@@ -7,12 +7,13 @@ import { capture } from '../obs';
 
 const limiter10h = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });
 
-const idRe = /^[A-Za-z0-9_\-]+$/;
+const idRe = /^[A-Za-z0-9_-]+$/;
 const createSchema = z.object({ id: z.string().regex(idRe).optional(), title: z.string().max(120).optional() }).strict();
 const titleSchema = z.object({ title: z.string().max(120) }).strict();
 
 // Async error wrapper to ensure all errors are caught
-const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextFunction) => {
+type AsyncRouteHandler = (req: Request, res: Response, next: NextFunction) => Promise<void | Response>;
+const asyncHandler = (fn: AsyncRouteHandler) => (req: Request, res: Response, next: NextFunction) => {
   Promise.resolve(fn(req, res, next)).catch((err) => {
     capture(err, 'route_error');
     next(err);

@@ -13,7 +13,7 @@ const TTL_SECONDS = (parseInt(process.env.ROOM_TTL_DAYS || '14', 10)) * 24 * 60 
 const HARD_CAP = 10 * 1024 * 1024; // 10MB
 const STATS_DELTA = 100 * 1024; // 100KB
 
-const timers = new Map<string, NodeJS.Timeout>();
+const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const lastFlushAt = new Map<string, number>();
 const lastBytes = new Map<string, number>();
 
@@ -21,7 +21,7 @@ export function scheduleWrite(roomId: string, producer: () => Uint8Array) {
   const now = Date.now();
   const prev = lastFlushAt.get(roomId) || 0;
   const dueIn = Math.max(0, 2000 - (now - prev)); // ~2s debounce
-  clearTimeout(timers.get(roomId) as any);
+  clearTimeout(timers.get(roomId));
   const t = setTimeout(() => flush(roomId, producer), Math.min(dueIn, 5000)); // ≤5s worst
   timers.set(roomId, t);
 }
