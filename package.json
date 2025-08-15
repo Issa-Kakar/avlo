@@ -23,5 +23,8 @@
   "devDependencies": {
     "@playwright/test": "^1.45.0",
     "concurrently": "^9.0.0"
-  }  
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.46.2"
+  }
 }

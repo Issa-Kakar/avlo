@@ -3,8 +3,8 @@ import * as Sentry from '@sentry/node';
 export async function initSentry() {
   const integrations: any[] = [];
   try {
+    // @ts-ignore optional dependency
     const mod = await import('@sentry/profiling-node');
-    // @ts-ignore optional
     integrations.push(mod.nodeProfilingIntegration());
   } catch {}
   Sentry.init({ 

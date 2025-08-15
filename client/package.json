@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "@rollup/rollup-linux-x64-gnu": "^4.46.2",
     "lodash": "^4.17.21",
     "monaco-editor": "^0.52.2",
     "nanoid": "^5.0.9",
@@ -23,8 +24,10 @@
     "yjs": "^13.6.27"
   },
   "devDependencies": {
+    "@types/d3": "^7.4.3",
     "@types/lodash": "^4.17.13",
     "@types/pako": "^2.0.3",
+    "@types/papaparse": "^5.3.16",
     "@types/rbush": "^4.0.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",

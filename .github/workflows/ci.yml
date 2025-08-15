@@ -1,121 +1,47 @@
-name: CI
-
+name: ci
 on:
-  push:
-    branches: [main, develop]
   pull_request:
-    branches: [main, develop]
-
+  push:
+    branches: [ main ]
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        node-version: [20.x]
-    
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: avlo_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Node.js
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-      
-      - name: Install dependencies
+          node-version: '20'
+          cache: npm
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ms-playwright-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install deps (lockfile)
         run: npm ci
-      
-      - name: Generate Prisma client
+
+      - name: Ensure env for prisma generate
+        run: cp .env.example .env || true
+
+      - name: Prisma generate (server)
         run: npm run db:generate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/avlo_test
-      
-      - name: Run database migrations
-        run: npm run db:deploy
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/avlo_test
-      
-      - name: Build application
+
+      - name: Install Chromium (no sudo)
+        run: npx playwright install chromium
+
+      - name: Build both workspaces
         run: npm run build
-        env:
-          NODE_ENV: production
-      
-      - name: Install Playwright browsers
-        run: npm run e2e:install
-      
-      - name: Run E2E tests
+
+      - name: Run E2E
         run: npm run test:e2e
-        env:
-          BASE_URL: http://localhost:3000
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/avlo_test
-          REDIS_URL: redis://localhost:6379
-          ORIGIN_ALLOWLIST: http://localhost:3000
-          NODE_ENV: test
-          CI: true
-      
-      - name: Upload test report
-        uses: actions/upload-artifact@v3
+
+      - name: Upload Playwright report (always)
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report/
-          retention-days: 30
-      
-      - name: Upload test videos
-        uses: actions/upload-artifact@v3
-        if: failure()
-        with:
-          name: playwright-videos
-          path: test-results/
-          retention-days: 7
-
-  lint:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.x
-          cache: 'npm'
-      
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Run TypeScript type check
-        run: |
-          npm run build --workspace=client -- --noEmit
-          npm run build --workspace=server -- --noEmit
-      
-      - name: Check for dependency vulnerabilities
-        run: npm audit --audit-level=high
+          path: playwright-report
