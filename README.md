@@ -9,6 +9,12 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 - **Backend**: Node.js, Express, WebSocket, Redis, PostgreSQL (via Prisma)
 - **Code Execution**: JavaScript + Python (via Pyodide)
 
+## Realtime Backend
+
+Server uses @y/websocket-server for the y-websocket protocol. We attach minimal wrappers for origin allowlist, per-IP caps, 2MB frame cap, room capacity, and read-only advisory. Persistence is Redis authoritative with gzip(4) and debounced flush.
+
+Note: Client uses y-websocket provider; server uses @y/websocket-server.
+
 ## Development Setup
 
 ### Prerequisites
@@ -31,6 +37,9 @@ sudo apt-get install libnspr4 libnss3 libasound2t64
 ```bash
 # Install dependencies
 npm install
+
+# Install server-specific y-websocket backend
+npm -w server i @y/websocket-server
 
 # Generate Prisma client
 npm run db:generate

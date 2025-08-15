@@ -70,13 +70,14 @@ console.log(`Copied client/dist → server/public`);
 
 ---
 
-## **Phase 1 — Server foundation (Express + y-websocket + Redis + Prisma)**
+## **Phase 1 — Server foundation (Express + @y/websocket-server + Redis + Prisma)**
 
-**Goal:** Boot an Express server with y-websocket gateway, Redis authoritative state, PostgreSQL metadata via Prisma, rate limits, origin allowlist, logging, health endpoints.
+**Goal:** Boot an Express server with @y/websocket-server gateway (official server for y-websocket v3), Redis authoritative state, PostgreSQL metadata via Prisma, rate limits, origin allowlist, logging, health endpoints.
 
 **Deliverables / Constraints**
 
-- Tech/deps: `express`, `ws`, `y-websocket`, `redis`, `@prisma/client`, `prisma`, `zod`, `helmet`, `cors`, `express-rate-limit`, `pino`, `@sentry/node`.
+- Tech/deps: `express`, `ws`, `yjs`, `@y/websocket-server` (server backend), `y-leveldb` (required by @y/websocket-server even though we use Redis), `redis`, `@prisma/client`, `prisma`, `zod`, `helmet`, `cors`, `express-rate-limit`, `pino`, `@sentry/node`.
+- **Note:** Client uses `y-websocket` provider; server uses `@y/websocket-server` for the backend.
 - Env vars: `NODE_ENV`, `PORT`, `DATABASE_URL`, `REDIS_URL`, `ORIGIN_ALLOWLIST`, `SENTRY_DSN` (optional), `APP_VERSION`, ‘ROOM_TTL_DAYS’(deafult 14)
 - **WebSocket endpoint:** `WS /ws` (Origin required). Client identifies `{ roomId }` on connect.
 - **Compression for Y.Doc persistence & byte accounting:** use **gzip level 4** for all persisted Y.Doc buffers (Redis). All reported **`sizeBytes`** refer to the **gzip(4) buffer length** of the last **accepted** write. Target flush cadence 2–3 s (≤5 s worst).
@@ -161,6 +162,13 @@ paths:
 - WS rejects frames > 2 MB; per-IP concurrent WS limited to 8.
 - `GET /api/rooms/:id/metadata` returns 404 when Redis doc is missing; `POST /api/rooms` with existing id returns 200 (idempotent).
 - With sustained edits, client receives `room_stats` at least every 5 s or after ≥100 KB growth.
+
+**Implementation Notes (Phase 1 Pivot)**
+
+- **y-websocket v3 changes:** The server implementation was moved from `y-websocket/bin/utils.*` to a separate package `@y/websocket-server`.
+- **Import path:** Use `import { setupWSConnection, setPersistence } from '@y/websocket-server/utils';` - Note this imports from `/utils` not `/bin/utils.js` as the package structure differs from expectations.
+- **y-leveldb dependency:** Although we use Redis for persistence, `y-leveldb` must be installed as `@y/websocket-server` imports it in the source files. This is an optional dependency that became required due to the import path.
+- **Client/Server split:** Client continues to use `y-websocket` provider; only the server uses `@y/websocket-server`.
 
 ---
 

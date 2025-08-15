@@ -1,691 +1,714 @@
-Amazing—perfect time to lock Phase 1 in. Below is an “overly explicit” runbook you can paste to your Claude code agents in your terminal. It’s broken into atomic tasks with exact files, code, commands, acceptance checks, and guardrails so the agents can work safely within scope.
-
-Where you see “(normative)”, that step is mandated by our Avlo spec; I cite the source lines so your agents know what’s non-negotiable.
+# Phase 1 — **AGENT TASKFILE** (Server + Sentry)
 
 ---
 
-# Phase 1 — Server Foundation (Express + y-websocket + Redis + Prisma)
+## A. Objective → What you are building
 
-## 0) Ground rules the agent must internalize (normative)
-
-- Tech/deps to use on the server: `express`, `ws`, `y-websocket`, `redis`, `@prisma/client`, `prisma`, `zod`, `helmet`, `cors`, `express-rate-limit`, `pino`, `@sentry/node`.&#x20;
-- Required env: `NODE_ENV`, `PORT`, `DATABASE_URL`, `REDIS_URL`, `ORIGIN_ALLOWLIST`, `SENTRY_DSN` (optional), `APP_VERSION`, `ROOM_TTL_DAYS` (default 14).&#x20;
-- WebSocket endpoint is `WS /ws`; clients identify `{ roomId }` and you **must** enforce Origin.&#x20;
-- Persist the Y.Doc to Redis **gzip level 4** and define `sizeBytes` as the last persisted **gzip(4) buffer length**; flush cadence 2–3s (≤5s).&#x20;
-- Redis is **authoritative**; Postgres is **metadata only** (`id`, `title`, `createdAt`, `lastWriteAt`, `sizeBytes`). Existence is defined by **Redis presence**.&#x20;
-- Origin allowlist is a comma-separated list of absolute origins; **no wildcards**.&#x20;
-- Per-IP concurrent WS connections ≤ **8**; inbound frame cap **2 MB**; enforce both.&#x20;
-- Publish advisory room size stats at most every **5 s** or after **≥100 KB** growth.&#x20;
-- Rate-limit room creation to **10 rooms/hour/IP**.&#x20;
-- HTTP API routes and semantics (create idempotent 201/200; metadata 404 when Redis missing; rename). &#x20;
-
-> You already added `SENTRY_DSN` to `.env`; the DSN is optional, but when present we must init Sentry early.&#x20;
+Stand up the **server foundation**: Express app, official **y‑websocket** gateway, **Redis authoritative** persistence with **gzip(4)**, **Prisma/PostgreSQL** for non‑authoritative metadata, **strict origin allowlist** (HTTP + WS), **rate‑limited** Room API, **health** endpoints, **WS hygiene** (≤8 per‑IP, 2 MB inbound frame cap), **room\_stats** advisories, and **Sentry** (errors + breadcrumbs only; no content logging).
 
 ---
 
-## 1) Prepare environment
+## B. Stop conditions (when to stop coding)
 
-Create a root .env.example (placeholders only—no secrets), and make sure .env is gitignored:
+Stop when **all checks in Section Q** pass locally. Do not implement UI, PWA, strict CSP/HSTS, export features, executors, or any AI endpoints.
 
-# from repo ROOT
+---
 
-cat > .env.example << 'EOF'
-NODE_ENV=development
-PORT=3000
-DATABASE_URL=postgresql://USER:PASS@localhost:5432/avlo
-REDIS_URL=redis://localhost:6379
-ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
-SENTRY_DSN= # leave blank in example
-APP_VERSION=dev
-ROOM_TTL_DAYS=14
-EOF
+## C. Tooling & prerequisites (no guessing)
 
-# ensure the real .env stays private
+* **Node.js ≥ 18.16** (LTS). Verify: `node -v`.
+* **Package manager:** npm (OK) or pnpm/yarn if already set. Use the repo's default.
+* **TypeScript runtime:** tsx available in dev (if not: `npm -w server i -D tsx typescript`).
+* **Process env:** Root `.env` contains: `NODE_ENV`, `PORT`, `DATABASE_URL`, `REDIS_URL`, `ORIGIN_ALLOWLIST`, `SENTRY_DSN` (optional), `APP_VERSION`, `ROOM_TTL_DAYS` (default 14).
+* **Required deps:** `express ws yjs y-websocket redis @prisma/client prisma zod helmet cors express-rate-limit pino pino-http dotenv @sentry/node`.
 
-grep -qxF '.env' .gitignore || echo '.env' >> .gitignore
-
-Make the server load the root .env early, regardless of working dir. (This avoids the “I ran the workspace from /server so it looked for server/.env” problem.)
-
-# add dotenv if you don't have it yet
-
-npm i -w server dotenv
-
-Create a tiny loader that searches upward for the first .env (root-first):
-
-# server/src/loadEnv.ts
-
-cat > server/src/loadEnv.ts << 'EOF'
-import { config } from "dotenv";
-import fs from "node:fs";
-import path from "node:path";
-
-// Try common locations in order (root first)
-const candidates = [
-path.resolve(process.cwd(), ".env"), // if you start from root
-path.resolve(process.cwd(), "../.env"), // if you start from server/
-path.resolve(process.cwd(), "../../.env"), // if bundled/compiled changes cwd
-];
-
-for (const p of candidates) {
-if (fs.existsSync(p)) {
-config({ path: p });
-break;
-}
-}
-EOF
-
-Validate and parse env once (so agents don’t guess), keeping Sentry optional:
-
-# server/src/env.ts
-
-cat > server/src/env.ts << 'EOF'
-import { z } from "zod";
-
-const schema = z.object({
-NODE_ENV: z.string().default("development"),
-PORT: z.coerce.number().default(3000),
-DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
-REDIS_URL: z.string().min(1, "REDIS_URL is required"),
-ORIGIN_ALLOWLIST: z.string().min(1, "ORIGIN_ALLOWLIST is required"),
-SENTRY_DSN: z.string().optional(), // optional
-APP_VERSION: z.string().default("dev"),
-ROOM_TTL_DAYS: z.coerce.number().default(14),
-});
-
-export const ENV = schema.parse(process.env);
-export const ORIGINS = new Set(
-ENV.ORIGIN_ALLOWLIST.split(",").map(s => s.trim()).filter(Boolean)
-);
-EOF
-
-Wire it at the very top of your server entry so everything sees the env values:
-
-// server/src/index.ts
-import "./loadEnv"; // <-- FIRST import
-import { ENV } from "./env";
-// ... your other imports ...
-
-// (unchanged) create app, routes, ws, etc.
-// use ENV.PORT, ENV.NODE_ENV, etc.
-
-Sentry stays conditional (since you already put DSN in root .env, this will activate):
-
-// server/src/sentry.ts (if you already have it, just keep it)
-import \* as Sentry from "@sentry/node";
-import "@sentry/profiling-node";
-import type { Express } from "express";
-import { ENV } from "./env";
-
-export function initSentry(app: Express) {
-if (!ENV.SENTRY_DSN) return; // optional
-Sentry.init({
-dsn: ENV.SENTRY_DSN,
-environment: ENV.NODE_ENV,
-release: ENV.APP_VERSION,
-tracesSampleRate: 0.1,
-profilesSampleRate: 0.1,
-sendDefaultPii: true,
-});
-app.use(Sentry.Handlers.requestHandler());
-app.use(Sentry.Handlers.tracingHandler());
-}
-
-export function sentryErrorHandler() {
-return Sentry.Handlers.errorHandler();
-}
-
-And in your entry:
-
-// server/src/index.ts
-import "./loadEnv";
-import { initSentry, sentryErrorHandler } from "./sentry";
-// ...
-const app = createHttpApp();
-initSentry(app);
-// mount routes...
-app.use(sentryErrorHandler()); // last
-
-## 2) Install server deps (pin per spec)
-
-**Agent: in `server/` run**
-
+**Install all deps (run this first):**
 ```bash
-npm i express ws y-websocket redis @prisma/client cors express-rate-limit helmet pino pino-http zod
-npm i -D prisma typescript tsx @types/express @types/ws @types/cors @sentry/node @sentry/profiling-node
+npm -w server i express ws yjs y-websocket @y/websocket-server redis @prisma/client zod helmet cors express-rate-limit pino pino-http dotenv @sentry/node
+npm -w server i -D prisma tsx typescript @types/express @types/ws @types/cors
 ```
 
-These packages/versions are the approved stack for the server.&#x20;
+---
+
+## D. Git hygiene (run)
+
+```bash
+git checkout -b feat/phase-1-server-foundation
+```
 
 ---
 
-## 3) Prisma model + migration (metadata only, non-authoritative)
+## E. Create file layout (exactly)
 
-**Agent: initialize Prisma**
-
-```bash
-npx prisma init --datasource-provider postgresql
+```
+server/
+  prisma/
+    schema.prisma
+  src/
+    index.ts                 # Express bootstrap + HTTP routes + bind WS
+    sentry.ts                # Sentry init + request/error handlers
+    obs.ts                   # Breadcrumb helpers (no content)
+    ws.ts                    # WS gateway (y-websocket + hygiene + identify + query fallback)
+    yjs-hooks.ts             # gzip(4) persistence + Redis + Prisma upsert + stats events + debounced flush
+    routes/
+      rooms.ts               # POST /api/rooms; GET metadata; PUT rename
+    util/
+      origin.ts              # isAllowedOrigin(csv)
+      ip.ts                  # getClientIp(req)
+    clients/
+      prisma.ts              # Prisma singleton
+      redis.ts               # Redis singleton
 ```
 
-**Agent: edit `server/prisma/schema.prisma`**
+Create the files below **verbatim**.
+
+---
+
+## F. Prisma schema (authoritative Redis; DB is metadata)
+
+**File:** `server/prisma/schema.prisma`
 
 ```prisma
 datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
 generator client { provider = "prisma-client-js" }
 
 model Room {
-  id          String   @id        // roomId
+  id          String   @id
   title       String   @db.VarChar(120)
   createdAt   DateTime @default(now())
-  lastWriteAt DateTime @updatedAt
+  lastWriteAt DateTime
   sizeBytes   Int
 }
 ```
 
-This reflects the **metadata fields**; Redis remains the source of truth for room existence and content.&#x20;
-
-**Agent: migrate & generate**
+**Run:**
 
 ```bash
-npm run db:generate --workspace=.
-npx prisma migrate dev -n init_rooms
+npx prisma generate
+npx prisma migrate dev --name init_phase1
 ```
 
 ---
 
-## 4) Redis client + gzip(4) persistence helpers (normative)
+## G. Sentry (minimal, safe, early)
 
-**Agent: create `server/src/redis.ts`**
-
-```ts
-import { createClient } from 'redis';
-
-export const redis = createClient({ url: process.env.REDIS_URL });
-export async function connectRedis() {
-  redis.on('error', (e) => console.error('Redis error', e));
-  if (!redis.isOpen) await redis.connect();
-}
-```
-
-**Agent: create `server/src/yjs-persistence.ts`**
-
-```ts
-import type { PrismaClient } from '@prisma/client';
-import { redis } from './redis';
-import { gzip } from 'node:zlib';
-import { promisify } from 'node:util';
-const gzipAsync = promisify(gzip);
-
-const ROOM_TTL_DAYS = parseInt(process.env.ROOM_TTL_DAYS ?? '14', 10);
-const ROOM_TTL_SECONDS = ROOM_TTL_DAYS * 24 * 60 * 60;
-
-// Persist binary Y.Doc to Redis with gzip(4) and upsert metadata.sizeBytes
-export async function persistYDoc(prisma: PrismaClient, roomId: string, ydocBinary: Buffer) {
-  const compressed = await gzipAsync(ydocBinary, { level: 4 }); // gzip(4) (normative)
-  await redis.set(`room:${roomId}`, compressed, { EX: ROOM_TTL_SECONDS, KEEPTTL: false });
-
-  await prisma.room.upsert({
-    where: { id: roomId },
-    update: { sizeBytes: compressed.length, lastWriteAt: new Date() },
-    create: {
-      id: roomId,
-      title: roomId,
-      createdAt: new Date(),
-      lastWriteAt: new Date(),
-      sizeBytes: compressed.length,
-    },
-  });
-
-  return compressed.length; // sizeBytes semantics: gzip(4) byte length (normative)
-}
-```
-
-The gzip level and `sizeBytes` semantics are **mandated**. The upsert path is also specified.&#x20;
-
----
-
-## 5) HTTP server scaffolding (Express, security, logging, health)
-
-**Agent: create `server/src/http.ts`**
-
-```ts
-import express from 'express';
-import helmet from 'helmet';
-import cors from 'cors';
-import pino from 'pino';
-import pinoHttp from 'pino-http';
-
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info' });
-
-export function createHttpApp() {
-  const app = express();
-
-  // Required to get correct client IP for per-IP caps/rate limits
-  app.set('trust proxy', 1); // normative
-  // CSP + core security headers (Profile A default)
-  app.use(
-    helmet({
-      contentSecurityPolicy: {
-        useDefaults: false,
-        directives: {
-          defaultSrc: ["'self'"],
-          imgSrc: ["'self'", 'data:'],
-          styleSrc: ["'self'", "'unsafe-inline'"],
-          scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
-          workerSrc: ["'self'"],
-          connectSrc: ["'self'", 'https:', 'wss:'],
-          frameAncestors: ["'none'"],
-        },
-      },
-      referrerPolicy: { policy: 'no-referrer' },
-    }),
-  );
-
-  // CORS (we'll validate Origin explicitly below, too)
-  app.use(cors({ origin: originValidator }));
-
-  app.use(express.json({ limit: '1mb' }));
-  app.use(pinoHttp({ logger: log }));
-
-  // Health/Readiness
-  app.get('/healthz', (_req, res) => res.status(200).json({ ok: true }));
-  app.get('/readyz', (_req, res) => res.status(200).json({ ok: true }));
-
-  return app;
-}
-
-// Parse ORIGIN_ALLOWLIST (comma-separated absolute origins; no wildcards)
-function parseAllowlist(): Set<string> {
-  const list = (process.env.ORIGIN_ALLOWLIST ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return new Set(list);
-}
-export const originAllowlist = parseAllowlist();
-
-export function originValidator(
-  origin: unknown,
-  cb?: (err: Error | null, allowed?: boolean) => void,
-) {
-  if (typeof origin !== 'string') return cb ? cb(null, true) : true; // same-origin/no Origin
-  const allowed = originAllowlist.has(origin);
-  return cb ? cb(null, allowed) : allowed;
-}
-```
-
-- `trust proxy` requirement: **normative**.&#x20;
-- CSP/headers profile and “no referrer”: **normative**.&#x20;
-- Validate Origin against allowlist (HTTP + WS): **normative**.&#x20;
-
----
-
-## 6) Sentry initialization (optional but supported)
-
-**Agent: create `server/src/sentry.ts`**
+**File:** `server/src/sentry.ts`
 
 ```ts
 import * as Sentry from '@sentry/node';
-import '@sentry/profiling-node';
 
-export function initSentry(app: import('express').Express) {
-  const dsn = process.env.SENTRY_DSN;
-  if (!dsn) return; // Optional per spec
-
-  Sentry.init({
-    dsn,
-    tracesSampleRate: 0.1, // adjust if needed later
-    profilesSampleRate: 0.1,
-    environment: process.env.NODE_ENV,
-    release: process.env.APP_VERSION,
-    sendDefaultPii: true,
-  });
-
-  app.use(Sentry.Handlers.requestHandler());
-  app.use(Sentry.Handlers.tracingHandler());
-}
-
-export function sentryErrorHandler() {
-  return Sentry.Handlers.errorHandler();
-}
-```
-
-Sentry DSN is explicitly listed as optional in our env set.&#x20;
-
----
-
-## 7) API contracts (create, metadata, rename) with rate limiting
-
-**Agent: create `server/src/api.ts`**
-
-```ts
-import { z } from 'zod';
-import rateLimit from 'express-rate-limit';
-import type { PrismaClient } from '@prisma/client';
-import type { Express } from 'express';
-import { originAllowlist } from './http';
-
-const createRoomLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }); // normative
-
-const Id = z.string().regex(/^[A-Za-z0-9_\-]+$/);
-const Title = z.string().max(120);
-
-export function mountApi(app: Express, prisma: PrismaClient) {
-  // guard all HTTP by Origin allowlist (explicit, in addition to CORS)
-  app.use((req, res, next) => {
-    const origin = req.headers.origin as string | undefined;
-    if (!origin || originAllowlist.has(origin)) return next();
-    return res.status(403).json({ error: 'origin_not_allowed' });
-  });
-
-  app.post('/api/rooms', createRoomLimiter, async (req, res) => {
-    const body = z.object({ id: Id.optional(), title: Title.optional() }).parse(req.body);
-    const roomId = body.id ?? cryptoRandomId();
-
-    // idempotent create: if exists in Redis later, we still return 200 with shareLink (handled by client/WS path)
-    await prisma.room.upsert({
-      where: { id: roomId },
-      update: { title: body.title ?? roomId },
-      create: { id: roomId, title: body.title ?? roomId, sizeBytes: 0 },
-    });
-
-    const payload = { roomId, shareLink: `/rooms/${roomId}` };
-    // Use 201 for first-time create; 200 if already existed
-    // (A real Redis existence check can drive status; keeping simple here)
-    return res.status(201).json(payload);
-  });
-
-  app.get('/api/rooms/:id/metadata', async (req, res) => {
-    const id = Id.parse(req.params.id);
-    // Redis presence defines existence; return 404 if missing (even if DB row exists)
-    // In practice you’d check Redis key room:<id> here; we stub 404 to match rule.
-    return res.status(404).json({ error: 'not_found' });
-  });
-
-  app.put('/api/rooms/:id', async (req, res) => {
-    const id = Id.parse(req.params.id);
-    const { title } = z.object({ title: Title }).parse(req.body);
-    const row = await prisma.room.update({ where: { id }, data: { title } }).catch(() => null);
-    if (!row) return res.status(404).json({ error: 'not_found' });
-    return res.status(200).json({ ok: true });
-  });
-}
-
-function cryptoRandomId() {
-  // simple nanoid-ish: use crypto if available; replace with nanoid if preferred
-  return Math.random().toString(36).slice(2, 10);
-}
-```
-
-- API shapes and semantics are **normative**: id regex, 201 vs 200 for idempotent create, metadata 404 when Redis key missing. &#x20;
-- Rate limit “10 rooms/hour/IP” is **required**.&#x20;
-
-> Note: In your real code, check Redis for `room:<id>` in `GET /metadata` to decide 404 vs 200; the spec requires 404 if Redis is absent even if a DB row exists.&#x20;
-
----
-
-## 8) y-websocket gateway + hygiene (WS caps, Origin, stats)
-
-**Agent: create `server/src/ws.ts`**
-
-```ts
-import { WebSocketServer } from 'ws';
-import type { Server } from 'http';
-import { originAllowlist } from './http';
-
-const MAX_FRAME = 2 * 1024 * 1024; // 2 MB (normative)
-const MAX_WS_PER_IP = 8; // normative
-
-const ipCounts = new Map<string, number>();
-function getIp(req: any) {
-  const fwd = (req.headers['x-forwarded-for'] || '').split(',')[0]?.trim();
-  return fwd || req.socket.remoteAddress;
-}
-
-export function attachWs(server: Server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
-
-  wss.on('connection', (ws, req) => {
-    const origin = req.headers.origin as string | undefined;
-    if (origin && !originAllowlist.has(origin)) {
-      ws.close(); // origin not allowed
-      return;
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || undefined,
+  environment: process.env.NODE_ENV || 'development',
+  release: process.env.APP_VERSION,
+  tracesSampleRate: 0.02,
+  sendDefaultPii: false,
+  beforeSend(event) {
+    if (event.request) {
+      delete (event.request as any).data;
+      delete (event.request as any).headers;
     }
-
-    const ip = getIp(req);
-    const count = (ipCounts.get(ip) ?? 0) + 1;
-    ipCounts.set(ip, count);
-    if (count > MAX_WS_PER_IP) {
-      ws.close();
-      ipCounts.set(ip, count - 1);
-      return;
-    }
-
-    ws.on('message', (msg: Buffer) => {
-      if (msg.length > MAX_FRAME) {
-        ws.close();
-        return;
-      }
-      // You will connect this to y-websocket's awareness/update flow.
-    });
-
-    ws.on('close', () => {
-      ipCounts.set(ip, (ipCounts.get(ip) ?? 1) - 1);
-    });
-  });
-
-  return wss;
-}
-```
-
-- Frame cap, per-IP cap, Origin enforcement are **normative**. &#x20;
-- The spec also provides a room stats publisher snippet; adapt it to broadcast `{type:"room_stats", bytes, cap}` at most every 5s or ≥100KB change. &#x20;
-
----
-
-## 9) Wire it all together (Sentry, Prisma, Redis, HTTP, WS)
-
-**Agent: create `server/src/index.ts`**
-
-```ts
-import http from 'node:http';
-import { createHttpApp, originAllowlist } from './http';
-import { initSentry, sentryErrorHandler } from './sentry';
-import { attachWs } from './ws';
-import { connectRedis } from './redis';
-import { PrismaClient } from '@prisma/client';
-import { mountApi } from './api';
-
-async function main() {
-  const app = createHttpApp();
-  initSentry(app); // optional based on SENTRY_DSN
-
-  const prisma = new PrismaClient();
-  await connectRedis();
-
-  mountApi(app, prisma);
-
-  // Sentry error handler last
-  app.use(sentryErrorHandler());
-
-  const server = http.createServer(app);
-  attachWs(server);
-
-  const port = parseInt(process.env.PORT ?? '3000', 10);
-  server.listen(port, () => {
-    console.log(`Server listening on http://localhost:${port}`);
-    console.log(`Origin allowlist: ${[...originAllowlist].join(', ') || '(empty)'}`);
-  });
-
-  // Graceful shutdown
-  const shutdown = async () => {
-    console.log('Shutting down…');
-    await prisma.$disconnect();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-}
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+    return event;
+  },
 });
+
+export const sentry = Sentry;
+export const sentryHandlers = {
+  request: Sentry.Handlers.requestHandler(),
+  error: Sentry.Handlers.errorHandler(),
+};
 ```
 
----
-
-## 10) Integrate y-websocket with Redis persistence (hook flush)
-
-Use the official `y-websocket` server. Add hooks so that when the Y.Doc state changes (debounced \~2–3s), you compress and persist via `persistYDoc(...)`. The spec includes an **illustrative** gzip(4) writeState function—your implementation should follow it.&#x20;
-
-**Agent: create `server/src/yjs-server.ts` (sketch)**
+**File:** `server/src/obs.ts`
 
 ```ts
-// Pseudocode scaffold — attach to your ws and persist periodically
-// Import the y-websocket server and bind to your wss instance.
-// On each accepted Yjs update, debounce-save the room's doc:
-//   const size = await persistYDoc(prisma, roomId, ydoc.encodeStateAsUpdate(...));
-// Then maybePublishRoomStats(roomId, size, 10*1024*1024);
+import { sentry } from './sentry';
+export const crumb = (message: string, category = 'gateway', level: 'info' as const) =>
+  sentry.addBreadcrumb({ message, category, level });
+export const capture = (err: unknown, hint?: string) => {
+  if (hint) crumb(hint, 'error', 'error');
+  sentry.captureException(err);
+};
 ```
 
-**Normative details to honor while implementing:**
+---
 
-- Flush cadence target **2–3 s** (≤5 s worst).&#x20;
-- `sizeBytes` = length of last **gzip(4)** buffer stored.&#x20;
-- TTL extends only on **accepted writes**; presence/viewing does not.&#x20;
+## H. Clients (singletons; no per‑request connects)
+
+**File:** `server/src/clients/prisma.ts`
+
+```ts
+import { PrismaClient } from '@prisma/client';
+export const prisma = new PrismaClient();
+```
+
+**File:** `server/src/clients/redis.ts`
+
+```ts
+import { createClient } from 'redis';
+export const redis = createClient({ url: process.env.REDIS_URL });
+await redis.connect();
+```
 
 ---
 
-## 11) Map gateway errors & read-only states (for later client)
+## I. Express bootstrap (middleware order is mandatory)
 
-While Phase 1 focuses server-side, your gateway hygiene must be able to emit these statuses for the client in Phase 2/8:
+**File:** `server/src/index.ts`
 
-- `room_full` at capacity 105.
-- Close connection when inbound frame > 2 MB (`offline_delta_too_large`).
-- Enforce **per-IP WS ≤ 8**.
-  These caps are **normative**.&#x20;
+```ts
+import 'dotenv/config';
+import './sentry';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import pinoHttp from 'pino-http';
+import { sentryHandlers } from './sentry';
+import { isAllowedOrigin } from './util/origin';
+import { registerWsGateway } from './ws';
+import roomsRouter from './routes/rooms';
+import { prisma } from './clients/prisma';
+import { redis } from './clients/redis';
+
+const app = express();
+app.set('trust proxy', 1);
+app.use(sentryHandlers.request); // FIRST
+app.use(pinoHttp({ redact: { paths: ['req.headers','req.body','res.headers'], remove: true } }));
+app.use(express.json({ limit: '1mb' }));
+
+const allowlistCsv = process.env.ORIGIN_ALLOWLIST || '';
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, false); // disallow non-browser by default
+    cb(null, isAllowedOrigin(origin, allowlistCsv));
+  },
+  credentials: false,
+}));
+app.use(helmet());
+
+// Serve static files from server/public (client build output)
+app.use(express.static('public'));
+
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.get('/readyz', async (_req, res) => {
+  try { 
+    await redis.ping(); 
+    await prisma.$queryRaw`SELECT 1`;
+    return res.json({ ok: true, degraded: { db: false } });
+  } catch (e) {
+    // Check which service is down
+    let redisOk = true, dbOk = true;
+    try { await redis.ping(); } catch { redisOk = false; }
+    try { await prisma.$queryRaw`SELECT 1`; } catch { dbOk = false; }
+    
+    if (!redisOk) {
+      return res.status(503).json({ ok: false, degraded: { redis: true, db: !dbOk } });
+    }
+    return res.json({ ok: true, degraded: { db: true } });
+  }
+});
+
+app.use('/api/rooms', roomsRouter);
+app.use(sentryHandlers.error); // LAST
+
+const server = app.listen(process.env.PORT || 3000, () => console.log('server listening'));
+registerWsGateway(server, allowlistCsv);
+
+// Graceful shutdown: flush, then close
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+async function shutdown() {
+  try { await prisma.$disconnect(); } catch {}
+  try { await redis.quit(); } catch {}
+  server.close(()=>process.exit(0));
+}
+```
 
 ---
 
-## 12) Start scripts and run
+## J. Utilities
 
-Ensure server workspace has:
+**File:** `server/src/util/origin.ts`
 
-```json
-// server/package.json (already aligned in spec)
-{
-  "name": "avlo-server",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+```ts
+export function isAllowedOrigin(origin: string | undefined, csv: string) {
+  if (!origin) return false;
+  const list = csv.split(',').map(s => s.trim()).filter(Boolean);
+  try { const u = new URL(origin); return list.includes(`${u.protocol}//${u.host}`); } catch { return false; }
+}
+```
+
+**File:** `server/src/util/ip.ts`
+
+```ts
+import type { IncomingMessage } from 'http';
+export function getClientIp(req: IncomingMessage) {
+  const fwd = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim();
+  return fwd || (req.socket as any).remoteAddress || '';
+}
+```
+
+---
+
+## K. Persistence (gzip(4) + Redis authoritative + Prisma upsert + stats + debounced flush)
+
+**Goals:**
+
+* Write **binary gzip(4)** into Redis key `room:<roomId>`.
+* Compute `sizeBytes` from **compressed** length.
+* Extend TTL **only on accepted writes** (not in read‑only state).
+* Debounce flushes: **\~2 s** cadence, **≤5 s** worst‑case.
+* Publish `room_stats` ≤5 s or ≥100 KB growth.
+
+**File:** `server/src/yjs-hooks.ts`
+
+```ts
+import { gzip, gunzip } from 'node:zlib';
+import { promisify } from 'node:util';
+import { EventEmitter } from 'node:events';
+import { prisma } from './clients/prisma';
+import { redis } from './clients/redis';
+import { crumb, capture } from './obs';
+
+export const yjsEvents = new EventEmitter();
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+
+const TTL_SECONDS = (parseInt(process.env.ROOM_TTL_DAYS || '14', 10)) * 24 * 60 * 60;
+const HARD_CAP = 10 * 1024 * 1024; // 10MB
+const STATS_DELTA = 100 * 1024; // 100KB
+
+const timers = new Map<string, NodeJS.Timeout>();
+const lastFlushAt = new Map<string, number>();
+const lastBytes = new Map<string, number>();
+
+export function scheduleWrite(roomId: string, producer: () => Uint8Array) {
+  const now = Date.now();
+  const prev = lastFlushAt.get(roomId) || 0;
+  const dueIn = Math.max(0, 2000 - (now - prev)); // ~2s debounce
+  clearTimeout(timers.get(roomId) as any);
+  const t = setTimeout(() => flush(roomId, producer), Math.min(dueIn, 5000)); // ≤5s worst
+  timers.set(roomId, t);
+}
+
+async function flush(roomId: string, producer: () => Uint8Array) {
+  try {
+    const binary = Buffer.from(producer());
+    const compressed = await gzipAsync(binary, { level: 4 });
+    const bytes = (compressed as Buffer).length;
+
+    const isReadOnly = bytes >= HARD_CAP;
+    if (!isReadOnly) {
+      await redis.set(`room:${roomId}`, compressed as Buffer, { EX: TTL_SECONDS });
+      await prisma.room.upsert({
+        where: { id: roomId },
+        update: { sizeBytes: bytes, lastWriteAt: new Date() },
+        create: { id: roomId, title: roomId, createdAt: new Date(), lastWriteAt: new Date(), sizeBytes: bytes },
+      });
+      crumb('redis_write_accept');
+    } else {
+      crumb('redis_write_skip_readonly', 'gateway', 'warning');
+    }
+
+    // room_stats cadence
+    const prevBytes = lastBytes.get(roomId) || 0;
+    const prevAt = lastFlushAt.get(roomId) || 0;
+    const now = Date.now();
+    if (now - prevAt >= 5000 || Math.abs(bytes - prevBytes) >= STATS_DELTA) {
+      yjsEvents.emit('room_stats', { roomId, bytes, cap: HARD_CAP });
+      crumb('room_stats_publish');
+      lastBytes.set(roomId, bytes);
+      lastFlushAt.set(roomId, now);
+    } else {
+      lastFlushAt.set(roomId, now);
+    }
+
+    if (isReadOnly) yjsEvents.emit('readonly', { roomId });
+  } catch (e) { capture(e, 'prisma_upsert_fail'); }
+}
+
+export async function loadState(roomId: string): Promise<Uint8Array | null> {
+  try {
+    const compressed = await redis.getBuffer(`room:${roomId}`);
+    if (!compressed) return null;
+    const decompressed = await gunzipAsync(compressed);
+    return new Uint8Array(decompressed);
+  } catch (e) {
+    capture(e, 'redis_load_fail');
+    return null;
   }
 }
 ```
 
-These scripts/stack are in the canonical overview.&#x20;
+---
 
-**Agent: run**
+## L. WebSocket gateway (y‑websocket + hygiene + identify + URL fallback)
 
-```bash
-# From repo root after Phase 0 baseline exists
-npm run dev --workspace=server
+**Behavior to enforce:**
+
+* **Origin allowlist** on upgrade (absolute origins only; no wildcards).
+* **Per‑IP concurrent WS ≤ 8** (reject 9th).
+* **Inbound frame cap = 2 MB** (close with `offline_delta_too_large`).
+* **Room capacity = 105** (send `room_full`).
+* **Hard cap 10 MB** (doc becomes read‑only; awareness still relays) → send `room_full_readonly`.
+* **Identify:** accept initial JSON `{ roomId }` **or** `{ type:'identify', roomId }`. For **back‑compat**, also accept `?room=<id>` in URL if the message is not sent within 5s.
+
+**File:** `server/src/ws.ts`
+
+```ts
+import { WebSocketServer, WebSocket } from 'ws';
+import type { Server, IncomingMessage } from 'http';
+import { isAllowedOrigin } from './util/origin';
+import { getClientIp } from './util/ip';
+import { crumb } from './obs';
+import { yjsEvents, scheduleWrite, loadState } from './yjs-hooks';
+import * as Y from 'yjs';
+
+// Import from @y/websocket-server (official server for y-websocket v3)
+import { setupWSConnection, setPersistence } from '@y/websocket-server/utils';
+
+const MAX_FRAME = 2 * 1024 * 1024; // 2MB
+const MAX_IP_CONNS = 8;
+const MAX_ROOM_CONNS = 105;
+const HARD_CAP = 10 * 1024 * 1024; // 10MB
+
+const ipCounts = new Map<string, number>();
+const roomConns = new Map<string, Set<WebSocket>>();
+
+setPersistence({
+  bindState: async (docName: string, ydoc: Y.Doc) => {
+    // Load existing state from Redis
+    const state = await loadState(docName);
+    if (state) Y.applyUpdate(ydoc, state);
+    
+    // Schedule writes on updates
+    ydoc.on('update', () => scheduleWrite(docName, () => Y.encodeStateAsUpdate(ydoc)));
+  },
+  writeState: async (docName: string, ydoc: Y.Doc) => {
+    scheduleWrite(docName, () => Y.encodeStateAsUpdate(ydoc));
+  }
+});
+
+export function registerWsGateway(server: Server, allowlistCsv: string) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  // Broadcast advisories
+  yjsEvents.on('room_stats', ({ roomId, bytes, cap }) => {
+    const conns = roomConns.get(roomId);
+    if (!conns) return;
+    const msg = JSON.stringify({ type: 'room_stats', bytes, cap });
+    for (const ws of conns) { if (ws.readyState === WebSocket.OPEN) try { ws.send(msg); } catch {} }
+  });
+  yjsEvents.on('readonly', ({ roomId }) => {
+    const conns = roomConns.get(roomId);
+    if (!conns) return;
+    const msg = JSON.stringify({ type: 'room_full_readonly', message: 'Board is read-only — size limit reached.' });
+    for (const ws of conns) { if (ws.readyState === WebSocket.OPEN) try { ws.send(msg); } catch {} }
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    const origin = req.headers.origin as string | undefined;
+    if (!isAllowedOrigin(origin, allowlistCsv)) {
+      crumb('origin_reject', 'gateway', 'warning');
+      socket.destroy();
+      return;
+    }
+    const ip = getClientIp(req);
+    const count = (ipCounts.get(ip) || 0) + 1;
+    if (count > MAX_IP_CONNS) {
+      crumb('per_ip_ws_cap', 'gateway', 'warning');
+      socket.destroy();
+      return;
+    }
+    ipCounts.set(ip, count);
+
+    wss.handleUpgrade(req as any, socket as any, head, (ws) => {
+      let roomId: string | null = null;
+
+      // Back‑compat URL query fallback
+      const url = new URL((req as any).url, 'http://local');
+      const roomFromQuery = url.searchParams.get('room');
+      if (roomFromQuery && /^[A-Za-z0-9_\-]+$/.test(roomFromQuery)) roomId = roomFromQuery;
+
+      const identifyTimer = setTimeout(() => { if (!roomId) try { ws.close(1008, 'Identify required'); } catch {} }, 5000);
+
+      const onMessage = (data: Buffer) => {
+        if (data.length > MAX_FRAME) {
+          crumb('frame_too_large', 'gateway', 'warning');
+          try { ws.send(JSON.stringify({ type: 'offline_delta_too_large', message: 'Change too large. Refresh to rejoin.' })); } catch {}
+          ws.close(1009, 'Frame too large');
+          return;
+        }
+        if (!roomId) {
+          try {
+            const j = JSON.parse(data.toString('utf8'));
+            const candidate = j?.roomId || (j?.type === 'identify' ? j?.roomId : undefined);
+            if (typeof candidate === 'string' && /^[A-Za-z0-9_\-]+$/.test(candidate)) roomId = candidate;
+            if (!roomId) return; // keep waiting
+          } catch { return; }
+        }
+        // After identified, let y-websocket handle messages
+      };
+
+      ws.on('message', onMessage);
+
+      const afterIdentify = () => {
+        if (!roomId) return; // still waiting
+        clearTimeout(identifyTimer);
+        ws.off('message', onMessage);
+
+        // Room capacity check
+        const set = roomConns.get(roomId) || new Set<WebSocket>();
+        if (set.size >= MAX_ROOM_CONNS) {
+          try { ws.send(JSON.stringify({ type: 'room_full', message: 'Room is full — create a new room.' })); } catch {}
+          ws.close(1008, 'Room full');
+          return;
+        }
+        set.add(ws); roomConns.set(roomId, set);
+
+        // Make y-websocket believe the docname is /ws/<roomId>
+        (req as any).url = `/ws/${encodeURIComponent(roomId)}`;
+        setupWSConnection(ws as any, req as any);
+      };
+
+      // Check periodically until identified or closed
+      const poll = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return clearInterval(poll);
+        if (roomId) { clearInterval(poll); afterIdentify(); }
+      }, 50);
+
+      ws.on('close', () => {
+        clearTimeout(identifyTimer); clearInterval(poll);
+        const ip = getClientIp(req as IncomingMessage);
+        ipCounts.set(ip, Math.max(0, (ipCounts.get(ip) || 1) - 1));
+        if (roomId) {
+          const set = roomConns.get(roomId);
+          if (set) { set.delete(ws); if (set.size === 0) roomConns.delete(roomId); }
+        }
+      });
+    });
+  });
+}
 ```
 
 ---
 
-## 13) Acceptance checklist the agent must verify (Phase 1)
+## M. Rooms API (idempotent create; metadata 404 without Redis; rename ≤120; rate limits)
 
-- Disallowed origins are rejected at **both** HTTP and WS.&#x20;
-- WS rejects frames > **2 MB**; per-IP concurrent WS limited to **8**.&#x20;
-- `GET /api/rooms/:id/metadata` returns **404** when the Redis doc is missing (even if DB row exists). &#x20;
-- `POST /api/rooms` with an existing id returns **200** idempotently; new rooms **201** and respond with `{ roomId, shareLink }`.&#x20;
-- With sustained edits, the server publishes `room_stats` to clients at least every **5 s** or after **≥100 KB** increase.&#x20;
+**Rules:**
 
----
+* `POST /api/rooms` → **10/hour/IP** cap, **201** on new, **200** if exists (idempotent).
+* `GET /api/rooms/:id/metadata` → **404** if Redis key missing (even if DB row exists).
+* `PUT /api/rooms/:id` (rename) → **10/hour/IP** cap, title ≤120, requires Redis presence.
 
-## 14) Guardrails / invariants to assert in PRs
+**File:** `server/src/routes/rooms.ts`
 
-- Never store raw Y.Doc without gzip(4). **All accounting** uses compressed length.&#x20;
-- Room TTL derived from `ROOM_TTL_DAYS`; **only** accepted writes extend TTL.&#x20;
-- Enforce Origin allowlist for **HTTP + WS**; **no wildcards** accepted. &#x20;
-- Rate-limit room creation: 10/h per IP.&#x20;
-- Logs/counters must **never** include document content (non-content observability only).&#x20;
+```ts
+import { Router, Request, Response, NextFunction } from 'express';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+import { prisma } from '../clients/prisma';
+import { redis } from '../clients/redis';
+import { capture } from '../obs';
 
----
+const limiter10h = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });
 
-## 15) Copy-paste prompts for Claude Code (execute one at a time)
+const idRe = /^[A-Za-z0-9_\-]+$/;
+const createSchema = z.object({ id: z.string().regex(idRe).optional(), title: z.string().max(120).optional() }).strict();
+const titleSchema = z.object({ title: z.string().max(120) }).strict();
 
-> **Prompt A — Create server scaffolding**
->
-> - Add files exactly as described in steps 3–9 (`src/http.ts`, `src/sentry.ts`, `src/api.ts`, `src/redis.ts`, `src/yjs-persistence.ts`, `src/ws.ts`, `src/index.ts`).
-> - Use the normative constraints (cited).
-> - Don’t introduce any other dependencies or features.
->
-> **Success conditions:** server compiles; `/healthz` returns `{ ok: true }`.
+// Async error wrapper to ensure all errors are caught
+const asyncHandler = (fn: Function) => (req: Request, res: Response, next: NextFunction) => {
+  Promise.resolve(fn(req, res, next)).catch((err) => {
+    capture(err, 'route_error');
+    next(err);
+  });
+};
 
-> **Prompt B — Prisma model + migrations**
->
-> - Create the `Room` Prisma model as specified and run a migration named `init_rooms`.
-> - Generate Prisma client and import it where appropriate.
+const router = Router();
 
-> **Prompt C — Wire rate limits and Origin enforcement**
->
-> - Apply the `createRoomLimiter` to `POST /api/rooms`.
-> - Block HTTP requests whose `Origin` header is not in `ORIGIN_ALLOWLIST`.
-> - Ensure WS path `/ws` enforces the same allowlist, frame cap, and per-IP cap.
+router.post('/', limiter10h, asyncHandler(async (req: Request, res: Response) => {
+  const parse = createSchema.safeParse(req.body || {});
+  if (!parse.success) return res.status(400).json({ error: 'invalid_input' });
+  const id = (parse.data.id || crypto.randomUUID()).replace(/-/g, '');
+  
+  try {
+    const existing = await prisma.room.findUnique({ where: { id } });
+    if (existing) return res.status(200).json({ roomId: id, shareLink: `/rooms/${id}` });
+    await prisma.room.create({ data: { id, title: parse.data.title || id, createdAt: new Date(), lastWriteAt: new Date(), sizeBytes: 0 } });
+    return res.status(201).json({ roomId: id, shareLink: `/rooms/${id}` });
+  } catch (e) {
+    capture(e, 'room_create_error');
+    return res.status(500).json({ error: 'internal_error' });
+  }
+}));
 
-> **Prompt D — Add gzip(4) persistence hook**
->
-> - Add a debounced flush (2–3 s) on Y.Doc updates that persists to Redis with gzip level 4 and upserts `sizeBytes`.
-> - Implement room stats broadcast at most every 5 s or after ≥100 KB increase.
+router.get('/:id/metadata', asyncHandler(async (req: Request, res: Response) => {
+  const id = req.params.id;
+  
+  try {
+    const buf = await redis.getBuffer(`room:${id}`);
+    if (!buf) return res.status(404).json({ error: 'not_found' });
+    const r = await prisma.room.findUnique({ where: { id } });
+    if (!r) return res.status(404).json({ error: 'not_found' });
+    const expiresAt = new Date(r.lastWriteAt.getTime() + (parseInt(process.env.ROOM_TTL_DAYS || '14', 10) * 24 * 60 * 60 * 1000));
+    res.json({ title: r.title, size_bytes: r.sizeBytes, created_at: r.createdAt.toISOString(), expires_at: expiresAt.toISOString() });
+  } catch (e) {
+    capture(e, 'room_metadata_error');
+    // If Redis is down but room exists in DB, return degraded response
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'ECONNREFUSED') {
+      return res.status(503).json({ error: 'service_unavailable' });
+    }
+    return res.status(500).json({ error: 'internal_error' });
+  }
+}));
 
-> **Prompt E — Sentry**
->
-> - Initialize Sentry only if `SENTRY_DSN` is present; add request/tracing handlers and error handler as shown.
+router.put('/:id', limiter10h, asyncHandler(async (req: Request, res: Response) => {
+  const id = req.params.id;
+  const parse = titleSchema.safeParse(req.body || {});
+  if (!parse.success) return res.status(400).json({ error: 'invalid_input' });
+  
+  try {
+    const exists = await redis.exists(`room:${id}`);
+    if (!exists) return res.status(404).json({ error: 'not_found' });
+    await prisma.room.update({ where: { id }, data: { title: parse.data.title } });
+    res.json({ ok: true });
+  } catch (e) {
+    capture(e, 'room_rename_error');
+    return res.status(500).json({ error: 'internal_error' });
+  }
+}));
 
-> **Prompt F — Acceptance test checklist**
->
-> - Manually verify: CORS/Origin rejection, WS frame cap, per-IP cap, metadata 404, create 201/200 idempotency, and stats cadence.
-
----
-
-## 16) Local manual test script (what to type)
-
-```bash
-# 1) Start Postgres + Redis locally (compose or services)
-# 2) Run the server
-npm run dev --workspace=server
-
-# 3) Smoke test HTTP
-curl -i http://localhost:3000/healthz
-curl -i -X POST http://localhost:3000/api/rooms -H "Content-Type: application/json" -d '{"title":"My Room"}'
-
-# 4) Try an Origin-forbidden request
-curl -i -H "Origin: http://evil.example" http://localhost:3000/api/rooms
-
-# 5) (Optional) WS test with wscat and oversize frame to ensure close at >2MB
+export default router;
 ```
 
 ---
 
-## 17) “Definition of Done” for Phase 1 PR
+## N. Normative constants (baked into the code above)
 
-- **Server boots** with Express, `WS /ws`, Sentry (if DSN present), pino logging. (Env set aligns with spec.)&#x20;
-- **Metadata DB** present with `Room` model; **no document content** stored in Postgres.&#x20;
-- **Redis persistence** uses gzip level 4; `sizeBytes` reflects compressed length; TTL extended only on write. &#x20;
-- **Origin allowlist** enforced for HTTP & WS; no wildcards; per-IP ≤8; frame cap 2MB. &#x20;
-- **API** implements create/metadata/rename with idempotency and rate limits (10/h). &#x20;
-- **Room stats** broadcast cadence implemented (5s or ≥100 KB).&#x20;
+* WS frame cap = **2 MB** → close with `offline_delta_too_large`.
+* Per‑IP concurrent WS ≤ **8**.
+* Room capacity = **105** → `room_full` on join.
+* Hard size cap = **10 MB** → `room_full_readonly` (updates rejected; awareness relays).
+* Soft advisory = **8 MB** (header pill; no toasts below hard cap).
+* Flush cadence ≈ **2–3 s** (≤5 s worst); TTL extends **only on accepted writes**.
+* `room_stats` published ≤ every **5 s** or on ≥ **100 KB** growth.
 
 ---
 
-## 18) Common pitfalls the agent must avoid
+## O. Error shapes (consistent JSON)
 
-- **Do not** compute `sizeBytes` from uncompressed buffers (must be gzip(4)).&#x20;
-- **Do not** extend TTL on view/presence or reads; only on accepted writes.&#x20;
-- **Do not** allow any Origin not in `ORIGIN_ALLOWLIST` (including `*`).&#x20;
-- **Do not** exceed per-IP 8 WS connections; enforce close on 2MB frames.&#x20;
-- **Do not** log or store document content in logs/metrics. Observe counters only.&#x20;
+* `400 { "error": "invalid_input" }`
+* `404 { "error": "not_found" }`
+* `429 { "error": "rate_limited" }` (from limiter)
+* `500 { "error": "internal_error" }` (unexpected errors)
+* `503 { "error": "service_unavailable" }` (Redis/DB connectivity issues)
+* `503 { "ok": false, "degraded": { "redis": true, "db": true } }` (from `/readyz`)
+
+---
+
+## P. Logging & breadcrumbs (do this, and only this)
+
+* **Pino** redacts `req.headers`, `req.body`, `res.headers`.
+* **No payloads** (doc contents, bodies) in logs or Sentry.
+* Add Sentry **breadcrumbs** when:
+
+  * origin rejected (`origin_reject`)
+  * per‑IP cap exceeded (`per_ip_ws_cap`)
+  * frame > 2 MB (`frame_too_large`)
+  * room\_stats published (`room_stats_publish`)
+  * write accepted / skipped (`redis_write_accept` / `redis_write_skip_readonly`)
+
+---
+
+## Q. Run & verify (local)
+
+**Run dev server:**
+
+```bash
+npm run dev --workspace=server
+```
+
+**Acceptance checklist (must all pass):**
+
+1. **Origin allowlist (HTTP)**
+
+```bash
+ORIGIN_ALLOWLIST=http://localhost:5173 node -e "console.log('use .env normally; this is just a demo')"
+# In another shell:
+curl -i -H "Origin: http://evil.example" http://localhost:3000/healthz | grep -i access-control-allow-origin && echo "SHOULD BE EMPTY"
+```
+
+2. **WS frame cap = 2 MB** (script sends 2.1 MB)
+
+```bash
+node - <<'NODE'
+const WebSocket = require('ws');
+const ws = new WebSocket('ws://localhost:3000/ws?room=captest', { headers: { Origin: 'http://localhost:5173' } });
+ws.on('open', ()=> ws.send(Buffer.alloc(2.1 * 1024 * 1024)));
+ws.on('message', m=>console.log(m.toString()));
+ws.on('close', (c,r)=>console.log('closed',c,r?.toString()));
+NODE
+```
+
+3. **Per‑IP ≤ 8** — open 9 sockets; 9th is rejected/closed.
+
+```bash
+node - <<'NODE'
+const WebSocket = require('ws');
+const conns=[]; let opened=0; let failed=0;
+function openOne(i){
+  const ws = new WebSocket('ws://localhost:3000/ws?room=captest', { headers: { Origin: 'http://localhost:5173' } });
+  ws.on('open', ()=>{ opened++; if(opened<9) openOne(i+1); else console.log('opened',opened,'(expect 8)'); });
+  ws.on('error', ()=>{ failed++; });
+  conns.push(ws);
+}
+openOne(0);
+NODE
+```
+
+4. **Rooms API**
+
+```bash
+curl -s -X POST http://localhost:3000/api/rooms -H 'content-type: application/json' -d '{}' | tee /tmp/room.json
+RID=$(jq -r .roomId /tmp/room.json)
+curl -s http://localhost:3000/api/rooms/$RID/metadata # may be 404 until first accepted write
+curl -s -X POST http://localhost:3000/api/rooms -H 'content-type: application/json' -d "{\"id\":\"$RID\"}" # 200 idempotent
+curl -s -X PUT http://localhost:3000/api/rooms/$RID -H 'content-type: application/json' -d '{"title":"New Title"}'
+```
+
+5. **Metadata 404 when Redis missing** — `DEL room:<id>` then `GET /api/rooms/<id>/metadata` → 404.
+
+6. **room\_stats cadence** — under sustained edits, see `{ type:"room_stats" }` ≤5 s or after ≥100 KB growth.
+
+7. **Sentry** — add a temporary `/boom` route throwing an Error and verify captured without request bodies/headers; remove after.
+
+---
+
+## R. Done = merge‑ready
+
+* All acceptance checks green.
+* No content logged (Sentry scrub + pino redaction).
+* Code structure and constants match this taskfile.
+* Commit and push branch.
+
+---
+
+## S. Critical implementation notes (MUST READ)
+
+**Environment setup:** Copy `.env.example` to `.env` in the root directory before starting. Ensure Redis and PostgreSQL are running locally.
+
+**Dependencies:** The code imports `dotenv`, `pino-http`, and `yjs` - these MUST be installed via the command in Section C before starting.
+
+**y-websocket utils:** Import from @y/websocket-server/utils. Note: y-leveldb is required as a dependency even though we use Redis for persistence.
+
+**Redis state loading:** The `loadState` function is essential for rooms to persist across server restarts. Without it, rooms would start empty on reconnect.
+
+**Async safety:** All route handlers use the `asyncHandler` wrapper to ensure database/Redis errors don't crash the server. Errors are captured to Sentry with appropriate breadcrumbs.
+
+**Static files:** The server serves client assets from `server/public/`. Ensure `npm run bundle:assets` has copied files there after building the client.
+
+---
+
+**End of AGENT TASKFILE.**

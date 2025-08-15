@@ -105,6 +105,7 @@
    "dependencies": {
    "yjs": "^13.6.27",
    "y-websocket": "^3.0.0",
+   "@y/websocket-server": "^1.0.0",
    "@prisma/client": "^5.22.0",
    "redis": "^5.8.0",
    "express": "^4.21.2",
@@ -153,7 +154,7 @@ Offline UX provides deterministic Offline Tools in place of the chat composer: E
 
 Collab core: Yjs CRDT as single source of truth; awareness (presence) is ephemeral.
 
-Transport: Official y-websocket server; minimal overrides for Redis persistence + size enforcement on flush via hooks; awareness untouched.
+Transport: The server uses the official @y/websocket-server backend with custom Redis persistence + size enforcement on flush via hooks; awareness untouched.
 
 Storage: Redis stores compressed Yjs doc with TTL; no snapshots/cold store. PostgreSQL stores non-authoritative room metadata (id, title, createdAt, lastWriteAt, size_bytes); Redis presence defines room existence.
 
@@ -168,7 +169,7 @@ Online path: Panel → /api/ai/\* → streamed message + optional unified diff +
 
 Offline path: When network is absent or drops mid-stream, the chat composer is replaced with Offline Tools (deterministic, no LLM). On reconnect, composer is restored and transcript remains.
 
-Platform & infra (hard MVP requirements). React (Vite), TypeScript, Tailwind, Yjs + y-websocket + y-indexeddb, Monaco, Pyodide; back end is the official y-websocket server with custom Redis bind/write hooks; Redis AOF enabled; hosted as a single container (Railway). Prisma + PostgreSQL (metadata only).
+Platform & infra (hard MVP requirements). React (Vite), TypeScript, Tailwind, Yjs + y-websocket + y-indexeddb, Monaco, Pyodide; back end uses the official @y/websocket-server backend with custom Redis bind/write hooks; Redis AOF enabled; hosted as a single container (Railway). Prisma + PostgreSQL (metadata only).
 External integrations. Sentry for errors/metrics only. No OAuth/SSO, no third-party CDNs. Pyodide and Monaco are self-hosted immutable assets; no external CDNs.
 Developer tooling. Pre-commit hooks via Husky + lint-staged for automatic ESLint fixing and Prettier formatting on staged files. Fast, lightweight setup (<5s) with TypeScript checking kept in CI only for optimal agent workflows.
 
