@@ -1,3 +1,4 @@
+// Resizer is keyboard accessible; ratio persisted to localStorage.
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 interface SplitPaneProps {

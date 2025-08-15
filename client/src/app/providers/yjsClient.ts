@@ -20,7 +20,17 @@ class ReconnectingWebsocketProvider extends WebsocketProvider {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private isDestroyed = false;
 
-  constructor(url: string, roomId: string, doc: Y.Doc, opts: any) {
+  constructor(
+    url: string,
+    roomId: string,
+    doc: Y.Doc,
+    opts: {
+      connect?: boolean;
+      params?: Record<string, string>;
+      protocols?: string[];
+      resyncInterval?: number;
+    },
+  ) {
     super(url, roomId, doc, opts);
     this.setupReconnection();
   }
