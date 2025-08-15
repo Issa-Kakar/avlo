@@ -2,6 +2,57 @@
 
 ## Phase 2: Client Foundation Complete - 2025-01-15
 
+### Steps 19-24: Presentational Controls, Remote Cursors & Teardown
+
+#### Step 19: Presentational Controls with Helpful Messages
+
+- All drawing tools show toast messages when clicked:
+  - View-only mode: "Drawing tools are view-only on mobile devices" or "Room is read-only due to size limit"
+  - Normal mode: "{Tool} will be available in a later phase"
+- Zoom controls, minimap, palette sliders all show appropriate "coming soon" messages
+- Language toggle and AI Assistant show phase notification toasts
+- Export and Run buttons maintain disabled state with helpful messages
+
+#### Step 20: Minimal Implementations
+
+- All required utility functions already implemented (device.ts, url.ts, etc.)
+- Connection state store, toast system, and theme provider complete
+
+#### Step 21: Remote Cursor Rendering
+
+- `RemoteCursors` component renders up to 20 remote cursors
+- Cursor position updates throttled to ~30Hz (33ms intervals)
+- Desktop: Shows cursor trails (last 24 points per user) with semi-transparent polylines
+- Mobile: Trails automatically hidden via CSS media queries (pointer: coarse)
+- Cursor labels show user names with colored backgrounds
+- Smooth transitions (75ms ease-out) for cursor movement
+
+#### Step 22: Connection State Store
+
+- Already implemented in previous steps
+- Combines provider status, navigator.onLine, and reconnecting state
+- Derives 4 states: Online, Reconnecting, Offline, Read-only
+
+#### Step 23: Teardown Discipline
+
+- `ReconnectingWebsocketProvider` properly cleans up timers on destroy
+- Room hook cancels all event listeners on unmount
+- Awareness state cleared with setLocalState(null)
+- Providers destroyed via teardownProviders()
+- IndexedDB persistence maintained (never deleted on leave)
+
+#### Step 24: Telemetry Touchpoints
+
+- Skipped - no telemetry infrastructure exists in codebase
+
+#### Files Modified
+
+- `client/src/app/components/RemoteCursors.tsx` - NEW: Remote cursor rendering with trails
+- `client/src/app/components/RemoteCursors.css` - NEW: Cursor animations and responsive styles
+- `client/src/app/pages/Room.tsx` - Enhanced with cursor overlay and tool click handlers
+
+## Phase 2: Client Foundation Complete - 2025-01-15
+
 ### Steps 13-18: Connection, Error Handling & Accessibility
 
 #### Step 13: Connection Indicator

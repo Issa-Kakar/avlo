@@ -8,6 +8,7 @@ import { isCoarsePointer, isNarrow, onResize } from '../utils/device.js';
 import { toast } from '../utils/toast.js';
 import { useRoom } from '../hooks/useRoom.js';
 import { getInitials } from '../state/presence.js';
+import { RemoteCursors } from '../components/RemoteCursors.js';
 import './Room.css';
 
 export default function Room() {
@@ -150,16 +151,49 @@ export default function Room() {
     toast.info('Code execution will be available in a later phase.');
   };
 
+  const handleToolClick = (toolName: string) => {
+    if (viewOnly) {
+      if (mobileViewOnly) {
+        toast.info('Drawing tools are view-only on mobile devices.');
+      } else {
+        toast.info('Room is read-only due to size limit.');
+      }
+    } else {
+      toast.info(`${toolName} will be available in a later phase.`);
+    }
+  };
+
+  const handleZoomClick = (_action: 'in' | 'out') => {
+    toast.info('Zoom controls will be available in a later phase.');
+  };
+
+  const handleMinimapClick = () => {
+    toast.info('Minimap will be available in a later phase.');
+  };
+
   const BoardContainer = () => (
     <section className="canvas-wrap" role="main" aria-label="Whiteboard canvas">
       <div className="grid" aria-hidden="true" />
       <canvas id="board" />
 
+      {/* Remote cursors overlay */}
+      <RemoteCursors
+        awareness={roomHandles?.awareness}
+        maxCursors={20}
+        showTrails={!mobileViewOnly}
+      />
+
       {/* Tool Rail - presentational only */}
       <div className="tool-rail-container" id="toolRailContainer">
         <div className="tool-rail-wrapper">
           <div className="tool-rail" role="group" aria-label="Drawing tools">
-            <button className="tool" data-tool="pen" aria-disabled={viewOnly} title="Pen (1)">
+            <button
+              className="tool"
+              data-tool="pen"
+              aria-disabled={viewOnly}
+              title="Pen (1)"
+              onClick={() => handleToolClick('Pen tool')}
+            >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 width="20"
@@ -179,6 +213,7 @@ export default function Room() {
               data-tool="highlighter"
               aria-disabled={viewOnly}
               title="Highlighter (2)"
+              onClick={() => handleToolClick('Highlighter tool')}
             >
               <svg
                 width="20"
@@ -194,7 +229,13 @@ export default function Room() {
                 <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
               </svg>
             </button>
-            <button className="tool" data-tool="eraser" aria-disabled={viewOnly} title="Eraser (3)">
+            <button
+              className="tool"
+              data-tool="eraser"
+              aria-disabled={viewOnly}
+              title="Eraser (3)"
+              onClick={() => handleToolClick('Eraser tool')}
+            >
               <svg
                 width="20"
                 height="20"
@@ -210,7 +251,13 @@ export default function Room() {
                 <path d="m5 11 9 9" />
               </svg>
             </button>
-            <button className="tool" data-tool="stamps" aria-disabled={viewOnly} title="Stamps">
+            <button
+              className="tool"
+              data-tool="stamps"
+              aria-disabled={viewOnly}
+              title="Stamps"
+              onClick={() => handleToolClick('Stamps tool')}
+            >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 width="20"
@@ -228,7 +275,13 @@ export default function Room() {
               </svg>
             </button>
             <div className="tool-sep" />
-            <button className="tool" data-tool="pan" aria-disabled={viewOnly} title="Pan (Space)">
+            <button
+              className="tool"
+              data-tool="pan"
+              aria-disabled={viewOnly}
+              title="Pan (Space)"
+              onClick={() => handleToolClick('Pan tool')}
+            >
               <svg
                 width="20"
                 height="20"
@@ -251,6 +304,7 @@ export default function Room() {
               data-tool="undo"
               aria-disabled={viewOnly}
               title="Undo (Ctrl/Cmd+Z)"
+              onClick={() => handleToolClick('Undo')}
             >
               <svg
                 width="20"
@@ -271,6 +325,7 @@ export default function Room() {
               data-tool="redo"
               aria-disabled={viewOnly}
               title="Redo (Ctrl/Cmd+Y)"
+              onClick={() => handleToolClick('Redo')}
             >
               <svg
                 width="20"
@@ -291,6 +346,7 @@ export default function Room() {
               data-tool="newpage"
               aria-disabled={viewOnly}
               title="Clear board (Ctrl/Cmd+K)"
+              onClick={() => handleToolClick('Clear board')}
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -335,6 +391,7 @@ export default function Room() {
               defaultValue="230"
               aria-label="Color picker"
               disabled={viewOnly}
+              onChange={() => toast.info('Color picker will be functional in a later phase.')}
             />
             <div
               id="colorPreview"
@@ -368,12 +425,19 @@ export default function Room() {
             defaultValue="4"
             aria-label="Brush size"
             disabled={viewOnly}
+            onChange={() => toast.info('Size controls will be functional in a later phase.')}
           />
         </div>
       </div>
 
       {/* Minimap - presentational only */}
-      <aside className="minimap" aria-label="Minimap" aria-expanded="true" id="minimap">
+      <aside
+        className="minimap"
+        aria-label="Minimap"
+        aria-expanded="true"
+        id="minimap"
+        onClick={handleMinimapClick}
+      >
         <div className="minimap-header" id="minimapHeader">
           Minimap
         </div>
@@ -392,7 +456,13 @@ export default function Room() {
       {/* Zoom bar - presentational only */}
       <div className="zoombar" role="group" aria-label="Zoom controls">
         <div className="zoom-top">
-          <button className="zoombtn" id="zoomOut" title="Zoom out (−)" aria-disabled={viewOnly}>
+          <button
+            className="zoombtn"
+            id="zoomOut"
+            title="Zoom out (−)"
+            aria-disabled={viewOnly}
+            onClick={() => handleZoomClick('out')}
+          >
             <svg
               xmlns="http://www.w3.org/2000/svg"
               width="20"
@@ -408,7 +478,13 @@ export default function Room() {
             </svg>
           </button>
           <div className="zoom-divider-v" aria-hidden="true" />
-          <button className="zoombtn" id="zoomIn" title="Zoom in (+)" aria-disabled={viewOnly}>
+          <button
+            className="zoombtn"
+            id="zoomIn"
+            title="Zoom in (+)"
+            aria-disabled={viewOnly}
+            onClick={() => handleZoomClick('in')}
+          >
             <svg
               xmlns="http://www.w3.org/2000/svg"
               width="20"
@@ -440,10 +516,19 @@ export default function Room() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div className="lang">
-            <button className="on" id="py">
+            <button
+              className="on"
+              id="py"
+              onClick={() => toast.info('Language switching will be available in a later phase.')}
+            >
               Python
             </button>
-            <button id="js">JavaScript</button>
+            <button
+              id="js"
+              onClick={() => toast.info('Language switching will be available in a later phase.')}
+            >
+              JavaScript
+            </button>
           </div>
           <button
             className="run"
@@ -472,7 +557,12 @@ nums = [1,0,8,5,3]
 print('sorted:', quicksort(nums))`}</pre>
 
       {/* AI Chat - presentational only */}
-      <section className="ai-chat" id="aiChat" aria-label="AI Assistant">
+      <section
+        className="ai-chat"
+        id="aiChat"
+        aria-label="AI Assistant"
+        onClick={() => toast.info('AI Assistant will be available in a later phase.')}
+      >
         <div className="ai-chat-header">
           <div className="ai-chat-title">
             <svg
