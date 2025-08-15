@@ -27,13 +27,13 @@
     "dev:client": "npm run dev --workspace=client",
     "build": "npm run build --workspace=client && npm run build --workspace=server && npm run bundle:assets",
     "bundle:assets": "node scripts/copy-client-dist.mjs",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:deploy": "prisma migrate deploy",
+    "db:generate": "npm run prisma:generate --workspace=server",
+    "db:migrate": "npm run prisma:migrate --workspace=server",
+    "db:deploy": "npm run prisma:deploy --workspace=server",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
-    "e2e:install": "playwright install --with-deps",
+    "e2e:install": "playwright install --with-deps", // Note: On restricted shells, use "playwright install chromium"
     "e2e:serve": "npm run build && node server/dist/index.js"
   },
   "devDependencies": {

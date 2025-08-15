@@ -24,13 +24,13 @@ CRITICAL: PACKAGE.JSON FILES MIGHT HAVE SMALL FORMATTING ERRORS
  " dev:client": "npm run dev --workspace=client",
  " build": "npm run build --workspace=client && npm run build --workspace=server && npm run bundle:assets",
  " bundle:assets": "node scripts/copy-client-dist.mjs",
- " db:generate": "prisma generate",
- " db:migrate": "prisma migrate dev",
- " db:deploy": "prisma migrate deploy" ,
+ " db:generate": "npm run prisma:generate --workspace=server",
+ " db:migrate": "npm run prisma:migrate --workspace=server",
+ " db:deploy": "npm run prisma:deploy --workspace=server",
  " test:e2e": "playwright test",
  " test:e2e:ui": "playwright test --ui",
  " test:e2e:report": "playwright show-report",
- " e2e:install": "playwright install --with-deps",
+ " e2e:install": "playwright install --with-deps", // Note: On restricted shells, use "playwright install chromium"
  " e2e:serve": "npm run build && node server/dist/index.js"
  }
  }
@@ -72,7 +72,7 @@ client/package.json:
  "devDependencies": {
  "@types/react": "^18.3.18",
  "@types/react-dom": "^18.3.5",
- "@types/rbush": "^3.0.5",
+ "@types/rbush": "^4.0.0",
  "@types/pako": "^2.0.3",
  "@types/lodash": "^4.17.13",
  "@types/papaparse": "^5.3.15",
@@ -82,7 +82,7 @@ client/package.json:
  "@typescript-eslint/parser": "^8.18.0",
  "eslint": "^9.17.0",
  "eslint-plugin-react-hooks": "^5.1.0",
- "eslint-plugin-react-refresh": "^0.5.0",
+ "eslint-plugin-react-refresh": "^0.4.20",
  "typescript": "^5.7.2",
  "vite": "^5.4.11",
  "vite-plugin-pwa": "^0.21.1",
@@ -943,12 +943,12 @@ Telemetry: Events emitted per §3.9 for panel toggle, TTFB, patch rendered/appli
 
 10.2 End-to-End Testing (Playwright) — Concise Guide`
 **Purpose.** Run realistic browser checks that exercise the MVP acceptance criteria and normative UI strings in §10 (e.g., read-only at 10 MB, TTL expiry, “Clear board (for everyone)”, offline quick-tools swap, AI precondition banner).
-**Install (dev-only).** Add `@playwright/test` as a **root** devDependency and run `npm run e2e:install` once on CI or new machines.
+**Install (dev-only).** Add `@playwright/test` as a **root** devDependency and run `npm run e2e:install` once on CI or new machines. Note: On restricted shells, use `playwright install chromium` instead of `--with-deps`.
 **Scripts (root `package.json`).**
 - `"test:e2e": "playwright test"`
 - `"test:e2e:ui": "playwright test --ui"`
 - `"test:e2e:report": "playwright show-report"`
-- `"e2e:install": "playwright install --with-deps"`
+- `"e2e:install": "playwright install --with-deps"` (Note: On restricted shells, use `"playwright install chromium")
 - `"e2e:serve": "npm run build && node server/dist/index.js"`
 **Config (`playwright.config.ts`, at repo root).**
 ```ts
@@ -1034,7 +1034,7 @@ No feature flags for Mode B/C; remove any mention of future autonomous modes.
 Continue single-container Railway deployment; no infra changes required beyond /api/ai/* route.
 
 
-CI: Run E2E on PRs — npm run e2e:install && npm run test:e2e with the Playwright webServer starting npm run e2e:serve. Upload the HTML report as an artifact.
+CI: Run E2E on PRs — npm run e2e:install && npm run test:e2e with the Playwright webServer starting npm run e2e:serve. Upload the HTML report as an artifact. (In no-sudo environments, use `playwright install chromium`.)
 
 
 
