@@ -1,4 +1,4 @@
-import { ThemeToggle } from './ThemeToggle.js';
+import ThemeToggle from './ThemeToggle.js';
 import { ConnectionChip, ConnectionState } from './ConnectionChip.js';
 import { UsersAvatarStack } from './UsersAvatarStack.js';
 import { CopyLinkButton } from './CopyLinkButton.js';

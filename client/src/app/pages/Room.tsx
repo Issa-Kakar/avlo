@@ -12,7 +12,7 @@ import './Room.css';
 
 export default function Room() {
   const { id } = useParams<{ id: string }>();
-  const [viewOnly, setViewOnly] = useState(false);
+  const [mobileViewOnly, setMobileViewOnly] = useState(false);
   const [users, setUsers] = useState<
     Array<{
       id: string;
@@ -26,6 +26,9 @@ export default function Room() {
   // Validate and setup room
   const roomHandles = useRoom(id);
   const connectionState = useConnectionState(roomHandles?.provider, roomHandles?.readOnly);
+
+  // Combined view-only state (mobile OR read-only from server)
+  const viewOnly = mobileViewOnly || roomHandles?.readOnly || false;
 
   // Update presence list from awareness
   useEffect(() => {
@@ -108,7 +111,7 @@ export default function Room() {
   // Check device capabilities for mobile view-only
   useEffect(() => {
     const checkDevice = () => {
-      setViewOnly(isCoarsePointer() || isNarrow());
+      setMobileViewOnly(isCoarsePointer() || isNarrow());
     };
     checkDevice();
     const cleanup = onResize(checkDevice);

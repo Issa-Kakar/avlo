@@ -5,6 +5,7 @@ import type { WebsocketProvider } from 'y-websocket';
 import type { Awareness } from 'y-protocols/awareness';
 import { createProviders, teardownProviders, YjsProviders } from '../providers/yjsClient.js';
 import { generateUserName, generateUserColor, Presence } from '../state/presence.js';
+import { toast } from '../utils/toast.js';
 
 export interface RoomHandles {
   roomId: string;
@@ -56,15 +57,28 @@ export function useRoom(roomId: string | undefined): RoomHandles | null {
     };
     awareness.setLocalStateField('user', presence);
 
-    // Handle room stats messages
+    // Handle room stats and error messages
     const handleMessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
+
+        // Handle room stats for read-only advisory
         if (data.type === 'room_stats' && data.bytes >= data.cap) {
           setReadOnly(true);
         }
+
+        // Handle room full error
+        if (data.type === 'error' && data.code === 'ROOM_FULL') {
+          setReadOnly(true);
+          toast.error('Room is full — create a new room.');
+        }
+
+        // Handle offline delta too large
+        if (data.type === 'error' && data.code === 'DELTA_TOO_LARGE') {
+          toast.error('Change too large. Refresh to rejoin.');
+        }
       } catch {
-        // Ignore non-JSON messages
+        // Ignore non-JSON messages or binary Yjs messages
       }
     };
 
@@ -72,10 +86,20 @@ export function useRoom(roomId: string | undefined): RoomHandles | null {
       providers.wsProvider.ws.addEventListener('message', handleMessage);
     }
 
+    // Handle connection errors
+    const handleError = () => {
+      toast.error('Network error. Check connection.');
+    };
+
+    if (providers.wsProvider.ws) {
+      providers.wsProvider.ws.addEventListener('error', handleError);
+    }
+
     // Cleanup on unmount
     return () => {
       if (providers.wsProvider.ws) {
         providers.wsProvider.ws.removeEventListener('message', handleMessage);
+        providers.wsProvider.ws.removeEventListener('error', handleError);
       }
       awareness.setLocalState(null);
       teardownProviders(providers);

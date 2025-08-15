@@ -59,4 +59,8 @@ export const toast = {
   error(message: string) {
     this.show(message, 2000);
   },
+
+  info(message: string) {
+    this.show(message, 1500);
+  },
 };
