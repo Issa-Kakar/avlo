@@ -68,7 +68,7 @@ if (yjsHooks.includes('gzipAsync(binary, { level: 4 })')) {
 
 // Check 7: Verify TTL configuration
 console.log('\n✓ Checking TTL configuration...');
-if (yjsHooks.includes('const TTL_SECONDS = (parseInt(process.env.ROOM_TTL_DAYS')) {
+if (yjsHooks.includes('const TTL_SECONDS = parseInt(process.env.ROOM_TTL_DAYS')) {
   console.log('  ✅ TTL configuration correctly uses ROOM_TTL_DAYS env var');
 } else {
   console.error('  ❌ TTL configuration not properly set');

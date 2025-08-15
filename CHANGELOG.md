@@ -1,5 +1,90 @@
 # CHANGELOG
 
+## Phase 2: Client Foundation (Steps 8-12) - 2025-01-15
+
+### Completed
+
+✅ **Step 8: Room Page Migration**
+
+- Migrated Avlo-Whiteboard HTML to React component
+- Integrated header, split view, tool rail, editor, console
+- All advanced controls are presentational only (per Phase 2 scope)
+- Added proper ARIA attributes and accessibility features
+
+✅ **Step 9: SplitPane Implementation**
+
+- Created draggable 70/30 split pane with resizer
+- Keyboard accessible (Arrow keys + Escape)
+- Persists ratio to localStorage
+- Added data-testid="split-resizer"
+
+✅ **Step 10: Device Capability Gate**
+
+- Implemented mobile view-only detection
+- Uses pointer: coarse and width <= 820px checks
+- Disables write tools on mobile devices
+- No UA sniffing (capability-based detection)
+
+✅ **Step 11: Yjs Providers & Room Hook**
+
+- Created yjsClient provider with Y.Doc({ guid: roomId })
+- Integrated y-websocket and y-indexeddb providers
+- Room validation with regex pattern
+- Proper teardown on unmount (keeps IndexedDB)
+- Connection state management
+
+✅ **Step 12: Presence (Awareness) System**
+
+- Random name/color generation (adjective+animal)
+- Real-time cursor tracking (throttled to ~30Hz)
+- User avatar stack with overflow handling
+- Users modal with focus trap
+- Activity states (idle, drawing, typing)
+
+### Technical Implementation
+
+- WebSocket URL built from window.location (no hardcoding)
+- Full jitter exponential backoff for reconnection
+- IndexedDB persistence per room (never deleted)
+- Connection states: Online, Reconnecting, Offline, Read-only
+- Normative toast: "Link copied." on copy link action
+
+### Files Created
+
+- client/src/app/utils/device.ts
+- client/src/app/components/SplitPane.tsx
+- client/src/app/components/ConnectionChip.tsx
+- client/src/app/components/CopyLinkButton.tsx
+- client/src/app/components/UsersAvatarStack.tsx
+- client/src/app/components/UsersModal.tsx
+- client/src/app/components/AppHeader.tsx
+- client/src/app/components/AppShell.tsx
+- client/src/app/pages/Room.css
+- client/src/app/hooks/useReconnector.ts
+- client/src/app/state/connection.ts
+- client/src/app/state/presence.ts
+- client/src/app/providers/yjsClient.ts
+- client/src/app/hooks/useRoom.ts
+
+### Files Modified
+
+- client/src/app/pages/Room.tsx (full implementation)
+
+### What's Next
+
+Steps 8-12 of Phase 2 are now complete, continuing from the first 7 steps completed earlier. The room page now has:
+
+- Full UI shell migrated from HTML mocks
+- Yjs collaboration infrastructure with WebSocket and IndexedDB
+- Presence and awareness system with cursor tracking
+- Mobile view-only gating
+- Connection status tracking
+- All presentational elements ready for future phases
+
+Remaining Phase 2 work includes connection indicator refinement, reconnection policy, and error handling.
+
+---
+
 ## Phase 2: Client Foundation (First 7 Steps) - 2025-01-15
 
 ### Completed
