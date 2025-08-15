@@ -12,8 +12,7 @@
 
 - Workspaces `client`, `server`; `build` copies Vite output into `server/public`.
 - Root scripts: `dev`, `build`, `bundle:assets`, Prisma `db:*`, Playwright `test:e2e*`.
-- Pre-commit hooks: Husky + lint-staged for automatic ESLint fixing and Prettier formatting on staged files.
-- Code quality tools: ESLint 9 with TypeScript parser, Prettier with consistent formatting rules.
+- Pre-commit hooks: Husky + lint-staged for ESLint/Prettier on staged files (<5s execution).
 
 **Exact root scripts & copy script (corrected + E2E convenience):**
 
@@ -41,64 +40,6 @@
   "devDependencies": {
     "concurrently": "^9.0.0",
     "playwright": "^1.45.0"
-  }
-}
-```
-
-**Added Development Tooling:**
-
-```json
-// .prettierrc (root)
-{
-  "singleQuote": true,
-  "trailingComma": "all",
-  "printWidth": 100,
-  "tabWidth": 2,
-  "semi": true,
-  "bracketSpacing": true
-}
-```
-
-```javascript
-// eslint.config.js (root) - ESLint 9 flat config
-import js from '@eslint/js';
-import tsPlugin from '@typescript-eslint/eslint-plugin';
-import tsParser from '@typescript-eslint/parser';
-import globals from 'globals';
-
-export default [
-  {
-    ignores: ['**/dist/**', '**/build/**', '**/node_modules/**', 'server/public/**']
-  },
-  {
-    files: ['**/*.{js,jsx,ts,tsx,mjs,cjs}'],
-    languageOptions: {
-      parser: tsParser,
-      globals: { ...globals.browser, ...globals.node }
-    },
-    plugins: { '@typescript-eslint': tsPlugin },
-    rules: {
-      ...js.configs.recommended.rules,
-      ...tsPlugin.configs.recommended.rules
-    }
-  }
-];
-```
-
-```json
-// package.json (root) - lint-staged config
-{
-  "lint-staged": {
-    "*.{ts,tsx,js,jsx,mjs,cjs}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.{json,md,css,scss}": [
-      "prettier --write"
-    ],
-    "server/prisma/schema.prisma": [
-      "npx prisma format"
-    ]
   }
 }
 ```
