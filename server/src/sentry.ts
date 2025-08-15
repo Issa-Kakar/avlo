@@ -1,17 +1,23 @@
 import * as Sentry from '@sentry/node';
 
-export async function initSentry() {
-  const integrations: any[] = [];
-  try {
-    // @ts-expect-error optional dependency
-    const mod = await import('@sentry/profiling-node');
-    integrations.push(mod.nodeProfilingIntegration());
-  } catch {
-    // Optional dependency not available, continue without profiling
-  }
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    enabled: !!process.env.SENTRY_DSN,
-    integrations: integrations as any,
-  });
-}
+Sentry.init({
+  dsn: process.env.SENTRY_DSN || undefined,
+  environment: process.env.NODE_ENV || 'development',
+  release: process.env.APP_VERSION,
+  tracesSampleRate: 0.02,
+  sendDefaultPii: false,
+  beforeSend(event) {
+    if (event.request) {
+      delete (event.request as any).data;
+      delete (event.request as any).headers;
+    }
+    return event;
+  },
+});
+
+export const sentry = Sentry;
+export const sentryHandlers = {
+  request: Sentry.Handlers?.requestHandler() || ((req: any, res: any, next: any) => next()),
+  error:
+    Sentry.Handlers?.errorHandler() || ((err: any, req: any, res: any, next: any) => next(err)),
+};

@@ -98,6 +98,9 @@ client/dist-ssr
 .DS_Store
 Thumbs.db
 
+# Claude AI Assistant Configuration
+CLAUDE.md
+
 # Logs
 logs
 *.log
@@ -110,3 +113,4 @@ pids
 # Environment variables
 .env
 .env.local
+THIS_PROMPT.md
