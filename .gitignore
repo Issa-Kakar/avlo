@@ -113,3 +113,4 @@ pids
 # Environment variables
 .env
 .env.local
+THIS_PROMPT.md
