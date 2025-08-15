@@ -29,6 +29,9 @@ npm run db:generate
 # Run database migrations
 npm run db:migrate
 
+# Install Playwright browsers for E2E testing
+npm run e2e:install
+
 # Start development servers
 npm run dev
 ```
@@ -45,6 +48,7 @@ REDIS_URL=redis://localhost:6379
 ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
 ROOM_TTL_DAYS=14
 APP_VERSION=0.1.0
+SENTRY_DSN=your_sentry_dsn_here (optional)
 ```
 
 ## Project Structure
@@ -59,12 +63,28 @@ avlo/
 └── package.json    # Monorepo root
 ```
 
-## Scripts
+## Available Scripts
 
-- `npm run dev` - Start development servers
-- `npm run build` - Build for production
-- `npm run db:migrate` - Run database migrations
-- `npm run test:e2e` - Run end-to-end tests
+### Development
+- `npm run dev` - Start both client and server in development mode
+- `npm run dev:client` - Start only the client dev server
+- `npm run dev:server` - Start only the server dev server
+
+### Build & Deploy
+- `npm run build` - Build both client and server for production
+- `npm run bundle:assets` - Copy client dist to server/public (runs automatically in build)
+
+### Database
+- `npm run db:generate` - Generate Prisma client (run after schema changes)
+- `npm run db:migrate` - Run database migrations in development
+- `npm run db:deploy` - Deploy database migrations in production
+
+### Testing
+- `npm run test:e2e` - Run Playwright end-to-end tests
+- `npm run test:e2e:ui` - Run tests with Playwright UI (interactive mode)
+- `npm run test:e2e:report` - Show HTML test report
+- `npm run e2e:install` - Install Playwright browsers (required once)
+- `npm run e2e:serve` - Build and serve the app for E2E testing
 
 ## License
 
