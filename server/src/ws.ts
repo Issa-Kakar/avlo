@@ -1,9 +1,9 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
-import { isAllowedOrigin } from './util/origin';
-import { getClientIp } from './util/ip';
-import { crumb } from './obs';
-import { yjsEvents, scheduleWrite, loadState } from './yjs-hooks';
+import { isAllowedOrigin } from './util/origin.js';
+import { getClientIp } from './util/ip.js';
+import { crumb } from './obs.js';
+import { yjsEvents, scheduleWrite, loadState } from './yjs-hooks.js';
 import * as Y from 'yjs';
 
 // Import from @y/websocket-server (official server for y-websocket v3)
@@ -12,7 +12,6 @@ import { setupWSConnection, setPersistence } from '@y/websocket-server/utils';
 const MAX_FRAME = 2 * 1024 * 1024; // 2MB
 const MAX_IP_CONNS = 8;
 const MAX_ROOM_CONNS = 105;
-const _HARD_CAP = 10 * 1024 * 1024; // 10MB
 
 const ipCounts = new Map<string, number>();
 const roomConns = new Map<string, Set<WebSocket>>();
@@ -35,20 +34,23 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
   const wss = new WebSocketServer({ noServer: true });
 
   // Broadcast advisories
-  yjsEvents.on('room_stats', ({ roomId, bytes, cap }) => {
-    const conns = roomConns.get(roomId);
-    if (!conns) return;
-    const msg = JSON.stringify({ type: 'room_stats', bytes, cap });
-    for (const ws of conns) {
-      if (ws.readyState === WebSocket.OPEN)
-        try {
-          ws.send(msg);
-        } catch {
-          /* ignore send errors */
-        }
-    }
-  });
-  yjsEvents.on('readonly', ({ roomId }) => {
+  yjsEvents.on(
+    'room_stats',
+    ({ roomId, bytes, cap }: { roomId: string; bytes: number; cap: number }) => {
+      const conns = roomConns.get(roomId);
+      if (!conns) return;
+      const msg = JSON.stringify({ type: 'room_stats', bytes, cap });
+      for (const ws of conns) {
+        if (ws.readyState === WebSocket.OPEN)
+          try {
+            ws.send(msg);
+          } catch {
+            /* ignore send errors */
+          }
+      }
+    },
+  );
+  yjsEvents.on('readonly', ({ roomId }: { roomId: string }) => {
     const conns = roomConns.get(roomId);
     if (!conns) return;
     const msg = JSON.stringify({
@@ -88,7 +90,7 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
       // Back‑compat URL query fallback
       const url = new URL((req as any).url, 'http://local');
       const roomFromQuery = url.searchParams.get('room');
-      if (roomFromQuery && /^[A-Za-z0-9_-]+$/.test(roomFromQuery)) roomId = roomFromQuery;
+      if (roomFromQuery && /^[A-Za-z0-9_-]{1,64}$/.test(roomFromQuery)) roomId = roomFromQuery;
 
       const identifyTimer = setTimeout(() => {
         if (!roomId)
@@ -119,7 +121,7 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
           try {
             const j = JSON.parse(data.toString('utf8'));
             const candidate = j?.roomId || (j?.type === 'identify' ? j?.roomId : undefined);
-            if (typeof candidate === 'string' && /^[A-Za-z0-9_-]+$/.test(candidate))
+            if (typeof candidate === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(candidate))
               roomId = candidate;
             if (!roomId) return; // keep waiting
           } catch {
@@ -146,6 +148,7 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
           } catch {
             /* ignore send error */
           }
+          clearInterval(poll);
           ws.close(1008, 'Room full');
           return;
         }
@@ -168,7 +171,7 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
         }
       }, 50);
 
-      ws.on('close', () => {
+      const cleanup = () => {
         clearTimeout(identifyTimer);
         clearInterval(poll);
         const ip = getClientIp(req as IncomingMessage);
@@ -180,7 +183,10 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
             if (set.size === 0) roomConns.delete(roomId);
           }
         }
-      });
+      };
+
+      ws.on('close', cleanup);
+      ws.on('error', cleanup);
     });
   });
 }

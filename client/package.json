@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
-    "@rollup/rollup-linux-x64-gnu": "^4.46.2",
     "lodash": "^4.17.21",
     "monaco-editor": "^0.52.2",
     "nanoid": "^5.0.9",
@@ -25,6 +24,7 @@
     "yjs": "^13.6.27"
   },
   "devDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.46.2",
     "@types/d3": "^7.4.3",
     "@types/lodash": "^4.17.13",
     "@types/pako": "^2.0.3",
@@ -41,7 +41,7 @@
     "eslint-plugin-react-refresh": "^0.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.2",
+    "typescript": "^5.9.2",
     "vite": "^5.4.11",
     "vite-plugin-pwa": "^0.21.1",
     "workbox-window": "^7.3.0"

@@ -11,7 +11,13 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 
 ## Realtime Backend
 
-Server uses @y/websocket-server for the y-websocket protocol. We attach minimal wrappers for origin allowlist, per-IP caps, 2MB frame cap, room capacity, and read-only advisory. Persistence is Redis authoritative with gzip(4) and debounced flush.
+Server uses @y/websocket-server@0.1.x as the y-websocket backend. Import via `@y/websocket-server/utils` (ESM). We install y-leveldb only to satisfy the package's static import; Redis is the only persistence used in production.
+
+Persistence: Redis authoritative (gzip(4), debounced 2–3s, TTL on accepted writes, 10 MB hard read-only, room_stats ≤ 5s or ≥ 100 KB).
+
+Limits enforced: 2 MB frame, ≤ 8 WS/IP, 105 clients/room. Read-only at 10 MB.
+
+Note: Server uses TypeScript `module: NodeNext`. Relative imports include `.js` in source (Node ESM rule).
 
 Note: Client uses y-websocket provider; server uses @y/websocket-server.
 
@@ -37,9 +43,6 @@ sudo apt-get install libnspr4 libnss3 libasound2t64
 ```bash
 # Install dependencies
 npm install
-
-# Install server-specific y-websocket backend
-npm -w server i @y/websocket-server
 
 # Generate Prisma client
 npm run db:generate
@@ -125,6 +128,24 @@ This project uses Husky and lint-staged for automatic code quality checks on com
 - Prisma schema formatting
 
 Hooks run automatically on `git commit` and complete in <5s. Type checking is intentionally kept in CI only for performance.
+
+## FAQ
+
+### Why not import /bin/utils.js?
+
+The published package on npm does not include /bin; use /utils (ESM) or /dist/utils.cjs (CJS).
+
+### Why is y-leveldb in package.json if we don't use it?
+
+Satisfies static import; runtime uses Redis.
+
+### About crypto.randomUUID()
+
+Node 18+ provides randomUUID() via `node:crypto` import. This project standardizes on node:crypto import.
+
+### Prisma Connection Pooling
+
+For production, configure pooling via the connection string in DATABASE_URL. See [Prisma docs](https://www.prisma.io/docs/concepts/database-connectors/postgresql#connection-pool) for details.
 
 ## License
 

@@ -105,7 +105,8 @@
    "dependencies": {
    "yjs": "^13.6.27",
    "y-websocket": "^3.0.0",
-   "@y/websocket-server": "^1.0.0",
+   "@y/websocket-server": "^0.1.1",
+   "y-leveldb": "^0.1.2",
    "@prisma/client": "^5.22.0",
    "redis": "^5.8.0",
    "express": "^4.21.2",
@@ -154,7 +155,7 @@ Offline UX provides deterministic Offline Tools in place of the chat composer: E
 
 Collab core: Yjs CRDT as single source of truth; awareness (presence) is ephemeral.
 
-Transport: The server uses the official @y/websocket-server backend with custom Redis persistence + size enforcement on flush via hooks; awareness untouched.
+Transport: The server uses the official @y/websocket-server@0.1.x backend with minimal wrappers (origin allowlist, per-IP caps, frame cap, room capacity) and custom Redis persistence. Import via @y/websocket-server/utils (ESM). We install y-leveldb only to satisfy the package's static import; Redis is the only persistence used in production.
 
 Storage: Redis stores compressed Yjs doc with TTL; no snapshots/cold store. PostgreSQL stores non-authoritative room metadata (id, title, createdAt, lastWriteAt, size_bytes); Redis presence defines room existence.
 
@@ -172,6 +173,7 @@ Offline path: When network is absent or drops mid-stream, the chat composer is r
 Platform & infra (hard MVP requirements). React (Vite), TypeScript, Tailwind, Yjs + y-websocket + y-indexeddb, Monaco, Pyodide; back end uses the official @y/websocket-server backend with custom Redis bind/write hooks; Redis AOF enabled; hosted as a single container (Railway). Prisma + PostgreSQL (metadata only).
 External integrations. Sentry for errors/metrics only. No OAuth/SSO, no third-party CDNs. Pyodide and Monaco are self-hosted immutable assets; no external CDNs.
 Developer tooling. Pre-commit hooks via Husky + lint-staged for automatic ESLint fixing and Prettier formatting on staged files. Fast, lightweight setup (<5s) with TypeScript checking kept in CI only for optimal agent workflows.
+Compatibility. Node 18+, randomUUID() available; project standardizes on node:crypto import. Server uses TypeScript module: NodeNext. Relative imports include .js in source (Node ESM rule).
 
 3. Data Models & Schema Definitions
    Note: The system's authoritative model is the Yjs document (Redis persists compressed binary; awareness is ephemeral). IndexedDB stores (a) the full per-room Y.Doc via y-indexeddb so rooms reopen and continue offline, and (b) the device-local “My Rooms” list and a small alias map for local→server ids. Hard numeric constraints are normative.

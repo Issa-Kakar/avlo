@@ -16,8 +16,8 @@ Sentry.init({
 });
 
 export const sentry = Sentry;
+const Handlers = (Sentry as any).Handlers;
 export const sentryHandlers = {
-  request: Sentry.Handlers?.requestHandler() || ((req: any, res: any, next: any) => next()),
-  error:
-    Sentry.Handlers?.errorHandler() || ((err: any, req: any, res: any, next: any) => next(err)),
+  request: Handlers?.requestHandler() ?? ((_req: any, _res: any, next: any) => next()),
+  error: Handlers?.errorHandler() ?? ((err: any, _req: any, _res: any, next: any) => next(err)),
 };
