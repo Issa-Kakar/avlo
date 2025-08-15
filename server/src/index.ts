@@ -1,4 +1,32 @@
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// CRITICAL: Force load .env and override any shell environment variables
+dotenv.config({ 
+  path: path.resolve(__dirname, '../../.env'),
+  override: true // This ensures .env file takes precedence over shell env vars
+});
+
+// Validate DATABASE_URL is not a placeholder
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL not found in .env file');
+  process.exit(1);
+}
+
+if (DATABASE_URL.includes('user:password')) {
+  console.error('FATAL: DATABASE_URL contains placeholder values. Please set correct credentials in .env file');
+  console.error('Expected format: postgresql://username:password@host:port/database');
+  process.exit(1);
+}
+
+console.log('Environment loaded from:', path.resolve(__dirname, '../../.env'));
+console.log('DATABASE_URL validated:', DATABASE_URL.replace(/:[^:@]+@/, ':****@'));
+
 import './sentry.js';
 import express from 'express';
 import cors from 'cors';
@@ -32,7 +60,8 @@ app.use(
 app.use(helmet());
 
 // Serve static files from server/public (client build output)
-app.use(express.static('public'));
+const publicPath = path.resolve(__dirname, '../public');
+app.use(express.static(publicPath));
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 app.get('/readyz', async (_req, res) => {
@@ -63,6 +92,12 @@ app.get('/readyz', async (_req, res) => {
 });
 
 app.use('/api/rooms', roomsRouter);
+
+// Catch-all route for SPA - serve index.html for all non-API routes
+app.get('*', (_req, res) => {
+  res.sendFile('index.html', { root: publicPath });
+});
+
 app.use(sentryHandlers.error); // LAST
 
 const port = process.env.PORT || 3000;

@@ -16,6 +16,7 @@ const STATS_DELTA = 100 * 1024; // 100KB
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const lastFlushAt = new Map<string, number>();
 const lastBytes = new Map<string, number>();
+const lastSeen = new Map<string, number>();
 
 export function scheduleWrite(roomId: string, producer: () => Uint8Array) {
   const now = Date.now();
@@ -24,6 +25,20 @@ export function scheduleWrite(roomId: string, producer: () => Uint8Array) {
   clearTimeout(timers.get(roomId));
   const t = setTimeout(() => flush(roomId, producer), Math.min(dueIn, 5000)); // ≤5s worst
   timers.set(roomId, t);
+  markRoomActive(roomId);
+}
+
+export function markRoomActive(roomId: string) {
+  lastSeen.set(roomId, Date.now());
+}
+
+export function clearRoomTimer(roomId: string) {
+  const t = timers.get(roomId);
+  if (t) clearTimeout(t);
+  timers.delete(roomId);
+  lastSeen.delete(roomId);
+  lastFlushAt.delete(roomId);
+  lastBytes.delete(roomId);
 }
 
 async function flush(roomId: string, producer: () => Uint8Array) {
@@ -83,3 +98,14 @@ export async function loadState(roomId: string): Promise<Uint8Array | null> {
     return null;
   }
 }
+
+// Periodic GC for abandoned rooms (no clients + idle > 10 min)
+setInterval(() => {
+  const now = Date.now();
+  for (const [roomId, ts] of lastSeen) {
+    if (now - ts > 10 * 60 * 1000) {
+      // Room has been idle for more than 10 minutes
+      clearRoomTimer(roomId);
+    }
+  }
+}, 60 * 1000); // Run every minute

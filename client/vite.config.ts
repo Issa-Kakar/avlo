@@ -14,6 +14,11 @@ export default defineConfig({
       '/ws': {
         target: 'ws://localhost:3000',
         ws: true,
+        changeOrigin: true,
+        rewrite: (path) => {
+          // Preserve the full path for WebSocket connections
+          return path;
+        },
       },
     },
   },

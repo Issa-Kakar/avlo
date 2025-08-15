@@ -98,9 +98,6 @@ client/dist-ssr
 .DS_Store
 Thumbs.db
 
-# Claude AI Assistant Configuration
-CLAUDE.md
-
 # Logs
 logs
 *.log
@@ -110,7 +107,22 @@ pids
 *.pid
 *.seed
 *.pid.lock
-# Environment variables
-.env
-.env.local
+
+# Environment variables (duplicate entries removed)
 THIS_PROMPT.md
+
+# Phase 2 development files
+PHASE2_*.md
+WEBSOCKET_*.md
+prompt.md
+
+# Temporary test files
+test-ws*.js
+
+# Generated type definitions
+client/src/vite-env.d.ts
+
+# Client test results (specific path)
+client/test-results/
+
+# Development scripts (keep setup-dev.sh in repo)

@@ -29,8 +29,10 @@ export function UsersAvatarStack({ users = [] }: UsersAvatarStackProps) {
           display: 'flex',
           alignItems: 'center',
           cursor: 'pointer',
+          gap: '8px',
         }}
       >
+        <span style={{ fontSize: '14px', color: 'var(--ink-secondary)' }}>{users.length}</span>
         {displayUsers.map((user, index) => (
           <div
             key={user.id}

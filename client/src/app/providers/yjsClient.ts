@@ -31,6 +31,17 @@ class ReconnectingWebsocketProvider extends WebsocketProvider {
       resyncInterval?: number;
     },
   ) {
+    // Debug: Log what will be passed to y-websocket
+    console.log('ReconnectingWebsocketProvider constructor:', {
+      url,
+      roomId,
+      params: opts.params
+    });
+    
+    // y-websocket will construct: url + '/' + roomId + params
+    // So final URL will be: ws://localhost:3000/ws + / + test-room + ?v=dev
+    // = ws://localhost:3000/ws/test-room?v=dev
+    
     super(url, roomId, doc, opts);
     this.setupReconnection();
   }
@@ -45,6 +56,8 @@ class ReconnectingWebsocketProvider extends WebsocketProvider {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = undefined;
       }
+      // Log the actual URL that will be used
+      console.log('Connecting to WebSocket URL:', (this as any).url);
       originalConnect();
     };
 
@@ -103,10 +116,23 @@ export function createProviders(roomId: string): YjsProviders {
   }
 
   // Attach WebSocket provider with reconnection logic
-  const wsUrl = getWsUrl();
-  const wsProvider = new ReconnectingWebsocketProvider(wsUrl, roomId, ydoc, {
+  // y-websocket v3 passes room ID as second constructor parameter
+  // and optionally as a query param
+  const baseWsUrl = getWsUrl(); // builds ws:// or wss:// to /ws endpoint
+  
+  // Debug: log the URL being used
+  console.log('Creating WebSocket provider with:', {
+    baseUrl: baseWsUrl,
+    roomId,
+    params: { v: 'dev' }
+  });
+  
+  const wsProvider = new ReconnectingWebsocketProvider(baseWsUrl, roomId, ydoc, {
     connect: true,
-    params: {},
+    params: { 
+      // y-websocket already appends roomId to the URL path, no need for query param
+      v: (import.meta.env.VITE_APP_VERSION ?? 'dev') as string 
+    },
     protocols: [],
     resyncInterval: 5000,
   });

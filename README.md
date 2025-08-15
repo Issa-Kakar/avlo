@@ -44,15 +44,15 @@ sudo apt-get install libnspr4 libnss3 libasound2t64
 # Install dependencies
 npm install
 
-# Generate Prisma client
-npm run db:generate
+# IMPORTANT: Set up environment variables first (see below)
 
-# Run database migrations
-npm run db:migrate
+# Option 1: Use the setup script (recommended)
+./scripts/setup-dev.sh
 
-# Install Playwright browsers for E2E testing
-# Note: In no-sudo environments, this uses 'playwright install chromium'
-npm run e2e:install
+# Option 2: Manual setup
+npm run db:generate      # Generate Prisma client
+npm run db:migrate       # Run database migrations
+npm run e2e:install      # Install Playwright browsers
 
 # Start development servers
 npm run dev
@@ -60,18 +60,34 @@ npm run dev
 
 ### Environment Variables
 
-Create a `.env` file in the root directory:
+⚠️ **CRITICAL**: Never use placeholder values in DATABASE_URL!
+
+Create a `.env` file in the root directory (copy from `.env.example`):
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your **actual** database credentials:
 
 ```env
 NODE_ENV=development
 PORT=3000
-DATABASE_URL=postgresql://user:password@localhost:5432/avlo
+# REPLACE with your actual PostgreSQL credentials!
+DATABASE_URL=postgresql://YOUR_ACTUAL_USERNAME:YOUR_ACTUAL_PASSWORD@localhost:5432/avlo
 REDIS_URL=redis://localhost:6379
 ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
 ROOM_TTL_DAYS=14
 APP_VERSION=0.1.0
 SENTRY_DSN=your_sentry_dsn_here (optional)
 ```
+
+**The server will reject placeholder credentials like `user:password` or `username:password`.**
+
+If you get authentication errors:
+1. Check your PostgreSQL credentials: `psql -U postgres -l`
+2. Ensure no shell variables override `.env`: `unset DATABASE_URL`
+3. Regenerate Prisma client: `cd server && npm run prisma:generate`
 
 ## Project Structure
 

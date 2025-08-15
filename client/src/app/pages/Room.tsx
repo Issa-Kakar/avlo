@@ -63,6 +63,24 @@ export default function Room() {
     };
   }, [roomHandles?.awareness]);
 
+  // Expose Y.Doc and awareness for testing in development
+  useEffect(() => {
+    if (roomHandles) {
+      console.log('[Room] Exposing test handles to window');
+      (window as any).__testYDoc = roomHandles.ydoc;
+      (window as any).__testAwareness = roomHandles.awareness;
+      (window as any).__testProvider = roomHandles.provider;
+    } else {
+      console.log('[Room] No roomHandles to expose');
+    }
+    return () => {
+      console.log('[Room] Cleaning up test handles');
+      (window as any).__testYDoc = undefined;
+      (window as any).__testAwareness = undefined;
+      (window as any).__testProvider = undefined;
+    };
+  }, [roomHandles]);
+
   // Update cursor position (throttled to ~30Hz)
   const updateCursor = useCallback(() => {
     if (!roomHandles?.awareness) return;

@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
+import { URL } from 'node:url';
 import { isAllowedOrigin } from './util/origin.js';
 import { getClientIp } from './util/ip.js';
 import { crumb } from './obs.js';
@@ -30,8 +31,33 @@ setPersistence({
   },
 });
 
+// Derive room from URL path; accept ?room= as fallback for compatibility.
+function getRoomId(req: IncomingMessage): string | null {
+  const url = new URL(req.url || '/', 'http://ws.local');
+  
+  // Try query param first (for backward compatibility)
+  const fromQuery = url.searchParams.get('room') || url.searchParams.get('doc') || undefined;
+  if (fromQuery && /^[A-Za-z0-9_-]{1,64}$/.test(fromQuery)) {
+    return fromQuery;
+  }
+  
+  // Standard y-websocket pattern: /ws/<roomId>
+  // Strip /ws prefix and get the room ID
+  const path = url.pathname;
+  const match = path.match(/^\/ws\/([A-Za-z0-9_-]{1,64})$/);
+  if (match) {
+    return match[1];
+  }
+  
+  return null;
+}
+
 export function registerWsGateway(server: Server, allowlistCsv: string) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ 
+    noServer: true,
+    // Cap inbound message size at 2 MB (enforced before Node buffers it)
+    maxPayload: MAX_FRAME
+  });
 
   // Broadcast advisories
   yjsEvents.on(
@@ -68,12 +94,20 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
   });
 
   server.on('upgrade', (req, socket, head) => {
+    // Only accept WebSocket connections to /ws/*
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+    if (!url.pathname.startsWith('/ws')) {
+      socket.destroy();
+      return;
+    }
+
     const origin = req.headers.origin as string | undefined;
     if (!isAllowedOrigin(origin, allowlistCsv)) {
       crumb('origin_reject', 'gateway', 'warning');
       socket.destroy();
       return;
     }
+    
     const ip = getClientIp(req);
     const count = (ipCounts.get(ip) || 0) + 1;
     if (count > MAX_IP_CONNS) {
@@ -85,23 +119,41 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     wss.handleUpgrade(req as any, socket as any, head, (ws) => {
-      let roomId: string | null = null;
+      // Get room ID from URL path or query
+      const roomId = getRoomId(req);
+      if (!roomId) {
+        ws.close(1008, 'missing_room');
+        ipCounts.set(ip, Math.max(0, (ipCounts.get(ip) || 1) - 1));
+        return;
+      }
 
-      // Back‑compat URL query fallback
-      const url = new URL((req as any).url, 'http://local');
-      const roomFromQuery = url.searchParams.get('room');
-      if (roomFromQuery && /^[A-Za-z0-9_-]{1,64}$/.test(roomFromQuery)) roomId = roomFromQuery;
+      // Room capacity check
+      const set = roomConns.get(roomId) || new Set<WebSocket>();
+      if (set.size >= MAX_ROOM_CONNS) {
+        try {
+          ws.send(
+            JSON.stringify({ type: 'room_full', message: 'Room is full — create a new room.' }),
+          );
+        } catch {
+          /* ignore send error */
+        }
+        ws.close(1008, 'room_full');
+        ipCounts.set(ip, Math.max(0, (ipCounts.get(ip) || 1) - 1));
+        return;
+      }
+      set.add(ws);
+      roomConns.set(roomId, set);
 
-      const identifyTimer = setTimeout(() => {
-        if (!roomId)
-          try {
-            ws.close(1008, 'Identify required');
-          } catch {
-            /* ignore close errors */
-          }
-      }, 5000);
+      // Let @y/websocket-server wire the Yjs protocol for this socket
+      // CRITICAL: @y/websocket-server expects docName to be derived from req.url
+      // We need to modify req.url to just be the room ID for compatibility
+      const modifiedReq = Object.create(req);
+      modifiedReq.url = `/${roomId}`; // @y/websocket-server expects /docName format
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setupWSConnection(ws as any, modifiedReq as any, { /* gc options if needed */ });
 
-      const onMessage = (data: Buffer) => {
+      // Handle frame size limit - listen for oversize frames
+      ws.on('message', (data: Buffer) => {
         if (data.length > MAX_FRAME) {
           crumb('frame_too_large', 'gateway', 'warning');
           try {
@@ -115,73 +167,16 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
             /* ignore send error */
           }
           ws.close(1009, 'Frame too large');
-          return;
         }
-        if (!roomId) {
-          try {
-            const j = JSON.parse(data.toString('utf8'));
-            const candidate = j?.roomId || (j?.type === 'identify' ? j?.roomId : undefined);
-            if (typeof candidate === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(candidate))
-              roomId = candidate;
-            if (!roomId) return; // keep waiting
-          } catch {
-            return;
-          }
-        }
-        // After identified, let y-websocket handle messages
-      };
-
-      ws.on('message', onMessage);
-
-      const afterIdentify = () => {
-        if (!roomId) return; // still waiting
-        clearTimeout(identifyTimer);
-        ws.off('message', onMessage);
-
-        // Room capacity check
-        const set = roomConns.get(roomId) || new Set<WebSocket>();
-        if (set.size >= MAX_ROOM_CONNS) {
-          try {
-            ws.send(
-              JSON.stringify({ type: 'room_full', message: 'Room is full — create a new room.' }),
-            );
-          } catch {
-            /* ignore send error */
-          }
-          clearInterval(poll);
-          ws.close(1008, 'Room full');
-          return;
-        }
-        set.add(ws);
-        roomConns.set(roomId, set);
-
-        // Make y-websocket believe the docname is /ws/<roomId>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (req as any).url = `/ws/${encodeURIComponent(roomId)}`;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        setupWSConnection(ws as any, req as any);
-      };
-
-      // Check periodically until identified or closed
-      const poll = setInterval(() => {
-        if (ws.readyState !== WebSocket.OPEN) return clearInterval(poll);
-        if (roomId) {
-          clearInterval(poll);
-          afterIdentify();
-        }
-      }, 50);
+      });
 
       const cleanup = () => {
-        clearTimeout(identifyTimer);
-        clearInterval(poll);
         const ip = getClientIp(req as IncomingMessage);
         ipCounts.set(ip, Math.max(0, (ipCounts.get(ip) || 1) - 1));
-        if (roomId) {
-          const set = roomConns.get(roomId);
-          if (set) {
-            set.delete(ws);
-            if (set.size === 0) roomConns.delete(roomId);
-          }
+        const s = roomConns.get(roomId);
+        if (s) {
+          s.delete(ws);
+          if (s.size === 0) roomConns.delete(roomId);
         }
       };
 

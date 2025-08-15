@@ -53,6 +53,7 @@ router.post(
       });
       return res.status(201).json({ roomId: id, shareLink: `/rooms/${id}` });
     } catch (e) {
+      console.error('Room creation error:', e);
       capture(e, 'room_create_error');
       return res.status(500).json({ error: 'internal_error' });
     }

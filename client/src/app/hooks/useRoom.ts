@@ -17,23 +17,46 @@ export interface RoomHandles {
 }
 
 export function useRoom(roomId: string | undefined): RoomHandles | null {
-  const [isValid, setIsValid] = useState(false);
+  // Initialize isValid based on the initial roomId
+  const [isValid, setIsValid] = useState(() => {
+    if (!roomId) {
+      console.log('[useRoom] Initial validation: No room ID');
+      return false;
+    }
+    const valid = /^[A-Za-z0-9_-]+$/.test(roomId);
+    console.log('[useRoom] Initial validation for roomId:', roomId, 'valid:', valid);
+    return valid;
+  });
   const [readOnly, setReadOnly] = useState(false);
-  const providersRef = useRef<YjsProviders | null>(null);
+  const [providers, setProviders] = useState<YjsProviders | null>(null);
   const userInfoRef = useRef<{ name: string; color: string } | null>(null);
 
-  // Validate room ID
+  // Validate room ID when it changes
   useEffect(() => {
+    console.log('[useRoom] Validating room ID:', roomId);
     if (!roomId) {
+      console.log('[useRoom] No room ID provided');
       setIsValid(false);
       return;
     }
-    setIsValid(/^[A-Za-z0-9_-]+$/.test(roomId));
+    const valid = /^[A-Za-z0-9_-]+$/.test(roomId);
+    console.log('[useRoom] Room ID valid:', valid);
+    setIsValid(valid);
   }, [roomId]);
 
   // Setup providers
   useEffect(() => {
-    if (!isValid || !roomId) return;
+    console.log('[useRoom] Provider setup - isValid:', isValid, 'roomId:', roomId);
+    if (!isValid || !roomId) {
+      console.log('[useRoom] Skipping provider setup');
+      return;
+    }
+
+    // Don't recreate providers if they already exist for this room
+    if (providers && providers.ydoc.guid === roomId) {
+      console.log('[useRoom] Providers already exist for room:', roomId);
+      return;
+    }
 
     // Generate user info once per session
     if (!userInfoRef.current) {
@@ -43,12 +66,14 @@ export function useRoom(roomId: string | undefined): RoomHandles | null {
       };
     }
 
+    console.log('[useRoom] Creating providers for room:', roomId);
     // Create providers
-    const providers = createProviders(roomId);
-    providersRef.current = providers;
+    const newProviders = createProviders(roomId);
+    setProviders(newProviders);
+    console.log('[useRoom] Providers created and stored in state');
 
     // Set up awareness with presence
-    const awareness = providers.wsProvider.awareness;
+    const awareness = newProviders.wsProvider.awareness;
     const presence: Presence = {
       name: userInfoRef.current.name,
       color: userInfoRef.current.color,
@@ -57,70 +82,92 @@ export function useRoom(roomId: string | undefined): RoomHandles | null {
     };
     awareness.setLocalStateField('user', presence);
 
-    // Handle room stats and error messages
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        // Handle room stats for read-only advisory
-        if (data.type === 'room_stats' && data.bytes >= data.cap) {
-          setReadOnly(true);
-        }
-
-        // Handle room full error
-        if (data.type === 'error' && data.code === 'ROOM_FULL') {
-          setReadOnly(true);
-          toast.error('Room is full — create a new room.');
-        }
-
-        // Handle offline delta too large
-        if (data.type === 'error' && data.code === 'DELTA_TOO_LARGE') {
-          toast.error('Change too large. Refresh to rejoin.');
-        }
-      } catch {
-        // Ignore non-JSON messages or binary Yjs messages
-      }
-    };
-
-    if (providers.wsProvider.ws) {
-      providers.wsProvider.ws.addEventListener('message', handleMessage);
-    }
-
-    // Handle connection errors
-    const handleError = () => {
-      toast.error('Network error. Check connection.');
-    };
-
-    if (providers.wsProvider.ws) {
-      providers.wsProvider.ws.addEventListener('error', handleError);
-    }
-
     // Cleanup on unmount
     return () => {
-      if (providers.wsProvider.ws) {
-        providers.wsProvider.ws.removeEventListener('message', handleMessage);
-        providers.wsProvider.ws.removeEventListener('error', handleError);
-      }
+      console.log('[useRoom] Cleanup - tearing down providers');
       awareness.setLocalState(null);
-      teardownProviders(providers);
-      providersRef.current = null;
+      teardownProviders(newProviders);
+      // Only clear the state if it's still the same providers instance
+      setProviders(current => current === newProviders ? null : current);
     };
-  }, [isValid, roomId]);
+  }, [isValid, roomId]); // Don't include providers in deps - that causes infinite loop!
 
-  if (!isValid || !roomId || !providersRef.current) {
+  // Handle WebSocket messages with proper race condition handling
+  useEffect(() => {
+    const provider = providers?.wsProvider;
+    if (!provider) return;
+    
+    let detach: (() => void) | null = null;
+
+    const attach = () => {
+      // guard: provider.ws may not exist immediately
+      const ws: WebSocket | undefined = (provider as any).ws;
+      if (!ws) return;
+
+      const onMessage = (ev: MessageEvent) => {
+        // handle custom advisories like { type: 'room_stats', ... }
+        try {
+          const data = JSON.parse(ev.data);
+          if (data?.type === 'room_stats') {
+            setReadOnly(data.bytes >= data.cap);
+          }
+          // Handle room full error
+          if (data?.type === 'error' && data?.code === 'ROOM_FULL') {
+            setReadOnly(true);
+            toast.error('Room is full — create a new room.');
+          }
+          // Handle offline delta too large
+          if (data?.type === 'error' && data?.code === 'DELTA_TOO_LARGE') {
+            toast.error('Change too large. Refresh to rejoin.');
+          }
+        } catch {
+          // Ignore non-JSON messages or binary Yjs messages
+        }
+      };
+      ws.addEventListener('message', onMessage);
+      detach = () => ws.removeEventListener('message', onMessage);
+    };
+
+    const onStatus = ({ status }: { status: string }) => {
+      if (status === 'connected') {
+        detach?.(); // avoid duplicates
+        attach();
+      } else {
+        detach?.();
+        detach = null;
+      }
+    };
+
+    provider.on('status', onStatus);
+    // in case we were already connected by the time this ran
+    // @ts-ignore: provider.wsconnected is present on y-websocket
+    if ((provider as any).wsconnected) attach();
+
+    return () => {
+      provider.off('status', onStatus);
+      detach?.();
+    };
+  }, [providers]);
+
+  const hasProviders = !!providers;
+  console.log('[useRoom] Check before return - isValid:', isValid, 'roomId:', roomId, 'hasProviders:', hasProviders);
+  
+  if (!isValid || !roomId || !providers) {
+    console.log('[useRoom] Returning null');
     return null;
   }
 
+  console.log('[useRoom] Returning room handles for room:', roomId);
   return {
     roomId,
-    ydoc: providersRef.current.ydoc,
-    provider: providersRef.current.wsProvider,
-    awareness: providersRef.current.wsProvider.awareness,
+    ydoc: providers.ydoc,
+    provider: providers.wsProvider,
+    awareness: providers.wsProvider.awareness,
     readOnly,
     destroy: () => {
-      if (providersRef.current) {
-        teardownProviders(providersRef.current);
-        providersRef.current = null;
+      if (providers) {
+        teardownProviders(providers);
+        setProviders(null);
       }
     },
   };
