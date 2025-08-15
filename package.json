@@ -14,7 +14,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
-    "e2e:install": "playwright install --with-deps",
+    "e2e:install": "playwright install",
     "e2e:serve": "npm run build && node server/dist/index.js"
   },
   "devDependencies": {

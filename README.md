@@ -17,6 +17,14 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 - PostgreSQL
 - Redis
 
+### System Dependencies (Linux/WSL)
+
+For headless E2E testing with Playwright:
+```bash
+# Minimal deps for headless E2E testing
+sudo apt-get install libnspr4 libnss3 libasound2t64
+```
+
 ### Installation
 
 ```bash
