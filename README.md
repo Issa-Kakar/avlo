@@ -20,6 +20,7 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 ### System Dependencies (Linux/WSL)
 
 For headless E2E testing with Playwright:
+
 ```bash
 # Minimal deps for headless E2E testing
 sudo apt-get install libnspr4 libnss3 libasound2t64
@@ -74,25 +75,47 @@ avlo/
 ## Available Scripts
 
 ### Development
+
 - `npm run dev` - Start both client and server in development mode
 - `npm run dev:client` - Start only the client dev server
 - `npm run dev:server` - Start only the server dev server
 
 ### Build & Deploy
+
 - `npm run build` - Build both client and server for production
 - `npm run bundle:assets` - Copy client dist to server/public (runs automatically in build)
 
 ### Database
+
 - `npm run db:generate` - Generate Prisma client (run after schema changes)
 - `npm run db:migrate` - Run database migrations in development
 - `npm run db:deploy` - Deploy database migrations in production
 
 ### Testing
+
 - `npm run test:e2e` - Run Playwright end-to-end tests
 - `npm run test:e2e:ui` - Run tests with Playwright UI (interactive mode)
 - `npm run test:e2e:report` - Show HTML test report
 - `npm run e2e:install` - Install Playwright browsers (required once, uses chromium only in no-sudo environments)
 - `npm run e2e:serve` - Build and serve the app for E2E testing
+
+### Code Quality
+
+- `npm run lint` - Run ESLint on all files
+- `npm run lint:fix` - Auto-fix ESLint issues
+- `npm run format` - Format all files with Prettier
+- `npm run format:check` - Check formatting without fixing
+- `npm run typecheck` - Run TypeScript type checking
+
+#### Pre-commit Hooks
+
+This project uses Husky and lint-staged for automatic code quality checks on commit:
+
+- ESLint auto-fix for TypeScript/JavaScript files
+- Prettier formatting for all supported files
+- Prisma schema formatting
+
+Hooks run automatically on `git commit` and complete in <5s. Type checking is intentionally kept in CI only for performance.
 
 ## License
 

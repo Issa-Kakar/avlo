@@ -1,6 +1,7 @@
 {
   "name": "avlo",
   "private": true,
+  "type": "module",
   "workspaces": [
     "client",
     "server"
@@ -18,11 +19,36 @@
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
     "e2e:install": "playwright install chromium",
-    "e2e:serve": "npm run build && node server/dist/index.js"
+    "e2e:serve": "npm run build && node server/dist/index.js",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,css,scss}": [
+      "prettier --write"
+    ],
+    "server/prisma/schema.prisma": [
+      "npx prisma format"
+    ]
   },
   "devDependencies": {
     "@playwright/test": "^1.45.0",
-    "concurrently": "^9.0.0"
+    "@typescript-eslint/eslint-plugin": "^8.39.1",
+    "@typescript-eslint/parser": "^8.39.1",
+    "concurrently": "^9.0.0",
+    "eslint": "^9.33.0",
+    "globals": "^16.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.5",
+    "prettier": "^3.6.2"
   },
   "optionalDependencies": {
     "@rollup/rollup-linux-x64-gnu": "^4.46.2"

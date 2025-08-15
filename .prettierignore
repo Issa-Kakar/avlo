@@ -1,0 +1,29 @@
+# Build outputs
+dist
+build
+node_modules
+server/public
+
+# Playwright
+playwright-report
+test-results
+
+# Prisma
+server/prisma/migrations
+
+# Lock files
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# IDE
+.idea
+.vscode
+
+# Git
+.git
+.husky/_
+
+# Cache
+.cache
+.turbo
