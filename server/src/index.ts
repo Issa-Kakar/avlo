@@ -6,9 +6,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // CRITICAL: Force load .env and override any shell environment variables
-dotenv.config({ 
+dotenv.config({
   path: path.resolve(__dirname, '../../.env'),
-  override: true // This ensures .env file takes precedence over shell env vars
+  override: true, // This ensures .env file takes precedence over shell env vars
 });
 
 // Validate DATABASE_URL is not a placeholder
@@ -19,7 +19,9 @@ if (!DATABASE_URL) {
 }
 
 if (DATABASE_URL.includes('user:password')) {
-  console.error('FATAL: DATABASE_URL contains placeholder values. Please set correct credentials in .env file');
+  console.error(
+    'FATAL: DATABASE_URL contains placeholder values. Please set correct credentials in .env file',
+  );
   console.error('Expected format: postgresql://username:password@host:port/database');
   process.exit(1);
 }
@@ -52,12 +54,45 @@ app.use(
   cors({
     origin: (origin, cb) => {
       if (!origin) return cb(null, false); // disallow non-browser by default
-      cb(null, isAllowedOrigin(origin, allowlistCsv));
+      const allowed = isAllowedOrigin(origin, allowlistCsv);
+      if (!allowed) {
+        // Log origin rejection for observability
+        import('./obs.js').then(({ crumb }) => {
+          crumb('origin_reject_http', 'security', 'warning');
+        });
+      }
+      cb(null, allowed);
     },
     credentials: false,
   }),
 );
-app.use(helmet());
+
+// Security headers with CSP Profile A
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        imgSrc: ["'self'", 'data:'],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'", "'wasm-unsafe-eval'"],
+        workerSrc: ["'self'"],
+        connectSrc: ["'self'", 'https:', 'wss:'],
+        frameAncestors: ["'none'"],
+      },
+    },
+    hsts:
+      process.env.NODE_ENV === 'production'
+        ? {
+            maxAge: 31536000, // 1 year
+            includeSubDomains: true,
+            preload: true,
+          }
+        : false,
+    noSniff: true,
+    referrerPolicy: { policy: 'no-referrer' },
+  }),
+);
 
 // Serve static files from server/public (client build output)
 const publicPath = path.resolve(__dirname, '../public');

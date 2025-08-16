@@ -299,7 +299,7 @@
 .recent-dot {
   width: 8px;
   height: 8px;
-  background: #10B981;
+  background: #10b981;
   border-radius: 50%;
 }
 
@@ -530,6 +530,58 @@
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+/* Animation styles */
+.drawer-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0;
+  transform: translate(-1000px, -1000px);
+  transition: opacity 120ms ease;
+}
+
+.cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--accent);
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Code syntax highlighting */
+.code-content .kw {
+  color: #c792ea;
+}
+.code-content .fn {
+  color: #82aaff;
+}
+.code-content .op {
+  color: #89ddff;
+}
+.code-content .num {
+  color: #f78c6c;
+}
+.code-content .comment {
+  color: #546e7a;
+  font-style: italic;
 }
 
 /* Responsive */

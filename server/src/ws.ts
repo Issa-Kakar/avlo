@@ -3,7 +3,7 @@ import type { Server, IncomingMessage } from 'http';
 import { URL } from 'node:url';
 import { isAllowedOrigin } from './util/origin.js';
 import { getClientIp } from './util/ip.js';
-import { crumb } from './obs.js';
+import { crumb, count } from './obs.js';
 import { yjsEvents, scheduleWrite, loadState } from './yjs-hooks.js';
 import * as Y from 'yjs';
 
@@ -34,13 +34,13 @@ setPersistence({
 // Derive room from URL path; accept ?room= as fallback for compatibility.
 function getRoomId(req: IncomingMessage): string | null {
   const url = new URL(req.url || '/', 'http://ws.local');
-  
+
   // Try query param first (for backward compatibility)
   const fromQuery = url.searchParams.get('room') || url.searchParams.get('doc') || undefined;
   if (fromQuery && /^[A-Za-z0-9_-]{1,64}$/.test(fromQuery)) {
     return fromQuery;
   }
-  
+
   // Standard y-websocket pattern: /ws/<roomId>
   // Strip /ws prefix and get the room ID
   const path = url.pathname;
@@ -48,15 +48,15 @@ function getRoomId(req: IncomingMessage): string | null {
   if (match) {
     return match[1];
   }
-  
+
   return null;
 }
 
 export function registerWsGateway(server: Server, allowlistCsv: string) {
-  const wss = new WebSocketServer({ 
+  const wss = new WebSocketServer({
     noServer: true,
     // Cap inbound message size at 2 MB (enforced before Node buffers it)
-    maxPayload: MAX_FRAME
+    maxPayload: MAX_FRAME,
   });
 
   // Broadcast advisories
@@ -95,11 +95,11 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
 
   server.on('upgrade', (req, socket, head) => {
     const DEBUG_WS = process.env.DEBUG_WS === 'true';
-    
+
     if (DEBUG_WS) {
       console.log('[WS UPGRADE] Request:', req.url, 'Origin:', req.headers.origin);
     }
-    
+
     // Only accept WebSocket connections to /ws/*
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     if (!url.pathname.startsWith('/ws')) {
@@ -114,24 +114,33 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
     }
     if (!isAllowedOrigin(origin, allowlistCsv)) {
       console.log('[WS UPGRADE] Origin rejected:', origin);
-      crumb('origin_reject', 'gateway', 'warning');
+      crumb('origin_reject_ws', 'security', 'warning');
+      count('origin_reject_ws', 'security', true);
       socket.destroy();
       return;
     }
     if (DEBUG_WS) console.log('[WS UPGRADE] Origin accepted:', origin);
-    
+
     const ip = getClientIp(req);
-    const count = (ipCounts.get(ip) || 0) + 1;
+    const ipConnCount = (ipCounts.get(ip) || 0) + 1;
     if (DEBUG_WS) {
-      console.log('[WS UPGRADE] IP:', ip, 'Current connections:', count, 'Max:', MAX_IP_CONNS);
+      console.log(
+        '[WS UPGRADE] IP:',
+        ip,
+        'Current connections:',
+        ipConnCount,
+        'Max:',
+        MAX_IP_CONNS,
+      );
     }
-    if (count > MAX_IP_CONNS) {
+    if (ipConnCount > MAX_IP_CONNS) {
       console.log('[WS UPGRADE] Rejected - IP connection limit exceeded');
-      crumb('per_ip_ws_cap', 'gateway', 'warning');
+      crumb('per_ip_ws_cap', 'security', 'warning');
+      count('per_ip_ws_cap', 'security', true);
       socket.destroy();
       return;
     }
-    ipCounts.set(ip, count);
+    ipCounts.set(ip, ipConnCount);
     if (DEBUG_WS) console.log('[WS UPGRADE] IP check passed, proceeding with upgrade');
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -154,6 +163,8 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
         } catch {
           /* ignore send error */
         }
+        crumb('room_full', 'capacity', 'warning');
+        count('room_full', 'capacity', true);
         ws.close(1008, 'room_full');
         ipCounts.set(ip, Math.max(0, (ipCounts.get(ip) || 1) - 1));
         return;
@@ -166,21 +177,26 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
       // We need to modify req.url to just be the room ID for compatibility
       const modifiedReq = Object.create(req);
       modifiedReq.url = `/${roomId}`; // @y/websocket-server expects /docName format
-      
+
       const DEBUG_WS = process.env.DEBUG_WS === 'true';
-      
+
       if (DEBUG_WS) console.log('[WS HANDSHAKE] Setting up Yjs connection for room:', roomId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setupWSConnection(ws as any, modifiedReq as any, { /* gc options if needed */ });
-      
+      setupWSConnection(ws as any, modifiedReq as any, {
+        /* gc options if needed */
+      });
+
       if (DEBUG_WS) {
         // Log message types for debugging
         let messageCount = 0;
         const originalSend = ws.send.bind(ws);
         ws.send = (data: any, cb?: any) => {
           messageCount++;
-          if (messageCount <= 5) { // Only log first 5 messages to avoid spam
-            console.log(`[WS OUT] Room ${roomId}: Message #${messageCount}, ${data.length || 0} bytes`);
+          if (messageCount <= 5) {
+            // Only log first 5 messages to avoid spam
+            console.log(
+              `[WS OUT] Room ${roomId}: Message #${messageCount}, ${data.length || 0} bytes`,
+            );
           }
           return originalSend(data, cb);
         };
@@ -188,17 +204,21 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
 
       // Track incoming messages for debugging
       let inMessageCount = 0;
-      
+
       // Handle frame size limit - listen for oversize frames
       ws.on('message', (data: Buffer) => {
         inMessageCount++;
-        if (DEBUG_WS && inMessageCount <= 5) { // Only log first 5 messages
+        if (DEBUG_WS && inMessageCount <= 5) {
+          // Only log first 5 messages
           console.log(`[WS IN] Room ${roomId}: Message #${inMessageCount}, ${data.length} bytes`);
         }
-        
+
         if (data.length > MAX_FRAME) {
-          console.log(`[WS ERROR] Room ${roomId}: Frame too large (${data.length} bytes > ${MAX_FRAME})`);
-          crumb('frame_too_large', 'gateway', 'warning');
+          console.log(
+            `[WS ERROR] Room ${roomId}: Frame too large (${data.length} bytes > ${MAX_FRAME})`,
+          );
+          crumb('frame_too_large', 'security', 'warning');
+          count('frame_too_large', 'security', true);
           try {
             ws.send(
               JSON.stringify({

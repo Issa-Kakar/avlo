@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { prisma } from './clients/prisma.js';
 import { redis } from './clients/redis.js';
-import { crumb, capture } from './obs.js';
+import { crumb, capture, recordFlushTiming, count } from './obs.js';
 
 export const yjsEvents = new EventEmitter();
 const gzipAsync = promisify(gzip);
@@ -47,7 +47,8 @@ async function flush(roomId: string, producer: () => Uint8Array) {
     console.log('[Persistence] Skipping Redis write for room:', roomId, '(REDIS_OFF=true)');
     return;
   }
-  
+
+  const flushStart = Date.now();
   try {
     const binary = Buffer.from(producer());
     const compressed = await gzipAsync(binary, { level: 4 });
@@ -68,9 +69,15 @@ async function flush(roomId: string, producer: () => Uint8Array) {
         },
       });
       crumb('redis_write_accept');
+      count('redis_write_accept', 'persistence');
     } else {
-      crumb('redis_write_skip_readonly', 'gateway', 'warning');
+      crumb('redis_write_skip_readonly', 'persistence', 'warning');
+      count('redis_write_skip_readonly', 'persistence');
     }
+
+    // Record flush timing for observability
+    const flushDuration = Date.now() - flushStart;
+    recordFlushTiming(flushDuration);
 
     // room_stats cadence
     const prevBytes = lastBytes.get(roomId) || 0;
@@ -79,13 +86,23 @@ async function flush(roomId: string, producer: () => Uint8Array) {
     if (now - prevAt >= 5000 || Math.abs(bytes - prevBytes) >= STATS_DELTA) {
       yjsEvents.emit('room_stats', { roomId, bytes, cap: HARD_CAP });
       crumb('room_stats_publish');
+      count('room_stats_publish', 'metrics');
       lastBytes.set(roomId, bytes);
       lastFlushAt.set(roomId, now);
     } else {
       lastFlushAt.set(roomId, now);
     }
 
-    if (isReadOnly) yjsEvents.emit('readonly', { roomId });
+    // Check for soft limit (8MB warning)
+    const SOFT_CAP = 8 * 1024 * 1024; // 8MB
+    if (bytes >= SOFT_CAP && bytes < HARD_CAP) {
+      count('limit_soft_hits', 'capacity');
+    }
+
+    if (isReadOnly) {
+      yjsEvents.emit('readonly', { roomId });
+      count('limit_hard_hits', 'capacity');
+    }
   } catch (e) {
     capture(e, 'prisma_upsert_fail');
   }
@@ -97,7 +114,7 @@ export async function loadState(roomId: string): Promise<Uint8Array | null> {
     console.log('[Persistence] Skipping Redis load for room:', roomId, '(REDIS_OFF=true)');
     return null;
   }
-  
+
   try {
     const compressed = await redis.getBuffer(`room:${roomId}`);
     if (!compressed) return null;

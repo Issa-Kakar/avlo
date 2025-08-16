@@ -24,7 +24,7 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Sentry integration with privacy protections
 - Health check endpoints (/healthz, /readyz)
 
-### 🚧 Phase 2: Next (Client Foundation)
+### 🚧 Phase 2: In Progress (Client Foundation)
 - React Router setup for /rooms/:id
 - Yjs providers (y-websocket + y-indexeddb)
 - Basic UI shell with split view

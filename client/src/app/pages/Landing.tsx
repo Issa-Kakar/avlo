@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ThemeToggle from '../components/ThemeToggle.js';
 import { getHttpBase } from '../utils/url.js';
@@ -15,6 +15,8 @@ export default function Landing() {
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
   const [roomId, setRoomId] = useState('');
   const [rooms, setRooms] = useState<RoomRow[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const animationFrameRef = useRef<number>(0);
 
   async function refreshRooms() {
     const roomList = await listRooms();
@@ -23,6 +25,574 @@ export default function Landing() {
 
   useEffect(() => {
     void refreshRooms();
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const canvasArea = canvas.parentElement;
+    if (!canvasArea) return;
+
+    if (getComputedStyle(canvasArea).position === 'static') {
+      canvasArea.style.position = 'relative';
+    }
+
+    function resizeCanvas() {
+      const r = canvas!.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas!.width = Math.max(1, Math.floor(r.width * dpr));
+      canvas!.height = Math.max(1, Math.floor(r.height * dpr));
+      ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    const participants = [
+      {
+        name: 'QuickQuail',
+        color: '#3B82F6',
+        el: null as HTMLDivElement | null,
+        _active: false,
+        _tip: { x: 0, y: 0 },
+      },
+      {
+        name: 'SwiftSalmon',
+        color: '#14B8A6',
+        el: null as HTMLDivElement | null,
+        _active: false,
+        _tip: { x: 0, y: 0 },
+      },
+      {
+        name: 'BraveBear',
+        color: '#EC4899',
+        el: null as HTMLDivElement | null,
+        _active: false,
+        _tip: { x: 0, y: 0 },
+      },
+      {
+        name: 'ElegantEagle',
+        color: '#8B5CF6',
+        el: null as HTMLDivElement | null,
+        _active: false,
+        _tip: { x: 0, y: 0 },
+      },
+    ];
+
+    participants.forEach((p) => {
+      const tag = document.createElement('div');
+      tag.className = 'drawer-tag';
+      Object.assign(tag.style, {
+        position: 'absolute',
+        left: '0',
+        top: '0',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '6px',
+        pointerEvents: 'none',
+        zIndex: '20',
+        opacity: '0',
+        transform: 'translate(-1000px,-1000px)',
+        transition: 'opacity 120ms ease',
+      });
+
+      const dot = document.createElement('div');
+      Object.assign(dot.style, {
+        width: '8px',
+        height: '8px',
+        borderRadius: '999px',
+        background: p.color,
+        boxShadow: '0 0 0 3px rgba(0,0,0,.05)',
+      });
+
+      const pill = document.createElement('span');
+      pill.textContent = p.name;
+      Object.assign(pill.style, {
+        font: '12px Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+        color: '#fff',
+        background: p.color,
+        padding: '2px 8px',
+        borderRadius: '999px',
+        boxShadow: '0 6px 16px rgba(0,0,0,.18)',
+      });
+
+      tag.appendChild(dot);
+      tag.appendChild(pill);
+      canvasArea.appendChild(tag);
+      p.el = tag;
+    });
+
+    const R = (a: number, b: number) => Math.random() * (b - a) + a;
+    const JP = (x: number, y: number, j: number): [number, number] => [x + R(-j, j), y + R(-j, j)];
+    const TAG_OFFSET_X = -4;
+    const TAG_OFFSET_Y = -10;
+
+    function linePts(
+      x1: number,
+      y1: number,
+      x2: number,
+      y2: number,
+      steps = 20,
+      j = 0.24,
+    ): [number, number][] {
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        pts.push(JP(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, j));
+      }
+      return pts;
+    }
+
+    function ellipsePts(
+      cx: number,
+      cy: number,
+      rx: number,
+      ry: number,
+      steps = 56,
+      j = 0.24,
+      start = 0,
+      end = Math.PI * 2,
+    ): [number, number][] {
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = start + (end - start) * (i / steps);
+        pts.push(JP(cx + Math.cos(t) * rx, cy + Math.sin(t) * ry, j));
+      }
+      return pts;
+    }
+
+    function cubicPts(
+      p0: [number, number],
+      p1: [number, number],
+      p2: [number, number],
+      p3: [number, number],
+      steps = 28,
+      j = 0.24,
+    ): [number, number][] {
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const mt = 1 - t;
+        const x =
+          mt * mt * mt * p0[0] +
+          3 * mt * mt * t * p1[0] +
+          3 * mt * t * t * p2[0] +
+          t * t * t * p3[0];
+        const y =
+          mt * mt * mt * p0[1] +
+          3 * mt * mt * t * p1[1] +
+          3 * mt * t * t * p2[1] +
+          t * t * t * p3[1];
+        pts.push(JP(x, y, j));
+      }
+      return pts;
+    }
+
+    function pathLen(pts: [number, number][]): number {
+      let d = 0;
+      for (let i = 1; i < pts.length; i++) {
+        d += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      }
+      return d;
+    }
+
+    function drawPath(
+      pts: [number, number][],
+      color: string,
+      width: number,
+      progress = 1,
+    ): { x: number; y: number } {
+      if (!pts.length) return { x: 0, y: 0 };
+      const total = pathLen(pts);
+      let left = total * progress;
+      ctx!.strokeStyle = color;
+      ctx!.lineWidth = width;
+      ctx!.lineCap = 'round';
+      ctx!.lineJoin = 'round';
+      ctx!.beginPath();
+      ctx!.moveTo(pts[0][0], pts[0][1]);
+      let last = pts[0];
+      for (let i = 1; i < pts.length; i++) {
+        const seg = Math.hypot(pts[i][0] - last[0], pts[i][1] - last[1]);
+        if (left <= 0) break;
+        ctx!.lineTo(pts[i][0], pts[i][1]);
+        left -= seg;
+        last = pts[i];
+      }
+      ctx!.stroke();
+      return { x: last[0], y: last[1] };
+    }
+
+    function joinPaths(a: [number, number][], b: [number, number][]): [number, number][] {
+      return a.length ? a.concat(b.slice(1)) : b;
+    }
+
+    function gw(ch: string, size: number): number {
+      if (ch === '[' || ch === ']') return size * 0.4;
+      if (ch === ',') return size * 0.26;
+      return size * 0.54;
+    }
+
+    function glyph(
+      ch: string,
+      x: number,
+      y: number,
+      size: number,
+    ): { w: number; s: [number, number][][] } {
+      const j = 0.24;
+      const half = size / 2;
+      const rx = size * 0.33;
+      const ry = size * 0.36;
+      const w = gw(ch, size);
+      const cx = x + w / 2;
+      const cy = y;
+
+      switch (ch) {
+        case '[':
+          return {
+            w,
+            s: [
+              linePts(x + w * 0.72, y - half, x + w * 0.18, y - half, 16, j),
+              linePts(x + w * 0.18, y - half, x + w * 0.18, y + half, 16, j),
+              linePts(x + w * 0.18, y + half, x + w * 0.72, y + half, 16, j),
+            ],
+          };
+        case ']':
+          return {
+            w,
+            s: [
+              linePts(x + w * 0.28, y - half, x + w * 0.82, y - half, 16, j),
+              linePts(x + w * 0.82, y - half, x + w * 0.82, y + half, 16, j),
+              linePts(x + w * 0.82, y + half, x + w * 0.28, y + half, 16, j),
+            ],
+          };
+        case ',': {
+          const p0: [number, number] = [cx + w * 0.03, y - half * 0.02];
+          const p1: [number, number] = [cx + w * 0.12, y + half * 0.1];
+          const p2: [number, number] = [cx - w * 0.08, y + half * 0.36];
+          const p3: [number, number] = [cx - w * 0.02, y + half * 0.58];
+          return { w, s: [cubicPts(p0, p1, p2, p3, 24, j)] };
+        }
+        case '1':
+          return { w, s: [linePts(cx, y - half, cx, y + half, 24, j)] };
+        case '0':
+          return { w, s: [ellipsePts(cx, cy, rx * 0.95, ry * 0.95 * 1.3, 60, j)] };
+        case '8': {
+          const a = ry * 0.72;
+          const top = ellipsePts(
+            cx,
+            cy - a,
+            rx * 0.82,
+            a,
+            42,
+            j,
+            Math.PI / 2,
+            Math.PI / 2 + Math.PI * 2,
+          );
+          const bottom = ellipsePts(
+            cx,
+            cy + a,
+            rx * 0.92,
+            a,
+            46,
+            j,
+            (3 * Math.PI) / 2,
+            (3 * Math.PI) / 2 + Math.PI * 2,
+          );
+          top[0] = [cx, cy];
+          top[top.length - 1] = [cx, cy];
+          bottom[0] = [cx, cy];
+          return { w, s: [joinPaths(top, bottom)] };
+        }
+        case '5': {
+          const left = x + w * 0.12;
+          const right = x + w * 0.88;
+          const topY = y - half;
+          const midY = y + half * 0.02;
+
+          const bar = linePts(left, topY, right, topY, 18, j);
+          const down = linePts(left, topY, left, midY, 16, j);
+
+          const cxB = (left + right) / 2;
+          const rxB = ((right - left) / 2) * 1.1;
+          const ryB = half * 0.68;
+          const cyB = y + half * 0.32;
+
+          const a1 = Math.PI;
+          const a1End = Math.PI * 2.1;
+          let arc1 = ellipsePts(cxB, cyB, rxB, ryB, 56, j, a1, a1End);
+          arc1[0] = [left, midY];
+
+          const a2End = Math.PI * 2.7;
+          const arc2 = ellipsePts(cxB, cyB, rxB * 0.98, ryB * 0.96, 32, j, a1End, a2End);
+
+          const bowl = joinPaths(arc1, arc2);
+
+          const ex = cxB + rxB * 0.98 * Math.cos(a2End);
+          const ey = cyB + ryB * 0.96 * Math.sin(a2End);
+          const tail = linePts(ex, ey, ex - w * 0.02, ey - half * 0.08, 10, j);
+
+          return { w, s: [bar, down, bowl.concat(tail)] };
+        }
+        case '3':
+          return {
+            w,
+            s: [
+              cubicPts(
+                [x + w * 0.1, y - half * 0.45 * 1.6],
+                [x + w * 0.85, y - half * 0.75 * 1.6],
+                [x + w * 0.86, y - half * 0.1 * 1.6],
+                [x + w * 0.26, y - half * 0.02 * 1.6],
+                30,
+                j,
+              ),
+              cubicPts(
+                [x + w * 0.26, y - half * 0.02 * 1.6],
+                [x + w * 0.92, y + half * 0.06 * 1.6],
+                [x + w * 0.9, y + half * 0.72 * 1.6],
+                [x + w * 0.18, y + half * 0.5 * 1.6],
+                30,
+                j,
+              ),
+            ],
+          };
+        default:
+          return { w, s: [] };
+      }
+    }
+
+    const seq = ['[', '1', ',', '0', ',', '8', ',', '5', ',', '3', ']'];
+    let timeline: Array<{
+      who: number;
+      color: string;
+      width: number;
+      start: number;
+      dur: number;
+      paths: [number, number][][];
+    }> = [];
+    let cycleMs = 12000;
+    let layout: { startX: number; baseY: number; size: number; gap: number } | null = null;
+
+    function buildTimeline() {
+      const r = canvas!.getBoundingClientRect();
+      const safeW = r.width * 0.86;
+      let size = Math.min(58, Math.max(28, Math.floor(r.height * 0.28)));
+      const gap = (s: number) => s * 0.1;
+      const totalW = (s: number) => seq.reduce((acc, ch) => acc + gw(ch, s) + gap(s), 0) - gap(s);
+
+      if (totalW(size) > safeW) {
+        size = Math.max(26, Math.floor(size * (safeW / totalW(size))));
+      }
+
+      const baseY = r.height / 2 + 4;
+      const startX = (r.width - totalW(size)) / 2;
+
+      layout = { startX, baseY, size, gap: gap(size) };
+
+      timeline = [];
+      let t = 500;
+      const perGlyph = 640;
+      const hold = 2200;
+      let x = startX;
+
+      seq.forEach((ch, i) => {
+        const g = glyph(ch, x, baseY, size);
+        const who = i % participants.length;
+        timeline.push({
+          who,
+          color: participants[who].color,
+          width: 2.1,
+          start: t,
+          dur: perGlyph,
+          paths: g.s,
+        });
+        x += g.w + layout!.gap;
+        t += perGlyph + 120;
+      });
+
+      cycleMs = t + hold;
+    }
+
+    const codeLines = [
+      { text: '<span class="kw">def</span> <span class="fn">quicksort</span>(arr):', delay: 100 },
+      {
+        text: '    <span class="kw">if</span> <span class="fn">len</span>(arr) <span class="op"><=</span> <span class="num">1</span>:',
+        delay: 80,
+      },
+      { text: '        <span class="kw">return</span> arr', delay: 70 },
+      { text: '    ', delay: 50 },
+      { text: '    pivot <span class="op">=</span> arr[<span class="num">0</span>]', delay: 70 },
+      { text: '    left <span class="op">=</span> []', delay: 60 },
+      { text: '    right <span class="op">=</span> []', delay: 60 },
+      { text: '    ', delay: 50 },
+      {
+        text: '    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(<span class="num">1</span>, <span class="fn">len</span>(arr)):',
+        delay: 90,
+      },
+      {
+        text: '        <span class="kw">if</span> arr[i] <span class="op"><</span> pivot:',
+        delay: 80,
+      },
+      { text: '            left.<span class="fn">append</span>(arr[i])', delay: 70 },
+      { text: '        <span class="kw">else</span>:', delay: 60 },
+      { text: '            right.<span class="fn">append</span>(arr[i])', delay: 70 },
+      { text: '    ', delay: 50 },
+      {
+        text: '    <span class="kw">return</span> <span class="fn">quicksort</span>(left) <span class="op">+</span> [pivot] <span class="op">+</span> <span class="fn">quicksort</span>(right)',
+        delay: 100,
+      },
+      { text: '', delay: 50 },
+      { text: '<span class="comment"># Test with array</span>', delay: 80 },
+      {
+        text: 'arr <span class="op">=</span> [<span class="num">1</span>, <span class="num">0</span>, <span class="num">8</span>, <span class="num">5</span>, <span class="num">3</span>]',
+        delay: 90,
+      },
+      {
+        text: 'sorted_arr <span class="op">=</span> <span class="fn">quicksort</span>(arr)',
+        delay: 100,
+      },
+      {
+        text: '<span class="fn">print</span>(sorted_arr)  <span class="comment"># [0, 1, 3, 5, 8]</span>',
+        delay: 120,
+      },
+    ];
+
+    let currentLine = 0;
+    let currentChar = 0;
+
+    function typeCode() {
+      const codeContent = document.getElementById('codeContent');
+      if (!codeContent) return;
+
+      if (currentLine >= codeLines.length) {
+        currentLine = 0;
+        currentChar = 0;
+        codeContent.innerHTML =
+          '<div class="code-line"><span class="line-number">1</span><span class="code-text"></span></div>';
+        setTimeout(typeCode, 2000);
+        return;
+      }
+
+      const line = codeLines[currentLine];
+      const fullText = line.text.replace(/<[^>]*>/g, '');
+
+      if (currentChar < fullText.length) {
+        currentChar++;
+        const displayText = line.text.substring(
+          0,
+          line.text.length * (currentChar / fullText.length),
+        );
+
+        const lineElements = codeContent.querySelectorAll('.code-line');
+        const lastLine = lineElements[lineElements.length - 1];
+        const codeText = lastLine.querySelector('.code-text');
+        if (codeText) {
+          codeText.innerHTML = displayText + '<span class="cursor"></span>';
+        }
+
+        setTimeout(typeCode, line.delay);
+      } else {
+        const lineElements = codeContent.querySelectorAll('.code-line');
+        const lastLine = lineElements[lineElements.length - 1];
+        const codeText = lastLine.querySelector('.code-text');
+        if (codeText) {
+          codeText.innerHTML = line.text;
+        }
+
+        currentLine++;
+        currentChar = 0;
+
+        if (currentLine < codeLines.length) {
+          const newLine = document.createElement('div');
+          newLine.className = 'code-line';
+          newLine.innerHTML = `<span class="line-number">${currentLine + 1}</span><span class="code-text"></span>`;
+          codeContent.appendChild(newLine);
+        }
+
+        setTimeout(typeCode, 200);
+      }
+    }
+
+    resizeCanvas();
+    buildTimeline();
+
+    const t0 = performance.now();
+
+    function animate(now = performance.now()) {
+      const r = canvas!.getBoundingClientRect();
+      ctx!.clearRect(0, 0, r.width, r.height);
+
+      ctx!.fillStyle = 'rgba(102,126,234,0.05)';
+      for (let x = 10; x < r.width; x += 20) {
+        for (let y = 10; y < r.height; y += 20) {
+          ctx!.beginPath();
+          ctx!.arc(x, y, 1, 0, Math.PI * 2);
+          ctx!.fill();
+        }
+      }
+
+      const t = (now - t0) % cycleMs;
+      participants.forEach((p) => {
+        p._active = false;
+        if (p.el) p.el.style.opacity = '0';
+      });
+
+      timeline.forEach((task) => {
+        const local = t - task.start;
+        if (local < -40) return;
+        const drawing = local >= 0 && local <= task.dur;
+        const prog = Math.max(0, Math.min(1, local / task.dur));
+
+        let tip: { x: number; y: number } | null = null;
+        const per = 1 / task.paths.length;
+        task.paths.forEach((pts, idx) => {
+          const segProg = Math.max(0, Math.min(1, (prog - idx * per) / per));
+          if (segProg > 0) {
+            tip = drawPath(pts, task.color, task.width, Math.min(segProg, 1));
+          }
+        });
+
+        if (drawing && tip) {
+          const p = participants[task.who];
+          p._active = true;
+          p._tip = tip;
+        }
+      });
+
+      const active = participants.find((p) => p._active);
+      if (active && active.el && active._tip) {
+        active.el.style.opacity = '1';
+        active.el.style.transform = `translate(${active._tip.x + TAG_OFFSET_X}px, ${active._tip.y + TAG_OFFSET_Y}px)`;
+      }
+
+      animationFrameRef.current = requestAnimationFrame(animate);
+    }
+
+    const handleResize = () => {
+      resizeCanvas();
+      buildTimeline();
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    setTimeout(() => {
+      typeCode();
+    }, 1000);
+
+    animationFrameRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      participants.forEach((p) => {
+        if (p.el && p.el.parentNode) {
+          p.el.parentNode.removeChild(p.el);
+        }
+      });
+    };
   }, []);
 
   const daysUntil = (isoString: string | undefined) => {
@@ -57,7 +627,7 @@ export default function Landing() {
       newExpiry.setDate(newExpiry.getDate() + 14);
       toast.success(`Room extended to ${newExpiry.toLocaleDateString()}.`);
       await refreshRooms();
-    } catch (_error) {
+    } catch {
       toast.error('Failed to extend room.');
     }
   };
@@ -213,7 +783,7 @@ export default function Landing() {
 
               <div className="demo-body">
                 <div className="canvas-area">
-                  <canvas id="collab-canvas"></canvas>
+                  <canvas ref={canvasRef} id="collab-canvas"></canvas>
 
                   <div className="toolbar">
                     <button className="tool active">
