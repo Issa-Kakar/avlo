@@ -22,56 +22,55 @@ precacheAndRoute(self.__WB_MANIFEST);
 
 self.addEventListener('install', (event: ExtendableEvent) => {
   console.log('SW: Installing service worker, version:', APP_VERSION);
-  
-  event.waitUntil((async () => {
-    // Pre-cache Monaco and practice problems
-    const offlinePackCache = await caches.open(OFFLINE_PACK_CACHE);
-    
-    // Practice problems JSON
-    await offlinePackCache.add('/problems.v1.json');
-    
-    // Monaco editor assets - these patterns should match Monaco files
-    const monacoAssets: string[] = [
-      // These will be populated by the build process
-      // The actual paths will depend on your Monaco setup
-    ];
-    
-    for (const asset of monacoAssets) {
+
+  event.waitUntil(
+    (async () => {
+      // Pre-cache practice problems JSON
+      const offlinePackCache = await caches.open(OFFLINE_PACK_CACHE);
+
       try {
-        await offlinePackCache.add(asset);
+        await offlinePackCache.add('/problems.v1.json');
+        console.log('SW: Practice problems cached');
       } catch (error) {
-        console.warn('SW: Failed to cache Monaco asset:', asset, error);
+        console.warn('SW: Failed to cache practice problems:', error);
       }
-    }
-    
-    console.log('SW: Offline pack cached');
-  })());
-  
+
+      // Monaco assets are handled by workbox precaching through the manifest
+      // and will be cached on first use with the cache-first strategy
+      console.log('SW: Offline pack ready');
+    })(),
+  );
+
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event: ExtendableEvent) => {
   console.log('SW: Activating service worker, version:', APP_VERSION);
-  
-  event.waitUntil((async () => {
-    // Clean up old caches
-    const cacheNames = await caches.keys();
-    const oldCaches = cacheNames.filter(name => 
-      (name.startsWith('app-shell-v') && name !== APP_SHELL_CACHE) ||
-      (name.startsWith('offline-pack-v') && name !== OFFLINE_PACK_CACHE) ||
-      name.startsWith(PYODIDE_CACHE_PREFIX)
-    );
-    
-    await Promise.all(oldCaches.map(name => {
-      console.log('SW: Deleting old cache:', name);
-      return caches.delete(name);
-    }));
-    
-    // Take control immediately
-    await self.clients.claim();
-    
-    console.log('SW: Activated, old caches cleaned');
-  })());
+
+  event.waitUntil(
+    (async () => {
+      // Clean up old caches
+      const cacheNames = await caches.keys();
+      const oldCaches = cacheNames.filter(
+        (name) =>
+          (name.startsWith('app-shell-v') && name !== APP_SHELL_CACHE) ||
+          (name.startsWith('offline-pack-v') && name !== OFFLINE_PACK_CACHE) ||
+          name.startsWith(PYODIDE_CACHE_PREFIX),
+      );
+
+      await Promise.all(
+        oldCaches.map((name) => {
+          console.log('SW: Deleting old cache:', name);
+          return caches.delete(name);
+        }),
+      );
+
+      // Take control immediately
+      await self.clients.claim();
+
+      console.log('SW: Activated, old caches cleaned');
+    })(),
+  );
 });
 
 // Handle skipWaiting message
@@ -85,13 +84,13 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
 // Navigation route - cache-first HTML for SPA
 const navigationHandler = async ({ request }: { request: Request }) => {
   const appShellCache = await caches.open(APP_SHELL_CACHE);
-  
+
   // Try cache first for HTML shell
   const cachedResponse = await appShellCache.match('/index.html');
   if (cachedResponse) {
     return cachedResponse;
   }
-  
+
   // Fallback to network (for development)
   try {
     const networkResponse = await fetch(request);
@@ -109,8 +108,8 @@ const navigationHandler = async ({ request }: { request: Request }) => {
 
 registerRoute(
   new NavigationRoute(navigationHandler, {
-    allowlist: [/^\/$/], // Only handle root and rooms
-  })
+    allowlist: [/^\/(?:rooms\/[^/]+)?$/], // Handle root (/) and /rooms/:id paths
+  }),
 );
 
 // API and WebSocket bypass - never cache these
@@ -119,21 +118,23 @@ registerRoute(
   async ({ request }) => {
     // Always bypass cache for API calls
     return fetch(request);
-  }
+  },
 );
 
 // Static assets (Monaco, JSON) - cache first
 registerRoute(
   ({ url, request }) => {
-    return request.destination === 'script' || 
-           request.destination === 'style' ||
-           url.pathname.endsWith('.json') ||
-           url.pathname.includes('monaco') ||
-           url.pathname.includes('problems.v1.json');
+    return (
+      request.destination === 'script' ||
+      request.destination === 'style' ||
+      url.pathname.endsWith('.json') ||
+      url.pathname.includes('monaco') ||
+      url.pathname.includes('problems.v1.json')
+    );
   },
   new CacheFirst({
     cacheName: OFFLINE_PACK_CACHE,
-  })
+  }),
 );
 
 // Pyodide warm cache (desktop only, handled by client)
@@ -141,7 +142,7 @@ registerRoute(
   ({ url }) => url.pathname.startsWith('/pyodide/'),
   new CacheFirst({
     cacheName: `${PYODIDE_CACHE_PREFIX}${APP_VERSION}`,
-  })
+  }),
 );
 
 console.log('SW: Service worker loaded, version:', APP_VERSION);

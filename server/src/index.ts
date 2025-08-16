@@ -26,7 +26,9 @@ if (DATABASE_URL.includes('user:password')) {
   process.exit(1);
 }
 
+// eslint-disable-next-line no-console
 console.log('Environment loaded from:', path.resolve(__dirname, '../../.env'));
+// eslint-disable-next-line no-console
 console.log('DATABASE_URL validated:', DATABASE_URL.replace(/:[^:@]+@/, ':****@'));
 
 import './sentry.js';
@@ -42,6 +44,7 @@ import { registerWsGateway } from './ws.js';
 import roomsRouter from './routes/rooms.js';
 import { prisma } from './clients/prisma.js';
 import { redis } from './clients/redis.js';
+import { startTTLJanitor, stopTTLJanitor } from './ttl-janitor.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -138,12 +141,18 @@ app.use(sentryHandlers.error); // LAST
 const port = process.env.PORT || 3000;
 const server = app.listen(port, () => {
   // Server started successfully
+  // eslint-disable-next-line no-console
+  console.log(`Server listening on port ${port}`);
+
+  // Start TTL janitor for expired room cleanup
+  startTTLJanitor();
 });
 
 try {
   registerWsGateway(server, allowlistCsv);
 } catch (err) {
   import('./sentry.js').then(({ sentry }) => sentry.captureException(err));
+
   console.error('Failed to register WebSocket gateway:', err);
 }
 
@@ -151,6 +160,12 @@ try {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 async function shutdown() {
+  // eslint-disable-next-line no-console
+  console.log('Shutting down gracefully...');
+
+  // Stop TTL janitor
+  stopTTLJanitor();
+
   try {
     await prisma.$disconnect();
   } catch {
