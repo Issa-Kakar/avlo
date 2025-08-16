@@ -127,5 +127,5 @@ client/test-results/
 
 # Development scripts (keep setup-dev.sh in repo)
 
-#Claude.md  
-CLAUDE.md
+# Personal notes and changelogs
+CHANGELOG.md

@@ -1,19 +1,19 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ThemeToggle from '../components/ThemeToggle.js';
-import { getHttpBase } from '../utils/url.js';
 import { toast } from '../utils/toast.js';
 import { listRooms, removeFromList, deleteLocalCopy } from '../features/myrooms/store.js';
 import { canExtendNow, markExtendedNow } from '../features/myrooms/extend-ttl.js';
+import CreateBoardDialog from '../components/entry/CreateBoardDialog.js';
+import JoinBoardDialog from '../components/entry/JoinBoardDialog.js';
 import './Landing.css';
 
 type RoomRow = Awaited<ReturnType<typeof listRooms>>[number];
 
 export default function Landing() {
   const navigate = useNavigate();
-  const [isCreating, setIsCreating] = useState(false);
-  const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
-  const [roomId, setRoomId] = useState('');
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false);
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number>(0);
@@ -645,62 +645,18 @@ export default function Landing() {
     toast.success('Local copy deleted');
   };
 
-  const handleCreateRoom = async () => {
-    if (isCreating) return;
-    setIsCreating(true);
-
-    try {
-      const response = await fetch(`${getHttpBase()}/api/rooms`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-
-      if (response.status === 429) {
-        toast.error('Too many requests — try again shortly.');
-        return;
-      }
-
-      if (!response.ok) {
-        toast.error('Unable to create room. Try again.');
-        return;
-      }
-
-      const data = await response.json();
-      if (data.shareLink) {
-        navigate(data.shareLink);
-      } else if (data.roomId) {
-        navigate(`/rooms/${data.roomId}`);
-      }
-    } catch {
-      toast.error('Unable to create room. Try again.');
-    } finally {
-      setIsCreating(false);
-    }
+  const handleCreateSuccess = (roomId: string) => {
+    navigate(`/rooms/${roomId}`);
   };
 
-  const handleJoinRoom = () => {
-    setIsJoinModalOpen(true);
+  const handleJoinSuccess = (roomId: string) => {
+    navigate(`/rooms/${roomId}`);
   };
 
-  const handleJoinSubmit = () => {
-    const trimmedId = roomId.trim();
-    if (!trimmedId) {
-      toast.error('Please enter a room ID');
-      return;
-    }
-
-    if (!/^[A-Za-z0-9_-]+$/.test(trimmedId)) {
-      toast.error('Invalid room ID format');
-      return;
-    }
-
-    navigate(`/rooms/${trimmedId}`);
-  };
-
-  const handleModalClose = () => {
-    setIsJoinModalOpen(false);
-    setRoomId('');
+  const handleCreateFromJoin = () => {
+    setIsJoinDialogOpen(false);
+    setIsCreateDialogOpen(true);
+    // Note: We could pass a name to CreateBoardDialog if we wanted to pre-fill it
   };
 
   return (
@@ -718,15 +674,14 @@ export default function Landing() {
               <button
                 className="btn btn-primary"
                 data-testid="create-room"
-                onClick={handleCreateRoom}
-                disabled={isCreating}
+                onClick={() => setIsCreateDialogOpen(true)}
               >
                 Create Room
               </button>
               <button
                 className="btn btn-secondary"
                 data-testid="join-room"
-                onClick={handleJoinRoom}
+                onClick={() => setIsJoinDialogOpen(true)}
               >
                 Join Room
               </button>
@@ -752,11 +707,7 @@ export default function Landing() {
                 doesn't.
               </p>
               <div className="hero-actions">
-                <button
-                  className="btn btn-primary"
-                  onClick={handleCreateRoom}
-                  disabled={isCreating}
-                >
+                <button className="btn btn-primary" onClick={() => setIsCreateDialogOpen(true)}>
                   Create Room
                   <svg width="16" height="16" fill="currentColor" viewBox="0 0 20 20">
                     <path
@@ -765,7 +716,7 @@ export default function Landing() {
                     />
                   </svg>
                 </button>
-                <button className="btn btn-secondary" onClick={handleJoinRoom}>
+                <button className="btn btn-secondary" onClick={() => setIsJoinDialogOpen(true)}>
                   Join Room
                 </button>
               </div>
@@ -955,41 +906,20 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Join Room Modal */}
-      {isJoinModalOpen && (
-        <div
-          className="modal-overlay"
-          onClick={handleModalClose}
-          onKeyDown={(e) => e.key === 'Escape' && handleModalClose()}
-        >
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="join-modal-title"
-          >
-            <h2 id="join-modal-title">Join Room</h2>
-            <input
-              type="text"
-              placeholder="Enter room ID"
-              value={roomId}
-              onChange={(e) => setRoomId(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleJoinSubmit()}
-              autoFocus
-              className="modal-input"
-            />
-            <div className="modal-actions">
-              <button className="btn btn-secondary" onClick={handleModalClose}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" onClick={handleJoinSubmit}>
-                Join
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Create Board Dialog */}
+      <CreateBoardDialog
+        isOpen={isCreateDialogOpen}
+        onClose={() => setIsCreateDialogOpen(false)}
+        onSuccess={handleCreateSuccess}
+      />
+
+      {/* Join Board Dialog */}
+      <JoinBoardDialog
+        isOpen={isJoinDialogOpen}
+        onClose={() => setIsJoinDialogOpen(false)}
+        onJoin={handleJoinSuccess}
+        onCreateNew={handleCreateFromJoin}
+      />
     </div>
   );
 }

@@ -2,92 +2,96 @@
 
 ## Project Overview
 
-Avlo is a link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution (JS + Python via Pyodide). See AVLO_OVERVIEW.MD for full specifications.
+Avlo is a link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution (JS + Python via Pyodide). MVP targets ≤125 ms p95 collaboration latency with ~50 concurrent users and ≤25 active drawers.
+
+**Core References:**
+
+- **Full Specification**: AVLO_OVERVIEW.MD
+- **Implementation Guide**: AVLO_IMPLEMENTATION.MD
 
 ## Current Implementation Status
 
-### ✅ Phase 0: Complete
-- Monorepo structure with client/server workspaces
-- Build pipeline and asset bundling  
-- TypeScript, ESLint, Prettier configuration
-- Pre-commit hooks with Husky
-- Playwright E2E test setup
-- Basic Express server with health check
-- Prisma schema for Room model
+### ✅ Phase 0: Complete - Repository Setup
 
-### ✅ Phase 1: Complete (Server Foundation)
-- Express + @y/websocket-server + Redis integration
-- WebSocket gateway with Origin validation and connection hygiene
-- Redis persistence with gzip(4) compression for authoritative storage
+- Monorepo with client/server workspaces
+- Build pipeline with asset bundling (`scripts/copy-client-dist.mjs`)
+- TypeScript, ESLint, Prettier configuration
+- Husky pre-commit hooks (<5s execution)
+- Playwright E2E test infrastructure
+
+### ✅ Phase 1: Complete - Server Foundation
+
+- Express + @y/websocket-server (0.1.1) + Redis (5.8.1)
+- WebSocket gateway with Origin validation
+- Redis persistence with gzip(4) compression (authoritative storage)
 - Room metadata API endpoints with rate limiting
 - Capacity enforcement (105 clients/room, 8 WS/IP, 2MB frame cap)
-- Sentry integration with privacy protections
+- Sentry integration (8.55.0) with privacy protections
 - Health check endpoints (/healthz, /readyz)
 
-### 🚧 Phase 2: In Progress (Client Foundation)
-- React Router setup for /rooms/:id
-- Yjs providers (y-websocket + y-indexeddb)
-- Basic UI shell with split view
-- Connection indicator and presence
-- Mobile view-only gating
+### ✅ Phase 2: Complete - Client Foundation
 
-### ✅ Phase 7: Complete (PWA & Offline Support)
-- Installable PWA with web app manifest
+- React Router DOM (7.8.0) for SPA routing
+- Yjs providers: y-websocket (3.0.0) + y-indexeddb (9.0.12)
+- Split view UI shell with resizable panes
+- Connection status indicator (Online/Reconnecting/Offline/Read-only)
+- Presence system with cursor tracking
+- Mobile view-only gating (capability-based)
+- Copy link functionality with toast notifications
+- Users avatar stack and modal
+
+### ✅ Phase 7: Complete - PWA & Offline Support
+
+- Installable PWA with manifest and icons (192×192, 512×512, maskable)
 - Service worker with cache-first HTML navigation
-- API/WebSocket bypass rules (never cache /api/**, /yjs/**, wss:)
+- Strategic bypass rules (never cache /api/**, /yjs/**, wss:)
 - Pre-cached Monaco editor and practice problems JSON
-- "Update available" prompt with seamless updates
-- Desktop-only Pyodide warm cache (silent background)
-- Comprehensive E2E PWA testing suite
+- "Update available" prompt with skipWaiting
+- Desktop-only Pyodide warm cache (silent, post-activate)
 
-### ✅ Phase 9: Partially Complete (My Rooms - Device Local)
-- Device-local room list with metadata (title, last opened, expiry)
-- IndexedDB storage for room history and aliases
-- Offline room creation with provisional IDs
-- Room TTL extension with tiny Yjs writes
-- "Delete local copy" functionality for per-room cleanup
-- Landing page with recent rooms integration
+### ✅ Phase 9: Complete - My Rooms (Device-Local)
 
-### ✅ Phase 10: Complete (Security & Observability)
-- Content Security Policy (CSP) enforcement
-- HSTS, X-Content-Type-Options, Referrer-Policy headers
+- IndexedDB-based room management (`avlo-myrooms` database)
+- Device-local room list with metadata tracking
+- Offline room creation with provisional IDs (`local-<ulid>`)
+- Alias mapping for provisional→server ID resolution
+- Room TTL extension via minimal Yjs writes
+- "Delete local copy" functionality
+- Landing page with recent rooms panel
+
+### ✅ Phase 10: Complete - Security & Observability
+
+- Helmet-based security headers (CSP Profile A)
+- HSTS (production-only), X-Content-Type-Options, Referrer-Policy
 - Origin allowlist validation for HTTP and WebSocket
-- Observability counters (non-content logging)
-- Rate limiting and capacity enforcement
-- Database degraded mode (Redis-only collaboration)
+- Comprehensive observability counters (non-content)
+- Database degraded mode (Redis-only when Postgres unavailable)
 
-### ⏳ Future Phases
+### ✅ Phase 8: Complete - Limits, Banners & UX Guards
+
+- Size warning pill at 8MB (X.Y / 10 MB display)
+- Read-only mode enforcement at 10MB hard cap
+- Gateway error mapping with normative toast messages
+- Room capacity enforcement (105 clients max)
+- Connection state includes Read-only indicator
+- Feature flag system for limits UI
+
+### ⏳ Future Phases (Not Yet Implemented)
+
 - Phase 3: Canvas rendering and drawing tools
-- Phase 4: Scene management (Clear board)
-- Phase 5: PNG export
+- Phase 4: Scene management ("Clear board for everyone")
+- Phase 5: PNG export (viewport/entire board)
 - Phase 6: Code execution (JS + Pyodide)
+- Phase 11: Deployment (Railway)
+- Phase 12: AI Assistance (Mode A)
 
 ## Technology Stack
 
-### Current Dependencies
-**Client:**
-- React 18.3.1, TypeScript 5.7.2, Vite 5.4.11
-- React Router DOM 7.8.0 (SPA routing)
-- Tailwind 3.4.17 (styling)
-- Yjs 13.6.27, y-websocket 3.0.0, y-indexeddb 9.0.12 (real-time collaboration)
-- Monaco Editor 0.52.2 (code editing)
-- vite-plugin-pwa 0.21.1, workbox-window 7.3.0 (PWA functionality)
-- Dependencies for future: pyodide (Python execution)
+**Client:** React, TypeScript, Vite, React Router DOM, Tailwind CSS, Yjs/y-websocket/y-indexeddb, Monaco Editor, PWA (vite-plugin-pwa), RBush, Pyodide
 
-**Server:**
-- Node.js (ES2022), Express 4.21.2
-- TypeScript 5.7.2, TSX 4.19.2 (dev)
-- Prisma 5.22.0, PostgreSQL 16
-- Redis 4.7.0 (authoritative storage)
-- @y/websocket-server 1.0.2, y-leveldb 0.1.2
-- WebSocket (ws 8.18.0) with hygiene enforcement
-- Sentry 8.45.0, Pino 9.5.0 (logging)
-- Helmet 8.0.0, CORS 2.8.5, express-rate-limit 7.4.1
+**Server:** Node.js (ESM), Express, TypeScript, Prisma/PostgreSQL, Redis, @y/websocket-server (0.1.1), WebSocket (ws), Sentry, Pino, Helmet
 
-**Testing & Tools:**
-- Playwright 1.45.0 (E2E)
-- ESLint 9.33.0, Prettier 3.6.2
-- Husky + lint-staged (pre-commit)
+**Tools:** Playwright, ESLint, Prettier, Husky, Concurrently
 
 ## Project Structure
 
@@ -95,132 +99,46 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 avlo/
 ├── client/                    # React SPA frontend
 │   ├── src/
-│   │   ├── app/              # Application components
-│   │   │   ├── components/   # Shared UI components
-│   │   │   ├── features/     # Feature modules (myrooms, etc.)
-│   │   │   ├── hooks/        # Custom React hooks
-│   │   │   ├── pages/        # Route components (Landing, Room)
-│   │   │   ├── providers/    # Yjs client integration
-│   │   │   ├── router.tsx    # React Router setup
-│   │   │   └── state/        # App state management
-│   │   ├── pwa/              # PWA functionality
-│   │   │   ├── PWAProvider.tsx      # PWA integration
-│   │   │   ├── register-sw.ts       # Service worker registration
-│   │   │   ├── update-prompt.tsx    # Update UI
-│   │   │   └── warm-pyodide.ts      # Desktop Pyodide cache
-│   │   ├── sw.ts             # Service worker implementation
-│   │   ├── main.tsx          # App entry with PWA
-│   │   └── styles/           # CSS and styling
-│   ├── public/
-│   │   ├── icons/            # PWA icons (192, 512, maskable)
-│   │   ├── manifest.webmanifest     # PWA manifest
-│   │   └── problems.v1.json         # Practice problems pack
-│   ├── dist/                 # Production build
-│   └── package.json
-├── server/
+│   │   ├── app/              # Components, hooks, pages, providers
+│   │   ├── pwa/              # PWA & service worker
+│   │   ├── ui/limits/        # Size pill, readonly banner
+│   │   └── state/            # Room stats, write operations
+│   └── public/               # Icons, manifest, problems.json
+├── server/                    # Express + WebSocket backend
 │   ├── src/
-│   │   ├── index.ts          # Express bootstrap + routes
-│   │   ├── sentry.ts         # Error tracking setup
-│   │   ├── obs.ts            # Observability helpers
-│   │   ├── ws.ts             # WebSocket gateway
-│   │   ├── yjs-hooks.ts      # Redis persistence hooks
-│   │   ├── routes/
-│   │   │   └── rooms.ts      # Room API endpoints
-│   │   ├── util/
-│   │   │   ├── origin.ts     # Origin validation
-│   │   │   └── ip.ts         # IP extraction
-│   │   └── clients/
-│   │       ├── prisma.ts     # Prisma singleton
-│   │       └── redis.ts      # Redis singleton
-│   ├── prisma/
-│   │   └── schema.prisma     # Room model
-│   ├── dist/                 # TypeScript output
-│   └── public/               # Static files (from client)
-├── e2e/                      # Playwright tests (including PWA)
-├── tasks/completed/          # Phase completion documentation
-├── scripts/
-│   └── copy-client-dist.mjs # Asset bundling
-└── package.json              # Root monorepo config
+│   │   ├── ws.ts            # WebSocket gateway
+│   │   ├── yjs-hooks.ts     # Redis persistence
+│   │   └── routes/rooms.ts  # Room API endpoints
+│   └── prisma/schema.prisma # Database schema
+├── e2e/                      # Playwright tests
+└── scripts/                  # Build utilities
 ```
 
 ## Essential Commands
 
-### Development
 ```bash
 npm run dev                # Start both client and server
-npm run dev:client         # Start Vite dev server only
-npm run dev:server         # Start Express server only
-```
-
-### Build & Deploy
-```bash
 npm run build              # Build both + bundle assets
-npm run db:generate        # Generate Prisma client
-npm run db:migrate         # Apply migrations (dev)
-npm run db:deploy          # Apply migrations (prod)
-npm start                  # Start production server
-```
-
-### Testing & Quality
-```bash
 npm run test:e2e           # Run Playwright tests
-npm run test:e2e:ui        # Interactive test UI
-npm run lint               # Check with ESLint
-npm run lint:fix           # Auto-fix issues
-npm run format             # Format with Prettier
+npm run db:migrate         # Apply migrations (dev)
 npm run typecheck          # TypeScript checking
 ```
 
 ## Environment Variables
 
-Create `.env` from `.env.example`:
 ```bash
-NODE_ENV=development
-PORT=3000
 DATABASE_URL=postgresql://user:pass@localhost:5432/avlo
 REDIS_URL=redis://localhost:6379
 ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
 ROOM_TTL_DAYS=14
 SENTRY_DSN=                # Optional
-APP_VERSION=dev
-```
-
-## Development Workflow
-
-### Starting Fresh
-```bash
-git pull origin main
-npm install
-npm run db:migrate
-npm run dev
-```
-
-### Before Committing
-```bash
-npm run typecheck          # Manual type check
-# Pre-commit hooks auto-run ESLint + Prettier on staged files
-git add .
-git commit -m "feat: description"
 ```
 
 ## Coding Standards
 
-### Naming Conventions
-- **Components**: PascalCase (e.g., `WhiteboardCanvas.tsx`)
-- **Hooks**: camelCase with 'use' prefix (e.g., `useCanvas.ts`)
-- **Services/Utils**: camelCase (e.g., `roomService.ts`)
-- **Types/Interfaces**: PascalCase
-- **Constants**: UPPER_SNAKE_CASE
-- **Functions**: camelCase with verb prefixes
-
-### Code Style
-- TypeScript strict mode
-- Functional React components
-- Async/await over promises
-- NO COMMENTS unless explicitly requested
-- 2 spaces indentation (Prettier enforced)
-- Single quotes for strings
-- Semicolons required
+- **Naming**: Components (PascalCase), hooks (use\*), constants (UPPER_SNAKE)
+- **Style**: TypeScript strict, functional components, async/await, NO COMMENTS
+- **Formatting**: 2 spaces, single quotes, semicolons (Prettier enforced)
 
 ## Critical Implementation Rules
 
@@ -236,56 +154,61 @@ When implementing features, remember:
 8. **Frame Size**: 2 MB max for WebSocket frames
 9. **Flush Cadence**: 2-3s to Redis (5s worst case)
 
-## TypeScript Configuration (Server) - CRITICAL
+## Key Implementation Details
 
-The server uses **NodeNext** module resolution which requires:
+### WebSocket Connection
 
-1. **tsconfig.json MUST use**:
-   ```json
-   {
-     "module": "NodeNext",
-     "moduleResolution": "NodeNext", 
-     "verbatimModuleSyntax": true
-   }
-   ```
+- Endpoint: `/ws` (requires Origin header)
+- Client identifies with `{ roomId }` on connect
+- Gateway errors: `room_full`, `room_full_readonly`, `offline_delta_too_large`
+- Reconnection: Exponential backoff with full jitter, ceiling 30s
 
-2. **All relative imports MUST include .js extension** even though files are .ts:
-   ```typescript
-   // ✅ CORRECT
-   import { foo } from './foo.js';
-   
-   // ❌ WRONG
-   import { foo } from './foo';
-   ```
+### REST API Endpoints
 
-3. **Type-only imports with verbatimModuleSyntax**:
-   ```typescript
-   import type { Request, Response } from 'express';
-   ```
+- `POST /api/rooms` - Create room (optional id, title)
+- `GET /api/rooms/:id/metadata` - Get room metadata
+- `PUT /api/rooms/:id` - Update room title
+- `GET /healthz` - Health check
+- `GET /readyz` - Readiness check
 
-4. **pino-http workaround** (due to CJS/ESM incompatibility):
-   ```typescript
-   import { createRequire } from 'node:module';
-   const require = createRequire(import.meta.url);
-   const pinoHttp = require('pino-http');
-   ```
-   Note: This workaround is necessary even with esModuleInterop enabled.
+### Presence System
 
-5. **@y/websocket-server usage**:
-   - Version: 0.1.x (NOT 1.0.x - doesn't exist)
-   - Import: `@y/websocket-server/utils` (ESM)
-   - No `provider` property needed in setPersistence
-   - Ambient typing provided in server/src/types/y-websocket-server.d.ts
+- Update cadence: 75-100ms tick, ~30Hz send throttle
+- Cursor trails: Ring buffer of 24 points, max 20 remote cursors rendered
+- Activity states: idle, drawing, typing
+- Awareness data is ephemeral (not persisted)
 
-6. **Redis v5 type handling**:
-   - getBuffer returns complex union type
-   - Cast through unknown when needed: `as unknown as Buffer`
+### Mobile Support
 
-DO NOT change module to "ESNext" or moduleResolution to "node" - this breaks Node.js ESM compatibility!
+- View-only in MVP (capability-based detection)
+- Detection: `(pointer: coarse)` or width ≤ 820px
+- No UA sniffing
+- Cursor trails disabled on mobile
+
+### IndexedDB Storage
+
+- Database: `avlo-myrooms` (version 1)
+- Stores: `rooms` (room metadata) and `aliases` (provisional→server mapping)
+- Per-room Y.Doc persistence via y-indexeddb
+- Never deleted on room leave (explicit "Delete local copy" required)
+
+## TypeScript Configuration (Server)
+
+**CRITICAL:** Server uses NodeNext module resolution:
+
+- All relative imports need `.js` extension: `import { foo } from './foo.js'`
+- pino-http requires createRequire workaround
+- @y/websocket-server is version 0.1.x (import from `@y/websocket-server/utils`)
+- Redis v5 types may need casting: `as unknown as Buffer`
+
+## Common Gotchas
+
+**Server:** Relative imports need `.js`, pino-http needs createRequire, @y/websocket-server is 0.1.x
+**Client:** Never mutate Yjs guid, don't auto-delete IndexedDB, use capability detection for mobile
+**Dev:** Pre-commit <5s, test PWA with build+preview, use exact UI strings
 
 ## Database Schema
 
-### Prisma Room Model (Non-Authoritative)
 ```prisma
 model Room {
   id          String   @id        // roomId
@@ -296,33 +219,57 @@ model Room {
 }
 ```
 
-Redis stores the authoritative Yjs document; PostgreSQL stores metadata only.
+Redis stores authoritative Yjs doc (gzip-4); PostgreSQL stores metadata only.
 
 ## Next Implementation Steps
 
-1. **Complete Phase 2** (Client Foundation):
-   - Enhance React Router for /rooms/:id routing  
-   - Improve Yjs providers (y-websocket + y-indexeddb)
-   - Refine UI shell with split view
-   - Enhance connection indicator and presence
-   - Improve mobile view-only gating
-
-2. **Begin Phase 3** (Canvas & Drawing):
+1. **Phase 3** (Canvas & Drawing):
    - Implement canvas renderer with RBush indexing
    - Add drawing tools (Pen, Highlighter, Stamps)
    - Create text tool with local preview
    - Add minimap and zoom controls
+   - Implement LOD (Level of Detail) rendering
+   - Add undo/redo with Y.UndoManager
+
+2. **Phase 4** (Scene Management):
+   - Implement "Clear board for everyone" functionality
+   - Add scene tick system for soft-clear
+   - Implement 10-second undo window for scene changes
+
+3. **Phase 5** (PNG Export):
+   - Export viewport or entire board
+   - 8192px max edge, 24px padding, white background
+   - 2-second render budget with fallback
 
 ## References
 
-- **Full Specification**: AVLO_OVERVIEW.MD
-- **Implementation Plan**: AVLO_IMPLEMENTATION.MD
-- **Phase Completions**: 
-  - tasks/completed/PHASE1_CHANGELOG.MD
-  - tasks/completed/PHASE_7_CHANGELOG.md
-  - tasks/completed/PHASE_9_CHANGELOG.MD
-  - tasks/completed/PHASE_10_CHANGELOG.md
-- **Next Phase Guide**: See AVLO_IMPLEMENTATION.MD Phase 3 (Canvas & Drawing)
+- **Specification**: AVLO_OVERVIEW.MD
+- **Implementation**: AVLO_IMPLEMENTATION.MD
+- **Phase Docs**: tasks/completed/
+
+## Normative UI Strings
+
+These exact strings MUST be used for consistency:
+
+### Toast Messages
+
+- Copy link: **"Link copied."**
+- Room full: **"Room is full — create a new room."**
+- Oversize frame: **"Change too large. Refresh to rejoin."**
+- Rate limit: **"Too many requests — try again shortly."**
+- Clear board: **"Cleared for everyone. Undo (10s)."**
+- Room extended: **"Room extended to [date]."**
+- Text committed: **"Text committed."**
+- Export fallback: **"Large board—exported visible area."**
+
+### Banners
+
+- Read-only: **"Room is read-only (10 MB limit reached). Create a new room to continue."**
+- Size warning pill: **"X.Y / 10 MB"** (appears at 80% capacity)
+
+### Connection States
+
+- **"Online"** / **"Reconnecting"** / **"Offline"** / **"Read-only"**
 
 ## Important Notes
 
@@ -330,3 +277,5 @@ Redis stores the authoritative Yjs document; PostgreSQL stores metadata only.
 - No authentication system - link sharing grants edit access
 - Mobile is view-only in MVP
 - Rooms expire after ROOM_TTL_DAYS (default: 14) with no recovery
+- No stack traces in UI - always show friendly messages
+- Undo/Redo is per-user origin-scoped (users undo their own operations only)

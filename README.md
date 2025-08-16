@@ -1,13 +1,30 @@
 # Avlo
 
-A link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor.
+A link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution.
+
+## 🚀 Project Status
+
+### Completed Features
+
+- ✅ **Real-time Collaboration** - WebSocket-based with Yjs CRDT
+- ✅ **Offline Support** - Full PWA with service worker and IndexedDB persistence
+- ✅ **Room Management** - Create, join, and manage collaborative rooms
+- ✅ **My Rooms** - Device-local room history with aliasing
+- ✅ **Security** - CSP, HSTS, origin validation, rate limiting
+- ✅ **Capacity Limits** - 10MB room size cap, 105 clients max per room
+
+### In Progress
+
+- 🚧 **Canvas & Drawing** - Phase 3 implementation
+- 🚧 **Code Execution** - JS + Python via Pyodide
 
 ## Tech Stack
 
-- **Frontend**: React (Vite), TypeScript, Tailwind, HTML Canvas, Monaco Editor
-- **Realtime & Offline**: Yjs CRDT, y-websocket, y-indexeddb
-- **Backend**: Node.js, Express, WebSocket, Redis, PostgreSQL (via Prisma)
+- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, React Router DOM
+- **Realtime & Offline**: Yjs CRDT, y-websocket, y-indexeddb, PWA
+- **Backend**: Node.js (ESM), Express, WebSocket, Redis, PostgreSQL (Prisma)
 - **Code Execution**: JavaScript + Python (via Pyodide)
+- **Testing**: Playwright E2E, ESLint, Prettier
 
 ## Realtime Backend
 
@@ -85,6 +102,7 @@ SENTRY_DSN=your_sentry_dsn_here (optional)
 **The server will reject placeholder credentials like `user:password` or `username:password`.**
 
 If you get authentication errors:
+
 1. Check your PostgreSQL credentials: `psql -U postgres -l`
 2. Ensure no shell variables override `.env`: `unset DATABASE_URL`
 3. Regenerate Prisma client: `cd server && npm run prisma:generate`
@@ -162,6 +180,12 @@ Node 18+ provides randomUUID() via `node:crypto` import. This project standardiz
 ### Prisma Connection Pooling
 
 For production, configure pooling via the connection string in DATABASE_URL. See [Prisma docs](https://www.prisma.io/docs/concepts/database-connectors/postgresql#connection-pool) for details.
+
+## Documentation
+
+- **[AVLO_OVERVIEW.MD](AVLO_OVERVIEW.MD)** - Full technical specification
+- **[AVLO_IMPLEMENTATION.MD](AVLO_IMPLEMENTATION.MD)** - Phase-by-phase implementation guide
+- **[CLAUDE.md](CLAUDE.md)** - Technical reference for AI assistance
 
 ## License
 
