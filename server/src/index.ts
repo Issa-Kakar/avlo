@@ -11,8 +11,12 @@ dotenv.config({
   override: true, // This ensures .env file takes precedence over shell env vars
 });
 
-// Validate DATABASE_URL is not a placeholder
+// Validate required environment variables
 const DATABASE_URL = process.env.DATABASE_URL;
+const REDIS_URL = process.env.REDIS_URL;
+const ORIGIN_ALLOWLIST = process.env.ORIGIN_ALLOWLIST;
+
+// Check DATABASE_URL
 if (!DATABASE_URL) {
   console.error('FATAL: DATABASE_URL not found in .env file');
   process.exit(1);
@@ -26,10 +30,30 @@ if (DATABASE_URL.includes('user:password')) {
   process.exit(1);
 }
 
+// Check REDIS_URL
+if (!REDIS_URL) {
+  console.error('FATAL: REDIS_URL not found in .env file');
+  process.exit(1);
+}
+
+// Check ORIGIN_ALLOWLIST
+if (!ORIGIN_ALLOWLIST) {
+  console.error('FATAL: ORIGIN_ALLOWLIST not found in .env file');
+  console.error('Expected format: comma-separated list of absolute origins');
+  console.error('Example: http://localhost:5173,http://localhost:3000');
+  process.exit(1);
+}
+
 // eslint-disable-next-line no-console
 console.log('Environment loaded from:', path.resolve(__dirname, '../../.env'));
 // eslint-disable-next-line no-console
-console.log('DATABASE_URL validated:', DATABASE_URL.replace(/:[^:@]+@/, ':****@'));
+console.log('Required environment variables validated:');
+// eslint-disable-next-line no-console
+console.log('  DATABASE_URL:', DATABASE_URL.replace(/:[^:@]+@/, ':****@'));
+// eslint-disable-next-line no-console
+console.log('  REDIS_URL:', REDIS_URL.replace(/:[^:@]+@/, ':****@'));
+// eslint-disable-next-line no-console
+console.log('  ORIGIN_ALLOWLIST:', ORIGIN_ALLOWLIST);
 
 import './sentry.js';
 import express from 'express';
