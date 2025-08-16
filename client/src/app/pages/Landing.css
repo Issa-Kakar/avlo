@@ -3,6 +3,7 @@
 .landing-page {
   min-height: 100vh;
   background: var(--bg);
+  overflow-y: auto;
 }
 
 /* Header */
@@ -269,9 +270,9 @@
 
 /* Recent Rooms Section */
 .recent-section {
-  padding: var(--space-7) 0;
+  padding: var(--space-6) 0;
   background: var(--bg);
-  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 .recent-header {
@@ -282,8 +283,9 @@
 }
 
 .recent-title {
-  font-size: 24px;
-  font-weight: 700;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .recent-info {
@@ -297,17 +299,112 @@
 .recent-dot {
   width: 8px;
   height: 8px;
+  background: #10B981;
   border-radius: 50%;
-  background: var(--ink-tertiary);
-  opacity: 0.5;
 }
 
 .recent-content {
-  padding: var(--space-4);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  text-align: center;
   color: var(--ink-secondary);
+}
+
+.recent-rooms-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  text-align: left;
+}
+
+.recent-room-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: all var(--fast) var(--ease-out);
+}
+
+.recent-room-item:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.room-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.room-title {
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-expiry {
+  font-size: 14px;
+  color: var(--ink-tertiary);
+}
+
+.room-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.room-menu {
+  position: relative;
+}
+
+.menu-dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 4px;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 10;
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--ink);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color var(--fast) var(--ease-out);
+}
+
+.menu-item:hover {
+  background: var(--surface-hover);
+}
+
+.menu-item:first-child {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+.menu-item:last-child {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 14px;
 }
 
 /* Steps Section */

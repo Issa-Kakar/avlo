@@ -1,15 +1,79 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ThemeToggle from '../components/ThemeToggle.js';
 import { getHttpBase } from '../utils/url.js';
 import { toast } from '../utils/toast.js';
+import { listRooms, removeFromList, deleteLocalCopy } from '../features/myrooms/store.js';
+import { canExtendNow, markExtendedNow } from '../features/myrooms/extend-ttl.js';
 import './Landing.css';
+
+type RoomRow = Awaited<ReturnType<typeof listRooms>>[number];
 
 export default function Landing() {
   const navigate = useNavigate();
   const [isCreating, setIsCreating] = useState(false);
   const [isJoinModalOpen, setIsJoinModalOpen] = useState(false);
   const [roomId, setRoomId] = useState('');
+  const [rooms, setRooms] = useState<RoomRow[]>([]);
+
+  async function refreshRooms() {
+    const roomList = await listRooms();
+    setRooms(roomList);
+  }
+
+  useEffect(() => {
+    void refreshRooms();
+  }, []);
+
+  const daysUntil = (isoString: string | undefined) => {
+    if (!isoString) return null;
+    const ms = new Date(isoString).getTime() - Date.now();
+    return Math.max(0, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+  };
+
+  const handleOpenRoom = (roomId: string) => {
+    navigate(`/rooms/${roomId}`);
+  };
+
+  const handleCopyLink = async (roomId: string) => {
+    try {
+      const link = `${window.location.origin}/rooms/${roomId}`;
+      await navigator.clipboard.writeText(link);
+      toast.success('Link copied.');
+    } catch {
+      toast.error('Unable to copy link.');
+    }
+  };
+
+  const handleExtendRoom = async (_roomId: string) => {
+    if (!canExtendNow()) {
+      toast.error('Can only extend once per day.');
+      return;
+    }
+
+    try {
+      markExtendedNow();
+      const newExpiry = new Date();
+      newExpiry.setDate(newExpiry.getDate() + 14);
+      toast.success(`Room extended to ${newExpiry.toLocaleDateString()}.`);
+      await refreshRooms();
+    } catch (error) {
+      toast.error('Failed to extend room.');
+    }
+  };
+
+  const handleRemoveFromList = async (roomId: string) => {
+    await removeFromList(roomId);
+    toast.success('Removed from list');
+    await refreshRooms();
+  };
+
+  const handleDeleteLocalCopy = async (roomId: string) => {
+    await deleteLocalCopy(roomId, async () => {
+      console.log(`Would destroy local Y.Doc for room: ${roomId}`);
+    });
+    toast.success('Local copy deleted');
+  };
 
   const handleCreateRoom = async () => {
     if (isCreating) return;
@@ -209,7 +273,63 @@ export default function Landing() {
           </div>
 
           <div className="recent-content">
-            <p>No recent rooms yet. Create or join a room and it'll appear here.</p>
+            {rooms.length === 0 ? (
+              <p>No recent rooms yet. Create or join a room and it'll appear here.</p>
+            ) : (
+              <div className="recent-rooms-list">
+                {rooms.map((room) => (
+                  <div key={room.roomId} className="recent-room-item">
+                    <div className="room-info">
+                      <div className="room-title">{room.title}</div>
+                      <div className="room-expiry">
+                        {room.expires_at
+                          ? `Expires in ${daysUntil(room.expires_at)} days.`
+                          : 'No expiry info'}
+                      </div>
+                    </div>
+                    <div className="room-actions">
+                      <button
+                        onClick={() => handleOpenRoom(room.roomId)}
+                        className="btn btn-sm btn-primary"
+                      >
+                        Open
+                      </button>
+                      <button
+                        onClick={() => handleCopyLink(room.roomId)}
+                        className="btn btn-sm btn-secondary"
+                      >
+                        Copy link
+                      </button>
+                      <button
+                        onClick={() => handleExtendRoom(room.roomId)}
+                        className="btn btn-sm btn-secondary"
+                      >
+                        Extend
+                      </button>
+                      <div className="room-menu">
+                        <details>
+                          <summary className="btn btn-sm btn-secondary">•••</summary>
+                          <div className="menu-dropdown">
+                            <button
+                              onClick={() => handleRemoveFromList(room.roomId)}
+                              className="menu-item"
+                            >
+                              Remove from list
+                            </button>
+                            <button
+                              onClick={() => handleDeleteLocalCopy(room.roomId)}
+                              className="menu-item"
+                            >
+                              Delete local copy
+                            </button>
+                          </div>
+                        </details>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </section>
