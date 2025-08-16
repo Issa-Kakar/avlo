@@ -9,10 +9,14 @@ import { toast } from '../utils/toast.js';
 import { useRoom } from '../hooks/useRoom.js';
 import { getInitials } from '../state/presence.js';
 import { RemoteCursors } from '../components/RemoteCursors.js';
+import { recordRoomOpen } from '../features/myrooms/integrations.js';
+import { getHttpBase } from '../utils/url.js';
 import './Room.css';
 
 export default function Room() {
+  console.log('🔴 UNIQUE_ROOM_COMPONENT_LOG_TEST_12345 🔴');
   const { id } = useParams<{ id: string }>();
+  console.log('[Room] Component render - id from useParams:', id);
   const [mobileViewOnly, setMobileViewOnly] = useState(false);
   const [users, setUsers] = useState<
     Array<{
@@ -24,9 +28,64 @@ export default function Room() {
     }>
   >([]);
 
+  // Validate room ID
+  const isValidRoomId = id && /^[A-Za-z0-9_-]+$/.test(id);
+  console.log('[Room] Validation - id:', id, 'isValidRoomId:', isValidRoomId);
+
   // Validate and setup room
   const roomHandles = useRoom(id);
   const connectionState = useConnectionState(roomHandles?.provider, roomHandles?.readOnly);
+
+  // Record room visit for "My Rooms" list (Phase 9 integration)
+  useEffect(() => {
+    console.log('[Room] useEffect triggered - id:', id, 'isValidRoomId:', isValidRoomId);
+    if (!id || !isValidRoomId) {
+      console.log('[Room] Skipping record visit - invalid conditions');
+      return;
+    }
+
+    const recordVisit = async () => {
+      console.log('[Room] Recording visit for room:', id);
+      try {
+        // Fetch room metadata from server
+        const response = await fetch(`${getHttpBase()}/api/rooms/${id}/metadata`);
+        console.log('[Room] Metadata response status:', response.status);
+        
+        if (response.ok) {
+          const metadata = await response.json();
+          console.log('[Room] Got metadata:', metadata);
+          await recordRoomOpen({
+            roomId: id,
+            title: metadata.title,
+            expires_at: metadata.expires_at,
+          });
+          console.log('[Room] Recorded room visit with metadata');
+        } else {
+          // If metadata fetch fails, still record the visit with basic info
+          console.log('[Room] Metadata fetch failed, using fallback');
+          await recordRoomOpen({
+            roomId: id,
+            title: `Room ${id}`,
+          });
+          console.log('[Room] Recorded room visit with fallback');
+        }
+      } catch (error) {
+        console.warn('[Room] Failed to record room visit:', error);
+        // Still try to record basic visit info
+        try {
+          await recordRoomOpen({
+            roomId: id,
+            title: `Room ${id}`,
+          });
+          console.log('[Room] Recorded room visit with final fallback');
+        } catch (fallbackError) {
+          console.error('[Room] Failed to record room visit (fallback):', fallbackError);
+        }
+      }
+    };
+
+    recordVisit();
+  }, [id, isValidRoomId]);
 
   // Combined view-only state (mobile OR read-only from server)
   const viewOnly = mobileViewOnly || roomHandles?.readOnly || false;
@@ -136,9 +195,6 @@ export default function Room() {
     const cleanup = onResize(checkDevice);
     return cleanup;
   }, []);
-
-  // Validate room ID
-  const isValidRoomId = id && /^[A-Za-z0-9_-]+$/.test(id);
 
   if (!isValidRoomId) {
     return (
