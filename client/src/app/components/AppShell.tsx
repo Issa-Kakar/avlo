@@ -13,12 +13,24 @@ interface AppShellProps {
     activity?: 'idle' | 'drawing' | 'typing';
   }>;
   roomTitle?: string;
+  roomStats?: { bytes: number; cap: number; softWarn: boolean };
 }
 
-export function AppShell({ children, connectionState, users, roomTitle }: AppShellProps) {
+export function AppShell({
+  children,
+  connectionState,
+  users,
+  roomTitle,
+  roomStats,
+}: AppShellProps) {
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-      <AppHeader connectionState={connectionState} users={users} roomTitle={roomTitle} />
+      <AppHeader
+        connectionState={connectionState}
+        users={users}
+        roomTitle={roomTitle}
+        roomStats={roomStats}
+      />
       <div style={{ flex: 1, overflow: 'hidden' }}>{children}</div>
     </div>
   );

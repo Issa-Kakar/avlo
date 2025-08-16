@@ -63,4 +63,21 @@ export const toast = {
   info(message: string) {
     this.show(message, 1500);
   },
+
+  // Phase 8 Gateway Error Toasts
+  roomFull() {
+    this.error('Room is full — create a new room.');
+  },
+
+  deltaTooBig() {
+    this.error('Change too large. Refresh to rejoin.');
+  },
+
+  rateLimited(backoffMinutes?: number) {
+    const hint =
+      backoffMinutes && backoffMinutes > 1
+        ? ` Try again in ${backoffMinutes} minutes.`
+        : ' Try again shortly.';
+    this.error(`Too many requests —${hint}`);
+  },
 };

@@ -2,6 +2,8 @@ import ThemeToggle from './ThemeToggle.js';
 import { ConnectionChip, ConnectionState } from './ConnectionChip.js';
 import { UsersAvatarStack } from './UsersAvatarStack.js';
 import { CopyLinkButton } from './CopyLinkButton.js';
+import { SizePillContainer } from '../../ui/limits/SizePill.js';
+import { isLimitsUIEnabled } from '../../limits/index.js';
 
 interface AppHeaderProps {
   connectionState?: ConnectionState;
@@ -13,12 +15,14 @@ interface AppHeaderProps {
     activity?: 'idle' | 'drawing' | 'typing';
   }>;
   roomTitle?: string;
+  roomStats?: { bytes: number; cap: number; softWarn: boolean };
 }
 
 export function AppHeader({
   connectionState = 'Online',
   users = [],
   roomTitle = 'Untitled Room',
+  roomStats,
 }: AppHeaderProps) {
   return (
     <header
@@ -93,6 +97,9 @@ export function AppHeader({
 
       <div className="header-center" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         <ConnectionChip state={connectionState} />
+        {isLimitsUIEnabled() && roomStats && (
+          <SizePillContainer bytes={roomStats.bytes} cap={roomStats.cap} />
+        )}
       </div>
 
       <div className="header-right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

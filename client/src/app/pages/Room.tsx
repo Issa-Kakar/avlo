@@ -11,6 +11,8 @@ import { getInitials } from '../state/presence.js';
 import { RemoteCursors } from '../components/RemoteCursors.js';
 import { recordRoomOpen } from '../features/myrooms/integrations.js';
 import { getHttpBase } from '../utils/url.js';
+import { ReadonlyBanner } from '../../ui/limits/ReadonlyBanner.js';
+import { isLimitsUIEnabled } from '../../limits/index.js';
 import './Room.css';
 
 export default function Room() {
@@ -1038,7 +1040,22 @@ print('sorted:', quicksort(nums))`}</pre>
   }, []);
 
   return (
-    <AppShell connectionState={connectionState} users={users} roomTitle={`Room ${id}`}>
+    <AppShell
+      connectionState={connectionState}
+      users={users}
+      roomTitle={`Room ${id}`}
+      roomStats={roomHandles?.roomStats}
+    >
+      {/* Phase 8: Read-only banner */}
+      {isLimitsUIEnabled() && viewOnly && roomHandles?.readOnly && (
+        <ReadonlyBanner
+          isVisible={true}
+          onCreateRoom={() =>
+            toast.info('Create room functionality will be available in a later phase.')
+          }
+        />
+      )}
+
       <SplitPane
         left={<BoardContainer />}
         right={<EditorContainer />}
