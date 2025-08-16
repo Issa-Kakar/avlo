@@ -1,9 +1,13 @@
+/* eslint-disable no-undef */
+/* eslint-disable no-console */
+/// <reference lib="webworker" />
 /// <reference types="vite/client" />
 import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
 import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { CacheFirst } from 'workbox-strategies';
 
 declare let self: ServiceWorkerGlobalScope;
+declare const __APP_VERSION__: string;
 
 const APP_VERSION = __APP_VERSION__ || 'dev';
 const APP_SHELL_CACHE = `app-shell-v${APP_VERSION}`;
@@ -16,7 +20,7 @@ cleanupOutdatedCaches();
 // Precache all build assets
 precacheAndRoute(self.__WB_MANIFEST);
 
-self.addEventListener('install', (event) => {
+self.addEventListener('install', (event: ExtendableEvent) => {
   console.log('SW: Installing service worker, version:', APP_VERSION);
   
   event.waitUntil((async () => {
@@ -46,7 +50,7 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', (event: ExtendableEvent) => {
   console.log('SW: Activating service worker, version:', APP_VERSION);
   
   event.waitUntil((async () => {
@@ -71,7 +75,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // Handle skipWaiting message
-self.addEventListener('message', (event) => {
+self.addEventListener('message', (event: ExtendableMessageEvent) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     console.log('SW: Received SKIP_WAITING message');
     self.skipWaiting();
