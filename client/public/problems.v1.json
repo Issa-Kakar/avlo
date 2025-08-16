@@ -1,0 +1,65 @@
+{
+  "version": "1.0.0",
+  "problems": [
+    {
+      "id": "sum-two-numbers",
+      "title": "Sum Two Numbers",
+      "difficulty": "easy",
+      "languages": "js,py",
+      "prompt": "Write a function that takes two numbers and returns their sum.",
+      "starterCode": "function sum(a, b) {\n  // Your code here\n}",
+      "hints": [
+        "Use the + operator to add two numbers",
+        "Make sure to return the result"
+      ],
+      "referenceSolution": "function sum(a, b) {\n  return a + b;\n}",
+      "sampleTests": "console.assert(sum(2, 3) === 5);\nconsole.assert(sum(-1, 1) === 0);"
+    },
+    {
+      "id": "reverse-string",
+      "title": "Reverse String",
+      "difficulty": "easy",
+      "languages": "js,py",
+      "prompt": "Write a function that reverses a string.",
+      "starterCode": "function reverseString(str) {\n  // Your code here\n}",
+      "hints": [
+        "You can convert a string to an array with split('')",
+        "Arrays have a reverse() method",
+        "Convert back to string with join('')"
+      ],
+      "referenceSolution": "function reverseString(str) {\n  return str.split('').reverse().join('');\n}",
+      "sampleTests": "console.assert(reverseString('hello') === 'olleh');\nconsole.assert(reverseString('') === '');"
+    },
+    {
+      "id": "fibonacci",
+      "title": "Fibonacci Sequence",
+      "difficulty": "medium",
+      "languages": "js,py",
+      "prompt": "Write a function that returns the nth number in the Fibonacci sequence.",
+      "starterCode": "function fibonacci(n) {\n  // Your code here\n}",
+      "hints": [
+        "Fibonacci: F(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2)",
+        "Consider using iteration instead of recursion for better performance",
+        "Start with base cases for n=0 and n=1"
+      ],
+      "referenceSolution": "function fibonacci(n) {\n  if (n <= 1) return n;\n  let a = 0, b = 1;\n  for (let i = 2; i <= n; i++) {\n    [a, b] = [b, a + b];\n  }\n  return b;\n}",
+      "sampleTests": "console.assert(fibonacci(0) === 0);\nconsole.assert(fibonacci(1) === 1);\nconsole.assert(fibonacci(5) === 5);"
+    },
+    {
+      "id": "binary-search",
+      "title": "Binary Search",
+      "difficulty": "hard",
+      "languages": "js,py",
+      "prompt": "Implement binary search to find a target value in a sorted array. Return the index or -1 if not found.",
+      "starterCode": "function binarySearch(arr, target) {\n  // Your code here\n}",
+      "hints": [
+        "Binary search works on sorted arrays by dividing the search space in half",
+        "Use two pointers: left and right",
+        "Compare the middle element with the target",
+        "Adjust the search space based on the comparison"
+      ],
+      "referenceSolution": "function binarySearch(arr, target) {\n  let left = 0, right = arr.length - 1;\n  while (left <= right) {\n    const mid = Math.floor((left + right) / 2);\n    if (arr[mid] === target) return mid;\n    if (arr[mid] < target) left = mid + 1;\n    else right = mid - 1;\n  }\n  return -1;\n}",
+      "sampleTests": "console.assert(binarySearch([1,2,3,4,5], 3) === 2);\nconsole.assert(binarySearch([1,2,3,4,5], 6) === -1);"
+    }
+  ]
+}

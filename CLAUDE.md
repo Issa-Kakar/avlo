@@ -31,20 +31,48 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Connection indicator and presence
 - Mobile view-only gating
 
+### ✅ Phase 7: Complete (PWA & Offline Support)
+- Installable PWA with web app manifest
+- Service worker with cache-first HTML navigation
+- API/WebSocket bypass rules (never cache /api/**, /yjs/**, wss:)
+- Pre-cached Monaco editor and practice problems JSON
+- "Update available" prompt with seamless updates
+- Desktop-only Pyodide warm cache (silent background)
+- Comprehensive E2E PWA testing suite
+
+### ✅ Phase 9: Partially Complete (My Rooms - Device Local)
+- Device-local room list with metadata (title, last opened, expiry)
+- IndexedDB storage for room history and aliases
+- Offline room creation with provisional IDs
+- Room TTL extension with tiny Yjs writes
+- "Delete local copy" functionality for per-room cleanup
+- Landing page with recent rooms integration
+
+### ✅ Phase 10: Complete (Security & Observability)
+- Content Security Policy (CSP) enforcement
+- HSTS, X-Content-Type-Options, Referrer-Policy headers
+- Origin allowlist validation for HTTP and WebSocket
+- Observability counters (non-content logging)
+- Rate limiting and capacity enforcement
+- Database degraded mode (Redis-only collaboration)
+
 ### ⏳ Future Phases
 - Phase 3: Canvas rendering and drawing tools
 - Phase 4: Scene management (Clear board)
 - Phase 5: PNG export
 - Phase 6: Code execution (JS + Pyodide)
-- Phase 7: PWA and offline support
 
 ## Technology Stack
 
 ### Current Dependencies
 **Client:**
 - React 18.3.1, TypeScript 5.7.2, Vite 5.4.11
-- Tailwind 3.4.17 (configured)
-- Placeholder dependencies for future: yjs, y-websocket, y-indexeddb, monaco-editor, pyodide
+- React Router DOM 7.8.0 (SPA routing)
+- Tailwind 3.4.17 (styling)
+- Yjs 13.6.27, y-websocket 3.0.0, y-indexeddb 9.0.12 (real-time collaboration)
+- Monaco Editor 0.52.2 (code editing)
+- vite-plugin-pwa 0.21.1, workbox-window 7.3.0 (PWA functionality)
+- Dependencies for future: pyodide (Python execution)
 
 **Server:**
 - Node.js (ES2022), Express 4.21.2
@@ -67,8 +95,26 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 avlo/
 ├── client/                    # React SPA frontend
 │   ├── src/
-│   │   ├── main.tsx          # App entry (placeholder)
-│   │   └── index.css         # Tailwind imports
+│   │   ├── app/              # Application components
+│   │   │   ├── components/   # Shared UI components
+│   │   │   ├── features/     # Feature modules (myrooms, etc.)
+│   │   │   ├── hooks/        # Custom React hooks
+│   │   │   ├── pages/        # Route components (Landing, Room)
+│   │   │   ├── providers/    # Yjs client integration
+│   │   │   ├── router.tsx    # React Router setup
+│   │   │   └── state/        # App state management
+│   │   ├── pwa/              # PWA functionality
+│   │   │   ├── PWAProvider.tsx      # PWA integration
+│   │   │   ├── register-sw.ts       # Service worker registration
+│   │   │   ├── update-prompt.tsx    # Update UI
+│   │   │   └── warm-pyodide.ts      # Desktop Pyodide cache
+│   │   ├── sw.ts             # Service worker implementation
+│   │   ├── main.tsx          # App entry with PWA
+│   │   └── styles/           # CSS and styling
+│   ├── public/
+│   │   ├── icons/            # PWA icons (192, 512, maskable)
+│   │   ├── manifest.webmanifest     # PWA manifest
+│   │   └── problems.v1.json         # Practice problems pack
 │   ├── dist/                 # Production build
 │   └── package.json
 ├── server/
@@ -90,7 +136,8 @@ avlo/
 │   │   └── schema.prisma     # Room model
 │   ├── dist/                 # TypeScript output
 │   └── public/               # Static files (from client)
-├── e2e/                      # Playwright tests
+├── e2e/                      # Playwright tests (including PWA)
+├── tasks/completed/          # Phase completion documentation
 ├── scripts/
 │   └── copy-client-dist.mjs # Asset bundling
 └── package.json              # Root monorepo config
@@ -253,14 +300,14 @@ Redis stores the authoritative Yjs document; PostgreSQL stores metadata only.
 
 ## Next Implementation Steps
 
-1. **Begin Phase 2** (Client Foundation):
-   - Set up React Router for /rooms/:id routing
-   - Initialize Yjs providers (y-websocket + y-indexeddb)
-   - Create basic UI shell with split view
-   - Implement connection indicator
-   - Add mobile view-only gating
+1. **Complete Phase 2** (Client Foundation):
+   - Enhance React Router for /rooms/:id routing  
+   - Improve Yjs providers (y-websocket + y-indexeddb)
+   - Refine UI shell with split view
+   - Enhance connection indicator and presence
+   - Improve mobile view-only gating
 
-2. **Phase 3** (Canvas & Drawing):
+2. **Begin Phase 3** (Canvas & Drawing):
    - Implement canvas renderer with RBush indexing
    - Add drawing tools (Pen, Highlighter, Stamps)
    - Create text tool with local preview
@@ -270,8 +317,12 @@ Redis stores the authoritative Yjs document; PostgreSQL stores metadata only.
 
 - **Full Specification**: AVLO_OVERVIEW.MD
 - **Implementation Plan**: AVLO_IMPLEMENTATION.MD
-- **Phase 1 Status**: PHASE1_CHANGELOG.MD
-- **Next Phase Guide**: See AVLO_IMPLEMENTATION.MD Phase 2
+- **Phase Completions**: 
+  - tasks/completed/PHASE1_CHANGELOG.MD
+  - tasks/completed/PHASE_7_CHANGELOG.md
+  - tasks/completed/PHASE_9_CHANGELOG.MD
+  - tasks/completed/PHASE_10_CHANGELOG.md
+- **Next Phase Guide**: See AVLO_IMPLEMENTATION.MD Phase 3 (Canvas & Drawing)
 
 ## Important Notes
 

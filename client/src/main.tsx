@@ -5,6 +5,7 @@ import './styles/tokens.css';
 import './styles/app.css';
 import AppRouter from './app/router.js';
 import { setTheme, getTheme } from './app/hooks/useTheme.js';
+import { PWAProvider } from './pwa/PWAProvider.js';
 
 // Initialize theme on app start
 setTheme(getTheme());
@@ -18,6 +19,8 @@ import('./app/features/myrooms/test-exports.js').then(() => {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <AppRouter />
+    <PWAProvider>
+      <AppRouter />
+    </PWAProvider>
   </React.StrictMode>,
 );
