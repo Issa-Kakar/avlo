@@ -94,28 +94,45 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
   });
 
   server.on('upgrade', (req, socket, head) => {
+    const DEBUG_WS = process.env.DEBUG_WS === 'true';
+    
+    if (DEBUG_WS) {
+      console.log('[WS UPGRADE] Request:', req.url, 'Origin:', req.headers.origin);
+    }
+    
     // Only accept WebSocket connections to /ws/*
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     if (!url.pathname.startsWith('/ws')) {
+      if (DEBUG_WS) console.log('[WS UPGRADE] Rejected - not /ws path:', url.pathname);
       socket.destroy();
       return;
     }
 
     const origin = req.headers.origin as string | undefined;
+    if (DEBUG_WS) {
+      console.log('[WS UPGRADE] Checking origin:', origin, 'against allowlist:', allowlistCsv);
+    }
     if (!isAllowedOrigin(origin, allowlistCsv)) {
+      console.log('[WS UPGRADE] Origin rejected:', origin);
       crumb('origin_reject', 'gateway', 'warning');
       socket.destroy();
       return;
     }
+    if (DEBUG_WS) console.log('[WS UPGRADE] Origin accepted:', origin);
     
     const ip = getClientIp(req);
     const count = (ipCounts.get(ip) || 0) + 1;
+    if (DEBUG_WS) {
+      console.log('[WS UPGRADE] IP:', ip, 'Current connections:', count, 'Max:', MAX_IP_CONNS);
+    }
     if (count > MAX_IP_CONNS) {
+      console.log('[WS UPGRADE] Rejected - IP connection limit exceeded');
       crumb('per_ip_ws_cap', 'gateway', 'warning');
       socket.destroy();
       return;
     }
     ipCounts.set(ip, count);
+    if (DEBUG_WS) console.log('[WS UPGRADE] IP check passed, proceeding with upgrade');
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     wss.handleUpgrade(req as any, socket as any, head, (ws) => {
@@ -149,12 +166,38 @@ export function registerWsGateway(server: Server, allowlistCsv: string) {
       // We need to modify req.url to just be the room ID for compatibility
       const modifiedReq = Object.create(req);
       modifiedReq.url = `/${roomId}`; // @y/websocket-server expects /docName format
+      
+      const DEBUG_WS = process.env.DEBUG_WS === 'true';
+      
+      if (DEBUG_WS) console.log('[WS HANDSHAKE] Setting up Yjs connection for room:', roomId);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setupWSConnection(ws as any, modifiedReq as any, { /* gc options if needed */ });
+      
+      if (DEBUG_WS) {
+        // Log message types for debugging
+        let messageCount = 0;
+        const originalSend = ws.send.bind(ws);
+        ws.send = (data: any, cb?: any) => {
+          messageCount++;
+          if (messageCount <= 5) { // Only log first 5 messages to avoid spam
+            console.log(`[WS OUT] Room ${roomId}: Message #${messageCount}, ${data.length || 0} bytes`);
+          }
+          return originalSend(data, cb);
+        };
+      }
 
+      // Track incoming messages for debugging
+      let inMessageCount = 0;
+      
       // Handle frame size limit - listen for oversize frames
       ws.on('message', (data: Buffer) => {
+        inMessageCount++;
+        if (DEBUG_WS && inMessageCount <= 5) { // Only log first 5 messages
+          console.log(`[WS IN] Room ${roomId}: Message #${inMessageCount}, ${data.length} bytes`);
+        }
+        
         if (data.length > MAX_FRAME) {
+          console.log(`[WS ERROR] Room ${roomId}: Frame too large (${data.length} bytes > ${MAX_FRAME})`);
           crumb('frame_too_large', 'gateway', 'warning');
           try {
             ws.send(

@@ -14,7 +14,7 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "@sentry/node": "^8.55.0",
-    "@y/websocket-server": "^0.1.1",
+    "@y/websocket-server": "0.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^4.21.2",
@@ -25,9 +25,8 @@
     "pino-http": "^10.5.0",
     "redis": "^5.8.1",
     "ws": "^8.18.3",
-    "y-leveldb": "^0.2.0",
-    "y-websocket": "^3.0.0",
-    "yjs": "^13.6.27",
+    "y-leveldb": "0.1.2",
+    "yjs": "13.6.27",
     "zod": "^3.25.76"
   },
   "devDependencies": {

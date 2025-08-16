@@ -42,6 +42,12 @@ export function clearRoomTimer(roomId: string) {
 }
 
 async function flush(roomId: string, producer: () => Uint8Array) {
+  // Skip persistence if REDIS_OFF is set (for testing)
+  if (process.env.REDIS_OFF === 'true') {
+    console.log('[Persistence] Skipping Redis write for room:', roomId, '(REDIS_OFF=true)');
+    return;
+  }
+  
   try {
     const binary = Buffer.from(producer());
     const compressed = await gzipAsync(binary, { level: 4 });
@@ -86,6 +92,12 @@ async function flush(roomId: string, producer: () => Uint8Array) {
 }
 
 export async function loadState(roomId: string): Promise<Uint8Array | null> {
+  // Skip persistence if REDIS_OFF is set (for testing)
+  if (process.env.REDIS_OFF === 'true') {
+    console.log('[Persistence] Skipping Redis load for room:', roomId, '(REDIS_OFF=true)');
+    return null;
+  }
+  
   try {
     const compressed = await redis.getBuffer(`room:${roomId}`);
     if (!compressed) return null;
