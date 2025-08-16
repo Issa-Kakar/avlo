@@ -57,7 +57,7 @@ export default function Landing() {
       newExpiry.setDate(newExpiry.getDate() + 14);
       toast.success(`Room extended to ${newExpiry.toLocaleDateString()}.`);
       await refreshRooms();
-    } catch (error) {
+    } catch (_error) {
       toast.error('Failed to extend room.');
     }
   };
@@ -70,7 +70,7 @@ export default function Landing() {
 
   const handleDeleteLocalCopy = async (roomId: string) => {
     await deleteLocalCopy(roomId, async () => {
-      console.log(`Would destroy local Y.Doc for room: ${roomId}`);
+      console.warn(`Would destroy local Y.Doc for room: ${roomId}`);
     });
     toast.success('Local copy deleted');
   };

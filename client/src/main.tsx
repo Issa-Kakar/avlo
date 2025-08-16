@@ -11,7 +11,7 @@ setTheme(getTheme());
 
 // Load Phase 9 test exports (for E2E testing)
 import('./app/features/myrooms/test-exports.js').then(() => {
-  console.log('Phase 9 test exports loaded successfully');
+  console.warn('Phase 9 test exports loaded successfully');
 }).catch((error) => {
   console.error('Failed to load Phase 9 test exports:', error);
 });

@@ -21,7 +21,7 @@ declare global {
 }
 
 if (typeof window !== 'undefined') {
-  console.log('Setting up Phase 9 test exports on window object');
+  console.warn('Setting up Phase 9 test exports on window object');
   window.avloPhase9 = {
     roomsStore,
     aliasStore,
@@ -33,5 +33,5 @@ if (typeof window !== 'undefined') {
     removeFromList,
     deleteLocalCopy,
   };
-  console.log('Phase 9 test exports attached to window.avloPhase9:', window.avloPhase9);
+  console.warn('Phase 9 test exports attached to window.avloPhase9:', window.avloPhase9);
 }
