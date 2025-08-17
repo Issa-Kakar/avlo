@@ -1,4 +1,5 @@
-import * as Y from 'yjs';
+// GUTTED IN PHASE A - Direct Y.Doc imports removed
+// Will be adapted to use WriteQueue in Phase C
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 const EXTEND_KEY = 'avlo:lastExtendAt'; // device-local throttle
@@ -13,14 +14,11 @@ export function markExtendedNow() {
 }
 
 /**
- * Perform a tiny Yjs write to extend TTL. This change should be excluded from global Undo history.
- * Convention: meta.keepAliveCounter++ (or update a meta.lastExtended timestamp).
- * 
- * ⚠️ REQUIRES PHASE 3: meta schema must be defined first
+ * TODO: Adapt to WriteQueue in Phase C
+ * Will perform a tiny write to extend TTL through the queue
+ * This change should be excluded from global Undo history
  */
-export function extendTtl(ydoc: Y.Doc) {
-  // tiny mutation - IMPLEMENT AFTER PHASE 3 SCHEMA IS DEFINED
-  const meta = ydoc.getMap('meta');
-  const prev = (meta.get('keepAliveCounter') as number) || 0;
-  meta.set('keepAliveCounter', prev + 1);
+export function extendTtl(_ydoc: any) {
+  // Stubbed for Phase A - will be implemented with WriteQueue in Phase C
+  console.warn('extendTtl is stubbed in Phase A');
 }

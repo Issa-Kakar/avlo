@@ -1,13 +1,12 @@
 // Phase 2 shell: no drawing/editor execution; advanced controls are presentational only.
 import { useParams } from 'react-router-dom';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AppShell } from '../components/AppShell.js';
 import { SplitPane } from '../components/SplitPane.js';
 import { useConnectionState } from '../state/connection.js';
 import { isCoarsePointer, isNarrow, onResize } from '../utils/device.js';
 import { toast } from '../utils/toast.js';
 import { useRoom } from '../hooks/useRoom.js';
-import { getInitials } from '../state/presence.js';
 import { RemoteCursors } from '../components/RemoteCursors.js';
 import { recordRoomOpen } from '../features/myrooms/integrations.js';
 import { getHttpBase } from '../utils/url.js';
@@ -74,7 +73,7 @@ export default function Room() {
   const [isToolbarRightSide, setIsToolbarRightSide] = useState(false);
   const [isToolbarCollapsed, setIsToolbarCollapsed] = useState(false);
   const [isMinimapCollapsed, setIsMinimapCollapsed] = useState(false);
-  const [users, setUsers] = useState<
+  const [users] = useState<
     Array<{
       id: string;
       name: string;
@@ -90,7 +89,7 @@ export default function Room() {
 
   // Validate and setup room
   const roomHandles = useRoom(id);
-  const connectionState = useConnectionState(roomHandles?.provider, roomHandles?.readOnly);
+  const connectionState = useConnectionState(undefined, roomHandles?.readOnly);
 
   // Record room visit for "My Rooms" list (Phase 9 integration)
   useEffect(() => {
@@ -146,101 +145,14 @@ export default function Room() {
   // Combined view-only state (mobile OR read-only from server)
   const viewOnly = mobileViewOnly || roomHandles?.readOnly || false;
 
-  // Update presence list from awareness
-  useEffect(() => {
-    if (!roomHandles?.awareness) return;
+  // Update presence list from awareness - GUTTED IN PHASE A
+  // Will be replaced with snapshot-based presence in Phase B/C
 
-    const updateUsers = () => {
-      const states = roomHandles.awareness.getStates();
-      const userList: typeof users = [];
+  // Test handle exposure - REMOVED IN PHASE A
+  // Direct Yjs access is no longer allowed in UI components
 
-      states.forEach((state, clientId) => {
-        const user = state.user;
-        if (user) {
-          userList.push({
-            id: clientId.toString(),
-            name: user.name || 'Anonymous',
-            color: user.color || '#94A3B8',
-            initials: getInitials(user.name || 'Anonymous'),
-            activity: user.activity || 'idle',
-          });
-        }
-      });
-
-      setUsers(userList);
-    };
-
-    updateUsers();
-    roomHandles.awareness.on('change', updateUsers);
-
-    return () => {
-      roomHandles.awareness.off('change', updateUsers);
-    };
-  }, [roomHandles?.awareness]);
-
-  // Expose Y.Doc and awareness for testing in development
-  useEffect(() => {
-    if (roomHandles) {
-      console.log('[Room] Exposing test handles to window');
-      (window as any).__testYDoc = roomHandles.ydoc;
-      (window as any).__testAwareness = roomHandles.awareness;
-      (window as any).__testProvider = roomHandles.provider;
-    } else {
-      console.log('[Room] No roomHandles to expose');
-    }
-    return () => {
-      console.log('[Room] Cleaning up test handles');
-      (window as any).__testYDoc = undefined;
-      (window as any).__testAwareness = undefined;
-      (window as any).__testProvider = undefined;
-    };
-  }, [roomHandles]);
-
-  // Update cursor position (throttled to ~30Hz)
-  const updateCursor = useCallback(() => {
-    if (!roomHandles?.awareness) return;
-
-    let lastUpdate = 0;
-    const throttleMs = 33; // ~30Hz
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const now = Date.now();
-      if (now - lastUpdate < throttleMs) return;
-      lastUpdate = now;
-
-      const board = document.getElementById('board');
-      if (!board) return;
-
-      const rect = board.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-
-      roomHandles.awareness.setLocalStateField('user', {
-        ...roomHandles.awareness.getLocalState()?.user,
-        cursor: { x, y },
-      });
-    };
-
-    const handleMouseLeave = () => {
-      roomHandles.awareness.setLocalStateField('user', {
-        ...roomHandles.awareness.getLocalState()?.user,
-        cursor: null,
-      });
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseleave', handleMouseLeave);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseleave', handleMouseLeave);
-    };
-  }, [roomHandles?.awareness]);
-
-  useEffect(() => {
-    const cleanup = updateCursor();
-    return cleanup;
-  }, [updateCursor]);
+  // Cursor position update - GUTTED IN PHASE A
+  // Will be replaced with operation-based cursor updates in Phase B/C
 
   // Check device capabilities for mobile view-only
   useEffect(() => {
@@ -465,12 +377,8 @@ export default function Room() {
       <div className="grid" aria-hidden="true" />
       <canvas id="board" />
 
-      {/* Remote cursors overlay */}
-      <RemoteCursors
-        awareness={roomHandles?.awareness}
-        maxCursors={20}
-        showTrails={!mobileViewOnly}
-      />
+      {/* Remote cursors overlay - STUBBED IN PHASE A */}
+      <RemoteCursors />
 
       {/* Tool Rail - presentational only */}
       <div

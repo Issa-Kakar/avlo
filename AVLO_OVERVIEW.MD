@@ -2,137 +2,144 @@
    Purpose. Build Avlo, a link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor (JS + Python via Pyodide). The MVP targets ≤125 ms p95 end-to-end collaboration latency with ~50 concurrent users and ≤25 active drawers, works offline (IndexedDB + CRDT), and persists rooms to Redis with ROOM_TTL_DAYS (default: 14) TTL. Hard data cap is 10 MB compressed per room; at the cap the room becomes read-only. Mobile is view-only for MVP.
    Problem & solution. Synchronous sketching + quick code execution for demos, teaching, and brainstorming—without accounts, installs, or SSO friction. Link sharing grants edit access; persistence is simple but time-limited; scale is single-node MVP.
    Tech Stack (MVP).
-   Frontend: React (Vite), TypeScript, Tailwind, HTML Canvas renderer with RBush indexing, Monaco editor.
-   Realtime & Offline: Yjs CRDT, y-websocket (official), y-indexeddb (offline cache), cursor awareness over WS.
+   Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTML Canvas renderer with RBush 4.0.1 indexing, Monaco editor 0.52.2.
+   Realtime & Offline: Yjs 13.6.27 CRDT, y-websocket 3.0.0 (official), y-indexeddb 9.0.12 (offline cache), cursor awareness over WS.
    Whiteboard Core: LOD-based rendering, dirty-rect redraw, viewport culling; stamps (rectangle/ellipse/arrow), and text nodes (single-commit text tool).
-   Execution: In-browser JS + Pyodide (per-run workers).
-   Persistence (authoritative): Redis 7 storing compressed Yjs doc with AOF; ROOM_TTL_DAYS (default: 14) TTL extended only on accepted writes.
-   Metadata DB (non-authoritative): PostgreSQL 16 via Prisma 5 (room title/createdAt/lastWriteAt/size_bytes only).
+   Execution: In-browser JS + Pyodide 0.26.4 (per-run workers).
+   Persistence (authoritative): Redis 5.8.1 storing compressed Yjs doc with AOF; ROOM_TTL_DAYS (default: 14) TTL extended only on accepted writes.
+   Metadata DB (non-authoritative): PostgreSQL via Prisma 5.22.0 (room title/createdAt/lastWriteAt/size_bytes only).
    PWA: Offline-first app shell with cache-first HTML navigations and versioned static assets. Pre-cache Monaco (core + workers) at install. Pyodide pack is desktop-only and warmed silently after Service Worker activate (not in precache). Do not cache /api/**, /yjs/**, or any wss: traffic. Show an Update available prompt on new versions.
    Deploy & Infra: Single container on Railway; no NGINX.
-   Railway deploy (no Docker): Use Railway’s Node service (Nixpacks). Build: npm ci && npm run db:generate && npm run build. Start: npm run db:deploy && node server/dist/index.js. (Ensure migrations are applied before the Node process starts; db:deploy may be in a wrapper script or the platform’s Start Command.) Static assets are served from server/public/ (copied from client/dist/ by bundle:assets). Env: NODE_ENV, PORT, DATABASE_URL, REDIS_URL, ORIGIN_ALLOWLIST, SENTRY_DSN (optional), APP_VERSION.
+   Railway deploy (no Docker): Use Railway's Node service (Nixpacks). Build: npm ci && npm run db:generate && npm run build. Start: npm run db:deploy && node server/dist/index.js. (Ensure migrations are applied before the Node process starts; db:deploy may be in a wrapper script or the platform's Start Command.) Static assets are served from server/public/ (copied from client/dist/ by bundle:assets). Env: NODE_ENV, PORT, DATABASE_URL, REDIS_URL, ORIGIN_ALLOWLIST, SENTRY_DSN (optional), APP_VERSION.
    Observability: Sentry + custom counters (limits, Redis failures, export attempts, executor cache states), plus counters for Text commits and advanced slider usage (size & hue), plus toolbar interactions (pin/unpin, side flip, collapse/expand).
-   CRITICAL: PACKAGE.JSON FILES MIGHT HAVE SMALL FORMATTING ERRORS
    Versioning note: Root package.json:
    {
-   " name": "avlo",
-   " private": true,
-   " workspaces": "client","server""client", "server",
-   " scripts": {
-   " dev": "concurrently "npm run dev:server" "npm run dev:client"",
-   " dev:server": "npm run dev --workspace=server",
-   " dev:client": "npm run dev --workspace=client",
-   " build": "npm run build --workspace=client && npm run build --workspace=server && npm run bundle:assets",
-   " bundle:assets": "node scripts/copy-client-dist.mjs",
-   " db:generate": "npm run prisma:generate --workspace=server",
-   " db:migrate": "npm run prisma:migrate --workspace=server",
-   " db:deploy": "npm run prisma:deploy --workspace=server",
-   " test:e2e": "playwright test",
-   " test:e2e:ui": "playwright test --ui",
-   " test:e2e:report": "playwright show-report",
-   " e2e:install": "playwright install --with-deps", // Note: On restricted shells, use "playwright install chromium"
-   " e2e:serve": "npm run build && node server/dist/index.js"
-   }
+     "name": "avlo",
+     "private": true,
+     "workspaces": ["client", "server"],
+     "scripts": {
+       "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+       "dev:server": "npm run dev --workspace=server",
+       "dev:client": "npm run dev --workspace=client",
+       "build": "npm run build --workspace=client && npm run build --workspace=server && npm run bundle:assets",
+       "bundle:assets": "node scripts/copy-client-dist.mjs",
+       "db:generate": "npm run prisma:generate --workspace=server",
+       "db:migrate": "npm run prisma:migrate --workspace=server",
+       "db:deploy": "npm run prisma:deploy --workspace=server",
+       "test:e2e": "playwright test",
+       "test:e2e:ui": "playwright test --ui",
+       "test:e2e:report": "playwright show-report",
+       "e2e:install": "playwright install chromium", // Note: On restricted shells, use "playwright install chromium"
+       "e2e:serve": "npm run build && node server/dist/index.js"
+     }
    }
    Create scripts/copy-client-dist.mjs:
    // copies Vite build into server/public for Express to serve
    import { cp } from 'node:fs/promises';
    import { dirname, resolve } from 'node:path';
    import { fileURLToPath } from 'node:url';
-   const **dirname = dirname(fileURLToPath(import.meta.url));
-   const src = resolve(**dirname, '../client/dist');
-   const dst = resolve(\_\_dirname, '../server/public');
+   const __dirname = dirname(fileURLToPath(import.meta.url));
+   const src = resolve(__dirname, '../client/dist');
+   const dst = resolve(__dirname, '../server/public');
    await cp(src, dst, { recursive: true });
-   console.log(bundle:assetsbundle:assets Copied ${src} -> ${dst});
+   console.log(`Copied ${src} -> ${dst}`);
    client/package.json:
    {
-   "name": "avlo-client",
-   "type": "module",
-   "private": true,
-   "scripts": {
-   "dev": "vite",
-   "build": "tsc && vite build",
-   "preview": "vite preview",
-   "lint": "eslint . --report-unused-disable-directives --max-warnings 0"
-   },
-   "dependencies": {
-   "react": "^18.3.1",
-   "react-dom": "^18.3.1",
-   "yjs": "^13.6.27",
-   "y-websocket": "^3.0.0",
-   "y-indexeddb": "^9.0.12",
-   "@monaco-editor/react": "^4.6.0",
-   "monaco-editor": "^0.52.2",
-   "rbush": "^4.0.1",
-   "nanoid": "^5.0.9",
-   "pako": "^2.1.0",
-   "pyodide": "^0.26.4",
-   "lodash": "^4.17.21"
-   },
-   "devDependencies": {
-   "@types/react": "^18.3.18",
-   "@types/react-dom": "^18.3.5",
-   "@types/rbush": "^4.0.0",
-   "@types/pako": "^2.0.3",
-   "@types/lodash": "^4.17.13",
-   "@types/papaparse": "^5.3.15",
-   "@types/d3": "^7.4.3",
-   "@vitejs/plugin-react": "^4.3.4",
-   "@typescript-eslint/eslint-plugin": "^8.18.0",
-   "@typescript-eslint/parser": "^8.18.0",
-   "eslint": "^9.17.0",
-   "eslint-plugin-react-hooks": "^5.1.0",
-   "eslint-plugin-react-refresh": "^0.4.20",
-   "typescript": "^5.7.2",
-   "vite": "^5.4.11",
-   "vite-plugin-pwa": "^0.21.1",
-   "workbox-window": "^7.3.0",
-   "tailwindcss": "^3.4.17",
-   "autoprefixer": "^10.4.20",
-   "postcss": "^8.4.49"
-   }
+     "name": "avlo-client",
+     "type": "module",
+     "private": true,
+     "scripts": {
+       "dev": "vite",
+       "build": "tsc && vite build",
+       "preview": "vite preview",
+       "lint": "eslint . --report-unused-disable-directives --max-warnings 0",
+       "typecheck": "tsc --noEmit"
+     },
+     "dependencies": {
+       "react": "^18.3.1",
+       "react-dom": "^18.3.1",
+       "react-router-dom": "^7.8.0",
+       "yjs": "13.6.27",
+       "y-websocket": "3.0.0",
+       "y-indexeddb": "^9.0.12",
+       "@monaco-editor/react": "^4.6.0",
+       "monaco-editor": "^0.52.2",
+       "rbush": "^4.0.1",
+       "nanoid": "^5.0.9",
+       "pako": "^2.1.0",
+       "pyodide": "^0.26.4",
+       "lodash": "^4.17.21"
+     },
+     "devDependencies": {
+       "@types/react": "^18.3.18",
+       "@types/react-dom": "^18.3.5",
+       "@types/rbush": "^4.0.0",
+       "@types/pako": "^2.0.3",
+       "@types/lodash": "^4.17.13",
+       "@types/papaparse": "^5.3.16",
+       "@types/d3": "^7.4.3",
+       "@vitejs/plugin-react": "^4.3.4",
+       "@typescript-eslint/eslint-plugin": "^8.18.0",
+       "@typescript-eslint/parser": "^8.18.0",
+       "eslint": "^9.17.0",
+       "eslint-plugin-react-hooks": "^5.1.0",
+       "eslint-plugin-react-refresh": "^0.4.20",
+       "typescript": "^5.9.2",
+       "vite": "^5.4.11",
+       "vite-plugin-pwa": "^0.21.1",
+       "workbox-window": "^7.3.0",
+       "tailwindcss": "^3.4.17",
+       "autoprefixer": "^10.4.20",
+       "postcss": "^8.4.49"
+     }
    }
    server/package.json:
    {
-   "name": "avlo-server",
-   "type": "module",
-   "private": true,
-   "scripts": {
-   "dev": "tsx watch src/index.ts",
-   "build": "tsc",
-   "start": "node dist/index.js"
-   },
-   "dependencies": {
-   "yjs": "^13.6.27",
-   "y-websocket": "^3.0.0",
-   "@y/websocket-server": "^0.1.1",
-   "y-leveldb": "^0.1.2",
-   "@prisma/client": "^5.22.0",
-   "redis": "^5.8.0",
-   "express": "^4.21.2",
-   "ws": "^8.18.0",
-   "nanoid": "^5.0.9",
-   "cors": "^2.8.5",
-   "express-rate-limit": "^7.5.0",
-   "helmet": "^8.0.0",
-   "pino": "^9.0.0",
-   "pino-http": "^10.0.0",
-   "zod": "^3.23.8",
-   },
-   "devDependencies": {
-   "prisma": "^5.22.0",
-   "@types/express": "^4.17.22",
-   "@types/ws": "^8.5.13",
-   "@types/cors": "^2.8.17",
-   "@types/pako": "^2.0.3",
-   "tsx": "^4.19.2",
-   "typescript": "^5.7.2",
-   "@sentry/node": "^8.45.0",
-   "@sentry/profiling-node": "^8.45.0"
-   }
+     "name": "avlo-server",
+     "type": "module",
+     "private": true,
+     "scripts": {
+       "dev": "tsx watch src/index.ts",
+       "build": "tsc",
+       "start": "node dist/index.js",
+       "typecheck": "tsc --noEmit",
+       "prisma:generate": "prisma generate",
+       "prisma:migrate": "prisma migrate dev",
+       "prisma:deploy": "prisma migrate deploy"
+     },
+     "dependencies": {
+       "@prisma/client": "^5.22.0",
+       "@sentry/node": "^8.55.0",
+       "@y/websocket-server": "0.1.1",
+       "cors": "^2.8.5",
+       "dotenv": "^17.2.1",
+       "express": "^4.21.2",
+       "express-rate-limit": "^7.5.1",
+       "helmet": "^8.1.0",
+       "nanoid": "^5.0.9",
+       "pino": "^9.9.0",
+       "pino-http": "^10.5.0",
+       "redis": "^5.8.1",
+       "ws": "^8.18.3",
+       "y-leveldb": "0.1.2",
+       "yjs": "13.6.27",
+       "zod": "^3.25.76"
+     },
+     "devDependencies": {
+       "@types/cors": "^2.8.19",
+       "@types/express": "^4.17.23",
+       "@types/node": "^24.3.0",
+       "@types/ws": "^8.18.1",
+       "prisma": "^5.22.0",
+       "tsx": "^4.20.4",
+       "typescript": "^5.9.2"
+     },
+     "optionalDependencies": {
+       "@sentry/profiling-node": "^8.45.0"
+     }
    }
    Success criteria & KPIs.
-   Published p50/p95 latency under scripted loads (50 users / 25 drawers).
+   Published p50/p95 latency under scripted loads (50 users / 15 drawers).
 
 Export reliability within defined caps; read-only enforcement at 10 MB; warning at 8 MB.
 
@@ -155,6 +162,22 @@ Offline UX provides deterministic Offline Tools in place of the chat composer: E
 
 Collab core: Yjs CRDT as single source of truth; awareness (presence) is ephemeral.
 
+**CRITICAL NOTES**: Do not expose Yjs to the UI: "Components MUST NOT receive Y.Doc, providers, or awareness. A single RoomDocManager owns them."
+
+Immutable snapshot boundary: "Rendering reads a frozen Snapshot published at most once per rAF or batched Yjs update. No component reads live Yjs structures."
+
+Coarse write rule: "Pointer-up commits one Yjs transaction containing the whole stroke; eraser deletes a set in one transaction."
+
+Typed array boundary: "Persist number[] in Yjs; construct Float32Array at render (f32.set(numbers)). Never store typed arrays in the CRDT."
+
+Presence routing: "awareness is subscribed centrally and throttled (~30 Hz); presence is ephemeral and included in the published snapshot only."
+
+**TEMPORAL CONSISTENCY RULES**:
+- **Single Owner Pattern**: One RoomDocManager per room owns Y.Doc, constructed with `new Y.Doc({ guid: roomId })` ONCE, guid never mutated.
+- **Write Queue Pattern**: All mutations go through validated WriteQueue with batching and backpressure control.
+- **Snapshot Publishing**: DocManager publishes frozen snapshots at max 60 FPS via requestAnimationFrame batching.
+- **ESLint Enforcement**: Ban 'yjs', 'y-websocket', 'y-indexeddb' imports in UI components via no-restricted-imports rule.
+
 Transport: The server uses the official @y/websocket-server@0.1.x backend with minimal wrappers (origin allowlist, per-IP caps, frame cap, room capacity) and custom Redis persistence. Import via @y/websocket-server/utils (ESM). We install y-leveldb only to satisfy the package's static import; Redis is the only persistence used in production.
 
 Storage: Redis stores compressed Yjs doc with TTL; no snapshots/cold store. PostgreSQL stores non-authoritative room metadata (id, title, createdAt, lastWriteAt, size_bytes); Redis presence defines room existence.
@@ -170,9 +193,9 @@ Online path: Panel → /api/ai/\* → streamed message + optional unified diff +
 
 Offline path: When network is absent or drops mid-stream, the chat composer is replaced with Offline Tools (deterministic, no LLM). On reconnect, composer is restored and transcript remains.
 
-Platform & infra (hard MVP requirements). React (Vite), TypeScript, Tailwind, Yjs + y-websocket + y-indexeddb, Monaco, Pyodide; back end uses the official @y/websocket-server backend with custom Redis bind/write hooks; Redis AOF enabled; hosted as a single container (Railway). Prisma + PostgreSQL (metadata only).
-External integrations. Sentry for errors/metrics only. No OAuth/SSO, no third-party CDNs. Pyodide and Monaco are self-hosted immutable assets; no external CDNs.
-Developer tooling. Pre-commit hooks via Husky + lint-staged for automatic ESLint fixing and Prettier formatting on staged files. Fast, lightweight setup (<5s) with TypeScript checking kept in CI only for optimal agent workflows.
+Platform & infra (hard MVP requirements). React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, Yjs 13.6.27 + y-websocket 3.0.0 + y-indexeddb 9.0.12, Monaco 0.52.2, Pyodide 0.26.4; back end uses the official @y/websocket-server 0.1.1 backend with custom Redis bind/write hooks; Redis 5.8.1 AOF enabled; hosted as a single container (Railway). Prisma 5.22.0 + PostgreSQL (metadata only).
+External integrations. Sentry 8.55.0 for errors/metrics only. No OAuth/SSO, no third-party CDNs. Pyodide and Monaco are self-hosted immutable assets; no external CDNs.
+Developer tooling. Pre-commit hooks via Husky 9.1.7 + lint-staged 16.1.5 for automatic ESLint 9.17.0 fixing and Prettier 3.6.2 formatting on staged files. Fast, lightweight setup (<5s) with TypeScript checking kept in CI only for optimal agent workflows.
 Compatibility. Node 18+, randomUUID() available; project standardizes on node:crypto import. Server uses TypeScript module: NodeNext. Relative imports include .js in source (Node ESM rule).
 
 3. Data Models & Schema Definitions
@@ -597,8 +620,8 @@ Telemetry. Emit events listed in §3.9. KPIs in §12.
    Render: 60 FPS via dirty-rect redraw + culling; do not render thousands per frame. Text render occurs in a dedicated pass after strokes.
 
 Sync: send throttle ≈30 Hz; presence 75–100 ms; flush to Redis every 2–3 s (≤5 s worst). Publish measured p50/p95.
-
-Goal (non-normative): ≤125 ms p95 with ~50 users and ≤25 drawers.
+**TARGET, NOT REQUIRED**:
+Goal (non-normative): ≤125 ms p95 with ~50 users and ≤15 drawers.
 
 Scalability. Single-node MVP; future multi-node requires pub/sub for Yjs.
 Security. Origin check required; CSP Profile A default; HSTS after TLS stable; nosniff; no-referrer; inbound WS frame cap 2 MB; no session tokens; upgrades validated with Origin + roomId.
@@ -633,25 +656,27 @@ IndexedDB → per-room Y.Doc persistence via y-indexeddb (offline reopen + editi
 PostgreSQL → non-authoritative metadata (id, title, createdAt, lastWriteAt, size_bytes).
 
 Flows.
-Stroke creation → local Yjs transact → y-websocket delta → remote apply → Redis flush (debounced).
+**Write Queue Pattern (CRITICAL):** All mutations go through WriteQueue → validate (not read-only, not mobile view-only, frame < 2MB) → batch operations → single yjs.transact() per logical operation → notify DocManager → publish frozen snapshot.
 
-Text commit → local overlay finalize → single Yjs transact → broadcast → Redis flush (debounced).
+Stroke creation → local preview in tool → pointer-up → WriteQueue.enqueue() → yjs.transact() with entire stroke → broadcast → Redis flush (debounced).
 
-Eraser preview → delete on release → mark touched IDs as ‘preview’ during press/drag (rendered with reduced opacity), then delete that set on release in one transaction; clear preview.
+Text commit → local overlay finalize → WriteQueue.enqueue() → single Yjs transact → broadcast → Redis flush (debounced).
 
-Clear board (for everyone) → append a tick to meta.scene_ticks (append-only) → current scene becomes scene_ticks.length → all visibility filters use the current scene.
+Eraser preview → delete on release → mark touched IDs as 'preview' during press/drag (rendered with reduced opacity), then WriteQueue.enqueue() deletion of set in one transaction; clear preview.
 
-Export → client-side render over visible elements (strokes + stamps + text); capped output and time budget.
+Clear board (for everyone) → WriteQueue.enqueue() scene tick append → meta.scene_ticks (append-only) → current scene becomes scene_ticks.length → all visibility filters use the current scene.
+
+Export → read from frozen snapshot → client-side render over visible elements (strokes + stamps + text); capped output and time budget.
 
 Flush hook metadata update → upon successful Redis writeState, upsert { lastWriteAt=now(), sizeBytes } in PostgreSQL. If unavailable, skip without affecting collaboration.
 
-Code execution → per-run worker, output appended to Yjs metadata subject to limits.
+Code execution → per-run worker, output appended via WriteQueue subject to limits.
 
-Extend room → client performs minimal Yjs write → accepted write extends Redis TTL; no effect from views/presence.
+Extend room → WriteQueue.enqueue() minimal Yjs write → accepted write extends Redis TTL; no effect from views/presence.
 
-AI Apply (Mode A) → diff card Apply → yjs.transact(...) with hashed span precondition → on mismatch, fail fast with inline banner and actions Re-run / Open 3-way merge / Copy patch; 3-way merge requires explicit user resolution.
+AI Apply (Mode A) → diff card Apply → WriteQueue.enqueue() with hashed span precondition → on mismatch, fail fast with inline banner and actions Re-run / Open 3-way merge / Copy patch; 3-way merge requires explicit user resolution.
 
-Offline transition → network drop during streaming → disable composer; show status chip “Offline — switched to Quick Tools”; expose Offline Tools; on reconnect, restore composer and preserve transcript.
+Offline transition → network drop during streaming → disable composer; show status chip "Offline — switched to Quick Tools"; expose Offline Tools; on reconnect, restore composer and preserve transcript.
 
 Canvas rendering & indexing (normative):
 LOD: at zoom < 0.5 render simplified strokes; ≥ 1.0 render full geometry.
@@ -668,7 +693,7 @@ Privacy & retention. TTL refreshes only on accepted document writes; viewing/awa
 
 8. Dependencies & Integrations
    Third-party (hard MVP). Yjs, y-websocket, y-indexeddb, Monaco, Pyodide, Redis, Prisma, PostgreSQL. Vendored static assets for Monaco & Pyodide are self-hosted under / and are included in the SW pre-cache.
-   Test (dev-only): Playwright (@playwright/test) for E2E browser tests.
+   Test (dev-only): Playwright 1.45.0 (@playwright/test) for E2E browser tests.
    Dev tooling (dev-only): ESLint 9 with TypeScript parser, Prettier for code formatting, Husky for git hooks, lint-staged for pre-commit automation. Pre-commit runs ESLint auto-fix and Prettier formatting on staged files only. Type checking intentionally kept in CI to maintain sub-5s pre-commit performance.
    Internal dependencies. Canvas renderer (pan/zoom), RBush index, toast system, minimap, PWA assets (manifest.webmanifest; icons 192/512/maskable-512).
    AI diffing & merge helpers. Tiny unified-diff renderer and optional small diff3 helper (or local impl) for the 3-way merge preview.
@@ -677,7 +702,7 @@ Privacy & retention. TTL refreshes only on accepted document writes; viewing/awa
    Monitoring & logging. Sentry + custom counters listed in §3.9 (no content logging).
 
 9. Technical Constraints & Assumptions
-   Hard constraints. All numeric limits/caps are authoritative in §3.6. Do not restate numbers elsewhere; reference §3.6 where needed.
+   Hard constraints. All numeric limits/caps are authoritative
    PWA offline pack (normative): Pre-cache Monaco (core + workers) at install. Pyodide is not in the precache; it is desktop-only and acquired silently after activate (immutable versioned path). The Service Worker must not intercept WebSocket traffic and must not cache /api/** or /yjs/**. No background sync or push in MVP.
    Assumptions.
    Typical boards stay far below the hard size limit, but enforcement must be exact.
@@ -721,7 +746,7 @@ Update flow: When a new build is deployed, the app shows an Update available pro
 
 Local-first rooms: Offline “Create Room” produces a provisional id, persists the doc, and allows editing; on reconnect, the client publishes the room, merges state to the server doc, updates aliases, and surfaces a shareable link.
 
-Undo/Redo: Whiteboard operations undo/redo correctly; scene tick operations (meta.scene_ticks) are excluded from global Undo; only the 10 s local ‘Clear’ Undo toast may revert the last tick if still within the window. Text node create/delete are undoable.
+Undo/Redo: Whiteboard operations undo/redo correctly; scene tick operations (meta.scene_ticks) are excluded from global Undo; only the 10 s local ‘Clear’ Undo toast may revert the last tick if still within the window. Text node create/delete are undoable. Undo groups = one per stroke and one per text commit; UndoManager tracks only the current user’s origin, with captureTimeout=0 so groups never coalesce across strokes; scene-tick/keep-alive use a different origin and are not tracked.
 
 Shortcuts: Keybindings trigger the correct actions and are suppressed while typing in Monaco; T selects Text; Enter commits; Esc cancels text overlay; Ctrl/Cmd+K = Clear board (for everyone).
 

@@ -29,7 +29,7 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Sentry integration (8.55.0) with privacy protections
 - Health check endpoints (/healthz, /readyz)
 
-### ✅ Phase 2: Complete - Client Foundation
+### 🚧 Phase 2: In Progress - Client Foundation
 
 - React Router DOM (7.8.0) for SPA routing
 - Yjs providers: y-websocket (3.0.0) + y-indexeddb (9.0.12)
@@ -49,6 +49,15 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - "Update available" prompt with skipWaiting
 - Desktop-only Pyodide warm cache (silent, post-activate)
 
+### ✅ Phase 8: Complete - Limits, Banners & UX Guards
+
+- Size warning pill at 8MB (X.Y / 10 MB display)
+- Read-only mode enforcement at 10MB hard cap
+- Gateway error mapping with normative toast messages
+- Room capacity enforcement (105 clients max)
+- Connection state includes Read-only indicator
+- Feature flag system for limits UI
+
 ### ✅ Phase 9: Complete - My Rooms (Device-Local)
 
 - IndexedDB-based room management (`avlo-myrooms` database)
@@ -67,15 +76,6 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Comprehensive observability counters (non-content)
 - Database degraded mode (Redis-only when Postgres unavailable)
 
-### ✅ Phase 8: Complete - Limits, Banners & UX Guards
-
-- Size warning pill at 8MB (X.Y / 10 MB display)
-- Read-only mode enforcement at 10MB hard cap
-- Gateway error mapping with normative toast messages
-- Room capacity enforcement (105 clients max)
-- Connection state includes Read-only indicator
-- Feature flag system for limits UI
-
 ### ⏳ Future Phases (Not Yet Implemented)
 
 - Phase 3: Canvas rendering and drawing tools
@@ -87,11 +87,11 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 
 ## Technology Stack
 
-**Client:** React, TypeScript, Vite, React Router DOM, Tailwind CSS, Yjs/y-websocket/y-indexeddb, Monaco Editor, PWA (vite-plugin-pwa), RBush, Pyodide
+**Client:** React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, React Router DOM 7.8.0, Tailwind CSS 3.4.17, Yjs 13.6.27, y-websocket 3.0.0, y-indexeddb 9.0.12, Monaco Editor 0.52.2, PWA (vite-plugin-pwa 0.21.1), RBush 4.0.1, Pyodide 0.26.4
 
-**Server:** Node.js (ESM), Express, TypeScript, Prisma/PostgreSQL, Redis, @y/websocket-server (0.1.1), WebSocket (ws), Sentry, Pino, Helmet
+**Server:** Node.js (ESM), Express 4.21.2, TypeScript 5.9.2, Prisma 5.22.0/PostgreSQL, Redis 5.8.1, @y/websocket-server 0.1.1, WebSocket (ws 8.18.3), Sentry 8.55.0, Pino 9.9.0, Helmet 8.1.0
 
-**Tools:** Playwright, ESLint, Prettier, Husky, Concurrently
+**Tools:** Playwright 1.45.0, ESLint 9.17.0, Prettier 3.6.2, Husky 9.1.7, Concurrently 9.0.0
 
 ## Project Structure
 
@@ -223,7 +223,15 @@ Redis stores authoritative Yjs doc (gzip-4); PostgreSQL stores metadata only.
 
 ## Next Implementation Steps
 
-1. **Phase 3** (Canvas & Drawing):
+1. **Phase 2** (Client Foundation - Current):
+   - Complete React Router DOM routing
+   - Wire up Yjs providers and room management
+   - Implement presence system
+   - Add connection status indicators
+   - Create split view UI shell
+   - Add mobile view-only detection
+
+2. **Phase 3** (Canvas & Drawing):
    - Implement canvas renderer with RBush indexing
    - Add drawing tools (Pen, Highlighter, Stamps)
    - Create text tool with local preview
@@ -231,15 +239,10 @@ Redis stores authoritative Yjs doc (gzip-4); PostgreSQL stores metadata only.
    - Implement LOD (Level of Detail) rendering
    - Add undo/redo with Y.UndoManager
 
-2. **Phase 4** (Scene Management):
+3. **Phase 4** (Scene Management):
    - Implement "Clear board for everyone" functionality
    - Add scene tick system for soft-clear
    - Implement 10-second undo window for scene changes
-
-3. **Phase 5** (PNG Export):
-   - Export viewport or entire board
-   - 8192px max edge, 24px padding, white background
-   - 2-second render budget with fallback
 
 ## References
 

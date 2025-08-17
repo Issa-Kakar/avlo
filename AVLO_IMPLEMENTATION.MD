@@ -21,6 +21,7 @@
 {
   "name": "avlo",
   "private": true,
+  "type": "module",
   "workspaces": ["client", "server"],
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
@@ -34,12 +35,12 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
-    "e2e:install": "playwright install --with-deps", // Note: On restricted shells, use "playwright install chromium"
+    "e2e:install": "playwright install chromium", // Note: On restricted shells, use "playwright install chromium"
     "e2e:serve": "npm run build && node server/dist/index.js"
   },
   "devDependencies": {
-    "concurrently": "^9.0.0",
-    "playwright": "^1.45.0"
+    "@playwright/test": "^1.45.0",
+    "concurrently": "^9.0.0"
   }
 }
 ```
@@ -76,7 +77,7 @@ console.log(`Copied client/dist → server/public`);
 
 **Deliverables / Constraints**
 
-- Tech/deps: `express`, `ws`, `yjs`, `@y/websocket-server` (server backend), `y-leveldb` (required by @y/websocket-server even though we use Redis), `redis`, `@prisma/client`, `prisma`, `zod`, `helmet`, `cors`, `express-rate-limit`, `pino`, `@sentry/node`.
+- Tech/deps: `express`, `ws`, `yjs` (13.6.27), `@y/websocket-server` (0.1.1 - server backend), `y-leveldb` (0.1.2 - required by @y/websocket-server even though we use Redis), `redis` (^5.8.1), `@prisma/client` (^5.22.0), `prisma` (^5.22.0), `zod` (^3.25.76), `helmet` (^8.1.0), `cors` (^2.8.5), `express-rate-limit` (^7.5.1), `pino` (^9.9.0), `pino-http` (^10.5.0), `@sentry/node` (^8.55.0), `dotenv` (^17.2.1).
 - **Note:** Client uses `y-websocket` provider; server uses `@y/websocket-server` for the backend.
 - Env vars: `NODE_ENV`, `PORT`, `DATABASE_URL`, `REDIS_URL`, `ORIGIN_ALLOWLIST`, `SENTRY_DSN` (optional), `APP_VERSION`, ‘ROOM_TTL_DAYS’(deafult 14)
 - **WebSocket endpoint:** `WS /ws` (Origin required). Client identifies `{ roomId }` on connect.
@@ -167,8 +168,9 @@ paths:
 
 - **y-websocket v3 changes:** The server implementation was moved from `y-websocket/bin/utils.*` to a separate package `@y/websocket-server`.
 - **Import path:** Use `import { setupWSConnection, setPersistence } from '@y/websocket-server/utils';` - Note this imports from `/utils` not `/bin/utils.js` as the package structure differs from expectations.
-- **y-leveldb dependency:** Although we use Redis for persistence, `y-leveldb` must be installed as `@y/websocket-server` imports it in the source files. This is an optional dependency that became required due to the import path.
-- **Client/Server split:** Client continues to use `y-websocket` provider; only the server uses `@y/websocket-server`.
+- **y-leveldb dependency:** Although we use Redis for persistence, `y-leveldb` (0.1.2) must be installed as `@y/websocket-server` imports it in the source files. This is an optional dependency that became required due to the import path.
+- **Client/Server split:** Client continues to use `y-websocket` (3.0.0) provider; only the server uses `@y/websocket-server` (0.1.1).
+- **Pinned versions:** Both client and server pin `yjs` to 13.6.27 and `y-websocket` to 3.0.0 (no caret) for consistency with the y-websocket ecosystem.
 
 ---
 
@@ -176,16 +178,21 @@ paths:
 
 **Goal:** Route `/` and `/rooms/:id`, wire Yjs providers (`y-websocket` & `y-indexeddb`), and render the app shell with mobile view-only gating.
 
+**CRITICAL ARCHITECTURE REQUIREMENT:** Implement **DocManager + Immutable Snapshot** pattern to prevent temporal fragmentation. UI components MUST NOT receive Y.Doc, providers, or awareness directly. A single RoomDocManager owns all Yjs objects and publishes frozen snapshots at max 60 FPS.
+
 **Deliverables / Constraints**
 
+- **Temporal Consistency:** All UI components read from immutable snapshots published by RoomDocManager; no direct Yjs access allowed.
+- **Single Owner Pattern:** One RoomDocManager per room owns Y.Doc + providers.
+- **Y.Doc construction & identity:** `new Y.Doc({ guid: roomId })` on room load; **never mutate `guid`** after construction.
+- **Write Queue:** All mutations go through validated WriteQueue with batching and backpressure control.
 - Offline-first: attach `y-indexeddb` per room; do **not** delete per-room IndexedDB on leave.
 - Mobile **view-only** gate; Editor role otherwise (no auth). Gate by capability (e.g., `(pointer: coarse)` or width ≤ 820 px); no UA sniff.
 - Connection indicator: Online / Reconnecting / Offline / Read-only.
-- Presence: name/color/cursor/activity; 75–100 ms tick; \~30 Hz send throttle.
+- Presence: name/color/cursor/activity; 75–100 ms tick; \~30 Hz send throttle; managed centrally by DocManager.
 - Split view defaults 70/30 with resizer & editor toggle; Users indicator + expandable UsersList (desktop).
-- Copy link: header button with toast **“Link copied.”**
+- Copy link: header button with toast **"Link copied."**
 - Accessibility: focus-trapped popovers/sliders, `Esc` closes, focus returns to trigger; sliders expose numeric readout.
-- **Y.Doc construction & identity:** `new Y.Doc({ guid: roomId })` on room load; **never mutate `guid`** after construction.
 - **Viewport semantics:** **full document sync always occurs**; viewport affects **rendering/presence only** (no selective sync).
 
 **Providers / WS hygiene (addition):**
@@ -200,16 +207,30 @@ paths:
 - **Cursor trails:** maintain a **ring buffer of 24** points per remote cursor; render at most **20** remote cursors; disable trails on mobile.
 - **Cursor ring & size slider:** the live cursor ring **scales** with the brush size slider.
 
+**Implementation Structure (Required):**
+```
+client/src/collaboration/
+├── RoomDocManager.ts       # Single Y.Doc owner, snapshot publisher
+├── RoomSnapshot.ts         # Immutable state interface  
+├── WriteQueue.ts           # Batched write operations
+└── hooks/
+    ├── useRoomSnapshot.ts  # Read-only snapshot hook
+    └── useWriteOps.ts      # Write operation hooks
+```
+
 **Acceptance checks**
 
+- **No direct Yjs exposure:** ESLint rule enforces no 'yjs' imports in UI components.
+- **Temporal consistency:** All components read same epoch from frozen snapshots.
+- **Single timeline:** No component holds stale Yjs references.
 - On mobile, write tools disabled; board renders.
 - Disconnect shows Reconnecting; Offline shows Offline; at hard size cap shows Read-only.
 - Users indicator count equals number of rendered remote cursors (up to 20).
-- Clicking Copy link shows **“Link copied.”**
+- Clicking Copy link shows **"Link copied."**
 - Popovers/slider a11y behaviors hold.
 - Presence continues to render in **read-only** and on **mobile view-only** (write tools disabled).
 - With toolbar **unpinned**, edge-hover reveal works; **no reveal during pointer-down**; `side/pinned/collapsed` persist across reloads.
-- Users indicator count equals rendered remote cursors (≤20); trails show smooth motion (buffered), disabled on mobile. _(Undo/Redo keybindings verified in Phase 3.)_
+- Users indicator count equals rendered remote cursors (≤20); trails show smooth motion (buffered), disabled on mobile. _(Undo/Redo keybindings verified in Phase 3.)_ 
 
 ---
 
@@ -217,10 +238,13 @@ paths:
 
 **Goal:** Implement document schema, renderer (RBush + dirty-rect + LOD), tools, undo/redo scope, keyboard navigation.
 
+**CRITICAL REQUIREMENT:** All drawing tools MUST work through WriteQueue from DocManager architecture (Phase 2). Canvas renders from immutable snapshots only. No direct Yjs access in drawing components.
+
 **Deliverables / Constraints**
 
 - **Schema (logical JSON view)** — `strokes[]`, `texts[]`, `code.splitView`, `meta.scene_ticks[]`, `meta.title`, etc. Current scene = `meta.scene_ticks.length`; render/export only `scene === currentScene`.
-- Renderer: RBush spatial index; dirty-rect; LOD rules; highlighter opacity **0.25**; cursor preview opacity **0.35**.
+- **Drawing Architecture:** Tools maintain local preview state; on pointer-up, commit entire stroke through WriteQueue as single transaction.
+- Renderer: RBush spatial index built from snapshot data; dirty-rect; LOD rules; highlighter opacity **0.25**; cursor preview opacity **0.35**.
 - **Constraints (normative):** `MAX_POINTS_PER_STROKE = 10000`, `MAX_TOTAL_STROKES = 5000`.
 - **Text guardrail:** `text.content.maxLength = 500` characters.
 - **LOD thresholds:** at zoom `< 0.5` render simplified stroke geometry; at `≥ 1.0` render full geometry.
@@ -230,13 +254,13 @@ paths:
 - Tools: **Pen**, **Highlighter**, **Stamps** (rectangle/ellipse/**arrow**), **Text**, **Pan** (spacebar).
   _Exclude the Extend keep-alive write from global Undo_
   - _Stamps are **single-stroke** inserts and are **immutable post-insert** (erasable as whole objects; no edit/resize in MVP)._
-- **Text tool (visibility rule):** renders a **local-only overlay**; **Enter** or clicking outside commits **one Yjs transaction**; **Esc** cancels. **Undo** restores the text node; **Eraser** removes a text node in one action.
+- **Text tool (visibility rule):** renders a **local-only overlay**; **Enter** or clicking outside commits **one Yjs transaction** via WriteQueue; **Esc** cancels. **Undo** restores the text node; **Eraser** removes a text node in one action.
 - Zoom/pan: wheel+ctrl, pinch; pan with spacebar drag.
 - Undo/Redo: per-user origin scope; **scene tick ops excluded**; text nodes participate.
-  - _Toolbar buttons labeled **“Undo”** / **“Redo”** with keybindings **Ctrl/Cmd+Z** and **Ctrl/Cmd+Y**._
-
+  - _Toolbar buttons labeled **"Undo"** / **"Redo"** with keybindings **Ctrl/Cmd+Z** and **Ctrl/Cmd+Y**._
+  - **Undo groups:** one per stroke and one per text commit; UndoManager tracks only current user's origin with captureTimeout=0 (no coalescing).
 - Minimap (minimal): bounds of **visible** strokes in current scene + local viewport; ≤10 FPS; may omit text glyphs initially.
-- **Eraser preview:** While pressed/dragging, targeted strokes or a text node preview at **reduced opacity**; on release, the previewed set is deleted in **one operation**; a **single Undo** restores them.
+- **Eraser preview:** While pressed/dragging, targeted strokes or a text node preview at **reduced opacity**; on release, the previewed set is deleted in **one operation** through WriteQueue; a **single Undo** restores them.
 - **Cursor preview ring:** Keep preview opacity; **cursor ring scales** live with the size slider.
 
 **Acceptance checks**
@@ -253,7 +277,7 @@ paths:
 - No viewport auto-movement occurs due to remote edits.
 - Pressing/dragging eraser shows reduced-opacity preview; releasing deletes the previewed set in one op; one Undo restores them.
 - Stamps cannot be edited post-insert; eraser removes a whole stamp in one op.
-- “Undo”/“Redo” labels present; **Ctrl/Cmd+Z** and **Ctrl/Cmd+Y** work (scene ticks excluded; text participates).
+- “Undo”/“Redo” labels present; **Ctrl/Cmd+Z** and **Ctrl/Cmd+Y** work (scene ticks excluded; text participates). Undo groups = one per stroke and one per text commit; UndoManager tracks only the current user’s origin, with captureTimeout=0 so groups never coalesce across strokes; scene-tick/keep-alive use a different origin and are not tracked.
 
 ---
 
