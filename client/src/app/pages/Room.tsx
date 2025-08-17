@@ -8,6 +8,8 @@ import { isCoarsePointer, isNarrow, onResize } from '../utils/device.js';
 import { toast } from '../utils/toast.js';
 import { useRoom } from '../hooks/useRoom.js';
 import { RemoteCursors } from '../components/RemoteCursors.js';
+import { useRoomSnapshot } from '../../collaboration/hooks/useRoomSnapshot.js';
+import { useRoomOperations } from '../../collaboration/hooks/useRoomOperations.js';
 import { recordRoomOpen } from '../features/myrooms/integrations.js';
 import { getHttpBase } from '../utils/url.js';
 import { ReadonlyBanner } from '../../ui/limits/ReadonlyBanner.js';
@@ -73,7 +75,7 @@ export default function Room() {
   const [isToolbarRightSide, setIsToolbarRightSide] = useState(false);
   const [isToolbarCollapsed, setIsToolbarCollapsed] = useState(false);
   const [isMinimapCollapsed, setIsMinimapCollapsed] = useState(false);
-  const [users] = useState<
+  const [users, setUsers] = useState<
     Array<{
       id: string;
       name: string;
@@ -89,7 +91,9 @@ export default function Room() {
 
   // Validate and setup room
   const roomHandles = useRoom(id);
-  const connectionState = useConnectionState(undefined, roomHandles?.readOnly);
+  const snapshot = useRoomSnapshot(id);
+  const operations = useRoomOperations(id);
+  const connectionState = useConnectionState(id, roomHandles?.readOnly);
 
   // Record room visit for "My Rooms" list (Phase 9 integration)
   useEffect(() => {
@@ -145,14 +149,69 @@ export default function Room() {
   // Combined view-only state (mobile OR read-only from server)
   const viewOnly = mobileViewOnly || roomHandles?.readOnly || false;
 
-  // Update presence list from awareness - GUTTED IN PHASE A
-  // Will be replaced with snapshot-based presence in Phase B/C
+  // Update presence list from snapshot
+  useEffect(() => {
+    if (!snapshot) {
+      setUsers([]);
+      return;
+    }
 
-  // Test handle exposure - REMOVED IN PHASE A
-  // Direct Yjs access is no longer allowed in UI components
+    const userList: typeof users = [];
+    snapshot.presence.forEach((user) => {
+      const getInitials = (name: string) => {
+        const parts = name.split(' ');
+        if (parts.length >= 2) {
+          return parts[0][0] + parts[1][0];
+        }
+        return name.slice(0, 2);
+      };
 
-  // Cursor position update - GUTTED IN PHASE A
-  // Will be replaced with operation-based cursor updates in Phase B/C
+      userList.push({
+        id: user.id,
+        name: user.name,
+        color: user.color,
+        initials: getInitials(user.name),
+        activity: user.activity,
+      });
+    });
+
+    setUsers(userList);
+  }, [snapshot?.presence]);
+
+  // Update cursor position using operations
+  useEffect(() => {
+    if (!operations || mobileViewOnly) return;
+
+    let lastUpdate = 0;
+    const throttleMs = 33; // ~30Hz
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const now = Date.now();
+      if (now - lastUpdate < throttleMs) return;
+      lastUpdate = now;
+
+      const board = document.getElementById('board');
+      if (!board) return;
+
+      const rect = board.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      operations.updateCursor(x, y);
+    };
+
+    const handleMouseLeave = () => {
+      operations.updateCursor(null, null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseleave', handleMouseLeave);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [operations, mobileViewOnly]);
 
   // Check device capabilities for mobile view-only
   useEffect(() => {
@@ -377,8 +436,8 @@ export default function Room() {
       <div className="grid" aria-hidden="true" />
       <canvas id="board" />
 
-      {/* Remote cursors overlay - STUBBED IN PHASE A */}
-      <RemoteCursors />
+      {/* Remote cursors overlay */}
+      {snapshot && <RemoteCursors users={snapshot.presence} mobileViewOnly={mobileViewOnly} />}
 
       {/* Tool Rail - presentational only */}
       <div

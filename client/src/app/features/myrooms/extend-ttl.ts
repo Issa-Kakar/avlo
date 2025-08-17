@@ -1,5 +1,5 @@
-// GUTTED IN PHASE A - Direct Y.Doc imports removed
-// Will be adapted to use WriteQueue in Phase C
+import { RoomDocManager } from '../../../collaboration/RoomDocManager.js';
+import { nanoid } from 'nanoid';
 
 const ONE_DAY = 24 * 60 * 60 * 1000;
 const EXTEND_KEY = 'avlo:lastExtendAt'; // device-local throttle
@@ -14,11 +14,28 @@ export function markExtendedNow() {
 }
 
 /**
- * TODO: Adapt to WriteQueue in Phase C
- * Will perform a tiny write to extend TTL through the queue
- * This change should be excluded from global Undo history
+ * Performs a minimal write to extend TTL through the WriteQueue
+ * This change is excluded from global Undo history by using a different origin
  */
-export function extendTtl(_ydoc: any) {
-  // Stubbed for Phase A - will be implemented with WriteQueue in Phase C
-  console.warn('extendTtl is stubbed in Phase A');
+export function extendTtl(roomId: string) {
+  if (!canExtendNow()) {
+    console.log('TTL extension throttled - can only extend once per 24h');
+    return false;
+  }
+
+  const manager = RoomDocManager.getInstance(roomId);
+
+  manager.enqueueWrite({
+    id: nanoid(),
+    type: 'extend',
+    execute: (ydoc) => {
+      const meta = ydoc.getMap('meta');
+      meta.set('keepAliveCounter', (meta.get('keepAliveCounter') || 0) + 1);
+      meta.set('lastExtended', new Date().toISOString());
+    },
+    origin: 'ttl-extend', // Different origin to exclude from undo
+  });
+
+  markExtendedNow();
+  return true;
 }

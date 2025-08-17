@@ -1,10 +1,40 @@
-// Keep the type definition
+import { useState, useEffect } from 'react';
+import { useRoomSnapshot } from '../../collaboration/hooks/useRoomSnapshot.js';
+
 export type ConnectionState = 'Online' | 'Reconnecting' | 'Offline' | 'Read-only';
 
-// GUTTED IN PHASE A - All provider coupling removed
-// Will be rebuilt in Phase B to derive from snapshot instead
-export function useConnectionState(_provider?: any, readOnly = false): ConnectionState {
-  // Temporary stub - always return 'Reconnecting' during Phase A
-  if (readOnly) return 'Read-only';
-  return 'Reconnecting';
+export function useConnectionState(roomId?: string, readOnly = false): ConnectionState {
+  const snapshot = useRoomSnapshot(roomId);
+  const [state, setState] = useState<ConnectionState>('Reconnecting');
+
+  useEffect(() => {
+    if (!snapshot) {
+      setState('Offline');
+      return;
+    }
+
+    // Check if room is read-only (takes precedence)
+    if (readOnly || snapshot.isReadOnly) {
+      setState('Read-only');
+      return;
+    }
+
+    // Map internal connection states to UI states
+    switch (snapshot.connectionState) {
+      case 'connected':
+        setState('Online');
+        break;
+      case 'connecting':
+      case 'reconnecting':
+        setState('Reconnecting');
+        break;
+      case 'disconnected':
+        setState('Offline');
+        break;
+      default:
+        setState('Reconnecting');
+    }
+  }, [snapshot?.connectionState, snapshot?.isReadOnly, readOnly]);
+
+  return state;
 }

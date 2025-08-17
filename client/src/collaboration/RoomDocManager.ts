@@ -4,6 +4,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { RoomSnapshot, UserPresence, WriteOperation } from './RoomSnapshot.js';
 import { getWsUrl } from '../app/utils/url.js';
 import { generateUserName, generateUserColor } from '../app/state/presence.js';
+import { ReadOnlyGate, MobileViewOnlyGate } from '../state/writeOperations.js';
 
 export class RoomDocManager {
   private static instances = new Map<string, RoomDocManager>();
@@ -20,6 +21,10 @@ export class RoomDocManager {
 
   // User info generated once per session
   private localUser: UserPresence;
+
+  // Write operation gates
+  private readOnlyGate = new ReadOnlyGate();
+  private mobileGate = new MobileViewOnlyGate();
 
   private constructor(roomId: string) {
     // CRITICAL: Construct Y.Doc with guid once, never mutate
@@ -191,8 +196,26 @@ export class RoomDocManager {
 
   // Write operations queue
   enqueueWrite(operation: WriteOperation) {
-    if (this.destroyed || this.snapshot.isReadOnly) {
-      console.warn('Cannot write:', this.destroyed ? 'destroyed' : 'read-only');
+    if (this.destroyed) {
+      console.warn('Cannot write: DocManager destroyed');
+      return;
+    }
+
+    // Check gates
+    const context = {
+      ydoc: this.ydoc,
+      readOnly: this.snapshot.isReadOnly,
+      operation: operation.type,
+      data: operation,
+    };
+
+    if (!this.readOnlyGate.canWrite(context)) {
+      console.warn('Write blocked:', this.readOnlyGate.getBlockReason(context));
+      return;
+    }
+
+    if (!this.mobileGate.canWrite(context)) {
+      console.warn('Write blocked:', this.mobileGate.getBlockReason(context));
       return;
     }
 
