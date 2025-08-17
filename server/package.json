@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:deploy": "prisma migrate deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage.enabled=true"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -33,10 +36,14 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
     "@types/node": "^24.3.0",
+    "@types/supertest": "^6.0.3",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^3.2.4",
     "prisma": "^5.22.0",
+    "supertest": "^7.1.4",
     "tsx": "^4.20.4",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
   },
   "optionalDependencies": {
     "@sentry/profiling-node": "^8.45.0"
