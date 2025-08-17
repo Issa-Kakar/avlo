@@ -59,7 +59,40 @@ export default [
   {
     files: ['client/**/*.{ts,tsx,js,jsx}'],
     rules: {
-      // React-specific rules if needed
+      // Architecture Guards - Prevent direct Yjs imports in UI components
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'yjs',
+              message: 'Direct Yjs imports forbidden in UI. Use collaboration hooks instead.',
+            },
+            {
+              name: 'y-websocket',
+              message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
+            },
+            {
+              name: 'y-indexeddb',
+              message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
+            },
+          ],
+          patterns: [
+            {
+              group: ['**/providers/yjsClient'],
+              message: 'Use collaboration hooks instead of direct provider access.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
+  // Allow Yjs imports only in collaboration layer
+  {
+    files: ['client/src/collaboration/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': 'off',
     },
   },
 
