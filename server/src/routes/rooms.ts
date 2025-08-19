@@ -55,6 +55,19 @@ router.post(
     } catch (e) {
       console.error('Room creation error:', e);
       capture(e, 'room_create_error');
+      
+      // If PostgreSQL is down, still allow room creation (Redis will be authoritative)
+      // Check if this is a connection error
+      const isConnectionError = e && typeof e === 'object' && 
+        ('code' in e && (e.code === 'P1001' || e.code === 'ECONNREFUSED')) ||
+        (e instanceof Error && e.message.includes('connect'));
+      
+      if (isConnectionError) {
+        console.warn('PostgreSQL unavailable, creating room without metadata entry');
+        // Room will be created in Redis when first client connects
+        return res.status(201).json({ roomId: id, shareLink: `/rooms/${id}` });
+      }
+      
       return res.status(500).json({ error: 'internal_error' });
     }
   }),
@@ -77,8 +90,43 @@ router.get(
       }
       const r = await prisma.room.findUnique({ where: { id } });
       if (!r) {
-        res.status(404).json({ error: 'not_found' });
-        return;
+        // Room exists in Redis but not in PostgreSQL - create metadata entry
+        console.log(`Room ${id} exists in Redis but not in PostgreSQL, creating metadata entry`);
+        try {
+          const newRoom = await prisma.room.create({
+            data: {
+              id,
+              title: id,
+              createdAt: new Date(),
+              lastWriteAt: new Date(),
+              sizeBytes: (buf as unknown as Buffer).length || 0,
+            },
+          });
+          const expiresAt = new Date(
+            newRoom.lastWriteAt.getTime() +
+              parseInt(process.env.ROOM_TTL_DAYS || '14', 10) * 24 * 60 * 60 * 1000,
+          );
+          res.json({
+            title: newRoom.title,
+            size_bytes: newRoom.sizeBytes,
+            created_at: newRoom.createdAt.toISOString(),
+            expires_at: expiresAt.toISOString(),
+          });
+          return;
+        } catch (createErr) {
+          console.error('Failed to create room metadata:', createErr);
+          // Fall back to minimal response if PostgreSQL is unavailable
+          const expiresAt = new Date(
+            Date.now() + parseInt(process.env.ROOM_TTL_DAYS || '14', 10) * 24 * 60 * 60 * 1000,
+          );
+          res.json({
+            title: id,
+            size_bytes: (buf as unknown as Buffer).length || 0,
+            created_at: new Date().toISOString(),
+            expires_at: expiresAt.toISOString(),
+          });
+          return;
+        }
       }
       const expiresAt = new Date(
         r.lastWriteAt.getTime() +

@@ -9,6 +9,51 @@
 
 ## Executive Summary
 
+## **Phase 2 — Client foundation (Routing, providers, shell)**
+
+**Goal:** Route `/` and `/rooms/:id`, wire Yjs providers (`y-websocket` & `y-indexeddb`), and render the app shell with mobile view-only gating.
+
+**CRITICAL ARCHITECTURE REQUIREMENT:** Implement **DocManager + Immutable Snapshot** pattern to prevent temporal fragmentation. UI components MUST NOT receive Y.Doc, providers, or awareness directly. A single RoomDocManager owns all Yjs objects and publishes frozen snapshots at max 60 FPS.
+
+**Deliverables / Constraints**
+
+- **Temporal Consistency:** All UI components read from immutable snapshots published by RoomDocManager; no direct Yjs access allowed.
+- **Single Owner Pattern:** One RoomDocManager per room owns Y.Doc + providers.
+- **Y.Doc construction & identity:** `new Y.Doc({ guid: roomId })` on room load; **never mutate `guid`** after construction.
+- **Write Queue:** All mutations go through validated WriteQueue with batching and backpressure control.
+- Offline-first: attach `y-indexeddb` per room; do **not** delete per-room IndexedDB on leave.
+- Mobile **view-only** gate; Editor role otherwise (no auth). Gate by capability (e.g., `(pointer: coarse)` or width ≤ 820 px); no UA sniff.
+- Connection indicator: Online / Reconnecting / Offline / Read-only.
+- Presence: name/color/cursor/activity; 75–100 ms tick; \~30 Hz send throttle; managed centrally by DocManager.
+- Split view defaults 70/30 with resizer & editor toggle; Users indicator + expandable UsersList (desktop).
+- Copy link: header button with toast **"Link copied."**
+- Accessibility: focus-trapped popovers/sliders, `Esc` closes, focus returns to trigger; sliders expose numeric readout.
+- **Viewport semantics:** **full document sync always occurs**; viewport affects **rendering/presence only** (no selective sync).
+
+**Providers / WS hygiene (addition):**
+
+- **Reconnection policy:** exponential backoff **with full jitter**:
+  `sleep_ms = random(0, min(30000, base * 2^attempt))` with `base ≈ 500 ms`.
+
+**Toolbar & Presence micro-behaviors (additions)**
+
+- **Toolbar unpinned auto-hide:** when unpinned, hide off-edge and **reveal on edge-hover** after a short dwell; **never auto-reveal during pointer-down drawing**; remains visible while a popover is open or the toolbar has focus. `side`, `pinned`, and `collapsed` persist **device-locally**.
+- **Undo/Redo controls:** toolbar buttons labeled **“Undo”** and **“Redo”**; keybindings **Ctrl/Cmd+Z** and **Ctrl/Cmd+Y**.
+- **Cursor trails:** maintain a **ring buffer of 24** points per remote cursor; render at most **20** remote cursors; disable trails on mobile.
+- **Cursor ring & size slider:** the live cursor ring **scales** with the brush size slider.
+
+**Implementation Structure (Required):**
+```
+client/src/collaboration/
+├── RoomDocManager.ts       # Single Y.Doc owner, snapshot publisher
+├── RoomSnapshot.ts         # Immutable state interface  
+├── WriteQueue.ts           # Batched write operations
+└── hooks/
+    ├── useRoomSnapshot.ts  # Read-only snapshot hook
+    └── useWriteOps.ts      # Write operation hooks
+```
+
+
 Phase 2 has **critical temporal fragmentation** issues that will cause catastrophic failures under collaborative load. The root cause: UI components directly access mutable Yjs references, creating race conditions where different components operate on different versions of reality simultaneously.
 
 **The Good News**:

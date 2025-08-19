@@ -20,7 +20,7 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 
 ## Tech Stack
 
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, React Router DOM
+- **Frontend**: React 18, TypeScript 5.9, Vite 5.4, Tailwind CSS, React Router DOM
 - **Realtime & Offline**: Yjs CRDT, y-websocket, y-indexeddb, PWA
 - **Backend**: Node.js (ESM), Express, WebSocket, Redis, PostgreSQL (Prisma)
 - **Code Execution**: JavaScript + Python (via Pyodide)

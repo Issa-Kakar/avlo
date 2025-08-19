@@ -26,11 +26,21 @@
        "db:generate": "npm run prisma:generate --workspace=server",
        "db:migrate": "npm run prisma:migrate --workspace=server",
        "db:deploy": "npm run prisma:deploy --workspace=server",
+       "test": "npm run test --workspace=client && npm run test --workspace=server",
+       "test:watch": "concurrently \"npm run test:watch --workspace=client\" \"npm run test:watch --workspace=server\"",
+       "test:ui": "concurrently \"npm run test:watch --workspace=client -- --ui\" \"npm run test:watch --workspace=server -- --ui\"",
+       "test:coverage": "npm run test:coverage --workspace=client && npm run test:coverage --workspace=server",
        "test:e2e": "playwright test",
        "test:e2e:ui": "playwright test --ui",
        "test:e2e:report": "playwright show-report",
        "e2e:install": "playwright install chromium", // Note: On restricted shells, use "playwright install chromium"
-       "e2e:serve": "npm run build && node server/dist/index.js"
+       "e2e:serve": "npm run build && node server/dist/index.js",
+       "lint": "eslint .",
+       "lint:fix": "eslint . --fix",
+       "format": "prettier --write .",
+       "format:check": "prettier --check .",
+       "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+       "prepare": "husky"
      }
    }
    Create scripts/copy-client-dist.mjs:
@@ -179,6 +189,9 @@ Presence routing: "awareness is subscribed centrally and throttled (~30 Hz); pre
 - **ESLint Enforcement**: Ban 'yjs', 'y-websocket', 'y-indexeddb' imports in UI components via no-restricted-imports rule.
 
 Transport: The server uses the official @y/websocket-server@0.1.x backend with minimal wrappers (origin allowlist, per-IP caps, frame cap, room capacity) and custom Redis persistence. Import via @y/websocket-server/utils (ESM). We install y-leveldb only to satisfy the package's static import; Redis is the only persistence used in production.
+- Client uses `y-websocket@3.0.0` which constructs URL as: `baseUrl + '/' + roomId`
+- Server expects `/ws/<roomId>` pattern
+- This aligns correctly when client provides `ws://host/ws` as baseUrl
 
 Storage: Redis stores compressed Yjs doc with TTL; no snapshots/cold store. PostgreSQL stores non-authoritative room metadata (id, title, createdAt, lastWriteAt, size_bytes); Redis presence defines room existence.
 
@@ -802,12 +815,15 @@ Telemetry: Events emitted per §3.9 for panel toggle, TTFB, patch rendered/appli
 
 10.2 End-to-End Testing (Playwright) — Concise Guide`**Purpose.** Run realistic browser checks that exercise the MVP acceptance criteria and normative UI strings in §10 (e.g., read-only at 10 MB, TTL expiry, “Clear board (for everyone)”, offline quick-tools swap, AI precondition banner).
 **Install (dev-only).** Add`@playwright/test`as a **root** devDependency and run`npm run e2e:install`once on CI or new machines. Note: On restricted shells, use`playwright install chromium`instead of`--with-deps`.
-**Scripts (root `package.json`).\*\*
+**Scripts (root `package.json`).**
 
+- `"test": "npm run test --workspace=client && npm run test --workspace=server"`
+- `"test:watch": "concurrently \"npm run test:watch --workspace=client\" \"npm run test:watch --workspace=server\""`
+- `"test:coverage": "npm run test:coverage --workspace=client && npm run test:coverage --workspace=server"`
 - `"test:e2e": "playwright test"`
 - `"test:e2e:ui": "playwright test --ui"`
 - `"test:e2e:report": "playwright show-report"`
-- `"e2e:install": "playwright install --with-deps"` (Note: On restricted shells, use `"playwright install chromium")
+- `"e2e:install": "playwright install chromium"` (Note: On restricted shells, use `"playwright install chromium")
 - `"e2e:serve": "npm run build && node server/dist/index.js"`
   **Config (`playwright.config.ts`, at repo root).**
 

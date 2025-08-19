@@ -14,10 +14,12 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 ### ✅ Phase 0: Complete - Repository Setup
 
 - Monorepo with client/server workspaces
-- Build pipeline with asset bundling (`scripts/copy-client-dist.mjs`)
+- Build pipeline with Vite 5.4.19 and asset bundling (`scripts/copy-client-dist.mjs`)
 - TypeScript, ESLint, Prettier configuration
-- Husky pre-commit hooks (<5s execution)
+- Husky pre-commit hooks (<5s execution) with lint-staged for automatic formatting
+- Vitest unit testing infrastructure with coverage support
 - Playwright E2E test infrastructure
+- Development server with hot module replacement (HMR)
 
 ### ✅ Phase 1: Complete - Server Foundation
 
@@ -29,7 +31,7 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Sentry integration (8.55.0) with privacy protections
 - Health check endpoints (/healthz, /readyz)
 
-### 🚧 Phase 2: In Progress - Client Foundation
+### ✅ Phase 2: Complete - Client Foundation
 
 - React Router DOM (7.8.0) for SPA routing
 - Yjs providers: y-websocket (3.0.0) + y-indexeddb (9.0.12)
@@ -39,6 +41,9 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 - Mobile view-only gating (capability-based)
 - Copy link functionality with toast notifications
 - Users avatar stack and modal
+- Vitest testing infrastructure with @testing-library/react
+- Unit test coverage for both client and server
+- Architecture guards to prevent temporal fragmentation
 
 ### ✅ Phase 7: Complete - PWA & Offline Support
 
@@ -91,7 +96,7 @@ Avlo is a link-based, account-less, offline-first, real-time collaborative white
 
 **Server:** Node.js (ESM), Express 4.21.2, TypeScript 5.9.2, Prisma 5.22.0/PostgreSQL, Redis 5.8.1, @y/websocket-server 0.1.1, WebSocket (ws 8.18.3), Sentry 8.55.0, Pino 9.9.0, Helmet 8.1.0
 
-**Tools:** Playwright 1.45.0, ESLint 9.17.0, Prettier 3.6.2, Husky 9.1.7, Concurrently 9.0.0
+**Tools:** Playwright 1.45.0, Vitest 3.2.4, @testing-library/react 16.3.0, ESLint 9.33.0, Prettier 3.6.2, Husky 9.1.7, Concurrently 9.0.0, lint-staged 16.1.5
 
 ## Project Structure
 
@@ -117,11 +122,16 @@ avlo/
 ## Essential Commands
 
 ```bash
-npm run dev                # Start both client and server
-npm run build              # Build both + bundle assets
-npm run test:e2e           # Run Playwright tests
+npm run dev                # Start both client (Vite dev server) and server
+npm run build              # Build both client (Vite) and server + bundle assets
+npm run test               # Run Vitest unit tests for both workspaces
+npm run test:watch         # Run Vitest in watch mode
+npm run test:coverage      # Run tests with coverage reports
+npm run test:e2e           # Run Playwright E2E tests
 npm run db:migrate         # Apply migrations (dev)
-npm run typecheck          # TypeScript checking
+npm run typecheck          # TypeScript checking for both workspaces
+npm run lint               # Run ESLint
+npm run format             # Run Prettier formatting
 ```
 
 ## Environment Variables
@@ -139,6 +149,8 @@ SENTRY_DSN=                # Optional
 - **Naming**: Components (PascalCase), hooks (use\*), constants (UPPER_SNAKE)
 - **Style**: TypeScript strict, functional components, async/await, NO COMMENTS
 - **Formatting**: 2 spaces, single quotes, semicolons (Prettier enforced)
+- **Pre-commit**: ESLint fix + Prettier formatting on staged files via lint-staged
+- **Testing**: Vitest for unit tests, Playwright for E2E tests
 
 ## Critical Implementation Rules
 
@@ -223,15 +235,7 @@ Redis stores authoritative Yjs doc (gzip-4); PostgreSQL stores metadata only.
 
 ## Next Implementation Steps
 
-1. **Phase 2** (Client Foundation - Current):
-   - Complete React Router DOM routing
-   - Wire up Yjs providers and room management
-   - Implement presence system
-   - Add connection status indicators
-   - Create split view UI shell
-   - Add mobile view-only detection
-
-2. **Phase 3** (Canvas & Drawing):
+1. **Phase 3** (Canvas & Drawing - Current):
    - Implement canvas renderer with RBush indexing
    - Add drawing tools (Pen, Highlighter, Stamps)
    - Create text tool with local preview

@@ -174,7 +174,7 @@ describe('Room Routes', () => {
 
   describe('PUT /api/rooms/:id', () => {
     it('should update room title', async () => {
-      app.put('/api/rooms/:id', (req, res) => {
+      app.put('/api/rooms/:id', (_req, res) => {
         if (!req.body.title) {
           res.status(400).json({ error: 'Title is required' });
         } else {
@@ -190,7 +190,7 @@ describe('Room Routes', () => {
     });
 
     it('should validate title length (max 120 chars)', async () => {
-      app.put('/api/rooms/:id', (req, res) => {
+      app.put('/api/rooms/:id', (_req, res) => {
         const title = req.body.title;
         if (!title) {
           res.status(400).json({ error: 'Title is required' });
@@ -210,7 +210,7 @@ describe('Room Routes', () => {
     });
 
     it('should return 404 if room does not exist', async () => {
-      app.put('/api/rooms/:id', (req, res) => {
+      app.put('/api/rooms/:id', (_req, res) => {
         const roomExists = false;
         
         if (!roomExists) {
@@ -230,7 +230,7 @@ describe('Room Routes', () => {
     it('should enforce rate limiting', async () => {
       let requestCount = 0;
       
-      app.put('/api/rooms/:id', (req, res) => {
+      app.put('/api/rooms/:id', (_req, res) => {
         requestCount++;
         if (requestCount > 10) {
           res.status(429).json({ error: 'Too many requests' });

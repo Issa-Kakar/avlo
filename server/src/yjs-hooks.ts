@@ -57,19 +57,27 @@ async function flush(roomId: string, producer: () => Uint8Array) {
     const isReadOnly = bytes >= HARD_CAP;
     if (!isReadOnly) {
       await redis.set(`room:${roomId}`, compressed as Buffer, { EX: TTL_SECONDS });
-      await prisma.room.upsert({
-        where: { id: roomId },
-        update: { sizeBytes: bytes, lastWriteAt: new Date() },
-        create: {
-          id: roomId,
-          title: roomId,
-          createdAt: new Date(),
-          lastWriteAt: new Date(),
-          sizeBytes: bytes,
-        },
-      });
       crumb('redis_write_accept');
       count('redis_write_accept', 'persistence');
+      
+      // Try to update PostgreSQL metadata, but don't fail if it's unavailable
+      try {
+        await prisma.room.upsert({
+          where: { id: roomId },
+          update: { sizeBytes: bytes, lastWriteAt: new Date() },
+          create: {
+            id: roomId,
+            title: roomId,
+            createdAt: new Date(),
+            lastWriteAt: new Date(),
+            sizeBytes: bytes,
+          },
+        });
+      } catch (pgError) {
+        // Log but don't throw - Redis is authoritative
+        console.warn(`Failed to update PostgreSQL metadata for room ${roomId}:`, pgError);
+        count('postgres_metadata_update_fail', 'persistence');
+      }
     } else {
       crumb('redis_write_skip_readonly', 'persistence', 'warning');
       count('redis_write_skip_readonly', 'persistence');

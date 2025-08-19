@@ -61,7 +61,7 @@ console.log(`Copied client/dist → server/public`);
 **Substeps**
 
 1. Create workspaces and commit the root `package.json` and `scripts/copy-client-dist.mjs`.
-2. Add CI (e.g., GitHub Actions): Node setup → `npm ci` → `npm run build` → `npm run test:e2e` on PRs. Cache Playwright browsers + Node modules.
+2. Add CI (e.g., GitHub Actions): Node setup → `npm ci` → `npm run build` → `npm run test` → `npm run test:e2e` on PRs. Cache Playwright browsers + Node modules.
 3. Ensure Playwright webServer starts `npm run e2e:serve` for E2E runs in CI.
 
 **Acceptance checks**

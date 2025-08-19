@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 
@@ -61,7 +61,7 @@ describe('Connection State', () => {
         return <div role="status">{state}</div>;
       };
       
-      const { rerender } = render(<ConnectionIndicator />);
+      render(<ConnectionIndicator />);
       
       expect(screen.getByRole('status')).toHaveTextContent('Online');
       

@@ -81,7 +81,9 @@ describe('PresenceModel', () => {
         
         if (remoteCursors.size >= 20) {
           const firstKey = remoteCursors.keys().next().value;
-          remoteCursors.delete(firstKey);
+          if (firstKey !== undefined) {
+            remoteCursors.delete(firstKey);
+          }
         }
         
         remoteCursors.set(userId, {

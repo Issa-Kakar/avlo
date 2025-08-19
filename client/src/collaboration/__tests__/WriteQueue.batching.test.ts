@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as Y from 'yjs';
 
 describe('WriteQueue', () => {
@@ -86,6 +86,7 @@ describe('WriteQueue', () => {
 
   describe('frame size validation', () => {
     it('should reject frames larger than 2MB', () => {
+      const doc = new Y.Doc({ guid: 'frame-size-test' });
       const largeData = 'x'.repeat(2 * 1024 * 1024 + 1);
       
       expect(() => {
@@ -94,6 +95,8 @@ describe('WriteQueue', () => {
           map.set('large', largeData);
         });
       }).toThrow();
+      
+      doc.destroy();
     });
   });
 });
