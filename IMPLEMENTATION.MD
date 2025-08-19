@@ -59,6 +59,34 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 ## Phase 2: Core Data Layer & Models
 
+Out of scope
+Any UI components, canvas work, or network providers—this phase is models + plumbing only. 
+Multi-node scaling, auth/permissions, or admin tooling. 
+
+Constraints
+UI must not import yjs/providers; expose access only through RoomDocManager + hooks. Snapshots are immutable and never null. 
+Authoritative storage is Redis (TTL-based); Postgres is non-authoritative metadata only. 
+Store stroke points as number[] in Yjs; create Float32Array only at render time. 
+Enforce budgets in WriteQueue.validate: MAX_POINTS_PER_STROKE=10k, encoded update < 128 KB, text ≤ 500 chars. 
+UI components must not import Yjs/providers directly; all mutations go through WriteQueue → CommandBus; snapshots are immutable. 
+Store numeric arrays in Yjs as number[]; only create Float32Array at render time. 
+Command limits: ≤10,000 points per stroke; code ≤200KB; text ≤500 chars; specific server rate limits apply later. 
+Snapshot publish loop max 60fps; coalesce updates within ~8–16ms; drop to ~8fps when tab hidden.
+Y.Doc({guid:roomId}) must equal resolved roomId; never mutate guid.
+Snapshot builder must be O(changes), publish ≤1/rAF, and freeze in dev.
+All commands carry idempotencyKey; duplicates discard without side-effects.
+Validation guards cover MAX_TOTAL_STROKES and per-command rate limits.
+
+Things to watch out for
+Single consumer for yjs.transact; coalesce within a transact; yield if > 8 ms to avoid jank. 
+Backpressure: widen micro-batch window to 24–32 ms when queue grows; drop superseded deltas.
+Always emit an initial EmptySnapshot; never allow null snapshot. 
+Enforce queue backpressure (max ~100 pending) and idempotency to prevent duplicate writes. 
+Keep Yjs state-vector–derived svKey stable to avoid spurious re-renders.
+Re-entrancy of observers during batch updates.
+Publish thrash when micro-batching windows widen; keep ≤32 ms under pressure.
+Memory pressure from large arrays; avoid accidental Float32Array retention.
+
 ### 2.1 Define TypeScript Types and Interfaces
 1. Create shared types file with all data models from Section 4:
    - StrokeId, TextId, SceneIdx type aliases
@@ -139,6 +167,28 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 
 ---
 ## Phase 3: Canvas Rendering & Drawing System
+Out of scope
+Partial/soft eraser, shape editing/selection, image uploads. (Whole-stroke eraser only; shapes later.) Presence/awareness rendering (Phase 4).  Tools like text/eraser/clear-board (Phase 6).
+
+Constraints 
+Commit on pointer-up via DrawStrokeCommit; no writes during preview. 
+Simplify in world units (Douglas–Peucker); keep encoded update < 128 KB. 
+Maintain strict draw order (strokes → stamps → text → cursors/overlays). 
+World/canvas/screen spaces must remain distinct; store everything in world coords; apply transforms at render time only. 
+Zoom limits 0.1×–10×; maintain strict draw order (bg → strokes → stamps → text → cursors → UI). 
+LOD rules: skip/simplify sub-pixel strokes; preview layer must not write to Yjs.
+All geometry in world units; DPR only affects canvas scale at paint time.
+Strict draw order never changes (including overlays/minimap).
+Preview layer MUST be cleared deterministically on pointer-up/cancel.
+
+Things to watch out for
+Device-pixel-ratio sizing and transform correctness across 0.5×/1×/2× zoom. 
+Dirty-rect and culling to stay within frame budget (ties into Phase 10 perf).
+Commit size: encoded stroke must be <128KB before submit. 
+DevicePixelRatio math—rounding errors can cause blurring; debounce resize. 
+Keep 60fps target; use dirty rects/culling aggressively. 
+GC churn from per-frame path construction; reuse buffers where safe.
+High-DPI rounding errors at extreme zoom; verify hit-tests at 0.5×/10×.
 
 ### 3.1 Set Up Canvas Infrastructure
 1. Create main canvas element with proper sizing:
@@ -236,6 +286,22 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 
 ## Phase 4: Real-time Collaboration Infrastructure
+Out of scope
+WebRTC/P2P transport and direct pairing—those land in Phase 9. 
+Constraints
+WebSocket is the authoritative path; inbound frame cap 2 MB; origin allowlist required. 
+Awareness is ephemeral (never persisted); throttle ~30 Hz with dynamic interval + jitter. 
+Reconnect with backoff (300 ms→20 s, ±20% jitter). 
+Server limits: ≤105 clients/room; ≤8 concurrent/IP; 2MB inbound frame. 
+Reconnect backoff: exp(300ms base) with jitter; reset after 30s stable. 
+Awareness: base ~30Hz; dynamic interval 50–150ms w/ ±10ms jitter; never persisted. 
+Things to watch out for
+Drop old awareness frames by seq; skip under backpressure. 
+Multi-tab primary election (BroadcastChannel) to avoid double TTL extensions.
+Emit specific error envelopes (room_full, room_full_readonly, offline_delta_too_large). 
+Multi-tab: primary handles awareness/TTL; secondaries are receive-only; promote within ~1s on primary exit. 
+Don’t attempt persistence via WS here; WS is authoritative path but data durability is Phase 5.
+Reconnect thundering-herd; jittered backoff and roster debounce.
 
 ### 4.1 Set Up WebSocket Server
 1. Install @y/websocket-server (v0.1.x) on server
@@ -339,8 +405,26 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 - Multi-tab coordination
 
 ---
-
 ## Phase 5: Persistence & Storage Layer
+Out of scope
+Recovery of expired rooms; cold storage beyond TTL; multi-node Redis. PWA caching (Phase 8) and WebRTC transport (Phase 9).  UI features (Phase 6) and code execution (Phase 7). 
+
+Constraints
+Redis is source of truth; gzip level 4; ROOM_TTL_DAYS=14 extended only on accepted writes. 
+8 MB warning pill; 10 MB hard cap makes room read-only. 
+Batch flushes every 2–3 s; final flush on SIGTERM (3 s grace). 
+Postgres: non-authoritative metadata; return 404 if Redis key missing. 
+Redis is the single source of truth; PostgreSQL is non-authoritative. Return 404 when Redis key missing. 
+TTL defaults to 14 days; extend only on accepted writes (never on reads/awareness). 
+Batch flushes every ~2–3s; flush on SIGTERM (3s grace); track sizes post-compression (gzip level 4). 
+IDB: proceed if load >2s; rehydrate in background; batch writes per frame.
+
+Things to watch out for
+Use persist-ack from server (size_bytes, new TTL) to drive pills/banners. 
+Guard against “large offline delta” on reconnect; surface clear recovery UX.
+Alias mapping (local-* → server ids) and provisional room flows during publish. 
+TTL extension command must be minimal and rate-limited (~10 min). 
+Rate limit APIs (e.g., 10 rooms/hour/IP; 5 renames/min).
 
 ### 5.1 Set Up Redis for Authoritative Storage
 1. Configure Redis instance with:
@@ -456,6 +540,21 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 
 ## Phase 6: UI Components & Tools
+Out of scope
+Auto-panning due to remote actions; any auth UX; mobile editing (MVP is view-only). Editor/code execution (Phase 7), PWA (Phase 8), and RTC (Phase 9).
+Constraints
+Whole-object eraser only(with preview, stroke lightens on touch and erases on mouse release); text becomes immutable on commit (≤500 chars). 
+“Clear board” appends a scene tick (excluded from undo/redo) and is rate-limited. 
+Show ≥8 MB size pill, enforce read-only at 10 MB. 
+Eraser is whole-object only; must integrate with RBush hit-testing. 
+Text: single commit (immutable after), ≤500 chars. 
+Clear Board appends a scene tick, not undoable; server rate-limited (1/15s). 
+PNG export: edge ≤8192px; white bg; 24px padding; 2s full-board timeout then fallback. 
+Things to watch out for
+Accessibility on sliders/popovers; never auto-reveal toolbar while drawing. 
+Gate minimap/export on G_FIRST_SNAPSHOT to avoid null state. 
+Exclude presence/UI overlays from export/clipboard. 
+Keep undo/redo per-user (device:tab).
 
 ### 6.1 Build Toolbar System
 1. Create docked toolbar component:
@@ -595,6 +694,14 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 
 ## Phase 7: Code Execution System
+Out of scope
+Any network/FS access inside workers(workers are sandboxed); persistent notebooks; multi-file projects.  
+Constraints
+Fresh worker per run; 5 s timeout; output ≤ 10 KB per run; keep last 10 outputs, total ≤ 128 KB. 
+Pyodide 0.26.4; warm on desktop only; skip on constrained devices. 
+Things to watch out for
+Versioned code-cell updates; handle concurrency with version tokens to avoid stale writes. 
+Large asset downloads (Monaco/Pyodide) interplay with PWA caching from Phase 8.
 
 ### 7.1 Integrate Monaco Editor
 1. Set up Monaco with lazy loading:
@@ -674,10 +781,23 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 - Python execution via Pyodide
 - Output capture and display
 - Proper isolation and timeouts
-
 ---
 
 ## Phase 8: PWA & Service Worker
+Out of scope
+Caching /api/**, /yjs/**, or any WebSocket traffic. 
+
+Constraints
+Versioned caches; separate buckets (app-shell-vN, offline-pack-vN, avatars-thumbs-vN, media-cache-vN). 
+Runtime strategies: allowlisted CDN media via SWR; avatars/thumbnails SWR unless immutable. Caps and eviction rules apply. 
+Respect storage/save-data; quota handling must evict LRU from media cache and expose a “Clear offline data”.
+Cache-first only for app shell; version cache names; delete old caches on activate. 
+Show update prompts and allow skip-waiting flow; handle multi-tab upgrades cleanly. 
+Manifest must include correct icon sizes, standalone display, theme/background colors.
+
+Things to watch out for
+Install/activate/warmup flow correctness; updates prompt users safely, but silently warm Pyodide for professional UI/UX.
+Don’t cache server-driven flags in SW; precache Monaco and heavy lazies with idle cue
 
 ### 8.1 Create Service Worker Foundation
 1. Set up Service Worker registration:
@@ -767,6 +887,15 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 
 ## Phase 9: WebRTC & Peer-to-Peer Enhancement
+Out of scope
+Starting RTC in large rooms (>15 peers), or when direct pairing mode is chosen (they’re mutually exclusive with provider signaling). Do not make y-webrtc authoritative, Websocket stays authoritative.
+Constraints
+Only enable y-webrtc for ≤12 peers; keep WS connected as the source-of-record. 
+Probe policy: keep RTC only if rtcMedianRtt ≤ wsRtt − 20 ms (or WS ≥ 70 ms and RTC < WS); add hysteresis. 
+Deduplicate awareness across WS/RTC via monotonic seq and short debounce. 
+Things to watch out for
+Drop RTC on peer-count > 15, ICE fail, CPU hot, or high bufferedAmount. 
+When Peer Mode (direct pairing) is active, do not instantiate WebrtcProvider; reflect mode in UI.
 
 ### 9.1 Set Up WebRTC Infrastructure
 1. Configure TURN server:
@@ -853,7 +982,18 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ---
 
 ## Phase 10: Production Polish & Optimization
+Out of scope
+Feature additions beyond MVP scope (auth, admin tools, cold storage). Focus on polish, perf, security, deploy. 
 
+Constraints
+Targets: p95 collaboration latency ≤125 ms, 60 FPS rendering; persist lag p95 ≤3000 ms (hard cap 5000 ms). 
+Mobile is view-only for MVP. Enforce in WriteQueue + UI. 
+Security headers (CSP, HSTS after TLS), origin allowlist, rate limiting per IP. 
+
+Things to watch out for
+Instrument the custom metrics: probe results, awareness drops/skip counts, WS sync timings, queue length, snapshot FPS. 
+
+Production deploy on a single container (Railway). No NGINX. Ensure final flush/TTL janitor.
 ### 10.1 Implement Observability
 1. Set up Sentry integration:
    - Error tracking
@@ -990,6 +1130,13 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 8. No authentication system - link-based access only
 9. Awareness is never persisted
 10. TTL extends only on accepted writes, not reads
+11. Never apply any async work against a mismatched svKey. 
+12. Never exceed the 2 MB inbound WS frame cap—close with 1009 and surface a clear error. 
+13. Never relax the 8 MB warn / 10 MB read-only gates by “one-off” logic. 
+14. Never let RTC decide authority or remain up when probe shows no win; WS stays connected regardless. 
+15. Never persist or replay awareness. It is ephemeral and lossy by design. 
+16. Never cache /api/**, /yjs/**, or any wss: traffic in the Service Worker. 
+17. Never accept UI imports of Yjs/providers in components—enforce via no-restricted-imports.
 
 ### Performance Targets:
 - p95 collaboration latency ≤ 125ms with 50 users
@@ -1004,7 +1151,16 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 - Immutable snapshot-based rendering
 - Per-user undo/redo scoping
 - Progressive enhancement (start with WS, add RTC if beneficial)
-
+- Idempotent-by-key writes. Every command carries an idempotencyKey; duplicates must be dropped before yjs.transact(...). (aligns with WriteQueue semantics) 
+- Command-bus isolation. UI never calls Y APIs; the only write path is WriteQueue → CommandBus → single transact. (restates rule as a principle, not policy) 
+- Snapshot-first rendering. All reads use immutable Snapshot objects; no UI keeps references to live Y data across frames. 
+- svKey-gated async. Any async apply (export, probe, layout, code output) must verify svKey === currentSnapshot.svKey or drop. 
+- Authority never bifurcates. WS/Redis remain source-of-record; RTC can accelerate fan-out but never become authoritative. 
+- Budgeted concurrency. Subsystems publish explicit budgets (frame ≤ 16 ms; encoded delta < 128 KB; write queue ≤ 100; awareness Hz degrades with N) and shed work predictably when exceeded. 
+- Primary-tab primacy. One tab per room owns TTL extension & RTC orchestration; others are passive. 
+- Forward-only evolution. Schema & storage changes define forward-only migrators; never mutate historical Y data in place (migrate-on-read if necessary).
+- Typed protocol envelopes. Envelopes are additive & versioned; extend via optional fields, never breaking existing parsers. 
+- Fail-closed gates. If a gate condition is ambiguous, treat the feature as closed (e.g., G_FIRST_SNAPSHOT, G_WS_CONNECTED).
 ---
 
 ## Success Criteria Checklist
