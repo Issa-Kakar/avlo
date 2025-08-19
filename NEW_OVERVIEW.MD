@@ -37,7 +37,7 @@ Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTM
 ---
 # 2. System Architecture Overview
 
-**High-level.** Client (React/TS, Canvas, Monaco, Pyodide, `y-indexeddb`) ⇄ `y-websocket` server (official) ⇄ Redis (AOF) with configurable TTL (`ROOM_TTL_DAYS`, default: 14). WebSocket carries Yjs doc updates + awareness; HTTP serves room creation and metadata (Prisma/PostgreSQL). Single-container deployment (Railway).
+**High-level.** Client (React/TS, Canvas, Monaco, Pyodide, `y-indexeddb`) ⇄ `y-websocket` server (official)(OPTIONAL webrtc) ⇄ Redis (AOF) with configurable TTL (`ROOM_TTL_DAYS`, default: 14). WebSocket carries Yjs doc updates + awareness; HTTP serves room creation and metadata (Prisma/PostgreSQL). Single-container deployment (Railway).
 
 **Data Paths:**
 - **Authoritative path**: Client `WriteQueue` → `yjs.transact` → y-js struct update → `y-websocket` → server adapter → Redis compressed doc (AOF) → metadata sizing
@@ -77,22 +77,16 @@ y-websocket URL mapping (client builds baseUrl + '/' + roomId, server expects /w
 export interface RoomDocManager {
   /** Immutable view published at most once per rAF (or batch). */
   readonly currentSnapshot: Snapshot;
-  
   /** Subscribe to immutable Snapshots (≤ 60 FPS). */
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
-  
   /** Throttled presence view; also injected into Snapshot. */
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
-  
   /** Advisory size/cap readings (bytes = last persisted compressed size). */
   subscribeRoomStats(cb: (s: { bytes: number; cap: number } | null) => void): Unsub;
-  
   /** Single entry to mutate authoritative state. Runs in one yjs.transact. */
   write(cmd: Command): void;
-  
   /** Force a TTL extension (tiny no-op write); client-rate-limited. */
   extendTTL(): void;
-  
   /** Lifecycle */
   destroy(): void;
 }
@@ -128,6 +122,8 @@ export interface RoomDocManager {
 — **RTC optimization.** When RTC is active, cap awareness to **20-30 Hz** base; if `dataChannel.bufferedAmount > 128KB`, temporarily reduce to ~15 Hz; **drop** instead of queueing under pressure.
 — **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only.
 **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.write(...)`.
+**P2P assist (small rooms):** Client y-webrtc DataChannel → other clients apply updates locally; WS remains connected and persists whatever lands in the local Y.Doc (RTC never persists).When awareness uses RTC, the client still maintains WS awareness subscription for seamless fallback.
+
 **Lifecycle.**
 
 * **Create (offline-first):** generate `local-<ulid>`, construct `Y.Doc`, attach `y-indexeddb`, list in **My Rooms** with `provisional: true`.
