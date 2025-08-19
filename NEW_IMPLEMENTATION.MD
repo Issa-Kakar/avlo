@@ -26,11 +26,11 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 3. Create build script that runs client build first, then server build
 4. Set up watch mode for development with concurrent client and server processes
 5. Configure environment variable loading with dotenv
-6. Create Docker configuration for single-container deployment
+
 
 ### 1.3 Set Up Development Environment
 1. Configure ESLint with strict rules including:
-   - `no-restricted-imports` rule blocking direct imports of yjs, y-websocket, y-indexeddb in UI code
+   - `no-restricted-imports` rule blocking direct imports of yjs, y-webrtc, y-websocket, y-indexeddb in UI code
    - TypeScript strict mode enabled
    - React hooks rules
 2. Set up Prettier with consistent formatting rules
@@ -954,8 +954,7 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
    - PostgreSQL with backups
    - Monitoring setup
 2. Set up deployment pipeline:
-   - Docker container build
-   - Railway configuration
+   - Railway configuration (NO NGINX)
    - Health checks
    - Rollback plan
 3. Create operational runbook:
