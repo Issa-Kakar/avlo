@@ -55,7 +55,7 @@ Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTM
 **Transport (normative additions).**
 
 — **Authority & transport.** Authority & transport. WebSocket remains the authoritative persistence path. y-webrtc may propagate updates P2P to reduce latency in small rooms; the WS provider persists whatever lands in the local Y.Doc. (WS stays connected even when P2P is active.)
-
+y-websocket URL mapping (client builds baseUrl + '/' + roomId, server expects /ws/<roomId>; set baseUrl to ws://host/ws
 — **Probe & keep.** On join (or toggle), run a ~2.5 s RTT probe using `currentRoundTripTime` for RTC and measured WS RTT. Keep RTC only if `rtcMedianRtt ≤ wsRtt − 20 ms` or (`wsRtt ≥ 70 ms` and `rtcMedianRtt < wsRtt`); else **tear down Y-WEBRTC** and stay WS-only. Use hysteresis to avoid flapping.
 
 — **Peer cap & health.** **Do not** start y-webrtc when peers > 15 (default). If peers grow past the cap or CPU overheats, **drop y-webrtc**. If ICE transitions to `failed`/`disconnected` (> 5 s), **drop y-webrtc** and continue on WS.
@@ -68,7 +68,8 @@ Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTM
 
 **Provider initialization races:** see **Initialization & Gates** for canonical order and gates.
 ---
-# 3. The RoomDocManager Model (Unified)
+
+# 3. **The RoomDocManager Model (Unified)**
 **Principle.** Components must not receive `Y.Doc`, providers, or awareness. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame` or per batched Yjs update; no component reads live Y structures. Writes are coarse-grained: pointer-up commits whole stroke; eraser deletes a set in one transaction. Awareness is ephemeral, throttled, and injected into snapshots.
 
 ```typescript
@@ -97,7 +98,7 @@ export interface RoomDocManager {
 }
 ```
 **Ownership**
-- `RoomDocManager` **owns**: `Y.Doc`, `y-indexeddb` provider, `y-websocket` provider, optional RTC awareness channel, `WriteQueue`, `CommandBus`, `RBush` index, and publish loop.
+- `RoomDocManager` **owns**: `Y.Doc`, `y-indexeddb` provider, `y-websocket` provider, y-webrtc optional RTC awareness channel, `WriteQueue`, `CommandBus`, `RBush` index, and publish loop.
 - **UI code MAY NOT import `yjs`, providers, or mutate Y types**. ESLint rule enforced (`no-restricted-imports`).
 
 **Publishing discipline**
@@ -120,12 +121,13 @@ export interface RoomDocManager {
 * `room.extendTTL(): void` — minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side).
 **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time.
 **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+
 **Awareness (normative additions).**
 — **Cadence & throttling.** Awareness send interval per client:
 `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N.
 — **RTC optimization.** When RTC is active, cap awareness to **20-30 Hz** base; if `dataChannel.bufferedAmount > 128KB`, temporarily reduce to ~15 Hz; **drop** instead of queueing under pressure.
 — **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only.
-**ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` via `no-restricted-imports`; access goes exclusively through hooks and `room.write(...)`.
+**ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.write(...)`.
 **Lifecycle.**
 
 * **Create (offline-first):** generate `local-<ulid>`, construct `Y.Doc`, attach `y-indexeddb`, list in **My Rooms** with `provisional: true`.
@@ -345,7 +347,7 @@ Auto mode (default): start WS immediately; for rooms ≤ 12 peers, also bring up
 Treat RTC default-on for small rooms as justified **only if** median `rtc_probe_delta_ms` > **20 ms** and `cursor_render_gap_ms_p95` improves by **>25%** for rooms ≤ 12.
 ---
 
-# 8. Data Architecture & Flows
+# 8. **Data Architecture & Flows**
 **Stores.** Yjs doc (authoritative) → Redis TTL; Awareness → WS only; IndexedDB → per-room `Y.Doc`, **My Rooms**, aliases; localStorage → device-local UI state (toolbar, AI panel). PostgreSQL → non-authoritative metadata.
 
 **Write Queue Pattern (critical).** All mutations pass `WriteQueue.validate()` (read-only, view-only, frame size) → batch → single `yjs.transact()` per logical op → DocManager notified → frozen snapshot published. Strokes/text/eraser/scene-tick/export/outputs/extend/AI-Apply all follow this pipeline with hashed-span preconditions where applicable.
@@ -382,10 +384,48 @@ Include variants: **offline**, **oversize**, **capacity full**, **WS disconnecte
 — **Micro-batching.** Coalesce Yjs updates into **8-16 ms** frames, expanding to **24-32 ms** under backpressure; apply the same windowing regardless of transport.
 — **IndexedDB snapshots.** Persist last-known render snapshot keyed by Yjs state vector; on load, if vectors match, render snapshot immediately while live components initialize; otherwise skip snapshot.
 — **IDB write/read strategy.** Batch writes once per frame or when queue ≥ **1,000** strokes; perform chunked reads via `getAll/getAllKeys` in **1k-5k** record chunks, yielding to the event loop between chunks.
----
 
+## **Additional Essential Data Flows**
+
+1. **Persist‑ack → UI stats refresh (authoritative read path)**
+   After a write is durably flushed, the server emits a `persist_ack` (including doc size, new TTL, and current state vector key). The client treats this as the source of truth for pills/banners and re‑computes the header stats from the ack, not from local estimates.
+2. **TTL extension semantics (and no‑ops)**
+   Only accepted *writes* extend TTL; passive views, awareness pings, or failed writes do **not**. The client updates the “expires in …” indicator on ack and shows a distinct affordance if the TTL is within the warning window.
+3. **Redis flush window → Postgres backfill**
+   Writes land in Redis first (room existence + content) and are flushed in a window. Postgres is updated with metadata (`sizeBytes`, `lastWriteAt`) for list/read APIs. If Postgres is temporarily unavailable, Redis still governs room truth; on recovery, a backfill corrects metadata.
+4. **Oversize & backpressure (pre‑write guardrail)**
+   The client estimates payload size before sending. If above soft limit, warn; if above hard limit, block and offer guidance. When backpressure is active, awareness signals are coalesced/dropped so foreground edits keep bandwidth.
+5. **Large offline delta (resume guardrail)**
+   On reconnect, if the pending local delta exceeds a safe threshold, the client surfaces a clear error and proposes actions (refresh, rejoin, or manual export) instead of attempting a risky merge.
+6. **Awareness authority & dedupe across WS/RTC**
+   Awareness is rate‑limited and digested on send; the server applies drop rules and forwards a deduped stream. Receivers interpolate cursors/avatars smoothly. The WS roster is the peer count source of truth even when RTC is active, preventing double‑counting.
+7. **ICE/TURN credential delivery + refresh**
+   Clients fetch time‑boxed TURN credentials from the server. Before expiry, they refresh; on failure, they fall back to server‑mediated transport (WS) without breaking the editing session.
+
+8. **Offline‑first publish & alias resolution**
+   Local creation yields a room with a provisional alias. On first sync: server allocates the canonical room key, merges content, and resolves the alias mapping. Clients store both (for backlinks and history) but render only the canonical alias going forward.
+9. **Expiry → local cleanup UX**
+   When a room expires (Redis TTL), metadata reads 404. The client removes server mappings, keeps the local Y.Doc (with a banner explaining the state), and offers a one‑click “create new room from local copy.”
+10. **Schema/versioning & migrations**
+    Docs carry a schema/state‑vector key. On open, the client migrates older schemas, writes the migrated shape, and re‑keys snapshots/IDB entries. Hard mismatches trigger a soft‑fail with export instructions rather than corrupting content.
+11. **Code‑cell concurrency & conflicts**
+    Code cell submissions include a version token. Server accepts if current; otherwise, it rejects with “stale version,” prompting the client to refresh cell input or switch that lane to CRDT if configured.
+12. **Observability routing (metrics & logs)**
+    Client and server emit counters/histograms with bounded cardinality (room IDs hashed; no content or PII). Errors go to the logging sink; flow‑level timings (persist, ack, export) power SLO dashboards.
+13. **Security envelope for link access**
+    Enforce origin allowlist, per‑room capacity/size gates, and rate limits. No bearer tokens in links; mitigate abuse via transport limits (frame caps, bandwidth ceilings) and server‑side validation on write paths.
+14. **Export pipeline & graceful fallbacks**
+    Export requests stream results in chunks to avoid UI stalls. If a full export exceeds budget, the client offers a viewport‑only export with a note explaining the trade‑off and emits telemetry
+15. **Shutdown flush & startup replay expectations**
+    On SIGTERM, the service drains in‑flight writes and flushes. On startup, rooms exist iff their Redis keys exist; there’s no replay beyond the durable store, so operators should not expect reconstruction from logs.
+---
+### Notes for Readers
+* The exact limits (payload sizes, TTL warning window, flush intervals) live with the **Limits & Thresholds** section; this page only states the flows.
+* Error banners/tooltips quote friendly user guidance; structured error codes go to telemetry for diagnostics.
+
+---
 # 9. Dependencies & Integrations
-**Hard MVP.** Yjs, `y-websocket`, `y-indexeddb`, Monaco, Pyodide, Redis, Prisma, PostgreSQL; vendored static assets for Monaco & Pyodide; Playwright for E2E; ESLint/Prettier/Husky/lint-staged in dev; plus internal canvas/minimap/toast/PWA assets.
+**Hard MVP.** Yjs, `y-websocket`, `y-indexeddb`, 'y-webrtc', Monaco, Pyodide, Redis, Prisma, PostgreSQL; vendored static assets for Monaco & Pyodide; Playwright for E2E; ESLint/Prettier/Husky/lint-staged in dev; plus internal canvas/minimap/toast/PWA assets.
 **Exact versions:**
 - `y-websocket@3.x` browser + `@y/websocket-server@0.1.x` server (no y-leveldb at runtime)
 - Redis 5.8.1 AOF enabled; gzip level 4; `size_bytes` = compressed length
@@ -755,13 +795,11 @@ export const BACKOFF = {
 
    * Duplicate `ClearBoard` or “select all → delete all” sequences are idempotent; second application is a no-op.
 ---
-
 # Appendix I: Presence vs Snapshot Gating
 **Rendering contracts aligned to §11 Gates:**
 * **Cursors/presence** draw only when **both** `G_AWARENESS_READY` **and** `G_FIRST_SNAPSHOT` are open.
 * If awareness is ready but first snapshot not yet published, show **“Presence degraded”** pill **without** cursors.
 * Export/minimap remain gated per `G_FIRST_SNAPSHOT`.&#x20;
-
 ---
 # Appendix J: WriteQueue Contract (Reentrancy & Budgeting)
 1. **Single consumer.** Only one active `yjs.transact` at a time; concurrent commands are **queued**.
@@ -770,13 +808,11 @@ export const BACKOFF = {
 4. **Backpressure.** If queue length > **Q\_HIGH** (tune empirically), start coarser simplification (Appendix A §5) and widen micro-batch window to **24–32 ms** until recovered. &#x20;
 
 ---
-
 # Appendix K: Awareness Sequencing & Identity
 1. **Sequence domain.** `uint32` with modulo wrap at `2^32`. Compare using unsigned modular arithmetic.
 2. **HELLO handshake.** On (re)join, sender transmits a `HELLO{ clientId, seq }`. Receivers set `lastSeqBySender[clientId]=seq`.
 3. **Identity reset.** On **clientId change** (new tab/reload), sender resets local `seq=0`; receivers treat it as a new sender and reset state for that `clientId`.
 4. **Loss handling.** Missing seqs are **not** retransmitted; receivers rely on **freshness** and de-dup policy (Appendix E).
-
 ---
 # Appendix L: Observability & Telemetry
 Track metrics (labels: `{roomId, clientId, channel={ws,rtc}}`):
@@ -789,7 +825,6 @@ Track metrics (labels: `{roomId, clientId, channel={ws,rtc}}`):
 **Logs:** include drop reasons (`ice_failed`, `signaling_timeout`, `probe_failed`) and backoff attempt index.
 ---
 # Appendix M: Direct Pairing vs Provider Signaling
-
 * **Mutually exclusive with provider-managed signaling.** If using `y-webrtc` provider for RTC, the “Direct (Peer Mode)” WS-mediated offer/answer flow is **not** started.
 * If **Direct (Peer Mode)** is explicitly chosen, do **not** instantiate the `WebrtcProvider`; use the WS code exchange path only for that session. UI must reflect the state (“Peer Mode On (Small Room)” vs “Server”).&#x20;
 
@@ -911,18 +946,15 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 * **Force‑send** on tool change, pointer‑down/up, page switch, or after **250 ms** of silence (heart‑beat for liveness).
 
 ### Server
-
 * Per‑sender, keep `{lastDigest, lastAt}` in memory (LRU by sender).
 * If a new frame arrives where `digest === lastDigest` within **150 ms**, **drop** it (no fan‑out). Update `lastAt` regardless.
 * Always respect `seq` monotonicity for ordering; ignore repeats even if transported via different channels.
 
 ### Edge cases
-
 * On reconnect (new RTC/WS), reset `lastSentDigest` and send a full state snapshot.
 * If we ever increase precision or payload shape, bump the **awareness version** so digests don’t collide.
 
 ### Acceptance checks
-
 * With stationary cursors, sender emits ≤ **4 fps** heart‑beats only.
 * Under rapid motion, transport volume falls vs. naive stream; no visible stall due to missed state changes.
 * No duplicate frames delivered across WS/RTC channel races.
@@ -997,7 +1029,6 @@ Offline→online >2 MB (expect `offline_delta_too_large`); concurrent clears (si
 Batch window; backpressure thresholds; compression level/codec; metadata source of truth (PG vs Redis) + caching; max IDB-gate timeout (2 s suggested); method for rolling `ĉ` (EWMA vs windowed).
 
 ---
-
 # Final Editorial Notes
 
 - Replace any "maybe/likely" with **explicit behavior**.
