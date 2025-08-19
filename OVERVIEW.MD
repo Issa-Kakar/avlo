@@ -204,13 +204,25 @@ interface Meta {
 ```typescript
 interface Awareness {
   userId: string; name: string; color: string;
-  cursor?: { x: number; y: number };            // screen coords, see spaces
+  cursor?: { x: number; y: number };            // world coordinates (always)
   activity: 'idle' | 'drawing' | 'typing';
   seq: number;                                   // monotonic per-sender
-  ts: number;                                    // send time ms
+  ts: number;                                    // send time ms epoch
+  aw_v?: number;                                 // awareness version for evolution
 }
 ```
-### 4.2 Device-local UI State (non-authoritative)
+### 4.2 Timestamp Policy (Global)
+
+**Canonical timestamp formats**:
+- **HTTP/WebSocket JSON**: ISO-8601 UTC strings (e.g., `"2025-08-19T12:34:56Z"`)
+- **CRDT/Document fields**: `number` type (milliseconds since epoch)
+- **Examples**:
+  - REST response: `{ "expires_at": "2025-08-19T12:34:56Z" }`
+  - Yjs document: `{ createdAt: 1724070000123 }`
+  - WS control frame: `{ "ts": "2025-08-19T12:34:56Z" }`
+**WebSocket is hybrid: Yjs updates = binary; control = JSON**
+
+### 4.3 Device-local UI State (non-authoritative)
 
 Stored in `localStorage:key=avlo:v1:ui`
 
@@ -256,16 +268,45 @@ interface DeviceUIState {
 - `GET /api/rooms/{id}/metadata` → public non-sensitive metadata (`title`, `size_bytes`, `expires_at`, `created_at`); return `404` if Redis key missing even if DB row exists.
 - `PUT /api/rooms/{id}` → rename `title`; `429` if more than 5/min.
 
-**WebSocket** (`/ws/<roomId>`, Origin required)
+**WebSocket** (`/ws/<roomId>`, Origin required) - **Hybrid Transport (Binary + JSON)**
+- **Binary frames**: Yjs document deltas and awareness updates (via y-websocket protocol)
+- **JSON control frames**: Server-to-client control messages with discriminator
 - Inbound frame cap `2 MB`; close with code `1009` if exceeded.
-- Error envelopes: `room_full`, `room_full_readonly`, `offline_delta_too_large`.
+- **Control frame schema**:
+  ```typescript
+  interface WSControlFrame {
+    type: 'persist_ack' | 'error' | 'welcome' | 'roster' | 'stats';
+    v: number;  // protocol version
+    ts: string; // ISO-8601 UTC
+    [key: string]: any;
+  }
+  ```
+- **Error envelope schema**:
+  ```typescript
+  interface WSErrorFrame extends WSControlFrame {
+    type: 'error';
+    code: 'room_full' | 'room_full_readonly' | 'offline_delta_too_large';
+    message: string;        // human-readable
+    retryable: boolean;
+    retry_in_ms?: number;   // if retryable
+  }
+  ```
 - Reconnect policy: exponential backoff with jitter (see **Failure Modes & Backoffs**).
 
 **AI Assistance (Mode A).** `POST /api/ai/complete` streams message + optional unified diff/tests; Apply guarded by hashed span; friendly error mapping for timeout/429/provider errors; large responses clamp with **Continue**.
 
 **Direct pairing (optional):**
-- `POST /api/direct/start` → returns `{ code }` (5 digits), `roomId`, short-TTL ICE creds.
-- `PUT /api/direct/claim` with `{ code }` → returns `{ roomId, iceCreds }`.
+- `POST /api/direct/start` → returns `{ code: string }` (5 digits), `roomId: string`, `iceCreds: ICECredentials`
+- `PUT /api/direct/claim` with `{ code: string }` → returns `{ roomId: string, iceCreds: ICECredentials }`
+- **ICE Credentials schema**:
+  ```typescript
+  interface ICECredentials {
+    urls: string[];         // e.g., ["turns:turn.example.com:443?transport=tcp"]
+    username: string;
+    credential: string;
+    ttl_sec: number;        // seconds until expiry
+  }
+  ```
 - **Notes:** Use the existing WS channel to exchange offer/answer/ICE for the same room; follows the same auth model (none). TURN credentials TTL: 90s, code expiry: 90s.
 
 ---
@@ -991,8 +1032,8 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 
 ## D. Protocol Envelopes (Normative, Compact)
 
-* **welcome**: `{"type":"welcome","docId":"<id>","userId":"<device:tab>","ice":{"ttl_sec":600,"servers":[...]},"limits":{"max_frame_bytes":2000000,"warn_size_bytes":8000000,"read_only_size_bytes":10000000,"offline_threshold":{"bytes":2000000,"minutes":15,"ops":10000}}}`.
-* **persist\_ack**: see A1.
+* **welcome**: `{"type":"welcome","v":1,"ts":"2025-08-19T12:34:56Z","docId":"<id>","userId":"<device:tab>","ice":{"ttl_sec":600,"servers":[...]},"limits":{"max_frame_bytes":2000000,"warn_size_bytes":8000000,"read_only_size_bytes":10000000,"offline_threshold":{"bytes":2000000,"minutes":15,"ops":10000}},"peer_count":12}`.
+* **persist\_ack**: `{"type":"persist_ack","v":1,"ts":"2025-08-19T12:34:56Z","docId":"<id>","svKey":"<ver>","size_bytes":123456,"expires_at":"2025-08-19T13:34:56Z","flush_seq":42}`.
 * **metadata\_poll (HTTP)**: `{"docId":"<id>","size_bytes":123456,"lastWriteAt":"2025-08-19T12:34:56Z","expires_at":"2025-08-19T13:34:56Z"}`.
 * **errors**:
 
@@ -1009,6 +1050,8 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 | Doc size warn / RO      |              8 MB / 10 MB | warn vs block                          |
 | Persist poll            |                      10 s | or on `persist_ack`                    |
 | WS high/low water       |            256 KB / 64 KB | coalesce above high, resume below low  |
+| WS send buffer thresh   |                     64 KB | skip awareness frames above this        |
+| WS roster update rate   |                      1 Hz | max rate for peer count updates         |
 | RTC pkt buffer high/low |              64 / 16 pkts | for awareness data channel             |
 | Awareness send rate     |       12 Hz → 6 Hz → 2 Hz | degrade when backpressured or `N ≥ 20` |
 | Offline thresholds      | 2 MB or 15 min or 10k ops | any triggers                           |

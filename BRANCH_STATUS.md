@@ -19,8 +19,8 @@ Only these branches exist locally:
 ## Project Documentation
 
 The project is defined by these key documents:
-- `NEW_IMPLEMENTATION.MD` - Step-by-step implementation guide for Avlo
-- `NEW_OVERVIEW.MD` - Complete technical specification and architecture
+- `IMPLEMENTATION.MD` - Step-by-step implementation guide for Avlo
+- `OVERVIEW.MD` - Complete technical specification and architecture
 
 ## Rules for Subagents
 
@@ -28,7 +28,7 @@ The project is defined by these key documents:
 2. **DO NOT** create new branches unless explicitly requested by the user
 3. **DO NOT** attempt to recover old branches or stashes - they have been intentionally removed
 4. **ALWAYS** work on the current branch (`phase0-clean-restart`)
-5. **ALWAYS** refer to `NEW_IMPLEMENTATION.MD` and `NEW_OVERVIEW.MD` for project specifications
+5. **ALWAYS** refer to `IMPLEMENTATION.MD` and `OVERVIEW.MD` for project specifications
 
 ## What Happened
 
@@ -36,7 +36,7 @@ Previous development had multiple branches with conflicting implementations that
 
 ## Next Steps
 
-Follow the implementation plan in `NEW_IMPLEMENTATION.MD` starting from Phase 1. All specifications are in `NEW_OVERVIEW.MD`.
+Follow the implementation plan in `IMPLEMENTATION.MD` starting from Phase 1. All specifications are in `OVERVIEW.MD`.
 
 ## Git History Note
 

@@ -309,6 +309,7 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
    - Extract roomId from URL path
    - Validate origin against allowlist
    - Set up per-connection state tracking
+   - Configure hybrid transport: binary frames for Yjs deltas, JSON frames with `type` discriminator for control messages (persist_ack, error, welcome, stats)
 3. Configure connection limits:
    - Maximum 105 clients per room
    - Maximum 8 concurrent connections per IP
@@ -346,9 +347,10 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
 2. Add awareness payload structure:
    - userId (device:tab format)
    - name and color
-   - cursor position (world coordinates)
+   - cursor position in world coordinates (always send world-space {x,y}; receivers project to view)
    - activity state (idle/drawing/typing)
    - Sequence number for ordering
+   - Timestamp as epoch ms for awareness, ISO-8601 strings for HTTP/WS JSON control frames
 3. Implement dynamic send interval:
    - Calculate: 50ms * (1 + max(0,(N-10)/20))
    - Clamp between 50ms and 150ms
@@ -504,8 +506,8 @@ Rate limit APIs (e.g., 10 rooms/hour/IP; 5 renames/min).
    - Enforce capacity limits
 4. Implement room expiry:
    - Check TTL on metadata fetch
-   - Return 404 when expired
-   - Clean up local storage
+   - Return 404 when expired  
+   - Keep local Y.Doc with banner, offer "create new room from local copy"
 5. Create TTL extension mechanism:
    - Minimal write to Y.Doc
    - Rate limit to once per 10 minutes

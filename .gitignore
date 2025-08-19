@@ -129,3 +129,11 @@ client/test-results/
 
 # Personal notes and changelogs
 CHANGELOG.md
+BRANCH_STATUS.md
+CLAUDE.MD
+NEW_OVERVIEW.MD
+NEW_IMPLEMENTATION.MD
+PROMPT.MD
+
+#personal tasks completion folder
+completed_tasks/
