@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default [
@@ -58,7 +59,13 @@ export default [
   // React-specific rules for client
   {
     files: ['client/**/*.{ts,tsx,js,jsx}'],
+    plugins: {
+      'react-hooks': reactHooks,
+    },
     rules: {
+      // React Hooks Rules
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
       // Architecture Guards - Prevent direct Yjs imports in UI components
       'no-restricted-imports': [
         'error',
@@ -75,6 +82,10 @@ export default [
             {
               name: 'y-indexeddb',
               message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
+            },
+            {
+              name: 'y-webrtc',
+              message: 'Direct WebRTC provider imports forbidden. Use RoomDocManager instead.',
             },
           ],
           patterns: [

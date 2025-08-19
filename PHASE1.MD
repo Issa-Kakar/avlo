@@ -32,6 +32,9 @@ npm install
 # - eslint and plugins
 # - husky and lint-staged
 # - Other dev dependencies
+
+# Install React hooks ESLint plugin for proper hooks validation
+npm install --save-dev eslint-plugin-react-hooks@5.1.0
 ```
 
 ### Step 2: Create Workspace Structure
@@ -217,7 +220,16 @@ export default defineConfig({
   build: {
     outDir: '../server/public',
     emptyOutDir: true,
-    sourcemap: process.env.NODE_ENV !== 'production'
+    sourcemap: process.env.NODE_ENV !== 'production',
+    // Chunk splitting for lazy-loaded modules
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'monaco': ['monaco-editor'],
+          'yjs': ['yjs', 'y-websocket', 'y-indexeddb', 'y-webrtc'],
+        }
+      }
+    }
   },
   server: {
     port: 3000,
@@ -363,8 +375,21 @@ export default defineConfig({
     include: ['**/src/**/*.test.{ts,tsx}'],
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html'],
-      exclude: ['node_modules/', 'dist/', '*.config.*']
+      reporter: ['text', 'html', 'json-summary'],
+      exclude: [
+        'node_modules/',
+        'dist/',
+        '*.config.*',
+        '**/index.ts',
+        '**/*.d.ts',
+        '**/types/**',
+      ],
+      thresholds: {
+        statements: 60,
+        branches: 60,
+        functions: 60,
+        lines: 60
+      }
     }
   },
   resolve: {
@@ -395,6 +420,57 @@ export default defineConfig({
 });
 ```
 
+#### 9.4 Create Test Data Generators
+Create helper utilities for generating test data:
+
+##### shared/test-utils/generators.ts
+```typescript
+import { randomBytes } from 'crypto';
+
+// Generate test room data
+export function generateTestRoom() {
+  const id = `room-${randomBytes(8).toString('hex')}`;
+  return {
+    id,
+    title: `Test Room ${id}`,
+    createdAt: new Date(),
+    lastWriteAt: new Date(),
+    size_bytes: 0,
+  };
+}
+
+// Generate test stroke data
+export function generateTestStroke() {
+  const strokeId = `stroke-${randomBytes(8).toString('hex')}`;
+  return {
+    id: strokeId,
+    tool: 'pen' as const,
+    color: '#000000',
+    size: 2,
+    opacity: 1,
+    points: [100, 100, 150, 150, 200, 100], // Simple test path
+    bbox: [100, 100, 200, 150] as [number, number, number, number],
+    scene: 0,
+    createdAt: Date.now(),
+    userId: 'test-user',
+  };
+}
+
+// Generate test user/awareness data
+export function generateTestUser() {
+  const userId = `user-${randomBytes(8).toString('hex')}`;
+  return {
+    userId,
+    name: `User ${userId.slice(0, 6)}`,
+    color: `#${Math.floor(Math.random()*16777215).toString(16)}`,
+    cursor: { x: Math.random() * 1000, y: Math.random() * 600 },
+    activity: 'idle' as const,
+    seq: 0,
+    ts: Date.now(),
+  };
+}
+```
+
 ### Step 10: Update Root Package.json Scripts
 ```json
 {
@@ -403,6 +479,7 @@ export default defineConfig({
     "build": "npm run build -w client && npm run build -w server",
     "test": "vitest",
     "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -434,7 +511,64 @@ echo "npm run typecheck" > .husky/pre-push
 chmod +x .husky/pre-push
 ```
 
-### Step 13: VS Code Configuration
+### Step 13: Configure ESLint with React Hooks
+
+#### Update eslint.config.js
+Add React hooks plugin and y-webrtc to restricted imports:
+
+```javascript
+import js from '@eslint/js';
+import tsPlugin from '@typescript-eslint/eslint-plugin';
+import tsParser from '@typescript-eslint/parser';
+import reactHooks from 'eslint-plugin-react-hooks';
+import globals from 'globals';
+
+// In the React-specific rules section:
+{
+  files: ['client/**/*.{ts,tsx,js,jsx}'],
+  plugins: {
+    'react-hooks': reactHooks,
+  },
+  rules: {
+    // React Hooks Rules
+    'react-hooks/rules-of-hooks': 'error',
+    'react-hooks/exhaustive-deps': 'warn',
+    
+    // Architecture Guards - Prevent direct Yjs imports in UI components
+    'no-restricted-imports': [
+      'error',
+      {
+        paths: [
+          {
+            name: 'yjs',
+            message: 'Direct Yjs imports forbidden in UI. Use collaboration hooks instead.',
+          },
+          {
+            name: 'y-websocket',
+            message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
+          },
+          {
+            name: 'y-indexeddb',
+            message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
+          },
+          {
+            name: 'y-webrtc',
+            message: 'Direct WebRTC provider imports forbidden. Use RoomDocManager instead.',
+          },
+        ],
+        patterns: [
+          {
+            group: ['**/providers/yjsClient'],
+            message: 'Use collaboration hooks instead of direct provider access.',
+          },
+        ],
+      },
+    ],
+  },
+}
+```
+
+### Step 14: VS Code Configuration
 
 #### .vscode/settings.json
 ```json
@@ -445,7 +579,6 @@ chmod +x .husky/pre-push
   },
   "typescript.tsdk": "node_modules/typescript/lib",
   "typescript.enablePromptUseWorkspaceTsdk": true
-}
 ```
 
 #### .vscode/extensions.json
