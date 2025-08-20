@@ -1,3 +1,25 @@
+// Polyfills for Node.js environment (for testing)
+declare global {
+  interface Window {
+    requestAnimationFrame: typeof requestAnimationFrame;
+    cancelAnimationFrame: typeof cancelAnimationFrame;
+  }
+}
+
+if (typeof globalThis.requestAnimationFrame === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).requestAnimationFrame = (callback: () => void) => {
+    return setTimeout(callback, 16); // ~60fps
+  };
+}
+
+if (typeof globalThis.cancelAnimationFrame === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).cancelAnimationFrame = (id: number) => {
+    clearTimeout(id);
+  };
+}
+
 import * as Y from 'yjs';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
@@ -145,18 +167,24 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Write command (stub - will be implemented with WriteQueue)
-  write(_cmd: Command): void {
+  write(cmd: Command): void {
+    // eslint-disable-next-line no-console
+    console.log('[RoomDocManager] Write command:', cmd.type);
     // Will be connected to WriteQueue/CommandBus in step 2.5
     this.requestPublish();
   }
 
   // Extend TTL (stub)
   extendTTL(): void {
+    // eslint-disable-next-line no-console
+    console.log('[RoomDocManager] Extending TTL');
     // Will be implemented with rate limiting
   }
 
   // Lifecycle
   destroy(): void {
+    // eslint-disable-next-line no-console
+    console.log('[RoomDocManager] Destroying');
     // Cancel any pending publish
     if (this.publishRAF !== null) {
       cancelAnimationFrame(this.publishRAF);
@@ -184,6 +212,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private setupObservers(): void {
     // Observe document changes
     this.ydoc.on('update', (_update: Uint8Array, _origin: unknown) => {
+      // eslint-disable-next-line no-console
+      console.log('[RoomDocManager] Y.Doc updated');
       this.requestPublish();
     });
 
@@ -192,9 +222,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Handle tab visibility
   private setupVisibilityHandling(): void {
+    // Only set up visibility handling in browser environment
+    if (typeof document === 'undefined') {
+      return;
+    }
+
     document.addEventListener('visibilitychange', () => {
       const wasHidden = this.isTabHidden;
       this.isTabHidden = document.hidden;
+      // eslint-disable-next-line no-console
+      console.log('[RoomDocManager] Tab visibility:', this.isTabHidden ? 'hidden' : 'visible');
 
       // When switching from visible to hidden, cancel RAF and use setTimeout
       if (!wasHidden && this.isTabHidden && this.publishRAF !== null) {
@@ -393,6 +430,8 @@ class RoomDocManagerRegistryClass {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
+      // eslint-disable-next-line no-console
+      console.log('[Registry] Creating new RoomDocManager for:', roomId);
       manager = new RoomDocManagerImpl(roomId);
       this.managers.set(roomId, manager);
     }
@@ -407,11 +446,15 @@ class RoomDocManagerRegistryClass {
   remove(roomId: RoomId): void {
     const manager = this.managers.get(roomId);
     if (manager) {
+      // eslint-disable-next-line no-console
+      console.log('[Registry] Removing RoomDocManager for:', roomId);
       this.managers.delete(roomId);
     }
   }
 
   destroyAll(): void {
+    // eslint-disable-next-line no-console
+    console.log('[Registry] Destroying all RoomDocManagers');
     this.managers.forEach((manager) => manager.destroy());
     this.managers.clear();
   }

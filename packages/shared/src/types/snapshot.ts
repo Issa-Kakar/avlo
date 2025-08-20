@@ -79,8 +79,8 @@ export function createEmptySnapshot(): Snapshot {
     },
     spatialIndex: { _tree: null },
     view: {
-      worldToCanvas: (x: number, y: number) => [x, y],
-      canvasToWorld: (x: number, y: number) => [x, y],
+      worldToCanvas: (x: number, y: number): [number, number] => [x, y],
+      canvasToWorld: (x: number, y: number): [number, number] => [x, y],
       scale: 1,
       pan: { x: 0, y: 0 },
     },
