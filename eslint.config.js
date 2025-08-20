@@ -99,9 +99,9 @@ export default [
     },
   },
 
-  // Allow Yjs imports only in collaboration layer
+  // Allow Yjs imports only in collaboration layer and lib (infrastructure)
   {
-    files: ['client/src/collaboration/**/*.{ts,tsx}'],
+    files: ['client/src/collaboration/**/*.{ts,tsx}', 'client/src/lib/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': 'off',
     },

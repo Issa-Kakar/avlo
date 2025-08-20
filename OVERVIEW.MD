@@ -563,7 +563,7 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 List and define **all** commands with inputs, idempotency, preconditions:
 ```typescript
 type Command =
-  | { type: 'DrawStrokeCommit'; id: StrokeId; tool:'pen'|'highlighter'; color:string; size:number; opacity:number; points:number[]; bbox:[number,number,number,number]; startedAt:number; finishedAt:number; scene?: SceneIdx }
+  | { type: 'DrawStrokeCommit'; id: StrokeId; tool:'pen'|'highlighter'; color:string; size:number; opacity:number; points:number[]; bbox:[number,number,number,number]; startedAt:number; finishedAt:number; scene: SceneIdx }
   | { type: 'EraseObjects'; ids: StrokeId[] | TextId[] }
   | { type: 'AddText'; id: TextId; x:number; y:number; w:number; h:number; content:string; color:string; size:number }
   | { type: 'ClearBoard' }
@@ -601,7 +601,7 @@ interface Snapshot {
 }
 interface StrokeView {
   id: string;
-  polyline: Float32Array; // built at render from number[]
+  polyline: Float32Array | null; // built at render from number[], null in snapshot
   style: { color:string; size:number; opacity:number; tool:'pen'|'highlighter' };
   bbox: [number,number,number,number];
 }

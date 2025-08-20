@@ -176,7 +176,7 @@ Memory pressure from large arrays; avoid accidental Float32Array retention.
 ---
 ## Phase 3: Canvas Rendering & Drawing System
 Out of scope
-Partial/soft eraser, shape editing/selection, image uploads. (Whole-stroke eraser only; shapes later.) Presence/awareness rendering (Phase 4).  Tools like text/eraser/clear-board (Phase 6).
+Partial eraser, shape editing/selection, image uploads. (Whole-stroke eraser only; shapes later.) Presence/awareness rendering (Phase 4).  Tools like text/eraser/clear-board (Phase 6).
 
 Constraints 
 Commit on pointer-up via DrawStrokeCommit; no writes during preview. 
@@ -344,7 +344,7 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
    - Reset retry counter after 30s stable connection
 4. Add connection indicator UI component:
    - Online (green)
-   - Reconnecting (yellow)
+   - DO NOT INCLUDE Reconnecting (BAD UI, THE APP IS MEANT TO BE OFFLINE-FIRST)
    - Offline (red)
    - Read-only (red with different icon)
 
