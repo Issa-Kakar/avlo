@@ -53,7 +53,8 @@ Link-based, account-less, offline-first collaborative whiteboard with integrated
 avlo/
 ├── client/          # React frontend (components, hooks, lib)
 ├── server/          # Express backend (websocket, api)
-├── shared/          # Shared types and configuration
+├── packages/
+│   └── shared/      # Shared types and configuration
 └── e2e/             # Playwright tests
 ```
 
@@ -128,22 +129,22 @@ npm run test:coverage
 
 ## 🔧 Configuration
 
-All configuration is centralized in `shared/config.ts` with environment variable overrides:
+All configuration is centralized in `packages/shared/src/config.ts` with environment variable overrides:
 
 ```typescript
 // Example configuration usage
-import { config } from '@shared/config';
+import { ROOM_CONFIG, PERFORMANCE_CONFIG, NETWORK_CONFIG } from '@avlo/shared';
 
 // Room limits
-const maxRoomSize = config.room.maxSizeBytes; // 10MB
-const roomTTL = config.room.ttlDays; // 14 days
+const maxRoomSize = ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES; // 10MB
+const roomTTL = ROOM_CONFIG.ROOM_TTL_DAYS; // 14 days
 
 // Performance settings
-const targetFPS = config.performance.targetFPS; // 60
-const snapshotBatchMs = config.performance.snapshotBatchWindowMs; // 8-16ms
+const targetFPS = PERFORMANCE_CONFIG.MAX_FPS; // 60
+const snapshotBatchMs = PERFORMANCE_CONFIG.MICRO_BATCH_DEFAULT_MS; // 8-16ms
 
 // Network settings
-const wsReconnectBase = config.network.ws.reconnectBaseMs; // 300ms
+const wsReconnectBase = BACKOFF_CONFIG.WS_BASE_MS; // 300ms
 ```
 
 ## 🛡️ Architecture Guards

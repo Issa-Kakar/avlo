@@ -1,8 +1,9 @@
 import { randomBytes } from 'crypto';
-import type { Room, RoomId, StrokeId, UserId } from '@avlo/shared';
+import type { RoomId, StrokeId, UserId } from '@avlo/shared';
 
 // Generate test room data
-export function generateTestRoom(): Room {
+// Note: Room type will be defined when persistence layer is implemented in Phase 5
+export function generateTestRoom() {
   const id: RoomId = `room-${randomBytes(8).toString('hex')}`;
   return {
     id,

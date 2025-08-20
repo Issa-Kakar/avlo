@@ -9,7 +9,7 @@ import {
   isRoomReadOnly,
   isRoomSizeWarning,
   getRoomSizePercentage,
-} from '@shared/config';
+} from '@avlo/shared';
 // Example 1: Room size monitoring
 export function getRoomStatusBadge(sizeBytes) {
   if (isRoomReadOnly(sizeBytes)) {

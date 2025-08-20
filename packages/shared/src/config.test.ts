@@ -7,7 +7,7 @@ import CONFIG, {
   isRoomSizeWarning,
   isRoomReadOnly,
   getRoomSizePercentage,
-} from '../config';
+} from './config';
 
 describe('Config Module', () => {
   describe('Config Constants', () => {

@@ -12,10 +12,13 @@ declare const globalThis: {
   };
 };
 
+// Declare window for browser environment
+declare const window: any;
+
 const getEnv = (): Record<string, string | undefined> => {
   // In browser, use import.meta.env (Vite)
-  if (typeof window !== 'undefined' && typeof import.meta !== 'undefined' && import.meta.env) {
-    return import.meta.env as Record<string, string | undefined>;
+  if (typeof window !== 'undefined' && typeof (import.meta as any)?.env !== 'undefined') {
+    return (import.meta as any).env as Record<string, string | undefined>;
   }
   // In Node.js, use process.env
   if (typeof globalThis !== 'undefined' && globalThis.process?.env) {
