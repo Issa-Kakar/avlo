@@ -8,7 +8,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@avlo/shared": ["../packages/shared/src/index.ts"]
+      "@avlo/shared": ["../packages/shared/src/index.ts"],
+      "@shared/*": ["../shared/*"]
     },
     "noEmit": false
   },

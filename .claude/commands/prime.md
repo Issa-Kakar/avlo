@@ -13,9 +13,9 @@ You are a meticulous investigator and instruction creator. Your goal is to creat
 
 ## Context Files
 
-- Overview/Context: @AVLO_OVERVIEW.MD
+- Overview/Context: @OVERVIEW.MD
 - Task: $ARGUMENTS
-- Current codebase state: !`find . -name "*.py" -o -name "*.md" | grep -E "(codedocsync|src|tests)" | head -20`
+- Current codebase state: !`find . -name "*.ts/js" -o -name "*.md" | grep -E "(avlo|src|tests)" | head -20`
 
 ## CRITICAL INVESTIGATION PROTOCOL
 
@@ -30,7 +30,7 @@ You are a meticulous investigator and instruction creator. Your goal is to creat
 
    ```bash
    # Check project structure
-   find ./codedocsync -type f -name "*.py" | head -30
+   find (insert path) -type f -name "*.ts" | head -30
 
    # Recent changes that might affect implementation
    git log --oneline -20 --graph
@@ -70,13 +70,13 @@ When the user specifies a phase (even if vague):
 
    ```bash
    # What similar features exist?
-   find . -name "*.py" | xargs grep -l "similar_functionality"
+   find . -name "*.ts" | xargs grep -l "similar_functionality"
 
    # What's the current capability?
-   grep -r "TODO\|FIXME\|NOTE" --include="*.py" | grep -i "phase\|feature"
+   grep -r "TODO\|FIXME\|NOTE" --include="*.ts" | grep -i "phase\|feature"
 
    # What tests define expected behavior?
-   find tests -name "*.py" -exec grep -l "test_.*feature" {} \;
+   find tests -name "*.ts" -exec grep -l "test_.*feature" {} \;
    ```
 
 4. **Define the "Minimum Viable Phase"**
@@ -88,7 +88,6 @@ When the user specifies a phase (even if vague):
    ```markdown
    ## Feasibility Assessment
 
-   - Estimated complexity: [1-10 based on investigation]
    - Similar existing code: [where]
    - Major risks: [what could go wrong]
    - Dependencies: [what needs to exist first]
@@ -151,10 +150,10 @@ After defining scope:
 
    ```bash
    # Find what's tested
-   find tests -name "test_*.py" -exec grep -l "feature_name" {} \;
+   find tests -name "test_*.ts" -exec grep -l "feature_name" {} \;
 
    # Check test completeness
-   grep -A 10 -B 2 "def test_" tests/test_[relevant].py
+   grep -A 10 -B 2 "def test_" tests/test_[relevant].ts
    ```
 
 ### Phase 4: Project-Wide Impact Analysis
@@ -165,24 +164,24 @@ Before any implementation:
 
    ```bash
    # What depends on this component
-   grep -r "from.*component_name import" . --include="*.py"
-   grep -r "import.*component_name" . --include="*.py"
+   grep -r "from.*component_name import" . --include="*.ts"
+   grep -r "import.*component_name" . --include="*.ts"
 
    # What this component depends on
-   grep -E "^(from|import)" [component_file.py]
+   grep -E "^(from|import)" [component_file.ts]
    ```
 
 2. **State management investigation**
 
    ```bash
    # How is state currently managed?
-   grep -r "self\._.*=\|self\..*=" --include="*.py" | grep -v test
+   grep -r "self\._.*=\|self\..*=" --include="*tsy" | grep -v test
 
    # What gets persisted?
    find . -name "*.json" -o -name "*.db" -o -name "*.sqlite"
 
    # Cache patterns
-   grep -r "cache\|Cache\|CACHE" --include="*.py"
+   grep -r "cache\|Cache\|CACHE" --include="*.ts"
    ```
 
 3. **Data flow mapping**
@@ -223,7 +222,7 @@ Before any implementation:
    - Data migration needs
    - Backwards compatibility
    - Feature flags required
-   - Gradual rollout strategy
+
 
 ### Phase 6: Sub-Agent Verification Protocol
 
@@ -274,11 +273,9 @@ Your instruction file MUST include:
    ## Before Starting
 
    - [ ] Verify you're on the correct branch
-   - [ ] Run ALL tests: `pytest` (should show X passing)
+   - [ ] Run ALL tests: (should show X passing)
    - [ ] Check no uncommitted changes: `git status`
-   - [ ] Activate venv: `source .venv/Scripts/activate`
    - [ ] Review project conventions in CLAUDE.md
-   - [ ] Backup current state: `git add . && git stash`
    ```
 
 3. **Implementation order (CRITICAL)**
@@ -298,11 +295,11 @@ Your instruction file MUST include:
    ````markdown
    ## Step 1: [Component Name] - [Why this component]
 
-   **File:** `path/to/file.py`
+   **File:** `path/to/file.ts`
    **Purpose in system:** [how it fits overall architecture]
    **Current state:**
 
-   ```python
+   ```
    # Lines 45-67 currently:
    [paste relevant current code]
    ```
@@ -310,14 +307,14 @@ Your instruction file MUST include:
 
    **Change required:**
 
-   ```python
+   ```
    # Replace lines 45-67 with:
    [exact new code]
    ```
 
    **Why this change:** [specific reason based on investigation]
    **Verification:**
-   - Unit test: `pytest tests/test_X.py::test_specific -v`
+   - Unit test: 
    - Integration check: [specific command]
    - Expected output: [what success looks like]
 
@@ -367,7 +364,7 @@ Your instruction file MUST include:
 
    1. **Test**: [test_name]
       - Tests: [what scenario]
-      - Location: `tests/test_[file].py`
+      - Location: `tests/test_[file].ts`
       - Implementation: [test code snippet]
 
    ### Existing Tests to Update
@@ -397,10 +394,6 @@ Your instruction file MUST include:
 
    ### Code Documentation
 
-   - Docstrings needed for: [list functions]
-   - Format: [Google/NumPy/Sphinx style]
-   - Example: [show proper format]
-
    ### README Updates
 
    - Section: [which part]
@@ -411,35 +404,6 @@ Your instruction file MUST include:
    - Endpoint changes: [if any]
    - Parameter updates: [if any]
    ```
-
-10. **Rollback procedures**
-
-    ````markdown
-    ## Rollback Strategy
-
-    ### Quick Rollback (< 2 min)
-
-    ```bash
-    git stash  # Save any debugging changes
-    git checkout -- [list of files]
-    pytest  # Verify tests pass again
-    ```
-    ````
-
-    ### Full Rollback
-
-    ```bash
-    git reset --hard [commit-hash-before-changes]
-    ```
-
-    ### Partial Rollback
-
-    If only Component X fails:
-    1. Keep Components Y and Z
-    2. Revert only: [specific files]
-    3. Apply hotfix: [specific code]
-
-    ```
 
     ```
 
@@ -457,28 +421,15 @@ Before delivering the instruction file:
    - Verify all code snippets are current
    - Check all commands work in the project
 
-3. **Evidence trail**
-
-   ```markdown
-   ## Investigation Evidence
-
-   Files personally inspected:
-
-   - [file_path]: lines X-Y (verified pattern Z)
-   - [file_path]: entire file (confirmed behavior)
-
-   Commands run for verification:
-
-   - `[command]`: [what it confirmed]
    ```
 
-4. **Continuous verification during writing**
+3. **Continuous verification during writing**
    - After writing each step, re-check the file hasn't changed
    - Verify your memory matches the actual code
    - If unsure about ANY detail, re-read the source
    - Test each command in a shell before including
 
-5. **Final sanity check**
+4. **Final sanity check**
 
    ```bash
    # Verify the files you're instructing to modify still exist
@@ -488,7 +439,7 @@ Before delivering the instruction file:
    git status
 
    # Ensure tests still pass before implementation
-   pytest -xvs
+
    ```
 
 ## Output Format
@@ -546,19 +497,19 @@ Before finalizing instructions, verify they make sense for the ENTIRE project:
 
 ```bash
 # Architecture overview
-find . -name "*.py" -exec grep -l "class.*Manager\|class.*Handler\|class.*Service" {} \; | head -20
+find . -name "*.ts" -exec grep -l "class.*Manager\|class.*Handler\|class.*Service" {} \; | head -20
 
 # Configuration patterns
-find . -name "*.env*" -o -name "*config*.py" -o -name "settings.py"
+find . -name "*.env*" -o -name "*config*.js/ts" -o -name "settings.ts"
 
 # Error handling patterns
-grep -r "except\|raise" --include="*.py" | grep -v test | head -20
+grep -r "except\|raise" --include="*.ts/js" | grep -v test | head -20
 
 # Database/model patterns (if applicable)
-find . -name "models.py" -o -name "*model*.py" | xargs grep "class.*Model"
+find . -name "models.ts" -o -name "*model*.ts" | xargs grep "class.*Model"
 
 # API endpoint patterns
-grep -r "@app\|@router\|route\(" --include="*.py"
+grep -r "@app\|@router\|route\(" --include="*.ts/js"
 ```
 
 ## Remember: Practical > Perfect

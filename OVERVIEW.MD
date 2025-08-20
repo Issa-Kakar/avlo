@@ -16,7 +16,7 @@
 **Problem & solution.** Synchronous sketching + quick code execution for demos, teaching, and brainstorming—without accounts, installs, or SSO friction. Link sharing grants edit access; persistence is simple but time-limited; scale is single-node MVP.
 
 **Tech Stack (MVP).**
-Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTML Canvas renderer with RBush 4.0.1 indexing, Monaco editor 0.52.2. Realtime & Offline: Yjs 13.6.27, y-websocket 3.x (authoritative persistence path), y-indexeddb 9.x, and y-webrtc 10.3.0 for optional P2P sync (used primarily for awareness and low-latency fan-out in small rooms). Execution: in-browser JS + Pyodide 0.26.4 (per-run workers). Persistence (authoritative): Redis 5.8.1 storing compressed Yjs doc with AOF; `ROOM_TTL_DAYS` (default: 14) TTL extended only on accepted writes. Metadata DB (non-authoritative): PostgreSQL via Prisma 5.22.0 (room title/createdAt/lastWriteAt/size_bytes only). PWA: offline-first app shell with cache-first HTML navigations and versioned static assets. Pre-cache Monaco at install; warm Pyodide on desktop post-activate; do not cache `/api/**`, `/yjs/**`, or any `wss:` traffic; show an **Update available** prompt on new versions. Deploy & Infra: single container on Railway; no NGINX.
+Frontend: React 18.3.1 (Vite 5.4.11), TypeScript 5.9.2, Tailwind CSS 3.4.17, HTML Canvas renderer with RBush 4.0.1 indexing, Monaco editor 0.52.2. Realtime & Offline: Yjs 13.6.27, y-websocket 3.x (authoritative persistence path), y-indexeddb 9.x, and y-webrtc 10.3.0 for optional P2P sync (used primarily for awareness and low-latency fan-out in small rooms). Execution: in-browser JS + Pyodide 0.26.4 (per-run workers). Persistence (authoritative): Redis 7.x stable, storing compressed Yjs doc with AOF; `ROOM_TTL_DAYS` (default: 14) TTL extended only on accepted writes. Metadata DB (non-authoritative): PostgreSQL via Prisma 5.22.0 (room title/createdAt/lastWriteAt/size_bytes only). PWA: offline-first app shell with cache-first HTML navigations and versioned static assets. Pre-cache Monaco at install; warm Pyodide on desktop post-activate; do not cache `/api/**`, `/yjs/**`, or any `wss:` traffic; show an **Update available** prompt on new versions. Deploy & Infra: single container on Railway; no NGINX.
 
 — "RTC config: **one** y-webrtc config: maxConns: 12–15 to match our small-room cap; peerOpts: { config: { iceServers: [TURN 443 tcp+tls, STUN (dev only)] } }; signaling: ['wss://signaling.yjs.dev', '<our self-hosted URL>']; password: <room-scoped HMAC> to encrypt signaling. (WS provider always stays connected as fallback & persistence path.) 
 
@@ -251,7 +251,7 @@ interface DeviceUIState {
 
 **Awareness payload.** `{ name, color, cursor{x,y}, activity∈{idle,drawing,typing} }`; cadence 75-100 ms; send throttle ≈30 Hz.
 
-**Redis storage.** Key `room:<roomId>` → compressed buffer; TTL = last accepted write; `ROOM_TTL_DAYS` controllable via env and mirrored in UI; sizeBytes equals last persisted compressed payload size.
+**Redis storage.** Key `room:<roomId>` → compressed buffer; TTL = last accepted write; `ROOM_TTL_DAYS` (14) controllable via env and mirrored in UI; sizeBytes equals last persisted compressed payload size.
 
 **My Rooms & aliases (IndexedDB).** Device-local metadata (title, last_opened, expires_at, provisional, aliasOf); server metadata refreshes when online; views/presence do not extend TTL; explicit **Extend** performs a tiny doc write and shows "Room extended to ...".
 
@@ -348,7 +348,9 @@ Provide a control labeled **Collaboration Mode** with **Server (default)** and *
 **Single active speaker** with a floor/token protocol over the awareness y-webrtc DataChannel (`ptt:req`, `ptt:grant`, `ptt:rel`, `ptt:nack` + optional heartbeat). Join with an **audio recv-only** transceiver; on first grant, request mic, add **send-only** transceiver, perform **one** renegotiation, and cap Opus **≈32 kbps**. Subsequent presses use `sender.replaceTrack(...)`. Auto-release at **60 s** or on heartbeat loss. Minimal UI: hold-to-talk button + Spacebar; disable drawing while pressed; show "🎙️ speaking".
 
 **Undo/Redo**: per-user scoped; define `origin=userId` for transactions; **scene_tick** excluded.
-
+## Global Conventions
+- **Timestamps:** ISO-8601 UTC strings for HTTP/WS JSON; **epoch ms** inside CRDT/Y structures.
+- **New constants live in `config.ts`** with env overrides.
 ---
 
 # 7. Non-Functional Requirements

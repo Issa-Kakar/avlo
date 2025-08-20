@@ -134,6 +134,9 @@ CLAUDE.MD
 NEW_OVERVIEW.MD
 NEW_IMPLEMENTATION.MD
 PROMPT.MD
+CONFIG_IMPLEMENTATION.md
+PROJECT_STATUS.md
+.claude/
 
 #personal tasks completion folder
 completed_tasks/

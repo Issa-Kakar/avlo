@@ -2,6 +2,12 @@
 
 ## Overview
 This guide provides a step-by-step implementation plan for building Avlo, an offline-first collaborative whiteboard. Follow each phase sequentially, as later phases depend on earlier foundations. Each step includes specific constraints from avlo.md to prevent over-engineering.
+
+## Global Conventions
+- **Timestamps:** ISO-8601 UTC strings for HTTP/WS JSON; **epoch ms** inside CRDT/Y structures.
+- **New constants live in `config.ts`** with env overrides.
+- **Redis:** Use Redis 7.x stable without pinning exact minor version.
+
 ---
 ## Phase 1: Project Foundation & Infrastructure Setup
 
@@ -60,10 +66,11 @@ This guide provides a step-by-step implementation plan for building Avlo, an off
 ## Phase 2: Core Data Layer & Models
 
 Out of scope
-Any UI components, canvas work, or network providers—this phase is models + plumbing only. 
+Any UI components, canvas work, or **network providers (WS/RTC)** are out of scope. **Local plumbing (WriteQueue/CommandBus)** is in scope. 
 Multi-node scaling, auth/permissions, or admin tooling. 
 
 Constraints
+- Will use stroke/text configs for data models
 UI must not import yjs/providers; expose access only through RoomDocManager + hooks. Snapshots are immutable and never null. 
 Authoritative storage is Redis (TTL-based); Postgres is non-authoritative metadata only. 
 Store stroke points as number[] in Yjs; create Float32Array only at render time. 
@@ -140,6 +147,7 @@ Memory pressure from large arrays; avoid accidental Float32Array retention.
 3. Implement dirty tracking to avoid unnecessary publishes
 4. Add logic to detect tab visibility and reduce to 8 FPS when hidden
 5. Ensure EmptySnapshot is published immediately on creation
+6. Persist **last render Snapshot** in IndexedDB **keyed by Yjs state vector (svKey)**. On boot, if `svKey` matches, render that snapshot immediately while providers connect; otherwise skip.
 
 ### 2.5 Create WriteQueue and CommandBus
 1. Implement WriteQueue class with:
@@ -255,6 +263,7 @@ High-DPI rounding errors at extreme zoom; verify hit-tests at 0.5×/10×.
    - Apply streaming simplification if needed
 4. Add pointer-up commit flow:
    - Run Douglas-Peucker simplification in world units
+   - Use **base tolerance**: **pen = 0.8 px**, **highlighter = 0.5 px**. If the encoded update still exceeds **128 KB**: set `tol *= 1.4` and retry once; if still over budget, hard downsample to max points. Never simplify text/stamps; cap highlighter tolerance bumps at **1.5×**.
    - Check encoded size (must be < 128KB)
    - Build DrawStrokeCommit command
    - Submit to WriteQueue
@@ -339,10 +348,44 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
    - Offline (red)
    - Read-only (red with different icon)
 
+### Protocol envelopes (normative)
+```ts
+// Control frame base
+interface WSControlFrame {
+  type: 'persist_ack' | 'error' | 'welcome' | 'roster' | 'stats';
+  v: number;  // protocol version
+  ts: string; // ISO-8601 UTC
+  [key: string]: any;
+}
+
+// Error envelope
+interface WSErrorFrame extends WSControlFrame {
+  type: 'error';
+  code: 'room_full' | 'room_full_readonly' | 'offline_delta_too_large';
+  message: string;        // human-readable
+  retryable: boolean;
+  retry_in_ms?: number;   // if retryable
+}
+
+// Example welcome (includes ICE creds & limits)
+// {"type":"welcome","v":1,"ts":"...","docId":"<id>","userId":"<device:tab>",
+//  "ice":{"ttl_sec":600,"servers":[...]},
+//  "limits":{"max_frame_bytes":2000000,"warn_size_bytes":8000000,"read_only_size_bytes":10000000,
+//            "offline_threshold":{"bytes":2000000,"minutes":15,"ops":10000}},
+//  "peer_count":12}
+
+// Example persist_ack (authoritative UI stats source)
+// {"type":"persist_ack","v":1,"ts":"...","docId":"<id>","svKey":"<ver>",
+//  "size_bytes":123456,"expires_at":"...","flush_seq":42}
+```
+
+Close WS with **1009** if inbound frame > **2 MB**; emit `error` envelope for large offline delta/read-only over-cap.
+
 ### 4.3 Implement Awareness System
 1. Set up awareness protocol via y-websocket:
    - Create awareness instance tied to Y.Doc
-   - Configure ~30Hz base send rate
+   - **WS send**: **~60–75 ms** interval target (**13–17 Hz**) with ±10 ms jitter; coalesce under WS high-water; skip under backpressure.
+   - **RTC send**: **~33–50 ms** interval target (**20–30 Hz**); if `dataChannel.bufferedAmount` > 128 KB, reduce toward ~15 Hz until recovered.
    - Implement throttling based on peer count
 2. Add awareness payload structure:
    - userId (device:tab format)
@@ -364,6 +407,7 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
    - Skip frames under backpressure
    - Drop old frames (seq number based)
    - Never persist awareness data
+   - Include `ptt.holderId` in presence payloads so late joiners render the current floor holder without waiting for the next PTT frame
 
 ### 4.4 Create Presence UI Components
 1. Build cursor renderer:
@@ -387,17 +431,19 @@ Reconnect thundering-herd; jittered backoff and roster debounce.
    - Channel name: 'room:<id>'
    - Elect primary tab (lowest openedAt)
    - Handle primary/secondary roles
+   - `userId = deviceULID:tabULID` (persist **device ULID** in IDB; **tab ULID** per tab).
 2. Primary tab responsibilities:
    - Send awareness updates
    - Perform TTL extensions
    - Start WebRTC if applicable
+   - Primary alone performs TTL extension & RTC orchestration.
 3. Secondary tab behavior:
    - Receive-only for awareness
    - No TTL extensions
    - No WebRTC initialization
 4. Implement promotion on primary departure:
    - Detect via visibilitychange/unload
-   - Secondary promotes within 1 second
+   - On primary exit, promote a secondary **≤ 1 s**; ties broken by **lowest openedAt**.
 
 **Deliverables:**
 - WebSocket server with Yjs integration
@@ -684,6 +730,12 @@ Keep undo/redo per-user (device:tab).
    - Debounced updates
    - Suspend when hidden
 
+### 6.8 AI Assistance (Mode A)
+1. Docked panel (first-run open), two slots with resizer, 10 s clamp on requests.
+2. `POST /api/ai/complete` streams assistant output; **Apply** guarded by **hashed span** with conflict UX.
+3. If offline, swap panel to **Quick Tools** (local-only).
+4. Telemetry: request counts, apply attempts, conflict rate.
+
 **Deliverables:**
 - Complete toolbar with all tools
 - Working eraser with preview
@@ -776,6 +828,7 @@ Large asset downloads (Monaco/Pyodide) interplay with PWA caching from Phase 8.
    - Queue if already running
    - Cancel previous on new run
    - Show execution status
+5. Reject code cell writes with `version < currentVersion` (return conflict) or migrate `code.body` to CRDT text; evict `outputs[]` with stable sort by `ts, runId` in a single transaction.
 
 **Deliverables:**
 - Monaco editor integration
@@ -820,6 +873,7 @@ Don’t cache server-driven flags in SW; precache Monaco and heavy lazies with i
    - HTML shell
    - Core JavaScript/CSS
    - Fonts and icons
+   - Precache fonts/icons (WOFF2 + maskable), Monaco bundles, and static JSON; never cache `/api/**`, `/yjs/**`, or any WS.
 2. Cache Monaco assets:
    - Pre-cache on install
    - Include language files
@@ -832,6 +886,10 @@ Don’t cache server-driven flags in SW; precache Monaco and heavy lazies with i
    - Delete old versions on activate
    - Respect storage quotas
    - Provide clear cache option
+5. **Separate buckets**: `app-shell-vN`, `offline-pack-vN`, `avatars-thumbs-vN`, `media-cache-vN`.
+6. **Avatars & thumbs**: Cache-First if hashed/immutable; otherwise SWR; caps **maxEntries: 400**, **maxAge: 7d**.
+7. **Media cache (allowlisted CDNs)**: SWR; caps **maxEntries: 300**, **maxAge: 14d**; reject opaque large responses.
+8. On `QuotaExceededError`, evict LRU from media cache; expose 'Clear offline data' in settings.
 
 ### 8.3 Build Update Flow
 1. Detect new Service Worker:
@@ -912,6 +970,9 @@ When Peer Mode (direct pairing) is active, do not instantiate WebrtcProvider; re
    - TURN for production
    - STUN for development only
    - Bundle policy max-bundle
+   - `iceCandidatePoolSize: 1-2`
+   - Trickle ICE on
+   - TURN on 443 TCP+TLS with long-term creds; keep a public STUN in dev
 
 ### 9.2 Implement WebRTC Provider
 1. Add y-webrtc to RoomDocManager:
@@ -933,9 +994,8 @@ When Peer Mode (direct pairing) is active, do not instantiate WebrtcProvider; re
    - Measure WebRTC RTT (2.5 seconds)
    - Calculate medians
 2. Create keep/drop logic:
-   - Keep if RTC median ≤ WS - 20ms
-   - Or if WS ≥ 70ms and RTC < WS
-   - Apply hysteresis to prevent flapping
+   - Keep RTC if `rtcMedianRtt ≤ wsRtt − 20 ms` **OR** `(wsRtt ≥ 70 ms && rtcMedianRtt < wsRtt)`.
+   - **Hysteresis**: evaluate every **10 s**; require **2 consecutive wins** to switch to RTC and **2 consecutive losses** to drop it (debounce flapping).
 3. Add drop conditions:
    - Peers exceed 15
    - CPU overheating
@@ -974,6 +1034,53 @@ When Peer Mode (direct pairing) is active, do not instantiate WebrtcProvider; re
    - Show tooltips explaining why
    - Auto-switch on conditions
 
+### 9.6 Direct Pairing (optional)
+1. Expose a **5-digit code** flow: server maps code → `{roomId, rtcCredentials}` with short TTL; both peers enter code.
+2. Use **WS** to exchange offer/answer/ICE; when Direct (Peer Mode) is active, **do not** instantiate `WebrtcProvider` (mutually exclusive).
+
+### 9.7 Push-to-Talk (PTT) — (Normative additions)
+* **Purpose:** Optional mode enabling **single active speaker** with floor control; others remain **receive-only**. PTT is mutually compatible with existing WebRTC provider and signaling.
+* **Floor control (server-arbitrated):**
+  * States: `idle → requesting → holding → releasing (or timeout) → idle`.
+  * **Single holder** globally per room. Queue policy: **FIFO**, max queue **8**; drop on disconnect.
+  * **Timeouts (from OVERVIEW.MD):** hard cap **60 s** hold; client sends **heartbeat** every **5 s** while holding; server revokes on missed 2 heartbeats.
+  * **Fairness:** When released or revoked, grant next queued requester; server issues `ptt_grant` only to one client at a time.
+* **Control frames (WebSocket):**
+
+  ```ts
+  // All frames carry {type, v, ts, roomId, clientId}
+  type PttClientToServer =
+    | { type: 'ptt_request'; reason?: 'press' | 'toggle' }
+    | { type: 'ptt_release' }
+    | { type: 'ptt_heartbeat' };
+
+  type PttServerToClient =
+    | { type: 'ptt_grant'; holderId: string; ttl_ms: number }           // you are granted
+    | { type: 'ptt_denied'; reason: 'queue_full' | 'already_holding' }
+    | { type: 'ptt_update'; holderId: string | null; queue_len: number } // roster signal
+    | { type: 'ptt_revoked'; reason: 'timeout' | 'policy' | 'disconnect' };
+  ```
+
+  * **Errors:** use existing `error` envelope for malformed PTT frames; `code: 'ptt_not_allowed' | 'ptt_queue_full'`.
+* **WebRTC behavior (no full renegotiation unless required):**
+  * Pre-create an **audio transceiver** at join: `direction: 'recvonly'`.
+  * On `ptt_grant`: switch to **sendonly** (or `sendrecv` if sidetone UX requires) via `sender.setParameters()`; prefer **parameter update** over full SDP renegotiation.
+  * **Opus / constraints (from OVERVIEW.MD):**
+    * Target **maxBitrate ~32 kbps**, `ptime=20ms`, `stereo=false`, `dtx=true`, `fec=true`, `opusMaxPlaybackRate=16000–24000`.
+    * `getUserMedia` with `echoCancellation`, `noiseSuppression`, `autoGainControl` = true.
+  * On `ptt_release`/`ptt_revoked`/timeout: revert transceiver to **recvonly**; stop mic; clear VU UI.
+* **UX (minimal, additive):**
+  * Add a **PTT button** (press-and-hold + keyboard shortcut). Show **current holder** and a **countdown** when you're holding.
+  * If holder differs from local `clientId`, mic stays off; show a "request floor" affordance.
+  * Accessibility: ARIA labels ("Request floor", "Release floor").
+* **Primary/secondary (multi-tab):**
+  * Only **primary tab** issues `ptt_request`/`ptt_release`; secondaries reflect roster via BroadcastChannel.
+  * On primary loss, promote ≤ **1 s**; if promoted while holding, immediately send `ptt_heartbeat`.
+* **Backoff & failure:**
+  * If `rtpSender.setParameters` fails or `bufferedAmount > 256 KB`, fallback to WS presence only (no audio) and auto-release floor.
+* **Security & limits:**
+  * Rate-limit `ptt_request` (no more than 1 per 2 s per client). Deny if read-only or over room cap.
+
 **Deliverables:**
 - WebRTC provider integration
 - RTT probe and decision system
@@ -1001,16 +1108,25 @@ Production deploy on a single container (Railway). No NGINX. Ensure final flush/
    - Error tracking
    - Performance monitoring
    - User session replay
-2. Add custom metrics:
-   - Collaboration latency p50/p95
-   - Persist lag measurements
-   - Room size tracking
-   - WebRTC probe results
-3. Create dashboards:
+2. Add custom metrics (with `{roomId, clientId, channel={ws,rtc}}` labels):
+   - `persist_lag_ms`, `flush_duration_ms`, `flush_batch_bytes`
+   - `ttl_extend_failures`, `doc_size_bytes` (warn/RO counters)
+   - `rejected_deltas_count{reason}`, `awareness_drop_rate{channel}`
+   - `ws_backpressure_drops`, `rtc_buffer_overflows`
+   - `rtc_probe_ms`, `rtc_connected_peers`
+   - `webrtc_signaling_connect_ms`, `webrtc_provider_errors{ice,signaling}`
+   - `write_transact_ms`, `writequeue_len`, `snapshot_fps`
+   - `extendTTL_calls_blocked{reason}`
+   - `ptt_requests_total`, `ptt_grants_total`, `ptt_denials_total{reason}`, `ptt_revokes_total{reason}`
+   - `ptt_hold_duration_ms`, `ptt_time_to_grant_ms`, `ptt_queue_len`
+   - `rtc_renegotiations_ptt_total`, `ptt_heartbeat_missed_total`
+   - `ptt_active_speaker_changes_total`
+3. Persist-ack metric wiring: `persist_lag_ms = ack.ts − first_update_received.ts`; treat **persist_ack** as the UI source of truth for size/TTL pills.
+4. Create dashboards:
    - Real-time metrics
    - Historical trends
    - Alert configurations
-4. Implement logging:
+5. Implement logging:
    - Structured logs
    - Appropriate log levels
    - No sensitive data
@@ -1088,6 +1204,22 @@ Production deploy on a single container (Railway). No NGINX. Ensure final flush/
    - Cross-browser testing
    - Accessibility audit
    - Usability review
+5. Named test cases:
+   - Offline→online delta **> 2 MB**: expect `offline_delta_too_large`.
+   - Concurrent clears → single scene tick (debounced).
+   - Awareness out-of-order: seq-drop + smoothing window.
+   - WS backpressure: coalescing, recovery under low-water.
+   - Batch crash: TTL extended on ingest; no phantom ack.
+   - Version conflict on code cell (stale write rejected).
+   - **Golden snapshot** rendering comparisons.
+   - Run with **synthetic shapers** (high RTT, loss, bandwidth).
+   - **PTT_single_holder:** two+ clients request; ensure exactly one `ptt_grant`.
+   - **PTT_fifo_fairness:** 3 clients request in order A,B,C → grants A,B,C.
+   - **PTT_timeout_revoke:** holder silent → server revokes after 60 s (2 missed heartbeats).
+   - **PTT_disconnect_drop:** holder disconnects → grant next; queue shrinks.
+   - **PTT_primary_failover:** primary holding floor crashes → secondary promotes ≤1 s and heartbeats resume.
+   - **PTT_bitrate_apply:** verify Opus params applied; fallback path on setParameters failure.
+   - **PTT_backpressure_release:** simulate high `bufferedAmount`; auto-release behavior triggers.
 
 ### 10.6 Deployment Preparation
 1. Configure production environment:

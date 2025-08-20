@@ -2,11 +2,11 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "rootDir": "./src",
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@avlo/shared": ["../packages/shared/src/index.ts"]
+      "@avlo/shared": ["../packages/shared/src/index.ts"],
+      "@shared/*": ["../shared/*"]
     },
     "types": ["vite/client"]
   },
