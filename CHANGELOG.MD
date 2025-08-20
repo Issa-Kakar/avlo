@@ -1,5 +1,13 @@
 # Changelog
 
+## [2025-08-20] Phase 2.2.2 - React Hooks & Testing
+
+### Added
+- React hooks for RoomDocManager integration (useRoomDoc, useSnapshot, usePresence, useRoomStats)
+- Comprehensive unit tests for type validation functions
+- Unit tests for RoomDocManager lifecycle and subscriptions
+- Unit tests for all React hooks with proper cleanup and state management
+
 ## [2025-08-20] Phase 2.2.1 - RoomDocManager Foundation
 
 ### Added
