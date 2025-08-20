@@ -1,0 +1,13 @@
+{
+  "name": "@avlo/shared",
+  "version": "0.0.0",
+  "private": true,
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.d.ts",
+    "./*": "./dist/*.d.ts"
+  },
+  "scripts": {
+    "build:types": "tsc -b"
+  }
+}

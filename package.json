@@ -4,27 +4,21 @@
   "type": "module",
   "workspaces": [
     "client",
-    "server"
+    "server",
+    "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "npm run dev --workspace=server",
-    "dev:client": "npm run dev --workspace=client",
-    "build": "npm run build --workspace=client && npm run build --workspace=server && npm run bundle:assets",
-    "bundle:assets": "node scripts/copy-client-dist.mjs",
-    "db:generate": "npm run prisma:generate --workspace=server",
-    "db:migrate": "npm run prisma:migrate --workspace=server",
-    "db:deploy": "npm run prisma:deploy --workspace=server",
+    "dev": "concurrently -n client,server -c cyan,magenta \"npm run dev -w client\" \"npm run dev -w server\"",
+    "build": "npm run build -w client && npm run build -w server",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui",
-    "test:e2e:report": "playwright show-report",
-    "e2e:install": "playwright install chromium",
-    "e2e:serve": "npm run build && node server/dist/index.js",
+    "typecheck": "npm run -w packages/shared build:types && npm run -w client typecheck && npm run -w server typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
     "prepare": "husky"
   },
   "lint-staged": {
@@ -34,28 +28,27 @@
     ],
     "*.{json,md,css,scss}": [
       "prettier --write"
-    ],
-    "server/prisma/schema.prisma": [
-      "npx prisma format"
     ]
   },
   "devDependencies": {
-    "@playwright/test": "^1.45.0",
+    "@playwright/test": "^1.49.0",
+    "@rollup/rollup-linux-x64-gnu": "^4.46.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^22.13.4",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",
-    "concurrently": "^9.0.0",
+    "@vitest/ui": "^2.1.8",
+    "concurrently": "^8.2.2",
     "eslint": "^9.33.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
     "globals": "^16.3.0",
     "husky": "^9.1.7",
+    "jsdom": "^26.0.0",
     "lint-staged": "^16.1.5",
     "prettier": "^3.6.2",
-    "prisma": "^6.14.0"
-  },
-  "optionalDependencies": {
-    "@rollup/rollup-linux-x64-gnu": "^4.46.2"
-  },
-  "dependencies": {
-    "@prisma/client": "^6.14.0",
-    "y-leveldb": "^0.1.2"
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.8"
   }
 }

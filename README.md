@@ -1,192 +1,183 @@
 # Avlo
 
-A link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution.
+Link-based, account-less, offline-first collaborative whiteboard with integrated code execution.
 
-## 🚀 Project Status
+## Core Features
 
-### Completed Features
+- **Offline-first:** Full functionality without internet, seamless sync when connected
+- **Real-time collaboration:** < 125ms p95 latency with 50+ concurrent users
+- **No accounts required:** Link-based sharing for instant collaboration
+- **Code execution:** JavaScript and Python (Pyodide) in isolated workers
+- **Performance:** 60 FPS rendering, < 3s persistence lag
+- **PWA:** Installable with full offline support
 
-- ✅ **Real-time Collaboration** - WebSocket-based with Yjs CRDT
-- ✅ **Offline Support** - Full PWA with service worker and IndexedDB persistence
-- ✅ **Room Management** - Create, join, and manage collaborative rooms
-- ✅ **My Rooms** - Device-local room history with aliasing
-- ✅ **Security** - CSP, HSTS, origin validation, rate limiting
-- ✅ **Capacity Limits** - 10MB room size cap, 105 clients max per room
+## 📊 Current Implementation Status
 
-### In Progress
+### ✅ Phase 1: Foundation & Infrastructure (COMPLETE)
 
-- 🚧 **Canvas & Drawing** - Phase 3 implementation
-- 🚧 **Code Execution** - JS + Python via Pyodide
+| Component                   | Status      | Details                                                      |
+| --------------------------- | ----------- | ------------------------------------------------------------ |
+| **Monorepo Structure**      | ✅ Complete | Client, server, and shared packages properly configured      |
+| **Build Pipeline**          | ✅ Complete | Vite 5.4.11 with proper chunking, asset hashing, source maps |
+| **TypeScript**              | ✅ Complete | 5.9.2 with composite projects, strict mode, path aliases     |
+| **Development Environment** | ✅ Complete | ESLint with architecture guards, Prettier, Husky hooks       |
+| **Testing Framework**       | ✅ Complete | Vitest (10 tests passing), Playwright configured             |
+| **Dependencies**            | ✅ Complete | All exact versions installed per specification               |
+| **Configuration System**    | ✅ Complete | Comprehensive shared config with env overrides               |
 
-## Tech Stack
+### 🚧 Upcoming Phases
 
-- **Frontend**: React 18, TypeScript, Vite, Tailwind CSS, React Router DOM
-- **Realtime & Offline**: Yjs CRDT, y-websocket, y-indexeddb, PWA
-- **Backend**: Node.js (ESM), Express, WebSocket, Redis, PostgreSQL (Prisma)
-- **Code Execution**: JavaScript + Python (via Pyodide)
-- **Testing**: Playwright E2E, ESLint, Prettier
+- **Phase 2:** Core Data Layer & Models (RoomDocManager, WriteQueue, CommandBus)
+- **Phase 3:** Canvas Rendering & Drawing System
+- **Phase 4:** Real-time Collaboration Infrastructure
+- **Phase 5:** Persistence & Storage Layer
+- **Phase 6:** UI Components & Tools
+- **Phase 7:** Code Execution System
+- **Phase 8:** PWA & Service Worker
+- **Phase 9:** WebRTC & P2P Enhancement
+- **Phase 10:** Production Polish & Optimization
 
-## Realtime Backend
+## Architecture
 
-Server uses @y/websocket-server@0.1.x as the y-websocket backend. Import via `@y/websocket-server/utils` (ESM). We install y-leveldb only to satisfy the package's static import; Redis is the only persistence used in production.
+### Key Principles
 
-Persistence: Redis authoritative (gzip(4), debounced 2–3s, TTL on accepted writes, 10 MB hard read-only, room_stats ≤ 5s or ≥ 100 KB).
+1. **No Direct Yjs Access**: UI components cannot import Yjs/providers directly (ESLint enforced)
+2. **Immutable Snapshots**: All rendering uses frozen snapshot objects, never live Yjs data
+3. **WriteQueue Pattern**: All mutations go through WriteQueue → CommandBus → single transaction
+4. **Offline-First**: IndexedDB for local persistence, CRDT for conflict resolution
+5. **WebSocket Authority**: WS remains authoritative path even when WebRTC is active
 
-Limits enforced: 2 MB frame, ≤ 8 WS/IP, 105 clients/room. Read-only at 10 MB.
+### Project Structure
 
-Note: Server uses TypeScript `module: NodeNext`. Relative imports include `.js` in source (Node ESM rule).
+```
+avlo/
+├── client/          # React frontend (components, hooks, lib)
+├── server/          # Express backend (websocket, api)
+├── shared/          # Shared types and configuration
+└── e2e/             # Playwright tests
+```
 
-Note: Client uses y-websocket provider; server uses @y/websocket-server.
-
-## Development Setup
+## 🚀 Getting Started
 
 ### Prerequisites
 
-- Node.js (v18+)
-- PostgreSQL
-- Redis
-
-### System Dependencies (Linux/WSL)
-
-For headless E2E testing with Playwright:
-
-```bash
-# Minimal deps for headless E2E testing
-sudo apt-get install libnspr4 libnss3 libasound2t64
-```
+- Node.js 20+ (use `.nvmrc` for exact version)
+- npm 10+
+- Redis 7.x (for Phase 5+)
+- PostgreSQL 15+ (for Phase 5+)
 
 ### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/yourusername/avlo.git
+cd avlo
+
 # Install dependencies
 npm install
 
-# IMPORTANT: Set up environment variables first (see below)
-
-# Option 1: Use the setup script (recommended)
-./scripts/setup-dev.sh
-
-# Option 2: Manual setup
-npm run db:generate      # Generate Prisma client
-npm run db:migrate       # Run database migrations
-npm run e2e:install      # Install Playwright browsers
-
-# Start development servers
-npm run dev
-```
-
-### Environment Variables
-
-⚠️ **CRITICAL**: Never use placeholder values in DATABASE_URL!
-
-Create a `.env` file in the root directory (copy from `.env.example`):
-
-```bash
+# Set up environment variables
 cp .env.example .env
 ```
 
-Then edit `.env` with your **actual** database credentials:
-
-```env
-NODE_ENV=development
-PORT=3000
-# REPLACE with your actual PostgreSQL credentials!
-DATABASE_URL=postgresql://YOUR_ACTUAL_USERNAME:YOUR_ACTUAL_PASSWORD@localhost:5432/avlo
-REDIS_URL=redis://localhost:6379
-ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
-ROOM_TTL_DAYS=14
-APP_VERSION=0.1.0
-SENTRY_DSN=your_sentry_dsn_here (optional)
-```
-
-**The server will reject placeholder credentials like `user:password` or `username:password`.**
-
-If you get authentication errors:
-
-1. Check your PostgreSQL credentials: `psql -U postgres -l`
-2. Ensure no shell variables override `.env`: `unset DATABASE_URL`
-3. Regenerate Prisma client: `cd server && npm run prisma:generate`
-
-## Project Structure
-
-```
-avlo/
-├── client/          # React frontend
-├── server/          # Node.js backend (includes prisma/)
-├── scripts/         # Build scripts
-├── e2e/            # End-to-end tests
-└── package.json    # Monorepo root
-```
-
-## Available Scripts
-
 ### Development
 
-- `npm run dev` - Start both client and server in development mode
-- `npm run dev:client` - Start only the client dev server
-- `npm run dev:server` - Start only the server dev server
+```bash
+# Start development servers (client on :3000, server on :3001)
+npm run dev
 
-### Build & Deploy
+# Run tests
+npm test
 
-- `npm run build` - Build both client and server for production
-- `npm run bundle:assets` - Copy client dist to server/public (runs automatically in build)
+# Type checking
+npm run typecheck
 
-### Database
+# Linting
+npm run lint
 
-- `npm run db:generate` - Generate Prisma client (run after schema changes)
-- `npm run db:migrate` - Run database migrations in development
-- `npm run db:deploy` - Deploy database migrations in production
+# Build for production
+npm run build
+```
 
 ### Testing
 
-- `npm run test:e2e` - Run Playwright end-to-end tests
-- `npm run test:e2e:ui` - Run tests with Playwright UI (interactive mode)
-- `npm run test:e2e:report` - Show HTML test report
-- `npm run e2e:install` - Install Playwright browsers (required once, uses chromium only in no-sudo environments)
-- `npm run e2e:serve` - Build and serve the app for E2E testing
+```bash
+# Unit tests (Vitest)
+npm test
 
-### Code Quality
+# E2E tests (Playwright) - Phase 3+
+npm run test:e2e
 
-- `npm run lint` - Run ESLint on all files
-- `npm run lint:fix` - Auto-fix ESLint issues
-- `npm run format` - Format all files with Prettier
-- `npm run format:check` - Check formatting without fixing
-- `npm run typecheck` - Run TypeScript type checking
+# Coverage report
+npm run test:coverage
+```
 
-#### Pre-commit Hooks
+## 📦 Technology Stack
 
-This project uses Husky and lint-staged for automatic code quality checks on commit:
+### Core Dependencies (Exact Versions)
 
-- ESLint auto-fix for TypeScript/JavaScript files
-- Prettier formatting for all supported files
-- Prisma schema formatting
+- **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11
+- **State Management**: Yjs 13.6.27 (CRDT)
+- **Real-time**: y-websocket 3.0.0, y-webrtc 10.3.0
+- **Offline**: y-indexeddb 9.0.0
+- **Code Editor**: Monaco Editor 0.52.2
+- **Code Execution**: Pyodide 0.26.4 (Phase 7)
+- **Canvas**: RBush 4.0.1 (spatial indexing)
+- **Database**: Prisma 5.22.0, Redis 7.x, PostgreSQL 15+
+- **Testing**: Vitest 2.1.8, Playwright 1.49.1
 
-Hooks run automatically on `git commit` and complete in <5s. Type checking is intentionally kept in CI only for performance.
+## 🔧 Configuration
 
-## FAQ
+All configuration is centralized in `shared/config.ts` with environment variable overrides:
 
-### Why not import /bin/utils.js?
+```typescript
+// Example configuration usage
+import { config } from '@shared/config';
 
-The published package on npm does not include /bin; use /utils (ESM) or /dist/utils.cjs (CJS).
+// Room limits
+const maxRoomSize = config.room.maxSizeBytes; // 10MB
+const roomTTL = config.room.ttlDays; // 14 days
 
-### Why is y-leveldb in package.json if we don't use it?
+// Performance settings
+const targetFPS = config.performance.targetFPS; // 60
+const snapshotBatchMs = config.performance.snapshotBatchWindowMs; // 8-16ms
 
-Satisfies static import; runtime uses Redis.
+// Network settings
+const wsReconnectBase = config.network.ws.reconnectBaseMs; // 300ms
+```
 
-### About crypto.randomUUID()
+## 🛡️ Architecture Guards
 
-Node 18+ provides randomUUID() via `node:crypto` import. This project standardizes on node:crypto import.
+The project enforces strict architectural boundaries:
 
-### Prisma Connection Pooling
+```javascript
+// ❌ This will fail ESLint checks in UI components
+import * as Y from 'yjs'; // Error: Direct Yjs import not allowed
 
-For production, configure pooling via the connection string in DATABASE_URL. See [Prisma docs](https://www.prisma.io/docs/concepts/database-connectors/postgresql#connection-pool) for details.
+// ✅ Correct approach
+import { useRoomSnapshot } from '@/hooks/useRoom';
+const snapshot = useRoomSnapshot(roomId); // Immutable snapshot
+```
 
-## Documentation
+## 📈 Performance Targets
 
-- **[AVLO_OVERVIEW.MD](AVLO_OVERVIEW.MD)** - Full technical specification
-- **[AVLO_IMPLEMENTATION.MD](AVLO_IMPLEMENTATION.MD)** - Phase-by-phase implementation guide
-- **[CLAUDE.md](CLAUDE.md)** - Technical reference for AI assistance
+- **Collaboration Latency**: p95 ≤ 125ms with 50 users
+- **Rendering**: 60 FPS maintained
+- **Persistence Lag**: p95 ≤ 3s, hard cap 5s
+- **Room Size**: 8MB warning, 10MB read-only cap
+- **Export**: 2s timeout before viewport fallback
 
-## License
+## 📚 Documentation
 
-Private
+- **[OVERVIEW.MD](OVERVIEW.MD)**: Complete technical specification
+- **[IMPLEMENTATION.MD](IMPLEMENTATION.MD)**: Phase-by-phase implementation guide
+
+## 📄 License
+
+Copyright © 2025. All rights reserved. (License to be determined)
+
+---
+
+**Current Focus**: Beginning Phase 2 - Core Data Layer & Models
+
+_Last Updated: January 2025_

@@ -1,17 +1,15 @@
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-  testDir: 'e2e',
+  testDir: './e2e',
+  fullyParallel: true,
   use: {
-    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
-    headless: true,
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',
   },
   webServer: {
-    command: 'npm run e2e:serve',
-    url: process.env.BASE_URL ?? 'http://localhost:3000',
+    command: 'npm run dev',
+    url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
   },
-  reporter: [['list'], ['html', { open: 'never' }]],
-  projects: [{ name: 'chromium' }],
 });
