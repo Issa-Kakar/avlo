@@ -7,27 +7,27 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
     include: ['**/src/**/*.test.{ts,tsx}'],
-    exclude: ['**/phase2-*.ts', '**/test-*.ts'],
-    
+    exclude: ['**/node_modules/**', '**/phase2-*.ts', '**/test-*.ts'],
+
     // Memory-safe configuration
     pool: 'threads',
     poolOptions: {
       threads: {
-        singleThread: true,  // Run tests sequentially to prevent memory issues
-        isolate: true,       // Isolate test environment between test files
+        singleThread: true, // Run tests sequentially to prevent memory issues
+        isolate: true, // Isolate test environment between test files
       },
     },
-    
+
     // Disable watch mode by default
     watch: false,
-    
+
     // Set reasonable timeouts
     testTimeout: 10000,
     hookTimeout: 10000,
-    
+
     // Clean up after each test file
     teardownTimeout: 1000,
-    
+
     // Memory monitoring
     onConsoleLog(_log) {
       if (process.memoryUsage) {
@@ -38,7 +38,7 @@ export default defineConfig({
         }
       }
     },
-    
+
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],

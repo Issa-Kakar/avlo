@@ -10,8 +10,8 @@
   "scripts": {
     "dev": "concurrently -n client,server -c cyan,magenta \"npm run dev -w client\" \"npm run dev -w server\"",
     "build": "npm run build -w client && npm run build -w server",
-    "test": "vitest",
-    "test:safe": "vitest run --config vitest.config.memory-safe.ts",
+    "test": "vitest run --config vitest.config.memory-safe.ts",
+    "test:watch": "vitest",
     "test:memory": "node --expose-gc test-memory-diagnostic.ts",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",

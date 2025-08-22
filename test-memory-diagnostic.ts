@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { RoomDocManagerRegistry } from './client/src/lib/room-doc-manager';
+import { RoomDocManagerRegistry } from './client/src/lib/room-doc-manager.js';
 
 function formatMemory(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)}MB`;
@@ -16,10 +16,10 @@ function logMemory(label: string) {
 
 async function testMemoryLeaks() {
   console.log('=== Memory Leak Test ===\n');
-  
+
   // Initial memory
   logMemory('Initial memory');
-  
+
   // Create managers
   console.log('\nCreating 100 RoomDocManagers...');
   const managers = [];
@@ -27,9 +27,9 @@ async function testMemoryLeaks() {
     const manager = RoomDocManagerRegistry.get(`room-${i}`);
     managers.push(manager);
   }
-  
+
   logMemory('After creating 100 managers');
-  
+
   // Subscribe to all of them
   console.log('\nSubscribing to all managers...');
   const unsubscribes: Array<() => void> = [];
@@ -39,35 +39,35 @@ async function testMemoryLeaks() {
     const unsub3 = manager.subscribeRoomStats(() => {});
     unsubscribes.push(unsub1, unsub2, unsub3);
   });
-  
+
   logMemory('After subscribing');
-  
+
   // Unsubscribe
   console.log('\nUnsubscribing...');
-  unsubscribes.forEach(unsub => unsub());
-  
+  unsubscribes.forEach((unsub) => unsub());
+
   logMemory('After unsubscribing');
-  
+
   // Destroy all managers
   console.log('\nDestroying all managers...');
   RoomDocManagerRegistry.destroyAll();
-  
+
   logMemory('After destroying');
-  
+
   // Force garbage collection if available
   if (global.gc) {
     console.log('\nForcing garbage collection...');
     global.gc();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
     logMemory('After GC');
   } else {
     console.log('\n(Run with --expose-gc flag to enable garbage collection)');
   }
-  
+
   // Test rapid creation/destruction
   console.log('\n=== Rapid Creation/Destruction Test ===\n');
   logMemory('Before rapid test');
-  
+
   for (let i = 0; i < 10; i++) {
     console.log(`Iteration ${i + 1}/10`);
     // Create 10 managers
@@ -80,16 +80,16 @@ async function testMemoryLeaks() {
     // Destroy them all
     RoomDocManagerRegistry.destroyAll();
   }
-  
+
   logMemory('After rapid test');
-  
+
   // Final cleanup
   if (global.gc) {
     global.gc();
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
     logMemory('Final memory after GC');
   }
-  
+
   console.log('\n=== Test Complete ===');
 }
 

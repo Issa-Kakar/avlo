@@ -115,8 +115,10 @@ npm install
 # Start both client and server concurrently
 npm run dev
 
-# Run tests
-npm run test              # Unit tests with Vitest
+# Run tests (memory-safe by default)
+npm run test              # Single-threaded memory-safe mode (1.3GB max)
+npm run test:watch        # Parallel mode for active development (requires 8GB+ RAM)
+npm run test:memory       # Run memory leak diagnostics
 npm run test:ui           # Vitest UI
 npm run test:coverage     # Coverage report
 npm run test:e2e          # Playwright E2E tests
@@ -198,6 +200,15 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - Collaboration latency: ≤125ms p95 (50 users)
    - Snapshot publishing: ≤60 FPS
    - Batch window: 8-32ms adaptive
+
+## Memory-Safe Testing
+
+Tests use single-threaded execution by default to prevent memory issues (was causing 6.5GB+ usage):
+- `npm test` - Memory-safe mode (1.3GB max)
+- `npm run test:watch` - Parallel mode for development (needs 8GB+ RAM)
+- `npm run test:memory` - Verify no memory leaks
+
+RoomDocManager properly cleans up event handlers and Y.Doc on destroy().
 
 ## Development Tips
 
