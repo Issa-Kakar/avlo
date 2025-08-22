@@ -24,15 +24,15 @@ import * as Y from 'yjs';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
-  STROKE_CONFIG as _STROKE_CONFIG, // Will be used in Phase 2.5
   TEXT_CONFIG,
-  isRoomReadOnly as _isRoomReadOnly, // Will be used in Phase 2.5
+  QUEUE_CONFIG,
 } from '@avlo/shared';
 import type {
   RoomId,
   Snapshot,
   PresenceView,
   Command,
+  ExtendTTL,
   Stroke,
   TextBlock,
   Output,
@@ -41,6 +41,8 @@ import type {
   ViewTransform,
   SnapshotMeta,
 } from '@avlo/shared';
+import { WriteQueue } from './write-queue';
+import { CommandBus } from './command-bus';
 
 // Type for unsubscribe function
 type Unsub = () => void;
@@ -115,6 +117,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Room stats tracking (for Phase 2.5)
   private roomStats: { bytes: number; expiresAt?: number } | null = null;
 
+  // Phase 2.5: WriteQueue and CommandBus
+  private writeQueue: WriteQueue | null = null;
+  private commandBus: CommandBus | null = null;
+
   constructor(roomId: RoomId) {
     this.roomId = roomId;
 
@@ -137,6 +143,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.setupObservers();
     this.setupVisibilityHandling();
     this.startPublishLoop();
+
+    // Phase 2.5: Setup write pipeline
+    this.setupWritePipeline();
 
     // ❌ DO NOT cache Y structure references:
     // this.yStrokes = ...             // WRONG
@@ -374,18 +383,26 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
-  // Write command (stub - will be implemented with WriteQueue)
+  // Write command via WriteQueue and CommandBus
   write(cmd: Command): void {
-    // eslint-disable-next-line no-console
-    console.log('[RoomDocManager] Write command:', cmd.type);
-    // Will be connected to WriteQueue/CommandBus in Phase 2.5
+    if (!this.writeQueue) {
+      console.error('[RoomDocManager] WriteQueue not initialized');
+      return;
+    }
+
+    const success = this.writeQueue.enqueue(cmd);
+    if (!success) {
+      console.warn('[RoomDocManager] Command rejected:', cmd.type);
+    }
   }
 
-  // Extend TTL (stub)
+  // Extend TTL with rate limiting
   extendTTL(): void {
-    // eslint-disable-next-line no-console
-    console.log('[RoomDocManager] Extending TTL');
-    // Will be implemented with rate limiting
+    const cmd: ExtendTTL = {
+      type: 'ExtendTTL',
+      idempotencyKey: `ttl_${Date.now()}`,
+    };
+    this.write(cmd);
   }
 
   // Lifecycle
@@ -397,6 +414,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (this.publishState.rafId) {
       cancelAnimationFrame(this.publishState.rafId);
     }
+
+    // Stop command processing
+    this.commandBus?.destroy();
+    this.writeQueue?.destroy();
 
     // Clean up observers
     this.ydoc.off('update', this.handleYDocUpdate);
@@ -768,6 +789,56 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     return snapshot;
+  }
+
+  // Phase 2.5: Setup WriteQueue and CommandBus
+  private setupWritePipeline(): void {
+    // Create WriteQueue
+    this.writeQueue = new WriteQueue({
+      maxPending: QUEUE_CONFIG.WRITE_QUEUE_MAX_PENDING,
+      isMobile: this.detectMobile(),
+      getCurrentSize: () => this.estimateDocSize(),
+      getCurrentScene: () => this.getCurrentScene(),
+    });
+
+    // Create CommandBus
+    this.commandBus = new CommandBus({
+      ydoc: this.ydoc,
+      writeQueue: this.writeQueue,
+      getCurrentSize: () => this.estimateDocSize(),
+      getHelpers: () => ({
+        getStrokes: this.getStrokes.bind(this),
+        getTexts: this.getTexts.bind(this),
+        getCode: this.getCode.bind(this),
+        getOutputs: this.getOutputs.bind(this),
+        getSceneTicks: this.getSceneTicks.bind(this),
+        getCurrentScene: this.getCurrentScene.bind(this),
+      }),
+    });
+
+    // Start processing
+    this.commandBus.start();
+  }
+
+  // Helper to detect mobile devices
+  private detectMobile(): boolean {
+    if (typeof window === 'undefined') return false;
+
+    const userAgent = window.navigator?.userAgent || '';
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      userAgent
+    );
+    const hasTouch = 'ontouchstart' in window;
+    const smallScreen = window.innerWidth < 768;
+
+    return isMobile || (hasTouch && smallScreen);
+  }
+
+  // Helper to estimate doc size (compressed)
+  private estimateDocSize(): number {
+    // Estimate compressed size (rough approximation)
+    const update = Y.encodeStateAsUpdate(this.ydoc);
+    return update.length * 0.7; // Assume 30% compression
   }
 }
 
