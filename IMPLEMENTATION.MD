@@ -140,6 +140,7 @@ Memory pressure from large arrays; avoid accidental Float32Array retention.
    - Generates unique svKey from state vector
    - Creates frozen arrays (Object.freeze in development)
    - Builds immutable snapshot object
+   - NOTE: `spatialIndex` field is set to `null` in Phase 2.4; it will be populated with RBush data in Phase 3.3
 2. Set up requestAnimationFrame loop for publishing:
    - Maximum 60 FPS rate limiting
    - Batch multiple Y updates within single frame
@@ -161,6 +162,9 @@ Authority reminders: never use cached Snapshots to make business decisions; UI s
    - Validation method checking room size, mobile status, frame size
    - Backpressure handling when queue exceeds limits
    - Idempotency tracking map
+   - CRITICAL: Enforce dual budget constraints:
+     * For `DrawStrokeCommit`: reject if estimated encoded update > 128KB (after simplification)
+     * For all commands: reject if estimated encoded delta > 2MB (transport cap)
 2. Create CommandBus that:
    - Consumes from WriteQueue
    - Wraps each command in single yjs.transact()

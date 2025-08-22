@@ -171,7 +171,15 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - All Yjs access goes through RoomDocManager
    - **Y.Doc created once**: `new Y.Doc({ guid: roomId })` - guid **never mutated**
 
-2. **Immutable Snapshots**
+2. **Scene Capture for Causal Consistency** ⚠️ CRITICAL
+   - Scene MUST be captured ONCE at interaction start (pointer-down, touch-start)
+   - Scene is preserved through to commit via command.scene field
+   - CommandBus MUST use cmd.scene, NEVER re-read getCurrentScene()
+   - This ensures objects remain in the scene where they were created
+   - Prevents distributed race condition: ClearBoard during gesture
+   - See PHASE_2.4_2.5_SCENE_CAPTURE_CRITICAL.md for details
+
+3. **Immutable Snapshots**
    - Snapshots are **never null** (EmptySnapshot on init)
    - Published snapshots are frozen in development
    - New arrays created per publish (no mutations)
@@ -179,26 +187,26 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - Prevents all null reference errors
    - Published immediatley even before Y.Doc data
 
-3. **Data Storage Rules**
+4. **Data Storage Rules**
    - Store arrays as `number[]` in Yjs (never Float32Array)
    - Create Float32Array only at render time
    - All commands must have idempotencyKey
 
-4. **Write Path**
+5. **Write Path**
    - All mutations: UI → Command → WriteQueue → CommandBus → yjs.transact
    - Single yjs.transact per logical command
    - WriteQueue validation order:
      1. Check read-only (≥10MB compressed)
      2. Check mobile view-only 
      3. Check frame size (<2MB)
-     4. Apply command-specific limits
+     4. Check stroke size (≤128KB) - SEPARATE from frame limit
 
-5. **Temporal Wormhole Prevention**
+6. **Temporal Wormhole Prevention**
    - Async operations MUST capture `svKey` at start
    - Verify `currentSnapshot.svKey` matches before applying
    - Discard stale work on mismatch (prevents race conditions)
 
-6. **Performance Targets**
+7. **Performance Targets**
    - Collaboration latency: ≤125ms p95 (50 users)
    - Snapshot publishing: ≤60 FPS
    - Batch window: 8-32ms adaptive
@@ -278,6 +286,7 @@ MAX_CLIENTS_PER_ROOM=50
 ### Data Model Conventions
 - **Timestamps**: ISO-8601 for HTTP/WS JSON, epoch ms in CRDT structures
 - **Scene management**: Append-only scene_ticks, excluded from undo, and is collaborative
+- **Scene capture**: Captured at pointer-down, preserved through command to commit
 - **Stroke simplification**: Douglas-Peucker at pointer-up
 - **Awareness**: Ephemeral, never persisted, 75-100ms cadence
 - **TTL extension**: Only on accepted writes, not on views/awareness

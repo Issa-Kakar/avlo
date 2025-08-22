@@ -234,7 +234,9 @@ interface Awareness {
   ts: number;                                    // send time ms epoch
   aw_v?: number;                                 // awareness version for evolution
 }
+
 **CRITICAL**: do not cache any doc-level Y references
+
 ```
 ### 4.2 Timestamp Policy (Global)
 
@@ -248,7 +250,9 @@ interface Awareness {
 **WebSocket is hybrid: Yjs updates = binary; control = JSON**
 
 ### 4.3 Device-local UI State (non-authoritative)
+
 Stored in `localStorage:key=avlo:v1:ui`
+
 ```typescript
 interface ToolbarState {
   tool: 'pen'|'highlighter'|'text'|'eraser'|'stamp';
@@ -264,18 +268,28 @@ interface DeviceUIState {
 }
 ```
 **Versioned & migratable**. On schema change bump `:vN` and provide migrator.
+
 **Authoritative model.** Yjs document persisted as compressed binary in Redis (`room:<roomId>`), AOF enabled; awareness is ephemeral. IndexedDB stores the full per-room `Y.Doc`, **My Rooms** list, and alias map.
+
 **Yjs document (logical view).**
 `meta.scene_ticks[]` (append-only, excluded from global Undo), `strokes[]` with max 10 000 points, `texts[]` (committed once, immutable), `code` (language ∈ {javascript, python}, max 200 KB), `outputs[]` (text ≤ 10 KB, keep last 10; total 128 KB). Current scene = `meta.scene_ticks.length`; rendering/export only include elements for the current scene.
+
 **Constraints.** `MAX_POINTS_PER_STROKE = 10000`; `MAX_TOTAL_STROKES = 5000`; highlighter opacity 0.25; cursor preview 0.35; size captured at stroke start; text max length 500 chars.
+
 **Awareness payload.** `{ name, color, cursor{x,y}, activity∈{idle,drawing,typing} }`; cadence 75-100 ms; send throttle ≈30 Hz.
+
 **Redis storage.** Key `room:<roomId>` → compressed buffer; TTL = last accepted write; `ROOM_TTL_DAYS` (14) controllable via env and mirrored in UI; sizeBytes equals last persisted compressed payload size.
+
 **My Rooms & aliases (IndexedDB).** Device-local metadata (title, last_opened, expires_at, provisional, aliasOf); server metadata refreshes when online; views/presence do not extend TTL; explicit **Extend** performs a tiny doc write and shows "Room extended to ...".
+
 **Constraints (normative additions).**
+
 — **Stroke simplification (pre-commit).** Always run Douglas–Peucker in **world units** at pointer-up. **Budgets:** encoded update ≤ **128 KB**; points ≤ **10,000**. **Base tolerance:** pen **0.8 px**, highlighter **0.5 px**. If over budget → `tol *= 1.4` and retry once; if still over → hard downsample to max points. Do **not** simplify text/stamps; cap highlighter tolerance bumps at **1.5×**.
+
 ---
 
 # 5. API Contracts & Interfaces
+
 **REST** 
 - `POST /api/rooms` → create/publish room; returns `{ roomId, shareLink }` (`200` idempotent); `429` if per-IP 10 rooms/hour exceeded.
 - `GET /api/rooms/{id}/metadata` → public non-sensitive metadata (`title`, `size_bytes`, `expires_at`, `created_at`); return `404` if Redis key missing even if DB row exists.
@@ -305,7 +319,9 @@ interface DeviceUIState {
   }
   ```
 - Reconnect policy: exponential backoff with jitter (see **Failure Modes & Backoffs**).
+
 **AI Assistance (Mode A).** `POST /api/ai/complete` streams message + optional unified diff/tests; Apply guarded by hashed span; friendly error mapping for timeout/429/provider errors; large responses clamp with **Continue**.
+
 **Direct pairing (optional):**
 - `POST /api/direct/start` → returns `{ code: string }` (5 digits), `roomId: string`, `iceCreds: ICECredentials`
 - `PUT /api/direct/claim` with `{ code: string }` → returns `{ roomId: string, iceCreds: ICECredentials }`
@@ -319,7 +335,9 @@ interface DeviceUIState {
   }
   ```
 - **Notes:** Use the existing WS channel to exchange offer/answer/ICE for the same room; follows the same auth model (none). TURN credentials TTL: 90s, code expiry: 90s.
+
 ---
+
 # 6. Functional Requirements
 
 **Roles & permissions.** Single role (Editor) for all link holders; mobile is **view-only**: `WriteQueue.validate()` rejects writes on mobile with `reason='view_only'`; show banner. Banners/toasts clarify read-only, capacity full, and oversize updates.
@@ -698,6 +716,7 @@ interface StrokeView {
 // ALWAYS capture svKey at async start
 const capturedSvKey = currentSnapshot.svKey;
 const asyncResult = await someAsyncOperation();
+
 // ALWAYS verify before applying
 if (capturedSvKey !== currentSnapshot.svKey) {
   // State changed - DISCARD stale work
@@ -797,6 +816,45 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 - **Centralized subscription**:
   - Awareness subscription is centralized; presence derivation happens inside manager with smoothing (lerp 1-2 frames; one-frame dead-reckon on miss).
 ---
+# 22. Failure Modes & Backoffs
+- **WS reconnect**:
+  - Backoff = `min(20 s, base*(2^retries))` with `base=300 ms`, jitter ±20%.
+  - Reset retry counter after 30 s steady connection.
+- **RTC health**:
+  - Drop RTC on `failed|disconnected` > 5 s; fall back to WS.
+- **Redis size/read-only**:
+  - If write rejected due to size cap: set `readOnly=true` in Snapshot meta; banner persists until room shrinks (not supported) or TTL expiry.
+- **Capacity (`room_full`)**:
+  - Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
+- **IDB errors**:
+  - Surface "Local storage degraded" toast; proceed WS-only.
+---
+# 23. WS Chaos Avoidance
+- **Capacity caps** (server):
+  - Hard room size 10 MB; total clients 105; inbound frame 2 MB.
+- **Peer cap** (client):
+  - RTC not started when peers > 15; drop RTC if peers cross 15 or CPU hot.
+- **Skips vs Queues**:
+  - Awareness prefers **skip** (freshness); never attempt reliability on RTC channel.
+**Code stub for Webrtc**:
+Code stub to drop in
+import { WebrtcProvider } from 'y-webrtc'
+import * as awarenessProtocol from 'y-protocols/awareness'
+const awareness = new awarenessProtocol.Awareness(ydoc)
+const provider = new WebrtcProvider(roomId, ydoc, {
+  signaling: [ 'wss://signaling.yjs.dev', process.env.Y_SIGNALING_URL! ].filter(Boolean),
+  maxConns: 15,
+  password: hmacRoomScopedSecret(roomId),
+  awareness,
+  peerOpts: {
+    config: { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' }, // dev only
+      { urls: 'turns:turn.example.com:443?transport=tcp', username: TURN_USER, credential: TURN_PASS }
+    ]}
+  }
+})
+(Provider stays connected only when the probe says it’s a win; otherwise call provider.destroy() and rely on WS.)
+---
 # 24. RAF & Publishing
 **Publisher** runs a single rAF loop per room tab:
 - **Input windows**: coalesce Y updates for **8-16 ms**; expand to **24-32 ms** under pressure (when publish work > 8 ms).
@@ -809,7 +867,34 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 **Collaboration Mode** segmented control:
 - When "Peer Mode (P2P)" selected: attempt RTC **only** if peers ≤ 12; otherwise show tooltip "P2P not available in large rooms"; auto-fallback to Server with badge update.
 **Network indicator**:
+- States: `Server` (WS-only), `Peer Mode On (Small Room)`, `Degraded` (awareness only via WS and RTC disabled), `Offline`.
 **Stats pill & read-only banner**:
+- Pill shown at `bytes ≥ 8 MB` (from metadata poll or persist ack).
+- Banner locks writes at `bytes ≥ 10 MB`.
+---
+# Appendix A: Exact Algorithms
+1. **y-webrtc vs WS Probe**:
+   - Measure WS RTT (ping–pong 5 samples, median).
+   - Establish y-webrtc DataChannel; measure `currentRoundTripTime` for 2.5 s; compute median.
+   - **Keep RTC** iff `(rtcMedian ≤ wsRtt − 20 ms)` OR `(wsRtt ≥ 70 ms AND rtcMedian < wsRtt)`.
+   - Apply **hysteresis**: once kept, only drop due to cap/CPU/ICE issues, not minor RTT regressions.
+2. **Awareness Send Interval**:
+   ```
+   N = peers
+   base = 50ms * (1 + max(0, (N-10)/20))
+   interval = clamp(base, 50ms, 150ms)   // WS
+   RTC base target 33-50ms (20-30 Hz)
+   jitter ±10ms, recompute on ≥15% change, trailing-edge coalesce
+   ```
+   - Under pressure: if `bufferedAmount > 128KB` → interval ≈ 66ms (15 Hz).
+3. **Micro-batching**:
+   - Window `8-16 ms` for Y updates; if publish time last frame > 8 ms, expand to `24-32 ms` until budget recovers.
+4. **RBush Maintenance**:
+   - Rebuild when `(added+removed) > 256` or `(deltaBBoxArea / totalArea) > 0.15`.
+   - Otherwise incremental updates per commit.
+5. **Douglas–Peucker Simplification**:
+   - Operate in **world units**; ensure `points.length/2 ≤ 10_000` and encoded diff ≤ 128 KB.
+   - One retry with `tol *= 1.4`; otherwise uniform downsample.
 ---
 # Appendix B: Invariants & Assertions (keep in code as dev-only)
 - `Snapshot` is **never null**.
@@ -818,9 +903,67 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 - `Awareness.seq` is strictly increasing per sender.
 - `svKey` only changes after a Yjs update apply.
 ---
+# Appendix C: Backoff Parameters (centralized constants)
+```typescript
+export const BACKOFF = {
+  wsBaseMs: 300,
+  wsMaxMs: 20000,
+  wsJitter: 0.2,
+  rtcIceFailGraceMs: 5000,
+  ttlExtendCooldownMs: 10*60*1000,
+  awarenessRtcBufferHigh: 128*1024,
+  awarenessWsBufferHigh: 64*1024,
+};
+```
+---
 # Appendix D: Test Plan Addendum (Playwright/E2E)
 - Provide **named tests** matching acceptance bullets; include synthetic network shapers (RTT/packet-loss) and CPU throttling to trigger RTC drop rules.
 - Add **golden snapshots** for coordinate transforms at zoom 0.5/1/2 with known inputs/outputs.
+---
+
+# Appendix E: Awareness De-Duplication (WS + RTC) - DISTRIBUTED CONSENSUS
+
+**Goal**: When both WS and RTC awareness channels are live, ensure single, monotonic ordering per sender and avoid double-processing.
+
+**Implementation Requirements**:
+1. **Per-sender monotonic sequence (cross-channel)**:
+   ```typescript
+   interface AwarenessFrame {
+     seq: number;      // uint32, wraps at 2^32
+     clientId: string; // sender identifier
+     // ... cursor, activity, etc.
+   }
+   
+   // Receiver state
+   const lastSeqBySender = new Map<string, number>();
+   
+   // Drop stale frames
+   if (frame.seq <= lastSeqBySender.get(frame.clientId)) {
+     return; // DROP - old or duplicate
+   }
+   lastSeqBySender.set(frame.clientId, frame.seq);
+   ```
+
+2. **Channel preference when RTC active**:
+   - RTC probe keeps RTC → **prefer RTC** for send/receive
+   - **Mute WS send** (stop sending awareness via WS)
+   - **Keep WS receive** enabled (for fallback)
+   - Drop WS frames with `seq ≤ lastSeq` (dedup)
+
+3. **Short debounce window**:
+   - If RTC frame with seq `s` applied within last **100ms**
+   - Drop any WS frame with `seq < s + 1`
+   - Prevents race during channel switch
+
+4. **Lossy by design (freshness > reliability)**:
+   - Under backpressure → **skip** current frame (don't queue)
+   - Missing sequences are **never retransmitted**
+   - Latest state matters more than every update
+
+5. **Edge cases**:
+   - On `clientId` change (reload) → reset receiver state
+   - On channel switch → send HELLO with current seq
+   - Sequence wraps at 2^32 using modular arithmetic
 
 ---
 # Appendix F: Provider Lifecycle (Init, Teardown, Reconnect)
@@ -835,6 +978,7 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 * Exponential backoff with jitter: `base=1s`, `jitter=±20%`, `cap=30s`, **max 5 tries**. Abort attempts if peer count > cap or CPU hot (same trigger you use to drop RTC).&#x20;
 ---
 # Appendix G: Multi-Tab Coordination (Same Room) - DISTRIBUTED LEADER ELECTION
+
 **Primary/Secondary Election Protocol**:
 ```typescript
 interface TabState {
@@ -842,23 +986,28 @@ interface TabState {
   openedAt: number;     // Timestamp for tie-breaking
   isPrimary: boolean;   // Current role
 }
+
 // BroadcastChannel per room
 const channel = new BroadcastChannel(`room:${roomId}`);
+
 // Election: lowest openedAt wins primary
 function electPrimary(tabs: TabState[]): string {
   return tabs.sort((a, b) => a.openedAt - b.openedAt)[0].tabId;
 }
 ```
+
 **Primary Tab Responsibilities (EXCLUSIVE)**:
 - **TTL Extension**: Only primary calls `ExtendTTL` command
 - **RTC Management**: Only primary starts/manages WebRTC provider
 - **Awareness Send**: Only primary sends awareness updates
 - **Metrics Collection**: Only primary reports to telemetry
+
 **Secondary Tab Behavior (RESTRICTED)**:
 - **Receive-only** awareness (no sending)
 - **No TTL extensions** (would cause conflicts)
 - **No RTC initialization** (avoid duplicate connections)
 - **WS remains active** for doc sync (all tabs need updates)
+
 **Promotion Protocol (≤1 second)**:
 1. Primary departure detected via:
    - `visibilitychange` → hidden
@@ -868,6 +1017,7 @@ function electPrimary(tabs: TabState[]): string {
 3. Run election among remaining tabs
 4. New primary assumes responsibilities immediately
 5. If holding PTT floor → send heartbeat within 1s
+
 **Invariants**:
 - **Exactly one primary** per room at any time
 - **Promotion completes ≤ 1 second** (prevents TTL gaps)
@@ -897,6 +1047,87 @@ function electPrimary(tabs: TabState[]): string {
 4. **Backpressure.** If queue length > **Q\_HIGH** (tune empirically), start coarser simplification (Appendix A §5) and widen micro-batch window to **24–32 ms** until recovered. &#x20;
 
 ---
+# Appendix K: Awareness Sequencing & Identity
+1. **Sequence domain.** `uint32` with modulo wrap at `2^32`. Compare using unsigned modular arithmetic.
+2. **HELLO handshake.** On (re)join, sender transmits a `HELLO{ clientId, seq }`. Receivers set `lastSeqBySender[clientId]=seq`.
+3. **Identity reset.** On **clientId change** (new tab/reload), sender resets local `seq=0`; receivers treat it as a new sender and reset state for that `clientId`.
+4. **Loss handling.** Missing seqs are **not** retransmitted; receivers rely on **freshness** and de-dup policy (Appendix E).
+---
+# Appendix L: Observability & Telemetry
+Track metrics (labels: `{roomId, clientId, channel={ws,rtc}}`):
+* `rtc_probe_ms`, `rtc_connected_peers`, `webrtc_signaling_connect_ms`, `webrtc_provider_errors{ice,signaling}`
+* `awareness_rx_dropped{reason=seq,stale,buffer}`, `awareness_tx_skipped{reason=backpressure}`
+* `ws_sync_ms{step=connect|stateVector|sync2}`, `ws_retries_total`
+* `write_transact_ms`, `writequeue_len`, `snapshot_fps`
+* `extendTTL_calls_blocked{reason}`
+
+**Logs:** include drop reasons (`ice_failed`, `signaling_timeout`, `probe_failed`) and backoff attempt index.
+---
+# Appendix M: Direct Pairing vs Provider Signaling
+* **Mutually exclusive with provider-managed signaling.** If using `y-webrtc` provider for RTC, the “Direct (Peer Mode)” WS-mediated offer/answer flow is **not** started.
+* If **Direct (Peer Mode)** is explicitly chosen, do **not** instantiate the `WebrtcProvider`; use the WS code exchange path only for that session. UI must reflect the state (“Peer Mode On (Small Room)” vs “Server”).&#x20;
+
+---
+# Appendix C — Additions to Backoff Parameters
+> Extend your centralized constants with RTC reconnect/backoff and awareness timing guards (keeps everything in one place like your current `BACKOFF`).&#x20;
+```typescript
+export const BACKOFF = {
+  // existing …
+  wsBaseMs: 300,
+  wsMaxMs: 20000,
+  wsJitter: 0.2,
+  rtcIceFailGraceMs: 5000,
+  ttlExtendCooldownMs: 10*60*1000,
+  awarenessRtcBufferHigh: 128*1024,
+  awarenessWsBufferHigh: 64*1024,
+
+  // NEW: RTC reconnect
+  rtcBaseMs: 1000,      // 1 s
+  rtcMaxMs: 30000,      // 30 s cap
+  rtcJitter: 0.2,       // ±20%
+  rtcMaxTries: 5,       // give up after 5 attempts
+  rtcFlapDebounceMs: 10000, // hold-off before re-create
+
+  // NEW: awareness de-bounce
+  awarenessWsDropWindowMs: 100, // prefer RTC within this window
+};
+
+```
+# More appendix :Appendix: Contracts & Gaps (Clean Format)
+
+## Service Worker & PWA — Quick Wins (Addendum)
+
+> **Placement:** under the existing **Service Worker & PWA** section, after baseline policy.
+These items complement the existing SW rules (no caching for `/api/**`, `/yjs/**`, or any WS endpoints). They’re intentionally conservative and bucketed for predictable storage and eviction.
+### Precache
+* **Fonts & Icons**: Precache self‑hosted WOFF2 font files and app icons (including 192/512 and **maskable**). Use hashed filenames for revving.
+* **Heavy dynamic‑import bundles**: Precache/warm large lazies used across canvases (e.g., workers, exporters, pickers). Queue them with `requestIdleCallback` and fall back to post‑`load` prefetch.
+* **Static JSON**: Precache localization packs and other immutable JSON. Keep A/B flags or any server‑driven configs **out** of the SW cache.
+### Runtime caches
+* **Avatars & Thumbnails** *(cache: `avatars-thumbs-vN`)*:
+
+  * If URL contains a **content hash** or immutable cache headers → **Cache First**.
+  * Otherwise → **Stale‑While‑Revalidate (SWR)**.
+  * Caps: `maxEntries: 400`, `maxAgeSeconds: 7 * 24 * 3600` (7 days).
+* **Embedded media from stable CDNs** *(cache: `media-cache-vN`)*:
+  * Allowlist domains: e.g., `images.example-cdn.com`, `static.example.com`.
+  * Strategy: **SWR** with `maxEntries: 300`, `maxAgeSeconds: 14 * 24 * 3600`.
+  * Reject opaque/unknown large responses and anything not on the allowlist.
+### Guardrails
+* **Versioned cache names** and `cleanupOutdatedCaches()` on `activate`.
+* **Separate buckets**: `app-shell-vN`, `offline-pack-vN`, `avatars-thumbs-vN`, `media-cache-vN`.
+* **Quota awareness**: on `QuotaExceededError`, delete LRU from `media-cache` and retry; expose a “Clear offline data” affordance in settings.
+* **Respect user/storage constraints**: skip heavy warmups when storage estimate < 200 MB free or `navigator.connection.saveData === true`.
+
+### Install/Warmup flow
+1. `install` → pre‑cache app shell + fonts/icons.
+2. `activate` → `cleanupOutdatedCaches()`.
+3. `idle` → warm heavy lazies (if allowed) and offline pack.
+### Acceptance checks
+* Cold install works offline for the app shell.
+* Revisions to fonts/icons ship instantly on next navigation.
+* Media/avatars stay within caps; eviction doesn’t touch app shell/offline packs.
+---
 ## Awareness — Cursor Trail (Implementation Notes)
 > **Placement:** append within **§ Awareness** (near cursors/receiver smoothing), or within **Canvas** if you group rendering details there.
 **Goal:** Lightweight, non‑authoritative visual feedback of remote pointers that scales gracefully with peer count.
@@ -914,6 +1145,7 @@ Per remote user keep a rolling buffer of **12–24** points `{x, y, t}` in **can
 * For each trail, draw a polyline through the buffer; alpha = `exp(-(now - t)/τ)` with τ≈**240–320 ms**.
 * Cap stroke width between **1–3 px**. Use **butt** caps to reduce halos; join style **round**.
 * Clear using `ctx.clearRect()` once per frame; no per‑point clears.
+
 ### Degrade rules
 * If `peerCount > 10`, shrink buffer to **≤12** points.
 * If `peerCount > 25` or `fps < 30`, **disable trails** (show dot‑only cursors).
@@ -921,6 +1153,7 @@ Per remote user keep a rolling buffer of **12–24** points `{x, y, t}` in **can
 
 ### Telemetry
 * Emit `cursorTrail.enabled`, `cursorTrail.points`, `cursorTrail.dropReason` (high peers / low fps / reduced‑motion) for tuning.
+
 ### Pseudocode
 ```ts
 interface TrailPoint { x: number; y: number; t: number }
@@ -933,6 +1166,7 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
   trails.set(id, buf);
 }
 ```
+---
 ## Awareness — Sender‑Side No‑Op Suppression & Server Ignore‑Repeats
 
 > **Placement:** within **§ Awareness → Transport/Send** and **Server** subsections.
@@ -955,6 +1189,10 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 * If a new frame arrives where `digest === lastDigest` within **150 ms**, **drop** it (no fan‑out). Update `lastAt` regardless.
 * Always respect `seq` monotonicity for ordering; ignore repeats even if transported via different channels.
 
+### Edge cases
+* On reconnect (new RTC/WS), reset `lastSentDigest` and send a full state snapshot.
+* If we ever increase precision or payload shape, bump the **awareness version** so digests don’t collide.
+
 ### Acceptance checks
 * With stationary cursors, sender emits ≤ **4 fps** heart‑beats only.
 * Under rapid motion, transport volume falls vs. naive stream; no visible stall due to missed state changes.
@@ -976,6 +1214,7 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 12. **Multi-Tab Identity** — `userId = deviceULID:tabULID`; persist device ULID in IDB; tab ULID per tab; rotate device ULID on hard reset only.
 
 ## B. Initialization & State Sync
+
 1. **Boot Gating** — Hold outbound doc sync until `G_IDB_READY` or 2 s timeout; then open WS, hydrate Y, and allow publish.
 2. **Scene Capture** — Stamp `sceneId` at pointer-down; in-flight strokes commit to that scene even if "Clear Board" happens.
 3. **Persist-Lag Metric** — Requires `persist_ack`; `persist_lag_ms = ack.ts - first_update_received.ts`.
@@ -984,10 +1223,23 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 6. **Crash Window & TTL** — On ingest: extend TTL. SIGTERM: flush+extend TTL then close. Ack only after durable write.
 
 ## C. Races & Ordering
+
 1. **Concurrent Clear Board** — Server: idempotency key + ≥150 ms rate-limit. Client: debounce \~300 ms and show pending state.
 2. **Awareness Reordering/Loss** — Frames carry `seq` (u32); drop if `seq ≤ lastSeq` modulo 2^31; smooth interpolation with 150–250 ms window.
 3. **Undo Scope Across Tabs** — Use per-tab `userId` to isolate histories.
 4. **outputs\[] Eviction** — Completion + eviction in single CRDT transaction so second finisher observes first delete.
+
+## D. Protocol Envelopes (Normative, Compact)
+
+* **welcome**: `{"type":"welcome","v":1,"ts":"2025-08-19T12:34:56Z","docId":"<id>","userId":"<device:tab>","ice":{"ttl_sec":600,"servers":[...]},"limits":{"max_frame_bytes":2000000,"warn_size_bytes":8000000,"read_only_size_bytes":10000000,"offline_threshold":{"bytes":2000000,"minutes":15,"ops":10000}},"peer_count":12}`.
+* **persist\_ack**: `{"type":"persist_ack","v":1,"ts":"2025-08-19T12:34:56Z","docId":"<id>","svKey":"<ver>","size_bytes":123456,"expires_at":"2025-08-19T13:34:56Z","flush_seq":42}`.
+* **metadata\_poll (HTTP)**: `{"docId":"<id>","size_bytes":123456,"lastWriteAt":"2025-08-19T12:34:56Z","expires_at":"2025-08-19T13:34:56Z"}`.
+* **errors**:
+
+  * `offline_delta_too_large`: `{"type":"error","code":"offline_delta_too_large","threshold":{"bytes":2000000,"minutes":15,"ops":10000},"server_size_bytes":9200000}`.
+  * `read_only_over_cap`: `{"type":"error","code":"read_only_over_cap","size_bytes":10300000}`.
+  * `conflict_on_version`: `{"type":"error","code":"conflict_on_version","expected":12,"received":10,"entity":"code_cell","id":"<cellId>"}`.
+* **awareness (WS/RTC)**: `{"type":"awareness","seq":12345,"ts":1724070000123,"userId":"<device:tab>","presence":{"cursor":{"x":123.4,"y":567.8,"space":"world"},"tool":"pen","color":"#AABBCC","viewId":"<opt>"}}`.
 
 ## E. Thresholds & Constants
 
@@ -1003,6 +1255,15 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 | Awareness send rate     |       12 Hz → 6 Hz → 2 Hz | degrade when backpressured or `N ≥ 20` |
 | Offline thresholds      | 2 MB or 15 min or 10k ops | any triggers                           |
 | Shutdown drain          |                       2 s | flush before force close               |
+
+## F. Observability & SLOs
+
+**Metrics**: `persist_lag_ms` (p50/p95), `flush_duration_ms`, `flush_batch_bytes`, `ttl_extend_failures`, `doc_size_bytes` (warn/RO counters), `rejected_deltas_count` by reason, `awareness_drop_rate` (WS/RTC), `ws_backpressure_drops`, `rtc_buffer_overflows`.
+**Logs**: include `docId`,`svKey`,`flush_seq`,`size_bytes`, threshold context in errors. **Alerts**: `doc_size_bytes > 8.5 MB` ≥5 min; `persist_lag_ms p95 > 1500` for 10 min; TTL within 2× batch window without recent ack.
+
+## H. Open Decisions
+Batch window; backpressure thresholds; compression level/codec; metadata source of truth (PG vs Redis) + caching; max IDB-gate timeout (2 s suggested); method for rolling `ĉ` (EWMA vs windowed).
+
 ---
 # Final Editorial Notes
 

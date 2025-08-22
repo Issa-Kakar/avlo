@@ -377,7 +377,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private buildSnapshot(): Snapshot {
     // Get current state vector for svKey
     const stateVector = Y.encodeStateVector(this.ydoc);
-    const svKey = btoa(String.fromCharCode(...stateVector));
+    // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
+    const svKey = btoa(Array.from(stateVector, (byte) => String.fromCharCode(byte)).join(''));
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
