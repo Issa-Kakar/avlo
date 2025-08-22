@@ -17,8 +17,9 @@ export interface Snapshot {
 // Stroke view for rendering
 export interface StrokeView {
   id: StrokeId;
-  polyline: Float32Array | null; // Built at RENDER time ONLY from stored number[]
-  // Will be null in snapshot, created during canvas render
+  points: ReadonlyArray<number>; // Raw points from Y.Doc (stored as number[], never Float32Array)
+  polyline: Float32Array | null; // Built at RENDER time ONLY from points
+  // Will be null in snapshot, created during canvas render from points
   style: {
     color: string;
     size: number;
