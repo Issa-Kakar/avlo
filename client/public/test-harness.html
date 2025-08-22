@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phase 2 Test Harness</title>
+  <style>
+    body {
+      font-family: monospace;
+      padding: 20px;
+    }
+    .status {
+      padding: 10px;
+      border: 1px solid #ccc;
+      margin: 10px 0;
+    }
+    .metric {
+      display: inline-block;
+      margin: 0 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Phase 2 Test Harness</h1>
+  
+  <div class="status">
+    <div class="metric">Status: <span id="status">Loading...</span></div>
+    <div class="metric">Scene: <span id="scene">0</span></div>
+    <div class="metric">Strokes: <span id="stroke-count">0</span></div>
+    <div class="metric">Texts: <span id="text-count">0</span></div>
+    <div class="metric">Publishes: <span id="publish-count">0</span></div>
+    <div class="metric">Last svKey: <span id="last-svkey">empty</span></div>
+    <div class="metric">Room Size: <span id="room-size">0</span> bytes</div>
+  </div>
+  
+  <div id="errors" style="color: red;"></div>
+  
+  <script type="module">
+    // Global test state
+    window.testState = {
+      ready: false,
+      manager: null,
+      publishMetrics: {
+        count: 0,
+        times: [],
+        lastSvKey: 'empty',
+        avgInterval: 0
+      },
+      commandLog: [],
+      rejectedCommands: [],
+      processedCommands: new Set(),
+      capturedScenes: {},
+      destroyed: false
+    };
+    
+    // Import and setup RoomDocManager
+    async function setupTestEnvironment() {
+      try {
+        // Note: This assumes the dev server is running with proper module resolution
+        const { RoomDocManagerRegistry } = await import('/src/lib/room-doc-manager.ts');
+        
+        const manager = RoomDocManagerRegistry.get('test-room');
+        window.testState.manager = manager;
+        
+        // Expose on window for direct access in tests
+        window.testManager = manager;
+        window.testReady = true;
+        
+        // Track publishes
+        let lastPublishTime = 0;
+        
+        manager.subscribeSnapshot((snapshot) => {
+          window.testState.publishMetrics.count++;
+          const now = performance.now();
+          
+          if (lastPublishTime > 0) {
+            window.testState.publishMetrics.times.push(now - lastPublishTime);
+          }
+          lastPublishTime = now;
+          
+          window.testState.publishMetrics.lastSvKey = snapshot.svKey;
+          if (window.testState.publishMetrics.times.length > 0) {
+            const sum = window.testState.publishMetrics.times.reduce((a, b) => a + b, 0);
+            window.testState.publishMetrics.avgInterval = sum / window.testState.publishMetrics.times.length;
+          }
+          
+          // Update UI
+          document.getElementById('scene').textContent = snapshot.scene;
+          document.getElementById('stroke-count').textContent = snapshot.strokes.length;
+          document.getElementById('text-count').textContent = snapshot.texts.length;
+          document.getElementById('publish-count').textContent = window.testState.publishMetrics.count;
+          document.getElementById('last-svkey').textContent = snapshot.svKey;
+          
+          // Track processed commands
+          snapshot.strokes.forEach(s => window.testState.processedCommands.add(s.id));
+          snapshot.texts.forEach(t => window.testState.processedCommands.add(t.id));
+          
+          // Expose metrics globally for tests
+          window.publishMetrics = window.testState.publishMetrics;
+        });
+        
+        manager.subscribeRoomStats((stats) => {
+          if (stats) {
+            document.getElementById('room-size').textContent = stats.bytes;
+            window.currentRoomSize = stats.bytes;
+          }
+        });
+        
+        // Override write to track rejections
+        const originalWrite = manager.write.bind(manager);
+        manager.write = (cmd) => {
+          window.testState.commandLog.push({ cmd, time: Date.now() });
+          try {
+            originalWrite(cmd);
+          } catch (e) {
+            window.testState.rejectedCommands.push({ cmd, error: e.message });
+            document.getElementById('errors').textContent = e.message;
+            throw e; // Re-throw for tests to catch
+          }
+        };
+        
+        // Scene capture helpers
+        window.captureScene = () => {
+          return manager.currentSnapshot.scene;
+        };
+        
+        window.simulatePointerDown = (strokeId) => {
+          const scene = window.captureScene();
+          window.testState.capturedScenes[strokeId] = scene;
+          window.capturedScenes = window.testState.capturedScenes; // Expose globally
+          return scene;
+        };
+        
+        window.simulatePointerUp = (strokeId, points) => {
+          const capturedScene = window.testState.capturedScenes[strokeId];
+          if (capturedScene === undefined) {
+            throw new Error('Scene not captured for stroke ' + strokeId);
+          }
+          
+          manager.write({
+            type: 'DrawStrokeCommit',
+            id: strokeId,
+            tool: 'pen',
+            color: '#000000',
+            size: 2,
+            opacity: 1,
+            points: points || [0, 0, 10, 10],
+            bbox: { min: [0, 0], max: [10, 10] },
+            scene: capturedScene,
+            startedAt: Date.now()
+          });
+        };
+        
+        // Helper to create large stroke
+        window.createLargeStroke = (pointCount) => {
+          const points = [];
+          for (let i = 0; i < pointCount; i++) {
+            points.push(i, i);
+          }
+          return points;
+        };
+        
+        // Expose state
+        window.commandLog = window.testState.commandLog;
+        window.rejectedCommands = window.testState.rejectedCommands;
+        window.processedCommands = window.testState.processedCommands;
+        
+        document.getElementById('status').textContent = 'Ready';
+        window.testState.ready = true;
+        
+      } catch (err) {
+        console.error('Setup error:', err);
+        document.getElementById('status').textContent = 'Error: ' + err.message;
+        document.getElementById('errors').textContent = err.stack;
+      }
+    }
+    
+    // Start setup
+    setupTestEnvironment();
+  </script>
+</body>
+</html>

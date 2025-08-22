@@ -182,6 +182,105 @@ Authority reminders: never use cached Snapshots to make business decisions; UI s
 - Yjs document structure initialized
 - Snapshot publishing pipeline
 - WriteQueue and CommandBus infrastructure
+Here’s the crisp call, then the exhaustive checklist.
+
+## TL;DR
+
+* **Mount/unmount tests:** Yes, you can and *should* test them **now**—but scope them to the **RoomDocManager + hooks layer** (subscriptions, unsubs, `destroy()`), not “real UI components.” Phase 2 explicitly excludes UI components and network providers; the lifecycle you *can* test is the manager’s subscriptions + a tiny hook wrapper and a debug counter component. Defer broader component behavior.  &#x20;
+* **Before moving on:** lock down the **RAF publisher contract** (≤60 FPS, coalescing 8–16 ms, \~8 FPS when hidden, initial EmptySnapshot), **immutability**, **idempotent writes**, **no Yjs in UI**, **size/budget caps**, and the **render-snapshot IDB cache keyed by `svKey`**. These are the Phase 2 invariants you’ll build everything else on.   &#x20;
+
+---
+
+# Can we test mounting/unmounting *right now*?
+
+**Yes—limit it to the data layer’s lifecycle:**
+
+* Implement/verify the manager’s **subscription API** returns working unsubs and never leaks after unmount or `destroy()`. That’s Phase 2 scope (RoomDocManager skeleton, subscription maps, and `destroy` stub are all called out).&#x20;
+* Write a tiny React **hook wrapper** (e.g., `useRoomSnapshot(roomId)`) that subscribes/unsubs. This isn’t “UI components”; it’s the public surface described in the overview and aligns with the “no Yjs in UI” rule. Mount/unmount it in tests to assert cleanup & idempotence. &#x20;
+* You **should not** spend time on canvas or complex component behavior yet (explicitly out of scope for Phase 2). Defer that.&#x20;
+
+**What to assert in these lifecycle tests:**
+
+1. **Immediate first publish** (EmptySnapshot) occurs once on mount; no extra publishes on unmount.&#x20;
+2. **Unsubscribe guarantees:** no callback invocations after unmount or `destroy()`. (Verify manager’s subscription maps clear.)&#x20;
+3. **No Yjs leakage:** mounting components must not import Yjs/providers (ESLint no-restricted-imports). Turn this into a red-bar test if possible.&#x20;
+4. **One manager per roomId:** mount two different room hooks → distinct managers; remount same room → reuse.&#x20;
+
+---
+
+# Phase 2: exhaustive “go/no-go” checklist (what to prove before moving on)
+
+## A) Type system & lints (foundational)
+
+* **Shared types present** (Stroke, TextBlock, CodeCell, Output, Meta with `scene_ticks`, ids) + **command types** + **Snapshot interface** + **type guards**.&#x20;
+* **ESLint rules** enforce “no direct Yjs/providers in UI.” Make failing imports block CI.&#x20;
+* Success criteria checklist passes: types, ESLint, acceptance tests, perf targets, leak checks, observability, docs, WriteQueue pattern, immutable snapshots, mobile view-only, size/TTL rules.&#x20;
+
+## B) RoomDocManager foundation
+
+* **Class skeleton**: owns `Y.Doc`, (providers placeholders), `currentSnapshot` (never null), subscription maps, singleton registry. **Constructor** sets `guid=roomId`, initializes **EmptySnapshot** synchronously, and event emitters. **`destroy()`** exists.  &#x20;
+* **Ownership invariants**: UI never sees Y types; helpers may return Y types for internal use only; no cached Y refs as fields. Test with “trap” unit tests.&#x20;
+
+## C) Y.Doc shape & numeric storage
+
+* Root `Y.Map`, plus arrays/maps for strokes, texts, outputs (with size enforcement), code cell, meta (`scene_ticks`). **Store numeric arrays as `number[]` (not `Float32Array`)**; typed arrays constructed at render time only. &#x20;
+* **Guid discipline:** `new Y.Doc({guid: roomId})` once; never mutate.&#x20;
+
+## D) Snapshot builder & RAF publisher (the big one)
+
+* **Builder**: computes `svKey` from Y state vector; returns **frozen** immutable objects (dev freeze), O(changes) work. &#x20;
+* **RAF loop contract**:
+
+  * ≤ **60 FPS**; ≤ **1 publish per rAF**; coalesce **8–16 ms**; **dirty-tracking** prevents redundant publishes; **EmptySnapshot** publishes immediately; **hidden tab** \~ **8 FPS**; widen micro-batch to **24–32 ms** under pressure; drop superseded deltas. Prove each with deterministic time-control tests.   &#x20;
+* **Render-snapshot cache (Phase 2.4)**: persist **last render Snapshot in IDB keyed by `{roomId, svKey}`**; on boot, compute svKey and hydrate only if equal; write only when svKey changes. (Small cache, *not* full offline.) Add schema/version for invalidation. Tests for hit/miss and schema bump.&#x20;
+
+## E) Write path & idempotency
+
+* **Single write entrypoint**: `write(cmd)` enqueues; **one `yjs.transact`** per logical op; UI never calls Y APIs.&#x20;
+* **Idempotency**: every command carries `idempotencyKey`; **drop dups** before `transact`. Unit test duplicate delivery. &#x20;
+* **Budgeted concurrency/backpressure**: explicit budgets (frame ≤16 ms; encoded delta <128 KB; queue ≤100). Under pressure, widen coalescing to 24–32 ms, drop superseded deltas. Assert via stress tests. &#x20;
+
+## F) Size caps & gates
+
+* **Inbound frame cap 2 MB** (abort/close 1009), **doc size warn/RO 8 MB/10 MB**, **never relax gates**, **no /api or /yjs caching in SW**. Add tests for cap banners + read-only mode transitions.&#x20;
+* **Room stats**: advisory `{bytes, cap}` available to UI via `subscribeRoomStats` (even if the pill/banner comes later). Verify it updates.&#x20;
+
+## G) Awareness & presence (Phase 2 view)
+
+* Awareness is **ephemeral**, **never persisted**, **throttled**, **injected into snapshots**; start WS awareness early; (RTC comes later). Ensure the snapshot includes presence view and that awareness is excluded from any persistence.&#x20;
+
+## H) TTL, authority & storage
+
+* **Authority never bifurcates**: WS/Redis authoritative; RTC (later) is optimization only; TTL extends on **accepted writes** (not reads). Add tests for `extendTTL()` rate-limiting hooks once exposed. &#x20;
+* **Postgres is metadata only**; Redis stores compressed docs with TTL. (No tests needed in Phase 2 beyond correct flags/writes in the server stub.)&#x20;
+
+## I) Performance & memory
+
+* **Targets**: maintain 60 FPS render; p95 collab latency ≤125 ms (for later phases, but keep the publisher budget now); persist lag ≤3 s p95. At minimum, assert the publisher never exceeds frame budget in micro-benchmarks; check for Float32Array retention. &#x20;
+
+## J) Observability & errors
+
+* Wire minimal metrics/counters for: publishes/frame, coalescing window, backpressure drops, queue depth, svKey churn. Ensure “fail-closed gates” disable features on ambiguity (e.g., `G_FIRST_SNAPSHOT`). &#x20;
+---
+
+# What to **defer** beyond Phase 2
+
+* **Network providers** (WS handshake quirks, RTC probe/keep rules, ICE/relay settings, direct pairing): all later phases. Don’t test these yet. &#x20;
+* **Full offline y-indexeddb provider** for the Y.Doc: explicitly deferred to Phase 5.3 to avoid “two persistence sources.” (You only do the tiny render-snapshot cache now.)&#x20;
+---
+
+## Practical test plan you can run today
+1. **Vitest + React Testing Library (mount/unmount):** render a tiny component using `useRoomSnapshot(roomId)`, assert:
+
+   * initial `EmptySnapshot` visible once; subscribe count increments; unmount → no further callbacks; remount → reuses manager instance. &#x20;
+2. **Playwright (deterministic RAF):** use `page.clock` to step time and prove: one publish per rAF; coalescing 8–16 ms; \~8 FPS when hidden; widen to \~24–32 ms under pressure. (Keep this even when MCP is added later.) &#x20;
+3. **IDB render-snapshot cache tests:** simulate boot with matching `svKey` (hydrate), and with mismatch (skip); write only when `svKey` changes.&#x20;
+4. **Guardrails:** ESLint “no-restricted-imports” (red-bar if UI imports Yjs); command idempotency duplicate test; size caps (2 MB frame; 8 MB/10 MB warn/RO).  &#x20;
+---
+
+### Bottom line
+* **Test mount/unmount now**—for the **manager + hooks lifecycle**, not full components.
+* **Gate Phase 2** on: RAF publisher invariants, immutable snapshots, idempotent/guarded writes, numeric-array discipline, caps/gates, and the render-snapshot IDB cache keyed by `svKey`. If these are green, you’ll have a rock-solid base to layer providers and UI on next.  &#x20;
 
 ---
 ## Phase 3: Canvas Rendering & Drawing System

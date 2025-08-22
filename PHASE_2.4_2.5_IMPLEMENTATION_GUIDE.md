@@ -1,5 +1,95 @@
 # Phase 2.4 & 2.5 Implementation Guide
 
+**ORIGINAL PHASE 2 GUIDE**:
+### 2.1 Define TypeScript Types and Interfaces
+1. Create shared types file with all data models from Section 4:
+   - StrokeId, TextId, SceneIdx type aliases
+   - Stroke interface with all required fields
+   - TextBlock interface
+   - CodeCell and Output interfaces
+   - Meta interface with scene_ticks array
+2. Define awareness payload structure (ephemeral data)
+3. Create device UI state interfaces for localStorage
+4. Define command types for WriteQueue pattern
+5. Create snapshot interface (immutable view structure)
+6. Add validation helper types and guards
+
+### 2.2 Implement RoomDocManager Foundation
+1. Create RoomDocManager class skeleton with:
+   - Private Y.Doc instance property
+   - Private provider references (will be null initially)
+   - Current snapshot property (never null - start with EmptySnapshot)
+   - Subscription management maps
+2. Implement constructor that:
+   - Creates Y.Doc with guid matching roomId
+   - Initializes EmptySnapshot synchronously
+   - Sets up internal event emitters
+3. Add destroy method that will handle cleanup (stub for now)
+4. Implement subscription methods (return unsubscribe functions):
+   - subscribeSnapshot
+   - subscribePresence  
+   - subscribeRoomStats
+5. Create singleton registry to ensure one manager per room
+
+### 2.3 Set Up Yjs Document Structure
+1. Initialize Y.Map as document root in RoomDocManager
+2. Create Y.Array for strokes with proper typing
+3. Create Y.Array for texts
+4. Create Y.Map for code cell
+5. Create Y.Array for outputs with size enforcement
+6. Create Y.Map for meta including scene_ticks array
+7. Add helper methods to safely access these structures 2. **Set up proper getters** for Y structures
+8. Important: Store arrays as plain number[], never Float32Array in Yjs
+
+### 2.4 Implement Snapshot Publishing System
+1. Create snapshot builder that:
+   - Reads current Y.Doc state
+   - Generates unique svKey from state vector
+   - Creates frozen arrays (Object.freeze in development)
+   - Builds immutable snapshot object
+   - NOTE: `spatialIndex` field is set to `null` in Phase 2.4; it will be populated with RBush data in Phase 3.3
+2. Set up requestAnimationFrame loop for publishing:
+   - Maximum 60 FPS rate limiting
+   - Batch multiple Y updates within single frame
+   - Coalesce updates within 8-16ms windows
+3. Implement dirty tracking to avoid unnecessary publishes
+4. Add logic to detect tab visibility and reduce to 8 FPS when hidden
+5. Ensure EmptySnapshot is published immediately on creation
+6. Persist **last render Snapshot** in IndexedDB **keyed by Yjs state vector (svKey)**. On boot, if `svKey` matches, render that snapshot immediately while providers connect; otherwise skip.
+Note: only add a tiny IndexedDB “render-snapshot cache”, not the full offline Yjs store. The full y-indexeddb provider (which persists the entire Y.Doc for offline use) doesn’t arrive until Phase 5.3. So you’re not blocked: 2.4’s cache is a minimal IDB key/value store used purely to hydrate the first paint while everything else spins up. Key: {roomId, svKey}; include a schema/version field so you can invalidate on shape changes. (Recommended.)
+Payload: only the Snapshot fields—no typed arrays inside; typed arrays are built at render time. 
+Write policy: write only when svKey changes (i.e., after a publish). (Recommended; matches rAF cadence.)
+Read policy: on boot, compute current svKey; return only if equal. Otherwise return null. 
+Size/TTL: cap the record size; keep one per room; clear on logout/workspace switch. (Recommended.)
+Authority reminders: never use cached Snapshots to make business decisions; UI stats refresh from persist_ack after a real write.
+
+### 2.5 Create WriteQueue and CommandBus
+1. Implement WriteQueue class with:
+   - Queue data structure with max 100 pending commands
+   - Validation method checking room size, mobile status, frame size
+   - Backpressure handling when queue exceeds limits
+   - Idempotency tracking map
+   - CRITICAL: Enforce dual budget constraints:
+     * For `DrawStrokeCommit`: reject if estimated encoded update > 128KB (after simplification)
+     * For all commands: reject if estimated encoded delta > 2MB (transport cap)
+2. Create CommandBus that:
+   - Consumes from WriteQueue
+   - Wraps each command in single yjs.transact()
+   - Applies commands to Y.Doc structures
+   - Handles command-specific logic
+3. Add command validation for each command type:
+   - Size limits (MAX_POINTS_PER_STROKE = 10,000)
+   - Content limits (code body ≤ 200KB)
+   - Text length limits (500 chars)
+4. Implement rate limiting for specific commands (ClearBoard: 1/15s)
+
+**Deliverables:**
+- Complete TypeScript type system
+- Basic RoomDocManager with subscription system
+- Yjs document structure initialized
+- Snapshot publishing pipeline
+- WriteQueue and CommandBus infrastructure
+
 ## Executive Summary
 
 This guide provides a complete implementation plan for Phase 2.4 (Snapshot Publishing System) and Phase 2.5 (WriteQueue and CommandBus). These phases are critical for establishing the real-time state synchronization and command processing pipeline that forms the core of Avlo's distributed architecture.

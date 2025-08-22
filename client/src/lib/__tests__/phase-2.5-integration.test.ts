@@ -2,7 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RoomDocManagerRegistry } from '../room-doc-manager';
 import { DrawStrokeCommit, AddText, ClearBoard, EraseObjects } from '@avlo/shared';
 
-describe('Phase 2.5 Integration', () => {
+/**
+ * WARNING: These tests use processCommandsImmediate() which BYPASSES the actual
+ * command processing timing and batch windows. They don't test real backpressure,
+ * rate limiting under actual timing conditions, or the CommandBus batch processing.
+ * 
+ * See phase-2.5-distributed-systems.test.ts for proper distributed systems testing.
+ * 
+ * TODO: Remove or refactor to test actual async command processing.
+ */
+describe.skip('Phase 2.5 Integration (FALSE POSITIVES - SKIPPED)', () => {
   let originalNavigator: any;
   let originalWindow: any;
 
@@ -26,7 +35,7 @@ describe('Phase 2.5 Integration', () => {
     vi.clearAllMocks();
   });
 
-  it('should process commands through WriteQueue and CommandBus', async () => {
+  it.skip('should process commands through WriteQueue and CommandBus (FALSE POSITIVE)', async () => {
     const roomId = 'test-room-2.5';
     const manager = RoomDocManagerRegistry.get(roomId);
 

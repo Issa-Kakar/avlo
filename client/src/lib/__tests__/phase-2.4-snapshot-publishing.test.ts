@@ -2,7 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RoomDocManagerRegistry } from '../room-doc-manager';
 import { DrawStrokeCommit, ClearBoard, AddText } from '@avlo/shared';
 
-describe('Phase 2.4: Snapshot Publishing System', () => {
+/**
+ * WARNING: These tests use processCommandsImmediate() which BYPASSES the actual RAF loop.
+ * They are FALSE POSITIVES that don't test real timing, coalescing, or backpressure.
+ * See phase-2.4-raf-timing.test.ts for proper distributed systems testing.
+ * 
+ * TODO: Remove or refactor these tests to use proper timing simulation.
+ */
+describe.skip('Phase 2.4: Snapshot Publishing System (FALSE POSITIVES - SKIPPED)', () => {
   beforeEach(() => {
     RoomDocManagerRegistry.destroyAll();
   });
@@ -13,7 +20,7 @@ describe('Phase 2.4: Snapshot Publishing System', () => {
   });
 
   describe('Core Snapshot Functionality', () => {
-    it('should publish snapshots when Y.Doc changes', async () => {
+    it.skip('should publish snapshots when Y.Doc changes (FALSE POSITIVE)', async () => {
       const roomId = 'test-room-publish';
       const manager = RoomDocManagerRegistry.get(roomId);
 
@@ -53,7 +60,7 @@ describe('Phase 2.4: Snapshot Publishing System', () => {
       manager.destroy();
     });
 
-    it('should coalesce multiple rapid updates into single snapshot', async () => {
+    it.skip('should coalesce multiple rapid updates into single snapshot (FALSE POSITIVE)', async () => {
       const roomId = 'test-room-batch';
       const manager = RoomDocManagerRegistry.get(roomId);
 
