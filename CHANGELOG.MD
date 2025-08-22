@@ -13,3 +13,10 @@
   - Step E: Snapshot building and publishing with svKey change detection
   - Step F: IndexedDB snapshot cache for fast initial paint
   - Fixed type mismatch in roomStats.expiresAt field
+
+### Enhanced
+- Phase 2.5 Preparation: Production ULID implementation
+  - Installed official ulid package (v3.0.1) for production-quality unique ID generation
+  - Critical for distributed systems causal consistency and scene capture
+  - Ensures lexicographically sortable, collision-resistant identifiers
+  - 128-bit UUID compatibility with 1.21e+24 unique IDs per millisecond

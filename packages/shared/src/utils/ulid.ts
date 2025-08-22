@@ -1,38 +1,26 @@
 /**
- * Simple ULID generator for unique identifiers
- * This is a basic implementation - can be replaced with the ulid package later
+ * ULID generator for unique identifiers
+ * Uses the official ulid package for production-quality ID generation
+ * Critical for distributed systems causal consistency
  */
 
-// ULID alphabet (Crockford's base32)
-const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+import { ulid as generateULID } from 'ulid';
 
 /**
  * Generate a ULID (Universally Unique Lexicographically Sortable Identifier)
  * Format: TTTTTTTTTTRRRRRRRRRRRRRRR
- * - T: Timestamp (10 chars)
- * - R: Randomness (16 chars)
+ * - T: Timestamp (10 chars, millisecond precision)
+ * - R: Randomness (16 chars, 80 bits)
+ *
+ * Properties:
+ * - Lexicographically sortable
+ * - 128-bit compatibility with UUID
+ * - 1.21e+24 unique IDs per millisecond
+ * - Case-insensitive and URL-safe (Crockford's base32)
+ *
+ * @param seedTime Optional timestamp in milliseconds
+ * @returns A 26-character ULID string
  */
 export function ulid(seedTime?: number): string {
-  const time = seedTime ?? Date.now();
-  const timestamp = encodeTime(time, 10);
-  const randomness = encodeRandom(16);
-  return timestamp + randomness;
-}
-
-function encodeTime(now: number, len: number): string {
-  let str = '';
-  for (let i = len - 1; i >= 0; i--) {
-    const mod = now % 32;
-    str = ENCODING[mod] + str;
-    now = Math.floor(now / 32);
-  }
-  return str;
-}
-
-function encodeRandom(len: number): string {
-  let str = '';
-  for (let i = 0; i < len; i++) {
-    str += ENCODING[Math.floor(Math.random() * 32)];
-  }
-  return str;
+  return generateULID(seedTime);
 }

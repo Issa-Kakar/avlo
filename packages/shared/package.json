@@ -14,5 +14,8 @@
   "scripts": {
     "build": "tsc -b",
     "build:types": "tsc -b"
+  },
+  "dependencies": {
+    "ulid": "^3.0.1"
   }
 }
