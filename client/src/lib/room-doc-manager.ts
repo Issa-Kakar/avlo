@@ -113,7 +113,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private cleanupHandlers: Array<() => void> = [];
 
   // Room stats tracking (for Phase 2.5)
-  private roomStats: { bytes: number; expiresAt?: string } | null = null;
+  private roomStats: { bytes: number; expiresAt?: number } | null = null;
 
   constructor(roomId: RoomId) {
     this.roomId = roomId;
