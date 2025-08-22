@@ -96,6 +96,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private batchWindowMs = 8; // Start with 8-16ms window
   private readonly MIN_BATCH_WINDOW = 8;
   private readonly MAX_BATCH_WINDOW = 32;
+  
+  // Event handlers for cleanup
+  private ydocUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+  private visibilityChangeHandler: (() => void) | null = null;
 
   constructor(roomId: RoomId) {
     this.roomId = roomId;
@@ -226,6 +230,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.presenceSubscribers.clear();
     this.statsSubscribers.clear();
 
+    // Remove event listeners
+    if (this.ydocUpdateHandler) {
+      this.ydoc.off('update', this.ydocUpdateHandler);
+      this.ydocUpdateHandler = null;
+    }
+    
+    if (this.visibilityChangeHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityChangeHandler);
+      this.visibilityChangeHandler = null;
+    }
+
     // Destroy providers (when added)
     // this.indexeddbProvider?.destroy();
     // this.websocketProvider?.destroy();
@@ -240,12 +255,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Set up Y.js observers
   private setupObservers(): void {
-    // Observe document changes
-    this.ydoc.on('update', (_update: Uint8Array, _origin: unknown) => {
+    // Create and store the update handler for cleanup
+    this.ydocUpdateHandler = (_update: Uint8Array, _origin: unknown) => {
       // eslint-disable-next-line no-console
       console.log('[RoomDocManager] Y.Doc updated');
       this.requestPublish();
-    });
+    };
+    
+    // Observe document changes
+    this.ydoc.on('update', this.ydocUpdateHandler);
 
     // Will add more specific observers as needed
   }
@@ -257,7 +275,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
-    document.addEventListener('visibilitychange', () => {
+    // Create and store the visibility handler for cleanup
+    this.visibilityChangeHandler = () => {
       const wasHidden = this.isTabHidden;
       this.isTabHidden = document.hidden;
       // eslint-disable-next-line no-console
@@ -277,7 +296,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       else if (wasHidden && !this.isTabHidden && this.pendingPublish) {
         this.requestPublish();
       }
-    });
+    };
+    
+    document.addEventListener('visibilitychange', this.visibilityChangeHandler);
   }
 
   // Private: Start the publish loop
