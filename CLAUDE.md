@@ -264,10 +264,12 @@ MAX_CLIENTS_PER_ROOM=50
 
 ### Data Model Conventions
 - **Timestamps**: ISO-8601 for HTTP/WS JSON, epoch ms in CRDT structures
-- **Scene management**: Append-only scene_ticks, excluded from undo
+- **Scene management**: Append-only scene_ticks, excluded from undo, and is collaborative
 - **Stroke simplification**: Douglas-Peucker at pointer-up
 - **Awareness**: Ephemeral, never persisted, 75-100ms cadence
 - **TTL extension**: Only on accepted writes, not on views/awareness
+- **Y.Map**: Must be initialized at root and put ALL structured under it
+- **Schema helpers**: all getRoot, getMeta, getStrokes etc. all read via **root**
 
 ### WriteQueue & Backpressure
 - **Validation order**: read-only check → mobile check → frame size check → command limits

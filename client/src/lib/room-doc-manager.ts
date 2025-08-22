@@ -63,6 +63,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
+  private readonly yRoot: Y.Map<unknown>;
 
   // Y.js structures (initialized in constructor)
   private readonly yStrokes: Y.Array<Stroke>;
@@ -102,17 +103,46 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Create Y.Doc with guid matching roomId
     this.ydoc = new Y.Doc({ guid: roomId });
 
-    // Initialize Y.js structures
-    this.yStrokes = this.ydoc.getArray<Stroke>('strokes');
-    this.yTexts = this.ydoc.getArray<TextBlock>('texts');
-    this.yCode = this.ydoc.getMap('code');
-    this.yOutputs = this.ydoc.getArray<Output>('outputs');
-    this.yMeta = this.ydoc.getMap('meta');
-
-    // Initialize meta if not present
-    if (!this.yMeta.has('scene_ticks')) {
-      this.yMeta.set('scene_ticks', []);
-    }
+    // Initialize root Y.Map as required by OVERVIEW.MD
+    this.yRoot = this.ydoc.getMap('root');
+    
+    // Initialize all structures under root in a single transaction
+    this.ydoc.transact(() => {
+      // Create Y structures if not present
+      if (!this.yRoot.has('meta')) {
+        const meta = new Y.Map();
+        meta.set('scene_ticks', new Y.Array<number>());
+        meta.set('schema_version', 1); // Future-proof
+        this.yRoot.set('meta', meta);
+      }
+      
+      if (!this.yRoot.has('strokes')) {
+        this.yRoot.set('strokes', new Y.Array<Stroke>());
+      }
+      
+      if (!this.yRoot.has('texts')) {
+        this.yRoot.set('texts', new Y.Array<TextBlock>());
+      }
+      
+      if (!this.yRoot.has('code')) {
+        const code = new Y.Map();
+        code.set('lang', 'javascript');
+        code.set('body', '');
+        code.set('version', 0);
+        this.yRoot.set('code', code);
+      }
+      
+      if (!this.yRoot.has('outputs')) {
+        this.yRoot.set('outputs', new Y.Array<Output>());
+      }
+    });
+    
+    // Store references to structures (now from root)
+    this.yMeta = this.yRoot.get('meta') as Y.Map<unknown>;
+    this.yStrokes = this.yRoot.get('strokes') as Y.Array<Stroke>;
+    this.yTexts = this.yRoot.get('texts') as Y.Array<TextBlock>;
+    this.yCode = this.yRoot.get('code') as Y.Map<unknown>;
+    this.yOutputs = this.yRoot.get('outputs') as Y.Array<Output>;
 
     // CRITICAL: Initialize with EmptySnapshot (NEVER null)
     this._currentSnapshot = createEmptySnapshot();
@@ -337,7 +367,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const svKey = btoa(String.fromCharCode(...stateVector));
 
     // Get current scene
-    const sceneTicks = (this.yMeta.get('scene_ticks') as number[]) || [];
+    const sceneTicks = (this.yMeta.get('scene_ticks') as Y.Array<number>)?.toArray() || [];
     const currentScene = sceneTicks.length;
 
     // Build stroke views (filter by current scene)
@@ -413,8 +443,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
 
     // Freeze entire snapshot in development
-    // NEEDS BUILT TIME REPLACEMENT FOR BROWSER
-    if (process.env.NODE_ENV === 'development') {
+    // Freeze entire snapshot in development
+    if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
       return Object.freeze(snapshot);
     }
 

@@ -131,7 +131,7 @@ Memory pressure from large arrays; avoid accidental Float32Array retention.
 4. Create Y.Map for code cell
 5. Create Y.Array for outputs with size enforcement
 6. Create Y.Map for meta including scene_ticks array
-7. Add helper methods to safely access these structures
+7. Add helper methods to safely access these structures 2. **Set up proper getters** for Y structures
 8. Important: Store arrays as plain number[], never Float32Array in Yjs
 
 ### 2.4 Implement Snapshot Publishing System
