@@ -24,9 +24,9 @@ import * as Y from 'yjs';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
-  STROKE_CONFIG as _STROKE_CONFIG, // Will be used in later Phase 2.3 steps
-  TEXT_CONFIG as _TEXT_CONFIG, // Will be used in later Phase 2.3 steps
-  isRoomReadOnly as _isRoomReadOnly, // Will be used in later Phase 2.3 steps
+  STROKE_CONFIG as _STROKE_CONFIG, // Will be used in Phase 2.5
+  TEXT_CONFIG,
+  isRoomReadOnly as _isRoomReadOnly, // Will be used in Phase 2.5
 } from '@avlo/shared';
 import type {
   RoomId,
@@ -98,43 +98,29 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Create Y.Doc with guid matching roomId
     this.ydoc = new Y.Doc({ guid: roomId });
 
-    // Initialize all structures under root in a single transaction
-    this.ydoc.transact(() => {
-      const root = this.ydoc.getMap('root');
+    // Initialize Yjs structures
+    this.initializeYjsStructures();
 
-      // Create Y structures if not present
-      if (!root.has('meta')) {
-        const meta = new Y.Map();
-        meta.set('scene_ticks', new Y.Array<number>());
-        meta.set('schema_version', 1); // Future-proof
-        root.set('meta', meta);
-      }
-
-      if (!root.has('strokes')) {
-        root.set('strokes', new Y.Array<Stroke>());
-      }
-
-      if (!root.has('texts')) {
-        root.set('texts', new Y.Array<TextBlock>());
-      }
-
-      if (!root.has('code')) {
-        const code = new Y.Map();
-        code.set('lang', 'javascript');
-        code.set('body', '');
-        code.set('version', 0);
-        root.set('code', code);
-      }
-
-      if (!root.has('outputs')) {
-        root.set('outputs', new Y.Array<Output>());
-      }
-    }, 'init');
+    // Validate structure integrity
+    if (!this.validateStructure()) {
+      throw new Error('Failed to initialize Y.Doc structure');
+    }
 
     // CRITICAL: Initialize with EmptySnapshot (NEVER null)
     this._currentSnapshot = createEmptySnapshot();
 
-    // PHASE 2.3 STOPS HERE - No observers/publish loop (Phase 2.4 concerns)
+    // PHASE 2.3 STOPS HERE - Constructor is DONE
+
+    // ❌ DO NOT add these (they belong to Phase 2.4):
+    // this.setupObservers();          // Phase 2.4
+    // this.setupVisibilityHandling(); // Phase 2.4
+    // this.startPublishLoop();        // Phase 2.4
+
+    // ❌ DO NOT cache Y structure references:
+    // this.yStrokes = ...             // WRONG
+    // this.yMeta = ...                // WRONG
+
+    // ✅ Always access through helper methods
   }
 
   // Public getters
@@ -203,6 +189,115 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private getCurrentScene(): number {
     const sceneTicks = this.getSceneTicks();
     return sceneTicks.length;
+  }
+
+  // Step 3: Initialize Y.js structures with proper setup
+  private initializeYjsStructures(): void {
+    this.ydoc.transact(() => {
+      const root = this.ydoc.getMap('root');
+
+      // Initialize meta if not present
+      if (!root.has('meta')) {
+        const meta = new Y.Map();
+        const sceneTicks = new Y.Array<number>();
+        meta.set('scene_ticks', sceneTicks);
+        // Canvas reference is optional per OVERVIEW.MD
+        // meta.set('canvas', { baseW: 1920, baseH: 1080 }); // Optional
+        root.set('meta', meta);
+      }
+
+      // Initialize strokes array
+      if (!root.has('strokes')) {
+        root.set('strokes', new Y.Array<Stroke>());
+      }
+
+      // Initialize texts array
+      if (!root.has('texts')) {
+        root.set('texts', new Y.Array<TextBlock>());
+      }
+
+      // Initialize code cell
+      if (!root.has('code')) {
+        const code = new Y.Map();
+        code.set('lang', 'javascript');
+        code.set('body', '');
+        code.set('version', 0);
+        root.set('code', code);
+      }
+
+      // Initialize outputs array with enforcement wrapper
+      if (!root.has('outputs')) {
+        root.set('outputs', new Y.Array<Output>());
+      }
+    }, 'init'); // Origin for debugging
+  }
+
+  // Step 4: Add output with size enforcement
+  private addOutput(output: Output): void {
+    const outputs = this.getOutputs();
+
+    // Validate single output size
+    const outputSize = new TextEncoder().encode(output.text).length;
+    if (outputSize > TEXT_CONFIG.MAX_OUTPUT_BYTES_PER_RUN) {
+      throw new Error(`Output exceeds ${TEXT_CONFIG.MAX_OUTPUT_BYTES_PER_RUN} bytes limit`);
+    }
+
+    this.ydoc.transact(() => {
+      // Add new output
+      outputs.push([output]);
+
+      // Enforce max count (keep last N)
+      while (outputs.length > TEXT_CONFIG.MAX_OUTPUTS_COUNT) {
+        outputs.delete(0, 1);
+      }
+
+      // Validate total size
+      let totalSize = 0;
+      for (const out of outputs) {
+        totalSize += new TextEncoder().encode(out.text).length;
+      }
+
+      // If total exceeds limit, remove oldest until under limit
+      while (totalSize > TEXT_CONFIG.MAX_TOTAL_OUTPUT_BYTES && outputs.length > 0) {
+        const removed = outputs.get(0);
+        if (removed) {
+          totalSize -= new TextEncoder().encode(removed.text).length;
+        }
+        outputs.delete(0, 1);
+      }
+    }, 'add-output');
+  }
+
+  // Step 6: Validate structure integrity
+  private validateStructure(): boolean {
+    try {
+      const root = this.getRoot();
+
+      // Check all required structures exist
+      if (!root.has('meta')) return false;
+      if (!root.has('strokes')) return false;
+      if (!root.has('texts')) return false;
+      if (!root.has('code')) return false;
+      if (!root.has('outputs')) return false;
+
+      // Validate meta structure
+      const meta = this.getMeta();
+      if (!meta.has('scene_ticks')) return false;
+
+      // Validate scene_ticks is array
+      const sceneTicks = meta.get('scene_ticks');
+      if (!(sceneTicks instanceof Y.Array)) return false;
+
+      // Validate code structure
+      const code = this.getCode();
+      if (!code.has('lang')) return false;
+      if (!code.has('body')) return false;
+      if (!code.has('version')) return false;
+
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // Subscription methods
