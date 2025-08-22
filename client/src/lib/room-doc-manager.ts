@@ -92,6 +92,29 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
 
+  // Phase 2.4 Component A: Snapshot Publisher State
+  private publishState = {
+    rafId: 0,
+    isDirty: false,
+    lastPublishTime: 0,
+    publishWorkMs: 0, // Track how long publish takes
+    isHidden: false,
+    batchWindow: 16, // Start with default 16ms
+    pendingUpdates: [] as Array<{ update: Uint8Array; origin: unknown; time: number }>,
+    lastSvKey: '', // Track to detect changes
+  };
+
+  // IndexedDB cache for render snapshots
+  private snapshotCache: IDBDatabase | null = null;
+  private readonly SNAPSHOT_CACHE_DB = 'avlo-snapshot-cache';
+  private readonly SNAPSHOT_CACHE_VERSION = 1;
+
+  // Track cleanup handlers
+  private cleanupHandlers: Array<() => void> = [];
+
+  // Room stats tracking (for Phase 2.5)
+  private roomStats: { bytes: number; expiresAt?: string } | null = null;
+
   constructor(roomId: RoomId) {
     this.roomId = roomId;
 
@@ -109,12 +132,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Initialize with EmptySnapshot (NEVER null)
     this._currentSnapshot = createEmptySnapshot();
 
-    // PHASE 2.3 STOPS HERE - Constructor is DONE
-
-    // ❌ DO NOT add these (they belong to Phase 2.4):
-    // this.setupObservers();          // Phase 2.4
-    // this.setupVisibilityHandling(); // Phase 2.4
-    // this.startPublishLoop();        // Phase 2.4
+    // Phase 2.4: Setup snapshot publishing (NO await)
+    this.initSnapshotCache(); // Async but don't await
+    this.setupObservers();
+    this.setupVisibilityHandling();
+    this.startPublishLoop();
 
     // ❌ DO NOT cache Y structure references:
     // this.yStrokes = ...             // WRONG
@@ -189,6 +211,24 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private getCurrentScene(): number {
     const sceneTicks = this.getSceneTicks();
     return sceneTicks.length;
+  }
+
+  // Helper to build presence view from awareness (stub for now, will be populated in Phase 4)
+  private buildPresenceView(): PresenceView {
+    return {
+      users: new Map(),
+      localUserId: '',
+    };
+  }
+
+  // Helper to get view transform (identity for now, will be populated in Phase 3)
+  private getViewTransform(): ViewTransform {
+    return {
+      worldToCanvas: (x: number, y: number) => [x, y],
+      canvasToWorld: (x: number, y: number) => [x, y],
+      scale: 1,
+      pan: { x: 0, y: 0 },
+    };
   }
 
   // Step 3: Initialize Y.js structures with proper setup
@@ -353,6 +393,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // eslint-disable-next-line no-console
     console.log('[RoomDocManager] Destroying');
 
+    // Stop RAF loop
+    if (this.publishState.rafId) {
+      cancelAnimationFrame(this.publishState.rafId);
+    }
+
+    // Clean up observers
+    this.ydoc.off('update', this.handleYDocUpdate);
+
+    // Clean up visibility handler
+    this.cleanupHandlers.forEach((cleanup) => cleanup());
+
+    // Close IndexedDB
+    this.snapshotCache?.close();
+
     // Clear subscribers
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
@@ -370,8 +424,257 @@ class RoomDocManagerImpl implements IRoomDocManager {
     RoomDocManagerRegistry.remove(this.roomId);
   }
 
-  // NOTE: Phase 2.4 methods (setupObservers, publish loop, etc.) will be added in Phase 2.4
-  // For now, these are stubbed out and not called from constructor
+  // Phase 2.4 Component B: Y.Doc Observer Setup
+  private setupObservers(): void {
+    // CRITICAL: Use 'update' event for batching, not deep observe
+    this.ydoc.on('update', this.handleYDocUpdate);
+
+    // Optional: Track specific events for debugging
+    if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
+      this.ydoc.on('afterTransaction', (transaction: Y.Transaction) => {
+        // eslint-disable-next-line no-console
+        console.log('[Snapshot] Transaction origin:', transaction.origin);
+      });
+    }
+  }
+
+  private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    // Mark dirty for next RAF
+    this.publishState.isDirty = true;
+
+    // Store update for potential analysis (optional)
+    this.publishState.pendingUpdates.push({ update, origin, time: Date.now() });
+
+    // Trim old updates beyond batch window
+    const cutoff = Date.now() - this.publishState.batchWindow;
+    this.publishState.pendingUpdates = this.publishState.pendingUpdates.filter(
+      (u) => u.time > cutoff,
+    );
+  };
+
+  // Phase 2.4 Component C: RAF-Based Publish Loop
+  private startPublishLoop(): void {
+    const loop = () => {
+      const now = performance.now();
+
+      // Check if we should publish
+      const timeSinceLastPublish = now - this.publishState.lastPublishTime;
+      const minInterval = this.publishState.isHidden
+        ? 125 // 8 FPS for hidden tab
+        : 16.67; // 60 FPS for active tab
+
+      if (this.publishState.isDirty && timeSinceLastPublish >= minInterval) {
+        const startTime = performance.now();
+
+        // Build and publish snapshot
+        this.publishSnapshot();
+
+        // Track publish time for adaptive batching
+        this.publishState.publishWorkMs = performance.now() - startTime;
+        this.publishState.lastPublishTime = now;
+        this.publishState.isDirty = false;
+
+        // Adaptive batch window based on publish time
+        this.updateBatchWindow();
+      }
+
+      // Continue loop
+      this.publishState.rafId = requestAnimationFrame(loop);
+    };
+
+    // Start loop
+    this.publishState.rafId = requestAnimationFrame(loop);
+  }
+
+  private updateBatchWindow(): void {
+    const { publishWorkMs } = this.publishState;
+
+    // Expand window if work takes >8ms, contract if <4ms
+    if (publishWorkMs > 8) {
+      this.publishState.batchWindow = Math.min(32, this.publishState.batchWindow * 1.5);
+    } else if (publishWorkMs < 4 && this.publishState.batchWindow > 16) {
+      this.publishState.batchWindow = Math.max(8, this.publishState.batchWindow * 0.8);
+    }
+  }
+
+  // Phase 2.4 Component D: Visibility Handling
+  private setupVisibilityHandling(): void {
+    const handleVisibilityChange = () => {
+      this.publishState.isHidden = document.hidden;
+
+      if (!this.publishState.isHidden) {
+        // Force publish when becoming visible
+        this.publishState.isDirty = true;
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Store for cleanup
+    this.cleanupHandlers.push(() => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    });
+  }
+
+  // Phase 2.4 Component E: Snapshot Building & Publishing
+  private publishSnapshot(): void {
+    // Build new snapshot
+    const newSnapshot = this.buildSnapshot();
+
+    // Check if svKey changed (actual Y.Doc update)
+    if (newSnapshot.svKey !== this.publishState.lastSvKey) {
+      this.publishState.lastSvKey = newSnapshot.svKey;
+
+      // Cache in IndexedDB (async, don't await)
+      this.cacheSnapshot(newSnapshot);
+    }
+
+    // Update current snapshot
+    this._currentSnapshot = newSnapshot;
+
+    // Notify subscribers
+    this.snapshotSubscribers.forEach((cb) => {
+      try {
+        cb(newSnapshot);
+      } catch (error) {
+        console.error('[Snapshot] Subscriber error:', error);
+      }
+    });
+  }
+
+  // Phase 2.4 Component F: IndexedDB Snapshot Cache
+  private async initSnapshotCache(): Promise<void> {
+    try {
+      const request = indexedDB.open(this.SNAPSHOT_CACHE_DB, this.SNAPSHOT_CACHE_VERSION);
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains('snapshots')) {
+          const store = db.createObjectStore('snapshots', { keyPath: 'key' });
+          store.createIndex('roomId', 'roomId', { unique: false });
+          store.createIndex('timestamp', 'timestamp', { unique: false });
+        }
+      };
+
+      request.onsuccess = (event) => {
+        this.snapshotCache = (event.target as IDBOpenDBRequest).result;
+        this.loadCachedSnapshot();
+      };
+
+      request.onerror = () => {
+        console.warn('[Snapshot] Failed to open IndexedDB cache');
+      };
+    } catch (error) {
+      console.warn('[Snapshot] IndexedDB not available:', error);
+    }
+  }
+
+  private async cacheSnapshot(snapshot: Snapshot): Promise<void> {
+    if (!this.snapshotCache) return;
+
+    try {
+      const transaction = this.snapshotCache.transaction(['snapshots'], 'readwrite');
+      const store = transaction.objectStore('snapshots');
+
+      // Store only essential data (no typed arrays, minimal size)
+      const cacheEntry = {
+        key: `${this.roomId}:${snapshot.svKey}`,
+        roomId: this.roomId,
+        svKey: snapshot.svKey,
+        timestamp: Date.now(),
+        snapshot: {
+          scene: snapshot.scene,
+          strokes: snapshot.strokes.map((s) => ({
+            id: s.id,
+            points: s.points, // Plain array, not Float32Array
+            style: s.style,
+            bbox: s.bbox,
+            scene: s.scene,
+          })),
+          texts: snapshot.texts.map((t) => ({
+            id: t.id,
+            x: t.x,
+            y: t.y,
+            w: t.w,
+            h: t.h,
+            content: t.content,
+            style: t.style,
+            scene: t.scene,
+          })),
+          meta: snapshot.meta,
+        },
+      };
+
+      // Delete old entries for this room
+      const deleteReq = store.index('roomId').openCursor(IDBKeyRange.only(this.roomId));
+      deleteReq.onsuccess = (event) => {
+        const cursor = (event.target as IDBRequest).result;
+        if (cursor) {
+          if (cursor.value.svKey !== snapshot.svKey) {
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
+
+      // Add new entry
+      store.put(cacheEntry);
+    } catch (error) {
+      console.warn('[Snapshot] Failed to cache:', error);
+    }
+  }
+
+  private async loadCachedSnapshot(): Promise<void> {
+    if (!this.snapshotCache) return;
+
+    try {
+      // Calculate current svKey
+      const stateVector = Y.encodeStateVector(this.ydoc);
+      // Safe base64 encoding for arbitrary bytes
+      const currentSvKey = btoa(
+        Array.from(stateVector, (byte) => String.fromCharCode(byte)).join(''),
+      );
+
+      const transaction = this.snapshotCache.transaction(['snapshots'], 'readonly');
+      const store = transaction.objectStore('snapshots');
+      const request = store.get(`${this.roomId}:${currentSvKey}`);
+
+      request.onsuccess = (event) => {
+        const result = (event.target as IDBRequest).result;
+        if (result && result.snapshot) {
+          // Restore snapshot for immediate render
+          this._currentSnapshot = this.reconstructSnapshot(result.snapshot, currentSvKey);
+
+          // Notify subscribers
+          this.snapshotSubscribers.forEach((cb) => cb(this._currentSnapshot));
+        }
+      };
+    } catch (error) {
+      console.warn('[Snapshot] Failed to load cache:', error);
+    }
+  }
+
+  private reconstructSnapshot(cached: any, svKey: string): Snapshot {
+    return {
+      svKey,
+      scene: cached.scene,
+      strokes: cached.strokes.map((s: any) => ({
+        ...s,
+        polyline: null as unknown as Float32Array | null,
+      })),
+      texts: cached.texts,
+      presence: { users: new Map(), localUserId: '' },
+      spatialIndex: { _tree: null },
+      view: {
+        worldToCanvas: (x: number, y: number) => [x, y],
+        canvasToWorld: (x: number, y: number) => [x, y],
+        scale: 1,
+        pan: { x: 0, y: 0 },
+      },
+      meta: cached.meta,
+      createdAt: Date.now(),
+    };
+  }
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
@@ -420,29 +723,23 @@ class RoomDocManagerImpl implements IRoomDocManager {
         scene: t.scene, // CRITICAL: Include scene for causal consistency
       }));
 
-    // Build presence view (stub for now)
-    const presence: PresenceView = {
-      users: new Map(),
-      localUserId: '',
-    };
+    // Build presence view
+    const presence: PresenceView = this.buildPresenceView();
 
     // Build spatial index (stub for now)
     const spatialIndex = { _tree: null };
 
-    // Build view transform (identity for now)
-    const view: ViewTransform = {
-      worldToCanvas: (x: number, y: number) => [x, y],
-      canvasToWorld: (x: number, y: number) => [x, y],
-      scale: 1,
-      pan: { x: 0, y: 0 },
-    };
+    // Build view transform
+    const view: ViewTransform = this.getViewTransform();
 
     // Build metadata
     const meta: SnapshotMeta = {
       cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES, // Use shared config
-      readOnly: false,
-      bytes: undefined,
-      expiresAt: undefined,
+      readOnly: this.roomStats?.bytes
+        ? this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES
+        : false,
+      bytes: this.roomStats?.bytes,
+      expiresAt: this.roomStats?.expiresAt,
     };
 
     // Create frozen snapshot (in development)
@@ -458,9 +755,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
       createdAt: Date.now(),
     };
 
-    // Freeze entire snapshot in development
-    // Freeze entire snapshot in development
+    // CRITICAL: Freeze in development to catch mutations
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
+      // Deep freeze strokes and texts arrays
+      Object.freeze(strokes);
+      strokes.forEach((s) => Object.freeze(s));
+      Object.freeze(texts);
+      texts.forEach((t) => Object.freeze(t));
+
+      // Freeze entire snapshot
       return Object.freeze(snapshot);
     }
 
