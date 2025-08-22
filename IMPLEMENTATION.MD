@@ -148,6 +148,12 @@ Memory pressure from large arrays; avoid accidental Float32Array retention.
 4. Add logic to detect tab visibility and reduce to 8 FPS when hidden
 5. Ensure EmptySnapshot is published immediately on creation
 6. Persist **last render Snapshot** in IndexedDB **keyed by Yjs state vector (svKey)**. On boot, if `svKey` matches, render that snapshot immediately while providers connect; otherwise skip.
+Note: only add a tiny IndexedDB “render-snapshot cache”, not the full offline Yjs store. The full y-indexeddb provider (which persists the entire Y.Doc for offline use) doesn’t arrive until Phase 5.3. So you’re not blocked: 2.4’s cache is a minimal IDB key/value store used purely to hydrate the first paint while everything else spins up. Key: {roomId, svKey}; include a schema/version field so you can invalidate on shape changes. (Recommended.)
+Payload: only the Snapshot fields—no typed arrays inside; typed arrays are built at render time. 
+Write policy: write only when svKey changes (i.e., after a publish). (Recommended; matches rAF cadence.)
+Read policy: on boot, compute current svKey; return only if equal. Otherwise return null. 
+Size/TTL: cap the record size; keep one per room; clear on logout/workspace switch. (Recommended.)
+Authority reminders: never use cached Snapshots to make business decisions; UI stats refresh from persist_ack after a real write.
 
 ### 2.5 Create WriteQueue and CommandBus
 1. Implement WriteQueue class with:

@@ -4,9 +4,9 @@
 // Ensure it's available on both window and globalThis
 if (typeof window !== 'undefined') {
   let rafId = 0;
-  const callbacks = new Map<number, (time: DOMHighResTimeStamp) => void>();
+  const callbacks = new Map<number, (time: number) => void>();
   
-  const raf = (callback: (time: DOMHighResTimeStamp) => void): number => {
+  const raf = (callback: (time: number) => void): number => {
     const id = ++rafId;
     callbacks.set(id, callback);
     // Execute immediately in test environment for faster tests

@@ -64,6 +64,8 @@ interface RoomDocManager {
   extendTTL(): void;
   destroy(): void;
 }
+
+
 ```
 
 #### Shared Configuration (`/packages/shared/src/config.ts`)
@@ -280,7 +282,9 @@ MAX_CLIENTS_PER_ROOM=50
 - **Awareness**: Ephemeral, never persisted, 75-100ms cadence
 - **TTL extension**: Only on accepted writes, not on views/awareness
 - **Y.Map**: Must be initialized at root and put ALL structured under it
-- **Schema helpers**: all getRoot, getMeta, getStrokes etc. all read via **root**
+- **No component outside RoomDocManager should hold Y refs; inside the manager, refs are allowed only as ephemeral locals returned by private helpers, never as cached fields or public returns**
+- **Caching any Y refs as fields is not allowed**
+- **Exposing Y refs from public methods isn't allowed**: The helpers must stay private and callers must use them each time; they return Y types only for other private internals within the class, never to the outside world
 
 ### WriteQueue & Backpressure
 - **Validation order**: read-only check → mobile check → frame size check → command limits

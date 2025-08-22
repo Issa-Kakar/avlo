@@ -27,6 +27,7 @@ export interface StrokeView {
     tool: 'pen' | 'highlighter';
   };
   bbox: [number, number, number, number];
+  scene: SceneIdx; // CRITICAL: Scene where stroke was created (captured at pointer-down)
 }
 
 // Text view for rendering
@@ -41,6 +42,7 @@ export interface TextView {
     color: string;
     size: number;
   };
+  scene: SceneIdx; // CRITICAL: Scene where text was created (captured at placement start)
 }
 
 // Spatial index view

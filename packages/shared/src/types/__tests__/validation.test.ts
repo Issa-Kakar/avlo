@@ -56,6 +56,7 @@ describe('Type Guards', () => {
       content: 'Hello World',
       color: '#000000',
       size: 16,
+      scene: 0, // Required scene field for causal consistency
     };
 
     expect(isTextCommand(textCmd)).toBe(true);
@@ -183,6 +184,7 @@ describe('estimateEncodedSize', () => {
       content: '你好世界 🌍 مرحبا بالعالم',
       color: '#000000',
       size: 16,
+      scene: 0, // Required scene field for causal consistency
     };
 
     const size = estimateEncodedSize(unicodeCmd);

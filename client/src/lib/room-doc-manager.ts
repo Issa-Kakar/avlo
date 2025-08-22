@@ -398,6 +398,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           tool: s.tool,
         },
         bbox: s.bbox,
+        scene: s.scene, // CRITICAL: Include scene for causal consistency
       }));
 
     // Build text views using helper (filter by current scene)
@@ -415,6 +416,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           color: t.color,
           size: t.size,
         },
+        scene: t.scene, // CRITICAL: Include scene for causal consistency
       }));
 
     // Build presence view (stub for now)

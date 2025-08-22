@@ -22,9 +22,9 @@ export interface DrawStrokeCommit {
   bbox: [number, number, number, number];
   startedAt: number;
   finishedAt: number;
-  scene: SceneIdx; // Current scene at commit time
+  scene: SceneIdx; // CRITICAL: Scene captured at pointer-down, NOT at commit time
 }
-//CRITICAL NOTE: SCROKES MUST HAVE A SCENE ASSIGNED AT COMMIT TIME
+// CRITICAL: Scene MUST be captured at interaction START (pointer-down) to ensure causal consistency
 
 // Erase multiple objects
 export interface EraseObjects {
@@ -44,6 +44,7 @@ export interface AddText {
   content: string;
   color: string;
   size: number;
+  scene: SceneIdx; // CRITICAL: Scene captured at text placement start, NOT at commit time
 }
 
 // Clear board (append scene tick)

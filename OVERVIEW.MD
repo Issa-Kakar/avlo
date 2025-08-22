@@ -210,6 +210,9 @@ interface Awareness {
   ts: number;                                    // send time ms epoch
   aw_v?: number;                                 // awareness version for evolution
 }
+
+**CRITICAL**: do not cache any doc-level Y references
+
 ```
 ### 4.2 Timestamp Policy (Global)
 
@@ -599,12 +602,15 @@ interface Snapshot {
   meta: { bytes?: number; cap: number; readOnly: boolean; expiresAt?: number };
   createdAt: number;              // ms epoch when snapshot frozen
 }
+
 interface StrokeView {
   id: string;
-  polyline: Float32Array | null; // built at render from number[], null in snapshot
-  style: { color:string; size:number; opacity:number; tool:'pen'|'highlighter' };
-  bbox: [number,number,number,number];
+  points: ReadonlyArray<number>;  // flat [x0,y0,x1,y1,...]; renderer builds typed arrays at render
+  polyline: Float32Array | null;  // built at render from points, null in snapshot
+  style: { color: string; size: number; opacity: number; tool: 'pen' | 'highlighter' };
+  bbox: [number, number, number, number];
 }
+
 ```
 - **Typed arrays** are **constructed at render only**; stored doc remains plain arrays.
 - **Preventing null snapshot**: On manager creation, publish `EmptySnapshot` with `scene=0`, empty arrays, identity transform, `meta.readOnly=false`.

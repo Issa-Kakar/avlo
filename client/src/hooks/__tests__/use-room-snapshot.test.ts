@@ -123,6 +123,7 @@ describe('useRoomSnapshot', () => {
       strokes: Object.freeze([
         {
           id: 'stroke-1',
+          points: [0, 0, 50, 50, 100, 100], // Add points for renderer
           polyline: null,
           style: {
             color: '#000000',
@@ -131,6 +132,7 @@ describe('useRoomSnapshot', () => {
             tool: 'pen' as const,
           },
           bbox: [0, 0, 100, 100] as [number, number, number, number],
+          scene: 0, // Required for causal consistency
         },
       ]),
       texts: Object.freeze([
@@ -145,6 +147,7 @@ describe('useRoomSnapshot', () => {
             color: '#000000',
             size: 16,
           },
+          scene: 0, // Required for causal consistency
         },
       ]),
       createdAt: Date.now(),
