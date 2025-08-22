@@ -38,19 +38,39 @@
   - Step F: IndexedDB snapshot cache for fast initial paint
   - Fixed type mismatch in roomStats.expiresAt field
 
-### Issues
-- Integration tests hanging - needs investigation
-  - Likely related to async command processing or cleanup timing
-  - May need to adjust setTimeout delays in tests
-  - CommandBus scheduling might need refinement
+### Issues (UNRESOLVED)
+- Phase 2.4/2.5 Integration tests still failing
+  - WriteQueue validation works correctly (11/11 tests pass)
+  - CommandBus processes commands but timing with fake timers is broken
+  - RAF-based snapshot publishing doesn't trigger properly in test environment
+  - Commands are enqueued but don't make it to snapshots in tests
+  - Test failures:
+    - DrawStrokeCommit: snapshot.strokes.length remains 0 (expected 1)
+    - AddText: snapshot.texts.length remains 0 (expected 1)  
+    - ClearBoard: scene doesn't increment from 0 to 1
+    - Scene capture: causal consistency test fails
 
-### TODO
-- Fix hanging integration tests 
-- Add more comprehensive scene capture testing
-- Verify memory cleanup in destroy() methods
-- Add performance benchmarks for command throughput
-- Test backpressure handling under load
-- Validate adaptive batch window behavior
+### Attempted Fixes (FAILED)
+- Tried removing async/await from CommandBus - made it worse
+- Added trigger() method to force processing - didn't help
+- Changed to vi.runAllTimers() - caused infinite loop/hang
+- Changed to vi.advanceTimersByTime(100) - still doesn't process
+- The core issue: setTimeout-based CommandBus and RAF-based publishing don't work with vitest fake timers
+
+### What Actually Works
+- WriteQueue validation and rate limiting (Phase 2.5 core logic)
+- Command enqueueing and idempotency
+- Mobile detection and view-only enforcement
+- Room size limit detection
+- Scene validation logic
+
+### Root Cause
+- The architecture uses setTimeout for CommandBus batching and requestAnimationFrame for snapshot publishing
+- Both are incompatible with vitest's fake timer system
+- Need either:
+  1. Synchronous test mode for CommandBus/snapshot publishing
+  2. Different testing approach without fake timers
+  3. Refactor to make the system more testable
 
 ### Enhanced
 - Phase 2.5 Preparation: Production ULID implementation

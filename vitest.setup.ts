@@ -1,11 +1,14 @@
 // Setup file for vitest
 
+// Polyfill IndexedDB for Node.js test environment
+import 'fake-indexeddb/auto';
+
 // Mock requestAnimationFrame for jsdom environment
 // Ensure it's available on both window and globalThis
 if (typeof window !== 'undefined') {
   let rafId = 0;
   const callbacks = new Map<number, (time: number) => void>();
-  
+
   const raf = (callback: (time: number) => void): number => {
     const id = ++rafId;
     callbacks.set(id, callback);
@@ -26,7 +29,7 @@ if (typeof window !== 'undefined') {
 
   window.requestAnimationFrame = raf;
   window.cancelAnimationFrame = caf;
-  
+
   // Also set on globalThis for the polyfill check
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).requestAnimationFrame = raf;

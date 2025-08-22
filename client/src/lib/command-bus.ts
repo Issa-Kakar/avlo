@@ -37,6 +37,21 @@ export class CommandBus {
     }
   }
 
+  // Add method to force immediate processing (for tests)
+  async processImmediate(): Promise<void> {
+    // Clear any pending timer
+    if (this.processTimer) {
+      clearTimeout(this.processTimer);
+      this.processTimer = 0;
+    }
+
+    // Process batch immediately
+    await this.processBatch();
+
+    // Reschedule for normal operation
+    this.scheduleProcess();
+  }
+
   private scheduleProcess(): void {
     if (this.processTimer) return;
 
@@ -100,9 +115,13 @@ export class CommandBus {
     // CRITICAL: Development assertions for scene consistency
     if (process.env.NODE_ENV === 'development') {
       // Assert scene is not from the future
-      if ('scene' in cmd && typeof cmd.scene === 'number' && cmd.scene > helpers.getCurrentScene()) {
+      if (
+        'scene' in cmd &&
+        typeof cmd.scene === 'number' &&
+        cmd.scene > helpers.getCurrentScene()
+      ) {
         throw new Error(
-          `[CommandBus] Scene from future: ${cmd.scene} > ${helpers.getCurrentScene()}`
+          `[CommandBus] Scene from future: ${cmd.scene} > ${helpers.getCurrentScene()}`,
         );
       }
 

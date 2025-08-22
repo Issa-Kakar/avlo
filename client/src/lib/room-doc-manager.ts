@@ -72,6 +72,8 @@ export interface IRoomDocManager {
   write(cmd: Command): void;
   extendTTL(): void;
   destroy(): void;
+  // Test helper - force immediate processing
+  processCommandsImmediate?(): Promise<void>;
 }
 
 // Private implementation
@@ -394,6 +396,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (!success) {
       console.warn('[RoomDocManager] Command rejected:', cmd.type);
     }
+
+    // Commands are processed automatically by CommandBus on its schedule
   }
 
   // Extend TTL with rate limiting
@@ -405,6 +409,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.write(cmd);
   }
 
+  // Test helper - force immediate processing of queued commands
+  async processCommandsImmediate(): Promise<void> {
+    if (!this.commandBus) {
+      return;
+    }
+
+    // Process commands immediately
+    await this.commandBus.processImmediate();
+
+    // Force a snapshot publish by marking dirty and calling publish directly
+    this.publishState.isDirty = true;
+    this.publishSnapshot();
+  }
+
   // Lifecycle
   destroy(): void {
     // eslint-disable-next-line no-console
@@ -413,6 +431,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Stop RAF loop
     if (this.publishState.rafId) {
       cancelAnimationFrame(this.publishState.rafId);
+      this.publishState.rafId = 0; // Clear the ID to stop the loop
     }
 
     // Stop command processing
@@ -476,6 +495,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Phase 2.4 Component C: RAF-Based Publish Loop
   private startPublishLoop(): void {
     const loop = () => {
+      // Check if RAF should continue (not destroyed)
+      if (!this.publishState.rafId) {
+        return; // Stop loop if rafId was cleared
+      }
+
       const now = performance.now();
 
       // Check if we should publish
@@ -499,8 +523,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.updateBatchWindow();
       }
 
-      // Continue loop
-      this.publishState.rafId = requestAnimationFrame(loop);
+      // Continue loop only if still active
+      if (this.publishState.rafId) {
+        this.publishState.rafId = requestAnimationFrame(loop);
+      }
     };
 
     // Start loop
@@ -826,7 +852,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     const userAgent = window.navigator?.userAgent || '';
     const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-      userAgent
+      userAgent,
     );
     const hasTouch = 'ontouchstart' in window;
     const smallScreen = window.innerWidth < 768;
