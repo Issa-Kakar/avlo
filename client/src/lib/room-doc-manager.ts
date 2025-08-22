@@ -23,6 +23,10 @@ if (typeof globalThis.cancelAnimationFrame === 'undefined') {
 import * as Y from 'yjs';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
+  ROOM_CONFIG,
+  STROKE_CONFIG as _STROKE_CONFIG, // Will be used in later Phase 2.3 steps
+  TEXT_CONFIG as _TEXT_CONFIG, // Will be used in later Phase 2.3 steps
+  isRoomReadOnly as _isRoomReadOnly, // Will be used in later Phase 2.3 steps
 } from '@avlo/shared';
 import type {
   RoomId,
@@ -40,6 +44,16 @@ import type {
 
 // Type for unsubscribe function
 type Unsub = () => void;
+
+// Type aliases for Y structures - internal use only
+// CRITICAL: Y.Map's generic parameter doesn't define the value shape
+// Use Y.Map<unknown> and cast when accessing specific properties
+type YMeta = Y.Map<unknown>;
+type YStrokes = Y.Array<Stroke>;
+type YTexts = Y.Array<TextBlock>;
+type YCode = Y.Map<unknown>;
+type YOutputs = Y.Array<Output>;
+type YSceneTicks = Y.Array<number>;
 
 // Room statistics
 interface RoomStats {
@@ -63,14 +77,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
-  private readonly yRoot: Y.Map<unknown>;
-
-  // Y.js structures (initialized in constructor)
-  private readonly yStrokes: Y.Array<Stroke>;
-  private readonly yTexts: Y.Array<TextBlock>;
-  private readonly yCode: Y.Map<unknown>;
-  private readonly yOutputs: Y.Array<Output>;
-  private readonly yMeta: Y.Map<unknown>;
+  // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: unknown = null;
@@ -79,27 +86,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Current state
   private _currentSnapshot: Snapshot;
-  private lastStateVector: Uint8Array | null = null;
 
   // Subscription management
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
-
-  // Publishing state
-  private publishRAF: number | null = null;
-  private pendingPublish = false;
-  private lastPublishTime = 0;
-  private isTabHidden = false;
-
-  // Batch window management
-  private batchWindowMs = 8; // Start with 8-16ms window
-  private readonly MIN_BATCH_WINDOW = 8;
-  private readonly MAX_BATCH_WINDOW = 32;
-  
-  // Event handlers for cleanup
-  private ydocUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
-  private visibilityChangeHandler: (() => void) | null = null;
 
   constructor(roomId: RoomId) {
     this.roomId = roomId;
@@ -107,63 +98,111 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Create Y.Doc with guid matching roomId
     this.ydoc = new Y.Doc({ guid: roomId });
 
-    // Initialize root Y.Map as required by OVERVIEW.MD
-    this.yRoot = this.ydoc.getMap('root');
-    
     // Initialize all structures under root in a single transaction
     this.ydoc.transact(() => {
+      const root = this.ydoc.getMap('root');
+
       // Create Y structures if not present
-      if (!this.yRoot.has('meta')) {
+      if (!root.has('meta')) {
         const meta = new Y.Map();
         meta.set('scene_ticks', new Y.Array<number>());
         meta.set('schema_version', 1); // Future-proof
-        this.yRoot.set('meta', meta);
+        root.set('meta', meta);
       }
-      
-      if (!this.yRoot.has('strokes')) {
-        this.yRoot.set('strokes', new Y.Array<Stroke>());
+
+      if (!root.has('strokes')) {
+        root.set('strokes', new Y.Array<Stroke>());
       }
-      
-      if (!this.yRoot.has('texts')) {
-        this.yRoot.set('texts', new Y.Array<TextBlock>());
+
+      if (!root.has('texts')) {
+        root.set('texts', new Y.Array<TextBlock>());
       }
-      
-      if (!this.yRoot.has('code')) {
+
+      if (!root.has('code')) {
         const code = new Y.Map();
         code.set('lang', 'javascript');
         code.set('body', '');
         code.set('version', 0);
-        this.yRoot.set('code', code);
+        root.set('code', code);
       }
-      
-      if (!this.yRoot.has('outputs')) {
-        this.yRoot.set('outputs', new Y.Array<Output>());
+
+      if (!root.has('outputs')) {
+        root.set('outputs', new Y.Array<Output>());
       }
-    });
-    
-    // Store references to structures (now from root)
-    this.yMeta = this.yRoot.get('meta') as Y.Map<unknown>;
-    this.yStrokes = this.yRoot.get('strokes') as Y.Array<Stroke>;
-    this.yTexts = this.yRoot.get('texts') as Y.Array<TextBlock>;
-    this.yCode = this.yRoot.get('code') as Y.Map<unknown>;
-    this.yOutputs = this.yRoot.get('outputs') as Y.Array<Output>;
+    }, 'init');
 
     // CRITICAL: Initialize with EmptySnapshot (NEVER null)
     this._currentSnapshot = createEmptySnapshot();
 
-    // Set up observers
-    this.setupObservers();
-
-    // Set up visibility change detection
-    this.setupVisibilityHandling();
-
-    // Start publish loop
-    this.startPublishLoop();
+    // PHASE 2.3 STOPS HERE - No observers/publish loop (Phase 2.4 concerns)
   }
 
   // Public getters
   get currentSnapshot(): Snapshot {
     return this._currentSnapshot;
+  }
+
+  // CRITICAL: These are PRIVATE helpers for internal use only
+  // NEVER expose these to external code or cache their return values
+  // Each call must go through the helper to ensure encapsulation
+
+  private getRoot(): Y.Map<unknown> {
+    return this.ydoc.getMap('root');
+  }
+
+  private getMeta(): YMeta {
+    const meta = this.getRoot().get('meta');
+    if (!(meta instanceof Y.Map)) {
+      throw new Error('Meta structure corrupted');
+    }
+    return meta as YMeta;
+  }
+
+  private getSceneTicks(): YSceneTicks {
+    const meta = this.getMeta();
+    const ticks = meta.get('scene_ticks');
+    if (!(ticks instanceof Y.Array)) {
+      throw new Error('Scene ticks structure corrupted');
+    }
+    return ticks as YSceneTicks;
+  }
+
+  private getStrokes(): YStrokes {
+    const strokes = this.getRoot().get('strokes');
+    if (!(strokes instanceof Y.Array)) {
+      throw new Error('Strokes structure corrupted');
+    }
+    return strokes as YStrokes;
+  }
+
+  private getTexts(): YTexts {
+    const texts = this.getRoot().get('texts');
+    if (!(texts instanceof Y.Array)) {
+      throw new Error('Texts structure corrupted');
+    }
+    return texts as YTexts;
+  }
+
+  private getCode(): YCode {
+    const code = this.getRoot().get('code');
+    if (!(code instanceof Y.Map)) {
+      throw new Error('Code structure corrupted');
+    }
+    return code as YCode;
+  }
+
+  private getOutputs(): YOutputs {
+    const outputs = this.getRoot().get('outputs');
+    if (!(outputs instanceof Y.Array)) {
+      throw new Error('Outputs structure corrupted');
+    }
+    return outputs as YOutputs;
+  }
+
+  // Helper to get current scene
+  private getCurrentScene(): number {
+    const sceneTicks = this.getSceneTicks();
+    return sceneTicks.length;
   }
 
   // Subscription methods
@@ -204,8 +243,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   write(cmd: Command): void {
     // eslint-disable-next-line no-console
     console.log('[RoomDocManager] Write command:', cmd.type);
-    // Will be connected to WriteQueue/CommandBus in step 2.5
-    this.requestPublish();
+    // Will be connected to WriteQueue/CommandBus in Phase 2.5
   }
 
   // Extend TTL (stub)
@@ -219,29 +257,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
   destroy(): void {
     // eslint-disable-next-line no-console
     console.log('[RoomDocManager] Destroying');
-    // Cancel any pending publish
-    if (this.publishRAF !== null) {
-      cancelAnimationFrame(this.publishRAF);
-      this.publishRAF = null;
-    }
 
     // Clear subscribers
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
     this.statsSubscribers.clear();
 
-    // Remove event listeners
-    if (this.ydocUpdateHandler) {
-      this.ydoc.off('update', this.ydocUpdateHandler);
-      this.ydocUpdateHandler = null;
-    }
-    
-    if (this.visibilityChangeHandler && typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', this.visibilityChangeHandler);
-      this.visibilityChangeHandler = null;
-    }
-
-    // Destroy providers (when added)
+    // Destroy providers (when added in Phase 4)
     // this.indexeddbProvider?.destroy();
     // this.websocketProvider?.destroy();
     // this.webrtcProvider?.destroy();
@@ -253,133 +275,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     RoomDocManagerRegistry.remove(this.roomId);
   }
 
-  // Private: Set up Y.js observers
-  private setupObservers(): void {
-    // Create and store the update handler for cleanup
-    this.ydocUpdateHandler = (_update: Uint8Array, _origin: unknown) => {
-      // eslint-disable-next-line no-console
-      console.log('[RoomDocManager] Y.Doc updated');
-      this.requestPublish();
-    };
-    
-    // Observe document changes
-    this.ydoc.on('update', this.ydocUpdateHandler);
-
-    // Will add more specific observers as needed
-  }
-
-  // Private: Handle tab visibility
-  private setupVisibilityHandling(): void {
-    // Only set up visibility handling in browser environment
-    if (typeof document === 'undefined') {
-      return;
-    }
-
-    // Create and store the visibility handler for cleanup
-    this.visibilityChangeHandler = () => {
-      const wasHidden = this.isTabHidden;
-      this.isTabHidden = document.hidden;
-      // eslint-disable-next-line no-console
-      console.log('[RoomDocManager] Tab visibility:', this.isTabHidden ? 'hidden' : 'visible');
-
-      // When switching from visible to hidden, cancel RAF and use setTimeout
-      if (!wasHidden && this.isTabHidden && this.publishRAF !== null) {
-        cancelAnimationFrame(this.publishRAF);
-        this.publishRAF = null;
-        // If we have pending publish, reschedule with setTimeout
-        if (this.pendingPublish) {
-          const delay = Math.min(125, this.batchWindowMs); // Cap at 8 FPS
-          setTimeout(() => this.publish(), delay);
-        }
-      }
-      // When switching from hidden to visible, re-request publish if pending
-      else if (wasHidden && !this.isTabHidden && this.pendingPublish) {
-        this.requestPublish();
-      }
-    };
-    
-    document.addEventListener('visibilitychange', this.visibilityChangeHandler);
-  }
-
-  // Private: Start the publish loop
-  private startPublishLoop(): void {
-    // Publish loop will be called via requestAnimationFrame
-    // when updates occur
-  }
-
-  // Private: Request a publish on next frame
-  private requestPublish(): void {
-    if (this.pendingPublish) return;
-
-    this.pendingPublish = true;
-
-    // Cancel any existing scheduled publish
-    if (this.publishRAF !== null) {
-      cancelAnimationFrame(this.publishRAF);
-      this.publishRAF = null;
-    }
-
-    // Use appropriate timing based on tab visibility
-    if (this.isTabHidden) {
-      // Use setTimeout when hidden (target ~8 FPS max)
-      // Use batch window timing, but cap at 125ms (8 FPS)
-      const delay = Math.min(125, this.batchWindowMs);
-      setTimeout(() => this.publish(), delay);
-    } else {
-      // Use requestAnimationFrame when visible (up to 60 FPS)
-      this.publishRAF = requestAnimationFrame(() => this.publish());
-    }
-  }
-
-  // Private: Build and publish snapshot
-  private publish(): void {
-    const startTime = performance.now();
-    this.pendingPublish = false;
-    this.publishRAF = null;
-
-    // Build new snapshot
-    const snapshot = this.buildSnapshot();
-
-    // Check if snapshot actually changed (by comparing svKey)
-    if (snapshot.svKey === this._currentSnapshot.svKey) {
-      // No actual changes, skip publish
-      return;
-    }
-
-    // Update current snapshot
-    this._currentSnapshot = snapshot;
-
-    // Notify all subscribers
-    this.snapshotSubscribers.forEach((cb) => {
-      try {
-        cb(snapshot);
-      } catch (err) {
-        console.error('[RoomDocManager] Snapshot subscriber error:', err);
-      }
-    });
-
-    // Notify presence subscribers if presence changed
-    this.presenceSubscribers.forEach((cb) => {
-      try {
-        cb(snapshot.presence);
-      } catch (err) {
-        console.error('[RoomDocManager] Presence subscriber error:', err);
-      }
-    });
-
-    // Track publish time for adaptive batching
-    const publishTime = performance.now() - startTime;
-    this.lastPublishTime = publishTime;
-
-    // Adjust batch window based on performance
-    if (publishTime > 8) {
-      // Expand window if publish is taking too long
-      this.batchWindowMs = Math.min(this.MAX_BATCH_WINDOW, this.batchWindowMs * 1.5);
-    } else if (publishTime < 4 && this.batchWindowMs > this.MIN_BATCH_WINDOW) {
-      // Shrink window if we have headroom
-      this.batchWindowMs = Math.max(this.MIN_BATCH_WINDOW, this.batchWindowMs * 0.9);
-    }
-  }
+  // NOTE: Phase 2.4 methods (setupObservers, publish loop, etc.) will be added in Phase 2.4
+  // For now, these are stubbed out and not called from constructor
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
@@ -387,18 +284,18 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const stateVector = Y.encodeStateVector(this.ydoc);
     const svKey = btoa(String.fromCharCode(...stateVector));
 
-    // Get current scene
-    const sceneTicks = (this.yMeta.get('scene_ticks') as Y.Array<number>)?.toArray() || [];
-    const currentScene = sceneTicks.length;
+    // Use helper to get current scene
+    const currentScene = this.getCurrentScene();
 
-    // Build stroke views (filter by current scene)
-    const strokes = this.yStrokes
+    // Build stroke views using helper (filter by current scene)
+    const strokes = this.getStrokes()
       .toArray()
       .filter((s) => s.scene === currentScene)
       .map((s) => ({
         id: s.id,
+        points: s.points, // Include points for renderer to build Float32Array
         // CRITICAL: Float32Array MUST be created at render time only, never in snapshot
-        polyline: null as unknown as Float32Array | null, // Will be created at render time from s.points
+        polyline: null as unknown as Float32Array | null, // Will be created at render time from points
         style: {
           color: s.color,
           size: s.size,
@@ -408,8 +305,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
         bbox: s.bbox,
       }));
 
-    // Build text views (filter by current scene)
-    const texts = this.yTexts
+    // Build text views using helper (filter by current scene)
+    const texts = this.getTexts()
       .toArray()
       .filter((t) => t.scene === currentScene)
       .map((t) => ({
@@ -444,7 +341,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Build metadata
     const meta: SnapshotMeta = {
-      cap: 10 * 1024 * 1024, // 10MB
+      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES, // Use shared config
       readOnly: false,
       bytes: undefined,
       expiresAt: undefined,
