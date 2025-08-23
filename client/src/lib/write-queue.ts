@@ -8,6 +8,7 @@ import {
   RATE_LIMIT_CONFIG,
   BACKOFF_CONFIG,
 } from '@avlo/shared';
+import { validateFrameSize } from './size-estimator';
 
 export interface WriteQueueConfig {
   maxPending: number;
@@ -31,7 +32,7 @@ export class WriteQueue {
     this.cleanupInterval = setInterval(() => this.cleanupIdempotency(), 60000) as unknown as number;
   }
 
-  validate(cmd: Command): ValidationResult {
+  async validate(cmd: Command): Promise<ValidationResult> {
     // 1. Check mobile view-only
     if (this.config.isMobile) {
       return { valid: false, reason: 'view_only', details: 'Mobile devices are view-only' };
@@ -60,16 +61,23 @@ export class WriteQueue {
       return specificValidation;
     }
 
-    // 6. Estimate encoded size
-    const estimatedSize = this.estimateEncodedSize(cmd);
-    if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
-      return { valid: false, reason: 'oversize', details: 'Command too large' };
+    // 6. Validate frame size with actual gzip measurement
+    // Serialize command to get actual wire format
+    const frameBytes = JSON.stringify(cmd);
+    const frameValidation = await validateFrameSize(frameBytes, ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES);
+    
+    if (!frameValidation.valid) {
+      return { 
+        valid: false, 
+        reason: 'oversize', 
+        details: `Frame exceeds 2MB limit: ${frameValidation.compressedSize} bytes compressed` 
+      };
     }
 
     return { valid: true };
   }
 
-  enqueue(cmd: Command): boolean {
+  async enqueue(cmd: Command): Promise<boolean> {
     // Check queue capacity
     if (this.queue.length >= this.config.maxPending) {
       console.warn('[WriteQueue] Queue full, dropping command');
@@ -77,7 +85,7 @@ export class WriteQueue {
     }
 
     // Validate
-    const validation = this.validate(cmd);
+    const validation = await this.validate(cmd);
     if (!validation.valid) {
       console.warn('[WriteQueue] Validation failed:', validation);
       return false;
@@ -159,6 +167,15 @@ export class WriteQueue {
   private validateCommand(cmd: Command): ValidationResult {
     switch (cmd.type) {
       case 'DrawStrokeCommit': {
+        // Check for required fields
+        if (!cmd.points || !Array.isArray(cmd.points)) {
+          return {
+            valid: false,
+            reason: 'invalid_data',
+            details: 'Points array is required',
+          };
+        }
+        
         // Check points limit
         if (cmd.points.length / 2 > STROKE_CONFIG.MAX_POINTS_PER_STROKE) {
           return {
@@ -249,10 +266,21 @@ export class WriteQueue {
   }
 
   private estimateEncodedSize(cmd: Command): number {
-    // Rough estimation of Y.js encoded update size
+    // More accurate estimation for different command types
+    if (cmd.type === 'DrawStrokeCommit') {
+      // For strokes, the points array dominates the size
+      // Each point is 2-3 floats (x, y, optional pressure)
+      // In JSON: ~15-20 chars per coordinate, plus metadata
+      const pointsSize = cmd.points.length * 8; // 8 bytes per float in binary
+      const metadataSize = 200; // Estimated metadata overhead
+      const yOverhead = 1.3; // Y.js encoding overhead
+      return Math.ceil((pointsSize + metadataSize) * yOverhead);
+    }
+    
+    // For other commands, use JSON estimation
     const json = JSON.stringify(cmd);
     const overhead = 1.5; // Y.js encoding overhead estimate
-    return json.length * overhead;
+    return Math.ceil(json.length * overhead);
   }
 
   private cleanupIdempotency(): void {

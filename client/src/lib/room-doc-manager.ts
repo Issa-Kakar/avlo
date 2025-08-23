@@ -27,6 +27,7 @@ import {
   TEXT_CONFIG,
   QUEUE_CONFIG,
 } from '@avlo/shared';
+import { RollingGzipEstimator, getGzipSize } from './size-estimator';
 import type {
   RoomId,
   Snapshot,
@@ -69,7 +70,7 @@ export interface IRoomDocManager {
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub;
-  write(cmd: Command): void;
+  write(cmd: Command): Promise<void>;
   extendTTL(): void;
   destroy(): void;
   // Test helper - force immediate processing
@@ -98,14 +99,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Phase 2.4 Component A: Snapshot Publisher State
   private publishState = {
-    rafId: 0,
     isDirty: false,
-    lastPublishTime: 0,
+    lastYUpdateAt: 0, // When Y last updated (performance.now())
+    lastPublishTime: 0, // When we last published (performance.now())
     publishWorkMs: 0, // Track how long publish takes
     isHidden: false,
-    batchWindow: 16, // Start with default 16ms
+    batchWindow: 20, // Default batch window in ms
     pendingUpdates: [] as Array<{ update: Uint8Array; origin: unknown; time: number }>,
     lastSvKey: '', // Track to detect changes
+    batchTimerInterval: null as number | null, // Continuous batch timer interval
+    scheduledRaf: -1, // Track if RAF is scheduled (-1 = not scheduled)
+    forcePublishRequested: false, // For clearboard or other immediate publish needs
   };
 
   // IndexedDB cache for render snapshots
@@ -122,6 +126,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Phase 2.5: WriteQueue and CommandBus
   private writeQueue: WriteQueue | null = null;
   private commandBus: CommandBus | null = null;
+  
+  // Size estimation for distributed constraints
+  private sizeEstimator = new RollingGzipEstimator();
 
   constructor(roomId: RoomId) {
     this.roomId = roomId;
@@ -144,7 +151,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.initSnapshotCache(); // Async but don't await
     this.setupObservers();
     this.setupVisibilityHandling();
-    this.startPublishLoop();
+    this.startBatchTimer(); // Start the continuous batch timer
 
     // Phase 2.5: Setup write pipeline
     this.setupWritePipeline();
@@ -221,6 +228,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Helper to get current scene
   private getCurrentScene(): number {
     const sceneTicks = this.getSceneTicks();
+    console.log('[getCurrentScene] sceneTicks:', sceneTicks, 'length:', sceneTicks.length, 'toArray:', sceneTicks.toArray());
     return sceneTicks.length;
   }
 
@@ -386,13 +394,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Write command via WriteQueue and CommandBus
-  write(cmd: Command): void {
+  async write(cmd: Command): Promise<void> {
     if (!this.writeQueue) {
       console.error('[RoomDocManager] WriteQueue not initialized');
       return;
     }
 
-    const success = this.writeQueue.enqueue(cmd);
+    const success = await this.writeQueue.enqueue(cmd);
     if (!success) {
       console.warn('[RoomDocManager] Command rejected:', cmd.type);
     }
@@ -410,6 +418,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Test helper - force immediate processing of queued commands
+  // IMPORTANT: This goes through the normal pipeline, no bypasses!
   async processCommandsImmediate(): Promise<void> {
     if (!this.commandBus) {
       return;
@@ -418,9 +427,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Process commands immediately
     await this.commandBus.processImmediate();
 
-    // Force a snapshot publish by marking dirty and calling publish directly
+    // CRITICAL: Do NOT call publishSnapshot() directly - that's a bypass!
+    // Instead, mark dirty and simulate a batch timer tick + rAF
     this.publishState.isDirty = true;
-    this.publishSnapshot();
+    
+    // Simulate the complete flow: batch timer tick -> rAF -> publish
+    // For testing, we execute synchronously what would normally be async
+    if (this.publishState.scheduledRaf === -1 && this.publishState.isDirty) {
+      // Simulate the rAF callback firing immediately
+      this.maybePublish();
+    }
   }
 
   // Lifecycle
@@ -428,10 +444,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // eslint-disable-next-line no-console
     console.log('[RoomDocManager] Destroying');
 
-    // Stop RAF loop
-    if (this.publishState.rafId) {
-      cancelAnimationFrame(this.publishState.rafId);
-      this.publishState.rafId = 0; // Clear the ID to stop the loop
+    // Cancel scheduled RAF if pending
+    if (this.publishState.scheduledRaf !== -1) {
+      cancelAnimationFrame(this.publishState.scheduledRaf);
+      this.publishState.scheduledRaf = -1;
+    }
+
+    // Stop the continuous batch timer
+    if (this.publishState.batchTimerInterval !== null) {
+      clearInterval(this.publishState.batchTimerInterval);
+      this.publishState.batchTimerInterval = null;
     }
 
     // Stop command processing
@@ -464,6 +486,40 @@ class RoomDocManagerImpl implements IRoomDocManager {
     RoomDocManagerRegistry.remove(this.roomId);
   }
 
+  // Phase 2.4: Start continuous batch timer (runs every BATCH_WINDOW_MS)
+  // INVARIANT: This is the ONLY place that creates a timer for publishing
+  private startBatchTimer(): void {
+    // Start the continuous batch timer that drives all publishing
+    // Note: Uses fixed 20ms interval. If adaptive batch window is needed,
+    // would need to restart timer when window changes
+    this.publishState.batchTimerInterval = setInterval(() => {
+      this.onBatchTimerTick();
+    }, this.publishState.batchWindow) as unknown as number;
+  }
+
+  // Phase 2.4: Batch timer tick - the ONLY place that schedules rAF
+  // INVARIANT: At most one rAF may be pending at any time (scheduledRaf ∈ {-1, ID})
+  // INVARIANT: This is the sole arbiter of when to schedule rAF
+  private onBatchTimerTick(): void {
+    // Check if we have work to do
+    const hasWork = this.publishState.isDirty || this.publishState.forcePublishRequested;
+    
+    if (!hasWork) {
+      return; // No work, nothing to do
+    }
+
+    // CRITICAL: Only schedule rAF if one isn't already pending
+    if (this.publishState.scheduledRaf === -1) {
+      this.publishState.scheduledRaf = requestAnimationFrame(() => {
+        // CRITICAL: Clear scheduledRaf BEFORE calling maybePublish
+        // This ensures one-shot behavior even if maybePublish throws
+        this.publishState.scheduledRaf = -1;
+        this.maybePublish();
+      });
+    }
+    // If rAF is already scheduled, do nothing - wait for it to complete
+  }
+
   // Phase 2.4 Component B: Y.Doc Observer Setup
   private setupObservers(): void {
     // CRITICAL: Use 'update' event for batching, not deep observe
@@ -478,80 +534,112 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
-    // Mark dirty for next RAF
+  private handleYDocUpdate = async (update: Uint8Array, origin: unknown): Promise<void> => {
+    // Phase 2.4: CRITICAL - Only mark dirty, NO timer/rAF scheduling here!
+    // The batch timer is the sole arbiter of when to schedule rAF
+    
+    // Mark dirty and record when Y was updated
     this.publishState.isDirty = true;
+    this.publishState.lastYUpdateAt = performance.now();
 
     // Store update for potential analysis (optional)
     this.publishState.pendingUpdates.push({ update, origin, time: Date.now() });
+    
+    // Track delta size for distributed constraints
+    const rawDeltaBytes = update.byteLength;
+    
+    // Sample compression ratio periodically for accuracy
+    if (this.sizeEstimator.shouldSample(rawDeltaBytes)) {
+      try {
+        const gzDeltaBytes = await getGzipSize(update);
+        this.sizeEstimator.observeDelta(rawDeltaBytes, gzDeltaBytes);
+      } catch (err) {
+        // Fallback to estimate only
+        this.sizeEstimator.observeDelta(rawDeltaBytes);
+      }
+    } else {
+      // Use estimated ratio
+      this.sizeEstimator.observeDelta(rawDeltaBytes);
+    }
 
-    // Trim old updates beyond batch window
-    const cutoff = Date.now() - this.publishState.batchWindow;
-    this.publishState.pendingUpdates = this.publishState.pendingUpdates.filter(
-      (u) => u.time > cutoff,
-    );
+    // Ring buffer behavior: trim old updates (keep max 100)
+    // This prevents unbounded memory growth from rapid updates
+    const cutoff = Date.now() - this.publishState.batchWindow * 2;
+    this.publishState.pendingUpdates = this.publishState.pendingUpdates
+      .filter((u) => u.time > cutoff)
+      .slice(-100); // Hard cap at 100 entries
+    
+    // NOTE: No timer scheduling here! The batch timer will handle it
   };
 
-  // Phase 2.4 Component C: RAF-Based Publish Loop
-  private startPublishLoop(): void {
-    const loop = () => {
-      // Check if RAF should continue (not destroyed)
-      if (!this.publishState.rafId) {
-        return; // Stop loop if rafId was cleared
-      }
-
-      const now = performance.now();
-
-      // Check if we should publish
-      const timeSinceLastPublish = now - this.publishState.lastPublishTime;
-      const minInterval = this.publishState.isHidden
-        ? 125 // 8 FPS for hidden tab
-        : 16.67; // 60 FPS for active tab
-
-      if (this.publishState.isDirty && timeSinceLastPublish >= minInterval) {
-        const startTime = performance.now();
-
-        // Build and publish snapshot
-        this.publishSnapshot();
-
-        // Track publish time for adaptive batching
-        this.publishState.publishWorkMs = performance.now() - startTime;
-        this.publishState.lastPublishTime = now;
-        this.publishState.isDirty = false;
-
-        // Adaptive batch window based on publish time
-        this.updateBatchWindow();
-      }
-
-      // Continue loop only if still active
-      if (this.publishState.rafId) {
-        this.publishState.rafId = requestAnimationFrame(loop);
-      }
-    };
-
-    // Start loop
-    this.publishState.rafId = requestAnimationFrame(loop);
-  }
-
-  private updateBatchWindow(): void {
-    const { publishWorkMs } = this.publishState;
-
-    // Expand window if work takes >8ms, contract if <4ms
-    if (publishWorkMs > 8) {
-      this.publishState.batchWindow = Math.min(32, this.publishState.batchWindow * 1.5);
-    } else if (publishWorkMs < 4 && this.publishState.batchWindow > 16) {
-      this.publishState.batchWindow = Math.max(8, this.publishState.batchWindow * 0.8);
+  // Phase 2.4 Component C: Publish decision - NO SELF-RESCHEDULING
+  // Called ONLY from rAF callback scheduled by batch timer
+  // INVARIANT: This function is pure w.r.t. scheduling - it either publishes or returns
+  // INVARIANT: It NEVER schedules timers or rAF
+  private maybePublish(): void {
+    // Check if we have work
+    const hasWork = this.publishState.isDirty || this.publishState.forcePublishRequested;
+    
+    if (!hasWork) {
+      // No work to do, just return
+      // The next batch timer tick will check again
+      return;
     }
+    
+    // We have work and we're in a rAF callback - always publish
+    // This implements the "Always-Publish on rAF" strategy from PHASE2_FIXES.md
+    // Simpler than quiet-time gating and more predictable for testing
+    const t0 = performance.now();
+    this.publishSnapshot();
+    const publishTime = performance.now();
+    
+    // Update state
+    this.publishState.lastPublishTime = publishTime;
+    this.publishState.isDirty = false;
+    this.publishState.forcePublishRequested = false;
+    
+    // Measure publish cost (for metrics/debugging)
+    const cost = publishTime - t0;
+    this.publishState.publishWorkMs = cost;
+    
+    // NOTE: Adaptive batch window disabled for simplicity
+    // If needed, would require restarting the interval timer
+    // this.adaptBatchWindow(cost);
+    
+    // CRITICAL: Do NOT schedule any timers or rAF here!
+    // The batch timer will handle the next opportunity
   }
+
+  // Phase 2.4: Adaptive batch window (DISABLED for simplicity)
+  // If re-enabled, would need to restart the interval timer with new window
+  // private adaptBatchWindow(costMs: number): void {
+  //   const oldWindow = this.publishState.batchWindow;
+  //   if (costMs > 8) {
+  //     // Work exceeded budget - widen batch window toward 24-32ms
+  //     this.publishState.batchWindow = Math.min(32, Math.max(24, this.publishState.batchWindow + 4));
+  //   } else if (costMs < 4) {
+  //     // Work is light - narrow batch window toward 8-16ms  
+  //     this.publishState.batchWindow = Math.max(8, Math.min(16, this.publishState.batchWindow - 2));
+  //   }
+  //   // If window changed, restart timer with new interval
+  //   if (oldWindow !== this.publishState.batchWindow && this.publishState.batchTimerInterval) {
+  //     clearInterval(this.publishState.batchTimerInterval);
+  //     this.startBatchTimer();
+  //   }
+  // }
 
   // Phase 2.4 Component D: Visibility Handling
   private setupVisibilityHandling(): void {
     const handleVisibilityChange = () => {
       this.publishState.isHidden = document.hidden;
 
-      if (!this.publishState.isHidden) {
-        // Force publish when becoming visible
-        this.publishState.isDirty = true;
+      // "Visible kick" - request immediate publish when tab becomes visible with pending changes
+      if (!this.publishState.isHidden && this.publishState.isDirty) {
+        // Request a forced publish on next batch timer tick
+        this.publishState.forcePublishRequested = true;
+        
+        // The batch timer will pick this up and schedule a rAF
+        // No direct timer/rAF scheduling here!
       }
     };
 
@@ -732,6 +820,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
+    console.log('[RoomDocManager] Building snapshot with scene:', currentScene);
 
     // Build stroke views using helper (filter by current scene)
     const strokes = this.getStrokes()
@@ -840,6 +929,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
         getSceneTicks: this.getSceneTicks.bind(this),
         getCurrentScene: this.getCurrentScene.bind(this),
       }),
+      onClearBoard: () => {
+        // Reset size estimator baseline after ClearBoard
+        // Keep a small baseline as the board is not truly empty (metadata exists)
+        this.sizeEstimator.resetBaseline(32 * 1024); // 32KB baseline
+        
+        // Force a publish after ClearBoard to ensure immediate visibility
+        this.publishState.forcePublishRequested = true;
+      },
     });
 
     // Start processing
@@ -862,9 +959,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Helper to estimate doc size (compressed)
   private estimateDocSize(): number {
-    // Estimate compressed size (rough approximation)
-    const update = Y.encodeStateAsUpdate(this.ydoc);
-    return update.length * 0.7; // Assume 30% compression
+    // Use rolling estimator for efficient size tracking
+    return Math.ceil(this.sizeEstimator.docEstGzBytes);
   }
 }
 

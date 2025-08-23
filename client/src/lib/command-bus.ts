@@ -14,6 +14,7 @@ export interface CommandBusConfig {
     getSceneTicks: () => Y.Array<number>;
     getCurrentScene: () => number;
   };
+  onClearBoard?: () => void; // Callback for size estimator reset
 }
 
 export class CommandBus {
@@ -97,13 +98,8 @@ export class CommandBus {
         await this.executeCommand(cmd);
       }
 
-      // Adaptive batch window
-      const totalTime = performance.now() - startTime;
-      if (totalTime > 8) {
-        this.batchWindow = Math.min(32, this.batchWindow * 1.5);
-      } else if (totalTime < 4 && this.batchWindow > 16) {
-        this.batchWindow = Math.max(8, this.batchWindow * 0.8);
-      }
+      // NOTE: Batch window adaptation is handled in RoomDocManager.maybePublish()
+      // based on actual publish cost, not command processing time
     } finally {
       this.processing = false;
     }
@@ -142,7 +138,9 @@ export class CommandBus {
     const userId = 'current-user'; // TODO: Get from awareness/auth in Phase 4
 
     // CRITICAL: Each command in exactly one transaction with userId as origin
-    this.config.ydoc.transact(() => {
+    // Wrap in try-catch for error recovery
+    try {
+      this.config.ydoc.transact(() => {
       switch (cmd.type) {
         case 'DrawStrokeCommit': {
           const strokes = helpers.getStrokes();
@@ -222,7 +220,23 @@ export class CommandBus {
 
         case 'ClearBoard': {
           const sceneTicks = helpers.getSceneTicks();
-          sceneTicks.push([Date.now()]);
+          console.log('[CommandBus] Before ClearBoard - sceneTicks:', sceneTicks);
+          console.log('[CommandBus] Before ClearBoard - sceneTicks length:', sceneTicks.length);
+          console.log('[CommandBus] Before ClearBoard - sceneTicks toArray:', sceneTicks.toArray());
+          
+          // CRITICAL: Push the timestamp directly as a single value
+          // Y.Array<number> expects individual numbers, not arrays
+          const timestamp = Date.now();
+          sceneTicks.push([timestamp]); // Y.Array push expects array of elements to push
+          
+          console.log('[CommandBus] After ClearBoard - sceneTicks length:', sceneTicks.length);
+          console.log('[CommandBus] After ClearBoard - sceneTicks toArray:', sceneTicks.toArray());
+          console.log('[CommandBus] Current scene should be:', sceneTicks.length);
+          
+          // Reset size estimator baseline after clearing board
+          if (this.config.onClearBoard) {
+            this.config.onClearBoard();
+          }
           break;
         }
 
@@ -262,7 +276,12 @@ export class CommandBus {
           console.warn('[CommandBus] Unknown command type:', (_exhaustive as any).type);
         }
       }
-    }, userId); // CRITICAL: Use userId as origin for undo/redo tracking
+      }, userId); // CRITICAL: Use userId as origin for undo/redo tracking
+    } catch (error) {
+      console.error('[CommandBus] Transaction failed:', error);
+      // Continue processing - don't let one failure stop the queue
+      // TODO: Consider retry logic or error reporting in Phase 4
+    }
   }
 
   destroy(): void {
