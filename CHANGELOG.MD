@@ -2,6 +2,14 @@
 
 ## [Phase 2 Refactoring] - 2025-01-25
 
+### Fixed Snapshot Implementation ✅
+- **Fixed scene assignment comments**: Changed from "captured at pointer-down" to "assigned at commit time using currentScene"
+- **Fixed spatialIndex type**: Changed from `RBushIndexView` to `null` for Phase 2 (RBush is Phase 6)
+- **Fixed room size limits**: Updated from 10MB to 15MB per OVERVIEW.MD spec (13MB warning, 15MB read-only)
+- **Fixed config values**: Updated ROOM_SIZE_WARNING_BYTES to 13MB and ROOM_SIZE_READONLY_BYTES to 15MB
+- **Fixed createEmptySnapshot**: Set spatialIndex to null instead of `{ _tree: null }`
+- **Used config constants**: Replaced hardcoded values with ROOM_CONFIG constants
+
 ### Completed (Steps 1-6)
 
 #### Step 1: Dependencies ✅
@@ -42,11 +50,19 @@
 - Updated RoomDocManager to import from `@avlo/shared`
 - Proper cross-workspace type sharing
 
+#### Step 8: ESLint UI Isolation ✅
+- **Already implemented** in `eslint.config.js`
+- Blocks direct imports of `yjs`, `y-websocket`, `y-indexeddb`, `y-webrtc` in UI components
+- Allows these imports only in `/client/src/lib/` and `/client/src/collaboration/` (infrastructure)
+- Enforces all UI access through RoomDocManager public API
+- Clear error messages guide developers to use proper hooks
+
 ### Architecture Improvements
 - Fixed presence building structure (ready for Phase 8 awareness integration)  
 - Added `handlePersistAck()` method for authoritative size updates from server
 - Maintained clean Y.Doc reference rules (no cached references)
 - Proper separation of concerns: UI state (Zustand), server state (TanStack Query), doc state (Yjs)
+- ESLint enforcement ensures UI components never directly access Yjs
 
 ### Result
 Transformed enterprise-scale system (1000+ LOC) into simple, spec-compliant implementation (~500 LOC) appropriate for 15-user collaborative whiteboard.
