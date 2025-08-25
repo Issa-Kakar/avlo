@@ -1,1425 +1,814 @@
-# Avlo Implementation Guide
+# AVLO Implementation Guide - Phase 2 Onwards
 
-## Overview
-This guide provides a step-by-step implementation plan for building Avlo, an offline-first collaborative whiteboard. Follow each phase sequentially, as later phases depend on earlier foundations. Each step includes specific constraints from avlo.md to prevent over-engineering.
-
-## Global Conventions
-- **Timestamps:** ISO-8601 UTC strings for HTTP/WS JSON; **epoch ms** inside CRDT/Y structures.
-- **New constants live in `config.ts`** with env overrides.
-- **Redis:** Use Redis 7.x stable without pinning exact minor version.
-
----
-## Phase 1: Project Foundation & Infrastructure Setup
-
-### 1.1 Initialize Monorepo Structure
-1. Create root directory with two workspaces: `client` and `server`
-2. Set up shared TypeScript configuration at root level
-3. Configure workspace package.json with exact versions from avlo.md:
-   - React 18.3.1, Vite 5.4.11, TypeScript 5.9.2
-   - Yjs 13.6.27, y-websocket 3.x, y-indexeddb 9.x
-   - Prisma 5.22.0, Monaco 0.52.2
-4. Install development dependencies: ESLint, Prettier, Husky, lint-staged
-5. Create `.nvmrc` file specifying Node version
-6. Initialize git repository with `.gitignore` covering build artifacts and node_modules
-
-### 1.2 Configure Build Pipeline
-1. Set up Vite configuration for client with:
-   - Output directory pointing to `server/public`
-   - Asset hashing enabled for cache busting
-   - Chunk splitting for lazy-loaded modules
-   - Source maps for development only
-2. Configure server build to compile TypeScript to JavaScript
-3. Create build script that runs client build first, then server build
-4. Set up watch mode for development with concurrent client and server processes
-5. Configure environment variable loading with dotenv
-
-
-### 1.3 Set Up Development Environment
-1. Configure ESLint with strict rules including:
-   - `no-restricted-imports` rule blocking direct imports of yjs, y-webrtc, y-websocket, y-indexeddb in UI code
-   - TypeScript strict mode enabled
-   - React hooks rules
-2. Set up Prettier with consistent formatting rules
-3. Configure git hooks via Husky:
-   - Pre-commit: lint-staged for formatting and linting
-   - Pre-push: type checking
-4. Create development environment variables file template
-5. Set up VS Code workspace settings with recommended extensions
-
-### 1.4 Initialize Testing Framework
-1. Install and configure Vitest for unit tests
-2. Set up Playwright for E2E tests with:
-   - Root configuration file
-   - Test directory structure (`e2e/*`)
-   - Helper utilities for common operations
-3. Create test data generators for rooms, strokes, and users
-4. Set up coverage reporting configuration
-5. Add test scripts to package.json
-
-**Deliverables:**
-- Monorepo with client/server workspaces
-- Build and development scripts
-- Linting and formatting configuration
-- Basic test infrastructure
-
----
 ## Phase 2: Core Data Layer & Models
 
-Out of scope
-Any UI components, canvas work, or **network providers (WS/RTC)** are out of scope. **Local plumbing (WriteQueue/CommandBus)** is in scope. 
-Multi-node scaling, auth/permissions, or admin tooling. 
+### 2.1 Define Core TypeScript Types and Interfaces
 
-Constraints
-- Will use stroke/text configs for data models
-UI must not import yjs/providers; expose access only through RoomDocManager + hooks. Snapshots are immutable and never null. 
-Authoritative storage is Redis (TTL-based); Postgres is non-authoritative metadata only. 
-Store stroke points as number[] in Yjs; create Float32Array only at render time. 
-Enforce budgets in WriteQueue.validate: MAX_POINTS_PER_STROKE=10k, encoded update < 128 KB, text ≤ 500 chars. 
-UI components must not import Yjs/providers directly; all mutations go through WriteQueue → CommandBus; snapshots are immutable. 
-Store numeric arrays in Yjs as number[]; only create Float32Array at render time. 
-Command limits: ≤10,000 points per stroke; code ≤200KB; text ≤500 chars; specific server rate limits apply later. 
-Snapshot publish loop max 60fps; coalesce updates within ~8–16ms; drop to ~8fps when tab hidden.
-Y.Doc({guid:roomId}) must equal resolved roomId; never mutate guid.
-Snapshot builder must be O(changes), publish ≤1/rAF, and freeze in dev.
-All commands carry idempotencyKey; duplicates discard without side-effects.
-Validation guards cover MAX_TOTAL_STROKES and per-command rate limits.
+#### 2.1.1 Create Coordinate and Geometry Types
+1. Define StrokePoint interface with x, y coordinates and optional pressure value (0 to 1 range)
+2. Create bbox type as tuple of four numbers representing minX, minY, maxX, maxY in world units
+3. Define SceneIdx as alias for number type representing scene index
+4. Create ULID type aliases for StrokeId and TextId to ensure type safety
+5. Add ViewTransform interface with worldToCanvas and canvasToWorld conversion methods
+6. Include scale and pan properties in ViewTransform for zoom and offset tracking
 
-Things to watch out for
-Single consumer for yjs.transact; coalesce within a transact; yield if > 8 ms to avoid jank. 
-Backpressure: widen micro-batch window to 24–32 ms when queue grows; drop superseded deltas.
-Always emit an initial EmptySnapshot; never allow null snapshot. 
-Enforce queue backpressure (max ~100 pending) and idempotency to prevent duplicate writes. 
-Keep Yjs state-vector–derived svKey stable to avoid spurious re-renders.
-Re-entrancy of observers during batch updates.
-Publish thrash when micro-batching windows widen; keep ≤32 ms under pressure.
-Memory pressure from large arrays; avoid accidental Float32Array retention.
+#### 2.1.2 Define Document Data Structures
+1. Create Stroke interface with all required fields per avlo.md specification
+   - Include id as ULID string, tool type limited to pen or highlighter
+   - Add color as hex string, size in world units, opacity from 0 to 1
+   - Points array as flat number array (never Float32Array in storage)
+   - Include bbox, scene index, createdAt timestamp, and userId
+2. Define TextBlock interface with positioning, content, and styling properties
+   - Position with x, y anchor points and w, h layout dimensions
+   - Content as immutable string with 500 character maximum
+   - Include scene assignment and user attribution
+3. Create CodeCell interface for code execution with language and version tracking
+4. Define Output interface with timestamp and text content (10KB limit)
+5. Create Meta interface for document-level metadata including scene_ticks array
 
-### 2.1 Define TypeScript Types and Interfaces
-1. Create shared types file with all data models from Section 4:
-   - StrokeId, TextId, SceneIdx type aliases
-   - Stroke interface with all required fields
-   - TextBlock interface
-   - CodeCell and Output interfaces
-   - Meta interface with scene_ticks array
-2. Define awareness payload structure (ephemeral data)
-3. Create device UI state interfaces for localStorage
-4. Define command types for WriteQueue pattern
-5. Create snapshot interface (immutable view structure)
-6. Add validation helper types and guards
+#### 2.1.3 Define Snapshot and View Types
+1. Create immutable Snapshot interface as the frozen view of document state
+   - Include svKey as base64 string of state vector (never null)
+   - Add scene index derived from meta.scene_ticks.length
+   - Arrays of stroke and text views filtered by current scene
+   - Presence view for cursor and user information
+   - Spatial index placeholder (null initially, RBush later)
+   - Meta object with size bytes, capacity, read-only flag
+2. Define StrokeView as read-only projection of stroke for rendering
+3. Create PresenceView interface for ephemeral user state
+4. Add RoomStats interface for size and capacity tracking
 
 ### 2.2 Implement RoomDocManager Foundation
-1. Create RoomDocManager class skeleton with:
-   - Private Y.Doc instance property
-   - Private provider references (will be null initially)
-   - Current snapshot property (never null - start with EmptySnapshot)
-   - Subscription management maps
-2. Implement constructor that:
-   - Creates Y.Doc with guid matching roomId
-   - Initializes EmptySnapshot synchronously
-   - Sets up internal event emitters
-3. Add destroy method that will handle cleanup (stub for now)
-4. Implement subscription methods (return unsubscribe functions):
-   - subscribeSnapshot
-   - subscribePresence  
-   - subscribeRoomStats
-5. Create singleton registry to ensure one manager per room
-
-### 2.3 Set Up Yjs Document Structure
-1. Initialize Y.Map as document root in RoomDocManager
-2. Create Y.Array for strokes with proper typing
-3. Create Y.Array for texts
-4. Create Y.Map for code cell
-5. Create Y.Array for outputs with size enforcement
-6. Create Y.Map for meta including scene_ticks array
-7. Add helper methods to safely access these structures 2. **Set up proper getters** for Y structures
-8. Important: Store arrays as plain number[], never Float32Array in Yjs
-
-### 2.4 Implement Snapshot Publishing System
-1. Create snapshot builder that:
-   - Reads current Y.Doc state
-   - Generates unique svKey from state vector
-   - Creates frozen arrays (Object.freeze in development)
-   - Builds immutable snapshot object
-   - NOTE: `spatialIndex` field is set to `null` in Phase 2.4; it will be populated with RBush data in Phase 3.3
-2. Set up requestAnimationFrame loop for publishing:
-   - Maximum 60 FPS rate limiting
-   - Batch multiple Y updates within single frame
-   - Coalesce updates within 8-16ms windows
-3. Implement dirty tracking to avoid unnecessary publishes
-4. Add logic to detect tab visibility and reduce to 8 FPS when hidden
-5. Ensure EmptySnapshot is published immediately on creation
-6. Persist **last render Snapshot** in IndexedDB **keyed by Yjs state vector (svKey)**. On boot, if `svKey` matches, render that snapshot immediately while providers connect; otherwise skip.
-Note: only add a tiny IndexedDB “render-snapshot cache”, not the full offline Yjs store. The full y-indexeddb provider (which persists the entire Y.Doc for offline use) doesn’t arrive until Phase 5.3. So you’re not blocked: 2.4’s cache is a minimal IDB key/value store used purely to hydrate the first paint while everything else spins up. Key: {roomId, svKey}; include a schema/version field so you can invalidate on shape changes. (Recommended.)
-Payload: only the Snapshot fields—no typed arrays inside; typed arrays are built at render time. 
-Write policy: write only when svKey changes (i.e., after a publish). (Recommended; matches rAF cadence.)
-Read policy: on boot, compute current svKey; return only if equal. Otherwise return null. 
-Size/TTL: cap the record size; keep one per room; clear on logout/workspace switch. (Recommended.)
-Authority reminders: never use cached Snapshots to make business decisions; UI stats refresh from persist_ack after a real write.
-
-### 2.5 Create WriteQueue and CommandBus
-1. Implement WriteQueue class with:
-   - Queue data structure with max 100 pending commands
-   - Validation method checking room size, mobile status, frame size
-   - Backpressure handling when queue exceeds limits
-   - Idempotency tracking map
-   - CRITICAL: Enforce dual budget constraints:
-     * For `DrawStrokeCommit`: reject if estimated encoded update > 128KB (after simplification)
-     * For all commands: reject if estimated encoded delta > 2MB (transport cap)
-2. Create CommandBus that:
-   - Consumes from WriteQueue
-   - Wraps each command in single yjs.transact()
-   - Applies commands to Y.Doc structures
-   - Handles command-specific logic
-3. Add command validation for each command type:
-   - Size limits (MAX_POINTS_PER_STROKE = 10,000)
-   - Content limits (code body ≤ 200KB)
-   - Text length limits (500 chars)
-4. Implement rate limiting for specific commands (ClearBoard: 1/15s)
-
-**Deliverables:**
-- Complete TypeScript type system
-- Basic RoomDocManager with subscription system
-- Yjs document structure initialized
-- Snapshot publishing pipeline
-- WriteQueue and CommandBus infrastructure
-Here’s the crisp call, then the exhaustive checklist.
-
-## TL;DR
-
-* **Mount/unmount tests:** Yes, you can and *should* test them **now**—but scope them to the **RoomDocManager + hooks layer** (subscriptions, unsubs, `destroy()`), not “real UI components.” Phase 2 explicitly excludes UI components and network providers; the lifecycle you *can* test is the manager’s subscriptions + a tiny hook wrapper and a debug counter component. Defer broader component behavior.  &#x20;
-* **Before moving on:** lock down the **RAF publisher contract** (≤60 FPS, coalescing 8–16 ms, \~8 FPS when hidden, initial EmptySnapshot), **immutability**, **idempotent writes**, **no Yjs in UI**, **size/budget caps**, and the **render-snapshot IDB cache keyed by `svKey`**. These are the Phase 2 invariants you’ll build everything else on.   &#x20;
-
----
-
-# Can we test mounting/unmounting *right now*?
-
-**Yes—limit it to the data layer’s lifecycle:**
-
-* Implement/verify the manager’s **subscription API** returns working unsubs and never leaks after unmount or `destroy()`. That’s Phase 2 scope (RoomDocManager skeleton, subscription maps, and `destroy` stub are all called out).&#x20;
-* Write a tiny React **hook wrapper** (e.g., `useRoomSnapshot(roomId)`) that subscribes/unsubs. This isn’t “UI components”; it’s the public surface described in the overview and aligns with the “no Yjs in UI” rule. Mount/unmount it in tests to assert cleanup & idempotence. &#x20;
-* You **should not** spend time on canvas or complex component behavior yet (explicitly out of scope for Phase 2). Defer that.&#x20;
-
-**What to assert in these lifecycle tests:**
-
-1. **Immediate first publish** (EmptySnapshot) occurs once on mount; no extra publishes on unmount.&#x20;
-2. **Unsubscribe guarantees:** no callback invocations after unmount or `destroy()`. (Verify manager’s subscription maps clear.)&#x20;
-3. **No Yjs leakage:** mounting components must not import Yjs/providers (ESLint no-restricted-imports). Turn this into a red-bar test if possible.&#x20;
-4. **One manager per roomId:** mount two different room hooks → distinct managers; remount same room → reuse.&#x20;
-
----
-
-# Phase 2: exhaustive “go/no-go” checklist (what to prove before moving on)
 
-## A) Type system & lints (foundational)
-
-* **Shared types present** (Stroke, TextBlock, CodeCell, Output, Meta with `scene_ticks`, ids) + **command types** + **Snapshot interface** + **type guards**.&#x20;
-* **ESLint rules** enforce “no direct Yjs/providers in UI.” Make failing imports block CI.&#x20;
-* Success criteria checklist passes: types, ESLint, acceptance tests, perf targets, leak checks, observability, docs, WriteQueue pattern, immutable snapshots, mobile view-only, size/TTL rules.&#x20;
-
-## B) RoomDocManager foundation
-
-* **Class skeleton**: owns `Y.Doc`, (providers placeholders), `currentSnapshot` (never null), subscription maps, singleton registry. **Constructor** sets `guid=roomId`, initializes **EmptySnapshot** synchronously, and event emitters. **`destroy()`** exists.  &#x20;
-* **Ownership invariants**: UI never sees Y types; helpers may return Y types for internal use only; no cached Y refs as fields. Test with “trap” unit tests.&#x20;
-
-## C) Y.Doc shape & numeric storage
-
-* Root `Y.Map`, plus arrays/maps for strokes, texts, outputs (with size enforcement), code cell, meta (`scene_ticks`). **Store numeric arrays as `number[]` (not `Float32Array`)**; typed arrays constructed at render time only. &#x20;
-* **Guid discipline:** `new Y.Doc({guid: roomId})` once; never mutate.&#x20;
-
-## D) Snapshot builder & RAF publisher (the big one)
-
-* **Builder**: computes `svKey` from Y state vector; returns **frozen** immutable objects (dev freeze), O(changes) work. &#x20;
-* **RAF loop contract**:
-
-  * ≤ **60 FPS**; ≤ **1 publish per rAF**; coalesce **8–16 ms**; **dirty-tracking** prevents redundant publishes; **EmptySnapshot** publishes immediately; **hidden tab** \~ **8 FPS**; widen micro-batch to **24–32 ms** under pressure; drop superseded deltas. Prove each with deterministic time-control tests.   &#x20;
-* **Render-snapshot cache (Phase 2.4)**: persist **last render Snapshot in IDB keyed by `{roomId, svKey}`**; on boot, compute svKey and hydrate only if equal; write only when svKey changes. (Small cache, *not* full offline.) Add schema/version for invalidation. Tests for hit/miss and schema bump.&#x20;
-
-## E) Write path & idempotency
-
-* **Single write entrypoint**: `write(cmd)` enqueues; **one `yjs.transact`** per logical op; UI never calls Y APIs.&#x20;
-* **Idempotency**: every command carries `idempotencyKey`; **drop dups** before `transact`. Unit test duplicate delivery. &#x20;
-* **Budgeted concurrency/backpressure**: explicit budgets (frame ≤16 ms; encoded delta <128 KB; queue ≤100). Under pressure, widen coalescing to 24–32 ms, drop superseded deltas. Assert via stress tests. &#x20;
-
-## F) Size caps & gates
-
-* **Inbound frame cap 2 MB** (abort/close 1009), **doc size warn/RO 8 MB/10 MB**, **never relax gates**, **no /api or /yjs caching in SW**. Add tests for cap banners + read-only mode transitions.&#x20;
-* **Room stats**: advisory `{bytes, cap}` available to UI via `subscribeRoomStats` (even if the pill/banner comes later). Verify it updates.&#x20;
-
-## G) Awareness & presence (Phase 2 view)
-
-* Awareness is **ephemeral**, **never persisted**, **throttled**, **injected into snapshots**; start WS awareness early; (RTC comes later). Ensure the snapshot includes presence view and that awareness is excluded from any persistence.&#x20;
-
-## H) TTL, authority & storage
-
-* **Authority never bifurcates**: WS/Redis authoritative; RTC (later) is optimization only; TTL extends on **accepted writes** (not reads). Add tests for `extendTTL()` rate-limiting hooks once exposed. &#x20;
-* **Postgres is metadata only**; Redis stores compressed docs with TTL. (No tests needed in Phase 2 beyond correct flags/writes in the server stub.)&#x20;
-
-## I) Performance & memory
-
-* **Targets**: maintain 60 FPS render; p95 collab latency ≤125 ms (for later phases, but keep the publisher budget now); persist lag ≤3 s p95. At minimum, assert the publisher never exceeds frame budget in micro-benchmarks; check for Float32Array retention. &#x20;
-
-## J) Observability & errors
-
-* Wire minimal metrics/counters for: publishes/frame, coalescing window, backpressure drops, queue depth, svKey churn. Ensure “fail-closed gates” disable features on ambiguity (e.g., `G_FIRST_SNAPSHOT`). &#x20;
----
-
-# What to **defer** beyond Phase 2
-
-* **Network providers** (WS handshake quirks, RTC probe/keep rules, ICE/relay settings, direct pairing): all later phases. Don’t test these yet. &#x20;
-* **Full offline y-indexeddb provider** for the Y.Doc: explicitly deferred to Phase 5.3 to avoid “two persistence sources.” (You only do the tiny render-snapshot cache now.)&#x20;
----
-
-## Practical test plan you can run today
-1. **Vitest + React Testing Library (mount/unmount):** render a tiny component using `useRoomSnapshot(roomId)`, assert:
-
-   * initial `EmptySnapshot` visible once; subscribe count increments; unmount → no further callbacks; remount → reuses manager instance. &#x20;
-2. **Playwright (deterministic RAF):** use `page.clock` to step time and prove: one publish per rAF; coalescing 8–16 ms; \~8 FPS when hidden; widen to \~24–32 ms under pressure. (Keep this even when MCP is added later.) &#x20;
-3. **IDB render-snapshot cache tests:** simulate boot with matching `svKey` (hydrate), and with mismatch (skip); write only when `svKey` changes.&#x20;
-4. **Guardrails:** ESLint “no-restricted-imports” (red-bar if UI imports Yjs); command idempotency duplicate test; size caps (2 MB frame; 8 MB/10 MB warn/RO).  &#x20;
----
-
-### Bottom line
-* **Test mount/unmount now**—for the **manager + hooks lifecycle**, not full components.
-* **Gate Phase 2** on: RAF publisher invariants, immutable snapshots, idempotent/guarded writes, numeric-array discipline, caps/gates, and the render-snapshot IDB cache keyed by `svKey`. If these are green, you’ll have a rock-solid base to layer providers and UI on next.  &#x20;
-
----
-## Phase 3: Canvas Rendering & Drawing System
-Out of scope
-Partial eraser, shape editing/selection, image uploads. (Whole-stroke eraser only; shapes later.) Presence/awareness rendering (Phase 4).  Tools like text/eraser/clear-board (Phase 6).
-
-Constraints 
-Commit on pointer-up via DrawStrokeCommit; no writes during preview. 
-Simplify in world units (Douglas–Peucker); keep encoded update < 128 KB. 
-Maintain strict draw order (strokes → stamps → text → cursors/overlays). 
-World/canvas/screen spaces must remain distinct; store everything in world coords; apply transforms at render time only. 
-Zoom limits 0.1×–10×; maintain strict draw order (bg → strokes → stamps → text → cursors → UI). 
-LOD rules: skip/simplify sub-pixel strokes; preview layer must not write to Yjs.
-All geometry in world units; DPR only affects canvas scale at paint time.
-Strict draw order never changes (including overlays/minimap).
-Preview layer MUST be cleared deterministically on pointer-up/cancel.
-
-Things to watch out for
-Device-pixel-ratio sizing and transform correctness across 0.5×/1×/2× zoom. 
-Dirty-rect and culling to stay within frame budget (ties into Phase 10 perf).
-Commit size: encoded stroke must be <128KB before submit. 
-DevicePixelRatio math—rounding errors can cause blurring; debounce resize. 
-Keep 60fps target; use dirty rects/culling aggressively. 
-GC churn from per-frame path construction; reuse buffers where safe.
-High-DPI rounding errors at extreme zoom; verify hit-tests at 0.5×/10×.
-
-### 3.1 Set Up Canvas Infrastructure
-1. Create main canvas element with proper sizing:
-   - Get device pixel ratio for high DPI support
-   - Size canvas backing store appropriately
-   - Handle resize events with debouncing
-2. Implement ViewTransform system:
-   - World to canvas coordinate conversion
-   - Canvas to world coordinate conversion
-   - Scale and pan state management
-   - Zoom limits (0.1x to 10x)
-3. Create render loop connected to snapshot updates:
-   - Subscribe to RoomDocManager snapshots
-   - Implement dirty rectangle tracking
-   - Set up culling for off-screen elements
-4. Establish draw order (critical for correct rendering):
-   - Background (white for export)
-   - Strokes, then stamps, then text
-   - Local preview overlays
-   - Presence cursors (when available)
-   - UI overlays (minimap, toasts)
-
-### 3.2 Implement Stroke Rendering
-1. Create stroke renderer that:
-   - Converts stored number[] to Float32Array at render time only
-   - Handles pen vs highlighter opacity differences
-   - Implements proper line caps and joins
-   - Applies world-to-canvas transform
-2. Add LOD (Level of Detail) system:
-   - Skip strokes smaller than 1 pixel at current zoom
-   - Simplify very small strokes to single points
-   - Use coarser rendering for tiny elements
-3. Implement stroke preview during drawing:
-   - Render to separate preview layer
-   - No writes to Yjs during preview
-   - Clear preview on pointer up
-4. Add proper pressure support where available
-
-### 3.3 Build Spatial Indexing with RBush
-1. Initialize RBush spatial index in RoomDocManager
-2. Populate index with stroke bounding boxes
-3. Implement index maintenance:
-   - Incremental updates for small changes
-   - Full rebuild when (added+removed) > 256
-   - Rebuild when bbox area change > 15%
-4. Create hit-testing methods using index:
-   - Point-in-stroke detection
-   - Rectangle intersection queries
-   - Nearest element finding
-5. Ensure index is included in immutable snapshots
-
-### 3.4 Implement Pointer Event Handling
-1. Set up pointer event listeners with:
-   - Unified mouse/touch/pen handling
-   - Proper pointer capture on drag
-   - Pressure detection where supported
-2. Create drawing state machine:
-   - Idle state (no interaction)
-   - Preview state (pointer down, collecting points)
-   - Commit state (pointer up, write to Yjs)
-3. Implement point collection during drawing:
-   - Convert screen to world coordinates immediately
-   - Store in temporary buffer
-   - Apply streaming simplification if needed
-4. Add pointer-up commit flow:
-   - Run Douglas-Peucker simplification in world units
-   - Use **base tolerance**: **pen = 0.8 px**, **highlighter = 0.5 px**. If the encoded update still exceeds **128 KB**: set `tol *= 1.4` and retry once; if still over budget, hard downsample to max points. Never simplify text/stamps; cap highlighter tolerance bumps at **1.5×**.
-   - Check encoded size (must be < 128KB)
-   - Build DrawStrokeCommit command
-   - Submit to WriteQueue
-5. Handle edge cases:
-   - Pointer leave during draw
-   - Right-click cancellation
-   - Multi-touch rejection
-
-### 3.5 Implement Coordinate Space Contract
-1. Define three coordinate spaces clearly:
-   - Document/world space (stable, stored)
-   - Canvas space (device pixels)
-   - Screen space (CSS pixels)
-2. Create transform utilities:
-   - Screen to canvas (accounting for device pixel ratio)
-   - Canvas to world (applying view transform)
-   - Chain transforms correctly
-3. Store all data in world coordinates only
-4. Apply transforms at render time only
-5. Test transforms at multiple zoom levels (0.5x, 1x, 2x)
-
-**Deliverables:**
-- Working canvas with proper coordinate systems
-- Stroke rendering with LOD
-- Spatial indexing for hit-testing
-- Complete drawing pipeline from pointer to commit
-- Preview rendering during draw
-
----
-
-## Phase 4: Real-time Collaboration Infrastructure
-Out of scope
-WebRTC/P2P transport and direct pairing—those land in Phase 9. 
-Constraints
-WebSocket is the authoritative path; inbound frame cap 2 MB; origin allowlist required. 
-Awareness is ephemeral (never persisted); throttle ~30 Hz with dynamic interval + jitter. 
-Reconnect with backoff (300 ms→20 s, ±20% jitter). 
-Server limits: ≤105 clients/room; ≤8 concurrent/IP; 2MB inbound frame. 
-Reconnect backoff: exp(300ms base) with jitter; reset after 30s stable. 
-Awareness: base ~30Hz; dynamic interval 50–150ms w/ ±10ms jitter; never persisted. 
-Things to watch out for
-Drop old awareness frames by seq; skip under backpressure. 
-Multi-tab primary election (BroadcastChannel) to avoid double TTL extensions.
-Emit specific error envelopes (room_full, room_full_readonly, offline_delta_too_large). 
-Multi-tab: primary handles awareness/TTL; secondaries are receive-only; promote within ~1s on primary exit. 
-Don’t attempt persistence via WS here; WS is authoritative path but data durability is Phase 5.
-Reconnect thundering-herd; jittered backoff and roster debounce.
-
-### 4.1 Set Up WebSocket Server
-1. Install @y/websocket-server (v0.1.x) on server
-2. Create WebSocket endpoint at `/ws/<roomId>`:
-   - Extract roomId from URL path
-   - Validate origin against allowlist
-   - Set up per-connection state tracking
-   - Configure hybrid transport: binary frames for Yjs deltas, JSON frames with `type` discriminator for control messages (persist_ack, error, welcome, stats)
-3. Configure connection limits:
-   - Maximum 105 clients per room
-   - Maximum 8 concurrent connections per IP
-   - 2MB inbound frame size limit
-4. Implement error envelopes for client:
-   - room_full
-   - room_full_readonly
-   - offline_delta_too_large
-5. Set up connection lifecycle logging
-
-### 4.2 Integrate y-websocket Provider in Client
-1. Add y-websocket provider to RoomDocManager:
-   - Create provider with room-specific URL
-   - Pass existing Y.Doc instance
-   - Store provider reference for cleanup
-2. Set up connection state tracking:
-   - G_WS_CONNECTED gate on open
-   - G_WS_SYNCED gate after first sync
-   - Handle disconnection states
-3. Implement reconnection logic:
-   - Exponential backoff (300ms base, 20s max)
-   - ±20% jitter to prevent thundering herd
-   - Reset retry counter after 30s stable connection
-4. Add connection indicator UI component:
-   - Online (green)
-   - DO NOT INCLUDE Reconnecting (BAD UI, THE APP IS MEANT TO BE OFFLINE-FIRST)
-   - Offline (red)
-   - Read-only (red with different icon)
-
-### Protocol envelopes (normative)
-```ts
-// Control frame base
-interface WSControlFrame {
-  type: 'persist_ack' | 'error' | 'welcome' | 'roster' | 'stats';
-  v: number;  // protocol version
-  ts: string; // ISO-8601 UTC
-  [key: string]: any;
-}
-
-// Error envelope
-interface WSErrorFrame extends WSControlFrame {
-  type: 'error';
-  code: 'room_full' | 'room_full_readonly' | 'offline_delta_too_large';
-  message: string;        // human-readable
-  retryable: boolean;
-  retry_in_ms?: number;   // if retryable
-}
-
-// Example welcome (includes ICE creds & limits)
-// {"type":"welcome","v":1,"ts":"...","docId":"<id>","userId":"<device:tab>",
-//  "ice":{"ttl_sec":600,"servers":[...]},
-//  "limits":{"max_frame_bytes":2000000,"warn_size_bytes":8000000,"read_only_size_bytes":10000000,
-//            "offline_threshold":{"bytes":2000000,"minutes":15,"ops":10000}},
-//  "peer_count":12}
-
-// Example persist_ack (authoritative UI stats source)
-// {"type":"persist_ack","v":1,"ts":"...","docId":"<id>","svKey":"<ver>",
-//  "size_bytes":123456,"expires_at":"...","flush_seq":42}
-```
-
-Close WS with **1009** if inbound frame > **2 MB**; emit `error` envelope for large offline delta/read-only over-cap.
-
-### 4.3 Implement Awareness System
-1. Set up awareness protocol via y-websocket:
-   - Create awareness instance tied to Y.Doc
-   - **WS send**: **~60–75 ms** interval target (**13–17 Hz**) with ±10 ms jitter; coalesce under WS high-water; skip under backpressure.
-   - **RTC send**: **~33–50 ms** interval target (**20–30 Hz**); if `dataChannel.bufferedAmount` > 128 KB, reduce toward ~15 Hz until recovered.
-   - Implement throttling based on peer count
-2. Add awareness payload structure:
-   - userId (device:tab format)
-   - name and color
-   - cursor position in world coordinates (always send world-space {x,y}; receivers project to view)
-   - activity state (idle/drawing/typing)
-   - Sequence number for ordering
-   - Timestamp as epoch ms for awareness, ISO-8601 strings for HTTP/WS JSON control frames
-3. Implement dynamic send interval:
-   - Calculate: 50ms * (1 + max(0,(N-10)/20))
-   - Clamp between 50ms and 150ms
-   - Add ±10ms jitter
-   - Recompute only on ≥15% peer count change
-4. Set up awareness subscription in RoomDocManager:
-   - Subscribe to awareness changes
-   - Inject into snapshot for rendering
-   - Apply smoothing/interpolation
-5. Handle awareness edge cases:
-   - Skip frames under backpressure
-   - Drop old frames (seq number based)
-   - Never persist awareness data
-   - Include `ptt.holderId` in presence payloads so late joiners render the current floor holder without waiting for the next PTT frame
-
-### 4.4 Create Presence UI Components
-1. Build cursor renderer:
-   - Render remote cursors from snapshot presence data
-   - Apply interpolation for smooth movement
-   - Show user name and color badges
-2. Implement cursor trails:
-   - Keep rolling buffer of 12-24 points
-   - Trim points older than 600ms
-   - Reduce to dots only when peers > 25
-3. Create active users list:
-   - Show all connected users
-   - Display activity indicators
-   - Update from awareness data
-4. Add collaboration mode indicator:
-   - Show "Server" or "P2P" mode
-   - Update based on active transport
-
-### 4.5 Handle Multi-Tab Coordination
-1. Set up BroadcastChannel for same room:
-   - Channel name: 'room:<id>'
-   - Elect primary tab (lowest openedAt)
-   - Handle primary/secondary roles
-   - `userId = deviceULID:tabULID` (persist **device ULID** in IDB; **tab ULID** per tab).
-2. Primary tab responsibilities:
-   - Send awareness updates
-   - Perform TTL extensions
-   - Start WebRTC if applicable
-   - Primary alone performs TTL extension & RTC orchestration.
-3. Secondary tab behavior:
-   - Receive-only for awareness
-   - No TTL extensions
-   - No WebRTC initialization
-4. Implement promotion on primary departure:
-   - Detect via visibilitychange/unload
-   - On primary exit, promote a secondary **≤ 1 s**; ties broken by **lowest openedAt**.
-
-**Deliverables:**
-- WebSocket server with Yjs integration
-- Client-side WebSocket provider
-- Working awareness system with presence
-- Cursor rendering with trails
-- Multi-tab coordination
-
----
-## Phase 5: Persistence & Storage Layer
-Out of scope
-Recovery of expired rooms; cold storage beyond TTL; multi-node Redis. PWA caching (Phase 8) and WebRTC transport (Phase 9).  UI features (Phase 6) and code execution (Phase 7). 
-
-Constraints
-Redis is source of truth; gzip level 4; ROOM_TTL_DAYS=14 extended only on accepted writes. 
-8 MB warning pill; 10 MB hard cap makes room read-only. 
-Batch flushes every 2–3 s; final flush on SIGTERM (3 s grace). 
-Postgres: non-authoritative metadata; return 404 if Redis key missing. 
-Redis is the single source of truth; PostgreSQL is non-authoritative. Return 404 when Redis key missing. 
-TTL defaults to 14 days; extend only on accepted writes (never on reads/awareness). 
-Batch flushes every ~2–3s; flush on SIGTERM (3s grace); track sizes post-compression (gzip level 4). 
-IDB: proceed if load >2s; rehydrate in background; batch writes per frame.
-
-Things to watch out for
-Use persist-ack from server (size_bytes, new TTL) to drive pills/banners. 
-Guard against “large offline delta” on reconnect; surface clear recovery UX.
-Alias mapping (local-* → server ids) and provisional room flows during publish. 
-TTL extension command must be minimal and rate-limited (~10 min). 
-Rate limit APIs (e.g., 10 rooms/hour/IP; 5 renames/min).
-
-### 5.1 Set Up Redis for Authoritative Storage
-1. Configure Redis instance with:
-   - AOF (Append Only File) enabled
-   - Appropriate memory limits
-   - Backup configuration
-2. Create Redis adapter for Yjs documents:
-   - Key format: 'room:<roomId>'
-   - Compress with gzip level 4 before storage
-   - Store as binary buffer
-3. Implement TTL management:
-   - Set TTL to ROOM_TTL_DAYS (default 14)
-   - Extend only on accepted writes
-   - Never extend on reads or awareness
-4. Add flush mechanism:
-   - Batch writes every 2-3 seconds
-   - Flush on SIGTERM with 3 second grace
-   - Track flush sequence numbers
-5. Implement size tracking:
-   - Calculate compressed size after each write
-   - Store size_bytes for capacity checks
-
-### 5.2 Configure PostgreSQL with Prisma
-1. Set up PostgreSQL database
-2. Create Prisma schema with room metadata:
-   - id (room identifier)
-   - title (user-provided name)
-   - createdAt timestamp
-   - lastWriteAt timestamp  
-   - size_bytes (from Redis)
-3. Configure connection pooling:
-   - Pool size 10-20 connections
-   - Set idle and acquire timeouts
-   - Log slow queries
-4. Important: PostgreSQL is non-authoritative
-   - Redis defines room existence
-   - Return 404 if Redis key missing even if DB row exists
-5. Handle degraded mode:
-   - System continues if PostgreSQL unavailable
-   - Metadata endpoints return 503
-
-### 5.3 Implement IndexedDB for Offline Storage
-1. Add y-indexeddb provider to RoomDocManager:
-   - One provider per room
-   - Attach immediately after Y.Doc creation
-   - Set G_IDB_READY gate when loaded
-2. Configure IndexedDB schema:
-   - Store full Y.Doc per room
-   - Store room metadata (My Rooms list)
-   - Store alias mappings (local-* to server ids)
-3. Implement 2-second timeout:
-   - If IDB doesn't load within 2s, proceed with empty doc
-   - Schedule background re-hydration attempt
-4. Handle IDB write strategy:
-   - Batch writes once per frame
-   - Flush when queue ≥ 1,000 strokes
-5. Add chunked read strategy:
-   - Read in 1k-5k record chunks
-   - Yield to event loop between chunks
-
-### 5.4 Create Room Lifecycle Management
-1. Implement local-first room creation:
-   - Generate 'local-<ulid>' identifier
-   - Create Y.Doc with provisional id
-   - Store in IndexedDB with provisional flag
-   - Add to My Rooms list
-2. Build publish flow to server:
-   - POST /api/rooms endpoint
-   - Merge local doc with server doc
-   - Update alias mapping
-   - Change provisional flag to false
-3. Add join flow for existing rooms:
-   - Resolve any aliases first
-   - Connect WebSocket
-   - Load metadata
-   - Check and display expiry time
-   - Enforce capacity limits
-4. Implement room expiry:
-   - Check TTL on metadata fetch
-   - Return 404 when expired  
-   - Keep local Y.Doc with banner, offer "create new room from local copy"
-5. Create TTL extension mechanism:
-   - Minimal write to Y.Doc
-   - Rate limit to once per 10 minutes
-   - Show confirmation toast
-
-### 5.5 Build REST API Endpoints
-1. Create POST /api/rooms:
-   - Generate permanent room ID
-   - Initialize in Redis
-   - Return roomId and shareLink
-   - Make idempotent (200 on retry)
-2. Implement GET /api/rooms/{id}/metadata:
-   - Fetch from PostgreSQL
-   - Check Redis for existence first
-   - Return 404 if Redis key missing
-   - Include size_bytes, expires_at
-3. Add PUT /api/rooms/{id} for rename:
-   - Update title in PostgreSQL
-   - Rate limit to 5 per minute
-   - Validate title length
-4. Set up rate limiting:
-   - 10 rooms per hour per IP
-   - Track with Redis or in-memory
-
-**Deliverables:**
-- Redis persistence with compression
-- PostgreSQL metadata storage
-- Complete offline storage via IndexedDB
-- Room lifecycle (create, publish, join, expire)
-- REST API for room management
-
----
-
-## Phase 6: UI Components & Tools
-Out of scope
-Auto-panning due to remote actions; any auth UX; mobile editing (MVP is view-only). Editor/code execution (Phase 7), PWA (Phase 8), and RTC (Phase 9).
-Constraints
-Whole-object eraser only(with preview, stroke lightens on touch and erases on mouse release); text becomes immutable on commit (≤500 chars). 
-“Clear board” appends a scene tick (excluded from undo/redo) and is rate-limited. 
-Show ≥8 MB size pill, enforce read-only at 10 MB. 
-Eraser is whole-object only; must integrate with RBush hit-testing. 
-Text: single commit (immutable after), ≤500 chars. 
-Clear Board appends a scene tick, not undoable; server rate-limited (1/15s). 
-PNG export: edge ≤8192px; white bg; 24px padding; 2s full-board timeout then fallback. 
-Things to watch out for
-Accessibility on sliders/popovers; never auto-reveal toolbar while drawing. 
-Gate minimap/export on G_FIRST_SNAPSHOT to avoid null state. 
-Exclude presence/UI overlays from export/clipboard. 
-Keep undo/redo per-user (device:tab).
-
-### 6.1 Build Toolbar System
-1. Create docked toolbar component:
-   - Left side, pinned, expanded by default
-   - Optional auto-hide behavior
-   - Device-local state persistence
-2. Implement tool buttons:
-   - Pen tool with size/color/opacity
-   - Highlighter (fixed 0.25 opacity)
-   - Text tool
-   - Eraser (whole-object only)
-   - Stamp selector
-3. Add advanced controls panel:
-   - Size slider with preview
-   - Color picker (HSV)
-   - Opacity control (pen only)
-   - Keyboard navigation support
-4. Store toolbar state in localStorage:
-   - Key: 'avlo:v1:ui'
-   - Include selected tool, colors, sizes
-   - Version and provide migrator
-5. Never auto-reveal toolbar while drawing
-
-### 6.2 Implement Eraser Functionality
-1. Create eraser hit-testing:
-   - Use RBush spatial index
-   - Find intersecting objects
-   - Highlight on hover
-2. Build delete command:
-   - Collect all intersecting stroke/text IDs
-   - Create single EraseObjects command
-   - Submit as one transaction
-3. Add visual feedback:
-   - Preview what will be erased
-   - Show eraser cursor size
-   - Animate deletion
-4. Ensure proper cleanup:
-   - Remove from spatial index
-   - Update snapshot
-
-### 6.3 Create Text Tool
-1. Build text overlay component:
-   - Click to place text cursor
-   - Inline editing interface
-   - Commit on blur or Enter
-2. Implement text constraints:
-   - Maximum 500 characters
-   - Single commit (immutable after)
-   - Store position and dimensions
-3. Add text rendering to canvas:
-   - Render after strokes but before cursors
-   - Apply proper font metrics
-   - Handle multi-line text
-4. Include in hit-testing:
-   - Add text blocks to RBush
-   - Make erasable like strokes
-
-### 6.4 Build Clear Board Feature
-1. Create Clear Board command:
-   - Appends to meta.scene_ticks[]
-   - Increments current scene
-   - Excludes from undo/redo
-2. Add confirmation dialog:
-   - Require explicit confirmation
-   - Show warning about affecting everyone
-3. Implement rate limiting:
-   - Server-side: 1 per 15 seconds
-   - Client-side: 10 second undo window
-4. Update rendering:
-   - Only show elements matching current scene
-   - Hide previous scene content
-
-### 6.5 Implement Undo/Redo System
-1. Set up per-user command history:
-   - Track by userId (device:tab)
-   - Store command references
-   - Limit history size
-2. Create undo/redo commands:
-   - Build inverse operations
-   - Apply via WriteQueue
-   - Maintain consistency
-3. Add keyboard shortcuts:
-   - Ctrl/Cmd+Z for undo
-   - Ctrl/Cmd+Shift+Z for redo
-4. Exclude from undo:
-   - Scene ticks (Clear Board)
-   - TTL extensions
-   - Awareness updates
-
-### 6.6 Create Export Functionality
-1. Build PNG export system:
-   - Viewport or entire board options
-   - Maximum edge 8192px
-   - White background
-   - 24px padding
-2. Implement progressive rendering:
-   - Chunk work into 16ms slices
-   - Yield between chunks
-   - Show progress indicator
-3. Add timeout handling:
-   - 2 second timeout for full export
-   - Fall back to viewport with toast
-   - Never block UI thread
-4. Support clipboard export:
-   - Use Clipboard API where available
-   - Fallback to download
-5. Exclude from export:
-   - Cursors and presence
-   - UI overlays
-   - Selection handles
-
-### 6.7 Build Minimap Component
-1. Create minimap renderer:
-   - Small overview in corner
-   - Update from snapshots
-   - Show viewport rectangle
-2. Add navigation:
-   - Click to jump
-   - Drag viewport rectangle
-3. Gate on G_FIRST_SNAPSHOT:
-   - Hide until first snapshot ready
-   - Show loading state
-4. Optimize performance:
-   - Lower resolution rendering
-   - Debounced updates
-   - Suspend when hidden
-
-### 6.8 AI Assistance (Mode A)
-1. Docked panel (first-run open), two slots with resizer, 10 s clamp on requests.
-2. `POST /api/ai/complete` streams assistant output; **Apply** guarded by **hashed span** with conflict UX.
-3. If offline, swap panel to **Quick Tools** (local-only).
-4. Telemetry: request counts, apply attempts, conflict rate.
-
-**Deliverables:**
-- Complete toolbar with all tools
-- Working eraser with preview
-- Text tool with editing
-- Clear Board with confirmation
-- Undo/redo per user
-- PNG export with fallbacks
-- Minimap for navigation
-
----
-
-## Phase 7: Code Execution System
-Out of scope
-Any network/FS access inside workers(workers are sandboxed); persistent notebooks; multi-file projects.  
-Constraints
-Fresh worker per run; 5 s timeout; output ≤ 10 KB per run; keep last 10 outputs, total ≤ 128 KB. 
-Pyodide 0.26.4; warm on desktop only; skip on constrained devices. 
-Things to watch out for
-Versioned code-cell updates; handle concurrency with version tokens to avoid stale writes. 
-Large asset downloads (Monaco/Pyodide) interplay with PWA caching from Phase 8.
-
-### 7.1 Integrate Monaco Editor
-1. Set up Monaco with lazy loading:
-   - Dynamic import on first use
-   - Pre-cache via Service Worker
-   - Show loading state
-2. Configure for JavaScript and Python:
-   - Syntax highlighting
-   - Basic autocomplete
-   - Error highlighting
-3. Create editor component:
-   - Resizable panel
-   - Theme matching app
-   - Keyboard shortcuts
-4. Connect to code cell in Y.Doc:
-   - Sync content changes
-   - Track version numbers
-   - Handle concurrent edits
-
-### 7.2 Implement JavaScript Execution
-1. Create web worker for isolation:
-   - Fresh worker per execution
-   - No network access
-   - No filesystem access
-2. Set up execution pipeline:
-   - Pass code to worker
-   - Capture console output
-   - Handle errors gracefully
-3. Implement timeouts:
-   - 5 second hard limit
-   - Terminate worker on timeout
-   - Show timeout message
-4. Capture and limit output:
-   - Maximum 10KB per run
-   - Stream to UI progressively
-   - Truncate if exceeds limit
-
-### 7.3 Set Up Pyodide for Python
-1. Configure Pyodide loading:
-   - Version 0.26.4 exactly
-   - Lazy load on first Python run
-   - Cache via Service Worker
-2. Implement warm-up strategy:
-   - Silent warm on desktop after activate
-   - Skip on mobile/low-memory
-   - Queue early runs while loading
-3. Create Python worker:
-   - Fresh worker per execution
-   - Load Pyodide in worker
-   - No network/filesystem
-4. Handle execution:
-   - Same timeout/output limits as JS
-   - Capture stdout/stderr
-   - Show Python-specific errors
-
-### 7.4 Build Output Management
-1. Create output storage in Y.Doc:
-   - Append to outputs array
-   - Keep last 10 outputs
-   - Enforce 128KB total limit
-2. Implement output display:
-   - Scrollable output panel
-   - Syntax highlighting
-   - Clear output button
-3. Add execution controls:
-   - Run button with loading state
-   - Stop button during execution
-   - Keyboard shortcut (Ctrl/Cmd+Enter)
-4. Handle concurrent executions:
-   - Queue if already running
-   - Cancel previous on new run
-   - Show execution status
-5. Reject code cell writes with `version < currentVersion` (return conflict) or migrate `code.body` to CRDT text; evict `outputs[]` with stable sort by `ts, runId` in a single transaction.
-
-**Deliverables:**
-- Monaco editor integration
-- JavaScript execution in workers
-- Python execution via Pyodide
-- Output capture and display
-- Proper isolation and timeouts
----
-
-## Phase 8: PWA & Service Worker
-Out of scope
-Caching /api/**, /yjs/**, or any WebSocket traffic. 
-
-Constraints
-Versioned caches; separate buckets (app-shell-vN, offline-pack-vN, avatars-thumbs-vN, media-cache-vN). 
-Runtime strategies: allowlisted CDN media via SWR; avatars/thumbnails SWR unless immutable. Caps and eviction rules apply. 
-Respect storage/save-data; quota handling must evict LRU from media cache and expose a “Clear offline data”.
-Cache-first only for app shell; version cache names; delete old caches on activate. 
-Show update prompts and allow skip-waiting flow; handle multi-tab upgrades cleanly. 
-Manifest must include correct icon sizes, standalone display, theme/background colors.
-
-Things to watch out for
-Install/activate/warmup flow correctness; updates prompt users safely, but silently warm Pyodide for professional UI/UX.
-Don’t cache server-driven flags in SW; precache Monaco and heavy lazies with idle cue
-
-### 8.1 Create Service Worker Foundation
-1. Set up Service Worker registration:
-   - Register on page load
-   - Handle update flow
-   - Show update prompts
-2. Configure cache strategies:
-   - Cache-first for app shell
-   - Never cache /api/**, /yjs/**, wss:
-   - Version cache names
-3. Implement basic offline support:
-   - Serve cached app shell
-   - Show offline indicator
-   - Queue actions when offline
-
-### 8.2 Implement Asset Caching
-1. Pre-cache critical assets:
-   - HTML shell
-   - Core JavaScript/CSS
-   - Fonts and icons
-   - Precache fonts/icons (WOFF2 + maskable), Monaco bundles, and static JSON; never cache `/api/**`, `/yjs/**`, or any WS.
-2. Cache Monaco assets:
-   - Pre-cache on install
-   - Include language files
-   - Version properly
-3. Set up Pyodide caching:
-   - Cache after first download
-   - Warm on desktop only
-   - Skip on constrained devices
-4. Configure cache cleanup:
-   - Delete old versions on activate
-   - Respect storage quotas
-   - Provide clear cache option
-5. **Separate buckets**: `app-shell-vN`, `offline-pack-vN`, `avatars-thumbs-vN`, `media-cache-vN`.
-6. **Avatars & thumbs**: Cache-First if hashed/immutable; otherwise SWR; caps **maxEntries: 400**, **maxAge: 7d**.
-7. **Media cache (allowlisted CDNs)**: SWR; caps **maxEntries: 300**, **maxAge: 14d**; reject opaque large responses.
-8. On `QuotaExceededError`, evict LRU from media cache; expose 'Clear offline data' in settings.
-
-### 8.3 Build Update Flow
-1. Detect new Service Worker:
-   - Check on navigation
-   - Compare versions
-2. Show update prompt:
-   - Non-intrusive notification
-   - Allow dismiss
-   - Force update option
-3. Handle update installation:
-   - Wait for all tabs to close
-   - Or skip waiting on user action
-   - Reload after update
-
-### 8.4 Create Web App Manifest
-1. Configure manifest.json:
-   - App name and description
-   - Icon sizes (192, 512, maskable)
-   - Theme and background colors
-   - Display mode (standalone)
-2. Set up install prompts:
-   - Detect install capability
-   - Show custom install UI
-   - Handle installation flow
-3. Configure app behavior:
-   - Start URL
-   - Orientation preferences
-   - Status bar styling
-
-### 8.5 Implement Offline Enhancements
-1. Add offline detection:
-   - Monitor online/offline events
-   - Update UI accordingly
-   - Pause certain operations
-2. Create offline fallbacks:
-   - Static offline page
-   - Cached data display
-   - Clear offline indicators
-3. Handle sync on reconnect:
-   - Trigger metadata refresh
-   - Resume WebSocket connection
-   - Sync IndexedDB changes
-4. Build Quick Tools for offline:
-   - Local-only utilities
-   - No server dependency
-   - Clear offline labeling
-
-**Deliverables:**
-- Complete Service Worker with caching
-- PWA manifest and install flow
-- Offline support with fallbacks
-- Update detection and prompts
-- Asset pre-caching strategy
-
----
-
-## Phase 9: WebRTC & Peer-to-Peer Enhancement
-Out of scope
-Starting RTC in large rooms (>15 peers), or when direct pairing mode is chosen (they’re mutually exclusive with provider signaling). Do not make y-webrtc authoritative, Websocket stays authoritative.
-Constraints
-Only enable y-webrtc for ≤12 peers; keep WS connected as the source-of-record. 
-Probe policy: keep RTC only if rtcMedianRtt ≤ wsRtt − 20 ms (or WS ≥ 70 ms and RTC < WS); add hysteresis. 
-Deduplicate awareness across WS/RTC via monotonic seq and short debounce. 
-Things to watch out for
-Drop RTC on peer-count > 15, ICE fail, CPU hot, or high bufferedAmount. 
-When Peer Mode (direct pairing) is active, do not instantiate WebrtcProvider; reflect mode in UI.
-
-### 9.1 Set Up WebRTC Infrastructure
-1. Configure TURN server:
-   - TCP+TLS on port 443
-   - Long-term credentials
-   - Rotation mechanism
-2. Set up signaling servers:
-   - Primary: self-hosted
-   - Fallback: public yjs signaling
-   - Room-scoped HMAC passwords
-3. Create ICE configuration:
-   - TURN for production
-   - STUN for development only
-   - Bundle policy max-bundle
-   - `iceCandidatePoolSize: 1-2`
-   - Trickle ICE on
-   - TURN on 443 TCP+TLS with long-term creds; keep a public STUN in dev
-
-### 9.2 Implement WebRTC Provider
-1. Add y-webrtc to RoomDocManager:
-   - Create only for small rooms (≤12 peers)
-   - Use same Y.Doc instance
-   - Share awareness with WebSocket
-2. Configure provider settings:
-   - maxConns: 12-15
-   - Password from room HMAC
-   - Proper ICE servers
-3. Keep WebSocket connected:
-   - WS remains authoritative
-   - WebRTC for latency only
-   - Fallback on WebRTC failure
-
-### 9.3 Build Probe System
-1. Implement RTT measurement:
-   - Measure WebSocket RTT (5 samples)
-   - Measure WebRTC RTT (2.5 seconds)
-   - Calculate medians
-2. Create keep/drop logic:
-   - Keep RTC if `rtcMedianRtt ≤ wsRtt − 20 ms` **OR** `(wsRtt ≥ 70 ms && rtcMedianRtt < wsRtt)`.
-   - **Hysteresis**: evaluate every **10 s**; require **2 consecutive wins** to switch to RTC and **2 consecutive losses** to drop it (debounce flapping).
-3. Add drop conditions:
-   - Peers exceed 15
-   - CPU overheating
-   - ICE connection failed
-   - Buffered amount too high
-
-### 9.4 Handle Awareness Deduplication
-1. Implement sequence numbers:
-   - Monotonic per sender
-   - Shared across channels
-   - Handle wraparound
-2. Create dedup logic:
-   - Track lastSeq per sender
-   - Drop if seq ≤ lastSeq
-   - Prefer RTC when available
-3. Add muting mechanism:
-   - Mute WS awareness when RTC active
-   - Continue receiving for fallback
-   - Short window debounce
-
-### 9.5 Create Collaboration Mode UI
-1. Build mode selector:
-   - Server (default)
-   - Peer Mode (P2P)
-   - Remember preference
-2. Add visual indicators:
-   - Header badge showing mode
-   - Network quality indicator
-   - Peer count display
-3. Handle mode transitions:
-   - Smooth fallback to server
-   - Update UI immediately
-   - Show degradation reasons
-4. Implement constraints:
-   - Disable P2P for large rooms
-   - Show tooltips explaining why
-   - Auto-switch on conditions
-
-### 9.6 Direct Pairing (optional)
-1. Expose a **5-digit code** flow: server maps code → `{roomId, rtcCredentials}` with short TTL; both peers enter code.
-2. Use **WS** to exchange offer/answer/ICE; when Direct (Peer Mode) is active, **do not** instantiate `WebrtcProvider` (mutually exclusive).
-
-### 9.7 Push-to-Talk (PTT) — (Normative additions)
-* **Purpose:** Optional mode enabling **single active speaker** with floor control; others remain **receive-only**. PTT is mutually compatible with existing WebRTC provider and signaling.
-* **Floor control (server-arbitrated):**
-  * States: `idle → requesting → holding → releasing (or timeout) → idle`.
-  * **Single holder** globally per room. Queue policy: **FIFO**, max queue **8**; drop on disconnect.
-  * **Timeouts (from OVERVIEW.MD):** hard cap **60 s** hold; client sends **heartbeat** every **5 s** while holding; server revokes on missed 2 heartbeats.
-  * **Fairness:** When released or revoked, grant next queued requester; server issues `ptt_grant` only to one client at a time.
-* **Control frames (WebSocket):**
-
-  ```ts
-  // All frames carry {type, v, ts, roomId, clientId}
-  type PttClientToServer =
-    | { type: 'ptt_request'; reason?: 'press' | 'toggle' }
-    | { type: 'ptt_release' }
-    | { type: 'ptt_heartbeat' };
-
-  type PttServerToClient =
-    | { type: 'ptt_grant'; holderId: string; ttl_ms: number }           // you are granted
-    | { type: 'ptt_denied'; reason: 'queue_full' | 'already_holding' }
-    | { type: 'ptt_update'; holderId: string | null; queue_len: number } // roster signal
-    | { type: 'ptt_revoked'; reason: 'timeout' | 'policy' | 'disconnect' };
-  ```
-
-  * **Errors:** use existing `error` envelope for malformed PTT frames; `code: 'ptt_not_allowed' | 'ptt_queue_full'`.
-* **WebRTC behavior (no full renegotiation unless required):**
-  * Pre-create an **audio transceiver** at join: `direction: 'recvonly'`.
-  * On `ptt_grant`: switch to **sendonly** (or `sendrecv` if sidetone UX requires) via `sender.setParameters()`; prefer **parameter update** over full SDP renegotiation.
-  * **Opus / constraints (from OVERVIEW.MD):**
-    * Target **maxBitrate ~32 kbps**, `ptime=20ms`, `stereo=false`, `dtx=true`, `fec=true`, `opusMaxPlaybackRate=16000–24000`.
-    * `getUserMedia` with `echoCancellation`, `noiseSuppression`, `autoGainControl` = true.
-  * On `ptt_release`/`ptt_revoked`/timeout: revert transceiver to **recvonly**; stop mic; clear VU UI.
-* **UX (minimal, additive):**
-  * Add a **PTT button** (press-and-hold + keyboard shortcut). Show **current holder** and a **countdown** when you're holding.
-  * If holder differs from local `clientId`, mic stays off; show a "request floor" affordance.
-  * Accessibility: ARIA labels ("Request floor", "Release floor").
-* **Primary/secondary (multi-tab):**
-  * Only **primary tab** issues `ptt_request`/`ptt_release`; secondaries reflect roster via BroadcastChannel.
-  * On primary loss, promote ≤ **1 s**; if promoted while holding, immediately send `ptt_heartbeat`.
-* **Backoff & failure:**
-  * If `rtpSender.setParameters` fails or `bufferedAmount > 256 KB`, fallback to WS presence only (no audio) and auto-release floor.
-* **Security & limits:**
-  * Rate-limit `ptt_request` (no more than 1 per 2 s per client). Deny if read-only or over room cap.
-
-**Deliverables:**
-- WebRTC provider integration
-- RTT probe and decision system
-- Awareness deduplication
-- Collaboration mode UI
-- Automatic fallback handling
-
----
-
-## Phase 10: Production Polish & Optimization
-Out of scope
-Feature additions beyond MVP scope (auth, admin tools, cold storage). Focus on polish, perf, security, deploy. 
-
-Constraints
-Targets: p95 collaboration latency ≤125 ms, 60 FPS rendering; persist lag p95 ≤3000 ms (hard cap 5000 ms). 
-Mobile is view-only for MVP. Enforce in WriteQueue + UI. 
-Security headers (CSP, HSTS after TLS), origin allowlist, rate limiting per IP. 
-
-Things to watch out for
-Instrument the custom metrics: probe results, awareness drops/skip counts, WS sync timings, queue length, snapshot FPS. 
-
-Production deploy on a single container (Railway). No NGINX. Ensure final flush/TTL janitor.
-### 10.1 Implement Observability
-1. Set up Sentry integration:
-   - Error tracking
-   - Performance monitoring
-   - User session replay
-2. Add custom metrics (with `{roomId, clientId, channel={ws,rtc}}` labels):
-   - `persist_lag_ms`, `flush_duration_ms`, `flush_batch_bytes`
-   - `ttl_extend_failures`, `doc_size_bytes` (warn/RO counters)
-   - `rejected_deltas_count{reason}`, `awareness_drop_rate{channel}`
-   - `ws_backpressure_drops`, `rtc_buffer_overflows`
-   - `rtc_probe_ms`, `rtc_connected_peers`
-   - `webrtc_signaling_connect_ms`, `webrtc_provider_errors{ice,signaling}`
-   - `write_transact_ms`, `writequeue_len`, `snapshot_fps`
-   - `extendTTL_calls_blocked{reason}`
-   - `ptt_requests_total`, `ptt_grants_total`, `ptt_denials_total{reason}`, `ptt_revokes_total{reason}`
-   - `ptt_hold_duration_ms`, `ptt_time_to_grant_ms`, `ptt_queue_len`
-   - `rtc_renegotiations_ptt_total`, `ptt_heartbeat_missed_total`
-   - `ptt_active_speaker_changes_total`
-3. Persist-ack metric wiring: `persist_lag_ms = ack.ts − first_update_received.ts`; treat **persist_ack** as the UI source of truth for size/TTL pills.
-4. Create dashboards:
-   - Real-time metrics
-   - Historical trends
-   - Alert configurations
-5. Implement logging:
-   - Structured logs
-   - Appropriate log levels
-   - No sensitive data
-
-### 10.2 Add Mobile View-Only Support
-1. Detect mobile devices:
-   - User agent detection
-   - Touch capability checks
-   - Screen size thresholds
-2. Block write operations:
-   - WriteQueue validates and rejects
-   - Show view-only banner
-   - Disable drawing tools
-3. Optimize mobile UI:
-   - Simplified toolbar
-   - Touch-friendly controls
-   - Responsive layout
-4. Test on real devices:
-   - Various screen sizes
-   - Different browsers
-   - Performance validation
-
-### 10.3 Performance Optimization
-1. Implement dirty-rect rendering:
-   - Track changed regions
-   - Redraw only affected areas
-   - Maintain 60 FPS target
-2. Add render budgeting:
-   - 16ms frame budget
-   - Yield for long tasks
-   - Progressive rendering
-3. Optimize memory usage:
-   - Cleanup unused references
-   - Limit history sizes
-   - Efficient data structures
-4. Add performance monitoring:
-   - Frame rate tracking
-   - Memory usage alerts
-   - Slow operation logging
-
-### 10.4 Security Hardening
-1. Configure CSP headers:
-   - Strict content policy
-   - Script source restrictions
-   - Style source limits
-2. Add security headers:
-   - HSTS (after TLS stable)
-   - X-Content-Type-Options: nosniff
-   - Referrer-Policy: no-referrer
-3. Implement rate limiting:
-   - Per-IP connection limits
-   - Room creation throttling
-   - API endpoint protection
-4. Validate all inputs:
-   - Frame size limits
-   - Content sanitization
-   - Origin checking
-
-### 10.5 Final Testing & Validation
-1. Run acceptance tests:
-   - All features from Section 10
-   - Size enforcement (8MB warning, 10MB cap)
-   - TTL expiry behavior
-   - Offline functionality
-2. Execute E2E test suite:
-   - Happy path flows
-   - Error conditions
-   - Network failures
-   - Concurrent users
-3. Performance testing:
-   - Load test with 50 users
-   - Measure p95 latency
-   - Verify 125ms target
-4. Manual QA:
-   - Cross-browser testing
-   - Accessibility audit
-   - Usability review
-5. Named test cases:
-   - Offline→online delta **> 2 MB**: expect `offline_delta_too_large`.
-   - Concurrent clears → single scene tick (debounced).
-   - Awareness out-of-order: seq-drop + smoothing window.
-   - WS backpressure: coalescing, recovery under low-water.
-   - Batch crash: TTL extended on ingest; no phantom ack.
-   - Version conflict on code cell (stale write rejected).
-   - **Golden snapshot** rendering comparisons.
-   - Run with **synthetic shapers** (high RTT, loss, bandwidth).
-   - **PTT_single_holder:** two+ clients request; ensure exactly one `ptt_grant`.
-   - **PTT_fifo_fairness:** 3 clients request in order A,B,C → grants A,B,C.
-   - **PTT_timeout_revoke:** holder silent → server revokes after 60 s (2 missed heartbeats).
-   - **PTT_disconnect_drop:** holder disconnects → grant next; queue shrinks.
-   - **PTT_primary_failover:** primary holding floor crashes → secondary promotes ≤1 s and heartbeats resume.
-   - **PTT_bitrate_apply:** verify Opus params applied; fallback path on setParameters failure.
-   - **PTT_backpressure_release:** simulate high `bufferedAmount`; auto-release behavior triggers.
-
-### 10.6 Deployment Preparation
-1. Configure production environment:
-   - Environment variables
-   - Redis with AOF
-   - PostgreSQL with backups
-   - Monitoring setup
-2. Set up deployment pipeline:
-   - Railway configuration (NO NGINX)
-   - Health checks
-   - Rollback plan
-3. Create operational runbook:
-   - Common issues
-   - Debug procedures
-   - Recovery steps
-   - Contact information
-4. Plan launch:
-   - Gradual rollout
-   - Feature flags
-   - Monitoring dashboard
-   - Support readiness
-
-**Deliverables:**
-- Complete observability
-- Mobile view-only implementation
-- Performance optimizations
-- Security hardening
-- Deployment-ready application
-
----
-
-## Critical Constraints to Maintain Throughout
-
-### Never Violate These Rules:
-1. Components must never import or directly access Yjs, y-websocket, or y-indexeddb
-2. All mutations must go through WriteQueue and CommandBus
-3. Snapshots are always immutable and never null
-4. Store number[] in Yjs, create Float32Array only at render time
-5. WebSocket is always the authoritative persistence path
-6. Room size hard cap at 10MB becomes read-only
-7. Mobile devices are view-only for MVP
-8. No authentication system - link-based access only
-9. Awareness is never persisted
-10. TTL extends only on accepted writes, not reads
-11. Never apply any async work against a mismatched svKey. 
-12. Never exceed the 2 MB inbound WS frame cap—close with 1009 and surface a clear error. 
-13. Never relax the 8 MB warn / 10 MB read-only gates by “one-off” logic. 
-14. Never let RTC decide authority or remain up when probe shows no win; WS stays connected regardless. 
-15. Never persist or replay awareness. It is ephemeral and lossy by design. 
-16. Never cache /api/**, /yjs/**, or any wss: traffic in the Service Worker. 
-17. Never accept UI imports of Yjs/providers in components—enforce via no-restricted-imports.
-
-### Performance Targets:
-- p95 collaboration latency ≤ 125ms with 50 users
-- Maintain 60 FPS rendering
-- Persist lag ≤ 3000ms p95, hard cap 5000ms
-- Export timeout 2 seconds before viewport fallback
-
-### Architectural Principles:
-- Offline-first with IndexedDB
-- CRDT-based conflict resolution
-- Single source of truth (Redis for persistence)
-- Immutable snapshot-based rendering
-- Per-user undo/redo scoping
-- Progressive enhancement (start with WS, add RTC if beneficial)
-- Idempotent-by-key writes. Every command carries an idempotencyKey; duplicates must be dropped before yjs.transact(...). (aligns with WriteQueue semantics) 
-- Command-bus isolation. UI never calls Y APIs; the only write path is WriteQueue → CommandBus → single transact. (restates rule as a principle, not policy) 
-- Snapshot-first rendering. All reads use immutable Snapshot objects; no UI keeps references to live Y data across frames. 
-- svKey-gated async. Any async apply (export, probe, layout, code output) must verify svKey === currentSnapshot.svKey or drop. 
-- Authority never bifurcates. WS/Redis remain source-of-record; RTC can accelerate fan-out but never become authoritative. 
-- Budgeted concurrency. Subsystems publish explicit budgets (frame ≤ 16 ms; encoded delta < 128 KB; write queue ≤ 100; awareness Hz degrades with N) and shed work predictably when exceeded. 
-- Primary-tab primacy. One tab per room owns TTL extension & RTC orchestration; others are passive. 
-- Forward-only evolution. Schema & storage changes define forward-only migrators; never mutate historical Y data in place (migrate-on-read if necessary).
-- Typed protocol envelopes. Envelopes are additive & versioned; extend via optional fields, never breaking existing parsers. 
-- Fail-closed gates. If a gate condition is ambiguous, treat the feature as closed (e.g., G_FIRST_SNAPSHOT, G_WS_CONNECTED).
----
-
-## Success Criteria Checklist
-Before considering any phase complete, verify:
-
-- [ ] All TypeScript types are properly defined
-- [ ] ESLint rules pass (especially no-restricted-imports)
-- [ ] Acceptance tests for the phase pass
-- [ ] Performance remains within targets
-- [ ] Memory leaks are checked and fixed
-- [ ] Error handling is comprehensive
-- [ ] Observability is in place
-- [ ] Documentation is updated
-- [ ] Code follows the WriteQueue pattern
-- [ ] Snapshots remain immutable
-- [ ] No direct Yjs access from UI components
-- [ ] Mobile view-only is enforced
-- [ ] Size limits are respected
-- [ ] TTL behavior is correct
+#### 2.2.1 Create Manager Class Structure
+1. Define RoomDocManager class with private Y.Doc instance
+2. Add private fields for room ID and current snapshot
+3. Create subscription management maps for snapshot and presence callbacks
+4. Initialize dirty flag for render scheduling
+5. Add animation frame ID for publish loop tracking
+6. Create destroyed flag to prevent operations after cleanup
+
+#### 2.2.2 Implement Y.Doc Initialization
+1. Create Y.Doc with guid parameter set to roomId (exactly once)
+2. Get root map from Y.Doc using getMap('root') method
+3. Check if root map has 'meta' key to detect initialization state
+4. If uninitialized, create root structure in single transaction:
+   - Set version number to 1
+   - Create empty Y.Map for meta with scene_ticks as empty Y.Array
+   - Initialize strokes as empty Y.Array
+   - Create texts as empty Y.Array
+   - Set up code as Y.Map and outputs as Y.Array
+5. Store room ID but never mutate the guid after creation
+6. Set up helper methods that traverse root on demand (never cache Y references)
+
+#### 2.2.3 Set Up Mutation Wrapper
+1. Create mutate method accepting function with Y.Doc parameter
+2. Implement minimal guards before transaction:
+   - Check if room is read-only (size >= 15MB)
+   - Verify not on mobile in view-only mode
+   - Estimate frame size doesn't exceed 2MB
+3. Wrap function execution in yjs.transact call with origin tracking
+4. Set dirty flag after successful transaction
+5. Handle errors gracefully without corrupting state
+6. Log mutations for debugging in development mode only
+
+### 2.3 Implement Snapshot Publishing System
+
+#### 2.3.1 Create Empty Snapshot Generator
+1. Define createEmptySnapshot function returning non-null snapshot
+2. Set svKey to base64 of empty state vector
+3. Initialize scene to 0, empty arrays for strokes and texts
+4. Create identity view transform with scale 1 and zero pan
+5. Set meta with readOnly false and 15MB capacity
+6. Return frozen object to prevent mutations
+
+#### 2.3.2 Build Snapshot Creation Pipeline
+1. Create buildSnapshot method reading from Y.Doc
+2. Extract current scene from meta.scene_ticks array length
+3. Convert Y.Array of strokes to plain JavaScript array
+4. Filter strokes where scene equals current scene
+5. Transform each stroke to StrokeView with read-only properties
+6. Apply same filtering and transformation to texts
+7. Calculate state vector and convert to base64 for svKey
+8. Include current presence state if available
+9. Freeze entire snapshot object before returning
+
+#### 2.3.3 Implement RAF-Based Publishing
+1. Set up requestAnimationFrame loop starting on manager creation
+2. Check dirty flag at each frame
+3. If dirty, build new snapshot from Y.Doc
+4. Compare svKey with previous snapshot to detect changes
+5. Only publish if svKey differs or presence updated: Publish only when svKey differs from the previous snapshot or presence has changed since the last publish; otherwise skip the frame.
+6. Call all registered snapshot callbacks with new snapshot
+7. Reset dirty flag after publishing
+8. Schedule next frame with requestAnimationFrame
+
+### 2.4 Set Up Subscription Management
+
+#### 2.4.1 Implement Snapshot Subscription
+1. Create subscribeSnapshot method accepting callback function
+2. Generate unique subscription ID
+3. Store callback in subscription map with ID as key
+4. Immediately invoke callback with current snapshot: Immediately invoke the callback with currentSnapshot on subscribe. Subscriptions are safe if registered during a publish cycle; new subscribers see the next committed frame.
+5. Return unsubscribe function that removes from map
+6. Handle edge case of subscription during publish cycle
+
+#### 2.4.2 Add Presence Subscription
+1. Create subscribePresence method with similar pattern
+2. Store presence callbacks in separate map
+3. Throttle presence updates to 30Hz maximum: Throttle presence emissions to ≤ 30 Hz; interpolate cursors 1–2 frames; apply single-frame dead-reckoning on a miss
+4. Implement interpolation for smooth cursor movement
+5. Include dead-reckoning for missed frames
+
+#### 2.4.3 Implement Stats Subscription
+1. Add subscribeRoomStats for size monitoring
+2. Initialize with null until first metadata received
+3. Update when persist_ack arrives from server
+4. Include bytes and capacity in stats object
+
+#### 2.4.4 Add Minimal Render Cache (Boot Splash Only)
+1. Create simple IndexedDB wrapper (NOT y-indexeddb provider)
+2. Store last rendered canvas as ImageData/PNG
+3. Key by roomId and validate with svKey
+4. Load and display immediately on boot while Y.Doc initializes
+5. This is purely cosmetic - not data persistence
+
+## Phase 3: Basic Canvas Infrastructure
+
+### 3.1 Set Up Canvas Element and Context
+
+#### 3.1.1 Create Canvas Component Structure
+1. Create React component wrapping HTML canvas element
+2. Use ref to access canvas DOM element directly
+3. Set up resize observer to track container dimensions
+4. Configure device pixel ratio for sharp rendering
+5. Set canvas width and height attributes based on container
+6. Apply CSS for proper sizing and positioning
+
+#### 3.1.2 Initialize 2D Rendering Context
+1. Get 2D context with willReadFrequently set to false
+2. Configure context with imageSmoothingEnabled for anti-aliasing
+3. Set up default line cap and join styles
+4. Create context state save/restore pattern for transforms
+5. Implement clear method using clearRect
+
+### 3.2 Implement Coordinate Transform System
+
+#### 3.2.1 Define Transform State Management
+1. Create view transform state with scale and pan properties
+2. Initialize scale to 1 for 100% zoom
+3. Set pan to {x: 0, y: 0} for centered view
+4. Store transform in component state or context
+5. Implement getter methods for current transform values
+
+#### 3.2.2 Create Coordinate Conversion Functions
+1. Implement worldToCanvas conversion method:
+   - Apply scale multiplication to world coordinates
+   - Add pan offset for viewport positioning
+   - Return canvas pixel coordinates
+2. Create canvasToWorld inverse transformation:
+   - Subtract pan offset from canvas coordinates
+   - Divide by scale to get world units
+   - Handle edge cases for zero scale
+3. Add screenToCanvas helper for DOM event coordinates
+4. Implement bounds checking for valid coordinate ranges
+
+### 3.3 Build Render Loop Foundation
+
+#### 3.3.1 Set Up Animation Frame Loop
+1. Create render function called via requestAnimationFrame
+2. Subscribe to snapshot updates from RoomDocManager
+3. Store latest snapshot in component state
+4. Track frame timing for performance monitoring
+5. Implement frame skipping if running behind
+
+#### 3.3.2 Implement Dirty Rectangle Tracking
+1. Create dirty region tracking system
+2. Mark regions that need redrawing
+3. Coalesce overlapping dirty rectangles
+4. Clear only dirty regions before redraw
+5. Skip rendering if no dirty regions exist
+canvas.width = cssW * dpr; canvas.height = cssH * dpr; ctx.setTransform(dpr,0,0,dpr,0,0) to avoid fuzzy strokes.
+
+#### 3.3.3 Create Render Pipeline Structure
+1. Define render order: background, strokes, text, overlays
+2. Create separate render methods for each layer
+3. Implement culling to skip off-screen elements
+4. Add render budgeting with 16ms frame target
+5. Yield to browser between heavy operations
+ctx.lineWidth = style.size * view.scale (since size is in world units) (will)
+
+## Phase 4: Stroke Data Model & Rendering
+
+### 4.1 Implement Stroke Rendering Pipeline
+
+#### 4.1.1 Create Path Building from Points
+1. Convert flat points array to coordinate pairs
+2. Handle pressure values if present (every third value)
+3. Build Path2D object for efficient rendering
+4. Cache paths per stroke ID to avoid rebuilding
+5. Invalidate cache when stroke data changes
+
+#### 4.1.2 Implement Basic Stroke Drawing
+1. Set stroke style from color property
+2. Apply line width from size property
+3. Configure global alpha for opacity
+4. Use stroke method to draw path
+5. Reset context state after drawing
+
+### 4.2 Add Tool-Specific Rendering
+
+#### 4.2.1 Implement Pen Tool Rendering
+1. Use standard stroke rendering with full opacity
+2. Apply round line caps for smooth appearance
+3. Set round line joins for continuous curves
+4. Handle single-point strokes as dots
+5. Implement pressure variation if available
+
+#### 4.2.2 Create Highlighter Rendering
+1. Set opacity to 0.25 as default
+2. Use square line caps for marker effect
+3. Apply composite operation for transparency
+4. Ensure proper layering under pen strokes
+5. Handle overlap blending correctly
+
+### 4.3 Optimize Rendering Performance
+
+#### 4.3.1 Implement Level-of-Detail System
+1. Check zoom level before rendering
+2. Skip tiny strokes when zoomed out
+3. Simplify complex paths at distance
+4. Use lower quality for fast panning
+5. Restore full quality when still
+
+#### 4.3.2 Add Render Caching
+1. Create offscreen canvas for static content
+2. Render unchanged strokes to cache
+3. Composite cache to main canvas
+4. Invalidate cache on data changes
+5. Limit cache memory usage
+
+## Phase 5: Drawing Input System
+
+### 5.1 Implement Pointer Event Handling
+
+#### 5.1.1 Set Up Event Listeners
+1. Add pointerdown listener to canvas element
+2. Attach pointermove for drawing updates
+3. Listen for pointerup to commit strokes
+4. Handle pointercancel for interrupted gestures
+5. Prevent default browser behaviors
+Coalesce move events to the latest per frame and drop the stale ones when busy
+canvas.setPointerCapture(e.pointerId) on pointerdown and release on up/cancel
+
+#### 5.1.2 Capture Pointer State
+1. Extract x, y coordinates from events
+2. Convert screen to world coordinates
+3. Capture pressure if available (0 to 1)
+4. Store pointer ID for multi-touch
+5. Track pointer type (mouse, pen, touch)
+
+### 5.2 Build Preview Rendering System
+
+#### 5.2.1 Create Local Preview State
+1. Initialize array for preview points
+2. Add points during pointermove
+3. Store with world coordinates
+4. Include pressure values if present
+5. Clear on pointerup or cancel
+
+#### 5.2.2 Implement Preview Drawing
+1. Render preview on separate canvas layer
+2. Draw with current tool settings
+3. Apply 0.35 opacity for preview
+4. Clear previous preview each frame
+5. Skip preview if no active points
+
+### 5.3 Implement Stroke Commit Logic
+
+#### 5.3.1 Process Points on Pointer Up
+1. Check minimum points threshold (at least 2)
+2. Calculate bounding box from all points
+3. Assign current scene from snapshot
+4. Generate ULID for stroke ID, ensure stroke object includes userID
+5. Capture current timestamp
+
+#### 5.3.2 Apply Douglas-Peucker Simplification
+1. Run simplification in world units
+2. Use base tolerance: pen 0.8px, highlighter 0.5px (Do not simplify text/stamps; cap highlighter tolerance bumps at 1.5x)
+3. Check resulting size under 128KB limit
+4. If over, increase tolerance by 1.4x and retry once
+5. Hard downsample to 10,000 points if still over
+
+#### 5.3.3 Commit to Y.Doc
+1. Create stroke object with all properties
+2. Call mutate method on RoomDocManager
+3. Append stroke to strokes array in transaction
+4. Let manager handle snapshot publishing
+5. Clear preview state after commit
+
+## Phase 6: RBush Spatial Indexing
+
+### 6.1 Integrate RBush Library
+
+#### 6.1.1 Initialize Spatial Index
+1. Import RBush library with TypeScript types
+2. Create RBush instance in RoomDocManager
+3. Configure with appropriate max entries per node
+4. Set up index for 2D bounding boxes
+5. Initialize as empty on manager creation
+
+#### 6.1.2 Define Index Item Structure
+1. Create interface for indexed stroke items
+2. Include minX, minY, maxX, maxY from bbox
+3. Add stroke ID for reference back to data
+4. Include scene index for filtering
+5. Store tool type for query optimization
+(bboxes are persisted on stroke commit and never recomputed at render time)
+
+### 6.2 Implement Index Maintenance
+
+#### 6.2.1 Build Initial Index
+1. Iterate through all strokes in snapshot
+2. Convert each stroke to RBush item format
+3. Bulk load items for efficiency
+4. Only include strokes from current scene(either re-filter or rebuild, cheap if you cache per scene indices)
+5. Store index in snapshot for queries
+
+#### 6.2.2 Handle Incremental Updates
+1. Track strokes added since last index
+2. Insert new strokes individually
+3. Remove deleted strokes from index
+4. Rebuild if changes exceed threshold (256 items)
+5. Monitor index performance metrics
+
+### 6.3 Create Spatial Query System
+
+#### 6.3.1 Implement Hit Testing
+1. Create point-to-stroke hit test method
+2. Convert point to search rectangle with tolerance
+3. Query RBush for overlapping strokes
+4. Perform precise hit test on candidates
+5. Return closest stroke or null
+
+#### 6.3.2 Add Area Selection Queries
+1. Implement rectangle selection search
+2. Query index for strokes in bounds
+3. Filter results by current scene
+4. Sort by z-order (array index)
+5. Return array of selected stroke IDs
+
+## Phase 7: WebSocket, Indexeddb, Persistence Infrastructure
+**Note**: This phase adds BOTH offline persistence (y-indexeddb) and real-time sync (y-websocket). The y-indexeddb provider comes first to enable offline-first architecture. This is
+different from the minimal render cache in Phase 2.4, which is just for boot splash UX.
+
+### 7.1 Implement Offline Persistence with y-indexeddb
+#### 7.1.1 Initialize IndexedDB Provider
+1. Import y-indexeddb in RoomDocManager
+2. Create provider with room-scoped database
+3. Pass existing Y.Doc instance
+4. Set up sync event handlers
+5. Implement G_IDB_READY gate with 2s timeout
+
+### 7.2 Set Up WebSocket Server
+#### 7.2.1 Initialize Express Server
+1. Create Express application instance
+2. Configure CORS with origin allowlist
+3. Set up body parser for JSON
+4. Add compression middleware
+5. Serve static files from public directory
+
+#### 7.2.2 Integrate Y-WebSocket Server
+2. Create WebSocket server on /ws path
+3. Configure with room-based routing
+4. Set 2MB frame size limit
+5. Add connection tracking per room
+
+### 7.3 Provider Initialization Order
+1. Attach y-indexeddb first (offline-first)
+2. Wait for IDB sync or timeout
+3. Then attach y-websocket
+4. Ensure proper gate sequencing
+
+### 7.4 Implement Redis Persistence
+
+#### 7.4.1 Set Up Redis Connection
+1. Create Redis client with connection config
+2. Enable AOF for durability
+3. Configure reconnection backoff
+4. Set up health check interval
+5. Log connection state changes
+
+#### 7.4.2 Create Persistence Adapter
+1. Implement save method for Y.Doc
+2. Convert document to update format
+3. Compress with gzip level 4
+4. Store with room-prefixed key
+5. Set TTL to ROOM_TTL_DAYS (14 default)
+
+#### 7.4.3 Handle Document Loading
+1. Check Redis for existing room key
+2. Decompress stored document
+3. Apply updates to new Y.Doc
+4. Return document or null if not found
+5. Track load timing for metrics
+
+### 7.5 Connect Client WebSocket Provider
+
+#### 7.5.1 Initialize Y-WebSocket Provider
+1. Import y-websocket in RoomDocManager
+2. Create provider with room URL
+3. Pass existing Y.Doc instance
+4. Configure reconnection settings
+5. Set up event listeners
+
+#### 7.5.2 Handle Connection States
+1. Listen for connection status events
+2. Update UI connection indicator
+3. Queue updates while disconnected
+4. Sync on reconnection
+5. Show appropriate user messages
+
+## Phase 8: Awareness & Presence System
+
+### 8.1 Implement Awareness Protocol
+
+#### 8.1.1 Set Up Awareness State
+1. Create awareness instance from Y.Doc
+2. Define local user properties
+3. Generate unique user ID per tab
+4. Assign random color from palette
+5. Set default name or initials
+
+#### 8.1.2 Configure Awareness Updates
+1. Track cursor position in world space
+2. Update on pointermove with throttling
+3. Include current tool and activity
+4. Add sequence number for ordering
+5. Set timestamp for each update
+
+### 8.2 Build Presence Rendering
+
+#### 8.2.1 Create Cursor Component
+1. Render cursors for remote users
+2. Position using world coordinates
+3. Apply user color to cursor
+4. Show name label on hover
+5. Fade out stale cursors
+
+#### 8.2.2 Implement Cursor Smoothing
+1. Interpolate between cursor updates
+2. Use last known velocity for prediction
+3. Apply easing for natural movement
+4. Handle missing updates gracefully
+5. Remove cursors after timeout
+
+### 8.3 Add User List Display
+
+#### 8.3.1 Create User List Component
+1. Subscribe to awareness updates
+2. Display active users with colors
+3. Show user count in header
+4. Indicate drawing activity
+5. Remove after inactivity timeout
+
+## Phase 9: UI Components & Toolbar
+
+### 9.1 Build Toolbar Structure
+
+#### 9.1.1 Create Toolbar Container
+1. Position toolbar on left side
+2. Implement expand/collapse behavior
+3. Add keyboard navigation support
+4. Store expanded state locally
+5. Apply responsive design for mobile
+
+#### 9.1.2 Implement Tool Buttons
+1. Create buttons for pen, highlighter, eraser, text, Stamp
+2. Add active state styling
+3. Implement tool switching logic
+4. Show keyboard shortcuts in tooltips
+5. Disable tools based on permissions
+
+### 9.2 Add Tool Controls
+
+#### 9.2.1 Create Size Slider
+1. Add range input for stroke size
+2. Show current value display
+3. Store per-tool size settings
+4. Apply min/max constraints
+5. Update preview on change
+
+#### 9.2.2 Implement Color Picker
+1. Create color palette grid
+2. Add custom color input
+3. Store recent colors
+4. Show current selection
+5. Update tool color on selection
+
+### 9.3 Persist Toolbar State
+
+#### 9.3.1 Set Up Local Storage
+1. Define toolbar state structure
+2. Create versioned storage key
+3. Save state on changes
+4. Load state on initialization
+5. Handle migration between versions
+
+## Phase 10: Eraser & Clear Board
+
+### 10.1 Implement Whole-Object Eraser
+
+#### 10.1.1 Create Eraser Hit Detection
+1. Use RBush for spatial queries
+2. Find strokes under pointer
+3. Highlight strokes on hover
+4. Track strokes to delete
+5. Show eraser cursor
+
+#### 10.1.2 Execute Batch Deletion
+1. Collect stroke IDs to remove
+2. Call mutate with delete operation
+3. Remove from strokes array in transaction
+4. Update spatial index
+5. Clear eraser preview
+
+### 10.2 Build Clear Board Feature
+
+#### 10.2.1 Implement Scene Tick Mechanism
+1. Add scene tick to meta array
+2. Increment current scene counter
+3. Filter rendering by scene
+4. Exclude from undo manager
+5. Apply rate limiting
+
+#### 10.2.2 Add Clear Board UI
+1. Create clear board button
+2. Show confirmation dialog
+3. Display warning about permanence
+4. Execute clear on confirmation
+5. Show success notification
+
+## Phase 11: Text & Stamps
+
+### 11.1 Implement Text Input System
+
+#### 11.1.1 Create Text Tool Mode
+1. Switch to text cursor on selection
+2. Show text input on click
+3. Position at click location
+4. Apply current text settings
+5. Focus input automatically
+
+#### 11.1.2 Handle Text Commit
+1. Capture text content on blur/enter
+2. Enforce 500 character limit
+3. Create TextBlock object
+4. Assign current scene
+5. Commit via mutate method
+
+### 11.2 Add Stamp Tools
+
+#### 11.2.1 Define Stamp Shapes
+1. Create stamp definitions (arrows, shapes)
+2. Define as point arrays
+3. Store in tool configuration
+4. Scale based on size setting
+5. Apply rotation if needed
+
+#### 11.2.2 Implement Stamp Placement
+1. Place stamp at click position
+2. Convert to stroke format
+3. Apply current color settings
+4. Commit as regular stroke
+5. Show preview before placement
+
+## Phase 12: Undo/Redo System
+
+### 12.1 Configure UndoManager
+
+#### 12.1.1 Initialize Yjs UndoManager
+1. Create UndoManager in RoomDocManager
+2. Configure tracked types (strokes, texts)
+3. Set up per-user origin tracking
+4. Exclude scene ticks from scope
+5. Set maximum undo stack size
+
+#### 12.1.2 Wire Up Keyboard Shortcuts
+1. Listen for Ctrl/Cmd+Z for undo
+2. Add Ctrl/Cmd+Shift+Z for redo
+3. Prevent default browser behavior
+4. Check if operations available
+5. Update UI button states
+
+### 12.2 Implement Undo/Redo Operations
+
+#### 12.2.1 Execute Undo Operation
+1. Check if undo stack has items
+2. Call undo with user origin
+3. Let Yjs handle state reversal
+4. Trigger snapshot update
+5. Show operation feedback
+
+## Phase 13: Room Lifecycle Management
+
+### 13.1 Implement Room Creation
+
+#### 13.1.1 Create Local Room
+1. Generate local-prefixed ULID
+2. Initialize Y.Doc with ID
+3. Mark as provisional in storage
+4. Add to My Rooms list
+5. Enable offline editing
+
+#### 13.1.2 Publish to Server
+1. POST to /api/rooms endpoint
+2. Receive server room ID
+3. Create alias mapping
+4. Connect WebSocket provider
+5. Merge local changes
+
+### 13.2 Handle Room Joining
+
+#### 13.2.1 Implement Join Flow
+1. Parse room ID from URL
+2. Check for local alias
+3. Fetch room metadata
+4. Connect WebSocket
+5. Load initial state
+
+#### 13.2.2 Enforce Capacity Limits
+1. Check room size from metadata
+2. Show warning pill at 13MB
+3. Block writes at 15MB
+4. Display read-only banner
+5. Allow view-only access
+
+### 13.3 Manage TTL Extension
+
+#### 13.3.1 Create Extension Mechanism
+1. Add extend button in UI
+2. Perform minimal write operation
+3. Update TTL by configured days
+4. Show new expiry date
+5. Rate limit extensions
+
+## Phase 14: Export & Minimap
+
+### 14.1 Implement PNG Export
+
+#### 14.1.1 Create Export Pipeline
+1. Calculate bounds of all content
+2. Create offscreen canvas
+3. Apply white background
+4. Render strokes and text
+5. Exclude UI overlays
+
+#### 14.1.2 Handle Export Options
+1. Offer viewport or full board
+2. Apply maximum dimension limit (8192px)
+3. Add padding around content
+4. Fall back to viewport if too large
+5. Show progress indicator
+
+### 14.2 Build Minimap Component
+
+#### 14.2.1 Create Minimap Renderer
+1. Render scaled version of board
+2. Show viewport rectangle
+3. Update on content changes
+4. Optimize with debouncing
+5. Hide when empty
+
+#### 14.2.2 Add Navigation Features
+1. Allow click to jump
+2. Drag viewport rectangle
+3. Show zoom level
+4. Update smoothly
+5. Collapse when not needed
+
+## Phase 15: Code Execution System
+
+### 15.1 Integrate Monaco Editor
+
+#### 15.1.1 Set Up Monaco
+1. Configure Monaco loader
+2. Create editor instance
+3. Set up syntax highlighting
+4. Configure auto-completion
+5. Add keyboard shortcuts
+
+#### 15.1.2 Implement Editor UI
+1. Create resizable panel
+2. Add language selector
+3. Show line numbers
+4. Include run button
+5. Display execution state
+
+### 15.2 Build Execution Environment
+
+#### 15.2.1 Create JavaScript Executor
+1. Set up web worker for isolation
+2. Implement 5-second timeout
+3. Capture console output
+4. Handle errors gracefully
+5. Clean up after execution
+
+#### 15.2.2 Add Python Support
+1. Load Pyodide when needed
+2. Create Python worker
+3. Handle package imports
+4. Capture print output
+5. Apply same timeout rules
+
+## Phase 16: Service Worker & PWA
+
+### 16.1 Implement Service Worker
+
+#### 16.1.1 Create Service Worker Registration
+1. Register service worker file
+2. Handle registration events
+3. Show update prompts
+4. Manage version transitions
+5. Clean old caches
+
+#### 16.1.2 Configure Caching Strategies
+1. Cache app shell with cache-first
+2. Pre-cache Monaco editor files
+3. Never cache API or WebSocket paths
+4. Set up runtime caches with limits
+5. Handle quota exceeded errors
+
+### 16.2 Enable PWA Features
+
+#### 16.2.1 Create Web App Manifest
+1. Define app name and description
+2. Add icon sets with sizes
+3. Configure display mode
+4. Set theme colors
+5. Define start URL
+
+#### 16.2.2 Implement Install Flow
+1. Listen for install prompt
+2. Show custom install UI
+3. Handle user choice
+4. Track installation state
+5. Update UI after install
+
+## Phase 17: WebRTC & P2P (Optional Enhancement)
+
+### 17.1 Add WebRTC Provider
+
+#### 17.1.1 Initialize WebRTC
+1. Import y-webrtc provider
+2. Configure signaling servers
+3. Set up ICE servers
+4. Apply room-scoped password
+5. Set max connections limit
+
+#### 17.1.2 Implement Probe Mechanism
+1. Measure WebSocket RTT
+2. Establish WebRTC connection
+3. Measure data channel RTT
+4. Compare latencies
+5. Keep if significant improvement
+
+### 17.2 Handle Fallback Logic
+
+#### 17.2.1 Monitor Connection Health
+1. Track ICE connection state
+2. Monitor peer count
+3. Check CPU usage
+4. Detect failed states
+5. Fall back to WebSocket only
+
+## Phase 18: Polish & Production Readiness
+
+### 18.1 Performance Optimization
+
+#### 18.1.1 Optimize Render Performance
+1. Profile render bottlenecks
+2. Implement aggressive culling
+3. Add frame budgeting
+4. Optimize path building
+5. Reduce memory allocations
+
+### 18.2 Error Handling & Recovery
+
+#### 18.2.1 Implement Error Boundaries
+1. Add React error boundaries
+2. Create fallback UI
+3. Log errors to Sentry
+4. Provide recovery options
+5. Preserve user data
+
+### 18.3 Testing & Validation
+
+#### 18.3.1 Complete E2E Test Suite
+1. Test all user workflows
+2. Verify capacity limits
+3. Test offline scenarios
+4. Validate export features
+5. Check accessibility
+
+Each phase builds upon the previous, minimizing the need for stubs and ensuring a working system at each stage. Follow the constraints in avlo.md strictly, particularly around Y.Doc access patterns, mutation wrappers, and the snapshot-based architecture.

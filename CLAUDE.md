@@ -1,7 +1,7 @@
 # CLAUDE.MD - Avlo Project Guide
 
 ## Project Overview
-**Avlo** is a link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution. The MVP targets ≤125ms p95 collaboration latency with ~50 concurrent users.
+**Avlo** is a link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution. The MVP targets ≤125ms p95 collaboration latency with ~50 concurrent users. **IMPORTANT**: This is a small side project for ~15 concurrent users maximum in reality - simplicity over scale.
 
 ## Tech Stack (Target)
 - **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, Tailwind CSS
@@ -15,39 +15,92 @@
 
 ## Current Implementation Status
 
-### ✅ Phase 1: Foundation (Complete)
-- Monorepo structure with client/server/shared workspaces
-- Build pipeline with Vite 5.4.11, TypeScript 5.9.2, React 18.3.1
-- Testing infrastructure (Vitest, Playwright)
-- ESLint rules enforcing no direct Yjs imports in UI
+### ✅ Phase 1-2.1: Foundation & Core Types (Complete)
+- Monorepo with Vite 5.4.11, TypeScript 5.9.2, React 18.3.1
+- All data models in `packages/shared`: Stroke, TextBlock, CodeCell, Output, Meta
+- ESLint enforcing UI isolation from Yjs
 
-### ✅ Phase 2.1-2.2: Core Data Layer (Complete & Validated)
-- **TypeScript types**: All data models defined in packages/shared folder
-- **RoomDocManager**: Singleton pattern with Y.Doc ownership
-- **Immutable snapshots**: Never null, frozen in development
-- **Subscription system**: Working hooks (useRoomSnapshot, usePresence, useRoomStats)
-- **Key invariants enforced**:
-  - Arrays stored as `number[]` in Yjs (never Float32Array)
-  - All commands have idempotencyKey
-  - UI isolation from Yjs via ESLint rules
+### 🚧 Phase 2.2-2.4: Core Data Layer (In Progress)
+- **RoomDocManager**: Subscriptions working, needs mutate(fn) pattern
+- **Snapshot publishing**: Basic RAF loop, needs throttling/coalescing  
+- **Presence**: Subscription exists, buildPresenceView() stub needs implementation
+- **Stats**: Needs persist_ack handler for authoritative size
+- **New abstractions**: Ring buffer for update coalescing, timing abstractions for deterministic testing
 
-### 🚧 Phase 2.3-2.5: Next Steps
-- Yjs document structure setup
-- Snapshot publishing system
-- WriteQueue and CommandBus
+### 📋 Phases 3-18: See IMPLEMENTATION.MD
+Canvas → Stroke Rendering → Input → Rbush → WebSocket → Awareness → UI → Code Execution → PWA
 
-### 📋 Future Phases (3-10)
-See IMPLEMENTATION.MD for detailed roadmap
+## Data Models (Phase 2-4 Focus)
+
+### Y.Doc Structure
+```typescript
+Y.Doc → root: Y.Map → {
+  v: number,                    // schema version (1)
+  meta: Y.Map<Meta>,           // scene_ticks: Y.Array<number>
+  strokes: Y.Array<Stroke>,    // append-only stroke data
+  texts: Y.Array<TextBlock>,   // immutable once committed
+  code: Y.Map<CodeCell>,       // future: Phase 7
+  outputs: Y.Array<Output>     // future: Phase 7
+}
+```
+
+### Core Types (Phase 2-4)
+```typescript
+interface Stroke {
+  id: string;           // ULID
+  tool: 'pen' | 'highlighter';
+  color: string;        // #RRGGBB
+  size: number;         // world units
+  opacity: number;      // 0..1
+  points: number[];     // flat [x,y,p?,x,y,p?,...] NEVER Float32Array
+  bbox: [number, number, number, number];
+  scene: SceneIdx;      // 0-based index, assigned at commit using currentScene
+  createdAt: number;    // ms epoch
+  userId: string;
+}
+
+// Type alias: SceneIdx = number (0-based scene index)
+
+interface Snapshot {
+  svKey: string;        // base64 state vector, never null
+  scene: number;        // from meta.scene_ticks.length
+  strokes: ReadonlyArray<StrokeView>;  // filtered by scene
+  texts: ReadonlyArray<TextView>;       // filtered by scene
+  presence: PresenceView;               // throttled to 30Hz
+  spatialIndex: null;   // Phase 5: RBush
+  view: ViewTransform;  // world↔canvas transforms
+  meta: { bytes?: number; cap: number; readOnly: boolean };
+}
+```
 
 ## Architecture
 
 ### Data Flow
 ```
-UI → Command → RoomDocManager → Y.Doc → Snapshot → UI
-         ↓
-    WriteQueue (validates: size, mobile, frame)
-         ↓
-    CommandBus (single yjs.transact per command)
+UI → mutate(fn) → Y.Doc → Snapshot → UI
+       ↓
+  Minimal guards (read-only, mobile, frame size)
+
+Document loop (authoritative)
+UI → mutate(fn) → [guards: read-only | mobile | frame size] → Y.Doc
+   → rAF buildSnapshot (dirty-check, freeze) → Snapshot (immutable) → UI
+
+Presence overlay (ephemeral; not in Y.Doc)
+Pointer/inputs → Presence emitter (≤ ~30 Hz, interpolate/dead-reckon 1 frame)
+   → inject into Snapshot.presence view → UI cursors/avatars
+
+Room stats (out-of-band; not in Y.Doc)
+persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI banners/gates
+```
+
+### Device-Local UI State (Zustand + localStorage)
+```typescript
+interface DeviceUIState {
+  toolbar: ToolbarState;  // pen/highlighter/text/eraser settings
+  lastSeenSceneByRoom: Record<string, SceneIdx>;  // For ghost preview after clear
+  collaborationMode: 'server' | 'peer';
+  // ... other local UI preferences
+}
 ```
 
 ### Core Components
@@ -58,14 +111,12 @@ Central authority that owns Y.Doc and providers:
 interface RoomDocManager {
   readonly currentSnapshot: Snapshot;  // Never null
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
-  subscribePresence(cb: (p: PresenceView) => void): Unsub;
-  subscribeRoomStats(cb: (s: Stats) => void): Unsub;
-  write(cmd: Command): void;
+  subscribePresence(cb: (p: PresenceView) => void): Unsub;  // Needs throttling
+  subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub;  // Needs persist_ack
+  mutate(fn: (ydoc: Y.Doc) => void): void;  // Single yjs.transact wrapper
   extendTTL(): void;
   destroy(): void;
 }
-
-
 ```
 
 #### Shared Configuration (`/packages/shared/src/config.ts`)
@@ -74,8 +125,8 @@ All constants centralized with environment overrides:
 import { ROOM_CONFIG, STROKE_CONFIG } from '@avlo/shared';
 
 // Examples:
-ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES  // 8MB
-ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES // 10MB
+ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES  // 13MB
+ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES // 15MB
 STROKE_CONFIG.MAX_POINTS_PER_STROKE  // 10,000
 ```
 
@@ -138,7 +189,7 @@ npm run format:check      # Prettier check
 npm run build             # Builds client then server
 ```
 
-### Database (Future - Phase 5)
+### Database (Future)
 ```bash
 # PostgreSQL setup
 npx prisma migrate dev
@@ -155,8 +206,8 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
 | Config | Default | Environment Variable |
 |--------|---------|---------------------|
 | Room TTL | 14 days | `ROOM_TTL_DAYS` |
-| Room size warning | 8MB | `ROOM_SIZE_WARNING_BYTES` |
-| Room size readonly | 10MB | `ROOM_SIZE_READONLY_BYTES` |
+| Room size warning | 13MB | `ROOM_SIZE_WARNING_BYTES` |
+| Room size readonly | 15MB | `ROOM_SIZE_READONLY_BYTES` |
 | Max clients/room | 105 | `MAX_CLIENTS_PER_ROOM` |
 | Max strokes | 5,000 | `MAX_TOTAL_STROKES` |
 | Max points/stroke | 10,000 | `MAX_POINTS_PER_STROKE` |
@@ -165,51 +216,51 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
 
 ## Critical Architecture Rules
 
-1. **UI Isolation from Yjs**
+1. **Y.Doc Reference Invariants (NEVER VIOLATE)**
+   ```typescript
+   // ❌ WRONG - cached Y reference
+   class RoomDocManager {
+     private yStrokes: Y.Array<any>; // NEVER DO THIS
+   }
+   
+   // ✅ CORRECT - helpers that traverse 'root' on demand
+   class RoomDocManager {
+     private getRoot(): Y.Map<any> {
+       return this.ydoc.getMap('root');
+     }
+     private getStrokes(): Y.Array<any> {
+       return this.getRoot().get('strokes') as Y.Array<any>;
+     }
+   }
+   ```
+   - **No cached Y references as class fields**
+   - **Helpers return Y types only for internal use**
+   - **Never expose Y types from public methods**
+   - **Y.Doc created once**: `new Y.Doc({ guid: roomId })` - guid never mutated
+
+2. **UI Isolation from Yjs**
    - UI components **MUST NOT** import `yjs`, `y-websocket`, `y-indexeddb`, `y-webrtc`
-   - ESLint rule `no-restricted-imports` enforces this
-   - All Yjs access goes through RoomDocManager
-   - **Y.Doc created once**: `new Y.Doc({ guid: roomId })` - guid **never mutated**
+   - ESLint `no-restricted-imports` enforces this
+   - All access through RoomDocManager public API
+   - Public API returns immutable snapshots only
 
-2. **Scene Capture for Causal Consistency** ⚠️ CRITICAL
-   - Scene MUST be captured ONCE at interaction start (pointer-down, touch-start)
-   - Scene is preserved through to commit via command.scene field
-   - CommandBus MUST use cmd.scene, NEVER re-read getCurrentScene()
-   - This ensures objects remain in the scene where they were created
-   - Prevents distributed race condition: ClearBoard during gesture
-   - See PHASE_2.4_2.5_SCENE_CAPTURE_CRITICAL.md for details
+3. **Mutation Pattern**
+   - Single `mutate(fn: (ydoc: Y.Doc) => void)` wrapper
+   - Executes inside one `yjs.transact()` 
+   - Minimal guards: read-only (≥15MB), mobile (view-only), frame size (2MB)
+   - No queuing, no complex validation
 
-3. **Immutable Snapshots**
-   - Snapshots are **never null** (EmptySnapshot on init)
-   - Published snapshots are frozen in development
-   - New arrays created per publish (no mutations)
-   - Constructor creates EmptySnapshot synchronously
-   - Prevents all null reference errors
-   - Published immediatley even before Y.Doc data
+4. **Immutable Snapshots**
+   - **Never null** - EmptySnapshot created synchronously on init
+   - Published at most once per rAF or batched Y update
+   - Frozen in development, new arrays per publish
+   - Include `svKey` (base64 state vector) for cache/change detection (svKey mainly cosmetic UX purposed)
 
-4. **Data Storage Rules**
-   - Store arrays as `number[]` in Yjs (never Float32Array)
-   - Create Float32Array only at render time
-   - All commands must have idempotencyKey
-
-5. **Write Path**
-   - All mutations: UI → Command → WriteQueue → CommandBus → yjs.transact
-   - Single yjs.transact per logical command
-   - WriteQueue validation order:
-     1. Check read-only (≥10MB compressed)
-     2. Check mobile view-only 
-     3. Check frame size (<2MB)
-     4. Check stroke size (≤128KB) - SEPARATE from frame limit
-
-6. **Temporal Wormhole Prevention**
-   - Async operations MUST capture `svKey` at start
-   - Verify `currentSnapshot.svKey` matches before applying
-   - Discard stale work on mismatch (prevents race conditions)
-
-7. **Performance Targets**
-   - Collaboration latency: ≤125ms p95 (50 users)
-   - Snapshot publishing: ≤60 FPS
-   - Batch window: 8-32ms adaptive
+5. **Data Storage Rules**
+   - Arrays stored as `number[]` in Yjs (never Float32Array)
+   - Float32Array created only at render time
+   - Scene assigned at commit time using currentScene
+   - Points flattened as `[x0,y0,p0?,x1,y1,p1?,...]`
 
 ## Memory-Safe Testing
 
@@ -238,12 +289,12 @@ if (isRoomReadOnly(sizeBytes)) {
 
 ### Testing Commands
 ```bash
-# Run validation script for Phase 2
-npx tsx test-validation.ts
-
 # Run specific test suites
 npm run test -- room-doc-manager
 npm run test -- validation
+
+# Check implementation status
+# See PHASE2_IMPLEMENTATION_AUDIT.md for current gaps
 ```
 
 ### Environment Overrides
@@ -254,88 +305,22 @@ DEBUG_MODE=true
 MAX_CLIENTS_PER_ROOM=50
 ```
 
-## Important Implementation Notes
-
-### Mobile Support
-- **Mobile is view-only for MVP**
-- WriteQueue validates and rejects with `reason='view_only'`
-- UI must show clear view-only banner on mobile devices
-
-### Security Model
-- **No authentication by design** - link sharing grants edit access
-- Security through link obscurity + TTL expiration
-- Origin allowlist must be configured for production
-
 ### Provider Initialization  
 - Order matters: IndexedDB → WebSocket → WebRTC (if eligible)
 - WebRTC is optional optimization - WebSocket always remains connected
 - Gates control feature availability:
-  - `G_IDB_READY`: 2s timeout, enables initial snapshot hydration
-  - `G_WS_CONNECTED`: 5s timeout, enables doc sync
-  - `G_WS_SYNCED`: 10s timeout, enables authoritative render  
-  - `G_AWARENESS_READY`: 5s timeout, enables cursors/presence
-  - `G_FIRST_SNAPSHOT`: 1 rAF, enables export/minimap
+- `G_IDB_READY`: 2s timeout, enables initial snapshot hydration
+- `G_WS_CONNECTED`: 5s timeout, enables doc sync
+- `G_WS_SYNCED`: 10s timeout, enables authoritative render  
+- `G_AWARENESS_READY`: 5s timeout, enables cursors/presence
+- `G_FIRST_SNAPSHOT`: 1 rAF, enables export/minimap
 
-### Debugging Tips
-- Check `G_*` gates for initialization state (G_IDB_READY, G_WS_CONNECTED, etc.)
-- Monitor `svKey` changes for Y.Doc updates
-- Use `persist_ack` frames for authoritative room size
-- Watch `bufferedAmount` for backpressure detection
-- Verify scene index for visibility issues
+## Key Implementation Notes
 
-### Data Model Conventions
-- **Timestamps**: ISO-8601 for HTTP/WS JSON, epoch ms in CRDT structures
-- **Scene management**: Append-only scene_ticks, excluded from undo, and is collaborative
-- **Scene capture**: Captured at pointer-down, preserved through command to commit
-- **Stroke simplification**: Douglas-Peucker at pointer-up
-- **Awareness**: Ephemeral, never persisted, 75-100ms cadence
-- **TTL extension**: Only on accepted writes, not on views/awareness
-- **Y.Map**: Must be initialized at root and put ALL structured under it
-- **No component outside RoomDocManager should hold Y refs; inside the manager, refs are allowed only as ephemeral locals returned by private helpers, never as cached fields or public returns**
-- **Caching any Y refs as fields is not allowed**
-- **Exposing Y refs from public methods isn't allowed**: The helpers must stay private and callers must use them each time; they return Y types only for other private internals within the class, never to the outside world
-
-### WriteQueue & Backpressure
-- **Validation order**: read-only check → mobile check → frame size check → command limits
-- **Queue limits**: Max 100 pending commands
-- **Backpressure**: Above limit drop awareness, throttle commits by 50ms
-- **Flush windows**: 8-16ms base, expand to 24-32ms under pressure
-
-### Snapshot Publishing  
-- **Coalesce window**: 8-16ms for Y updates (expand to 24-32ms when publish >8ms)
-- **Work budget**: 6ms soft limit for rendering prep (RBush, paths)
-- **FPS cap**: 60 FPS active tab, 8 FPS hidden tab
-- **Never null**: EmptySnapshot created synchronously on init
-
-### Persist-ack Authority
-- **Server `persist_ack` frames** are authoritative for room size/TTL
-- **Client never trusts local size estimates** for read-only decisions
-- **Format**: `{type: 'persist_ack', size_bytes: number, expires_at: string, svKey: string}`
-- **Stats refresh**: Update pills/banners only from persist_ack, not local calculations
-
-### Coordinate Transform Contract
-```typescript
-interface ViewTransform {
-  worldToCanvas: (x: number, y: number) => [number, number];
-  canvasToWorld: (x: number, y: number) => [number, number];
-  scale: number;  // world px → canvas px
-  pan: { x: number; y: number }; // world offset
-}
-```
-- **Always use transform functions** for pointer conversion
-- **Store positions in world coordinates** in Yjs
-- **Transform to canvas coordinates** only at render time
-
-### Room Lifecycle (Future - Phase 5)
-1. **Local-first creation**: Generate `local-<ulid>` room ID
-2. **Publish to server**: POST `/api/rooms` merges local → server
-3. **Persistence**: Redis with AOF, compressed gzip level 4
-4. **Metadata**: PostgreSQL for non-authoritative data
-5. **Expiry**: TTL-based, no recovery after expiration
-
-## Next Steps
-- **Phase 2.3**: Set up Yjs document structure
-- **Phase 2.4**: Implement snapshot publishing  
-- **Phase 2.5**: Create WriteQueue and CommandBus
+- **Mobile**: View-only, guard in mutate()
+- **Scene**: Assigned at commit using currentScene
+- **Awareness**: 30Hz throttled, ephemeral, never persisted
+- **persist_ack**: Server authoritative for size/TTL
+- **Snapshots**: Never null, frozen, new arrays per publish
 
 See `IMPLEMENTATION.MD` for detailed phase breakdown and `OVERVIEW.MD` for complete specifications.

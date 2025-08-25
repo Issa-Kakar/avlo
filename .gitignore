@@ -122,6 +122,11 @@ test-ws*.js
 # Generated type definitions
 client/src/vite-env.d.ts
 
+# Compiled JavaScript in source directories
+client/src/**/*.js
+!client/src/**/*.config.js
+packages/*/src/**/*.js
+
 # Client test results (specific path)
 client/test-results/
 

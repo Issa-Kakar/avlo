@@ -25,15 +25,13 @@ import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
   TEXT_CONFIG,
-  QUEUE_CONFIG,
+  ulid,
 } from '@avlo/shared';
-import { RollingGzipEstimator, getGzipSize } from './size-estimator';
+import { RollingGzipEstimator, GzipImpl } from './size-estimator';
 import type {
   RoomId,
   Snapshot,
   PresenceView,
-  Command,
-  ExtendTTL,
   Stroke,
   TextBlock,
   Output,
@@ -41,9 +39,16 @@ import type {
   TextView,
   ViewTransform,
   SnapshotMeta,
+  RoomStats,
 } from '@avlo/shared';
-import { WriteQueue } from './write-queue';
-import { CommandBus } from './command-bus';
+import { UpdateRing } from './ring-buffer';
+import {
+  Clock,
+  FrameScheduler,
+  BrowserClock,
+  BrowserFrameScheduler,
+  TimingOptions,
+} from './timing-abstractions';
 
 // Type for unsubscribe function
 type Unsub = () => void;
@@ -58,23 +63,20 @@ type YCode = Y.Map<unknown>;
 type YOutputs = Y.Array<Output>;
 type YSceneTicks = Y.Array<number>;
 
-// Room statistics
-interface RoomStats {
-  bytes: number; // Compressed size in bytes
-  cap: number; // Hard cap (10MB)
-}
-
 // Manager interface - public API
 export interface IRoomDocManager {
   readonly currentSnapshot: Snapshot;
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub;
-  write(cmd: Command): Promise<void>;
+  mutate(fn: (ydoc: Y.Doc) => void): void;
   extendTTL(): void;
   destroy(): void;
-  // Test helper - force immediate processing
-  processCommandsImmediate?(): Promise<void>;
+}
+
+// Extended options for RoomDocManager
+export interface RoomDocManagerOptions extends TimingOptions {
+  gzipImpl?: GzipImpl;
 }
 
 // Private implementation
@@ -82,6 +84,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
+  private readonly userId: string;  // Session user ID for undo/redo origin
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
@@ -97,19 +100,21 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
 
-  // Phase 2.4 Component A: Snapshot Publisher State
+  // Timing abstractions (injected for testing)
+  private clock: Clock;
+  private frames: FrameScheduler;
+  private batchWindowMs: number;
+  private gzipImpl?: GzipImpl;
+
+  // Simplified publish state for RAF loop
   private publishState = {
     isDirty: false,
-    lastYUpdateAt: 0, // When Y last updated (performance.now())
-    lastPublishTime: 0, // When we last published (performance.now())
-    publishWorkMs: 0, // Track how long publish takes
-    isHidden: false,
-    batchWindow: 20, // Default batch window in ms
-    pendingUpdates: [] as Array<{ update: Uint8Array; origin: unknown; time: number }>,
+    presenceDirty: false, // Track presence changes separately
+    rafId: -1, // RAF request ID (-1 = not scheduled)
+    lastPublishTime: 0, // When we last published (clock.now())
+    publishCostMs: 0, // Track how long publish takes
+    pendingUpdates: null as UpdateRing<{ update: Uint8Array; origin: unknown; time: number }> | null,
     lastSvKey: '', // Track to detect changes
-    batchTimerInterval: null as number | null, // Continuous batch timer interval
-    scheduledRaf: -1, // Track if RAF is scheduled (-1 = not scheduled)
-    forcePublishRequested: false, // For clearboard or other immediate publish needs
   };
 
   // IndexedDB cache for render snapshots
@@ -120,18 +125,30 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Track cleanup handlers
   private cleanupHandlers: Array<() => void> = [];
 
-  // Room stats tracking (for Phase 2.5)
-  private roomStats: { bytes: number; expiresAt?: number } | null = null;
-
-  // Phase 2.5: WriteQueue and CommandBus
-  private writeQueue: WriteQueue | null = null;
-  private commandBus: CommandBus | null = null;
+  // Room stats tracking
+  private roomStats: RoomStats | null = null;
   
-  // Size estimation for distributed constraints
-  private sizeEstimator = new RollingGzipEstimator();
+  // Size estimation for guards
+  private sizeEstimator: RollingGzipEstimator;
+  
+  // Track if destroyed for cleanup
+  private destroyed = false;
 
-  constructor(roomId: RoomId) {
+  constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
+    this.userId = ulid(); // Generate session user ID for undo/redo origin
+
+    // Initialize timing abstractions with defaults
+    this.clock = options?.clock ?? new BrowserClock();
+    this.frames = options?.frames ?? new BrowserFrameScheduler();
+    this.gzipImpl = options?.gzipImpl;
+
+    // Initialize helpers
+    this.sizeEstimator = new RollingGzipEstimator(this.gzipImpl);
+
+    // Initialize ring buffer for pending updates (keep for metrics)
+    const pendingCap = options?.pendingCap ?? 16;
+    this.publishState.pendingUpdates = new UpdateRing(pendingCap);
 
     // CRITICAL: Create Y.Doc with guid matching roomId
     this.ydoc = new Y.Doc({ guid: roomId });
@@ -147,14 +164,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Initialize with EmptySnapshot (NEVER null)
     this._currentSnapshot = createEmptySnapshot();
 
-    // Phase 2.4: Setup snapshot publishing (NO await)
+    // Setup snapshot publishing
     this.initSnapshotCache(); // Async but don't await
     this.setupObservers();
     this.setupVisibilityHandling();
-    this.startBatchTimer(); // Start the continuous batch timer
-
-    // Phase 2.5: Setup write pipeline
-    this.setupWritePipeline();
+    this.startPublishLoop(); // Start simple RAF loop
 
     // ❌ DO NOT cache Y structure references:
     // this.yStrokes = ...             // WRONG
@@ -228,15 +242,33 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Helper to get current scene
   private getCurrentScene(): number {
     const sceneTicks = this.getSceneTicks();
-    console.log('[getCurrentScene] sceneTicks:', sceneTicks, 'length:', sceneTicks.length, 'toArray:', sceneTicks.toArray());
+    // Debug: sceneTicks length is the current scene
     return sceneTicks.length;
   }
 
-  // Helper to build presence view from awareness (stub for now, will be populated in Phase 4)
+  // Build presence view from awareness (will be connected to awareness in Phase 8)
   private buildPresenceView(): PresenceView {
+    const users = new Map<string, any>();
+    
+    // For now, return proper structure even if awareness not connected
+    // This will be populated in Phase 8 when awareness is integrated
+    // if (this.awareness) {
+    //   this.awareness.getStates().forEach((state, clientId) => {
+    //     if (state.userId && state.cursor) {
+    //       users.set(clientId.toString(), {
+    //         userId: state.userId,
+    //         name: state.name || 'Anonymous',
+    //         color: state.color || '#000000',
+    //         cursor: state.cursor,
+    //         activity: state.activity || 'idle',
+    //       });
+    //     }
+    //   });
+    // }
+    
     return {
-      users: new Map(),
-      localUserId: '',
+      users,
+      localUserId: this.userId,
     };
   }
 
@@ -394,71 +426,69 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Write command via WriteQueue and CommandBus
-  async write(cmd: Command): Promise<void> {
-    if (!this.writeQueue) {
-      console.error('[RoomDocManager] WriteQueue not initialized');
-      return;
-    }
-
-    const success = await this.writeQueue.enqueue(cmd);
-    if (!success) {
-      console.warn('[RoomDocManager] Command rejected:', cmd.type);
-    }
-
-    // Commands are processed automatically by CommandBus on its schedule
-  }
-
-  // Extend TTL with rate limiting
-  extendTTL(): void {
-    const cmd: ExtendTTL = {
-      type: 'ExtendTTL',
-      idempotencyKey: `ttl_${Date.now()}`,
-    };
-    this.write(cmd);
-  }
-
-  // Test helper - force immediate processing of queued commands
-  // IMPORTANT: This goes through the normal pipeline, no bypasses!
-  async processCommandsImmediate(): Promise<void> {
-    if (!this.commandBus) {
-      return;
-    }
-
-    // Process commands immediately
-    await this.commandBus.processImmediate();
-
-    // CRITICAL: Do NOT call publishSnapshot() directly - that's a bypass!
-    // Instead, mark dirty and simulate a batch timer tick + rAF
-    this.publishState.isDirty = true;
+  // Simple mutate method with minimal guards
+  mutate(fn: (ydoc: Y.Doc) => void): void {
+    // Minimal guards (same as spec)
     
-    // Simulate the complete flow: batch timer tick -> rAF -> publish
-    // For testing, we execute synchronously what would normally be async
-    if (this.publishState.scheduledRaf === -1 && this.publishState.isDirty) {
-      // Simulate the rAF callback firing immediately
-      this.maybePublish();
+    // 1. Check room read-only (≥15MB)
+    if (this.roomStats && this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
+      console.warn('[RoomDocManager] Room is read-only (size limit exceeded)');
+      return;
     }
+    
+    // 2. Check mobile view-only
+    if (this.isMobileDevice()) {
+      console.warn('[RoomDocManager] Mobile devices are view-only');
+      return;
+    }
+    
+    // 3. Check frame size (if we have a pending update estimate)
+    // Note: This is a simplified check - actual implementation would estimate
+    // the size of the operation about to be performed
+    const estimatedSize = this.sizeEstimator.getCurrentEstimate();
+    if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
+      console.warn('[RoomDocManager] Operation too large (frame size limit)');
+      return;
+    }
+    
+    // Execute in single transaction with user origin
+    this.ydoc.transact(() => {
+      fn(this.ydoc);
+    }, this.userId); // Origin for undo/redo tracking
+    
+    // Mark dirty for publishing
+    this.publishState.isDirty = true;
+  }
+
+  // Extend TTL with minimal write
+  extendTTL(): void {
+    // Perform a minimal write to extend TTL
+    this.mutate((_ydoc) => {
+      const meta = this.getMeta();
+      // Set a timestamp to trigger a write
+      meta.set('lastExtendedAt', Date.now());
+    });
+  }
+
+  // Helper for mobile detection
+  private isMobileDevice(): boolean {
+    if (typeof window === 'undefined') return false;
+    return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   }
 
   // Lifecycle
   destroy(): void {
+    // Set destroyed flag
+    this.destroyed = true;
+    
     // eslint-disable-next-line no-console
     console.log('[RoomDocManager] Destroying');
 
     // Cancel scheduled RAF if pending
-    if (this.publishState.scheduledRaf !== -1) {
-      cancelAnimationFrame(this.publishState.scheduledRaf);
-      this.publishState.scheduledRaf = -1;
+    if (this.publishState.rafId !== -1) {
+      this.frames.cancel(this.publishState.rafId);
+      this.publishState.rafId = -1;
     }
-
-    // Stop the continuous batch timer
-    if (this.publishState.batchTimerInterval !== null) {
-      clearInterval(this.publishState.batchTimerInterval);
-      this.publishState.batchTimerInterval = null;
-    }
-
-    // Stop command processing
-    this.commandBus?.destroy();
-    this.writeQueue?.destroy();
 
     // Clean up observers
     this.ydoc.off('update', this.handleYDocUpdate);
@@ -486,38 +516,39 @@ class RoomDocManagerImpl implements IRoomDocManager {
     RoomDocManagerRegistry.remove(this.roomId);
   }
 
-  // Phase 2.4: Start continuous batch timer (runs every BATCH_WINDOW_MS)
-  // INVARIANT: This is the ONLY place that creates a timer for publishing
-  private startBatchTimer(): void {
-    // Start the continuous batch timer that drives all publishing
-    // Note: Uses fixed 20ms interval. If adaptive batch window is needed,
-    // would need to restart timer when window changes
-    this.publishState.batchTimerInterval = setInterval(() => {
-      this.onBatchTimerTick();
-    }, this.publishState.batchWindow) as unknown as number;
-  }
-
-  // Phase 2.4: Batch timer tick - the ONLY place that schedules rAF
-  // INVARIANT: At most one rAF may be pending at any time (scheduledRaf ∈ {-1, ID})
-  // INVARIANT: This is the sole arbiter of when to schedule rAF
-  private onBatchTimerTick(): void {
-    // Check if we have work to do
-    const hasWork = this.publishState.isDirty || this.publishState.forcePublishRequested;
+  // Simple RAF loop for publishing
+  private startPublishLoop(): void {
+    const rafLoop = () => {
+      // Publish if Y.Doc changed OR presence changed
+      if (this.publishState.isDirty || this.publishState.presenceDirty) {
+        const startTime = this.clock.now();
+        
+        // Build snapshot
+        const newSnapshot = this.buildSnapshot();
+        
+        // Optional optimization: Skip publish if svKey unchanged and no presence update
+        const svKeyChanged = newSnapshot.svKey !== this.publishState.lastSvKey;
+        if (svKeyChanged || this.publishState.presenceDirty) {
+          this.publishSnapshot(newSnapshot);
+        }
+        
+        // Clear both dirty flags
+        this.publishState.isDirty = false;
+        this.publishState.presenceDirty = false;
+        
+        // Track timing for metrics
+        this.publishState.lastPublishTime = this.clock.now();
+        this.publishState.publishCostMs = this.clock.now() - startTime;
+      }
+      
+      // Continue loop if not destroyed
+      if (!this.destroyed) {
+        this.publishState.rafId = this.frames.request(rafLoop);
+      }
+    };
     
-    if (!hasWork) {
-      return; // No work, nothing to do
-    }
-
-    // CRITICAL: Only schedule rAF if one isn't already pending
-    if (this.publishState.scheduledRaf === -1) {
-      this.publishState.scheduledRaf = requestAnimationFrame(() => {
-        // CRITICAL: Clear scheduledRaf BEFORE calling maybePublish
-        // This ensures one-shot behavior even if maybePublish throws
-        this.publishState.scheduledRaf = -1;
-        this.maybePublish();
-      });
-    }
-    // If rAF is already scheduled, do nothing - wait for it to complete
+    // Start the loop
+    this.publishState.rafId = this.frames.request(rafLoop);
   }
 
   // Phase 2.4 Component B: Y.Doc Observer Setup
@@ -534,112 +565,33 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  private handleYDocUpdate = async (update: Uint8Array, origin: unknown): Promise<void> => {
-    // Phase 2.4: CRITICAL - Only mark dirty, NO timer/rAF scheduling here!
-    // The batch timer is the sole arbiter of when to schedule rAF
-    
-    // Mark dirty and record when Y was updated
+  private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
-    this.publishState.lastYUpdateAt = performance.now();
-
-    // Store update for potential analysis (optional)
-    this.publishState.pendingUpdates.push({ update, origin, time: Date.now() });
     
-    // Track delta size for distributed constraints
-    const rawDeltaBytes = update.byteLength;
-    
-    // Sample compression ratio periodically for accuracy
-    if (this.sizeEstimator.shouldSample(rawDeltaBytes)) {
-      try {
-        const gzDeltaBytes = await getGzipSize(update);
-        this.sizeEstimator.observeDelta(rawDeltaBytes, gzDeltaBytes);
-      } catch (err) {
-        // Fallback to estimate only
-        this.sizeEstimator.observeDelta(rawDeltaBytes);
-      }
-    } else {
-      // Use estimated ratio
-      this.sizeEstimator.observeDelta(rawDeltaBytes);
+    // Store update for metrics (keep ring buffer, it's useful)
+    if (this.publishState.pendingUpdates) {
+      this.publishState.pendingUpdates.push({
+        update,
+        origin,
+        time: this.clock.now()
+      });
     }
-
-    // Ring buffer behavior: trim old updates (keep max 100)
-    // This prevents unbounded memory growth from rapid updates
-    const cutoff = Date.now() - this.publishState.batchWindow * 2;
-    this.publishState.pendingUpdates = this.publishState.pendingUpdates
-      .filter((u) => u.time > cutoff)
-      .slice(-100); // Hard cap at 100 entries
     
-    // NOTE: No timer scheduling here! The batch timer will handle it
+    // Update size estimate (keep this, it's needed for guards)
+    const deltaBytes = update.byteLength;
+    this.sizeEstimator.observeDelta(deltaBytes);
+    
+    // RAF loop will handle publishing
   };
 
-  // Phase 2.4 Component C: Publish decision - NO SELF-RESCHEDULING
-  // Called ONLY from rAF callback scheduled by batch timer
-  // INVARIANT: This function is pure w.r.t. scheduling - it either publishes or returns
-  // INVARIANT: It NEVER schedules timers or rAF
-  private maybePublish(): void {
-    // Check if we have work
-    const hasWork = this.publishState.isDirty || this.publishState.forcePublishRequested;
-    
-    if (!hasWork) {
-      // No work to do, just return
-      // The next batch timer tick will check again
-      return;
-    }
-    
-    // We have work and we're in a rAF callback - always publish
-    // This implements the "Always-Publish on rAF" strategy from PHASE2_FIXES.md
-    // Simpler than quiet-time gating and more predictable for testing
-    const t0 = performance.now();
-    this.publishSnapshot();
-    const publishTime = performance.now();
-    
-    // Update state
-    this.publishState.lastPublishTime = publishTime;
-    this.publishState.isDirty = false;
-    this.publishState.forcePublishRequested = false;
-    
-    // Measure publish cost (for metrics/debugging)
-    const cost = publishTime - t0;
-    this.publishState.publishWorkMs = cost;
-    
-    // NOTE: Adaptive batch window disabled for simplicity
-    // If needed, would require restarting the interval timer
-    // this.adaptBatchWindow(cost);
-    
-    // CRITICAL: Do NOT schedule any timers or rAF here!
-    // The batch timer will handle the next opportunity
-  }
 
-  // Phase 2.4: Adaptive batch window (DISABLED for simplicity)
-  // If re-enabled, would need to restart the interval timer with new window
-  // private adaptBatchWindow(costMs: number): void {
-  //   const oldWindow = this.publishState.batchWindow;
-  //   if (costMs > 8) {
-  //     // Work exceeded budget - widen batch window toward 24-32ms
-  //     this.publishState.batchWindow = Math.min(32, Math.max(24, this.publishState.batchWindow + 4));
-  //   } else if (costMs < 4) {
-  //     // Work is light - narrow batch window toward 8-16ms  
-  //     this.publishState.batchWindow = Math.max(8, Math.min(16, this.publishState.batchWindow - 2));
-  //   }
-  //   // If window changed, restart timer with new interval
-  //   if (oldWindow !== this.publishState.batchWindow && this.publishState.batchTimerInterval) {
-  //     clearInterval(this.publishState.batchTimerInterval);
-  //     this.startBatchTimer();
-  //   }
-  // }
-
-  // Phase 2.4 Component D: Visibility Handling
+  // Visibility handling (simplified)
   private setupVisibilityHandling(): void {
     const handleVisibilityChange = () => {
-      this.publishState.isHidden = document.hidden;
-
-      // "Visible kick" - request immediate publish when tab becomes visible with pending changes
-      if (!this.publishState.isHidden && this.publishState.isDirty) {
-        // Request a forced publish on next batch timer tick
-        this.publishState.forcePublishRequested = true;
-        
-        // The batch timer will pick this up and schedule a rAF
-        // No direct timer/rAF scheduling here!
+      // When tab becomes visible with pending changes, mark dirty to trigger publish
+      if (!document.hidden && this.publishState.isDirty) {
+        // RAF loop will pick this up automatically
       }
     };
 
@@ -820,7 +772,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
-    console.log('[RoomDocManager] Building snapshot with scene:', currentScene);
+    // Building snapshot with currentScene
 
     // Build stroke views using helper (filter by current scene)
     const strokes = this.getStrokes()
@@ -906,75 +858,50 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return snapshot;
   }
 
-  // Phase 2.5: Setup WriteQueue and CommandBus
-  private setupWritePipeline(): void {
-    // Create WriteQueue
-    this.writeQueue = new WriteQueue({
-      maxPending: QUEUE_CONFIG.WRITE_QUEUE_MAX_PENDING,
-      isMobile: this.detectMobile(),
-      getCurrentSize: () => this.estimateDocSize(),
-      getCurrentScene: () => this.getCurrentScene(),
-    });
-
-    // Create CommandBus
-    this.commandBus = new CommandBus({
-      ydoc: this.ydoc,
-      writeQueue: this.writeQueue,
-      getCurrentSize: () => this.estimateDocSize(),
-      getHelpers: () => ({
-        getStrokes: this.getStrokes.bind(this),
-        getTexts: this.getTexts.bind(this),
-        getCode: this.getCode.bind(this),
-        getOutputs: this.getOutputs.bind(this),
-        getSceneTicks: this.getSceneTicks.bind(this),
-        getCurrentScene: this.getCurrentScene.bind(this),
-      }),
-      onClearBoard: () => {
-        // Reset size estimator baseline after ClearBoard
-        // Keep a small baseline as the board is not truly empty (metadata exists)
-        this.sizeEstimator.resetBaseline(32 * 1024); // 32KB baseline
-        
-        // Force a publish after ClearBoard to ensure immediate visibility
-        this.publishState.forcePublishRequested = true;
-      },
-    });
-
-    // Start processing
-    this.commandBus.start();
-  }
-
-  // Helper to detect mobile devices
-  private detectMobile(): boolean {
-    if (typeof window === 'undefined') return false;
-
-    const userAgent = window.navigator?.userAgent || '';
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-      userAgent,
-    );
-    const hasTouch = 'ontouchstart' in window;
-    const smallScreen = window.innerWidth < 768;
-
-    return isMobile || (hasTouch && smallScreen);
-  }
-
-  // Helper to estimate doc size (compressed)
-  private estimateDocSize(): number {
-    // Use rolling estimator for efficient size tracking
-    return Math.ceil(this.sizeEstimator.docEstGzBytes);
+  // Method to handle persist acknowledgments from server
+  handlePersistAck(ack: { sizeBytes: number; timestamp: string }): void {
+    // Update room stats with authoritative size
+    const oldStats = this.roomStats;
+    this.roomStats = {
+      bytes: ack.sizeBytes,
+      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
+    };
+    
+    // Notify subscribers if changed
+    if (oldStats?.bytes !== ack.sizeBytes) {
+      this.statsSubscribers.forEach(cb => cb(this.roomStats));
+    }
+    
+    // Check if room became read-only
+    if (ack.sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
+      console.warn('[RoomDocManager] Room is now read-only due to size limit');
+      // Could emit an event or update UI state here
+    }
   }
 }
 
 // Singleton Registry
 class RoomDocManagerRegistryClass {
   private managers = new Map<RoomId, IRoomDocManager>();
+  private defaultOptions?: RoomDocManagerOptions;
 
-  get(roomId: RoomId): IRoomDocManager {
+  /**
+   * Set default options for all new managers
+   * Useful for test environments
+   */
+  setDefaultOptions(options: RoomDocManagerOptions): void {
+    this.defaultOptions = options;
+  }
+
+  get(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
       // eslint-disable-next-line no-console
       console.log('[Registry] Creating new RoomDocManager for:', roomId);
-      manager = new RoomDocManagerImpl(roomId);
+      // Use provided options, fall back to default options, or use browser defaults
+      const finalOptions = options ?? this.defaultOptions;
+      manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
     }
 

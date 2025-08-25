@@ -6,6 +6,7 @@ export * from './types/commands';
 export * from './types/snapshot';
 export * from './types/device-state';
 export * from './types/validation';
+export * from './types/room-stats';
 
 // Export config
 export * from './config';

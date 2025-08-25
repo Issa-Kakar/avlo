@@ -5,6 +5,7 @@
  * 1. Actual gzip measurement for precise 2MB frame cap enforcement
  * 2. Rolling compression ratio (EWMA) for efficient doc size estimation
  * 3. Platform-agnostic implementation (browser/Node)
+ * 4. Test injection for deterministic testing
  */
 
 /**
@@ -25,10 +26,36 @@ export async function gzipSizeBrowser(input: Uint8Array | string): Promise<numbe
 }
 
 /**
- * Compress data using gzip in Node.js/tests
- * Uses zlib for synchronous compression
+ * Compress data using gzip in Node.js/tests (async version)
+ * Uses zlib for async compression to avoid blocking
  */
-export function gzipSizeNode(input: Uint8Array | string): number {
+export async function gzipSizeNodeAsync(input: Uint8Array | string): Promise<number> {
+  // Check if we're in Node environment
+  if (typeof process === 'undefined' || !process.versions?.node) {
+    throw new Error('Node.js environment required for gzipSizeNodeAsync');
+  }
+  
+  // Dynamic import to avoid bundling in browser
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { gzip } = require('zlib');
+  const { promisify } = require('util');
+  const gzipAsync = promisify(gzip);
+  
+  const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : Buffer.from(input);
+  const compressed = await gzipAsync(bytes);
+  return compressed.byteLength;
+}
+
+/**
+ * Compress data using gzip in Node.js/tests (sync version)
+ * Fallback for when async is not needed
+ */
+export function gzipSizeNodeSync(input: Uint8Array | string): number {
+  // Check if we're in Node environment
+  if (typeof process === 'undefined' || !process.versions?.node) {
+    throw new Error('Node.js environment required for gzipSizeNodeSync');
+  }
+  
   // Dynamic import to avoid bundling in browser
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { gzipSync } = require('zlib');
@@ -37,17 +64,68 @@ export function gzipSizeNode(input: Uint8Array | string): number {
 }
 
 /**
+ * Interface for gzip implementation
+ */
+export interface GzipImpl {
+  gzipSize(input: Uint8Array | string): Promise<number>;
+}
+
+/**
+ * Test gzip implementation override
+ */
+let testGzipImpl: GzipImpl | null = null;
+
+/**
+ * Set a custom gzip implementation for testing
+ * @param impl - Custom implementation or null to reset
+ */
+export function setGzipImplForTests(impl: GzipImpl | null): void {
+  testGzipImpl = impl;
+}
+
+/**
+ * Check if CompressionStream is available (browser environment)
+ */
+function hasCompressionStream(): boolean {
+  return typeof globalThis !== 'undefined' &&
+         typeof (globalThis as any).CompressionStream !== 'undefined';
+}
+
+/**
+ * Check if we're in a Node.js environment
+ */
+function isNodeEnvironment(): boolean {
+  return typeof process !== 'undefined' && 
+         process.versions != null && 
+         process.versions.node != null;
+}
+
+/**
  * Platform-agnostic gzip size measurement
  * Automatically selects browser or Node implementation
+ * Can be overridden with test implementation
  */
 export async function getGzipSize(input: Uint8Array | string): Promise<number> {
-  // Check for CompressionStream availability (browser)
-  if (typeof CompressionStream !== 'undefined') {
-    return gzipSizeBrowser(input);
-  } else {
-    // In Node/tests, wrap sync call in Promise for consistent API
-    return Promise.resolve(gzipSizeNode(input));
+  // Check for test override first
+  if (testGzipImpl) {
+    return testGzipImpl.gzipSize(input);
   }
+  
+  // Check for browser CompressionStream
+  if (hasCompressionStream()) {
+    return gzipSizeBrowser(input);
+  }
+  
+  // Check for Node.js environment
+  if (isNodeEnvironment()) {
+    return gzipSizeNodeAsync(input);
+  }
+  
+  // Fallback: return a conservative estimate
+  // This should rarely happen in practice
+  console.warn('[GzipSize] No compression implementation available, using estimate');
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  return Math.ceil(bytes.length * 0.5); // Conservative 50% compression estimate
 }
 
 /**
@@ -165,12 +243,17 @@ export class RollingGzipEstimator {
 /**
  * Frame size validator
  * Ensures frames don't exceed transport limits (2MB)
+ * Can accept optional gzip implementation for testing
  */
 export async function validateFrameSize(
   frameBytes: Uint8Array | string,
-  maxBytes = 2_000_000
+  maxBytes = 2_000_000,
+  gzipImpl?: GzipImpl
 ): Promise<{ valid: boolean; compressedSize: number; reason?: string }> {
-  const compressedSize = await getGzipSize(frameBytes);
+  // Use provided implementation or fall back to default
+  const compressedSize = gzipImpl 
+    ? await gzipImpl.gzipSize(frameBytes)
+    : await getGzipSize(frameBytes);
   
   if (compressedSize > maxBytes) {
     return {
