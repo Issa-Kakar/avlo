@@ -14,25 +14,39 @@ export function useRoomDoc(roomId: RoomId): RoomDocManager {
   const registry = useRoomDocRegistry();
   const managerRef = useRef<RoomDocManager>();
   const roomIdRef = useRef<RoomId>();
+  const hasAcquiredRef = useRef(false);
 
   // Check if roomId has changed or if we don't have a manager yet
   if (!managerRef.current || roomIdRef.current !== roomId) {
-    // Get the manager for the current roomId
-    managerRef.current = registry.get(roomId);
+    // Release the previous manager if we had one
+    if (managerRef.current && roomIdRef.current && hasAcquiredRef.current) {
+      registry.release(roomIdRef.current);
+      hasAcquiredRef.current = false;
+    }
+
+    // Acquire a reference to the new manager
+    managerRef.current = registry.acquire(roomId);
     roomIdRef.current = roomId;
+    hasAcquiredRef.current = true;
   }
 
   useEffect(() => {
-    // Manager lifecycle is handled by the registry
-    // Components don't destroy managers directly
-    // The registry maintains reference counting internally
-    // Note: We don't call registry.remove() here because:
-    // 1. Other components in the same tab might be using the same manager
-    // 2. The registry handles cleanup when appropriate
+    // The effect ensures we release when:
+    // 1. The component unmounts
+    // 2. The roomId changes (handled above, but this is a safety net)
+
+    // Track the current values for cleanup
+    const currentRegistry = registry;
+    const currentRoomId = roomId;
+    const wasAcquired = hasAcquiredRef.current;
+
     return () => {
-      // No cleanup needed - registry manages lifecycle
+      // Release on unmount
+      if (wasAcquired) {
+        currentRegistry.release(currentRoomId);
+      }
     };
-  }, [roomId]);
+  }, [registry, roomId]);
 
   return managerRef.current;
 }

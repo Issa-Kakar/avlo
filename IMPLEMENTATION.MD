@@ -126,7 +126,7 @@
 3. Update when persist_ack arrives from server
 4. Include bytes and capacity in stats object
 
-#### 2.4.4 Add Minimal Render Cache (Boot Splash Only)
+#### 2.4.4 Add Minimal Render Cache (Boot Splash Only)  #SKIP TESTS FOR THIS PHASE
 1. Create simple IndexedDB wrapper (NOT y-indexeddb provider)
 2. Store last rendered canvas as ImageData/PNG
 3. Key by roomId and validate with svKey

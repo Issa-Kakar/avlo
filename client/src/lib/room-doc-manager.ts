@@ -893,6 +893,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 // Registry class for managing RoomDocManager instances
 export class RoomDocManagerRegistry {
   private managers = new Map<RoomId, IRoomDocManager>();
+  private refCounts = new Map<RoomId, number>();
   private defaultOptions?: RoomDocManagerOptions;
 
   /**
@@ -906,8 +907,11 @@ export class RoomDocManagerRegistry {
   /**
    * Get or create a manager for a room
    * Ensures singleton per room within this registry instance
+   * @deprecated Use acquire() instead for proper reference counting
    */
   get(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
+    // For backward compatibility, delegate to acquire
+    // But don't increment ref count (maintains old behavior for tests)
     let manager = this.managers.get(roomId);
 
     if (!manager) {
@@ -917,9 +921,67 @@ export class RoomDocManagerRegistry {
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
+      // Don't set ref count for backward compatibility with tests
     }
 
     return manager;
+  }
+
+  /**
+   * Acquire a reference to a manager for a room
+   * Creates the manager if it doesn't exist, increments reference count
+   * Must be paired with release() when done
+   */
+  acquire(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
+    let manager = this.managers.get(roomId);
+
+    if (!manager) {
+      // eslint-disable-next-line no-console
+      console.log('[Registry] Creating new RoomDocManager for:', roomId);
+      const finalOptions = options ?? this.defaultOptions;
+      manager = new RoomDocManagerImpl(roomId, finalOptions);
+      this.managers.set(roomId, manager);
+      this.refCounts.set(roomId, 0);
+    }
+
+    // Increment reference count
+    const currentCount = this.refCounts.get(roomId) || 0;
+    this.refCounts.set(roomId, currentCount + 1);
+    // eslint-disable-next-line no-console
+    console.log(`[Registry] Acquired reference for ${roomId}, refCount: ${currentCount + 1}`);
+
+    return manager;
+  }
+
+  /**
+   * Release a reference to a manager
+   * Decrements reference count and destroys manager if count reaches 0
+   */
+  release(roomId: RoomId): void {
+    const count = this.refCounts.get(roomId);
+    if (count === undefined) {
+      // If no refcount, this manager was created with legacy get() method
+      // Don't do anything to maintain backward compatibility
+      return;
+    }
+
+    const newCount = count - 1;
+    // eslint-disable-next-line no-console
+    console.log(`[Registry] Released reference for ${roomId}, refCount: ${newCount}`);
+
+    if (newCount <= 0) {
+      // Reference count reached 0, destroy and remove
+      const manager = this.managers.get(roomId);
+      if (manager) {
+        // eslint-disable-next-line no-console
+        console.log(`[Registry] Destroying RoomDocManager for ${roomId} (refCount: 0)`);
+        manager.destroy();
+      }
+      this.managers.delete(roomId);
+      this.refCounts.delete(roomId);
+    } else {
+      this.refCounts.set(roomId, newCount);
+    }
   }
 
   /**
@@ -935,6 +997,13 @@ export class RoomDocManagerRegistry {
     return this.managers.has(roomId);
   }
 
+  /**
+   * Get the reference count for a room (for debugging/testing)
+   */
+  getRefCount(roomId: RoomId): number {
+    return this.refCounts.get(roomId) || 0;
+  }
+
   remove(roomId: RoomId): void {
     const manager = this.managers.get(roomId);
     if (manager) {
@@ -942,6 +1011,7 @@ export class RoomDocManagerRegistry {
       console.log('[Registry] Removing RoomDocManager for:', roomId);
       manager.destroy();
       this.managers.delete(roomId);
+      this.refCounts.delete(roomId);
     }
   }
 
@@ -956,6 +1026,7 @@ export class RoomDocManagerRegistry {
     console.log('[Registry] Destroying all RoomDocManagers');
     this.managers.forEach((manager) => manager.destroy());
     this.managers.clear();
+    this.refCounts.clear();
     this.defaultOptions = undefined;
   }
 
