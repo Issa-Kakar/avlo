@@ -4,16 +4,18 @@ import React from 'react';
 import { useRoomDoc } from '../use-room-doc';
 import { RoomDocRegistryProvider } from '../../lib/room-doc-registry-context';
 import { createRoomDocManagerRegistry } from '../../lib/room-doc-manager';
+import { TestClock, TestFrameScheduler } from '../../lib/timing-abstractions';
 
 describe('useRoomDoc', () => {
   let registry: ReturnType<typeof createRoomDocManagerRegistry>;
+  let clock: TestClock;
+  let frames: TestFrameScheduler;
 
   beforeEach(() => {
     registry = createRoomDocManagerRegistry();
-    registry.setDefaultOptions({
-      skipProviders: true,
-      enablePresenceThrottling: false,
-    });
+    clock = new TestClock();
+    frames = new TestFrameScheduler();
+    registry.setDefaultOptions({ clock, frames });
   });
 
   afterEach(() => {
