@@ -61,8 +61,8 @@ export class DrawingToolExample {
         color: '#000000',
         size: 2,
         opacity: 1,
-        points: this.currentStroke.points, // Flattened points
-        bbox: this.calculateBBox(this.currentStroke.points),
+        points: this.currentStroke!.points, // Flattened points (non-null asserted after check)
+        bbox: this.calculateBBox(this.currentStroke!.points),
         scene: currentScene, // CRITICAL: Scene assigned at commit time!
         createdAt: Date.now(),
         userId: 'user-id', // Would come from manager's userId

@@ -29,6 +29,8 @@ export interface StrokeView {
   };
   bbox: [number, number, number, number];
   scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)
+  createdAt: number;
+  userId: string;
 }
 
 // Text view for rendering
@@ -39,11 +41,11 @@ export interface TextView {
   w: number;
   h: number;
   content: string;
-  style: {
-    color: string;
-    size: number;
-  };
+  color: string; // Flattened for simpler access
+  size: number;   // Flattened for simpler access
   scene: SceneIdx; // Scene where text was committed (assigned at commit time using currentScene)
+  createdAt: number;
+  userId: string;
 }
 
 // Spatial index view

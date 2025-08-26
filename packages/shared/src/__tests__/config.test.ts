@@ -4,7 +4,7 @@ import {
   STROKE_CONFIG, 
   TEXT_CONFIG,
   isRoomReadOnly,
-  isRoomWarning,
+  isRoomSizeWarning as isRoomWarning, // Import with correct name
   calculateAwarenessInterval
 } from '../config';
 

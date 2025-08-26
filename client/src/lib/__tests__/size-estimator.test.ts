@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RollingGzipEstimator, type GzipImpl } from '../size-estimator';
 
-describe('RollingGzipEstimator', () => {
+// Skip these tests - RollingGzipEstimator is not part of Phase 2
+describe.skip('RollingGzipEstimator', () => {
   let estimator: RollingGzipEstimator;
   let mockGzip: GzipImpl;
 

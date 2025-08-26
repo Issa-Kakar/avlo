@@ -85,6 +85,10 @@ export const STROKE_CONFIG = {
   HIGHLIGHTER_SIMPLIFICATION_TOLERANCE: getEnvNumber('HIGHLIGHTER_SIMPLIFICATION_TOLERANCE', 0.5),
   SIMPLIFICATION_TOLERANCE_MULTIPLIER: getEnvNumber('SIMPLIFICATION_TOLERANCE_MULTIPLIER', 1.4),
   HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER: getEnvNumber('HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER', 1.5),
+  
+  // Aliases for backward compatibility with tests
+  SIMPLIFY_TOLERANCE_PEN: getEnvNumber('PEN_SIMPLIFICATION_TOLERANCE', 0.8),
+  SIMPLIFY_TOLERANCE_HIGHLIGHTER: getEnvNumber('HIGHLIGHTER_SIMPLIFICATION_TOLERANCE', 0.5),
 
   // Update size limits
   MAX_ENCODED_UPDATE_BYTES: getEnvNumber('MAX_ENCODED_UPDATE_BYTES', 128 * 1024), // 128 KB (DEPRECATED - use MAX_STROKE_UPDATE_BYTES)
@@ -367,7 +371,8 @@ export function isRoomSizeWarning(sizeBytes: number): boolean {
 /**
  * Check if room size is at read-only threshold
  */
-export function isRoomReadOnly(sizeBytes: number): boolean {
+export function isRoomReadOnly(sizeBytes: number | undefined): boolean {
+  if (sizeBytes === undefined) return false;
   return sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES;
 }
 

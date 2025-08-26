@@ -32,17 +32,6 @@ export class RenderCache {
 
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-      request.onerror = () => {
-        console.error('[RenderCache] Failed to open database');
-      };
-
-      request.onsuccess = () => {
-        this.db = request.result;
-        this.initialized = true;
-        // Clean up old entries on init
-        this.cleanupOldEntries();
-      };
-
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
         
@@ -53,15 +42,17 @@ export class RenderCache {
         }
       };
 
-      // Wait for initialization
+      // Wait for initialization (only set handlers once in the Promise)
       await new Promise<void>((resolve, reject) => {
         request.onsuccess = () => {
           this.db = request.result;
           this.initialized = true;
+          // Clean up old entries on init
           this.cleanupOldEntries();
           resolve();
         };
         request.onerror = () => {
+          console.error('[RenderCache] Failed to open database');
           reject(new Error('Failed to initialize render cache'));
         };
       });
@@ -223,6 +214,27 @@ export class RenderCache {
       });
     } catch (error) {
       console.warn('[RenderCache] Failed to clear cache:', error);
+    }
+  }
+
+  /**
+   * Clear all cached renders
+   * Useful for testing or complete cache reset
+   */
+  async clearAll(): Promise<void> {
+    if (!this.db) return;
+
+    try {
+      const transaction = this.db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      store.clear();
+
+      await new Promise<void>((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+      });
+    } catch (error) {
+      console.warn('[RenderCache] Failed to clear all caches:', error);
     }
   }
 

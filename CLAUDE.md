@@ -23,8 +23,27 @@ Phase 2.4 Subscription Managment
 ## Current Status
 **TESTING PHASE 2**
 
+## CRITICAL: Registry Architecture & Testing Strategy
+
+### Registry Pattern (MANDATORY)
+The **RoomDocManagerRegistry** is THE ONLY way to access RoomDocManager instances:
+- **Production**: Use `useRoomDocRegistry()` hook from React context
+- **Tests**: Use `createTestManager()` helper for isolated instances
+- **Never** export or instantiate RoomDocManagerImpl directly
+- Registry ensures singleton-per-room guarantee (critical for CRDT consistency)
+
+### Test-Specific Configuration
+- Test files intentionally use `any` types to access private implementation
+- Test helpers (`waitForSnapshot`, `collectSnapshots`, etc.) are preserved for Phases 3-7
+- ESLint configured with test-specific rules - DO NOT "fix" these warnings
+- `__testonly` exports are NODE_ENV gated for safety
+
+### React Hook Note
+- `useHasRoomDocRegistry()` follows React hook naming (was `hasRoomDocRegistry`)
+- Must be called unconditionally in React components/hooks
+
 ### 📋 Phases 3-18: See IMPLEMENTATION.MD
-Canvas → Stroke Rendering → Input → Rbush → WebSocket → Awareness → UI → Code Execution → PWA
+Canvas → Stroke Rendering → Input → Rbush → WebSocket + Indexeddb→ Awareness → UI → Code Execution → PWA
 
 ## Data Models (Phase 2-4 Focus)
 

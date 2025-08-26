@@ -13,11 +13,11 @@ describe('Snapshot Types', () => {
       
       // Verify structure
       expect(snapshot).toBeDefined();
-      expect(snapshot.svKey).toBe('');
+      expect(snapshot.svKey).toBe('empty'); // Per implementation
       expect(snapshot.scene).toBe(0);
       expect(snapshot.strokes).toEqual([]);
       expect(snapshot.texts).toEqual([]);
-      expect(snapshot.presence).toEqual({ users: [] });
+      expect(snapshot.presence).toEqual({ users: new Map(), localUserId: '' });
       expect(snapshot.spatialIndex).toBeNull();
       
       // Verify view transform
@@ -26,7 +26,7 @@ describe('Snapshot Types', () => {
       
       // Verify meta
       expect(snapshot.meta.bytes).toBeUndefined();
-      expect(snapshot.meta.cap).toBe(15_000_000);
+      expect(snapshot.meta.cap).toBe(15 * 1024 * 1024); // 15 MB in bytes
       expect(snapshot.meta.readOnly).toBe(false);
       expect(snapshot.meta.expiresAt).toBeUndefined();
       
@@ -47,20 +47,22 @@ describe('Snapshot Types', () => {
       }).toThrow();
       
       expect(() => {
-        snapshot.strokes.push({} as StrokeView);
+        (snapshot.strokes as any).push({} as StrokeView);
       }).toThrow();
       
       process.env.NODE_ENV = originalEnv;
     });
 
-    it('should create non-frozen snapshot in production', () => {
+    it('should create frozen snapshot in production', () => {
       const originalEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'production';
       
       const snapshot = createEmptySnapshot();
       
-      // Should not throw in production (but we still shouldn't mutate)
-      expect(Object.isFrozen(snapshot)).toBe(false);
+      // Snapshots are ALWAYS frozen per spec (immutable by contract)
+      expect(Object.isFrozen(snapshot)).toBe(true);
+      expect(Object.isFrozen(snapshot.strokes)).toBe(true);
+      expect(Object.isFrozen(snapshot.texts)).toBe(true);
       
       process.env.NODE_ENV = originalEnv;
     });

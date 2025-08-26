@@ -58,8 +58,11 @@ export function useRoomDocRegistry(): RoomDocManagerRegistry {
 /**
  * Hook to check if we're within a registry provider
  * Useful for components that optionally use the registry
+ * 
+ * NOTE: This is a React Hook and must follow the Rules of Hooks
+ * (cannot be called conditionally, must be called from React components/hooks)
  */
-export function hasRoomDocRegistry(): boolean {
+export function useHasRoomDocRegistry(): boolean {
   const context = useContext(RoomDocRegistryContext);
   return context !== null;
 }

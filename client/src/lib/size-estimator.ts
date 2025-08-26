@@ -13,7 +13,7 @@
  * Uses the native CompressionStream API
  */
 export async function gzipSizeBrowser(input: Uint8Array | string): Promise<number> {
-  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : input;
+  const bytes = typeof input === 'string' ? new TextEncoder().encode(input) : new Uint8Array(input);
   
   // CompressionStream is supported on modern browsers
   const cs = new CompressionStream('gzip');

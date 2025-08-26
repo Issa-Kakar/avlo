@@ -145,6 +145,14 @@ export class TestFrameScheduler implements FrameScheduler {
     this.cancelledIds.clear();
     this.nextId = 1;
   }
+
+  /**
+   * Flush all pending frames (alias for advanceAllFrames)
+   * Added for test compatibility
+   */
+  flush(time: number = 0): void {
+    this.advanceAllFrames(time);
+  }
 }
 
 /**

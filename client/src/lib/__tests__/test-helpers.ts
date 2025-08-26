@@ -1,3 +1,21 @@
+/**
+ * Test Helper Module for RoomDocManager Testing
+ * 
+ * CRITICAL: Many functions in this file are intentionally preserved for future phases.
+ * DO NOT REMOVE "unused" functions - they are part of the testing infrastructure
+ * that will be activated in Phases 3-7.
+ * 
+ * Current Phase: 2 (Core RoomDocManager)
+ * Future Phases:
+ * - Phase 3: Canvas rendering (will use waitForSnapshot)
+ * - Phase 4: Input handling (will use collectSnapshots)
+ * - Phase 5: WebSocket integration (will use collectPresenceUpdates)
+ * - Phase 6: Awareness/presence (will use presence helpers)
+ * - Phase 7: Code execution (will use execution helpers)
+ * 
+ * @module test-helpers
+ */
+
 import { vi } from 'vitest';
 import type { RoomId, Snapshot, PresenceView, RoomStats } from '@avlo/shared';
 import { 
@@ -73,6 +91,12 @@ export function observeDocEvents(
 
 /**
  * Helper to wait for next snapshot publication
+ * 
+ * FUTURE USE: Phase 3 (Canvas Rendering)
+ * This function will be used to test canvas rendering updates
+ * and ensure snapshots are published after mutations.
+ * 
+ * @reserved-for-phase-3
  */
 export async function waitForSnapshot(
   manager: RoomDocManager,
@@ -90,6 +114,12 @@ export async function waitForSnapshot(
 
 /**
  * Helper to collect multiple snapshots over time
+ * 
+ * FUTURE USE: Phase 4 (Input Handling & Stroke Rendering)
+ * Will be used to test stroke accumulation and multi-frame
+ * rendering scenarios during drawing operations.
+ * 
+ * @reserved-for-phase-4
  */
 export function collectSnapshots(
   manager: RoomDocManager,
@@ -113,6 +143,12 @@ export function collectSnapshots(
 
 /**
  * Helper to test presence updates with timing control
+ * 
+ * FUTURE USE: Phase 6 (Awareness & Presence)
+ * Essential for testing cursor position updates, user awareness,
+ * and throttling behavior of presence broadcasts.
+ * 
+ * @reserved-for-phase-6
  */
 export function collectPresenceUpdates(
   manager: RoomDocManager,
