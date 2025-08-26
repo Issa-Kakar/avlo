@@ -69,6 +69,8 @@ export class UpdateRing<T> {
 
   /**
    * Reset everything including metrics
+   * AUDIT NOTE: Creating new array is fine in JS - old array is garbage collected
+   * No explicit memory cleanup needed beyond removing references
    */
   reset(): void {
     this.head = 0;

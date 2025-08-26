@@ -1,3 +1,17 @@
+/**
+ * RoomDocManager - Central authority for Y.Doc and real-time collaboration
+ *
+ * ERROR BOUNDARY RECOMMENDATIONS (Phase 3+):
+ * - Y.js operations rarely throw (CRDTs are designed for consistency)
+ * - Critical error boundaries needed at:
+ *   1. IndexedDB attach/open (Phase 7) - handle quota/corruption errors
+ *   2. WebSocket connect/sync (Phase 7) - handle network failures
+ *   3. WebRTC bring-up (Phase 17) - handle ICE/signaling failures
+ *   4. Snapshot cache I/O (Phase 2.4.4) - handle storage errors
+ * - React error boundary at app level for UI protection
+ * - Current Phase 2 is resilient without explicit boundaries
+ */
+
 import * as Y from 'yjs';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
@@ -51,7 +65,7 @@ export interface IRoomDocManager {
   mutate(fn: (ydoc: Y.Doc) => void): void;
   extendTTL(): void;
   destroy(): void;
-  
+
   // Phase 2.4.4: Render cache for boot splash (cosmetic only)
   storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
   showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
@@ -68,7 +82,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
-  private readonly userId: string;  // Session user ID for undo/redo origin
+  private readonly userId: string; // Session user ID for undo/redo origin
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
@@ -83,9 +97,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
-  
+
   // Throttled presence updates (30Hz = ~33ms)
   private updatePresenceThrottled: (() => void) | null = null;
+  // Cleanup function for throttled presence updates
+  private updatePresenceThrottledCleanup: (() => void) | null = null;
 
   // Timing abstractions (injected for testing)
   private clock: Clock;
@@ -99,66 +115,74 @@ class RoomDocManagerImpl implements IRoomDocManager {
     rafId: -1, // RAF request ID (-1 = not scheduled)
     lastPublishTime: 0, // When we last published (clock.now())
     publishCostMs: 0, // Track how long publish takes
-    pendingUpdates: null as UpdateRing<{ update: Uint8Array; origin: unknown; time: number }> | null,
+    pendingUpdates: null as UpdateRing<{
+      update: Uint8Array;
+      origin: unknown;
+      time: number;
+    }> | null,
     lastSvKey: '', // Track to detect changes
   };
 
-
   // Room stats tracking
   private roomStats: RoomStats | null = null;
-  
+
   // Size estimation for guards
+  // AUDIT NOTE: Clear board does NOT delete data, only increments scene counter
+  // Size estimator remains valid across scene changes (tracks total doc size)
+  // Will be enhanced with compaction/GC and persist_ack in later phases
   private sizeEstimator: RollingGzipEstimator;
-  
+
   // Track if destroyed for cleanup
   private destroyed = false;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
     this.userId = ulid(); // User ID for this session
-    
+
     // Initialize Y.Doc with room GUID
     this.ydoc = new Y.Doc({ guid: roomId });
-    
+
     // Initialize timing abstractions
     this.clock = options?.clock || new BrowserClock();
     this.frames = options?.frames || new BrowserFrameScheduler();
-    
+
     // Initialize helpers
     this.sizeEstimator = new RollingGzipEstimator();
-    
+
     // Initialize state
     this.publishState = {
       isDirty: false,
-      presenceDirty: false,  // Track presence changes separately
+      presenceDirty: false, // Track presence changes separately
       rafId: -1,
       lastPublishTime: 0,
       publishCostMs: 0,
       pendingUpdates: new UpdateRing(16), // Keep ring buffer for metrics
       lastSvKey: '', // Track to detect changes
     };
-    
+
     // Start with empty snapshot
     this._currentSnapshot = createEmptySnapshot();
-    
+
     // Initialize root structure
     this.initializeYjsStructures();
-    
+
     // Setup observers
     this.setupObservers();
-    
+
     // Initialize throttled presence updates (30Hz = ~33ms)
-    this.updatePresenceThrottled = this.throttle(
+    const presenceThrottle = this.throttle(
       this.updatePresence.bind(this),
-      33 // 1000ms / 30Hz = ~33ms
+      33, // 1000ms / 30Hz = ~33ms
     );
-    
+    this.updatePresenceThrottled = presenceThrottle.throttled;
+    this.updatePresenceThrottledCleanup = presenceThrottle.cleanup;
+
     // Initialize render cache for boot splash (Phase 2.4.4)
     // Fire and forget - cosmetic only
-    renderCache.init().catch(err => {
+    renderCache.init().catch((err) => {
       console.warn('[RoomDocManager] Render cache init failed (non-critical):', err);
     });
-    
+
     // Start RAF loop
     this.startPublishLoop();
   }
@@ -229,19 +253,24 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private getCurrentScene(): number {
     const sceneTicks = this.getSceneTicks();
     // Debug: sceneTicks length is the current scene
+    // AUDIT NOTE: Scene can never be negative by construction (array.length is always >= 0)
+    // Empty filtered stroke/text arrays are handled correctly by renderers
     return sceneTicks.length;
   }
 
   // Build presence view from awareness (will be connected to awareness in Phase 8)
   private buildPresenceView(): PresenceView {
-    const users = new Map<string, {
-      name: string;
-      color: string;
-      cursor?: { x: number; y: number };
-      activity: string;
-      lastSeen: number;
-    }>();
-    
+    const users = new Map<
+      string,
+      {
+        name: string;
+        color: string;
+        cursor?: { x: number; y: number };
+        activity: string;
+        lastSeen: number;
+      }
+    >();
+
     // For now, return proper structure even if awareness not connected
     // This will be populated in Phase 8 when awareness is integrated
     // Example of what will be added in Phase 8:
@@ -258,7 +287,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     //     }
     //   });
     // }
-    
+
     return {
       users,
       localUserId: this.userId,
@@ -426,19 +455,19 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
     // Minimal guards (same as spec)
-    
+
     // 1. Check room read-only (≥15MB)
     if (this.roomStats && this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
       console.warn('[RoomDocManager] Room is read-only (size limit exceeded)');
       return;
     }
-    
+
     // 2. Check mobile view-only
     if (this.isMobileDevice()) {
       console.warn('[RoomDocManager] Mobile devices are view-only');
       return;
     }
-    
+
     // 3. Check frame size (if we have a pending update estimate)
     // Note: This is a simplified check - actual implementation would estimate
     // the size of the operation about to be performed
@@ -447,28 +476,28 @@ class RoomDocManagerImpl implements IRoomDocManager {
       console.warn('[RoomDocManager] Operation too large (frame size limit)');
       return;
     }
-    
+
     // Execute in single transaction with user origin
     this.ydoc.transact(() => {
       fn(this.ydoc);
     }, this.userId); // Origin for undo/redo tracking
-    
+
     // Mark dirty for publishing
     this.publishState.isDirty = true;
   }
 
-  // Simple throttle utility function
+  // Enhanced throttle utility function with cleanup
   private throttle<T extends (...args: any[]) => void>(
     func: T,
-    wait: number
-  ): T {
+    wait: number,
+  ): { throttled: T; cleanup: () => void } {
     let timeout: ReturnType<typeof setTimeout> | null = null;
     let lastCallTime = 0;
-    
+
     const throttled = (...args: any[]) => {
       const now = Date.now();
       const timeSinceLastCall = now - lastCallTime;
-      
+
       if (timeSinceLastCall >= wait) {
         // Enough time has passed, execute immediately
         lastCallTime = now;
@@ -484,19 +513,27 @@ class RoomDocManagerImpl implements IRoomDocManager {
       }
       // If timeout is already scheduled, skip this call (throttling)
     };
-    
-    return throttled as T;
+
+    // Cleanup function to clear any pending timeout
+    const cleanup = () => {
+      if (timeout !== null) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+
+    return { throttled: throttled as T, cleanup };
   }
-  
+
   // Update presence and notify subscribers (called when awareness changes)
   private updatePresence(): void {
     const presence = this.buildPresenceView();
-    this.presenceSubscribers.forEach(cb => cb(presence));
-    
+    this.presenceSubscribers.forEach((cb) => cb(presence));
+
     // Mark presence dirty to trigger snapshot publish
     this.publishState.presenceDirty = true;
   }
-  
+
   // Extend TTL with minimal write
   extendTTL(): void {
     // Perform a minimal write to extend TTL
@@ -517,33 +554,37 @@ class RoomDocManagerImpl implements IRoomDocManager {
   destroy(): void {
     // Set destroyed flag
     this.destroyed = true;
-    
+
     // Stop RAF loop
     if (this.publishState.rafId !== -1) {
       this.frames.cancel(this.publishState.rafId);
       this.publishState.rafId = -1;
     }
-    
+
     // Remove Y.Doc observers
     // NOTE: This correctly removes the listener because handleYDocUpdate
     // is an arrow function property with stable identity (see setupObservers)
     this.ydoc.off('update', this.handleYDocUpdate);
-    
+
     // Clear subscriptions
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
     this.statsSubscribers.clear();
-    
-    // Clear throttled function reference
+
+    // Clear throttled function and any pending timeouts
+    if (this.updatePresenceThrottledCleanup) {
+      this.updatePresenceThrottledCleanup();
+      this.updatePresenceThrottledCleanup = null;
+    }
     this.updatePresenceThrottled = null;
-    
+
     // Destroy Y.Doc
     this.ydoc.destroy();
-    
+
     // Clear references
     this._currentSnapshot = createEmptySnapshot();
     this.roomStats = null;
-    
+
     // Note: Registry removal is handled externally
     // The registry that created this manager should handle cleanup
   }
@@ -557,18 +598,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Take first 100 bytes (or less if vector is smaller)
     const sampleSize = Math.min(100, stateVector.length);
     const sample = stateVector.slice(0, sampleSize);
-    
+
     // Convert sample to base64
     let sampleStr = '';
     for (let i = 0; i < sample.length; i++) {
       sampleStr += String.fromCharCode(sample[i]);
     }
-    
+
     // Include length for additional uniqueness
     // Format: base64(first100bytes):length:checksum
-    const checksum = Array.from(stateVector.slice(-4))
-      .reduce((sum, byte) => sum + byte, 0);
-    
+    const checksum = Array.from(stateVector.slice(-4)).reduce((sum, byte) => sum + byte, 0);
+
     return `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
   }
 
@@ -578,31 +618,32 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Publish if Y.Doc changed OR presence changed
       if (this.publishState.isDirty || this.publishState.presenceDirty) {
         const startTime = this.clock.now();
-        
+
         // Build snapshot
         const newSnapshot = this.buildSnapshot();
-        
+
         // Optional optimization: Skip publish if svKey unchanged and no presence update
         const svKeyChanged = newSnapshot.svKey !== this.publishState.lastSvKey;
         if (svKeyChanged || this.publishState.presenceDirty) {
           this.publishSnapshot(newSnapshot);
         }
-        
+
         // Clear both dirty flags
         this.publishState.isDirty = false;
         this.publishState.presenceDirty = false;
-        
+
         // Track timing for metrics
         this.publishState.lastPublishTime = this.clock.now();
         this.publishState.publishCostMs = this.clock.now() - startTime;
       }
-      
+
       // Continue loop if not destroyed
+      // AUDIT NOTE: Proper guard prevents RAF callbacks after destroy()
       if (!this.destroyed) {
         this.publishState.rafId = this.frames.request(rafLoop);
       }
     };
-    
+
     // Start the loop
     this.publishState.rafId = this.frames.request(rafLoop);
   }
@@ -632,24 +673,22 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
-    
+
     // Store update for metrics (keep ring buffer, it's useful)
     if (this.publishState.pendingUpdates) {
       this.publishState.pendingUpdates.push({
         update,
         origin,
-        time: this.clock.now()
+        time: this.clock.now(),
       });
     }
-    
+
     // Update size estimate (keep this, it's needed for guards)
     const deltaBytes = update.byteLength;
     this.sizeEstimator.observeDelta(deltaBytes);
-    
+
     // RAF loop will handle publishing
   };
-
-
 
   // Phase 2.4 Component E: Snapshot Building & Publishing
   private publishSnapshot(newSnapshot: Snapshot): void {
@@ -668,7 +707,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
       }
     });
   }
-
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
@@ -716,8 +754,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
         h: t.h,
         content: t.content,
         color: t.color, // Flattened for simpler access
-        size: t.size,   // Flattened for simpler access
-        scene: t.scene,  // Include scene field (assigned at commit time, used for filtering)
+        size: t.size, // Flattened for simpler access
+        scene: t.scene, // Include scene field (assigned at commit time, used for filtering)
         createdAt: t.createdAt,
         userId: t.userId,
       }));
@@ -777,12 +815,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
       bytes: ack.sizeBytes,
       cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
     };
-    
+
     // Notify subscribers if changed
     if (oldStats?.bytes !== ack.sizeBytes) {
-      this.statsSubscribers.forEach(cb => cb(this.roomStats));
+      this.statsSubscribers.forEach((cb) => cb(this.roomStats));
     }
-    
+
     // Check if room became read-only
     if (ack.sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
       console.warn('[RoomDocManager] Room is now read-only due to size limit');
@@ -791,7 +829,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Phase 2.4.4: Render cache methods for boot splash (cosmetic only)
-  
+
   /**
    * Store current render to cache for boot splash
    * Called after successful canvas render (Phase 3)
@@ -799,7 +837,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
    */
   async storeRenderCache(canvas: HTMLCanvasElement): Promise<void> {
     if (!canvas || this.destroyed) return;
-    
+
     try {
       // Store with current svKey for validation
       await renderCache.store(this.roomId, this._currentSnapshot.svKey, canvas);
@@ -900,6 +938,8 @@ export class RoomDocManagerRegistry {
   /**
    * Destroy all managers and clear the registry
    * Used for cleanup in tests and app teardown
+   * AUDIT NOTE: Simple forEach is sufficient - no inter-manager dependencies exist
+   * If future phases add inter-dependencies, implement topological sort
    */
   destroyAll(): void {
     // eslint-disable-next-line no-console
@@ -942,32 +982,33 @@ export { renderCache } from './render-cache';
 export const __testonly = {
   RoomDocManagerImpl: process.env.NODE_ENV === 'test' ? RoomDocManagerImpl : null,
   // Helper to observe Y.Doc behavior in tests without exposing Y types to app
-  attachDocObserver: process.env.NODE_ENV === 'test' 
-    ? (manager: IRoomDocManager, callback: (event: string, data?: unknown) => void) => {
-        // Type assertion to access private impl
-        const impl = manager as unknown as RoomDocManagerImpl;
-        // Access the private ydoc for test observation
-        const ydoc = (impl as any).ydoc;
-        if (!ydoc) return () => {};
-        
-        // Observe update events
-        const updateHandler = (update: Uint8Array, origin: unknown) => {
-          callback('update', { updateSize: update.length, origin });
-        };
-        
-        // Observe transaction events  
-        const transactionHandler = (transaction: any) => {
-          callback('transaction', { origin: transaction.origin || null });
-        };
-        
-        ydoc.on('update', updateHandler);
-        ydoc.on('afterTransaction', transactionHandler);
-        
-        // Return cleanup function
-        return () => {
-          ydoc.off('update', updateHandler);
-          ydoc.off('afterTransaction', transactionHandler);
-        };
-      }
-    : null
+  attachDocObserver:
+    process.env.NODE_ENV === 'test'
+      ? (manager: IRoomDocManager, callback: (event: string, data?: unknown) => void) => {
+          // Type assertion to access private impl
+          const impl = manager as unknown as RoomDocManagerImpl;
+          // Access the private ydoc for test observation
+          const ydoc = (impl as any).ydoc;
+          if (!ydoc) return () => {};
+
+          // Observe update events
+          const updateHandler = (update: Uint8Array, origin: unknown) => {
+            callback('update', { updateSize: update.length, origin });
+          };
+
+          // Observe transaction events
+          const transactionHandler = (transaction: any) => {
+            callback('transaction', { origin: transaction.origin || null });
+          };
+
+          ydoc.on('update', updateHandler);
+          ydoc.on('afterTransaction', transactionHandler);
+
+          // Return cleanup function
+          return () => {
+            ydoc.off('update', updateHandler);
+            ydoc.off('afterTransaction', transactionHandler);
+          };
+        }
+      : null,
 };
