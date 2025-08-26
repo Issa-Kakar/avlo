@@ -133,7 +133,6 @@ client/test-results/
 # Development scripts (keep setup-dev.sh in repo)
 
 # Personal notes and changelogs
-CHANGELOG.md
 BRANCH_STATUS.md
 CLAUDE.MD
 NEW_OVERVIEW.MD

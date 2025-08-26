@@ -98,7 +98,7 @@ export class TestFrameScheduler implements FrameScheduler {
   /**
    * Advance one frame, executing the oldest pending callback
    */
-  advanceFrame(clock: TestClock): void {
+  advanceFrame(time: number = 0): void {
     if (this.queue.length === 0) return;
 
     const item = this.queue.shift();
@@ -110,16 +110,16 @@ export class TestFrameScheduler implements FrameScheduler {
       return;
     }
 
-    // Execute callback with current time
-    item.callback(clock.now());
+    // Execute callback with provided time
+    item.callback(time);
   }
 
   /**
    * Advance all pending frames
    */
-  advanceAllFrames(clock: TestClock): void {
+  advanceAllFrames(time: number = 0): void {
     while (this.queue.length > 0) {
-      this.advanceFrame(clock);
+      this.advanceFrame(time);
     }
   }
 
@@ -127,6 +127,13 @@ export class TestFrameScheduler implements FrameScheduler {
    * Get number of pending frames
    */
   get pending(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Get queue length (alias for pending)
+   */
+  getQueueLength(): number {
     return this.queue.length;
   }
 

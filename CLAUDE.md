@@ -15,17 +15,13 @@
 
 ## Current Implementation Status
 
-### ✅ Phase 1-2.1: Foundation & Core Types (Complete)
-- Monorepo with Vite 5.4.11, TypeScript 5.9.2, React 18.3.1
-- All data models in `packages/shared`: Stroke, TextBlock, CodeCell, Output, Meta
-- ESLint enforcing UI isolation from Yjs
+### COMPLETED: Phase 2.1 Core Typescript Types and Interfaces
+Phase 2.2 RoomDocManager Foundaiton, Y.Doc 
+Phase 2.3 Snapshot Publishing System
+Phase 2.4 Subscription Managment
 
-### 🚧 Phase 2.2-2.4: Core Data Layer (In Progress)
-- **RoomDocManager**: Subscriptions working, needs mutate(fn) pattern
-- **Snapshot publishing**: Basic RAF loop, needs throttling/coalescing  
-- **Presence**: Subscription exists, buildPresenceView() stub needs implementation
-- **Stats**: Needs persist_ack handler for authoritative size
-- **New abstractions**: Ring buffer for update coalescing, timing abstractions for deterministic testing
+## Current Status
+**TESTING PHASE 2**
 
 ### 📋 Phases 3-18: See IMPLEMENTATION.MD
 Canvas → Stroke Rendering → Input → Rbush → WebSocket → Awareness → UI → Code Execution → PWA
@@ -318,7 +314,7 @@ MAX_CLIENTS_PER_ROOM=50
 ## Key Implementation Notes
 
 - **Mobile**: View-only, guard in mutate()
-- **Scene**: Assigned at commit using currentScene
+- **Scene**: Assigned at commit using currentScene(not about casual consistency)
 - **Awareness**: 30Hz throttled, ephemeral, never persisted
 - **persist_ack**: Server authoritative for size/TTL
 - **Snapshots**: Never null, frozen, new arrays per publish

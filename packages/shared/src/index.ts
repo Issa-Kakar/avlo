@@ -31,5 +31,8 @@ export {
   getRoomSizePercentage,
 } from './config';
 
+// Export schemas
+export * from './schemas';
+
 // Export utilities
 export { ulid } from './utils/ulid';

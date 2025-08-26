@@ -22,9 +22,9 @@ export interface DrawStrokeCommit {
   bbox: [number, number, number, number];
   startedAt: number;
   finishedAt: number;
-  scene: SceneIdx; // CRITICAL: Scene captured at pointer-down, NOT at commit time
+  scene: SceneIdx; // CRITICAL: Scene assigned at COMMIT time (pointer-up) using currentScene
 }
-// CRITICAL: Scene MUST be captured at interaction START (pointer-down) to ensure causal consistency
+// CRITICAL: Scene MUST be assigned at commit time to ensure strokes land in correct scene if ClearBoard happens during gesture
 
 // Erase multiple objects
 export interface EraseObjects {
@@ -44,7 +44,7 @@ export interface AddText {
   content: string;
   color: string;
   size: number;
-  scene: SceneIdx; // CRITICAL: Scene captured at text placement start, NOT at commit time
+  scene: SceneIdx; // CRITICAL: Scene assigned at commit time using currentScene
 }
 
 // Clear board (append scene tick)

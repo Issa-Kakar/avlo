@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { RoomId } from '@avlo/shared';
-import { RoomDocManagerRegistry, RoomDocManager } from '../lib/room-doc-manager';
+import { RoomDocManager } from '../lib/room-doc-manager';
+import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
 
 /**
  * Internal hook to get or create a RoomDocManager instance
@@ -10,10 +11,11 @@ import { RoomDocManagerRegistry, RoomDocManager } from '../lib/room-doc-manager'
  * @internal
  */
 export function useRoomDoc(roomId: RoomId): RoomDocManager {
+  const registry = useRoomDocRegistry();
   const managerRef = useRef<RoomDocManager>();
 
   if (!managerRef.current) {
-    managerRef.current = RoomDocManagerRegistry.get(roomId);
+    managerRef.current = registry.get(roomId);
   }
 
   useEffect(() => {

@@ -1,5 +1,6 @@
 import { SceneIdx, StrokeId, TextId } from './identifiers';
 import { PresenceView } from './awareness';
+import { ROOM_CONFIG } from '../config';
 
 // Immutable snapshot - NEVER null
 export interface Snapshot {
@@ -8,7 +9,7 @@ export interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;
   texts: ReadonlyArray<TextView>;
   presence: PresenceView; // Derived + smoothed presence
-  spatialIndex: RBushIndexView; // Read-only spatial index for hit-testing
+  spatialIndex: null; // Phase 6: Will be RBushIndexView for hit-testing
   view: ViewTransform; // World-to-canvas transform
   meta: SnapshotMeta;
   createdAt: number; // ms epoch when snapshot was frozen
@@ -27,7 +28,7 @@ export interface StrokeView {
     tool: 'pen' | 'highlighter';
   };
   bbox: [number, number, number, number];
-  scene: SceneIdx; // CRITICAL: Scene where stroke was created (captured at pointer-down)
+  scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)
 }
 
 // Text view for rendering
@@ -42,7 +43,7 @@ export interface TextView {
     color: string;
     size: number;
   };
-  scene: SceneIdx; // CRITICAL: Scene where text was created (captured at placement start)
+  scene: SceneIdx; // Scene where text was committed (assigned at commit time using currentScene)
 }
 
 // Spatial index view
@@ -64,7 +65,7 @@ export interface ViewTransform {
 // Snapshot metadata
 export interface SnapshotMeta {
   bytes?: number; // Last persisted compressed size
-  cap: number; // Hard cap (10MB)
+  cap: number; // Hard cap (15MB)
   readOnly: boolean; // True when room is at/above cap
   expiresAt?: number; // ms epoch TTL expiry
 }
@@ -80,7 +81,7 @@ export function createEmptySnapshot(): Snapshot {
       users: new Map(),
       localUserId: '',
     },
-    spatialIndex: { _tree: null },
+    spatialIndex: null,
     view: {
       worldToCanvas: (x: number, y: number): [number, number] => [x, y],
       canvasToWorld: (x: number, y: number): [number, number] => [x, y],
@@ -88,7 +89,7 @@ export function createEmptySnapshot(): Snapshot {
       pan: { x: 0, y: 0 },
     },
     meta: {
-      cap: 10 * 1024 * 1024, // 10MB
+      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
       readOnly: false,
     },
     createdAt: Date.now(),
