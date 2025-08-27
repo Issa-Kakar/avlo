@@ -38,6 +38,16 @@ The **RoomDocManagerRegistry** is THE ONLY way to access RoomDocManager instance
 - ESLint configured with test-specific rules - DO NOT "fix" these warnings
 - `__testonly` exports are NODE_ENV gated for safety
 
+### ⚠️ CRITICAL: Protected Test Files (DO NOT "FIX")
+The following test files contain **protective stubs only** - their implementations are WORKING:
+- **render-cache.test.ts** - Stub only (implementation uses `imageData`, not `blob`)
+- **ring-buffer.test.ts** - Stub only (actual API: `push()`, not `add()`)
+- **size-estimator.test.ts** - Stub only (actual API: `observeDelta()`, not `addUpdate()`)
+
+**See `/client/src/lib/__tests__/DO_NOT_FIX_TESTS.md` for full details**
+
+These are NOT broken tests needing fixes. They prevent incorrect tests from being recreated.
+
 ### React Hook Note
 - `useHasRoomDocRegistry()` follows React hook naming (was `hasRoomDocRegistry`)
 - Must be called unconditionally in React components/hooks
