@@ -137,12 +137,6 @@ COMPREHENSIVE AUDIT FINDINGS
    to be generally well-implemented with proper patterns. However, I've 
   identified several areas that need attention:
 
-  CRITICAL ISSUES
-Deep Analysis Complete: Memory Leak Confirmed
-
-  After thoroughly investigating the registry and hook implementation, I can
-  definitively confirm there IS a memory leak. Here's the complete picture:
-
   The Architecture
 
   The registry implements a singleton-per-room pattern - each room ID gets
@@ -150,174 +144,18 @@ Deep Analysis Complete: Memory Leak Confirmed
   This is a good design for avoiding duplicate Y.Docs and ensuring
   consistency.
 
-  The Problem
-
-  The comment in useRoomDoc that says "The registry maintains reference 
-  counting internally" is FALSE.
-
-  Looking at the registry implementation (lines 894-977):
-  - It's just a simple Map<RoomId, IRoomDocManager>
-  - NO reference counting exists - searched for refcount, reference count,
-  WeakMap, etc.
-  - NO automatic cleanup - remove() is never called in production code (only
-  in tests)
-  - NO usage tracking - registry doesn't know if anyone is using a manager
-
-  What Happens When User Switches Rooms
-
-  When navigating from room1 → room2 → room3:
-
-  1. room1 manager remains in registry with:
-    - Full Y.Doc in memory (can be up to 15MB per spec)
-    - RAF loop running 60 times/second (checking isDirty flag)
-    - Y.Doc update observer attached
-    - 0 subscribers but doesn't know it should cleanup
-  2. room2 manager - same story after navigating away
-  3. room3 manager - active with subscribers
-
-  The Impact
-
-  For abandoned managers (no subscribers):
-  - RAF loop: Runs 60x/sec but only checks if (isDirty || presenceDirty) -
-  minimal CPU but still registered callbacks
-  - Memory: Full Y.Doc preserved (up to 15MB each per your spec)
-  - Observers: Y.Doc update listener remains attached
-
-  After visiting 10 rooms: 10 Y.Docs + 10 RAF loops
-  After visiting 100 rooms: 100 Y.Docs + 100 RAF loops (potentially 1.5GB!)
-
-  Why This Matters
-
-  While the RAF loops do minimal work when idle (just checking boolean
-  flags), the memory impact is significant:
-  - Each Y.Doc holds the complete room data
-  - No garbage collection possible - strong references in registry Map
-  - Unbounded growth - no max size, no LRU, no timeouts
-
-  The Misleading Comment
-
-  The comment stating "registry maintains reference counting internally"
-  appears to be:
-  - Aspirational (planned but not implemented)
-  - Or copied from another codebase
-  - Or simply incorrect documentation
-
-  Verdict
-
-  This IS a memory leak that needs fixing. The architecture is sound
-  (singleton pattern is good), but needs one of:
-  1. Reference counting - track active users per manager
-  2. Explicit cleanup - call registry.remove() on navigation
-  3. LRU cache - limit max managers with eviction
-  4. Timeout cleanup - remove after period of inactivity
-
-  The good news: The destroy() method properly cleans everything up when
-  called. You just need a mechanism to trigger it.
-
-  1. useRoomDoc Hook - Potential Memory Leak: The hook doesn't properly 
-  handle cleanup when roomId changes. A new manager is created but the old 
-  one is never explicitly cleaned up.
-  2. RoomDocManagerRegistry - No Reference Counting: The registry doesn't 
-  track how many components are using each manager, so managers are never 
-  automatically cleaned up when no longer needed.
-  3. RenderCache - Missing Error Recovery: The render cache's cleanup 
-  operation doesn't wait for promises, potentially leaving orphaned IndexedDB
-   entries.
-
   MEDIUM ISSUES
 
   1. Size Estimator - Incomplete Frame Size Check: The frame size guard only 
   checks if the entire document exceeds 2MB, not the actual delta that would 
   be sent.
 
-
-│ │ Phase 2 Implementation Audit - Comprehensive Findings              
-│ │ Overall 
-
-destroy() does comprehensive cleanup:
-  1. Stops RAF loop
-  2. Removes Y.Doc observers
-  3. Clears all subscriber sets
-  4. Destroys the Y.Doc itself
-  5. Clears references
-
-  But destroy() is NEVER called automatically. It's only called by 
-  registry.remove(), which itself is never called in production code.
-
-  The registry is crystal clear:
-  - Just a Map<RoomId, IRoomDocManager>
-  - No reference counting
-  - No tracking of usage
-  - No automatic cleanup
-  - Only manual remove() and destroyAll()
-
-  The comment in useRoomDoc that says "The registry maintains reference 
-  counting internally" is completely false. There is NO reference counting.
-
-  Now let me be absolutely certain about the memory leak by considering all 
-  angles:
-
-  1. Is this intentional caching?
-    - Maybe, but without limits it's a leak
-    - No LRU, no max size, no timeouts
-  2. Will it be cleaned up elsewhere?
-    - Searched entire codebase
-    - registry.remove() only called in tests
-    - No navigation handlers call it
-  3. Is the impact significant?
-    - Y.Doc can be up to 15MB each (per spec)
-    - RAF loops consume browser resources
-    - With 10 rooms: potentially 150MB + 10 RAF loops
-    - With 100 rooms: potentially 1.5GB + 100 RAF loops
-  4. What keeps running?
-    - RAF loop checking flags 60x/second
-    - Y.Doc observer listening (but no updates)
-    - All internal state preserved
-
-
-Assessment                                                         
-
-│ │ The Phase 2 implementation is generally well-architected and follows the   │ │
-│ │ design patterns correctly. The code properly implements the RoomDocManager │ │
-│ │  model, snapshot publishing system, and subscription management. However,  │ │
-│ │ I've identified several issues that should be addressed.                   │ │
-
-│ │ CRITICAL ISSUES FOUND                                                      │ │
-
-│ │ 1. Memory Leak in useRoomDoc Hook (client/src/hooks/use-room-doc.ts)       │ │
-
-│ │ - Problem: When roomId changes, a new manager is fetched but the old one   │ │
-│ │ is never cleaned up                                                        │ │
-│ │ - Impact: Managers accumulate in memory, Y.Doc observers remain attached   │ │
-│ │ - Fix: Track previous manager and call registry.remove() when roomId       │ │
-│ │ changes                                                                    │ 
-│ │ 2. Registry Lacks Reference Counting                                       │ │
-│ │ (client/src/lib/room-doc-manager.ts:894-961)                               │ │
-
-│ │ - Problem: Registry never automatically removes managers when components   │ │
-│ │ unmount                                                                    │ │
-│ │ - Impact: Managers persist indefinitely until manual cleanup               │ │
-│ │ - Fix: Implement reference counting or weak references for automatic       │ │
-│ │ cleanup                                                                    │ 
-│ │ 3. RenderCache Async Cleanup Issue                                         │ │
-│ │ (client/src/lib/render-cache.ts:243-266)                                   │ │
-
-│ │ - Problem: cleanupOldEntries() doesn't await transaction completion        │ │
-│ │ - Impact: Could leave orphaned IndexedDB entries if cleanup fails          │ │
-│ │ - Fix: Properly await IndexedDB transaction completion                     │ │
-
-│ │ MEDIUM SEVERITY ISSUES                                                     │ │
-
-│ │ 4. Incomplete Frame Size Guard                                             │ │
-│ │ (client/src/lib/room-doc-manager.ts:473-488)                               │ │
-
-│ │ - Problem: Only blocks if entire doc > 2MB, not the actual delta being     │ │
-│ │ sent                                                                       │ │
-│ │ - Impact: Large operations (>2MB) could still fail at transport layer      │ │
-│ │ - Fix: Need delta size estimation (planned for Phase 3+)                   │ │
-                                                                     │ │
-│ │ 5. Missing Snapshot Publishing Backpressure                                │ │
-│ │ (client/src/lib/room-doc-manager.ts:625-659)                               │ │
+ 4. Incomplete Frame Size Guard                
+ (client/src/lib room-doc-manager.ts:473-488)          - Problem: Only blocks if entire doc > 2MB, not the actual delta being   sent                                                                      
+- Impact: Large operations (>2MB) could still fail at transport layer      
+│ │ - Fix: Need delta size estimation (planned for Phase 3+)                 
+│ │ 5. Missing Snapshot Publishing Backpressure                               
+│ │(client/src/lib/room-doc-manager.ts:625-659)                              
 
 │ │ - Problem: RAF loop continues even if subscribers are slow                 │ │
 │ │ - Impact: Could cause memory buildup with slow subscribers                 │ │
@@ -332,38 +170,7 @@ Assessment
 
 │ │ LOW SEVERITY ISSUES                                                        │ │
 
-│ │ 8. Performance Optimizations                                               │ │
+│ │ POSITIVE FINDINGS ✓                                                     - Proper Y.Doc encapsulation: No Y references leak to UI                   │ │
+- Correct event cleanup: handleYDocUpdate arrow function pattern works   correctly                                                                   Good destroyed flag handling: RAF loop properly checks destroyed state  - Immutable snapshots: Properly frozen in development                 
+ - Throttling implemented: Presence updates correctly throttled to 30Hz   - Size estimation working: RollingGzipEstimator properly tracks document size                           
 
-│ │ - createSafeStateVectorKey builds strings inefficiently in loop            │ │
-│ │ - Consider using Uint8Array methods instead                                │ │
-                                                           │ │
-│ │ 9. Error Handling                                                          │ │
-
-│ │ propagation                                                                │ │
-│ │ - Consider error boundaries for critical paths                             │ │
-│ 
-│ │ POSITIVE FINDINGS ✓                                                    
-│ │ - Proper Y.Doc encapsulation: No Y references leak to UI                   │ │
-│ │ - Correct event cleanup: handleYDocUpdate arrow function pattern works     │ │
-│ │ correctly                                                                  
-│ │ - Good destroyed flag handling: RAF loop properly checks destroyed state   │ │
-│ │ - Immutable snapshots: Properly frozen in development                      │ │
-│ │ - Throttling implemented: Presence updates correctly throttled to 30Hz     │ │
-│ │ - Size estimation working: RollingGzipEstimator properly tracks document   │ │
-│ │ size                           
-
-Add shallow equality checks in snapshot subscription, and add integration tests for manager lifecycle and cleanup.
-
-checklist (so you can sanity-check your code)
-
- there is exactly one RoomDocManager per roomId in a tab
-
- hooks acquire on mount/room-change and release on unmount
-
- when refcount hits 0, registry calls mgr.destroy() and removes it
-
- manager’s destroy() is idempotent and unsubscribes observers, disconnects providers, and stops the rAF loop
-
- (optional) idle eviction (5–30 s) if users bounce between rooms a lot
-
- (nice to have) when there are no subscribers, the manager pauses any extra work that isn’t needed (e.g., disable the rAF until someone subscribes again)

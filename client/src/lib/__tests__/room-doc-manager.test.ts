@@ -377,30 +377,85 @@ describe('RoomDocManager', () => {
       cleanup();
     });
 
-    it('rejects mutations when frame size exceeds 2MB', () => {
+    it('allows small mutations even when document is large', () => {
       const { manager, cleanup } = createTestManager('room-014');
 
-      // Mock size estimator to return >2MB
+      // Mock size estimator to return >2MB (large document)
       (manager as any).sizeEstimator = {
         docEstGzBytes: ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES + 1,
         observeDelta: () => {},
       };
 
-      const initialSnapshot = manager.currentSnapshot;
-
-      // Attempt mutation
+      // CRITICAL TEST: With old behavior, this mutation would be BLOCKED
+      // because doc > 2MB. With new behavior, it should go through because
+      // the delta (the actual change) is small.
       manager.mutate((ydoc) => {
         const strokes = ydoc.getMap('root').get('strokes') as Y.Array<any>;
-        strokes.push([{ id: 'should-not-add' }]);
+        strokes.push([{ id: 'small-stroke', points: [0, 0, 1, 1] }]);
       });
 
-      // Snapshot should be unchanged
-      expect(manager.currentSnapshot).toBe(initialSnapshot);
+      // Verify the mutation actually modified the Y.Doc
+      // This is the PROOF that our guard didn't block it
+      const ydoc = (manager as any).ydoc;
+      const strokes = ydoc.getMap('root').get('strokes') as Y.Array<any>;
+      expect(strokes.length).toBe(1);
+      expect(strokes.get(0).id).toBe('small-stroke');
+
+      // Also verify dirty flag was set (mutation completed successfully)
+      expect((manager as any).publishState.isDirty).toBe(true);
+
+      cleanup();
+    });
+
+    it('detects when delta size would exceed 2MB', () => {
+      const { manager, cleanup } = createTestManager('room-016');
+
+      // Spy on console.error to detect warning
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      // Create a truly massive mutation to ensure we exceed 2MB
+      // We need to account for Yjs encoding overhead
+      const massiveData = new Array(100).fill(null).map((_, i) => ({
+        id: `stroke-${i}`,
+        // Create 50,000 points per stroke = ~400KB per stroke x 100 = ~40MB
+        points: new Array(50000).fill(0).map((_, j) => j),
+        // Add extra metadata to ensure size
+        metadata: new Array(1000).fill('x').join(''),
+        color: '#000000',
+        size: 5,
+        opacity: 1,
+        tool: 'pen',
+        bbox: [0, 0, 100, 100],
+        scene: 0,
+        createdAt: Date.now(),
+        userId: 'test',
+      }));
+
+      manager.mutate((ydoc) => {
+        const strokes = ydoc.getMap('root').get('strokes') as Y.Array<any>;
+        strokes.push(massiveData);
+      });
+
+      // IMPORTANT: Verify BOTH behaviors:
+      // 1. Warning was logged about delta size
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('Delta size'));
+
+      // 2. Mutation still went through (we only warn, don't block yet)
+      // This proves we're measuring delta correctly but not breaking existing behavior
+      const ydoc = (manager as any).ydoc;
+      const strokes = ydoc.getMap('root').get('strokes') as Y.Array<any>;
+      expect(strokes.length).toBe(100); // All 100 strokes were added
+      expect(strokes.get(0).id).toBe('stroke-0');
+
+      // Dirty flag should still be set (mutation completed)
+      expect((manager as any).publishState.isDirty).toBe(true);
+
+      consoleErrorSpy.mockRestore();
       cleanup();
     });
 
     it('executes mutations with userId as origin', () => {
-      const { manager, cleanup } = createTestManager('room-015');
+      const { manager, cleanup } = createTestManager('room-017');
 
       let capturedOrigin: any;
 
