@@ -5,12 +5,12 @@
 
 ## Tech Stack (Target)
 - **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, Tailwind CSS
-- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 3)
+- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 6)
 - **Editor**: Monaco 0.52.2 (Phase 7)
 - **Real-time**: Yjs 13.6.27, y-websocket, y-indexeddb, y-webrtc
 - **Execution**: JS + Pyodide 0.26.4 (Phase 7)
 - **Backend**: Node.js, Express, @y/websocket-server
-- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma (Phase 5)
+- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma (future phases)
 - **Deployment**: Single container on Railway
 
 ## Current Implementation Status
@@ -37,16 +37,6 @@ The **RoomDocManagerRegistry** is THE ONLY way to access RoomDocManager instance
 - Test helpers (`waitForSnapshot`, `collectSnapshots`, etc.) are preserved for Phases 3-7
 - ESLint configured with test-specific rules - DO NOT "fix" these warnings
 - `__testonly` exports are NODE_ENV gated for safety
-
-### ⚠️ CRITICAL: Protected Test Files (DO NOT "FIX")
-The following test files contain **protective stubs only** - their implementations are WORKING:
-- **render-cache.test.ts** - Stub only (implementation uses `imageData`, not `blob`)
-- **ring-buffer.test.ts** - Stub only (actual API: `push()`, not `add()`)
-- **size-estimator.test.ts** - Stub only (actual API: `observeDelta()`, not `addUpdate()`)
-
-**See `/client/src/lib/__tests__/DO_NOT_FIX_TESTS.md` for full details**
-
-These are NOT broken tests needing fixes. They prevent incorrect tests from being recreated.
 
 ### React Hook Note
 - `useHasRoomDocRegistry()` follows React hook naming (was `hasRoomDocRegistry`)
@@ -178,6 +168,7 @@ avlo/
         └── CONFIG_USAGE.md   # Config usage guide
 
 ```
+Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`).
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)

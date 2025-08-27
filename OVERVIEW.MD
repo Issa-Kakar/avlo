@@ -64,6 +64,12 @@ zustand@^5.0.8, @tanstack/react-query@^5 (latest: 5.85.5) zod@^4 (e.g., ^4.1.0)
 
 **Principle.** Components must not receive `Y.Doc`, providers, or awareness. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame` or per batched Yjs update; no component reads live Y structures. Writes are coarse-grained: pointer-up commits whole stroke; eraser deletes a set in one transaction. Awareness is ephemeral, throttled, and injected into snapshots.
 
+**Registry Pattern (Implementation).** RoomDocManager instances are accessed exclusively through **RoomDocManagerRegistry** to ensure singleton-per-room guarantee:
+- Production code uses `useRoomDocRegistry()` hook or registry.acquire(roomId)  
+- Tests use `createTestManager()` helper for isolated instances
+- Registry supports reference counting with acquire/release for lifecycle management
+- Interface-based access only (IRoomDocManager); implementation never exposed
+
 ```
 // Authority: exactly one RoomDocManager per roomId, per-tab.
 export interface RoomDocManager {
@@ -162,7 +168,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation**: To avoid stack overflow on large state vectors, uses first 100 bytes + length + checksum for cache invalidation (sufficient for cosmetic purposes). **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
 
 **Awareness (normative additions).** --- **Cadence & throttling.** Awareness send interval per client: `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N. --- **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only. **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.mutate(...)`. 
 
@@ -753,10 +759,6 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 
   -   Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
 
-  
-
-
-
 * * * * *
 
 24\. RAF & Publishing
@@ -847,6 +849,36 @@ Appendix F: Mutations & Undo
 -   Coalesce pointer-moves to rAF.
 -   Drop stale motion events if queue backs up.
 -   No client timers/windows; event loop + Yjs batching suffice.
+
+* * * * *
+
+Appendix G: Testing Requirements
+================================
+
+**Registry Pattern for Tests:**
+
+All tests involving RoomDocManager MUST use the registry pattern to ensure proper isolation and cleanup:
+
+```typescript
+// ✅ CORRECT - Use createTestManager helper
+const { manager, cleanup } = createTestManager(roomId);
+// ... test code ...
+cleanup();
+
+// ❌ WRONG - Never instantiate directly
+const manager = new RoomDocManagerImpl(roomId); // NEVER DO THIS
+```
+
+This pattern ensures:
+- Complete isolation between tests (each gets its own registry)
+- Proper Y.Doc cleanup (prevents memory leaks)
+- Test-specific timing control (TestClock/TestFrameScheduler)
+- Consistent test behavior across phases
+
+**Future Phase Examples:**
+- Phase 3: Canvas rendering tests with `waitForSnapshot()`
+- Phase 5: Drawing commit tests using `room.mutate()`
+- Phase 6: Awareness tests with `collectPresenceUpdates()`
 
 * * * * *
 
