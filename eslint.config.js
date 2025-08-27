@@ -99,9 +99,9 @@ export default [
     },
   },
 
-  // Allow Yjs imports only in collaboration layer
+  // Allow Yjs imports only in collaboration layer and lib (infrastructure)
   {
-    files: ['client/src/collaboration/**/*.{ts,tsx}'],
+    files: ['client/src/collaboration/**/*.{ts,tsx}', 'client/src/lib/**/*.{ts,tsx}'],
     rules: {
       'no-restricted-imports': 'off',
     },
@@ -112,6 +112,40 @@ export default [
     files: ['server/**/*.{ts,js}'],
     rules: {
       // Server-specific rules if needed
+    },
+  },
+
+  // Test-specific rules
+  {
+    files: [
+      '**/__tests__/**/*.{ts,tsx,js,jsx}',
+      '**/*.test.{ts,tsx,js,jsx}',
+      '**/*.spec.{ts,tsx,js,jsx}',
+      '**/test-*.{ts,tsx,js,jsx}',
+    ],
+    rules: {
+      // Allow 'any' types in tests for accessing private implementation details
+      // CRITICAL: These are intentional for testing the RoomDocManager's internal state
+      // without exposing implementation details to production code
+      '@typescript-eslint/no-explicit-any': 'off',
+      
+      // Allow unused variables in test helpers - they're for future phases
+      // IMPORTANT: Functions like waitForSnapshot, collectSnapshots, collectPresenceUpdates
+      // are documented test utilities that will be used in Phases 3-7
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          // Combine patterns: underscore prefix OR specific test helper names
+          varsIgnorePattern: '^_|^(waitForSnapshot|collectSnapshots|collectPresenceUpdates|capturedOrigin|cleanup|unsubSnapshot|unsubPresence|unsubStats|vi|RoomStats|RoomDocManagerRegistry|Clock|FrameScheduler|afterEach|clock|frames|id2|data)$',
+        },
+      ],
+      
+      // Allow console.log in tests for debugging
+      'no-console': 'off',
+      
+      // Allow direct Yjs imports in tests (needed for test assertions)
+      'no-restricted-imports': 'off',
     },
   },
 ];

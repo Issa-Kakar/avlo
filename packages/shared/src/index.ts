@@ -1,17 +1,38 @@
-// Shared types between client and server
-// This file will be expanded in Phase 2 with actual data models
+// Re-export all types
+export * from './types/identifiers';
+export * from './types/room';
+export * from './types/awareness';
+export * from './types/commands';
+export * from './types/snapshot';
+export * from './types/device-state';
+export * from './types/validation';
+export * from './types/room-stats';
 
-export type RoomId = string;
-export type UserId = string;
-export type StrokeId = string;
-export type TextId = string;
-export type SceneIdx = number;
+// Export config
+export * from './config';
+export {
+  ROOM_CONFIG,
+  STROKE_CONFIG,
+  TEXT_CONFIG,
+  WEBRTC_CONFIG,
+  BACKOFF_CONFIG,
+  RATE_LIMIT_CONFIG,
+  PERFORMANCE_CONFIG,
+  QUEUE_CONFIG,
+  OFFLINE_THRESHOLD_CONFIG,
+  PWA_CONFIG,
+  SERVER_CONFIG,
+  PROTOCOL_CONFIG,
+  DEBUG_CONFIG,
+  isRoomReadOnly,
+  isRoomSizeWarning,
+  calculateAwarenessInterval,
+  applyJitter,
+  getRoomSizePercentage,
+} from './config';
 
-// Placeholder types that will be properly defined in Phase 2
-export interface Room {
-  id: RoomId;
-  title: string;
-  createdAt: Date;
-  lastWriteAt: Date;
-  size_bytes: number;
-}
+// Export schemas
+export * from './schemas';
+
+// Export utilities
+export { ulid } from './utils/ulid';

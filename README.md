@@ -1,183 +1,111 @@
 # Avlo
 
-Link-based, account-less, offline-first collaborative whiteboard with integrated code execution.
+A link-based, account-less, offline-first, real-time collaborative whiteboard with integrated code execution.
 
-## Core Features
+## Overview
 
-- **Offline-first:** Full functionality without internet, seamless sync when connected
-- **Real-time collaboration:** < 125ms p95 latency with 50+ concurrent users
-- **No accounts required:** Link-based sharing for instant collaboration
-- **Code execution:** JavaScript and Python (Pyodide) in isolated workers
-- **Performance:** 60 FPS rendering, < 3s persistence lag
-- **PWA:** Installable with full offline support
+Avlo is designed for synchronous sketching and quick code execution for demos, teaching, and brainstorming—without accounts, installs, or SSO friction. Link sharing grants edit access with time-limited persistence.
 
-## 📊 Current Implementation Status
+**Target Scale**: ~15 concurrent users (small side project optimized for simplicity over scale)  
+**Performance Target**: ≤125ms p95 collaboration latency
 
-### ✅ Phase 1: Foundation & Infrastructure (COMPLETE)
+## Tech Stack
 
-| Component                   | Status      | Details                                                      |
-| --------------------------- | ----------- | ------------------------------------------------------------ |
-| **Monorepo Structure**      | ✅ Complete | Client, server, and shared packages properly configured      |
-| **Build Pipeline**          | ✅ Complete | Vite 5.4.11 with proper chunking, asset hashing, source maps |
-| **TypeScript**              | ✅ Complete | 5.9.2 with composite projects, strict mode, path aliases     |
-| **Development Environment** | ✅ Complete | ESLint with architecture guards, Prettier, Husky hooks       |
-| **Testing Framework**       | ✅ Complete | Vitest (10 tests passing), Playwright configured             |
-| **Dependencies**            | ✅ Complete | All exact versions installed per specification               |
-| **Configuration System**    | ✅ Complete | Comprehensive shared config with env overrides               |
+- **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, Tailwind CSS
+- **Real-time**: Yjs 13.6.27 (CRDT), y-websocket, y-indexeddb, y-webrtc
+- **Backend**: Node.js, Express, @y/websocket-server
+- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma
+- **Canvas**: HTML Canvas with RBush spatial indexing
+- **Code Execution**: JavaScript + Pyodide (Python in browser)
 
-### 🚧 Upcoming Phases
+## Current Status
 
-- **Phase 2:** Core Data Layer & Models (RoomDocManager, WriteQueue, CommandBus)
-- **Phase 3:** Canvas Rendering & Drawing System
-- **Phase 4:** Real-time Collaboration Infrastructure
-- **Phase 5:** Persistence & Storage Layer
-- **Phase 6:** UI Components & Tools
-- **Phase 7:** Code Execution System
-- **Phase 8:** PWA & Service Worker
-- **Phase 9:** WebRTC & P2P Enhancement
-- **Phase 10:** Production Polish & Optimization
+**Phase 2 Complete**: Core data layer, RoomDocManager foundation, and snapshot publishing system implemented and tested.
 
-## Architecture
+See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadmap (Phases 2-18).
 
-### Key Principles
-
-1. **No Direct Yjs Access**: UI components cannot import Yjs/providers directly (ESLint enforced)
-2. **Immutable Snapshots**: All rendering uses frozen snapshot objects, never live Yjs data
-3. **WriteQueue Pattern**: All mutations go through WriteQueue → CommandBus → single transaction
-4. **Offline-First**: IndexedDB for local persistence, CRDT for conflict resolution
-5. **WebSocket Authority**: WS remains authoritative path even when WebRTC is active
-
-### Project Structure
-
-```
-avlo/
-├── client/          # React frontend (components, hooks, lib)
-├── server/          # Express backend (websocket, api)
-├── shared/          # Shared types and configuration
-└── e2e/             # Playwright tests
-```
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-- Node.js 20+ (use `.nvmrc` for exact version)
-- npm 10+
-- Redis 7.x (for Phase 5+)
-- PostgreSQL 15+ (for Phase 5+)
-
-### Installation
+## Getting Started
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/avlo.git
-cd avlo
-
-# Install dependencies
+# Install dependencies (monorepo with workspaces)
 npm install
 
-# Set up environment variables
-cp .env.example .env
-```
-
-### Development
-
-```bash
-# Start development servers (client on :3000, server on :3001)
+# Start development servers (client + server concurrently)
 npm run dev
 
-# Run tests
+# Run tests (memory-safe mode)
 npm test
 
 # Type checking
 npm run typecheck
 
-# Linting
+# Linting & formatting
 npm run lint
-
-# Build for production
-npm run build
+npm run format
 ```
 
-### Testing
+## Project Structure
+
+```
+avlo/
+├── client/                    # React frontend (Vite)
+│   ├── src/
+│   │   ├── hooks/            # React hooks for data subscriptions
+│   │   ├── lib/              # RoomDocManager core
+│   │   ├── stores/           # Zustand stores (device-local UI state)
+│   │   └── types/            # TypeScript types
+├── server/                    # Node.js backend
+└── packages/
+    └── shared/               # Shared configuration & types
+```
+
+## Key Architecture Decisions
+
+### RoomDocManager Pattern
+
+- Central authority that owns Y.Doc and providers
+- Components access only immutable snapshots via subscriptions
+- UI never directly touches Yjs structures
+- Registry pattern ensures singleton-per-room guarantee
+
+### Immutable Snapshots
+
+- Published at most once per rAF
+- Never null (EmptySnapshot on init)
+- Frozen objects prevent accidental mutations
+- Include state vector key for change detection
+
+### Mutation Wrapper
+
+- All edits go through `mutate(fn)` with single `yjs.transact()`
+- Minimal guards: read-only (≥15MB), mobile (view-only), frame size (2MB)
+
+## Testing
+
+Tests use single-threaded execution by default to prevent memory issues:
 
 ```bash
-# Unit tests (Vitest)
-npm test
-
-# E2E tests (Playwright) - Phase 3+
-npm run test:e2e
-
-# Coverage report
-npm run test:coverage
+npm test              # Memory-safe mode (1.3GB max)
+npm run test:watch    # Parallel mode (requires 8GB+ RAM)
+npm run test:memory   # Memory leak diagnostics
+npm run test:coverage # Coverage report
 ```
 
-## 📦 Technology Stack
+## Documentation
 
-### Core Dependencies (Exact Versions)
+- [OVERVIEW.MD](./OVERVIEW.MD) - Complete system specification
+- [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) - Phase-by-phase implementation guide
+- [CLAUDE.md](./CLAUDE.md) - Development guide and current status
+- [packages/shared/CONFIG_USAGE.md](./packages/shared/CONFIG_USAGE.md) - Configuration guide
 
-- **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11
-- **State Management**: Yjs 13.6.27 (CRDT)
-- **Real-time**: y-websocket 3.0.0, y-webrtc 10.3.0
-- **Offline**: y-indexeddb 9.0.0
-- **Code Editor**: Monaco Editor 0.52.2
-- **Code Execution**: Pyodide 0.26.4 (Phase 7)
-- **Canvas**: RBush 4.0.1 (spatial indexing)
-- **Database**: Prisma 5.22.0, Redis 7.x, PostgreSQL 15+
-- **Testing**: Vitest 2.1.8, Playwright 1.49.1
+## Development Guidelines
 
-## 🔧 Configuration
+1. **Y.Doc References**: Never cache Y references as class fields
+2. **UI Isolation**: Components must not import Yjs libraries directly
+3. **Phase-Based Development**: Follow the implementation phases in order
+4. **Testing**: Use `createTestManager()` helper for isolated test instances
+5. **Configuration**: All constants in `@avlo/shared` with env overrides
 
-All configuration is centralized in `shared/config.ts` with environment variable overrides:
+## License
 
-```typescript
-// Example configuration usage
-import { config } from '@shared/config';
-
-// Room limits
-const maxRoomSize = config.room.maxSizeBytes; // 10MB
-const roomTTL = config.room.ttlDays; // 14 days
-
-// Performance settings
-const targetFPS = config.performance.targetFPS; // 60
-const snapshotBatchMs = config.performance.snapshotBatchWindowMs; // 8-16ms
-
-// Network settings
-const wsReconnectBase = config.network.ws.reconnectBaseMs; // 300ms
-```
-
-## 🛡️ Architecture Guards
-
-The project enforces strict architectural boundaries:
-
-```javascript
-// ❌ This will fail ESLint checks in UI components
-import * as Y from 'yjs'; // Error: Direct Yjs import not allowed
-
-// ✅ Correct approach
-import { useRoomSnapshot } from '@/hooks/useRoom';
-const snapshot = useRoomSnapshot(roomId); // Immutable snapshot
-```
-
-## 📈 Performance Targets
-
-- **Collaboration Latency**: p95 ≤ 125ms with 50 users
-- **Rendering**: 60 FPS maintained
-- **Persistence Lag**: p95 ≤ 3s, hard cap 5s
-- **Room Size**: 8MB warning, 10MB read-only cap
-- **Export**: 2s timeout before viewport fallback
-
-## 📚 Documentation
-
-- **[OVERVIEW.MD](OVERVIEW.MD)**: Complete technical specification
-- **[IMPLEMENTATION.MD](IMPLEMENTATION.MD)**: Phase-by-phase implementation guide
-
-## 📄 License
-
-Copyright © 2025. All rights reserved. (License to be determined)
-
----
-
-**Current Focus**: Beginning Phase 2 - Core Data Layer & Models
-
-_Last Updated: January 2025_
+Private project - not for public distribution

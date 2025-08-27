@@ -2,7 +2,7 @@
 
 ## Overview
 
-All Avlo constants are centralized in `shared/config.ts` as specified in the global conventions. This ensures consistency across the codebase and allows for environment-based overrides.
+All Avlo constants are centralized in `packages/shared/src/config.ts` as specified in the global conventions. This ensures consistency across the codebase and allows for environment-based overrides.
 
 ## Usage Examples
 
@@ -10,13 +10,13 @@ All Avlo constants are centralized in `shared/config.ts` as specified in the glo
 
 ```typescript
 // Import specific config groups
-import { ROOM_CONFIG, STROKE_CONFIG } from '@shared/config';
+import { ROOM_CONFIG, STROKE_CONFIG } from '@avlo/shared';
 
 // Import the default CONFIG object
-import CONFIG from '@shared/config';
+import CONFIG from '@avlo/shared';
 
 // Import utility functions
-import { isRoomReadOnly, calculateAwarenessInterval } from '@shared/config';
+import { isRoomReadOnly, calculateAwarenessInterval } from '@avlo/shared';
 ```
 
 ### Common Usage Patterns
@@ -24,7 +24,7 @@ import { isRoomReadOnly, calculateAwarenessInterval } from '@shared/config';
 #### 1. Checking Room Size Limits
 
 ```typescript
-import { isRoomSizeWarning, isRoomReadOnly } from '@shared/config';
+import { isRoomSizeWarning, isRoomReadOnly } from '@avlo/shared';
 
 function checkRoomStatus(sizeBytes: number) {
   if (isRoomReadOnly(sizeBytes)) {
@@ -41,7 +41,7 @@ function checkRoomStatus(sizeBytes: number) {
 #### 2. Using Stroke Limits
 
 ```typescript
-import { STROKE_CONFIG } from '@shared/config';
+import { STROKE_CONFIG } from '@avlo/shared';
 
 function validateStroke(points: number[]) {
   const pointCount = points.length / 2; // x,y pairs
@@ -61,7 +61,7 @@ function validateStroke(points: number[]) {
 #### 3. WebRTC Configuration
 
 ```typescript
-import { WEBRTC_CONFIG, calculateAwarenessInterval } from '@shared/config';
+import { WEBRTC_CONFIG, calculateAwarenessInterval } from '@avlo/shared';
 
 function shouldStartWebRTC(peerCount: number) {
   return peerCount <= WEBRTC_CONFIG.WEBRTC_START_THRESHOLD;
@@ -81,7 +81,7 @@ function getAwarenessRate(peerCount: number, isRTC: boolean) {
 #### 4. Backoff and Retry Logic
 
 ```typescript
-import { BACKOFF_CONFIG, applyJitter } from '@shared/config';
+import { BACKOFF_CONFIG, applyJitter } from '@avlo/shared';
 
 class WebSocketReconnect {
   private retryCount = 0;
@@ -105,7 +105,7 @@ class WebSocketReconnect {
 #### 5. Performance Budgets
 
 ```typescript
-import { PERFORMANCE_CONFIG } from '@shared/config';
+import { PERFORMANCE_CONFIG } from '@avlo/shared';
 
 class RenderLoop {
   private lastFrameTime = 0;
@@ -164,7 +164,7 @@ AWARENESS_HZ_BASE_RTC=30           # Override default 25 Hz
 
    ```typescript
    // Good
-   import { ROOM_CONFIG } from '@shared/config';
+   import { ROOM_CONFIG } from '@avlo/shared';
 
    // Bad - don't hardcode values
    const MAX_CLIENTS = 105; // Don't do this!
@@ -174,7 +174,7 @@ AWARENESS_HZ_BASE_RTC=30           # Override default 25 Hz
 
    ```typescript
    // Good
-   import { isRoomReadOnly } from '@shared/config';
+   import { isRoomReadOnly } from '@avlo/shared';
 
    // Less ideal - manual comparison
    if (sizeBytes >= 10 * 1024 * 1024) {
@@ -184,7 +184,7 @@ AWARENESS_HZ_BASE_RTC=30           # Override default 25 Hz
 3. **Type safety with config types**
 
    ```typescript
-   import type { RoomConfig, StrokeConfig } from '@shared/config';
+   import type { RoomConfig, StrokeConfig } from '@avlo/shared';
 
    function processWithConfig(room: RoomConfig, stroke: StrokeConfig) {
      // TypeScript ensures correct config shape
@@ -195,7 +195,7 @@ AWARENESS_HZ_BASE_RTC=30           # Override default 25 Hz
 
    ```typescript
    // Use DEBUG_CONFIG for development features
-   import { DEBUG_CONFIG } from '@shared/config';
+   import { DEBUG_CONFIG } from '@avlo/shared';
 
    if (DEBUG_CONFIG.ENABLE_PROFILING) {
      performance.mark('render-start');
@@ -206,7 +206,7 @@ AWARENESS_HZ_BASE_RTC=30           # Override default 25 Hz
 
 ```typescript
 // In tests, you can rely on consistent default values
-import { ROOM_CONFIG } from '@shared/config';
+import { ROOM_CONFIG } from '@avlo/shared';
 
 describe('Room limits', () => {
   it('should enforce size limits', () => {
@@ -235,7 +235,7 @@ Different config groups become relevant in different phases:
 To see active configuration:
 
 ```typescript
-import CONFIG from '@shared/config';
+import CONFIG from '@avlo/shared';
 
 // Log all active configuration (development only)
 if (CONFIG.DEBUG.DEBUG_MODE) {
@@ -252,7 +252,7 @@ When refactoring existing code:
 const roomSize = 10485760; // 10 MB
 
 // After
-import { ROOM_CONFIG } from '@shared/config';
+import { ROOM_CONFIG } from '@avlo/shared';
 const roomSize = ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES;
 ```
 

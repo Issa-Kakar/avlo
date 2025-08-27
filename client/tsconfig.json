@@ -6,7 +6,7 @@
     "paths": {
       "@/*": ["./src/*"],
       "@avlo/shared": ["../packages/shared/src/index.ts"],
-      "@shared/*": ["../shared/*"]
+      "@avlo/shared/*": ["../packages/shared/src/*"]
     },
     "types": ["vite/client"]
   },
