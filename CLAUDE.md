@@ -156,6 +156,8 @@ avlo/
 │   ├── src/
 │   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
 │   │   ├── lib/              # RoomDocManager core
+│   │   │   └── tools/        # Tool implementations (future)
+│   │   ├── stores/           # Zustand stores for device-local UI state
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
 │   └── src/
