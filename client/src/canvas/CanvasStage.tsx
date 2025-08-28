@@ -51,6 +51,12 @@ export interface CanvasStageHandle {
    * @param run - Function that performs drawing operations on the context
    */
   withContext(run: (ctx: CanvasRenderingContext2D) => void): void;
+
+  /**
+   * Gets the bounding client rect of the canvas element.
+   * Used for coordinate conversion between screen and canvas space.
+   */
+  getBounds(): DOMRect;
 }
 
 /**
@@ -108,6 +114,10 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
           } finally {
             ctx.restore();
           }
+        },
+
+        getBounds(): DOMRect {
+          return canvasRef.current?.getBoundingClientRect() || new DOMRect();
         },
       }),
       [],
