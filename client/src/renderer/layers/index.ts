@@ -1,6 +1,9 @@
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 
+// Re-export the actual implementation
+export { drawStrokes, clearStrokeCache } from './strokes';
+
 // Layer function signatures - all are stubs in Phase 3.3
 
 export function drawBackground(
@@ -10,22 +13,9 @@ export function drawBackground(
   _viewport: ViewportInfo,
 ): void {
   // Phase 3.3: Stub only
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] Background');
-  }
-}
-
-export function drawStrokes(
-  _ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Phase 4: Will implement actual stroke rendering
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] Strokes', snapshot.strokes.length);
   }
 }
 
@@ -36,7 +26,7 @@ export function drawShapes(
   _viewport: ViewportInfo,
 ): void {
   // Future phase: Stamps and shapes
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] Shapes');
   }
@@ -49,7 +39,7 @@ export function drawText(
   _viewport: ViewportInfo,
 ): void {
   // Phase 11: Text rendering
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] Text', snapshot.texts.length);
   }
@@ -62,7 +52,7 @@ export function drawAuthoringOverlays(
   _viewport: ViewportInfo,
 ): void {
   // Future: Selection boxes, handles, text cursor
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] Authoring Overlays');
   }
@@ -80,7 +70,7 @@ export function drawPresenceOverlays(
   // - G_FIRST_SNAPSHOT: Ensures we have valid doc data to render against
   // Without both, show "Presence degraded" indicator but NO cursors
 
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] Presence Overlays');
   }
@@ -100,7 +90,7 @@ export function drawHUD(
 ): void {
   // Future: Minimap, toasts, update prompts
   // Note: Never included in export
-  if (process.env.NODE_ENV === 'development' && process.env.DEBUG_RENDER_LAYERS) {
+  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
     console.log('[Layer] HUD');
   }
