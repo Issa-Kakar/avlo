@@ -13,17 +13,23 @@ export interface CanvasProps {
   className?: string;
 }
 
+export interface CanvasHandle {
+  screenToWorld: (clientX: number, clientY: number) => [number, number];
+  worldToClient: (worldX: number, worldY: number) => [number, number];
+}
+
 /**
  * Canvas component that integrates rendering with coordinate transforms.
  * Bridges between the low-level CanvasStage and high-level room data.
  *
  * Phase 3.3: Now uses RenderLoop with event-driven architecture
+ * Phase 3.4: Fixed DPR handling in coordinate transforms
  */
-export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
+export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, className }, ref) => {
   const stageRef = useRef<CanvasStageHandle>(null);
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
-  const [canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
+  const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
   const renderLoopRef = useRef<RenderLoop | null>(null);
 
@@ -73,40 +79,39 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
 
   // Convert screen (client/CSS) coordinates to world coordinates
   // Used for pointer events in Phase 5 - pass e.clientX/e.clientY
-  const _screenToWorld = useCallback(
+  const screenToWorld = useCallback(
     (clientX: number, clientY: number): [number, number] => {
-      if (!canvasSize || !stageRef.current) return [clientX, clientY];
+      if (!stageRef.current) return [clientX, clientY];
 
       // Get canvas element position from stage ref
       const rect = stageRef.current.getBounds();
 
-      // Client (CSS) coordinates to canvas coordinates
-      // Account for DPR: CSS pixels to canvas pixels
-      const canvasX = (clientX - rect.left) * canvasSize.dpr;
-      const canvasY = (clientY - rect.top) * canvasSize.dpr;
+      // Screen to Canvas (CSS pixels) - NO DPR multiplication
+      const canvasX = clientX - rect.left;
+      const canvasY = clientY - rect.top;
 
-      // Canvas to world using transform
+      // Canvas to World using ViewTransform (CSS pixels → world units)
       return viewTransform.canvasToWorld(canvasX, canvasY);
     },
-    [viewTransform, canvasSize],
+    [viewTransform],
   );
 
   // Convert world coordinates to client (CSS) coordinates
   // Used for positioning UI elements
-  const _worldToClient = useCallback(
+  const worldToClient = useCallback(
     (worldX: number, worldY: number): [number, number] => {
-      if (!canvasSize || !stageRef.current) return [worldX, worldY];
+      if (!stageRef.current) return [worldX, worldY];
 
-      // World to canvas
+      // World to canvas (returns CSS pixels)
       const [canvasX, canvasY] = viewTransform.worldToCanvas(worldX, worldY);
 
-      // Get canvas element position from stage ref
+      // Get canvas element position
       const rect = stageRef.current.getBounds();
 
-      // Canvas to screen (CSS): divide by DPR and add rect offset
-      return [canvasX / canvasSize.dpr + rect.left, canvasY / canvasSize.dpr + rect.top];
+      // Canvas to screen (both in CSS pixels) - NO DPR division
+      return [canvasX + rect.left, canvasY + rect.top];
     },
-    [viewTransform, canvasSize],
+    [viewTransform],
   );
 
   // Handle resize events from CanvasStage
@@ -221,5 +226,17 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
   }, [viewTransform.scale, viewTransform.pan.x, viewTransform.pan.y]);
 
+  // Expose coordinate transform functions via ref
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      screenToWorld,
+      worldToClient,
+    }),
+    [screenToWorld, worldToClient],
+  );
+
   return <CanvasStage ref={stageRef} className={className} onResize={handleResize} />;
-};
+});
+
+Canvas.displayName = 'Canvas';

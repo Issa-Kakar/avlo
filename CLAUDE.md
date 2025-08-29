@@ -107,6 +107,12 @@ Pointer/inputs → Presence emitter (≤ ~30 Hz, interpolate/dead-reckon 1 frame
 Room stats (out-of-band; not in Y.Doc)
 persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI banners/gates
 ```
+Think in three coordinate spaces, each with a single clear owner: World space (logical data), What your Y.Doc stores: strokes, shapes, anchors, Units are abstract/logical; stable across screens, zoom, and displays.
+
+Canvas space (CSS pixels): What your view transform consumes/produces, and Matches DOM layout and any HTML overlays (selection boxes, tooltips, inputs), and Where pointer events “naturally” live.
+
+Device space (physical pixels): What the GPU/2D raster actually draws into, Only the raster layer should care about DPR. The golden rule: DPR is a raster concern, not a modeling or interaction concern.
+So DPR should be applied once—when sizing the backing store and setting the canvas’ drawing transform—not sprinkled through hit-testing, pointer math, or data transforms.
 
 ### Device-Local UI State (Zustand + localStorage)
 ```typescript
