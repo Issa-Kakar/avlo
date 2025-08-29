@@ -265,7 +265,7 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 3. Do not reorder by tool—respect scene order and the canonical layer ("Strokes" pass)
 
 ### 4.3 Performance Notes (keep minimal in Phase 4)
-1. LOD heuristics (optional): when zoomed far out, you may skip extremely tiny strokes or use a simpler path, but keep correctness first
+1. LOD heuristics : when zoomed far out, you may skip extremely tiny strokes or use a simpler path, but keep correctness first
 2. Offscreen/tiled caches: defer to a later optimization phase; the only normative early cache is the boot splash render snapshot keyed by svKey (displayed at boot, not used for logic)
 
 ## Phase 5: Drawing Input System
