@@ -154,6 +154,24 @@
 
 ### 3.2 Implement Coordinate Transform System
 
+THESE INSTRUCTIONS IN PHASE 3 ARE NOT AUTHORITATIVE, VIEW OVERVIEW.MD FOR CORRECT SPECIFICATIONS
+§3.2.2 worldToCanvas:
+“Subtract pan (world units), then multiply by scale:
+cx = (wx - pan.x) * scale; cy = (wy - pan.y) * scale.”
+§3.2.2 canvasToWorld:
+“Divide by scale, then add pan (world units):
+wx = cx / scale + pan.x; wy = cy / scale + pan.y.”
+§3.2.2 Context transform note:
+“On the 2D context, scale first, then translate(-pan.x, -pan.y).”
+§3.1 / §3.3.2 DPR:
+“Set DPR once in canvas setup with setTransform(dpr,0,0,dpr,0,0) and do not mix DPR into view transforms.”
+§3.3.2 Dirty-rects:
+“If scale or pan changed since last frame, skip dirty-rects and full-clear.”
+§3.3.3 Render order:
+“Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence overlays → HUD.”
+§3.3.3 Line widths:
+“World strokes: ctx.lineWidth = style.size. Hairlines/HUD: 1 / scale.”
+
 #### 3.2.1 Define Transform State Management
 1. Create view transform state with scale and pan properties
 2. Initialize scale to 1 for 100% zoom
@@ -163,12 +181,12 @@
 
 #### 3.2.2 Create Coordinate Conversion Functions
 1. Implement worldToCanvas conversion method:
-   - Apply scale multiplication to world coordinates
-   - Add pan offset for viewport positioning
+   - Subtract pan (world offset) from world coordinates
+   - Apply scale multiplication
    - Return canvas pixel coordinates
 2. Create canvasToWorld inverse transformation:
-   - Subtract pan offset from canvas coordinates
-   - Divide by scale to get world units
+   - Divide canvas coordinates by scale
+   - Add pan (world offset) to get world units
    - Handle edge cases for zero scale
 3. Add screenToCanvas helper for DOM event coordinates
 4. Implement bounds checking for valid coordinate ranges
@@ -176,136 +194,127 @@
 ### 3.3 Build Render Loop Foundation
 
 #### 3.3.1 Set Up Animation Frame Loop
-1. Create render function called via requestAnimationFrame
-2. Subscribe to snapshot updates from RoomDocManager
-3. Store latest snapshot in component state
-4. Track frame timing for performance monitoring
-5. Implement frame skipping if running behind
+
+1. Create a render() function driven by requestAnimationFrame (rAF).
+2. Subscribe to snapshot updates from RoomDocManager; write the latest snapshot into a ref (not React state) to avoid extra React re-renders during rAF.
+3. Read the ViewTransform from the UI ViewTransform context (Phase 3.2) each frame. The snapshot’s view remains identity in this phase—do not read view from snapshot.
+4. Track simple frame timing metrics (duration, dropped-frame counter) for debugging.
+5. Add optional frame skipping when a previous frame exceeds budget
+6. Unmount hygiene: cancel the rAF loop, unsubscribe from the snapshot stream, and tear down observers/listeners.
 
 #### 3.3.2 Implement Dirty Rectangle Tracking
-1. Create dirty region tracking system
-2. Mark regions that need redrawing
-3. Coalesce overlapping dirty rectangles
-4. Clear only dirty regions before redraw
-5. Skip rendering if no dirty regions exist
-canvas.width = cssW * dpr; canvas.height = cssH * dpr; ctx.setTransform(dpr,0,0,dpr,0,0) to avoid fuzzy strokes.
+1. Build a dirty region tracker to collect and coalesce invalidated areas.
+2. Transform change rule: if scale or pan changed since the last frame, ignore dirty rects and perform a full clear (transform shifts invalidate the whole screen).
+3. DPR policy: DPR is applied once by the CanvasStage on resize with ctx.setTransform(dpr,0,0,dpr,0,0). Never mix DPR into your world transform in the render pass.
+4. Clear pass:
+Dirty-rect clears (transform unchanged):
+ctx.save(); ctx.setTransform(1,0,0,1,0,0);
+for each coalesced rect in device pixels → ctx.clearRect(x, y, w, h);
+ctx.restore();
+
+Full clear (transform changed):
+ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
+5. World transform (draw pass): apply world-space only transform, wrapped in save/restore:
+ctx.save();
+ctx.scale(view.scale, view.scale);
+ctx.translate(-view.pan.x, -view.pan.y);
+// …draw layers here…
+ctx.restore();
+This composes to canvas = (world − pan) × scale..
+6. Skip rendering when no dirty rects and transform unchanged.
 
 #### 3.3.3 Create Render Pipeline Structure
-1. Define render order: background, strokes, text, overlays
-2. Create separate render methods for each layer
-3. Implement culling to skip off-screen elements
-4. Add render budgeting with 16ms frame target
-5. Yield to browser between heavy operations
-ctx.lineWidth = style.size * view.scale (since size is in world units) (will)
+1. Define render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence overlays → HUD.
+2. Provide separate draw functions for each layer; layers read the same snapshot and ViewTransform.
+3. Implement culling helpers (e.g., isInViewport) using the ViewTransform and current canvas bounds.
+4. Keep a 16 ms target budget; yield work across frames when heavy.
+5. Line-width policy reminder for later phases:
+World content (e.g., strokes): ctx.lineWidth = style.size (world units).
+Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied DPR).
 
 ## Phase 4: Stroke Data Model & Rendering
 
 ### 4.1 Implement Stroke Rendering Pipeline
 
-#### 4.1.1 Create Path Building from Points
-1. Convert flat points array to coordinate pairs
-2. Handle pressure values if present (every third value)
-3. Build Path2D object for efficient rendering
-4. Cache paths per stroke ID to avoid rebuilding
-5. Invalidate cache when stroke data changes
+#### 4.1.1 Build Paths from Points
+1. Detect stride of Stroke.points:
+   - If points.length % 3 === 0 → [x,y,p, x,y,p, …]
+   - Else → [x,y, x,y, …] (no pressure)
+2. Convert to an ephemeral typed array/polyline for this frame; never persist typed arrays to Yjs (storage remains plain number[])
+3. Optionally build a Path2D per stroke for fast stroking; this cache is UI-local (not persisted)
+4. Cache keying: cache render data by (svKey, stroke.id) (or stroke version). Invalidate when svKey changes or that stroke mutates (Use svKey from the snapshot contract)
 
-#### 4.1.2 Implement Basic Stroke Drawing
-1. Set stroke style from color property
-2. Apply line width from size property
-3. Configure global alpha for opacity
-4. Use stroke method to draw path
-5. Reset context state after drawing
+#### 4.1.2 Draw Basic Strokes (world units)
+1. Color: ctx.strokeStyle = stroke.color
+2. Width: ctx.lineWidth = stroke.size (world units; do not multiply by DPR). CanvasStage already applied DPR on resize
+3. Opacity: ctx.globalAlpha = stroke.opacity
+4. Stroke with ctx.stroke(path); reset only the properties you changed (alpha, styles) to avoid churn
 
-### 4.2 Add Tool-Specific Rendering
+#### 4.1.3 Hairlines & HUD (reference)
+1. For hairline overlays drawn in world space, use ctx.lineWidth = 1 / view.scale to target ~1 device pixel (DPR already baked into the context)
 
-#### 4.2.1 Implement Pen Tool Rendering
-1. Use standard stroke rendering with full opacity
-2. Apply round line caps for smooth appearance
-3. Set round line joins for continuous curves
-4. Handle single-point strokes as dots
-5. Implement pressure variation if available
+### 4.2 Tool-Specific Rendering
 
-#### 4.2.2 Create Highlighter Rendering
-1. Set opacity to 0.25 as default
-2. Use square line caps for marker effect
-3. Apply composite operation for transparency
-4. Ensure proper layering under pen strokes
-5. Handle overlap blending correctly
+#### 4.2.1 Pen
+1. Standard stroke rendering with the rules in 4.1.2
+2. Use round caps/joins by default (consistent, smooth curves)
 
-### 4.3 Optimize Rendering Performance
+#### 4.2.2 Highlighter
+1. Default opacity = 0.25 (world units for size still apply)
+2. Use normal blending (source-over); avoid multiply unless you have a tested visual requirement
+3. Do not reorder by tool—respect scene order and the canonical layer ("Strokes" pass)
 
-#### 4.3.1 Implement Level-of-Detail System
-1. Check zoom level before rendering
-2. Skip tiny strokes when zoomed out
-3. Simplify complex paths at distance
-4. Use lower quality for fast panning
-5. Restore full quality when still
-
-#### 4.3.2 Add Render Caching
-1. Create offscreen canvas for static content
-2. Render unchanged strokes to cache
-3. Composite cache to main canvas
-4. Invalidate cache on data changes
-5. Limit cache memory usage
+### 4.3 Performance Notes (keep minimal in Phase 4)
+1. LOD heuristics (optional): when zoomed far out, you may skip extremely tiny strokes or use a simpler path, but keep correctness first
+2. Offscreen/tiled caches: defer to a later optimization phase; the only normative early cache is the boot splash render snapshot keyed by svKey (displayed at boot, not used for logic)
 
 ## Phase 5: Drawing Input System
 
 ### 5.1 Implement Pointer Event Handling
 
 #### 5.1.1 Set Up Event Listeners
-1. Add pointerdown listener to canvas element
-2. Attach pointermove for drawing updates
-3. Listen for pointerup to commit strokes
-4. Handle pointercancel for interrupted gestures
-5. Prevent default browser behaviors
-Coalesce move events to the latest per frame and drop the stale ones when busy
-canvas.setPointerCapture(e.pointerId) on pointerdown and release on up/cancel
+1. Add pointerdown on the canvas (or an interaction overlay)
+2. Attach pointermove for live preview; pointerup to commit; pointercancel to abort
+3. Prevent default browser behaviors; ensure the canvas (or overlay) sets touch-action: none
+4. Use non-passive listeners so you can reliably call preventDefault()
+5. Event coalescing: keep only the latest move event per rAF; drop stale events under load
+6. Call canvas.setPointerCapture(e.pointerId) on down; release on up/cancel
 
 #### 5.1.2 Capture Pointer State
-1. Extract x, y coordinates from events
-2. Convert screen to world coordinates
-3. Capture pressure if available (0 to 1)
-4. Store pointer ID for multi-touch
-5. Track pointer type (mouse, pen, touch)
+1. Extract client coordinates; convert screen → canvas → world via the ViewTransform utilities
+2. Capture pressure if available; clamp to [0,1]
+3. Track pointerId and pointer type (mouse | pen | touch) for tool behavior
 
-### 5.2 Build Preview Rendering System
+### 5.2 Build Preview Rendering
 
-#### 5.2.1 Create Local Preview State
-1. Initialize array for preview points
-2. Add points during pointermove
-3. Store with world coordinates
-4. Include pressure values if present
-5. Clear on pointerup or cancel
+#### 5.2.1 Local Preview State
+1. Maintain a local array of world-space preview points (include pressure if present)
+2. Clear preview on pointerup or pointercancel
 
-#### 5.2.2 Implement Preview Drawing
-1. Render preview on separate canvas layer
-2. Draw with current tool settings
-3. Apply 0.35 opacity for preview
-4. Clear previous preview each frame
-5. Skip preview if no active points
+#### 5.2.2 Preview Draw Pass
+1. Render preview on a separate canvas layer (or the same stage with a dedicated pass)
+2. Use current tool settings; set preview opacity to 0.35 (from constraints)
+3. DPR & transforms: the preview canvas also uses CanvasStage's DPR policy; in the draw pass apply the same world-space transform (scale then translate(-pan))
+4. Clear the previous preview each frame (identity → clearRect(devicePixels))
 
-### 5.3 Implement Stroke Commit Logic
+### 5.3 Commit a Stroke
 
-#### 5.3.1 Process Points on Pointer Up
-1. Check minimum points threshold (at least 2)
-2. Calculate bounding box from all points
-3. Assign current scene from snapshot
-4. Generate ULID for stroke ID, ensure stroke object includes userID
-5. Capture current timestamp
+#### 5.3.1 Validate on Pointer-Up
+1. Require at least 2 points; compute bbox from world points
+2. Assign scene at commit from currentScene in the snapshot
+3. Create a ULID id; include userId and createdAt (ms epoch)
 
-#### 5.3.2 Apply Douglas-Peucker Simplification
-1. Run simplification in world units
-2. Use base tolerance: pen 0.8px, highlighter 0.5px (Do not simplify text/stamps; cap highlighter tolerance bumps at 1.5x)
-3. Check resulting size under 128KB limit
-4. If over, increase tolerance by 1.4x and retry once
-5. Hard downsample to 10,000 points if still over
+#### 5.3.2 Apply Douglas–Peucker Simplification (world units)
+1. Base tolerances: pen 0.8 px, highlighter 0.5 px (cap highlighter bumps at 1.5×)
+2. Budgets: encoded update ≤ 128 KB and points ≤ 10,000
+3. If over budget → one retry with tol *= 1.4; if still over → hard downsample to ≤ 10,000 points
 
-#### 5.3.3 Commit to Y.Doc
-1. Create stroke object with all properties
-2. Call mutate method on RoomDocManager
-3. Append stroke to strokes array in transaction
-4. Let manager handle snapshot publishing
-5. Clear preview state after commit
+#### 5.3.3 Commit to Y.Doc (single transact)
+1. Build a Stroke object per the authoritative schema (points remain flattened number[]; no typed arrays)
+2. Minimal write guards right before mutate(fn):
+   - BLOCK when room is read-only (≥ 15 MB), on mobile view-only, or when this frame would exceed 2 MB
+3. Execute one yjs.transact() to append to root.strokes[]; the DocManager publishes a new Snapshot at the next rAF
+4. Clear preview state after commit
 
 ## Phase 6: RBush Spatial Indexing
 
