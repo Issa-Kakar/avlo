@@ -20,7 +20,7 @@ Avlo is designed for synchronous sketching and quick code execution for demos, t
 
 ## Current Status
 
-**Phase 2 Complete**: Core data layer, RoomDocManager foundation, and snapshot publishing system implemented and tested.
+**Phase 3 Complete**: Core data layer, RoomDocManager foundation, snapshot publishing system, and basic canvas infrastructure with coordinate transforms and render loop implemented and tested.
 
 See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadmap (Phases 2-18).
 
