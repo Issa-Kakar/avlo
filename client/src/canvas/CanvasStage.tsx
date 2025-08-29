@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
+import { PERFORMANCE_CONFIG } from '@avlo/shared';
 import { configureContext2D } from './internal/context2d';
 
 /**
@@ -85,7 +86,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
     });
 
     // Media query listener for DPR changes
-    const dprChangeListenerRef = useRef<MediaQueryList | null>(null);
+    const dprChangeListenerRef = useRef<(MediaQueryList & { handler?: () => void }) | null>(null);
 
     // Expose imperative API to parent components
     useImperativeHandle(
@@ -128,20 +129,21 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
       const canvas = canvasRef.current;
       if (!canvas) return;
 
-      // Store handleDPRChange at a higher scope for cleanup
-      let handleDPRChange: (() => void) | null = null;
-
-      // Setup DPR change listener
+      // Setup DPR change listener with proper cleanup
       const setupDPRListener = () => {
-        // Clean up previous listener
-        if (dprChangeListenerRef.current && handleDPRChange) {
-          dprChangeListenerRef.current.removeEventListener('change', handleDPRChange);
+        // Clean up any existing listener first
+        if (dprChangeListenerRef.current) {
+          const oldListener = dprChangeListenerRef.current;
+          const oldHandler = oldListener.handler;
+          if (oldHandler) {
+            oldListener.removeEventListener('change', oldHandler);
+          }
         }
 
         const dpr = window.devicePixelRatio || 1;
         const mediaQuery = window.matchMedia(`(resolution: ${dpr}dppx)`);
 
-        handleDPRChange = () => {
+        const handleDPRChange = () => {
           // Re-run the resize logic with new DPR
           if (canvasRef.current) {
             const rect = canvasRef.current.getBoundingClientRect();
@@ -150,9 +152,10 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
             // Update stored values
             dprRef.current = newDpr;
 
-            // Reapply sizing and transforms
-            canvasRef.current.width = rect.width * newDpr;
-            canvasRef.current.height = rect.height * newDpr;
+            // Reapply sizing and transforms with size limits
+            const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
+            canvasRef.current.width = Math.min(rect.width * newDpr, maxDim);
+            canvasRef.current.height = Math.min(rect.height * newDpr, maxDim);
 
             if (ctxRef.current) {
               configureContext2D(ctxRef.current);
@@ -169,12 +172,14 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
             });
 
             // Recreate listener for the new DPR value
+            // Important: this will clean up the current listener first
             setupDPRListener();
           }
         };
 
         mediaQuery.addEventListener('change', handleDPRChange);
-        dprChangeListenerRef.current = mediaQuery;
+        // Store both the query and handler for proper cleanup
+        dprChangeListenerRef.current = Object.assign(mediaQuery, { handler: handleDPRChange });
       };
 
       // Create ResizeObserver
@@ -188,10 +193,11 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
           dprRef.current = dpr;
           dimensionsRef.current = { cssWidth: width, cssHeight: height };
 
-          // Set canvas buffer size (actual device pixels)
+          // Set canvas buffer size (actual device pixels) with size limits
           // This changes backing store only, not CSS dimensions
-          canvas.width = width * dpr;
-          canvas.height = height * dpr;
+          const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
+          canvas.width = Math.min(width * dpr, maxDim);
+          canvas.height = Math.min(height * dpr, maxDim);
 
           // Get context if first time
           if (!ctxRef.current) {
@@ -230,8 +236,12 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
       // Cleanup on unmount
       return () => {
         resizeObserverRef.current?.disconnect();
-        if (dprChangeListenerRef.current && handleDPRChange) {
-          dprChangeListenerRef.current.removeEventListener('change', handleDPRChange);
+        if (dprChangeListenerRef.current) {
+          const listener = dprChangeListenerRef.current;
+          const handler = listener.handler;
+          if (handler) {
+            listener.removeEventListener('change', handler);
+          }
         }
 
         // Null all refs

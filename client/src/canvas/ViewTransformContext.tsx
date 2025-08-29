@@ -56,7 +56,13 @@ export function ViewTransformProvider({ children }: { children: React.ReactNode 
   }, []);
 
   const setPan = useCallback((pan: { x: number; y: number }) => {
-    setViewState((prev) => ({ ...prev, pan }));
+    // Clamp pan to prevent excessive distances from origin
+    const maxDistance = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
+    const clampedPan = {
+      x: Math.max(-maxDistance, Math.min(maxDistance, pan.x)),
+      y: Math.max(-maxDistance, Math.min(maxDistance, pan.y)),
+    };
+    setViewState((prev) => ({ ...prev, pan: clampedPan }));
   }, []);
 
   const resetView = useCallback(() => {
