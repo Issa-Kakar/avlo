@@ -103,15 +103,18 @@ export function getVisibleWorldBounds(
   scale: number,
   pan: { x: number; y: number },
 ): Bounds {
+  // Guard against invalid scale (avoid division by zero)
+  const safeScale = Math.max(0.001, scale);
+
   // Inverse transform: worldPoint = canvasPoint / scale + pan
   const topLeftWorld = {
-    x: 0 / scale + pan.x,
-    y: 0 / scale + pan.y,
+    x: 0 / safeScale + pan.x,
+    y: 0 / safeScale + pan.y,
   };
 
   const bottomRightWorld = {
-    x: viewportWidth / scale + pan.x,
-    y: viewportHeight / scale + pan.y,
+    x: viewportWidth / safeScale + pan.x,
+    y: viewportHeight / safeScale + pan.y,
   };
 
   return {

@@ -21,8 +21,9 @@ export interface CanvasProps {
 export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
   const stageRef = useRef<CanvasStageHandle>(null);
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
-  const { transform: viewTransform, viewState } = useViewTransform();
+  const { transform: viewTransform } = useViewTransform();
   const [canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
+  const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
   const renderLoopRef = useRef<RenderLoop | null>(null);
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
@@ -110,8 +111,9 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
   // Handle resize events from CanvasStage
   const handleResize = useCallback((info: ResizeInfo) => {
     setCanvasSize(info);
+    canvasSizeRef.current = info; // Update ref for closure access
 
-    // Notify render loop
+    // Notify render loop of resize
     renderLoopRef.current?.setResizeInfo({
       width: info.pixelWidth,
       height: info.pixelHeight,
@@ -119,7 +121,7 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     });
   }, []);
 
-  // ADD render loop initialization (stable, doesn't restart on transform changes)
+  // Initialize render loop on mount (stable, doesn't restart on transform changes)
   useEffect(() => {
     if (!stageRef.current) return;
 
@@ -128,32 +130,48 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
 
     renderLoop.start({
       stageRef,
-      getView: () => viewTransformRef.current, // Read from UI state ref, NOT from snapshot.view
-      getSnapshot: () => snapshotRef.current, // snapshot.view remains identity in Phase 3
+      getView: () => viewTransformRef.current,
+      getSnapshot: () => snapshotRef.current,
       getViewport: (): ViewportInfo => {
-        const bounds = stageRef.current?.getBounds();
-        if (!bounds) {
+        // Use cached canvas size if available for better performance
+        const cachedSize = canvasSizeRef.current;
+        if (cachedSize && cachedSize.cssWidth > 0 && cachedSize.cssHeight > 0) {
           return {
-            pixelWidth: 0,
-            pixelHeight: 0,
-            cssWidth: 0,
-            cssHeight: 0,
-            dpr: window.devicePixelRatio || 1,
+            pixelWidth: cachedSize.pixelWidth,
+            pixelHeight: cachedSize.pixelHeight,
+            cssWidth: cachedSize.cssWidth,
+            cssHeight: cachedSize.cssHeight,
+            dpr: cachedSize.dpr,
           };
         }
+
+        // Fallback to getBounds if canvasSize not yet set
+        const bounds = stageRef.current?.getBounds();
+        const dpr = window.devicePixelRatio || 1;
+
+        if (!bounds || bounds.width === 0 || bounds.height === 0) {
+          // Return minimal valid viewport for edge cases
+          return {
+            pixelWidth: 1,
+            pixelHeight: 1,
+            cssWidth: 1,
+            cssHeight: 1,
+            dpr,
+          };
+        }
+
         return {
-          pixelWidth: bounds.width * (window.devicePixelRatio || 1),
-          pixelHeight: bounds.height * (window.devicePixelRatio || 1),
+          pixelWidth: Math.max(1, Math.round(bounds.width * dpr)),
+          pixelHeight: Math.max(1, Math.round(bounds.height * dpr)),
           cssWidth: bounds.width,
           cssHeight: bounds.height,
-          dpr: window.devicePixelRatio || 1,
+          dpr,
         };
       },
-      isMobile, // For FPS throttling
+      isMobile,
       onStats:
         process.env.NODE_ENV === 'development'
           ? (stats) => {
-              // Log frame stats in dev (every 60 frames)
               if (stats.frameCount % 60 === 0) {
                 // eslint-disable-next-line no-console
                 console.log('[RenderLoop Stats]', {
@@ -168,25 +186,37 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
           : undefined,
     });
 
-    // Trigger initial render ONLY if we have content
+    // Trigger initial render if we have content
+    // Use setTimeout(0) instead of queueMicrotask for better safety
+    // This ensures the render loop is fully initialized and avoids race conditions
+    let initialRenderTimeout: ReturnType<typeof setTimeout> | undefined;
     if (snapshotRef.current.svKey !== createEmptySnapshot().svKey) {
-      renderLoop.invalidateAll('content-change');
+      initialRenderTimeout = setTimeout(() => {
+        // Safety check - renderLoop might have been destroyed if component unmounted quickly
+        if (renderLoopRef.current === renderLoop) {
+          renderLoop.invalidateAll('content-change');
+        }
+      }, 0);
     }
 
     return () => {
+      if (initialRenderTimeout) {
+        clearTimeout(initialRenderTimeout);
+      }
       renderLoop.stop();
       renderLoop.destroy();
       renderLoopRef.current = null;
     };
-  }, [isMobile]); // Include isMobile dependency - it's stable due to empty useCallback deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // NO DEPENDENCIES - stable render loop lifecycle, isMobile is a stable callback
 
-  // ADD transform change detection (separate from lifecycle)
+  // Transform change detection (separate from lifecycle)
   useEffect(() => {
     // Trigger a frame when transform changes
     // The DirtyRectTracker.notifyTransformChange() in tick() will detect the change
     // and automatically promote to full clear - we just need to trigger the frame
     renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
-  }, [viewState.scale, viewState.pan.x, viewState.pan.y]);
+  }, [viewTransform.scale, viewTransform.pan.x, viewTransform.pan.y]);
 
   return <CanvasStage ref={stageRef} className={className} onResize={handleResize} />;
 };

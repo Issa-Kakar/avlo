@@ -8,7 +8,7 @@ import {
   FRAME_CONFIG,
   InvalidationReason,
   WorldBounds,
-  CSSPixelRect,
+  type CSSPixelRect,
 } from './types';
 import {
   drawBackground,
@@ -45,11 +45,12 @@ export class RenderLoop {
 
   private rafId: number | null = null;
   private lastFrameTime = 0;
-  private lastView: ViewTransform | null = null;
+  private lastTransformState: { scale: number; pan: { x: number; y: number } } | null = null;
   private skipNextFrame = false;
   private isHidden = false;
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
   private needsFrame = false; // EVENT-DRIVEN: Only schedule when dirty
+  private framesSinceInvalidation = 0; // Count frames since last invalidation
 
   constructor() {
     // Listen for visibility changes
@@ -84,20 +85,37 @@ export class RenderLoop {
 
   // Stop the render loop
   stop(): void {
+    // Clear any pending animation frames first
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
 
+    // Clear any hidden tab intervals
     if (this.hiddenIntervalId !== null) {
       clearInterval(this.hiddenIntervalId);
       this.hiddenIntervalId = null;
     }
 
+    // Reset all state
     this.config = null;
     this.dirtyTracker.reset();
-    this.lastView = null;
+    this.lastTransformState = null;
     this.needsFrame = false;
+    this.framesSinceInvalidation = 0;
+    this.skipNextFrame = false;
+    this.lastFrameTime = 0;
+
+    // Reset frame stats to initial state
+    this.frameStats = {
+      frameCount: 0,
+      avgMs: 0,
+      fps: 60,
+      overBudgetCount: 0,
+      skippedCount: 0,
+      lastClearType: 'none',
+      rectCount: 0,
+    };
   }
 
   // Handle visibility change
@@ -131,8 +149,13 @@ export class RenderLoop {
 
     const intervalMs = 1000 / FRAME_CONFIG.HIDDEN_FPS;
     this.hiddenIntervalId = window.setInterval(() => {
-      if (this.needsFrame) {
+      // Safety check - config might have been cleared if stopped
+      if (this.config && this.needsFrame) {
         this.tick();
+      } else if (!this.config && this.hiddenIntervalId !== null) {
+        // Clean up interval if config was cleared
+        clearInterval(this.hiddenIntervalId);
+        this.hiddenIntervalId = null;
       }
     }, intervalMs);
   }
@@ -149,11 +172,11 @@ export class RenderLoop {
     // Only throttle subsequent frames while still dirty
     const now = performance.now();
     const elapsed = now - this.lastFrameTime;
-    const isFirstFrameAfterInvalidation =
-      this.frameStats.frameCount === 0 || this.dirtyTracker.getClearInstructions().type !== 'none';
 
-    if (!isFirstFrameAfterInvalidation && elapsed < targetMs) {
-      // Schedule for the remaining time (only for subsequent frames)
+    // Don't throttle the first frame (framesSinceInvalidation === 0)
+    // Only apply FPS throttling to subsequent continuous frames
+    if (this.framesSinceInvalidation > 0 && elapsed < targetMs) {
+      // We've rendered recently and need to respect FPS cap
       window.setTimeout(() => this.scheduleFrameIfNeeded(), targetMs - elapsed);
       return;
     }
@@ -178,6 +201,7 @@ export class RenderLoop {
 
     // Clear the needsFrame flag - will be set again if new work arrives
     this.needsFrame = false;
+    this.framesSinceInvalidation++; // Increment frame counter
 
     // Skip frame if previous was over budget
     if (this.skipNextFrame) {
@@ -194,18 +218,52 @@ export class RenderLoop {
     const snapshot = getSnapshot();
     const viewport = getViewport();
 
+    // Validate view transform to prevent rendering issues
+    if (
+      !view ||
+      !isFinite(view.scale) ||
+      view.scale <= 0 ||
+      !isFinite(view.pan.x) ||
+      !isFinite(view.pan.y)
+    ) {
+      console.error('[RenderLoop] Invalid view transform:', view);
+      // Force full clear and return early - invalid transform can't be rendered
+      this.dirtyTracker.invalidateAll('transform-change');
+      return;
+    }
+
     // Update dirty tracker canvas size if changed
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
 
-    // Check for transform change
-    if (this.lastView) {
+    // Check for transform change only if it might have changed
+    // This avoids calling notifyTransformChange on every frame unnecessarily
+    if (
+      !this.lastTransformState ||
+      this.lastTransformState.scale !== view.scale ||
+      this.lastTransformState.pan.x !== view.pan.x ||
+      this.lastTransformState.pan.y !== view.pan.y
+    ) {
       this.dirtyTracker.notifyTransformChange(view);
+      // Store only the values we need for comparison (not functions)
+      this.lastTransformState = {
+        scale: view.scale,
+        pan: { x: view.pan.x, y: view.pan.y },
+      };
     }
-    this.lastView = view;
 
-    // Coalesce dirty rectangles
-    this.dirtyTracker.coalesce();
-    const clearInstructions = this.dirtyTracker.getClearInstructions();
+    // Get clear instructions early to check if we need to do anything
+    let clearInstructions = this.dirtyTracker.getClearInstructions();
+
+    // Coalesce dirty rectangles only if we have dirty rects (not full clear or none)
+    if (
+      clearInstructions.type === 'dirty' &&
+      clearInstructions.rects &&
+      clearInstructions.rects.length > 1
+    ) {
+      this.dirtyTracker.coalesce();
+      // Get updated instructions after coalescing
+      clearInstructions = this.dirtyTracker.getClearInstructions();
+    }
 
     // Early exit if nothing to do
     if (clearInstructions.type === 'none' && this.frameStats.frameCount > 0) {
@@ -223,12 +281,12 @@ export class RenderLoop {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
 
       if (clearInstructions.type === 'full') {
-        // Full clear
+        // Full clear in device pixels
         ctx.clearRect(0, 0, viewport.pixelWidth, viewport.pixelHeight);
         this.frameStats.lastClearType = 'full';
         this.frameStats.rectCount = 0; // Reset rect count on full clear
       } else if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
-        // Dirty rectangle clears
+        // Dirty rectangle clears - rects are already in device pixels
         for (const rect of clearInstructions.rects) {
           ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
         }
@@ -243,6 +301,8 @@ export class RenderLoop {
     // Draw pass (world transform)
     stage.withContext((ctx) => {
       // Apply world transform: scale first, then translate
+      // Note: withContext starts with the base DPR transform from CanvasStage
+      // The operations below compose with it: DPR × scale × translate
       ctx.scale(view.scale, view.scale);
       ctx.translate(-view.pan.x, -view.pan.y);
 
@@ -344,8 +404,12 @@ export class RenderLoop {
 
   // EVENT-DRIVEN: Mark dirty and schedule frame if needed
   private markDirty(): void {
+    // Safety check - don't schedule if config is null (stopped)
+    if (!this.config) return;
+
     if (!this.needsFrame) {
       this.needsFrame = true;
+      this.framesSinceInvalidation = 0; // Reset counter for new invalidation
       this.scheduleFrameIfNeeded();
     }
   }

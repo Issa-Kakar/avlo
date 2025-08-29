@@ -4,7 +4,11 @@ import type { ViewTransform } from '@avlo/shared';
 export class DirtyRectTracker {
   private rects: DevicePixelRect[] = [];
   private fullClearRequired = false;
-  private lastTransform: { scale: number; pan: { x: number; y: number } } | null = null;
+  // Initialize with identity transform to avoid unnecessary full clear on first update
+  private lastTransform: { scale: number; pan: { x: number; y: number } } = {
+    scale: 1,
+    pan: { x: 0, y: 0 },
+  };
   private canvasSize = { width: 0, height: 0 }; // Device pixels
   private dpr = 1; // Store DPR for conversions
 
@@ -16,10 +20,9 @@ export class DirtyRectTracker {
     this.dpr = dpr;
   }
 
-  // Notify of transform change - forces full clear
+  // Notify of transform change - forces full clear only if actually changed
   notifyTransformChange(newTransform: { scale: number; pan: { x: number; y: number } }): void {
     if (
-      !this.lastTransform ||
       this.lastTransform.scale !== newTransform.scale ||
       this.lastTransform.pan.x !== newTransform.pan.x ||
       this.lastTransform.pan.y !== newTransform.pan.y
@@ -32,6 +35,13 @@ export class DirtyRectTracker {
 
   // Add world-space invalidation
   invalidateWorldBounds(bounds: WorldBounds, viewTransform: ViewTransform): void {
+    // Guard against invalid scale
+    if (!viewTransform.scale || viewTransform.scale <= 0) {
+      // If scale is invalid, force full clear as a safety measure
+      this.invalidateAll('transform-change');
+      return;
+    }
+
     // Use canonical transform helper for consistency
     // CRITICAL: worldToCanvas returns CSS pixels, NOT device pixels
     // Transform: (world - pan) * scale = CSS pixels
@@ -59,12 +69,32 @@ export class DirtyRectTracker {
   ): void {
     if (this.fullClearRequired) return; // Already clearing everything
 
+    // Validate input rect to prevent NaN/Infinity issues
+    if (!isFinite(rect.x) || !isFinite(rect.y) || !isFinite(rect.width) || !isFinite(rect.height)) {
+      // Invalid rect - force full clear as safety measure
+      this.invalidateAll('dirty-overflow');
+      return;
+    }
+
+    // Clamp negative dimensions to 0
+    const safeRect = {
+      x: rect.x,
+      y: rect.y,
+      width: Math.max(0, rect.width),
+      height: Math.max(0, rect.height),
+    };
+
+    // Skip empty rectangles
+    if (safeRect.width === 0 || safeRect.height === 0) {
+      return;
+    }
+
     // Convert CSS pixels to device pixels for clearing
     const deviceRect = {
-      x: rect.x * dpr,
-      y: rect.y * dpr,
-      width: rect.width * dpr,
-      height: rect.height * dpr,
+      x: safeRect.x * dpr,
+      y: safeRect.y * dpr,
+      width: safeRect.width * dpr,
+      height: safeRect.height * dpr,
     };
 
     // Scale-aware stroke margin in device pixels: worst-case is maxLineWidth * scale * dpr
@@ -78,6 +108,22 @@ export class DirtyRectTracker {
       width: Math.ceil(deviceRect.width + 2 * totalMargin),
       height: Math.ceil(deviceRect.height + 2 * totalMargin),
     };
+
+    // Clamp to canvas bounds to prevent overflow
+    if (this.canvasSize.width > 0 && this.canvasSize.height > 0) {
+      // If completely outside canvas, might still need to clear (for transforms)
+      // But limit the rect size to reasonable bounds
+      inflated.x = Math.max(
+        -this.canvasSize.width,
+        Math.min(inflated.x, this.canvasSize.width * 2),
+      );
+      inflated.y = Math.max(
+        -this.canvasSize.height,
+        Math.min(inflated.y, this.canvasSize.height * 2),
+      );
+      inflated.width = Math.min(inflated.width, this.canvasSize.width * 3);
+      inflated.height = Math.min(inflated.height, this.canvasSize.height * 3);
+    }
 
     // Snap to grid for better coalescing
     inflated.x =
