@@ -237,18 +237,19 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 ### 4.1 Implement Stroke Rendering Pipeline
 
 #### 4.1.1 Build Paths from Points
-1. Detect stride of Stroke.points:
-   - If points.length % 3 === 0 → [x,y,p, x,y,p, …]
-   - Else → [x,y, x,y, …] (no pressure)
-2. Convert to an ephemeral typed array/polyline for this frame; never persist typed arrays to Yjs (storage remains plain number[])
+1. When reading points at render time, set stride = (points.length % 3 === 0) ? 3 : 2
+   - Commit-time rules ensure fixed stride per stroke
+   - At commit time, enforce consistency: if any pressure was observed during drawing, encode all points as triplets and fill missing pressure values with 1.0; otherwise encode as pairs only
+2. Build an ephemeral typed array per frame for rendering; never persist typed arrays to Yjs (storage remains plain number[])
 3. Optionally build a Path2D per stroke for fast stroking; this cache is UI-local (not persisted)
-4. Cache keying: cache render data by (svKey, stroke.id) (or stroke version). Invalidate when svKey changes or that stroke mutates (Use svKey from the snapshot contract)
+4. Cache render data by stroke.id only (strokes are immutable post-commit). Optionally include a style stamp (size/color/opacity/tool). Do not key per-stroke caches by svKey; reserve svKey for the boot splash snapshot and cosmetic guards
 
 #### 4.1.2 Draw Basic Strokes (world units)
 1. Color: ctx.strokeStyle = stroke.color
 2. Width: ctx.lineWidth = stroke.size (world units; do not multiply by DPR). CanvasStage already applied DPR on resize
 3. Opacity: ctx.globalAlpha = stroke.opacity
-4. Stroke with ctx.stroke(path); reset only the properties you changed (alpha, styles) to avoid churn
+4. Stroke with ctx.stroke(path)
+5. After ctx.stroke(...), reset any changed properties (e.g., ctx.globalAlpha = 1). Keep using the outer save/restore for the world transform only
 
 #### 4.1.3 Hairlines & HUD (reference)
 1. For hairline overlays drawn in world space, use ctx.lineWidth = 1 / view.scale to target ~1 device pixel (DPR already baked into the context)
@@ -265,7 +266,7 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 3. Do not reorder by tool—respect scene order and the canonical layer ("Strokes" pass)
 
 ### 4.3 Performance Notes (keep minimal in Phase 4)
-1. LOD heuristics : when zoomed far out, you may skip extremely tiny strokes or use a simpler path, but keep correctness first
+1. LOD heuristics: skip stroke drawing when the stroke's bbox diagonal in screen space is < 2 CSS pixels
 2. Offscreen/tiled caches: defer to a later optimization phase; the only normative early cache is the boot splash render snapshot keyed by svKey (displayed at boot, not used for logic)
 
 ## Phase 5: Drawing Input System
@@ -273,17 +274,18 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 ### 5.1 Implement Pointer Event Handling
 
 #### 5.1.1 Set Up Event Listeners
-1. Add pointerdown on the canvas (or an interaction overlay)
+1. Attach events to the canvas element directly; call canvas.setPointerCapture(e.pointerId) on pointerdown and release on up/cancel
 2. Attach pointermove for live preview; pointerup to commit; pointercancel to abort
-3. Prevent default browser behaviors; ensure the canvas (or overlay) sets touch-action: none
+3. Prevent default browser behaviors; ensure the canvas element sets touch-action: none
 4. Use non-passive listeners so you can reliably call preventDefault()
 5. Event coalescing: keep only the latest move event per rAF; drop stale events under load
-6. Call canvas.setPointerCapture(e.pointerId) on down; release on up/cancel
+6. Use existing coordinate conversion helpers from Canvas component for screen → world transforms
 
 #### 5.1.2 Capture Pointer State
-1. Extract client coordinates; convert screen → canvas → world via the ViewTransform utilities
+1. Extract client coordinates; convert screen → canvas → world via the ViewTransform utilities from useViewTransform() hook
 2. Capture pressure if available; clamp to [0,1]
 3. Track pointerId and pointer type (mouse | pen | touch) for tool behavior
+4. Keep float world coordinates end-to-end for authoring (no rounding during drawing)
 
 ### 5.2 Build Preview Rendering
 
@@ -292,29 +294,34 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 2. Clear preview on pointerup or pointercancel
 
 #### 5.2.2 Preview Draw Pass
-1. Render preview on a separate canvas layer (or the same stage with a dedicated pass)
-2. Use current tool settings; set preview opacity to 0.35 (from constraints)
-3. DPR & transforms: the preview canvas also uses CanvasStage's DPR policy; in the draw pass apply the same world-space transform (scale then translate(-pan))
-4. Clear the previous preview each frame (identity → clearRect(devicePixels))
+1. Render preview in the same stage using a dedicated preview pass (no extra canvas layer)
+2. Use current tool settings from device UI state; set preview opacity to 0.35 (from constraints)
+3. DPR & transforms: apply the same world-space transform as strokes (scale then translate(-pan))
+4. On each pointermove, invalidate union(prevPreviewBBox, newPreviewBBox) in world space
+5. On up/cancel, clear preview state and invalidate the last preview bbox
 
 ### 5.3 Commit a Stroke
 
 #### 5.3.1 Validate on Pointer-Up
 1. Require at least 2 points; compute bbox from world points
-2. Assign scene at commit from currentScene in the snapshot
+2. Scene will be assigned at commit time from currentScene (not captured during gesture)
 3. Create a ULID id; include userId and createdAt (ms epoch)
 
 #### 5.3.2 Apply Douglas–Peucker Simplification (world units)
-1. Base tolerances: pen 0.8 px, highlighter 0.5 px (cap highlighter bumps at 1.5×)
+1. Base tolerances: pen 0.8 px, highlighter 0.5 px in world units ('px' means world pixels at scale=1; never multiply by view.scale)
 2. Budgets: encoded update ≤ 128 KB and points ≤ 10,000
 3. If over budget → one retry with tol *= 1.4; if still over → hard downsample to ≤ 10,000 points
+4. Cap highlighter tolerance bumps at 1.5× maximum
 
 #### 5.3.3 Commit to Y.Doc (single transact)
 1. Build a Stroke object per the authoritative schema (points remain flattened number[]; no typed arrays)
-2. Minimal write guards right before mutate(fn):
-   - BLOCK when room is read-only (≥ 15 MB), on mobile view-only, or when this frame would exceed 2 MB
-3. Execute one yjs.transact() to append to root.strokes[]; the DocManager publishes a new Snapshot at the next rAF
-4. Clear preview state after commit
+2. Right before mutate(fn), read snapshot.meta.readOnly and/or the latest room stats (bytes, cap) and BLOCK when:
+   - Room is read-only (≥ 15 MB based on snapshot.meta.readOnly)
+   - Mobile view-only mode is active
+   - Encoded update would exceed 2 MB frame limit
+3. Inside mutate(), assign scene from current scene (meta.scene_ticks.length) at commit time
+4. Execute one yjs.transact() to append to root.strokes[]; the DocManager publishes a new Snapshot at the next rAF
+5. Clear preview state and invalidate affected world bounds after commit
 
 ## Phase 6: RBush Spatial Indexing
 

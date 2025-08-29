@@ -320,16 +320,6 @@ if (isRoomReadOnly(sizeBytes)) {
 npm run test -- room-doc-manager
 npm run test -- validation
 
-# Check implementation status
-# See PHASE2_IMPLEMENTATION_AUDIT.md for current gaps
-```
-
-### Environment Overrides
-```bash
-# .env file for local development
-ROOM_TTL_DAYS=7
-DEBUG_MODE=true
-MAX_CLIENTS_PER_ROOM=50
 ```
 
 ### Provider Initialization  
