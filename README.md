@@ -20,7 +20,7 @@ Avlo is designed for synchronous sketching and quick code execution for demos, t
 
 ## Current Status
 
-**Phase 2 Complete**: Core data layer, RoomDocManager foundation, and snapshot publishing system implemented and tested.
+**Phase 3 Complete**: Core data layer, RoomDocManager foundation, snapshot publishing system, and basic canvas infrastructure with coordinate transforms and render loop implemented and tested.
 
 See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadmap (Phases 2-18).
 
@@ -50,8 +50,11 @@ npm run format
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
+│   │   ├── canvas/           # Canvas components & transforms
+│   │   ├── contexts/         # React contexts (Registry, ViewTransform)
 │   │   ├── hooks/            # React hooks for data subscriptions
 │   │   ├── lib/              # RoomDocManager core
+│   │   ├── renderer/         # Render loop & dirty rect tracking
 │   │   ├── stores/           # Zustand stores (device-local UI state)
 │   │   └── types/            # TypeScript types
 ├── server/                    # Node.js backend

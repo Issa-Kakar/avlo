@@ -85,7 +85,7 @@ export const STROKE_CONFIG = {
   HIGHLIGHTER_SIMPLIFICATION_TOLERANCE: getEnvNumber('HIGHLIGHTER_SIMPLIFICATION_TOLERANCE', 0.5),
   SIMPLIFICATION_TOLERANCE_MULTIPLIER: getEnvNumber('SIMPLIFICATION_TOLERANCE_MULTIPLIER', 1.4),
   HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER: getEnvNumber('HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER', 1.5),
-  
+
   // Aliases for backward compatibility with tests
   SIMPLIFY_TOLERANCE_PEN: getEnvNumber('PEN_SIMPLIFICATION_TOLERANCE', 0.8),
   SIMPLIFY_TOLERANCE_HIGHLIGHTER: getEnvNumber('HIGHLIGHTER_SIMPLIFICATION_TOLERANCE', 0.5),
@@ -231,6 +231,10 @@ export const PERFORMANCE_CONFIG = {
   // Zoom limits
   MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.1),
   MAX_ZOOM: getEnvNumber('MAX_ZOOM', 10),
+  MAX_PAN_DISTANCE: getEnvNumber('MAX_PAN_DISTANCE', 50000), // Maximum pan distance from origin in world units
+
+  // Canvas size limits (prevent memory exhaustion)
+  MAX_CANVAS_DIMENSION: getEnvNumber('MAX_CANVAS_DIMENSION', 16384), // Max width or height in pixels
 
   // Spatial index
   RBUSH_REBUILD_THRESHOLD_COUNT: getEnvNumber('RBUSH_REBUILD_THRESHOLD_COUNT', 256),

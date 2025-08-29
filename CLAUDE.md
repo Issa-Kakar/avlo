@@ -15,13 +15,12 @@
 
 ## Current Implementation Status
 
-### COMPLETED: Phase 2.1 Core Typescript Types and Interfaces
-Phase 2.2 RoomDocManager Foundaiton, Y.Doc 
-Phase 2.3 Snapshot Publishing System
-Phase 2.4 Subscription Managment
+### COMPLETED: 
+- Phase 2: Core Data Layer & Models (Types, RoomDocManager, Snapshots, Subscriptions)
+- Phase 3: Basic Canvas Infrastructure (Canvas Component, Transform System, Render Loop)
 
 ## Current Status
-**TESTING PHASE 2**
+**READY FOR PHASE 4: Stroke Data Model & Rendering**
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -154,9 +153,19 @@ Usage patterns documented in `/packages/shared/CONFIG_USAGE.md`
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
+│   │   ├── canvas/           # Canvas components (Phase 3)
+│   │   │   ├── Canvas.tsx    # Main canvas component
+│   │   │   ├── CanvasStage.tsx # DPR-aware canvas substrate
+│   │   │   └── internal/     # Transform utilities
+│   │   ├── contexts/         # React contexts
+│   │   │   ├── RoomDocRegistryContext.tsx
+│   │   │   └── ViewTransformContext.tsx
 │   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
 │   │   ├── lib/              # RoomDocManager core
 │   │   │   └── tools/        # Tool implementations (future)
+│   │   ├── renderer/         # Render loop (Phase 3)
+│   │   │   ├── RenderLoop.ts # RAF-based render loop
+│   │   │   └── DirtyRectTracker.ts # Dirty region tracking
 │   │   ├── stores/           # Zustand stores for device-local UI state
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
@@ -170,7 +179,7 @@ avlo/
         └── CONFIG_USAGE.md   # Config usage guide
 
 ```
-Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`).
+Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`, `canvas/__tests__/`).
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)
