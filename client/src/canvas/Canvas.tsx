@@ -6,6 +6,7 @@ import { useRoomDoc } from '../hooks/use-room-doc';
 import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
 import type { ViewportInfo } from '../renderer/types';
+import { clearStrokeCache } from '../renderer/layers';
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -169,21 +170,20 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
         };
       },
       isMobile,
-      onStats:
-        process.env.NODE_ENV === 'development'
-          ? (stats) => {
-              if (stats.frameCount % 60 === 0) {
-                // eslint-disable-next-line no-console
-                console.log('[RenderLoop Stats]', {
-                  fps: stats.fps.toFixed(1),
-                  avgMs: stats.avgMs.toFixed(2),
-                  overBudget: stats.overBudgetCount,
-                  skipped: stats.skippedCount,
-                  lastClear: stats.lastClearType,
-                });
-              }
+      onStats: import.meta.env.DEV
+        ? (stats) => {
+            if (stats.frameCount % 60 === 0) {
+              // eslint-disable-next-line no-console
+              console.log('[RenderLoop Stats]', {
+                fps: stats.fps.toFixed(1),
+                avgMs: stats.avgMs.toFixed(2),
+                overBudget: stats.overBudgetCount,
+                skipped: stats.skippedCount,
+                lastClear: stats.lastClearType,
+              });
             }
-          : undefined,
+          }
+        : undefined,
     });
 
     // Trigger initial render if we have content
@@ -206,6 +206,9 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
       renderLoop.stop();
       renderLoop.destroy();
       renderLoopRef.current = null;
+      // Clear stroke render cache on unmount
+      // This prevents memory leaks when switching rooms
+      clearStrokeCache();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // NO DEPENDENCIES - stable render loop lifecycle, isMobile is a stable callback

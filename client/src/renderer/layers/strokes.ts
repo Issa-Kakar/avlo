@@ -73,6 +73,9 @@ export function drawStrokes(
 /**
  * Renders a single stroke.
  * Handles tool-specific rendering (pen vs highlighter).
+ *
+ * Note: viewTransform is passed for consistency but not used here since
+ * RenderLoop has already applied the world transform to the context.
  */
 function renderStroke(
   ctx: CanvasRenderingContext2D,

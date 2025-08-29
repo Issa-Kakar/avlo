@@ -237,12 +237,14 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 ### 4.1 Implement Stroke Rendering Pipeline
 
 #### 4.1.1 Build Paths from Points
-1. When reading points at render time, set stride = (points.length % 3 === 0) ? 3 : 2
-   - Commit-time rules ensure fixed stride per stroke
-   - At commit time, enforce consistency: if any pressure was observed during drawing, encode all points as triplets and fill missing pressure values with 1.0; otherwise encode as pairs only
+1. When reading points at render time, detect stride with robust validation:
+   - Phase 4 uses a heuristic: if length % 3 === 0, sample pressure columns and verify ≥80% are valid [0,1] values
+   - This prevents false positives on 2-stride arrays whose length is divisible by 3
+   - Phase 5 will enforce consistent stride at commit time: if any pressure observed during drawing, encode all points as triplets (fill missing with 1.0); otherwise encode as pairs only
 2. Build an ephemeral typed array per frame for rendering; never persist typed arrays to Yjs (storage remains plain number[])
 3. Optionally build a Path2D per stroke for fast stroking; this cache is UI-local (not persisted)
-4. Cache render data by stroke.id only (strokes are immutable post-commit). Optionally include a style stamp (size/color/opacity/tool). Do not key per-stroke caches by svKey; reserve svKey for the boot splash snapshot and cosmetic guards
+   - Feature-detect Path2D availability for test environments (use fallback path when unavailable)
+4. Cache render data by stroke.id only (strokes are immutable post-commit). Do not key per-stroke caches by svKey; reserve svKey for the boot splash snapshot and cosmetic guards only
 
 #### 4.1.2 Draw Basic Strokes (world units)
 1. Color: ctx.strokeStyle = stroke.color
