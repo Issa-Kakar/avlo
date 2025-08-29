@@ -50,8 +50,11 @@ npm run format
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
+│   │   ├── canvas/           # Canvas components & transforms
+│   │   ├── contexts/         # React contexts (Registry, ViewTransform)
 │   │   ├── hooks/            # React hooks for data subscriptions
 │   │   ├── lib/              # RoomDocManager core
+│   │   ├── renderer/         # Render loop & dirty rect tracking
 │   │   ├── stores/           # Zustand stores (device-local UI state)
 │   │   └── types/            # TypeScript types
 ├── server/                    # Node.js backend

@@ -153,9 +153,19 @@ Usage patterns documented in `/packages/shared/CONFIG_USAGE.md`
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
+│   │   ├── canvas/           # Canvas components (Phase 3)
+│   │   │   ├── Canvas.tsx    # Main canvas component
+│   │   │   ├── CanvasStage.tsx # DPR-aware canvas substrate
+│   │   │   └── internal/     # Transform utilities
+│   │   ├── contexts/         # React contexts
+│   │   │   ├── RoomDocRegistryContext.tsx
+│   │   │   └── ViewTransformContext.tsx
 │   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
 │   │   ├── lib/              # RoomDocManager core
 │   │   │   └── tools/        # Tool implementations (future)
+│   │   ├── renderer/         # Render loop (Phase 3)
+│   │   │   ├── RenderLoop.ts # RAF-based render loop
+│   │   │   └── DirtyRectTracker.ts # Dirty region tracking
 │   │   ├── stores/           # Zustand stores for device-local UI state
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
@@ -169,7 +179,7 @@ avlo/
         └── CONFIG_USAGE.md   # Config usage guide
 
 ```
-Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`).
+Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`, `canvas/__tests__/`).
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)
