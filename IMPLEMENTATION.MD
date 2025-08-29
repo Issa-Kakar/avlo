@@ -5,7 +5,7 @@
 ### 2.1 Define Core TypeScript Types and Interfaces
 
 #### 2.1.1 Create Coordinate and Geometry Types
-1. Define StrokePoint interface with x, y coordinates and optional pressure value (0 to 1 range)
+1. Define StrokePoint interface with x, y coordinates for world position
 2. Create bbox type as tuple of four numbers representing minX, minY, maxX, maxY in world units
 3. Define SceneIdx as alias for number type representing scene index
 4. Create ULID type aliases for StrokeId and TextId to ensure type safety
@@ -237,10 +237,9 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 ### 4.1 Implement Stroke Rendering Pipeline
 
 #### 4.1.1 Build Paths from Points
-1. When reading points at render time, detect stride with robust validation:
-   - Phase 4 uses a heuristic: if length % 3 === 0, sample pressure columns and verify ≥80% are valid [0,1] values
-   - This prevents false positives on 2-stride arrays whose length is divisible by 3
-   - Phase 5 will enforce consistent stride at commit time: if any pressure observed during drawing, encode all points as triplets (fill missing with 1.0); otherwise encode as pairs only
+1. Points are always stored as [x,y, x,y, ...] pairs (2-stride format)
+   - Validate that points.length % 2 === 0 for consistency
+   - No pressure data is captured or stored
 2. Build an ephemeral typed array per frame for rendering; never persist typed arrays to Yjs (storage remains plain number[])
 3. Optionally build a Path2D per stroke for fast stroking; this cache is UI-local (not persisted)
    - Feature-detect Path2D availability for test environments (use fallback path when unavailable)
@@ -285,14 +284,13 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 
 #### 5.1.2 Capture Pointer State
 1. Extract client coordinates; convert screen → canvas → world via the ViewTransform utilities from useViewTransform() hook
-2. Capture pressure if available; clamp to [0,1]
-3. Track pointerId and pointer type (mouse | pen | touch) for tool behavior
-4. Keep float world coordinates end-to-end for authoring (no rounding during drawing)
+2. Track pointerId and pointer type (mouse | pen | touch) for tool behavior
+3. Keep float world coordinates end-to-end for authoring (no rounding during drawing)
 
 ### 5.2 Build Preview Rendering
 
 #### 5.2.1 Local Preview State
-1. Maintain a local array of world-space preview points (include pressure if present)
+1. Maintain a local array of world-space preview points [x,y, x,y, ...]
 2. Clear preview on pointerup or pointercancel
 
 #### 5.2.2 Preview Draw Pass

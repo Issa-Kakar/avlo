@@ -67,7 +67,7 @@ interface Stroke {
   color: string;        // #RRGGBB
   size: number;         // world units
   opacity: number;      // 0..1
-  points: number[];     // flat [x,y,p?,x,y,p?,...] NEVER Float32Array
+  points: number[];     // flat [x,y,x,y,...] NEVER Float32Array
   bbox: [number, number, number, number];
   scene: SceneIdx;      // 0-based index, assigned at commit using currentScene
   createdAt: number;    // ms epoch
@@ -268,7 +268,7 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - Arrays stored as `number[]` in Yjs (never Float32Array)
    - Float32Array created only at render time
    - Scene assigned at commit time using currentScene
-   - Points flattened as `[x0,y0,p0?,x1,y1,p1?,...]`
+   - Points flattened as `[x0,y0,x1,y1,...]`
 
 ## Memory-Safe Testing
 

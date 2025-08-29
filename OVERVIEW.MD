@@ -191,7 +191,7 @@ type StrokeId = string;     // ULID
 type TextId   = string;     // ULID
 type SceneIdx = number;     // 0-based
 
-interface StrokePoint { x: number; y: number; p?: number } // p=pressure 0..1
+interface StrokePoint { x: number; y: number } // world coordinates
 
 interface Stroke {
   id: StrokeId;
@@ -199,7 +199,7 @@ interface Stroke {
   color: string;            // #RRGGBB
   size: number;             // world units (px at scale=1)
   opacity: number;          // 0..1; highlighter default 0.25
-  points: number[];         // flattened [x0,y0,(p0?), x1,y1,(p1?), ...]; NEVER Float32Array
+  points: number[];         // flattened [x0,y0, x1,y1, ...]; NEVER Float32Array
   bbox: [number, number, number, number]; // [minX, minY, maxX, maxY] world units
   scene: SceneIdx;          // assigned at commit time from currentScene
   createdAt: number;        // ms epoch
