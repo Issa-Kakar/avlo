@@ -142,5 +142,7 @@ CONFIG_IMPLEMENTATION.md
 PROJECT_STATUS.md
 .claude/
 full_project.MD 
+PROMPT.MD
+instruction_fix.md
 #personal tasks completion folder
 completed_tasks/

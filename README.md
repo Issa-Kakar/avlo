@@ -4,10 +4,15 @@ A link-based, account-less, offline-first, real-time collaborative whiteboard wi
 
 ## Overview
 
-Avlo is designed for synchronous sketching and quick code execution for demos, teaching, and brainstorming—without accounts, installs, or SSO friction. Link sharing grants edit access with time-limited persistence.
+Avlo enables synchronous sketching and quick code execution for demos, teaching, and brainstorming—without the friction of accounts, installs, or SSO. Simply share a link to grant edit access. Built with offline-first architecture using CRDTs, Avlo ensures your work is always available, syncing seamlessly when connected.
 
-**Target Scale**: ~15 concurrent users (small side project optimized for simplicity over scale)  
-**Performance Target**: ≤125ms p95 collaboration latency
+**Key Features:**
+
+- **Instant collaboration** - Share a link, start drawing together
+- **Code execution** - Run JavaScript and Python directly in the browser
+- **Offline-first** - Works without internet, syncs when reconnected
+- **Real-time** - ≤125ms p95 collaboration latency
+- **No setup** - No accounts, no installation, just open and use
 
 ## Tech Stack
 
@@ -20,7 +25,7 @@ Avlo is designed for synchronous sketching and quick code execution for demos, t
 
 ## Current Status
 
-**Phase 3 Complete**: Core data layer, RoomDocManager foundation, snapshot publishing system, and basic canvas infrastructure with coordinate transforms and render loop implemented and tested.
+**Phase 4 Complete**: Core data layer, RoomDocManager foundation, snapshot publishing system, canvas infrastructure with coordinate transforms, render loop, and stroke rendering pipeline with Path2D building and tool-specific rendering implemented and tested.
 
 See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadmap (Phases 2-18).
 
@@ -54,7 +59,7 @@ avlo/
 │   │   ├── contexts/         # React contexts (Registry, ViewTransform)
 │   │   ├── hooks/            # React hooks for data subscriptions
 │   │   ├── lib/              # RoomDocManager core
-│   │   ├── renderer/         # Render loop & dirty rect tracking
+│   │   ├── renderer/         # Render loop, layers & stroke building
 │   │   ├── stores/           # Zustand stores (device-local UI state)
 │   │   └── types/            # TypeScript types
 ├── server/                    # Node.js backend
@@ -85,13 +90,10 @@ avlo/
 
 ## Testing
 
-Tests use single-threaded execution by default to prevent memory issues:
-
 ```bash
-npm test              # Memory-safe mode (1.3GB max)
-npm run test:watch    # Parallel mode (requires 8GB+ RAM)
-npm run test:memory   # Memory leak diagnostics
-npm run test:coverage # Coverage report
+npm test              # Run test suite
+npm run test:watch    # Watch mode for development
+npm run test:coverage # Generate coverage report
 ```
 
 ## Documentation

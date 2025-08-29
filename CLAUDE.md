@@ -18,9 +18,10 @@
 ### COMPLETED: 
 - Phase 2: Core Data Layer & Models (Types, RoomDocManager, Snapshots, Subscriptions)
 - Phase 3: Basic Canvas Infrastructure (Canvas Component, Transform System, Render Loop)
+- Phase 4: Stroke Data Model & Rendering (Stroke rendering pipeline, Path building, Tool-specific rendering)
 
 ## Current Status
-**READY FOR PHASE 4: Stroke Data Model & Rendering**
+**READY FOR PHASE 5: Drawing Input System**
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -134,17 +135,15 @@ interface RoomDocManager {
 ```
 
 #### Shared Configuration (`/packages/shared/src/config.ts`)
-All constants centralized with environment overrides:
+All constants centralized with environment overrides. Import and use:
 ```typescript
-import { ROOM_CONFIG, STROKE_CONFIG } from '@avlo/shared';
+import { ROOM_CONFIG, STROKE_CONFIG, isRoomReadOnly } from '@avlo/shared';
 
 // Examples:
 ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES  // 13MB
 ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES // 15MB
-STROKE_CONFIG.MAX_POINTS_PER_STROKE  // 10,000
+if (isRoomReadOnly(sizeBytes)) { /* Block writes */ }
 ```
-
-Usage patterns documented in `/packages/shared/CONFIG_USAGE.md`
 
 ## Project Structure
 
@@ -163,9 +162,14 @@ avlo/
 │   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
 │   │   ├── lib/              # RoomDocManager core
 │   │   │   └── tools/        # Tool implementations (future)
-│   │   ├── renderer/         # Render loop (Phase 3)
+│   │   ├── renderer/         # Render loop (Phase 3-4)
 │   │   │   ├── RenderLoop.ts # RAF-based render loop
-│   │   │   └── DirtyRectTracker.ts # Dirty region tracking
+│   │   │   ├── DirtyRectTracker.ts # Dirty region tracking
+│   │   │   ├── layers/      # Rendering layers (Phase 4)
+│   │   │   │   └── strokes.ts # Stroke rendering implementation
+│   │   │   └── stroke-builder/ # Stroke path building (Phase 4)
+│   │   │       ├── path-builder.ts # Path2D building utilities
+│   │   │       └── stroke-cache.ts # Stroke render cache
 │   │   ├── stores/           # Zustand stores for device-local UI state
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
@@ -187,43 +191,20 @@ Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tes
 
 ## Essential Commands
 
-### Development
 ```bash
-# Install all dependencies (root + workspaces)
-npm install
+# Core development
+npm install               # Install all dependencies
+npm run dev              # Start client & server
+npm run build            # Production build
+npm run typecheck        # Type check all workspaces
 
-# Start both client and server concurrently
-npm run dev
+# Testing
+npm test                 # Memory-safe mode (1.3GB)
+npm run test:watch       # Parallel mode (8GB+ RAM)
 
-# Run tests (memory-safe by default)
-npm run test              # Single-threaded memory-safe mode (1.3GB max)
-npm run test:watch        # Parallel mode for active development (requires 8GB+ RAM)
-npm run test:memory       # Run memory leak diagnostics
-npm run test:ui           # Vitest UI
-npm run test:coverage     # Coverage report
-npm run test:e2e          # Playwright E2E tests
-
-# Type checking (all workspaces)
-npm run typecheck
-
-# Linting & formatting
-npm run lint              # ESLint check
-npm run lint:fix          # ESLint auto-fix
-npm run format            # Prettier write
-npm run format:check      # Prettier check
-
-# Build for production
-npm run build             # Builds client then server
-```
-
-### Database (Future)
-```bash
-# PostgreSQL setup
-npx prisma migrate dev
-npx prisma generate
-
-# Redis
-redis-server              # Start Redis with AOF
+# Code quality
+npm run lint:fix         # Fix linting issues
+npm run format           # Format code
 ```
 
 ## Key Configuration Values
@@ -291,48 +272,9 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
 
 ## Memory-Safe Testing
 
-Tests use single-threaded execution by default to prevent memory issues (was causing 6.5GB+ usage):
-- `npm test` - Memory-safe mode (1.3GB max)
-- `npm run test:watch` - Parallel mode for development (needs 8GB+ RAM)
-- `npm run test:memory` - Verify no memory leaks
+Tests default to single-threaded (1.3GB max) due to Y.Doc memory usage. Use `npm test` for memory-safe mode or `npm run test:watch` for parallel development (8GB+ RAM needed).
 
-RoomDocManager properly cleans up event handlers and Y.Doc on destroy().
-
-## Development Tips
-
-### Using Shared Config
-```typescript
-// Import specific configs
-import { ROOM_CONFIG, STROKE_CONFIG } from '@avlo/shared';
-
-// Use utility functions
-import { isRoomReadOnly, calculateAwarenessInterval } from '@avlo/shared';
-
-// Check room status
-if (isRoomReadOnly(sizeBytes)) {
-  // Block writes
-}
-```
-
-### Testing Commands
-```bash
-# Run specific test suites
-npm run test -- room-doc-manager
-npm run test -- validation
-
-# Check implementation status
-# See PHASE2_IMPLEMENTATION_AUDIT.md for current gaps
-```
-
-### Environment Overrides
-```bash
-# .env file for local development
-ROOM_TTL_DAYS=7
-DEBUG_MODE=true
-MAX_CLIENTS_PER_ROOM=50
-```
-
-### Provider Initialization  
+## Provider Initialization  
 - Order matters: IndexedDB → WebSocket → WebRTC (if eligible)
 - WebRTC is optional optimization - WebSocket always remains connected
 - Gates control feature availability:
