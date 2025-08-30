@@ -565,7 +565,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Helper for mobile detection
   private isMobileDevice(): boolean {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-    return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    // CRITICAL FIX: Include maxTouchPoints check for iPadOS reliability
+    // iPadOS reports as "Macintosh" in UA string but has maxTouchPoints > 1
+    return (
+      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1
+    );
   }
 
   // Lifecycle

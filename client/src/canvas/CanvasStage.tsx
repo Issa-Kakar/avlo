@@ -58,6 +58,12 @@ export interface CanvasStageHandle {
    * Used for coordinate conversion between screen and canvas space.
    */
   getBounds(): DOMRect;
+
+  /**
+   * Gets the canvas element for event attachment.
+   * Phase 5: Used for pointer event listeners.
+   */
+  getCanvasElement(): HTMLCanvasElement | null;
 }
 
 /**
@@ -119,6 +125,10 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
 
         getBounds(): DOMRect {
           return canvasRef.current?.getBoundingClientRect() || new DOMRect();
+        },
+
+        getCanvasElement(): HTMLCanvasElement | null {
+          return canvasRef.current;
         },
       }),
       [],

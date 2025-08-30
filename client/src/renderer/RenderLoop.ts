@@ -1,6 +1,7 @@
 import type { RefObject } from 'react';
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import type { CanvasStageHandle } from '../canvas/CanvasStage';
+import type { PreviewData } from '../lib/tools/types';
 import { DirtyRectTracker } from './DirtyRectTracker';
 import {
   FrameStats,
@@ -19,7 +20,12 @@ import {
   drawPresenceOverlays,
   drawHUD,
 } from './layers';
+import { drawPreview } from './layers/preview';
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
+
+export interface PreviewProvider {
+  getPreview(): PreviewData | null;
+}
 
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
@@ -51,11 +57,21 @@ export class RenderLoop {
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
   private needsFrame = false; // EVENT-DRIVEN: Only schedule when dirty
   private framesSinceInvalidation = 0; // Count frames since last invalidation
+  private previewProvider: PreviewProvider | null = null; // Phase 5: Preview support
 
   constructor() {
     // Listen for visibility changes
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+  }
+
+  // Set the preview provider for drawing preview
+  public setPreviewProvider(provider: PreviewProvider | null): void {
+    this.previewProvider = provider;
+    // If we're setting a provider with preview data, mark dirty to render it
+    if (provider && provider.getPreview()) {
+      this.markDirty();
     }
   }
 
@@ -105,6 +121,7 @@ export class RenderLoop {
     this.framesSinceInvalidation = 0;
     this.skipNextFrame = false;
     this.lastFrameTime = 0;
+    this.previewProvider = null; // Clear preview provider
 
     // Reset frame stats to initial state
     this.frameStats = {
@@ -331,7 +348,18 @@ export class RenderLoop {
       drawStrokes(ctx, snapshot, view, augmentedViewport); // Phase 4: actual stroke rendering
       drawShapes(ctx, snapshot, view, augmentedViewport); // Future: stamps/shapes
       drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
+
+      // Authoring overlay - preview goes here (Phase 5)
+      // CRITICAL TRANSFORM STATE: Context has world transform applied!
+      // - Transform was applied BEFORE drawStrokes using: ctx.save(); ctx.scale(view.scale, view.scale); ctx.translate(-view.pan.x, -view.pan.y);
+      // - Preview points are in world space and will be automatically transformed to canvas space
+      // - DO NOT apply additional transforms in drawPreview!
       drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport); // Future: selection/handles
+      const preview = this.previewProvider?.getPreview();
+      if (preview) {
+        drawPreview(ctx, preview); // Draws in world coordinates (transform already applied)
+      }
+
       drawPresenceOverlays(ctx, snapshot, view, augmentedViewport); // Phase 8: cursors (with gates)
       drawHUD(ctx, snapshot, view, augmentedViewport); // Future: minimap, toasts (never exported)
     });
