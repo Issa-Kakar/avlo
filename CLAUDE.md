@@ -19,9 +19,10 @@
 - Phase 2: Core Data Layer & Models (Types, RoomDocManager, Snapshots, Subscriptions)
 - Phase 3: Basic Canvas Infrastructure (Canvas Component, Transform System, Render Loop)
 - Phase 4: Stroke Data Model & Rendering (Stroke rendering pipeline, Path building, Tool-specific rendering)
+- Phase 5: Drawing Input System (Pointer event handling, DrawingTool, Preview rendering, Stroke commit with simplification)
 
 ## Current Status
-**READY FOR PHASE 5: Drawing Input System**
+**READY FOR PHASE 6: RBush Spatial Indexing**
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -82,7 +83,7 @@ interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;  // filtered by scene
   texts: ReadonlyArray<TextView>;       // filtered by scene
   presence: PresenceView;               // throttled to 30Hz
-  spatialIndex: null;   // Phase 5: RBush
+  spatialIndex: null;   // Phase 6: RBush (coming next)
   view: ViewTransform;  // world↔canvas transforms
   meta: { bytes?: number; cap: number; readOnly: boolean };
 }
@@ -107,21 +108,20 @@ Pointer/inputs → Presence emitter (≤ ~30 Hz, interpolate/dead-reckon 1 frame
 Room stats (out-of-band; not in Y.Doc)
 persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI banners/gates
 ```
-Think in three coordinate spaces, each with a single clear owner: World space (logical data), What your Y.Doc stores: strokes, shapes, anchors, Units are abstract/logical; stable across screens, zoom, and displays.
+**Coordinate Spaces**: World (Y.Doc data, stable across zoom/screens) → Canvas (CSS pixels, view transform) → Device (physical pixels, DPR only). Apply DPR once at canvas setup, not in transforms.
 
-Canvas space (CSS pixels): What your view transform consumes/produces, and Matches DOM layout and any HTML overlays (selection boxes, tooltips, inputs), and Where pointer events “naturally” live.
-
-Device space (physical pixels): What the GPU/2D raster actually draws into, Only the raster layer should care about DPR. The golden rule: DPR is a raster concern, not a modeling or interaction concern.
-So DPR should be applied once—when sizing the backing store and setting the canvas’ drawing transform—not sprinkled through hit-testing, pointer math, or data transforms.
-
-### Device-Local UI State (Zustand + localStorage)
+### Device-Local UI State
+**Zustand Store** (`stores/device-ui-store.ts`) - Full implementation exists but not yet integrated
+**Phase 5 Simplified** (`lib/tools/types.ts`) - DrawingTool uses minimal interface:
 ```typescript
+// Phase 5 simplified interface (DrawingTool)
 interface DeviceUIState {
-  toolbar: ToolbarState;  // pen/highlighter/text/eraser settings
-  lastSeenSceneByRoom: Record<string, SceneIdx>;  // For ghost preview after clear
-  collaborationMode: 'server' | 'peer';
-  // ... other local UI preferences
+  tool: 'pen' | 'highlighter';
+  color: string;
+  size: number;
+  opacity: number;
 }
+// Full Zustand store exists with toolbar, lastSeenSceneByRoom, etc. (future integration)
 ```
 
 ### Core Components
@@ -161,22 +161,29 @@ avlo/
 │   │   ├── canvas/           # Canvas components (Phase 3)
 │   │   │   ├── Canvas.tsx    # Main canvas component
 │   │   │   ├── CanvasStage.tsx # DPR-aware canvas substrate
+│   │   │   ├── ViewTransformContext.tsx # View transform context
 │   │   │   └── internal/     # Transform utilities
-│   │   ├── contexts/         # React contexts
-│   │   │   ├── RoomDocRegistryContext.tsx
-│   │   │   └── ViewTransformContext.tsx
+│   │   ├── components/       # UI components
+│   │   │   └── MobileViewOnlyBanner.tsx
 │   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
 │   │   ├── lib/              # RoomDocManager core
-│   │   │   └── tools/        # Tool implementations (future)
+│   │   │   ├── room-doc-manager.ts
+│   │   │   ├── room-doc-registry-context.tsx
+│   │   │   └── tools/        # Tool implementations (Phase 5)
+│   │   │       ├── DrawingTool.ts # Drawing tool implementation
+│   │   │       ├── simplification.ts # Douglas-Peucker
+│   │   │       └── types.ts  # Tool-specific types
 │   │   ├── renderer/         # Render loop (Phase 3-4)
 │   │   │   ├── RenderLoop.ts # RAF-based render loop
 │   │   │   ├── DirtyRectTracker.ts # Dirty region tracking
-│   │   │   ├── layers/      # Rendering layers (Phase 4)
-│   │   │   │   └── strokes.ts # Stroke rendering implementation
+│   │   │   ├── layers/       # Rendering layers (Phase 4-5)
+│   │   │   │   ├── strokes.ts # Stroke rendering
+│   │   │   │   └── preview.ts # Preview rendering (Phase 5)
 │   │   │   └── stroke-builder/ # Stroke path building (Phase 4)
 │   │   │       ├── path-builder.ts # Path2D building utilities
 │   │   │       └── stroke-cache.ts # Stroke render cache
-│   │   ├── stores/           # Zustand stores for device-local UI state
+│   │   ├── stores/           # Zustand store (not yet integrated)
+│   │   │   └── device-ui-store.ts
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
 │   └── src/
@@ -293,9 +300,11 @@ Tests default to single-threaded (1.3GB max) due to Y.Doc memory usage. Use `npm
 ## Key Implementation Notes
 
 - **Mobile**: View-only, guard in mutate()
-- **Scene**: Assigned at commit using currentScene(not about casual consistency)
+- **Scene**: Assigned at commit using currentScene (not about causal consistency)
 - **Awareness**: 30Hz throttled, ephemeral, never persisted
 - **persist_ack**: Server authoritative for size/TTL
 - **Snapshots**: Never null, frozen, new arrays per publish
+- **DrawingTool**: RAF-coalesced pointer events, Douglas-Peucker simplification in world units
+- **Preview**: Rendered at 0.35 opacity, invalidates old and new bounds on move
 
 See `IMPLEMENTATION.MD` for detailed phase breakdown and `OVERVIEW.MD` for complete specifications.
