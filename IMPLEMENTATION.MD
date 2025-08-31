@@ -277,51 +277,55 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 #### 5.1.1 Set Up Event Listeners
 1. Attach events to the canvas element directly; call canvas.setPointerCapture(e.pointerId) on pointerdown and release on up/cancel
 2. Attach pointermove for live preview; pointerup to commit; pointercancel to abort
-3. Prevent default browser behaviors; ensure the canvas element sets touch-action: none
+3. Prevent default browser behaviors; set touch-action: none on desktop only (preserve mobile scrolling)
 4. Use non-passive listeners so you can reliably call preventDefault()
-5. Event coalescing: keep only the latest move event per rAF; drop stale events under load
-6. Use existing coordinate conversion helpers from Canvas component for screen → world transforms
+5. Event coalescing: RAF-based with pendingPoint buffer for pointermove events
+6. Mobile gate: detect with UA string AND navigator.maxTouchPoints > 1 for iPadOS reliability
 
-#### 5.1.2 Capture Pointer State
-1. Extract client coordinates; convert screen → canvas → world via the ViewTransform utilities from useViewTransform() hook
-2. Track pointerId and pointer type (mouse | pen | touch) for tool behavior
-3. Keep float world coordinates end-to-end for authoring (no rounding during drawing)
+#### 5.1.2 Create DrawingTool Class
+1. Build DrawingTool class to manage drawing state, preview data, and RAF coalescing
+2. Freeze tool settings (color, size, opacity) at pointerdown for entire gesture
+3. Track pointerId to prevent cross-pointer interference
+4. Convert screen → canvas → world via ViewTransform.canvasToWorld() (returns null on error)
+5. Access ViewTransform via ref to avoid effect re-runs on pan/zoom changes
+6. Store points as world-space float coordinates [x,y, x,y, ...] throughout gesture
 
 ### 5.2 Build Preview Rendering
 
-#### 5.2.1 Local Preview State
-1. Maintain a local array of world-space preview points [x,y, x,y, ...]
-2. Clear preview on pointerup or pointercancel
+#### 5.2.1 Preview Provider Integration
+1. Add setPreviewProvider() method to RenderLoop for preview data access
+2. DrawingTool implements getPreview() returning PreviewData with points, tool, color, size
+3. Set preview opacity to 0.35 (CURSOR_PREVIEW_OPACITY constant)
+4. Mobile devices get no preview provider (view-only enforcement)
 
 #### 5.2.2 Preview Draw Pass
-1. Render preview in the same stage using a dedicated preview pass (no extra canvas layer)
-2. Use current tool settings from device UI state; set preview opacity to 0.35 (from constraints)
-3. DPR & transforms: apply the same world-space transform as strokes (scale then translate(-pan))
-4. On each pointermove, invalidate union(prevPreviewBBox, newPreviewBBox) in world space
-5. On up/cancel, clear preview state and invalidate the last preview bbox
+1. Render preview as authoring overlay (after world content, inside world transform)
+2. Preview points are world coordinates, transformed automatically by canvas context
+3. Use save/scale/translate/restore for world transforms (never setTransform which overwrites DPR)
+4. Calculate bounds with stroke width inflation for proper invalidation
+5. Invalidate both old and new preview bounds on pointermove via RenderLoop.invalidateWorld()
 
 ### 5.3 Commit a Stroke
 
 #### 5.3.1 Validate on Pointer-Up
-1. Require at least 2 points; compute bbox from world points
-2. Scene will be assigned at commit time from currentScene (not captured during gesture)
-3. Create a ULID id; include userId and createdAt (ms epoch)
+1. Flush RAF-coalesced pending point before validation
+2. Require minimum 4 values (2 points) in points array
+3. Cancel stroke if validation fails or simplification exceeds budget
 
 #### 5.3.2 Apply Douglas–Peucker Simplification (world units)
-1. Base tolerances: pen 0.8 px, highlighter 0.5 px in world units ('px' means world pixels at scale=1; never multiply by view.scale)
-2. Budgets: encoded update ≤ 128 KB and points ≤ 10,000
-3. If over budget → one retry with tol *= 1.4; if still over → hard downsample to ≤ 10,000 points
-4. Cap highlighter tolerance bumps at 1.5× maximum
+1. Use iterative implementation with explicit stack to handle 10k+ points safely (prevent stack overflow)
+2. Base tolerances: pen 0.8, highlighter 0.5 in world units
+3. Budgets: encoded update ≤ 128 KB and points ≤ 10,000
+4. If over budget → retry with tolerance *= 1.4; if still over → hard downsample
+5. Re-check 128 KB budget after downsample; return empty points if still exceeds
 
 #### 5.3.3 Commit to Y.Doc (single transact)
-1. Build a Stroke object per the authoritative schema (points remain flattened number[]; no typed arrays)
-2. Right before mutate(fn), read snapshot.meta.readOnly and/or the latest room stats (bytes, cap) and BLOCK when:
-   - Room is read-only (≥ 15 MB based on snapshot.meta.readOnly)
-   - Mobile view-only mode is active
-   - Encoded update would exceed 2 MB frame limit
-3. Inside mutate(), assign scene from current scene (meta.scene_ticks.length) at commit time
-4. Execute one yjs.transact() to append to root.strokes[]; the DocManager publishes a new Snapshot at the next rAF
-5. Clear preview state and invalidate affected world bounds after commit
+1. Access room via useRoomDocRegistry() hook (never instantiate directly)
+2. Check guards before mutate(): read-only (≥15MB), mobile view-only, frame size (2MB)
+3. Generate ULID stroke ID; use stable userId from session storage
+4. Assign scene from meta.scene_ticks.length at commit time (not during gesture)
+5. Push stroke to Y.Array with plain number[] points (never Float32Array in storage)
+6. Invalidate both preview bounds and final stroke bounds after commit
 
 ## Phase 6: RBush Spatial Indexing
 

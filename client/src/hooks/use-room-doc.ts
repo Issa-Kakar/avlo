@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { RoomId } from '@avlo/shared';
-import { RoomDocManager } from '../lib/room-doc-manager';
+import type { IRoomDocManager } from '../lib/room-doc-manager';
 import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
 
 /**
@@ -10,9 +10,9 @@ import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
  * a narrow, hook-based surface as per the architecture.
  * @internal
  */
-export function useRoomDoc(roomId: RoomId): RoomDocManager {
+export function useRoomDoc(roomId: RoomId): IRoomDocManager {
   const registry = useRoomDocRegistry();
-  const managerRef = useRef<RoomDocManager>();
+  const managerRef = useRef<IRoomDocManager>();
   const roomIdRef = useRef<RoomId>();
   const hasAcquiredRef = useRef(false);
 
