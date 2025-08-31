@@ -28,7 +28,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
       const meta = root.get('meta') as any;
       const sceneTicks = meta.get('scene_ticks') as any;
       if (sceneTicks) {
-        sceneTicks.push(Date.now()); // Push number, not array
+        sceneTicks.push([Date.now()]); // Y.Array.push expects an array of items
       }
     });
   };
