@@ -1,6 +1,3 @@
-avlo.md
-=======
-
 1\. Executive Summary & Project Definition
 ==========================================
 
@@ -168,7 +165,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation**: To avoid stack overflow on large state vectors, uses first 100 bytes + length + checksum for cache invalidation (sufficient for cosmetic purposes). **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation**: To avoid stack overflow on large state vectors, uses first 100 bytes + length + checksum. Serves dual purposes: (1) publishing optimization to skip redundant snapshot publishes when Y.Doc unchanged, (2) cache invalidation for cosmetic operations (boot splash, exports). **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
 
 **Awareness (normative additions).** --- **Cadence & throttling.** Awareness send interval per client: `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N. --- **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only. **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.mutate(...)`. 
 
@@ -435,8 +432,6 @@ Global Conventions
 
  **Async-apply contract**. For **cosmetic, long-running async** (export/IDB hydrate), use the svKey two-line check; not required elsewhere.; this eliminates temporal wormholes.  Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
 
-* * * * *
-
 8\. **Data Architecture & Flows**
 =================================
 
@@ -486,12 +481,9 @@ Global Conventions
 - **Refreshing:** invalidate on `persist_ack` for that room; otherwise poll ~10s; `refetchOnWindowFocus=false`, `retry=1`.
 
 **Additional Essential Data Flows**
------------------------------------
 
 1.  **Offline­first publish & alias resolution** Local creation yields a room with a provisional alias. On first sync: server allocates the canonical room key, merges content, and resolves the alias mapping. Clients store both (for backlinks and history) but render only the canonical alias going forward.
 2.  **Expiry → local cleanup UX** When a room expires (Redis TTL), metadata reads 404. The client removes server mappings, keeps the local Y.Doc (with a banner explaining the state), and offers a one­click "create new room from local copy."
-
-* * * * *
 
 9\. Dependencies & Integrations
 ===============================
@@ -505,10 +497,6 @@ Global Conventions
 - **TURN**: tcp+tls on 443; long-term creds rotated; **STUN** dev only **AuthN/AuthZ.** None; link-based open access by design. **Monitoring.** Sentry + counters (no content logging).
 
 - **Operational (additions).** **Connection pooling.** Postgres: `pg.Pool` size **10-20**, set idle/acquire timeouts, and log slow queries. Redis: one client for commands and one for pub/sub per process; health checks and reconnect backoff. Add y-webrtc@10.3.0. Env: Y_SIGNALING_URLS, Y_RTC_MAX_CONNS, Y_TURN_URL, Y_TURN_USER, Y_TURN_PASS, Y_RTC_PASSWORD_SALT. Self-hosted signaling (optional): include bin/server.js from y-webrtc or an equivalent deployment; keep public wss://signaling.yjs.dev as a backup
-  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
 
 11\. Initialization & Gates
 ===========================
@@ -532,7 +520,8 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 
 4. **Awareness**
 
-   -   Start WS awareness immediately.
+   -   Start WS awareness immediately
+       -   **Note (MVP boot behavior).** We attach `y-indexeddb` first and connect **WebSocket immediately** (do **not** wait for IDB). First paint is always non-null via the EmptySnapshot, so showing **awareness before content** is intentional and safe; the first doc-derived frame arrives ≤ 1 rAF after the first IDB apply or WS sync. At this scale, server-vs-IDB hydration order is not user-visible. Outgoing local edits during early hydrate are allowed; Yjs merges them when WS sync completes.
    -   If **RTC small-room probe** eligible (peers ≤ 12), start RTC and run probe (2.5 s).
    -   Gate `G_AWARENESS_READY` when at least **one** channel (WS or RTC) is healthy.
 
@@ -549,13 +538,13 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 
 ### 11.2 Gates Table
 
-| Gate                | Opens When                        | Unblocks                                         | Timeout | On Timeout                                               |
-| :------------------ | :-------------------------------- | :----------------------------------------------- | :------ | :------------------------------------------------------- |
-| `G_IDB_READY`       | y-indexeddb loaded or 2 s elapsed | initial snapshot hydration; "Recent Rooms" badge | 2 s     | proceed with empty doc; schedule background re-hydration |
-| `G_WS_CONNECTED`    | WS open                           | WS awareness, doc sync                           | 5 s     | show "Reconnecting..."; proceed offline if IDB ready     |
-| `G_WS_SYNCED`       | first Y sync completes            | authoritative render                             | 10 s    | keep rendering from IDB; continue syncing                |
-| `G_AWARENESS_READY` | WS or RTC awareness live          | cursors/presence                                 | 5 s     | show "Presence degraded" indicator                       |
-| `G_FIRST_SNAPSHOT`  | first publish                     | UI enables hit-testing, export                   | 1 rAF   | N/A                                                      |
+| Gate                | Opens When                             | Unblocks                                           | Timeout | On Timeout                                             |
+| :------------------ | :------------------------------------- | :------------------------------------------------- | :------ | :----------------------------------------------------- |
+| `G_IDB_READY`       | y-indexeddb loaded or 2 s elapsed      | initial snapshot hydration; "Recent Rooms" badge   | 2 s     | Render `EmptySnapshot`; continue background re-hydrate |
+| `G_WS_CONNECTED`    | WS open                                | WS awareness, doc sync                             | 5 s     | show "Reconnecting..."; proceed offline if IDB ready   |
+| `G_WS_SYNCED`       | first Y sync completes                 | authoritative render (server merged state)         | 10 s    | keep rendering from IDB; continue syncing              |
+| `G_AWARENESS_READY` | WS or RTC awareness live               | Prescence cursors/names/pings                      | 5 s     | show "Presence degraded" indicator                     |
+| `G_FIRST_SNAPSHOT`  | first publish to UI occurs (IDB or WS) | Enables features that require a populated snapshot | 1 rAF   | N/A                                                    |
 
 **Where to gate writes**:
 
@@ -563,7 +552,19 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   When **room read-only** (≥ 15 MB) or **mobile**: **BLOCK** in minimal guards with UX banner.
 -   Before `G_FIRST_SNAPSHOT`: **BLOCK exports** and **minimap**; allow drawing.
 
-* * * * *
+**Feature → Gate**
+
+| Feature              | Gate(s)                      | Behavior when closed                                         |
+| -------------------- | ---------------------------- | ------------------------------------------------------------ |
+| Drawing (writes)     | none (offline-first)         | Writes go to local Y + IDB; syncs to server when `G_WS_CONNECTED` later opens |
+| Read-only / mobile   | room policy                  | Block writes; show banner explaining restriction             |
+| Export PNG           | `G_FIRST_SNAPSHOT`           | Disable button; tooltip “Preparing board…”                   |
+| Minimap              | `G_FIRST_SNAPSHOT`           | Hide                                                         |
+| Presence cursors     | `G_AWARENESS_READY`          | Hide cursors; show “Presence degraded”                       |
+| Extend TTL           | `G_WS_CONNECTED`             | Disable; tooltip “Requires connection”                       |
+| Clear Board          | server rate-limit + debounce | If dropped: toast user; do not retry aggressively            |
+| Recent Rooms badge   | `G_IDB_READY`                | Hide                                                         |
+| Authoritative render | `G_WS_SYNCED`                | Continue rendering from IDB snapshot until sync completes    |
 
 12\. State Synchronization & Derivation
 =======================================
@@ -580,13 +581,10 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   **Never** write derived values into Yjs (e.g., `bbox` MAY be stored to avoid recompute; all other derivations remain ephemeral).
 -   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (base64 of Yjs state vector) used for cache/change detection and optional guards for cosmetic long-running tasks (PNG export, IDB hydrate) -- not a global temporal pin.
 
-* * * * *
-
 13\. Mutations & Undo
 =====================
 
 **Mutations**: mutate(fn) → yjs.transact with minimal guards (≥15 MB read-only, mobile view-only, 2 MB frame cap). **Undo/Redo**: Yjs UndoManager with origin = userId (per-user history). **Scenes**: commit-time assignment; strokes/text commit to current scene at time of commit. **Backpressure**: coalesce pointer-move on rAF, drop stale events if the queue backs up; no client timers/windows.
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 14\. Snapshot Contract
 ======================
@@ -600,7 +598,7 @@ interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
   presence: PresenceView;         // derived + smoothed
-  spatialIndex: RBushIndexView;   // populated when RBush is implemented (now Phase 6)
+  spatialIndex: RBushIndexView;   // populated when RBush is implemented (now Phase 8)
   view: ViewTransform;            // world->canvas transform
   meta: { bytes?: number; cap: number; readOnly: boolean; expiresAt?: number };
   createdAt: number;              // ms epoch when snapshot frozen
@@ -653,24 +651,6 @@ applyAsyncResult(asyncResult);
     -   IndexedDB snapshot loading
     -   Deferred rendering work
 
-* * * * *
-
-16\. Where to Gate
-==================
-
-Provide a table specifying **feature → gate**:
-
-| Feature          | Gate(s)                            | Behavior when closed                         |
-| :--------------- | :--------------------------------- | :------------------------------------------- |
-| Drawing          | none (offline-first)               | Writes go to local Y+IDB; WS sync later      |
-| Export PNG       | `G_FIRST_SNAPSHOT`                 | Disable button; tooltip "Preparing board..." |
-| Minimap          | `G_FIRST_SNAPSHOT`                 | Hide                                         |
-| Presence cursors | `G_AWARENESS_READY`                | Show "Presence degraded"                     |
-| Extend TTL       | `G_WS_CONNECTED`                   | Disable; show tooltip                        |
-| Clear Board      | server rate-limit + local debounce | Toast if dropped                             |
-
-* * * * *
-
 17\. Event Isolation & Canvas
 =============================
 
@@ -690,8 +670,6 @@ Render order must match the architectural contract: background → strokes → s
 
 -   **Isolation**: While "Push-to-talk" active, drawing is disabled; awareness still emitted.(In later webrtc)
 
-* * * * *
-
 18\. Coordinate Spaces & Transforms
 ===================================
 
@@ -705,8 +683,7 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 
 - **Transform contract**:
 
-  ```
-  interface ViewTransform {  worldToCanvas: (x:number,y:number)=>[number,number];  canvasToWorld: (x:number,y:number)=>[number,number];  scale: number;  // world px → canvas px  pan: { x:number; y:number }; // world offset}
+  -interface ViewTransform {  worldToCanvas: (x:number,y:number)=>[number,number];  canvasToWorld: (x:number,y:number)=>[number,number];  scale: number;  // world px → canvas px  pan: { x:number; y:number }; // world offset}
   
   ```
 
@@ -719,8 +696,6 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 
 - **Ghost preview/export**: uses the existing visibility isolation (sceneOverride to filter).
 
-* * * * *
-
 19\. Transport Ordering & Flow Control
 ======================================
 
@@ -729,6 +704,13 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 -   **Message ordering**:
     -   Awareness processed **before** snapshot publish if received in same tick; otherwise makes next frame.
 -   **Coalesce pointer-move on rAF, drop stale motion under load.**
+-   **WS backpressure rules (authoritative).**
+     • **High/low water:** 256 KB / 64 KB from `WebSocket.bufferedAmount`. Above high: coalesce doc sends and **skip awareness** frames; resume when below low.
+     • **Presence skip threshold:** if `bufferedAmount > 64 KB`, drop the current awareness frame (freshness over reliability).
+     • **Awareness cadence degrade:** **12 → 6 → 2 Hz** when backpressured or when **N ≥ 20**.
+     • **Roster rate:** cap WS roster/buddy-list updates to **≤ 1 Hz**.
+     These are stricter than the generic “lossy under backpressure” guidance and make behavior predictable at small-room scale. 
+-   **Server slow-socket policy.** On each connection, watch `bufferedAmount`. While a socket is above the high-water, **suspend presence fan-out** to that socket and **bound its per-socket queue** (doc updates remain prioritized). Resume presence when it drains below low-water. This prevents a single slow client from causing memory growth or stalling broadcast. 
 
 * * * * *
 
@@ -747,17 +729,16 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 ==================================
 
 - **Single ownership**:
-
   -   `RoomDocManager` owns providers and **solely** observes Y types.
   -   UI relies on **subscriptions** only; no direct observers of Y types anywhere else.
 
 - **Centralized subscription**:
-
   -   Awareness subscription is centralized; presence derivation happens inside manager with smoothing (lerp 1-2 frames; one-frame dead-reckon on miss).
 
 - **Capacity (`room_full`)**:
 
-  -   Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
+-   Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
+  - **Provider-agnostic observers.** Register all Y.Doc observers **exactly once** inside `RoomDocManager`. Providers (`y-indexeddb`, `y-websocket`, optional `y-webrtc`) **must not** bind their own doc listeners; they are transport only. They may attach their own internal doc listeners to function, but they do not register any app/UI observers or publish UI state. Provider lifecycle events (connect/disconnect, first-sync, IDB hydrated, awareness live) are consumed centrally by RoomDocManager and translated into gates.
 
 * * * * *
 
@@ -802,7 +783,7 @@ Appendix C: Provider Lifecycle (Init, Teardown, Reconnect)
 **Teardown order (room leave, toggle to WS-only, tab close):**
 
 1.  **Stop awareness publisher** → 2) **Destroy RTC provider** (if any) → 3) **Unsubscribe awareness listeners** →
-2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops. (Integrates with §11 Gates and your authority path.)\
+2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops.
     **RTC flap handling & debounce:**
 
 * * * * *
@@ -875,11 +856,6 @@ This pattern ensures:
 - Test-specific timing control (TestClock/TestFrameScheduler)
 - Consistent test behavior across phases
 
-**Future Phase Examples:**
-- Phase 3: Canvas rendering tests with `waitForSnapshot()`
-- Phase 5: Drawing commit tests using `room.mutate()`
-- Phase 6: Awareness tests with `collectPresenceUpdates()`
-
 * * * * *
 
 Awareness -- Cursor Trail (Implementation Notes)
@@ -929,20 +905,11 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 
 1.  **Awareness Coordinates** -- Send world-space; receivers project to view. Optional: include `{viewId, world, ts}`; prefer world when present.
 
-B. Initialization & State Sync
-
-1.  **Boot Gating** -- Hold outbound doc sync until `G_IDB_READY` or 2 s timeout; then open WS, hydrate Y, and allow publish.
+**B. Initialization & State Sync**
+1.  **Boot Gating** -- Attach y-indexeddb first and open y-websocket immediately; do not wait for G_IDB_READY (the 2 s timeout gates IDB hydrate only); gate UI with G_WS_CONNECTED/G_WS_SYNCED and G_FIRST_SNAPSHOT.
 2.  **Scene Capture** -- Scene is assigned at commit time using currentScene; no capturing at gesture start.
 3.  **Frame Size vs Micro-Batch** -- Inbound frames ≤2 MB; server never coalesces beyond cap; client uses rAF coalescing only.
 
 C. Races & Ordering
 1.  **Concurrent Clear Board** -- Server: idempotency key + ≥150 ms rate-limit. Client: debounce ~300 ms and show pending state.
 2.  **outputs[] Eviction** -- Completion + eviction in single CRDT transaction so second finisher observes first delete.
-
-Final Editorial Notes
--   Every new constant is declared in a `config.ts` with defaults and environment overrides.
--   Ensure **no written Float32Array** into Yjs; build at render.
--   **Prevent null snapshot** via immediate `EmptySnapshot`.
--   Clarify **mutable vs immutable**: live Y state mutable only via mutations; published `Snapshot` immutable.
--   **Direct observation vs centralized subscription**: centralized only.
--   **Ownership** lines explicit for each subsystem.

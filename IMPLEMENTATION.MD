@@ -3,342 +3,448 @@
 ## Phase 2: Core Data Layer & Models
 
 ### 2.1 Define Core TypeScript Types and Interfaces
-
-#### 2.1.1 Create Coordinate and Geometry Types
-1. Define StrokePoint interface with x, y coordinates for world position
-2. Create bbox type as tuple of four numbers representing minX, minY, maxX, maxY in world units
-3. Define SceneIdx as alias for number type representing scene index
-4. Create ULID type aliases for StrokeId and TextId to ensure type safety
-5. Add ViewTransform interface with worldToCanvas and canvasToWorld conversion methods
-6. Include scale and pan properties in ViewTransform for zoom and offset tracking
-
-#### 2.1.2 Define Document Data Structures
-1. Create Stroke interface with all required fields per avlo.md specification
-   - Include id as ULID string, tool type limited to pen or highlighter
-   - Add color as hex string, size in world units, opacity from 0 to 1
-   - Points array as flat number array (never Float32Array in storage)
-   - Include bbox, scene index, createdAt timestamp, and userId
-2. Define TextBlock interface with positioning, content, and styling properties
-   - Position with x, y anchor points and w, h layout dimensions
-   - Content as immutable string with 500 character maximum
-   - Include scene assignment and user attribution
-3. Create CodeCell interface for code execution with language and version tracking
-4. Define Output interface with timestamp and text content (10KB limit)
-5. Create Meta interface for document-level metadata including scene_ticks array
-
-#### 2.1.3 Define Snapshot and View Types
-1. Create immutable Snapshot interface as the frozen view of document state
-   - Include svKey as base64 string of state vector (never null)
-   - Add scene index derived from meta.scene_ticks.length
-   - Arrays of stroke and text views filtered by current scene
-   - Presence view for cursor and user information
-   - Spatial index placeholder (null initially, RBush later)
-   - Meta object with size bytes, capacity, read-only flag
-2. Define StrokeView as read-only projection of stroke for rendering
-3. Create PresenceView interface for ephemeral user state
-4. Add RoomStats interface for size and capacity tracking
+- Create coordinate types (StrokePoint, bbox, SceneIdx, ULID aliases)
+- Define document structures (Stroke, TextBlock, CodeCell, Output, Meta) per OVERVIEW.MD §4
+- Create Snapshot and view types (immutable, frozen, never null)
+- Add ViewTransform interface with world↔canvas conversion methods
 
 ### 2.2 Implement RoomDocManager Foundation
-
-#### 2.2.1 Create Manager Class Structure
-1. Define RoomDocManager class with private Y.Doc instance
-2. Add private fields for room ID and current snapshot
-3. Create subscription management maps for snapshot and presence callbacks
-4. Initialize dirty flag for render scheduling
-5. Add animation frame ID for publish loop tracking
-6. Create destroyed flag to prevent operations after cleanup
-
-#### 2.2.2 Implement Y.Doc Initialization
-1. Create Y.Doc with guid parameter set to roomId (exactly once)
-2. Get root map from Y.Doc using getMap('root') method
-3. Check if root map has 'meta' key to detect initialization state
-4. If uninitialized, create root structure in single transaction:
-   - Set version number to 1
-   - Create empty Y.Map for meta with scene_ticks as empty Y.Array
-   - Initialize strokes as empty Y.Array
-   - Create texts as empty Y.Array
-   - Set up code as Y.Map and outputs as Y.Array
-5. Store room ID but never mutate the guid after creation
-6. Set up helper methods that traverse root on demand (never cache Y references)
-
-#### 2.2.3 Set Up Mutation Wrapper
-1. Create mutate method accepting function with Y.Doc parameter
-2. Implement minimal guards before transaction:
-   - Check if room is read-only (size >= 15MB)
-   - Verify not on mobile in view-only mode
-   - Estimate frame size doesn't exceed 2MB
-3. Wrap function execution in yjs.transact call with origin tracking
-4. Set dirty flag after successful transaction
-5. Handle errors gracefully without corrupting state
-6. Log mutations for debugging in development mode only
+- Create RoomDocManager class with private Y.Doc instance (guid: roomId, never mutated)
+- Initialize Y.Doc structure in single transaction (root → v, meta, strokes, texts, code, outputs)
+- Set up helper methods that traverse root on demand (never cache Y references)
+- Implement mutate(fn) wrapper with minimal guards (read-only ≥15MB, mobile, 2MB frame)
 
 ### 2.3 Implement Snapshot Publishing System
-
-#### 2.3.1 Create Empty Snapshot Generator
-1. Define createEmptySnapshot function returning non-null snapshot
-2. Set svKey to base64 of empty state vector
-3. Initialize scene to 0, empty arrays for strokes and texts
-4. Create identity view transform with scale 1 and zero pan
-5. Set meta with readOnly false and 15MB capacity
-6. Return frozen object to prevent mutations
-
-#### 2.3.2 Build Snapshot Creation Pipeline
-1. Create buildSnapshot method reading from Y.Doc
-2. Extract current scene from meta.scene_ticks array length
-3. Convert Y.Array of strokes to plain JavaScript array
-4. Filter strokes where scene equals current scene
-5. Transform each stroke to StrokeView with read-only properties
-6. Apply same filtering and transformation to texts
-7. Calculate state vector and convert to base64 for svKey
-8. Include current presence state if available
-9. Freeze entire snapshot object before returning
-
-#### 2.3.3 Implement RAF-Based Publishing
-1. Set up requestAnimationFrame loop starting on manager creation
-2. Check dirty flag at each frame
-3. If dirty, build new snapshot from Y.Doc
-4. Compare svKey with previous snapshot to detect changes
-5. Only publish if svKey differs or presence updated: Publish only when svKey differs from the previous snapshot or presence has changed since the last publish; otherwise skip the frame.
-6. Call all registered snapshot callbacks with new snapshot
-7. Reset dirty flag after publishing
-8. Schedule next frame with requestAnimationFrame
+- Create EmptySnapshot generator (synchronous, non-null, frozen)
+- Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
+- Implement RAF-based publishing (≤60 FPS, dirty flags, svKey optimization)
 
 ### 2.4 Set Up Subscription Management
-
-#### 2.4.1 Implement Snapshot Subscription
-1. Create subscribeSnapshot method accepting callback function
-2. Generate unique subscription ID
-3. Store callback in subscription map with ID as key
-4. Immediately invoke callback with current snapshot: Immediately invoke the callback with currentSnapshot on subscribe. Subscriptions are safe if registered during a publish cycle; new subscribers see the next committed frame.
-5. Return unsubscribe function that removes from map
-6. Handle edge case of subscription during publish cycle
-
-#### 2.4.2 Add Presence Subscription
-1. Create subscribePresence method with similar pattern
-2. Store presence callbacks in separate map
-3. Throttle presence updates to 30Hz maximum: Throttle presence emissions to ≤ 30 Hz; interpolate cursors 1–2 frames; apply single-frame dead-reckoning on a miss
-4. Implement interpolation for smooth cursor movement
-5. Include dead-reckoning for missed frames
-
-#### 2.4.3 Implement Stats Subscription
-1. Add subscribeRoomStats for size monitoring
-2. Initialize with null until first metadata received
-3. Update when persist_ack arrives from server
-4. Include bytes and capacity in stats object
-
-#### 2.4.4 Add Minimal Render Cache (Boot Splash Only)  #SKIP TESTS FOR THIS PHASE
-1. Create simple IndexedDB wrapper (NOT y-indexeddb provider)
-2. Store last rendered canvas as ImageData/PNG
-3. Key by roomId and validate with svKey
-4. Load and display immediately on boot while Y.Doc initializes
-5. This is purely cosmetic - not data persistence
+- Implement subscribeSnapshot with immediate callback on subscribe
+- Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
+- Create subscribeRoomStats (null initially, updates on persist_ack)
+- Add minimal render cache for boot splash (cosmetic only, NOT y-indexeddb)
 
 ## Phase 3: Basic Canvas Infrastructure
 
 ### 3.1 Set Up Canvas Element and Context
-
-#### 3.1.1 Create Canvas Component Structure
-1. Create React component wrapping HTML canvas element
-2. Use ref to access canvas DOM element directly
-3. Set up resize observer to track container dimensions
-4. Configure device pixel ratio for sharp rendering
-5. Set canvas width and height attributes based on container
-6. Apply CSS for proper sizing and positioning
-
-#### 3.1.2 Initialize 2D Rendering Context
-1. Get 2D context with willReadFrequently set to false
-2. Configure context with imageSmoothingEnabled for anti-aliasing
-3. Set up default line cap and join styles
-4. Create context state save/restore pattern for transforms
-5. Implement clear method using clearRect
+- Create Canvas React component with ref to DOM element
+- Configure ResizeObserver, DPR handling, and 2D context
+- Apply DPR once with setTransform(dpr,0,0,dpr,0,0) - never mix into view transforms
 
 ### 3.2 Implement Coordinate Transform System
-
-THESE INSTRUCTIONS IN PHASE 3 ARE NOT AUTHORITATIVE, VIEW OVERVIEW.MD FOR CORRECT SPECIFICATIONS
-§3.2.2 worldToCanvas:
-“Subtract pan (world units), then multiply by scale:
-cx = (wx - pan.x) * scale; cy = (wy - pan.y) * scale.”
-§3.2.2 canvasToWorld:
-“Divide by scale, then add pan (world units):
-wx = cx / scale + pan.x; wy = cy / scale + pan.y.”
-§3.2.2 Context transform note:
-“On the 2D context, scale first, then translate(-pan.x, -pan.y).”
-§3.1 / §3.3.2 DPR:
-“Set DPR once in canvas setup with setTransform(dpr,0,0,dpr,0,0) and do not mix DPR into view transforms.”
-§3.3.2 Dirty-rects:
-“If scale or pan changed since last frame, skip dirty-rects and full-clear.”
-§3.3.3 Render order:
-“Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence overlays → HUD.”
-§3.3.3 Line widths:
-“World strokes: ctx.lineWidth = style.size. Hairlines/HUD: 1 / scale.”
-
-#### 3.2.1 Define Transform State Management
-1. Create view transform state with scale and pan properties
-2. Initialize scale to 1 for 100% zoom
-3. Set pan to {x: 0, y: 0} for centered view
-4. Store transform in component state or context
-5. Implement getter methods for current transform values
-
-#### 3.2.2 Create Coordinate Conversion Functions
-1. Implement worldToCanvas conversion method:
-   - Subtract pan (world offset) from world coordinates
-   - Apply scale multiplication
-   - Return canvas pixel coordinates
-2. Create canvasToWorld inverse transformation:
-   - Divide canvas coordinates by scale
-   - Add pan (world offset) to get world units
-   - Handle edge cases for zero scale
-3. Add screenToCanvas helper for DOM event coordinates
-4. Implement bounds checking for valid coordinate ranges
+**Note:** See OVERVIEW.MD §3.2 for authoritative transform formulas
+- Define ViewTransform with scale and pan (world units)
+- worldToCanvas: `(world - pan) * scale`
+- canvasToWorld: `canvas / scale + pan`
+- Context transform: `scale()` then `translate(-pan.x, -pan.y)`
 
 ### 3.3 Build Render Loop Foundation
-
-#### 3.3.1 Set Up Animation Frame Loop
-
-1. Create a render() function driven by requestAnimationFrame (rAF).
-2. Subscribe to snapshot updates from RoomDocManager; write the latest snapshot into a ref (not React state) to avoid extra React re-renders during rAF.
-3. Read the ViewTransform from the UI ViewTransform context (Phase 3.2) each frame. The snapshot’s view remains identity in this phase—do not read view from snapshot.
-4. Track simple frame timing metrics (duration, dropped-frame counter) for debugging.
-5. Add optional frame skipping when a previous frame exceeds budget
-6. Unmount hygiene: cancel the rAF loop, unsubscribe from the snapshot stream, and tear down observers/listeners.
-
-#### 3.3.2 Implement Dirty Rectangle Tracking
-1. Build a dirty region tracker to collect and coalesce invalidated areas.
-2. Transform change rule: if scale or pan changed since the last frame, ignore dirty rects and perform a full clear (transform shifts invalidate the whole screen).
-3. DPR policy: DPR is applied once by the CanvasStage on resize with ctx.setTransform(dpr,0,0,dpr,0,0). Never mix DPR into your world transform in the render pass.
-4. Clear pass:
-Dirty-rect clears (transform unchanged):
-ctx.save(); ctx.setTransform(1,0,0,1,0,0);
-for each coalesced rect in device pixels → ctx.clearRect(x, y, w, h);
-ctx.restore();
-
-Full clear (transform changed):
-ctx.save(); ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore();
-5. World transform (draw pass): apply world-space only transform, wrapped in save/restore:
-ctx.save();
-ctx.scale(view.scale, view.scale);
-ctx.translate(-view.pan.x, -view.pan.y);
-// …draw layers here…
-ctx.restore();
-This composes to canvas = (world − pan) × scale..
-6. Skip rendering when no dirty rects and transform unchanged.
-
-#### 3.3.3 Create Render Pipeline Structure
-1. Define render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence overlays → HUD.
-2. Provide separate draw functions for each layer; layers read the same snapshot and ViewTransform.
-3. Implement culling helpers (e.g., isInViewport) using the ViewTransform and current canvas bounds.
-4. Keep a 16 ms target budget; yield work across frames when heavy.
-5. Line-width policy reminder for later phases:
-World content (e.g., strokes): ctx.lineWidth = style.size (world units).
-Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied DPR).
+- Create RAF-driven render loop subscribing to snapshots (ref, not state)
+- Implement dirty rectangle tracking (full clear if transform changed)
+- Define render order: Background → Strokes → Text → Overlays → Presence → HUD
+- Apply 16ms frame budget with optional yielding
 
 ## Phase 4: Stroke Data Model & Rendering
 
 ### 4.1 Implement Stroke Rendering Pipeline
-
-#### 4.1.1 Build Paths from Points
-1. Points are always stored as [x,y, x,y, ...] pairs (2-stride format)
-   - Validate that points.length % 2 === 0 for consistency
-   - No pressure data is captured or stored
-2. Build an ephemeral typed array per frame for rendering; never persist typed arrays to Yjs (storage remains plain number[])
-3. Optionally build a Path2D per stroke for fast stroking; this cache is UI-local (not persisted)
-   - Feature-detect Path2D availability for test environments (use fallback path when unavailable)
-4. Cache render data by stroke.id only (strokes are immutable post-commit). Do not key per-stroke caches by svKey; reserve svKey for the boot splash snapshot and cosmetic guards only
-
-#### 4.1.2 Draw Basic Strokes (world units)
-1. Color: ctx.strokeStyle = stroke.color
-2. Width: ctx.lineWidth = stroke.size (world units; do not multiply by DPR). CanvasStage already applied DPR on resize
-3. Opacity: ctx.globalAlpha = stroke.opacity
-4. Stroke with ctx.stroke(path)
-5. After ctx.stroke(...), reset any changed properties (e.g., ctx.globalAlpha = 1). Keep using the outer save/restore for the world transform only
-
-#### 4.1.3 Hairlines & HUD (reference)
-1. For hairline overlays drawn in world space, use ctx.lineWidth = 1 / view.scale to target ~1 device pixel (DPR already baked into the context)
+- Store points as flat `[x,y,x,y,...]` arrays (plain number[], never Float32Array in Y.Doc)
+- Build Path2D cache per stroke.id (strokes immutable post-commit)
+- Render strokes: strokeStyle=color, lineWidth=size (world units), globalAlpha=opacity
+- Hairlines/HUD use `1/scale` for ~1 device pixel
 
 ### 4.2 Tool-Specific Rendering
+- Pen: Standard rendering, round caps/joins
+- Highlighter: opacity=0.25, normal blending (source-over)
+- Respect scene order - no tool-based reordering
 
-#### 4.2.1 Pen
-1. Standard stroke rendering with the rules in 4.1.2
-2. Use round caps/joins by default (consistent, smooth curves)
-
-#### 4.2.2 Highlighter
-1. Default opacity = 0.25 (world units for size still apply)
-2. Use normal blending (source-over); avoid multiply unless you have a tested visual requirement
-3. Do not reorder by tool—respect scene order and the canonical layer ("Strokes" pass)
-
-### 4.3 Performance Notes (keep minimal in Phase 4)
-1. LOD heuristics: skip stroke drawing when the stroke's bbox diagonal in screen space is < 2 CSS pixels
-2. Offscreen/tiled caches: defer to a later optimization phase; the only normative early cache is the boot splash render snapshot keyed by svKey (displayed at boot, not used for logic)
+### 4.3 Performance Notes
+- Skip strokes with bbox diagonal <2px in screen space
+- Boot splash cache is cosmetic only (not for logic)
 
 ## Phase 5: Drawing Input System
 
 ### 5.1 Implement Pointer Event Handling
-
-#### 5.1.1 Set Up Event Listeners
-1. Attach events to the canvas element directly; call canvas.setPointerCapture(e.pointerId) on pointerdown and release on up/cancel
-2. Attach pointermove for live preview; pointerup to commit; pointercancel to abort
-3. Prevent default browser behaviors; set touch-action: none on desktop only (preserve mobile scrolling)
-4. Use non-passive listeners so you can reliably call preventDefault()
-5. Event coalescing: RAF-based with pendingPoint buffer for pointermove events
-6. Mobile gate: detect with UA string AND navigator.maxTouchPoints > 1 for iPadOS reliability
-
-#### 5.1.2 Create DrawingTool Class
-1. Build DrawingTool class to manage drawing state, preview data, and RAF coalescing
-2. Freeze tool settings (color, size, opacity) at pointerdown for entire gesture
-3. Track pointerId to prevent cross-pointer interference
-4. Convert screen → canvas → world via ViewTransform.canvasToWorld() (returns null on error)
-5. Access ViewTransform via ref to avoid effect re-runs on pan/zoom changes
-6. Store points as world-space float coordinates [x,y, x,y, ...] throughout gesture
+- Attach pointer events with setPointerCapture on down, release on up/cancel
+- RAF-coalesce pointermove events with pendingPoint buffer
+- Create DrawingTool class managing state, preview, and tool settings (frozen at pointerdown)
+- Convert screen→canvas→world coordinates via ViewTransform
+- Mobile detection: UA string + maxTouchPoints>1 for iPadOS
 
 ### 5.2 Build Preview Rendering
-
-#### 5.2.1 Preview Provider Integration
-1. Add setPreviewProvider() method to RenderLoop for preview data access
-2. DrawingTool implements getPreview() returning PreviewData with points, tool, color, size
-3. Set preview opacity to 0.35 (CURSOR_PREVIEW_OPACITY constant)
-4. Mobile devices get no preview provider (view-only enforcement)
-
-#### 5.2.2 Preview Draw Pass
-1. Render preview as authoring overlay (after world content, inside world transform)
-2. Preview points are world coordinates, transformed automatically by canvas context
-3. Use save/scale/translate/restore for world transforms (never setTransform which overwrites DPR)
-4. Calculate bounds with stroke width inflation for proper invalidation
-5. Invalidate both old and new preview bounds on pointermove via RenderLoop.invalidateWorld()
+- Add setPreviewProvider() to RenderLoop for preview access
+- Render preview at 0.35 opacity as authoring overlay (world coordinates)
+- Invalidate old and new bounds on pointermove
+- Mobile gets no preview (view-only enforcement)
 
 ### 5.3 Commit a Stroke
+- Validate: minimum 2 points (4 values), flush pending points
+- Apply Douglas-Peucker simplification in world units:
+  - Base tolerance: pen 0.8, highlighter 0.5
+  - Budgets: ≤128KB encoded, ≤10k points
+  - Retry with tol*=1.4 if over, then hard downsample
+- Commit via mutate(): generate ULID, assign scene at commit, push to Y.Array
 
-#### 5.3.1 Validate on Pointer-Up
-1. Flush RAF-coalesced pending point before validation
-2. Require minimum 4 values (2 points) in points array
-3. Cancel stroke if validation fails or simplification exceeds budget
+### Phase 6A: Offline-First Doc Persistence & Boot Gates (y-indexeddb + manager plumbing)
 
-#### 5.3.2 Apply Douglas–Peucker Simplification (world units)
-1. Use iterative implementation with explicit stack to handle 10k+ points safely (prevent stack overflow)
-2. Base tolerances: pen 0.8, highlighter 0.5 in world units
-3. Budgets: encoded update ≤ 128 KB and points ≤ 10,000
-4. If over budget → retry with tolerance *= 1.4; if still over → hard downsample
-5. Re-check 128 KB budget after downsample; return empty points if still exceeds
+### 6A.1 Attach y-indexeddb (provider comes first)
 
-#### 5.3.3 Commit to Y.Doc (single transact)
-1. Access room via useRoomDocRegistry() hook (never instantiate directly)
-2. Check guards before mutate(): read-only (≥15MB), mobile view-only, frame size (2MB)
-3. Generate ULID stroke ID; use stable userId from session storage
-4. Assign scene from meta.scene_ticks.length at commit time (not during gesture)
-5. Push stroke to Y.Array with plain number[] points (never Float32Array in storage)
-6. Invalidate both preview bounds and final stroke bounds after commit
+#### 6A.1.1 Wire provider inside RoomDocManager
 
-## Phase 6: RBush Spatial Indexing
+1. Import `y-indexeddb` and create a **room-scoped** provider using the existing `Y.Doc({ guid: roomId })`.
+2. Instantiate **exactly once** per manager construction; never in UI components.
+3. Use database name/keyspace derived from `roomId` (e.g., `avlo.v1.rooms.<roomId>`).
+4. Register provider lifecycle handlers **inside** the manager (not UI):
+   - `on('synced')` → mark IDB hydrate finished.
+   - `on('destroy')` → no-op safe; the manager remains authority for teardown.
+5. On first construction, do **not** assume any IDB content; the manager should already have created the root containers in a single transact earlier. The provider simply applies any stored ops.
 
-### 6.1 Integrate RBush Library
+#### 6A.1.2 Implement `G_IDB_READY` gate (2 s timeout)
 
-#### 6.1.1 Initialize Spatial Index
+1. Start a short timer (2,000 ms) when attaching the IDB provider.
+2. Open `G_IDB_READY` as soon as the provider fires its first “applied stored updates” signal(sync/whenSynced, from provider) **or** the timer elapses—whichever happens first. 
+3. On timeout, continue with an empty doc; keep the provider attached to apply late updates when the browser finishes spinning up IndexedDB.
+4. Emit a lightweight internal metric (`idb.hydrate.ms`, `idb.timeout=true|false`) for future tuning.
+5. Wrap provider creation in try/catch. On exception:
+   - Mark an internal `idb.initFailed=true`, emit `idb.init.failed` metric, **open `G_IDB_READY` immediately** (fallback path), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.) 
+
+#### 6A.1.3 Dirty-flag integration for publish loop
+
+1. When IDB applies a batch, flip the manager’s **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
+2. Rely on the **existing** snapshot pipeline to compute the `svKey` and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS.
+
+After each publish where svKey changed, enqueue an async write to the minimal render cache (simple IDB). Follow the minimal svKey two-line check contract for cosmetic async to prevent temporal wormholes.
+Do not migrate the boot-splash cache into the y-indexeddb provider’s DB; keep its separate keyspace (e.g., avlo.v1.splash.<roomId>) so CRDT data and cosmetic assets never mingle.
+Do not gate drawing on the splash. Drawing remains allowed from frame 0 (offline-first); the splash is strictly visual until G_FIRST_SNAPSHOT flips
+
+### 6A.2 Boot discipline & first-paint guarantees
+
+#### 6A.2.1 EmptySnapshot on construct (non-null from frame 0)
+
+1. Ensure the manager constructs and stores a **non-null EmptySnapshot** synchronously at creation time.
+2. Immediately expose this snapshot to new subscribers (UI can render chrome, blank stage, and disabled buttons gated on `G_FIRST_SNAPSHOT` as needed).
+3. Leave the rAF publisher **running from creation**, so the first doc-derived snapshot appears ≤ 1 frame after any Y update is applied (IDB or later WS).
+
+On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by svKey. Render it only if the cached svKey equals the current Yjs svKey; otherwise skip. Hide it precisely when G_FIRST_SNAPSHOT opens
+
+#### 6A.2.2 rAF publisher discipline already in place
+
+1. Keep the single rAF loop model (no multiple loops per provider).
+2. Publish when **either** Yjs changed (svKey delta) **or** presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
+3. Preserve the **svKey optimization**: skip publish when the doc is unchanged and only cosmetic work would occur.
+
+### 6A.3 Client config validation with Zod (boot-critical only)
+
+#### 6A.3.1 Define `config.ts` schema
+
+1. Add a `z.object({...})` schema for **boot-time** client config (env and constants actually read in Phase 6):
+   - `VITE_WS_BASE` (string, required, e.g., `"/ws"` or absolute wss URL).
+   - `VITE_API_BASE` (string, required, e.g., `"/api"`).
+   - `ROOM_TTL_DAYS` (number, default 14, clamp to sensible bounds).
+2. Export a `loadClientConfig()` that validates once at boot and returns **narrowed types**.
+
+#### 6A.3.2 Fail-fast with friendly UI
+
+1. If validation fails, show a small in-app error panel explaining the missing/invalid setting and disable network-dependent controls; offline editing from IDB can still proceed once Y is ready.
+2. Log a single diagnostic (dev only). 
+
+### 6A.4 Minimal “Recent Rooms” readiness (unblocks UI later)
+
+#### 6A.4.1 Gate the badge, not the feature
+
+1. Expose a boolean “IDB ready” flag from the manager/registry so the **Recent Rooms** UI can show a badge only after `G_IDB_READY`.
+2. Do **not** build the full list UX here; only ensure the signal exists so later phases can hook it without refactoring.
+
+### 6A.5 Teardown & recovery hygiene
+
+#### 6A.5.1 Deterministic teardown
+
+1. On `destroy()`:
+   1. stop rAF publisher
+   2. unobserve Y listeners
+   3. **wsProvider.close()**(WS won’t be formally introduced yet) (or `.disconnect()`), ignore errors
+   4. **idbProvider.destroy()** (do **not** delete its DB)
+   5. `ydoc.destroy()`
+   6. subsequent public calls are no-ops. 
+
+#### 6A.5.2 Concurrency assertions (dev-only)
+
+1. Assert single manager per `roomId` in the registry.
+2. Assert that no UI layer imports `yjs`/providers directly (ESLint `no-restricted-imports`).
+3. Assert that provider attach happens **after** `Y.Doc` construction and before any WS attempts (to honor offline-first ordering once WS is introduced).
+
+------
+
+## Phase 6B: Server — y-websocket + Redis persistence + PostgreSQL/Prisma metadata
+
+### 6B.1 Server foundation (Express)
+
+#### 6B.1.1 App skeleton
+
+1. Create an Express app that serves static files from `server/public` (Vite build output copied here).
+2. Install middleware: JSON body parser (small limits), compression, basic security headers, and **CORS with an origin allowlist**.
+3. Reserve `/ws/*` for WebSocket upgrade; reserve `/api/*` for REST; serve index.html for other GETs.
+
+### 6B.2 Zod-validated environment
+
+#### 6B.2.1 Define and validate `ServerEnv`
+
+1. Create a Zod schema:
+   - `PORT` (number, default 3000)
+   - `ORIGIN_ALLOWLIST` (array of strings; include `localhost` dev entries)
+   - `REDIS_URL` (string, required)
+   - `DATABASE_URL` (string, required for Prisma)
+   - `ROOM_TTL_DAYS` (number, default 14, clamp 1–90)
+   - `WS_MAX_FRAME_BYTES` (number, default 2_000_000)
+2. Parse at process start; **fail fast** with a readable log if invalid.
+
+### 6B.3 Redis binding (authoritative storage)
+
+#### 6B.3.1 Connect and harden
+
+1. Initialize a Redis client (commands) and a separate pub/sub if needed later.
+2. Configure reconnect backoff; emit health logs on connect/disconnect.
+3. Ensure AOF is enabled at the deployment (infra) layer.
+
+#### 6B.3.2 Persistence adapter
+
+1. On `doc-update` from the WS server:
+   1. **Yjs applies the incoming delta to the in-memory room Y.Doc** (the official y-websocket server already does this).
+   2. **Serialize a fresh full snapshot** from the now-current Y.Doc using `encodeStateAsUpdate(ydoc)` (i.e., state-from-empty to current), **not** the incremental delta that just arrived.
+   3. Gzip (level 4) the snapshot buffer and **SET with TTL** (`SET room:<id> <buf> EX <ttlSeconds>`) so Redis holds a single authoritative blob.
+   4. Compute `size_bytes = buf.length` (compressed) and write the advisory metadata row in Postgres (`lastWriteAt`, `size_bytes`).
+   5. Do **not** append logs of deltas; awareness is never persisted; TTL extends only on accepted writes.
+
+### 6B.4 Prisma/PostgreSQL (non-authoritative metadata)
+
+#### 6B.4.1 Schema & migration
+
+1. Define `RoomMetadata` table with:
+   - `id TEXT PRIMARY KEY` (room id)
+   - `title TEXT NOT NULL DEFAULT ''`
+   - `createdAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()`
+   - `lastWriteAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()`
+   - `size_bytes INTEGER NOT NULL DEFAULT 0`
+2. Add an index on `(lastWriteAt DESC)`.
+3. Run `prisma migrate dev` to generate the migration and apply locally.
+
+#### 6B.4.2 Data contract
+
+1. Treat this table as **advisory only**. If `room:<id>` is missing in Redis, **return 404** for metadata even if a row exists.
+2. Update `size_bytes` and `lastWriteAt` **after** each successful doc persist.
+3. Never store awareness or per-stroke rows.
+
+### 6B.5 y-websocket server integration
+
+#### 6B.5.1 Bind `@y/websocket-server` to `/ws/:roomId`
+
+1. Mount the official server on the Express HTTP server; route by `roomId` path segment.
+2. Enforce origin allowlist on upgrade; reject unknown origins early.
+3. Configure inbound frame cap to **2 MB**; drop with close code if exceeded.
+
+#### 6B.5.2 Room load & save hooks
+
+1. On the first client join for a room, attempt `loadDoc(roomId)`; if present, apply to the in-memory Y.Doc that the WS server maintains for that room.
+2. On each **doc update** event from the WS server, apply delta to in memory room Y.Doc, compute full state(i.e. from empty state), 
+3. `gzip(level=4)` the full state and `SETEX room:<roomId>`.
+4. Update Prisma `size_bytes` with the **compressed** length and set `lastWriteAt`.
+5. Extend TTL to `ROOM_TTL_DAYS` on each successful persist; do not extend on awareness/control messages. Extend TTL only on accepted writes.
+
+#### 6B.5.3 Capacity & read-only enforcement (advisory)
+
+1. Optionally cap peer count per room (small default). If capacity exceeded, mark the room **read-only** in a control envelope so clients can show a banner (writes are still accepted locally and merge later when a slot opens).
+2. Keep enforcement simple (single process, no cluster).
+
+### 6B.6 HTTP API (Zod-guarded)
+
+#### 6B.6.1 Create room
+
+1. `POST /api/rooms` → allocate canonical `roomId` (ULID), insert `RoomMetadata`, **do not** pre-create Redis key.
+2. Return `{ id, title: "", createdAt, lastWriteAt, size_bytes: 0 }`.
+
+#### 6B.6.2 Read metadata
+
+1. `GET /api/rooms/:id/metadata` → check Redis key; if missing, respond **404** (expired).
+2. If present, read Prisma row; if missing row, create a minimal one on the fly to avoid client confusion.
+3. Return `{ id, size_bytes, expires_at: now + TTL, title, createdAt, lastWriteAt }`.
+
+#### 6B.6.3 Rename room
+
+1. `PUT /api/rooms/:id/rename` with `{ title: string ≤ 120 }`.
+2. Validate with Zod; update Prisma; return the new title.
+
+#### 6B.6.4 List rooms (optional)
+
+1. `GET /api/rooms?limit=…` for server-side lists (useful in admin/dev).
+2. This is **not** the “My Rooms” UX (that remains device-local), but it is convenient for tests and demos.
+
+### 6B.7 Backpressure & slow-socket policies (WS-only scope)
+
+#### 6B.7.1 Inbound/Outbound flow control
+
+1. Enforce the 2 MB inbound frame cap at the gateway; close misbehaving clients.
+2. Monitor each connection’s `bufferedAmount`. While above a **high-water** (e.g., 256 KB), **suspend presence fan-out** to that socket and **bound** its per-socket queue to doc-update essentials; resume when below **low-water** (e.g., 64 KB).
+3. Prefer freshness for awareness: if the queue builds, drop awareness frames destined for that socket first.
+
+### 6B.8 Health, metrics, and TTL janitor
+
+1. `GET /healthz` returns 200 + simple Redis ping.
+2. Emit counters: `ws.connections`, `persist.bytes`, `persist.ms`, `idb.hydrate.timeouts` (from clients if later reported).
+3. Launch an hourly janitor that logs rooms nearing expiry (no resurrection; purely observability).
+
+------
+
+## Phase 6C: Client — WebSocket provider, metadata wiring (TanStack Query), gates & failure modes
+
+### 6C.1 Attach y-websocket provider (client)
+
+#### 6C.1.1 Provider construction & order
+
+1. After attaching `y-indexeddb`, **connect WebSocket immediately**; do **not** wait for `G_IDB_READY`.
+2. Build the WS URL from validated `config.VITE_WS_BASE` and `roomId` (exact `/ws/<roomId>` mapping).
+3. Instantiate the WS provider **with the same Y.Doc** and **shared awareness instance placeholder** (awareness features remain unused until a later phase).
+4. 
+
+#### 6C.1.2 Connection gates
+
+1. Open `G_WS_CONNECTED` when the underlying socket opens.
+2. Open `G_WS_SYNCED` when the first Yjs sync (state-vector exchange / `syncStep2`) completes.
+3. Keep drawing enabled regardless (offline-first). The existing write guards already block when the room is server-declared read-only.
+
+#### 6C.1.3 Event wiring (provider-agnostic observers)
+
+1. Register **all** Y.Doc observers only once inside the manager (already established pattern).
+2. Do **not** add extra doc listeners from providers; treat them as transport only.
+3. On “doc update” from WS provider, flip the **doc-dirty** flag; the rAF loop will publish the next frame.
+
+#### 6C.1.4 Reconnect & offline handling
+
+1. If the socket closes, continue offline with IDB; queue CRDT ops locally (Y handles this).
+2. Show a **connection indicator**, (already present in UI wiring) based on `G_WS_CONNECTED` and `G_WS_SYNCED`. Only show offline/online, no need to show “reconnecting” this app is offline-first by design(poor UI)
+3. On reconnect, let Yjs merge; no special client logic needed beyond gates.
+
+### 6C.2 Room stats & metadata (TanStack Query v5)
+
+#### 6C.2.1 Query keys and fetchers
+
+1. Define query keys:
+   - `["rooms","metadata", roomId]`
+   - `["rooms","list"]` (if a simple server list UI is later added)
+2. Implement fetchers against:
+   - `GET /api/rooms/:id/metadata` (returns `{ size_bytes, expires_at, ... }`).
+3. Configure QueryClient defaults: `staleTime: 10_000`, `retry: 1`, `refetchOnWindowFocus: false`.
+
+#### 6C.2.2 Bridge to RoomDocManager stats
+
+1. On successful metadata fetch, call the manager’s internal setter to update the **RoomStats** stream (`bytes`, `cap`, optional `expiresAt`).
+2. The existing `subscribeRoomStats` will propagate to the UI (header pill at 13 MB, banner at 15 MB).
+3. If the endpoint returns 404 (expired), set stats to `null`, surface a banner explaining expiry, and leave the local IDB copy intact for “create new from local” later.
+
+#### 6C.2.3 Invalidation policy
+
+1. Invalidate `["rooms","metadata", roomId]` after a confirmed persist-ack (if/when the server emits one) **or** poll every ~10 s as a fallback.
+2. Do **not** spam invalidations on every local write; rely on the poll or ack.
+
+### 6C.3 Create/join glue (client side)
+
+#### 6C.3.1 Join flow (server room)
+
+1. Parse `roomId` from the URL.
+2. Attach IDB provider, then WS provider immediately.
+3. Kick off a metadata query; render content from IDB/WS as it arrives; gates handle feature availability.
+
+#### 6C.3.2 Local-first room → publish later (hook points only)
+
+1. Ensure the manager exposes `extendTTL()` (already present) so the UI can surface an **Extend** control when online.
+2. Leave full “create local → publish” and alias mapping UX to the dedicated Room Lifecycle phase; only maintain the function signatures here so later phases don’t reshuffle the manager API.
+
+### 6C.4 Failure modes & user feedback
+
+#### 6C.4.1 Gate-driven UI
+
+1. **Before `G_WS_CONNECTED`**: allow drawing (offline), disable actions that require the server (TTL extend).
+2. **Before `G_WS_SYNCED`**: render from IDB snapshot; keep a small “Syncing…” badge.
+3. **IDB timeout**: continue with EmptySnapshot; a late IDB apply will flip the doc-dirty flag and publish.
+
+#### 6C.4.2 Network & size errors
+
+1. If the server enforces read-only (capacity or size), reflect that via the existing banner logic; writes remain accepted locally but won’t persist server-side until policy clears.
+2. If a metadata fetch fails transiently, show a quiet “Reconnecting…” indicator; do not block drawing.
+
+### 6C.5 Client boundary validation with Zod (HTTP & WS control)
+
+#### 6C.5.1 HTTP schemas
+
+1. For `/api/rooms/:id/metadata`, define a Zod response schema; parse on receipt and surface a typed object to TanStack Query.
+2. For `/api/rooms/:id/rename` (wired later in the UI), define request/response schemas now to avoid future churn.
+
+#### 6C.5.2 WS control envelopes (future-proofing)
+
+1. Prepare a tiny Zod schema for any non-CRDT WS control envelopes you may use (e.g., server read-only notifications).
+2. Parse before acting; ignore unknown fields gracefully.
+
+**Teardown order (room leave, toggle to WS-only, tab close):**
+
+1. **Stop awareness publisher** → 2) **Destroy RTC provider** (not in this phase) → 3) **Unsubscribe awareness listeners** →
+2. **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops
+
+TODO: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so the UI knows when to show cursors
+
+## Phase 7: Awareness & Presence System
+
+### 7.1 Implement Awareness Protocol
+
+#### 7.1.1 Set Up Awareness State
+1. Create awareness instance from Y.Doc
+2. Define local user properties
+3. Generate unique user ID per tab
+4. Assign random color from palette
+5. Set default name or initials
+
+#### 7.1.2 Configure Awareness Updates
+1. Track cursor position in world space
+2. Update on pointermove with throttling
+3. Include current tool and activity
+4. Add sequence number for ordering
+5. Set timestamp for each update
+
+### 7.2 Build Presence Rendering
+
+#### 7.2.1 Create Cursor Component
+1. Render cursors for remote users
+2. Position using world coordinates
+3. Apply user color to cursor
+4. Show name label on hover
+5. Fade out stale cursors
+
+#### 7.2.2 Implement Cursor Smoothing
+1. Interpolate between cursor updates
+2. Use last known velocity for prediction
+3. Apply easing for natural movement
+4. Handle missing updates gracefully
+5. Remove cursors after timeout
+
+### 7.3 Add User List Display
+
+#### 7.3.1 Create User List Component
+1. Subscribe to awareness updates
+2. Display active users with colors
+3. Show user count in header
+4. Indicate drawing activity
+5. Remove after inactivity timeout
+
+## Phase 8: RBush Spatial Indexing
+
+### 8.1 Integrate RBush Library
+
+#### 8.1.1 Initialize Spatial Index
 1. Import RBush library with TypeScript types
 2. Create RBush instance in RoomDocManager
 3. Configure with appropriate max entries per node
 4. Set up index for 2D bounding boxes
 5. Initialize as empty on manager creation
 
-#### 6.1.2 Define Index Item Structure
+#### 8.1.2 Define Index Item Structure
 1. Create interface for indexed stroke items
 2. Include minX, minY, maxX, maxY from bbox
 3. Add stroke ID for reference back to data
@@ -346,151 +452,37 @@ Hairlines/HUD: ~1 device pixel using 1 / view.scale (CanvasStage already applied
 5. Store tool type for query optimization
 (bboxes are persisted on stroke commit and never recomputed at render time)
 
-### 6.2 Implement Index Maintenance
+### 8.2 Implement Index Maintenance
 
-#### 6.2.1 Build Initial Index
+#### 8.2.1 Build Initial Index
 1. Iterate through all strokes in snapshot
 2. Convert each stroke to RBush item format
 3. Bulk load items for efficiency
 4. Only include strokes from current scene(either re-filter or rebuild, cheap if you cache per scene indices)
 5. Store index in snapshot for queries
 
-#### 6.2.2 Handle Incremental Updates
+#### 8.2.2 Handle Incremental Updates
 1. Track strokes added since last index
 2. Insert new strokes individually
 3. Remove deleted strokes from index
 4. Rebuild if changes exceed threshold (256 items)
 5. Monitor index performance metrics
 
-### 6.3 Create Spatial Query System
+### 8.3 Create Spatial Query System
 
-#### 6.3.1 Implement Hit Testing
+#### 8.3.1 Implement Hit Testing
 1. Create point-to-stroke hit test method
 2. Convert point to search rectangle with tolerance
 3. Query RBush for overlapping strokes
 4. Perform precise hit test on candidates
 5. Return closest stroke or null
 
-#### 6.3.2 Add Area Selection Queries
+#### 8.3.2 Add Area Selection Queries
 1. Implement rectangle selection search
 2. Query index for strokes in bounds
 3. Filter results by current scene
 4. Sort by z-order (array index)
 5. Return array of selected stroke IDs
-
-## Phase 7: WebSocket, Indexeddb, Persistence Infrastructure
-**Note**: This phase adds BOTH offline persistence (y-indexeddb) and real-time sync (y-websocket). The y-indexeddb provider comes first to enable offline-first architecture. This is
-different from the minimal render cache in Phase 2.4, which is just for boot splash UX.
-
-### 7.1 Implement Offline Persistence with y-indexeddb
-#### 7.1.1 Initialize IndexedDB Provider
-1. Import y-indexeddb in RoomDocManager
-2. Create provider with room-scoped database
-3. Pass existing Y.Doc instance
-4. Set up sync event handlers
-5. Implement G_IDB_READY gate with 2s timeout
-
-### 7.2 Set Up WebSocket Server
-#### 7.2.1 Initialize Express Server
-1. Create Express application instance
-2. Configure CORS with origin allowlist
-3. Set up body parser for JSON
-4. Add compression middleware
-5. Serve static files from public directory
-
-#### 7.2.2 Integrate Y-WebSocket Server
-2. Create WebSocket server on /ws path
-3. Configure with room-based routing
-4. Set 2MB frame size limit
-5. Add connection tracking per room
-
-### 7.3 Provider Initialization Order
-1. Attach y-indexeddb first (offline-first)
-2. Wait for IDB sync or timeout
-3. Then attach y-websocket
-4. Ensure proper gate sequencing
-
-### 7.4 Implement Redis Persistence
-
-#### 7.4.1 Set Up Redis Connection
-1. Create Redis client with connection config
-2. Enable AOF for durability
-3. Configure reconnection backoff
-4. Set up health check interval
-5. Log connection state changes
-
-#### 7.4.2 Create Persistence Adapter
-1. Implement save method for Y.Doc
-2. Convert document to update format
-3. Compress with gzip level 4
-4. Store with room-prefixed key
-5. Set TTL to ROOM_TTL_DAYS (14 default)
-
-#### 7.4.3 Handle Document Loading
-1. Check Redis for existing room key
-2. Decompress stored document
-3. Apply updates to new Y.Doc
-4. Return document or null if not found
-5. Track load timing for metrics
-
-### 7.5 Connect Client WebSocket Provider
-
-#### 7.5.1 Initialize Y-WebSocket Provider
-1. Import y-websocket in RoomDocManager
-2. Create provider with room URL
-3. Pass existing Y.Doc instance
-4. Configure reconnection settings
-5. Set up event listeners
-
-#### 7.5.2 Handle Connection States
-1. Listen for connection status events
-2. Update UI connection indicator
-3. Queue updates while disconnected
-4. Sync on reconnection
-5. Show appropriate user messages
-
-## Phase 8: Awareness & Presence System
-
-### 8.1 Implement Awareness Protocol
-
-#### 8.1.1 Set Up Awareness State
-1. Create awareness instance from Y.Doc
-2. Define local user properties
-3. Generate unique user ID per tab
-4. Assign random color from palette
-5. Set default name or initials
-
-#### 8.1.2 Configure Awareness Updates
-1. Track cursor position in world space
-2. Update on pointermove with throttling
-3. Include current tool and activity
-4. Add sequence number for ordering
-5. Set timestamp for each update
-
-### 8.2 Build Presence Rendering
-
-#### 8.2.1 Create Cursor Component
-1. Render cursors for remote users
-2. Position using world coordinates
-3. Apply user color to cursor
-4. Show name label on hover
-5. Fade out stale cursors
-
-#### 8.2.2 Implement Cursor Smoothing
-1. Interpolate between cursor updates
-2. Use last known velocity for prediction
-3. Apply easing for natural movement
-4. Handle missing updates gracefully
-5. Remove cursors after timeout
-
-### 8.3 Add User List Display
-
-#### 8.3.1 Create User List Component
-1. Subscribe to awareness updates
-2. Display active users with colors
-3. Show user count in header
-4. Indicate drawing activity
-5. Remove after inactivity timeout
 
 ## Phase 9: UI Components & Toolbar
 
@@ -712,123 +704,37 @@ different from the minimal render cache in Phase 2.4, which is just for boot spl
 ### 15.1 Integrate Monaco Editor
 
 #### 15.1.1 Set Up Monaco
-1. Configure Monaco loader
-2. Create editor instance
-3. Set up syntax highlighting
-4. Configure auto-completion
-5. Add keyboard shortcuts
 
 #### 15.1.2 Implement Editor UI
-1. Create resizable panel
-2. Add language selector
-3. Show line numbers
-4. Include run button
-5. Display execution state
 
 ### 15.2 Build Execution Environment
 
 #### 15.2.1 Create JavaScript Executor
-1. Set up web worker for isolation
-2. Implement 5-second timeout
-3. Capture console output
-4. Handle errors gracefully
-5. Clean up after execution
 
 #### 15.2.2 Add Python Support
-1. Load Pyodide when needed
-2. Create Python worker
-3. Handle package imports
-4. Capture print output
-5. Apply same timeout rules
 
 ## Phase 16: Service Worker & PWA
 
 ### 16.1 Implement Service Worker
 
 #### 16.1.1 Create Service Worker Registration
-1. Register service worker file
-2. Handle registration events
-3. Show update prompts
-4. Manage version transitions
-5. Clean old caches
 
 #### 16.1.2 Configure Caching Strategies
-1. Cache app shell with cache-first
-2. Pre-cache Monaco editor files
-3. Never cache API or WebSocket paths
-4. Set up runtime caches with limits
-5. Handle quota exceeded errors
 
 ### 16.2 Enable PWA Features
 
 #### 16.2.1 Create Web App Manifest
-1. Define app name and description
-2. Add icon sets with sizes
-3. Configure display mode
-4. Set theme colors
-5. Define start URL
 
 #### 16.2.2 Implement Install Flow
-1. Listen for install prompt
-2. Show custom install UI
-3. Handle user choice
-4. Track installation state
-5. Update UI after install
 
 ## Phase 17: WebRTC & P2P (Optional Enhancement)
 
 ### 17.1 Add WebRTC Provider
 
 #### 17.1.1 Initialize WebRTC
-1. Import y-webrtc provider
-2. Configure signaling servers
-3. Set up ICE servers
-4. Apply room-scoped password
-5. Set max connections limit
 
 #### 17.1.2 Implement Probe Mechanism
-1. Measure WebSocket RTT
-2. Establish WebRTC connection
-3. Measure data channel RTT
-4. Compare latencies
-5. Keep if significant improvement
 
 ### 17.2 Handle Fallback Logic
 
 #### 17.2.1 Monitor Connection Health
-1. Track ICE connection state
-2. Monitor peer count
-3. Check CPU usage
-4. Detect failed states
-5. Fall back to WebSocket only
-
-## Phase 18: Polish & Production Readiness
-
-### 18.1 Performance Optimization
-
-#### 18.1.1 Optimize Render Performance
-1. Profile render bottlenecks
-2. Implement aggressive culling
-3. Add frame budgeting
-4. Optimize path building
-5. Reduce memory allocations
-
-### 18.2 Error Handling & Recovery
-
-#### 18.2.1 Implement Error Boundaries
-1. Add React error boundaries
-2. Create fallback UI
-3. Log errors to Sentry
-4. Provide recovery options
-5. Preserve user data
-
-### 18.3 Testing & Validation
-
-#### 18.3.1 Complete E2E Test Suite
-1. Test all user workflows
-2. Verify capacity limits
-3. Test offline scenarios
-4. Validate export features
-5. Check accessibility
-
-Each phase builds upon the previous, minimizing the need for stubs and ensuring a working system at each stage. Follow the constraints in avlo.md strictly, particularly around Y.Doc access patterns, mutation wrappers, and the snapshot-based architecture.

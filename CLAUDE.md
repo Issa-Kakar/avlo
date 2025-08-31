@@ -5,12 +5,12 @@
 
 ## Tech Stack (Target)
 - **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, Tailwind CSS
-- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 6)
-- **Editor**: Monaco 0.52.2 (Phase 7)
+- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 8)
+- **Editor**: Monaco 0.52.2 (Phase 15)
 - **Real-time**: Yjs 13.6.27, y-websocket, y-indexeddb, y-webrtc
-- **Execution**: JS + Pyodide 0.26.4 (Phase 7)
+- **Execution**: JS + Pyodide 0.26.4 (Phase 15)
 - **Backend**: Node.js, Express, @y/websocket-server
-- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma (future phases)
+- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma 
 - **Deployment**: Single container on Railway
 
 ## Current Implementation Status
@@ -22,7 +22,7 @@
 - Phase 5: Drawing Input System (Pointer event handling, DrawingTool, Preview rendering, Stroke commit with simplification)
 
 ## Current Status
-**READY FOR PHASE 6: RBush Spatial Indexing**
+**READY FOR PHASE 6: WebSocket, Indexeddb, Persistence Infrastructure**
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -43,8 +43,8 @@ The **RoomDocManagerRegistry** is THE ONLY way to access RoomDocManager instance
 - `useHasRoomDocRegistry()` follows React hook naming (was `hasRoomDocRegistry`)
 - Must be called unconditionally in React components/hooks
 
-### 📋 Phases 3-18: See IMPLEMENTATION.MD
-Canvas → Stroke Rendering → Input → Rbush → WebSocket + Indexeddb→ Awareness → UI → Code Execution → PWA
+### 📋 Phases 6-17: See IMPLEMENTATION.MD
+WebSocket + IndexedDB + Persistence → Awareness → RBush → UI → Eraser → Text/Stamps → Undo/Redo → Room Lifecycle → Export/Minimap → Code Execution → PWA → WebRTC → Polish
 
 ## Data Models (Phase 2-4 Focus)
 
@@ -83,7 +83,7 @@ interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;  // filtered by scene
   texts: ReadonlyArray<TextView>;       // filtered by scene
   presence: PresenceView;               // throttled to 30Hz
-  spatialIndex: null;   // Phase 6: RBush (coming next)
+  spatialIndex: null;   // Phase 8: RBush
   view: ViewTransform;  // world↔canvas transforms
   meta: { bytes?: number; cap: number; readOnly: boolean };
 }
