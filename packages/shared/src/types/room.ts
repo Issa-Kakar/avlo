@@ -1,10 +1,9 @@
 import { StrokeId, TextId, SceneIdx, UserId } from './identifiers';
 
-// Individual stroke point with optional pressure
+// Individual stroke point with world coordinates
 export interface StrokePoint {
   x: number;
   y: number;
-  p?: number; // pressure 0..1, optional
 }
 
 // Complete stroke data structure
@@ -14,7 +13,7 @@ export interface Stroke {
   color: string; // #RRGGBB format
   size: number; // world units (px at scale=1)
   opacity: number; // 0..1; highlighter default 0.25
-  points: number[]; // CRITICAL: flattened [x0,y0,(p0?), x1,y1,(p1?), ...]
+  points: number[]; // CRITICAL: flattened [x0,y0, x1,y1, ...]
   // NEVER Float32Array in storage
   bbox: [number, number, number, number]; // [minX, minY, maxX, maxY] world units
   scene: SceneIdx; // assigned at commit time

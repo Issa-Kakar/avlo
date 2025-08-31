@@ -25,7 +25,7 @@ Avlo enables synchronous sketching and quick code execution for demos, teaching,
 
 ## Current Status
 
-**Phase 4 Complete**: Core data layer, RoomDocManager foundation, snapshot publishing system, canvas infrastructure with coordinate transforms, render loop, and stroke rendering pipeline with Path2D building and tool-specific rendering implemented and tested.
+**Phase 5 Complete**: Drawing input system with pointer event handling, DrawingTool class with RAF coalescing, preview rendering, and stroke commit with Douglas-Peucker simplification. Ready for Phase 6 (RBush spatial indexing).
 
 See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadmap (Phases 2-18).
 
@@ -56,11 +56,12 @@ avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
 │   │   ├── canvas/           # Canvas components & transforms
-│   │   ├── contexts/         # React contexts (Registry, ViewTransform)
+│   │   ├── components/       # UI components
 │   │   ├── hooks/            # React hooks for data subscriptions
 │   │   ├── lib/              # RoomDocManager core
+│   │   │   └── tools/        # DrawingTool & simplification
 │   │   ├── renderer/         # Render loop, layers & stroke building
-│   │   ├── stores/           # Zustand stores (device-local UI state)
+│   │   ├── stores/           # Zustand stores (not yet integrated)
 │   │   └── types/            # TypeScript types
 ├── server/                    # Node.js backend
 └── packages/

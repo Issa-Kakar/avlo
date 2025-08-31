@@ -6,6 +6,12 @@ import { CanvasStage, type CanvasStageHandle } from '../CanvasStage';
 describe('CanvasStage', () => {
   // Mock ResizeObserver locally (not globally)
   beforeEach(() => {
+    // Mock devicePixelRatio
+    Object.defineProperty(window, 'devicePixelRatio', {
+      writable: true,
+      value: 1,
+    });
+
     // Mock matchMedia for DPR change listener
     Object.defineProperty(window, 'matchMedia', {
       writable: true,

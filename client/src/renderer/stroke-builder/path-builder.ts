@@ -5,32 +5,6 @@ export interface StrokeRenderData {
   polyline: Float32Array;
   bounds: { x: number; y: number; width: number; height: number }; // Plain object, not DOMRect
   pointCount: number;
-  hasPressure: boolean;
-}
-
-/**
- * Detects stride robustly - only uses 3-stride if points have pressure-like values.
- * Prevents false positives on 2-stride arrays with length divisible by 3.
- *
- * CRITICAL: This is a Phase 4 heuristic. Phase 5 will enforce consistent stride at commit time:
- * - If any pressure observed during drawing → encode all points as triplets (fill missing with 1.0)
- * - Otherwise encode as pairs only
- * This ensures fixed stride per stroke, eliminating guesswork.
- */
-function detectStride(points: ReadonlyArray<number>): 2 | 3 {
-  if (points.length >= 3 && points.length % 3 === 0) {
-    // Sample entries to verify they look like pressure values
-    let samples = 0,
-      validPressure = 0;
-    for (let i = 2; i < points.length && samples < 12; i += 3) {
-      const p = points[i];
-      samples++;
-      if (Number.isFinite(p) && p >= 0 && p <= 1) validPressure++;
-    }
-    // Require 80% of samples to be valid pressure values
-    if (validPressure >= Math.ceil(samples * 0.8)) return 3;
-  }
-  return 2;
 }
 
 /**
@@ -43,9 +17,8 @@ function detectStride(points: ReadonlyArray<number>): 2 | 3 {
 export function buildStrokeRenderData(stroke: StrokeView): StrokeRenderData {
   const { points } = stroke;
 
-  // Robust stride detection to avoid mis-parsing
-  const stride = detectStride(points);
-  const hasPressure = stride === 3;
+  // Points are always 2-stride (x,y pairs)
+  const stride = 2;
   const pointCount = Math.floor(points.length / stride);
 
   // Build Float32Array at render time (never stored)
@@ -62,7 +35,6 @@ export function buildStrokeRenderData(stroke: StrokeView): StrokeRenderData {
       polyline,
       bounds: { x: 0, y: 0, width: 0, height: 0 },
       pointCount: 0,
-      hasPressure: false,
     };
   }
 
@@ -85,7 +57,7 @@ export function buildStrokeRenderData(stroke: StrokeView): StrokeRenderData {
 
     const x = points[srcIdx];
     const y = points[srcIdx + 1];
-    // const pressure = hasPressure ? points[srcIdx + 2] : 1.0; // For future use
+    // No pressure support in this version
 
     if (path) {
       path.lineTo(x, y);
@@ -113,7 +85,6 @@ export function buildStrokeRenderData(stroke: StrokeView): StrokeRenderData {
     polyline,
     bounds,
     pointCount,
-    hasPressure,
   };
 }
 

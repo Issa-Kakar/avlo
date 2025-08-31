@@ -20,14 +20,13 @@ describe('Path Builder', () => {
 
       expect(result.pointCount).toBe(0);
       expect(result.polyline.length).toBe(0);
-      expect(result.hasPressure).toBe(false);
       expect(result.bounds).toEqual({ x: 0, y: 0, width: 0, height: 0 });
     });
 
-    it('should build path from points without pressure (2-stride)', () => {
+    it('should build path from points array', () => {
       const stroke: StrokeView = {
         id: 'test-2',
-        points: [100, 100, 150, 150, 200, 100], // 3 points, no pressure
+        points: [100, 100, 150, 150, 200, 100], // 3 points
         polyline: null,
         style: { color: '#000', size: 2, opacity: 1, tool: 'pen' },
         bbox: [100, 100, 200, 150],
@@ -40,17 +39,16 @@ describe('Path Builder', () => {
 
       expect(result.pointCount).toBe(3);
       expect(result.polyline.length).toBe(6); // 3 points * 2 coords
-      expect(result.hasPressure).toBe(false);
       expect(result.polyline[0]).toBe(100);
       expect(result.polyline[1]).toBe(100);
       expect(result.polyline[4]).toBe(200);
       expect(result.polyline[5]).toBe(100);
     });
 
-    it('should detect pressure data correctly with 80% threshold', () => {
+    it('should handle multiple points correctly', () => {
       const stroke: StrokeView = {
         id: 'test-3',
-        points: [100, 100, 0.5, 150, 150, 0.8, 200, 100, 1.0], // 3 points with valid pressure
+        points: [100, 100, 150, 150, 200, 100], // 3 points in standard format
         polyline: null,
         style: { color: '#000', size: 2, opacity: 1, tool: 'pen' },
         bbox: [100, 100, 200, 150],
@@ -62,15 +60,13 @@ describe('Path Builder', () => {
       const result = buildStrokeRenderData(stroke);
 
       expect(result.pointCount).toBe(3);
-      expect(result.polyline.length).toBe(6); // Still 3 points * 2 coords in polyline
-      expect(result.hasPressure).toBe(true);
+      expect(result.polyline.length).toBe(6); // 3 points * 2 coords
     });
 
-    it('should NOT detect pressure on false positive (length divisible by 3 but not pressure)', () => {
-      // This is the critical test for robust stride detection
+    it('should handle points array with even length', () => {
       const stroke: StrokeView = {
-        id: 'test-false-positive',
-        points: [100, 100, 200, 200, 300, 300], // 3 points but third value is NOT pressure (200, 300)
+        id: 'test-even-length',
+        points: [100, 100, 200, 200, 300, 300], // 3 points
         polyline: null,
         style: { color: '#000', size: 2, opacity: 1, tool: 'pen' },
         bbox: [100, 100, 300, 300],
@@ -81,35 +77,16 @@ describe('Path Builder', () => {
 
       const result = buildStrokeRenderData(stroke);
 
-      // Should be parsed as 2-stride since the "pressure" values are out of range
-      expect(result.hasPressure).toBe(false);
       expect(result.pointCount).toBe(3); // 6 values / 2 = 3 points
     });
 
-    it('should require 80% valid pressure values for 3-stride detection', () => {
-      // Test with mixed valid/invalid pressure values
+    it('should handle longer stroke paths', () => {
       const stroke: StrokeView = {
-        id: 'test-mixed-pressure',
-        points: [
-          100,
-          100,
-          0.5, // valid pressure
-          150,
-          150,
-          2.0, // invalid pressure (> 1)
-          200,
-          200,
-          0.8, // valid pressure
-          250,
-          250,
-          -0.5, // invalid pressure (< 0)
-          300,
-          300,
-          0.7, // valid pressure
-        ],
+        id: 'test-long-stroke',
+        points: [100, 100, 150, 150, 200, 200, 250, 250, 300, 300, 350, 250, 400, 200],
         polyline: null,
         style: { color: '#000', size: 2, opacity: 1, tool: 'pen' },
-        bbox: [100, 100, 300, 300],
+        bbox: [100, 100, 400, 300],
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
@@ -117,9 +94,8 @@ describe('Path Builder', () => {
 
       const result = buildStrokeRenderData(stroke);
 
-      // 3/5 = 60% valid, below 80% threshold, should parse as 2-stride
-      expect(result.hasPressure).toBe(false);
-      expect(result.pointCount).toBe(7); // 15 values / 2 = 7.5, floor to 7
+      expect(result.pointCount).toBe(7); // 14 values / 2 = 7 points
+      expect(result.polyline.length).toBe(14);
     });
 
     it('should calculate correct bounds', () => {

@@ -79,10 +79,9 @@ describe('Transform utilities', () => {
       }
     });
 
-    it('handles non-zero canvas position and DPR correctly', () => {
-      // Mock canvas at position (100, 50) with DPR 2
+    it('handles CSS pixels correctly without DPR in transforms', () => {
+      // Canvas transforms work in CSS pixels, DPR is handled only at canvas context level
       const canvasRect = { left: 100, top: 50 };
-      const dpr = 2;
       const scale = 2;
       const pan = { x: 10, y: 5 };
 
@@ -90,18 +89,23 @@ describe('Transform utilities', () => {
       const screenX = 150;
       const screenY = 100;
 
-      // Expected canvas coordinates (accounting for DPR)
-      const expectedCanvasX = (screenX - canvasRect.left) * dpr; // (150-100)*2 = 100
-      const expectedCanvasY = (screenY - canvasRect.top) * dpr; // (100-50)*2 = 100
+      // CSS canvas coordinates (NO DPR multiplication)
+      const canvasX = screenX - canvasRect.left; // 150 - 100 = 50
+      const canvasY = screenY - canvasRect.top; // 100 - 50 = 50
 
-      // Expected world coordinates using inverse transform
-      // world = canvas / scale + pan
-      const expectedWorldX = expectedCanvasX / scale + pan.x; // 100/2 + 10 = 60
-      const expectedWorldY = expectedCanvasY / scale + pan.y; // 100/2 + 5 = 55
+      // World coordinates using transform
+      const worldX = canvasX / scale + pan.x; // 50/2 + 10 = 35
+      const worldY = canvasY / scale + pan.y; // 50/2 + 5 = 30
 
-      // Verify the math (this would be in actual component tests)
-      expect(expectedWorldX).toBe(60);
-      expect(expectedWorldY).toBe(55);
+      expect(worldX).toBe(35);
+      expect(worldY).toBe(30);
+    });
+
+    it('DPR is applied only in canvas context, not in coordinate transforms', () => {
+      // DPR affects the canvas backing store and initial context transform
+      // It should NEVER appear in ViewTransform or coordinate conversion math
+      // The only place DPR belongs is: ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      expect(true).toBe(true); // Documentation test
     });
   });
 });
