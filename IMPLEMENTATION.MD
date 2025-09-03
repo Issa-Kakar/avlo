@@ -18,6 +18,7 @@
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
 - Implement RAF-based publishing (≤60 FPS, dirty flags, svKey optimization)
+- **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. This is sufficient for cache invalidation and change detection
 
 ### 2.4 Set Up Subscription Management
 - Implement subscribeSnapshot with immediate callback on subscribe
@@ -86,7 +87,11 @@
 - Commit via mutate(): generate ULID, assign scene at commit, push to Y.Array
 
 ### Phase 6A: Offline-First Doc Persistence & Boot Gates (y-indexeddb + manager plumbing)
-
+Local persistence policy (normative):
+Persist the entire Y.Doc per room in IndexedDB under avlo.v1.rooms.<roomId>.
+Initialize with new Y.Doc({ guid: roomId }) once; attach y-indexeddb immediately and do not wait to connect WS.
+Never change guid. If remapping is required, create a new doc and apply updates.
+Do not delete the room’s IDB data on leave; expose Delete local copy in My Rooms.
 ### 6A.1 Attach y-indexeddb (provider comes first)
 
 #### 6A.1.1 Wire provider inside RoomDocManager
@@ -95,25 +100,27 @@
 2. Instantiate **exactly once** per manager construction; never in UI components.
 3. Use database name/keyspace derived from `roomId` (e.g., `avlo.v1.rooms.<roomId>`).
 4. Register provider lifecycle handlers **inside** the manager (not UI):
-   - `on('synced')` → mark IDB hydrate finished.
-   - `on('destroy')` → no-op safe; the manager remains authority for teardown.
+   - Prefer `provider.whenSynced.then(() => mark IDB hydrate finished)`; if unavailable in your wrapper, listen **once** for `'synced'` and then mark finished.
+   - Do not subscribe to a destroy event. Teardown is explicit: in the manager’s `teardown()`, call `await provider.destroy()` (best-effort), null out references, and leave `G_IDB_READY` unchanged. If your wrapper emits `'destroyed'`, you may log it in dev only; never gate behavior on it.
+
 5. On first construction, do **not** assume any IDB content; the manager should already have created the root containers in a single transact earlier. The provider simply applies any stored ops.
 
 #### 6A.1.2 Implement `G_IDB_READY` gate (2 s timeout)
 
 1. Start a short timer (2,000 ms) when attaching the IDB provider.
-2. Open `G_IDB_READY` as soon as the provider fires its first “applied stored updates” signal(sync/whenSynced, from provider) **or** the timer elapses—whichever happens first. 
+2. 2. Open `G_IDB_READY` when `provider.whenSynced` resolves (or on the first `'synced'` event, if that’s what your wrapper exposes) **or** when the 2,000 ms timer elapses—whichever happens first.
 3. On timeout, continue with an empty doc; keep the provider attached to apply late updates when the browser finishes spinning up IndexedDB.
-4. Emit a lightweight internal metric (`idb.hydrate.ms`, `idb.timeout=true|false`) for future tuning.
+4. Dev-only debug log; keep metric() calls as no-ops in prod.
 5. Wrap provider creation in try/catch. On exception:
-   - Mark an internal `idb.initFailed=true`, emit `idb.init.failed` metric, **open `G_IDB_READY` immediately** (fallback path), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.) 
+Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue with EmptySnapshot + rAF; keep drawing offline; log a dev-only debug line (no prod metric), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.) 
 
 #### 6A.1.3 Dirty-flag integration for publish loop
 
-1. When IDB applies a batch, flip the manager’s **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
-2. Rely on the **existing** snapshot pipeline to compute the `svKey` and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS.
+1. When IDB applies a batch, flip the manager's **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
+2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS.
+**Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
 
-After each publish where svKey changed, enqueue an async write to the minimal render cache (simple IDB). Follow the minimal svKey two-line check contract for cosmetic async to prevent temporal wormholes.
+After each publish where svKey changed, enqueue an async write to the minimal render cache (simple IDB) **and persist `lastKnownSvKey` (a tiny string) alongside it**. Follow the svKey two-line check contract for cosmetic async to prevent temporal wormholes.
 Do not migrate the boot-splash cache into the y-indexeddb provider’s DB; keep its separate keyspace (e.g., avlo.v1.splash.<roomId>) so CRDT data and cosmetic assets never mingle.
 Do not gate drawing on the splash. Drawing remains allowed from frame 0 (offline-first); the splash is strictly visual until G_FIRST_SNAPSHOT flips
 
@@ -121,17 +128,17 @@ Do not gate drawing on the splash. Drawing remains allowed from frame 0 (offline
 
 #### 6A.2.1 EmptySnapshot on construct (non-null from frame 0)
 
-1. Ensure the manager constructs and stores a **non-null EmptySnapshot** synchronously at creation time.
+1. Ensure the manager constructs and stores a **non-null EmptySnapshot** synchronously at creation time(already done in Phase 2).
 2. Immediately expose this snapshot to new subscribers (UI can render chrome, blank stage, and disabled buttons gated on `G_FIRST_SNAPSHOT` as needed).
 3. Leave the rAF publisher **running from creation**, so the first doc-derived snapshot appears ≤ 1 frame after any Y update is applied (IDB or later WS).
 
-On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by svKey. Render it only if the cached svKey equals the current Yjs svKey; otherwise skip. Hide it precisely when G_FIRST_SNAPSHOT opens
+On boot, read `{ png, svKey }` from the simple IDB wrapper **and** the persisted `lastKnownSvKey`. If `cached.svKey === lastKnownSvKey`, show the splash immediately; otherwise skip. Always hide the splash exactly when `G_FIRST_SNAPSHOT` opens.
 
 #### 6A.2.2 rAF publisher discipline already in place
 
 1. Keep the single rAF loop model (no multiple loops per provider).
 2. Publish when **either** Yjs changed (svKey delta) **or** presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
-3. Preserve the **svKey optimization**: skip publish when the doc is unchanged and only cosmetic work would occur.
+3. Preserve the **svKey optimization**: skip publish when the doc is unchanged (detected via svKey comparison) and only cosmetic work would occur. Note: svKey changes only when Y.Doc actually changes, making it a reliable change detector despite using a truncated format.
 
 ### 6A.3 Client config validation with Zod (boot-critical only)
 
@@ -159,13 +166,14 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 
 #### 6A.5.1 Deterministic teardown
 
-1. On `destroy()`:
-   1. stop rAF publisher
-   2. unobserve Y listeners
-   3. **wsProvider.close()**(WS won’t be formally introduced yet) (or `.disconnect()`), ignore errors
-   4. **idbProvider.destroy()** (do **not** delete its DB)
-   5. `ydoc.destroy()`
-   6. subsequent public calls are no-ops. 
+On `destroy()`:
+1) stop rAF 
+2) unobserve Y 
+3) if (wsProvider) { try { await wsProvider.close?.() ?? wsProvider.disconnect?.() ?? wsProvider.destroy?.() } catch {} ; wsProvider = null }
+4) if (idbProvider) { try { await idbProvider.destroy?.() } catch {} ; idbProvider = null }
+5) try { ydoc.destroy() } catch {}
+6) mark `this._destroyed = true` so subsequent calls are no-ops.
+
 
 #### 6A.5.2 Concurrency assertions (dev-only)
 
@@ -203,9 +211,9 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 #### 6B.3.1 Connect and harden
 
 1. Initialize a Redis client (commands) and a separate pub/sub if needed later.
-2. Configure reconnect backoff; emit health logs on connect/disconnect.
+2. Configure reconnect backoff; 
 3. Ensure AOF is enabled at the deployment (infra) layer.
-
+Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server never issues DEL/cron deletes. On missing key, treat the room as expired.
 #### 6B.3.2 Persistence adapter
 
 1. On `doc-update` from the WS server:
@@ -286,11 +294,8 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 2. Monitor each connection’s `bufferedAmount`. While above a **high-water** (e.g., 256 KB), **suspend presence fan-out** to that socket and **bound** its per-socket queue to doc-update essentials; resume when below **low-water** (e.g., 64 KB).
 3. Prefer freshness for awareness: if the queue builds, drop awareness frames destined for that socket first.
 
-### 6B.8 Health, metrics, and TTL janitor
-
+### 6B.8 Health
 1. `GET /healthz` returns 200 + simple Redis ping.
-2. Emit counters: `ws.connections`, `persist.bytes`, `persist.ms`, `idb.hydrate.timeouts` (from clients if later reported).
-3. Launch an hourly janitor that logs rooms nearing expiry (no resurrection; purely observability).
 
 ------
 
@@ -303,7 +308,6 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 1. After attaching `y-indexeddb`, **connect WebSocket immediately**; do **not** wait for `G_IDB_READY`.
 2. Build the WS URL from validated `config.VITE_WS_BASE` and `roomId` (exact `/ws/<roomId>` mapping).
 3. Instantiate the WS provider **with the same Y.Doc** and **shared awareness instance placeholder** (awareness features remain unused until a later phase).
-4. 
 
 #### 6C.1.2 Connection gates
 
@@ -320,7 +324,7 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 #### 6C.1.4 Reconnect & offline handling
 
 1. If the socket closes, continue offline with IDB; queue CRDT ops locally (Y handles this).
-2. Show a **connection indicator**, (already present in UI wiring) based on `G_WS_CONNECTED` and `G_WS_SYNCED`. Only show offline/online, no need to show “reconnecting” this app is offline-first by design(poor UI)
+2. 2. Show a **connection indicator** based on `G_WS_CONNECTED` and `G_WS_SYNCED`: Online / Offline / Read-only. Do **not** show “Reconnecting”.
 3. On reconnect, let Yjs merge; no special client logic needed beyond gates.
 
 ### 6C.2 Room stats & metadata (TanStack Query v5)
@@ -339,6 +343,7 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 1. On successful metadata fetch, call the manager’s internal setter to update the **RoomStats** stream (`bytes`, `cap`, optional `expiresAt`).
 2. The existing `subscribeRoomStats` will propagate to the UI (header pill at 13 MB, banner at 15 MB).
 3. If the endpoint returns 404 (expired), set stats to `null`, surface a banner explaining expiry, and leave the local IDB copy intact for “create new from local” later.
+Do not recreate keys from Postgres; 404 is final.
 
 #### 6C.2.3 Invalidation policy
 
@@ -363,13 +368,13 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 #### 6C.4.1 Gate-driven UI
 
 1. **Before `G_WS_CONNECTED`**: allow drawing (offline), disable actions that require the server (TTL extend).
-2. **Before `G_WS_SYNCED`**: render from IDB snapshot; keep a small “Syncing…” badge.
+2. **Before `G_WS_SYNCED`**: render from IDB snapshot; (No special UI indicator) Keep rendering from local/IDB until `G_WS_SYNCED` opens.
 3. **IDB timeout**: continue with EmptySnapshot; a late IDB apply will flip the doc-dirty flag and publish.
 
 #### 6C.4.2 Network & size errors
 
 1. If the server enforces read-only (capacity or size), reflect that via the existing banner logic; writes remain accepted locally but won’t persist server-side until policy clears.
-2. If a metadata fetch fails transiently, show a quiet “Reconnecting…” indicator; do not block drawing.
+2. If a metadata fetch fails transiently, retry silently; do not block drawing. Optionally flip the connection indicator to Offline until the next successful fetch.
 
 ### 6C.5 Client boundary validation with Zod (HTTP & WS control)
 
@@ -386,13 +391,14 @@ On boot, attempt to read the cosmetic PNG from the simple IDB wrapper keyed by s
 **Teardown order (room leave, toggle to WS-only, tab close):**
 
 1. **Stop awareness publisher** → 2) **Destroy RTC provider** (not in this phase) → 3) **Unsubscribe awareness listeners** →
-2. **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops
+2. **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**.Guarantee all public calls after `destroy()` are no-ops (guard every public method with `if (this._destroyed) return;`).
 
-TODO: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so the UI knows when to show cursors
+TODO IN FUTURE PHASE 7: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so the UI knows when to show cursors. When offline:(no UI) – presence is best-effort; cursors simply hide
 
 ## Phase 7: Awareness & Presence System
 
 ### 7.1 Implement Awareness Protocol
+Do not start an awareness timeout. If awareness is unavailable, keep presence features hidden with no extra UI.
 
 #### 7.1.1 Set Up Awareness State
 1. Create awareness instance from Y.Doc
@@ -422,7 +428,7 @@ TODO: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so
 2. Use last known velocity for prediction
 3. Apply easing for natural movement
 4. Handle missing updates gracefully
-5. Remove cursors after timeout
+5. Remove cursors after disconnect
 
 ### 7.3 Add User List Display
 
@@ -431,7 +437,7 @@ TODO: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so
 2. Display active users with colors
 3. Show user count in header
 4. Indicate drawing activity
-5. Remove after inactivity timeout
+
 
 ## Phase 8: RBush Spatial Indexing
 

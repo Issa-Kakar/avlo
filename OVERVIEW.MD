@@ -399,7 +399,7 @@ Docked toolbar (left/pinned/expanded by default) with optional auto-hide; device
 
 **My Rooms.** Device-local list with provisional/published; delete only removes local entry; per-room `Y.Doc` persists until explicit **Delete local copy**.
 
-**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Reconnecting/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap.
+**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap.
 
 **Collaboration Mode & Indicators (additions).** Provide a control labeled **Collaboration Mode** with **Server (default)** and **Peer Mode (P2P)**. Remember per-device. Show a header badge (**Server** or **Peer Mode On **). 
 
@@ -422,13 +422,13 @@ Global Conventions
 
 **Security.** CSP profile, HSTS after TLS stable; `nosniff`; `no-referrer`; WS frame cap 2 MB; no session tokens; upgrades validated with Origin + roomId; **Origin allowlist** config and 403 behavior. password in WebrtcProvider encrypts signaling and prevents MITM on public signaling servers; recommend a room-scoped HMAC.
 
-**Availability.** "TTL janitor" every hour; final Redis flush on process SIGTERM with 3 s grace. TTL-based retention; AOF enabled; idle GC and final flush; no recovery after expiry. **Degraded mode.** Collaboration proceeds if Postgres is unavailable; metadata endpoints may 503.
+**Availability.** TTL-based retention; AOF enabled; idle GC and final flush on process SIGTERM with 3 s grace; no recovery after expiry. **Degraded mode.** Collaboration proceeds if Postgres is unavailable; metadata endpoints may 503.
 
-**Usability & accessibility.** Clear toasts and help copy; no auto-panning due to remote actions; popovers focus-trapped; toolbar never auto-reveals while drawing. **Maintainability.** Unobserve all Yjs observers on unmount; Sentry + counters; assistant bundle is lazy-loaded. **PWA constraints.** Do not cache `/api/**` or `/yjs/**`; SW must not intercept WebSocket traffic; Pyodide warmed on desktop only; maintain asset budgets.
+**Usability & accessibility.** Clear toasts and help copy; no auto-panning due to remote actions; popovers focus-trapped; toolbar never auto-reveals while drawing. **Maintainability.** Unobserve all Yjs observers on unmount; Sentry; assistant bundle is lazy-loaded. **PWA constraints.** Do not cache `/api/**` or `/yjs/**`; SW must not intercept WebSocket traffic; Pyodide warmed on desktop only; maintain asset budgets.
 
 **Transport runtime policy (additions).** Auto mode (default): start WS immediately; for rooms ≤ 12 peers, also bring up RTC and probe; keep only on a clear win; drop RTC if peers > 15, CPU hot, or ICE troubled. Direct mode: code pairing, hard cap 8 peers, same drop rules.
 
-**Observability.** Sentry + 3 metrics
+**Observability.** Sentry (errors only)
 
  **Async-apply contract**. For **cosmetic, long-running async** (export/IDB hydrate), use the svKey two-line check; not required elsewhere.; this eliminates temporal wormholes.  Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
 
@@ -457,7 +457,7 @@ Global Conventions
 5.  **DocManager**:
     -   Batches Y updates; publishes new **Snapshot** at next rAF.
 6.  **Transport**:
-    -   y-websocket sends delta; server persists; Redis TTL extended. Include variants: **offline**, **oversize**, **capacity full**, **WS disconnected** (see backoffs).
+    -   y-websocket sends delta; server persists; Redis TTL extended. Include variants: **offline**, **oversize**, **capacity full**
 
 ### 8.2 Clear Board (for everyone)
 
@@ -492,9 +492,9 @@ Global Conventions
 
 - `y-websocket@3.x` browser + `@y/websocket-server@0.1.x` server (no y-leveldb at runtime)
 
-- Redis 5.8.1 AOF enabled; gzip level 4; `size_bytes` = compressed length
+- Redis 7.x stable AOF enabled; gzip level 4; `size_bytes` = compressed length
 
-- **TURN**: tcp+tls on 443; long-term creds rotated; **STUN** dev only **AuthN/AuthZ.** None; link-based open access by design. **Monitoring.** Sentry + counters (no content logging).
+- **TURN**: tcp+tls on 443; long-term creds rotated; **STUN** dev only **AuthN/AuthZ.** None; link-based open access by design. **Monitoring.** Sentry (no content logging). _Optional when WebRTC is enabled:_ counters `rtc.upgrade.count`, `rtc.ws_fallback.count`, `rtc.relay.ratio`, `turn.alloc.failures`, `turn.bytes.relayed`.
 
 - **Operational (additions).** **Connection pooling.** Postgres: `pg.Pool` size **10-20**, set idle/acquire timeouts, and log slow queries. Redis: one client for commands and one for pub/sub per process; health checks and reconnect backoff. Add y-webrtc@10.3.0. Env: Y_SIGNALING_URLS, Y_RTC_MAX_CONNS, Y_TURN_URL, Y_TURN_USER, Y_TURN_PASS, Y_RTC_PASSWORD_SALT. Self-hosted signaling (optional): include bin/server.js from y-webrtc or an equivalent deployment; keep public wss://signaling.yjs.dev as a backup
 
@@ -541,10 +541,10 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 | Gate                | Opens When                             | Unblocks                                           | Timeout | On Timeout                                             |
 | :------------------ | :------------------------------------- | :------------------------------------------------- | :------ | :----------------------------------------------------- |
 | `G_IDB_READY`       | y-indexeddb loaded or 2 s elapsed      | initial snapshot hydration; "Recent Rooms" badge   | 2 s     | Render `EmptySnapshot`; continue background re-hydrate |
-| `G_WS_CONNECTED`    | WS open                                | WS awareness, doc sync                             | 5 s     | show "Reconnecting..."; proceed offline if IDB ready   |
-| `G_WS_SYNCED`       | first Y sync completes                 | authoritative render (server merged state)         | 10 s    | keep rendering from IDB; continue syncing              |
-| `G_AWARENESS_READY` | WS or RTC awareness live               | Prescence cursors/names/pings                      | 5 s     | show "Presence degraded" indicator                     |
-| `G_FIRST_SNAPSHOT`  | first publish to UI occurs (IDB or WS) | Enables features that require a populated snapshot | 1 rAF   | N/A                                                    |
+| `G_WS_CONNECTED`    | WS open                                | WS awareness, doc sync                             | 5 s     | proceed offline if IDB ready   
+| `G_WS_SYNCED`       | first Y sync completes                 | authoritative render (server merged state)         | 10 s    | keep rendering from IDB; continue syncing             
+| `G_AWARENESS_READY` | WS or RTC awareness live               | Prescence cursors/names/pings                      | none    | N/A
+| `G_FIRST_SNAPSHOT`  | first publish to UI occurs (IDB or WS) | Enables features that require a populated snapshot | 1 rAF   | N/A                                   
 
 **Where to gate writes**:
 
@@ -560,7 +560,7 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 | Read-only / mobile   | room policy                  | Block writes; show banner explaining restriction             |
 | Export PNG           | `G_FIRST_SNAPSHOT`           | Disable button; tooltip “Preparing board…”                   |
 | Minimap              | `G_FIRST_SNAPSHOT`           | Hide                                                         |
-| Presence cursors     | `G_AWARENESS_READY`          | Hide cursors; show “Presence degraded”                       |
+| Presence cursors     | `G_AWARENESS_READY`          | Hide cursors; no additional indicator                        |
 | Extend TTL           | `G_WS_CONNECTED`             | Disable; tooltip “Requires connection”                       |
 | Clear Board          | server rate-limit + debounce | If dropped: toast user; do not retry aggressively            |
 | Recent Rooms badge   | `G_IDB_READY`                | Hide                                                         |
@@ -579,7 +579,7 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   `docStats = { bytes, cap: 15MB }` (from metadata poll every 10 s or on successful persist ack)
 -   `presenceView` throttled & interpolated **Consistency rules:**
 -   **Never** write derived values into Yjs (e.g., `bbox` MAY be stored to avoid recompute; all other derivations remain ephemeral).
--   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (base64 of Yjs state vector) used for cache/change detection and optional guards for cosmetic long-running tasks (PNG export, IDB hydrate) -- not a global temporal pin.
+-   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (first 100 bytes + length + checksum to avoid stack overflow) used for cache/change detection and optional guards for cosmetic long-running tasks (PNG export, IDB hydrate) -- not a global temporal pin.
 
 13\. Mutations & Undo
 =====================
@@ -593,7 +593,7 @@ Define **precisely** what is in `Snapshot` and **never null**:
 
 ```
 interface Snapshot {
-  svKey: string; // base64 of Yjs state vector; keys IDB render snapshot (always string, never raw Uint8Array)
+  svKey: string; // first 100 bytes + length + checksum of state vector; keys IDB render snapshot (always string, never raw Uint8Array)
   scene: SceneIdx;	//derived from root.meta.scene_ticks.length at capture time
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
@@ -613,7 +613,6 @@ interface StrokeView {
 }
 
 ```
-
 -   **Typed arrays** are **constructed at render only**; stored doc remains plain arrays.
 -   **Preventing null snapshot**: On manager creation, publish `EmptySnapshot` with `scene=0`, empty arrays, identity transform, `meta.readOnly=false`, `meta.cap=15_000_000`.
 
@@ -783,8 +782,8 @@ Appendix C: Provider Lifecycle (Init, Teardown, Reconnect)
 **Teardown order (room leave, toggle to WS-only, tab close):**
 
 1.  **Stop awareness publisher** → 2) **Destroy RTC provider** (if any) → 3) **Unsubscribe awareness listeners** →
-2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops.
-    **RTC flap handling & debounce:**
+2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops (guard every public method with `if (this._destroyed) return;`).
+**RTC flap handling & debounce:**
 
 * * * * *
 
@@ -806,7 +805,7 @@ Appendix E: Presence vs Snapshot Gating
 **Rendering contracts aligned to §11 Gates:**
 
 -   **Cursors/presence** draw only when **both** `G_AWARENESS_READY` **and** `G_FIRST_SNAPSHOT` are open.
--   If awareness is ready but first snapshot not yet published, show **"Presence degraded"** pill **without** cursors.
+-   If awareness is ready but the first snapshot is not yet published, (no UI) — cursors remain hidden.
 -   Export/minimap remain gated per `G_FIRST_SNAPSHOT`.
 
 * * * * *
