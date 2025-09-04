@@ -856,8 +856,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
    * Store current render to cache for boot splash
    * Called after successful canvas render (Phase 3)
    * @param canvas - The rendered canvas element
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async storeRenderCache(canvas: HTMLCanvasElement): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve();
+    }
     if (!canvas || this.destroyed) return;
 
     try {
@@ -873,8 +878,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
    * Show boot splash from cache while Y.Doc loads
    * @param targetElement - Element to display splash in
    * @returns Cleanup function to fade out splash, or null if no cache
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve(null);
+    }
     try {
       const shown = await renderCache.showBootSplash(this.roomId, targetElement);
       if (shown) {
@@ -892,8 +902,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
   /**
    * Clear render cache for this room
    * Called when room data is cleared/deleted
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async clearRenderCache(): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve();
+    }
     try {
       await renderCache.clear(this.roomId);
     } catch (error) {

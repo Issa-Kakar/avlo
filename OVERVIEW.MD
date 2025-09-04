@@ -1,7 +1,7 @@
 1\. Executive Summary & Project Definition
 ==========================================
 
-**Purpose.** Build Avlo, a link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor (JS + Python via Pyodide). CRITICAL: THIS IS A SMALL SIDE PROJECT, EXCESS COMPLEXITY IS NOT NEEDED FOR LARGE SCALE. REGULAR REAL WORLD USAGE WILL BE LOW, WITH 50+ USERS AND LIKELY NO MORE THAN 15 CONCURRENT USERS EVER. THIS IS FOR SWE RESUME KEYWORD AND PROJECT OPTIMIZATION ONLY. The MVP targets ≤125 ms p95 end-to-end collaboration latency with ~100 concurrent users and ≤15 active drawers, works offline (IndexedDB + CRDT), and persists rooms to Redis with (default: 14) TTL.  Mobile is view-only for MVP.
+**Purpose.** Build Avlo, a link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor (JS + Python via Pyodide). CRITICAL: THIS IS A SMALL SIDE PROJECT, EXCESS COMPLEXITY IS NOT NEEDED FOR LARGE SCALE. REGULAR REAL WORLD USAGE WILL BE LOW, WITH 50+ USERS AND LIKELY NO MORE THAN 15 CONCURRENT USERS EVER. THIS IS FOR SWE RESUME KEYWORD AND PROJECT OPTIMIZATION ONLY. The MVP targets ≤125 ms p95 end-to-end collaboration latency with ~100 concurrent users and ≤15 active drawers, works offline (IndexedDB + CRDT), and persists rooms to Redis with (default: 14) TTL.  Mobile is view-only for MVP. 
 
 **Production Flags:**
 
@@ -165,7 +165,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation**: To avoid stack overflow on large state vectors, uses first 100 bytes + length + checksum. Serves dual purposes: (1) publishing optimization to skip redundant snapshot publishes when Y.Doc unchanged, (2) cache invalidation for cosmetic operations (boot splash, exports). **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation.** To avoid stack overflow on large state vectors, compute `svKey` from the first 100 bytes + length + checksum. **Purpose (MVP): publishing optimization only** (skip redundant publishes when the Y.Doc hasn't changed). **Do not** use `svKey` to gate any boot visuals. **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
 
 **Awareness (normative additions).** --- **Cadence & throttling.** Awareness send interval per client: `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N. --- **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only. **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.mutate(...)`. 
 
@@ -430,7 +430,7 @@ Global Conventions
 
 **Observability.** Sentry (errors only)
 
- **Async-apply contract**. For **cosmetic, long-running async** (export/IDB hydrate), use the svKey two-line check; not required elsewhere.; this eliminates temporal wormholes.  Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
+ **Async-apply contract (MVP pivot).** We **do not** use any svKey "two-line" recheck in the MVP. Cosmetic async (exports, hydrate) proceeds without an svKey guard; if the board changes mid-task, we accept that the result may be slightly stale. Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
 
 8\. **Data Architecture & Flows**
 =================================
@@ -470,9 +470,9 @@ Global Conventions
 -   **Per-run worker**; hard timeouts; no network/FS.
 -   Append `root.outputs[]` with clamp to last 10 items; enforce 128 KB total.
 
-**Render snapshot cache.** Keep a lightweight render snapshot cache (e.g., PNG) keyed by svKey for boot splash only. Write the cached PNG only when svKey changes; show it immediately at boot and fade to live; no business logic depends on it. Do not build a server/CDN snapshot persistence pipeline.
+**Render snapshot cache (dormant in MVP).** The small render cache from Phase 2.4 **remains in the codebase** but is **not used** by Phase 6. **Do not** display any boot image from this cache; **do not** read or write it during boot. Keep it only as a future utility; no server/CDN persistence.
 
-**Flows (additions).** --- **IndexedDB snapshots.** Persist last-known render snapshot keyed by Yjs state vector; on load, if vectors match, render snapshot immediately while live components initialize; otherwise skip snapshot. 
+**Flows (additions).** --- **IndexedDB snapshots (MVP).** **Do not** attempt any boot-time render snapshot display. IndexedDB persists the **Y.Doc** and device-local UI only; first paint is the **EmptySnapshot** followed by live frames. 
 
 ### TanStack Query (policy)
 
@@ -593,7 +593,7 @@ Define **precisely** what is in `Snapshot` and **never null**:
 
 ```
 interface Snapshot {
-  svKey: string; // first 100 bytes + length + checksum of state vector; keys IDB render snapshot (always string, never raw Uint8Array)
+  svKey: string; // first 100 bytes + length + checksum of state vector; used only for publish dedupe (MVP), not for any boot visuals
   scene: SceneIdx;	//derived from root.meta.scene_ticks.length at capture time
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
@@ -618,37 +618,6 @@ interface StrokeView {
 
 * * * * *
 
-15\. Optional svKey checks (cosmetic tasks only)
-================================================
-
-**Optional svKey Check Pattern**:
-
-```
-// Use only for long-running cosmetic tasks
-const capturedSvKey = currentSnapshot.svKey;
-const asyncResult = await someAsyncOperation();
-
-// Optional verification for cosmetic work
-if (capturedSvKey !== currentSnapshot.svKey) {
-  // State changed - discard stale cosmetic work
-  console.warn('Discarding stale async work - svKey mismatch');
-  return;
-}
-// Safe to apply cosmetic result
-applyAsyncResult(asyncResult);
-
-```
-
-**Core Rules**:
-
--   **UI MUST NOT** hold references to live Y objects or rely on their identity across frames
--   **Stable identity**: Use `id` strings; Snapshot arrays are **new immutable** arrays per publish
--   **Correlation across frames**: Use `id` map lookups; never retain object references
--   **Use the two-line svKey recheck pattern only for long-running cosmetic tasks** (export, IDB hydrate)
--   **Common cosmetic operations using svKey guard**:
-    -   PNG export generation
-    -   IndexedDB snapshot loading
-    -   Deferred rendering work
 
 17\. Event Isolation & Canvas
 =============================

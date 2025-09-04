@@ -24,7 +24,7 @@
 - Implement subscribeSnapshot with immediate callback on subscribe
 - Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
 - Create subscribeRoomStats (null initially, updates on persist_ack)
-- Add minimal render cache for boot splash (cosmetic only, NOT y-indexeddb)
+- **COMPLETED BUT DEFERRAL**:  Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed and used for publish/change detection, but no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
 
 ## Phase 3: Basic Canvas Infrastructure
 
@@ -61,7 +61,7 @@
 
 ### 4.3 Performance Notes
 - Skip strokes with bbox diagonal <2px in screen space
-- Boot splash cache is cosmetic only (not for logic)
+- Render cache (if present) is cosmetic only and unused by Phase 6
 
 ## Phase 5: Drawing Input System
 
@@ -120,9 +120,7 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS.
 **Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
 
-After each publish where svKey changed, enqueue an async write to the minimal render cache (simple IDB) **and persist `lastKnownSvKey` (a tiny string) alongside it**. Follow the svKey two-line check contract for cosmetic async to prevent temporal wormholes.
-Do not migrate the boot-splash cache into the y-indexeddb provider’s DB; keep its separate keyspace (e.g., avlo.v1.splash.<roomId>) so CRDT data and cosmetic assets never mingle.
-Do not gate drawing on the splash. Drawing remains allowed from frame 0 (offline-first); the splash is strictly visual until G_FIRST_SNAPSHOT flips
+**MVP pivot:** **Do not** read or write any render cache in Phase 6, and **do not** persist `lastKnownSvKey`. The render cache remains present in the codebase but is dormant.
 
 ### 6A.2 Boot discipline & first-paint guarantees
 
@@ -132,7 +130,7 @@ Do not gate drawing on the splash. Drawing remains allowed from frame 0 (offline
 2. Immediately expose this snapshot to new subscribers (UI can render chrome, blank stage, and disabled buttons gated on `G_FIRST_SNAPSHOT` as needed).
 3. Leave the rAF publisher **running from creation**, so the first doc-derived snapshot appears ≤ 1 frame after any Y update is applied (IDB or later WS).
 
-On boot, read `{ png, svKey }` from the simple IDB wrapper **and** the persisted `lastKnownSvKey`. If `cached.svKey === lastKnownSvKey`, show the splash immediately; otherwise skip. Always hide the splash exactly when `G_FIRST_SNAPSHOT` opens.
+**Boot behavior (MVP pivot).** Do **not** render any boot image. First paint is the **EmptySnapshot**, and the live, doc-derived snapshot follows as usual via rAF. No `lastKnownSvKey` exists in Phase 6.
 
 #### 6A.2.2 rAF publisher discipline already in place
 
