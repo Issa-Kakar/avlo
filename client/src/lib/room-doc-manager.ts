@@ -13,6 +13,7 @@
  */
 
 import * as Y from 'yjs';
+import { IndexeddbPersistence } from 'y-indexeddb';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
@@ -66,6 +67,16 @@ export interface IRoomDocManager {
   extendTTL(): void;
   destroy(): void;
 
+  // Phase 6A: Gate status methods
+  getGateStatus(): Readonly<{
+    idbReady: boolean;
+    wsConnected: boolean;
+    wsSynced: boolean;
+    awarenessReady: boolean;
+    firstSnapshot: boolean;
+  }>;
+  isIndexedDBReady(): boolean;
+
   // Phase 2.4.4: Render cache for boot splash (cosmetic only)
   storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
   showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
@@ -86,7 +97,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
-  private indexeddbProvider: unknown = null;
+  private indexeddbProvider: IndexeddbPersistence | null = null;
   private websocketProvider: unknown = null;
   private webrtcProvider: unknown = null;
 
@@ -135,6 +146,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Track if destroyed for cleanup
   private destroyed = false;
 
+  // Gate tracking
+  private gates = {
+    idbReady: false,
+    wsConnected: false,
+    wsSynced: false,
+    awarenessReady: false,
+    firstSnapshot: false,
+  };
+  private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private gateCallbacks: Map<string, Set<() => void>> = new Map();
+
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
     this.userId = ulid(); // User ID for this session
@@ -182,6 +204,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     renderCache.init().catch((err) => {
       console.warn('[RoomDocManager] Render cache init failed (non-critical):', err);
     });
+
+    // Initialize IndexedDB provider (Phase 6A)
+    this.initializeIndexedDBProvider();
 
     // Start RAF loop
     this.startPublishLoop();
@@ -583,6 +608,22 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.publishState.rafId = -1;
     }
 
+    // Clear gate timeouts
+    this.gateTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.gateTimeouts.clear();
+
+    // Cleanup providers (Phase 6A additions)
+    if (this.indexeddbProvider) {
+      this.indexeddbProvider.destroy();
+      this.indexeddbProvider = null;
+    }
+
+    if (this.websocketProvider) {
+      // Phase 6C: will add proper WS cleanup (disconnect + destroy)
+      // For now, just null the reference - actual cleanup added in 6C
+      this.websocketProvider = null;
+    }
+
     // Remove Y.Doc observers
     // NOTE: This correctly removes the listener because handleYDocUpdate
     // is an arrow function property with stable identity (see setupObservers)
@@ -712,6 +753,83 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // RAF loop will handle publishing
   };
 
+  private initializeIndexedDBProvider(): void {
+    try {
+      // Create room-scoped IDB provider
+      const dbName = `avlo.v1.rooms.${this.roomId}`;
+      this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
+
+      // Set up IDB gate with 2s timeout
+      const timeoutId = setTimeout(() => {
+        this.openGate('idbReady');
+        console.debug('[RoomDocManager] IDB timeout reached, continuing with empty doc');
+      }, 2000);
+      this.gateTimeouts.set('idbReady', timeoutId);
+
+      // Listen for IDB sync completion for gate control
+      this.indexeddbProvider.whenSynced
+        .then(() => {
+          const timeout = this.gateTimeouts.get('idbReady');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('idbReady');
+          }
+          this.openGate('idbReady');
+          console.debug('[RoomDocManager] IDB synced successfully');
+        })
+        .catch((err: unknown) => {
+          console.warn('[RoomDocManager] IDB sync error (non-critical):', err);
+          // Still open gate on error - fallback to empty doc
+          this.openGate('idbReady');
+        });
+
+      // Note: No need to listen for 'synced' event to mark dirty
+      // Y.Doc updates from IDB will trigger the existing doc update handler
+    } catch (err: unknown) {
+      console.warn('[RoomDocManager] IDB initialization failed (non-critical):', err);
+      // Mark as failed but continue
+      this.openGate('idbReady');
+    }
+  }
+
+  // Gate management
+  private openGate(gateName: keyof typeof this.gates): void {
+    if (this.gates[gateName]) return; // Already open
+
+    this.gates[gateName] = true;
+
+    // Notify subscribers
+    const callbacks = this.gateCallbacks.get(gateName);
+    if (callbacks) {
+      callbacks.forEach((cb) => cb());
+      callbacks.clear();
+    }
+
+    // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
+    // Do NOT open it here based on other gates
+  }
+
+  private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
+    if (this.gates[gateName]) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      if (!this.gateCallbacks.has(gateName)) {
+        this.gateCallbacks.set(gateName, new Set());
+      }
+      this.gateCallbacks.get(gateName)!.add(resolve);
+    });
+  }
+
+  public getGateStatus(): Readonly<typeof this.gates> {
+    return { ...this.gates };
+  }
+
+  public isIndexedDBReady(): boolean {
+    return this.gates.idbReady;
+  }
+
   // Phase 2.4 Component E: Snapshot Building & Publishing
   private publishSnapshot(newSnapshot: Snapshot): void {
     // Update svKey tracker
@@ -813,6 +931,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
       meta,
       createdAt: Date.now(),
     };
+
+    // Check if svKey changed to track first doc-derived snapshot
+    if (snapshot.svKey !== this.publishState.lastSvKey) {
+      // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
+      // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
+      if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
+        this.openGate('firstSnapshot');
+        console.debug('[RoomDocManager] First doc-derived snapshot published');
+      }
+    }
 
     // CRITICAL: Freeze in development to catch mutations
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
