@@ -14,12 +14,14 @@
 
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
+import { WebsocketProvider } from 'y-websocket';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
   TEXT_CONFIG,
   ulid,
 } from '@avlo/shared';
+import { clientConfig } from './config-schema';
 import { RollingGzipEstimator, GzipImpl } from './size-estimator';
 import type {
   RoomId,
@@ -77,6 +79,13 @@ export interface IRoomDocManager {
   }>;
   isIndexedDBReady(): boolean;
 
+  // Phase 6C: Room stats support
+  /**
+   * Update room stats from external sources (e.g., metadata polling)
+   * This is used by TanStack Query hooks to update stats from HTTP metadata
+   */
+  setRoomStats(stats: RoomStats | null): void;
+
   // Phase 2.4.4: Render cache for boot splash (cosmetic only)
   storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
   showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
@@ -98,7 +107,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
-  private websocketProvider: unknown = null;
+  private websocketProvider: WebsocketProvider | null = null;
   private webrtcProvider: unknown = null;
 
   // Current state
@@ -207,6 +216,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Initialize IndexedDB provider (Phase 6A)
     this.initializeIndexedDBProvider();
+
+    // Initialize WebSocket provider (Phase 6C)
+    this.initializeWebSocketProvider();
 
     // Start RAF loop
     this.startPublishLoop();
@@ -619,8 +631,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     if (this.websocketProvider) {
-      // Phase 6C: will add proper WS cleanup (disconnect + destroy)
-      // For now, just null the reference - actual cleanup added in 6C
+      // Proper cleanup: disconnect first, then destroy
+      this.websocketProvider.disconnect();
+      this.websocketProvider.destroy();
       this.websocketProvider = null;
     }
 
@@ -794,6 +807,108 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
+  private initializeWebSocketProvider(): void {
+    try {
+      // Get config (validated) - typically '/ws'
+      const wsBase = clientConfig.VITE_WS_BASE;
+
+      // Convert to WebSocket URL base (without room ID)
+      const wsUrl = this.buildWebSocketUrl(wsBase);
+
+      // Create WebSocket provider with standard signature
+      // y-websocket will append /<roomId> to the base URL automatically
+      // Result: ws://host/ws/<roomId>
+      this.websocketProvider = new WebsocketProvider(
+        wsUrl,
+        this.roomId, // Pass room ID separately (standard y-websocket contract)
+        this.ydoc,
+        {
+          // Disable awareness for now (Phase 7)
+          awareness: undefined,
+          // Reconnect settings
+          maxBackoffTime: 10000,
+          resyncInterval: 5000,
+        },
+      );
+
+      // Set up G_WS_CONNECTED gate with 5s timeout
+      const wsConnectedTimeout = setTimeout(() => {
+        if (!this.gates.wsConnected && this.gates.idbReady) {
+          // Proceed offline if IDB ready
+          console.debug('[RoomDocManager] WS connection timeout, proceeding offline');
+        }
+      }, 5000);
+      this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
+
+      // Set up G_WS_SYNCED gate with 10s timeout
+      const wsSyncedTimeout = setTimeout(() => {
+        if (!this.gates.wsSynced) {
+          // Keep rendering from IDB, continue trying to sync
+          console.debug('[RoomDocManager] WS sync timeout, continuing with local state');
+        }
+      }, 10000);
+      this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
+
+      // Set up connection gates
+      this.websocketProvider.on('status', (event: { status: string }) => {
+        if (event.status === 'connected') {
+          // Clear connection timeout
+          const timeout = this.gateTimeouts.get('wsConnected');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('wsConnected');
+          }
+          this.openGate('wsConnected');
+          console.debug('[RoomDocManager] WebSocket connected');
+        } else if (event.status === 'disconnected') {
+          this.gates.wsConnected = false;
+          this.gates.wsSynced = false;
+          console.debug('[RoomDocManager] WebSocket disconnected');
+        }
+      });
+
+      // Listen for sync status (v3 uses 'sync' event, not 'synced')
+      this.websocketProvider.on('sync', (isSynced: boolean) => {
+        if (isSynced) {
+          // Clear sync timeout
+          const timeout = this.gateTimeouts.get('wsSynced');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('wsSynced');
+          }
+          this.openGate('wsSynced');
+          console.debug('[RoomDocManager] WebSocket synced');
+        } else {
+          this.gates.wsSynced = false;
+        }
+      });
+
+      // Note: Document updates are already handled by the existing Y.Doc update observer
+      // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
+      // No need for additional provider-specific update listeners
+    } catch (err: unknown) {
+      console.error('[RoomDocManager] WebSocket initialization failed:', err);
+      // Keep offline mode functional
+    }
+  }
+
+  private buildWebSocketUrl(basePath: string): string {
+    // Handle both relative and absolute URLs
+    if (basePath.startsWith('ws://') || basePath.startsWith('wss://')) {
+      return basePath;
+    }
+
+    // Build from current location
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+
+    // Ensure path starts with /
+    const cleanPath = basePath.startsWith('/') ? basePath : `/${basePath}`;
+
+    // Return base WebSocket URL (y-websocket will append room ID)
+    return `${protocol}//${host}${cleanPath}`;
+  }
+
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {
     if (this.gates[gateName]) return; // Already open
@@ -830,6 +945,26 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   public isIndexedDBReady(): boolean {
     return this.gates.idbReady;
+  }
+
+  // Phase 6C: Room stats support
+  private updateRoomStats(stats: RoomStats | null): void {
+    this.roomStats = stats;
+
+    // Notify subscribers
+    this.statsSubscribers.forEach((cb) => cb(stats));
+
+    // Update read-only state if needed
+    if (stats && stats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
+      // Room is read-only due to size
+      console.warn('[RoomDocManager] Room is read-only due to size limit');
+    }
+  }
+
+  // Public method for external updates (e.g., from TanStack Query)
+  public setRoomStats(stats: RoomStats | null): void {
+    if (this.destroyed) return;
+    this.updateRoomStats(stats);
   }
 
   // Phase 2.4 Component E: Snapshot Building & Publishing
