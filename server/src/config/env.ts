@@ -4,8 +4,8 @@ const ServerEnvSchema = z.object({
   PORT: z.coerce.number().default(3001),
   ORIGIN_ALLOWLIST: z
     .string()
-    .transform((s) => s.split(',').map((o) => o.trim()))
-    .default('http://localhost:5173,http://localhost:3000'),
+    .default('http://localhost:5173,http://localhost:3000')
+    .transform((s) => s.split(',').map((o) => o.trim())),
   REDIS_URL: z.string().min(1, 'Redis URL is required'),
   DATABASE_URL: z.string().min(1, 'Database URL is required'),
   ROOM_TTL_DAYS: z.coerce.number().min(1).max(90).default(14),

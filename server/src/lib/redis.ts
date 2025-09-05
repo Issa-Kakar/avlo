@@ -27,7 +27,7 @@ export class RedisAdapter {
     });
 
     this.client.on('connect', () => {
-      console.log('[Redis] Connected successfully');
+      console.debug('[Redis] Connected successfully');
     });
   }
 
@@ -58,15 +58,17 @@ export class RedisAdapter {
 
     if (!compressed) return null;
 
-    // Decompress
-    const decompressed = await gunzipAsync(compressed);
+    // Decompress - ensure compressed is a Buffer
+    const buffer = Buffer.isBuffer(compressed) ? compressed : Buffer.from(String(compressed));
+    const decompressed = await gunzipAsync(buffer);
     return new Uint8Array(decompressed);
   }
 
   async extendTTL(roomId: string): Promise<boolean> {
     const key = `room:${roomId}`;
     const ttlSeconds = this.env.ROOM_TTL_DAYS * 24 * 60 * 60;
-    return await this.client.expire(key, ttlSeconds);
+    const result = await this.client.expire(key, ttlSeconds);
+    return result === 1;
   }
 
   async exists(roomId: string): Promise<boolean> {
