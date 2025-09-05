@@ -47,6 +47,7 @@ export class RedisAdapter {
     const ttlSeconds = this.env.ROOM_TTL_DAYS * 24 * 60 * 60;
     const key = `room:${roomId}`;
 
+    // Store as Buffer to ensure binary data is preserved
     await this.client.setEx(key, ttlSeconds, compressed);
 
     return compressed.length; // Return compressed size
@@ -54,12 +55,13 @@ export class RedisAdapter {
 
   async loadRoom(roomId: string): Promise<Uint8Array | null> {
     const key = `room:${roomId}`;
-    const compressed = await this.client.getBuffer(key);
+    // Use get() - redis client returns string or Buffer depending on data type
+    const compressed = await this.client.get(key);
 
     if (!compressed) return null;
 
     // Decompress - ensure compressed is a Buffer
-    const buffer = Buffer.isBuffer(compressed) ? compressed : Buffer.from(String(compressed));
+    const buffer = Buffer.isBuffer(compressed) ? compressed : Buffer.from(compressed);
     const decompressed = await gunzipAsync(buffer);
     return new Uint8Array(decompressed);
   }

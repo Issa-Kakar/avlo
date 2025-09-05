@@ -292,7 +292,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Debug: sceneTicks length is the current scene
     // AUDIT NOTE: Scene can never be negative by construction (array.length is always >= 0)
     // Empty filtered stroke/text arrays are handled correctly by renderers
-    return sceneTicks.length;
+    const scene = sceneTicks.length;
+    console.log(`[RoomDocManager] getCurrentScene: scene=${scene}, ticks=[${sceneTicks.toArray().join(', ')}]`);
+    return scene;
   }
 
   // Build presence view from awareness (will be connected to awareness in Phase 8)
@@ -695,6 +697,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const rafLoop = () => {
       // Publish if Y.Doc changed OR presence changed
       if (this.publishState.isDirty || this.publishState.presenceDirty) {
+        console.log(`[RoomDocManager] RAF Loop: Publishing snapshot (docDirty=${this.publishState.isDirty}, presenceDirty=${this.publishState.presenceDirty})`);
         const startTime = this.clock.now();
 
         // Build snapshot
@@ -749,6 +752,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    console.log(`[RoomDocManager] handleYDocUpdate: Y.Doc updated, origin=${origin}, updateSize=${update.byteLength}`);
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
 
@@ -987,6 +991,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
+    console.log('[RoomDocManager] buildSnapshot: Building new snapshot');
     // Get current state vector for svKey
     const stateVector = Y.encodeStateVector(this.ydoc);
     // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
@@ -996,12 +1001,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
+    console.log(`[RoomDocManager] buildSnapshot: currentScene=${currentScene}`);
     // Building snapshot with currentScene
 
     // Build stroke views using helper (filter by current scene)
-    const strokes = this.getStrokes()
-      .toArray()
-      .filter((s) => s.scene === currentScene)
+    const allStrokes = this.getStrokes().toArray();
+    console.log(`[RoomDocManager] buildSnapshot: Total strokes=${allStrokes.length}`);
+    const strokes = allStrokes
+      .filter((s) => {
+        const match = s.scene === currentScene;
+        if (!match) {
+          console.log(`[RoomDocManager] Filtering out stroke ${s.id} (scene=${s.scene}, currentScene=${currentScene})`);
+        }
+        return match;
+      })
       .map((s) => ({
         id: s.id,
         points: s.points, // Include points for renderer to build Float32Array
