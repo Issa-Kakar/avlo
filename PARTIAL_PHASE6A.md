@@ -199,13 +199,13 @@ this._currentSnapshot = createEmptySnapshot();
 
 **IMPORTANT**: The RAF publisher loop should already be running from manager creation (implemented in Phase 2). This ensures the first doc-derived snapshot appears ≤ 1 rAF after any Y update (from IDB or WS). Do NOT wait for any gates to start the RAF loop.
 
-#### 6A.2.2: Ensure Proper Publishing and Gate Logic
+#### 6A.2.2: Fix svKey Publishing Bug
 
 **File**: `client/src/lib/room-doc-manager.ts`
 
-**CRITICAL**: The svKey deduplication optimization must be removed from the RAF loop to ensure strokes render immediately. The svKey truncation (first 100 bytes) misses local client updates when state vectors are large (>100 bytes).
+**CRITICAL FIX**: Remove the svKey deduplication optimization from the RAF loop. The svKey truncation (first 100 bytes) misses local client updates when state vectors are large (>100 bytes), causing strokes not to render until page refresh.
 
-1. **Update the RAF loop to always publish when dirty** (in `startPublishLoop` method, around line 710):
+**Update the RAF loop to always publish when dirty** (in `startPublishLoop` method, around line 710):
 
 ```typescript
 private startPublishLoop(): void {
@@ -243,48 +243,7 @@ private startPublishLoop(): void {
 }
 ```
 
-2. **Update buildSnapshot to check for first snapshot gate only** (around line 950):
-
-```typescript
-private buildSnapshot(): Snapshot {
-  // ... existing implementation that builds `snapshot` ...
-  // snapshot.svKey computed as truncated state-vector signature
-
-  // Check if svKey changed to track first doc-derived snapshot
-  if (snapshot.svKey !== this.publishState.lastSvKey) {
-    // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
-    // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
-    if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
-      this.openGate('firstSnapshot');
-      console.debug('[RoomDocManager] First doc-derived snapshot published');
-    }
-    // DO NOT update lastSvKey here - that happens in publishSnapshot
-  }
-
-  return snapshot;
-}
-```
-
-3. **Ensure publishSnapshot updates lastSvKey** (around line 850):
-
-```typescript
-private publishSnapshot(newSnapshot: Snapshot): void {
-  // Update svKey tracker (for firstSnapshot gate detection)
-  this.publishState.lastSvKey = newSnapshot.svKey;
-
-  // Store current snapshot
-  this._currentSnapshot = newSnapshot;
-
-  // Notify all subscribers
-  this.snapshotSubscribers.forEach((cb) => {
-    try {
-      cb(newSnapshot);
-    } catch (err) {
-      console.error('[RoomDocManager] Snapshot subscriber error:', err);
-    }
-  });
-}
-```
+**What was removed**: The `svKeyChanged` comparison that was previously gating the `publishSnapshot` call. Now it always publishes when dirty, ensuring strokes render immediately.
 
 ### 6A.3: Client Config Validation with Zod
 
