@@ -479,6 +479,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
+    // DEBUG: Log mutation start
+    console.log('[DEBUG mutate] Starting mutation...');
+    
     // Minimal guards (same as spec)
 
     // 1. Check room read-only (≥15MB)
@@ -508,6 +511,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.ydoc.transact(() => {
         fn(this.ydoc);
       }, this.userId); // Origin for undo/redo tracking
+      
+      // DEBUG: Log mutation completion
+      console.log('[DEBUG mutate] Mutation completed. Update size=', updateSize);
 
       // Check if the delta exceeds frame limit
       if (updateSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
@@ -658,9 +664,32 @@ class RoomDocManagerImpl implements IRoomDocManager {
    * without risk of stack overflow on large state vectors.
    */
   private createSafeStateVectorKey(stateVector: Uint8Array): string {
+    // DEBUG: Let's see what's happening with the state vector
+    console.log('[DEBUG svKey] State vector length:', stateVector.length, 'bytes');
+    
+    // DEBUG: Compute a FULL hash to see if the vector is actually changing
+    let fullHash = 0;
+    for (let i = 0; i < stateVector.length; i++) {
+      fullHash = ((fullHash << 5) - fullHash + stateVector[i]) | 0; // Simple hash
+    }
+    console.log('[DEBUG svKey] Full vector hash:', fullHash);
+    
     // Take first 100 bytes (or less if vector is smaller)
     const sampleSize = Math.min(100, stateVector.length);
     const sample = stateVector.slice(0, sampleSize);
+    
+    // DEBUG: Show what bytes we're actually using
+    console.log('[DEBUG svKey] Using first', sampleSize, 'bytes for key (out of', stateVector.length, ')');
+    
+    // DEBUG: Show hex of first 20 bytes and last 20 bytes to see where changes occur
+    const first20Hex = Array.from(stateVector.slice(0, 20))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join(' ');
+    const last20Hex = Array.from(stateVector.slice(-20))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join(' ');
+    console.log('[DEBUG svKey] First 20 bytes:', first20Hex);
+    console.log('[DEBUG svKey] Last 20 bytes:', last20Hex);
 
     // Convert sample to base64
     let sampleStr = '';
@@ -671,8 +700,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Include length for additional uniqueness
     // Format: base64(first100bytes):length:checksum
     const checksum = Array.from(stateVector.slice(-4)).reduce((sum, byte) => sum + byte, 0);
+    
+    const key = `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
+    console.log('[DEBUG svKey] Generated key:', key.substring(0, 20) + '...');
 
-    return `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
+    return key;
   }
 
   // Simple RAF loop for publishing
@@ -684,12 +716,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
         // Build snapshot
         const newSnapshot = this.buildSnapshot();
-
-        // Optional optimization: Skip publish if svKey unchanged and no presence update
-        const svKeyChanged = newSnapshot.svKey !== this.publishState.lastSvKey;
-        if (svKeyChanged || this.publishState.presenceDirty) {
-          this.publishSnapshot(newSnapshot);
-        }
+        
+        // CRITICAL FIX: Always publish when dirty, don't use svKey as a gate
+        // The svKey truncation (first 100 bytes) was missing local client updates
+        // when state vectors were large (>100 bytes), causing strokes to not render
+        // until refresh. SvKey dedupe optimization had to be removed.
+        this.publishSnapshot(newSnapshot);
+        
 
         // Clear both dirty flags
         this.publishState.isDirty = false;
@@ -735,6 +768,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
     // Just mark dirty - RAF will handle publishing
+    console.log('[DEBUG Y.Doc] Update received! Origin=', origin, 'Size=', update.byteLength);
     this.publishState.isDirty = true;
 
     // Store update for metrics (keep ring buffer, it's useful)
@@ -832,6 +866,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Phase 2.4 Component E: Snapshot Building & Publishing
   private publishSnapshot(newSnapshot: Snapshot): void {
+    // DEBUG: Log publish event
+    console.log('[DEBUG publishSnapshot] Publishing! svKey=', newSnapshot.svKey?.substring(0, 10) + '...',
+                'subscribers=', this.snapshotSubscribers.size,
+                'strokes=', newSnapshot.strokes.length);
+    
     // Update svKey tracker
     this.publishState.lastSvKey = newSnapshot.svKey;
 
@@ -933,6 +972,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
 
     // Check if svKey changed to track first doc-derived snapshot
+    // DEBUG: Log before checking
+    console.log('[DEBUG buildSnapshot] Before check: snapshot.svKey=', snapshot.svKey?.substring(0, 10) + '...',
+                'lastSvKey=', this.publishState.lastSvKey?.substring(0, 10) + '...');
+    
     if (snapshot.svKey !== this.publishState.lastSvKey) {
       // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
       // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
@@ -940,6 +983,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.openGate('firstSnapshot');
         console.debug('[RoomDocManager] First doc-derived snapshot published');
       }
+      
+      // DEBUG: CHECK IF THERE'S A BUG HERE - Phase 6A might have added this line incorrectly
+      // If this line exists, it would break publishing:
+      // this.publishState.lastSvKey = snapshot.svKey; // DO NOT ADD THIS HERE!
+      console.log('[DEBUG buildSnapshot] After gate check, lastSvKey still=', 
+                  this.publishState.lastSvKey?.substring(0, 10) + '...',
+                  '(should NOT have changed!)');
     }
 
     // CRITICAL: Freeze in development to catch mutations
