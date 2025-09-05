@@ -15,6 +15,14 @@ Phase 6 implements the complete persistence infrastructure for Avlo, including o
 
 ## Phase 6A: Offline-First Doc Persistence & Boot Gates
 
+> **⚠️ CRITICAL IMPLEMENTATION NOTE**:
+> The svKey deduplication optimization that was originally in Phase 2-5 must be removed when implementing Phase 6A.
+> The svKey truncation (using only first 100 bytes of state vector) causes a critical bug where local client updates
+> are not detected when state vectors exceed 100 bytes (common after IndexedDB loads historical data).
+> This results in strokes not rendering until page refresh.
+> **Solution**: Always publish when dirty, regardless of svKey comparison.
+> See PHASE_6A_DEBUG_REPORT.md for full investigation details.
+
 ### 6A.1: Attach y-indexeddb Provider
 
 #### 6A.1.1: Wire Provider Inside RoomDocManager
@@ -191,30 +199,90 @@ this._currentSnapshot = createEmptySnapshot();
 
 **IMPORTANT**: The RAF publisher loop should already be running from manager creation (implemented in Phase 2). This ensures the first doc-derived snapshot appears ≤ 1 rAF after any Y update (from IDB or WS). Do NOT wait for any gates to start the RAF loop.
 
-#### 6A.2.2: Update Snapshot Publishing to Check svKey
+#### 6A.2.2: Ensure Proper Publishing and Gate Logic
 
 **File**: `client/src/lib/room-doc-manager.ts`
 
-Update buildSnapshot method to track svKey changes (around line 800):
+**CRITICAL**: The svKey deduplication optimization must be removed from the RAF loop to ensure strokes render immediately. The svKey truncation (first 100 bytes) misses local client updates when state vectors are large (>100 bytes).
+
+1. **Update the RAF loop to always publish when dirty** (in `startPublishLoop` method, around line 710):
+
+```typescript
+private startPublishLoop(): void {
+  const rafLoop = () => {
+    // Publish if Y.Doc changed OR presence changed
+    if (this.publishState.isDirty || this.publishState.presenceDirty) {
+      const startTime = this.clock.now();
+
+      // Build snapshot
+      const newSnapshot = this.buildSnapshot();
+
+      // CRITICAL FIX: Always publish when dirty, don't use svKey as a gate
+      // The svKey truncation (first 100 bytes) was missing local client updates
+      // when state vectors were large (>100 bytes), causing strokes to not render
+      // until refresh. See PHASE_6A_DEBUG_REPORT.md for full details.
+      this.publishSnapshot(newSnapshot);
+
+      // Clear both dirty flags
+      this.publishState.isDirty = false;
+      this.publishState.presenceDirty = false;
+
+      // Track timing for metrics
+      this.publishState.lastPublishTime = this.clock.now();
+      this.publishState.publishCostMs = this.clock.now() - startTime;
+    }
+
+    // Continue loop if not destroyed
+    if (!this.destroyed) {
+      this.publishState.rafId = this.frames.request(rafLoop);
+    }
+  };
+
+  // Start the loop
+  this.publishState.rafId = this.frames.request(rafLoop);
+}
+```
+
+2. **Update buildSnapshot to check for first snapshot gate only** (around line 950):
 
 ```typescript
 private buildSnapshot(): Snapshot {
   // ... existing implementation that builds `snapshot` ...
   // snapshot.svKey computed as truncated state-vector signature
 
-  // After building snapshot, check if svKey changed
+  // Check if svKey changed to track first doc-derived snapshot
   if (snapshot.svKey !== this.publishState.lastSvKey) {
-    this.publishState.lastSvKey = snapshot.svKey;
-
     // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
     // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
     if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
       this.openGate('firstSnapshot');
       console.debug('[RoomDocManager] First doc-derived snapshot published');
     }
+    // DO NOT update lastSvKey here - that happens in publishSnapshot
   }
 
   return snapshot;
+}
+```
+
+3. **Ensure publishSnapshot updates lastSvKey** (around line 850):
+
+```typescript
+private publishSnapshot(newSnapshot: Snapshot): void {
+  // Update svKey tracker (for firstSnapshot gate detection)
+  this.publishState.lastSvKey = newSnapshot.svKey;
+
+  // Store current snapshot
+  this._currentSnapshot = newSnapshot;
+
+  // Notify all subscribers
+  this.snapshotSubscribers.forEach((cb) => {
+    try {
+      cb(newSnapshot);
+    } catch (err) {
+      console.error('[RoomDocManager] Snapshot subscriber error:', err);
+    }
+  });
 }
 ```
 

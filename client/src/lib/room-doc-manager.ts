@@ -479,9 +479,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
-    // DEBUG: Log mutation start
-    console.log('[DEBUG mutate] Starting mutation...');
-
     // Minimal guards (same as spec)
 
     // 1. Check room read-only (≥15MB)
@@ -511,9 +508,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.ydoc.transact(() => {
         fn(this.ydoc);
       }, this.userId); // Origin for undo/redo tracking
-
-      // DEBUG: Log mutation completion
-      console.log('[DEBUG mutate] Mutation completed. Update size=', updateSize);
 
       // Check if the delta exceeds frame limit
       if (updateSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
