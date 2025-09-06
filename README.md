@@ -94,8 +94,13 @@ npm run dev
 
 The `npm run dev` command starts both:
 
-- Client dev server on http://localhost:3000 (Vite)
-- Backend server on http://localhost:3001 (Express + WebSocket)
+- **Client dev server** on http://localhost:3000 (Vite)
+  - Serves the React app over HTTP
+  - Proxies `/api` requests to the backend
+  - Proxies WebSocket connections (`ws://localhost:3000/ws`) to the backend
+- **Backend server** on http://localhost:3001 (Express + WebSocket server)
+  - Handles API requests
+  - Handles WebSocket connections for real-time sync
 
 ## Testing
 
