@@ -5,12 +5,12 @@
 
 ## Tech Stack (Target)
 - **Frontend**: React 18.3.1, TypeScript 5.9.2, Vite 5.4.11, Tailwind CSS
-- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 6)
-- **Editor**: Monaco 0.52.2 (Phase 7)
+- **Canvas**: HTML Canvas with RBush spatial indexing (Phase 8)
+- **Editor**: Monaco 0.52.2 (Phase 15)
 - **Real-time**: Yjs 13.6.27, y-websocket, y-indexeddb, y-webrtc
-- **Execution**: JS + Pyodide 0.26.4 (Phase 7)
+- **Execution**: JS + Pyodide 0.26.4 (Phase 15)
 - **Backend**: Node.js, Express, @y/websocket-server
-- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma (future phases)
+- **Persistence**: Redis 7.x (AOF), PostgreSQL via Prisma 
 - **Deployment**: Single container on Railway
 
 ## Current Implementation Status
@@ -20,9 +20,16 @@
 - Phase 3: Basic Canvas Infrastructure (Canvas Component, Transform System, Render Loop)
 - Phase 4: Stroke Data Model & Rendering (Stroke rendering pipeline, Path building, Tool-specific rendering)
 - Phase 5: Drawing Input System (Pointer event handling, DrawingTool, Preview rendering, Stroke commit with simplification)
+- Phase 6: Offline-First Infrastructure & Real-time Sync
+  - 6A: y-indexeddb provider integration, boot gates (G_IDB_READY), local persistence
+  - 6B: Server setup with y-websocket, Redis persistence, PostgreSQL/Prisma metadata
+  - 6C: Client WebSocket provider, TanStack Query for metadata, Zod validation
+  - 6D: UI Integration - Routing, Toolbar, Connection status, Zustand integration
 
 ## Current Status
-**READY FOR PHASE 6: RBush Spatial Indexing**
+**IN PROGRESS: Phase 7 - Awareness & Presence System**
+- Infrastructure ready: subscribeGates with stable primitives, room routing, toolbar UI
+- Next: Cursor trails, user list, presence indicators
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -43,8 +50,8 @@ The **RoomDocManagerRegistry** is THE ONLY way to access RoomDocManager instance
 - `useHasRoomDocRegistry()` follows React hook naming (was `hasRoomDocRegistry`)
 - Must be called unconditionally in React components/hooks
 
-### 📋 Phases 3-18: See IMPLEMENTATION.MD
-Canvas → Stroke Rendering → Input → Rbush → WebSocket + Indexeddb→ Awareness → UI → Code Execution → PWA
+### 📋 Phases 6-17: See IMPLEMENTATION.MD
+WebSocket + IndexedDB + Persistence → Awareness → RBush → UI → Eraser → Text/Stamps → Undo/Redo → Room Lifecycle → Export/Minimap → Code Execution → PWA → WebRTC → Polish
 
 ## Data Models (Phase 2-4 Focus)
 
@@ -55,8 +62,8 @@ Y.Doc → root: Y.Map → {
   meta: Y.Map<Meta>,           // scene_ticks: Y.Array<number>
   strokes: Y.Array<Stroke>,    // append-only stroke data
   texts: Y.Array<TextBlock>,   // immutable once committed
-  code: Y.Map<CodeCell>,       // future: Phase 7
-  outputs: Y.Array<Output>     // future: Phase 7
+  code: Y.Map<CodeCell>,       // future
+  outputs: Y.Array<Output>     // future
 }
 ```
 
@@ -78,14 +85,22 @@ interface Stroke {
 // Type alias: SceneIdx = number (0-based scene index)
 
 interface Snapshot {
-  svKey: string;        // base64 state vector, never null
+  svKey: string;        // first 100 bytes + length + checksum; diagnostics-only in Phase 6 (never gates publishing)
   scene: number;        // from meta.scene_ticks.length
   strokes: ReadonlyArray<StrokeView>;  // filtered by scene
   texts: ReadonlyArray<TextView>;       // filtered by scene
   presence: PresenceView;               // throttled to 30Hz
-  spatialIndex: null;   // Phase 6: RBush (coming next)
+  spatialIndex: null;   // Phase 8: RBush
   view: ViewTransform;  // world↔canvas transforms
   meta: { bytes?: number; cap: number; readOnly: boolean };
+}
+
+interface GateStatus {
+  idbReady: boolean;
+  wsConnected: boolean;
+  wsSynced: boolean;
+  awarenessReady: boolean;
+  firstSnapshot: boolean;
 }
 ```
 
@@ -110,19 +125,19 @@ persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI b
 ```
 **Coordinate Spaces**: World (Y.Doc data, stable across zoom/screens) → Canvas (CSS pixels, view transform) → Device (physical pixels, DPR only). Apply DPR once at canvas setup, not in transforms.
 
-### Device-Local UI State
-**Zustand Store** (`stores/device-ui-store.ts`) - Full implementation exists but not yet integrated
-**Phase 5 Simplified** (`lib/tools/types.ts`) - DrawingTool uses minimal interface:
+### Device-Local UI State (Integrated)
+**Zustand Store** (`stores/device-ui-store.ts`) - Fully integrated via guarded adapter
+**Canvas Integration** (`lib/tools/types.ts`) - toolbarToDeviceUI adapter:
 ```typescript
-// Phase 5 simplified interface (DrawingTool)
-interface DeviceUIState {
-  tool: 'pen' | 'highlighter';
-  color: string;
-  size: number;
-  opacity: number;
+// Guarded adapter ensures safe tool state
+export function toolbarToDeviceUI(toolbar: ToolbarState): DeviceUIState {
+  // Defaults unknown tools to 'pen', clamps size 1-64, validates color
+  return { tool, color, size, opacity };
 }
-// Full Zustand store exists with toolbar, lastSeenSceneByRoom, etc. (future integration)
 ```
+- Persisted in localStorage with versioning
+- Tracks toolbar state, lastSeenSceneByRoom, collaboration mode
+- Tool state frozen at pointer-down for consistency
 
 ### Core Components
 
@@ -134,6 +149,8 @@ interface RoomDocManager {
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;  // Needs throttling
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub;  // Needs persist_ack
+  subscribeGates(cb: (gates: GateStatus) => void): Unsub;  // 150ms debounced
+  getGateStatus(): Readonly<GateStatus>;  // For useSyncExternalStore
   mutate(fn: (ydoc: Y.Doc) => void): void;  // Single yjs.transact wrapper
   extendTTL(): void;
   destroy(): void;
@@ -158,45 +175,29 @@ if (isRoomReadOnly(sizeBytes)) { /* Block writes */ }
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
-│   │   ├── canvas/           # Canvas components (Phase 3)
-│   │   │   ├── Canvas.tsx    # Main canvas component
-│   │   │   ├── CanvasStage.tsx # DPR-aware canvas substrate
-│   │   │   ├── ViewTransformContext.tsx # View transform context
-│   │   │   └── internal/     # Transform utilities
+│   │   ├── canvas/           # Canvas components & transforms
 │   │   ├── components/       # UI components
-│   │   │   └── MobileViewOnlyBanner.tsx
-│   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
-│   │   ├── lib/              # RoomDocManager core
-│   │   │   ├── room-doc-manager.ts
-│   │   │   ├── room-doc-registry-context.tsx
-│   │   │   └── tools/        # Tool implementations (Phase 5)
-│   │   │       ├── DrawingTool.ts # Drawing tool implementation
-│   │   │       ├── simplification.ts # Douglas-Peucker
-│   │   │       └── types.ts  # Tool-specific types
-│   │   ├── renderer/         # Render loop (Phase 3-4)
-│   │   │   ├── RenderLoop.ts # RAF-based render loop
-│   │   │   ├── DirtyRectTracker.ts # Dirty region tracking
-│   │   │   ├── layers/       # Rendering layers (Phase 4-5)
-│   │   │   │   ├── strokes.ts # Stroke rendering
-│   │   │   │   └── preview.ts # Preview rendering (Phase 5)
-│   │   │   └── stroke-builder/ # Stroke path building (Phase 4)
-│   │   │       ├── path-builder.ts # Path2D building utilities
-│   │   │       └── stroke-cache.ts # Stroke render cache
-│   │   ├── stores/           # Zustand store (not yet integrated)
-│   │   │   └── device-ui-store.ts
-│   │   └── types/            # Client-specific types
+│   │   │   └── Toolbar/      # Tool selection, size/color controls
+│   │   ├── hooks/            # use-room-*, use-connection-gates
+│   │   ├── lib/              # Core: room-doc-manager, registry, api-client, tools/
+│   │   ├── pages/            # RoomPage component
+│   │   ├── renderer/         # RenderLoop, DirtyRectTracker, layers/, stroke-builder/
+│   │   ├── stores/           # Zustand device-ui-store (integrated)
+│   │   └── types/            # Client-specific types (removed, using shared)
 ├── server/                    # Node.js backend
+│   ├── prisma/               # Database schema & migrations
+│   ├── public/               # Static assets (served from Vite build)
 │   └── src/
-│       └── index.ts          # Server entry (minimal currently)
-└── packages/                  # Shared packages
-    └── shared/               # Shared configuration & types
-        ├── src/
-        │   ├── config.ts     # All constants with env overrides
-        │   └── types/        # Shared type definitions
-        └── CONFIG_USAGE.md   # Config usage guide
-
+│       ├── lib/              # env, redis, prisma clients
+│       ├── middleware/       # CORS, security
+│       ├── routes/           # rooms, health endpoints
+│       ├── index.ts          # Entry point
+│       └── websocket-server.ts # y-websocket server
+└── packages/
+    └── shared/               # Shared config & types
+    
 ```
-Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`, `canvas/__tests__/`).
+Tests co-located in `__tests__/` folders within each directory. Client and server have separate vitest configs - use `npm run test:client` or `npm run test:server`.
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)
@@ -275,7 +276,7 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - **Never null** - EmptySnapshot created synchronously on init
    - Published at most once per rAF or batched Y update
    - Frozen in development, new arrays per publish
-   - Include `svKey` (base64 state vector) for cache/change detection (svKey mainly cosmetic UX purposed)
+   - Publisher is continuous; publish when doc or awareness is dirty; never use svKey to skip a publish in Phase 6
 
 5. **Data Storage Rules**
    - Arrays stored as `number[]` in Yjs (never Float32Array)
@@ -306,5 +307,18 @@ Tests default to single-threaded (1.3GB max) due to Y.Doc memory usage. Use `npm
 - **Snapshots**: Never null, frozen, new arrays per publish
 - **DrawingTool**: RAF-coalesced pointer events, Douglas-Peucker simplification in world units
 - **Preview**: Rendered at 0.35 opacity, invalidates old and new bounds on move
+- **Phase 6 Additions**:
+  - **y-indexeddb**: Room-scoped persistence in `avlo.v1.rooms.<roomId>`
+  - **y-websocket**: Authoritative sync path, immediate connection (no wait for IDB)
+  - **Redis**: Compressed Yjs doc storage with TTL, AOF enabled
+  - **Prisma**: Non-authoritative metadata (title, size_bytes, timestamps)
+  - **TanStack Query**: Metadata fetching with 10s polling
+  - **Zod**: Environment and API validation
+- **Phase 6-7 Infrastructure**:
+  - **React Router**: Dynamic room routing at `/room/:roomId`
+  - **subscribeGates**: Stable primitive snapshots prevent re-render loops
+  - **Toolbar UI**: Foundation for stamps, text, eraser tools
+  - **ClearBoard**: lastSeenScene tracking for export after clear
+  - **Connection UI**: Online/Offline states (no "Syncing" in offline-first)
 
 See `IMPLEMENTATION.MD` for detailed phase breakdown and `OVERVIEW.MD` for complete specifications.

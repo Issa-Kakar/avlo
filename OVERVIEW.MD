@@ -1,10 +1,7 @@
-avlo.md
-=======
-
 1\. Executive Summary & Project Definition
 ==========================================
 
-**Purpose.** Build Avlo, a link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor (JS + Python via Pyodide). CRITICAL: THIS IS A SMALL SIDE PROJECT, EXCESS COMPLEXITY IS NOT NEEDED FOR LARGE SCALE. REGULAR REAL WORLD USAGE WILL BE LOW, WITH 50+ USERS AND LIKELY NO MORE THAN 15 CONCURRENT USERS EVER. THIS IS FOR SWE RESUME KEYWORD AND PROJECT OPTIMIZATION ONLY. The MVP targets ≤125 ms p95 end-to-end collaboration latency with ~100 concurrent users and ≤15 active drawers, works offline (IndexedDB + CRDT), and persists rooms to Redis with (default: 14) TTL.  Mobile is view-only for MVP.
+**Purpose.** Build Avlo, a link-based, account-less, offline-first, real-time collaborative whiteboard with an integrated code executor (JS + Python via Pyodide). CRITICAL: THIS IS A SMALL SIDE PROJECT, EXCESS COMPLEXITY IS NOT NEEDED FOR LARGE SCALE. REGULAR REAL WORLD USAGE WILL BE LOW, WITH 50+ USERS AND LIKELY NO MORE THAN 15 CONCURRENT USERS EVER. THIS IS FOR SWE RESUME KEYWORD AND PROJECT OPTIMIZATION ONLY. The MVP targets ≤125 ms p95 end-to-end collaboration latency with ~100 concurrent users and ≤15 active drawers, works offline (IndexedDB + CRDT), and persists rooms to Redis with (default: 14) TTL.  Mobile is view-only for MVP. 
 
 **Production Flags:**
 
@@ -81,6 +78,10 @@ export interface RoomDocManager {
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
   /** Advisory size/cap readings (bytes = last persisted compressed size). */
   subscribeRoomStats(cb: (s: { bytes: number; cap: number } | null) => void): Unsub;
+  /** Subscribe to connection gates with stable primitive snapshots (Phase 6D). */
+  subscribeGates(cb: (gates: Readonly<GateStatus>) => void): Unsub;
+  /** Get current gate status. */
+  getGateStatus(): Readonly<GateStatus>;
   /** Single entry to mutate authoritative state. Runs in one yjs.transact. */
   mutate(fn: (ydoc: Y.Doc) => void): void;
   /** Force a TTL extension (tiny no-op write); client-rate-limited. */
@@ -168,7 +169,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation**: To avoid stack overflow on large state vectors, uses first 100 bytes + length + checksum for cache invalidation (sufficient for cosmetic purposes). **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation.** To avoid stack overflow on large state vectors, compute `svKey` from the first 100 bytes + length + checksum. **Purpose (Phase 6): diagnostics/telemetry only.** We **do not** use `svKey` to decide whether to publish; the publisher always emits a new snapshot whenever the manager is dirty. `svKey` is still included in snapshots and tooling, and it is **never** used to gate boot visuals. **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
 
 **Awareness (normative additions).** --- **Cadence & throttling.** Awareness send interval per client: `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N. --- **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only. **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.mutate(...)`. 
 
@@ -330,7 +331,7 @@ interface DeviceUIState {
   collaborationMode: 'server' | 'peer';
   aiPanelOpen: boolean;
   lastVersionSeen: string; // for update prompt
-  lastSeenSceneByRoom: Record<string, number>; // for ghost preview after clear
+  lastSeenSceneByRoom: Record<string, number>; // for tracking last scene local to user, ghost preview after clear
 }
 
 ```
@@ -402,7 +403,7 @@ Docked toolbar (left/pinned/expanded by default) with optional auto-hide; device
 
 **My Rooms.** Device-local list with provisional/published; delete only removes local entry; per-room `Y.Doc` persists until explicit **Delete local copy**.
 
-**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Reconnecting/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap.
+**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap.
 
 **Collaboration Mode & Indicators (additions).** Provide a control labeled **Collaboration Mode** with **Server (default)** and **Peer Mode (P2P)**. Remember per-device. Show a header badge (**Server** or **Peer Mode On **). 
 
@@ -425,17 +426,15 @@ Global Conventions
 
 **Security.** CSP profile, HSTS after TLS stable; `nosniff`; `no-referrer`; WS frame cap 2 MB; no session tokens; upgrades validated with Origin + roomId; **Origin allowlist** config and 403 behavior. password in WebrtcProvider encrypts signaling and prevents MITM on public signaling servers; recommend a room-scoped HMAC.
 
-**Availability.** "TTL janitor" every hour; final Redis flush on process SIGTERM with 3 s grace. TTL-based retention; AOF enabled; idle GC and final flush; no recovery after expiry. **Degraded mode.** Collaboration proceeds if Postgres is unavailable; metadata endpoints may 503.
+**Availability.** TTL-based retention; AOF enabled; idle GC and final flush on process SIGTERM with 3 s grace; no recovery after expiry. **Degraded mode.** Collaboration proceeds if Postgres is unavailable; metadata endpoints may 503.
 
-**Usability & accessibility.** Clear toasts and help copy; no auto-panning due to remote actions; popovers focus-trapped; toolbar never auto-reveals while drawing. **Maintainability.** Unobserve all Yjs observers on unmount; Sentry + counters; assistant bundle is lazy-loaded. **PWA constraints.** Do not cache `/api/**` or `/yjs/**`; SW must not intercept WebSocket traffic; Pyodide warmed on desktop only; maintain asset budgets.
+**Usability & accessibility.** Clear toasts and help copy; no auto-panning due to remote actions; popovers focus-trapped; toolbar never auto-reveals while drawing. **Maintainability.** Unobserve all Yjs observers on unmount; Sentry; assistant bundle is lazy-loaded. **PWA constraints.** Do not cache `/api/**` or `/yjs/**`; SW must not intercept WebSocket traffic; Pyodide warmed on desktop only; maintain asset budgets.
 
 **Transport runtime policy (additions).** Auto mode (default): start WS immediately; for rooms ≤ 12 peers, also bring up RTC and probe; keep only on a clear win; drop RTC if peers > 15, CPU hot, or ICE troubled. Direct mode: code pairing, hard cap 8 peers, same drop rules.
 
-**Observability.** Sentry + 3 metrics
+**Observability.** Sentry (errors only)
 
- **Async-apply contract**. For **cosmetic, long-running async** (export/IDB hydrate), use the svKey two-line check; not required elsewhere.; this eliminates temporal wormholes.  Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
-
-* * * * *
+ **Async-apply contract (MVP pivot).** We **do not** use any svKey "two-line" recheck in the MVP. Cosmetic async (exports, hydrate) proceeds without an svKey guard; if the board changes mid-task, we accept that the result may be slightly stale. Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
 
 8\. **Data Architecture & Flows**
 =================================
@@ -462,7 +461,7 @@ Global Conventions
 5.  **DocManager**:
     -   Batches Y updates; publishes new **Snapshot** at next rAF.
 6.  **Transport**:
-    -   y-websocket sends delta; server persists; Redis TTL extended. Include variants: **offline**, **oversize**, **capacity full**, **WS disconnected** (see backoffs).
+    -   y-websocket sends delta; server persists; Redis TTL extended. Include variants: **offline**, **oversize**, **capacity full**
 
 ### 8.2 Clear Board (for everyone)
 
@@ -475,9 +474,9 @@ Global Conventions
 -   **Per-run worker**; hard timeouts; no network/FS.
 -   Append `root.outputs[]` with clamp to last 10 items; enforce 128 KB total.
 
-**Render snapshot cache.** Keep a lightweight render snapshot cache (e.g., PNG) keyed by svKey for boot splash only. Write the cached PNG only when svKey changes; show it immediately at boot and fade to live; no business logic depends on it. Do not build a server/CDN snapshot persistence pipeline.
+**Render snapshot cache (dormant in MVP).** The small render cache from Phase 2.4 **remains in the codebase** but is **not used** by Phase 6. **Do not** display any boot image from this cache; **do not** read or write it during boot. Keep it only as a future utility; no server/CDN persistence.
 
-**Flows (additions).** --- **IndexedDB snapshots.** Persist last-known render snapshot keyed by Yjs state vector; on load, if vectors match, render snapshot immediately while live components initialize; otherwise skip snapshot. 
+**Flows (additions).** --- **IndexedDB snapshots (MVP).** **Do not** attempt any boot-time render snapshot display. IndexedDB persists the **Y.Doc** and device-local UI only; first paint is the **EmptySnapshot** followed by live frames. 
 
 ### TanStack Query (policy)
 
@@ -486,12 +485,9 @@ Global Conventions
 - **Refreshing:** invalidate on `persist_ack` for that room; otherwise poll ~10s; `refetchOnWindowFocus=false`, `retry=1`.
 
 **Additional Essential Data Flows**
------------------------------------
 
 1.  **Offline­first publish & alias resolution** Local creation yields a room with a provisional alias. On first sync: server allocates the canonical room key, merges content, and resolves the alias mapping. Clients store both (for backlinks and history) but render only the canonical alias going forward.
 2.  **Expiry → local cleanup UX** When a room expires (Redis TTL), metadata reads 404. The client removes server mappings, keeps the local Y.Doc (with a banner explaining the state), and offers a one­click "create new room from local copy."
-
-* * * * *
 
 9\. Dependencies & Integrations
 ===============================
@@ -500,15 +496,11 @@ Global Conventions
 
 - `y-websocket@3.x` browser + `@y/websocket-server@0.1.x` server (no y-leveldb at runtime)
 
-- Redis 5.8.1 AOF enabled; gzip level 4; `size_bytes` = compressed length
+- Redis 7.x stable AOF enabled; gzip level 4; `size_bytes` = compressed length
 
-- **TURN**: tcp+tls on 443; long-term creds rotated; **STUN** dev only **AuthN/AuthZ.** None; link-based open access by design. **Monitoring.** Sentry + counters (no content logging).
+- **TURN**: tcp+tls on 443; long-term creds rotated; **STUN** dev only **AuthN/AuthZ.** None; link-based open access by design. **Monitoring.** Sentry (no content logging). _Optional when WebRTC is enabled:_ counters `rtc.upgrade.count`, `rtc.ws_fallback.count`, `rtc.relay.ratio`, `turn.alloc.failures`, `turn.bytes.relayed`.
 
 - **Operational (additions).** **Connection pooling.** Postgres: `pg.Pool` size **10-20**, set idle/acquire timeouts, and log slow queries. Redis: one client for commands and one for pub/sub per process; health checks and reconnect backoff. Add y-webrtc@10.3.0. Env: Y_SIGNALING_URLS, Y_RTC_MAX_CONNS, Y_TURN_URL, Y_TURN_USER, Y_TURN_PASS, Y_RTC_PASSWORD_SALT. Self-hosted signaling (optional): include bin/server.js from y-webrtc or an equivalent deployment; keep public wss://signaling.yjs.dev as a backup
-  -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
 
 11\. Initialization & Gates
 ===========================
@@ -532,7 +524,8 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 
 4. **Awareness**
 
-   -   Start WS awareness immediately.
+   -   Start WS awareness immediately
+       -   **Note (MVP boot behavior).** We attach `y-indexeddb` first and connect **WebSocket immediately** (do **not** wait for IDB). First paint is always non-null via the EmptySnapshot, so showing **awareness before content** is intentional and safe; the first doc-derived frame arrives ≤ 1 rAF after the first IDB apply or WS sync. At this scale, server-vs-IDB hydration order is not user-visible. Outgoing local edits during early hydrate are allowed; Yjs merges them when WS sync completes.
    -   If **RTC small-room probe** eligible (peers ≤ 12), start RTC and run probe (2.5 s).
    -   Gate `G_AWARENESS_READY` when at least **one** channel (WS or RTC) is healthy.
 
@@ -549,13 +542,13 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 
 ### 11.2 Gates Table
 
-| Gate                | Opens When                        | Unblocks                                         | Timeout | On Timeout                                               |
-| :------------------ | :-------------------------------- | :----------------------------------------------- | :------ | :------------------------------------------------------- |
-| `G_IDB_READY`       | y-indexeddb loaded or 2 s elapsed | initial snapshot hydration; "Recent Rooms" badge | 2 s     | proceed with empty doc; schedule background re-hydration |
-| `G_WS_CONNECTED`    | WS open                           | WS awareness, doc sync                           | 5 s     | show "Reconnecting..."; proceed offline if IDB ready     |
-| `G_WS_SYNCED`       | first Y sync completes            | authoritative render                             | 10 s    | keep rendering from IDB; continue syncing                |
-| `G_AWARENESS_READY` | WS or RTC awareness live          | cursors/presence                                 | 5 s     | show "Presence degraded" indicator                       |
-| `G_FIRST_SNAPSHOT`  | first publish                     | UI enables hit-testing, export                   | 1 rAF   | N/A                                                      |
+| Gate                | Opens When                             | Unblocks                                           | Timeout | On Timeout                                             |
+| :------------------ | :------------------------------------- | :------------------------------------------------- | :------ | :----------------------------------------------------- |
+| `G_IDB_READY`       | y-indexeddb loaded or 2 s elapsed      | initial snapshot hydration; "Recent Rooms" badge   | 2 s     | Render `EmptySnapshot`; continue background re-hydrate |
+| `G_WS_CONNECTED`    | WS open                                | WS awareness, doc sync                             | 5 s     | proceed offline if IDB ready   
+| `G_WS_SYNCED`       | first Y sync completes                 | authoritative render (server merged state)         | 10 s    | keep rendering from IDB; continue syncing             
+| `G_AWARENESS_READY` | WS or RTC awareness live               | Prescence cursors/names/pings                      | none    | N/A
+| `G_FIRST_SNAPSHOT`  | first publish to UI occurs (IDB or WS) | Enables features that require a populated snapshot | 1 rAF   | N/A                                   
 
 **Where to gate writes**:
 
@@ -563,7 +556,19 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   When **room read-only** (≥ 15 MB) or **mobile**: **BLOCK** in minimal guards with UX banner.
 -   Before `G_FIRST_SNAPSHOT`: **BLOCK exports** and **minimap**; allow drawing.
 
-* * * * *
+**Feature → Gate**
+
+| Feature              | Gate(s)                      | Behavior when closed                                         |
+| -------------------- | ---------------------------- | ------------------------------------------------------------ |
+| Drawing (writes)     | none (offline-first)         | Writes go to local Y + IDB; syncs to server when `G_WS_CONNECTED` later opens |
+| Read-only / mobile   | room policy                  | Block writes; show banner explaining restriction             |
+| Export PNG           | `G_FIRST_SNAPSHOT`           | Disable button; tooltip “Preparing board…”                   |
+| Minimap              | `G_FIRST_SNAPSHOT`           | Hide                                                         |
+| Presence cursors     | `G_AWARENESS_READY`          | Hide cursors; no additional indicator                        |
+| Extend TTL           | `G_WS_CONNECTED`             | Disable; tooltip “Requires connection”                       |
+| Clear Board          | server rate-limit + debounce | If dropped: toast user; do not retry aggressively            |
+| Recent Rooms badge   | `G_IDB_READY`                | Hide                                                         |
+| Authoritative render | `G_WS_SYNCED`                | Continue rendering from IDB snapshot until sync completes    |
 
 12\. State Synchronization & Derivation
 =======================================
@@ -578,15 +583,12 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   `docStats = { bytes, cap: 15MB }` (from metadata poll every 10 s or on successful persist ack)
 -   `presenceView` throttled & interpolated **Consistency rules:**
 -   **Never** write derived values into Yjs (e.g., `bbox` MAY be stored to avoid recompute; all other derivations remain ephemeral).
--   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (base64 of Yjs state vector) used for cache/change detection and optional guards for cosmetic long-running tasks (PNG export, IDB hydrate) -- not a global temporal pin.
-
-* * * * *
+-   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (first 100 bytes + length + checksum to avoid stack overflow) **for diagnostics and tooling only.** In Phase 6, `svKey` is **not** consulted for publish/change detection and is **not** used to guard long-running tasks.
 
 13\. Mutations & Undo
 =====================
 
 **Mutations**: mutate(fn) → yjs.transact with minimal guards (≥15 MB read-only, mobile view-only, 2 MB frame cap). **Undo/Redo**: Yjs UndoManager with origin = userId (per-user history). **Scenes**: commit-time assignment; strokes/text commit to current scene at time of commit. **Backpressure**: coalesce pointer-move on rAF, drop stale events if the queue backs up; no client timers/windows.
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 14\. Snapshot Contract
 ======================
@@ -595,12 +597,12 @@ Define **precisely** what is in `Snapshot` and **never null**:
 
 ```
 interface Snapshot {
-  svKey: string; // base64 of Yjs state vector; keys IDB render snapshot (always string, never raw Uint8Array)
+  svKey: string; // first 100 bytes + length + checksum of state vector; included for diagnostics; NOT used to gate publishing in Phase 6
   scene: SceneIdx;	//derived from root.meta.scene_ticks.length at capture time
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
   presence: PresenceView;         // derived + smoothed
-  spatialIndex: RBushIndexView;   // populated when RBush is implemented (now Phase 6)
+  spatialIndex: RBushIndexView;   // populated when RBush is implemented (now Phase 8)
   view: ViewTransform;            // world->canvas transform
   meta: { bytes?: number; cap: number; readOnly: boolean; expiresAt?: number };
   createdAt: number;              // ms epoch when snapshot frozen
@@ -615,61 +617,11 @@ interface StrokeView {
 }
 
 ```
-
 -   **Typed arrays** are **constructed at render only**; stored doc remains plain arrays.
 -   **Preventing null snapshot**: On manager creation, publish `EmptySnapshot` with `scene=0`, empty arrays, identity transform, `meta.readOnly=false`, `meta.cap=15_000_000`.
 
 * * * * *
 
-15\. Optional svKey checks (cosmetic tasks only)
-================================================
-
-**Optional svKey Check Pattern**:
-
-```
-// Use only for long-running cosmetic tasks
-const capturedSvKey = currentSnapshot.svKey;
-const asyncResult = await someAsyncOperation();
-
-// Optional verification for cosmetic work
-if (capturedSvKey !== currentSnapshot.svKey) {
-  // State changed - discard stale cosmetic work
-  console.warn('Discarding stale async work - svKey mismatch');
-  return;
-}
-// Safe to apply cosmetic result
-applyAsyncResult(asyncResult);
-
-```
-
-**Core Rules**:
-
--   **UI MUST NOT** hold references to live Y objects or rely on their identity across frames
--   **Stable identity**: Use `id` strings; Snapshot arrays are **new immutable** arrays per publish
--   **Correlation across frames**: Use `id` map lookups; never retain object references
--   **Use the two-line svKey recheck pattern only for long-running cosmetic tasks** (export, IDB hydrate)
--   **Common cosmetic operations using svKey guard**:
-    -   PNG export generation
-    -   IndexedDB snapshot loading
-    -   Deferred rendering work
-
-* * * * *
-
-16\. Where to Gate
-==================
-
-Provide a table specifying **feature → gate**:
-
-| Feature          | Gate(s)                            | Behavior when closed                         |
-| :--------------- | :--------------------------------- | :------------------------------------------- |
-| Drawing          | none (offline-first)               | Writes go to local Y+IDB; WS sync later      |
-| Export PNG       | `G_FIRST_SNAPSHOT`                 | Disable button; tooltip "Preparing board..." |
-| Minimap          | `G_FIRST_SNAPSHOT`                 | Hide                                         |
-| Presence cursors | `G_AWARENESS_READY`                | Show "Presence degraded"                     |
-| Extend TTL       | `G_WS_CONNECTED`                   | Disable; show tooltip                        |
-| Clear Board      | server rate-limit + local debounce | Toast if dropped                             |
-
-* * * * *
 
 17\. Event Isolation & Canvas
 =============================
@@ -678,6 +630,7 @@ Provide a table specifying **feature → gate**:
 -   All mutations pass through **mutate(fn)** at **pointer-up** or explicit actions.
 -   **Canvas renderer**:
     -   Renders at **60 FPS** with dirty-rect culling. Use dirty-rect culling only when transform is unchanged; on transform change, fall back to full clear (or tile cache).
+    -   **Scene tick (Clear Board)**: perform a full canvas clear before drawing the new scene. Dirty-rects may leave stale pixels after refresh; treat scene change as a full-clear boundary.
     -   **No auto-pan** due to remote actions.
     -   **Hit-testing** via RBush built from Snapshot; never touches Y live data. **Draw order for Canvas**:
 
@@ -689,8 +642,6 @@ Provide a table specifying **feature → gate**:
 Render order must match the architectural contract: background → strokes → stamps/shapes → text → authoring overlays → presence overlays → HUD.
 
 -   **Isolation**: While "Push-to-talk" active, drawing is disabled; awareness still emitted.(In later webrtc)
-
-* * * * *
 
 18\. Coordinate Spaces & Transforms
 ===================================
@@ -705,8 +656,7 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 
 - **Transform contract**:
 
-  ```
-  interface ViewTransform {  worldToCanvas: (x:number,y:number)=>[number,number];  canvasToWorld: (x:number,y:number)=>[number,number];  scale: number;  // world px → canvas px  pan: { x:number; y:number }; // world offset}
+  -interface ViewTransform {  worldToCanvas: (x:number,y:number)=>[number,number];  canvasToWorld: (x:number,y:number)=>[number,number];  scale: number;  // world px → canvas px  pan: { x:number; y:number }; // world offset}
   
   ```
 
@@ -719,8 +669,6 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 
 - **Ghost preview/export**: uses the existing visibility isolation (sceneOverride to filter).
 
-* * * * *
-
 19\. Transport Ordering & Flow Control
 ======================================
 
@@ -729,6 +677,13 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 -   **Message ordering**:
     -   Awareness processed **before** snapshot publish if received in same tick; otherwise makes next frame.
 -   **Coalesce pointer-move on rAF, drop stale motion under load.**
+-   **WS backpressure rules (authoritative).**
+     • **High/low water:** 256 KB / 64 KB from `WebSocket.bufferedAmount`. Above high: coalesce doc sends and **skip awareness** frames; resume when below low.
+     • **Presence skip threshold:** if `bufferedAmount > 64 KB`, drop the current awareness frame (freshness over reliability).
+     • **Awareness cadence degrade:** **12 → 6 → 2 Hz** when backpressured or when **N ≥ 20**.
+     • **Roster rate:** cap WS roster/buddy-list updates to **≤ 1 Hz**.
+     These are stricter than the generic “lossy under backpressure” guidance and make behavior predictable at small-room scale. 
+-   **Server slow-socket policy.** On each connection, watch `bufferedAmount`. While a socket is above the high-water, **suspend presence fan-out** to that socket and **bound its per-socket queue** (doc updates remain prioritized). Resume presence when it drains below low-water. This prevents a single slow client from causing memory growth or stalling broadcast. 
 
 * * * * *
 
@@ -747,28 +702,30 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 ==================================
 
 - **Single ownership**:
-
   -   `RoomDocManager` owns providers and **solely** observes Y types.
   -   UI relies on **subscriptions** only; no direct observers of Y types anywhere else.
 
 - **Centralized subscription**:
-
   -   Awareness subscription is centralized; presence derivation happens inside manager with smoothing (lerp 1-2 frames; one-frame dead-reckon on miss).
 
 - **Capacity (`room_full`)**:
 
-  -   Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
+-   Show blocking modal; allow **view-only** join if capacity gate provides read-only seat (server-driven).
+  - **Provider-agnostic observers.** Register all Y.Doc observers **exactly once** inside `RoomDocManager`. Providers (`y-indexeddb`, `y-websocket`, optional `y-webrtc`) **must not** bind their own doc listeners; they are transport only. They may attach their own internal doc listeners to function, but they do not register any app/UI observers or publish UI state. Provider lifecycle events (connect/disconnect, first-sync, IDB hydrated, awareness live) are consumed centrally by RoomDocManager and translated into gates.
 
 * * * * *
 
 24\. RAF & Publishing
 =====================
 
-**Publisher** runs a single rAF loop per room tab with event-driven policy:
+**Publisher** runs a continuous rAF loop (one per room tab):
 
--   **Event-driven rAF**: set a dirty flag when Yjs updates or local edits occur; schedule one rAF
--   **FPS policy**: default 60 FPS, switch to 30 FPS only on mobile/battery saver/very heavy scenes; if hidden tab, switch to `setTimeout(1000/8)` (8 FPS).
--   **Work budgeting**: rendering prep (RBush rebuild, path building) soft budget **6 ms**; if exceeded, split across frames. **Export path**:
+-   **On every frame**, publish a new frozen Snapshot if either document or awareness is dirty. We never suppress a publish using `svKey` in Phase 6.
+-   **If nothing changed**, we publish an identical Snapshot anyway, performance difference is negligible
+-   **FPS policy**: default 60 FPS; 30 FPS on heavy/mobile; hidden tabs drop to ~8 FPS.
+-   **Work budgeting**: keep prep ≤ ~6 ms; split work across frames.
+-   **Awareness changes** mark the manager dirty the same way as doc changes (IDB/WS).
+-   **Export path**:
 -   If export prep exceeds **2 s**, fall back to viewport export with toast; never block UI thread longer than **16 ms** bursts.
 
 * * * * *
@@ -802,8 +759,8 @@ Appendix C: Provider Lifecycle (Init, Teardown, Reconnect)
 **Teardown order (room leave, toggle to WS-only, tab close):**
 
 1.  **Stop awareness publisher** → 2) **Destroy RTC provider** (if any) → 3) **Unsubscribe awareness listeners** →
-2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops. (Integrates with §11 Gates and your authority path.)\
-    **RTC flap handling & debounce:**
+2.  **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**. Guarantee all public calls after `destroy()` are no-ops (guard every public method with `if (this._destroyed) return;`).
+**RTC flap handling & debounce:**
 
 * * * * *
 
@@ -825,7 +782,7 @@ Appendix E: Presence vs Snapshot Gating
 **Rendering contracts aligned to §11 Gates:**
 
 -   **Cursors/presence** draw only when **both** `G_AWARENESS_READY` **and** `G_FIRST_SNAPSHOT` are open.
--   If awareness is ready but first snapshot not yet published, show **"Presence degraded"** pill **without** cursors.
+-   If awareness is ready but the first snapshot is not yet published, (no UI) — cursors remain hidden.
 -   Export/minimap remain gated per `G_FIRST_SNAPSHOT`.
 
 * * * * *
@@ -875,10 +832,32 @@ This pattern ensures:
 - Test-specific timing control (TestClock/TestFrameScheduler)
 - Consistent test behavior across phases
 
-**Future Phase Examples:**
-- Phase 3: Canvas rendering tests with `waitForSnapshot()`
-- Phase 5: Drawing commit tests using `room.mutate()`
-- Phase 6: Awareness tests with `collectPresenceUpdates()`
+* * * * *
+
+Appendix H: Phase 6D - UI Integration Patterns
+==============================================
+
+**Stable Primitive Snapshots for Gate Subscription:**
+
+To prevent infinite re-render loops with `useSyncExternalStore`, the `subscribeGates` method uses encoded string primitives:
+
+```typescript
+// Encode gates as stable string primitive: "0|1|0|1|1"
+type GateSnapshot = `${0|1}|${0|1}|${0|1}|${0|1}|${0|1}`;
+
+// Use queueMicrotask to defer callback execution
+const subscribe = (onStoreChange: () => void) => {
+  return room.subscribeGates(() => queueMicrotask(onStoreChange));
+};  // 150ms debounce prevents UI flicker during rapid gate changes
+```
+
+**Routing Structure (Post-Phase 6):**
+
+- `/` → Test harness with hardcoded 'test-room-001'
+- `/room/:roomId` → Dynamic room pages with full UI
+- `/test` → Alternative test harness path
+
+```
 
 * * * * *
 
@@ -929,20 +908,11 @@ function pushPoint(id: UserId, p: {x:number,y:number,t:number}) {
 
 1.  **Awareness Coordinates** -- Send world-space; receivers project to view. Optional: include `{viewId, world, ts}`; prefer world when present.
 
-B. Initialization & State Sync
-
-1.  **Boot Gating** -- Hold outbound doc sync until `G_IDB_READY` or 2 s timeout; then open WS, hydrate Y, and allow publish.
+**B. Initialization & State Sync**
+1.  **Boot Gating** -- Attach y-indexeddb first and open y-websocket immediately; do not wait for G_IDB_READY (the 2 s timeout gates IDB hydrate only); gate UI with G_WS_CONNECTED/G_WS_SYNCED and G_FIRST_SNAPSHOT.
 2.  **Scene Capture** -- Scene is assigned at commit time using currentScene; no capturing at gesture start.
 3.  **Frame Size vs Micro-Batch** -- Inbound frames ≤2 MB; server never coalesces beyond cap; client uses rAF coalescing only.
 
 C. Races & Ordering
 1.  **Concurrent Clear Board** -- Server: idempotency key + ≥150 ms rate-limit. Client: debounce ~300 ms and show pending state.
 2.  **outputs[] Eviction** -- Completion + eviction in single CRDT transaction so second finisher observes first delete.
-
-Final Editorial Notes
--   Every new constant is declared in a `config.ts` with defaults and environment overrides.
--   Ensure **no written Float32Array** into Yjs; build at render.
--   **Prevent null snapshot** via immediate `EmptySnapshot`.
--   Clarify **mutable vs immutable**: live Y state mutable only via mutations; published `Snapshot` immutable.
--   **Direct observation vs centralized subscription**: centralized only.
--   **Ownership** lines explicit for each subsystem.

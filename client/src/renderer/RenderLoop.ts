@@ -52,6 +52,7 @@ export class RenderLoop {
   private rafId: number | null = null;
   private lastFrameTime = 0;
   private lastTransformState: { scale: number; pan: { x: number; y: number } } | null = null;
+  private lastRenderedScene = -1; // Track scene changes for full clear
   private skipNextFrame = false;
   private isHidden = false;
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
@@ -117,6 +118,7 @@ export class RenderLoop {
     this.config = null;
     this.dirtyTracker.reset();
     this.lastTransformState = null;
+    this.lastRenderedScene = -1; // Reset scene tracking
     this.needsFrame = false;
     this.framesSinceInvalidation = 0;
     this.skipNextFrame = false;
@@ -251,6 +253,13 @@ export class RenderLoop {
 
     // Update dirty tracker canvas size if changed
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
+
+    // Check for scene change FIRST - this triggers full clear
+    if (snapshot.scene !== this.lastRenderedScene) {
+      // Scene changed - forcing full clear
+      this.dirtyTracker.invalidateAll('scene-change');
+      this.lastRenderedScene = snapshot.scene;
+    }
 
     // Check for transform change only if it might have changed
     // This avoids calling notifyTransformChange on every frame unnecessarily

@@ -1,26 +1,43 @@
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createServer } from 'http';
+import { setupWebSocketServer } from './websocket-server.js';
+import { validateServerEnv } from './config/env.js';
+import { setupMiddleware } from './middleware/index.js';
+import { roomRoutes } from './routes/rooms.js';
+import { healthRoutes } from './routes/health.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const app = express();
-const PORT = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json());
+// Validate environment on startup
+const env = validateServerEnv();
+
+const app = express();
+const httpServer = createServer(app);
+
+// Setup middleware
+setupMiddleware(app, env);
+
+// API routes
+app.use('/api/rooms', roomRoutes);
+app.use('/api', healthRoutes);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../public')));
+
+  // SPA fallback
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+  });
 }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', phase: 1 });
-});
+// Setup WebSocket server
+setupWebSocketServer(httpServer, env);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Start server
+httpServer.listen(env.PORT, () => {
+  // Server started on port ${env.PORT}
 });

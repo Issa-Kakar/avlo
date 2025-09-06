@@ -34,7 +34,7 @@ export class RenderCache {
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
-        
+
         // Create object store if it doesn't exist
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           const store = db.createObjectStore(STORE_NAME, { keyPath: 'roomId' });
@@ -78,7 +78,7 @@ export class RenderCache {
 
       // Convert canvas to base64 PNG
       const imageData = canvas.toDataURL('image/png');
-      
+
       const entry: RenderCacheEntry = {
         roomId,
         svKey,
@@ -88,7 +88,7 @@ export class RenderCache {
 
       const transaction = this.db.transaction([STORE_NAME], 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
-      
+
       // Use put to insert or update
       store.put(entry);
 
@@ -149,12 +149,17 @@ export class RenderCache {
   /**
    * Display cached image as boot splash
    * Returns true if splash was shown
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async showBootSplash(
     roomId: string,
     targetElement: HTMLElement,
-    expectedSvKey?: string
+    expectedSvKey?: string,
   ): Promise<boolean> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve(false);
+    }
     const entry = await this.get(roomId, expectedSvKey);
     if (!entry) return false;
 
@@ -172,7 +177,7 @@ export class RenderCache {
       img.style.transition = 'opacity 300ms ease-out';
       img.style.pointerEvents = 'none';
       img.style.zIndex = '1000';
-      
+
       // Add to target element
       targetElement.appendChild(img);
 
@@ -248,10 +253,10 @@ export class RenderCache {
       const transaction = this.db.transaction([STORE_NAME], 'readwrite');
       const store = transaction.objectStore(STORE_NAME);
       const index = store.index('timestamp');
-      
+
       const cutoff = Date.now() - CACHE_TTL_MS;
       const range = IDBKeyRange.upperBound(cutoff);
-      
+
       const request = index.openCursor(range);
       request.onsuccess = () => {
         const cursor = request.result;

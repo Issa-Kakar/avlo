@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-interface ToolbarState {
+export interface ToolbarState {
   tool: 'pen' | 'highlighter' | 'text' | 'eraser' | 'stamp';
   size: number;
   color: string;
@@ -11,17 +11,17 @@ interface ToolbarState {
 interface DeviceUIState {
   // Toolbar state
   toolbar: ToolbarState;
-  
+
   // Track last seen scene per room (for ghost preview after clear)
   lastSeenSceneByRoom: Record<string, number>;
-  
+
   // Collaboration mode preference
   collaborationMode: 'server' | 'peer';
-  
+
   // UI preferences
   sidebarOpen: boolean;
   minimapVisible: boolean;
-  
+
   // Actions
   setTool: (tool: ToolbarState['tool']) => void;
   setToolSize: (size: number) => void;
@@ -47,44 +47,41 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       collaborationMode: 'server',
       sidebarOpen: true,
       minimapVisible: true,
-      
+
       // Actions
-      setTool: (tool) => 
+      setTool: (tool) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, tool }
+          toolbar: { ...state.toolbar, tool },
         })),
-        
+
       setToolSize: (size) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, size }
+          toolbar: { ...state.toolbar, size },
         })),
-        
+
       setToolColor: (color) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, color }
+          toolbar: { ...state.toolbar, color },
         })),
-        
+
       setToolOpacity: (opacity) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, opacity }
+          toolbar: { ...state.toolbar, opacity },
         })),
-        
+
       updateLastSeenScene: (roomId, scene) =>
         set((state) => ({
           lastSeenSceneByRoom: {
             ...state.lastSeenSceneByRoom,
-            [roomId]: scene
-          }
+            [roomId]: scene,
+          },
         })),
-        
-      setCollaborationMode: (mode) =>
-        set({ collaborationMode: mode }),
-        
-      toggleSidebar: () =>
-        set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-        
-      toggleMinimap: () =>
-        set((state) => ({ minimapVisible: !state.minimapVisible })),
+
+      setCollaborationMode: (mode) => set({ collaborationMode: mode }),
+
+      toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+
+      toggleMinimap: () => set((state) => ({ minimapVisible: !state.minimapVisible })),
     }),
     {
       name: 'avlo:v1:ui', // localStorage key
@@ -97,6 +94,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         }
         return persistedState as DeviceUIState;
       },
-    }
-  )
+    },
+  ),
 );

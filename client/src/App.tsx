@@ -8,11 +8,13 @@
  * for this dev-only component. Production code should never do this.
  */
 
+import { Routes, Route } from 'react-router-dom';
 import { RoomDocRegistryProvider } from './lib/room-doc-registry-context';
 import { ViewTransformProvider, useViewTransform } from './canvas/ViewTransformContext';
 import { Canvas } from './canvas/Canvas';
 import { useRoomDoc } from './hooks/use-room-doc';
 import { useRoomSnapshot } from './hooks/use-room-snapshot';
+import RoomPage from './pages/RoomPage';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);
@@ -20,6 +22,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
   const { viewState, setScale, setPan, resetView } = useViewTransform();
 
   const handleClearCanvas = () => {
+    // Clear button clicked - incrementing scene
     // Increment scene by pushing a new timestamp to scene_ticks
     // NOTE: Using 'any' here for dev test only - production code should use proper helpers
     // TODO: In Phase 10, we'll have a proper clearBoard() method on RoomDocManager
@@ -28,7 +31,10 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
       const meta = root.get('meta') as any;
       const sceneTicks = meta.get('scene_ticks') as any;
       if (sceneTicks) {
-        sceneTicks.push([Date.now()]); // Y.Array.push expects an array of items
+        const timestamp = Date.now();
+        // Pushing scene tick
+        sceneTicks.push([timestamp]); // Y.Array.push expects an array of items
+        // Scene ticks updated
       }
     });
   };
@@ -136,15 +142,38 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
   );
 }
 
-export default function App() {
+function TestHarness() {
   // Fixed room ID for testing - in production this would come from URL
   const roomId = 'test-room-001';
 
+  // Parse query parameters to check for persist=0 flag
+  const urlParams = new URLSearchParams(window.location.search);
+  const skipIndexedDB = urlParams.get('persist') === '0';
+
+  // Log the flag status for debugging
+  if (skipIndexedDB) {
+    // eslint-disable-next-line no-console
+    console.log('[App] IndexedDB disabled via ?persist=0 flag');
+  }
+
   return (
-    <RoomDocRegistryProvider>
+    <RoomDocRegistryProvider skipIndexedDB={skipIndexedDB}>
       <ViewTransformProvider>
         <CanvasWithControls roomId={roomId} />
       </ViewTransformProvider>
     </RoomDocRegistryProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      {/* Test harness at root and /test */}
+      <Route path="/" element={<TestHarness />} />
+      <Route path="/test" element={<TestHarness />} />
+
+      {/* Room page for actual rooms */}
+      <Route path="/room/:roomId" element={<RoomPage />} />
+    </Routes>
   );
 }

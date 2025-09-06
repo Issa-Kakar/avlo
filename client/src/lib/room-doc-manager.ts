@@ -13,12 +13,15 @@
  */
 
 import * as Y from 'yjs';
+import { IndexeddbPersistence } from 'y-indexeddb';
+import { WebsocketProvider } from 'y-websocket';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
   TEXT_CONFIG,
   ulid,
 } from '@avlo/shared';
+import { clientConfig } from './config-schema';
 import { RollingGzipEstimator, GzipImpl } from './size-estimator';
 import type {
   RoomId,
@@ -66,6 +69,36 @@ export interface IRoomDocManager {
   extendTTL(): void;
   destroy(): void;
 
+  // Phase 6A: Gate status methods
+  getGateStatus(): Readonly<{
+    idbReady: boolean;
+    wsConnected: boolean;
+    wsSynced: boolean;
+    awarenessReady: boolean;
+    firstSnapshot: boolean;
+  }>;
+  isIndexedDBReady(): boolean;
+
+  // Phase 7: Event-driven gate subscription
+  subscribeGates(
+    cb: (
+      gates: Readonly<{
+        idbReady: boolean;
+        wsConnected: boolean;
+        wsSynced: boolean;
+        awarenessReady: boolean;
+        firstSnapshot: boolean;
+      }>,
+    ) => void,
+  ): Unsub;
+
+  // Phase 6C: Room stats support
+  /**
+   * Update room stats from external sources (e.g., metadata polling)
+   * This is used by TanStack Query hooks to update stats from HTTP metadata
+   */
+  setRoomStats(stats: RoomStats | null): void;
+
   // Phase 2.4.4: Render cache for boot splash (cosmetic only)
   storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
   showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
@@ -75,6 +108,7 @@ export interface IRoomDocManager {
 // Extended options for RoomDocManager
 export interface RoomDocManagerOptions extends TimingOptions {
   gzipImpl?: GzipImpl;
+  skipIndexedDB?: boolean; // Optional: disable IndexedDB (for testing)
 }
 
 // Private implementation
@@ -86,8 +120,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
-  private indexeddbProvider: unknown = null;
-  private websocketProvider: unknown = null;
+  private indexeddbProvider: IndexeddbPersistence | null = null;
+  private websocketProvider: WebsocketProvider | null = null;
   private webrtcProvider: unknown = null;
 
   // Current state
@@ -97,6 +131,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
+  private gateSubscribers = new Set<(gates: Readonly<typeof this.gates>) => void>();
 
   // Throttled presence updates (30Hz = ~33ms)
   private updatePresenceThrottled: (() => void) | null = null;
@@ -134,6 +169,21 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Track if destroyed for cleanup
   private destroyed = false;
+
+  // Gate tracking
+  private gates = {
+    idbReady: false,
+    wsConnected: false,
+    wsSynced: false,
+    awarenessReady: false,
+    firstSnapshot: false,
+  };
+  private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
+  private gateCallbacks: Map<string, Set<() => void>> = new Map();
+
+  // Gate subscription state for debouncing
+  private lastGateState: typeof this.gates | null = null;
+  private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
@@ -182,6 +232,18 @@ class RoomDocManagerImpl implements IRoomDocManager {
     renderCache.init().catch((err) => {
       console.warn('[RoomDocManager] Render cache init failed (non-critical):', err);
     });
+
+    // Initialize IndexedDB provider (Phase 6A) - unless skipIndexedDB is set
+    if (!options?.skipIndexedDB) {
+      this.initializeIndexedDBProvider();
+    } else {
+      // If IndexedDB is skipped, immediately open the IDB gate
+      this.openGate('idbReady');
+      // IndexedDB skipped by option
+    }
+
+    // Initialize WebSocket provider (Phase 6C)
+    this.initializeWebSocketProvider();
 
     // Start RAF loop
     this.startPublishLoop();
@@ -255,7 +317,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Debug: sceneTicks length is the current scene
     // AUDIT NOTE: Scene can never be negative by construction (array.length is always >= 0)
     // Empty filtered stroke/text arrays are handled correctly by renderers
-    return sceneTicks.length;
+    const scene = sceneTicks.length;
+    // Scene determined from scene ticks length
+    return scene;
   }
 
   // Build presence view from awareness (will be connected to awareness in Phase 8)
@@ -420,6 +484,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Subscription methods
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.snapshotSubscribers.add(cb);
     // Immediately call with current snapshot
     cb(this._currentSnapshot);
@@ -430,6 +499,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   subscribePresence(cb: (p: PresenceView) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.presenceSubscribers.add(cb);
     // Immediately call with current presence
     cb(this._currentSnapshot.presence);
@@ -440,6 +514,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.statsSubscribers.add(cb);
     // Immediately call with current stats if available
     const stats = this._currentSnapshot.meta.bytes
@@ -452,8 +531,26 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
+  subscribeGates(cb: (gates: Readonly<typeof this.gates>) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
+    this.gateSubscribers.add(cb);
+    // Immediately call with current gate status
+    cb(this.getGateStatus());
+
+    return () => {
+      this.gateSubscribers.delete(cb);
+    };
+  }
+
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
+    // Check if destroyed first
+    if (this.destroyed) return;
+
     // Minimal guards (same as spec)
 
     // 1. Check room read-only (≥15MB)
@@ -554,6 +651,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Extend TTL with minimal write
   extendTTL(): void {
+    // Check if destroyed first
+    if (this.destroyed) return;
+
     // Perform a minimal write to extend TTL
     this.mutate((_ydoc) => {
       const meta = this.getMeta();
@@ -574,6 +674,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Lifecycle
   destroy(): void {
+    // Check if already destroyed (makes it safe to call multiple times)
+    if (this.destroyed) return;
+
     // Set destroyed flag
     this.destroyed = true;
 
@@ -581,6 +684,29 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (this.publishState.rafId !== -1) {
       this.frames.cancel(this.publishState.rafId);
       this.publishState.rafId = -1;
+    }
+
+    // Clear gate timeouts
+    this.gateTimeouts.forEach((timeout) => clearTimeout(timeout));
+    this.gateTimeouts.clear();
+
+    // Clear gate debounce timer
+    if (this.gateDebounceTimer) {
+      clearTimeout(this.gateDebounceTimer);
+      this.gateDebounceTimer = null;
+    }
+
+    // Cleanup providers (Phase 6A additions)
+    if (this.indexeddbProvider) {
+      this.indexeddbProvider.destroy();
+      this.indexeddbProvider = null;
+    }
+
+    if (this.websocketProvider) {
+      // Proper cleanup: disconnect first, then destroy
+      this.websocketProvider.disconnect();
+      this.websocketProvider.destroy();
+      this.websocketProvider = null;
     }
 
     // Remove Y.Doc observers
@@ -592,6 +718,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
     this.statsSubscribers.clear();
+    this.gateSubscribers.clear();
 
     // Clear throttled function and any pending timeouts
     if (this.updatePresenceThrottledCleanup) {
@@ -631,7 +758,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Format: base64(first100bytes):length:checksum
     const checksum = Array.from(stateVector.slice(-4)).reduce((sum, byte) => sum + byte, 0);
 
-    return `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
+    const key = `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
+
+    return key;
   }
 
   // Simple RAF loop for publishing
@@ -639,16 +768,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const rafLoop = () => {
       // Publish if Y.Doc changed OR presence changed
       if (this.publishState.isDirty || this.publishState.presenceDirty) {
+        // Publishing snapshot based on dirty flags
         const startTime = this.clock.now();
 
         // Build snapshot
         const newSnapshot = this.buildSnapshot();
 
-        // Optional optimization: Skip publish if svKey unchanged and no presence update
-        const svKeyChanged = newSnapshot.svKey !== this.publishState.lastSvKey;
-        if (svKeyChanged || this.publishState.presenceDirty) {
-          this.publishSnapshot(newSnapshot);
-        }
+        // CRITICAL FIX: Always publish when dirty, don't use svKey as a gate
+        // The svKey truncation (first 100 bytes) was missing local client updates
+        // when state vectors were large (>100 bytes), causing strokes to not render
+        // until refresh. SvKey dedupe optimization had to be removed.
+        this.publishSnapshot(newSnapshot);
 
         // Clear both dirty flags
         this.publishState.isDirty = false;
@@ -683,9 +813,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Optional: Track specific events for debugging
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-      this.ydoc.on('afterTransaction', (transaction: Y.Transaction) => {
-        // eslint-disable-next-line no-console
-        console.log('[Snapshot] Transaction origin:', transaction.origin);
+      this.ydoc.on('afterTransaction', (_transaction: Y.Transaction) => {
+        // Transaction origin tracked
       });
     }
   }
@@ -693,6 +822,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    // Y.Doc updated
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
 
@@ -711,6 +841,244 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // RAF loop will handle publishing
   };
+
+  private initializeIndexedDBProvider(): void {
+    try {
+      // Create room-scoped IDB provider
+      const dbName = `avlo.v1.rooms.${this.roomId}`;
+      this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
+
+      // Set up IDB gate with 2s timeout
+      const timeoutId = setTimeout(() => {
+        this.openGate('idbReady');
+        // IDB timeout reached, continuing with empty doc
+      }, 2000);
+      this.gateTimeouts.set('idbReady', timeoutId);
+
+      // Listen for IDB sync completion for gate control
+      this.indexeddbProvider.whenSynced
+        .then(() => {
+          const timeout = this.gateTimeouts.get('idbReady');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('idbReady');
+          }
+          this.openGate('idbReady');
+          // IDB synced successfully
+        })
+        .catch((err: unknown) => {
+          console.warn('[RoomDocManager] IDB sync error (non-critical):', err);
+          // Still open gate on error - fallback to empty doc
+          this.openGate('idbReady');
+        });
+
+      // Note: No need to listen for 'synced' event to mark dirty
+      // Y.Doc updates from IDB will trigger the existing doc update handler
+    } catch (err: unknown) {
+      console.warn('[RoomDocManager] IDB initialization failed (non-critical):', err);
+      // Mark as failed but continue
+      this.openGate('idbReady');
+    }
+  }
+
+  private initializeWebSocketProvider(): void {
+    try {
+      // Get config (validated) - typically '/ws'
+      const wsBase = clientConfig.VITE_WS_BASE;
+
+      // Convert to WebSocket URL base (without room ID)
+      const wsUrl = this.buildWebSocketUrl(wsBase);
+
+      // Create WebSocket provider with standard signature
+      // y-websocket will append /<roomId> to the base URL automatically
+      // Result: ws://host/ws/<roomId>
+      this.websocketProvider = new WebsocketProvider(
+        wsUrl,
+        this.roomId, // Pass room ID separately (standard y-websocket contract)
+        this.ydoc,
+        {
+          // Disable awareness for now (Phase 7)
+          awareness: undefined,
+          // Reconnect settings
+          maxBackoffTime: 10000,
+          resyncInterval: 5000,
+        },
+      );
+
+      // Set up G_WS_CONNECTED gate with 5s timeout
+      const wsConnectedTimeout = setTimeout(() => {
+        if (!this.gates.wsConnected && this.gates.idbReady) {
+          // Proceed offline if IDB ready
+          // WS connection timeout, proceeding offline
+        }
+      }, 5000);
+      this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
+
+      // Set up G_WS_SYNCED gate with 10s timeout
+      const wsSyncedTimeout = setTimeout(() => {
+        if (!this.gates.wsSynced) {
+          // Keep rendering from IDB, continue trying to sync
+          // WS sync timeout, continuing with local state
+        }
+      }, 10000);
+      this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
+
+      // Set up connection gates
+      this.websocketProvider.on('status', (event: { status: string }) => {
+        if (event.status === 'connected') {
+          // Clear connection timeout
+          const timeout = this.gateTimeouts.get('wsConnected');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('wsConnected');
+          }
+          this.openGate('wsConnected');
+          // WebSocket connected
+        } else if (event.status === 'disconnected') {
+          this.gates.wsConnected = false;
+          this.gates.wsSynced = false;
+          this.notifyGateChange();
+          // WebSocket disconnected
+        }
+      });
+
+      // Listen for sync status (v3 uses 'sync' event, not 'synced')
+      this.websocketProvider.on('sync', (isSynced: boolean) => {
+        if (isSynced) {
+          // Clear sync timeout
+          const timeout = this.gateTimeouts.get('wsSynced');
+          if (timeout) {
+            clearTimeout(timeout);
+            this.gateTimeouts.delete('wsSynced');
+          }
+          this.openGate('wsSynced');
+          // WebSocket synced
+        } else {
+          this.gates.wsSynced = false;
+          this.notifyGateChange();
+        }
+      });
+
+      // Note: Document updates are already handled by the existing Y.Doc update observer
+      // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
+      // No need for additional provider-specific update listeners
+    } catch (err: unknown) {
+      console.error('[RoomDocManager] WebSocket initialization failed:', err);
+      // Keep offline mode functional
+    }
+  }
+
+  private buildWebSocketUrl(basePath: string): string {
+    // Handle both relative and absolute URLs
+    if (basePath.startsWith('ws://') || basePath.startsWith('wss://')) {
+      return basePath;
+    }
+
+    // Build from current location
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+
+    // Ensure path starts with /
+    const cleanPath = basePath.startsWith('/') ? basePath : `/${basePath}`;
+
+    // Return base WebSocket URL (y-websocket will append room ID)
+    return `${protocol}//${host}${cleanPath}`;
+  }
+
+  // Gate management
+  private openGate(gateName: keyof typeof this.gates): void {
+    if (this.gates[gateName]) return; // Already open
+
+    this.gates[gateName] = true;
+
+    // Notify subscribers
+    const callbacks = this.gateCallbacks.get(gateName);
+    if (callbacks) {
+      callbacks.forEach((cb) => cb());
+      callbacks.clear();
+    }
+
+    // Notify gate subscribers about the change
+    this.notifyGateChange();
+
+    // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
+    // Do NOT open it here based on other gates
+  }
+
+  private notifyGateChange(): void {
+    const currentGates = this.getGateStatus();
+
+    // Only notify if gates actually changed (shallow compare)
+    if (
+      this.lastGateState &&
+      this.lastGateState.idbReady === currentGates.idbReady &&
+      this.lastGateState.wsConnected === currentGates.wsConnected &&
+      this.lastGateState.wsSynced === currentGates.wsSynced &&
+      this.lastGateState.awarenessReady === currentGates.awarenessReady &&
+      this.lastGateState.firstSnapshot === currentGates.firstSnapshot
+    ) {
+      return;
+    }
+
+    this.lastGateState = { ...currentGates };
+
+    // Debounce notifications by 150ms to prevent flicker
+    if (this.gateDebounceTimer) {
+      clearTimeout(this.gateDebounceTimer);
+    }
+
+    this.gateDebounceTimer = setTimeout(() => {
+      this.gateSubscribers.forEach((cb) => {
+        try {
+          cb(currentGates);
+        } catch (err) {
+          console.error('Error in gate subscriber:', err);
+        }
+      });
+      this.gateDebounceTimer = null;
+    }, 150);
+  }
+
+  private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
+    if (this.gates[gateName]) {
+      return Promise.resolve();
+    }
+
+    return new Promise((resolve) => {
+      if (!this.gateCallbacks.has(gateName)) {
+        this.gateCallbacks.set(gateName, new Set());
+      }
+      this.gateCallbacks.get(gateName)!.add(resolve);
+    });
+  }
+
+  public getGateStatus(): Readonly<typeof this.gates> {
+    return { ...this.gates };
+  }
+
+  public isIndexedDBReady(): boolean {
+    return this.gates.idbReady;
+  }
+
+  // Phase 6C: Room stats support
+  private updateRoomStats(stats: RoomStats | null): void {
+    this.roomStats = stats;
+
+    // Notify subscribers
+    this.statsSubscribers.forEach((cb) => cb(stats));
+
+    // Update read-only state if needed
+    if (stats && stats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
+      // Room is read-only due to size
+      console.warn('[RoomDocManager] Room is read-only due to size limit');
+    }
+  }
+
+  // Public method for external updates (e.g., from TanStack Query)
+  public setRoomStats(stats: RoomStats | null): void {
+    if (this.destroyed) return;
+    this.updateRoomStats(stats);
+  }
 
   // Phase 2.4 Component E: Snapshot Building & Publishing
   private publishSnapshot(newSnapshot: Snapshot): void {
@@ -732,6 +1100,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
+    // Building new snapshot
     // Get current state vector for svKey
     const stateVector = Y.encodeStateVector(this.ydoc);
     // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
@@ -741,12 +1110,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
+    // Current scene determined
     // Building snapshot with currentScene
 
     // Build stroke views using helper (filter by current scene)
-    const strokes = this.getStrokes()
-      .toArray()
-      .filter((s) => s.scene === currentScene)
+    const allStrokes = this.getStrokes().toArray();
+    // Processing strokes
+    const strokes = allStrokes
+      .filter((s) => {
+        const match = s.scene === currentScene;
+        if (!match) {
+          // Filtering stroke by scene
+        }
+        return match;
+      })
       .map((s) => ({
         id: s.id,
         points: s.points, // Include points for renderer to build Float32Array
@@ -814,6 +1191,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
       createdAt: Date.now(),
     };
 
+    // Check if svKey changed to track first doc-derived snapshot
+    if (snapshot.svKey !== this.publishState.lastSvKey) {
+      // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
+      // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
+      if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
+        this.openGate('firstSnapshot');
+        // First doc-derived snapshot published
+      }
+    }
+
     // CRITICAL: Freeze in development to catch mutations
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
       // Deep freeze strokes and texts arrays
@@ -856,16 +1243,21 @@ class RoomDocManagerImpl implements IRoomDocManager {
    * Store current render to cache for boot splash
    * Called after successful canvas render (Phase 3)
    * @param canvas - The rendered canvas element
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async storeRenderCache(canvas: HTMLCanvasElement): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve();
+    }
     if (!canvas || this.destroyed) return;
 
     try {
       // Store with current svKey for validation
       await renderCache.store(this.roomId, this._currentSnapshot.svKey, canvas);
-    } catch (error) {
+    } catch (_error) {
       // Non-critical - just log and continue
-      console.debug('[RoomDocManager] Failed to store render cache:', error);
+      // Failed to store render cache
     }
   }
 
@@ -873,8 +1265,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
    * Show boot splash from cache while Y.Doc loads
    * @param targetElement - Element to display splash in
    * @returns Cleanup function to fade out splash, or null if no cache
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve(null);
+    }
     try {
       const shown = await renderCache.showBootSplash(this.roomId, targetElement);
       if (shown) {
@@ -883,8 +1280,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
         return img?.fadeOut || null;
       }
       return null;
-    } catch (error) {
-      console.debug('[RoomDocManager] Failed to show boot splash:', error);
+    } catch (_error) {
+      // Failed to show boot splash
       return null;
     }
   }
@@ -892,12 +1289,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
   /**
    * Clear render cache for this room
    * Called when room data is cleared/deleted
+   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
    */
   async clearRenderCache(): Promise<void> {
+    if (process.env.NODE_ENV === 'production') {
+      // MVP pivot: splash/render-cache paths are disabled in prod
+      return Promise.resolve();
+    }
     try {
       await renderCache.clear(this.roomId);
-    } catch (error) {
-      console.debug('[RoomDocManager] Failed to clear render cache:', error);
+    } catch (_error) {
+      // Failed to clear render cache
     }
   }
 }
@@ -927,8 +1329,7 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Creating new RoomDocManager for:', roomId);
+      // Creating new RoomDocManager
       // Use provided options, fall back to default options, or use browser defaults
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
@@ -948,8 +1349,7 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Creating new RoomDocManager for:', roomId);
+      // Creating new RoomDocManager
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
@@ -959,8 +1359,7 @@ export class RoomDocManagerRegistry {
     // Increment reference count
     const currentCount = this.refCounts.get(roomId) || 0;
     this.refCounts.set(roomId, currentCount + 1);
-    // eslint-disable-next-line no-console
-    console.log(`[Registry] Acquired reference for ${roomId}, refCount: ${currentCount + 1}`);
+    // Reference acquired
 
     return manager;
   }
@@ -978,15 +1377,13 @@ export class RoomDocManagerRegistry {
     }
 
     const newCount = count - 1;
-    // eslint-disable-next-line no-console
-    console.log(`[Registry] Released reference for ${roomId}, refCount: ${newCount}`);
+    // Reference released
 
     if (newCount <= 0) {
       // Reference count reached 0, destroy and remove
       const manager = this.managers.get(roomId);
       if (manager) {
-        // eslint-disable-next-line no-console
-        console.log(`[Registry] Destroying RoomDocManager for ${roomId} (refCount: 0)`);
+        // Destroying RoomDocManager (refCount: 0)
         manager.destroy();
       }
       this.managers.delete(roomId);
@@ -1019,8 +1416,7 @@ export class RoomDocManagerRegistry {
   remove(roomId: RoomId): void {
     const manager = this.managers.get(roomId);
     if (manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Removing RoomDocManager for:', roomId);
+      // Removing RoomDocManager
       manager.destroy();
       this.managers.delete(roomId);
       this.refCounts.delete(roomId);
@@ -1034,8 +1430,7 @@ export class RoomDocManagerRegistry {
    * If future phases add inter-dependencies, implement topological sort
    */
   destroyAll(): void {
-    // eslint-disable-next-line no-console
-    console.log('[Registry] Destroying all RoomDocManagers');
+    // Destroying all RoomDocManagers
     this.managers.forEach((manager) => manager.destroy());
     this.managers.clear();
     this.refCounts.clear();

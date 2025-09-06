@@ -49,6 +49,7 @@ export default [
         {
           argsIgnorePattern: '^_',
           varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
         },
       ],
       '@typescript-eslint/no-explicit-any': 'warn',
@@ -128,7 +129,7 @@ export default [
       // CRITICAL: These are intentional for testing the RoomDocManager's internal state
       // without exposing implementation details to production code
       '@typescript-eslint/no-explicit-any': 'off',
-      
+
       // Allow unused variables in test helpers - they're for future phases
       // IMPORTANT: Functions like waitForSnapshot, collectSnapshots, collectPresenceUpdates
       // are documented test utilities that will be used in Phases 3-7
@@ -137,13 +138,15 @@ export default [
         {
           argsIgnorePattern: '^_',
           // Combine patterns: underscore prefix OR specific test helper names
-          varsIgnorePattern: '^_|^(waitForSnapshot|collectSnapshots|collectPresenceUpdates|capturedOrigin|cleanup|unsubSnapshot|unsubPresence|unsubStats|vi|RoomStats|RoomDocManagerRegistry|Clock|FrameScheduler|afterEach|clock|frames|id2|data)$',
+          varsIgnorePattern:
+            '^_|^(waitForSnapshot|collectSnapshots|collectPresenceUpdates|capturedOrigin|cleanup|unsubSnapshot|unsubPresence|unsubStats|vi|RoomStats|RoomDocManagerRegistry|Clock|FrameScheduler|afterEach|clock|frames|id2|data)$',
+          caughtErrorsIgnorePattern: '^_',
         },
       ],
-      
+
       // Allow console.log in tests for debugging
       'no-console': 'off',
-      
+
       // Allow direct Yjs imports in tests (needed for test assertions)
       'no-restricted-imports': 'off',
     },

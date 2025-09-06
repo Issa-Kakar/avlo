@@ -24,7 +24,9 @@ export type InvalidationReason =
   | 'transform-change'
   | 'dirty-overflow'
   | 'geometry-change'
-  | 'content-change';
+  | 'content-change'
+  | 'scene-change'
+  | 'snapshot-update';
 
 // Rectangles in different coordinate spaces
 export interface DevicePixelRect {
