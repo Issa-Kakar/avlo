@@ -29,10 +29,9 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:3001',
       '/ws': {
-        target: 'http://localhost:3001',
+        target: 'ws://localhost:3001',
         ws: true,
         changeOrigin: true,
-        rewrite: (path) => path,
       },
     },
   },

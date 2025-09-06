@@ -1,74 +1,157 @@
-Got it—focusing **only** on the Phase 6A code you pasted (svKey, snapshot publishing, and gates), here’s the straight answer:
+Gotcha—let’s pin down exactly what Redis in **your** stack should be doing, and how to make the gzip’d binary path bullet-proof.
 
-## Short answer
+# What our spec says (the target behavior)
 
-There **is** a subtle but decisive bug in what you pasted: you’re updating `publishState.lastSvKey` **inside `buildSnapshot()`** (and opening the `firstSnapshot` gate from there). That change can cause the **publisher’s dedupe check** to think “nothing changed” and **skip the actual publish**, which perfectly explains “strokes/clear do nothing until refresh,” and why disabling the svKey optimization made strokes render again.
+* **Version/role:** Redis **7.x stable** with **AOF enabled** is the authoritative store for the entire Y.Doc, stored as **one gzipped blob per room** (key `room:<id>`). TTL (default **ROOM\_TTL\_DAYS = 14**) is extended **only** on accepted writes. The stored **size\_bytes** is the **compressed** length.&#x20;
+* **On each doc update (server):** Apply the delta to the in-memory doc, then compute a **fresh full snapshot** with `encodeStateAsUpdate(ydoc)`, **gzip (level 4)**, and `SET room:<id> <buf> EX <ttlSeconds>`. Awareness is never persisted.&#x20;
+* **On first client join (server):** `GET` the blob from Redis, **gunzip**, `Y.applyUpdate` to the fresh in-memory Y.Doc for that room.&#x20;
 
-## Why that’s a bug (step-by-step)
+(#) Why these choices are correct
 
-Typical publish loop discipline is:
-
-1. A Y update marks the doc “dirty”.
-2. RAF tick runs → **builds** a `snapshot` (pure computation, no side effects).
-3. Publisher compares `snapshot.svKey` vs **the svKey of the last snapshot it actually published** (`publishState.lastSvKey`).
-4. If different → **publish** to subscribers → **then** update `publishState.lastSvKey = snapshot.svKey`.
-5. If same → skip publish.
-
-Your 6A change moves part of (4) **up into `buildSnapshot()`**:
-
-```ts
-// inside buildSnapshot():
-if (snapshot.svKey !== this.publishState.lastSvKey) {
-  this.publishState.lastSvKey = snapshot.svKey;   // <-- side-effect here
-  if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
-    this.openGate('firstSnapshot');               // <-- gate opens here too
-  }
-}
-```
-
-That’s a problem because:
-
-* The **dedupe comparison** now happens **after** you’ve already mutated `lastSvKey`.
-* So, by the time the publisher checks “did svKey change?”, it may see **`snapshot.svKey === lastSvKey`** and decide **not to publish**—even though it should have.
-* Meanwhile, `firstSnapshot` might get opened **before** any snapshot is actually emitted to subscribers (mis-signaling readiness).
-
-This produces exactly your symptom profile:
-
-* **Strokes/clear appear only after refresh**: the publish during the first session gets swallowed by the premature `lastSvKey` write; after a reload the lifecycle differs just enough that you occasionally see a publish (or you disabled the optimization temporarily).
-* **Disabling the svKey optimization** makes strokes render: by removing the “same-key → skip” check, you sidestep the premature `lastSvKey` update and the publisher finally emits frames.
-
-## Other 6A-specific gotchas in your paste
-
-These aren’t *the* root cause, but they amplify confusion:
-
-* **`firstSnapshot` gate opens inside `buildSnapshot()`**: your comment says it should open when the first **doc-derived snapshot publishes**. Opening it at build-time can fire the gate **even if no publish happens**, so any UI awaiting that gate may proceed under a false “ready” signal while subscribers never received a new snapshot.
-* **IDB gate and RAF**: You correctly say RAF should **not** wait for gates. Good. If, however, any consumer is waiting on `firstSnapshot` to start painting and that gate opens too early (see above), they’ll move on without actually having received a published snapshot.
-
-## What to change (principles, not code)
-
-* Treat `buildSnapshot()` as **pure**: compute and return a snapshot; **do not** mutate `publishState` or gates from here.
-* Perform **all** dedupe and state advancement in the **publish** path:
-
-  * Compare `snapshot.svKey` to `publishState.lastSvKey`.
-  * If different → **emit to subscribers**, then **update `publishState.lastSvKey`**.
-  * Only **after** a successful emit, open `firstSnapshot` (if not yet open and `svKey !== ''`).
-* Keep the RAF loop independent of gates (as you already stated).
-
-## A quick, surgical way to prove it locally
-
-Add four breadcrumb logs (no code here, just what to log and where):
-
-1. **On Y update** → log `onDocUpdate -> dirty=true`.
-2. **At RAF tick before build** → log `raf -> lastSvKey=<value>`.
-3. **Immediately after `buildSnapshot()` returns** → log `built snapshot svKey=<value>`.
-4. **Right where you decide to publish** → log `willPublish=<true/false> (compare snapshot.svKey vs lastSvKey)` and **after** notifying subscribers log `published` and then `advance lastSvKey=<value>`.
-
-If you currently see the sequence:
-`raf (lastSvKey=A)` → `built (svKey=A)` → `willPublish=false`,
-and yet you know the doc changed just now, that’s the smoking gun: `lastSvKey` was already advanced **inside** `buildSnapshot()`.
+* Redis strings are **binary-safe**; you can store raw gzipped bytes directly—no base64 needed. RESP uses length-prefixed bulk strings, so binary content is safe end-to-end. ([Redis][1])
+* **AOF** is the persistence mode we rely on at the infra level (not per-write logic), with TTL handling done via `SET … EX …` on each persist. ([Redis][2])
+* With **node-redis v4**, you should **write a Buffer** and **read a Buffer** using `commandOptions({ returnBuffers: true })`. Avoid round-tripping through UTF-8 strings. (This is the v4 replacement for the old `return_buffers` flag and prevents the classic “bytes ≥ 0x7f get mangled” issue.) ([Stack Overflow][3], [GitHub][4], [npm][5])
+* Gzip level **4** is the specified speed/ratio tradeoff, and Node’s `zlib` exposes it directly; higher levels compress more slowly, lower levels save less memory. ([Node.js][6])
+* Yjs API correctness: use `Y.encodeStateAsUpdate(ydoc)` for the full snapshot and `Y.applyUpdate(ydoc, update)` for hydration. ([docs.yjs.dev][7])
 
 ---
 
-### Bottom line
+# Reference implementation (drop-in safe path)
 
-Based solely on the Phase 6A snippet you pasted: the premature update of `publishState.lastSvKey` (and the `firstSnapshot` gate opening) **inside `buildSnapshot()`** is the most likely cause of your “no render until refresh” behavior. Move the `lastSvKey` advancement and `firstSnapshot` gate opening to the **post-publish** commit path, and the symptoms you described should disappear without touching earlier phases or the rest of your architecture.
+### Save path (WS “doc-update” → Redis)
+
+```ts
+// server/redisAdapter.ts
+import { commandOptions, createClient } from 'redis';
+import * as zlib from 'node:zlib';
+import * as Y from 'yjs';
+
+const redis = createClient({ url: process.env.REDIS_URL! });
+
+export async function persistRoomDoc(roomId: string, ydoc: Y.Doc, ttlSec: number) {
+  // 1) Fresh full snapshot from current in-memory Y.Doc
+  const update = Y.encodeStateAsUpdate(ydoc);            // Uint8Array
+
+  // 2) Gzip(level=4) → Node Buffer
+  const gz = zlib.gzipSync(Buffer.from(update), { level: 4 });
+
+  // 3) Store as binary with TTL (atomic via SET EX)
+  await redis.set(`room:${roomId}`, gz, { EX: ttlSec });
+
+  // Return compressed size for advisory metadata
+  return gz.length;
+}
+```
+
+### Load path (first join → hydrate in-memory Y.Doc)
+
+```ts
+import { commandOptions } from 'redis';
+import * as zlib from 'node:zlib';
+import * as Y from 'yjs';
+
+export async function loadRoomDoc(roomId: string, ydoc: Y.Doc) {
+  const key = `room:${roomId}`;
+  // Read exact bytes back (no UTF-8 decode!)
+  const gz = await redis.get(commandOptions({ returnBuffers: true }), key);
+  if (!gz) return false; // expired/missing
+
+  const update = zlib.gunzipSync(gz as Buffer); // Buffer → Buffer
+  Y.applyUpdate(ydoc, update);                  // reconstruct full doc
+  return true;
+}
+```
+
+> **Key details that avoid the classic traps**
+> • Do **not** `toString()` or `JSON.stringify()` any Buffer.
+> • Do **not** base64 unless you’re forced to (you aren’t).
+> • Use `commandOptions({ returnBuffers: true })` with node-redis v4 when **reading**. (In v4 there is no global `return_buffers`—this is the per-command way.) ([Stack Overflow][3], [GitHub][8])
+
+---
+
+# Fast validation checklist (run these now)
+
+**Redis side**
+
+1. Confirm version & AOF:
+
+```bash
+redis-cli INFO server | grep redis_version
+redis-cli INFO persistence | egrep 'appendonly|aof_current_size'
+```
+
+Expect Redis **7.x**, with `appendonly:1`. ([Redis][2])
+
+2. TTL behavior: always use **one** `SET` with `EX` for atomic “write + TTL”. Don’t do `SET` followed by a separate `EXPIRE`. ([Redis][9])
+
+**Node adapter**
+
+* **GET returns Buffer?** If you see a string, your client call is wrong—add `commandOptions({ returnBuffers: true })`. If you see “random chars” on gunzip, you accidentally decoded as UTF-8 first. ([Stack Overflow][3])
+* **Size accounting:** record **compressed** length (what we actually store). That’s what the UI pill reads.&#x20;
+
+**Gzip path**
+
+* Use Node’s `zlib.gzipSync(buf, { level: 4 })` and `zlib.gunzipSync(buf)`. If decompression throws “incorrect header check”, you likely used **deflate** on write and **gunzip** on read (or double-compressed). ([Node.js][6])
+
+**Yjs semantics**
+
+* On persist: **full** state snapshot (`encodeStateAsUpdate`) *not* the last incremental delta. On load: apply once to empty doc. New clients must hydrate to the **entire** document. ([docs.yjs.dev][7])
+
+---
+
+# Minimal round-trip self-test (proves gzip+Redis+Yjs end-to-end)
+
+```ts
+import * as Y from 'yjs';
+import * as zlib from 'node:zlib';
+import { createClient, commandOptions } from 'redis';
+
+const redis = createClient({ url: process.env.REDIS_URL! });
+
+async function smoke(roomId='test-room') {
+  const a = new Y.Doc();
+  a.getArray('strokes').insert(0, [{ id:'1', points:[0,0, 10,10] }]);
+
+  // Persist
+  const update = Y.encodeStateAsUpdate(a);
+  const gz = zlib.gzipSync(Buffer.from(update), { level: 4 });
+  await redis.set(`room:${roomId}`, gz, { EX: 60 });
+
+  // Hydrate a fresh doc from Redis
+  const gzBack = await redis.get(commandOptions({ returnBuffers: true }), `room:${roomId}`);
+  const updateBack = zlib.gunzipSync(gzBack as Buffer);
+  const b = new Y.Doc();
+  Y.applyUpdate(b, updateBack);
+
+  // Equivalent state? Their state vectors should match length/content.
+  // (Or compare your snapshot svKey for debugging.)
+}
+```
+
+---
+
+# Likely causes of the issues you’re seeing (and the quick fixes)
+
+1. **UTF-8 decoding of binary** (very common): you read a string, `gunzip` fails or returns garbage.
+   **Fix:** read with `returnBuffers: true`. ([Stack Overflow][3])
+
+2. **Wrong compressor pair**: `deflate` on write, `gunzip` on read (or double gzip).
+   **Fix:** always `gzipSync` ↔ `gunzipSync`. ([Node.js][6])
+
+3. **Storing incremental deltas** instead of a full snapshot: new rooms fail to hydrate cleanly.
+   **Fix:** always `encodeStateAsUpdate(ydoc)` after applying the delta to memory; do **not** persist the incoming delta itself.&#x20;
+
+4. **TTL not being extended**: you used `EXPIRE` after `SET` and sometimes missed it under load.
+   **Fix:** **single** `SET … EX <seconds>` per write. ([Redis][9])
+
+5. **AOF off / memory eviction surprises**: Redis restarts drop the key or eviction removes it.
+   **Fix:** verify `appendonly:1` and appropriate eviction policy for your environment (we rely on TTL, not cron deletes). ([Redis][2])
+
+---
+
+## TL;DR
+
+* Your Redis should be **7.x + AOF**, storing **one gzipped full Yjs snapshot per room** with **SET … EX** on each accepted write; **size\_bytes = gz.length**.
+* In Node, **write Buffers**, **read Buffers** (`commandOptions({ returnBuffers: true })`), and use `gzipSync(level:4)`/`gunzipSync`. ([Stack Overflow][3], [npm][5], [Node.js][6])
+
+If anything in your adapter differs from the snippets above, that’s almost certainly the culprit.

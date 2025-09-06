@@ -1,4 +1,4 @@
-import { createClient } from 'redis';
+import { createClient, RESP_TYPES } from 'redis';
 import { ServerEnv } from '../config/env.js';
 import { gzip, gunzip } from 'node:zlib';
 import { promisify } from 'node:util';
@@ -12,6 +12,7 @@ export class RedisAdapter {
 
   constructor(env: ServerEnv) {
     this.env = env;
+    // Create client with type mapping to ensure binary strings return as Buffers
     this.client = createClient({
       url: env.REDIS_URL,
       socket: {
@@ -20,6 +21,8 @@ export class RedisAdapter {
           return Math.min(retries * 100, 3000);
         },
       },
+    }).withTypeMapping({
+      [RESP_TYPES.BLOB_STRING]: Buffer, // Ensure binary strings → Buffer
     });
 
     this.client.on('error', (err) => {
@@ -41,7 +44,7 @@ export class RedisAdapter {
 
   async saveRoom(roomId: string, docState: Uint8Array): Promise<number> {
     // Compress the document
-    const compressed = await gzipAsync(docState, { level: this.env.GZIP_LEVEL });
+    const compressed = await gzipAsync(Buffer.from(docState), { level: this.env.GZIP_LEVEL });
 
     // Save with TTL
     const ttlSeconds = this.env.ROOM_TTL_DAYS * 24 * 60 * 60;
@@ -55,14 +58,14 @@ export class RedisAdapter {
 
   async loadRoom(roomId: string): Promise<Uint8Array | null> {
     const key = `room:${roomId}`;
-    // Use get() - redis client returns string or Buffer depending on data type
-    const compressed = await this.client.get(key);
-
+    
+    // Thanks to type mapping, GET returns Buffer for binary strings
+    const compressed = (await this.client.get(key)) as Buffer | null;
+    
     if (!compressed) return null;
 
-    // Decompress - ensure compressed is a Buffer
-    const buffer = Buffer.isBuffer(compressed) ? compressed : Buffer.from(compressed);
-    const decompressed = await gunzipAsync(buffer);
+    // Decompress the gzipped data
+    const decompressed = await gunzipAsync(compressed);
     return new Uint8Array(decompressed);
   }
 
