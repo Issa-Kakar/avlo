@@ -221,8 +221,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     } else {
       // If IndexedDB is skipped, immediately open the IDB gate
       this.openGate('idbReady');
-      // eslint-disable-next-line no-console
-      console.log('[RoomDocManager] IndexedDB skipped by option');
+      // IndexedDB skipped by option
     }
 
     // Initialize WebSocket provider (Phase 6C)
@@ -301,7 +300,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // AUDIT NOTE: Scene can never be negative by construction (array.length is always >= 0)
     // Empty filtered stroke/text arrays are handled correctly by renderers
     const scene = sceneTicks.length;
-    console.log(`[RoomDocManager] getCurrentScene: scene=${scene}, ticks=[${sceneTicks.toArray().join(', ')}]`);
+    // Scene determined from scene ticks length
     return scene;
   }
 
@@ -705,7 +704,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const rafLoop = () => {
       // Publish if Y.Doc changed OR presence changed
       if (this.publishState.isDirty || this.publishState.presenceDirty) {
-        console.log(`[RoomDocManager] RAF Loop: Publishing snapshot (docDirty=${this.publishState.isDirty}, presenceDirty=${this.publishState.presenceDirty})`);
+        // Publishing snapshot based on dirty flags
         const startTime = this.clock.now();
 
         // Build snapshot
@@ -750,9 +749,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Optional: Track specific events for debugging
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-      this.ydoc.on('afterTransaction', (transaction: Y.Transaction) => {
-        // eslint-disable-next-line no-console
-        console.log('[Snapshot] Transaction origin:', transaction.origin);
+      this.ydoc.on('afterTransaction', (_transaction: Y.Transaction) => {
+        // Transaction origin tracked
       });
     }
   }
@@ -760,7 +758,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
-    console.log(`[RoomDocManager] handleYDocUpdate: Y.Doc updated, origin=${origin}, updateSize=${update.byteLength}`);
+    // Y.Doc updated
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
 
@@ -789,7 +787,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Set up IDB gate with 2s timeout
       const timeoutId = setTimeout(() => {
         this.openGate('idbReady');
-        console.debug('[RoomDocManager] IDB timeout reached, continuing with empty doc');
+        // IDB timeout reached, continuing with empty doc
       }, 2000);
       this.gateTimeouts.set('idbReady', timeoutId);
 
@@ -802,7 +800,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
             this.gateTimeouts.delete('idbReady');
           }
           this.openGate('idbReady');
-          console.debug('[RoomDocManager] IDB synced successfully');
+          // IDB synced successfully
         })
         .catch((err: unknown) => {
           console.warn('[RoomDocManager] IDB sync error (non-critical):', err);
@@ -847,7 +845,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       const wsConnectedTimeout = setTimeout(() => {
         if (!this.gates.wsConnected && this.gates.idbReady) {
           // Proceed offline if IDB ready
-          console.debug('[RoomDocManager] WS connection timeout, proceeding offline');
+          // WS connection timeout, proceeding offline
         }
       }, 5000);
       this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
@@ -856,7 +854,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       const wsSyncedTimeout = setTimeout(() => {
         if (!this.gates.wsSynced) {
           // Keep rendering from IDB, continue trying to sync
-          console.debug('[RoomDocManager] WS sync timeout, continuing with local state');
+          // WS sync timeout, continuing with local state
         }
       }, 10000);
       this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
@@ -871,11 +869,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
             this.gateTimeouts.delete('wsConnected');
           }
           this.openGate('wsConnected');
-          console.debug('[RoomDocManager] WebSocket connected');
+          // WebSocket connected
         } else if (event.status === 'disconnected') {
           this.gates.wsConnected = false;
           this.gates.wsSynced = false;
-          console.debug('[RoomDocManager] WebSocket disconnected');
+          // WebSocket disconnected
         }
       });
 
@@ -889,7 +887,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
             this.gateTimeouts.delete('wsSynced');
           }
           this.openGate('wsSynced');
-          console.debug('[RoomDocManager] WebSocket synced');
+          // WebSocket synced
         } else {
           this.gates.wsSynced = false;
         }
@@ -999,7 +997,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
-    console.log('[RoomDocManager] buildSnapshot: Building new snapshot');
+    // Building new snapshot
     // Get current state vector for svKey
     const stateVector = Y.encodeStateVector(this.ydoc);
     // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
@@ -1009,17 +1007,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
-    console.log(`[RoomDocManager] buildSnapshot: currentScene=${currentScene}`);
+    // Current scene determined
     // Building snapshot with currentScene
 
     // Build stroke views using helper (filter by current scene)
     const allStrokes = this.getStrokes().toArray();
-    console.log(`[RoomDocManager] buildSnapshot: Total strokes=${allStrokes.length}`);
+    // Processing strokes
     const strokes = allStrokes
       .filter((s) => {
         const match = s.scene === currentScene;
         if (!match) {
-          console.log(`[RoomDocManager] Filtering out stroke ${s.id} (scene=${s.scene}, currentScene=${currentScene})`);
+          // Filtering stroke by scene
         }
         return match;
       })
@@ -1096,7 +1094,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
       if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
         this.openGate('firstSnapshot');
-        console.debug('[RoomDocManager] First doc-derived snapshot published');
+        // First doc-derived snapshot published
       }
     }
 
@@ -1154,9 +1152,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     try {
       // Store with current svKey for validation
       await renderCache.store(this.roomId, this._currentSnapshot.svKey, canvas);
-    } catch (error) {
+    } catch (_error) {
       // Non-critical - just log and continue
-      console.debug('[RoomDocManager] Failed to store render cache:', error);
+      // Failed to store render cache
     }
   }
 
@@ -1179,8 +1177,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
         return img?.fadeOut || null;
       }
       return null;
-    } catch (error) {
-      console.debug('[RoomDocManager] Failed to show boot splash:', error);
+    } catch (_error) {
+      // Failed to show boot splash
       return null;
     }
   }
@@ -1197,8 +1195,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
     try {
       await renderCache.clear(this.roomId);
-    } catch (error) {
-      console.debug('[RoomDocManager] Failed to clear render cache:', error);
+    } catch (_error) {
+      // Failed to clear render cache
     }
   }
 }
@@ -1228,8 +1226,7 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Creating new RoomDocManager for:', roomId);
+      // Creating new RoomDocManager
       // Use provided options, fall back to default options, or use browser defaults
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
@@ -1249,8 +1246,7 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Creating new RoomDocManager for:', roomId);
+      // Creating new RoomDocManager
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
@@ -1260,8 +1256,7 @@ export class RoomDocManagerRegistry {
     // Increment reference count
     const currentCount = this.refCounts.get(roomId) || 0;
     this.refCounts.set(roomId, currentCount + 1);
-    // eslint-disable-next-line no-console
-    console.log(`[Registry] Acquired reference for ${roomId}, refCount: ${currentCount + 1}`);
+    // Reference acquired
 
     return manager;
   }
@@ -1279,15 +1274,13 @@ export class RoomDocManagerRegistry {
     }
 
     const newCount = count - 1;
-    // eslint-disable-next-line no-console
-    console.log(`[Registry] Released reference for ${roomId}, refCount: ${newCount}`);
+    // Reference released
 
     if (newCount <= 0) {
       // Reference count reached 0, destroy and remove
       const manager = this.managers.get(roomId);
       if (manager) {
-        // eslint-disable-next-line no-console
-        console.log(`[Registry] Destroying RoomDocManager for ${roomId} (refCount: 0)`);
+        // Destroying RoomDocManager (refCount: 0)
         manager.destroy();
       }
       this.managers.delete(roomId);
@@ -1320,8 +1313,7 @@ export class RoomDocManagerRegistry {
   remove(roomId: RoomId): void {
     const manager = this.managers.get(roomId);
     if (manager) {
-      // eslint-disable-next-line no-console
-      console.log('[Registry] Removing RoomDocManager for:', roomId);
+      // Removing RoomDocManager
       manager.destroy();
       this.managers.delete(roomId);
       this.refCounts.delete(roomId);
@@ -1335,8 +1327,7 @@ export class RoomDocManagerRegistry {
    * If future phases add inter-dependencies, implement topological sort
    */
   destroyAll(): void {
-    // eslint-disable-next-line no-console
-    console.log('[Registry] Destroying all RoomDocManagers');
+    // Destroying all RoomDocManagers
     this.managers.forEach((manager) => manager.destroy());
     this.managers.clear();
     this.refCounts.clear();

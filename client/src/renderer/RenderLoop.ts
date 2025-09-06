@@ -256,7 +256,7 @@ export class RenderLoop {
 
     // Check for scene change FIRST - this triggers full clear
     if (snapshot.scene !== this.lastRenderedScene) {
-      console.log(`[RenderLoop] Scene changed from ${this.lastRenderedScene} to ${snapshot.scene} - forcing full clear`);
+      // Scene changed - forcing full clear
       this.dirtyTracker.invalidateAll('scene-change');
       this.lastRenderedScene = snapshot.scene;
     }

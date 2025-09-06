@@ -20,7 +20,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
   const { viewState, setScale, setPan, resetView } = useViewTransform();
 
   const handleClearCanvas = () => {
-    console.log('[App] Clear button clicked - incrementing scene');
+    // Clear button clicked - incrementing scene
     // Increment scene by pushing a new timestamp to scene_ticks
     // NOTE: Using 'any' here for dev test only - production code should use proper helpers
     // TODO: In Phase 10, we'll have a proper clearBoard() method on RoomDocManager
@@ -30,9 +30,9 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
       const sceneTicks = meta.get('scene_ticks') as any;
       if (sceneTicks) {
         const timestamp = Date.now();
-        console.log(`[App] Pushing scene tick: ${timestamp}, current length: ${sceneTicks.length}`);
+        // Pushing scene tick
         sceneTicks.push([timestamp]); // Y.Array.push expects an array of items
-        console.log(`[App] Scene ticks after push: ${sceneTicks.length}`);
+        // Scene ticks updated
       }
     });
   };

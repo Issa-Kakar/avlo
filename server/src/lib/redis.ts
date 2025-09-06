@@ -30,7 +30,7 @@ export class RedisAdapter {
     });
 
     this.client.on('connect', () => {
-      console.debug('[Redis] Connected successfully');
+      // Redis connected successfully
     });
   }
 
@@ -58,10 +58,10 @@ export class RedisAdapter {
 
   async loadRoom(roomId: string): Promise<Uint8Array | null> {
     const key = `room:${roomId}`;
-    
+
     // Thanks to type mapping, GET returns Buffer for binary strings
     const compressed = (await this.client.get(key)) as Buffer | null;
-    
+
     if (!compressed) return null;
 
     // Decompress the gzipped data

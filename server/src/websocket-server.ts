@@ -143,5 +143,5 @@ export function setupWebSocketServer(server: HTTPServer, env: ServerEnv) {
     });
   });
 
-  console.debug('[WebSocket] Server initialized');
+  // WebSocket server initialized
 }

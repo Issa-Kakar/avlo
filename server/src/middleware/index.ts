@@ -44,7 +44,7 @@ export function setupMiddleware(app: Application, env: ServerEnv) {
   // Request logging in development
   if (process.env.NODE_ENV === 'development') {
     app.use((req, res, next) => {
-      console.debug(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+      // Debug: ${req.method} ${req.path}
       next();
     });
   }
