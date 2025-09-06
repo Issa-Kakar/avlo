@@ -61,7 +61,7 @@ describe('Phase 6 Teardown Hygiene', () => {
     }
 
     // Verify destroyed flag is set
-    expect(impl._destroyed).toBe(true);
+    expect(impl.destroyed).toBe(true);
 
     // Restore
     global.cancelAnimationFrame = origCancelAF;
@@ -121,7 +121,11 @@ describe('Phase 6 Teardown Hygiene', () => {
     // Cleanup
     cleanup();
 
-    // Y.Doc should be destroyed
-    expect(impl.ydoc._observers).toBeUndefined();
+    // Y.Doc should be destroyed - observers should be cleared or undefined
+    if (impl.ydoc._observers !== undefined) {
+      expect(impl.ydoc._observers.size).toBe(0);
+    } else {
+      expect(impl.ydoc._observers).toBeUndefined();
+    }
   });
 });

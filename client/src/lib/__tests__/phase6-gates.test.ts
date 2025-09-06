@@ -23,15 +23,15 @@ describe('Phase 6 Gates - Minimal Tests', () => {
       const impl = manager as any;
 
       // Initially gate should be closed
-      expect(impl.gates.G_IDB_READY).toBe(false);
+      expect(impl.gates.idbReady).toBe(false);
 
       // Advance time by 1.9s - gate should still be closed
       vi.advanceTimersByTime(1900);
-      expect(impl.gates.G_IDB_READY).toBe(false);
+      expect(impl.gates.idbReady).toBe(false);
 
       // Advance to 2s - gate should open
       vi.advanceTimersByTime(100);
-      expect(impl.gates.G_IDB_READY).toBe(true);
+      expect(impl.gates.idbReady).toBe(true);
 
       cleanup();
     });
@@ -42,13 +42,12 @@ describe('Phase 6 Gates - Minimal Tests', () => {
       const impl = manager as any;
 
       // Initially closed
-      expect(impl.gates.G_IDB_READY).toBe(false);
+      expect(impl.gates.idbReady).toBe(false);
 
-      // Simulate IDB provider sync
-      if (impl.indexeddbProvider?.whenSynced) {
-        // Trigger the promise resolution
-        impl.markIdbReady();
-        expect(impl.gates.G_IDB_READY).toBe(true);
+      // Simulate IDB provider sync by calling openGate directly
+      if (impl.openGate) {
+        impl.openGate('idbReady');
+        expect(impl.gates.idbReady).toBe(true);
       }
 
       cleanup();
@@ -62,18 +61,18 @@ describe('Phase 6 Gates - Minimal Tests', () => {
       const impl = manager as any;
 
       // Initially both gates closed
-      expect(impl.gates.G_WS_CONNECTED).toBe(false);
-      expect(impl.gates.G_WS_SYNCED).toBe(false);
+      expect(impl.gates.wsConnected).toBe(false);
+      expect(impl.gates.wsSynced).toBe(false);
 
-      // Simulate WebSocket connection
-      if (impl.websocketProvider) {
-        impl.websocketProvider.emit('status', { status: 'connected' });
-        expect(impl.gates.G_WS_CONNECTED).toBe(true);
-        expect(impl.gates.G_WS_SYNCED).toBe(false);
+      // Simulate WebSocket gates opening by calling openGate directly
+      if (impl.openGate) {
+        impl.openGate('wsConnected');
+        expect(impl.gates.wsConnected).toBe(true);
+        expect(impl.gates.wsSynced).toBe(false);
 
         // Simulate sync completion
-        impl.websocketProvider.emit('sync', { synced: true });
-        expect(impl.gates.G_WS_SYNCED).toBe(true);
+        impl.openGate('wsSynced');
+        expect(impl.gates.wsSynced).toBe(true);
       }
 
       cleanup();

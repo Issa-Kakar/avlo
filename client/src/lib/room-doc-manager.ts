@@ -466,6 +466,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Subscription methods
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.snapshotSubscribers.add(cb);
     // Immediately call with current snapshot
     cb(this._currentSnapshot);
@@ -476,6 +481,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   subscribePresence(cb: (p: PresenceView) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.presenceSubscribers.add(cb);
     // Immediately call with current presence
     cb(this._currentSnapshot.presence);
@@ -486,6 +496,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
     this.statsSubscribers.add(cb);
     // Immediately call with current stats if available
     const stats = this._currentSnapshot.meta.bytes
@@ -500,6 +515,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
+    // Check if destroyed first
+    if (this.destroyed) return;
+
     // Minimal guards (same as spec)
 
     // 1. Check room read-only (≥15MB)
@@ -600,6 +618,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Extend TTL with minimal write
   extendTTL(): void {
+    // Check if destroyed first
+    if (this.destroyed) return;
+
     // Perform a minimal write to extend TTL
     this.mutate((_ydoc) => {
       const meta = this.getMeta();
@@ -620,6 +641,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Lifecycle
   destroy(): void {
+    // Check if already destroyed (makes it safe to call multiple times)
+    if (this.destroyed) return;
+
     // Set destroyed flag
     this.destroyed = true;
 

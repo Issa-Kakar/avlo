@@ -5,8 +5,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as Y from 'yjs';
 import { gzipSync, gunzipSync } from 'zlib';
-import { loadDocFromRedis, saveDocToRedis } from '../lib/redis';
-import { createMockRedis } from './test-utils';
+import { loadDocFromRedis, saveDocToRedis } from '../lib/redis.js';
+import { createMockRedis } from './test-utils.js';
 
 describe('Phase 6 Redis Persistence - Minimal Tests', () => {
   let mockRedis: ReturnType<typeof createMockRedis>;

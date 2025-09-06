@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as Y from 'yjs';
 // Note: We're testing the persistence logic, not the actual WebSocket server
 // The actual setupWSConnection is from @y/websocket-server/utils
-import { createMockRedis } from './test-utils';
+import { createMockRedis } from './test-utils.js';
 
 describe('Phase 6 WebSocket Persistence Integration', () => {
   let mockRedis: ReturnType<typeof createMockRedis>;
@@ -34,7 +34,7 @@ describe('Phase 6 WebSocket Persistence Integration', () => {
     const serverDoc = new Y.Doc();
 
     // Import the persistence functions directly
-    const { saveDocToRedis } = await import('../lib/redis');
+    const { saveDocToRedis } = await import('../lib/redis.js');
 
     // Add data to the server doc
     const root = serverDoc.getMap('root');
@@ -90,7 +90,7 @@ describe('Phase 6 WebSocket Persistence Integration', () => {
     root.set('existingData', 'test-value');
 
     // Import the Redis functions
-    const { saveDocToRedis, loadDocFromRedis } = await import('../lib/redis');
+    const { saveDocToRedis, loadDocFromRedis } = await import('../lib/redis.js');
 
     // Save the doc first
     await saveDocToRedis(mockRedis.client, roomId, existingDoc, 14);
@@ -118,7 +118,7 @@ describe('Phase 6 WebSocket Persistence Integration', () => {
     const roomId = 'ttl-test';
 
     // Import the Redis functions
-    const { saveDocToRedis } = await import('../lib/redis');
+    const { saveDocToRedis } = await import('../lib/redis.js');
 
     // Create and save a doc
     const doc = new Y.Doc();
