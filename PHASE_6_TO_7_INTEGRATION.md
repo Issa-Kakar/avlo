@@ -1,5 +1,48 @@
 # Phase 6 to 7 Integration Instructions
 
+## 🚨 POST-IMPLEMENTATION FIX (January 2025)
+
+### Infinite Re-render Loop Resolution
+
+**Problem Encountered**: After initial implementation, navigating to the room page caused a "Maximum update depth exceeded" error due to an infinite re-render loop.
+
+**Root Causes**:
+
+1. **Immediate callback invocation**: The `subscribeGates` method was calling the callback synchronously during subscription, triggering state updates during React's mount phase
+2. **Referential instability**: `getGateStatus()` was returning a new object on each call, causing `useSyncExternalStore` to detect changes even when the actual values hadn't changed
+
+**Solution Implemented**: Option C - Stable Primitive Snapshot
+
+Modified `useConnectionGates` hook to:
+
+- Use `queueMicrotask` to defer callback execution, preventing synchronous state updates
+- Return a stable string primitive (`"0|1|0|1|1"`) instead of an object
+- Encode/decode between string and object representations
+
+```typescript
+// Actual implementation in client/src/hooks/use-connection-gates.ts
+type GateSnapshot = `${0 | 1}|${0 | 1}|${0 | 1}|${0 | 1}|${0 | 1}`;
+
+function encodeGates(gates: GateStatus): GateSnapshot {
+  return `${+gates.idbReady}|${+gates.wsConnected}|${+gates.wsSynced}|${+gates.awarenessReady}|${+gates.firstSnapshot}`;
+}
+
+function decodeGates(snapshot: GateSnapshot): GateStatus {
+  const [idb, wc, ws, aw, fs] = snapshot.split('|').map((n) => n === '1');
+  return { idbReady: idb, wsConnected: wc, wsSynced: ws, awarenessReady: aw, firstSnapshot: fs };
+}
+
+// In the hook:
+const subscribe = (onStoreChange: () => void) => {
+  return room.subscribeGates(() => queueMicrotask(onStoreChange));
+};
+const getSnapshot = () => encodeGates(room.getGateStatus());
+```
+
+**Why This Approach**: For a simple online/offline badge in a small project (~15 concurrent users max), this solution is appropriately simple, avoiding over-engineering while solving the core issue.
+
+---
+
 ## Executive Summary
 
 We are transitioning from a working test harness (App.tsx) to a proper Room page structure while preserving all existing functionality. Phase 6 is complete with fully functional drawing, clear board, real-time sync, and offline capabilities. This integration creates minimal UI shells for your partner while you work on Phase 7 (Awareness).
@@ -85,7 +128,8 @@ private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 public subscribeGates(cb: (gates: Readonly<GateStatus>) => void): Unsub {
   this.gateSubscribers.add(cb);
-  cb(this.getGateStatus());
+  // IMPORTANT: Do NOT call cb() immediately here to avoid infinite loops with useSyncExternalStore
+  // The hook will call getGateStatus() to get the initial state
 
   return () => {
     this.gateSubscribers.delete(cb);
@@ -302,14 +346,19 @@ const deviceUI: DeviceUIState = useMemo(
 
 #### 5.1 Create useConnectionGates Hook
 
+**⚠️ IMPORTANT**: The simplified version below will cause infinite re-render loops. See the "POST-IMPLEMENTATION FIX" section at the top of this document for the actual working implementation using stable primitive snapshots.
+
 ```typescript
 // client/src/hooks/use-connection-gates.ts
+// WARNING: This simplified version has issues - see actual implementation at top of document
 import { useSyncExternalStore } from 'react';
 import { useRoomDoc } from './use-room-doc';
 
 export function useConnectionGates(roomId: string) {
   const room = useRoomDoc(roomId);
 
+  // ACTUAL IMPLEMENTATION: Must use queueMicrotask and stable primitives
+  // See POST-IMPLEMENTATION FIX section for working code
   const subscribe = (onStoreChange: () => void) => room.subscribeGates(() => onStoreChange());
 
   const getSnapshot = () => room.getGateStatus();
