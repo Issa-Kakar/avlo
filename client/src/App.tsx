@@ -8,11 +8,13 @@
  * for this dev-only component. Production code should never do this.
  */
 
+import { Routes, Route } from 'react-router-dom';
 import { RoomDocRegistryProvider } from './lib/room-doc-registry-context';
 import { ViewTransformProvider, useViewTransform } from './canvas/ViewTransformContext';
 import { Canvas } from './canvas/Canvas';
 import { useRoomDoc } from './hooks/use-room-doc';
 import { useRoomSnapshot } from './hooks/use-room-snapshot';
+import RoomPage from './pages/RoomPage';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);
@@ -140,7 +142,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
   );
 }
 
-export default function App() {
+function TestHarness() {
   // Fixed room ID for testing - in production this would come from URL
   const roomId = 'test-room-001';
 
@@ -160,5 +162,18 @@ export default function App() {
         <CanvasWithControls roomId={roomId} />
       </ViewTransformProvider>
     </RoomDocRegistryProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <Routes>
+      {/* Test harness at root and /test */}
+      <Route path="/" element={<TestHarness />} />
+      <Route path="/test" element={<TestHarness />} />
+
+      {/* Room page for actual rooms */}
+      <Route path="/room/:roomId" element={<RoomPage />} />
+    </Routes>
   );
 }

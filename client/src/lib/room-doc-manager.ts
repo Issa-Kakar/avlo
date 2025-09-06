@@ -79,6 +79,19 @@ export interface IRoomDocManager {
   }>;
   isIndexedDBReady(): boolean;
 
+  // Phase 7: Event-driven gate subscription
+  subscribeGates(
+    cb: (
+      gates: Readonly<{
+        idbReady: boolean;
+        wsConnected: boolean;
+        wsSynced: boolean;
+        awarenessReady: boolean;
+        firstSnapshot: boolean;
+      }>,
+    ) => void,
+  ): Unsub;
+
   // Phase 6C: Room stats support
   /**
    * Update room stats from external sources (e.g., metadata polling)
@@ -118,6 +131,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
   private statsSubscribers = new Set<(s: RoomStats | null) => void>();
+  private gateSubscribers = new Set<(gates: Readonly<typeof this.gates>) => void>();
 
   // Throttled presence updates (30Hz = ~33ms)
   private updatePresenceThrottled: (() => void) | null = null;
@@ -166,6 +180,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
   };
   private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private gateCallbacks: Map<string, Set<() => void>> = new Map();
+
+  // Gate subscription state for debouncing
+  private lastGateState: typeof this.gates | null = null;
+  private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
@@ -513,6 +531,21 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
+  subscribeGates(cb: (gates: Readonly<typeof this.gates>) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
+    this.gateSubscribers.add(cb);
+    // Immediately call with current gate status
+    cb(this.getGateStatus());
+
+    return () => {
+      this.gateSubscribers.delete(cb);
+    };
+  }
+
   // Simple mutate method with minimal guards
   mutate(fn: (ydoc: Y.Doc) => void): void {
     // Check if destroyed first
@@ -657,6 +690,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.gateTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.gateTimeouts.clear();
 
+    // Clear gate debounce timer
+    if (this.gateDebounceTimer) {
+      clearTimeout(this.gateDebounceTimer);
+      this.gateDebounceTimer = null;
+    }
+
     // Cleanup providers (Phase 6A additions)
     if (this.indexeddbProvider) {
       this.indexeddbProvider.destroy();
@@ -679,6 +718,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
     this.statsSubscribers.clear();
+    this.gateSubscribers.clear();
 
     // Clear throttled function and any pending timeouts
     if (this.updatePresenceThrottledCleanup) {
@@ -897,6 +937,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         } else if (event.status === 'disconnected') {
           this.gates.wsConnected = false;
           this.gates.wsSynced = false;
+          this.notifyGateChange();
           // WebSocket disconnected
         }
       });
@@ -914,6 +955,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           // WebSocket synced
         } else {
           this.gates.wsSynced = false;
+          this.notifyGateChange();
         }
       });
 
@@ -956,8 +998,45 @@ class RoomDocManagerImpl implements IRoomDocManager {
       callbacks.clear();
     }
 
+    // Notify gate subscribers about the change
+    this.notifyGateChange();
+
     // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
     // Do NOT open it here based on other gates
+  }
+
+  private notifyGateChange(): void {
+    const currentGates = this.getGateStatus();
+
+    // Only notify if gates actually changed (shallow compare)
+    if (
+      this.lastGateState &&
+      this.lastGateState.idbReady === currentGates.idbReady &&
+      this.lastGateState.wsConnected === currentGates.wsConnected &&
+      this.lastGateState.wsSynced === currentGates.wsSynced &&
+      this.lastGateState.awarenessReady === currentGates.awarenessReady &&
+      this.lastGateState.firstSnapshot === currentGates.firstSnapshot
+    ) {
+      return;
+    }
+
+    this.lastGateState = { ...currentGates };
+
+    // Debounce notifications by 150ms to prevent flicker
+    if (this.gateDebounceTimer) {
+      clearTimeout(this.gateDebounceTimer);
+    }
+
+    this.gateDebounceTimer = setTimeout(() => {
+      this.gateSubscribers.forEach((cb) => {
+        try {
+          cb(currentGates);
+        } catch (err) {
+          console.error('Error in gate subscriber:', err);
+        }
+      });
+      this.gateDebounceTimer = null;
+    }, 150);
   }
 
   private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {

@@ -10,6 +10,8 @@ import type { ViewportInfo } from '../renderer/types';
 import { clearStrokeCache } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import type { DeviceUIState } from '@/lib/tools/types';
+import { toolbarToDeviceUI } from '@/lib/tools/types';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -54,18 +56,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     return id;
   });
 
-  // Default device UI (Phase 5 - no Zustand yet)
-  // IMPORTANT: This is intentionally static for Phase 5
-  // When Zustand is added in Phase 7, this will need to be in effect deps
+  // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
+  // Phase 6-7 Integration: Dynamic tool state from Zustand
+  const toolbar = useDeviceUIStore((state) => state.toolbar);
   const deviceUI: DeviceUIState = useMemo(
-    () => ({
-      tool: 'pen',
-      color: '#000000',
-      size: 4,
-      opacity: 1,
-    }),
-    [],
-  ); // Memoized to prevent recreation
+    () => toolbarToDeviceUI(toolbar),
+    // Re-create deviceUI when any toolbar property changes
+    [toolbar.tool, toolbar.color, toolbar.size, toolbar.opacity],
+  );
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref

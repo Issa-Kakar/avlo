@@ -1,5 +1,5 @@
 import React from 'react';
-import { useRoomDoc } from '../hooks/use-room-doc';
+import { useConnectionGates } from '../hooks/use-connection-gates';
 import { useRoomStats } from '../hooks/use-room-stats';
 import { ROOM_CONFIG } from '@avlo/shared';
 
@@ -8,19 +8,15 @@ interface ConnectionStatusProps {
 }
 
 export function ConnectionStatus({ roomId }: ConnectionStatusProps) {
-  const room = useRoomDoc(roomId);
-  const gates = room.getGateStatus();
+  const { isOnline } = useConnectionGates(roomId);
   const stats = useRoomStats(roomId);
 
   let status = 'Offline';
   let className = 'text-gray-500';
 
-  if (gates.wsSynced) {
+  if (isOnline) {
     status = 'Online';
     className = 'text-green-500';
-  } else if (gates.wsConnected) {
-    status = 'Syncing...';
-    className = 'text-yellow-500';
   }
 
   // Check if room is read-only
