@@ -78,6 +78,10 @@ export interface RoomDocManager {
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
   /** Advisory size/cap readings (bytes = last persisted compressed size). */
   subscribeRoomStats(cb: (s: { bytes: number; cap: number } | null) => void): Unsub;
+  /** Subscribe to connection gates with stable primitive snapshots (Phase 6D). */
+  subscribeGates(cb: (gates: Readonly<GateStatus>) => void): Unsub;
+  /** Get current gate status. */
+  getGateStatus(): Readonly<GateStatus>;
   /** Single entry to mutate authoritative state. Runs in one yjs.transact. */
   mutate(fn: (ydoc: Y.Doc) => void): void;
   /** Force a TTL extension (tiny no-op write); client-rate-limited. */
@@ -827,6 +831,33 @@ This pattern ensures:
 - Proper Y.Doc cleanup (prevents memory leaks)
 - Test-specific timing control (TestClock/TestFrameScheduler)
 - Consistent test behavior across phases
+
+* * * * *
+
+Appendix H: Phase 6D - UI Integration Patterns
+==============================================
+
+**Stable Primitive Snapshots for Gate Subscription:**
+
+To prevent infinite re-render loops with `useSyncExternalStore`, the `subscribeGates` method uses encoded string primitives:
+
+```typescript
+// Encode gates as stable string primitive: "0|1|0|1|1"
+type GateSnapshot = `${0|1}|${0|1}|${0|1}|${0|1}|${0|1}`;
+
+// Use queueMicrotask to defer callback execution
+const subscribe = (onStoreChange: () => void) => {
+  return room.subscribeGates(() => queueMicrotask(onStoreChange));
+};  // 150ms debounce prevents UI flicker during rapid gate changes
+```
+
+**Routing Structure (Post-Phase 6):**
+
+- `/` → Test harness with hardcoded 'test-room-001'
+- `/room/:roomId` → Dynamic room pages with full UI
+- `/test` → Alternative test harness path
+
+```
 
 * * * * *
 

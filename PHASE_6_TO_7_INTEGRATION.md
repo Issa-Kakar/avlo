@@ -578,30 +578,13 @@ Only pen and highlighter should be clickable. Others show "Coming soon" tooltip.
 8. **Export UI**: Export button design (gated behind G_FIRST_SNAPSHOT)
 9. **Minimap UI**: Minimap container (gated behind G_FIRST_SNAPSHOT)
 
-### What Your Partner Should NOT Touch
+### What should be left alone
 
 1. **RoomDocManager**: Core CRDT logic
 2. **DrawingTool**: Pointer event handling
 3. **Y.Doc mutations**: Any direct Yjs operations
 4. **Provider setup**: WebSocket/IndexedDB initialization
 5. **Gate logic**: Connection state management
-
-## Success Criteria
-
-The integration is complete when:
-
-1. ✅ Room page exists at `/room/:roomId` with working drawing
-2. ✅ Toolbar controls pen/highlighter tool, size, and color
-3. ✅ Connection status shows online/offline state (event-driven, no "Syncing")
-4. ✅ Clear board works without cooldown
-5. ✅ Test harness remains functional at `/` or `/test`
-6. ✅ Zustand store persists toolbar state
-7. ✅ Partner can work on UI without breaking functionality
-8. ✅ Mobile devices show view-only banner
-9. ✅ Room managers properly acquired/released through registry
-10. ✅ LastSeenScene tracked per room
-11. ✅ Safety features working (destroyed guards already exist, error boundary added)
-12. ✅ No memory leaks or StrictMode issues
 
 ## Notes for Phase 7 Integration
 
@@ -635,3 +618,47 @@ While we're not implementing feature flags now, here's how they could be added l
 5. **Scene Management**: Clear board appends to `meta.scene_ticks[]`, currentScene = length
 6. **Mobile Detection**: Uses both UserAgent and maxTouchPoints for reliability
 7. **Connection States**: Only Online/Offline (this is offline-first, no "Syncing" state)
+
+How to Access Rooms via Router
+
+Now that the routing is set up, here's how you can access different parts of your application on
+localhost:3000:
+
+Available Routes:
+
+1. Test Harness (what you've been using):
+
+
+    - http://localhost:3000/ - Root path shows the test harness
+    - http://localhost:3000/test - Alternative path for the test harness
+    - Uses the hardcoded room ID: test-room-001
+
+2. Room Pages (new functionality):
+
+
+    - http://localhost:3000/room/[roomId] - Access any room by its ID
+    - Examples:
+        - http://localhost:3000/room/my-drawing-room
+      - http://localhost:3000/room/collaboration-123
+      - http://localhost:3000/room/test-room-001 (same room as test harness)
+
+Key Features of the Room Page:
+
+- Full drawing functionality with pen/highlighter tools
+- Toolbar with tool selection, size slider (1-64px), and color picker
+- Connection status indicator (Online/Offline)
+- Clear Board button with lastSeenScene tracking
+- Mobile view-only banner for mobile devices
+- Zoom/pan controls integrated into the UI
+- Dynamic room ID from the URL
+
+What's Different from Test Harness:
+
+- Room page uses dynamic room IDs from the URL
+- Integrated Zustand store for persistent toolbar state
+- Professional UI layout with proper component organization
+- Event-driven connection status (no polling)
+- Ready for Phase 7 awareness features
+
+You can now open multiple browser tabs with different room IDs to test real-time collaboration between
+rooms!

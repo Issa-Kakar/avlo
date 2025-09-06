@@ -24,9 +24,12 @@
   - 6A: y-indexeddb provider integration, boot gates (G_IDB_READY), local persistence
   - 6B: Server setup with y-websocket, Redis persistence, PostgreSQL/Prisma metadata
   - 6C: Client WebSocket provider, TanStack Query for metadata, Zod validation
+  - 6D: UI Integration - Routing, Toolbar, Connection status, Zustand integration
 
 ## Current Status
-**READY FOR PHASE 7: Awareness & Presence System**
+**IN PROGRESS: Phase 7 - Awareness & Presence System**
+- Infrastructure ready: subscribeGates with stable primitives, room routing, toolbar UI
+- Next: Cursor trails, user list, presence indicators
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -91,6 +94,14 @@ interface Snapshot {
   view: ViewTransform;  // world↔canvas transforms
   meta: { bytes?: number; cap: number; readOnly: boolean };
 }
+
+interface GateStatus {
+  idbReady: boolean;
+  wsConnected: boolean;
+  wsSynced: boolean;
+  awarenessReady: boolean;
+  firstSnapshot: boolean;
+}
 ```
 
 ## Architecture
@@ -114,19 +125,19 @@ persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI b
 ```
 **Coordinate Spaces**: World (Y.Doc data, stable across zoom/screens) → Canvas (CSS pixels, view transform) → Device (physical pixels, DPR only). Apply DPR once at canvas setup, not in transforms.
 
-### Device-Local UI State
-**Zustand Store** (`stores/device-ui-store.ts`) - Full implementation exists but not yet integrated
-**Phase 5 Simplified** (`lib/tools/types.ts`) - DrawingTool uses minimal interface:
+### Device-Local UI State (Integrated)
+**Zustand Store** (`stores/device-ui-store.ts`) - Fully integrated via guarded adapter
+**Canvas Integration** (`lib/tools/types.ts`) - toolbarToDeviceUI adapter:
 ```typescript
-// Phase 5 simplified interface (DrawingTool)
-interface DeviceUIState {
-  tool: 'pen' | 'highlighter';
-  color: string;
-  size: number;
-  opacity: number;
+// Guarded adapter ensures safe tool state
+export function toolbarToDeviceUI(toolbar: ToolbarState): DeviceUIState {
+  // Defaults unknown tools to 'pen', clamps size 1-64, validates color
+  return { tool, color, size, opacity };
 }
-// Full Zustand store exists with toolbar, lastSeenSceneByRoom, etc. (future integration)
 ```
+- Persisted in localStorage with versioning
+- Tracks toolbar state, lastSeenSceneByRoom, collaboration mode
+- Tool state frozen at pointer-down for consistency
 
 ### Core Components
 
@@ -138,6 +149,8 @@ interface RoomDocManager {
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;  // Needs throttling
   subscribeRoomStats(cb: (s: RoomStats | null) => void): Unsub;  // Needs persist_ack
+  subscribeGates(cb: (gates: GateStatus) => void): Unsub;  // 150ms debounced
+  getGateStatus(): Readonly<GateStatus>;  // For useSyncExternalStore
   mutate(fn: (ydoc: Y.Doc) => void): void;  // Single yjs.transact wrapper
   extendTTL(): void;
   destroy(): void;
@@ -164,14 +177,16 @@ avlo/
 │   ├── src/
 │   │   ├── canvas/           # Canvas components & transforms
 │   │   ├── components/       # UI components
-│   │   ├── hooks/            # use-room-snapshot, use-room-metadata, use-room-stats, etc.
+│   │   │   └── Toolbar/      # Tool selection, size/color controls
+│   │   ├── hooks/            # use-room-*, use-connection-gates
 │   │   ├── lib/              # Core: room-doc-manager, registry, api-client, tools/
-│   │   ├── renderer/         # RenderLoop, DirtyRectTracker, layers/, path utilities
-│   │   ├── stores/           # Zustand device-ui-store (future integration)
-│   │   └── types/            # Client-specific types
+│   │   ├── pages/            # RoomPage component
+│   │   ├── renderer/         # RenderLoop, DirtyRectTracker, layers/, stroke-builder/
+│   │   ├── stores/           # Zustand device-ui-store (integrated)
+│   │   └── types/            # Client-specific types (removed, using shared)
 ├── server/                    # Node.js backend
 │   ├── prisma/               # Database schema & migrations
-│   ├── public/               # Static assets
+│   ├── public/               # Static assets (served from Vite build)
 │   └── src/
 │       ├── lib/              # env, redis, prisma clients
 │       ├── middleware/       # CORS, security
@@ -293,11 +308,17 @@ Tests default to single-threaded (1.3GB max) due to Y.Doc memory usage. Use `npm
 - **DrawingTool**: RAF-coalesced pointer events, Douglas-Peucker simplification in world units
 - **Preview**: Rendered at 0.35 opacity, invalidates old and new bounds on move
 - **Phase 6 Additions**:
-- **y-indexeddb**: Room-scoped persistence in `avlo.v1.rooms.<roomId>`
-- **y-websocket**: Authoritative sync path, immediate connection (no wait for IDB)
-- **Redis**: Compressed Yjs doc storage with TTL, AOF enabled
-- **Prisma**: Non-authoritative metadata (title, size_bytes, timestamps)
-- **TanStack Query**: Metadata fetching with 10s polling
-- **Zod**: Environment and API validation
+  - **y-indexeddb**: Room-scoped persistence in `avlo.v1.rooms.<roomId>`
+  - **y-websocket**: Authoritative sync path, immediate connection (no wait for IDB)
+  - **Redis**: Compressed Yjs doc storage with TTL, AOF enabled
+  - **Prisma**: Non-authoritative metadata (title, size_bytes, timestamps)
+  - **TanStack Query**: Metadata fetching with 10s polling
+  - **Zod**: Environment and API validation
+- **Phase 6-7 Infrastructure**:
+  - **React Router**: Dynamic room routing at `/room/:roomId`
+  - **subscribeGates**: Stable primitive snapshots prevent re-render loops
+  - **Toolbar UI**: Foundation for stamps, text, eraser tools
+  - **ClearBoard**: lastSeenScene tracking for export after clear
+  - **Connection UI**: Online/Offline states (no "Syncing" in offline-first)
 
 See `IMPLEMENTATION.MD` for detailed phase breakdown and `OVERVIEW.MD` for complete specifications.

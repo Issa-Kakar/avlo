@@ -39,7 +39,6 @@ export function Toolbar({ className = '' }: ToolbarProps) {
           {TOOLS.map((tool) => (
             <ToolButton
               key={tool.id}
-              id={tool.id}
               label={tool.label}
               icon={tool.icon}
               isActive={toolbar.tool === tool.id}
