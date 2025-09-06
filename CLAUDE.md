@@ -196,7 +196,7 @@ avlo/
         └── CONFIG_USAGE.md   # Config usage guide
 
 ```
-Tests co-located in `__tests__/` folders within each directory (e.g., `lib/__tests__/`, `hooks/__tests__/`, `canvas/__tests__/`).
+Tests co-located in `__tests__/` folders within each directory. Client and server have separate vitest configs - use `npm run test:client` or `npm run test:server`.
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)

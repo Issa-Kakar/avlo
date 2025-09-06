@@ -164,12 +164,11 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 
 #### 6A.5.1 Deterministic teardown
 
-On `destroy()`:
-**ACTUAL IMPLEMENTATION CHANGED TO NO AWAIT, DESTROY WILL BE SYNCHRONUS**
+On `destroy()` (synchronous implementation):
 1) stop rAF 
 2) unobserve Y 
-3) if (wsProvider) { try { await wsProvider.close?.() ?? wsProvider.disconnect?.() ?? wsProvider.destroy?.() } catch {} ; wsProvider = null }
-4) if (idbProvider) { this.idbProvider.destroy?.() } catch {} ; idbProvider = null 
+3) if (wsProvider) { wsProvider.disconnect(); wsProvider.destroy(); wsProvider = null }
+4) if (idbProvider) { idbProvider.destroy(); idbProvider = null }
 5) try { ydoc.destroy() } catch {}
 6) mark `this._destroyed = true` so subsequent calls are no-ops.
 
