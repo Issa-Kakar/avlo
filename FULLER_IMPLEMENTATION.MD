@@ -393,6 +393,38 @@ Do not recreate keys from Postgres; 404 is final.
 
 TODO IN FUTURE PHASE 7: **`G_AWARENESS_READY`** opens when WS (or RTC later) awareness is live, so the UI knows when to show cursors. When offline:(no UI) – presence is best-effort; cursors simply hide
 
+------
+
+## Phase 6D: UI Integration & Routing
+
+### 6D.1 Gate Subscription System
+**Critical Fix**: Prevent infinite re-render loops by using stable primitive snapshots with `useSyncExternalStore`.
+- Add `subscribeGates()` method to RoomDocManager with 150ms debounce
+- Return string primitives (`"0|1|0|1|1"`) instead of objects for referential stability  
+- Use `queueMicrotask` to defer callbacks, avoiding synchronous state updates
+- Call `notifyGateChange()` when gates change (IDB ready, WS connected/synced, first snapshot)
+
+### 6D.2 React Router Integration
+- Routes: `/` (test harness), `/room/:roomId` (dynamic rooms), `/test` (alt test path)
+- Extract CanvasWithControls to RoomPage component
+- Use `useParams()` for dynamic room ID, replace hardcoded 'test-room-001'
+- Wrap with ViewTransformProvider, reset view on room change
+
+### 6D.3 Zustand Store Integration
+Create guarded `toolbarToDeviceUI` adapter:
+- Default unknown tools to 'pen', clamp size 1-64, validate hex colors
+- Wire Canvas.tsx to use Zustand store instead of static deviceUI
+- Tool state frozen at pointer-down (existing DrawingTool mechanism)
+
+### 6D.4 UI Components
+- **ErrorBoundary**: React error boundary for graceful failures
+- **ConnectionStatus**: Show "Online"/"Offline" only (no "Syncing" state)
+- **Toolbar**: Pen/highlighter buttons, size slider, color picker (others disabled)
+- **ClearBoardButton**: Optimistic lastSeenScene update, no cooldown
+
+### 6D.5 Mobile Support
+MobileViewOnlyBanner using UA string + maxTouchPoints detection.
+
 ## Phase 7: Awareness & Presence System
 
 ### 7.1 Implement Awareness Protocol
