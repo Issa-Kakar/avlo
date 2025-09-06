@@ -69,7 +69,7 @@ See [IMPLEMENTATION.MD](./IMPLEMENTATION.MD) for the complete development roadma
    PORT=3001
    REDIS_URL=redis://localhost:6379
    DATABASE_URL=postgresql://user:password@localhost:5432/avlo
-   ORIGIN_ALLOWLIST=http://localhost:5173,http://localhost:3000
+   ORIGIN_ALLOWLIST=http://localhost:3000
    ROOM_TTL_DAYS=14
    ```
 
@@ -89,12 +89,12 @@ npm install
 # Start development servers (client + server concurrently)
 npm run dev
 
-# The app will be available at http://localhost:5173
+# The app will be available at http://localhost:3000
 ```
 
 The `npm run dev` command starts both:
 
-- Client dev server on http://localhost:5173 (Vite)
+- Client dev server on http://localhost:3000 (Vite)
 - Backend server on http://localhost:3001 (Express + WebSocket)
 
 ## Testing
