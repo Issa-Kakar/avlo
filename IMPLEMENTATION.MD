@@ -17,14 +17,14 @@
 ### 2.3 Implement Snapshot Publishing System
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
-- Implement RAF-based publishing (≤60 FPS, dirty flags, svKey optimization)
-- **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. This is sufficient for cache invalidation and change detection
+- Implement RAF-based publishing (≤60 FPS, dirty flags; **no `svKey`-based dedupe in Phase 6**)
+- **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. **We compute and attach it to each snapshot for diagnostics/tooling only; it is not consulted to decide whether to publish.**
 
 ### 2.4 Set Up Subscription Management
 - Implement subscribeSnapshot with immediate callback on subscribe
 - Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
 - Create subscribeRoomStats (null initially, updates on persist_ack)
-- **COMPLETED BUT DEFERRAL**:  Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed and used for publish/change detection, but no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
+- **COMPLETED BUT DEFERRAL**:  Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed but is *not* used for publish/change detection in Phase 6; no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
 
 ## Phase 3: Basic Canvas Infrastructure
 
@@ -117,7 +117,7 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 #### 6A.1.3 Dirty-flag integration for publish loop
 
 1. When IDB applies a batch, flip the manager's **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
-2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS.
+2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS. **In Phase 6, `svKey` is not used to suppress publishes; any doc-dirty event schedules a publish unconditionally.**
 **Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
 
 **MVP pivot:** **Do not** read or write any render cache in Phase 6, and **do not** persist `lastKnownSvKey`. The render cache remains present in the codebase but is dormant.
@@ -135,8 +135,8 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 #### 6A.2.2 rAF publisher discipline already in place
 
 1. Keep the single rAF loop model (no multiple loops per provider).
-2. Publish when **either** Yjs changed (svKey delta) **or** presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
-3. Preserve the **svKey optimization**: skip publish when the doc is unchanged (detected via svKey comparison) and only cosmetic work would occur. Note: svKey changes only when Y.Doc actually changes, making it a reliable change detector despite using a truncated format.
+2. Publish when **either** the manager is **doc-dirty** (Yjs applied updates or local edits) **or** the presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
+3. **Remove the svKey-based publish optimization**: in Phase 6, if the manager is dirty, publish a new snapshot on the next rAF without comparing `svKey`. Note: svKey changes only when Y.Doc actually changes, making it a reliable change detector despite using a truncated format.
 
 ### 6A.3 Client config validation with Zod (boot-critical only)
 
@@ -290,7 +290,7 @@ Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server
 #### 6B.7.1 Inbound/Outbound flow control
 
 1. Enforce the 2 MB inbound frame cap at the gateway; close misbehaving clients.
-2. Monitor each connection’s `bufferedAmount`. While above a **high-water** (e.g., 256 KB), **suspend presence fan-out** to that socket and **bound** its per-socket queue to doc-update essentials; resume when below **low-water** (e.g., 64 KB).
+2. **DEFERRED TO LATER PHASES**: Monitor each connection’s `bufferedAmount`. While above a **high-water** (e.g., 256 KB), **suspend presence fan-out** to that socket and **bound** its per-socket queue to doc-update essentials; resume when below **low-water** (e.g., 64 KB).
 3. Prefer freshness for awareness: if the queue builds, drop awareness frames destined for that socket first.
 
 ### 6B.8 Health

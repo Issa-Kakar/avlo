@@ -13,6 +13,13 @@ Phase 6 implements the complete persistence infrastructure for Avlo, including o
 - **Boot visuals (MVP pivot):** No boot splash. RoomDocManager **never** touches the DOM. First paint is **`EmptySnapshot`**, followed by the first doc-derived snapshot via RAF. Render cache is **not** used by Phase 6.
 - **Zod** validates boundaries at environment, HTTP, and WebSocket control layers
 
+**CRITICAL**: > **⚠️ CRITICAL IMPLEMENTATION NOTE**:
+> The svKey deduplication optimization that was originally in Phase 6 had to be removed.
+> The svKey truncation (using only first 100 bytes of state vector) causes a critical bug where local client updates
+> are not detected when state vectors exceed 100 bytes (common after IndexedDB loads historical data).
+> This results in strokes not rendering until page refresh.
+> **Solution**: Always publish when dirty, regardless of svKey comparison.
+
 ## Phase 6A: Offline-First Doc Persistence & Boot Gates
 
 ### 6A.1: Attach y-indexeddb Provider
@@ -191,9 +198,50 @@ this._currentSnapshot = createEmptySnapshot();
 
 **IMPORTANT**: The RAF publisher loop should already be running from manager creation (implemented in Phase 2). This ensures the first doc-derived snapshot appears ≤ 1 rAF after any Y update (from IDB or WS). Do NOT wait for any gates to start the RAF loop.
 
-#### 6A.2.2: Update Snapshot Publishing to Check svKey
+#### 6A.2.2: Fix svKey Publishing Bug — Always publish when dirty
 
 **File**: `client/src/lib/room-doc-manager.ts`
+**CRITICAL FIX**: Remove the svKey deduplication optimization from the RAF loop. The svKey truncation (first 100 bytes) misses local client updates when state vectors are large (>100 bytes), causing strokes not to render until page refresh.
+
+**Update the RAF loop to always publish when dirty** (in `startPublishLoop` method, around line 710):
+
+```typescript
+private startPublishLoop(): void {
+  const rafLoop = () => {
+    // Publish if Y.Doc changed OR presence changed
+    if (this.publishState.isDirty || this.publishState.presenceDirty) {
+      const startTime = this.clock.now();
+
+      // Build snapshot
+      const newSnapshot = this.buildSnapshot();
+
+      // CRITICAL FIX: Always publish when dirty, don't use svKey as a gate
+      // The svKey truncation (first 100 bytes) was missing local client updates
+      // when state vectors were large (>100 bytes), causing strokes to not render
+      // until refresh. See PHASE_6A_DEBUG_REPORT.md for full details.
+      this.publishSnapshot(newSnapshot);
+
+      // Clear both dirty flags
+      this.publishState.isDirty = false;
+      this.publishState.presenceDirty = false;
+
+      // Track timing for metrics
+      this.publishState.lastPublishTime = this.clock.now();
+      this.publishState.publishCostMs = this.clock.now() - startTime;
+    }
+
+    // Continue loop if not destroyed
+    if (!this.destroyed) {
+      this.publishState.rafId = this.frames.request(rafLoop);
+    }
+  };
+
+  // Start the loop
+  this.publishState.rafId = this.frames.request(rafLoop);
+}
+```
+
+**What was removed**: The `svKeyChanged` comparison that was previously gating the `publishSnapshot` call. Now it always publishes when dirty, ensuring strokes render immediately.
 
 Update buildSnapshot method to track svKey changes (around line 800):
 
@@ -203,6 +251,7 @@ private buildSnapshot(): Snapshot {
   // snapshot.svKey computed as truncated state-vector signature
 
   // After building snapshot, check if svKey changed
+  // CRITICAL: In Phase 6, svKey is not consulted to dedupe publishing; it’s used here only to detect the first doc-derived snapshot for gate purposes
   if (snapshot.svKey !== this.publishState.lastSvKey) {
     this.publishState.lastSvKey = snapshot.svKey;
 
@@ -549,7 +598,8 @@ process.on('beforeExit', async () => {
 2. **Server API (v0.1.x)**: Import from `@y/websocket-server/utils` and use:
    - `setupWSConnection(ws, req, { docName })` - handles the Yjs sync protocol
    - `getYDoc(roomId)` - single argument, returns singleton doc for the room
-3. **Persistence Strategy**: The server persists on ALL document updates with debouncing (100ms). Alternative: Use global `setPersistence({ bindState, writeState })` to avoid per-connection handlers.
+3. **Persistence Strategy**: The server persists on ALL document updates with debouncing (100ms). Alternative: Use global `setPersistence({ bindState, writeState })` to avoid per-connection handlers. 
+Client-side publish cadence (RAF snapshots) is a UI concern and does not affect server persistence, which listens to Y.Doc updates only.
 
 **CRITICAL WebSocket Path Handling**:
 
@@ -950,6 +1000,8 @@ private websocketProvider: WebsocketProvider | null = null;
 ```
 
 3. **Add WebSocket initialization** (in constructor, after IDB init):
+
+**Note**: publisher cadence is independent of WS state; WS only feeds Y.Doc updates which mark the manager dirty.
 
 ```typescript
 // Initialize WebSocket provider (Phase 6C)
@@ -1360,6 +1412,7 @@ export function ConnectionStatus({ roomId }: ConnectionStatusProps) {
 
 **Note**: `G_AWARENESS_READY` will be implemented in Phase 7 when awareness is added.
 
+**NOTE** `G_FIRST_SNAPSHOT` Opens on first doc-derived snapshot; independent of any svKey deduplication (none in Phase 6).
 ## Provider Event Patterns (Critical)
 
 ### Correct Event Usage
@@ -1424,6 +1477,7 @@ Provider events are for **connection/sync gates only**. Document content changes
 7. **Redis Authority**: Redis presence defines room existence, not PostgreSQL
 8. **Compression**: Always gzip with level 4 before Redis storage
 9. **TTL Extension**: Only on accepted writes, not on reads/awareness
+10. **Phase 6 invariant**: The publisher never consults svKey to gate or dedupe. If isDirty or presenceDirty is set, a snapshot is published on the next rAF. svKey is computed in buildSnapshot() for diagnostics and for opening G_FIRST_SNAPSHOT only.
 
 ### Critical Integration Notes
 

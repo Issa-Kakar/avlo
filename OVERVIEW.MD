@@ -165,7 +165,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation.** To avoid stack overflow on large state vectors, compute `svKey` from the first 100 bytes + length + checksum. **Purpose (MVP): publishing optimization only** (skip redundant publishes when the Y.Doc hasn't changed). **Do not** use `svKey` to gate any boot visuals. **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **svKey implementation.** To avoid stack overflow on large state vectors, compute `svKey` from the first 100 bytes + length + checksum. **Purpose (Phase 6): diagnostics/telemetry only.** We **do not** use `svKey` to decide whether to publish; the publisher always emits a new snapshot whenever the manager is dirty. `svKey` is still included in snapshots and tooling, and it is **never** used to gate boot visuals. **Awareness.** Central subscription with ~30 Hz throttling; presence ticks 75-100 ms; awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. If small-room probe passes, instantiate WebrtcProvider with the same Y.Doc and shared awareness instance; otherwise destroy/disconnect it and run WS-only. G_AWARENESS_READY opens when either provider is live.
 
 **Awareness (normative additions).** --- **Cadence & throttling.** Awareness send interval per client: `interval = clamp(50ms * (1 + max(0,(N-10)/20)), 50ms, 150ms)`, permitting up to **200 ms** only when `N ≥ 60` or device is in battery saver; recompute only on **≥15%** change; apply **±10 ms** jitter; trailing-edge coalescing. Target ≤ ~300 inbound msgs/s at large N. --- **Receiver smoothing.** Interpolate cursor state (lerp) for 1-2 frames; on a missing frame, dead-reckon using last velocity for one frame. Awareness is never persisted and remains snapshot-injected only. **ESLint enforcement.** UI components ban imports of `yjs`, `y-websocket`, and `y-indexeddb` and 'y-webrtc' via `no-restricted-imports`; access goes exclusively through hooks and `room.mutate(...)`. 
 
@@ -579,7 +579,7 @@ Define explicit **init order**, **gates**, **timeouts**, and **what they unblock
 -   `docStats = { bytes, cap: 15MB }` (from metadata poll every 10 s or on successful persist ack)
 -   `presenceView` throttled & interpolated **Consistency rules:**
 -   **Never** write derived values into Yjs (e.g., `bbox` MAY be stored to avoid recompute; all other derivations remain ephemeral).
--   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (first 100 bytes + length + checksum to avoid stack overflow) used for cache/change detection and optional guards for cosmetic long-running tasks (PNG export, IDB hydrate) -- not a global temporal pin.
+-   Snapshot MUST reflect a **single state vector** at the moment of capture; include `svKey: string` (first 100 bytes + length + checksum to avoid stack overflow) **for diagnostics and tooling only.** In Phase 6, `svKey` is **not** consulted for publish/change detection and is **not** used to guard long-running tasks.
 
 13\. Mutations & Undo
 =====================
@@ -593,7 +593,7 @@ Define **precisely** what is in `Snapshot` and **never null**:
 
 ```
 interface Snapshot {
-  svKey: string; // first 100 bytes + length + checksum of state vector; used only for publish dedupe (MVP), not for any boot visuals
+  svKey: string; // first 100 bytes + length + checksum of state vector; included for diagnostics; NOT used to gate publishing in Phase 6
   scene: SceneIdx;	//derived from root.meta.scene_ticks.length at capture time
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
@@ -716,6 +716,7 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 **Publisher** runs a single rAF loop per room tab with event-driven policy:
 
 -   **Event-driven rAF**: set a dirty flag when Yjs updates or local edits occur; schedule one rAF
+-   **Phase 6 rule:** publishing is **never** deduped by comparing `svKey`. If the document or presence made the manager dirty, a new frozen snapshot is published on the next rAF.
 -   **FPS policy**: default 60 FPS, switch to 30 FPS only on mobile/battery saver/very heavy scenes; if hidden tab, switch to `setTimeout(1000/8)` (8 FPS).
 -   **Work budgeting**: rendering prep (RBush rebuild, path building) soft budget **6 ms**; if exceeded, split across frames. **Export path**:
 -   If export prep exceeds **2 s**, fall back to viewport export with toast; never block UI thread longer than **16 ms** bursts.

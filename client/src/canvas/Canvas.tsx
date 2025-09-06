@@ -85,15 +85,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   useEffect(() => {
     // Subscribe through public API and write to ref (not state)
     const unsubscribe = roomDoc.subscribeSnapshot((newSnapshot) => {
-      const prevSvKey = snapshotRef.current.svKey;
-
       // IMPORTANT: DO NOT modify the snapshot - it must remain immutable
       // Phase 3 contract: snapshot.view remains identity transform - read view from UI instead
       snapshotRef.current = newSnapshot;
 
-      // Invalidate render loop if content changed
-      if (renderLoopRef.current && newSnapshot.svKey !== prevSvKey) {
-        renderLoopRef.current.invalidateAll('content-change');
+      // Phase 6: Always invalidate on new snapshot (no svKey gating)
+      // The RenderLoop will detect scene changes and handle full clears accordingly
+      if (renderLoopRef.current) {
+        renderLoopRef.current.invalidateAll('snapshot-update');
       }
     });
 
