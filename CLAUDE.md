@@ -20,9 +20,13 @@
 - Phase 3: Basic Canvas Infrastructure (Canvas Component, Transform System, Render Loop)
 - Phase 4: Stroke Data Model & Rendering (Stroke rendering pipeline, Path building, Tool-specific rendering)
 - Phase 5: Drawing Input System (Pointer event handling, DrawingTool, Preview rendering, Stroke commit with simplification)
+- Phase 6: Offline-First Infrastructure & Real-time Sync
+  - 6A: y-indexeddb provider integration, boot gates (G_IDB_READY), local persistence
+  - 6B: Server setup with y-websocket, Redis persistence, PostgreSQL/Prisma metadata
+  - 6C: Client WebSocket provider, TanStack Query for metadata, Zod validation
 
 ## Current Status
-**READY FOR PHASE 6: WebSocket, Indexeddb, Persistence Infrastructure**
+**READY FOR PHASE 7: Awareness & Presence System**
 
 ## CRITICAL: Registry Architecture & Testing Strategy
 
@@ -55,8 +59,8 @@ Y.Doc → root: Y.Map → {
   meta: Y.Map<Meta>,           // scene_ticks: Y.Array<number>
   strokes: Y.Array<Stroke>,    // append-only stroke data
   texts: Y.Array<TextBlock>,   // immutable once committed
-  code: Y.Map<CodeCell>,       // future: Phase 7
-  outputs: Y.Array<Output>     // future: Phase 7
+  code: Y.Map<CodeCell>,       // future
+  outputs: Y.Array<Output>     // future
 }
 ```
 
@@ -78,7 +82,7 @@ interface Stroke {
 // Type alias: SceneIdx = number (0-based scene index)
 
 interface Snapshot {
-  svKey: string;        // base64 state vector, never null
+  svKey: string;        // first 100 bytes + length + checksum; diagnostics-only in Phase 6 (never gates publishing)
   scene: number;        // from meta.scene_ticks.length
   strokes: ReadonlyArray<StrokeView>;  // filtered by scene
   texts: ReadonlyArray<TextView>;       // filtered by scene
@@ -158,43 +162,25 @@ if (isRoomReadOnly(sizeBytes)) { /* Block writes */ }
 avlo/
 ├── client/                    # React frontend (Vite)
 │   ├── src/
-│   │   ├── canvas/           # Canvas components (Phase 3)
-│   │   │   ├── Canvas.tsx    # Main canvas component
-│   │   │   ├── CanvasStage.tsx # DPR-aware canvas substrate
-│   │   │   ├── ViewTransformContext.tsx # View transform context
-│   │   │   └── internal/     # Transform utilities
+│   │   ├── canvas/           # Canvas components & transforms
 │   │   ├── components/       # UI components
-│   │   │   └── MobileViewOnlyBanner.tsx
-│   │   ├── hooks/            # useRoomSnapshot, usePresence, etc.
-│   │   ├── lib/              # RoomDocManager core
-│   │   │   ├── room-doc-manager.ts
-│   │   │   ├── room-doc-registry-context.tsx
-│   │   │   └── tools/        # Tool implementations (Phase 5)
-│   │   │       ├── DrawingTool.ts # Drawing tool implementation
-│   │   │       ├── simplification.ts # Douglas-Peucker
-│   │   │       └── types.ts  # Tool-specific types
-│   │   ├── renderer/         # Render loop (Phase 3-4)
-│   │   │   ├── RenderLoop.ts # RAF-based render loop
-│   │   │   ├── DirtyRectTracker.ts # Dirty region tracking
-│   │   │   ├── layers/       # Rendering layers (Phase 4-5)
-│   │   │   │   ├── strokes.ts # Stroke rendering
-│   │   │   │   └── preview.ts # Preview rendering (Phase 5)
-│   │   │   └── stroke-builder/ # Stroke path building (Phase 4)
-│   │   │       ├── path-builder.ts # Path2D building utilities
-│   │   │       └── stroke-cache.ts # Stroke render cache
-│   │   ├── stores/           # Zustand store (not yet integrated)
-│   │   │   └── device-ui-store.ts
+│   │   ├── hooks/            # use-room-snapshot, use-room-metadata, use-room-stats, etc.
+│   │   ├── lib/              # Core: room-doc-manager, registry, api-client, tools/
+│   │   ├── renderer/         # RenderLoop, DirtyRectTracker, layers/, path utilities
+│   │   ├── stores/           # Zustand device-ui-store (future integration)
 │   │   └── types/            # Client-specific types
 ├── server/                    # Node.js backend
+│   ├── prisma/               # Database schema & migrations
+│   ├── public/               # Static assets
 │   └── src/
-│       └── index.ts          # Server entry (minimal currently)
-└── packages/                  # Shared packages
-    └── shared/               # Shared configuration & types
-        ├── src/
-        │   ├── config.ts     # All constants with env overrides
-        │   └── types/        # Shared type definitions
-        └── CONFIG_USAGE.md   # Config usage guide
-
+│       ├── lib/              # env, redis, prisma clients
+│       ├── middleware/       # CORS, security
+│       ├── routes/           # rooms, health endpoints
+│       ├── index.ts          # Entry point
+│       └── websocket-server.ts # y-websocket server
+└── packages/
+    └── shared/               # Shared config & types
+    
 ```
 Tests co-located in `__tests__/` folders within each directory. Client and server have separate vitest configs - use `npm run test:client` or `npm run test:server`.
 
@@ -275,7 +261,7 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - **Never null** - EmptySnapshot created synchronously on init
    - Published at most once per rAF or batched Y update
    - Frozen in development, new arrays per publish
-   - Include `svKey` (base64 state vector) for cache/change detection (svKey mainly cosmetic UX purposed)
+   - Publisher is continuous; publish when doc or awareness is dirty; never use svKey to skip a publish in Phase 6
 
 5. **Data Storage Rules**
    - Arrays stored as `number[]` in Yjs (never Float32Array)
@@ -306,5 +292,12 @@ Tests default to single-threaded (1.3GB max) due to Y.Doc memory usage. Use `npm
 - **Snapshots**: Never null, frozen, new arrays per publish
 - **DrawingTool**: RAF-coalesced pointer events, Douglas-Peucker simplification in world units
 - **Preview**: Rendered at 0.35 opacity, invalidates old and new bounds on move
+- **Phase 6 Additions**:
+- **y-indexeddb**: Room-scoped persistence in `avlo.v1.rooms.<roomId>`
+- **y-websocket**: Authoritative sync path, immediate connection (no wait for IDB)
+- **Redis**: Compressed Yjs doc storage with TTL, AOF enabled
+- **Prisma**: Non-authoritative metadata (title, size_bytes, timestamps)
+- **TanStack Query**: Metadata fetching with 10s polling
+- **Zod**: Environment and API validation
 
 See `IMPLEMENTATION.MD` for detailed phase breakdown and `OVERVIEW.MD` for complete specifications.

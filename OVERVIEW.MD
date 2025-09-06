@@ -327,7 +327,7 @@ interface DeviceUIState {
   collaborationMode: 'server' | 'peer';
   aiPanelOpen: boolean;
   lastVersionSeen: string; // for update prompt
-  lastSeenSceneByRoom: Record<string, number>; // for ghost preview after clear
+  lastSeenSceneByRoom: Record<string, number>; // for tracking last scene local to user, ghost preview after clear
 }
 
 ```
@@ -626,6 +626,7 @@ interface StrokeView {
 -   All mutations pass through **mutate(fn)** at **pointer-up** or explicit actions.
 -   **Canvas renderer**:
     -   Renders at **60 FPS** with dirty-rect culling. Use dirty-rect culling only when transform is unchanged; on transform change, fall back to full clear (or tile cache).
+    -   **Scene tick (Clear Board)**: perform a full canvas clear before drawing the new scene. Dirty-rects may leave stale pixels after refresh; treat scene change as a full-clear boundary.
     -   **No auto-pan** due to remote actions.
     -   **Hit-testing** via RBush built from Snapshot; never touches Y live data. **Draw order for Canvas**:
 
@@ -713,12 +714,14 @@ Specify the **contract** between **screen**, **canvas**, and **document/world** 
 24\. RAF & Publishing
 =====================
 
-**Publisher** runs a single rAF loop per room tab with event-driven policy:
+**Publisher** runs a continuous rAF loop (one per room tab):
 
--   **Event-driven rAF**: set a dirty flag when Yjs updates or local edits occur; schedule one rAF
--   **Phase 6 rule:** publishing is **never** deduped by comparing `svKey`. If the document or presence made the manager dirty, a new frozen snapshot is published on the next rAF.
--   **FPS policy**: default 60 FPS, switch to 30 FPS only on mobile/battery saver/very heavy scenes; if hidden tab, switch to `setTimeout(1000/8)` (8 FPS).
--   **Work budgeting**: rendering prep (RBush rebuild, path building) soft budget **6 ms**; if exceeded, split across frames. **Export path**:
+-   **On every frame**, publish a new frozen Snapshot if either document or awareness is dirty. We never suppress a publish using `svKey` in Phase 6.
+-   **If nothing changed**, we publish an identical Snapshot anyway, performance difference is negligible
+-   **FPS policy**: default 60 FPS; 30 FPS on heavy/mobile; hidden tabs drop to ~8 FPS.
+-   **Work budgeting**: keep prep ≤ ~6 ms; split work across frames.
+-   **Awareness changes** mark the manager dirty the same way as doc changes (IDB/WS).
+-   **Export path**:
 -   If export prep exceeds **2 s**, fall back to viewport export with toast; never block UI thread longer than **16 ms** bursts.
 
 * * * * *
