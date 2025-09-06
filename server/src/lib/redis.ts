@@ -101,3 +101,34 @@ export async function getRedisAdapter(env: ServerEnv): Promise<RedisAdapter> {
   }
   return redisAdapter;
 }
+
+// Helper functions for testing - match what the tests expect
+export async function saveDocToRedis(
+  client: any,
+  roomId: string,
+  ydoc: any,
+  ttlDays: number,
+): Promise<number> {
+  const Y = await import('yjs');
+  const stateUpdate = Y.encodeStateAsUpdate(ydoc);
+  const compressed = await gzipAsync(Buffer.from(stateUpdate), { level: 4 });
+
+  const ttlSeconds = ttlDays * 24 * 60 * 60;
+  const key = `room:${roomId}`;
+
+  await client.set(key, compressed, 'EX', ttlSeconds);
+  return compressed.length;
+}
+
+export async function loadDocFromRedis(client: any, roomId: string): Promise<any | null> {
+  const Y = await import('yjs');
+  const key = `room:${roomId}`;
+  const compressed = await client.get(key);
+
+  if (!compressed) return null;
+
+  const decompressed = await gunzipAsync(compressed);
+  const doc = new Y.Doc();
+  Y.applyUpdate(doc, new Uint8Array(decompressed));
+  return doc;
+}

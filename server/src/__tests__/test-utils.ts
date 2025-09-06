@@ -55,6 +55,16 @@ export function createMockRedisClient() {
 }
 
 /**
+ * Create a mock Redis wrapper for testing (matches import in tests)
+ */
+export function createMockRedis() {
+  return {
+    client: createMockRedisClient(),
+    pubClient: createMockRedisClient(),
+  };
+}
+
+/**
  * Create a mock Prisma client for testing
  */
 export function createMockPrismaClient() {
