@@ -144,8 +144,18 @@ export default function App() {
   // Fixed room ID for testing - in production this would come from URL
   const roomId = 'test-room-001';
 
+  // Parse query parameters to check for persist=0 flag
+  const urlParams = new URLSearchParams(window.location.search);
+  const skipIndexedDB = urlParams.get('persist') === '0';
+
+  // Log the flag status for debugging
+  if (skipIndexedDB) {
+    // eslint-disable-next-line no-console
+    console.log('[App] IndexedDB disabled via ?persist=0 flag');
+  }
+
   return (
-    <RoomDocRegistryProvider>
+    <RoomDocRegistryProvider skipIndexedDB={skipIndexedDB}>
       <ViewTransformProvider>
         <CanvasWithControls roomId={roomId} />
       </ViewTransformProvider>

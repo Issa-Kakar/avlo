@@ -95,6 +95,7 @@ export interface IRoomDocManager {
 // Extended options for RoomDocManager
 export interface RoomDocManagerOptions extends TimingOptions {
   gzipImpl?: GzipImpl;
+  skipIndexedDB?: boolean; // Optional: disable IndexedDB (for testing)
 }
 
 // Private implementation
@@ -214,8 +215,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
       console.warn('[RoomDocManager] Render cache init failed (non-critical):', err);
     });
 
-    // Initialize IndexedDB provider (Phase 6A)
-    this.initializeIndexedDBProvider();
+    // Initialize IndexedDB provider (Phase 6A) - unless skipIndexedDB is set
+    if (!options?.skipIndexedDB) {
+      this.initializeIndexedDBProvider();
+    } else {
+      // If IndexedDB is skipped, immediately open the IDB gate
+      this.openGate('idbReady');
+      // eslint-disable-next-line no-console
+      console.log('[RoomDocManager] IndexedDB skipped by option');
+    }
 
     // Initialize WebSocket provider (Phase 6C)
     this.initializeWebSocketProvider();

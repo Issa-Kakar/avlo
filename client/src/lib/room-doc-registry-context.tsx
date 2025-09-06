@@ -13,6 +13,7 @@ const RoomDocRegistryContext = createContext<RoomDocRegistryContextValue | null>
 interface RoomDocRegistryProviderProps {
   children: ReactNode;
   registry?: RoomDocManagerRegistry; // Optional: allow injection for testing
+  skipIndexedDB?: boolean; // Optional: disable IndexedDB for testing
 }
 
 /**
@@ -22,13 +23,18 @@ interface RoomDocRegistryProviderProps {
  */
 export function RoomDocRegistryProvider({ 
   children, 
-  registry 
+  registry,
+  skipIndexedDB = false 
 }: RoomDocRegistryProviderProps) {
   // Create registry once and maintain it for the lifetime of the provider
   const registryRef = useRef<RoomDocManagerRegistry>();
   
   if (!registryRef.current) {
     registryRef.current = registry ?? createRoomDocManagerRegistry();
+    // Set default options if skipIndexedDB is true
+    if (skipIndexedDB && !registry) {
+      registryRef.current.setDefaultOptions({ skipIndexedDB: true });
+    }
   }
 
   return (
