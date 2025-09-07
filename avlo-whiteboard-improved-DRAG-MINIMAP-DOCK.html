@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Avlo – Workspace (Draggable Toolbar + Dock Picker)</title>
+  <style>
+    /* ===== Design System Foundation ===== */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+    
+    :root {
+      --font-stack: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+
+      /* Simplified Color System */
+      --brand-primary: #6366F1;
+      --brand-secondary: #8B5CF6;
+      
+      /* Unified Light Theme */
+      --bg-primary: #FFFFFF;
+      --bg-secondary: #F8FAFC;
+      --bg-tertiary: #F1F5F9;
+      --surface-elevated: #FFFFFF;
+      --surface-sunken: #F8FAFC;
+      
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --text-tertiary: #94A3B8;
+      --text-inverse: #FFFFFF;
+      
+      --border-light: rgba(15, 23, 42, 0.06);
+      --border-default: rgba(15, 23, 42, 0.10);
+      --border-strong: rgba(15, 23, 42, 0.15);
+      
+      /* Functional Colors */
+      --accent-success: #10B981;
+      --accent-warning: #F59E0B;
+      --accent-error: #EF4444;
+      --accent-info: #3B82F6;
+      
+      /* Consistent Spacing Scale */
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --space-xl: 32px;
+      --space-2xl: 48px;
+      
+      /* Unified Border Radius */
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-full: 999px;
+      
+      /* Typography Scale */
+      --text-xs: 11px;
+      --text-sm: 13px;
+      --text-base: 15px;
+      --text-lg: 17px;
+      
+      /* Refined Shadows */
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+      --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.04), 0 2px 4px rgba(0, 0, 0, 0.06);
+      --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.04), 0 4px 6px rgba(0, 0, 0, 0.06);
+      --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.04), 0 10px 10px rgba(0, 0, 0, 0.06);
+      
+      /* Minimal Animation */
+      --transition-fast: 150ms ease;
+      --transition-base: 200ms ease;
+    }
+
+    /* Dark Theme */
+    [data-theme="dark"] {
+      --bg-primary: #0F1419;
+      --bg-secondary: #111827;
+      --bg-tertiary: #1F2937;
+      --surface-elevated: #111827;
+      --surface-sunken: #0B0F1A;
+      
+      --text-primary: #F1F5F9;
+      --text-secondary: #CBD5E1;
+      --text-tertiary: #64748B;
+      --text-inverse: #0F172A;
+      
+      --border-light: rgba(241, 245, 249, 0.06);
+      --border-default: rgba(241, 245, 249, 0.10);
+      --border-strong: rgba(241, 245, 249, 0.15);
+      
+      --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
+      --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3);
+      --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.4);
+      --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5);
+    }
+
+    /* ===== Base Styles ===== */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      font-family: var(--font-stack);
+      font-size: var(--text-base);
+      color: var(--text-primary);
+      background: var(--bg-secondary);
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
+    input, textarea { font-family: inherit; }
+
+    /* ===== Layout Structure ===== */
+    .app-container { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ===== Unified Header ===== */
+    .header {
+      height: 56px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 var(--space-lg); background: var(--bg-primary); border-bottom: 1px solid var(--border-light); flex-shrink: 0;
+    }
+    .header-left { display: flex; align-items: center; gap: var(--space-md); }
+    .logo { display: flex; align-items: center; gap: var(--space-sm); text-decoration: none; color: var(--text-primary); }
+    .logo-mark {
+      width: 32px; height: 32px; background: linear-gradient(135deg, var(--brand-secondary), var(--brand-primary));
+      border-radius: var(--radius-sm); display: grid; place-items: center; color: white; font-weight: 600; font-size: 14px;
+    }
+    .room-title {
+      background: transparent; border: 1px solid transparent; padding: 6px 12px; border-radius: var(--radius-sm);
+      font-size: var(--text-sm); font-weight: 500; color: var(--text-primary); width: 200px; transition: all var(--transition-fast);
+    }
+    .room-title:hover { background: var(--bg-tertiary); }
+    .room-title:focus { outline: none; border-color: var(--brand-primary); background: var(--bg-primary); }
+    .header-center { display: flex; align-items: center; gap: var(--space-md); }
+    .status-chip {
+      display: inline-flex; align-items: center; gap: var(--space-xs); padding: 4px 10px; background: var(--bg-tertiary);
+      border-radius: var(--radius-full); font-size: var(--text-xs); font-weight: 500; color: var(--text-secondary);
+    }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-success); }
+    .header-right { display: flex; align-items: center; gap: var(--space-sm); }
+    .btn {
+      padding: 8px 16px; border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 500; transition: all var(--transition-fast);
+      display: inline-flex; align-items: center; gap: var(--space-xs);
+    }
+    .btn-ghost { color: var(--text-secondary); }
+    .btn-ghost:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+    .btn-primary { background: var(--brand-primary); color: white; }
+    .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+    .btn-clear { background: var(--bg-tertiary); color: var(--text-secondary); }
+    .btn-clear:hover { background: var(--bg-primary); color: var(--text-primary); box-shadow: var(--shadow-sm); }
+    .icon-btn { width: 36px; height: 36px; border-radius: var(--radius-sm); display: grid; place-items: center; color: var(--text-secondary); transition: all var(--transition-fast); }
+    .icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+    /* ===== Main Content Area ===== */
+    .workspace { flex: 1; display: flex; overflow: hidden; }
+
+    /* ===== Canvas Section ===== */
+    .canvas-container { flex: 1; position: relative; background: var(--bg-secondary); }
+    .canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    /* Grid background */
+    .canvas-grid {
+      position: absolute; inset: 0;
+      background-image: radial-gradient(circle, var(--border-light) 1px, transparent 1px);
+      background-size: 20px 20px; opacity: 0.5; pointer-events: none;
+    }
+
+    /* ===== Tool Panel (Draggable) ===== */
+    .tool-panel {
+      position: absolute; top: var(--space-lg); left: var(--space-lg);
+      background: var(--surface-elevated); border-radius: var(--radius-lg); border: 1px solid var(--border-light);
+      box-shadow: var(--shadow-lg); padding: var(--space-sm); display: flex; flex-direction: column; gap: var(--space-xs); z-index: 10;
+      will-change: transform;
+    }
+    .drag-handle {
+      height: 10px; margin: 4px 6px var(--space-xs); border-radius: var(--radius-sm);
+      background: var(--bg-tertiary); cursor: grab;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .tool-btn {
+      width: 44px; height: 44px; border-radius: var(--radius-md); display: grid; place-items: center;
+      color: var(--text-secondary); background: transparent; transition: all var(--transition-fast); position: relative;
+    }
+    .tool-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+    .tool-btn.active { background: var(--brand-primary); color: white; }
+    .tool-divider { height: 1px; background: var(--border-light); margin: var(--space-xs) var(--space-sm); }
+    /* Tooltip */
+    .tool-btn::after {
+      content: attr(data-tooltip); position: absolute; left: calc(100% + 8px); top: 50%;
+      transform: translateY(-50%) scale(0.9); background: var(--text-primary); color: var(--text-inverse);
+      padding: 4px 8px; border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 500; white-space: nowrap;
+      opacity: 0; pointer-events: none; transition: all var(--transition-fast);
+    }
+    .tool-btn:hover::after { opacity: 1; transform: translateY(-50%) scale(1); }
+
+    /* ===== Bottom Tool Dock (Color + Size) ===== */
+    .tool-dock {
+      position: absolute; left: 50%; bottom: var(--space-lg); transform: translateX(-50%);
+      display: none; /* shown for pen/highlighter */
+      gap: var(--space-lg); align-items: center;
+      padding: 10px 14px; background: var(--surface-elevated); border: 1px solid var(--border-light);
+      border-radius: var(--radius-full); box-shadow: var(--shadow-xl); z-index: 50;
+    }
+    .tool-dock.show { display: flex; }
+    .dock-group { display: flex; align-items: center; gap: var(--space-sm); }
+    .dock-label { font-size: var(--text-xs); color: var(--text-secondary); font-weight: 600; }
+    .dock-slider {
+      width: 260px; height: 28px; -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer;
+    }
+    .dock-slider::-webkit-slider-runnable-track {
+      height: 6px; border-radius: var(--radius-full);
+      background: linear-gradient(90deg, #000000, var(--brand-secondary), var(--brand-primary), #ffffff);
+      border: 1px solid var(--border-light);
+    }
+    .dock-slider.color::-webkit-slider-runnable-track { /* same, explicit for clarity */ }
+    .dock-slider.size::-webkit-slider-runnable-track { background: var(--bg-tertiary); }
+    .dock-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 16px; height: 16px; background: var(--brand-primary);
+      border-radius: 50%; box-shadow: 0 0 0 2px var(--surface-elevated);
+      margin-top: -5px;
+    }
+    .size-readout { min-width: 40px; text-align: right; font-size: var(--text-xs); color: var(--text-secondary); }
+
+    /* ===== Floating Controls ===== */
+    .floating-controls {
+      position: absolute; bottom: var(--space-lg); right: var(--space-lg);
+      display: flex; gap: var(--space-sm); align-items: center;
+    }
+    .zoom-controls {
+      background: var(--surface-elevated); border: 1px solid var(--border-light); border-radius: var(--radius-md);
+      box-shadow: var(--shadow-md); display: flex; align-items: center; padding: var(--space-xs); gap: var(--space-xs);
+    }
+    .zoom-btn { width: 32px; height: 32px; border-radius: var(--radius-sm); display: grid; place-items: center; color: var(--text-secondary); transition: all var(--transition-fast); }
+    .zoom-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+    .zoom-label { padding: 0 var(--space-sm); font-size: var(--text-xs); font-weight: 500; color: var(--text-secondary); min-width: 48px; text-align: center; }
+
+    /* ===== Editor Panel ===== */
+    .editor-panel { width: 400px; background: var(--bg-primary); border-left: 1px solid var(--border-light); display: flex; flex-direction: column; transition: transform var(--transition-base); }
+    .editor-panel.collapsed { transform: translateX(100%); }
+    .editor-header {
+      height: 48px; padding: 0 var(--space-md); border-bottom: 1px solid var(--border-light);
+      display: flex; align-items: center; justify-content: space-between; background: var(--bg-tertiary);
+    }
+    .editor-tabs { display: flex; gap: var(--space-xs); }
+    .editor-tab { padding: 6px 12px; border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 500; color: var(--text-secondary); transition: all var(--transition-fast); }
+    .editor-tab:hover { background: var(--bg-secondary); }
+    .editor-tab.active { background: var(--bg-primary); color: var(--text-primary); }
+    .editor-content { flex: 1; overflow-y: auto; font-family: var(--font-mono); font-size: var(--text-sm); padding: var(--space-md); background: var(--bg-secondary); color: var(--text-primary); }
+
+    /* ===== AI Panel ===== */
+    .ai-panel { height: 160px; border-top: 1px solid var(--border-light); background: var(--bg-primary); display: flex; flex-direction: column; }
+    .ai-header { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--border-light); display: flex; align-items: center; justify-content: space-between; background: var(--bg-tertiary); }
+    .ai-title { font-size: var(--text-sm); font-weight: 500; color: var(--text-primary); display: flex; align-items: center; gap: var(--space-xs); }
+    .ai-messages { flex: 1; overflow-y: auto; padding: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
+    .ai-message { padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); font-size: var(--text-sm); max-width: 80%; }
+    .ai-message.user { align-self: flex-end; background: var(--brand-primary); color: white; }
+    .ai-message.assistant { align-self: flex-start; background: var(--bg-tertiary); color: var(--text-primary); }
+    .ai-input-area { padding: var(--space-sm) var(--space-md); border-top: 1px solid var(--border-light); display: flex; gap: var(--space-sm); }
+    .ai-input {
+      flex: 1; padding: var(--space-sm); border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+      background: var(--bg-secondary); color: var(--text-primary); font-size: var(--text-sm); resize: none; outline: none;
+    }
+    .ai-input:focus { border-color: var(--brand-primary); }
+    .ai-send { padding: var(--space-sm) var(--space-md); background: var(--brand-primary); color: white; border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 500; transition: opacity var(--transition-fast); }
+    .ai-send:hover { opacity: 0.9; }
+    .ai-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ===== Minimap (with header + collapse) ===== */
+    .minimap {
+      position: absolute; bottom: var(--space-lg); left: var(--space-lg);
+      width: 180px; height: 120px; background: var(--surface-elevated); border: 1px solid var(--border-light);
+      border-radius: var(--radius-md); box-shadow: var(--shadow-md); overflow: hidden; opacity: 0.95; transition: opacity var(--transition-fast);
+      z-index: 15;
+    }
+    .minimap:hover { opacity: 1; }
+    .minimap-header {
+      height: 32px; display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-sm);
+      background: var(--bg-primary); border-bottom: 1px solid var(--border-light);
+    }
+    .minimap-title { font-size: var(--text-xs); font-weight: 600; color: var(--text-secondary); }
+    .minimap-toggle { width: 24px; height: 24px; border-radius: var(--radius-sm); display: grid; place-items: center; }
+    .minimap-toggle:hover { background: var(--bg-tertiary); }
+    .minimap-content { width: 100%; height: calc(100% - 32px); background: var(--bg-tertiary); position: relative; }
+    .minimap-viewport { position: absolute; border: 2px solid var(--brand-primary); background: rgba(99, 102, 241, 0.1); pointer-events: none; }
+    /* Collapsed pill */
+    .minimap.collapsed { width: auto; height: auto; padding: 0; }
+    .minimap.collapsed .minimap-content, .minimap.collapsed .minimap-header { display: none; }
+    .minimap-pill {
+      display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--surface-elevated);
+      border: 1px solid var(--border-light); border-radius: var(--radius-full); box-shadow: var(--shadow-md); margin: 6px;
+      font-size: var(--text-xs); color: var(--text-secondary);
+    }
+
+    /* ===== Toast ===== */
+    .toast {
+      position: fixed; bottom: var(--space-lg); left: 50%; transform: translateX(-50%) translateY(100px);
+      background: var(--text-primary); color: var(--text-inverse); padding: var(--space-sm) var(--space-md);
+      border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 500; box-shadow: var(--shadow-lg);
+      opacity: 0; transition: all var(--transition-base); pointer-events: none; z-index: 200;
+    }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+    /* ===== Responsive ===== */
+    @media (max-width: 768px) {
+      .editor-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 100%; max-width: 400px; box-shadow: var(--shadow-xl); }
+      .tool-panel { top: var(--space-md); left: var(--space-md); }
+      .minimap { display: none; }
+      .floating-controls { bottom: var(--space-md); right: var(--space-md); }
+      .tool-dock { bottom: calc(var(--space-md) + 56px); } /* keep above mobile UI */
+    }
+
+    /* ===== SVG Icons ===== */
+    .icon { width: 20px; height: 20px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    .icon-sm { width: 16px; height: 16px; }
+    .icon-lg { width: 24px; height: 24px; }
+  </style>
+</head>
+<body>
+  <!-- App Container -->
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <a href="#" class="logo"><div class="logo-mark">A</div></a>
+        <input type="text" class="room-title" value="Untitled Room" />
+      </div>
+      <div class="header-center">
+        <div class="status-chip"><span class="status-dot"></span><span>Connected</span></div>
+      </div>
+      <div class="header-right">
+        <div class="users-stack" id="usersBtn">
+          <div class="user-avatar" style="width:28px;height:28px;border-radius:999px;background:#3B82F6;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600;border:2px solid var(--bg-primary);">JD</div>
+          <div class="user-avatar" style="width:28px;height:28px;border-radius:999px;background:#10B981;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600;border:2px solid var(--bg-primary);margin-left:-8px;">AS</div>
+          <div class="user-avatar" style="width:28px;height:28px;border-radius:999px;background:#F59E0B;color:#fff;display:grid;place-items:center;font-size:11px;font-weight:600;border:2px solid var(--bg-primary);margin-left:-8px;">MK</div>
+        </div>
+        <button class="btn btn-ghost" id="shareBtn">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+          Share
+        </button>
+        <button class="btn btn-primary" id="exportBtn">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          Export
+        </button>
+        <button class="btn btn-clear" id="clearCanvasBtn">
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+          Clear
+        </button>
+        <button class="icon-btn" id="themeToggle">
+          <svg class="icon" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="5"/>
+            <path d="M12 1v6M12 17v6M4.22 4.22l4.24 4.24M15.54 15.54l4.24 4.24M1 12h6M17 12h6M4.22 19.78l4.24-4.24M15.54 8.46l4.24-4.24"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Workspace -->
+    <div class="workspace">
+      <!-- Canvas -->
+      <div class="canvas-container">
+        <div class="canvas-grid"></div>
+        <canvas class="canvas" id="canvas"></canvas>
+        
+        <!-- Tool Panel (draggable) -->
+        <div class="tool-panel" id="toolPanel">
+          <div class="drag-handle" id="toolbarHandle" aria-label="Move toolbar"></div>
+          <button class="tool-btn active" data-tool="pen" data-tooltip="Pen (P)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/></svg>
+          </button>
+          <button class="tool-btn" data-tool="highlighter" data-tooltip="Highlighter (H)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></svg>
+          </button>
+          <button class="tool-btn" data-tool="eraser" data-tooltip="Eraser (E)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/></svg>
+          </button>
+          <button class="tool-btn" data-tool="text" data-tooltip="Text (T)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+          </button>
+          <div class="tool-divider"></div>
+          <button class="tool-btn" data-tool="select" data-tooltip="Select (V)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M5 3l14 9-14 9V3z"/></svg>
+          </button>
+          <button class="tool-btn" data-tool="pan" data-tooltip="Pan (Space)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 12h18M12 3v18"/></svg>
+          </button>
+          <div class="tool-divider"></div>
+          <button class="tool-btn" data-tool="undo" data-tooltip="Undo (⌘Z)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"/></svg>
+          </button>
+          <button class="tool-btn" data-tool="redo" data-tooltip="Redo (⌘Y)">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 019-9 9 9 0 016 2.3l3 2.7"/></svg>
+          </button>
+          <!-- Clear removed from toolbar -->
+        </div>
+
+        <!-- Bottom Tool Dock (color + size) -->
+        <div class="tool-dock" id="toolDock" aria-label="Drawing settings">
+          <div class="dock-group">
+            <span class="dock-label">Color</span>
+            <input type="range" id="colorSlider" class="dock-slider color" min="0" max="100" value="50" />
+          </div>
+          <div class="dock-group">
+            <span class="dock-label">Size</span>
+            <input type="range" id="sizeDockSlider" class="dock-slider size" min="1" max="20" value="4" />
+            <span class="size-readout" id="sizeReadout">4px</span>
+          </div>
+        </div>
+        
+        <!-- Minimap -->
+        <div class="minimap" id="minimap">
+          <div class="minimap-header">
+            <span class="minimap-title">Minimap</span>
+            <button class="minimap-toggle" id="minimapToggle" aria-label="Collapse minimap">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M19 12H5"/></svg>
+            </button>
+          </div>
+          <div class="minimap-content">
+            <div class="minimap-viewport" style="width: 60px; height: 40px; top: 20px; left: 40px;"></div>
+          </div>
+        </div>
+        
+        <!-- Floating Controls -->
+        <div class="floating-controls">
+          <div class="zoom-controls">
+            <button class="zoom-btn" id="zoomOut"><svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+            <span class="zoom-label" id="zoomLabel">100%</span>
+            <button class="zoom-btn" id="zoomIn"><svg class="icon icon-sm" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><line x1="12" y1="5" x2="12" y2="19"/></svg></button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Editor Panel -->
+      <div class="editor-panel" id="editorPanel">
+        <div class="editor-header">
+          <div class="editor-tabs">
+            <button class="editor-tab active">Code</button>
+            <button class="editor-tab">Output</button>
+          </div>
+          <button class="icon-btn" id="toggleEditor">
+            <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M11 19l-7-7 7-7M4 12h16"/></svg>
+          </button>
+        </div>
+        <div class="editor-content">
+<pre><span class="code-highlight"># Quick Sort Implementation</span>
+def quicksort(arr):
+    if len(arr) <= 1:
+        return arr
+    pivot = arr[0]
+    left = [x for x in arr[1:] if x < pivot]
+    right = [x for x in arr[1:] if x >= pivot]
+    return quicksort(left) + [pivot] + quicksort(right)
+
+nums = [3, 1, 4, 1, 5, 9, 2, 6]
+print("Sorted:", quicksort(nums))</pre>
+        </div>
+        <!-- AI Assistant -->
+        <div class="ai-panel">
+          <div class="ai-header">
+            <div class="ai-title">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+              AI Assistant
+            </div>
+            <button class="icon-btn" id="clearChat"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></button>
+          </div>
+          <div class="ai-messages" id="aiMessages"></div>
+          <div class="ai-input-area">
+            <textarea class="ai-input" id="aiInput" placeholder="Ask about your code..." rows="1"></textarea>
+            <button class="ai-send" id="aiSend">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast">Link copied to clipboard</div>
+
+  <script>
+    // ===== Theme toggle =====
+    const themeToggle = document.getElementById('themeToggle');
+    const html = document.documentElement;
+    themeToggle.addEventListener('click', () => {
+      const currentTheme = html.getAttribute('data-theme');
+      const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', newTheme);
+      localStorage.setItem('theme', newTheme);
+    });
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    html.setAttribute('data-theme', savedTheme);
+
+    // ===== Canvas & drawing basics =====
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(rect.width * dpr);
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    let currentTool = 'pen';
+    let currentColor = '#0F172A';
+    let currentSize = 4;
+    let isDrawing = false;
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (currentTool === 'pen' || currentTool === 'highlighter') {
+        isDrawing = true;
+        ctx.beginPath();
+        ctx.moveTo(e.offsetX, e.offsetY);
+        ctx.strokeStyle = currentColor;
+        ctx.lineWidth = currentSize;
+        ctx.lineCap = 'round';
+        ctx.globalAlpha = currentTool === 'highlighter' ? 0.3 : 1;
+      }
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (isDrawing) { ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); }
+    });
+    ['mouseup','mouseleave'].forEach(ev => canvas.addEventListener(ev, () => { isDrawing = false; }));
+
+    // ===== Toolbar tool selection & actions =====
+    const toolBtns = document.querySelectorAll('.tool-btn[data-tool]');
+    const toolDock = document.getElementById('toolDock');
+    toolBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tool = btn.dataset.tool;
+        if (['undo','redo'].includes(tool)) { showToast(tool.toUpperCase()); return; }
+        toolBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentTool = tool;
+        // Show dock for drawing tools
+        if (tool === 'pen' || tool === 'highlighter') {
+          toolDock.classList.add('show');
+        } else {
+          toolDock.classList.remove('show');
+        }
+      });
+    });
+
+    // ===== Bottom dock sliders (color + size) =====
+    const colorSlider = document.getElementById('colorSlider');
+    const sizeDockSlider = document.getElementById('sizeDockSlider');
+    const sizeReadout = document.getElementById('sizeReadout');
+    sizeDockSlider.addEventListener('input', (e) => {
+      currentSize = +e.target.value;
+      sizeReadout.textContent = currentSize + 'px';
+    });
+    // Color interpolation: 0 -> black, 50 -> brandPrimary, 100 -> white
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function hexToRgb(hex) {
+      const v = hex.replace('#','');
+      return [parseInt(v.substring(0,2),16), parseInt(v.substring(2,4),16), parseInt(v.substring(4,6),16)];
+    }
+    function rgbToHex(r,g,b) {
+      const toHex = (n) => n.toString(16).padStart(2,'0');
+      return '#' + toHex(Math.round(r)) + toHex(Math.round(g)) + toHex(Math.round(b));
+    }
+    const brand = getComputedStyle(document.documentElement).getPropertyValue('--brand-primary').trim() || '#6366F1';
+    const brandRgb = hexToRgb(brand);
+    colorSlider.addEventListener('input', (e) => {
+      const v = +e.target.value;
+      if (v <= 50) {
+        const t = v / 50;
+        const r = lerp(0, brandRgb[0], t);
+        const g = lerp(0, brandRgb[1], t);
+        const b = lerp(0, brandRgb[2], t);
+        currentColor = rgbToHex(r,g,b);
+      } else {
+        const t = (v - 50) / 50;
+        const r = lerp(brandRgb[0], 255, t);
+        const g = lerp(brandRgb[1], 255, t);
+        const b = lerp(brandRgb[2], 255, t);
+        currentColor = rgbToHex(r,g,b);
+      }
+    });
+
+    // ===== Zoom controls =====
+    const zoomIn = document.getElementById('zoomIn');
+    const zoomOut = document.getElementById('zoomOut');
+    const zoomLabel = document.getElementById('zoomLabel');
+    let currentZoom = 100;
+    zoomIn.addEventListener('click', () => { currentZoom = Math.min(200, currentZoom + 25); zoomLabel.textContent = currentZoom + '%'; });
+    zoomOut.addEventListener('click', () => { currentZoom = Math.max(25, currentZoom - 25); zoomLabel.textContent = currentZoom + '%'; });
+
+    // ===== Editor toggle =====
+    const editorPanel = document.getElementById('editorPanel');
+    const toggleEditor = document.getElementById('toggleEditor');
+    toggleEditor.addEventListener('click', () => { editorPanel.classList.toggle('collapsed'); });
+
+    // ===== Users modal (stub trigger) =====
+    const usersBtn = document.getElementById('usersBtn');
+    usersBtn.addEventListener('click', () => { showToast('Users list coming soon'); });
+
+    // ===== Share / Export / Clear =====
+    const shareBtn = document.getElementById('shareBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const clearCanvasBtn = document.getElementById('clearCanvasBtn');
+    shareBtn.addEventListener('click', () => { navigator.clipboard.writeText(window.location.href); showToast('Link copied to clipboard'); });
+    exportBtn.addEventListener('click', () => { showToast('Exporting canvas...'); setTimeout(() => showToast('Export complete'), 1200); });
+    clearCanvasBtn.addEventListener('click', () => {
+      if (confirm('Clear the board? This cannot be undone.')) {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        showToast('Canvas cleared');
+      }
+    });
+
+    // ===== Toast helper =====
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message; toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+
+    // ===== Keyboard shortcuts =====
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      const k = e.key.toLowerCase();
+      if (k === 'p') document.querySelector('[data-tool="pen"]').click();
+      else if (k === 'h') document.querySelector('[data-tool="highlighter"]').click();
+      else if (k === 'e') document.querySelector('[data-tool="eraser"]').click();
+      else if (k === 't') document.querySelector('[data-tool="text"]').click();
+      else if (k === 'v') document.querySelector('[data-tool="select"]').click();
+      else if (k === ' ') { e.preventDefault(); document.querySelector('[data-tool="pan"]').click(); }
+      else if ((e.metaKey || e.ctrlKey) && k === 'z') { e.preventDefault(); showToast(e.shiftKey ? 'REDO' : 'UNDO'); }
+      else if ((e.metaKey || e.ctrlKey) && k === 'k') { e.preventDefault(); clearCanvasBtn.click(); }
+    });
+
+    // ===== Draggable toolbar (pointer events + rAF, bounded to canvas container) =====
+    (function() {
+      const panel = document.getElementById('toolPanel');
+      const handle = document.getElementById('toolbarHandle');
+      let pos = JSON.parse(localStorage.getItem('avlo.toolbar.pos') || '{"x":24,"y":24}');
+      let raf = null;
+      let start = null;
+      function applyTransform() { panel.style.transform = `translate3d(${pos.x}px, ${pos.y}px, 0)`; }
+      function bounds() {
+        const container = document.querySelector('.canvas-container');
+        const c = container.getBoundingClientRect();
+        const n = panel.getBoundingClientRect();
+        return { minX:8, minY:8, maxX:c.width - n.width - 8, maxY:c.height - n.height - 8 };
+      }
+      applyTransform();
+      handle.addEventListener('pointerdown', (e) => {
+        handle.setPointerCapture?.(e.pointerId);
+        start = { x:e.clientX, y:e.clientY, px:pos.x, py:pos.y };
+        const onMove = (ev) => {
+          const b = bounds();
+          const nx = Math.max(b.minX, Math.min(b.maxX, start.px + (ev.clientX - start.x)));
+          const ny = Math.max(b.minY, Math.min(b.maxY, start.py + (ev.clientY - start.y)));
+          pos = { x:nx, y:ny };
+          if (raf == null) {
+            raf = requestAnimationFrame(() => { raf = null; applyTransform(); });
+          }
+        };
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          localStorage.setItem('avlo.toolbar.pos', JSON.stringify(pos));
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp, { once:true });
+      });
+      window.addEventListener('resize', () => { // keep inside container
+        const b = bounds();
+        pos = { x: Math.min(Math.max(pos.x, b.minX), b.maxX), y: Math.min(Math.max(pos.y, b.minY), b.maxY) };
+        applyTransform();
+      });
+    })();
+
+    // ===== Minimap collapse / expand =====
+    (function() {
+      const minimap = document.getElementById('minimap');
+      const toggle = document.getElementById('minimapToggle');
+      let collapsed = false;
+      function render() {
+        if (collapsed) {
+          minimap.classList.add('collapsed');
+          // Render pill
+          minimap.innerHTML = '<div class="minimap-pill" id="minimapPill"><svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/></svg><span>Minimap</span></div>';
+          document.getElementById('minimapPill').addEventListener('click', () => { collapsed = false; rebuild(); });
+        } else {
+          rebuild();
+        }
+      }
+      function rebuild() {
+        minimap.classList.remove('collapsed');
+        minimap.innerHTML = `
+          <div class="minimap-header">
+            <span class="minimap-title">Minimap</span>
+            <button class="minimap-toggle" id="minimapToggle" aria-label="Collapse minimap">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M19 12H5"/></svg>
+            </button>
+          </div>
+          <div class="minimap-content">
+            <div class="minimap-viewport" style="width: 60px; height: 40px; top: 20px; left: 40px;"></div>
+          </div>`;
+        document.getElementById('minimapToggle').addEventListener('click', () => { collapsed = true; render(); });
+      }
+      toggle.addEventListener('click', () => { collapsed = true; render(); });
+    })();
+
+    // ===== AI Chat (stub) =====
+    const aiInput = document.getElementById('aiInput');
+    const aiSend = document.getElementById('aiSend');
+    const aiMessages = document.getElementById('aiMessages');
+    const clearChat = document.getElementById('clearChat');
+    aiSend.addEventListener('click', sendMessage);
+    aiInput.addEventListener('keypress', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+    clearChat.addEventListener('click', () => { aiMessages.innerHTML = ''; showToast('Chat cleared'); });
+    function sendMessage() {
+      const message = aiInput.value.trim();
+      if (!message) return;
+      const userMsg = document.createElement('div'); userMsg.className = 'ai-message user'; userMsg.textContent = message; aiMessages.appendChild(userMsg);
+      aiInput.value = '';
+      setTimeout(() => {
+        const aiMsg = document.createElement('div'); aiMsg.className = 'ai-message assistant';
+        aiMsg.textContent = 'Quicksort is O(n log n) on average.'; aiMessages.appendChild(aiMsg);
+        aiMessages.scrollTop = aiMessages.scrollHeight;
+      }, 800);
+      aiMessages.scrollTop = aiMessages.scrollHeight;
+    }
+  </script>
+</body>
+</html>

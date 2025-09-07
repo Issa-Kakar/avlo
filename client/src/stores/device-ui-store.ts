@@ -1,16 +1,27 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export interface ToolbarState {
-  tool: 'pen' | 'highlighter' | 'text' | 'eraser' | 'stamp';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'stamps' | 'pan' | 'select';
+
+export interface ToolSettings {
   size: number;
   color: string;
-  opacity: number;
+  opacity?: number;
 }
 
 interface DeviceUIState {
-  // Toolbar state
-  toolbar: ToolbarState;
+  // Phase 9: Enhanced toolbar state
+  activeTool: Tool;
+  pen: ToolSettings;
+  highlighter: ToolSettings;
+  eraser: { size: number };
+  text: { size: number; color: string };
+
+  // UI state
+  zoom: number;
+  editorCollapsed: boolean;
+  minimapCollapsed: boolean;
+  toolbarPos: { x: number; y: number };
 
   // Track last seen scene per room (for ghost preview after clear)
   lastSeenSceneByRoom: Record<string, number>;
@@ -18,56 +29,76 @@ interface DeviceUIState {
   // Collaboration mode preference
   collaborationMode: 'server' | 'peer';
 
-  // UI preferences
-  sidebarOpen: boolean;
-  minimapVisible: boolean;
-
   // Actions
-  setTool: (tool: ToolbarState['tool']) => void;
-  setToolSize: (size: number) => void;
-  setToolColor: (color: string) => void;
-  setToolOpacity: (opacity: number) => void;
+  setActiveTool: (tool: Tool) => void;
+  setPenSettings: (settings: Partial<ToolSettings>) => void;
+  setHighlighterSettings: (settings: Partial<ToolSettings>) => void;
+  setEraserSize: (size: number) => void;
+  setTextSettings: (settings: Partial<{ size: number; color: string }>) => void;
+  setZoom: (zoom: number) => void;
+  toggleEditor: () => void;
+  toggleMinimap: () => void;
+  setToolbarPosition: (pos: { x: number; y: number }) => void;
   updateLastSeenScene: (roomId: string, scene: number) => void;
   setCollaborationMode: (mode: 'server' | 'peer') => void;
-  toggleSidebar: () => void;
-  toggleMinimap: () => void;
+}
+
+// Export ToolbarState for backward compatibility
+export interface ToolbarState {
+  tool: Tool;
+  color: string;
+  size: number;
+  opacity: number;
 }
 
 export const useDeviceUIStore = create<DeviceUIState>()(
   persist(
     (set) => ({
-      // Default state
-      toolbar: {
-        tool: 'pen',
-        size: 2,
-        color: '#000000',
-        opacity: 1,
-      },
+      // Phase 9: Enhanced default state
+      activeTool: 'pen',
+      pen: { size: 4, color: '#0F172A' },
+      highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
+      eraser: { size: 10 },
+      text: { size: 16, color: '#0F172A' },
+
+      zoom: 1.0,
+      editorCollapsed: false,
+      minimapCollapsed: false,
+      toolbarPos: { x: 24, y: 24 },
+
       lastSeenSceneByRoom: {},
       collaborationMode: 'server',
-      sidebarOpen: true,
-      minimapVisible: true,
 
       // Actions
-      setTool: (tool) =>
+      setActiveTool: (tool) => set({ activeTool: tool }),
+
+      setPenSettings: (settings) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, tool },
+          pen: { ...state.pen, ...settings },
         })),
 
-      setToolSize: (size) =>
+      setHighlighterSettings: (settings) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, size },
+          highlighter: { ...state.highlighter, ...settings },
         })),
 
-      setToolColor: (color) =>
+      setEraserSize: (size) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, color },
+          eraser: { ...state.eraser, size },
         })),
 
-      setToolOpacity: (opacity) =>
+      setTextSettings: (settings) =>
         set((state) => ({
-          toolbar: { ...state.toolbar, opacity },
+          text: { ...state.text, ...settings },
         })),
+
+      setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(2.0, zoom)) }),
+
+      toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
+
+      toggleMinimap: () => set((state) => ({ minimapCollapsed: !state.minimapCollapsed })),
+
+      setToolbarPosition: (pos) => set({ toolbarPos: pos }),
 
       updateLastSeenScene: (roomId, scene) =>
         set((state) => ({
@@ -78,19 +109,28 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         })),
 
       setCollaborationMode: (mode) => set({ collaborationMode: mode }),
-
-      toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-
-      toggleMinimap: () => set((state) => ({ minimapVisible: !state.minimapVisible })),
     }),
     {
-      name: 'avlo:v1:ui', // localStorage key
-      version: 1,
-      // Migration function for future schema changes
+      name: 'avlo.toolbar.v1', // Phase 9: updated localStorage key
+      version: 2,
+      // Migration function for schema changes
       migrate: (persistedState: any, version: number) => {
-        if (version === 0) {
-          // Migration from version 0 to 1
-          return { ...persistedState, version: 1 };
+        if (version === 0 || version === 1) {
+          // Migration from older versions
+          const oldState = persistedState as any;
+          return {
+            activeTool: oldState.toolbar?.tool || 'pen',
+            pen: { size: 4, color: oldState.toolbar?.color || '#0F172A' },
+            highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
+            eraser: { size: 10 },
+            text: { size: 16, color: '#0F172A' },
+            zoom: 1.0,
+            editorCollapsed: false,
+            minimapCollapsed: oldState.minimapVisible === false,
+            toolbarPos: { x: 24, y: 24 },
+            lastSeenSceneByRoom: oldState.lastSeenSceneByRoom || {},
+            collaborationMode: oldState.collaborationMode || 'server',
+          };
         }
         return persistedState as DeviceUIState;
       },

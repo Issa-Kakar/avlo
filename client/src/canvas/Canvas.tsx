@@ -57,8 +57,20 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   });
 
   // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
-  // Phase 6-7 Integration: Dynamic tool state from Zustand
-  const toolbar = useDeviceUIStore((state) => state.toolbar);
+  // Phase 9: Updated to use new store structure
+  const { activeTool, pen, highlighter } = useDeviceUIStore();
+
+  // Create a compatible toolbar object for the existing toolbarToDeviceUI function
+  const toolbar = useMemo(() => {
+    const currentSettings = activeTool === 'pen' ? pen : highlighter;
+    return {
+      tool: activeTool === 'pen' || activeTool === 'highlighter' ? activeTool : 'pen',
+      color: currentSettings.color,
+      size: currentSettings.size,
+      opacity: currentSettings.opacity || 1,
+    };
+  }, [activeTool, pen, highlighter]);
+
   const deviceUI: DeviceUIState = useMemo(
     () => toolbarToDeviceUI(toolbar),
     // Re-create deviceUI when any toolbar property changes

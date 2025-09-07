@@ -1,5 +1,5 @@
 import React from 'react';
-import { useDeviceUIStore } from '../../stores/device-ui-store';
+import { useDeviceUIStore, Tool } from '../../stores/device-ui-store';
 import { ToolButton } from './ToolButton';
 import { ToolControls } from './ToolControls';
 
@@ -17,16 +17,24 @@ interface ToolbarProps {
 }
 
 export function Toolbar({ className = '' }: ToolbarProps) {
-  const toolbar = useDeviceUIStore((state) => state.toolbar);
-  const setTool = useDeviceUIStore((state) => state.setTool);
-  const setToolSize = useDeviceUIStore((state) => state.setToolSize);
-  const setToolColor = useDeviceUIStore((state) => state.setToolColor);
+  // Phase 9: Updated to use new store structure
+  const { activeTool, pen, highlighter } = useDeviceUIStore();
+  const { setActiveTool, setPenSettings, setHighlighterSettings } = useDeviceUIStore();
+
+  // Create compatible toolbar object for backward compatibility
+  const currentSettings = activeTool === 'pen' ? pen : highlighter;
+  const toolbar = {
+    tool: activeTool,
+    color: currentSettings.color,
+    size: currentSettings.size,
+    opacity: currentSettings.opacity || 1,
+  };
 
   const handleToolClick = (toolId: string) => {
     // Only allow switching to enabled tools
     const tool = TOOLS.find((t) => t.id === toolId);
     if (tool?.enabled) {
-      setTool(toolId as 'pen' | 'highlighter' | 'text' | 'eraser' | 'stamp');
+      setActiveTool(toolId as Tool);
     }
   };
 
@@ -56,8 +64,20 @@ export function Toolbar({ className = '' }: ToolbarProps) {
           <ToolControls
             size={toolbar.size}
             color={toolbar.color}
-            onSizeChange={setToolSize}
-            onColorChange={setToolColor}
+            onSizeChange={(newSize) => {
+              if (activeTool === 'pen') {
+                setPenSettings({ ...pen, size: newSize });
+              } else if (activeTool === 'highlighter') {
+                setHighlighterSettings({ ...highlighter, size: newSize });
+              }
+            }}
+            onColorChange={(newColor) => {
+              if (activeTool === 'pen') {
+                setPenSettings({ ...pen, color: newColor });
+              } else if (activeTool === 'highlighter') {
+                setHighlighterSettings({ ...highlighter, color: newColor });
+              }
+            }}
           />
           {toolbar.tool === 'highlighter' && (
             <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-700">
