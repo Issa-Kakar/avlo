@@ -180,10 +180,14 @@ import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 
 **Location**: In `RoomDocManagerImpl` class
 
-Add private field (using aliased type to avoid collision with app's Awareness interface):
+Add private fields (using aliased type to avoid collision with app's Awareness interface):
 
 ```typescript
-private yAwareness: YAwareness | null = null;
+private yAwareness?: YAwareness;
+
+// Awareness event handler storage for cleanup
+private _onAwarenessUpdate: (() => void) | null = null;
+private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 ```
 
 In constructor, after Y.Doc creation:
@@ -218,13 +222,6 @@ this.websocketProvider = new WebsocketProvider(wsUrl, this.roomId, this.ydoc, {
 ```
 
 #### 1.4 Wire Awareness Events
-
-Add private fields to store handlers:
-
-```typescript
-private _onAwarenessUpdate: (() => void) | null = null;
-private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
-```
 
 After WebSocket provider creation, add:
 
@@ -294,32 +291,39 @@ if (this.websocketProvider && this._onWebSocketStatus) {
 // This prevents cursors from being permanently hidden when awareness arrives before snapshot
 // Add this to your existing gate opening logic (e.g., in openGate method):
 ```typescript
-// In openGate(gateName: string) method:
-openGate(gateName: keyof GateStatus): void {
+// In openGate method:
+private openGate(gateName: keyof typeof this.gates): void {
   const wasOpen = this.gates[gateName];
+  if (wasOpen) return; // Already open
+
   this.gates[gateName] = true;
 
   // Force presence publish when both gates are open for the first time
+  // The RAF loop is already running from constructor, so just mark dirty
   if (!wasOpen && gateName === 'firstSnapshot' && this.gates.awarenessReady) {
     this.publishState.presenceDirty = true;
-    // Kick the rAF publisher immediately
-    if (!this.rafId) {
-      this.rafId = requestAnimationFrame(() => this.publishSnapshot());
-    }
+    // No need to call schedulePublish() - the loop is already running
   }
   // Similar check if awarenessReady opens after firstSnapshot
   if (!wasOpen && gateName === 'awarenessReady' && this.gates.firstSnapshot) {
     this.publishState.presenceDirty = true;
-    if (!this.rafId) {
-      this.rafId = requestAnimationFrame(() => this.publishSnapshot());
-    }
+    // No need to call schedulePublish() - the loop is already running
   }
 
-  this.notifyGateChange();
-}
-````
+  // Notify subscribers
+  const callbacks = this.gateCallbacks.get(gateName);
+  if (callbacks) {
+    callbacks.forEach((cb) => cb());
+    callbacks.clear();
+  }
 
-````
+  // Notify gate subscribers about the change
+  this.notifyGateChange();
+
+  // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
+  // Do NOT open it here based on other gates
+}
+```
 
 #### 1.5 Update buildPresenceView()
 **Location**: `buildPresenceView()` method
@@ -341,7 +345,7 @@ private buildPresenceView(): PresenceView {
   const users = new Map<UserId, any>();
 
   if (this.yAwareness) {
-    this.yAwareness.getStates().forEach((state, clientId) => {
+    this.yAwareness.getStates().forEach((state) => {
       if (state.userId && state.userId !== this.userId) {
         users.set(state.userId, {
           name: state.name || 'Anonymous',
@@ -670,7 +674,7 @@ public updateActivity(activity: 'idle' | 'drawing' | 'typing'): void {
 }
 ```
 
-#### 3.3 Add Cleanup
+#### 3.4 Add Cleanup
 
 In `destroy()` method, add:
 
@@ -715,7 +719,7 @@ if (this.yAwareness) {
     }
   } catch {}
 
-  this.yAwareness = null;
+  this.yAwareness = undefined;
 }
 ```
 
@@ -1116,10 +1120,12 @@ The sendAwareness method already handles mobile correctly by checking isMobile w
 
 ```typescript
 // In sendAwareness method, when calling setLocalState:
-// Check if mobile
+// Check if mobile device
 const isMobile = /Mobi|Android/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
-// The actual setLocalState call already includes:
+// Actually send awareness (only increment seq when we really send)
+// Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
+this.awarenessSeq++;
 this.yAwareness.setLocalState({
   userId: this.userId, // Use existing per-tab userId
   name: this.userProfile.name,

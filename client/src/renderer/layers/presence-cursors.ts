@@ -10,6 +10,11 @@ const MAX_TRAIL_POINTS = 24;
 const MAX_TRAIL_AGE = 600; // ms
 const TRAIL_DECAY_RATE = 320; // ms
 
+// Helper to check if user prefers reduced motion
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 // Clear all cursor trails (call on disconnect or room change)
 export function clearCursorTrails(): void {
   cursorTrails.clear();
@@ -28,6 +33,11 @@ export function drawCursors(
   }
 
   const now = Date.now();
+
+  // Performance optimizations based on peer count
+  const peerCount = presence.users.size;
+  const enableTrails = peerCount <= 25 && !prefersReducedMotion();
+  const maxPoints = peerCount > 10 ? 12 : MAX_TRAIL_POINTS; // Reduce trail buffer size under load
 
   // Update trails and render cursors
   presence.users.forEach((user, userId) => {
@@ -63,17 +73,17 @@ export function drawCursors(
       trail.lastUpdate = now;
     }
 
-    // Trim old points
+    // Trim old points (using dynamic maxPoints based on load)
     while (trail.points.length > 0) {
-      if (now - trail.points[0].t > MAX_TRAIL_AGE || trail.points.length > MAX_TRAIL_POINTS) {
+      if (now - trail.points[0].t > MAX_TRAIL_AGE || trail.points.length > maxPoints) {
         trail.points.shift();
       } else {
         break;
       }
     }
 
-    // Draw trail if not degraded
-    if (presence.users.size <= 25) {
+    // Draw trail only if enabled (based on peer count and motion preference)
+    if (enableTrails) {
       drawTrail(ctx, trail, viewTransform, user.color, now);
     }
 

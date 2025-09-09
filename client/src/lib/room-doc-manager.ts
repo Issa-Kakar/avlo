@@ -500,6 +500,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
+    // Check if mobile device
+    const isMobile = /Mobi|Android/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
+
     // Actually send awareness (only increment seq when we really send)
     // Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
     this.awarenessSeq++;
@@ -507,8 +510,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
       userId: this.userId, // Use existing per-tab userId
       name: this.userProfile.name,
       color: this.userProfile.color,
-      cursor: this.localCursor,
-      activity: this.localActivity,
+      cursor: isMobile ? undefined : this.localCursor, // No cursor on mobile
+      activity: isMobile ? 'idle' : this.localActivity, // Always idle on mobile
       seq: this.awarenessSeq,
       ts: Date.now(),
       aw_v: 1,
