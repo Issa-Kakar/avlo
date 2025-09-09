@@ -433,8 +433,9 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7A.1 Single-owner awareness (manager only)
 
-1. **RoomDocManager** constructs exactly one **awareness** instance bound to its existing `Y.Doc`. UI **must not** import Yjs/providers directly. Awareness lifetime equals the manager’s lifetime. Presence is also injected into every published **Snapshot** (`snapshot.presence`).&#x20;
-2. Public surface (unchanged):
+1. **RoomDocManager** constructs exactly one **awareness** instance bound to its existing `Y.Doc`. UI **must not** import Yjs/providers directly. Awareness lifetime equals the manager's lifetime. Presence is also injected into every published **Snapshot** (`snapshot.presence`).
+2. **Import note:** Use `import { Awareness as YAwareness } from 'y-protocols/awareness'` (don't import from y-websocket) to avoid colliding with the app's Awareness type.
+3. Public surface (unchanged):
    * `subscribePresence(cb)` (throttled view emission).
    * Presence derived view is included in Snapshots published ≤ 60 FPS.&#x20;
 
@@ -447,6 +448,7 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
    - Presence UI renders only when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`
    - When `G_FIRST_SNAPSHOT` flips true, force one render to flush any queued presence
    - When `G_AWARENESS_READY` flips false, presence dirty triggers to hide cursors immediately
+   - **Gate transitions:** Open `G_AWARENESS_READY` on WS connected and close immediately on disconnected, then `setLocalState(null)` and clear cursor trails so cursors vanish right away. When either `G_FIRST_SNAPSHOT` or `G_AWARENESS_READY` flips true after the other, mark presence dirty to flush once (prevents cursor invisibility when awareness leads/follows the first snapshot)
 3. **Teardown** on leave: stop awareness publisher → unsubscribe awareness listeners → close WS (doc provider remains authoritative path) → keep IDB. All public calls after `destroy()` are no-ops.
 4. **RTC status**: Any prior “Optional RTC probe/Peer Mode” copy is **out of scope** here and moved to the future RTC phase. Keep the UI in **Server** mode.
 
@@ -473,7 +475,7 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 #### 7B.2 Activity sources
 
 * **Cursor**: on `pointermove` over the stage, compute **world** coords via current `ViewTransform`; schedule emit. **No cursor emits on mobile** (view-only).
-* **Pointer leave / off-stage**: when the local pointer leaves the drawable stage (or pointer capture ends while not over stage), call `awareness.setLocalStateField('cursor', undefined)`; do not retain the last position. This ensures remote peers stop drawing the dot/label immediately; their trails will age out naturally. (Mobile still emits no cursor.)
+* **Pointer leave / off-stage**: when the local pointer leaves the drawable stage (or pointer capture ends while not over stage), set cursor to undefined in the full awareness state; do not retain the last position. This ensures remote peers stop drawing the dot/label immediately; their trails will age out naturally. (Mobile still emits no cursor.)
 * **Activity**:
 
   * `drawing` between pointerdown…pointerup (DrawingTool).
@@ -573,7 +575,11 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7E.2 **Backpressure (client-only)**
 
-* **Sender rule:** before emitting awareness, if `WebSocket.bufferedAmount > 64 KB`, skip; if it ever hits **≥ 256 KB**, continue skipping until **< 64 KB**.
+* **Best-effort rule:** Before emitting, try to read `WebSocket.bufferedAmount`.
+  - If you can read it and it's > 64 KB, skip this awareness frame (freshness over reliability).
+  - If it's ≥ 256 KB, temporarily degrade send rate to ~6–7 Hz and keep skipping until it drains below 64 KB, then restore the base rate (~10–13 Hz).
+  - If you cannot access the socket or bufferedAmount (provider internals, race, not OPEN), do not treat that as backpressure—proceed to send.
+  - This keeps presence alive even if internals shift.
 * **No server slow-socket policy;** no custom broadcaster; keep official `@y/websocket-server`.
 * **Yjs doc updates** are not app-coalesced; rely on provider behavior.
 
@@ -594,6 +600,7 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
    - Cursors/labels hide immediately (gated by G_AWARENESS_READY && G_FIRST_SNAPSHOT)
    - Trails fade naturally based on age (600ms max)
    - Local awareness state cleared (setLocalState(null))
+   - Clear cursor trails to prevent stale visuals/memory
    - Header shows Offline
    - On reconnect, G_AWARENESS_READY reopens, presence resumes
    - Writes continue offline via IDB (document persistence unaffected)
@@ -623,10 +630,12 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7G.3 Send loop (pseudo-spec)
 
-1. Set local awareness state immediately when profile is available (safe to call before gates open)
-2. On cursor/activity change, schedule `emitLocalAwareness()` via cadence timer.
-3. `emitLocalAwareness()` builds payload, increments `_seq`, sets `ts = now`, calls `awareness.setLocalStateField(...)`.
-4. If WS backpressured per 7E.2, **skip** and coalesce to next tick.&#x20;
+1. Mark dirty immediately; actually send once the awareness gate is open (prevents accidental pre-gate sends)
+2. On profile/cursor/activity change: mark dirty and schedule send; if `G_AWARENESS_READY` is closed, keep dirty and retry after it opens.
+3. Only when sending: bump `seq`, set `ts = now`, and call `awareness.setLocalState({...})` with the complete payload.
+4. Mobile shaping: on mobile, omit cursor and fix `activity='idle'` even if local UI toggles.
+5. Quantization: quantize cursor to 0.5 world units before the equality check to avoid sub-pixel churn.
+6. If WS backpressured per 7E.2, **skip** and coalesce to next tick.&#x20;
 
 #### 7G.4 Receive hooks
 
