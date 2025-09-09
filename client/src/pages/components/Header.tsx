@@ -25,14 +25,12 @@ export function Header({
   const userCount = presence.users.size + 1; // +1 for self
 
   const handleClearBoard = () => {
-    if (window.confirm('Clear the board for everyone? This cannot be undone.')) {
-      try {
-        clearScene?.();
-        onToast?.('Board cleared');
-      } catch (error) {
-        console.error('Failed to clear board:', error);
-        onToast?.('Failed to clear board');
-      }
+    try {
+      clearScene?.();
+      onToast?.('Board cleared');
+    } catch (error) {
+      console.error('Failed to clear board:', error);
+      onToast?.('Failed to clear board');
     }
   };
 
