@@ -2,6 +2,7 @@ import type { RefObject } from 'react';
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import type { CanvasStageHandle } from '../canvas/CanvasStage';
 import type { PreviewData } from '../lib/tools/types';
+import type { GateStatus } from '@/hooks/use-connection-gates';
 import { DirtyRectTracker } from './DirtyRectTracker';
 import {
   FrameStats,
@@ -32,6 +33,7 @@ export interface RenderLoopConfig {
   getView: () => ViewTransform;
   getSnapshot: () => Snapshot;
   getViewport: () => ViewportInfo;
+  getGates: () => GateStatus; // Phase 7: Gate status for presence rendering
   onStats?: (stats: FrameStats) => void;
   isMobile?: () => boolean; // For mobile FPS throttling
 }
@@ -216,7 +218,7 @@ export class RenderLoop {
 
     const startTime = performance.now();
     this.lastFrameTime = startTime;
-    const { stageRef, getView, getSnapshot, getViewport } = this.config;
+    const { stageRef, getView, getSnapshot, getViewport, getGates } = this.config;
 
     // Clear the needsFrame flag - will be set again if new work arrives
     this.needsFrame = false;
@@ -369,7 +371,9 @@ export class RenderLoop {
         drawPreview(ctx, preview); // Draws in world coordinates (transform already applied)
       }
 
-      drawPresenceOverlays(ctx, snapshot, view, augmentedViewport); // Phase 8: cursors (with gates)
+      // Phase 7: Get gates for presence rendering
+      const gates = getGates();
+      drawPresenceOverlays(ctx, snapshot, view, augmentedViewport, gates);
       drawHUD(ctx, snapshot, view, augmentedViewport); // Future: minimap, toasts (never exported)
     });
 

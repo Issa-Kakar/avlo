@@ -19,6 +19,7 @@ Phase 7 implements the **Awareness & Presence System** for Avlo using **WebSocke
 ## Scope Definition
 
 ### IN SCOPE (Phase 7)
+
 - ✅ y-websocket awareness protocol integration (client + server)
 - ✅ Client-side backpressure implementation (WebSocket.bufferedAmount monitoring)
 - ✅ User identity system (random names/colors per tab, memory-only, no UI customization)
@@ -34,6 +35,7 @@ Phase 7 implements the **Awareness & Presence System** for Avlo using **WebSocke
 ### ✅ COMPLETED Infrastructure (From Phases 2-6)
 
 #### 1. **Type System** (`packages/shared/src/types/awareness.ts`)
+
 ```typescript
 // ALREADY DEFINED - DO NOT RECREATE
 interface Awareness {
@@ -42,18 +44,19 @@ interface Awareness {
   color: string;
   cursor?: { x: number; y: number }; // world coordinates
   activity: 'idle' | 'drawing' | 'typing';
-  seq: number;  // CRITICAL for future RTC: deduplicates when WS+RTC race in parallel
+  seq: number; // CRITICAL for future RTC: deduplicates when WS+RTC race in parallel
   ts: number;
   aw_v?: number;
 }
 
 interface PresenceView {
-  users: Map<UserId, { name, color, cursor?, activity, lastSeen }>;
+  users: Map<UserId, { name; color; cursor?; activity; lastSeen }>;
   localUserId: UserId;
 }
 ```
 
 #### 2. **RoomDocManager Foundation** (`client/src/lib/room-doc-manager.ts`)
+
 - ✅ `subscribePresence()` method with 30Hz throttling
 - ✅ `buildPresenceView()` placeholder (returns empty Map)
 - ✅ Presence injection into snapshots
@@ -62,17 +65,20 @@ interface PresenceView {
 - ✅ Throttle utility with cleanup
 
 #### 3. **React Hooks** (`client/src/hooks/`)
+
 - ✅ `usePresence(roomId)` - Full implementation ready
 - ✅ `useConnectionGates()` - Includes `hasAwareness` flag
 - ✅ Gate subscription with stable primitives
 
 #### 4. **Canvas Infrastructure** (`client/src/canvas/`, `client/src/renderer/`)
+
 - ✅ Coordinate transform system (world↔canvas)
 - ✅ Render layer architecture with presence slot
 - ✅ 60 FPS RAF loop with dirty tracking
 - ✅ `drawPresenceOverlays()` placeholder in render pipeline
 
 #### 5. **UI Components**
+
 - ✅ `UsersModal` placeholder ready
 - ✅ `ConnectionStatus` component
 - ✅ Toolbar with tool state tracking
@@ -92,6 +98,7 @@ interface PresenceView {
 ## Architecture & Data Flow
 
 ### System Architecture
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         Client (Browser)                     │
@@ -122,24 +129,25 @@ interface PresenceView {
 ```
 
 ### Data Flow Pipeline
+
 ```
 1. POINTER MOVE (Canvas)
-   → [worldX, worldY] = canvasToWorld(x, y) 
+   → [worldX, worldY] = canvasToWorld(x, y)
    → updateLocalAwareness({ cursor: { x: worldX, y: worldY } })
-   
+
 2. AWARENESS SEND (10-13Hz network rate)
    → Check WebSocket.bufferedAmount
    → Skip if > 64KB (backpressure)
    → awareness.setLocalState(state)
    → WebSocket binary frame
-   
+
 3. AWARENESS RECEIVE
    → WebSocket message
    → awareness 'update' event
    → updatePresenceThrottled() (30Hz UI rate)
    → buildPresenceView()
    → Mark presenceDirty
-   
+
 4. RAF PUBLISH (≤60 FPS)
    → Check isDirty || presenceDirty
    → buildSnapshot() with presence injection
@@ -150,14 +158,17 @@ interface PresenceView {
 ## Detailed Implementation Steps
 
 ### CRITICAL: Backpressure Recovery Pattern
+
 **Best-effort backpressure check - always send if bufferedAmount cannot be read.** The backpressure optimization is opportunistic, not required for correctness. If we cannot access the WebSocket or read bufferedAmount, we MUST still send the awareness update. Only skip when we successfully read bufferedAmount AND it's above the threshold. This prevents silent failures when provider internals change or ws is temporarily unavailable.
 
 ### STEP 1: Enable Awareness in WebSocket Provider
 
 #### 1.1 Import Awareness Dependencies
+
 **File**: `client/src/lib/room-doc-manager.ts`
 
 Update the imports to include the Yjs Awareness class (aliased to avoid collision with app types):
+
 ```typescript
 import { Awareness as YAwareness } from 'y-protocols/awareness';
 import { WebsocketProvider } from 'y-websocket';
@@ -166,23 +177,28 @@ import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 ```
 
 #### 1.2 Create Awareness Instance
+
 **Location**: In `RoomDocManagerImpl` class
 
 Add private field (using aliased type to avoid collision with app's Awareness interface):
+
 ```typescript
 private yAwareness: YAwareness | null = null;
 ```
 
 In constructor, after Y.Doc creation:
+
 ```typescript
 // Create awareness instance bound to this doc
 this.yAwareness = new YAwareness(this.ydoc);
 ```
 
 #### 1.3 Connect Awareness to WebSocket Provider
+
 **Location**: `initializeWebSocketProvider()` method
 
 CURRENT CODE:
+
 ```typescript
 this.websocketProvider = new WebsocketProvider(wsUrl, this.roomId, this.ydoc, {
   awareness: undefined, // Disabled for now (Phase 7)
@@ -192,6 +208,7 @@ this.websocketProvider = new WebsocketProvider(wsUrl, this.roomId, this.ydoc, {
 ```
 
 CHANGE TO:
+
 ```typescript
 this.websocketProvider = new WebsocketProvider(wsUrl, this.roomId, this.ydoc, {
   awareness: this.yAwareness, // ENABLE AWARENESS
@@ -201,19 +218,22 @@ this.websocketProvider = new WebsocketProvider(wsUrl, this.roomId, this.ydoc, {
 ```
 
 #### 1.4 Wire Awareness Events
+
 Add private fields to store handlers:
+
 ```typescript
 private _onAwarenessUpdate: (() => void) | null = null;
 private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 ```
 
 After WebSocket provider creation, add:
-```typescript
+
+````typescript
 // Store bound handlers for cleanup
 this._onAwarenessUpdate = () => {
   // Mark presence dirty for next RAF publish
   this.publishState.presenceDirty = true;
-  
+
   // Trigger throttled presence update for subscribers
   if (this.updatePresenceThrottled) {
     this.updatePresenceThrottled();
@@ -225,7 +245,7 @@ this._onWebSocketStatus = (event: { status: string }) => {
     // Open awareness gate immediately on WS connect
     // No need to wait for remote awareness states
     this.openGate('awarenessReady');
-    
+
     // Mark dirty to trigger initial awareness send on reconnect
     if (this.yAwareness) {
       this.awarenessIsDirty = true;
@@ -235,21 +255,21 @@ this._onWebSocketStatus = (event: { status: string }) => {
     // CRITICAL: Close awareness gate on disconnect
     // This ensures cursors hide immediately when offline
     this.closeGate('awarenessReady');
-    
+
     // Clear cursor trails to prevent stale data across sessions
     // Import at the top: import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
     clearCursorTrails();
-    
+
     // Mark presence dirty to trigger immediate UI update
     this.publishState.presenceDirty = true;
-    
+
     // Clear local cursor state
     this.localCursor = undefined;
-    
-    // NOTE: We keep awarenessIsDirty true if it was true, 
+
+    // NOTE: We keep awarenessIsDirty true if it was true,
     // and let sendAwareness() handle the retry logic when reconnected.
     // This ensures pending state changes are sent once back online.
-    
+
     // Force awareness state clear to signal departure to peers
     if (this.yAwareness) {
       try {
@@ -278,7 +298,7 @@ if (this.websocketProvider && this._onWebSocketStatus) {
 openGate(gateName: keyof GateStatus): void {
   const wasOpen = this.gates[gateName];
   this.gates[gateName] = true;
-  
+
   // Force presence publish when both gates are open for the first time
   if (!wasOpen && gateName === 'firstSnapshot' && this.gates.awarenessReady) {
     this.publishState.presenceDirty = true;
@@ -294,11 +314,12 @@ openGate(gateName: keyof GateStatus): void {
       this.rafId = requestAnimationFrame(() => this.publishSnapshot());
     }
   }
-  
+
   this.notifyGateChange();
 }
-```
-```
+````
+
+````
 
 #### 1.5 Update buildPresenceView()
 **Location**: `buildPresenceView()` method
@@ -311,13 +332,14 @@ private buildPresenceView(): PresenceView {
     localUserId: this.userId,
   };
 }
-```
+````
 
 CHANGE TO:
+
 ```typescript
 private buildPresenceView(): PresenceView {
   const users = new Map<UserId, any>();
-  
+
   if (this.yAwareness) {
     this.yAwareness.getStates().forEach((state, clientId) => {
       if (state.userId && state.userId !== this.userId) {
@@ -332,7 +354,7 @@ private buildPresenceView(): PresenceView {
       }
     });
   }
-  
+
   return {
     users,
     localUserId: this.userId,
@@ -343,26 +365,60 @@ private buildPresenceView(): PresenceView {
 ### STEP 2: Implement User Identity System
 
 #### 2.1 Create Identity Generator
+
 **File**: Create `client/src/lib/user-identity.ts`
 
 ```typescript
 // Random adjective-animal name lists
 const ADJECTIVES = [
-  'Swift', 'Bright', 'Happy', 'Clever', 'Bold',
-  'Calm', 'Eager', 'Gentle', 'Keen', 'Lively',
-  'Noble', 'Quick', 'Sharp', 'Wise', 'Zesty'
+  'Swift',
+  'Bright',
+  'Happy',
+  'Clever',
+  'Bold',
+  'Calm',
+  'Eager',
+  'Gentle',
+  'Keen',
+  'Lively',
+  'Noble',
+  'Quick',
+  'Sharp',
+  'Wise',
+  'Zesty',
 ];
 
 const ANIMALS = [
-  'Fox', 'Bear', 'Wolf', 'Eagle', 'Owl',
-  'Hawk', 'Lion', 'Tiger', 'Lynx', 'Otter',
-  'Seal', 'Whale', 'Raven', 'Swan', 'Deer'
+  'Fox',
+  'Bear',
+  'Wolf',
+  'Eagle',
+  'Owl',
+  'Hawk',
+  'Lion',
+  'Tiger',
+  'Lynx',
+  'Otter',
+  'Seal',
+  'Whale',
+  'Raven',
+  'Swan',
+  'Deer',
 ];
 
 const COLORS = [
-  '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4',
-  '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F',
-  '#85C1E2', '#F8B739', '#52B788', '#E76F51'
+  '#FF6B6B',
+  '#4ECDC4',
+  '#45B7D1',
+  '#96CEB4',
+  '#FFEAA7',
+  '#DDA0DD',
+  '#98D8C8',
+  '#F7DC6F',
+  '#85C1E2',
+  '#F8B739',
+  '#52B788',
+  '#E76F51',
 ];
 
 export interface UserProfile {
@@ -374,40 +430,45 @@ export function generateUserProfile(): UserProfile {
   // Generate random indices using crypto.getRandomValues
   const randomValues = new Uint32Array(3);
   crypto.getRandomValues(randomValues);
-  
+
   // Random name from lists
   const adjIndex = randomValues[0] % ADJECTIVES.length;
   const animalIndex = randomValues[1] % ANIMALS.length;
   const name = `${ADJECTIVES[adjIndex]} ${ANIMALS[animalIndex]}`;
-  
+
   // Random color from palette
   const colorIndex = randomValues[2] % COLORS.length;
   const color = COLORS[colorIndex];
-  
+
   return { name, color };
 }
 ```
 
 #### 2.2 Initialize User Profile in RoomDocManager
+
 **File**: `client/src/lib/room-doc-manager.ts`
 
 Add import:
+
 ```typescript
 import { generateUserProfile, UserProfile } from './user-identity';
 ```
 
 Add private field:
+
 ```typescript
 private userProfile: UserProfile;
 ```
 
 In constructor (after `this.userId = ulid();`):
+
 ```typescript
 // Generate random user profile per tab
 this.userProfile = generateUserProfile();
 ```
 
 After awareness creation:
+
 ```typescript
 // Mark awareness as dirty to trigger initial send when gate opens
 // Don't send immediately - wait for awareness gate to open
@@ -423,22 +484,26 @@ if (this.yAwareness) {
 ### STEP 3: Implement Backpressure Logic
 
 #### 3.1 Add Backpressure Configuration
+
 **File**: `packages/shared/src/config.ts`
 
 Already exists:
+
 ```typescript
 export const AWARENESS_CONFIG = {
   AWARENESS_HZ_BASE_WS: 15,
   AWARENESS_HZ_DEGRADED: 8,
-  WEBSOCKET_BUFFER_HIGH_BYTES: 64 * 1024,    // 64KB
+  WEBSOCKET_BUFFER_HIGH_BYTES: 64 * 1024, // 64KB
   WEBSOCKET_BUFFER_CRITICAL_BYTES: 256 * 1024, // 256KB
 };
 ```
 
 #### 3.2 Create Awareness Publisher with Backpressure
+
 **File**: `client/src/lib/room-doc-manager.ts`
 
 Add private fields:
+
 ```typescript
 private localCursor: { x: number; y: number } | undefined = undefined;
 private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
@@ -451,16 +516,17 @@ private lastSentAwareness: { cursor?: { x: number; y: number }; activity: string
 ```
 
 Add method:
+
 ```typescript
 private scheduleAwarenessSend(): void {
   // Only schedule if not already scheduled and we have changes to send
   if (this.awarenessSendTimer !== null || !this.awarenessIsDirty) return;
-  
+
   // Calculate interval with degradation
   const baseInterval = 1000 / this.awarenessSendRate;
   const jitter = (Math.random() - 0.5) * 20; // ±10ms jitter
   const interval = Math.max(75, Math.min(150, baseInterval + jitter));
-  
+
   this.awarenessSendTimer = window.setTimeout(() => {
     this.awarenessSendTimer = null;
     this.sendAwareness();
@@ -474,18 +540,18 @@ private sendAwareness(): void {
     this.scheduleAwarenessSend();
     return;
   }
-  
+
   // Only send if we have changes (implements "no pings" policy)
   if (!this.awarenessIsDirty) {
     return;
   }
-  
+
   // Check provider availability - remain dirty and retry
   if (!this.yAwareness || !this.websocketProvider) {
     this.scheduleAwarenessSend();
     return;
   }
-  
+
   // Check if actual state changed (not just seq/ts)
   const currentState = {
     cursor: this.localCursor,
@@ -493,25 +559,25 @@ private sendAwareness(): void {
     name: this.userProfile.name,
     color: this.userProfile.color,
   };
-  
+
   // Compare with last sent state (shallow compare of meaningful fields)
   if (this.lastSentAwareness) {
     const cursorSame = (!currentState.cursor && !this.lastSentAwareness.cursor) ||
       (currentState.cursor && this.lastSentAwareness.cursor &&
        currentState.cursor.x === this.lastSentAwareness.cursor.x &&
        currentState.cursor.y === this.lastSentAwareness.cursor.y);
-    
+
     const otherSame = currentState.activity === this.lastSentAwareness.activity &&
       currentState.name === this.lastSentAwareness.name &&
       currentState.color === this.lastSentAwareness.color;
-    
+
     if (cursorSame && otherSame) {
       // Nothing actually changed, clear dirty flag and return (no reschedule needed)
       this.awarenessIsDirty = false;
       return;
     }
   }
-  
+
   // Best-effort backpressure check - only skip if we can successfully read bufferedAmount AND it's high
   let shouldSkipDueToBackpressure = false;
   try {
@@ -521,7 +587,7 @@ private sendAwareness(): void {
       if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_HIGH_BYTES) {
         shouldSkipDueToBackpressure = true;
         this.awarenessSkipCount++;
-        
+
         // If critical, degrade send rate
         if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_CRITICAL_BYTES) {
           this.awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_DEGRADED;
@@ -535,14 +601,14 @@ private sendAwareness(): void {
   } catch {
     // Swallow exception - proceed to send normally
   }
-  
+
   // Only skip if we successfully detected high buffer
   if (shouldSkipDueToBackpressure) {
     // Stay dirty AND schedule the next attempt
     this.scheduleAwarenessSend();
     return;
   }
-  
+
   // Actually send awareness (only increment seq when we really send)
   // Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
   this.awarenessSeq++;
@@ -556,7 +622,7 @@ private sendAwareness(): void {
     ts: Date.now(),
     aw_v: 1,
   });
-  
+
   // Update last sent state and clear dirty flag
   this.lastSentAwareness = { ...currentState };
   this.awarenessIsDirty = false;
@@ -566,21 +632,21 @@ private sendAwareness(): void {
 public updateCursor(worldX: number | undefined, worldY: number | undefined): void {
   // Apply 0.5 world-unit quantization to prevent sub-pixel jitter
   const quantize = (v: number): number => Math.round(v / 0.5) * 0.5;
-  
-  const newCursor = (worldX !== undefined && worldY !== undefined) 
-    ? { x: quantize(worldX), y: quantize(worldY) } 
+
+  const newCursor = (worldX !== undefined && worldY !== undefined)
+    ? { x: quantize(worldX), y: quantize(worldY) }
     : undefined;
-  
+
   // Check if cursor actually changed (now comparing quantized values)
   const cursorChanged = (!this.localCursor && newCursor) ||
     (this.localCursor && !newCursor) ||
-    (this.localCursor && newCursor && 
+    (this.localCursor && newCursor &&
      (this.localCursor.x !== newCursor.x || this.localCursor.y !== newCursor.y));
-  
+
   if (cursorChanged) {
     this.localCursor = newCursor;
     this.awarenessIsDirty = true;
-    
+
     // Only schedule send if gate is open
     // If offline, the dirty flag remains set and will trigger send on reconnect
     if (this.gates.awarenessReady) {
@@ -594,7 +660,7 @@ public updateActivity(activity: 'idle' | 'drawing' | 'typing'): void {
   if (this.localActivity !== activity) {
     this.localActivity = activity;
     this.awarenessIsDirty = true;
-    
+
     // Only schedule send if gate is open
     // If offline, the dirty flag remains set and will trigger send on reconnect
     if (this.gates.awarenessReady) {
@@ -605,7 +671,9 @@ public updateActivity(activity: 'idle' | 'drawing' | 'typing'): void {
 ```
 
 #### 3.3 Add Cleanup
+
 In `destroy()` method, add:
+
 ```typescript
 // Clear awareness timer and dirty flag
 if (this.awarenessSendTimer !== null) {
@@ -631,7 +699,7 @@ if (this.yAwareness) {
   try {
     this.yAwareness.setLocalState(null);
   } catch {}
-  
+
   // Unregister event listeners (if the off method exists)
   if (this._onAwarenessUpdate) {
     try {
@@ -639,14 +707,14 @@ if (this.yAwareness) {
     } catch {}
     this._onAwarenessUpdate = null;
   }
-  
+
   // Call destroy if it exists
   try {
     if (typeof (this.yAwareness as any).destroy === 'function') {
       (this.yAwareness as any).destroy();
     }
   } catch {}
-  
+
   this.yAwareness = null;
 }
 ```
@@ -654,41 +722,48 @@ if (this.yAwareness) {
 ### STEP 4: Implement Cursor Position Tracking
 
 #### 4.1 Update Canvas Component
+
 **File**: `client/src/canvas/Canvas.tsx`
 
 Add cursor tracking to pointer move handler:
+
 ```typescript
-const handlePointerMove = useCallback((e: React.PointerEvent) => {
-  const rect = canvasRef.current?.getBoundingClientRect();
-  if (!rect) return;
-  
-  // Calculate canvas coordinates
-  const canvasX = e.clientX - rect.left;
-  const canvasY = e.clientY - rect.top;
-  
-  // Convert to world coordinates
-  const [worldX, worldY] = viewTransform.canvasToWorld(canvasX, canvasY);
-  
-  // Update awareness cursor (not on mobile)
-  if (!isMobile) {
-    roomDoc.updateCursor(worldX, worldY);
-  }
-  
-  // ... existing drawing logic ...
-}, [roomDoc, viewTransform, isMobile]);
+const handlePointerMove = useCallback(
+  (e: React.PointerEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Calculate canvas coordinates
+    const canvasX = e.clientX - rect.left;
+    const canvasY = e.clientY - rect.top;
+
+    // Convert to world coordinates
+    const [worldX, worldY] = viewTransform.canvasToWorld(canvasX, canvasY);
+
+    // Update awareness cursor (not on mobile)
+    if (!isMobile) {
+      roomDoc.updateCursor(worldX, worldY);
+    }
+
+    // ... existing drawing logic ...
+  },
+  [roomDoc, viewTransform, isMobile],
+);
 ```
 
 Add pointer leave handler:
+
 ```typescript
 const handlePointerLeave = useCallback(() => {
   // Clear cursor when pointer leaves canvas
   roomDoc.updateCursor(undefined, undefined);
-  
+
   // ... existing logic ...
 }, [roomDoc]);
 ```
 
 Update activity state:
+
 ```typescript
 // In handlePointerDown
 roomDoc.updateActivity('drawing');
@@ -700,6 +775,7 @@ roomDoc.updateActivity('idle');
 ### STEP 5: Implement Cursor Rendering
 
 #### 5.1 Create Cursor Renderer
+
 **File**: Create `client/src/renderer/layers/presence-cursors.ts`
 
 ```typescript
@@ -725,41 +801,42 @@ export function drawCursors(
   ctx: CanvasRenderingContext2D,
   presence: PresenceView,
   viewTransform: ViewTransform,
-  gates: { awarenessReady: boolean; firstSnapshot: boolean }
+  gates: { awarenessReady: boolean; firstSnapshot: boolean },
 ): void {
   // Single render guard: ONLY draw when both gates are open
   // Presence intake continues always - we just don't render until both gates pass
   if (!gates.awarenessReady || !gates.firstSnapshot) {
     return;
   }
-  
+
   const now = Date.now();
-  
+
   // Update trails and render cursors
   presence.users.forEach((user, userId) => {
     if (!user.cursor) {
       // No cursor, skip rendering but keep trail aging
       return;
     }
-    
+
     // Update trail
     let trail = cursorTrails.get(userId);
     if (!trail) {
       trail = { points: [], lastUpdate: now };
       cursorTrails.set(userId, trail);
     }
-    
+
     // Add new point if moved enough (matches cursor quantization)
     const lastPoint = trail.points[trail.points.length - 1];
     const distance = lastPoint
       ? Math.hypot(user.cursor.x - lastPoint.x, user.cursor.y - lastPoint.y)
       : Infinity;
-    
-    if (distance > 0.5) { // 0.5 world units threshold (same as cursor quantization)
+
+    if (distance > 0.5) {
+      // 0.5 world units threshold (same as cursor quantization)
       trail.points.push({
         x: user.cursor.x,
         y: user.cursor.y,
-        t: now
+        t: now,
       });
       // Update lastUpdate when adding a point
       trail.lastUpdate = now;
@@ -767,7 +844,7 @@ export function drawCursors(
       // Still update lastUpdate to keep aging accurate even if not moving
       trail.lastUpdate = now;
     }
-    
+
     // Trim old points
     while (trail.points.length > 0) {
       if (now - trail.points[0].t > MAX_TRAIL_AGE || trail.points.length > MAX_TRAIL_POINTS) {
@@ -776,20 +853,20 @@ export function drawCursors(
         break;
       }
     }
-    
+
     // Draw trail if not degraded
     if (presence.users.size <= 25) {
       drawTrail(ctx, trail, viewTransform, user.color, now);
     }
-    
+
     // Draw cursor pointer
     const [canvasX, canvasY] = viewTransform.worldToCanvas(user.cursor.x, user.cursor.y);
     drawCursorPointer(ctx, canvasX, canvasY, user.color);
-    
+
     // Draw name label
     drawNameLabel(ctx, canvasX, canvasY, user.name, user.color);
   });
-  
+
   // Cleanup old trails
   for (const [userId, trail] of cursorTrails.entries()) {
     if (now - trail.lastUpdate > MAX_TRAIL_AGE && !presence.users.has(userId)) {
@@ -803,31 +880,31 @@ function drawTrail(
   trail: CursorTrail,
   viewTransform: ViewTransform,
   color: string,
-  now: number
+  now: number,
 ): void {
   if (trail.points.length < 2) return;
-  
+
   ctx.save();
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  
+
   // Draw each segment with its own alpha for proper gradient effect
   for (let i = 1; i < trail.points.length; i++) {
     const prevPoint = trail.points[i - 1];
     const currPoint = trail.points[i];
-    
+
     // Calculate alpha based on current point's age
     const age = now - currPoint.t;
     const alpha = Math.exp(-age / TRAIL_DECAY_RATE);
-    
+
     if (alpha < 0.01) continue;
-    
+
     // Transform both points
     const [prevX, prevY] = viewTransform.worldToCanvas(prevPoint.x, prevPoint.y);
     const [currX, currY] = viewTransform.worldToCanvas(currPoint.x, currPoint.y);
-    
+
     // Draw this segment with its specific alpha
     ctx.globalAlpha = alpha;
     ctx.beginPath();
@@ -835,7 +912,7 @@ function drawTrail(
     ctx.lineTo(currX, currY);
     ctx.stroke();
   }
-  
+
   ctx.restore();
 }
 
@@ -843,25 +920,25 @@ function drawCursorPointer(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  color: string
+  color: string,
 ): void {
   ctx.save();
-  
+
   // Draw pointer shape (triangle with tail)
   ctx.fillStyle = color;
   ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
   ctx.lineWidth = 1;
-  
+
   ctx.beginPath();
   ctx.moveTo(x, y); // Tip
   ctx.lineTo(x - 4, y + 10); // Left
-  ctx.lineTo(x + 1, y + 7);  // Middle
+  ctx.lineTo(x + 1, y + 7); // Middle
   ctx.lineTo(x + 6, y + 12); // Right
   ctx.closePath();
-  
+
   ctx.fill();
   ctx.stroke();
-  
+
   ctx.restore();
 }
 
@@ -870,62 +947,75 @@ function drawNameLabel(
   x: number,
   y: number,
   name: string,
-  color: string
+  color: string,
 ): void {
   ctx.save();
-  
+
   // Position label below and right of cursor
   const labelX = x + 8;
   const labelY = y + 14;
-  
+
   // Measure text
   ctx.font = '11px system-ui, -apple-system, sans-serif';
   const metrics = ctx.measureText(name);
   const padding = 4;
   const width = metrics.width + padding * 2;
   const height = 16;
-  
+
   // Draw pill background
   ctx.fillStyle = color;
   ctx.globalAlpha = 0.9;
   ctx.beginPath();
   ctx.roundRect(labelX, labelY, width, height, height / 2);
   ctx.fill();
-  
+
   // Draw text
   ctx.fillStyle = '#FFFFFF';
   ctx.globalAlpha = 1;
   ctx.fillText(name, labelX + padding, labelY + 12);
-  
+
   ctx.restore();
 }
 ```
 
-#### 5.2 Integrate Cursor Rendering into Canvas
-**File**: `client/src/renderer/RenderLoop.ts`
+#### 5.2 Integrate Cursor Rendering into Render Pipeline
 
-Update `drawPresenceOverlays()` function:
-```typescript
-import { drawCursors } from './layers/presence-cursors';
+**Critical Architecture Update**: The render pipeline needs gate status to control presence rendering. This requires threading gates through multiple layers:
 
-export function drawPresenceOverlays(
-  ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  viewTransform: ViewTransform,
-  viewport: { width: number; height: number },
-  gates: GateStatus
-): void {
-  // Draw cursors with trails
-  drawCursors(ctx, snapshot.presence, viewTransform, {
-    awarenessReady: gates.awarenessReady,
-    firstSnapshot: gates.firstSnapshot,
-  });
-}
-```
+1. **Update RenderLoopConfig** (`client/src/renderer/RenderLoop.ts`):
+   - Add `getGates: () => GateStatus` to config interface
+   - Import `GateStatus` type from `@/hooks/use-connection-gates`
+   - Pass gates from config to drawPresenceOverlays in tick()
+
+2. **Update Canvas Component** (`client/src/canvas/Canvas.tsx`):
+   - Provide `getGates: () => roomDoc.getGateStatus()` in renderLoop.start() config
+   - This connects RoomDocManager's gate state to the render pipeline
+
+3. **Update drawPresenceOverlays** (`client/src/renderer/layers/index.ts`):
+
+   ```typescript
+   export function drawPresenceOverlays(
+     ctx: CanvasRenderingContext2D,
+     snapshot: Snapshot,
+     view: ViewTransform,
+     _viewport: ViewportInfo,
+     gates: GateStatus,
+   ): void {
+     // Draw cursors only when both gates are open
+     drawCursors(ctx, snapshot.presence, view, {
+       awarenessReady: gates.awarenessReady,
+       firstSnapshot: gates.firstSnapshot,
+     });
+   }
+   ```
+
+4. **Update Tests** (`client/src/renderer/__tests__/RenderLoop.test.ts`):
+   - Add `getGates` to defaultConfig() returning all gates as true for tests
 
 ### STEP 6: Implement Roster UI
 
 #### 6.1 Update UsersModal Component
+
 **File**: `client/src/pages/components/UsersModal.tsx`
 
 ```typescript
@@ -934,14 +1024,14 @@ import { Badge } from '@/components/ui/badge';
 
 export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
   const presence = usePresence(roomId);
-  
+
   if (!isOpen) return null;
-  
+
   // Get entries (userId, user) for stable React keys
   const userEntries = Array.from(presence.users.entries());
   const activeCount = userEntries.filter(([_, u]) => u.activity === 'drawing').length;
   const typingCount = userEntries.filter(([_, u]) => u.activity === 'typing').length;
-  
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
@@ -953,7 +1043,7 @@ export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
             ✕
           </button>
         </div>
-        
+
         <div className="flex gap-2 mb-4">
           {activeCount > 0 && (
             <Badge variant="secondary">✏️ Drawing {activeCount}</Badge>
@@ -962,12 +1052,12 @@ export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
             <Badge variant="secondary">⌨️ Typing {typingCount}</Badge>
           )}
         </div>
-        
+
         <div className="space-y-2 max-h-96 overflow-y-auto">
           {userEntries.map(([userId, user]) => (
             <div key={userId} className="flex items-center gap-3 p-2 rounded hover:bg-gray-50">
-              <div 
-                className="w-3 h-3 rounded-full" 
+              <div
+                className="w-3 h-3 rounded-full"
                 style={{ backgroundColor: user.color }}
               />
               <span className="flex-1">{user.name}</span>
@@ -977,7 +1067,7 @@ export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
             </div>
           ))}
         </div>
-        
+
         {userEntries.length === 0 && (
           <p className="text-gray-500 text-center py-8">
             No other users connected
@@ -990,9 +1080,11 @@ export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
 ```
 
 #### 6.2 Add Header Badge Counter
+
 **File**: `client/src/pages/RoomPage.tsx`
 
 Add to header area:
+
 ```typescript
 const presence = usePresence(roomId);
 const userCount = presence.users.size + 1; // +1 for self
@@ -1009,7 +1101,9 @@ const userCount = presence.users.size + 1; // +1 for self
 ### STEP 7: Mobile Support
 
 #### 7.1 Disable Cursor Emission on Mobile
+
 Already handled in Canvas.tsx with:
+
 ```typescript
 if (!isMobile) {
   roomDoc.updateCursor(worldX, worldY);
@@ -1017,16 +1111,17 @@ if (!isMobile) {
 ```
 
 #### 7.2 Mobile Awareness State
+
 The sendAwareness method already handles mobile correctly by checking isMobile when building the state:
+
 ```typescript
 // In sendAwareness method, when calling setLocalState:
 // Check if mobile
-const isMobile = /Mobi|Android/i.test(navigator.userAgent) || 
-                 navigator.maxTouchPoints > 1;
+const isMobile = /Mobi|Android/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
 // The actual setLocalState call already includes:
 this.yAwareness.setLocalState({
-  userId: this.userId,  // Use existing per-tab userId
+  userId: this.userId, // Use existing per-tab userId
   name: this.userProfile.name,
   color: this.userProfile.color,
   cursor: isMobile ? undefined : this.localCursor, // No cursor on mobile
@@ -1042,7 +1137,9 @@ Note: Mobile detection is already integrated in the main sendAwareness logic. Th
 ### STEP 8: Performance Optimizations
 
 #### 8.1 Degrade Under Load
+
 In cursor rendering, add peer count checks:
+
 ```typescript
 // In drawCursors()
 const peerCount = presence.users.size;
@@ -1055,6 +1152,7 @@ const maxPoints = peerCount > 10 ? 12 : 24;
 ```
 
 #### 8.2 Respect Reduced Motion
+
 ```typescript
 function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -1064,6 +1162,7 @@ function prefersReducedMotion(): boolean {
 ## Configuration Values
 
 ### Network Rates (from `packages/shared/src/config.ts`)
+
 - **Awareness Send Rate**: 10-13 Hz (75-100ms intervals)
 - **UI Update Rate**: ≤30 Hz (throttled)
 - **Render Rate**: ≤60 FPS (RAF-based)
@@ -1071,6 +1170,7 @@ function prefersReducedMotion(): boolean {
 - **Critical Threshold**: 256KB (degrade to 6-7 Hz)
 
 ### Limits
+
 - **Max Trail Points**: 24 (12 when degraded)
 - **Trail Age**: 600ms
 - **Trail Decay**: τ = 240-320ms
@@ -1080,10 +1180,11 @@ function prefersReducedMotion(): boolean {
 ## Validation Points
 
 ### Gate States
+
 1. **G_AWARENESS_READY** opens when:
    - WebSocket connected (no timeout, no remote state requirement)
    - Opens immediately on WS 'connected' status
-   
+
    **G_AWARENESS_READY** closes when:
    - WebSocket disconnected
    - Closes immediately on WS 'disconnected' status
@@ -1100,6 +1201,7 @@ function prefersReducedMotion(): boolean {
    - When `firstSnapshot` flips true, call `drawCursors()` once to flush any queued presence
 
 ### Mobile Behavior
+
 - **No cursor emission** (cursor: undefined)
 - **Activity always 'idle'**
 - **Can see other cursors**
@@ -1108,6 +1210,7 @@ function prefersReducedMotion(): boolean {
 ## Architecture Invariants
 
 ### NEVER VIOLATE
+
 1. **Awareness is ephemeral** - Never persist to Redis/PostgreSQL
 2. **Presence is injected** - Always part of Snapshot, not Y.Doc
 3. **Throttling is critical** - Network ≠ UI rates
@@ -1117,6 +1220,7 @@ function prefersReducedMotion(): boolean {
 7. **Offline behavior** - Cursors hide immediately when offline (gate-driven)
 
 ### Data Flow Rules
+
 1. **Cursor coordinates are world space** - Transform per-frame for view independence
 2. **Sequence-based ordering** - Use seq for deduplication, not timestamps
 3. **Activity states are exclusive** - idle | drawing | typing
@@ -1146,6 +1250,7 @@ function prefersReducedMotion(): boolean {
 ## Critical Implementation Requirements Summary
 
 ### 1. Best-Effort Backpressure (Prevents Silent Failures)
+
 ```typescript
 // ✅ CORRECT - Try to read buffer, but always send if we can't
 let shouldSkip = false;
@@ -1154,22 +1259,31 @@ try {
   if (ws?.readyState === WebSocket.OPEN) {
     shouldSkip = (ws.bufferedAmount ?? 0) > threshold;
   }
-} catch { /* proceed to send */ }
-if (shouldSkip) { reschedule(); return; }
+} catch {
+  /* proceed to send */
+}
+if (shouldSkip) {
+  reschedule();
+  return;
+}
 // Always reaches setLocalState() unless we KNOW buffer is high
 
 // ❌ WRONG - Hard dependency on reading buffer
 const ws = (provider as any).ws;
-if (!ws) { reschedule(); return; } // Silent failure!
+if (!ws) {
+  reschedule();
+  return;
+} // Silent failure!
 ```
 
 ### 2. Gate Transition Presence Flush (Prevents Hidden Cursors)
+
 ```typescript
 // ✅ CORRECT - Force publish when both gates open
 openGate(gateName: keyof GateStatus): void {
   const wasOpen = this.gates[gateName];
   this.gates[gateName] = true;
-  
+
   // Force presence publish when both gates become true
   if (!wasOpen && this.gates.firstSnapshot && this.gates.awarenessReady) {
     this.publishState.presenceDirty = true;
@@ -1179,6 +1293,7 @@ openGate(gateName: keyof GateStatus): void {
 ```
 
 ### 3. Cursor Quantization (Prevents Jitter & Unnecessary Sends)
+
 ```typescript
 // ✅ CORRECT - Quantize before storing and comparing
 const quantize = (v: number) => Math.round(v / 0.5) * 0.5;

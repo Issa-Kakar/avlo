@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useClearScene } from '../../hooks/useRoomIntegration';
+import { usePresence } from '../../hooks/use-presence';
 
 interface HeaderProps {
   roomId: string;
@@ -20,6 +21,8 @@ export function Header({
 }: HeaderProps) {
   const [roomTitle, setRoomTitle] = useState('Untitled Room');
   const clearScene = useClearScene(roomId);
+  const presence = usePresence(roomId);
+  const userCount = presence.users.size + 1; // +1 for self
 
   const handleClearBoard = () => {
     if (window.confirm('Clear the board for everyone? This cannot be undone.')) {
@@ -77,7 +80,34 @@ export function Header({
 
       <div className="header-right">
         {/* Users Row */}
-        <div className="users-row" onClick={onUsersClick} style={{ cursor: 'pointer' }}>
+        <div
+          className="users-row"
+          onClick={onUsersClick}
+          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '4px 8px',
+              backgroundColor: 'var(--bg-secondary)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              border: '1px solid var(--border-light)',
+            }}
+          >
+            <span
+              style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                backgroundColor: '#10b981',
+              }}
+            />
+            {userCount} {userCount === 1 ? 'user' : 'users'}
+          </div>
           <div
             className="user-avatar"
             style={{

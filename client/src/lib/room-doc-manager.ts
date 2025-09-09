@@ -4,8 +4,8 @@
  * ERROR BOUNDARY RECOMMENDATIONS (Phase 3+):
  * - Y.js operations rarely throw (CRDTs are designed for consistency)
  * - Critical error boundaries needed at:
- *   1. IndexedDB attach/open (Phase 7) - handle quota/corruption errors
- *   2. WebSocket connect/sync (Phase 7) - handle network failures
+ *   1. IndexedDB attach/open (Phase 6) - handle quota/corruption errors
+ *   2. WebSocket connect/sync (Phase 6) - handle network failures
  *   3. WebRTC bring-up (Phase 17) - handle ICE/signaling failures
  *   4. Snapshot cache I/O (Phase 2.4.4) - handle storage errors
  * - React error boundary at app level for UI protection
@@ -15,14 +15,18 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
+import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
   TEXT_CONFIG,
+  AWARENESS_CONFIG,
   ulid,
 } from '@avlo/shared';
 import { clientConfig } from './config-schema';
 import { RollingGzipEstimator, GzipImpl } from './size-estimator';
+import { generateUserProfile, UserProfile } from './user-identity';
+import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type {
   RoomId,
   Snapshot,
@@ -103,6 +107,10 @@ export interface IRoomDocManager {
   storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
   showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
   clearRenderCache(): Promise<void>;
+
+  // Phase 7: Awareness API
+  updateCursor(worldX: number | undefined, worldY: number | undefined): void;
+  updateActivity(activity: 'idle' | 'drawing' | 'typing'): void;
 }
 
 // Extended options for RoomDocManager
@@ -117,12 +125,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
   private readonly userId: string; // Session user ID for undo/redo origin
+  private userProfile: UserProfile; // User name and color for awareness
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
   private websocketProvider: WebsocketProvider | null = null;
   private webrtcProvider: unknown = null;
+
+  // Awareness instance (aliased to avoid collision with app's Awareness interface)
+  private yAwareness?: YAwareness;
 
   // Current state
   private _currentSnapshot: Snapshot;
@@ -170,6 +182,23 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Track if destroyed for cleanup
   private destroyed = false;
 
+  // Awareness state tracking (Phase 7)
+  private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
+  private awarenessIsDirty = false;
+
+  // Backpressure fields for awareness
+  private localCursor: { x: number; y: number } | undefined = undefined;
+  private awarenessSeq = 0;
+  private awarenessSendTimer: number | null = null;
+  private awarenessSkipCount = 0;
+  private awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS;
+  private lastSentAwareness: {
+    cursor?: { x: number; y: number };
+    activity: string;
+    name: string;
+    color: string;
+  } | null = null;
+
   // Gate tracking
   private gates = {
     idbReady: false,
@@ -185,12 +214,32 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private lastGateState: typeof this.gates | null = null;
   private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Awareness event handler storage for cleanup
+  private _onAwarenessUpdate: (() => void) | null = null;
+  private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
+
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
     this.userId = ulid(); // User ID for this session
 
+    // Generate random user profile per tab
+    this.userProfile = generateUserProfile();
+
     // Initialize Y.Doc with room GUID
     this.ydoc = new Y.Doc({ guid: roomId });
+
+    // Create awareness instance bound to this doc
+    this.yAwareness = new YAwareness(this.ydoc);
+
+    // Mark awareness as dirty to trigger initial send when gate opens
+    // Don't send immediately - wait for awareness gate to open
+    if (this.yAwareness) {
+      // Store initial values but don't send yet
+      this.localActivity = 'idle';
+      this.awarenessIsDirty = true;
+      // The actual send will happen when G_AWARENESS_READY opens
+      // via the WebSocket status handler
+    }
 
     // Initialize timing abstractions
     this.clock = options?.clock || new BrowserClock();
@@ -322,7 +371,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return scene;
   }
 
-  // Build presence view from awareness (will be connected to awareness in Phase 8)
+  // Build presence view from awareness
   private buildPresenceView(): PresenceView {
     const users = new Map<
       string,
@@ -335,27 +384,183 @@ class RoomDocManagerImpl implements IRoomDocManager {
       }
     >();
 
-    // For now, return proper structure even if awareness not connected
-    // This will be populated in Phase 7 when awareness is integrated
-    // Example of what will be added in Phase 7:
-    // if (this.awareness) {
-    //   this.awareness.getStates().forEach((state, clientId) => {
-    //     if (state.userId && state.cursor) {
-    //       users.set(state.userId, {
-    //         name: state.name || 'Anonymous',
-    //         color: state.color || '#000000',
-    //         cursor: state.cursor,
-    //         activity: state.activity || 'idle',
-    //         lastSeen: Date.now(),
-    //       });
-    //     }
-    //   });
-    // }
+    if (this.yAwareness) {
+      this.yAwareness.getStates().forEach((state) => {
+        if (state.userId && state.userId !== this.userId) {
+          users.set(state.userId, {
+            name: state.name || 'Anonymous',
+            color: state.color || '#808080',
+            cursor: state.cursor,
+            activity: state.activity || 'idle',
+            // Use the timestamp from the remote state if available
+            lastSeen: typeof state.ts === 'number' ? state.ts : Date.now(),
+          });
+        }
+      });
+    }
 
     return {
       users,
       localUserId: this.userId,
     };
+  }
+
+  // Awareness sending with backpressure
+  private scheduleAwarenessSend(): void {
+    // Only schedule if not already scheduled and we have changes to send
+    if (this.awarenessSendTimer !== null || !this.awarenessIsDirty) return;
+
+    // Calculate interval with degradation
+    const baseInterval = 1000 / this.awarenessSendRate;
+    const jitter = (Math.random() - 0.5) * 20; // ±10ms jitter
+    const interval = Math.max(75, Math.min(150, baseInterval + jitter));
+
+    this.awarenessSendTimer = window.setTimeout(() => {
+      this.awarenessSendTimer = null;
+      this.sendAwareness();
+    }, interval);
+  }
+
+  private sendAwareness(): void {
+    // Check if gate is closed (offline) - remain dirty and retry
+    if (!this.gates.awarenessReady) {
+      // Keep dirty flag and reschedule to try again when online
+      this.scheduleAwarenessSend();
+      return;
+    }
+
+    // Only send if we have changes (implements "no pings" policy)
+    if (!this.awarenessIsDirty) {
+      return;
+    }
+
+    // Check provider availability - remain dirty and retry
+    if (!this.yAwareness || !this.websocketProvider) {
+      this.scheduleAwarenessSend();
+      return;
+    }
+
+    // Check if actual state changed (not just seq/ts)
+    const currentState = {
+      cursor: this.localCursor,
+      activity: this.localActivity,
+      name: this.userProfile.name,
+      color: this.userProfile.color,
+    };
+
+    // Compare with last sent state (shallow compare of meaningful fields)
+    if (this.lastSentAwareness) {
+      const cursorSame =
+        (!currentState.cursor && !this.lastSentAwareness.cursor) ||
+        (currentState.cursor &&
+          this.lastSentAwareness.cursor &&
+          currentState.cursor.x === this.lastSentAwareness.cursor.x &&
+          currentState.cursor.y === this.lastSentAwareness.cursor.y);
+
+      const otherSame =
+        currentState.activity === this.lastSentAwareness.activity &&
+        currentState.name === this.lastSentAwareness.name &&
+        currentState.color === this.lastSentAwareness.color;
+
+      if (cursorSame && otherSame) {
+        // Nothing actually changed, clear dirty flag and return (no reschedule needed)
+        this.awarenessIsDirty = false;
+        return;
+      }
+    }
+
+    // Best-effort backpressure check - only skip if we can successfully read bufferedAmount AND it's high
+    let shouldSkipDueToBackpressure = false;
+    try {
+      const ws: WebSocket | undefined = (this.websocketProvider as any)?.ws;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const bufferedAmount = ws.bufferedAmount ?? 0;
+        if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_HIGH_BYTES) {
+          shouldSkipDueToBackpressure = true;
+          this.awarenessSkipCount++;
+
+          // If critical, degrade send rate
+          if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_CRITICAL_BYTES) {
+            this.awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_DEGRADED;
+          }
+        } else if (this.awarenessSendRate < AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS) {
+          // Buffer recovered, restore rate
+          this.awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS;
+        }
+      }
+      // If ws is missing or not OPEN, do NOT treat as fatal - proceed to send
+    } catch {
+      // Swallow exception - proceed to send normally
+    }
+
+    // Only skip if we successfully detected high buffer
+    if (shouldSkipDueToBackpressure) {
+      // Stay dirty AND schedule the next attempt
+      this.scheduleAwarenessSend();
+      return;
+    }
+
+    // Actually send awareness (only increment seq when we really send)
+    // Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
+    this.awarenessSeq++;
+    this.yAwareness.setLocalState({
+      userId: this.userId, // Use existing per-tab userId
+      name: this.userProfile.name,
+      color: this.userProfile.color,
+      cursor: this.localCursor,
+      activity: this.localActivity,
+      seq: this.awarenessSeq,
+      ts: Date.now(),
+      aw_v: 1,
+    });
+
+    // Update last sent state and clear dirty flag
+    this.lastSentAwareness = { ...currentState };
+    this.awarenessIsDirty = false;
+  }
+
+  // Public API for updating cursor
+  public updateCursor(worldX: number | undefined, worldY: number | undefined): void {
+    // Apply 0.5 world-unit quantization to prevent sub-pixel jitter
+    const quantize = (v: number): number => Math.round(v / 0.5) * 0.5;
+
+    const newCursor =
+      worldX !== undefined && worldY !== undefined
+        ? { x: quantize(worldX), y: quantize(worldY) }
+        : undefined;
+
+    // Check if cursor actually changed (now comparing quantized values)
+    const cursorChanged =
+      (!this.localCursor && newCursor) ||
+      (this.localCursor && !newCursor) ||
+      (this.localCursor &&
+        newCursor &&
+        (this.localCursor.x !== newCursor.x || this.localCursor.y !== newCursor.y));
+
+    if (cursorChanged) {
+      this.localCursor = newCursor;
+      this.awarenessIsDirty = true;
+
+      // Only schedule send if gate is open
+      // If offline, the dirty flag remains set and will trigger send on reconnect
+      if (this.gates.awarenessReady) {
+        this.scheduleAwarenessSend();
+      }
+    }
+  }
+
+  // Public API for updating activity
+  public updateActivity(activity: 'idle' | 'drawing' | 'typing'): void {
+    if (this.localActivity !== activity) {
+      this.localActivity = activity;
+      this.awarenessIsDirty = true;
+
+      // Only schedule send if gate is open
+      // If offline, the dirty flag remains set and will trigger send on reconnect
+      if (this.gates.awarenessReady) {
+        this.scheduleAwarenessSend();
+      }
+    }
   }
 
   // Helper to get view transform (identity for now, will be populated in Phase 3)
@@ -640,6 +845,16 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return { throttled: throttled as T, cleanup };
   }
 
+  // Helper to ensure RAF loop is running (only restarts if stopped)
+  private schedulePublish(): void {
+    // Only restart if the loop is truly stopped (e.g., after destroy/recreate)
+    if (this.publishState.rafId === -1 && !this.destroyed) {
+      this.publishState.isDirty = true; // ensure first tick publishes
+      this.startPublishLoop();
+    }
+    // If loop is already running, it will pick up dirty flags on next tick
+  }
+
   // Update presence and notify subscribers (called when awareness changes)
   private updatePresence(): void {
     const presence = this.buildPresenceView();
@@ -696,10 +911,30 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.gateDebounceTimer = null;
     }
 
+    // Clear awareness timer and dirty flag
+    if (this.awarenessSendTimer !== null) {
+      clearTimeout(this.awarenessSendTimer);
+      this.awarenessSendTimer = null;
+    }
+    this.awarenessIsDirty = false;
+
+    // Clear cursor trails to prevent memory leaks and cross-room contamination
+    clearCursorTrails();
+
     // Cleanup providers (Phase 6A additions)
     if (this.indexeddbProvider) {
       this.indexeddbProvider.destroy();
       this.indexeddbProvider = null;
+    }
+
+    // Cleanup WebSocket status listener
+    if (this.websocketProvider && this._onWebSocketStatus) {
+      try {
+        (this.websocketProvider as any).off?.('status', this._onWebSocketStatus);
+      } catch {
+        // Ignore errors during cleanup
+      }
+      this._onWebSocketStatus = null;
     }
 
     if (this.websocketProvider) {
@@ -707,6 +942,37 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.websocketProvider.disconnect();
       this.websocketProvider.destroy();
       this.websocketProvider = null;
+    }
+
+    // Cleanup awareness defensively
+    if (this.yAwareness) {
+      // Signal departure by setting local state to null
+      try {
+        this.yAwareness.setLocalState(null);
+      } catch {
+        // Ignore errors during cleanup
+      }
+
+      // Unregister event listeners (if the off method exists)
+      if (this._onAwarenessUpdate) {
+        try {
+          (this.yAwareness as any).off?.('update', this._onAwarenessUpdate);
+        } catch {
+          // Ignore errors during cleanup
+        }
+        this._onAwarenessUpdate = null;
+      }
+
+      // Call destroy if it exists
+      try {
+        if (typeof (this.yAwareness as any).destroy === 'function') {
+          (this.yAwareness as any).destroy();
+        }
+      } catch {
+        // Ignore errors during cleanup
+      }
+
+      this.yAwareness = undefined;
     }
 
     // Remove Y.Doc observers
@@ -897,8 +1163,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.roomId, // Pass room ID separately (standard y-websocket contract)
         this.ydoc,
         {
-          // Disable awareness for now (Phase 7)
-          awareness: undefined,
+          // ENABLE AWARENESS
+          awareness: this.yAwareness,
           // Reconnect settings
           maxBackoffTime: 10000,
           resyncInterval: 5000,
@@ -923,23 +1189,94 @@ class RoomDocManagerImpl implements IRoomDocManager {
       }, 10000);
       this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
 
-      // Set up connection gates
-      this.websocketProvider.on('status', (event: { status: string }) => {
+      // Store bound handlers for cleanup
+      this._onAwarenessUpdate = () => {
+        // Mark presence dirty for next RAF publish
+        this.publishState.presenceDirty = true;
+
+        // Trigger throttled presence update for subscribers
+        if (this.updatePresenceThrottled) {
+          this.updatePresenceThrottled();
+        }
+      };
+
+      this._onWebSocketStatus = (event: { status: string }) => {
         if (event.status === 'connected') {
-          // Clear connection timeout
-          const timeout = this.gateTimeouts.get('wsConnected');
-          if (timeout) {
-            clearTimeout(timeout);
-            this.gateTimeouts.delete('wsConnected');
+          // Handle connection gates
+          if (!this.gates.wsConnected) {
+            // Clear connection timeout
+            const timeout = this.gateTimeouts.get('wsConnected');
+            if (timeout) {
+              clearTimeout(timeout);
+              this.gateTimeouts.delete('wsConnected');
+            }
+            this.openGate('wsConnected');
           }
-          this.openGate('wsConnected');
+
+          // Open awareness gate immediately on WS connect
+          // No need to wait for remote awareness states
+          if (!this.gates.awarenessReady) {
+            this.openGate('awarenessReady');
+
+            // Mark dirty to trigger initial awareness send on reconnect
+            if (this.yAwareness) {
+              this.awarenessIsDirty = true;
+              this.scheduleAwarenessSend();
+            }
+
+            // Also mark presence dirty to ensure initial publish
+            this.publishState.presenceDirty = true;
+            // No need to call schedulePublish() - the loop is already running
+          }
           // WebSocket connected
         } else if (event.status === 'disconnected') {
-          this.closeGate('wsConnected');
-          this.closeGate('wsSynced');
+          // Close connection gates if they're open
+          if (this.gates.wsConnected) {
+            this.closeGate('wsConnected');
+          }
+          if (this.gates.wsSynced) {
+            this.closeGate('wsSynced');
+          }
+
+          // CRITICAL: Close awareness gate on disconnect
+          // This ensures cursors hide immediately when offline
+          if (this.gates.awarenessReady) {
+            this.closeGate('awarenessReady');
+
+            // Clear cursor trails to prevent stale data across sessions
+            clearCursorTrails();
+
+            // Mark presence dirty to trigger immediate UI update
+            this.publishState.presenceDirty = true;
+            // No need to call schedulePublish() - the loop is already running
+
+            // Clear local cursor state
+            this.localCursor = undefined;
+
+            // NOTE: We keep awarenessIsDirty true if it was true,
+            // and let sendAwareness() handle the retry logic when reconnected.
+            // This ensures pending state changes are sent once back online.
+
+            // Force awareness state clear to signal departure to peers
+            if (this.yAwareness) {
+              try {
+                this.yAwareness.setLocalState(null);
+              } catch {
+                // Ignore errors during awareness cleanup
+              }
+            }
+          }
           // WebSocket disconnected
         }
-      });
+      };
+
+      // Listen for awareness updates
+      if (this.yAwareness && this._onAwarenessUpdate) {
+        this.yAwareness.on('update', this._onAwarenessUpdate);
+      }
+
+      // Set up connection gates with new handler
+      this.websocketProvider.on('status', this._onWebSocketStatus);
 
       // Listen for sync status (v3 uses 'sync' event, not 'synced')
       this.websocketProvider.on('sync', (isSynced: boolean) => {
@@ -985,9 +1322,22 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {
-    if (this.gates[gateName]) return; // Already open
+    const wasOpen = this.gates[gateName];
+    if (wasOpen) return; // Already open
 
     this.gates[gateName] = true;
+
+    // Force presence publish when both gates are open for the first time
+    // The RAF loop is already running from constructor, so just mark dirty
+    if (!wasOpen && gateName === 'firstSnapshot' && this.gates.awarenessReady) {
+      this.publishState.presenceDirty = true;
+      // No need to call schedulePublish() - the loop is already running
+    }
+    // Similar check if awarenessReady opens after firstSnapshot
+    if (!wasOpen && gateName === 'awarenessReady' && this.gates.firstSnapshot) {
+      this.publishState.presenceDirty = true;
+      // No need to call schedulePublish() - the loop is already running
+    }
 
     // Notify subscribers
     const callbacks = this.gateCallbacks.get(gateName);

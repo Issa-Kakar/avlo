@@ -25,6 +25,13 @@ describe('RenderLoop', () => {
       cssHeight: 600,
       dpr: 1,
     }),
+    getGates: () => ({
+      idbReady: true,
+      wsConnected: true,
+      wsSynced: true,
+      awarenessReady: true,
+      firstSnapshot: true,
+    }),
   });
 
   beforeEach(() => {

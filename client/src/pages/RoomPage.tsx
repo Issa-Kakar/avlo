@@ -113,7 +113,11 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
       </div>
 
       {/* Users Modal */}
-      <UsersModal isOpen={usersModalOpen} onClose={() => setUsersModalOpen(false)} />
+      <UsersModal
+        roomId={roomId}
+        isOpen={usersModalOpen}
+        onClose={() => setUsersModalOpen(false)}
+      />
     </div>
   );
 }

@@ -1,5 +1,7 @@
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
+import type { GateStatus } from '@/hooks/use-connection-gates';
+import { drawCursors } from './presence-cursors';
 
 // Re-export the actual implementation
 export { drawStrokes, clearStrokeCache } from './strokes';
@@ -59,27 +61,32 @@ export function drawAuthoringOverlays(
 }
 
 export function drawPresenceOverlays(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
+  ctx: CanvasRenderingContext2D,
+  snapshot: Snapshot,
+  view: ViewTransform,
   _viewport: ViewportInfo,
+  gates: GateStatus,
 ): void {
-  // Phase 8: Cursors and trails
+  // Phase 7: Cursors and trails implementation
   // CRITICAL GATE CHECK: Only render when BOTH gates are open
   // - G_AWARENESS_READY: Ensures awareness channel is live (WS or RTC)
   // - G_FIRST_SNAPSHOT: Ensures we have valid doc data to render against
-  // Without both, show "Presence degraded" indicator but NO cursors
+  // Without both, cursors are hidden immediately
 
   if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
     // eslint-disable-next-line no-console
-    console.log('[Layer] Presence Overlays');
+    console.log('[Layer] Presence Overlays', {
+      awarenessReady: gates.awarenessReady,
+      firstSnapshot: gates.firstSnapshot,
+      userCount: snapshot.presence.users.size,
+    });
   }
 
-  // TODO Phase 8: Implement gate checks
-  // const gateManager = /* get gate manager instance */;
-  // if (!gateManager.isOpen('G_AWARENESS_READY') || !gateManager.isOpen('G_FIRST_SNAPSHOT')) {
-  //   return; // Skip rendering cursors
-  // }
+  // Draw cursors with trails (Phase 7)
+  drawCursors(ctx, snapshot.presence, view, {
+    awarenessReady: gates.awarenessReady,
+    firstSnapshot: gates.firstSnapshot,
+  });
 }
 
 export function drawHUD(

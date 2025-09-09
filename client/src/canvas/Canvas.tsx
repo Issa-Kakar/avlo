@@ -224,6 +224,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           dpr,
         };
       },
+      getGates: () => roomDoc.getGateStatus(), // Phase 7: Provide gate status for presence rendering
       isMobile,
       onStats: import.meta.env.DEV
         ? (stats) => {
@@ -347,9 +348,21 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       const [worldX, worldY] = worldCoords;
       tool.startDrawing(e.pointerId, worldX, worldY);
+
+      // Update activity state to drawing
+      roomDoc.updateActivity('drawing');
     };
 
     const handlePointerMove = (e: PointerEvent) => {
+      // Update awareness cursor position (not on mobile)
+      if (!isMobile) {
+        const worldCoords = screenToWorld(e.clientX, e.clientY);
+        if (worldCoords) {
+          const [worldX, worldY] = worldCoords;
+          roomDoc.updateCursor(worldX, worldY);
+        }
+      }
+
       if (!tool.isDrawing()) return;
       if (e.pointerId !== tool.getPointerId()) return;
 
@@ -376,11 +389,16 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         // Can't get final point, cancel the stroke for safety
         console.warn('Failed to get final coordinates, canceling stroke');
         tool.cancelDrawing();
+        // Still update activity to idle even on cancel
+        roomDoc.updateActivity('idle');
         return;
       }
 
       const [worldX, worldY] = worldCoords;
       tool.commitStroke(worldX, worldY);
+
+      // Update activity state to idle
+      roomDoc.updateActivity('idle');
     };
 
     const handlePointerCancel = (e: PointerEvent) => {
@@ -400,6 +418,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       tool.cancelDrawing();
     };
 
+    const handlePointerLeave = () => {
+      // Clear cursor when pointer leaves canvas
+      roomDoc.updateCursor(undefined, undefined);
+    };
+
     // Set canvas styles (conditional for mobile)
     if (!isMobile) {
       // Only disable touch on desktop (preserve scrolling on mobile)
@@ -417,6 +440,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     canvas.addEventListener('pointerup', handlePointerUp, { passive: false });
     canvas.addEventListener('pointercancel', handlePointerCancel, { passive: false });
     canvas.addEventListener('lostpointercapture', handleLostPointerCapture, { passive: false });
+    canvas.addEventListener('pointerleave', handlePointerLeave, { passive: false });
 
     // CLEANUP - comprehensive cleanup on any dependency change
     return () => {
@@ -437,6 +461,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.removeEventListener('pointerup', handlePointerUp);
       canvas.removeEventListener('pointercancel', handlePointerCancel);
       canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
+      canvas.removeEventListener('pointerleave', handlePointerLeave);
 
       // Clean up tool and preview provider
       tool.destroy();
