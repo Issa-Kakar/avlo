@@ -935,9 +935,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
           this.openGate('wsConnected');
           // WebSocket connected
         } else if (event.status === 'disconnected') {
-          this.gates.wsConnected = false;
-          this.gates.wsSynced = false;
-          this.notifyGateChange();
+          this.closeGate('wsConnected');
+          this.closeGate('wsSynced');
           // WebSocket disconnected
         }
       });
@@ -954,8 +953,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           this.openGate('wsSynced');
           // WebSocket synced
         } else {
-          this.gates.wsSynced = false;
-          this.notifyGateChange();
+          this.closeGate('wsSynced');
         }
       });
 
@@ -1003,6 +1001,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
     // Do NOT open it here based on other gates
+  }
+
+  private closeGate(gateName: keyof typeof this.gates): void {
+    if (!this.gates[gateName]) return; // Already closed
+
+    this.gates[gateName] = false;
+
+    // Notify gate subscribers about the change
+    this.notifyGateChange();
   }
 
   private notifyGateChange(): void {
