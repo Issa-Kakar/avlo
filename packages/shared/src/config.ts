@@ -150,6 +150,7 @@ export const WEBRTC_CONFIG = {
   // Buffer thresholds
   DATACHANNEL_BUFFER_HIGH_BYTES: getEnvNumber('DATACHANNEL_BUFFER_HIGH_BYTES', 128 * 1024),
   WEBSOCKET_BUFFER_HIGH_BYTES: getEnvNumber('WEBSOCKET_BUFFER_HIGH_BYTES', 64 * 1024),
+  WEBSOCKET_BUFFER_CRITICAL_BYTES: getEnvNumber('WEBSOCKET_BUFFER_CRITICAL_BYTES', 256 * 1024),
 
   // Signaling
   SIGNALING_URLS: getEnvString('Y_SIGNALING_URLS', 'wss://signaling.yjs.dev').split(','),
@@ -157,6 +158,23 @@ export const WEBRTC_CONFIG = {
   TURN_USERNAME: getEnvString('Y_TURN_USER', ''),
   TURN_PASSWORD: getEnvString('Y_TURN_PASS', ''),
   RTC_PASSWORD_SALT: getEnvString('Y_RTC_PASSWORD_SALT', 'avlo-rtc-salt'),
+} as const;
+
+// Alias for Phase 7 WS-only awareness implementation
+// Re-exports only awareness-relevant fields from WEBRTC_CONFIG
+export const AWARENESS_CONFIG = {
+  // WS cadence knobs used in Phase 7
+  AWARENESS_HZ_BASE_WS: WEBRTC_CONFIG.AWARENESS_HZ_BASE_WS,
+  AWARENESS_HZ_DEGRADED: WEBRTC_CONFIG.AWARENESS_HZ_DEGRADED,
+
+  // Interval helpers
+  AWARENESS_BASE_INTERVAL_MS: WEBRTC_CONFIG.AWARENESS_BASE_INTERVAL_MS,
+  AWARENESS_MAX_INTERVAL_MS: WEBRTC_CONFIG.AWARENESS_MAX_INTERVAL_MS,
+  AWARENESS_JITTER_MS: WEBRTC_CONFIG.AWARENESS_JITTER_MS,
+
+  // WS backpressure thresholds (Phase 7)
+  WEBSOCKET_BUFFER_HIGH_BYTES: WEBRTC_CONFIG.WEBSOCKET_BUFFER_HIGH_BYTES,
+  WEBSOCKET_BUFFER_CRITICAL_BYTES: WEBRTC_CONFIG.WEBSOCKET_BUFFER_CRITICAL_BYTES,
 } as const;
 
 // ============================================
@@ -417,6 +435,7 @@ if (getEnvString('NODE_ENV', 'development') !== 'production') {
   Object.freeze(STROKE_CONFIG);
   Object.freeze(TEXT_CONFIG);
   Object.freeze(WEBRTC_CONFIG);
+  Object.freeze(AWARENESS_CONFIG);
   Object.freeze(BACKOFF_CONFIG);
   Object.freeze(RATE_LIMIT_CONFIG);
   Object.freeze(PERFORMANCE_CONFIG);

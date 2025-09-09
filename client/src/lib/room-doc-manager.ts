@@ -336,8 +336,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     >();
 
     // For now, return proper structure even if awareness not connected
-    // This will be populated in Phase 8 when awareness is integrated
-    // Example of what will be added in Phase 8:
+    // This will be populated in Phase 7 when awareness is integrated
+    // Example of what will be added in Phase 7:
     // if (this.awareness) {
     //   this.awareness.getStates().forEach((state, clientId) => {
     //     if (state.userId && state.cursor) {
