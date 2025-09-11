@@ -1465,7 +1465,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const stateVector = Y.encodeStateVector(this.ydoc);
     // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
     // Create a hash-like key from first 100 bytes + length for uniqueness
-    // This is sufficient for cosmetic cache invalidation purposes
+
     const svKey = this.createSafeStateVectorKey(stateVector);
 
     // Use helper to get current scene

@@ -3,31 +3,12 @@ import { PresenceView, ViewTransform } from '@avlo/shared';
 interface CursorTrail {
   points: Array<{ x: number; y: number; t: number }>;
   lastUpdate: number;
-  lastPushTime: number;
-  lastMovement: number; // tracks when cursor actually moved (for stop detection)
-  lastPosition: { x: number; y: number } | null; // to detect actual movement
-  length: number; // total world-distance of the polyline
 }
 
 const cursorTrails = new Map<string, CursorTrail>();
-
-// Optimal whiteboard UX: smooth digital ink that flows naturally
-const MAX_TRAIL_POINTS = 22;           // More points for ultra-smooth curves
-const MAX_TRAIL_AGE = 550;             // ms, longer visibility for gesture clarity
-const TRAIL_DECAY_TAU = 260;           // ms, slower fade for better visibility
-const MIN_POINT_DIST = 0.35;           // world units, finer sampling for smoothness
-const MIN_POINT_DT = 8;                // ms, 125Hz sampling for fluid motion
-const MAX_TRAIL_LENGTH = 200;          // world units, comfortable trail length
-
-// Natural stop behavior - no jarring transitions
-const STOP_THRESHOLD = 80;             // ms of no movement = "stopped" 
-const STOP_FADE_MULTIPLIER = 0.45;     // Gentle fade when stopped (55% reduction)
-const MOVEMENT_EPSILON = 0.08;         // world units, sensitive movement detection
-
-// Visual polish for professional feel
-const TRAIL_LINE_WIDTH_MAX = 2.2;      // px at head, slightly thicker
-const TRAIL_LINE_WIDTH_MIN = 0.4;      // px at tail, thinner taper
-const FADE_POWER = 1.5;                // Gentler power curve for natural fade
+const MAX_TRAIL_POINTS = 24;
+const MAX_TRAIL_AGE = 600; // ms
+const TRAIL_DECAY_RATE = 320; // ms
 
 // Helper to check if user prefers reduced motion
 function prefersReducedMotion(): boolean {
@@ -56,6 +37,7 @@ export function drawCursors(
   // Performance optimizations based on peer count
   const peerCount = presence.users.size;
   const enableTrails = peerCount <= 25 && !prefersReducedMotion();
+  const maxPoints = peerCount > 10 ? 12 : MAX_TRAIL_POINTS; // Reduce trail buffer size under load
 
   // Update trails and render cursors
   presence.users.forEach((user, userId) => {
@@ -67,54 +49,36 @@ export function drawCursors(
     // Update trail
     let trail = cursorTrails.get(userId);
     if (!trail) {
-      trail = { 
-        points: [], 
-        lastUpdate: now, 
-        lastPushTime: 0, 
-        lastMovement: now,
-        lastPosition: null,
-        length: 0 
-      };
+      trail = { points: [], lastUpdate: now };
       cursorTrails.set(userId, trail);
     }
 
-    // Check if cursor actually moved (for stop detection)
-    const hasMoved = !trail.lastPosition || 
-      Math.hypot(user.cursor.x - trail.lastPosition.x, user.cursor.y - trail.lastPosition.y) > MOVEMENT_EPSILON;
-    
-    if (hasMoved) {
-      trail.lastMovement = now;
-      trail.lastPosition = { x: user.cursor.x, y: user.cursor.y };
+    // Add new point if moved enough (matches cursor quantization)
+    const lastPoint = trail.points[trail.points.length - 1];
+    const distance = lastPoint
+      ? Math.hypot(user.cursor.x - lastPoint.x, user.cursor.y - lastPoint.y)
+      : Infinity;
+
+    if (distance > 0.5) {
+      // 0.5 world units threshold (same as cursor quantization)
+      trail.points.push({
+        x: user.cursor.x,
+        y: user.cursor.y,
+        t: now,
+      });
+      // Update lastUpdate when adding a point
+      trail.lastUpdate = now;
+    } else {
+      // Still update lastUpdate to keep aging accurate even if not moving
+      trail.lastUpdate = now;
     }
 
-    // --- add or skip point
-    const last = trail.points[trail.points.length - 1];
-    const dx = last ? (user.cursor.x - last.x) : 0;
-    const dy = last ? (user.cursor.y - last.y) : 0;
-    const moved = last ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY;
-    const dt = last ? (now - trail.lastPushTime) : Number.POSITIVE_INFINITY;
-
-    if (moved >= MIN_POINT_DIST && dt >= MIN_POINT_DT) {
-      trail.points.push({ x: user.cursor.x, y: user.cursor.y, t: now });
-      trail.lastPushTime = now;
-      trail.length += Number.isFinite(moved) ? moved : 0;
-    }
-    // Always refresh lastUpdate for cleanup tracking
-    trail.lastUpdate = now;
-
-    // --- trim by age, count, and total length
-    while (
-      trail.points.length > 1 &&
-      (
-        (now - trail.points[0].t) > MAX_TRAIL_AGE ||
-        trail.points.length > MAX_TRAIL_POINTS ||
-        trail.length > MAX_TRAIL_LENGTH
-      )
-    ) {
-      const p0 = trail.points.shift()!;
-      const p1 = trail.points[0];
-      if (p1) {
-        trail.length -= Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    // Trim old points (using dynamic maxPoints based on load)
+    while (trail.points.length > 0) {
+      if (now - trail.points[0].t > MAX_TRAIL_AGE || trail.points.length > maxPoints) {
+        trail.points.shift();
+      } else {
+        break;
       }
     }
 
@@ -149,66 +113,32 @@ function drawTrail(
   if (trail.points.length < 2) return;
 
   ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
-  // Detect if cursor has stopped moving
-  const timeSinceMovement = now - trail.lastMovement;
-  const isStopped = timeSinceMovement > STOP_THRESHOLD;
-  
-  // Apply aggressive fade multiplier when stopped
-  const stopFade = isStopped ? STOP_FADE_MULTIPLIER : 1.0;
+  // Draw each segment with its own alpha for proper gradient effect
+  for (let i = 1; i < trail.points.length; i++) {
+    const prevPoint = trail.points[i - 1];
+    const currPoint = trail.points[i];
 
-  // Three-pass rendering for ultra-smooth appearance
-  const passes = [
-    { widthMultiplier: 3.0, alphaMultiplier: 0.15 }, // Outer glow
-    { widthMultiplier: 1.8, alphaMultiplier: 0.35 }, // Inner glow
-    { widthMultiplier: 1.0, alphaMultiplier: 1.0 }   // Main stroke
-  ];
+    // Calculate alpha based on current point's age
+    const age = now - currPoint.t;
+    const alpha = Math.exp(-age / TRAIL_DECAY_RATE);
 
-  for (const pass of passes) {
-    ctx.strokeStyle = color;
-    
-    // Draw each segment with its own alpha and width for gradient effect
-    for (let i = 1; i < trail.points.length; i++) {
-      const a = trail.points[i - 1];
-      const b = trail.points[i];
+    if (alpha < 0.01) continue;
 
-      // Calculate normalized position in trail (0 = tail, 1 = head)
-      const positionInTrail = i / trail.points.length;
-      
-      // Calculate age-based fade with smoother curve for visibility
-      const age = now - b.t;
-      const normalizedAge = Math.min(age / TRAIL_DECAY_TAU, 2.5); // cap at 2.5x tau
-      const baseFade = Math.max(0, 1 - Math.pow(normalizedAge, FADE_POWER));
-      
-      // Position-based fade with softer curve for smoother gradient
-      const positionFade = 0.3 + (0.7 * Math.pow(positionInTrail, 0.8));
-      
-      // Combine all fade factors
-      let alpha = baseFade * stopFade * positionFade * pass.alphaMultiplier;
-      
-      // Skip if too faint (lower threshold for better visibility)
-      if (alpha < 0.01) continue;
+    // Transform both points
+    const [prevX, prevY] = viewTransform.worldToCanvas(prevPoint.x, prevPoint.y);
+    const [currX, currY] = viewTransform.worldToCanvas(currPoint.x, currPoint.y);
 
-      // Smoother width taper for more elegant appearance
-      const widthCurve = 0.5 + (0.5 * Math.pow(positionInTrail, 0.7));
-      const baseWidth = TRAIL_LINE_WIDTH_MIN + 
-        (TRAIL_LINE_WIDTH_MAX - TRAIL_LINE_WIDTH_MIN) * widthCurve;
-      const width = baseWidth * pass.widthMultiplier;
-      
-      // Transform both points
-      const [ax, ay] = viewTransform.worldToCanvas(a.x, a.y);
-      const [bx, by] = viewTransform.worldToCanvas(b.x, b.y);
-
-      // Draw segment with calculated alpha and width
-      ctx.globalAlpha = alpha;
-      ctx.lineWidth = width;
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-    }
+    // Draw this segment with its specific alpha
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(prevX, prevY);
+    ctx.lineTo(currX, currY);
+    ctx.stroke();
   }
 
   ctx.restore();

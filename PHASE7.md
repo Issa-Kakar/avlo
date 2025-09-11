@@ -1013,9 +1013,6 @@ function drawNameLabel(
    }
    ```
 
-4. **Update Tests** (`client/src/renderer/__tests__/RenderLoop.test.ts`):
-   - Add `getGates` to defaultConfig() returning all gates as true for tests
-
 ### STEP 6: Implement Roster UI
 
 #### 6.1 Update UsersModal Component

@@ -326,7 +326,7 @@ export class RenderLoop {
       ctx.restore();
     });
 
-    // Draw pass (world transform)
+    // Draw pass 1: World content (world transform)
     stage.withContext((ctx) => {
       // Apply world transform: scale first, then translate
       // Note: withContext starts with the base DPR transform from CanvasStage
@@ -349,7 +349,7 @@ export class RenderLoop {
         visibleWorldBounds: visibleBounds,
       };
 
-      // Draw layers in canonical order
+      // Draw world layers only
       // LINE WIDTH POLICY:
       // - World content (strokes): ctx.lineWidth = style.size (world units)
       // - Hairlines/HUD: ctx.lineWidth = 1 / view.scale (targets ~1 CSS pixel, becomes DPR device pixels)
@@ -371,9 +371,32 @@ export class RenderLoop {
         drawPreview(ctx, preview); // Draws in world coordinates (transform already applied)
       }
 
-      // Phase 7: Get gates for presence rendering
+      // NO PRESENCE HERE - context will be restored after this block
+    });
+
+    // Draw pass 2: Presence overlays (screen space with DPR only)
+    stage.withContext((ctx) => {
+      // CRITICAL: Start fresh with DPR-only transform
+      // withContext already has DPR applied by CanvasStage, so we just draw in CSS pixels
+      // No additional world transform here!
+
+      const augmentedViewport = {
+        ...viewport,
+        visibleWorldBounds: getVisibleWorldBounds(
+          viewport.cssWidth,
+          viewport.cssHeight,
+          view.scale,
+          view.pan,
+        ),
+      };
+
+      // Get gates and current time for presence rendering
       const gates = getGates();
+
+      // Draw presence in screen space
       drawPresenceOverlays(ctx, snapshot, view, augmentedViewport, gates);
+
+      // HUD also draws in screen space
       drawHUD(ctx, snapshot, view, augmentedViewport); // Future: minimap, toasts (never exported)
     });
 

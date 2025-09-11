@@ -627,7 +627,7 @@ interface StrokeView {
 -   **UI events** (pointer/mouse/keyboard) MUST NOT mutate Y state directly.
 -   All mutations pass through **mutate(fn)** at **pointer-up** or explicit actions.
 -   **Canvas renderer**:
-    -   Renders at **60 FPS** with dirty-rect culling. Use dirty-rect culling only when transform is unchanged; on transform change, fall back to full clear (or tile cache).
+    -   Renders at **60 FPS** with dirty-rect culling. Use dirty-rect culling only when transform is unchanged; on transform change, fall back to full clear (or tile cache). **CRITICAL UPDATE**: FULL CLEAR IS ON EVERY SNAPSHOT UPDATE FOR NOW, DUE TO SINGLE CANVAS ARCHIECTURE AND SNAPSHOT PUBLISHES ON ANY AWARENESS/DOC UPDATE
     -   **Scene tick (Clear Board)**: perform a full canvas clear before drawing the new scene. Dirty-rects may leave stale pixels after refresh; treat scene change as a full-clear boundary.
     -   **No auto-pan** due to remote actions.
     -   **Hit-testing** via RBush built from Snapshot; never touches Y live data. **Draw order for Canvas**:
@@ -838,8 +838,9 @@ Per remote user keep a rolling buffer of **12--24** points `{x, y, t}` in **worl
 -   If gaps > **60 ms**, linearly interpolate **1--2** points to avoid segments snapping.
 -   Merge with existing **receiver smoothing** (do not double‑smooth): if a predicted point exists for the current frame, prefer it.
 
-### Render loop (overlay canvas)
+### Render loop (canvas)
 
+-  **CRITICAL**: "Overlay canvas below is deferred, precense and strokes are drawn on the same cavnas, and published in the same snapshot if either awareness or doc is dirty
 -   Single overlay `<canvas>` above the stage; render at `requestAnimationFrame`.
 -   For each trail, draw a polyline through the buffer; alpha = `exp(-(now - t)/τ)` with τ≈**240--320 ms**.
 -   Cap stroke width between **1--3 px**. Use **butt** caps to reduce halos; join style **round**.

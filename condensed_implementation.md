@@ -3,44 +3,52 @@
 ## Phase 2: Core Data Layer & Models
 
 ### 2.1 Define Core TypeScript Types and Interfaces
+
 - Create coordinate types (StrokePoint, bbox, SceneIdx, ULID aliases)
 - Define document structures (Stroke, TextBlock, CodeCell, Output, Meta) per OVERVIEW.MD §4
 - Create Snapshot and view types (immutable, frozen, never null)
 - Add ViewTransform interface with world↔canvas conversion methods
 
 ### 2.2 Implement RoomDocManager Foundation
+
 - Create RoomDocManager class with private Y.Doc instance (guid: roomId, never mutated)
 - Initialize Y.Doc structure in single transaction (root → v, meta, strokes, texts, code, outputs)
 - Set up helper methods that traverse root on demand (never cache Y references)
 - Implement mutate(fn) wrapper with minimal guards (read-only ≥15MB, mobile, 2MB frame)
 
 ### 2.3 Implement Snapshot Publishing System
+
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
 - Implement RAF-based publishing (≤60 FPS, dirty flags; **no `svKey`-based dedupe in Phase 6**)
 - **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. **We compute and attach it to each snapshot for diagnostics/tooling only; it is not consulted to decide whether to publish.**
 
 ### 2.4 Set Up Subscription Management
+
 - Implement subscribeSnapshot with immediate callback on subscribe
 - Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
 - Create subscribeRoomStats (null initially, updates on persist_ack)
-- **COMPLETED BUT DEFERRAL**:  Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed but is *not* used for publish/change detection in Phase 6; no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
+- **COMPLETED BUT DEFERRAL**: Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed but is _not_ used for publish/change detection in Phase 6; no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
 
 ## Phase 3: Basic Canvas Infrastructure
 
 ### 3.1 Set Up Canvas Element and Context
+
 - Create Canvas React component with ref to DOM element
 - Configure ResizeObserver, DPR handling, and 2D context
 - Apply DPR once with setTransform(dpr,0,0,dpr,0,0) - never mix into view transforms
 
 ### 3.2 Implement Coordinate Transform System
+
 **Note:** See OVERVIEW.MD §3.2 for authoritative transform formulas
+
 - Define ViewTransform with scale and pan (world units)
 - worldToCanvas: `(world - pan) * scale`
 - canvasToWorld: `canvas / scale + pan`
 - Context transform: `scale()` then `translate(-pan.x, -pan.y)`
 
 ### 3.3 Build Render Loop Foundation
+
 - Create RAF-driven render loop subscribing to snapshots (ref, not state)
 - Implement dirty rectangle tracking (full clear if transform changed)
 - Define render order: Background → Strokes → Text → Overlays → Presence → HUD
@@ -49,23 +57,27 @@
 ## Phase 4: Stroke Data Model & Rendering
 
 ### 4.1 Implement Stroke Rendering Pipeline
+
 - Store points as flat `[x,y,x,y,...]` arrays (plain number[], never Float32Array in Y.Doc)
 - Build Path2D cache per stroke.id (strokes immutable post-commit)
 - Render strokes: strokeStyle=color, lineWidth=size (world units), globalAlpha=opacity
 - Hairlines/HUD use `1/scale` for ~1 device pixel
 
 ### 4.2 Tool-Specific Rendering
+
 - Pen: Standard rendering, round caps/joins
 - Highlighter: opacity=0.25, normal blending (source-over)
 - Respect scene order - no tool-based reordering
 
 ### 4.3 Performance Notes
+
 - Skip strokes with bbox diagonal <2px in screen space
 - Render cache (if present) is cosmetic only and unused by Phase 6
 
 ## Phase 5: Drawing Input System
 
 ### 5.1 Implement Pointer Event Handling
+
 - Attach pointer events with setPointerCapture on down, release on up/cancel
 - RAF-coalesce pointermove events with pendingPoint buffer
 - Create DrawingTool class managing state, preview, and tool settings (frozen at pointerdown)
@@ -73,25 +85,29 @@
 - Mobile detection: UA string + maxTouchPoints>1 for iPadOS
 
 ### 5.2 Build Preview Rendering
+
 - Add setPreviewProvider() to RenderLoop for preview access
 - Render preview at 0.35 opacity as authoring overlay (world coordinates)
 - Invalidate old and new bounds on pointermove
 - Mobile gets no preview (view-only enforcement)
 
 ### 5.3 Commit a Stroke
+
 - Validate: minimum 2 points (4 values), flush pending points
 - Apply Douglas-Peucker simplification in world units:
   - Base tolerance: pen 0.8, highlighter 0.5
   - Budgets: ≤128KB encoded, ≤10k points
-  - Retry with tol*=1.4 if over, then hard downsample
+  - Retry with tol\*=1.4 if over, then hard downsample
 - Commit via mutate(): generate ULID, assign scene at commit, push to Y.Array
 
 ### Phase 6A: Offline-First Doc Persistence & Boot Gates (y-indexeddb + manager plumbing)
+
 Local persistence policy (normative):
 Persist the entire Y.Doc per room in IndexedDB under avlo.v1.rooms.<roomId>.
 Initialize with new Y.Doc({ guid: roomId }) once; attach y-indexeddb immediately and do not wait to connect WS.
 Never change guid. If remapping is required, create a new doc and apply updates.
 Do not delete the room’s IDB data on leave; expose Delete local copy in My Rooms.
+
 ### 6A.1 Attach y-indexeddb (provider comes first)
 
 #### 6A.1.1 Wire provider inside RoomDocManager
@@ -112,13 +128,13 @@ Do not delete the room’s IDB data on leave; expose Delete local copy in My Roo
 3. On timeout, continue with an empty doc; keep the provider attached to apply late updates when the browser finishes spinning up IndexedDB.
 4. Dev-only debug log; keep metric() calls as no-ops in prod.
 5. Wrap provider creation in try/catch. On exception:
-Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue with EmptySnapshot + rAF; keep drawing offline; log a dev-only debug line (no prod metric), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.) 
+   Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue with EmptySnapshot + rAF; keep drawing offline; log a dev-only debug line (no prod metric), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.)
 
 #### 6A.1.3 Dirty-flag integration for publish loop
 
 1. When IDB applies a batch, flip the manager's **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
 2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS. **In Phase 6, `svKey` is not used to suppress publishes; any doc-dirty event schedules a publish unconditionally.**
-**Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
+   **Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
 
 **MVP pivot:** **Do not** read or write any render cache in Phase 6, and **do not** persist `lastKnownSvKey`. The render cache remains present in the codebase but is dormant.
 
@@ -151,7 +167,7 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 #### 6A.3.2 Fail-fast with friendly UI
 
 1. If validation fails, show a small in-app error panel explaining the missing/invalid setting and disable network-dependent controls; offline editing from IDB can still proceed once Y is ready.
-2. Log a single diagnostic (dev only). 
+2. Log a single diagnostic (dev only).
 
 ### 6A.4 Minimal “Recent Rooms” readiness (unblocks UI later)
 
@@ -165,13 +181,13 @@ Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue wi
 #### 6A.5.1 Deterministic teardown
 
 On `destroy()` (synchronous implementation):
-1) stop rAF 
-2) unobserve Y 
-3) if (wsProvider) { wsProvider.disconnect(); wsProvider.destroy(); wsProvider = null }
-4) if (idbProvider) { idbProvider.destroy(); idbProvider = null }
-5) try { ydoc.destroy() } catch {}
-6) mark `this._destroyed = true` so subsequent calls are no-ops.
 
+1. stop rAF
+2. unobserve Y
+3. if (wsProvider) { wsProvider.disconnect(); wsProvider.destroy(); wsProvider = null }
+4. if (idbProvider) { idbProvider.destroy(); idbProvider = null }
+5. try { ydoc.destroy() } catch {}
+6. mark `this._destroyed = true` so subsequent calls are no-ops.
 
 #### 6A.5.2 Concurrency assertions (dev-only)
 
@@ -179,7 +195,7 @@ On `destroy()` (synchronous implementation):
 2. Assert that no UI layer imports `yjs`/providers directly (ESLint `no-restricted-imports`).
 3. Assert that provider attach happens **after** `Y.Doc` construction and before any WS attempts (to honor offline-first ordering once WS is introduced).
 
-------
+---
 
 ## Phase 6B: Server — y-websocket + Redis persistence + PostgreSQL/Prisma metadata
 
@@ -209,9 +225,10 @@ On `destroy()` (synchronous implementation):
 #### 6B.3.1 Connect and harden
 
 1. Initialize a Redis client (commands) and a separate pub/sub if needed later.
-2. Configure reconnect backoff; 
+2. Configure reconnect backoff;
 3. Ensure AOF is enabled at the deployment (infra) layer.
-Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server never issues DEL/cron deletes. On missing key, treat the room as expired.
+   Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server never issues DEL/cron deletes. On missing key, treat the room as expired.
+
 #### 6B.3.2 Persistence adapter
 
 1. On `doc-update` from the WS server:
@@ -251,7 +268,7 @@ Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server
 #### 6B.5.2 Room load & save hooks
 
 1. On the first client join for a room, attempt `loadDoc(roomId)`; if present, apply to the in-memory Y.Doc that the WS server maintains for that room.
-2. On each **doc update** event from the WS server, apply delta to in memory room Y.Doc, compute full state(i.e. from empty state), 
+2. On each **doc update** event from the WS server, apply delta to in memory room Y.Doc, compute full state(i.e. from empty state),
 3. `gzip(level=4)` the full state and `SETEX room:<roomId>`.
 4. Update Prisma `size_bytes` with the **compressed** length and set `lastWriteAt`.
 5. Extend TTL to `ROOM_TTL_DAYS` on each successful persist; do not extend on awareness/control messages. Extend TTL only on accepted writes.
@@ -291,9 +308,10 @@ Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server
 2. **Out of scope (MVP).** Do not implement server slow-socket handling. Run the official `@y/websocket-server` unchanged; rely exclusively on client-side skipping of awareness frames based on `WebSocket.bufferedAmount`.
 
 ### 6B.8 Health
+
 1. `GET /healthz` returns 200 + simple Redis ping.
 
-------
+---
 
 ## Phase 6C: Client — WebSocket provider, metadata wiring (TanStack Query), gates & failure modes
 
@@ -339,7 +357,7 @@ Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server
 1. On successful metadata fetch, call the manager’s internal setter to update the **RoomStats** stream (`bytes`, `cap`, optional `expiresAt`).
 2. The existing `subscribeRoomStats` will propagate to the UI (header pill at 13 MB, banner at 15 MB).
 3. If the endpoint returns 404 (expired), set stats to `null`, surface a banner explaining expiry, and leave the local IDB copy intact for “create new from local” later.
-Do not recreate keys from Postgres; 404 is final.
+   Do not recreate keys from Postgres; 404 is final.
 
 #### 6C.2.3 Invalidation policy
 
@@ -391,36 +409,43 @@ Do not recreate keys from Postgres; 404 is final.
 
 TODO IN FUTURE PHASE 7: **`G_AWARENESS_READY`** opens when WS connected (no timeout, no remote state requirement). Cursors/presence render only when both `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. When offline: presence is best-effort; cursors simply hide
 
-------
+---
 
 ## Phase 6D: UI Integration & Routing
 
 ### 6D.1 Gate Subscription System
+
 **Critical Fix**: Prevent infinite re-render loops by using stable primitive snapshots with `useSyncExternalStore`.
+
 - Add `subscribeGates()` method to RoomDocManager with 150ms debounce
-- Return string primitives (`"0|1|0|1|1"`) instead of objects for referential stability  
+- Return string primitives (`"0|1|0|1|1"`) instead of objects for referential stability
 - Use `queueMicrotask` to defer callbacks, avoiding synchronous state updates
 - Call `notifyGateChange()` when gates change (IDB ready, WS connected/synced, first snapshot)
 
 ### 6D.2 React Router Integration
+
 - Routes: `/` (test harness), `/room/:roomId` (dynamic rooms), `/test` (alt test path)
 - Extract CanvasWithControls to RoomPage component
 - Use `useParams()` for dynamic room ID, replace hardcoded 'test-room-001'
 - Wrap with ViewTransformProvider, reset view on room change
 
 ### 6D.3 Zustand Store Integration
+
 Create guarded `toolbarToDeviceUI` adapter:
+
 - Default unknown tools to 'pen', clamp size 1-64, validate hex colors
 - Wire Canvas.tsx to use Zustand store instead of static deviceUI
 - Tool state frozen at pointer-down (existing DrawingTool mechanism)
 
 ### 6D.4 UI Components
+
 - **ErrorBoundary**: React error boundary for graceful failures
 - **ConnectionStatus**: Show "Online"/"Offline" only (no "Syncing" state)
 - **Toolbar**: Pen/highlighter buttons, size slider, color picker (others disabled)
 - **ClearBoardButton**: Optimistic lastSeenScene update, no cooldown
 
 ### 6D.5 Mobile Support
+
 MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 ## Phase 7: Awareness & Presence System (WS-only, Phase-6-style expansion)
@@ -436,13 +461,13 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 1. **RoomDocManager** constructs exactly one **awareness** instance bound to its existing `Y.Doc`. UI **must not** import Yjs/providers directly. Awareness lifetime equals the manager's lifetime. Presence is also injected into every published **Snapshot** (`snapshot.presence`).
 2. **Import note:** Use `import { Awareness as YAwareness } from 'y-protocols/awareness'` (don't import from y-websocket) to avoid colliding with the app's Awareness type.
 3. Public surface (unchanged):
-   * `subscribePresence(cb)` (throttled view emission).
-   * Presence derived view is included in Snapshots published ≤ 60 FPS.&#x20;
+   - `subscribePresence(cb)` (throttled view emission).
+   - Presence derived view is included in Snapshots published ≤ 60 FPS.&#x20;
 
 #### 7A.2 Provider wiring & gates (WS-only in this phase)
 
 1. **Attach y-websocket awareness immediately** after WS connect; open `G_WS_CONNECTED` on socket open and `G_WS_SYNCED` after first state-vector sync. Awareness frames may flow as soon as `G_WS_CONNECTED` is open.
-2. **Awareness readiness**: 
+2. **Awareness readiness**:
    - **Opens** `G_AWARENESS_READY` when **WS connected** (no timeout, no remote state requirement)
    - **Closes** `G_AWARENESS_READY` when **WS disconnected** (immediate, clears local state)
    - Presence UI renders only when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`
@@ -458,9 +483,9 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 1. Generate a stable **per-tab `userId`** (ULID) on manager construct; store in memory only.
 2. **Profile** defaults: `{ name, color }`.
+   - `name`: random from **"adjective + animal"** lists (ASCII; sanitized; ≤40 chars). Generated using `crypto.getRandomValues()` for unpredictability. This avoids PII and generates fresh labels on each tab load. **UI does not allow changing the name in Phase 7.**&#x20;
+   - `color`: random from a fixed palette using `crypto.getRandomValues()`; vetted `#RRGGBB` values; optional UI to change color is allowed.
 
-   * `name`: random from **"adjective + animal"** lists (ASCII; sanitized; ≤40 chars). Generated using `crypto.getRandomValues()` for unpredictability. This avoids PII and generates fresh labels on each tab load. **UI does not allow changing the name in Phase 7.**&#x20;
-   * `color`: random from a fixed palette using `crypto.getRandomValues()`; vetted `#RRGGBB` values; optional UI to change color is allowed.
 3. **Local awareness payload** (never persisted):
 
    ```ts
@@ -474,13 +499,12 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7B.2 Activity sources
 
-* **Cursor**: on `pointermove` over the stage, compute **world** coords via current `ViewTransform`; schedule emit. **No cursor emits on mobile** (view-only).
-* **Pointer leave / off-stage**: when the local pointer leaves the drawable stage (or pointer capture ends while not over stage), set cursor to undefined in the full awareness state; do not retain the last position. This ensures remote peers stop drawing the dot/label immediately; their trails will age out naturally. (Mobile still emits no cursor.)
-* **Activity**:
-
-  * `drawing` between pointerdown…pointerup (DrawingTool).
-  * `typing` while Monaco editor focused.
-  * `idle` otherwise (window blur sets `idle` immediately).&#x20;
+- **Cursor**: on `pointermove` over the stage, compute **world** coords via current `ViewTransform`; schedule emit. **No cursor emits on mobile** (view-only).
+- **Pointer leave / off-stage**: when the local pointer leaves the drawable stage (or pointer capture ends while not over stage), set cursor to undefined in the full awareness state; do not retain the last position. This ensures remote peers stop drawing the dot/label immediately; their trails will age out naturally. (Mobile still emits no cursor.)
+- **Activity**:
+  - `drawing` between pointerdown…pointerup (DrawingTool).
+  - `typing` while Monaco editor focused.
+  - `idle` otherwise (window blur sets `idle` immediately).&#x20;
 
 #### 7B.3 Cadence & **client backpressure**
 
@@ -488,38 +512,38 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
    `interval = clamp(90ms + 3ms * max(0, N - 10), 75ms, 150ms)` with ±10 ms jitter; trailing-edge coalescing.
    This yields **~10–13 Hz** in small rooms and **~6–7 Hz** as N grows.
 2. **WS backpressure (client)**:
-   * If `WebSocket.bufferedAmount > 64 KB` → **skip** this awareness frame (freshness over reliability).
-   * If `≥ 256 KB` → keep skipping until it drains **below 64 KB**.
+   - If `WebSocket.bufferedAmount > 64 KB` → **skip** this awareness frame (freshness over reliability).
+   - If `≥ 256 KB` → keep skipping until it drains **below 64 KB**.
 3. **Hidden tab**: timers naturally drop to ~8 Hz via rAF throttling; no extra timers.
 4. **Low FPS/Battery**: manager may halve sender rate when render loop reports < 30 FPS sustained.
 
 #### 7B.4 Heartbeats
 
-* **No app-level pings**. When state doesn’t change, we stay silent. Liveness derives from receive-side and provider disconnects.
+- **No app-level pings**. When state doesn’t change, we stay silent. Liveness derives from receive-side and provider disconnects.
 
 ### 7C: Receive pipeline — ordering, smoothing, **no fade staleness**
 
 #### 7C.1 Ingest & ordering
 
-* Keep `Map<userId, PeerPresence>` with last accepted `{seq, ts, cursor, activity, name, color}`.
-* Drop frames with `seq <= last.seq` from that sender (arrival order + seq wins; `ts` advisory).&#x20;
+- Keep `Map<userId, PeerPresence>` with last accepted `{seq, ts, cursor, activity, name, color}`.
+- Drop frames with `seq <= last.seq` from that sender (arrival order + seq wins; `ts` advisory).&#x20;
 
 #### 7C.2 Smoothing & prediction
 
-* Store last two **world** points & velocities; project to canvas **per frame** using current `ViewTransform`.
-* Lerp 1–2 frames between updates; **one-frame dead-reckon** on a missed tick. Avoid double-smoothing with trails.&#x20;
+- Store last two **world** points & velocities; project to canvas **per frame** using current `ViewTransform`.
+- Lerp 1–2 frames between updates; **one-frame dead-reckon** on a missed tick. Avoid double-smoothing with trails.&#x20;
 
 #### 7C.3 Staleness policy (no stale fade; hide on leave/absent cursor)
 
-* **Dot/label visibility**: show a peer's dot + tiny name only when that peer's cursor is present in the latest accepted awareness state. If cursor is absent (sender left the stage) or the peer disconnects, hide the dot/label immediately.
-* **Trails**: receivers keep a rolling world-space buffer that fades by age (α = exp(-(now - t)/τ)), and naturally disappears once points age out.
-* **No "fade to invisible" due to staleness**: we never keep a frozen cursor on screen; visibility is strictly tied to cursor presence or connection state.
-* **Roster presence**: show only a roster list once clicked on, and a **header badge** in the corner. **No "connected for 15 s" grace and no "away" state**; remove the peer immediately when leave/disconnect is reported.&#x20;
+- **Dot/label visibility**: show a peer's dot + tiny name only when that peer's cursor is present in the latest accepted awareness state. If cursor is absent (sender left the stage) or the peer disconnects, hide the dot/label immediately.
+- **Trails**: receivers keep a rolling world-space buffer that fades by age (α = exp(-(now - t)/τ)), and naturally disappears once points age out.
+- **No "fade to invisible" due to staleness**: we never keep a frozen cursor on screen; visibility is strictly tied to cursor presence or connection state.
+- **Roster presence**: show only a roster list once clicked on, and a **header badge** in the corner. **No "connected for 15 s" grace and no "away" state**; remove the peer immediately when leave/disconnect is reported.&#x20;
 
 #### 7C.4 Deriving the `PresenceView`
 
-* On any accepted awareness update **or** transform change, mark **awareness-dirty**.
-* Next rAF, compute readonly `PresenceView`:
+- On any accepted awareness update **or** transform change, mark **awareness-dirty**.
+- Next rAF, compute readonly `PresenceView`:
 
   ```ts
   interface PresenceView {
@@ -540,11 +564,11 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 1. Render order: world → authoring overlays → **presence** → HUD. Export excludes presence.
 2. **Cursor glyph (tiny pointer, not a dot)**:
-   * Draw in screen space at cursorCanvas {x,y} (DPR-aware). Size fixed in CSS px (does not scale with zoom).
-   * Shape: OS-style arrow pointer (tip at {x,y}). Bounding box ≈ 10–12 px tall × 7–9 px wide.
-   * Path: triangular head + short tail; 1 px outline (black at 30–40% alpha) to preserve contrast over light/dark canvases; fill = user color.
-   * Hotspot alignment: pointer tip = cursorCanvas. Do not rotate with view; presence is UI chrome.
-   * Hidden when cursorCanvas is undefined (e.g., pointer left stage or peer absent).
+   - Draw in screen space at cursorCanvas {x,y} (DPR-aware). Size fixed in CSS px (does not scale with zoom).
+   - Shape: OS-style arrow pointer (tip at {x,y}). Bounding box ≈ 10–12 px tall × 7–9 px wide.
+   - Path: triangular head + short tail; 1 px outline (black at 30–40% alpha) to preserve contrast over light/dark canvases; fill = user color.
+   - Hotspot alignment: pointer tip = cursorCanvas. Do not rotate with view; presence is UI chrome.
+   - Hidden when cursorCanvas is undefined (e.g., pointer left stage or peer absent).
 3. **Name label**: **always on and tiny** (≈10–11 px, rounded pill, minimal padding) placed right and slightly below the pointer tail to avoid covering the tip; text clamped, sanitized, and ensures ≥4.5:1 contrast. (No hover requirement; avoids extra hit-testing.)&#x20;
 4. **Draw condition**: Render a dot/pointer + label only for peers whose cursorCanvas is defined (derived from cursor via current ViewTransform). If undefined, skip drawing dot/label for that peer.
 
@@ -554,10 +578,9 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 2. On render, transform world→canvas via current `ViewTransform`; draw a simple polyline each frame with alpha decay `exp(-(now - t)/τ)` where τ≈240–320 ms; stroke 1–2 px; `butt` caps, `round` joins.
 3. **Cursor absent behavior**: On receiver, stop appending to a peer's trail when their cursor is absent; the existing trail points continue to render with age-based alpha until trimmed (≤600 ms), then disappear.
 4. **Degrade rules**:
-
-   * `peerCount > 10` → cap to **≤12** points.
-   * `peerCount > 25` **or** FPS <30 → **disable trails** (pointer-only).
-   * Respect `prefers-reduced-motion`: pointer-only.&#x20;
+   - `peerCount > 10` → cap to **≤12** points.
+   - `peerCount > 25` **or** FPS <30 → **disable trails** (pointer-only).
+   - Respect `prefers-reduced-motion`: pointer-only.&#x20;
 
 #### 7D.3 **Roster / header badges** (minimal)
 
@@ -570,32 +593,32 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7E.1 Cadence & degrade (sender + manager)
 
-* **Sender (network):** ~75–100 ms (~10–13 Hz) in small rooms, degrading toward **~150 ms** (~6–7 Hz) as peers increase; ±10 ms jitter; trailing-edge coalescing.
-* **UI publish:** `subscribePresence(cb)` is throttled to **≤ 30 Hz** to protect React. (This is **not** the network send rate.)
+- **Sender (network):** ~75–100 ms (~10–13 Hz) in small rooms, degrading toward **~150 ms** (~6–7 Hz) as peers increase; ±10 ms jitter; trailing-edge coalescing.
+- **UI publish:** `subscribePresence(cb)` is throttled to **≤ 30 Hz** to protect React. (This is **not** the network send rate.)
 
 #### 7E.2 **Backpressure (client-only)**
 
-* **Best-effort rule:** Before emitting, try to read `WebSocket.bufferedAmount`.
+- **Best-effort rule:** Before emitting, try to read `WebSocket.bufferedAmount`.
   - If you can read it and it's > 64 KB, skip this awareness frame (freshness over reliability).
   - If it's ≥ 256 KB, temporarily degrade send rate to ~6–7 Hz and keep skipping until it drains below 64 KB, then restore the base rate (~10–13 Hz).
   - If you cannot access the socket or bufferedAmount (provider internals, race, not OPEN), do not treat that as backpressure—proceed to send.
   - This keeps presence alive even if internals shift.
-* **No server slow-socket policy;** no custom broadcaster; keep official `@y/websocket-server`.
-* **Yjs doc updates** are not app-coalesced; rely on provider behavior.
+- **No server slow-socket policy;** no custom broadcaster; keep official `@y/websocket-server`.
+- **Yjs doc updates** are not app-coalesced; rely on provider behavior.
 
 #### 7E.3 Privacy & PII minimization
 
-* Awareness never leaves volatile server memory; Redis/Postgres store **doc only**. Clamp name length (≤40), sanitize visible characters only; colors from vetted palette; random fallback names are ephemeral per-tab.
+- Awareness never leaves volatile server memory; Redis/Postgres store **doc only**. Clamp name length (≤40), sanitize visible characters only; colors from vetted palette; random fallback names are ephemeral per-tab.
 
 #### 7E.4 Mobile policy
 
-* Mobile is **view-only** for doc writes; awareness **send** is minimal (name/color/activity=`idle` only). No cursor emits from mobile. Show roster and remote cursors normally.
+- Mobile is **view-only** for doc writes; awareness **send** is minimal (name/color/activity=`idle` only). No cursor emits from mobile. Show roster and remote cursors normally.
 
 ---
 
 ### 7F: Failure modes & recovery
 
-1. **WS loss**: 
+1. **WS loss**:
    - **G_AWARENESS_READY closes immediately** on disconnect
    - Cursors/labels hide immediately (gated by G_AWARENESS_READY && G_FIRST_SNAPSHOT)
    - Trails fade naturally based on age (600ms max)
@@ -613,20 +636,20 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7G.1 Private fields
 
-* `_awareness`: WS provider awareness instance.
-* `_presence`: `Map<userId, PeerPresence>` + **rolling trail buffers**.
-* `_localProfile`: `{ userId, name, color }` (per-tab; device-local).
-* `_awarenessDirty`: boolean.
-* `_sendTimer`: cadence controller with jitter/skip logic.
-* `_seq`: monotonically increasing per sender.
-* `_cursorLocalWorld`: last world cursor (desktop only).
-* `_activity`: `'idle'|'drawing'|'typing'`.&#x20;
+- `_awareness`: WS provider awareness instance.
+- `_presence`: `Map<userId, PeerPresence>` + **rolling trail buffers**.
+- `_localProfile`: `{ userId, name, color }` (per-tab; device-local).
+- `_awarenessDirty`: boolean.
+- `_sendTimer`: cadence controller with jitter/skip logic.
+- `_seq`: monotonically increasing per sender.
+- `_cursorLocalWorld`: last world cursor (desktop only).
+- `_activity`: `'idle'|'drawing'|'typing'`.&#x20;
 
 #### 7G.2 Public API
 
-* `setLocalProfile({ color? }: { color?: string })`: validate color, throttle, update awareness. Name is locked to the random fallback in Phase 7; attempts to set a custom name are ignored (no UI for it).
-* `subscribePresence(cb)`: emits derived `PresenceView` (≤30 Hz).
-* `getGateStatus()`: includes `G_AWARENESS_READY`.&#x20;
+- `setLocalProfile({ color? }: { color?: string })`: validate color, throttle, update awareness. Name is locked to the random fallback in Phase 7; attempts to set a custom name are ignored (no UI for it).
+- `subscribePresence(cb)`: emits derived `PresenceView` (≤30 Hz).
+- `getGateStatus()`: includes `G_AWARENESS_READY`.&#x20;
 
 #### 7G.3 Send loop (pseudo-spec)
 
@@ -639,39 +662,38 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7G.4 Receive hooks
 
-* Subscribe once to provider’s awareness updates; per change: validate, clamp numbers, ignore self, apply `seq` ordering, update `_presence`, refresh trail buffer, set `_awarenessDirty = true`.
+- Subscribe once to provider’s awareness updates; per change: validate, clamp numbers, ignore self, apply `seq` ordering, update `_presence`, refresh trail buffer, set `_awarenessDirty = true`.
 
 ### 7H: Rendering details & accessibility
 
-* Overlay `<canvas>` is DPR-aware; cleared once per frame. Fonts match app typography; label contrast ≥4.5:1.
-* Presence never participates in RBush/hit-testing; **purely visual**.
-* Keyboard: no cursor when keyboard-only in UI; `U` toggles roster; do not trap focus.
+- Same canvas for cursors and strokes, `<canvas>` is DPR-aware; cleared once per frame. Fonts match app typography; label contrast ≥4.5:1.
+- Keyboard: no cursor when keyboard-only in UI; `U` toggles roster; do not trap focus.
 
 ### 7I: Telemetry (dev only)
 
-* Counters: `aw.send.hz`, `aw.recv.drop.seq`, `aw.skip.backpressure`, `trail.enabled`, `trail.points`, `trail.dropReason`.
-* Debug overlay (dev only): draw tiny dots for received vs predicted; show per-peer update age.
-* No PII in logs; redact names to initials.&#x20;
+- Counters: `aw.send.hz`, `aw.recv.drop.seq`, `aw.skip.backpressure`, `trail.enabled`, `trail.points`, `trail.dropReason`.
+- Debug overlay (dev only): draw tiny dots for received vs predicted; show per-peer update age.
+- No PII in logs; redact names to initials.&#x20;
 
 ### 7K: Non-goals (Phase 7)
 
-* WebRTC awareness or Peer Mode UI (deferred).
-* Persisting awareness to Redis/Postgres.
-* images or external profile services.
-* Presence-driven permissions/moderation.&#x20;
+- WebRTC awareness or Peer Mode UI (deferred).
+- Persisting awareness to Redis/Postgres.
+- images or external profile services.
+- Presence-driven permissions/moderation.&#x20;
 
 ### 7L: Implementation notes & cross-phase alignment
 
-* **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24.
-* **Gating**: Single render guard - draw cursors/presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. Presence intake never stops. Force one flush when `G_FIRST_SNAPSHOT` flips true. Exports/minimap remain gated by `G_FIRST_SNAPSHOT`.&#x20;
-* **Backpressure policy** is client-only; no server fork and no slow-socket logic on the server.&#x20;
-* **UI changes applied per prior discussion**: pointer/label are **visible only while cursor is present**; no 'fade to invisible' staleness. **Retain trails** with age-based fade, and show **header badges** only (no "away" state).&#x20;
-* **RTC**: explicitly deferred; revisit in the dedicated WebRTC phase; reuse the **same** `bufferedAmount` skip semantics on RTC data channels when implemented.&#x20;
+- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24.
+- **Gating**: Single render guard - draw cursors/presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. Presence intake never stops. Force one flush when `G_FIRST_SNAPSHOT` flips true. Exports/minimap remain gated by `G_FIRST_SNAPSHOT`.&#x20;
+- **Backpressure policy** is client-only; no server fork and no slow-socket logic on the server.&#x20;
+- **UI changes applied per prior discussion**: pointer/label are **visible only while cursor is present**; no 'fade to invisible' staleness. **Retain trails** with age-based fade, and show **header badges** only (no "away" state).&#x20;
+- **RTC**: explicitly deferred; revisit in the dedicated WebRTC phase; reuse the **same** `bufferedAmount` skip semantics on RTC data channels when implemented.&#x20;
 
 #### Appendix: Random fallback names (ephemeral)
 
-* **Generation**: `name = Adjectives[randomValues[0] % A] + ' ' + Animals[randomValues[1] % B]` using `crypto.getRandomValues()` (lists curated, ASCII only).
-* **Policy**: sanitize; clamp to ≤40 chars; ephemeral per-tab; **broadcast** via awareness. **Name is not user-editable in Phase 7**. **No persistence** to localStorage or server/DB.&#x20;
+- **Generation**: `name = Adjectives[randomValues[0] % A] + ' ' + Animals[randomValues[1] % B]` using `crypto.getRandomValues()` (lists curated, ASCII only).
+- **Policy**: sanitize; clamp to ≤40 chars; ephemeral per-tab; **broadcast** via awareness. **Name is not user-editable in Phase 7**. **No persistence** to localStorage or server/DB.&#x20;
 
 ## Phase 8: RBush Spatial Indexing
 
