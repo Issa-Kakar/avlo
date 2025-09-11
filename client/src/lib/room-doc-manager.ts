@@ -119,6 +119,27 @@ export interface RoomDocManagerOptions extends TimingOptions {
   skipIndexedDB?: boolean; // Optional: disable IndexedDB (for testing)
 }
 
+// Interpolation types for cursor smoothing
+type Pt = { x: number; y: number; t: number };
+
+interface PeerSmoothing {
+  lastSeq: number; // last accepted seq from that sender
+
+  // Inputs (from awareness):
+  prev?: Pt; // previous accepted sample (post-quantize)
+  last?: Pt; // latest accepted sample (post-quantize)
+  hasCursor: boolean; // whether the latest awareness advertises a cursor
+
+  // Animation state (for lerp between displayStart -> last)
+  displayStart?: Pt; // position we started lerping from
+  animStartMs?: number; // when lerp starts
+  animEndMs?: number; // when lerp should finish
+}
+
+// Interpolation constants
+const INTERP_WINDOW_MS = 66; // ~1–2 frames @60 FPS
+const CURSOR_Q_STEP = 0.5; // world-unit quantization (matches sender)
+
 // Private implementation
 class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
@@ -199,6 +220,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
     color: string;
   } | null = null;
 
+  // Cursor interpolation fields (Phase 7 - interpolation)
+  private peerSmoothers = new Map<string, PeerSmoothing>();
+  private presenceAnimDeadlineMs = 0;
+
   // Gate tracking
   private gates = {
     idbReady: false,
@@ -215,7 +240,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Awareness event handler storage for cleanup
-  private _onAwarenessUpdate: (() => void) | null = null;
+  private _onAwarenessUpdate: ((event: any) => void) | null = null;
   private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
@@ -371,8 +396,81 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return scene;
   }
 
+  // Ingest awareness updates with seq-based ordering
+  private ingestAwareness(userId: string, state: any, now: number): void {
+    let ps = this.peerSmoothers.get(userId);
+    if (!ps) {
+      ps = { hasCursor: false, lastSeq: -1 };
+      this.peerSmoothers.set(userId, ps);
+    }
+
+    const seq: number | undefined = state.seq;
+    const c = state.cursor as { x: number; y: number } | undefined;
+
+    // Handle removal / no cursor
+    if (!c) {
+      ps.hasCursor = false;
+      ps.prev = ps.last = ps.displayStart = undefined;
+      ps.animStartMs = ps.animEndMs = undefined;
+      return;
+    }
+
+    // Drop stale or duplicate frames
+    if (typeof seq === 'number' && seq <= ps.lastSeq) return;
+
+    // Quantize once at ingest (match sender)
+    const q = (v: number) => Math.round(v / CURSOR_Q_STEP) * CURSOR_Q_STEP;
+    const nx = q(c.x);
+    const ny = q(c.y);
+
+    const hadLast = !!ps.last;
+    if (hadLast) ps.prev = ps.last;
+    ps.last = { x: nx, y: ny, t: now };
+    ps.hasCursor = true;
+
+    // Gap detection
+    const gap = typeof seq === 'number' && ps.lastSeq >= 0 && seq > ps.lastSeq + 1;
+
+    // Animation policy:
+    // - if first sample, or gap>0 → snap (no lerp)
+    // - else start a short lerp window
+    if (!hadLast || gap) {
+      ps.displayStart = undefined;
+      ps.animStartMs = undefined;
+      ps.animEndMs = undefined;
+    } else {
+      ps.displayStart = undefined; // set lazily on first publish in window
+      ps.animStartMs = now;
+      ps.animEndMs = now + INTERP_WINDOW_MS;
+      this.presenceAnimDeadlineMs = Math.max(this.presenceAnimDeadlineMs, ps.animEndMs);
+    }
+
+    if (typeof seq === 'number') ps.lastSeq = seq;
+  }
+
+  // Get smoothed display cursor position
+  private getDisplayCursor(ps: PeerSmoothing, now: number): { x: number; y: number } | undefined {
+    if (!ps.hasCursor || !ps.last) return undefined;
+
+    // Inside the lerp window
+    if (ps.animStartMs !== undefined && ps.animEndMs !== undefined && now < ps.animEndMs) {
+      if (!ps.displayStart) {
+        const s = ps.prev ?? ps.last;
+        ps.displayStart = { x: s.x, y: s.y, t: now };
+      }
+      const u = Math.max(0, Math.min(1, (now - ps.animStartMs) / (ps.animEndMs - ps.animStartMs)));
+      const x = ps.displayStart.x + (ps.last.x - ps.displayStart.x) * u;
+      const y = ps.displayStart.y + (ps.last.y - ps.displayStart.y) * u;
+      return { x, y };
+    }
+
+    // No active animation → just show the last accepted target
+    return { x: ps.last.x, y: ps.last.y };
+  }
+
   // Build presence view from awareness
   private buildPresenceView(): PresenceView {
+    const now = this.clock.now();
     const users = new Map<
       string,
       {
@@ -387,10 +485,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (this.yAwareness) {
       this.yAwareness.getStates().forEach((state) => {
         if (state.userId && state.userId !== this.userId) {
+          // Get or create smoother for this peer
+          let ps = this.peerSmoothers.get(state.userId);
+          if (!ps) {
+            ps = { hasCursor: false, lastSeq: -1 };
+            this.peerSmoothers.set(state.userId, ps);
+          }
+
+          // Get smoothed cursor position
+          const displayCursor = this.getDisplayCursor(ps, now);
+
           users.set(state.userId, {
             name: state.name || 'Anonymous',
             color: state.color || '#808080',
-            cursor: state.cursor,
+            cursor: displayCursor,
             activity: state.activity || 'idle',
             // Use the timestamp from the remote state if available
             lastSeen: typeof state.ts === 'number' ? state.ts : Date.now(),
@@ -989,6 +1097,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.statsSubscribers.clear();
     this.gateSubscribers.clear();
 
+    // Clear cursor interpolation state
+    this.peerSmoothers.clear();
+    this.presenceAnimDeadlineMs = 0;
+
     // Clear throttled function and any pending timeouts
     if (this.updatePresenceThrottledCleanup) {
       this.updatePresenceThrottledCleanup();
@@ -1035,6 +1147,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Simple RAF loop for publishing
   private startPublishLoop(): void {
     const rafLoop = () => {
+      // Keep publishing during presence animation window
+      const now = this.clock.now();
+      if (!this.publishState.presenceDirty && now < this.presenceAnimDeadlineMs) {
+        // Force a presence publish to progress the interpolation
+        this.publishState.presenceDirty = true;
+      }
+
       // Publish if Y.Doc changed OR presence changed
       if (this.publishState.isDirty || this.publishState.presenceDirty) {
         // Publishing snapshot based on dirty flags
@@ -1193,7 +1312,35 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
 
       // Store bound handlers for cleanup
-      this._onAwarenessUpdate = () => {
+      this._onAwarenessUpdate = (event: any) => {
+        // Ingest awareness changes with interpolation
+        const now = this.clock.now();
+
+        // Process changed states
+        if (event && typeof event === 'object') {
+          // Handle added/updated states
+          const changedClientIds = [
+            ...(event.added || []),
+            ...(event.updated || []),
+            ...(event.removed || []),
+          ];
+
+          for (const clientId of changedClientIds) {
+            const state = this.yAwareness?.getStates()?.get(clientId);
+            if (state && state.userId && state.userId !== this.userId) {
+              this.ingestAwareness(state.userId as string, state, now);
+            } else if (!state && clientId) {
+              // Handle removed peers
+              const ps = this.peerSmoothers.get(String(clientId));
+              if (ps) {
+                ps.hasCursor = false;
+                ps.prev = ps.last = ps.displayStart = undefined;
+                ps.animStartMs = ps.animEndMs = undefined;
+              }
+            }
+          }
+        }
+
         // Mark presence dirty for next RAF publish
         this.publishState.presenceDirty = true;
 
