@@ -1,6 +1,6 @@
 import React, { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
-import type { RoomId, Snapshot, ViewTransform } from '@avlo/shared';
 import { createEmptySnapshot } from '@avlo/shared';
+import type { RoomId, Snapshot, ViewTransform } from '@avlo/shared';
 import { ulid } from 'ulid';
 import { CanvasStage, type CanvasStageHandle, type ResizeInfo } from './CanvasStage';
 import { useRoomDoc } from '../hooks/use-room-doc';
@@ -243,10 +243,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     });
 
     // Trigger initial render if we have content
+    // Use gate status instead of svKey comparison
     // Use setTimeout(0) instead of queueMicrotask for better safety
     // This ensures the render loop is fully initialized and avoids race conditions
     let initialRenderTimeout: ReturnType<typeof setTimeout> | undefined;
-    if (snapshotRef.current.svKey !== createEmptySnapshot().svKey) {
+    const gateStatus = roomDoc.getGateStatus();
+    if (gateStatus.firstSnapshot) {
       initialRenderTimeout = setTimeout(() => {
         // Safety check - renderLoop might have been destroyed if component unmounted quickly
         if (renderLoopRef.current === renderLoop) {

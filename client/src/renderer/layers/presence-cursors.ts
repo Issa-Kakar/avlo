@@ -12,7 +12,13 @@ const TRAIL_DECAY_RATE = 320; // ms
 
 // Helper to check if user prefers reduced motion
 function prefersReducedMotion(): boolean {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Handle test environments where matchMedia may not be available or return undefined
+  try {
+    const result = window?.matchMedia?.('(prefers-reduced-motion: reduce)');
+    return result?.matches ?? false;
+  } catch {
+    return false;
+  }
 }
 
 // Clear all cursor trails (call on disconnect or room change)

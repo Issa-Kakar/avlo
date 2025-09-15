@@ -66,7 +66,7 @@ function createTestSnapshot(
   };
 
   return {
-    svKey: 'test-key',
+    docVersion: 1,
     scene,
     strokes,
     texts: [],

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, vi } from 'vitest';
 import { RenderLoop } from '../RenderLoop';
 import { createEmptySnapshot } from '@avlo/shared';
 import {
@@ -13,6 +13,23 @@ describe('RenderLoop', () => {
   let frameScheduler: TestFrameScheduler;
   let mockCtx: CanvasRenderingContext2D;
   let mockStage: any;
+
+  // Mock window.matchMedia for presence-cursors.ts
+  beforeAll(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+  });
 
   const defaultConfig = () => ({
     stageRef: { current: mockStage },

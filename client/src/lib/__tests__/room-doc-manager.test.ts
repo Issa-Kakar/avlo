@@ -112,7 +112,7 @@ describe('RoomDocManager', () => {
       const snapshot = manager.currentSnapshot;
 
       expect(snapshot).not.toBeNull();
-      expect(snapshot.svKey).toBeTruthy();
+      expect(snapshot.docVersion).toBe(0); // Empty snapshot has version 0
       expect(snapshot.scene).toBe(0);
       expect(snapshot.strokes).toEqual([]);
       expect(snapshot.texts).toEqual([]);
@@ -255,12 +255,11 @@ describe('RoomDocManager', () => {
       cleanup();
     });
 
-    it('generates unique svKey from state vector', () => {
+    it('increments docVersion on updates', () => {
       const { manager, frames, cleanup } = createTestManager('room-009');
 
-      const initialSvKey = manager.currentSnapshot.svKey;
-      expect(initialSvKey).toBeTruthy();
-      expect(typeof initialSvKey).toBe('string');
+      const initialVersion = manager.currentSnapshot.docVersion;
+      expect(initialVersion).toBe(0); // Empty snapshot
 
       // Make a change
       manager.mutate((ydoc) => {
@@ -284,8 +283,8 @@ describe('RoomDocManager', () => {
       // Advance frame to publish changes
       frames.advanceFrame(0);
 
-      const newSvKey = manager.currentSnapshot.svKey;
-      expect(newSvKey).not.toBe(initialSvKey);
+      const newVersion = manager.currentSnapshot.docVersion;
+      expect(newVersion).toBeGreaterThan(0);
       cleanup();
     });
 
@@ -909,57 +908,6 @@ describe('RoomDocManager', () => {
 
       // Observer should be cleaned up (no errors on call)
       expect(() => unobserve()).not.toThrow();
-
-      cleanup();
-    });
-  });
-
-  describe('Render Cache Integration (Phase 2.4.4)', () => {
-    it('provides render cache methods for boot splash', async () => {
-      const { manager, cleanup } = createTestManager('room-cache-001');
-
-      // Verify methods exist
-      expect(manager.storeRenderCache).toBeDefined();
-      expect(manager.showBootSplash).toBeDefined();
-      expect(manager.clearRenderCache).toBeDefined();
-
-      // Create mock canvas
-      const mockCanvas = document.createElement('canvas');
-      mockCanvas.width = 100;
-      mockCanvas.height = 100;
-
-      // Store should not throw
-      await expect(manager.storeRenderCache(mockCanvas)).resolves.not.toThrow();
-
-      // Clear should not throw
-      await expect(manager.clearRenderCache()).resolves.not.toThrow();
-
-      cleanup();
-    });
-
-    it('uses svKey from snapshot for render cache key', async () => {
-      const { manager, frames, cleanup } = createTestManager('room-cache-002');
-
-      // Get initial svKey
-      const initialSvKey = manager.currentSnapshot.svKey;
-      expect(initialSvKey).toBeTruthy();
-
-      // Create mock canvas
-      const mockCanvas = document.createElement('canvas');
-
-      // Store render - should use current svKey
-      await manager.storeRenderCache(mockCanvas);
-
-      // Make a change to get new svKey
-      manager.mutate((ydoc) => {
-        const strokes = ydoc.getMap('root').get('strokes') as Y.Array<any>;
-        strokes.push([{ id: 'test', tool: 'pen' }]);
-      });
-      frames.advanceFrame(0);
-
-      // svKey should have changed
-      const newSvKey = manager.currentSnapshot.svKey;
-      expect(newSvKey).not.toBe(initialSvKey);
 
       cleanup();
     });

@@ -13,7 +13,6 @@ const RoomDocRegistryContext = createContext<RoomDocRegistryContextValue | null>
 interface RoomDocRegistryProviderProps {
   children: ReactNode;
   registry?: RoomDocManagerRegistry; // Optional: allow injection for testing
-  skipIndexedDB?: boolean; // Optional: disable IndexedDB for testing
 }
 
 /**
@@ -21,20 +20,12 @@ interface RoomDocRegistryProviderProps {
  * Creates and maintains a single registry instance for the app
  * Tests can inject their own registry instance
  */
-export function RoomDocRegistryProvider({ 
-  children, 
-  registry,
-  skipIndexedDB = false 
-}: RoomDocRegistryProviderProps) {
+export function RoomDocRegistryProvider({ children, registry }: RoomDocRegistryProviderProps) {
   // Create registry once and maintain it for the lifetime of the provider
   const registryRef = useRef<RoomDocManagerRegistry>();
-  
+
   if (!registryRef.current) {
     registryRef.current = registry ?? createRoomDocManagerRegistry();
-    // Set default options if skipIndexedDB is true
-    if (skipIndexedDB && !registry) {
-      registryRef.current.setDefaultOptions({ skipIndexedDB: true });
-    }
   }
 
   return (
@@ -50,21 +41,21 @@ export function RoomDocRegistryProvider({
  */
 export function useRoomDocRegistry(): RoomDocManagerRegistry {
   const context = useContext(RoomDocRegistryContext);
-  
+
   if (!context) {
     throw new Error(
       'useRoomDocRegistry must be used within a RoomDocRegistryProvider. ' +
-      'Wrap your app with <RoomDocRegistryProvider> or provide a registry for testing.'
+        'Wrap your app with <RoomDocRegistryProvider> or provide a registry for testing.',
     );
   }
-  
+
   return context.registry;
 }
 
 /**
  * Hook to check if we're within a registry provider
  * Useful for components that optionally use the registry
- * 
+ *
  * NOTE: This is a React Hook and must follow the Rules of Hooks
  * (cannot be called conditionally, must be called from React components/hooks)
  */

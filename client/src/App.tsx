@@ -146,34 +146,25 @@ function TestHarness() {
   // Fixed room ID for testing - in production this would come from URL
   const roomId = 'test-room-001';
 
-  // Parse query parameters to check for persist=0 flag
-  const urlParams = new URLSearchParams(window.location.search);
-  const skipIndexedDB = urlParams.get('persist') === '0';
-
-  // Log the flag status for debugging
-  if (skipIndexedDB) {
-    // eslint-disable-next-line no-console
-    console.log('[App] IndexedDB disabled via ?persist=0 flag');
-  }
-
   return (
-    <RoomDocRegistryProvider skipIndexedDB={skipIndexedDB}>
-      <ViewTransformProvider>
-        <CanvasWithControls roomId={roomId} />
-      </ViewTransformProvider>
-    </RoomDocRegistryProvider>
+    <ViewTransformProvider>
+      <CanvasWithControls roomId={roomId} />
+    </ViewTransformProvider>
   );
 }
 
 export default function App() {
+  // Single registry provider at root level - manages ALL rooms in this tab
   return (
-    <Routes>
-      {/* Test harness at root and /test */}
-      <Route path="/" element={<TestHarness />} />
-      <Route path="/test" element={<TestHarness />} />
+    <RoomDocRegistryProvider>
+      <Routes>
+        {/* Test harness at root and /test */}
+        <Route path="/" element={<TestHarness />} />
+        <Route path="/test" element={<TestHarness />} />
 
-      {/* Room page for actual rooms */}
-      <Route path="/room/:roomId" element={<RoomPage />} />
-    </Routes>
+        {/* Room page for actual rooms */}
+        <Route path="/room/:roomId" element={<RoomPage />} />
+      </Routes>
+    </RoomDocRegistryProvider>
   );
 }

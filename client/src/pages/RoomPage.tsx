@@ -7,7 +7,6 @@
 
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { RoomDocRegistryProvider } from '../lib/room-doc-registry-context';
 import { ViewTransformProvider } from '../canvas/ViewTransformContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
@@ -145,18 +144,12 @@ export default function RoomPage() {
     );
   }
 
-  // Parse query parameters to check for persist=0 flag (dev feature)
-  const urlParams = new URLSearchParams(window.location.search);
-  const skipIndexedDB = urlParams.get('persist') === '0';
-
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <RoomDocRegistryProvider skipIndexedDB={skipIndexedDB}>
-          <ViewTransformProvider>
-            <RoomCanvas roomId={roomId} />
-          </ViewTransformProvider>
-        </RoomDocRegistryProvider>
+        <ViewTransformProvider>
+          <RoomCanvas roomId={roomId} />
+        </ViewTransformProvider>
       </ToastProvider>
     </ErrorBoundary>
   );

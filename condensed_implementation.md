@@ -21,6 +21,7 @@
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
 - Implement RAF-based publishing (≤60 FPS, dirty flags; **no `svKey`-based dedupe in Phase 6**)
+- **Publish→clear policy (Phase 7)**: On each published Snapshot, the renderer calls `invalidateAll('snapshot')` to force a full clear. The DirtyRect infrastructure remains in place for future optimization but is bypassed here. Both presenceDirty and docDirty schedule rAF and a new Snapshot build.
 - **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. **We compute and attach it to each snapshot for diagnostics/tooling only; it is not consulted to decide whether to publish.**
 
 ### 2.4 Set Up Subscription Management
@@ -50,8 +51,8 @@
 ### 3.3 Build Render Loop Foundation
 
 - Create RAF-driven render loop subscribing to snapshots (ref, not state)
-- Implement dirty rectangle tracking (full clear if transform changed)
-- Define render order: Background → Strokes → Text → Overlays → Presence → HUD
+- Implement a DirtyRect tracker, but Phase 7 policy calls `invalidateAll('snapshot')` on every publish (and on presence/doc invalidations), effectively full-clearing each frame; keep DirtyRect infra for future use.
+- Define render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence → HUD
 - Apply 16ms frame budget with optional yielding
 
 ## Phase 4: Stroke Data Model & Rendering
@@ -439,10 +440,7 @@ Create guarded `toolbarToDeviceUI` adapter:
 
 ### 6D.4 UI Components
 
-- **ErrorBoundary**: React error boundary for graceful failures
-- **ConnectionStatus**: Show "Online"/"Offline" only (no "Syncing" state)
-- **Toolbar**: Pen/highlighter buttons, size slider, color picker (others disabled)
-- **ClearBoardButton**: Optimistic lastSeenScene update, no cooldown
+- **ToolPanel.tsx**: Pen/highlighter buttons, size slider, color picker (others disabled)
 
 ### 6D.5 Mobile Support
 
@@ -558,9 +556,21 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 ---
 
-### 7D: Rendering & UI (overlay canvas + **header badge roster**)
+### 7D: Rendering & UI (single canvas + **header badge roster**)
 
-#### 7D.1 Overlay renderer (cursors)
+#### 7D.1 Single-canvas renderer (NO overlay)
+
+**CRITICAL Architecture**: All rendering on ONE canvas via two RenderLoop passes:
+
+- **Pass 1**: World content (world transform) - strokes, shapes, text, authoring overlays
+- **Pass 2**: Presence overlays (screen space, DPR-only) - cursors and trails
+
+**File Structure**:
+
+- `renderer/RenderLoop.ts`: Orchestrates both passes, provides `getGates()` integration point
+- `renderer/layers/presence-cursors.ts`: `drawCursors()` implementation with trail management
+- `renderer/layers/index.ts`: `drawPresenceOverlays()` gate check → `drawCursors()` call
+- `canvas/Canvas.tsx`: Supplies gates via `getGates: () => roomDoc.getGateStatus()`
 
 1. Render order: world → authoring overlays → **presence** → HUD. Export excludes presence.
 2. **Cursor glyph (tiny pointer, not a dot)**:
@@ -574,9 +584,9 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 #### 7D.2 **Cursor trails** (kept; minimal, adaptive)
 
-1. Per-peer rolling buffer of **world-space** `{x,y,t}` points; trim older than **600 ms** or beyond buffer size. Quantize to **0.5 world units**; interpolate 1–2 points on gaps > 60 ms.
-2. On render, transform world→canvas via current `ViewTransform`; draw a simple polyline each frame with alpha decay `exp(-(now - t)/τ)` where τ≈240–320 ms; stroke 1–2 px; `butt` caps, `round` joins.
-3. **Cursor absent behavior**: On receiver, stop appending to a peer's trail when their cursor is absent; the existing trail points continue to render with age-based alpha until trimmed (≤600 ms), then disappear.
+1. **Trail management**: `cursorTrails` Map in `presence-cursors.ts` stores per-peer rolling buffer of **world-space** `{x,y,t}` points; trim older than **600 ms (MAX_TRAIL_AGE)** or beyond buffer size. Quantize to **0.5 world units**; interpolate 1–2 points on gaps > 60 ms.
+2. On render, transform world→canvas via current `ViewTransform`; draw a simple polyline each frame with alpha decay `exp(-(now - t)/τ)` where τ≈240–320 ms (TRAIL_DECAY_RATE); stroke 1–2 px; `butt` caps, `round` joins.
+3. **Cursor absent behavior**: On receiver, stop appending to a peer's trail when their cursor is absent; the existing trail points continue to render with age-based alpha until trimmed (≤600 ms), then disappear. `clearCursorTrails()` called on disconnect/room change.
 4. **Degrade rules**:
    - `peerCount > 10` → cap to **≤12** points.
    - `peerCount > 25` **or** FPS <30 → **disable trails** (pointer-only).
@@ -684,22 +694,64 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 ### 7L: Implementation notes & cross-phase alignment
 
-- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24.
+- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24. Awareness changes mark manager dirty same as doc changes, triggering snapshot publish on next rAF.
+- **Awareness→Render Pipeline**: RoomDocManager receives awareness → `buildPresenceView()` with interpolation → inject into `snapshot.presence` → RenderLoop reads snapshot → `drawPresenceOverlays()` checks gates → `drawCursors()` renders if both gates open.
 - **Gating**: Single render guard - draw cursors/presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. Presence intake never stops. Force one flush when `G_FIRST_SNAPSHOT` flips true. Exports/minimap remain gated by `G_FIRST_SNAPSHOT`.&#x20;
 - **Backpressure policy** is client-only; no server fork and no slow-socket logic on the server.&#x20;
 - **UI changes applied per prior discussion**: pointer/label are **visible only while cursor is present**; no 'fade to invisible' staleness. **Retain trails** with age-based fade, and show **header badges** only (no "away" state).&#x20;
 - **RTC**: explicitly deferred; revisit in the dedicated WebRTC phase; reuse the **same** `bufferedAmount` skip semantics on RTC data channels when implemented.&#x20;
 
+### 7M: Cursor Interpolation (Receiver-side smoothing)
+
+Eliminates cursor jitter by doing **receiver-side interpolation** inside `RoomDocManager` (not renderer):
+
+#### 7M.1 Architecture
+
+- **Manager-owned**: All smoothing logic in `RoomDocManager`, renderer just draws `snapshot.presence`
+- **Per-peer state**: Track `PeerSmoothing` with `lastSeq`, `prev/last` samples, animation state
+- **Constants**: `INTERP_WINDOW_MS = 66` (~1-2 frames), `CURSOR_Q_STEP = 0.5` world units
+
+#### 7M.2 Ingest algorithm (`ingestAwareness`)
+
+- Drop stale/duplicate frames using `seq <= lastSeq` check
+- Quantize to 0.5 world units at ingest (matches sender)
+- **Gap detection**: If `seq > lastSeq + 1`, snap immediately (no lerp) to avoid rubber-banding
+- **Sequential samples**: Start 66ms lerp window, set `presenceAnimDeadlineMs`
+- Clear state when cursor absent (peer left stage)
+
+#### 7M.3 Display computation (`getDisplayCursor`)
+
+- During lerp window: Linear interpolation from `displayStart` to `last` sample
+- Outside window: Show last accepted position
+- Return `undefined` when `!hasCursor` (hide immediately)
+
+#### 7M.4 Publishing discipline
+
+- **RAF keep-alive**: Force `presenceDirty = true` while `now < presenceAnimDeadlineMs`
+- Ensures animation frames publish even without new awareness updates
+- `buildPresenceView()` calls `getDisplayCursor()` for smoothed world coords
+
+#### 7M.5 Renderer discipline
+
+- **No double-smoothing**: Renderer draws positions as-is from `snapshot.presence`
+- Trails consume smoothed positions naturally
+- `clearCursorTrails()` on disconnect (manager calls this)
+
 #### Appendix: Random fallback names (ephemeral)
 
 - **Generation**: `name = Adjectives[randomValues[0] % A] + ' ' + Animals[randomValues[1] % B]` using `crypto.getRandomValues()` (lists curated, ASCII only).
-- **Policy**: sanitize; clamp to ≤40 chars; ephemeral per-tab; **broadcast** via awareness. **Name is not user-editable in Phase 7**. **No persistence** to localStorage or server/DB.&#x20;
+- **Policy**: sanitize; clamp to ≤40 chars; ephemeral per-tab; **broadcast** via awareness. **Name is not user-editable in Phase 7**. **No persistence** to localStorage or server/DB.
 
 ## Phase 8: RBush Spatial Indexing
+
+**Deferred.** Interfaces may remain reserved (e.g., `spatialIndex`) but are not populated in Phase 7; the eraser uses a linear bbox scan over the Snapshot for now.
 
 ## Phase 9: UI Components & Toolbar
 
 ## Phase 10: Eraser
+
+- **Whole-stroke eraser (Phase 7)**: perform hit-test by linear bbox scan across `snapshot.strokes`; on hit, delete the entire stroke in a single transaction.
+- **RBush deferred**: spatial indexing will be introduced in Phase 8; keep any index-related interfaces as placeholders.
 
 ## Phase 11: Text & Stamps
 

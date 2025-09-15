@@ -4,12 +4,12 @@ import { ROOM_CONFIG } from '../config';
 
 // Immutable snapshot - NEVER null
 export interface Snapshot {
-  svKey: string; // base64 of Yjs state vector - keys IDB render snapshot
+  docVersion: number; // Incremental version, replaces svKey
   scene: SceneIdx; // Current scene index
   strokes: ReadonlyArray<StrokeView>;
   texts: ReadonlyArray<TextView>;
   presence: PresenceView; // Derived + smoothed presence
-  spatialIndex: null; // Phase 6: Will be RBushIndexView for hit-testing
+  spatialIndex: null; // Deferred, dormant field but deferred
   view: ViewTransform; // World-to-canvas transform
   meta: SnapshotMeta;
   createdAt: number; // ms epoch when snapshot was frozen
@@ -42,7 +42,7 @@ export interface TextView {
   h: number;
   content: string;
   color: string; // Flattened for simpler access
-  size: number;   // Flattened for simpler access
+  size: number; // Flattened for simpler access
   scene: SceneIdx; // Scene where text was committed (assigned at commit time using currentScene)
   createdAt: number;
   userId: string;
@@ -50,9 +50,7 @@ export interface TextView {
 
 // Spatial index view
 export interface RBushIndexView {
-  // Opaque structure - implementation detail
-  // Will be populated by RBush library
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Deferred
   _tree?: any; // RBush internal structure
 }
 
@@ -75,7 +73,7 @@ export interface SnapshotMeta {
 // Empty snapshot constant shape
 export function createEmptySnapshot(): Snapshot {
   return Object.freeze({
-    svKey: 'empty',
+    docVersion: 0, // Empty snapshot has version 0
     scene: 0,
     strokes: Object.freeze([]),
     texts: Object.freeze([]),

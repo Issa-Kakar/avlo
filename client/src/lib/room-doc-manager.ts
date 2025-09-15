@@ -48,7 +48,6 @@ import {
   BrowserFrameScheduler,
   TimingOptions,
 } from './timing-abstractions';
-import { renderCache } from './render-cache';
 
 // Type for unsubscribe function
 type Unsub = () => void;
@@ -103,11 +102,6 @@ export interface IRoomDocManager {
    */
   setRoomStats(stats: RoomStats | null): void;
 
-  // Phase 2.4.4: Render cache for boot splash (cosmetic only)
-  storeRenderCache(canvas: HTMLCanvasElement): Promise<void>;
-  showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null>;
-  clearRenderCache(): Promise<void>;
-
   // Phase 7: Awareness API
   updateCursor(worldX: number | undefined, worldY: number | undefined): void;
   updateActivity(activity: 'idle' | 'drawing' | 'typing'): void;
@@ -116,7 +110,6 @@ export interface IRoomDocManager {
 // Extended options for RoomDocManager
 export interface RoomDocManagerOptions extends TimingOptions {
   gzipImpl?: GzipImpl;
-  skipIndexedDB?: boolean; // Optional: disable IndexedDB (for testing)
 }
 
 // Interpolation types for cursor smoothing
@@ -188,7 +181,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
       origin: unknown;
       time: number;
     }> | null,
-    lastSvKey: '', // Track to detect changes
   };
 
   // Room stats tracking
@@ -202,6 +194,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Track if destroyed for cleanup
   private destroyed = false;
+
+  // Document version tracking (replaces svKey)
+  private docVersion = 0; // Increments on every Y.Doc update
+  private sawAnyDocUpdate = false; // Tracks if we've seen any doc updates
 
   // Awareness state tracking (Phase 7)
   private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
@@ -281,7 +277,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
       lastPublishTime: 0,
       publishCostMs: 0,
       pendingUpdates: new UpdateRing(16), // Keep ring buffer for metrics
-      lastSvKey: '', // Track to detect changes
     };
 
     // Start with empty snapshot
@@ -301,20 +296,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.updatePresenceThrottled = presenceThrottle.throttled;
     this.updatePresenceThrottledCleanup = presenceThrottle.cleanup;
 
-    // Initialize render cache for boot splash (Phase 2.4.4)
-    // Fire and forget - cosmetic only
-    renderCache.init().catch((err) => {
-      console.warn('[RoomDocManager] Render cache init failed (non-critical):', err);
-    });
-
-    // Initialize IndexedDB provider (Phase 6A) - unless skipIndexedDB is set
-    if (!options?.skipIndexedDB) {
-      this.initializeIndexedDBProvider();
-    } else {
-      // If IndexedDB is skipped, immediately open the IDB gate
-      this.openGate('idbReady');
-      // IndexedDB skipped by option
-    }
+    // Initialize IndexedDB provider (Phase 6A)
+    this.initializeIndexedDBProvider();
 
     // Initialize WebSocket provider (Phase 6C)
     this.initializeWebSocketProvider();
@@ -1119,31 +1102,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // The registry that created this manager should handle cleanup
   }
 
-  /**
-   * Create a safe state vector key for cache invalidation.
-   * Uses first 100 bytes + length to create a unique identifier
-   * without risk of stack overflow on large state vectors.
-   */
-  private createSafeStateVectorKey(stateVector: Uint8Array): string {
-    // Take first 100 bytes (or less if vector is smaller)
-    const sampleSize = Math.min(100, stateVector.length);
-    const sample = stateVector.slice(0, sampleSize);
-
-    // Convert sample to base64
-    let sampleStr = '';
-    for (let i = 0; i < sample.length; i++) {
-      sampleStr += String.fromCharCode(sample[i]);
-    }
-
-    // Include length for additional uniqueness
-    // Format: base64(first100bytes):length:checksum
-    const checksum = Array.from(stateVector.slice(-4)).reduce((sum, byte) => sum + byte, 0);
-
-    const key = `${btoa(sampleStr)}:${stateVector.length}:${checksum}`;
-
-    return key;
-  }
-
   // Simple RAF loop for publishing
   private startPublishLoop(): void {
     const rafLoop = () => {
@@ -1210,6 +1168,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    // Increment docVersion on ANY Y.Doc change
+    this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
+    this.sawAnyDocUpdate = true; // We've now seen real doc data
+
     // Y.Doc updated
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
@@ -1589,9 +1551,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Phase 2.4 Component E: Snapshot Building & Publishing
   private publishSnapshot(newSnapshot: Snapshot): void {
-    // Update svKey tracker
-    this.publishState.lastSvKey = newSnapshot.svKey;
-
     // Update current snapshot
     this._currentSnapshot = newSnapshot;
 
@@ -1607,13 +1566,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Private: Build immutable snapshot from Y.Doc
   private buildSnapshot(): Snapshot {
-    // Building new snapshot
-    // Get current state vector for svKey
-    const stateVector = Y.encodeStateVector(this.ydoc);
-    // CRITICAL: Use safe encoding to avoid stack overflow on large state vectors
-    // Create a hash-like key from first 100 bytes + length for uniqueness
+    // Early return if Y.Doc structure is not yet initialized
+    // This can happen during the first RAF frame before initializeYjsStructures completes
+    const root = this.ydoc.getMap('root');
+    if (!root.has('meta')) {
+      return this._currentSnapshot; // Return current (empty) snapshot
+    }
 
-    const svKey = this.createSafeStateVectorKey(stateVector);
+    // Building new snapshot
 
     // Use helper to get current scene
     const currentScene = this.getCurrentScene();
@@ -1669,7 +1629,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Build presence view
     const presence: PresenceView = this.buildPresenceView();
 
-    // Build spatial index (Phase 6 - for now just null)
+    // Deferred for now
     const spatialIndex = null;
 
     // Build view transform
@@ -1687,7 +1647,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Create frozen snapshot (in development)
     const snapshot: Snapshot = {
-      svKey,
+      docVersion: this.docVersion, // Use docVersion instead of svKey
       scene: currentScene,
       strokes: Object.freeze(strokes) as ReadonlyArray<StrokeView>,
       texts: Object.freeze(texts) as ReadonlyArray<TextView>,
@@ -1698,14 +1658,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
       createdAt: Date.now(),
     };
 
-    // Check if svKey changed to track first doc-derived snapshot
-    if (snapshot.svKey !== this.publishState.lastSvKey) {
-      // CRITICAL: This is the ONLY place where G_FIRST_SNAPSHOT opens
-      // Opens when first doc-derived snapshot publishes (≤ 1 rAF after any Y update)
-      if (!this.gates.firstSnapshot && snapshot.svKey !== '') {
-        this.openGate('firstSnapshot');
-        // First doc-derived snapshot published
-      }
+    // Open G_FIRST_SNAPSHOT when we've seen any doc updates
+    if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
+      this.openGate('firstSnapshot');
+      // First doc-derived snapshot published
     }
 
     // CRITICAL: Freeze in development to catch mutations
@@ -1745,70 +1701,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Phase 2.4.4: Render cache methods for boot splash (cosmetic only)
-
-  /**
-   * Store current render to cache for boot splash
-   * Called after successful canvas render (Phase 3)
-   * @param canvas - The rendered canvas element
-   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
-   */
-  async storeRenderCache(canvas: HTMLCanvasElement): Promise<void> {
-    if (process.env.NODE_ENV === 'production') {
-      // MVP pivot: splash/render-cache paths are disabled in prod
-      return Promise.resolve();
-    }
-    if (!canvas || this.destroyed) return;
-
-    try {
-      // Store with current svKey for validation
-      await renderCache.store(this.roomId, this._currentSnapshot.svKey, canvas);
-    } catch (_error) {
-      // Non-critical - just log and continue
-      // Failed to store render cache
-    }
-  }
-
-  /**
-   * Show boot splash from cache while Y.Doc loads
-   * @param targetElement - Element to display splash in
-   * @returns Cleanup function to fade out splash, or null if no cache
-   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
-   */
-  async showBootSplash(targetElement: HTMLElement): Promise<(() => void) | null> {
-    if (process.env.NODE_ENV === 'production') {
-      // MVP pivot: splash/render-cache paths are disabled in prod
-      return Promise.resolve(null);
-    }
-    try {
-      const shown = await renderCache.showBootSplash(this.roomId, targetElement);
-      if (shown) {
-        // Find the image element and return its fadeOut function
-        const img = targetElement.querySelector('img[style*="z-index"]') as any;
-        return img?.fadeOut || null;
-      }
-      return null;
-    } catch (_error) {
-      // Failed to show boot splash
-      return null;
-    }
-  }
-
-  /**
-   * Clear render cache for this room
-   * Called when room data is cleared/deleted
-   * @deprecated MVP: not used by Phase 6. Do not call from app UI.
-   */
-  async clearRenderCache(): Promise<void> {
-    if (process.env.NODE_ENV === 'production') {
-      // MVP pivot: splash/render-cache paths are disabled in prod
-      return Promise.resolve();
-    }
-    try {
-      await renderCache.clear(this.roomId);
-    } catch (_error) {
-      // Failed to clear render cache
-    }
-  }
 }
 
 // Registry class for managing RoomDocManager instances
@@ -1970,7 +1862,6 @@ export function createRoomDocManagerRegistry(): RoomDocManagerRegistry {
 export type RoomDocManager = IRoomDocManager;
 
 // Re-export render cache for direct access if needed
-export { renderCache } from './render-cache';
 
 // Test-only exports - clearly marked for testing purposes only
 // These should NEVER be used in production code
