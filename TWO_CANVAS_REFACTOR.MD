@@ -276,19 +276,29 @@ Use it in:
 + const overlayLoop = new OverlayRenderLoop();
 + overlayLoop.start({ stage: overlayStageRef.current!, getView, getViewport: getOverlayViewport, getGates, getPresence: () => presenceRef.current, drawPresence: drawPresenceOverlays });
 
-- const unsubscribeSnapshot = roomDoc.subscribeSnapshot((snap) => {
--   snapshotRef.current = snap;
--   baseLoop.invalidateAll('snapshot-update');
-- });
-+ const unsubscribeSnapshot = roomDoc.subscribeSnapshot((snap) => {
-+   snapshotRef.current = snap;
-+   baseLoop.invalidateAll('snapshot-update'); // doc‑driven only now
-+ });
+// Canvas.tsx — snapshot subscription (corrected)
+const unsubscribeSnapshot = roomDoc.subscribeSnapshot((next) => {
+  const prev = snapshotRef.current;
+  snapshotRef.current = Object.freeze(next);
 
-+ const unsubscribePresence = roomDoc.subscribePresence((p) => {
-+   presenceRef.current = p;
-+   overlayLoop.invalidateAll(); // full clear + redraw of overlay
-+ });
+  // Branch on *document* change only
+  const docChanged =
+    !prev || next.docVersion !== prev.docVersion; // Y.Doc changed only then
+
+  if (docChanged) {
+    // Yes: force a full clear for now (safe & correct)
+    baseLoop.invalidateAll('doc-version-change');
+    // Dirty-rects still work for local edits you explicitly invalidate with bounds.
+  } else {
+    // Presence-only update: do NOT touch the world canvas
+    // Overlay canvas handles presence; cheap full clear there is fine.
+    overlayLoop.invalidateAll(); // this only clears the overlay canvas
+  }
+});
+
+```
+Why: in your codebase, RenderLoop.invalidateAll(...) -> DirtyRectTracker.invalidateAll(...) → fullClearRequired = true; rects = [] (so a full clear next frame). Using that on every snapshot would nullify dirty rects.
+
 ```
 
 ### E) RoomDocManager publish tweak (presence‑only → no snapshot)

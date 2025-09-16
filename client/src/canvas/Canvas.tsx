@@ -6,12 +6,123 @@ import { CanvasStage, type CanvasStageHandle, type ResizeInfo } from './CanvasSt
 import { useRoomDoc } from '../hooks/use-room-doc';
 import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
+import { OverlayRenderLoop } from '../renderer/OverlayRenderLoop';
 import type { ViewportInfo } from '../renderer/types';
-import { clearStrokeCache } from '../renderer/layers';
+import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import type { DeviceUIState } from '@/lib/tools/types';
 import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+
+// Helper to inflate bbox for stroke width & antialiasing
+function inflateWorld(
+  bbox: [number, number, number, number],
+  maxStrokePx: number,
+  viewScale: number
+): [number, number, number, number] {
+  // World delta for 1 CSS px (antialiasing)
+  const aaWorld = 1 / Math.max(viewScale, 1e-6);
+  // World delta for stroke width + AA
+  const delta = (maxStrokePx / Math.max(viewScale, 1e-6)) + aaWorld;
+  return [
+    bbox[0] - delta,
+    bbox[1] - delta,
+    bbox[2] + delta,
+    bbox[3] + delta
+  ];
+}
+
+// Epsilon equality for floating point comparison
+function bboxEquals(a: number[], b: number[]): boolean {
+  const eps = 1e-3;
+  return Math.abs(a[0] - b[0]) < eps &&
+         Math.abs(a[1] - b[1]) < eps &&
+         Math.abs(a[2] - b[2]) < eps &&
+         Math.abs(a[3] - b[3]) < eps;
+}
+
+interface WorldBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+function diffBounds(
+  prev: Snapshot,
+  next: Snapshot,
+  viewScale: number
+): WorldBounds[] {
+  const prevStrokeMap = new Map(prev.strokes.map(s => [s.id, s]));
+  const nextStrokeMap = new Map(next.strokes.map(s => [s.id, s]));
+  const dirty: WorldBounds[] = [];
+
+  // Added/modified strokes
+  for (const [id, stroke] of nextStrokeMap) {
+    const prevStroke = prevStrokeMap.get(id);
+    if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
+      // Inflate bbox to account for stroke width and AA
+      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      dirty.push({
+        minX: inflated[0],
+        minY: inflated[1],
+        maxX: inflated[2],
+        maxY: inflated[3]
+      });
+    }
+  }
+
+  // Removed strokes
+  for (const [id, stroke] of prevStrokeMap) {
+    if (!nextStrokeMap.has(id)) {
+      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      dirty.push({
+        minX: inflated[0],
+        minY: inflated[1],
+        maxX: inflated[2],
+        maxY: inflated[3]
+      });
+    }
+  }
+
+  // Handle text blocks
+  const prevTextMap = new Map(prev.texts.map(t => [t.id, t]));
+  const nextTextMap = new Map(next.texts.map(t => [t.id, t]));
+
+  // Added/modified texts
+  for (const [id, text] of nextTextMap) {
+    const prevText = prevTextMap.get(id);
+    if (!prevText ||
+        prevText.x !== text.x ||
+        prevText.y !== text.y ||
+        prevText.w !== text.w ||
+        prevText.h !== text.h) {
+      // Add some padding for text rendering
+      const padding = 5 / Math.max(viewScale, 1e-6);
+      dirty.push({
+        minX: text.x - padding,
+        minY: text.y - padding,
+        maxX: text.x + text.w + padding,
+        maxY: text.y + text.h + padding
+      });
+    }
+  }
+
+  // Removed texts
+  for (const [id, text] of prevTextMap) {
+    if (!nextTextMap.has(id)) {
+      const padding = 5 / Math.max(viewScale, 1e-6);
+      dirty.push({
+        minX: text.x - padding,
+        minY: text.y - padding,
+        maxX: text.x + text.w + padding,
+        maxY: text.y + text.h + padding
+      });
+    }
+  }
+
+  return dirty;  // Let DirtyRectTracker handle coalescing
+}
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -33,13 +144,16 @@ export interface CanvasHandle {
  * Phase 3.4: Fixed DPR handling in coordinate transforms
  */
 export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, className }, ref) => {
-  const stageRef = useRef<CanvasStageHandle>(null);
+  // Replace single stageRef with two stages
+  const baseStageRef = useRef<CanvasStageHandle>(null);
+  const overlayStageRef = useRef<CanvasStageHandle>(null);
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
   const drawingToolRef = useRef<DrawingTool>();
   const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
-  const renderLoopRef = useRef<RenderLoop | null>(null);
+  const renderLoopRef = useRef<RenderLoop | null>(null);      // existing
+  const overlayLoopRef = useRef<OverlayRenderLoop | null>(null); // new
 
   // Generate stable user ID (Phase 5 placeholder)
   // IMPORTANT: This will be replaced by proper awareness management in Phase 6
@@ -92,22 +206,64 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   }, [viewTransform]);
 
   // Subscribe to snapshots via public API (stores in ref to avoid re-renders)
+  // 3C: Update snapshot subscription to check docVersion
   useEffect(() => {
-    // Subscribe through public API and write to ref (not state)
+    let lastDocVersion = -1;
+
     const unsubscribe = roomDoc.subscribeSnapshot((newSnapshot) => {
-      // IMPORTANT: DO NOT modify the snapshot - it must remain immutable
-      // Phase 3 contract: snapshot.view remains identity transform - read view from UI instead
+      const prevSnapshot = snapshotRef.current;
       snapshotRef.current = newSnapshot;
 
-      // Phase 6: Always invalidate on new snapshot (no svKey gating)
-      // The RenderLoop will detect scene changes and handle full clears accordingly
-      if (renderLoopRef.current) {
-        renderLoopRef.current.invalidateAll('snapshot-update');
+      if (!renderLoopRef.current || !overlayLoopRef.current) return;
+
+      // Check if scene changed (requires full clear on both)
+      if (!prevSnapshot || prevSnapshot.scene !== newSnapshot.scene) {
+        renderLoopRef.current.invalidateAll('scene-change');
+        overlayLoopRef.current.invalidateAll();
+        lastDocVersion = newSnapshot.docVersion;
+        return;
+      }
+
+      // Check if document content changed (not just presence)
+      // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
+      if (newSnapshot.docVersion !== lastDocVersion) {
+        lastDocVersion = newSnapshot.docVersion;
+
+        // Use bbox diffing for targeted invalidation instead of full clear
+        const changedBounds = diffBounds(prevSnapshot, newSnapshot, viewTransformRef.current.scale);
+        if (changedBounds.length > 0) {
+          // If there are many changed regions, it's more efficient to do a full clear
+          // Threshold: if more than 50% of viewport would be invalidated, do full clear
+          const viewportArea = (canvasSizeRef.current?.cssWidth || 800) * (canvasSizeRef.current?.cssHeight || 600);
+          let totalDirtyArea = 0;
+
+          for (const bounds of changedBounds) {
+            const worldBounds = bounds;
+            const [minX, minY] = viewTransformRef.current.worldToCanvas(worldBounds.minX, worldBounds.minY);
+            const [maxX, maxY] = viewTransformRef.current.worldToCanvas(worldBounds.maxX, worldBounds.maxY);
+            totalDirtyArea += (maxX - minX) * (maxY - minY);
+          }
+
+          if (totalDirtyArea > viewportArea * 0.5 || changedBounds.length > 20) {
+            // Too many changes or too large area - do full clear
+            renderLoopRef.current.invalidateAll('content-change');
+          } else {
+            // Targeted invalidation for each changed bound
+            for (const bounds of changedBounds) {
+              renderLoopRef.current.invalidateWorld(bounds);
+            }
+          }
+        }
+
+        overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
+      } else {
+        // Presence-only change - update overlay only
+        overlayLoopRef.current.invalidateAll();
       }
     });
 
-    // Set initial snapshot
     snapshotRef.current = roomDoc.currentSnapshot;
+    lastDocVersion = roomDoc.currentSnapshot.docVersion;
 
     return unsubscribe;
   }, [roomDoc]); // Depend on roomDoc from hook
@@ -125,7 +281,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // CRITICAL: This function is stable (no deps) to prevent effect re-runs
   // It reads viewTransform from ref to always use the latest transform
   const screenToWorld = useCallback((clientX: number, clientY: number): [number, number] | null => {
-    const canvas = stageRef.current?.getCanvasElement();
+    const canvas = baseStageRef.current?.getCanvasElement();
     const transform = viewTransformRef.current; // Always get latest transform
     if (!canvas || !transform) {
       console.warn('Cannot convert coordinates: canvas or transform not ready');
@@ -145,13 +301,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Used for positioning UI elements
   const worldToClient = useCallback(
     (worldX: number, worldY: number): [number, number] => {
-      if (!stageRef.current) return [worldX, worldY];
+      if (!baseStageRef.current) return [worldX, worldY];
 
       // World to canvas (returns CSS pixels)
       const [canvasX, canvasY] = viewTransform.worldToCanvas(worldX, worldY);
 
       // Get canvas element position
-      const rect = stageRef.current.getBounds();
+      const rect = baseStageRef.current.getBounds();
 
       // Canvas to screen (both in CSS pixels) - NO DPR division
       return [canvasX + rect.left, canvasY + rect.top];
@@ -159,12 +315,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     [viewTransform],
   );
 
-  // Handle resize events from CanvasStage
-  const handleResize = useCallback((info: ResizeInfo) => {
+  // 3G: Handle resize for both stages
+  const handleBaseResize = useCallback((info: ResizeInfo) => {
     setCanvasSize(info);
-    canvasSizeRef.current = info; // Update ref for closure access
-
-    // Notify render loop of resize
+    canvasSizeRef.current = info;
     renderLoopRef.current?.setResizeInfo({
       width: info.pixelWidth,
       height: info.pixelHeight,
@@ -172,20 +326,25 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     });
   }, []);
 
+  const handleOverlayResize = useCallback((info: ResizeInfo) => {
+    // Overlay just needs to invalidate on resize
+    overlayLoopRef.current?.invalidateAll();
+  }, []);
+
   // CRITICAL FIX: Compute stageReady to ensure effect re-runs when stage becomes available
   // This prevents the initialization from silently failing if timing precondition is missed
-  const stageReady = !!(renderLoopRef.current && stageRef.current?.getCanvasElement());
+  const stageReady = !!(renderLoopRef.current && baseStageRef.current?.getCanvasElement());
 
-  // Initialize render loop on mount (stable, doesn't restart on transform changes)
+  // 3D: Initialize base render loop
   // Use useLayoutEffect to ensure render loop exists before drawing tool effect
   useLayoutEffect(() => {
-    if (!stageRef.current) return;
+    if (!baseStageRef.current) return;
 
     const renderLoop = new RenderLoop();
     renderLoopRef.current = renderLoop;
 
     renderLoop.start({
-      stageRef,
+      stageRef: baseStageRef,
       getView: () => viewTransformRef.current,
       getSnapshot: () => snapshotRef.current,
       getViewport: (): ViewportInfo => {
@@ -202,7 +361,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         }
 
         // Fallback to getBounds if canvasSize not yet set
-        const bounds = stageRef.current?.getBounds();
+        const bounds = baseStageRef.current?.getBounds();
         const dpr = window.devicePixelRatio || 1;
 
         if (!bounds || bounds.width === 0 || bounds.height === 0) {
@@ -271,6 +430,57 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // NO DEPENDENCIES - stable render loop lifecycle, isMobile is a stable callback
 
+  // 3E: Add overlay render loop initialization
+  useLayoutEffect(() => {
+    if (!overlayStageRef.current) return;
+
+    const overlayLoop = new OverlayRenderLoop();
+    overlayLoopRef.current = overlayLoop;
+
+    overlayLoop.start({
+      stage: overlayStageRef.current!,
+      getView: () => viewTransformRef.current!,
+      getViewport: () => {
+        const cachedSize = canvasSizeRef.current;
+        if (cachedSize && cachedSize.cssWidth > 0) {
+          return {
+            cssWidth: cachedSize.cssWidth,
+            cssHeight: cachedSize.cssHeight,
+            dpr: cachedSize.dpr,
+          };
+        }
+        // Fallback
+        const dpr = window.devicePixelRatio || 1;
+        return { cssWidth: 1, cssHeight: 1, dpr };
+      },
+      getGates: () => roomDoc.getGateStatus(),
+      getPresence: () => snapshotRef.current.presence,  // Get from current snapshot
+      drawPresence: (ctx, presence, view, vp) => {
+        // Import drawPresenceOverlays from layers
+        const viewport: ViewportInfo = {
+          pixelWidth: Math.round(vp.cssWidth * vp.dpr),
+          pixelHeight: Math.round(vp.cssHeight * vp.dpr),
+          cssWidth: vp.cssWidth,
+          cssHeight: vp.cssHeight,
+          dpr: vp.dpr,
+        };
+        drawPresenceOverlays(
+          ctx,
+          snapshotRef.current,  // Pass full snapshot (presence is already up-to-date)
+          view,
+          viewport,
+          roomDoc.getGateStatus()
+        );
+      },
+    });
+
+    return () => {
+      overlayLoop.stop();
+      overlayLoop.destroy();
+      overlayLoopRef.current = null;
+    };
+  }, [roomDoc]);
+
   // CRITICAL FIX: Combined initialization and event listener effect
   // This ensures everything is wired up atomically when dependencies are ready
   // IMPORTANT: viewTransform is NOT in dependencies to prevent mid-gesture teardown
@@ -278,7 +488,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   useEffect(() => {
     // Wait for all required dependencies
     const renderLoop = renderLoopRef.current;
-    const canvas = stageRef.current?.getCanvasElement();
+    const canvas = baseStageRef.current?.getCanvasElement();
     const initialTransform = viewTransformRef.current; // Check initial availability
 
     // Guard: ensure all required components exist
@@ -305,19 +515,15 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       return; // Exit early before creating tool to prevent memory leak
     }
 
-    // Create drawing tool AFTER validation
+    // 3I & 3E2: Update DrawingTool to wire preview to overlay
     const tool = new DrawingTool(
       roomDoc,
       deviceUI,
       userId, // Pass the stable ID value
       (bounds) => {
-        // Invalidate with inflated bounds
-        renderLoop.invalidateWorld({
-          minX: bounds[0],
-          minY: bounds[1],
-          maxX: bounds[2],
-          maxY: bounds[3],
-        });
+        // During drawing, invalidate overlay (preview is there)
+        // The overlay will full-clear anyway, but this triggers a frame
+        overlayLoopRef.current?.invalidateAll();
       },
     );
 
@@ -328,9 +534,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const isMobile =
       /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
-    // Set preview provider on RenderLoop (disabled on mobile - no authoring overlays)
-    if (!isMobile) {
-      renderLoop.setPreviewProvider({
+    // Set preview provider on overlay loop (not base loop!)
+    if (!isMobile && overlayLoopRef.current) {
+      overlayLoopRef.current.setPreviewProvider({
         getPreview: () => tool.getPreview(),
       });
     }
@@ -468,19 +674,20 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Clean up tool and preview provider
       tool.destroy();
       drawingToolRef.current = undefined;
-      renderLoop.setPreviewProvider(null);
+      overlayLoopRef.current?.setPreviewProvider(null);
     };
   }, [roomDoc, userId, deviceUI, stageReady, screenToWorld]); // CRITICAL: stageReady ensures re-run, but NO viewTransform to prevent mid-gesture teardown
 
-  // Transform change detection (separate from lifecycle)
+  // 3F: Handle transform changes for both loops
   useEffect(() => {
     // Trigger a frame when transform changes
     // The DirtyRectTracker.notifyTransformChange() in tick() will detect the change
     // and automatically promote to full clear - we just need to trigger the frame
     renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
+    overlayLoopRef.current?.invalidateAll(); // Overlay needs redraw on pan/zoom
   }, [viewTransform.scale, viewTransform.pan.x, viewTransform.pan.y]);
 
-  // Expose coordinate transform functions and render loop methods via ref
+  // 3H: Update imperative handle for preview routing
   React.useImperativeHandle(
     ref,
     () => ({
@@ -493,16 +700,39 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         renderLoopRef.current?.invalidateWorld(bounds);
       },
       setPreviewProvider: (provider: () => any) => {
-        // Store provider on renderLoop for Phase 5 preview rendering
-        if (renderLoopRef.current) {
-          (renderLoopRef.current as any).previewProvider = provider;
+        // Route to overlay loop instead of base loop
+        if (overlayLoopRef.current) {
+          overlayLoopRef.current.setPreviewProvider({
+            getPreview: provider,
+          });
         }
       },
     }),
     [screenToWorld, worldToClient],
   );
 
-  return <CanvasStage ref={stageRef} className={className} onResize={handleResize} />;
+  // 3J: Update JSX to render two canvases
+  return (
+    <div className="relative w-full h-full">
+      <CanvasStage
+        ref={baseStageRef}
+        className={className}
+        style={{ position: 'absolute', inset: 0, zIndex: 1 }}
+        onResize={handleBaseResize}
+      />
+      <CanvasStage
+        ref={overlayStageRef}
+        className={className}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 2,
+          pointerEvents: 'none' // Critical: overlay doesn't block input
+        }}
+        onResize={handleOverlayResize}
+      />
+    </div>
+  );
 });
 
 Canvas.displayName = 'Canvas';

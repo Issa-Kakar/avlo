@@ -18,10 +18,8 @@ import {
   drawShapes,
   drawText,
   drawAuthoringOverlays,
-  drawPresenceOverlays,
   drawHUD,
 } from './layers';
-import { drawPreview } from './layers/preview';
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
 
 export interface PreviewProvider {
@@ -360,26 +358,14 @@ export class RenderLoop {
       drawShapes(ctx, snapshot, view, augmentedViewport); // Future: stamps/shapes
       drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
 
-      // Authoring overlay - preview goes here (Phase 5)
-      // CRITICAL TRANSFORM STATE: Context has world transform applied!
-      // - Transform was applied BEFORE drawStrokes using: ctx.save(); ctx.scale(view.scale, view.scale); ctx.translate(-view.pan.x, -view.pan.y);
-      // - Preview points are in world space and will be automatically transformed to canvas space
-      // - DO NOT apply additional transforms in drawPreview!
-      drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport); // Future: selection/handles
-      const preview = this.previewProvider?.getPreview();
-      if (preview) {
-        drawPreview(ctx, preview); // Draws in world coordinates (transform already applied)
-      }
+      // Authoring overlay - for future selection/handles
+      drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport);
 
-      // NO PRESENCE HERE - context will be restored after this block
+      // ⛔️ Preview moved to overlay canvas - no longer drawn here
     });
 
-    // Draw pass 2: Presence overlays (screen space with DPR only)
+    // Draw pass 2: HUD only (screen space with DPR only)
     stage.withContext((ctx) => {
-      // CRITICAL: Start fresh with DPR-only transform
-      // withContext already has DPR applied by CanvasStage, so we just draw in CSS pixels
-      // No additional world transform here!
-
       const augmentedViewport = {
         ...viewport,
         visibleWorldBounds: getVisibleWorldBounds(
@@ -390,13 +376,9 @@ export class RenderLoop {
         ),
       };
 
-      // Get gates and current time for presence rendering
-      const gates = getGates();
+      // ⛔️ Presence moved to overlay canvas - no longer drawn here
 
-      // Draw presence in screen space
-      drawPresenceOverlays(ctx, snapshot, view, augmentedViewport, gates);
-
-      // HUD also draws in screen space
+      // Keep HUD on base canvas
       drawHUD(ctx, snapshot, view, augmentedViewport); // Future: minimap, toasts (never exported)
     });
 

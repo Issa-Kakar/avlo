@@ -1185,22 +1185,37 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.publishState.presenceDirty = true;
       }
 
-      // Publish if Y.Doc changed OR presence changed
-      if (this.publishState.isDirty || this.publishState.presenceDirty) {
-        // Publishing snapshot based on dirty flags
+      // Option B-prime: Handle doc vs presence-only updates separately
+      if (this.publishState.isDirty) {
+        // Document changed - build full snapshot (expensive)
         const startTime = this.clock.now();
-
-        // Build snapshot
         const newSnapshot = this.buildSnapshot();
-
-        // CRITICAL FIX: Always publish when dirty, don't use svKey as a gate
-        // The svKey truncation (first 100 bytes) was missing local client updates
-        // when state vectors were large (>100 bytes), causing strokes to not render
-        // until refresh. SvKey dedupe optimization had to be removed.
         this.publishSnapshot(newSnapshot);
-
-        // Clear both dirty flags
         this.publishState.isDirty = false;
+        this.publishState.presenceDirty = false; // Clear both flags
+
+        // Track timing for metrics
+        this.publishState.lastPublishTime = this.clock.now();
+        this.publishState.publishCostMs = this.clock.now() - startTime;
+      } else if (this.publishState.presenceDirty) {
+        // Presence-only update - reuse last snapshot (cheap!)
+        const startTime = this.clock.now();
+        const livePresence = this.buildPresenceView();
+        const prev = this._currentSnapshot;
+
+        // Construct a fresh object so identity changes
+        const snap: Snapshot = {
+          ...prev,                // reuses already-frozen arrays & fields
+          presence: livePresence, // new presence
+          createdAt: Date.now(),  // fresh timestamp
+        };
+
+        // Dev parity with buildSnapshot(): freeze the top-level object
+        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
+          Object.freeze(snap);
+        }
+
+        this.publishSnapshot(snap); // sets current + notifies subscribers
         this.publishState.presenceDirty = false;
 
         // Track timing for metrics
