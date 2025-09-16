@@ -7,7 +7,6 @@
  *   1. IndexedDB attach/open (Phase 6) - handle quota/corruption errors
  *   2. WebSocket connect/sync (Phase 6) - handle network failures
  *   3. WebRTC bring-up (Phase 17) - handle ICE/signaling failures
- *   4. Snapshot cache I/O (Phase 2.4.4) - handle storage errors
  * - React error boundary at app level for UI protection
  * - Current Phase 2 is resilient without explicit boundaries
  */
@@ -240,6 +239,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
+    console.log(`[RoomDocManagerImpl Constructor] Creating new instance for roomId: ${roomId}`);
     this.roomId = roomId;
     this.userId = ulid(); // User ID for this session
 
@@ -282,10 +282,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Start with empty snapshot
     this._currentSnapshot = createEmptySnapshot();
 
-    // Initialize root structure
-    this.initializeYjsStructures();
-
-    // Setup observers
+    // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
 
     // Initialize throttled presence updates (30Hz = ~33ms)
@@ -296,11 +293,31 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.updatePresenceThrottled = presenceThrottle.throttled;
     this.updatePresenceThrottledCleanup = presenceThrottle.cleanup;
 
-    // Initialize IndexedDB provider (Phase 6A)
+    // CRITICAL FIX: Attach IDB FIRST before creating any structures
+    // This prevents race condition where fresh containers overwrite persisted ones
     this.initializeIndexedDBProvider();
 
     // Initialize WebSocket provider (Phase 6C)
     this.initializeWebSocketProvider();
+
+    // Seed only after IDB is ready *and* we've given WS a brief chance to sync.
+    // This avoids a peer joining a fresh room and locally seeding just before WS
+    // delivers the authoritative (possibly non-empty) doc.
+    this.whenGateOpen('idbReady').then(async () => {
+      await Promise.race([
+        this.whenGateOpen('wsSynced'),
+        this.delay(350), // ~1–2 frames; prevents cross-tab fresh-room races
+      ]);
+
+      const root = this.ydoc.getMap('root');
+      if (!root.has('meta')) {
+        console.log(`[RoomDocManager] Seeding structures for new room: ${this.roomId}`);
+        this.initializeYjsStructures();
+      } else {
+        console.log(`[RoomDocManager] Room ${this.roomId} already has structures from IDB/WS`);
+        this.logContainerIdentities('LOADED_FROM_IDB_OR_WS');
+      }
+    });
 
     // Start RAF loop
     this.startPublishLoop();
@@ -657,6 +674,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
+  // Tiny helper to await a timeout (used for the WS-sync grace window)
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   // Helper to get view transform (identity for now, will be populated in Phase 3)
   private getViewTransform(): ViewTransform {
     return {
@@ -669,6 +691,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Step 3: Initialize Y.js structures with proper setup
   private initializeYjsStructures(): void {
+    console.log(`[RoomDocManager] initializeYjsStructures running for room: ${this.roomId}`);
+
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
 
@@ -710,7 +734,38 @@ class RoomDocManagerImpl implements IRoomDocManager {
       if (!root.has('outputs')) {
         root.set('outputs', new Y.Array<Output>());
       }
-    }, 'init'); // Origin for debugging
+    }, 'init-structures'); // Origin for debugging
+
+    // Log container identities right after initialization
+    this.logContainerIdentities('AFTER_INIT');
+  }
+
+  // Helper to log container identities for debugging
+  private logContainerIdentities(phase: string): void {
+    const root = this.ydoc.getMap('root');
+    const strokes = root.get('strokes');
+    const meta = root.get('meta');
+    const sceneTicks = meta instanceof Y.Map ? meta.get('scene_ticks') : null;
+
+    // Create stable identifiers using object reference + type
+    const strokesId = strokes
+      ? `${(strokes as any)._item?.id?.clock || 'unknown'}-${strokes.constructor.name}`
+      : 'null';
+    const metaId = meta
+      ? `${(meta as any)._item?.id?.clock || 'unknown'}-${meta.constructor.name}`
+      : 'null';
+    const ticksId = sceneTicks
+      ? `${(sceneTicks as any)._item?.id?.clock || 'unknown'}-${sceneTicks.constructor.name}`
+      : 'null';
+
+    console.log(`[Container Identity - ${phase}] room: ${this.roomId}`);
+    console.log(
+      `  strokes: ${strokesId}, length: ${strokes instanceof Y.Array ? strokes.length : 'N/A'}`,
+    );
+    console.log(`  meta: ${metaId}`);
+    console.log(
+      `  scene_ticks: ${ticksId}, length: ${sceneTicks instanceof Y.Array ? sceneTicks.length : 'N/A'}`,
+    );
   }
 
   // Step 4: Add output with size enforcement
@@ -849,6 +904,24 @@ class RoomDocManagerImpl implements IRoomDocManager {
   mutate(fn: (ydoc: Y.Doc) => void): void {
     // Check if destroyed first
     if (this.destroyed) return;
+
+    // Pre-init guard: before IDB hydration or seeding, don't create containers via writes.
+    // This prevents the race condition where writes could create fresh containers that
+    // compete with persisted ones from IDB or WS. Once 'meta' exists, structures are initialized.
+    const root = this.ydoc.getMap('root');
+    if (!root.has('meta')) {
+      // Defer writes until either (a) WS syncs, or (b) a short grace elapses after IDB.
+      this.whenGateOpen('idbReady').then(async () => {
+        await Promise.race([this.whenGateOpen('wsSynced'), this.delay(350)]);
+        const r = this.ydoc.getMap('root');
+        if (!r.has('meta')) {
+          // Truly fresh doc even after IDB + grace → seed once.
+          this.initializeYjsStructures();
+        }
+        this.mutate(fn); // replay the write
+      });
+      return;
+    }
 
     // Minimal guards (same as spec)
 
@@ -1168,6 +1241,28 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
+    // Log transaction origin to track IDB vs local updates
+    const originStr =
+      typeof origin === 'string'
+        ? origin
+        : origin === this.indexeddbProvider
+          ? 'IDB_PROVIDER'
+          : origin === this.websocketProvider
+            ? 'WS_PROVIDER'
+            : origin
+              ? (origin as any).constructor?.name || 'unknown'
+              : 'null';
+
+    console.log(
+      `[Transaction Origin] room: ${this.roomId}, origin: ${originStr}, update size: ${update.byteLength}`,
+    );
+
+    // If this is from IDB, check if container identities changed
+    if (origin === this.indexeddbProvider || originStr === 'IDB_PROVIDER') {
+      console.log('[Transaction] IDB update detected, checking for container changes...');
+      this.logContainerIdentities('DURING_IDB_UPDATE');
+    }
+
     // Increment docVersion on ANY Y.Doc change
     this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
     this.sawAnyDocUpdate = true; // We've now seen real doc data
@@ -1196,30 +1291,30 @@ class RoomDocManagerImpl implements IRoomDocManager {
     try {
       // Create room-scoped IDB provider
       const dbName = `avlo.v1.rooms.${this.roomId}`;
+      console.log(`[RoomDocManager] Creating IndexedDB with name: ${dbName}`);
       this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
 
       // Set up IDB gate with 2s timeout
       const timeoutId = setTimeout(() => {
-        this.openGate('idbReady');
-        // IDB timeout reached, continuing with empty doc
+        console.log(
+          `[RoomDocManager] IDB timeout reached for room: ${this.roomId}, proceeding with empty doc`,
+        );
+        this.handleIDBReady(); // Use unified handler
       }, 2000);
       this.gateTimeouts.set('idbReady', timeoutId);
 
       // Listen for IDB sync completion for gate control
       this.indexeddbProvider.whenSynced
         .then(() => {
-          const timeout = this.gateTimeouts.get('idbReady');
-          if (timeout) {
-            clearTimeout(timeout);
-            this.gateTimeouts.delete('idbReady');
-          }
-          this.openGate('idbReady');
-          // IDB synced successfully
+          console.log(
+            `[RoomDocManager] IndexedDB whenSynced resolved for room: ${this.roomId}, dbName: avlo.v1.rooms.${this.roomId}`,
+          );
+          this.handleIDBReady(); // Use unified handler
         })
         .catch((err: unknown) => {
           console.warn('[RoomDocManager] IDB sync error (non-critical):', err);
           // Still open gate on error - fallback to empty doc
-          this.openGate('idbReady');
+          this.handleIDBReady(); // Use unified handler
         });
 
       // Note: No need to listen for 'synced' event to mark dirty
@@ -1227,8 +1322,25 @@ class RoomDocManagerImpl implements IRoomDocManager {
     } catch (err: unknown) {
       console.warn('[RoomDocManager] IDB initialization failed (non-critical):', err);
       // Mark as failed but continue
-      this.openGate('idbReady');
+      this.handleIDBReady(); // Use unified handler
     }
+  }
+
+  // Centralized handler for IDB ready state - ensures consistent behavior
+  private handleIDBReady(): void {
+    // Clear any pending timeout
+    const timeout = this.gateTimeouts.get('idbReady');
+    if (timeout) {
+      clearTimeout(timeout);
+      this.gateTimeouts.delete('idbReady');
+    }
+
+    // Log container identities after IDB is ready (either synced or timed out)
+    this.logContainerIdentities('AFTER_IDB_READY');
+
+    // Open the gate - structure initialization is handled in constructor
+    // via whenGateOpen('idbReady').then(...)
+    this.openGate('idbReady');
   }
 
   private initializeWebSocketProvider(): void {
@@ -1400,6 +1512,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
             this.gateTimeouts.delete('wsSynced');
           }
           this.openGate('wsSynced');
+          // Log identities after the first WS sync to verify origin of containers
+          this.logContainerIdentities('AFTER_WS_SYNC');
           // WebSocket synced
         } else {
           this.closeGate('wsSynced');
@@ -1723,17 +1837,27 @@ export class RoomDocManagerRegistry {
    * @deprecated Use acquire() instead for proper reference counting
    */
   get(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
+    console.warn(
+      `[Registry] DEPRECATED get() method called for roomId: ${roomId} - should use acquire() instead`,
+    );
     // For backward compatibility, delegate to acquire
     // But don't increment ref count (maintains old behavior for tests)
     let manager = this.managers.get(roomId);
 
     if (!manager) {
+      console.log(
+        `[Registry] Creating new RoomDocManager via deprecated get() for roomId: ${roomId}`,
+      );
       // Creating new RoomDocManager
       // Use provided options, fall back to default options, or use browser defaults
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
       // Don't set ref count for backward compatibility with tests
+    } else {
+      console.log(
+        `[Registry] Reusing existing RoomDocManager via deprecated get() for roomId: ${roomId}`,
+      );
     }
 
     return manager;
@@ -1748,11 +1872,14 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
+      console.log(`[Registry] Creating new RoomDocManager via acquire() for roomId: ${roomId}`);
       // Creating new RoomDocManager
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
       this.refCounts.set(roomId, 0);
+    } else {
+      console.log(`[Registry] Reusing existing RoomDocManager via acquire() for roomId: ${roomId}`);
     }
 
     // Increment reference count

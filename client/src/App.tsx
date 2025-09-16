@@ -144,7 +144,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
 
 function TestHarness() {
   // Fixed room ID for testing - in production this would come from URL
-  const roomId = 'test-room-001';
+  const roomId = 'test-fix-races';
 
   return (
     <ViewTransformProvider>

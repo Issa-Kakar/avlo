@@ -20,16 +20,15 @@
 
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
-- Implement RAF-based publishing (≤60 FPS, dirty flags; **no `svKey`-based dedupe in Phase 6**)
+- Implement RAF-based publishing (≤60 FPS) driven by dirty flags; publish on next rAF whenever **doc-dirty** or **presence-dirty** is set.
 - **Publish→clear policy (Phase 7)**: On each published Snapshot, the renderer calls `invalidateAll('snapshot')` to force a full clear. The DirtyRect infrastructure remains in place for future optimization but is bypassed here. Both presenceDirty and docDirty schedule rAF and a new Snapshot build.
-- **svKey implementation**: Create safe state vector key using first 100 bytes + length + checksum to avoid stack overflow on large state vectors. Format: `btoa(first100bytes):length:checksum`. **We compute and attach it to each snapshot for diagnostics/tooling only; it is not consulted to decide whether to publish.**
+- Each Snapshot includes **`docVersion: number`** (monotonic). `docVersion` increments on any Y.Doc change; presence-only updates **do not** increment it.
 
 ### 2.4 Set Up Subscription Management
 
 - Implement subscribeSnapshot with immediate callback on subscribe
 - Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
 - Create subscribeRoomStats (null initially, updates on persist_ack)
-- **COMPLETED BUT DEFERRAL**: Deferral (Phase 6): Boot splash is not implemented in this release. svKey is still computed but is _not_ used for publish/change detection in Phase 6; no splash is read or shown on boot. The minimal render cache remains write-only for now. Add minimal render cache (cosmetic only, NOT y-indexeddb)
 
 ## Phase 3: Basic Canvas Infrastructure
 
@@ -73,7 +72,6 @@
 ### 4.3 Performance Notes
 
 - Skip strokes with bbox diagonal <2px in screen space
-- Render cache (if present) is cosmetic only and unused by Phase 6
 
 ## Phase 5: Drawing Input System
 
@@ -120,7 +118,11 @@ Do not delete the room’s IDB data on leave; expose Delete local copy in My Roo
    - Prefer `provider.whenSynced.then(() => mark IDB hydrate finished)`; if unavailable in your wrapper, listen **once** for `'synced'` and then mark finished.
    - Do not subscribe to a destroy event. Teardown is explicit: in the manager’s `teardown()`, call `await provider.destroy()` (best-effort), null out references, and leave `G_IDB_READY` unchanged. If your wrapper emits `'destroyed'`, you may log it in dev only; never gate behavior on it.
 
-5. On first construction, do **not** assume any IDB content; the manager should already have created the root containers in a single transact earlier. The provider simply applies any stored ops.
+5. Do **not** create containers in the constructor. Seed containers only after `G_IDB_READY` **and** either `G_WS_SYNCED` or a 350 ms grace; if `!root.has('meta')`, call `initializeYjsStructures()` exactly once.
+
+#### 6A.1.1b Seeding discipline
+
+Seed containers only after idbReady **and** either wsSynced or a 350 ms grace (Promise.race). If, at that point, root.has('meta') is still false, call initializeYjsStructures() exactly once.
 
 #### 6A.1.2 Implement `G_IDB_READY` gate (2 s timeout)
 
@@ -134,10 +136,8 @@ Do not delete the room’s IDB data on leave; expose Delete local copy in My Roo
 #### 6A.1.3 Dirty-flag integration for publish loop
 
 1. When IDB applies a batch, flip the manager's **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
-2. Rely on the **existing** snapshot pipeline to compute the `svKey` (first 100 bytes + length + checksum, NOT full state vector) and publish a frozen Snapshot on the next frame; do **not** special-case IDB vs WS. **In Phase 6, `svKey` is not used to suppress publishes; any doc-dirty event schedules a publish unconditionally.**
-   **Why truncated svKey**: Full state vectors can be megabytes on large documents, causing stack overflow when converting to base64. The truncated format is deterministic and sufficient for cache invalidation while remaining performant.
-
-**MVP pivot:** **Do not** read or write any render cache in Phase 6, and **do not** persist `lastKnownSvKey`. The render cache remains present in the codebase but is dormant.
+2. When IDB applies a batch, flip **doc-dirty** and schedule the rAF publisher. We do **not** compute or compare any state-vector key. `docVersion` increments on every Y.Doc change elsewhere.
+3. Before containers exist (`!root.has('meta')`), **defer writes** until idbReady and either wsSynced or a 350 ms grace, then replay the write; if still uninitialized, seed once, then replay.
 
 ### 6A.2 Boot discipline & first-paint guarantees
 
@@ -147,13 +147,14 @@ Do not delete the room’s IDB data on leave; expose Delete local copy in My Roo
 2. Immediately expose this snapshot to new subscribers (UI can render chrome, blank stage, and disabled buttons gated on `G_FIRST_SNAPSHOT` as needed).
 3. Leave the rAF publisher **running from creation**, so the first doc-derived snapshot appears ≤ 1 frame after any Y update is applied (IDB or later WS).
 
-**Boot behavior (MVP pivot).** Do **not** render any boot image. First paint is the **EmptySnapshot**, and the live, doc-derived snapshot follows as usual via rAF. No `lastKnownSvKey` exists in Phase 6.
+**Boot behavior (MVP pivot).** Do **not** render any boot image. First paint is the **EmptySnapshot**, and the live, doc-derived snapshot follows as usual via rAF. There is **no** `lastKnownSvKey`.
+Canvas initial render is **gate-driven** by `G_FIRST_SNAPSHOT` (opened when `sawAnyDocUpdate` becomes true).
 
 #### 6A.2.2 rAF publisher discipline already in place
 
 1. Keep the single rAF loop model (no multiple loops per provider).
 2. Publish when **either** the manager is **doc-dirty** (Yjs applied updates or local edits) **or** the presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
-3. **Remove the svKey-based publish optimization**: in Phase 6, if the manager is dirty, publish a new snapshot on the next rAF without comparing `svKey`. Note: svKey changes only when Y.Doc actually changes, making it a reliable change detector despite using a truncated format.
+3. If the manager is dirty, publish a new snapshot on the next rAF. We do not use any state-vector key comparison.
 
 ### 6A.3 Client config validation with Zod (boot-critical only)
 
@@ -685,13 +686,6 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 - Debug overlay (dev only): draw tiny dots for received vs predicted; show per-peer update age.
 - No PII in logs; redact names to initials.&#x20;
 
-### 7K: Non-goals (Phase 7)
-
-- WebRTC awareness or Peer Mode UI (deferred).
-- Persisting awareness to Redis/Postgres.
-- images or external profile services.
-- Presence-driven permissions/moderation.&#x20;
-
 ### 7L: Implementation notes & cross-phase alignment
 
 - **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24. Awareness changes mark manager dirty same as doc changes, triggering snapshot publish on next rAF.
@@ -704,8 +698,6 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 ### 7M: Cursor Interpolation (Receiver-side smoothing)
 
 Eliminates cursor jitter by doing **receiver-side interpolation** inside `RoomDocManager` (not renderer):
-
-#### 7M.1 Architecture
 
 - **Manager-owned**: All smoothing logic in `RoomDocManager`, renderer just draws `snapshot.presence`
 - **Per-peer state**: Track `PeerSmoothing` with `lastSeq`, `prev/last` samples, animation state
