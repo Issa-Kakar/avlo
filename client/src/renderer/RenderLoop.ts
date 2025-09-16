@@ -1,7 +1,6 @@
 import type { RefObject } from 'react';
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import type { CanvasStageHandle } from '../canvas/CanvasStage';
-import type { PreviewData } from '../lib/tools/types';
 import type { GateStatus } from '@/hooks/use-connection-gates';
 import { DirtyRectTracker } from './DirtyRectTracker';
 import {
@@ -21,10 +20,6 @@ import {
   drawHUD,
 } from './layers';
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
-
-export interface PreviewProvider {
-  getPreview(): PreviewData | null;
-}
 
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
@@ -58,21 +53,11 @@ export class RenderLoop {
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
   private needsFrame = false; // EVENT-DRIVEN: Only schedule when dirty
   private framesSinceInvalidation = 0; // Count frames since last invalidation
-  private previewProvider: PreviewProvider | null = null; // Phase 5: Preview support
 
   constructor() {
     // Listen for visibility changes
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
-    }
-  }
-
-  // Set the preview provider for drawing preview
-  public setPreviewProvider(provider: PreviewProvider | null): void {
-    this.previewProvider = provider;
-    // If we're setting a provider with preview data, mark dirty to render it
-    if (provider && provider.getPreview()) {
-      this.markDirty();
     }
   }
 
@@ -123,7 +108,6 @@ export class RenderLoop {
     this.framesSinceInvalidation = 0;
     this.skipNextFrame = false;
     this.lastFrameTime = 0;
-    this.previewProvider = null; // Clear preview provider
 
     // Reset frame stats to initial state
     this.frameStats = {
@@ -216,7 +200,7 @@ export class RenderLoop {
 
     const startTime = performance.now();
     this.lastFrameTime = startTime;
-    const { stageRef, getView, getSnapshot, getViewport, getGates } = this.config;
+    const { stageRef, getView, getSnapshot, getViewport } = this.config;
 
     // Clear the needsFrame flag - will be set again if new work arrives
     this.needsFrame = false;

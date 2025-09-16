@@ -14,31 +14,15 @@ import type { DeviceUIState } from '@/lib/tools/types';
 import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 
-// Helper to inflate bbox for stroke width & antialiasing
-function inflateWorld(
-  bbox: [number, number, number, number],
-  maxStrokePx: number,
-  viewScale: number
-): [number, number, number, number] {
-  // World delta for 1 CSS px (antialiasing)
-  const aaWorld = 1 / Math.max(viewScale, 1e-6);
-  // World delta for stroke width + AA
-  const delta = (maxStrokePx / Math.max(viewScale, 1e-6)) + aaWorld;
-  return [
-    bbox[0] - delta,
-    bbox[1] - delta,
-    bbox[2] + delta,
-    bbox[3] + delta
-  ];
-}
-
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
   const eps = 1e-3;
-  return Math.abs(a[0] - b[0]) < eps &&
-         Math.abs(a[1] - b[1]) < eps &&
-         Math.abs(a[2] - b[2]) < eps &&
-         Math.abs(a[3] - b[3]) < eps;
+  return (
+    Math.abs(a[0] - b[0]) < eps &&
+    Math.abs(a[1] - b[1]) < eps &&
+    Math.abs(a[2] - b[2]) < eps &&
+    Math.abs(a[3] - b[3]) < eps
+  );
 }
 
 interface WorldBounds {
@@ -48,26 +32,21 @@ interface WorldBounds {
   maxY: number;
 }
 
-function diffBounds(
-  prev: Snapshot,
-  next: Snapshot,
-  viewScale: number
-): WorldBounds[] {
-  const prevStrokeMap = new Map(prev.strokes.map(s => [s.id, s]));
-  const nextStrokeMap = new Map(next.strokes.map(s => [s.id, s]));
+function diffBounds(prev: Snapshot, next: Snapshot): WorldBounds[] {
+  const prevStrokeMap = new Map(prev.strokes.map((s) => [s.id, s]));
+  const nextStrokeMap = new Map(next.strokes.map((s) => [s.id, s]));
   const dirty: WorldBounds[] = [];
 
   // Added/modified strokes
   for (const [id, stroke] of nextStrokeMap) {
     const prevStroke = prevStrokeMap.get(id);
     if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-      // Inflate bbox to account for stroke width and AA
-      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      // Don't inflate here - DirtyRectTracker will handle it
       dirty.push({
-        minX: inflated[0],
-        minY: inflated[1],
-        maxX: inflated[2],
-        maxY: inflated[3]
+        minX: stroke.bbox[0],
+        minY: stroke.bbox[1],
+        maxX: stroke.bbox[2],
+        maxY: stroke.bbox[3],
       });
     }
   }
@@ -75,35 +54,36 @@ function diffBounds(
   // Removed strokes
   for (const [id, stroke] of prevStrokeMap) {
     if (!nextStrokeMap.has(id)) {
-      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      // Don't inflate here - DirtyRectTracker will handle it
       dirty.push({
-        minX: inflated[0],
-        minY: inflated[1],
-        maxX: inflated[2],
-        maxY: inflated[3]
+        minX: stroke.bbox[0],
+        minY: stroke.bbox[1],
+        maxX: stroke.bbox[2],
+        maxY: stroke.bbox[3],
       });
     }
   }
 
   // Handle text blocks
-  const prevTextMap = new Map(prev.texts.map(t => [t.id, t]));
-  const nextTextMap = new Map(next.texts.map(t => [t.id, t]));
+  const prevTextMap = new Map(prev.texts.map((t) => [t.id, t]));
+  const nextTextMap = new Map(next.texts.map((t) => [t.id, t]));
 
   // Added/modified texts
   for (const [id, text] of nextTextMap) {
     const prevText = prevTextMap.get(id);
-    if (!prevText ||
-        prevText.x !== text.x ||
-        prevText.y !== text.y ||
-        prevText.w !== text.w ||
-        prevText.h !== text.h) {
-      // Add some padding for text rendering
-      const padding = 5 / Math.max(viewScale, 1e-6);
+    if (
+      !prevText ||
+      prevText.x !== text.x ||
+      prevText.y !== text.y ||
+      prevText.w !== text.w ||
+      prevText.h !== text.h
+    ) {
+      // Don't add padding here - DirtyRectTracker will handle it
       dirty.push({
-        minX: text.x - padding,
-        minY: text.y - padding,
-        maxX: text.x + text.w + padding,
-        maxY: text.y + text.h + padding
+        minX: text.x,
+        minY: text.y,
+        maxX: text.x + text.w,
+        maxY: text.y + text.h,
       });
     }
   }
@@ -111,17 +91,17 @@ function diffBounds(
   // Removed texts
   for (const [id, text] of prevTextMap) {
     if (!nextTextMap.has(id)) {
-      const padding = 5 / Math.max(viewScale, 1e-6);
+      // Don't add padding here - DirtyRectTracker will handle it
       dirty.push({
-        minX: text.x - padding,
-        minY: text.y - padding,
-        maxX: text.x + text.w + padding,
-        maxY: text.y + text.h + padding
+        minX: text.x,
+        minY: text.y,
+        maxX: text.x + text.w,
+        maxY: text.y + text.h,
       });
     }
   }
 
-  return dirty;  // Let DirtyRectTracker handle coalescing
+  return dirty; // Let DirtyRectTracker handle coalescing
 }
 
 export interface CanvasProps {
@@ -152,7 +132,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const drawingToolRef = useRef<DrawingTool>();
   const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
-  const renderLoopRef = useRef<RenderLoop | null>(null);      // existing
+  const renderLoopRef = useRef<RenderLoop | null>(null); // existing
   const overlayLoopRef = useRef<OverlayRenderLoop | null>(null); // new
 
   // Generate stable user ID (Phase 5 placeholder)
@@ -230,29 +210,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         lastDocVersion = newSnapshot.docVersion;
 
         // Use bbox diffing for targeted invalidation instead of full clear
-        const changedBounds = diffBounds(prevSnapshot, newSnapshot, viewTransformRef.current.scale);
-        if (changedBounds.length > 0) {
-          // If there are many changed regions, it's more efficient to do a full clear
-          // Threshold: if more than 50% of viewport would be invalidated, do full clear
-          const viewportArea = (canvasSizeRef.current?.cssWidth || 800) * (canvasSizeRef.current?.cssHeight || 600);
-          let totalDirtyArea = 0;
-
-          for (const bounds of changedBounds) {
-            const worldBounds = bounds;
-            const [minX, minY] = viewTransformRef.current.worldToCanvas(worldBounds.minX, worldBounds.minY);
-            const [maxX, maxY] = viewTransformRef.current.worldToCanvas(worldBounds.maxX, worldBounds.maxY);
-            totalDirtyArea += (maxX - minX) * (maxY - minY);
-          }
-
-          if (totalDirtyArea > viewportArea * 0.5 || changedBounds.length > 20) {
-            // Too many changes or too large area - do full clear
-            renderLoopRef.current.invalidateAll('content-change');
-          } else {
-            // Targeted invalidation for each changed bound
-            for (const bounds of changedBounds) {
-              renderLoopRef.current.invalidateWorld(bounds);
-            }
-          }
+        const changedBounds = diffBounds(prevSnapshot, newSnapshot);
+        // Let DirtyRectTracker handle promotion to full clear if needed
+        for (const bounds of changedBounds) {
+          renderLoopRef.current.invalidateWorld(bounds);
         }
 
         overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
@@ -326,7 +287,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     });
   }, []);
 
-  const handleOverlayResize = useCallback((info: ResizeInfo) => {
+  const handleOverlayResize = useCallback((_info: ResizeInfo) => {
     // Overlay just needs to invalidate on resize
     overlayLoopRef.current?.invalidateAll();
   }, []);
@@ -454,7 +415,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         return { cssWidth: 1, cssHeight: 1, dpr };
       },
       getGates: () => roomDoc.getGateStatus(),
-      getPresence: () => snapshotRef.current.presence,  // Get from current snapshot
+      getPresence: () => snapshotRef.current.presence, // Get from current snapshot
       drawPresence: (ctx, presence, view, vp) => {
         // Import drawPresenceOverlays from layers
         const viewport: ViewportInfo = {
@@ -466,10 +427,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         };
         drawPresenceOverlays(
           ctx,
-          snapshotRef.current,  // Pass full snapshot (presence is already up-to-date)
+          snapshotRef.current, // Pass full snapshot (presence is already up-to-date)
           view,
           viewport,
-          roomDoc.getGateStatus()
+          roomDoc.getGateStatus(),
         );
       },
     });
@@ -507,20 +468,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       return; // Dependencies not ready yet, will retry when stageReady changes
     }
 
-    // Validate that RenderLoop supports preview provider BEFORE creating tool
-    if (typeof renderLoop.setPreviewProvider !== 'function') {
-      console.error(
-        'RenderLoop does not support preview provider - Phase 3 implementation missing',
-      );
-      return; // Exit early before creating tool to prevent memory leak
-    }
-
     // 3I & 3E2: Update DrawingTool to wire preview to overlay
     const tool = new DrawingTool(
       roomDoc,
       deviceUI,
       userId, // Pass the stable ID value
-      (bounds) => {
+      (_bounds) => {
         // During drawing, invalidate overlay (preview is there)
         // The overlay will full-clear anyway, but this triggers a frame
         overlayLoopRef.current?.invalidateAll();
@@ -727,7 +680,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           position: 'absolute',
           inset: 0,
           zIndex: 2,
-          pointerEvents: 'none' // Critical: overlay doesn't block input
+          pointerEvents: 'none', // Critical: overlay doesn't block input
         }}
         onResize={handleOverlayResize}
       />
