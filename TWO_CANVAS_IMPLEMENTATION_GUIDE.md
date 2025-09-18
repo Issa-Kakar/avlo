@@ -486,26 +486,7 @@ private startPublishLoop(): void {
 
 ### Step 5: (Optional) Implement Enhanced Bbox Diffing
 
-For even better performance, implement diffing with proper inflation and epsilon comparison:
-
-```typescript
-// Helper to inflate bbox for stroke width & antialiasing
-function inflateWorld(
-  bbox: [number, number, number, number],
-  maxStrokePx: number,
-  viewScale: number
-): [number, number, number, number] {
-  // World delta for 1 CSS px (antialiasing)
-  const aaWorld = 1 / Math.max(viewScale, 1e-6);
-  // World delta for stroke width + AA
-  const delta = (maxStrokePx / Math.max(viewScale, 1e-6)) + aaWorld;
-  return [
-    bbox[0] - delta,
-    bbox[1] - delta,
-    bbox[2] + delta,
-    bbox[3] + delta
-  ];
-}
+For even better performance, implement diffing with epsilon comparison:
 
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
@@ -514,28 +495,30 @@ function bboxEquals(a: number[], b: number[]): boolean {
          Math.abs(a[1] - b[1]) < eps &&
          Math.abs(a[2] - b[2]) < eps &&
          Math.abs(a[3] - b[3]) < eps;
+};
+
+interface WorldBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
 }
 
-function diffBounds(
-  prev: Snapshot,
-  next: Snapshot,
-  viewScale: number
-): WorldBounds[] {
-  const prevStrokeMap = new Map(prev.strokes.map(s => [s.id, s]));
-  const nextStrokeMap = new Map(next.strokes.map(s => [s.id, s]));
+function diffBounds(prev: Snapshot, next: Snapshot): WorldBounds[] {
+  const prevStrokeMap = new Map(prev.strokes.map((s) => [s.id, s]));
+  const nextStrokeMap = new Map(next.strokes.map((s) => [s.id, s]));
   const dirty: WorldBounds[] = [];
 
   // Added/modified strokes
   for (const [id, stroke] of nextStrokeMap) {
     const prevStroke = prevStrokeMap.get(id);
     if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-      // Inflate bbox to account for stroke width and AA
-      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      // Don't inflate here - DirtyRectTracker will handle it
       dirty.push({
-        minX: inflated[0],
-        minY: inflated[1],
-        maxX: inflated[2],
-        maxY: inflated[3]
+        minX: stroke.bbox[0],
+        minY: stroke.bbox[1],
+        maxX: stroke.bbox[2],
+        maxY: stroke.bbox[3],
       });
     }
   }
@@ -543,30 +526,67 @@ function diffBounds(
   // Removed strokes
   for (const [id, stroke] of prevStrokeMap) {
     if (!nextStrokeMap.has(id)) {
-      const inflated = inflateWorld(stroke.bbox, stroke.style.size, viewScale);
+      // Don't inflate here - DirtyRectTracker will handle it
       dirty.push({
-        minX: inflated[0],
-        minY: inflated[1],
-        maxX: inflated[2],
-        maxY: inflated[3]
+        minX: stroke.bbox[0],
+        minY: stroke.bbox[1],
+        maxX: stroke.bbox[2],
+        maxY: stroke.bbox[3],
       });
     }
   }
 
-  // TODO: Include text blocks and other content types
-  // Follow same pattern for prev.texts vs next.texts
+  // Handle text blocks
+  const prevTextMap = new Map(prev.texts.map((t) => [t.id, t]));
+  const nextTextMap = new Map(next.texts.map((t) => [t.id, t]));
 
-  return dirty;  // Let DirtyRectTracker handle coalescing
+  // Added/modified texts
+  for (const [id, text] of nextTextMap) {
+    const prevText = prevTextMap.get(id);
+    if (
+      !prevText ||
+      prevText.x !== text.x ||
+      prevText.y !== text.y ||
+      prevText.w !== text.w ||
+      prevText.h !== text.h
+    ) {
+      // Don't add padding here - DirtyRectTracker will handle it
+      dirty.push({
+        minX: text.x,
+        minY: text.y,
+        maxX: text.x + text.w,
+        maxY: text.y + text.h,
+      });
+    }
+  }
+
+  // Removed texts
+  for (const [id, text] of prevTextMap) {
+    if (!nextTextMap.has(id)) {
+      // Don't add padding here - DirtyRectTracker will handle it
+      dirty.push({
+        minX: text.x,
+        minY: text.y,
+        maxX: text.x + text.w,
+        maxY: text.y + text.h,
+      });
+    }
+  }
+
+  return dirty; // Let DirtyRectTracker handle coalescing
 }
 ```
 
 Then in the snapshot subscription, call this instead of full invalidation:
 ```typescript
 // Instead of: renderLoopRef.current.invalidateAll('doc-change');
-const changedBounds = diffBounds(prevSnapshot, newSnapshot, viewTransform.scale);
-for (const bounds of changedBounds) {
-  renderLoopRef.current.invalidateWorld(bounds);
-}
+
+++ // Use bbox diffing for targeted invalidation instead of full clear
+        const changedBounds = diffBounds(prevSnapshot, newSnapshot);
+        // Let DirtyRectTracker handle promotion to full clear if needed
+        for (const bounds of changedBounds) {
+          renderLoopRef.current.invalidateWorld(bounds);
+        }
 ```
 
 ## Key Implementation Notes
@@ -576,9 +596,6 @@ for (const bounds of changedBounds) {
 3. **Preview on overlay** - Preview renders on overlay with world transform, eliminating base canvas flicker
 4. **Single subscription** - Use snapshot subscription for both canvases, no separate presence subscription
 5. **DirtyRectTracker untouched** - Continues to work for base canvas optimization
-6. **Transform changes** - Both loops notified; base gets tiny invalidation, overlay full redraw
-7. **Viewport guards** - Skip overlay frames when dimensions <= 1px
-8. **Bbox inflation** - Account for stroke width + antialiasing to prevent edge artifacts
 9. **Presence interpolation** - Kept smooth via presenceAnimDeadlineMs forcing presenceDirty
 
 ## Preview-Specific Changes

@@ -209,9 +209,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       if (newSnapshot.docVersion !== lastDocVersion) {
         lastDocVersion = newSnapshot.docVersion;
 
-        // Use bbox diffing for targeted invalidation instead of full clear
+        // Hold preview for one frame to prevent flash on commit
+        overlayLoopRef.current.holdPreviewForOneFrame();
+
+        // Use bbox diffing for targeted invalidation
         const changedBounds = diffBounds(prevSnapshot, newSnapshot);
-        // Let DirtyRectTracker handle promotion to full clear if needed
+
+        // Use optimized dirty rect invalidation for all changes
+        // The translucent check in RenderLoop will promote to full clear when needed
         for (const bounds of changedBounds) {
           renderLoopRef.current.invalidateWorld(bounds);
         }

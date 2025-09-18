@@ -15,7 +15,7 @@ export function drawPreview(ctx: CanvasRenderingContext2D, preview: PreviewData)
   // Apply preview styling
   ctx.strokeStyle = preview.color;
   ctx.lineWidth = preview.size; // World units
-  ctx.globalAlpha = preview.opacity; // 0.35 for preview
+  ctx.globalAlpha = preview.opacity; // Tool-specific: 0.35 for pen, 0.25 for highlighter
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 

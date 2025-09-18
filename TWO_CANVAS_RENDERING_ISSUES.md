@@ -3,7 +3,6 @@
 ## Executive Summary
 
 After implementing the two-canvas architecture, several visual artifacts appeared:
-
 1. Visible dirty rectangles during preview drawing
 2. Highlighter strokes becoming progressively darker
 3. Strange darkening interactions between pen and highlighter in dense areas
@@ -17,7 +16,6 @@ Root cause: **Incomplete refactor** with lingering preview code in base canvas, 
 **Status**: Confirmed issue
 
 Despite commenting out preview drawing in RenderLoop.ts (lines 364-365), the preview provider infrastructure remains:
-
 - Line 61: `private previewProvider: PreviewProvider | null = null`
 - Lines 71-77: `setPreviewProvider()` method still exists
 - Line 126: Preview provider cleared on stop
@@ -35,7 +33,6 @@ Despite commenting out preview drawing in RenderLoop.ts (lines 364-365), the pre
 OverlayRenderLoop.ts performs a full clear (line 120) but never explicitly resets `globalCompositeOperation` to `source-over`. Canvas contexts can retain state between frames.
 
 **Impact**:
-
 - If any operation changes composite mode, subsequent frames use wrong blending
 - Highlighter strokes (opacity 0.25) accumulate incorrectly, appearing darker
 - Progressive darkening in areas with multiple overlapping strokes
@@ -49,12 +46,10 @@ OverlayRenderLoop.ts performs a full clear (line 120) but never explicitly reset
 **Status**: Confirmed redundancy
 
 The stroke bounds are being inflated TWICE:
-
 1. `Canvas.tsx` diffBounds(): Inflates by actual `stroke.style.size` (lines 65, 78)
 2. `DirtyRectTracker` invalidateCanvasPixels(): Inflates by `MAX_WORLD_LINE_WIDTH` constant (line 101)
 
 **Impact**:
-
 - Dirty rectangles are larger than necessary
 - More area cleared/redrawn than needed
 - Visual artifacts at rectangle edges
@@ -68,17 +63,14 @@ The stroke bounds are being inflated TWICE:
 **Status**: Confirmed redundancy
 
 Canvas.tsx performs its own "should we do full clear?" check (lines 237-249):
-
 - Calculates if > 50% of viewport would be invalidated
 - Checks if > 20 dirty rects
 
 But DirtyRectTracker ALREADY has this logic:
-
 - `checkPromotion()` promotes to full clear if area > 33% (MAX_AREA_RATIO)
 - Also checks MAX_RECT_COUNT
 
 **Impact**:
-
 - Duplicate calculations on every frame
 - Inconsistent thresholds (50% vs 33%)
 - Canvas.tsx bypasses DirtyRectTracker's optimized coalescing
@@ -92,7 +84,6 @@ But DirtyRectTracker ALREADY has this logic:
 **Status**: Working as intended
 
 Initially suspected that diffBounds was called on presence-only updates, but the code is correct:
-
 - Lines 229-258: Only runs diffBounds when `docVersion !== lastDocVersion`
 - Lines 260-261: Presence-only updates skip straight to overlay update
 
@@ -110,7 +101,6 @@ The darkening effect is caused by a combination of factors:
 4. **Preview on wrong canvas**: Preview changes trigger base canvas dirty rects, causing unnecessary redraws
 
 When a highlighter stroke (0.25 opacity) gets redrawn multiple times due to dirty rect overlaps, the alpha values accumulate:
-
 - First draw: 0.25 opacity
 - Second draw over same area: Results in darker appearance
 - Third draw: Even darker
@@ -120,7 +110,6 @@ This is especially visible in dense areas where many strokes overlap.
 ## Recommended Fixes
 
 ### 1. Clean up RenderLoop.ts
-
 ```typescript
 // Remove these lines entirely:
 // - Line 61: private previewProvider declaration
@@ -129,28 +118,43 @@ This is especially visible in dense areas where many strokes overlap.
 // - Any other preview-related code
 ```
 
-### 3. Remove double inflation in Canvas.tsx
+### 2. Fix OverlayRenderLoop.ts
+```typescript
+private frame() {
+    // ... existing code ...
 
+    // Always full clear overlay (cheap for preview + presence)
+    stage.clear();
+
+    // CRITICAL: Reset composite operation after clear
+    stage.withContext((ctx) => {
+        ctx.globalCompositeOperation = 'source-over';
+    });
+
+    // ... rest of frame logic ...
+}
+```
+
+### 3. Remove double inflation in Canvas.tsx
 ```typescript
 // In diffBounds(), remove inflateWorld calls:
 if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-  // Don't inflate here - DirtyRectTracker will handle it
-  dirty.push({
-    minX: stroke.bbox[0],
-    minY: stroke.bbox[1],
-    maxX: stroke.bbox[2],
-    maxY: stroke.bbox[3],
-  });
+    // Don't inflate here - DirtyRectTracker will handle it
+    dirty.push({
+        minX: stroke.bbox[0],
+        minY: stroke.bbox[1],
+        maxX: stroke.bbox[2],
+        maxY: stroke.bbox[3]
+    });
 }
 ```
 
 ### 4. Simplify Canvas.tsx invalidation logic
-
 ```typescript
 // Replace lines 233-256 with:
 const changedBounds = diffBounds(prevSnapshot, newSnapshot, viewTransformRef.current.scale);
 for (const bounds of changedBounds) {
-  renderLoopRef.current.invalidateWorld(bounds);
+    renderLoopRef.current.invalidateWorld(bounds);
 }
 // Let DirtyRectTracker handle promotion to full clear
 ```
@@ -158,14 +162,12 @@ for (const bounds of changedBounds) {
 ## Performance Impact
 
 These fixes will:
-
 - Eliminate visual artifacts and darkening issues
 - Reduce unnecessary calculations
 - Make dirty rect sizing more accurate
 - Improve overall rendering performance
 
 The redundant calculations were causing:
-
 - ~2x bbox inflation (unnecessary clear area)
 - Duplicate viewport area calculations per frame
 - Extra coordinate transformations

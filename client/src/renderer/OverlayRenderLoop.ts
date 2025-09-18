@@ -28,6 +28,8 @@ export class OverlayRenderLoop {
   private rafId: number | null = null;
   private needsFrame = false;
   private previewProvider: PreviewProvider | null = null;
+  private cachedPreview: PreviewData | null = null;
+  private holdPreviewOneFrame = false;
 
   start(config: OverlayLoopConfig) {
     this.config = config;
@@ -54,6 +56,11 @@ export class OverlayRenderLoop {
     }
   }
 
+  holdPreviewForOneFrame(): void {
+    this.holdPreviewOneFrame = true;
+    this.invalidateAll(); // Ensure we draw a frame
+  }
+
   private schedule() {
     if (this.rafId || !this.config) return;
     this.rafId = requestAnimationFrame(() => {
@@ -78,7 +85,15 @@ export class OverlayRenderLoop {
 
     // ---------- PASS 1: World-space preview (with world transform) ----------
     const preview = this.previewProvider?.getPreview();
+
+    // Cache the latest preview if we have one
     if (preview) {
+      this.cachedPreview = preview;
+    }
+
+    // Draw preview if we have one OR if holding cached for one frame
+    const previewToDraw = preview || (this.holdPreviewOneFrame && this.cachedPreview);
+    if (previewToDraw) {
       stage.withContext((ctx) => {
         // Apply world transform for preview rendering
         ctx.save();
@@ -86,10 +101,16 @@ export class OverlayRenderLoop {
         ctx.translate(-view.pan.x, -view.pan.y);
 
         // Draw preview in world coordinates
-        drawPreview(ctx, preview);
+        drawPreview(ctx, previewToDraw);
 
         ctx.restore();
       });
+
+      // Clear the hold flag and cache after drawing the held frame
+      if (this.holdPreviewOneFrame && !preview) {
+        this.holdPreviewOneFrame = false;
+        this.cachedPreview = null;
+      }
     }
 
     // ---------- PASS 2: Screen-space presence (DPR only) ----------

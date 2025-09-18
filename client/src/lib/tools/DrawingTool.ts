@@ -137,7 +137,9 @@ export class DrawingTool {
       tool: this.state.config.tool,
       color: this.state.config.color,
       size: this.state.config.size,
-      opacity: STROKE_CONFIG.CURSOR_PREVIEW_OPACITY, // 0.35
+      opacity: this.state.config.tool === 'pen'
+        ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY        // 0.35 for pen preview
+        : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY,  // 0.15 for highlighter preview (lighter to prevent flicker)
       bbox: this.lastBounds,
     };
   }

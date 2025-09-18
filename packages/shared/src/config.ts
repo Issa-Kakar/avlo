@@ -97,6 +97,8 @@ export const STROKE_CONFIG = {
   // Opacity defaults
   HIGHLIGHTER_DEFAULT_OPACITY: getEnvNumber('HIGHLIGHTER_DEFAULT_OPACITY', 0.25),
   CURSOR_PREVIEW_OPACITY: getEnvNumber('CURSOR_PREVIEW_OPACITY', 0.35),
+  // Lighter preview for highlighter to prevent double-blend flicker when holding preview on commit
+  HIGHLIGHTER_PREVIEW_OPACITY: getEnvNumber('HIGHLIGHTER_PREVIEW_OPACITY', 0.15),
 } as const;
 
 // ============================================
