@@ -1185,7 +1185,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.publishState.presenceDirty = true;
       }
 
-      // Option B-prime: Handle doc vs presence-only updates separately
+      // Handle doc vs presence-only updates separately
       if (this.publishState.isDirty) {
         // Document changed - build full snapshot (expensive)
         const startTime = this.clock.now();
@@ -1205,9 +1205,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
         // Construct a fresh object so identity changes
         const snap: Snapshot = {
-          ...prev,                // reuses already-frozen arrays & fields
+          ...prev, // reuses already-frozen arrays & fields
           presence: livePresence, // new presence
-          createdAt: Date.now(),  // fresh timestamp
+          createdAt: Date.now(), // fresh timestamp
         };
 
         // Dev parity with buildSnapshot(): freeze the top-level object

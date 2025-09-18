@@ -18,9 +18,7 @@ interface DeviceUIState {
   text: { size: number; color: string };
 
   // UI state
-  zoom: number;
   editorCollapsed: boolean;
-  minimapCollapsed: boolean;
   toolbarPos: { x: number; y: number };
 
   // Track last seen scene per room (for ghost preview after clear)
@@ -35,9 +33,7 @@ interface DeviceUIState {
   setHighlighterSettings: (settings: Partial<ToolSettings>) => void;
   setEraserSize: (size: number) => void;
   setTextSettings: (settings: Partial<{ size: number; color: string }>) => void;
-  setZoom: (zoom: number) => void;
   toggleEditor: () => void;
-  toggleMinimap: () => void;
   setToolbarPosition: (pos: { x: number; y: number }) => void;
   updateLastSeenScene: (roomId: string, scene: number) => void;
   setCollaborationMode: (mode: 'server' | 'peer') => void;
@@ -61,9 +57,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       eraser: { size: 10 },
       text: { size: 16, color: '#0F172A' },
 
-      zoom: 1.0,
       editorCollapsed: false,
-      minimapCollapsed: false,
       toolbarPos: { x: 24, y: 24 },
 
       lastSeenSceneByRoom: {},
@@ -92,11 +86,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           text: { ...state.text, ...settings },
         })),
 
-      setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(2.0, zoom)) }),
-
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
-
-      toggleMinimap: () => set((state) => ({ minimapCollapsed: !state.minimapCollapsed })),
 
       setToolbarPosition: (pos) => set({ toolbarPos: pos }),
 
@@ -124,9 +114,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
             eraser: { size: 10 },
             text: { size: 16, color: '#0F172A' },
-            zoom: 1.0,
             editorCollapsed: false,
-            minimapCollapsed: oldState.minimapVisible === false,
             toolbarPos: { x: 24, y: 24 },
             lastSeenSceneByRoom: oldState.lastSeenSceneByRoom || {},
             collaborationMode: oldState.collaborationMode || 'server',

@@ -143,7 +143,7 @@ export interface RoomDocManager {
 -   `usePresence(roomId): PresenceView` -- derived, throttled presence view included in the snapshot.
 -   `useRoomStats(roomId): { bytes: number; cap: number } | null` -- advisory header pill ≥ 13 MB cap; authoritative read-only banner at 15 MB cap.
 -   `room.mutate(fn: (ydoc: Y.Doc) => void): void` -- executes inside a single yjs.transact, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
--   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF` whenever either is dirty. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. On publish, the renderer issues `invalidateAll('snapshot')` to force a full clear; presenceDirty or docDirty both schedule rAF and a new Snapshot build. **Snapshot versioning.** Each Snapshot carries `docVersion: number` (monotonic) that increments on any Y.Doc change. Presence-only updates **do not** increment it. We do **not** compute or compare any state-vector key. **Awareness.** Network send: 75–100 ms (WS) with degrade rules in §19. UI: subscribePresence is throttled ≤30 Hz for React; snapshot publisher remains ≤60 FPS. Awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. *(RTC probe/Peer Mode are deferred to the dedicated WebRTC phase; Phase 7 runs WS-only.)* `G_AWARENESS_READY` opens when WS awareness is live.
+-   `room.extendTTL(): void` -- minimal Yjs write to extend TTL by `ROOM_TTL_DAYS` (rate-limited client-side). **Snapshot publishing.** Manager batches doc changes and presence into a frozen `Snapshot` published ≤ 60 FPS via `rAF`. **Option B-prime optimization:** When only presence changes, the manager clones the previous snapshot with updated presence instead of rebuilding from Y.Doc. Document changes trigger full snapshot builds. Renderers, hit-testing, minimap, and export read **only** from the current snapshot. Typed-array discipline: store `number[]` in Yjs; construct `Float32Array` at render time. **Snapshot versioning.** Each Snapshot carries `docVersion: number` (monotonic) that increments on any Y.Doc change. Presence-only updates **do not** increment it. **Awareness.** Network send: 75–100 ms (WS) with degrade rules in §19. UI: subscribePresence is throttled ≤30 Hz for React; snapshot publisher remains ≤60 FPS. Awareness is never persisted and is injected into published snapshots only. Start WS awareness immediately. *(RTC probe/Peer Mode are deferred to the dedicated WebRTC phase; Phase 7 runs WS-only.)* `G_AWARENESS_READY` opens when WS awareness is live.
 
 **Awareness (normative additions).** 
 **Cadence & throttling.** Awareness send interval per client:
@@ -565,20 +565,26 @@ interface StrokeView {
 
 -   **UI events** (pointer/mouse/keyboard) MUST NOT mutate Y state directly.
 -   All mutations pass through **mutate(fn)** at **pointer-up** or explicit actions.
--   **Canvas renderer**:
-    -   Renders at **60 FPS** with dirty-rect culling. Use dirty-rect culling only when transform is unchanged; on transform change, fall back to full clear (or tile cache). **CRITICAL UPDATE**: FULL CLEAR IS ON EVERY SNAPSHOT UPDATE FOR NOW, DUE TO SINGLE CANVAS ARCHIECTURE AND SNAPSHOT PUBLISHES ON ANY AWARENESS/DOC UPDATE
-    -   **Scene tick (Clear Board)**: perform a full canvas clear before drawing the new scene. Dirty-rects may leave stale pixels after refresh; treat scene change as a full-clear boundary.
+-   **Two-canvas renderer**:
+    -   **Base canvas**: Renders world content at **60 FPS** with dirty-rect optimization. Invalidates only on scene changes (full clear) or document changes (dirty-rect based on bbox diffing). Transform changes trigger full clear.
+    -   **Overlay canvas**: Renders preview (world-space) and presence (screen-space) with cheap full-clears every frame. Always uses `pointer-events: none`.
+    -   **Scene tick (Clear Board)**: Both canvases perform a full clear before drawing the new scene.
     -   **No auto-pan** due to remote actions.
-    -   **Publish→clear policy:** On every published Snapshot we call `invalidateAll('snapshot')`, which performs a full clear. The dirty-rect infrastructure remains in place for future optimization but is bypassed in this phase.
+    -   **Invalidation policy:** Base canvas invalidates only when `docVersion` changes (actual Y.Doc updates). Overlay canvas invalidates on any presence or preview change.
     -   **Hit-testing** uses a linear bbox scan over the current **Snapshot** (no live Y access).
-    -   **Draw order (single canvas, two passes):** background → world layers (strokes → stamps/shapes → text) → authoring overlays → presence overlays (screen-space pass) → HUD.
+    -   **Draw order:** Base canvas: background → world layers (strokes → stamps/shapes → text) → authoring overlays → HUD. Overlay canvas: preview (world-space pass) → presence (screen-space pass).
 
+**Base canvas layers:**
 1.  Background (export uses white background).
 2.  World layers: strokes → stamps/shapes → text.
 3.  Authoring overlays: selection boxes/handles, text caret/selection.
-4.  Presence overlays: remote cursors/trails (renders only when G_AWARENESS_READY + G_FIRST_SNAPSHOT).
-5.  HUD/UI overlays: minimap, update prompts, toasts (never included in export). Export rule: include (1)--(2); exclude (3)--(5). Render loop remains ≤60 FPS with dirty-rect culling.
-Render order must match the architectural contract: background → strokes → stamps/shapes → text → authoring overlays → presence overlays → HUD.
+4.  HUD/UI overlays: minimap, update prompts, toasts (never included in export).
+
+**Overlay canvas layers:**
+1.  Preview strokes (world-space with view transform applied).
+2.  Presence overlays: remote cursors/trails (screen-space, renders only when G_AWARENESS_READY + G_FIRST_SNAPSHOT).
+
+Export rule: include base layers (1)--(2); exclude authoring overlays, HUD, and entire overlay canvas. Render loops run at ≤60 FPS.
 
 -   **Isolation**: While "Push-to-talk" active, drawing is disabled; awareness still emitted.(In later webrtc)
 
@@ -713,10 +719,11 @@ const subscribe = (onStoreChange: () => void) => {
 - Interpolate 1-2 points for gaps >60ms to prevent segment snapping
 - Merge with receiver smoothing (avoid double-smoothing) - prefer predicted points when available
 
-**Rendering** (Single Canvas):
-- **CRITICAL**: Presence and strokes draw on same canvas, published together when either awareness or doc is dirty
-- Draw polyline through buffer with alpha decay: `α = exp(-(now - t)/τ)` where τ≈240-320ms  
-- Stroke width: 1-3px cap, round joins, frame-level clears
+**Rendering** (Two-Canvas Architecture):
+- Presence renders on overlay canvas, strokes on base canvas
+- Overlay invalidates on presence changes, base only on document changes
+- Draw polyline through buffer with alpha decay: `α = exp(-(now - t)/τ)` where τ≈240-320ms
+- Stroke width: 1-3px cap, round joins
 
 **Performance Degradation**:
 - `peerCount > 10`: Shrink buffer to ≤12 points

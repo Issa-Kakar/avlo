@@ -14,7 +14,7 @@ export function useKeyboardShortcuts({
   onRedo,
   onToast,
 }: KeyboardShortcutsOptions) {
-  const { setActiveTool, zoom, setZoom } = useDeviceUIStore();
+  const { setActiveTool } = useDeviceUIStore();
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
@@ -92,28 +92,11 @@ export function useKeyboardShortcuts({
             onClear?.();
             break;
 
-          case '=':
-          case '+':
-            event.preventDefault();
-            setZoom(Math.min(2.0, zoom + 0.25));
-            onToast?.(`Zoom: ${Math.round((zoom + 0.25) * 100)}%`);
-            break;
-
-          case '-':
-            event.preventDefault();
-            setZoom(Math.max(0.25, zoom - 0.25));
-            onToast?.(`Zoom: ${Math.round((zoom - 0.25) * 100)}%`);
-            break;
-
-          case '0':
-            event.preventDefault();
-            setZoom(1.0);
-            onToast?.('Zoom: 100%');
-            break;
+          // Zoom shortcuts removed - now handled by ZoomControls component
         }
       }
     },
-    [setActiveTool, zoom, setZoom, onClear, onUndo, onRedo, onToast],
+    [setActiveTool, onClear, onUndo, onRedo, onToast],
   );
 
   useEffect(() => {

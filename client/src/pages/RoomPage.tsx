@@ -12,10 +12,9 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 
 // Phase 9 Components
 import { Header } from './components/Header';
-import { CanvasPane } from './components/CanvasPane';
+import { Canvas } from '../canvas/Canvas';
 import { ToolPanel } from './components/ToolPanel';
 import { ColorSizeDock } from './components/ColorSizeDock';
-import { Minimap } from './components/Minimap';
 import { ZoomControls } from './components/ZoomControls';
 import { EditorPanel } from './components/EditorPanel';
 import { UsersModal } from './components/UsersModal';
@@ -92,20 +91,19 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
 
       {/* Workspace */}
       <div className="workspace">
-        {/* Canvas Container with Floating Elements */}
-        <CanvasPane roomId={roomId}>
-          {/* Draggable Tool Panel */}
+        {/* Canvas Container */}
+        <div className="canvas-container">
+          {/* Grid Background */}
+          <div className="canvas-grid" />
+
+          {/* Main Canvas */}
+          <Canvas roomId={roomId} className="canvas" />
+
+          {/* Floating UI elements */}
           <ToolPanel onToast={showToast} />
-
-          {/* Color/Size Dock (bottom center, shows for pen/highlighter) */}
           <ColorSizeDock />
-
-          {/* Minimap */}
-          <Minimap />
-
-          {/* Zoom Controls */}
           <ZoomControls />
-        </CanvasPane>
+        </div>
 
         {/* Editor Panel (30% width) */}
         <EditorPanel />

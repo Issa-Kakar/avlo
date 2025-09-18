@@ -5,16 +5,7 @@
 
 import { useCallback } from 'react';
 import { useRoomDoc } from './use-room-doc';
-import { useRoomSnapshot } from './use-room-snapshot';
 import { useConnectionGates } from './use-connection-gates';
-
-/**
- * Get current snapshot (read-only)
- */
-export function useSnapshot(roomId: string) {
-  const snapshot = useRoomSnapshot(roomId);
-  return snapshot;
-}
 
 /**
  * Get connection gates status (read-only)
@@ -55,12 +46,4 @@ export function useClearScene(roomId: string) {
 
   // Return undefined if room is not available, making it optional
   return room ? clearScene : undefined;
-}
-
-/**
- * Get last snapshot for minimap/preview (Phase 9: can return static data)
- */
-export function useLastSnapshot(roomId: string) {
-  const snapshot = useRoomSnapshot(roomId);
-  return snapshot; // In Phase 9, this is sufficient for static minimap
 }

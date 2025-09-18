@@ -1,28 +1,29 @@
 import React from 'react';
-import { useDeviceUIStore } from '../../stores/device-ui-store';
+import { useViewTransform } from '../../canvas/ViewTransformContext';
+import { PERFORMANCE_CONFIG } from '@avlo/shared';
 
 interface ZoomControlsProps {
   className?: string;
 }
 
 export function ZoomControls({ className = '' }: ZoomControlsProps) {
-  const { zoom, setZoom } = useDeviceUIStore();
+  const { viewState, setScale, resetView } = useViewTransform();
 
   const handleZoomIn = () => {
-    const newZoom = Math.min(2.0, zoom + 0.25);
-    setZoom(newZoom);
+    const newScale = Math.min(viewState.scale * 1.2, PERFORMANCE_CONFIG.MAX_ZOOM);
+    setScale(newScale);
   };
 
   const handleZoomOut = () => {
-    const newZoom = Math.max(0.25, zoom - 0.25);
-    setZoom(newZoom);
+    const newScale = Math.max(viewState.scale / 1.2, PERFORMANCE_CONFIG.MIN_ZOOM);
+    setScale(newScale);
   };
 
   const handleZoomReset = () => {
-    setZoom(1.0);
+    resetView();
   };
 
-  const zoomPercentage = Math.round(zoom * 100);
+  const zoomPercentage = Math.round(viewState.scale * 100);
 
   return (
     <div className={`floating-controls ${className}`}>
@@ -30,7 +31,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
         <button
           className="zoom-btn"
           onClick={handleZoomOut}
-          disabled={zoom <= 0.25}
+          disabled={viewState.scale <= PERFORMANCE_CONFIG.MIN_ZOOM}
           aria-label="Zoom out"
           title="Zoom Out"
         >
@@ -52,7 +53,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
         <button
           className="zoom-btn"
           onClick={handleZoomIn}
-          disabled={zoom >= 2.0}
+          disabled={viewState.scale >= PERFORMANCE_CONFIG.MAX_ZOOM}
           aria-label="Zoom in"
           title="Zoom In"
         >

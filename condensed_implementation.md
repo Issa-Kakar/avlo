@@ -21,7 +21,7 @@
 - Create EmptySnapshot generator (synchronous, non-null, frozen)
 - Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
 - Implement RAF-based publishing (≤60 FPS) driven by dirty flags; publish on next rAF whenever **doc-dirty** or **presence-dirty** is set.
-- **Publish→clear policy (Phase 7)**: On each published Snapshot, the renderer calls `invalidateAll('snapshot')` to force a full clear. The DirtyRect infrastructure remains in place for future optimization but is bypassed here. Both presenceDirty and docDirty schedule rAF and a new Snapshot build.
+- **Option B-prime optimization**: When only presence changes, clone the previous snapshot with updated presence instead of rebuilding from Y.Doc. Document changes trigger full snapshot builds.
 - Each Snapshot includes **`docVersion: number`** (monotonic). `docVersion` increments on any Y.Doc change; presence-only updates **do not** increment it.
 
 ### 2.4 Set Up Subscription Management
@@ -49,9 +49,10 @@
 
 ### 3.3 Build Render Loop Foundation
 
-- Create RAF-driven render loop subscribing to snapshots (ref, not state)
-- Implement a DirtyRect tracker, but Phase 7 policy calls `invalidateAll('snapshot')` on every publish (and on presence/doc invalidations), effectively full-clearing each frame; keep DirtyRect infra for future use.
-- Define render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → Presence → HUD
+- Create RAF-driven render loops for two canvases (base and overlay)
+- Implement DirtyRect tracker for base canvas optimization (active with bbox diffing between snapshots)
+- Base canvas render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → HUD
+- Overlay canvas render order: Preview (world-space) → Presence (screen-space)
 - Apply 16ms frame budget with optional yielding
 
 ## Phase 4: Stroke Data Model & Rendering
@@ -85,9 +86,9 @@
 
 ### 5.2 Build Preview Rendering
 
-- Add setPreviewProvider() to RenderLoop for preview access
-- Render preview at 0.35 opacity as authoring overlay (world coordinates)
-- Invalidate old and new bounds on pointermove
+- Add setPreviewProvider() to OverlayRenderLoop for preview access
+- Render preview for pen at 0.35 opacity on overlay canvas (world coordinates with view transform)
+- Invalidate overlay canvas on pointermove (base canvas remains unchanged during drawing)
 - Mobile gets no preview (view-only enforcement)
 
 ### 5.3 Commit a Stroke
@@ -557,23 +558,23 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 ---
 
-### 7D: Rendering & UI (single canvas + **header badge roster**)
+### 7D: Rendering & UI (two-canvas architecture + **header badge roster**)
 
-#### 7D.1 Single-canvas renderer (NO overlay)
+#### 7D.1 Two-canvas renderer
 
-**CRITICAL Architecture**: All rendering on ONE canvas via two RenderLoop passes:
+**CRITICAL Architecture**: Split rendering across TWO canvases:
 
-- **Pass 1**: World content (world transform) - strokes, shapes, text, authoring overlays
-- **Pass 2**: Presence overlays (screen space, DPR-only) - cursors and trails
+- **Base canvas** (RenderLoop): World content (world transform) - strokes, shapes, text, authoring overlays, HUD
+- **Overlay canvas** (OverlayRenderLoop): Preview (world-space) and Presence (screen-space)
 
 **File Structure**:
 
-- `renderer/RenderLoop.ts`: Orchestrates both passes, provides `getGates()` integration point
+- `renderer/RenderLoop.ts`: Handles base canvas rendering (world content, authoring, HUD)
+- `renderer/OverlayRenderLoop.ts`: Handles overlay canvas (preview, presence)
 - `renderer/layers/presence-cursors.ts`: `drawCursors()` implementation with trail management
-- `renderer/layers/index.ts`: `drawPresenceOverlays()` gate check → `drawCursors()` call
-- `canvas/Canvas.tsx`: Supplies gates via `getGates: () => roomDoc.getGateStatus()`
+- `canvas/Canvas.tsx`: Manages both canvas stages and routes preview/presence to overlay
 
-1. Render order: world → authoring overlays → **presence** → HUD. Export excludes presence.
+1. Base canvas invalidates only on `docVersion` changes; overlay invalidates on any presence/preview change. Export excludes overlay content.
 2. **Cursor glyph (tiny pointer, not a dot)**:
    - Draw in screen space at cursorCanvas {x,y} (DPR-aware). Size fixed in CSS px (does not scale with zoom).
    - Shape: OS-style arrow pointer (tip at {x,y}). Bounding box ≈ 10–12 px tall × 7–9 px wide.
@@ -688,8 +689,8 @@ MobileViewOnlyBanner using UA string + maxTouchPoints detection.
 
 ### 7L: Implementation notes & cross-phase alignment
 
-- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS; **never** gate on `svKey` in this MVP; publishing even identical frames is acceptable per Phase 6/Appendix 24. Awareness changes mark manager dirty same as doc changes, triggering snapshot publish on next rAF.
-- **Awareness→Render Pipeline**: RoomDocManager receives awareness → `buildPresenceView()` with interpolation → inject into `snapshot.presence` → RenderLoop reads snapshot → `drawPresenceOverlays()` checks gates → `drawCursors()` renders if both gates open.
+- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS. **Option B-prime**: presence-only updates clone the previous snapshot with new presence instead of rebuilding from Y.Doc. Document changes trigger full snapshot builds.
+- **Awareness→Render Pipeline**: RoomDocManager receives awareness → `buildPresenceView()` with interpolation → inject into `snapshot.presence` → OverlayRenderLoop reads presence from snapshot → `drawPresenceOverlays()` checks gates → `drawCursors()` renders if both gates open.
 - **Gating**: Single render guard - draw cursors/presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. Presence intake never stops. Force one flush when `G_FIRST_SNAPSHOT` flips true. Exports/minimap remain gated by `G_FIRST_SNAPSHOT`.&#x20;
 - **Backpressure policy** is client-only; no server fork and no slow-socket logic on the server.&#x20;
 - **UI changes applied per prior discussion**: pointer/label are **visible only while cursor is present**; no 'fade to invisible' staleness. **Retain trails** with age-based fade, and show **header badges** only (no "away" state).&#x20;
@@ -736,14 +737,14 @@ Eliminates cursor jitter by doing **receiver-side interpolation** inside `RoomDo
 
 ## Phase 8: RBush Spatial Indexing
 
-**Deferred.** Interfaces may remain reserved (e.g., `spatialIndex`) but are not populated in Phase 7; the eraser uses a linear bbox scan over the Snapshot for now.
+**Deferred.** Interfaces may remain reserved (e.g., `spatialIndex`) but are not populated
 
 ## Phase 9: UI Components & Toolbar
 
 ## Phase 10: Eraser
 
-- **Whole-stroke eraser (Phase 7)**: perform hit-test by linear bbox scan across `snapshot.strokes`; on hit, delete the entire stroke in a single transaction.
-- **RBush deferred**: spatial indexing will be introduced in Phase 8; keep any index-related interfaces as placeholders.
+- **Whole-stroke eraser**: perform hit-test by linear bbox scan across `snapshot.strokes`; on hit, delete the entire stroke in a single transaction.
+- **RBush deferred**
 
 ## Phase 11: Text & Stamps
 
