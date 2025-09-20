@@ -64,3 +64,13 @@ export class StrokeRenderCache {
     return this.cache.size;
   }
 }
+
+// Add singleton export for shared access
+let globalCacheInstance: StrokeRenderCache | null = null;
+
+export function getStrokeCacheInstance(): StrokeRenderCache {
+  if (!globalCacheInstance) {
+    globalCacheInstance = new StrokeRenderCache(1000);
+  }
+  return globalCacheInstance;
+}

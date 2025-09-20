@@ -10,9 +10,13 @@ import { OverlayRenderLoop } from '../renderer/OverlayRenderLoop';
 import type { ViewportInfo } from '../renderer/types';
 import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
+import { EraserTool } from '@/lib/tools/EraserTool';
 import type { DeviceUIState } from '@/lib/tools/types';
 import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+
+// Unified interface for both DrawingTool and EraserTool
+type PointerTool = DrawingTool | EraserTool;
 
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
@@ -129,7 +133,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const overlayStageRef = useRef<CanvasStageHandle>(null);
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
-  const drawingToolRef = useRef<DrawingTool>();
+  const toolRef = useRef<PointerTool>();
   const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
   const renderLoopRef = useRef<RenderLoop | null>(null); // existing
@@ -152,7 +156,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
   // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter } = useDeviceUIStore();
+  const { activeTool, pen, highlighter, eraser } = useDeviceUIStore();
 
   // Create a compatible toolbar object for the existing toolbarToDeviceUI function
   const toolbar = useMemo(() => {
@@ -421,6 +425,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       },
       getGates: () => roomDoc.getGateStatus(),
       getPresence: () => snapshotRef.current.presence, // Get from current snapshot
+      getSnapshot: () => snapshotRef.current, // Added for eraser dimming
       drawPresence: (ctx, presence, view, vp) => {
         // Import drawPresenceOverlays from layers
         const viewport: ViewportInfo = {
@@ -473,115 +478,127 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       return; // Dependencies not ready yet, will retry when stageReady changes
     }
 
-    // 3I & 3E2: Update DrawingTool to wire preview to overlay
-    const tool = new DrawingTool(
-      roomDoc,
-      deviceUI,
-      userId, // Pass the stable ID value
-      (_bounds) => {
-        // During drawing, invalidate overlay (preview is there)
-        // The overlay will full-clear anyway, but this triggers a frame
-        overlayLoopRef.current?.invalidateAll();
-      },
-    );
-
-    drawingToolRef.current = tool;
-
     // Mobile detection for view-only enforcement
     // CRITICAL FIX: Include maxTouchPoints check for iPadOS (reports as "Macintosh")
     const isMobile =
       /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
-    // Set preview provider on overlay loop (not base loop!)
+    // Create appropriate tool based on activeTool (branch ONCE here)
+    let tool: PointerTool | null = null;
+
+    if (activeTool === 'eraser') {
+      // Pass deviceUI.eraser directly (no adapter needed)
+      tool = new EraserTool(
+        roomDoc,
+        eraser,  // Direct from store, no adapter
+        userId,
+        () => overlayLoopRef.current?.invalidateAll(),
+        // Pass viewport callback for hit-test pruning
+        () => {
+          const size = canvasSizeRef.current;
+          if (size) {
+            return {
+              cssWidth: size.cssWidth,
+              cssHeight: size.cssHeight,
+              dpr: size.dpr
+            };
+          }
+          return { cssWidth: 1, cssHeight: 1, dpr: 1 };
+        }
+      );
+    } else if (activeTool === 'pen' || activeTool === 'highlighter') {
+      // Use adapter only for DrawingTool
+      const adaptedUI = toolbarToDeviceUI({
+        tool: activeTool,
+        color: activeTool === 'pen' ? pen.color : highlighter.color,
+        size: activeTool === 'pen' ? pen.size : highlighter.size,
+        opacity: activeTool === 'pen' ? (pen.opacity || 1) : (highlighter.opacity || 0.25)
+      });
+
+      tool = new DrawingTool(
+        roomDoc,
+        adaptedUI,
+        userId,
+        (_bounds) => {
+          // During drawing, invalidate overlay (preview is there)
+          // The overlay will full-clear anyway, but this triggers a frame
+          overlayLoopRef.current?.invalidateAll();
+        },
+      );
+    } else {
+      return; // Unsupported tool
+    }
+
+    toolRef.current = tool;
+
+    // Set preview provider on overlay loop (both tools implement getPreview())
     if (!isMobile && overlayLoopRef.current) {
       overlayLoopRef.current.setPreviewProvider({
-        getPreview: () => tool.getPreview(),
+        getPreview: () => tool?.getPreview() || null,
       });
     }
 
-    // EVENT LISTENERS - Attached in same effect to ensure atomicity
-    const handlePointerDown = (e: PointerEvent) => {
-      // Gate early for mobile view-only (no preview, no capture)
-      if (isMobile) return;
+    // Update cursor style
+    canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
 
-      if (!tool.canStartDrawing()) return;
+    // UNIFIED POINTER HANDLERS - No tool branching here!
+    const handlePointerDown = (e: PointerEvent) => {
+      // Canvas gates for mobile (not tool)
+      if (isMobile) return;
+      if (!tool?.canBegin()) return;
 
       const worldCoords = screenToWorld(e.clientX, e.clientY);
-      if (!worldCoords) return; // Transform failed
+      if (!worldCoords) return;
 
       e.preventDefault();
       canvas.setPointerCapture(e.pointerId);
 
-      const [worldX, worldY] = worldCoords;
-      tool.startDrawing(e.pointerId, worldX, worldY);
-
-      // Update activity state to drawing
-      roomDoc.updateActivity('drawing');
+      // Polymorphic call - works for any tool
+      tool.begin(e.pointerId, worldCoords[0], worldCoords[1]);
+      roomDoc.updateActivity('drawing'); // Same for pen/eraser
     };
 
     const handlePointerMove = (e: PointerEvent) => {
-      // Update awareness cursor position (not on mobile)
+      // Update awareness cursor (not on mobile)
       if (!isMobile) {
         const worldCoords = screenToWorld(e.clientX, e.clientY);
         if (worldCoords) {
-          const [worldX, worldY] = worldCoords;
-          roomDoc.updateCursor(worldX, worldY);
+          roomDoc.updateCursor(worldCoords[0], worldCoords[1]);
+
+          // Always forward movement to the tool (for hover preview)
+          if (tool) {
+            tool.move(worldCoords[0], worldCoords[1]);
+          }
         }
       }
-
-      if (!tool.isDrawing()) return;
-      if (e.pointerId !== tool.getPointerId()) return;
-
-      const worldCoords = screenToWorld(e.clientX, e.clientY);
-      if (!worldCoords) return; // Transform failed, skip this point
-
-      e.preventDefault();
-      const [worldX, worldY] = worldCoords;
-      tool.addPoint(worldX, worldY);
     };
 
     const handlePointerUp = (e: PointerEvent) => {
-      if (!tool.isDrawing()) return;
-      if (e.pointerId !== tool.getPointerId()) return;
+      if (!tool?.isActive() || e.pointerId !== tool.getPointerId()) return;
 
       try {
         canvas.releasePointerCapture(e.pointerId);
-      } catch {
-        // Ignore if already released
-      }
+      } catch {}
 
       const worldCoords = screenToWorld(e.clientX, e.clientY);
-      if (!worldCoords) {
-        // Can't get final point, cancel the stroke for safety
-        console.warn('Failed to get final coordinates, canceling stroke');
-        tool.cancelDrawing();
-        // Still update activity to idle even on cancel
-        roomDoc.updateActivity('idle');
-        return;
-      }
-
-      const [worldX, worldY] = worldCoords;
-      tool.commitStroke(worldX, worldY);
-
-      // Update activity state to idle
+      tool.end(worldCoords?.[0], worldCoords?.[1]);
       roomDoc.updateActivity('idle');
     };
 
     const handlePointerCancel = (e: PointerEvent) => {
-      if (e.pointerId !== tool.getPointerId()) return;
+      if (e.pointerId !== tool?.getPointerId()) return;
 
       try {
         canvas.releasePointerCapture(e.pointerId);
-      } catch {
-        // Ignore if already released
-      }
+      } catch {}
 
-      tool.cancelDrawing();
+      tool?.cancel();
+      roomDoc.updateActivity('idle');
     };
 
     const handleLostPointerCapture = (e: PointerEvent) => {
-      if (e.pointerId !== tool.getPointerId()) return;
-      tool.cancelDrawing();
+      if (e.pointerId !== tool?.getPointerId()) return;
+      tool?.cancel();
     };
 
     const handlePointerLeave = () => {
@@ -593,7 +610,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     if (!isMobile) {
       // Only disable touch on desktop (preserve scrolling on mobile)
       canvas.style.touchAction = 'none';
-      canvas.style.cursor = 'crosshair';
+      // Don't override the cursor here - it was already set based on tool above
     }
     // CRITICAL FIX: Ensure NO global CSS sets touch-action: none on canvas for mobile
     // Check your stylesheets - mobile MUST preserve touch-action: auto for scrolling
@@ -610,16 +627,17 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     // CLEANUP - comprehensive cleanup on any dependency change
     return () => {
-      // Cancel any in-progress drawing
-      const pointerId = tool.getPointerId();
+      // Cleanup
+      const pointerId = tool?.getPointerId();
       if (pointerId !== null) {
         try {
           canvas.releasePointerCapture(pointerId);
-        } catch {
-          // Ignore errors
-        }
+        } catch {}
       }
-      tool.cancelDrawing();
+      tool?.cancel();
+      tool?.destroy();
+      toolRef.current = undefined;
+      overlayLoopRef.current?.setPreviewProvider(null);
 
       // Remove event listeners
       canvas.removeEventListener('pointerdown', handlePointerDown);
@@ -628,13 +646,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.removeEventListener('pointercancel', handlePointerCancel);
       canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
-
-      // Clean up tool and preview provider
-      tool.destroy();
-      drawingToolRef.current = undefined;
-      overlayLoopRef.current?.setPreviewProvider(null);
     };
-  }, [roomDoc, userId, deviceUI, stageReady, screenToWorld]); // CRITICAL: stageReady ensures re-run, but NO viewTransform to prevent mid-gesture teardown
+  }, [roomDoc, userId, activeTool, pen, highlighter, eraser, stageReady, screenToWorld]); // Include all tool dependencies
 
   // 3F: Handle transform changes for both loops
   useEffect(() => {

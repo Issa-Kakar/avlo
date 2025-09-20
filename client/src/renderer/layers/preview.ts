@@ -1,4 +1,4 @@
-import type { PreviewData } from '@/lib/tools/types';
+import type { StrokePreview } from '@/lib/tools/types';
 
 /**
  * Draw preview stroke
@@ -7,7 +7,7 @@ import type { PreviewData } from '@/lib/tools/types';
  * The preview is drawn as an authoring overlay AFTER world content but BEFORE transform restore
  * Preview points are in world coordinates and will be transformed to canvas automatically
  */
-export function drawPreview(ctx: CanvasRenderingContext2D, preview: PreviewData): void {
+export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePreview): void {
   if (!preview || preview.points.length < 2) return;
 
   ctx.save();

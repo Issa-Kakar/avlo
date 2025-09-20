@@ -31,13 +31,7 @@ const FADE_POWER = 1.5;                // Gentler power curve for natural fade
 
 // Helper to check if user prefers reduced motion
 function prefersReducedMotion(): boolean {
-  // Handle test environments where matchMedia may not be available or return undefined
-  try {
-    const result = window?.matchMedia?.('(prefers-reduced-motion: reduce)');
-    return result?.matches ?? false;
-  } catch {
-    return false;
-  }
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 // Clear all cursor trails (call on disconnect or room change)

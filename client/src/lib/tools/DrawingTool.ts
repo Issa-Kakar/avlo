@@ -56,6 +56,41 @@ export class DrawingTool {
     return !this.state.isDrawing && (tool === 'pen' || tool === 'highlighter');
   }
 
+  // PointerTool interface methods for polymorphic handling with EraserTool
+  canBegin(): boolean {
+    return this.canStartDrawing();
+  }
+
+  begin(pointerId: number, worldX: number, worldY: number): void {
+    this.startDrawing(pointerId, worldX, worldY);
+  }
+
+  move(worldX: number, worldY: number): void {
+    this.addPoint(worldX, worldY);
+  }
+
+  end(worldX?: number, worldY?: number): void {
+    if (worldX !== undefined && worldY !== undefined) {
+      this.commitStroke(worldX, worldY);
+    } else {
+      // Fallback to last point if no final coords provided
+      const len = this.state.points.length;
+      if (len >= 2) {
+        this.commitStroke(this.state.points[len - 2], this.state.points[len - 1]);
+      } else {
+        this.cancelDrawing();
+      }
+    }
+  }
+
+  cancel(): void {
+    this.cancelDrawing();
+  }
+
+  isActive(): boolean {
+    return this.isDrawing();
+  }
+
   startDrawing(pointerId: number, worldX: number, worldY: number): void {
     if (this.state.isDrawing) return;
 
@@ -133,6 +168,7 @@ export class DrawingTool {
     }
 
     return {
+      kind: 'stroke',  // Add discriminant for union type
       points: this.state.points,
       tool: this.state.config.tool,
       color: this.state.config.color,

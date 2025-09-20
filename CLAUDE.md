@@ -85,7 +85,7 @@ interface Stroke {
 // Type alias: SceneIdx = number (0-based scene index)
 
 interface Snapshot {
-  svKey: string;        // first 100 bytes + length + checksum; diagnostics-only in Phase 6 (never gates publishing)
+  docVersion: number; // Incremental version, replaces svKey
   scene: number;        // from meta.scene_ticks.length
   strokes: ReadonlyArray<StrokeView>;  // filtered by scene
   texts: ReadonlyArray<TextView>;       // filtered by scene
@@ -123,7 +123,7 @@ Pointer/inputs → Presence emitter (≤ ~30 Hz, interpolate/dead-reckon 1 frame
 Room stats (out-of-band; not in Y.Doc)
 persist_ack / metadata poll → RoomStats (bytes, cap | null initially) → UI banners/gates
 ```
-**Coordinate Spaces**: World (Y.Doc data, stable across zoom/screens) → Canvas (CSS pixels, view transform) → Device (physical pixels, DPR only). Apply DPR once at canvas setup, not in transforms.
+**Coordinate Spaces**: World (Y.Doc data, stable across zoom/screens) → Canvas (CSS pixels, view transform) → Device (physical pixels, DPR only). Apply DPR once at canvas setup, not in transforms. Two canvas architecture, one for preview and presence, the other base canvas(invalidated on Y.doc updates)
 
 ### Device-Local UI State (Integrated)
 **Zustand Store** (`stores/device-ui-store.ts`) - Fully integrated via guarded adapter
@@ -167,34 +167,6 @@ ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES  // 13MB
 ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES // 15MB
 if (isRoomReadOnly(sizeBytes)) { /* Block writes */ }
 ```
-
-## Project Structure
-
-### Monorepo Layout
-```
-avlo/
-├── client/                    # React frontend (Vite)
-│   ├── src/
-│   │   ├── canvas/           # Canvas components & transforms
-│   │   ├── components/       # UI components
-│   │   │   └── Toolbar/      # Tool selection, size/color controls
-│   │   ├── hooks/            # use-room-*, use-connection-gates
-│   │   ├── lib/              # Core: room-doc-manager, registry, api-client, tools/
-│   │   ├── pages/            # RoomPage component
-│   │   ├── renderer/         # RenderLoop, DirtyRectTracker, layers/, stroke-builder/
-│   │   ├── stores/           # Zustand device-ui-store (integrated)
-│   │   └── types/            # Client-specific types (removed, using shared)
-├── server/                    # Node.js backend
-│   ├── prisma/               # Database schema & migrations
-│   ├── public/               # Static assets (served from Vite build)
-│   └── src/
-│       ├── lib/              # env, redis, prisma clients
-│       ├── middleware/       # CORS, security
-│       ├── routes/           # rooms, health endpoints
-│       ├── index.ts          # Entry point
-│       └── websocket-server.ts # y-websocket server
-└── packages/
-    └── shared/               # Shared config & types
     
 ```
 Tests co-located in `__tests__/` folders within each directory. Client and server have separate vitest configs - use `npm run test:client` or `npm run test:server`.
@@ -276,7 +248,7 @@ All limits and thresholds are defined in `/packages/shared/src/config.ts`:
    - **Never null** - EmptySnapshot created synchronously on init
    - Published at most once per rAF or batched Y update
    - Frozen in development, new arrays per publish
-   - Publisher is continuous; publish when doc or awareness is dirty; never use svKey to skip a publish in Phase 6
+   - Publisher is continuous; publish when doc or awareness is dirty;
 
 5. **Data Storage Rules**
    - Arrays stored as `number[]` in Yjs (never Float32Array)

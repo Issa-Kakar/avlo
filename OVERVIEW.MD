@@ -131,8 +131,7 @@ export interface RoomDocManager {
 **Seeding discipline.** Do **not** seed containers in the constructor. Attach y-indexeddb first, connect WS immediately, then **seed exactly once** **after** `G_IDB_READY` **and** either **`G_WS_SYNCED` or a short 350 ms grace**. Only if `root.has('meta') === false` at that point, call `initializeYjsStructures()` once. This avoids LWW clobber when a fresh tab joins an already-initialized room. (Constructor still creates `new Y.Doc({ guid: roomId })` exactly once.)
 
 - Attach providers inside the manager:
-
-  -   **Persistence provider:** `y-indexeddb` for per-room offline storage. In Phase 2.4, only a minimal render-snapshot IDB cache is used.
+  -   **Persistence provider:** `y-indexeddb` for per-room offline storage. 
   -   **Realtime provider:** `y-websocket` bound to `/ws/<roomId>` with origin checks.
 
 - Initialize a validated **mutate(fn)** wrapper that executes inside a single `yjs.transact`, applies tiny local guards (read-only, mobile, 2 MB frame cap) immediately before the transact.
@@ -570,7 +569,7 @@ interface StrokeView {
     -   **Overlay canvas**: Renders preview (world-space) and presence (screen-space) with cheap full-clears every frame. Always uses `pointer-events: none`.
     -   **Scene tick (Clear Board)**: Both canvases perform a full clear before drawing the new scene.
     -   **No auto-pan** due to remote actions.
-    -   **Invalidation policy:** Base canvas invalidates only when `docVersion` changes (actual Y.Doc updates). Overlay canvas invalidates on any presence or preview change.
+    -   **Invalidation policy:** Base canvas invalidates only when `docVersion` changes (actual Y.Doc updates), uses InvalidateWorld and bbox diffing, lets DirtyRectTracker judge whether to promote to full clear. Overlay canvas invalidates on any presence or preview change.
     -   **Hit-testing** uses a linear bbox scan over the current **Snapshot** (no live Y access).
     -   **Draw order:** Base canvas: background → world layers (strokes → stamps/shapes → text) → authoring overlays → HUD. Overlay canvas: preview (world-space pass) → presence (screen-space pass).
 
@@ -658,7 +657,7 @@ Export rule: include base layers (1)--(2); exclude authoring overlays, HUD, and 
 
 **Publisher** runs a continuous rAF loop (one per room tab):
 
--   **On every frame**, On each rAF, **if** the document or awareness is dirty, publish a new frozen Snapshot. We never use a state-vector key; publishing is driven by dirty flags. A dirty event may still yield an *identical* Snapshot; we publish it once, then remain idle until the next dirty event.
+-   **On every frame**, On each rAF, **if** the document or awareness is dirty, publish a new frozen Snapshot; publishing is driven by dirty flags. A dirty event may still yield an *identical* Snapshot; we publish it once, then remain idle until the next dirty event.
 -   **FPS policy**: default 60 FPS; 30 FPS on heavy/mobile; hidden tabs drop to ~8 FPS.
 -   **Work budgeting**: keep prep ≤ ~6 ms; split work across frames.
 -   **Awareness changes** mark the manager dirty the same way as doc changes (IDB/WS).
@@ -729,3 +728,136 @@ const subscribe = (onStoreChange: () => void) => {
 - `peerCount > 10`: Shrink buffer to ≤12 points
 - `peerCount > 25` or `fps < 30`: Disable trails (cursor-only)
 - `prefers-reduced-motion`: Default to cursor-only
+
+25. Eraser Implementation (Phase 8)
+==========================================
+
+**Architecture.** Whole-stroke eraser following DrawingTool lifecycle pattern. Mirror pointer event handling, use same two-canvas overlay system, commit via single mutate() for atomic undo.
+
+**Coordinate Spaces:**
+- **Cursor**: Screen-space circle (constant CSS pixels regardless of zoom), rendered on overlay after DPR transform
+- **Hit-testing**: World-space using eraser radius converted via `radiusWorld = radiusPx / viewTransform.scale`
+- **Dimming**: World-space re-rendering of hit strokes at reduced opacity on overlay
+
+**EraserTool State Machine:**
+```typescript
+interface EraserState {
+  isErasing: boolean;
+  pointerId: number | null;
+  lastWorld: [number, number] | null;  // Last cursor position
+  radiusPx: number;                     // CSS pixels (from deviceUI.eraser.size)
+  hitNow: Set<string>;                  // IDs under current cursor
+  hitAccum: Set<string>;                // IDs accumulated during drag
+  dimOpacity: number;                   // 0.35 base, adjusted for highlighters
+}
+```
+
+**Hit-Testing Algorithm (Linear Scan with Optimizations):**
+1. **Viewport prune**: Skip strokes with bbox outside visible world bounds + margin
+2. **Inflate bbox**: Expand by `radiusWorld` before testing
+3. **Segment distance**: For each stroke segment, compute point-to-line distance
+4. **Text blocks**: Simple bbox-circle intersection (glyph precision deferred)
+5. **Performance budget**: Cap at ~6ms per frame or 100 segments, defer rest to next RAF
+
+**Visual Feedback (Two-Pass Overlay):**
+- **Pass A (World)**: Re-stroke hit objects at reduced opacity using cached Path2D
+  - Strokes: `alpha = clamp(0.2 + 0.6 * stroke.opacity, 0.2, 0.6)`
+  - Texts: Draw semi-transparent rounded rect over bbox
+- **Pass B (Screen)**: Draw the cursor circle **after** `ctx.setTransform(dpr,0,0,dpr,0,0)` (no world transform)
+  - Circle outline: 1px stroke at ~0.8 alpha, no fill
+  - Radius: fixed **screen** pixels (12–32px typical)
+  - Line width: **1** (device-pixel consistent because we're in screen space)
+
+**Commit Flow (Atomic Delete):**
+```typescript
+roomDoc.mutate((ydoc) => {
+  const root = ydoc.getMap('root');
+  const yStrokes = root.get('strokes') as Y.Array<any>;
+  const yTexts = root.get('texts') as Y.Array<any>;
+
+  // Build id→index maps
+  const strokeIndices = [...hitAccum]
+    .map(id => /* find index */)
+    .sort((a,b) => b - a); // Reverse order
+
+  // Delete in reverse to preserve indices
+  for (const idx of strokeIndices) {
+    yStrokes.delete(idx, 1);
+  }
+  // Same for texts
+});
+```
+
+**Canvas Integration Pattern:**
+```typescript
+// In Canvas.tsx useEffect
+const tool = activeTool === 'eraser'
+  ? new EraserTool(roomDoc, deviceUI.eraser, userId, onInvalidate)
+  : new DrawingTool(roomDoc, toolbarToDeviceUI(deviceUI), userId, onInvalidate);
+
+// Set preview provider (polymorphic)
+overlayLoopRef.current?.setPreviewProvider({
+  getPreview: () => tool.getPreview(), // Returns union type
+});
+
+// Hide OS cursor when eraser active
+canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
+```
+
+**Tool-Agnostic Pointer Surface**
+To keep Canvas dumb and uniform, both tools expose the same minimal surface:
+
+```typescript
+type PointerTool = {
+  canBegin(): boolean;
+  begin(pointerId: number, x: number, y: number): void;
+  move(x: number, y: number): void;
+  end(x?: number, y?: number): void;   // DrawingTool uses (x,y); EraserTool may ignore
+  cancel(): void;
+  isActive(): boolean;
+  getPointerId(): number | null;
+  getPreview(): PreviewData | null;
+  destroy(): void;
+};
+```
+
+Canvas instantiates the appropriate tool once per effect run (based on `activeTool`) and routes the same listeners to this surface. Listeners **do not** branch by tool at call sites—only the constructor does. See Phase-8 wiring for details.
+
+**Preview Union Type (normative):**
+```typescript
+export type PreviewData = StrokePreview | EraserPreview;
+
+export interface EraserPreview {
+  kind: 'eraser';
+  /**
+   * Center is in **world** coordinates (so overlay can handle transforms).
+   * Radius is in **screen pixels** (CSS px), fixed regardless of zoom.
+   */
+  circle: { cx: number; cy: number; r_px: number };
+  /** World object IDs to dim in pass A. */
+  hitIds: string[];
+  /** 0.2–0.6 base opacity; highlighters get a lighter treatment in renderer. */
+  dimOpacity: number;
+}
+```
+
+**Shared Cache Access (normative):**
+- Export a singleton: `getStrokeCacheInstance()` from the stroke-builder module.
+- Both the base strokes layer **and** the eraser-dim overlay must reuse it.
+- Helpers like `drawDimmedStrokes(...)` must never rebuild Path2D for hits.
+
+**Performance Guards:**
+- Skip LOD strokes (<2px screen diagonal)
+- Time budget: 6ms max per pointer move
+- Cache polylines once per frame
+- Coalesce pointer moves on RAF
+- Skip dimming at >25 peers or <30 FPS
+
+**Mobile & Read-only:**
+- Gate in `canStartErasing()`: return false if mobile or room ≥15MB
+- Show hover preview only (no deletion capability)
+
+**Scene & Edge Cases:**
+- Scene changes mid-gesture: id→index map handles missing IDs gracefully
+- Lost pointer capture: Clear state, invalidate overlay
+- Undo: Single mutate() = single undo step (per UndoManager with origin=userId)

@@ -4,411 +4,424 @@
 
 ### 2.1 Define Core TypeScript Types and Interfaces
 
-- Create coordinate types (StrokePoint, bbox, SceneIdx, ULID aliases)
-- Define document structures (Stroke, TextBlock, CodeCell, Output, Meta) per OVERVIEW.MD §4
-- Create Snapshot and view types (immutable, frozen, never null)
-- Add ViewTransform interface with world↔canvas conversion methods
+**Files:**
+- `/packages/shared/src/types/room.ts`: Core domain types (Stroke, TextBlock, Meta, etc.)
+- `/packages/shared/src/types/snapshot.ts`: Snapshot interfaces and createEmptySnapshot()
+- `/packages/shared/src/types/identifiers.ts`: Type aliases (StrokeId, TextId, SceneIdx, UserId)
+
+**Key Implementation Details:**
+- Stroke points stored as flat `number[]` array (NEVER Float32Array in Y.Doc)
+- Scene field assigned at commit time using currentScene (for filtering)
+- Snapshot includes docVersion (monotonic counter replacing svKey)
+- ViewTransform provides worldToCanvas/canvasToWorld methods
+- createEmptySnapshot() returns frozen object with all required fields
 
 ### 2.2 Implement RoomDocManager Foundation
 
-- Create RoomDocManager class with private Y.Doc instance (guid: roomId, never mutated)
-- Initialize Y.Doc structure in single transaction (root → v, meta, strokes, texts, code, outputs)
-- Set up helper methods that traverse root on demand (never cache Y references)
-- Implement mutate(fn) wrapper with minimal guards (read-only ≥15MB, mobile, 2MB frame)
+**File:** `/client/src/lib/room-doc-manager.ts`
+
+**Registry Pattern (CRITICAL):**
+- RoomDocManagerImpl class is private - NEVER export directly
+- Access only via RoomDocManagerRegistry (singleton per room guarantee)
+- Registry methods: acquire()/release() for ref counting
+- Test helper: createTestManager() for isolated test instances
+
+**Y.Doc Reference Rules (NEVER VIOLATE):**
+```typescript
+// Helpers traverse 'root' on demand - no cached Y references
+private getRoot(): Y.Map<unknown> { return this.ydoc.getMap('root'); }
+private getStrokes(): Y.Array<Stroke> { return this.getRoot().get('strokes'); }
+private getMeta(): Y.Map<unknown> { return this.getRoot().get('meta'); }
+```
+
+**Initialization:**
+- Constructor: `new Y.Doc({ guid: roomId })` - guid never mutated
+- initializeYjsStructures(): Seeds root map in single transaction
+- Seeding delayed until after G_IDB_READY + (G_WS_SYNCED or 350ms grace)
+- Detection: `root.has('meta')` indicates initialized structure
+
+**mutate() Implementation:**
+- Wrapper around single yjs.transact()
+- Guards: room ≥15MB (read-only), mobile (view-only), frame >2MB
+- Defers writes if containers don't exist, replays after seeding
 
 ### 2.3 Implement Snapshot Publishing System
 
-- Create EmptySnapshot generator (synchronous, non-null, frozen)
-- Build snapshot pipeline: Y.Doc → filter by scene → convert to views → freeze
-- Implement RAF-based publishing (≤60 FPS) driven by dirty flags; publish on next rAF whenever **doc-dirty** or **presence-dirty** is set.
-- **Option B-prime optimization**: When only presence changes, clone the previous snapshot with updated presence instead of rebuilding from Y.Doc. Document changes trigger full snapshot builds.
-- Each Snapshot includes **`docVersion: number`** (monotonic). `docVersion` increments on any Y.Doc change; presence-only updates **do not** increment it.
+**File:** `/client/src/lib/room-doc-manager.ts`
+
+**RAF Loop Architecture:**
+- Continuous RAF loop starts on manager creation (never stops until destroy)
+- publishState tracks: isDirty, presenceDirty, rafId, lastPublishTime
+- Dirty flags set by: Y.Doc updates, awareness changes, gate transitions
+
+**buildSnapshot() Method:**
+- Early return if !root.has('meta') - returns current snapshot
+- Filters strokes/texts by currentScene
+- Includes docVersion (increments on Y.Doc changes only)
+- Deep freezes arrays in development
+- Opens G_FIRST_SNAPSHOT gate on first doc-derived publish
+
+**Publishing Optimizations:**
+- Option B-prime: Presence-only changes clone previous snapshot
+- Document changes trigger full rebuild from Y.Doc
+- publishSnapshot() method updates _currentSnapshot and notifies subscribers
+- Timing tracked for metrics (publishCostMs)
 
 ### 2.4 Set Up Subscription Management
 
-- Implement subscribeSnapshot with immediate callback on subscribe
-- Add subscribePresence (throttled ≤30Hz, interpolation, dead-reckoning)
-- Create subscribeRoomStats (null initially, updates on persist_ack)
+**Files:**
+- `/client/src/lib/room-doc-manager.ts`: Core subscription methods
+- `/client/src/lib/room-doc-registry-context.tsx`: React context for registry access
+
+**Subscription Methods:**
+- subscribeSnapshot(): Immediate callback with currentSnapshot, returns unsubscribe
+- subscribePresence(): Throttled via updatePresenceThrottled (30Hz), immediate callback
+- subscribeRoomStats(): Returns current stats or null, updates on setRoomStats()
+- subscribeGates(): Uses stable string primitives to prevent re-render loops
+
+**React Integration:**
+- RoomDocRegistryProvider: Wraps app, maintains single registry instance
+- useRoomDocRegistry(): Hook to access registry (must be in provider)
+- useHasRoomDocRegistry(): Check if within provider context
+
+**Presence Throttling (Phase 7 preview):**
+- Separate 30Hz throttle for UI updates (not network rate)
+- buildPresenceView() includes cursor smoothing (lerp/interpolation)
+- Presence dirty flag triggers snapshot republish
 
 ## Phase 3: Basic Canvas Infrastructure
 
 ### 3.1 Set Up Canvas Element and Context
 
-- Create Canvas React component with ref to DOM element
-- Configure ResizeObserver, DPR handling, and 2D context
+**Files:**
+- `/client/src/canvas/CanvasStage.tsx`: Low-level DPR-aware canvas substrate
+- `/client/src/canvas/internal/context2d.ts`: Context configuration utilities
+
+**Implementation Details:**
+- CanvasStage component provides imperative handle with clear(), withContext(), getBounds()
+- ResizeObserver fires onResize with ResizeInfo (cssWidth, cssHeight, dpr, pixelWidth, pixelHeight)
+- DPR handling: Canvas backing store sized to device pixels (width * dpr, height * dpr)
 - Apply DPR once with setTransform(dpr,0,0,dpr,0,0) - never mix into view transforms
+- Clear() uses identity transform + device pixel dimensions for complete clearing
+- DPR change detection via matchMedia listener on `(resolution: ${dpr}dppx)`
 
 ### 3.2 Implement Coordinate Transform System
 
-**Note:** See OVERVIEW.MD §3.2 for authoritative transform formulas
+**Files:**
+- `/client/src/canvas/ViewTransformContext.tsx`: React context for view state management
+- `/client/src/canvas/internal/transforms.ts`: Transform utilities (applyViewTransform, transformBounds, etc.)
 
-- Define ViewTransform with scale and pan (world units)
-- worldToCanvas: `(world - pan) * scale`
-- canvasToWorld: `canvas / scale + pan`
-- Context transform: `scale()` then `translate(-pan.x, -pan.y)`
+**Implementation Details:**
+- ViewTransform interface with worldToCanvas/canvasToWorld methods + scale/pan properties
+- Pan is in WORLD UNITS (not screen pixels) - critical for proper zoom behavior
+- Transform formulas (authoritative per OVERVIEW.MD):
+  - worldToCanvas: `[(x - pan.x) * scale, (y - pan.y) * scale]`
+  - canvasToWorld: `[x / scale + pan.x, y / scale + pan.y]`
+- Context transform order: `ctx.scale(scale, scale)` THEN `ctx.translate(-pan.x, -pan.y)`
+- View limits: MIN_ZOOM=0.1, MAX_ZOOM=10, MAX_PAN_DISTANCE=50000
+- ViewTransformProvider manages state, provides setScale/setPan/resetView methods
 
 ### 3.3 Build Render Loop Foundation
 
-- Create RAF-driven render loops for two canvases (base and overlay)
-- Implement DirtyRect tracker for base canvas optimization (active with bbox diffing between snapshots)
-- Base canvas render order: Background → Strokes → Stamps/Shapes → Text → Authoring overlays → HUD
-- Overlay canvas render order: Preview (world-space) → Presence (screen-space)
-- Apply 16ms frame budget with optional yielding
+**Files:**
+- `/client/src/canvas/Canvas.tsx`: Main canvas component orchestrating both render loops
+- `/client/src/renderer/RenderLoop.ts`: Base canvas render loop (world content)
+- `/client/src/renderer/OverlayRenderLoop.ts`: Overlay canvas loop (preview + presence)
+- `/client/src/renderer/DirtyRectTracker.ts`: Dirty rect optimization for base canvas
+
+**Architecture (Two-Canvas):**
+- Base canvas (RenderLoop): Renders world content, invalidates only on docVersion changes
+- Overlay canvas (OverlayRenderLoop): Renders preview/presence, invalidates on any change
+- Both canvases managed by Canvas.tsx with separate refs (baseStageRef, overlayStageRef)
+
+**RenderLoop (Base Canvas) Details:**
+- EVENT-DRIVEN: Only schedules RAF when needsFrame=true (via invalidation)
+- DirtyRectTracker manages partial redraws vs full clears based on area threshold
+- Transform changes force full clear (tracked via lastTransformState)
+- Scene changes force full clear (tracked via lastRenderedScene)
+- Hidden tab handling: Falls back to 8 FPS interval when document.hidden
+- Render order: Background → Strokes → Shapes → Text → Authoring overlays → HUD
+- Viewport culling: Skip strokes with bbox outside visible bounds
+
+**OverlayRenderLoop Details:**
+- Lightweight loop for preview (drawing in progress) and presence (cursors)
+- Preview accessed via PreviewProvider interface (set by DrawingTool)
+- Always does full clear (cheap operation for sparse overlay content)
+- Render order: Preview pass (world-space) → Presence pass (screen-space)
+- holdPreviewForOneFrame(): Special method to prevent flicker on commit
+
+**Canvas.tsx Integration:**
+- Subscribes to snapshots via roomDoc.subscribeSnapshot()
+- Stores snapshot in ref (not state) to avoid React re-renders at 60 FPS
+- diffBounds() computes dirty regions between snapshots for base canvas
+- Handles viewport/resize events, propagates to both render loops
+- Bridges DrawingTool preview to OverlayRenderLoop via setPreviewProvider()
 
 ## Phase 4: Stroke Data Model & Rendering
 
 ### 4.1 Implement Stroke Rendering Pipeline
 
-- Store points as flat `[x,y,x,y,...]` arrays (plain number[], never Float32Array in Y.Doc)
-- Build Path2D cache per stroke.id (strokes immutable post-commit)
+**Files:**
+- `/client/src/renderer/stroke-builder/path-builder.ts`: Builds Path2D and Float32Array at render time
+- `/client/src/renderer/stroke-builder/stroke-cache.ts`: FIFO cache (max 1000 strokes) keyed by stroke ID
+- `/client/src/renderer/layers/strokes.ts`: Main stroke rendering layer
+
+**Key Implementation Details:**
+- Store points as flat `[x,y,x,y,...]` arrays (plain number[], NEVER Float32Array in Y.Doc)
+- `buildStrokeRenderData()`: Creates Float32Array and Path2D only at render time
+- Path2D feature detection for test environments (falls back to manual path building)
+- Module-level `StrokeRenderCache` persists across frames, cleared on scene change
+- **Phase 8 Update**: Export `getStrokeCacheInstance()` for sharing with eraser dim layer
 - Render strokes: strokeStyle=color, lineWidth=size (world units), globalAlpha=opacity
 - Hairlines/HUD use `1/scale` for ~1 device pixel
 
 ### 4.2 Tool-Specific Rendering
 
-- Pen: Standard rendering, round caps/joins
-- Highlighter: opacity=0.25, normal blending (source-over)
+- Pen: Standard rendering, round caps/joins, opacity from tool settings
+- Highlighter: opacity=0.25 (default), normal blending (source-over)
 - Respect scene order - no tool-based reordering
+- Context save/restore per stroke for clean state isolation
 
-### 4.3 Performance Notes
+### 4.3 Performance Optimizations
 
-- Skip strokes with bbox diagonal <2px in screen space
+**Viewport Culling (`isStrokeVisible`):**
+- Converts viewport to world bounds with margin (50px / scale)
+- Inflates stroke bbox by half stroke width for accurate culling
+- Uses CSS pixels for transforms, not device pixels
+
+**Level of Detail (LOD):**
+- `shouldSkipLOD()`: Skip strokes with bbox diagonal <2px in screen space
+- Calculates screen diagonal as `worldDiagonal * viewTransform.scale`
+
+**Cache Management:**
+- FIFO eviction when cache exceeds 1000 strokes
+- Cache cleared on scene change (tracked via lastScene)
+- Cache keyed by stroke.id (strokes immutable post-commit)
 
 ## Phase 5: Drawing Input System
 
 ### 5.1 Implement Pointer Event Handling
 
-- Attach pointer events with setPointerCapture on down, release on up/cancel
-- RAF-coalesce pointermove events with pendingPoint buffer
-- Create DrawingTool class managing state, preview, and tool settings (frozen at pointerdown)
-- Convert screen→canvas→world coordinates via ViewTransform
-- Mobile detection: UA string + maxTouchPoints>1 for iPadOS
+**Files:**
+- `/client/src/lib/tools/DrawingTool.ts`: Core drawing tool implementation
+- `/client/src/canvas/Canvas.tsx`: Pointer event handling and tool lifecycle
+
+**Implementation Details:**
+- Attach pointer events with `setPointerCapture` on pointerdown, release on up/cancel/lostcapture
+- RAF-coalesce pointermove via `pendingPoint` buffer (prevents event flooding)
+- Tool settings **frozen at pointerdown** (stored in state.config)
+- Convert screen→canvas→world coordinates via `screenToWorld()` helper
+- Mobile detection: UA string + `maxTouchPoints>1` for iPadOS
+- Event listeners attached with `{ passive: false }` for preventDefault
+- Comprehensive cleanup on unmount (release capture, cancel drawing, remove listeners)
+- Update awareness activity state: 'drawing' during gesture, 'idle' on up
 
 ### 5.2 Build Preview Rendering
 
-- Add setPreviewProvider() to OverlayRenderLoop for preview access
-- Render preview for pen at 0.35 opacity on overlay canvas (world coordinates with view transform)
-- Invalidate overlay canvas on pointermove (base canvas remains unchanged during drawing)
+**Files:**
+- `/client/src/renderer/layers/preview.ts`: Preview rendering function
+- `/client/src/renderer/OverlayRenderLoop.ts`: Preview provider interface
+
+**Implementation Details:**
+- `setPreviewProvider()` bridges DrawingTool to OverlayRenderLoop
+- Preview opacity: **0.35 for pen**, **0.15 for highlighter** (prevents commit flicker)
+- Render on overlay canvas in world coordinates (transform already applied)
+- `updateBounds()`: Invalidates old bounds first, then new bounds
+- `holdPreviewForOneFrame()`: Prevents flicker on stroke commit
 - Mobile gets no preview (view-only enforcement)
 
 ### 5.3 Commit a Stroke
 
-- Validate: minimum 2 points (4 values), flush pending points
-- Apply Douglas-Peucker simplification in world units:
-  - Base tolerance: pen 0.8, highlighter 0.5
-  - Budgets: ≤128KB encoded, ≤10k points
-  - Retry with tol\*=1.4 if over, then hard downsample
-- Commit via mutate(): generate ULID, assign scene at commit, push to Y.Array
-
-### Phase 6A: Offline-First Doc Persistence & Boot Gates (y-indexeddb + manager plumbing)
-
-Local persistence policy (normative):
-Persist the entire Y.Doc per room in IndexedDB under avlo.v1.rooms.<roomId>.
-Initialize with new Y.Doc({ guid: roomId }) once; attach y-indexeddb immediately and do not wait to connect WS.
-Never change guid. If remapping is required, create a new doc and apply updates.
-Do not delete the room’s IDB data on leave; expose Delete local copy in My Rooms.
-
-### 6A.1 Attach y-indexeddb (provider comes first)
-
-#### 6A.1.1 Wire provider inside RoomDocManager
-
-1. Import `y-indexeddb` and create a **room-scoped** provider using the existing `Y.Doc({ guid: roomId })`.
-2. Instantiate **exactly once** per manager construction; never in UI components.
-3. Use database name/keyspace derived from `roomId` (e.g., `avlo.v1.rooms.<roomId>`).
-4. Register provider lifecycle handlers **inside** the manager (not UI):
-   - Prefer `provider.whenSynced.then(() => mark IDB hydrate finished)`; if unavailable in your wrapper, listen **once** for `'synced'` and then mark finished.
-   - Do not subscribe to a destroy event. Teardown is explicit: in the manager’s `teardown()`, call `await provider.destroy()` (best-effort), null out references, and leave `G_IDB_READY` unchanged. If your wrapper emits `'destroyed'`, you may log it in dev only; never gate behavior on it.
-
-5. Do **not** create containers in the constructor. Seed containers only after `G_IDB_READY` **and** either `G_WS_SYNCED` or a 350 ms grace; if `!root.has('meta')`, call `initializeYjsStructures()` exactly once.
-
-#### 6A.1.1b Seeding discipline
-
-Seed containers only after idbReady **and** either wsSynced or a 350 ms grace (Promise.race). If, at that point, root.has('meta') is still false, call initializeYjsStructures() exactly once.
-
-#### 6A.1.2 Implement `G_IDB_READY` gate (2 s timeout)
-
-1. Start a short timer (2,000 ms) when attaching the IDB provider.
-2. 2. Open `G_IDB_READY` when `provider.whenSynced` resolves (or on the first `'synced'` event, if that’s what your wrapper exposes) **or** when the 2,000 ms timer elapses—whichever happens first.
-3. On timeout, continue with an empty doc; keep the provider attached to apply late updates when the browser finishes spinning up IndexedDB.
-4. Dev-only debug log; keep metric() calls as no-ops in prod.
-5. Wrap provider creation in try/catch. On exception:
-   Mark idb.initFailed = true, open G_IDB_READY immediately (fallback), continue with EmptySnapshot + rAF; keep drawing offline; log a dev-only debug line (no prod metric), and continue with the EmptySnapshot + rAF publisher; keep drawing offline. (If the page later gains IDB access, you can attempt a lazy attach.)
-
-#### 6A.1.3 Dirty-flag integration for publish loop
-
-1. When IDB applies a batch, flip the manager's **doc-dirty** flag and schedule the rAF publisher (if not already scheduled).
-2. When IDB applies a batch, flip **doc-dirty** and schedule the rAF publisher. We do **not** compute or compare any state-vector key. `docVersion` increments on every Y.Doc change elsewhere.
-3. Before containers exist (`!root.has('meta')`), **defer writes** until idbReady and either wsSynced or a 350 ms grace, then replay the write; if still uninitialized, seed once, then replay.
-
-### 6A.2 Boot discipline & first-paint guarantees
-
-#### 6A.2.1 EmptySnapshot on construct (non-null from frame 0)
-
-1. Ensure the manager constructs and stores a **non-null EmptySnapshot** synchronously at creation time(already done in Phase 2).
-2. Immediately expose this snapshot to new subscribers (UI can render chrome, blank stage, and disabled buttons gated on `G_FIRST_SNAPSHOT` as needed).
-3. Leave the rAF publisher **running from creation**, so the first doc-derived snapshot appears ≤ 1 frame after any Y update is applied (IDB or later WS).
-
-**Boot behavior (MVP pivot).** Do **not** render any boot image. First paint is the **EmptySnapshot**, and the live, doc-derived snapshot follows as usual via rAF. There is **no** `lastKnownSvKey`.
-Canvas initial render is **gate-driven** by `G_FIRST_SNAPSHOT` (opened when `sawAnyDocUpdate` becomes true).
-
-#### 6A.2.2 rAF publisher discipline already in place
-
-1. Keep the single rAF loop model (no multiple loops per provider).
-2. Publish when **either** the manager is **doc-dirty** (Yjs applied updates or local edits) **or** the presence view changed (presence will be wired in a later phase; keep the hook points in place but inert).
-3. If the manager is dirty, publish a new snapshot on the next rAF. We do not use any state-vector key comparison.
-
-### 6A.3 Client config validation with Zod (boot-critical only)
-
-#### 6A.3.1 Define `config.ts` schema
-
-1. Add a `z.object({...})` schema for **boot-time** client config (env and constants actually read in Phase 6):
-   - `VITE_WS_BASE` (string, required, e.g., `"/ws"` or absolute wss URL).
-   - `VITE_API_BASE` (string, required, e.g., `"/api"`).
-   - `ROOM_TTL_DAYS` (number, default 14, clamp to sensible bounds).
-2. Export a `loadClientConfig()` that validates once at boot and returns **narrowed types**.
-
-#### 6A.3.2 Fail-fast with friendly UI
-
-1. If validation fails, show a small in-app error panel explaining the missing/invalid setting and disable network-dependent controls; offline editing from IDB can still proceed once Y is ready.
-2. Log a single diagnostic (dev only).
-
-### 6A.4 Minimal “Recent Rooms” readiness (unblocks UI later)
-
-#### 6A.4.1 Gate the badge, not the feature
-
-1. Expose a boolean “IDB ready” flag from the manager/registry so the **Recent Rooms** UI can show a badge only after `G_IDB_READY`.
-2. Do **not** build the full list UX here; only ensure the signal exists so later phases can hook it without refactoring.
-
-### 6A.5 Teardown & recovery hygiene
-
-#### 6A.5.1 Deterministic teardown
-
-On `destroy()` (synchronous implementation):
-
-1. stop rAF
-2. unobserve Y
-3. if (wsProvider) { wsProvider.disconnect(); wsProvider.destroy(); wsProvider = null }
-4. if (idbProvider) { idbProvider.destroy(); idbProvider = null }
-5. try { ydoc.destroy() } catch {}
-6. mark `this._destroyed = true` so subsequent calls are no-ops.
-
-#### 6A.5.2 Concurrency assertions (dev-only)
-
-1. Assert single manager per `roomId` in the registry.
-2. Assert that no UI layer imports `yjs`/providers directly (ESLint `no-restricted-imports`).
-3. Assert that provider attach happens **after** `Y.Doc` construction and before any WS attempts (to honor offline-first ordering once WS is introduced).
-
----
-
-## Phase 6B: Server — y-websocket + Redis persistence + PostgreSQL/Prisma metadata
-
-### 6B.1 Server foundation (Express)
-
-#### 6B.1.1 App skeleton
-
-1. Create an Express app that serves static files from `server/public` (Vite build output copied here).
-2. Install middleware: JSON body parser (small limits), compression, basic security headers, and **CORS with an origin allowlist**.
-3. Reserve `/ws/*` for WebSocket upgrade; reserve `/api/*` for REST; serve index.html for other GETs.
-
-### 6B.2 Zod-validated environment
-
-#### 6B.2.1 Define and validate `ServerEnv`
-
-1. Create a Zod schema:
-   - `PORT` (number, default 3000)
-   - `ORIGIN_ALLOWLIST` (array of strings; include `localhost` dev entries)
-   - `REDIS_URL` (string, required)
-   - `DATABASE_URL` (string, required for Prisma)
-   - `ROOM_TTL_DAYS` (number, default 14, clamp 1–90)
-   - `WS_MAX_FRAME_BYTES` (number, default 2_000_000)
-2. Parse at process start; **fail fast** with a readable log if invalid.
-
-### 6B.3 Redis binding (authoritative storage)
-
-#### 6B.3.1 Connect and harden
-
-1. Initialize a Redis client (commands) and a separate pub/sub if needed later.
-2. Configure reconnect backoff;
-3. Ensure AOF is enabled at the deployment (infra) layer.
-   Expiry behavior (normative): Redis TTL is the sole cleanup mechanism. The server never issues DEL/cron deletes. On missing key, treat the room as expired.
-
-#### 6B.3.2 Persistence adapter
-
-1. On `doc-update` from the WS server:
-   1. **Yjs applies the incoming delta to the in-memory room Y.Doc** (the official y-websocket server already does this).
-   2. **Serialize a fresh full snapshot** from the now-current Y.Doc using `encodeStateAsUpdate(ydoc)` (i.e., state-from-empty to current), **not** the incremental delta that just arrived.
-   3. Gzip (level 4) the snapshot buffer and **SET with TTL** (`SET room:<id> <buf> EX <ttlSeconds>`) so Redis holds a single authoritative blob.
-   4. Compute `size_bytes = buf.length` (compressed) and write the advisory metadata row in Postgres (`lastWriteAt`, `size_bytes`).
-   5. Do **not** append logs of deltas; awareness is never persisted; TTL extends only on accepted writes.
-
-### 6B.4 Prisma/PostgreSQL (non-authoritative metadata)
-
-#### 6B.4.1 Schema & migration
-
-1. Define `RoomMetadata` table with:
-   - `id TEXT PRIMARY KEY` (room id)
-   - `title TEXT NOT NULL DEFAULT ''`
-   - `createdAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()`
-   - `lastWriteAt TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()`
-   - `size_bytes INTEGER NOT NULL DEFAULT 0`
-2. Add an index on `(lastWriteAt DESC)`.
-3. Run `prisma migrate dev` to generate the migration and apply locally.
-
-#### 6B.4.2 Data contract
-
-1. Treat this table as **advisory only**. If `room:<id>` is missing in Redis, **return 404** for metadata even if a row exists.
-2. Update `size_bytes` and `lastWriteAt` **after** each successful doc persist.
-3. Never store awareness or per-stroke rows.
-
-### 6B.5 y-websocket server integration
-
-#### 6B.5.1 Bind `@y/websocket-server` to `/ws/:roomId`
-
-1. Mount the official server on the Express HTTP server; route by `roomId` path segment.
-2. Enforce origin allowlist on upgrade; reject unknown origins early.
-3. Configure inbound frame cap to **2 MB**; drop with close code if exceeded.
-
-#### 6B.5.2 Room load & save hooks
-
-1. On the first client join for a room, attempt `loadDoc(roomId)`; if present, apply to the in-memory Y.Doc that the WS server maintains for that room.
-2. On each **doc update** event from the WS server, apply delta to in memory room Y.Doc, compute full state(i.e. from empty state),
-3. `gzip(level=4)` the full state and `SETEX room:<roomId>`.
-4. Update Prisma `size_bytes` with the **compressed** length and set `lastWriteAt`.
-5. Extend TTL to `ROOM_TTL_DAYS` on each successful persist; do not extend on awareness/control messages. Extend TTL only on accepted writes.
-
-#### 6B.5.3 Capacity & read-only enforcement (advisory)
-
-1. Optionally cap peer count per room (small default). If capacity exceeded, mark the room **read-only** in a control envelope so clients can show a banner (writes are still accepted locally and merge later when a slot opens).
-2. Keep enforcement simple (single process, no cluster).
-
-### 6B.6 HTTP API (Zod-guarded)
-
-#### 6B.6.1 Create room
-
-1. `POST /api/rooms` → allocate canonical `roomId` (ULID), insert `RoomMetadata`, **do not** pre-create Redis key.
-2. Return `{ id, title: "", createdAt, lastWriteAt, size_bytes: 0 }`.
-
-#### 6B.6.2 Read metadata
-
-1. `GET /api/rooms/:id/metadata` → check Redis key; if missing, respond **404** (expired).
-2. If present, read Prisma row; if missing row, create a minimal one on the fly to avoid client confusion.
-3. Return `{ id, size_bytes, expires_at: now + TTL, title, createdAt, lastWriteAt }`.
-
-#### 6B.6.3 Rename room
-
-1. `PUT /api/rooms/:id/rename` with `{ title: string ≤ 120 }`.
-2. Validate with Zod; update Prisma; return the new title.
-
-#### 6B.6.4 List rooms (optional)
-
-1. `GET /api/rooms?limit=…` for server-side lists (useful in admin/dev).
-2. This is **not** the “My Rooms” UX (that remains device-local), but it is convenient for tests and demos.
-
-### 6B.7 Backpressure & slow-socket policies (WS-only scope)
-
-1. Enforce the 2 MB inbound frame cap at the gateway; close misbehaving clients.
-
-2. **Out of scope (MVP).** Do not implement server slow-socket handling. Run the official `@y/websocket-server` unchanged; rely exclusively on client-side skipping of awareness frames based on `WebSocket.bufferedAmount`.
-
-### 6B.8 Health
-
-1. `GET /healthz` returns 200 + simple Redis ping.
-
----
-
-## Phase 6C: Client — WebSocket provider, metadata wiring (TanStack Query), gates & failure modes
-
-### 6C.1 Attach y-websocket provider (client)
-
-#### 6C.1.1 Provider construction & order
-
-1. After attaching `y-indexeddb`, **connect WebSocket immediately**; do **not** wait for `G_IDB_READY`.
-2. Build the WS URL from validated `config.VITE_WS_BASE` and `roomId` (exact `/ws/<roomId>` mapping).
-3. Instantiate the WS provider **with the same Y.Doc** and **shared awareness instance placeholder** (awareness features remain unused until a later phase).
-
-#### 6C.1.2 Connection gates
-
-1. Open `G_WS_CONNECTED` when the underlying socket opens.
-2. Open `G_WS_SYNCED` when the first Yjs sync (state-vector exchange / `syncStep2`) completes.
-3. Keep drawing enabled regardless (offline-first). The existing write guards already block when the room is server-declared read-only.
-
-#### 6C.1.3 Event wiring (provider-agnostic observers)
-
-1. Register **all** Y.Doc observers only once inside the manager (already established pattern).
-2. Do **not** add extra doc listeners from providers; treat them as transport only.
-3. On “doc update” from WS provider, flip the **doc-dirty** flag; the rAF loop will publish the next frame.
-
-#### 6C.1.4 Reconnect & offline handling
-
-1. If the socket closes, continue offline with IDB; queue CRDT ops locally (Y handles this).
-2. 2. Show a **connection indicator** based on `G_WS_CONNECTED` and `G_WS_SYNCED`: Online / Offline / Read-only. Do **not** show “Reconnecting”.
-3. On reconnect, let Yjs merge; no special client logic needed beyond gates.
-
-### 6C.2 Room stats & metadata (TanStack Query v5)
-
-#### 6C.2.1 Query keys and fetchers
-
-1. Define query keys:
-   - `["rooms","metadata", roomId]`
-   - `["rooms","list"]` (if a simple server list UI is later added)
-2. Implement fetchers against:
-   - `GET /api/rooms/:id/metadata` (returns `{ size_bytes, expires_at, ... }`).
-3. Configure QueryClient defaults: `staleTime: 10_000`, `retry: 1`, `refetchOnWindowFocus: false`.
-
-#### 6C.2.2 Bridge to RoomDocManager stats
-
-1. On successful metadata fetch, call the manager’s internal setter to update the **RoomStats** stream (`bytes`, `cap`, optional `expiresAt`).
-2. The existing `subscribeRoomStats` will propagate to the UI (header pill at 13 MB, banner at 15 MB).
-3. If the endpoint returns 404 (expired), set stats to `null`, surface a banner explaining expiry, and leave the local IDB copy intact for “create new from local” later.
-   Do not recreate keys from Postgres; 404 is final.
-
-#### 6C.2.3 Invalidation policy
-
-1. Invalidate `["rooms","metadata", roomId]` after a confirmed persist-ack (if/when the server emits one) **or** poll every ~10 s as a fallback.
-2. Do **not** spam invalidations on every local write; rely on the poll or ack.
-
-### 6C.3 Create/join glue (client side)
-
-#### 6C.3.1 Join flow (server room)
-
-1. Parse `roomId` from the URL.
-2. Attach IDB provider, then WS provider immediately.
-3. Kick off a metadata query; render content from IDB/WS as it arrives; gates handle feature availability.
-
-#### 6C.3.2 Local-first room → publish later (hook points only)
-
-1. Ensure the manager exposes `extendTTL()` (already present) so the UI can surface an **Extend** control when online.
-2. Leave full “create local → publish” and alias mapping UX to the dedicated Room Lifecycle phase; only maintain the function signatures here so later phases don’t reshuffle the manager API.
-
-### 6C.4 Failure modes & user feedback
-
-#### 6C.4.1 Gate-driven UI
-
-1. **Before `G_WS_CONNECTED`**: allow drawing (offline), disable actions that require the server (TTL extend).
-2. **Before `G_WS_SYNCED`**: render from IDB snapshot; (No special UI indicator) Keep rendering from local/IDB until `G_WS_SYNCED` opens.
-3. **IDB timeout**: continue with EmptySnapshot; a late IDB apply will flip the doc-dirty flag and publish.
-
-#### 6C.4.2 Network & size errors
-
-1. If the server enforces read-only (capacity or size), reflect that via the existing banner logic; writes remain accepted locally but won’t persist server-side until policy clears.
-2. If a metadata fetch fails transiently, retry silently; do not block drawing. Optionally flip the connection indicator to Offline until the next successful fetch.
-
-### 6C.5 Client boundary validation with Zod (HTTP & WS control)
-
-#### 6C.5.1 HTTP schemas
-
-1. For `/api/rooms/:id/metadata`, define a Zod response schema; parse on receipt and surface a typed object to TanStack Query.
-2. For `/api/rooms/:id/rename` (wired later in the UI), define request/response schemas now to avoid future churn.
-
-#### 6C.5.2 WS control envelopes (future-proofing)
-
-1. Prepare a tiny Zod schema for any non-CRDT WS control envelopes you may use (e.g., server read-only notifications).
-2. Parse before acting; ignore unknown fields gracefully.
-
-**Teardown order (room leave, toggle to WS-only, tab close):**
-
-1. **Stop awareness publisher** → 2) **Destroy RTC provider** (not in this phase) → 3) **Unsubscribe awareness listeners** →
-2. **Leave/close WS** (doc provider remains authoritative path) → 5) **Flush pending mutations** → 6) **Close IDB (optional)**.Guarantee all public calls after `destroy()` are no-ops (guard every public method with `if (this._destroyed) return;`).
+**Files:**
+- `/client/src/lib/tools/simplification.ts`: Douglas-Peucker and size estimation
+
+**Implementation Flow:**
+1. **Flush pending points** from RAF buffer
+2. **Validate minimum** 4 values (2 points)
+3. **Simplification** (`simplifyStroke()`):
+   - Douglas-Peucker with **iterative algorithm** (prevents stack overflow on 10k+ points)
+   - Base tolerance: pen 0.8, highlighter 0.5 world units
+   - Budgets: ≤128KB encoded update, ≤10k points
+   - One retry with `tol *= 1.4` if over limits
+   - Highlighter tolerance capped at `baseTol * 1.5`
+   - Hard downsample if still exceeds point count
+   - Returns empty array if still exceeds 128KB (stroke rejected)
+4. **Frame size check**: Verify < 2MB transport limit after simplification
+5. **Calculate bbox** with stroke width inflation (world units)
+6. **Commit via mutate()**:
+   - Generate ULID for stroke ID
+   - Get `currentScene` from `scene_ticks.length` at commit time
+   - Push to `strokes` Y.Array in single transaction
+7. **Invalidate regions**:
+   - Preview bounds (clears preview rendering)
+   - Simplified stroke bounds (draws committed stroke)
+   - Both invalidations critical to avoid visual artifacts
+
+**Size Estimation (`estimateEncodedSize`):**
+- Each coordinate: ~16 bytes (8 for float64 + 8 for CRDT metadata)
+- Stroke metadata: ~500 bytes
+- Update envelope: ~1024 bytes
+
+## Phase 6: Offline-First Infrastructure & Real-time Sync
+
+Phase 6 establishes the complete persistence and sync infrastructure, connecting IndexedDB for offline storage, WebSocket for real-time collaboration, Redis for server persistence, and PostgreSQL for metadata.
+
+### 6.1 Client-Side Persistence (y-indexeddb)
+
+**Files:**
+- `/client/src/lib/room-doc-manager.ts`: Provider initialization, gate management
+- `/client/src/lib/config-schema.ts`: Client config validation with Zod
+
+**Implementation:**
+
+**Provider Initialization (`initializeIndexedDBProvider`):**
+- Creates room-scoped IDB with key `avlo.v1.rooms.${roomId}`
+- Attaches BEFORE WebSocket (offline-first principle)
+- Sets 2s timeout for `G_IDB_READY` gate
+- On timeout: continues with empty doc, keeps provider attached for late updates
+- Wrapped in try/catch: on exception, opens gate immediately as fallback
+
+**Seeding Discipline:**
+- Waits for `G_IDB_READY` AND either `G_WS_SYNCED` OR 350ms grace period
+- Seeds containers only if `!root.has('meta')` at that point
+- Single `initializeYjsStructures()` call in one transaction
+- Prevents race where fresh tab clobbers existing room data
+
+**Boot Guarantees:**
+- EmptySnapshot created synchronously on construct (never null)
+- First paint always non-null via EmptySnapshot
+- Doc-derived frame arrives ≤1 RAF after IDB/WS sync
+- No boot-time render snapshot; always starts from empty
+
+**Config Validation (`ClientConfigSchema`):**
+- Validates `VITE_WS_BASE`, `VITE_API_BASE`, `VITE_ROOM_TTL_DAYS`
+- Fails gracefully with user-friendly error panel
+- Offline editing continues even on config failure
+
+### 6.2 Server Infrastructure
+
+**Files:**
+- `/server/src/index.ts`: Express server setup, middleware
+- `/server/src/config/env.ts`: Server environment validation with Zod
+- `/server/src/lib/redis.ts`: Redis adapter with gzip compression
+- `/server/src/lib/prisma.ts`: Prisma client singleton
+- `/server/src/websocket-server.ts`: y-websocket server integration
+- `/server/src/routes/rooms.ts`: HTTP API endpoints
+
+**Environment Config (`ServerEnvSchema`):**
+- Validates PORT, ORIGIN_ALLOWLIST, REDIS_URL, DATABASE_URL
+- ROOM_TTL_DAYS (1-90), WS_MAX_FRAME_BYTES (2MB default)
+- MAX_CLIENTS_PER_ROOM (105 default), GZIP_LEVEL (4)
+- Fails fast on invalid config at startup
+
+**Redis Persistence (`RedisAdapter`):**
+- Stores compressed Y.Doc snapshots with TTL
+- Key format: `room:<roomId>`
+- Compression: gzip level 4 before storage
+- Full state serialization (not incremental deltas)
+- TTL extends only on accepted writes (not awareness)
+- AOF enabled at deployment layer for durability
+- Type mapping ensures binary data preserved as Buffers
+
+**PostgreSQL Metadata:**
+- Non-authoritative; Redis presence defines existence
+- Schema: id, title, createdAt, lastWriteAt, sizeBytes
+- Updates after each successful persist
+- Returns 404 if Redis key missing (expired room)
+
+### 6.3 WebSocket Integration
+
+**Files:**
+- `/server/src/websocket-server.ts`: Server-side WebSocket handling
+- `/client/src/lib/room-doc-manager.ts`: Client WebSocket provider
+
+**Server (`setupWebSocketServer`):**
+- Binds `@y/websocket-server` to `/ws/:roomId` paths
+- Origin allowlist enforcement on upgrade
+- 2MB frame size cap with immediate close on violation
+- Capacity check: sends `room_full` message before closing
+- First connection loads from Redis, applies to Y.Doc
+- On doc updates: serialize full state, gzip, save to Redis
+- Updates Prisma metadata (sizeBytes, lastWriteAt)
+- Debounced persistence (300ms) to batch rapid changes
+
+**Client (`initializeWebSocketProvider`):**
+- Connects immediately after IDB (no waiting)
+- URL built from `VITE_WS_BASE` + roomId
+- Opens `G_WS_CONNECTED` on socket open
+- Opens `G_WS_SYNCED` after first state-vector exchange
+- On disconnect: continues offline with IDB queue
+- Connection indicator: Online/Offline/Read-only states
+
+### 6.4 HTTP API & Metadata
+
+**Files:**
+- `/server/src/routes/rooms.ts`: REST endpoints
+- `/client/src/hooks/use-room-metadata.ts`: TanStack Query hooks
+- `/client/src/lib/api-client.ts`: Typed API client
+
+**Endpoints:**
+- `POST /api/rooms`: Create room (ULID), insert metadata
+- `GET /api/rooms/:id/metadata`: Check Redis, return metadata or 404
+- `PUT /api/rooms/:id/rename`: Update title with Zod validation
+- `GET /api/rooms?limit=N`: Optional list for dev/admin
+
+**Client Integration (`useRoomMetadata`):**
+- TanStack Query with 10s polling, no window focus refetch
+- Updates RoomDocManager stats on successful fetch
+- Shows size warning at 13MB, read-only at 15MB
+- Sets stats to null on 404 (expired room)
+- Preserves local IDB copy for recovery
+
+### 6.5 Gate System & UI Integration
+
+**Files:**
+- `/client/src/hooks/use-connection-gates.ts`: Gate subscription with stable primitives
+- `/client/src/pages/RoomPage.tsx`: Dynamic room routing
+- `/client/src/stores/device-ui-store.ts`: Zustand store for UI state
+- `/client/src/lib/tools/types.ts`: `toolbarToDeviceUI` adapter
+
+**Gate Management:**
+- Encodes gates as stable string primitives (`"0|1|0|1|1"`)
+- Prevents re-render loops with `useSyncExternalStore`
+- 150ms debounce on gate changes
+- `queueMicrotask` wrapper prevents sync updates
+
+**Routing & UI:**
+- React Router with `/room/:roomId` dynamic routes
+- ViewTransformProvider resets on room change
+- Zustand persists toolbar state in localStorage
+- Tool state frozen at pointer-down (DrawingTool)
+
+**Connection States:**
+- Before `G_WS_CONNECTED`: Drawing allowed, server actions disabled
+- Before `G_WS_SYNCED`: Renders from IDB, no special indicator
+- IDB timeout: Continues with EmptySnapshot
+- Read-only enforcement: Local writes accepted, server rejects
+
+### 6.6 Teardown & Error Handling
+
+**Teardown Order:**
+1. Stop RAF publisher
+2. Unobserve Y.Doc listeners
+3. Disconnect/destroy WebSocket provider
+4. Destroy IndexedDB provider
+5. Destroy Y.Doc (wrapped in try/catch)
+6. Mark destroyed, guard all public methods
+
+**Error Boundaries:**
+- Config validation failures show user-friendly panel
+- Network errors retry silently (1 retry, then fallback)
+- Metadata 404 preserves local data for recovery
+- Frame size violations close connection immediately
+- Capacity exceeded shows read-only banner
+
+**Critical Invariants:**
+- Single RoomDocManager per roomId (registry enforced)
+- No UI imports of yjs/providers (ESLint enforced)
+- Provider attach order: IDB → WS → (future) RTC
+- All mutations through single `mutate()` wrapper
+- Awareness never persisted, only ephemeral
 
 TODO IN FUTURE PHASE 7: **`G_AWARENESS_READY`** opens when WS connected (no timeout, no remote state requirement). Cursors/presence render only when both `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. When offline: presence is best-effort; cursors simply hide
 
@@ -440,326 +453,204 @@ Create guarded `toolbarToDeviceUI` adapter:
 - Wire Canvas.tsx to use Zustand store instead of static deviceUI
 - Tool state frozen at pointer-down (existing DrawingTool mechanism)
 
-### 6D.4 UI Components
-
-- **ToolPanel.tsx**: Pen/highlighter buttons, size slider, color picker (others disabled)
-
-### 6D.5 Mobile Support
-
-MobileViewOnlyBanner using UA string + maxTouchPoints detection.
-
-## Phase 7: Awareness & Presence System (WS-only, Phase-6-style expansion)
-
-> **Scope.** Implement end-to-end awareness over **y-websocket only** (no WebRTC in this phase), with throttled send, smoothed receive, **cursor + minimal trails**, and a **header badge roster**. Awareness is **ephemeral** (never persisted), injected into published **Snapshots**, and exposed via `subscribePresence`. Rendering follows the established gates: draw presence only when **both** `G_AWARENESS_READY` **and** `G_FIRST_SNAPSHOT` are open. WebRTC is deferred to a later phase.
-
----
-
-### 7A: Transport & Manager Ownership (WS authoritative; RTC deferred)
-
-#### 7A.1 Single-owner awareness (manager only)
-
-1. **RoomDocManager** constructs exactly one **awareness** instance bound to its existing `Y.Doc`. UI **must not** import Yjs/providers directly. Awareness lifetime equals the manager's lifetime. Presence is also injected into every published **Snapshot** (`snapshot.presence`).
-2. **Import note:** Use `import { Awareness as YAwareness } from 'y-protocols/awareness'` (don't import from y-websocket) to avoid colliding with the app's Awareness type.
-3. Public surface (unchanged):
-   - `subscribePresence(cb)` (throttled view emission).
-   - Presence derived view is included in Snapshots published ≤ 60 FPS.&#x20;
-
-#### 7A.2 Provider wiring & gates (WS-only in this phase)
-
-1. **Attach y-websocket awareness immediately** after WS connect; open `G_WS_CONNECTED` on socket open and `G_WS_SYNCED` after first state-vector sync. Awareness frames may flow as soon as `G_WS_CONNECTED` is open.
-2. **Awareness readiness**:
-   - **Opens** `G_AWARENESS_READY` when **WS connected** (no timeout, no remote state requirement)
-   - **Closes** `G_AWARENESS_READY` when **WS disconnected** (immediate, clears local state)
-   - Presence UI renders only when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`
-   - When `G_FIRST_SNAPSHOT` flips true, force one render to flush any queued presence
-   - When `G_AWARENESS_READY` flips false, presence dirty triggers to hide cursors immediately
-   - **Gate transitions:** Open `G_AWARENESS_READY` on WS connected and close immediately on disconnected, then `setLocalState(null)` and clear cursor trails so cursors vanish right away. When either `G_FIRST_SNAPSHOT` or `G_AWARENESS_READY` flips true after the other, mark presence dirty to flush once (prevents cursor invisibility when awareness leads/follows the first snapshot)
-3. **Teardown** on leave: stop awareness publisher → unsubscribe awareness listeners → close WS (doc provider remains authoritative path) → keep IDB. All public calls after `destroy()` are no-ops.
-4. **RTC status**: Any prior “Optional RTC probe/Peer Mode” copy is **out of scope** here and moved to the future RTC phase. Keep the UI in **Server** mode.
-
-### 7B: Local (sender) pipeline — identity, cadence, and emit rules
-
-#### 7B.1 Per-tab identity & profile (no custom names in MVP)
-
-1. Generate a stable **per-tab `userId`** (ULID) on manager construct; store in memory only.
-2. **Profile** defaults: `{ name, color }`.
-   - `name`: random from **"adjective + animal"** lists (ASCII; sanitized; ≤40 chars). Generated using `crypto.getRandomValues()` for unpredictability. This avoids PII and generates fresh labels on each tab load. **UI does not allow changing the name in Phase 7.**&#x20;
-   - `color`: random from a fixed palette using `crypto.getRandomValues()`; vetted `#RRGGBB` values; optional UI to change color is allowed.
-
-3. **Local awareness payload** (never persisted):
-
-   ```ts
-   { userId, name, color,
-     cursor?: { x, y },              // world coords (desktop only)
-     activity: 'idle' | 'drawing' | 'typing',
-     seq: number,                    // monotonic per-sender
-     ts: number,                     // ms epoch
-     aw_v?: number }                 // awareness version for evolution
-   ```
-
-#### 7B.2 Activity sources
-
-- **Cursor**: on `pointermove` over the stage, compute **world** coords via current `ViewTransform`; schedule emit. **No cursor emits on mobile** (view-only).
-- **Pointer leave / off-stage**: when the local pointer leaves the drawable stage (or pointer capture ends while not over stage), set cursor to undefined in the full awareness state; do not retain the last position. This ensures remote peers stop drawing the dot/label immediately; their trails will age out naturally. (Mobile still emits no cursor.)
-- **Activity**:
-  - `drawing` between pointerdown…pointerup (DrawingTool).
-  - `typing` while Monaco editor focused.
-  - `idle` otherwise (window blur sets `idle` immediately).&#x20;
-
-#### 7B.3 Cadence & **client backpressure**
-
-1. **Interval** (derived by peer count):
-   `interval = clamp(90ms + 3ms * max(0, N - 10), 75ms, 150ms)` with ±10 ms jitter; trailing-edge coalescing.
-   This yields **~10–13 Hz** in small rooms and **~6–7 Hz** as N grows.
-2. **WS backpressure (client)**:
-   - If `WebSocket.bufferedAmount > 64 KB` → **skip** this awareness frame (freshness over reliability).
-   - If `≥ 256 KB` → keep skipping until it drains **below 64 KB**.
-3. **Hidden tab**: timers naturally drop to ~8 Hz via rAF throttling; no extra timers.
-4. **Low FPS/Battery**: manager may halve sender rate when render loop reports < 30 FPS sustained.
-
-#### 7B.4 Heartbeats
-
-- **No app-level pings**. When state doesn’t change, we stay silent. Liveness derives from receive-side and provider disconnects.
-
-### 7C: Receive pipeline — ordering, smoothing, **no fade staleness**
-
-#### 7C.1 Ingest & ordering
-
-- Keep `Map<userId, PeerPresence>` with last accepted `{seq, ts, cursor, activity, name, color}`.
-- Drop frames with `seq <= last.seq` from that sender (arrival order + seq wins; `ts` advisory).&#x20;
-
-#### 7C.2 Smoothing & prediction
-
-- Store last two **world** points & velocities; project to canvas **per frame** using current `ViewTransform`.
-- Lerp 1–2 frames between updates; **one-frame dead-reckon** on a missed tick. Avoid double-smoothing with trails.&#x20;
-
-#### 7C.3 Staleness policy (no stale fade; hide on leave/absent cursor)
-
-- **Dot/label visibility**: show a peer's dot + tiny name only when that peer's cursor is present in the latest accepted awareness state. If cursor is absent (sender left the stage) or the peer disconnects, hide the dot/label immediately.
-- **Trails**: receivers keep a rolling world-space buffer that fades by age (α = exp(-(now - t)/τ)), and naturally disappears once points age out.
-- **No "fade to invisible" due to staleness**: we never keep a frozen cursor on screen; visibility is strictly tied to cursor presence or connection state.
-- **Roster presence**: show only a roster list once clicked on, and a **header badge** in the corner. **No "connected for 15 s" grace and no "away" state**; remove the peer immediately when leave/disconnect is reported.&#x20;
-
-#### 7C.4 Deriving the `PresenceView`
-
-- On any accepted awareness update **or** transform change, mark **awareness-dirty**.
-- Next rAF, compute readonly `PresenceView`:
-
-  ```ts
-  interface PresenceView {
-    users: Map<UserId, { name; color; cursor?; activity; lastSeen }>;
-    localUserId: UserId;
-  }
-  // Note: counts (total, drawing, typing, idle) are trivially derived at render time
-  // as demonstrated in UsersModal component
-  ```
-
-  Inject into the published **Snapshot** (`snapshot.presence`).
-
----
-
-### 7D: Rendering & UI (two-canvas architecture + **header badge roster**)
-
-#### 7D.1 Two-canvas renderer
-
-**CRITICAL Architecture**: Split rendering across TWO canvases:
-
-- **Base canvas** (RenderLoop): World content (world transform) - strokes, shapes, text, authoring overlays, HUD
-- **Overlay canvas** (OverlayRenderLoop): Preview (world-space) and Presence (screen-space)
-
-**File Structure**:
-
-- `renderer/RenderLoop.ts`: Handles base canvas rendering (world content, authoring, HUD)
-- `renderer/OverlayRenderLoop.ts`: Handles overlay canvas (preview, presence)
-- `renderer/layers/presence-cursors.ts`: `drawCursors()` implementation with trail management
-- `canvas/Canvas.tsx`: Manages both canvas stages and routes preview/presence to overlay
-
-1. Base canvas invalidates only on `docVersion` changes; overlay invalidates on any presence/preview change. Export excludes overlay content.
-2. **Cursor glyph (tiny pointer, not a dot)**:
-   - Draw in screen space at cursorCanvas {x,y} (DPR-aware). Size fixed in CSS px (does not scale with zoom).
-   - Shape: OS-style arrow pointer (tip at {x,y}). Bounding box ≈ 10–12 px tall × 7–9 px wide.
-   - Path: triangular head + short tail; 1 px outline (black at 30–40% alpha) to preserve contrast over light/dark canvases; fill = user color.
-   - Hotspot alignment: pointer tip = cursorCanvas. Do not rotate with view; presence is UI chrome.
-   - Hidden when cursorCanvas is undefined (e.g., pointer left stage or peer absent).
-3. **Name label**: **always on and tiny** (≈10–11 px, rounded pill, minimal padding) placed right and slightly below the pointer tail to avoid covering the tip; text clamped, sanitized, and ensures ≥4.5:1 contrast. (No hover requirement; avoids extra hit-testing.)&#x20;
-4. **Draw condition**: Render a dot/pointer + label only for peers whose cursorCanvas is defined (derived from cursor via current ViewTransform). If undefined, skip drawing dot/label for that peer.
-
-#### 7D.2 **Cursor trails** (kept; minimal, adaptive)
-
-1. **Trail management**: `cursorTrails` Map in `presence-cursors.ts` stores per-peer rolling buffer of **world-space** `{x,y,t}` points; trim older than **600 ms (MAX_TRAIL_AGE)** or beyond buffer size. Quantize to **0.5 world units**; interpolate 1–2 points on gaps > 60 ms.
-2. On render, transform world→canvas via current `ViewTransform`; draw a simple polyline each frame with alpha decay `exp(-(now - t)/τ)` where τ≈240–320 ms (TRAIL_DECAY_RATE); stroke 1–2 px; `butt` caps, `round` joins.
-3. **Cursor absent behavior**: On receiver, stop appending to a peer's trail when their cursor is absent; the existing trail points continue to render with age-based alpha until trimmed (≤600 ms), then disappear. `clearCursorTrails()` called on disconnect/room change.
-4. **Degrade rules**:
-   - `peerCount > 10` → cap to **≤12** points.
-   - `peerCount > 25` **or** FPS <30 → **disable trails** (pointer-only).
-   - Respect `prefers-reduced-motion`: pointer-only.&#x20;
-
-#### 7D.3 **Roster / header badges** (minimal)
-
-1. Subscribe to `PresenceView`; render a compact **header badge** per connected peer (`{name, color}` chip). When a user leaves, **their badge disappears immediately**. No “away” or post-disconnect grace.&#x20;
-2. Show **user count** and a tiny activity micro-legend (✏️ drawing N, ⌨️ typing M); **cap updates to ≤1 Hz**.&#x20;
-
----
-
-### 7E: Policies — cadence, **backpressure (client-only)**, privacy
-
-#### 7E.1 Cadence & degrade (sender + manager)
-
-- **Sender (network):** ~75–100 ms (~10–13 Hz) in small rooms, degrading toward **~150 ms** (~6–7 Hz) as peers increase; ±10 ms jitter; trailing-edge coalescing.
-- **UI publish:** `subscribePresence(cb)` is throttled to **≤ 30 Hz** to protect React. (This is **not** the network send rate.)
-
-#### 7E.2 **Backpressure (client-only)**
-
-- **Best-effort rule:** Before emitting, try to read `WebSocket.bufferedAmount`.
-  - If you can read it and it's > 64 KB, skip this awareness frame (freshness over reliability).
-  - If it's ≥ 256 KB, temporarily degrade send rate to ~6–7 Hz and keep skipping until it drains below 64 KB, then restore the base rate (~10–13 Hz).
-  - If you cannot access the socket or bufferedAmount (provider internals, race, not OPEN), do not treat that as backpressure—proceed to send.
-  - This keeps presence alive even if internals shift.
-- **No server slow-socket policy;** no custom broadcaster; keep official `@y/websocket-server`.
-- **Yjs doc updates** are not app-coalesced; rely on provider behavior.
-
-#### 7E.3 Privacy & PII minimization
-
-- Awareness never leaves volatile server memory; Redis/Postgres store **doc only**. Clamp name length (≤40), sanitize visible characters only; colors from vetted palette; random fallback names are ephemeral per-tab.
-
-#### 7E.4 Mobile policy
-
-- Mobile is **view-only** for doc writes; awareness **send** is minimal (name/color/activity=`idle` only). No cursor emits from mobile. Show roster and remote cursors normally.
-
----
-
-### 7F: Failure modes & recovery
-
-1. **WS loss**:
-   - **G_AWARENESS_READY closes immediately** on disconnect
-   - Cursors/labels hide immediately (gated by G_AWARENESS_READY && G_FIRST_SNAPSHOT)
-   - Trails fade naturally based on age (600ms max)
-   - Local awareness state cleared (setLocalState(null))
-   - Clear cursor trails to prevent stale visuals/memory
-   - Header shows Offline
-   - On reconnect, G_AWARENESS_READY reopens, presence resumes
-   - Writes continue offline via IDB (document persistence unaffected)
-2. **Clock skew**: rely on `seq` ordering; treat `ts` as advisory.&#x20;
-3. **Duplicate tabs**: each tab has its own `userId`; roster shows both; future enhancement may group by `name`.
-
----
-
-### 7G: Manager internals & contracts
-
-#### 7G.1 Private fields
-
-- `_awareness`: WS provider awareness instance.
-- `_presence`: `Map<userId, PeerPresence>` + **rolling trail buffers**.
-- `_localProfile`: `{ userId, name, color }` (per-tab; device-local).
-- `_awarenessDirty`: boolean.
-- `_sendTimer`: cadence controller with jitter/skip logic.
-- `_seq`: monotonically increasing per sender.
-- `_cursorLocalWorld`: last world cursor (desktop only).
-- `_activity`: `'idle'|'drawing'|'typing'`.&#x20;
-
-#### 7G.2 Public API
-
-- `setLocalProfile({ color? }: { color?: string })`: validate color, throttle, update awareness. Name is locked to the random fallback in Phase 7; attempts to set a custom name are ignored (no UI for it).
-- `subscribePresence(cb)`: emits derived `PresenceView` (≤30 Hz).
-- `getGateStatus()`: includes `G_AWARENESS_READY`.&#x20;
-
-#### 7G.3 Send loop (pseudo-spec)
-
-1. Mark dirty immediately; actually send once the awareness gate is open (prevents accidental pre-gate sends)
-2. On profile/cursor/activity change: mark dirty and schedule send; if `G_AWARENESS_READY` is closed, keep dirty and retry after it opens.
-3. Only when sending: bump `seq`, set `ts = now`, and call `awareness.setLocalState({...})` with the complete payload.
-4. Mobile shaping: on mobile, omit cursor and fix `activity='idle'` even if local UI toggles.
-5. Quantization: quantize cursor to 0.5 world units before the equality check to avoid sub-pixel churn.
-6. If WS backpressured per 7E.2, **skip** and coalesce to next tick.&#x20;
-
-#### 7G.4 Receive hooks
-
-- Subscribe once to provider’s awareness updates; per change: validate, clamp numbers, ignore self, apply `seq` ordering, update `_presence`, refresh trail buffer, set `_awarenessDirty = true`.
-
-### 7H: Rendering details & accessibility
-
-- Same canvas for cursors and strokes, `<canvas>` is DPR-aware; cleared once per frame. Fonts match app typography; label contrast ≥4.5:1.
-- Keyboard: no cursor when keyboard-only in UI; `U` toggles roster; do not trap focus.
-
-### 7I: Telemetry (dev only)
-
-- Counters: `aw.send.hz`, `aw.recv.drop.seq`, `aw.skip.backpressure`, `trail.enabled`, `trail.points`, `trail.dropReason`.
-- Debug overlay (dev only): draw tiny dots for received vs predicted; show per-peer update age.
-- No PII in logs; redact names to initials.&#x20;
-
-### 7L: Implementation notes & cross-phase alignment
-
-- **Publisher discipline**: publish a new **Snapshot** on **doc-dirty or awareness-dirty** at ≤60 FPS. **Option B-prime**: presence-only updates clone the previous snapshot with new presence instead of rebuilding from Y.Doc. Document changes trigger full snapshot builds.
-- **Awareness→Render Pipeline**: RoomDocManager receives awareness → `buildPresenceView()` with interpolation → inject into `snapshot.presence` → OverlayRenderLoop reads presence from snapshot → `drawPresenceOverlays()` checks gates → `drawCursors()` renders if both gates open.
-- **Gating**: Single render guard - draw cursors/presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`. Presence intake never stops. Force one flush when `G_FIRST_SNAPSHOT` flips true. Exports/minimap remain gated by `G_FIRST_SNAPSHOT`.&#x20;
-- **Backpressure policy** is client-only; no server fork and no slow-socket logic on the server.&#x20;
-- **UI changes applied per prior discussion**: pointer/label are **visible only while cursor is present**; no 'fade to invisible' staleness. **Retain trails** with age-based fade, and show **header badges** only (no "away" state).&#x20;
-- **RTC**: explicitly deferred; revisit in the dedicated WebRTC phase; reuse the **same** `bufferedAmount` skip semantics on RTC data channels when implemented.&#x20;
-
-### 7M: Cursor Interpolation (Receiver-side smoothing)
-
-Eliminates cursor jitter by doing **receiver-side interpolation** inside `RoomDocManager` (not renderer):
-
-- **Manager-owned**: All smoothing logic in `RoomDocManager`, renderer just draws `snapshot.presence`
-- **Per-peer state**: Track `PeerSmoothing` with `lastSeq`, `prev/last` samples, animation state
-- **Constants**: `INTERP_WINDOW_MS = 66` (~1-2 frames), `CURSOR_Q_STEP = 0.5` world units
-
-#### 7M.2 Ingest algorithm (`ingestAwareness`)
-
-- Drop stale/duplicate frames using `seq <= lastSeq` check
-- Quantize to 0.5 world units at ingest (matches sender)
-- **Gap detection**: If `seq > lastSeq + 1`, snap immediately (no lerp) to avoid rubber-banding
-- **Sequential samples**: Start 66ms lerp window, set `presenceAnimDeadlineMs`
-- Clear state when cursor absent (peer left stage)
-
-#### 7M.3 Display computation (`getDisplayCursor`)
-
-- During lerp window: Linear interpolation from `displayStart` to `last` sample
-- Outside window: Show last accepted position
-- Return `undefined` when `!hasCursor` (hide immediately)
-
-#### 7M.4 Publishing discipline
-
-- **RAF keep-alive**: Force `presenceDirty = true` while `now < presenceAnimDeadlineMs`
-- Ensures animation frames publish even without new awareness updates
-- `buildPresenceView()` calls `getDisplayCursor()` for smoothed world coords
-
-#### 7M.5 Renderer discipline
-
-- **No double-smoothing**: Renderer draws positions as-is from `snapshot.presence`
-- Trails consume smoothed positions naturally
-- `clearCursorTrails()` on disconnect (manager calls this)
-
-#### Appendix: Random fallback names (ephemeral)
-
-- **Generation**: `name = Adjectives[randomValues[0] % A] + ' ' + Animals[randomValues[1] % B]` using `crypto.getRandomValues()` (lists curated, ASCII only).
-- **Policy**: sanitize; clamp to ≤40 chars; ephemeral per-tab; **broadcast** via awareness. **Name is not user-editable in Phase 7**. **No persistence** to localStorage or server/DB.
-
-## Phase 8: RBush Spatial Indexing
+## Phase 7: Awareness & Presence System
+
+**Scope**: WebSocket-only awareness (no WebRTC), cursor trails, roster badges, and interpolation. Ephemeral data never persisted, injected into Snapshots.
+
+### 7.1 Core Awareness Architecture
+
+**Files:**
+- `/client/src/lib/room-doc-manager.ts`: Awareness ownership, send/receive, interpolation
+- `/client/src/lib/user-identity.ts`: Random name/color generation
+- `/client/src/hooks/use-presence.ts`: React subscription hook
+
+**Single-Owner Awareness:**
+
+- RoomDocManager owns one `YAwareness` instance bound to Y.Doc (UI never imports Yjs directly)
+- Import from `'y-protocols/awareness'` to avoid name collision with app's Awareness type
+- Presence injected into every published Snapshot at ≤60 FPS
+- `subscribePresence(cb)`: Throttled to ≤30 Hz for React protection&#x20;
+
+**Gates & Lifecycle:**
+- `G_AWARENESS_READY`: Opens on WS connect, closes on disconnect (immediate, no timeout)
+- Presence renders only when both `G_AWARENESS_READY && G_FIRST_SNAPSHOT` are true
+- On disconnect: `setLocalState(null)` + `clearCursorTrails()` for immediate hide
+- Gate transitions trigger `presenceDirty` to flush visibility changes
+- Teardown: Stop publisher → unsubscribe → close WS → preserve IDB
+
+### 7.2 Local Identity & Sending
+
+**Identity Generation (`/client/src/lib/user-identity.ts`):**
+- Per-tab `userId` (ULID) generated on manager construct
+- Random name: "Adjective Animal" (e.g., "Swift Fox") using crypto.getRandomValues()
+- Random color from palette of 12 vetted hex colors
+- Name is not editable in Phase 7 (no UI for custom names)
+
+**Awareness Payload Structure:**
+```typescript
+{
+  userId: string,         // Per-tab ULID
+  name: string,          // "Adjective Animal"
+  color: string,         // #RRGGBB from palette
+  cursor?: { x, y },     // World coords (desktop only, undefined on mobile)
+  activity: 'idle' | 'drawing' | 'typing',
+  seq: number,           // Monotonic per-sender for ordering
+  ts: number,           // ms epoch (advisory)
+  aw_v?: number         // Version for future evolution
+}
+```
+
+**Activity Tracking & Send Cadence:**
+- **Cursor updates**: World coords on pointermove (desktop only, mobile sends no cursor)
+- **Pointer leave**: Set cursor undefined immediately when leaving stage
+- **Activity states**: `drawing` (pointer down), `typing` (Monaco focus), `idle` (default/blur)
+- **Send interval**: `clamp(90ms + 3ms * max(0, N-10), 75ms, 150ms)` + ±10ms jitter
+  - Small rooms: ~10-13 Hz, degrades to ~6-7 Hz as peer count grows
+- **Backpressure**: Skip frame if `bufferedAmount > 64KB`, degrade rate if > 256KB
+- **No heartbeats**: Silent when state unchanged (freshness over pings)
+
+### 7.3 Cursor Interpolation & Receive Pipeline
+
+**Interpolation (`ingestAwareness` in room-doc-manager.ts):**
+- Track `PeerSmoothing` per user with last/prev samples and animation state
+- Drop stale frames using `seq <= lastSeq` check (sequence-based ordering)
+- Quantize cursor to 0.5 world units at ingest to reduce jitter&#x20;
+
+- **Gap detection**: If `seq > lastSeq + 1`, snap immediately to avoid rubber-banding
+- **Linear interpolation**: 66ms window (`INTERP_WINDOW_MS`) for 1-2 frame smoothing
+- **RAF keep-alive**: Force `presenceDirty` while animating to publish interpolated frames
+
+**Visibility Policy:**
+- Cursors visible only when present in latest awareness state (no frozen cursors)
+- Immediate hide on disconnect or pointer-leave (cursor undefined)
+- Trails fade naturally by age using exponential decay: `α = exp(-(now - t)/τ)`
+- No "away" states or post-disconnect grace periods
+
+**PresenceView Structure:**
+```typescript
+interface PresenceView {
+  users: Map<UserId, {
+    name: string;
+    color: string;
+    cursor?: { x: number; y: number };  // Smoothed world coords
+    activity: 'idle' | 'drawing' | 'typing';
+    lastSeen: number;
+  }>;
+  localUserId: string;
+}
+```
+
+### 7.4 Two-Canvas Rendering Architecture
+
+**Files:**
+- `/client/src/canvas/Canvas.tsx`: Orchestrates both canvas stages
+- `/client/src/renderer/RenderLoop.ts`: Base canvas (world content)
+- `/client/src/renderer/OverlayRenderLoop.ts`: Overlay canvas (preview + presence)
+- `/client/src/renderer/layers/presence-cursors.ts`: Cursor trail rendering
+- `/client/src/renderer/layers/index.ts`: `drawPresenceOverlays()` integration
+- `/client/src/pages/components/UsersModal.tsx`: Roster modal UI
+
+**Canvas Split:**
+- **Base canvas**: Document content, invalidates only on `docVersion` change
+- **Overlay canvas**: Preview strokes + presence cursors, invalidates on any change
+- Export excludes overlay content (presence is ephemeral)
+
+**Cursor Rendering (`drawCursors()` in presence-cursors.ts):**
+- OS-style arrow pointer (10-12px tall × 7-9px wide) with 1px black outline at 30% alpha
+- Fixed screen-space size (doesn't scale with zoom)
+- Pointer tip aligns to cursor position
+- Name label: 11px rounded pill below cursor, white text on user color background
+**Cursor Trails:**
+- Rolling buffer of world-space `{x, y, t}` points per peer (max 22 points, 550ms age limit)
+- Three-pass rendering for smooth appearance: outer glow, inner glow, main stroke
+- Alpha decay: `α = exp(-(now - t)/260ms)` with position-based and stop-motion multipliers
+- Stop detection: Fade aggressively (45% multiplier) when cursor stationary >80ms
+- Trail width tapers from 2.2px (head) to 0.4px (tail)
+- **Performance degradation**: >10 peers: cap to 12 points; >25 peers or <30 FPS: disable trails
+- **Accessibility**: Respects `prefers-reduced-motion` (cursor-only when enabled)&#x20;
+
+**Roster UI (UsersModal.tsx):**
+- User count badge with activity indicators (✏️ drawing, ⌨️ typing)
+- Immediate removal on disconnect (no "away" state or grace period)
+- Updates capped to ≤1 Hz to prevent UI flicker
+
+### 7.5 Policies & Error Handling
+
+**Network & Performance:**
+- **Send rate**: ~10-13 Hz (small rooms) → ~6-7 Hz (high peer count)
+- **Backpressure**: Skip frame if `bufferedAmount > 64KB`, degrade if > 256KB
+- **UI throttle**: `subscribePresence()` capped at 30 Hz (React protection)
+- **Mobile**: View-only, no cursor emission, activity always 'idle'
+
+**Privacy:**
+- Awareness never persisted (ephemeral, server memory only)
+- Names sanitized, capped at 40 chars
+- No PII collection, random names per tab
+
+**Failure Recovery:**
+- **WS disconnect**: `G_AWARENESS_READY` closes → cursors hide immediately → `setLocalState(null)`
+- **Reconnect**: Gate reopens → presence resumes → trails rebuild
+- **Clock skew**: Use `seq` for ordering, `ts` is advisory only
+- **Multiple tabs**: Each gets unique `userId` (shows as separate users)
+
+### 7.6 Implementation Details
+
+**Key Private Fields (RoomDocManager):**
+- `yAwareness`: YAwareness instance from 'y-protocols/awareness'
+- `peerSmoothers`: Map for interpolation state per peer
+- `awarenessSeq`: Monotonic counter for send ordering
+- `localProfile`: Per-tab { userId, name, color }
+- `awarenessIsDirty`: Dirty flag for send scheduling
+
+**Send Loop:**
+- Mark dirty on cursor/activity/profile change
+- Wait for `G_AWARENESS_READY` before sending
+- Increment `seq` only on actual send
+- Quantize cursor to 0.5 world units before equality check
+- Skip frame on backpressure, coalesce to next tick
+
+**Receive Processing:**
+- Validate and drop stale frames (seq-based)
+- Update `PeerSmoothing` state for interpolation
+- Set `presenceDirty` to trigger RAF publish
+- Ignore self updates
+
+**Critical Implementation Notes:**
+- **Publishing**: Presence-only updates clone previous snapshot (Option B-prime optimization)
+- **Pipeline**: RoomDocManager → `buildPresenceView()` → inject into snapshot → overlay renders
+- **Single gate guard**: Draw presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`
+- **No double-smoothing**: Manager interpolates, renderer draws as-is
+- **WebRTC deferred**: Phase 7 is WebSocket-only, RTC in future phase
+
+## Phase: RBush Spatial Indexing
 
 **Deferred.** Interfaces may remain reserved (e.g., `spatialIndex`) but are not populated
 
-## Phase 9: UI Components & Toolbar
+## Phase 8: Eraser Tool Implementation
 
-## Phase 10: Eraser
+**Architecture.** Whole-stroke eraser following DrawingTool lifecycle pattern. Mirror pointer event handling, use same two-canvas overlay system, commit via single mutate() for atomic undo.
 
-- **Whole-stroke eraser**: perform hit-test by linear bbox scan across `snapshot.strokes`; on hit, delete the entire stroke in a single transaction.
-- **RBush deferred**
+**Key Updates (Phase 8 Revision):**
+- **Tool-Agnostic Canvas**: Canvas.tsx instantiates tools based on `activeTool`, routes events to uniform `PointerTool` interface
+- **Preview Union Type**: `PreviewData = StrokePreview | EraserPreview` with eraser having world center coords and screen-space radius
+- **Shared Cache**: Export `getStrokeCacheInstance()` singleton from stroke-builder for reuse in dimming pass
+- **Coordinate Spaces**: Eraser cursor center in world coords (transformed by overlay), radius in CSS pixels (fixed size)
+- **Two-Pass Rendering**: Pass A dims hit strokes in world space, Pass B draws cursor circle in screen space with lineWidth=1
+- **Atomic Delete**: Single `mutate()` transaction for all deletions = one undo step
 
-## Phase 11: Text & Stamps
+VIEW PHASE8.md for full implementation details.
 
-### 11.2 Add Stamp Tools
 
-## Phase 12: Undo/Redo System
+## Phase 9: Text & Stamps
 
-## Phase 13: Room Lifecycle Management
+## Phase 10: Undo/Redo System
 
-## Phase 14: Export & Minimap
+## Phase 11: Room Lifecycle Management
 
-### 14.2 Build Minimap Component
+## Phase 12: Export
 
-## Phase 15: Code Execution System
+## Phase 13: Code Execution System
 
-## Phase 16: Service Worker & PWA
+## Phase 14: Service Worker & PWA
 
-## Phase 17: WebRTC & P2P (Optional Enhancement)
+## Phase 15: WebRTC & P2P (Optional Enhancement)

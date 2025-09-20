@@ -21,10 +21,11 @@ export interface DrawingState {
 }
 
 /**
- * PreviewData is the single source of truth for preview structure
- * Used by both DrawingTool and RenderLoop
+ * StrokePreview is the preview data for drawing strokes
+ * Used by DrawingTool and RenderLoop
  */
-export interface PreviewData {
+export interface StrokePreview {
+  kind: 'stroke'; // Discriminant for union type
   points: ReadonlyArray<number>; // [x,y, x,y, ...] in world coordinates
   tool: 'pen' | 'highlighter';
   color: string;
@@ -32,6 +33,24 @@ export interface PreviewData {
   opacity: number;
   bbox: [number, number, number, number] | null; // Used for dirty rect tracking
 }
+
+/**
+ * EraserPreview is the preview data for eraser tool
+ * Used by EraserTool and overlay rendering
+ */
+export interface EraserPreview {
+  kind: 'eraser';
+  /** Center in world coords; overlay does worldToCanvas() */
+  circle: { cx: number; cy: number; r_px: number };
+  hitIds: string[];
+  dimOpacity: number;
+}
+
+/**
+ * PreviewData is the union type for all preview types
+ * Discriminated by 'kind' field
+ */
+export type PreviewData = StrokePreview | EraserPreview;
 
 // Simplified device UI for Phase 5 (no Zustand yet)
 export interface DeviceUIState {

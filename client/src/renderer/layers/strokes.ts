@@ -1,9 +1,9 @@
 import type { Snapshot, StrokeView, ViewTransform } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import { StrokeRenderCache, isStrokeVisible } from '../stroke-builder';
+import { getStrokeCacheInstance, isStrokeVisible } from '../stroke-builder';
 
-// Module-level cache persists across frames
-const strokeCache = new StrokeRenderCache(1000);
+// Use shared singleton cache for stroke rendering
+const strokeCache = getStrokeCacheInstance();
 
 // Track scene for cache invalidation
 let lastScene = -1;
