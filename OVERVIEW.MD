@@ -81,7 +81,7 @@ export interface RoomDocManager {
 
 **Ownership & Y.Doc Reference Rules (CRITICAL)**
 
--   `RoomDocManager` **owns**: `Y.Doc`, `y-indexeddb` provider (Phase 5.3+), `y-websocket` provider, y-webrtc optional RTC awareness channel, `UndoManager` (Yjs) scoped per-user origin, `mutate(fn)` wrapper, DEFERRED `RBush` index, and publish loop.
+-   `RoomDocManager` **owns**: `Y.Doc`, `y-indexeddb` provider (Phase 5.3+), `y-websocket` provider, y-webrtc optional RTC awareness channel, `UndoManager` (Yjs) scoped per-user origin, `mutate(fn)` wrapper, Spatial index (UniformGrid), and publish loop.
 
 **Y.Doc Reference Invariants (NEVER VIOLATE)**:
 
@@ -538,7 +538,7 @@ interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;  // MUST filter: only scene === currentScene
   texts: ReadonlyArray<TextView>;       // MUST filter: only scene === currentScene
   presence: PresenceView;         // derived + smoothed
-  spatialIndex: RBushIndexView;   // DEFERRED, DORMANT FIELD BUT DEFERRED
+  spatialIndex: SpatialIndex | null;   // UniformGrid implementation (Phase 8)
   view: ViewTransform;            // world->canvas transform
   meta: { bytes?: number; cap: number; readOnly: boolean; expiresAt?: number };
   createdAt: number;              // ms epoch when snapshot frozen
@@ -732,12 +732,12 @@ const subscribe = (onStoreChange: () => void) => {
 25. Eraser Implementation (Phase 8)
 ==========================================
 
-**Architecture.** Whole-stroke eraser following DrawingTool lifecycle pattern. Mirror pointer event handling, use same two-canvas overlay system, commit via single mutate() for atomic undo.
+**Architecture.** Whole-stroke eraser following DrawingTool lifecycle pattern. Uses PointerTool interface for polymorphic handling with Canvas.tsx. Two-canvas overlay system with adaptive dimming. Single mutate() for atomic undo/deletion.
 
 **Coordinate Spaces:**
 - **Cursor**: Screen-space circle (constant CSS pixels regardless of zoom), rendered on overlay after DPR transform
 - **Hit-testing**: World-space using eraser radius converted via `radiusWorld = radiusPx / viewTransform.scale`
-- **Dimming**: World-space re-rendering of hit strokes at reduced opacity on overlay
+- **Dimming**: World-space adaptive color strategy based on stroke brightness, using blend modes and overlay colors
 
 **EraserTool State Machine:**
 ```typescript
@@ -752,17 +752,22 @@ interface EraserState {
 }
 ```
 
-**Hit-Testing Algorithm (Linear Scan with Optimizations):**
-1. **Viewport prune**: Skip strokes with bbox outside visible world bounds + margin
-2. **Inflate bbox**: Expand by `radiusWorld` before testing
-3. **Segment distance**: For each stroke segment, compute point-to-line distance
-4. **Text blocks**: Simple bbox-circle intersection (glyph precision deferred)
-5. **Performance budget**: Cap at ~6ms per frame or 100 segments, defer rest to next RAF
+**Hit-Testing Algorithm (Spatial Index with Fallback):**
+1. **Spatial query**: Use `snapshot.spatialIndex.queryCircle()` when available, fallback to linear scan
+2. **Viewport prune**: Skip strokes with bbox outside visible world bounds + margin
+3. **Stroke width**: Inflate hit radius by `stroke.style.size / 2` for accurate detection
+4. **Segment distance**: For each stroke segment, compute point-to-line distance
+5. **Text blocks**: Simple bbox-circle intersection (glyph precision deferred)
+6. **Resume index**: Track progress for continuation across frames (10ms budget, 500 segments max)
+7. **Live view**: Uses `getView()` callback for accurate transforms (avoids stale view)
 
 **Visual Feedback (Two-Pass Overlay):**
-- **Pass A (World)**: Re-stroke hit objects at reduced opacity using cached Path2D
-  - Strokes: `alpha = clamp(0.2 + 0.6 * stroke.opacity, 0.2, 0.6)`
-  - Texts: Draw semi-transparent rounded rect over bbox
+- **Pass A (World)**: Adaptive dimming based on stroke color brightness
+  - Dark strokes (<80 luminance): White overlay with 'screen' blend mode
+  - Mid-tones (80-180): Inverted overlay for contrast
+  - Light strokes (>180): Black overlay with high opacity
+  - Uses shared stroke cache (`getStrokeCacheInstance()`) for Path2D reuse
+  - Adds 3-4px extra thickness for visibility
 - **Pass B (Screen)**: Draw the cursor circle **after** `ctx.setTransform(dpr,0,0,dpr,0,0)` (no world transform)
   - Circle outline: 1px stroke at ~0.8 alpha, no fill
   - Radius: fixed **screen** pixels (12–32px typical)
@@ -805,23 +810,24 @@ canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
 ```
 
 **Tool-Agnostic Pointer Surface**
-To keep Canvas dumb and uniform, both tools expose the same minimal surface:
+To keep Canvas uniform, both tools expose the same PointerTool interface:
 
 ```typescript
 type PointerTool = {
   canBegin(): boolean;
   begin(pointerId: number, x: number, y: number): void;
   move(x: number, y: number): void;
-  end(x?: number, y?: number): void;   // DrawingTool uses (x,y); EraserTool may ignore
+  end(x?: number, y?: number): void;   // DrawingTool uses (x,y); EraserTool ignores final coords
   cancel(): void;
   isActive(): boolean;
   getPointerId(): number | null;
   getPreview(): PreviewData | null;
   destroy(): void;
+  clearHover?(): void;  // Optional: EraserTool clears hover state on pointer leave
 };
 ```
 
-Canvas instantiates the appropriate tool once per effect run (based on `activeTool`) and routes the same listeners to this surface. Listeners **do not** branch by tool at call sites—only the constructor does. See Phase-8 wiring for details.
+Canvas instantiates the appropriate tool once per effect run (based on `activeTool`) and routes unified handlers to this surface. Mobile gating happens in Canvas, not tools. Live view transform passed via `getView()` callback for accurate hit-testing.
 
 **Preview Union Type (normative):**
 ```typescript
@@ -841,21 +847,26 @@ export interface EraserPreview {
 }
 ```
 
-**Shared Cache Access (normative):**
-- Export a singleton: `getStrokeCacheInstance()` from the stroke-builder module.
-- Both the base strokes layer **and** the eraser-dim overlay must reuse it.
-- Helpers like `drawDimmedStrokes(...)` must never rebuild Path2D for hits.
+**Shared Cache Access (Implemented):**
+- Singleton export: `getStrokeCacheInstance()` from stroke-builder module
+- Shared between base stroke rendering and eraser dimming overlay
+- FIFO cache with 1000 stroke limit
+- Path2D objects built once, reused across frames
+- Cache keyed by stroke ID (strokes immutable after commit)
 
 **Performance Guards:**
 - Skip LOD strokes (<2px screen diagonal)
-- Time budget: 6ms max per pointer move
-- Cache polylines once per frame
-- Coalesce pointer moves on RAF
+- Time budget: 10ms per frame, 500 segments max
+- Resume index for hit-test continuation across frames
+- RAF coalescing for pointer moves
+- Spatial index query when available (128x128 world unit cells)
 - Skip dimming at >25 peers or <30 FPS
 
 **Mobile & Read-only:**
-- Gate in `canStartErasing()`: return false if mobile or room ≥15MB
-- Show hover preview only (no deletion capability)
+- Mobile gating in Canvas.tsx (not in tools): prevents pointer events
+- Read-only gating in mutate() wrapper: rejects writes when room ≥15MB
+- Tool's canBegin() only checks tool-local state (not mobile/read-only)
+- Cursor hidden on mobile (no hover preview)
 
 **Scene & Edge Cases:**
 - Scene changes mid-gesture: id→index map handles missing IDs gracefully

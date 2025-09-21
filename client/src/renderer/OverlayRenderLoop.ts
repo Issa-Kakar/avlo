@@ -46,8 +46,13 @@ export class OverlayRenderLoop {
 
   setPreviewProvider(provider: PreviewProvider | null): void {
     this.previewProvider = provider;
-    if (provider && provider.getPreview()) {
-      this.invalidateAll();
+    // Always invalidate to ensure preview updates or clears
+    this.invalidateAll();
+
+    // Clear cached preview when provider is removed
+    if (!provider) {
+      this.cachedPreview = null;
+      this.holdPreviewOneFrame = false;
     }
   }
 
@@ -74,7 +79,8 @@ export class OverlayRenderLoop {
 
   private frame() {
     if (!this.config) return;
-    const { stage, getView, getViewport, getPresence, getGates, drawPresence, getSnapshot } = this.config;
+    const { stage, getView, getViewport, getPresence, getGates, drawPresence, getSnapshot } =
+      this.config;
 
     // Get viewport first to check if ready
     const vp = getViewport();
@@ -105,7 +111,6 @@ export class OverlayRenderLoop {
           ctx.translate(-view.pan.x, -view.pan.y);
           drawPreview(ctx, previewToDraw); // Existing preview function
           ctx.restore();
-
         } else if (previewToDraw.kind === 'eraser') {
           // New eraser preview (two passes)
           const snapshot = getSnapshot(); // Need snapshot for dimming
@@ -128,7 +133,7 @@ export class OverlayRenderLoop {
           // Transform cursor position to screen
           const [screenX, screenY] = view.worldToCanvas(
             previewToDraw.circle.cx,
-            previewToDraw.circle.cy
+            previewToDraw.circle.cy,
           );
 
           // Draw circle outline

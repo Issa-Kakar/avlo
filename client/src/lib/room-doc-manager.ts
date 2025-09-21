@@ -38,6 +38,7 @@ import type {
   ViewTransform,
   SnapshotMeta,
   RoomStats,
+  SpatialIndex,
 } from '@avlo/shared';
 import { UpdateRing } from './ring-buffer';
 import {
@@ -47,6 +48,7 @@ import {
   BrowserFrameScheduler,
   TimingOptions,
 } from './timing-abstractions';
+import { StrokeSpatialIndex } from './spatial/stroke-spatial-index';
 
 // Type for unsubscribe function
 type Unsub = () => void;
@@ -239,7 +241,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
-    console.log(`[RoomDocManagerImpl Constructor] Creating new instance for roomId: ${roomId}`);
     this.roomId = roomId;
     this.userId = ulid(); // User ID for this session
 
@@ -311,10 +312,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
       const root = this.ydoc.getMap('root');
       if (!root.has('meta')) {
-        console.log(`[RoomDocManager] Seeding structures for new room: ${this.roomId}`);
         this.initializeYjsStructures();
       } else {
-        console.log(`[RoomDocManager] Room ${this.roomId} already has structures from IDB/WS`);
         this.logContainerIdentities('LOADED_FROM_IDB_OR_WS');
       }
     });
@@ -691,8 +690,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Step 3: Initialize Y.js structures with proper setup
   private initializeYjsStructures(): void {
-    console.log(`[RoomDocManager] initializeYjsStructures running for room: ${this.roomId}`);
-
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
 
@@ -741,31 +738,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Helper to log container identities for debugging
-  private logContainerIdentities(phase: string): void {
-    const root = this.ydoc.getMap('root');
-    const strokes = root.get('strokes');
-    const meta = root.get('meta');
-    const sceneTicks = meta instanceof Y.Map ? meta.get('scene_ticks') : null;
-
-    // Create stable identifiers using object reference + type
-    const strokesId = strokes
-      ? `${(strokes as any)._item?.id?.clock || 'unknown'}-${strokes.constructor.name}`
-      : 'null';
-    const metaId = meta
-      ? `${(meta as any)._item?.id?.clock || 'unknown'}-${meta.constructor.name}`
-      : 'null';
-    const ticksId = sceneTicks
-      ? `${(sceneTicks as any)._item?.id?.clock || 'unknown'}-${sceneTicks.constructor.name}`
-      : 'null';
-
-    console.log(`[Container Identity - ${phase}] room: ${this.roomId}`);
-    console.log(
-      `  strokes: ${strokesId}, length: ${strokes instanceof Y.Array ? strokes.length : 'N/A'}`,
-    );
-    console.log(`  meta: ${metaId}`);
-    console.log(
-      `  scene_ticks: ${ticksId}, length: ${sceneTicks instanceof Y.Array ? sceneTicks.length : 'N/A'}`,
-    );
+  private logContainerIdentities(_phase: string): void {
+    // Debug logging method - disabled in production
   }
 
   // Step 4: Add output with size enforcement
@@ -1268,13 +1242,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
               ? (origin as any).constructor?.name || 'unknown'
               : 'null';
 
-    console.log(
-      `[Transaction Origin] room: ${this.roomId}, origin: ${originStr}, update size: ${update.byteLength}`,
-    );
+    // Transaction origin tracked for debugging
 
     // If this is from IDB, check if container identities changed
     if (origin === this.indexeddbProvider || originStr === 'IDB_PROVIDER') {
-      console.log('[Transaction] IDB update detected, checking for container changes...');
+      // IDB update detected
       this.logContainerIdentities('DURING_IDB_UPDATE');
     }
 
@@ -1306,14 +1278,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
     try {
       // Create room-scoped IDB provider
       const dbName = `avlo.v1.rooms.${this.roomId}`;
-      console.log(`[RoomDocManager] Creating IndexedDB with name: ${dbName}`);
+      // Creating IndexedDB provider
       this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
 
       // Set up IDB gate with 2s timeout
       const timeoutId = setTimeout(() => {
-        console.log(
-          `[RoomDocManager] IDB timeout reached for room: ${this.roomId}, proceeding with empty doc`,
-        );
+        // IDB timeout reached, proceeding with empty doc
         this.handleIDBReady(); // Use unified handler
       }, 2000);
       this.gateTimeouts.set('idbReady', timeoutId);
@@ -1321,9 +1291,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Listen for IDB sync completion for gate control
       this.indexeddbProvider.whenSynced
         .then(() => {
-          console.log(
-            `[RoomDocManager] IndexedDB whenSynced resolved for room: ${this.roomId}, dbName: avlo.v1.rooms.${this.roomId}`,
-          );
+          // IndexedDB whenSynced resolved
           this.handleIDBReady(); // Use unified handler
         })
         .catch((err: unknown) => {
@@ -1758,8 +1726,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Build presence view
     const presence: PresenceView = this.buildPresenceView();
 
-    // Deferred for now
-    const spatialIndex = null;
+    // Build spatial index for efficient hit-testing (only if we have strokes)
+    const spatialIndex = strokes.length > 0 ? this.buildSpatialIndex(strokes) : null;
 
     // Build view transform
     const view: ViewTransform = this.getViewTransform();
@@ -1829,6 +1797,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
+  // Build spatial index for efficient stroke hit-testing
+  private buildSpatialIndex(strokes: ReadonlyArray<StrokeView>): SpatialIndex {
+    // Use a cell size that balances memory and query performance
+    // 128 world units works well for typical whiteboard usage
+    const cellSize = 128;
+    return new StrokeSpatialIndex(strokes, cellSize);
+  }
+
   // Phase 2.4.4: Render cache methods for boot splash (cosmetic only)
 }
 
@@ -1860,9 +1836,7 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      console.log(
-        `[Registry] Creating new RoomDocManager via deprecated get() for roomId: ${roomId}`,
-      );
+      // Creating new RoomDocManager via deprecated get()
       // Creating new RoomDocManager
       // Use provided options, fall back to default options, or use browser defaults
       const finalOptions = options ?? this.defaultOptions;
@@ -1870,9 +1844,7 @@ export class RoomDocManagerRegistry {
       this.managers.set(roomId, manager);
       // Don't set ref count for backward compatibility with tests
     } else {
-      console.log(
-        `[Registry] Reusing existing RoomDocManager via deprecated get() for roomId: ${roomId}`,
-      );
+      // Reusing existing RoomDocManager via deprecated get()
     }
 
     return manager;
@@ -1887,14 +1859,14 @@ export class RoomDocManagerRegistry {
     let manager = this.managers.get(roomId);
 
     if (!manager) {
-      console.log(`[Registry] Creating new RoomDocManager via acquire() for roomId: ${roomId}`);
+      // Creating new RoomDocManager via acquire()
       // Creating new RoomDocManager
       const finalOptions = options ?? this.defaultOptions;
       manager = new RoomDocManagerImpl(roomId, finalOptions);
       this.managers.set(roomId, manager);
       this.refCounts.set(roomId, 0);
     } else {
-      console.log(`[Registry] Reusing existing RoomDocManager via acquire() for roomId: ${roomId}`);
+      // Reusing existing RoomDocManager via acquire()
     }
 
     // Increment reference count

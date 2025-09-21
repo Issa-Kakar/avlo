@@ -1,9 +1,487 @@
 Phase 8: Eraser Tool Implementation
 
+# Phase 8 Eraser Tool - Critical Fixes Documentation
+
+## Issues Identified
+
+### 1. **CRITICAL: Stale View Transform in Hit-Testing**
+
+**Severity:** Critical
+**Location:** `EraserTool.updateHitTest()` line 134-135
+
+The eraser is using `snapshot.view` for hit-testing calculations, but this view can be stale when zooming/panning. The overlay renderer correctly uses live `getView()` but the hit-test doesn't.
+
+```typescript
+// CURRENT (BROKEN):
+const snapshot = this.room.currentSnapshot;
+const viewTransform = snapshot.view; // <-- STALE VIEW!
+const radiusWorld = this.state.radiusPx / viewTransform.scale;
+```
+
+**Impact:** When zoomed out, the eraser calculates wrong `radiusWorld` and visible bounds, causing hit-test failures.
+
+### 2. **Cursor Remains On Screen After Pointer Leave**
+
+**Severity:** High
+**Location:** Multiple issues
+
+#### 2a. No `onPointerLeave` handler in EraserTool
+
+- `EraserTool` has no method to clear hover state when pointer leaves canvas
+- `lastWorld` stays set, causing `getPreview()` to keep returning a circle
+- Canvas `handlePointerLeave` only clears awareness cursor, not tool preview
+
+#### 2b. `setPreviewProvider(null)` doesn't invalidate overlay
+
+**Location:** `OverlayRenderLoop.ts` line 47-52
+
+```typescript
+setPreviewProvider(provider: PreviewProvider | null): void {
+  this.previewProvider = provider;
+  if (provider && provider.getPreview()) { // <-- DOESN'T INVALIDATE ON NULL!
+    this.invalidateAll();
+  }
+}
+```
+
+#### 2c. `destroy()` and `commitErase()` don't call `onInvalidate`
+
+- After committing or destroying, the last preview frame stays visible
+
+### 3. **Dimming Not Obvious - baseOpacity Ignored**
+
+**Severity:** Medium
+**Location:** `eraser-dim.ts` line 8-39
+
+The function receives `baseOpacity` parameter but **never uses it**:
+
+```typescript
+export function drawDimmedStrokes(
+  ctx: CanvasRenderingContext2D,
+  hitIds: string[],
+  snapshot: Snapshot,
+  baseOpacity: number  // <-- RECEIVED BUT IGNORED!
+): void {
+  // ...
+  const dimFactor = stroke.style.tool === 'highlighter' ? 0.7 : 0.5;
+  ctx.globalAlpha = 1; // <-- HARDCODED!
+  ctx.strokeStyle = `rgba(128, 128, 128, ${dimFactor})`; // <-- FIXED ALPHA
+```
+
+### 4. **Missing Stroke Width in Hit Testing**
+
+**Severity:** Medium
+**Location:** `EraserTool.updateHitTest()` line 158, 162
+
+Hit-testing doesn't account for stroke thickness:
+
+```typescript
+const inflatedBbox = this.inflateBbox(stroke.bbox, radiusWorld); // <-- NO STROKE WIDTH!
+if (this.strokeHitTest(worldX, worldY, stroke.points, radiusWorld)) { // <-- NO STROKE WIDTH!
+```
+
+This makes 1px strokes much harder to erase than thick strokes.
+
+### 5. **Performance: Early Break Without Resume**
+
+**Severity:** Medium
+**Location:** `EraserTool.updateHitTest()` line 171-175
+
+```typescript
+if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
+  // Optional: could store resume index for next frame
+  break; // <-- STOPS SCANNING, NO RESUME!
+}
+```
+
+When breaking early, strokes after current position are never tested.
+
+### 6. **Missing getView() Parameter**
+
+**Severity:** Critical
+**Location:** `Canvas.tsx` line 491-508
+
+EraserTool is not receiving `getView` callback:
+
+```typescript
+tool = new EraserTool(
+  roomDoc,
+  eraser,
+  userId,
+  () => overlayLoopRef.current?.invalidateAll(),
+  () => {
+    /* getViewport */
+  },
+  // <-- MISSING getView PARAMETER!
+);
+```
+
+### 7. **No Spatial Index Implementation**
+
+**Severity:** Low (Performance)
+**Location:** Throughout
+
+`spatialIndex` field in Snapshot is hardcoded to `null`. No spatial indexing for efficient hit-testing.
+
+## Fix Implementation Guide
+
+### Fix 1: Add Live View Transform Support
+
+#### Step 1.1: Update EraserTool Constructor
+
+```typescript
+// EraserTool.ts
+export class EraserTool {
+  private getView?: () => ViewTransform; // ADD THIS
+
+  constructor(
+    room: IRoomDocManager,
+    settings: EraserSettings,
+    userId: string,
+    onInvalidate?: () => void,
+    getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number },
+    getView?: () => ViewTransform  // ADD THIS PARAMETER
+  ) {
+    // ...
+    this.getView = getView; // STORE IT
+  }
+```
+
+#### Step 1.2: Use Live View in updateHitTest
+
+```typescript
+private updateHitTest(worldX: number, worldY: number): void {
+  const snapshot = this.room.currentSnapshot;
+
+  // USE LIVE VIEW, FALLBACK TO SNAPSHOT IF NOT PROVIDED
+  const viewTransform = this.getView ? this.getView() : snapshot.view;
+
+  const radiusWorld = this.state.radiusPx / viewTransform.scale;
+  const visibleBounds = this.getVisibleWorldBounds(viewTransform);
+  // ... rest of method
+}
+```
+
+#### Step 1.3: Pass getView from Canvas
+
+```typescript
+// Canvas.tsx line 491
+tool = new EraserTool(
+  roomDoc,
+  eraser,
+  userId,
+  () => overlayLoopRef.current?.invalidateAll(),
+  () => {
+    /* getViewport callback */
+  },
+  () => viewTransformRef.current, // ADD THIS!
+);
+```
+
+### Fix 2: Handle Pointer Leave Properly
+
+#### Step 2.1: Add clearHover Method to EraserTool
+
+```typescript
+// EraserTool.ts
+clearHover(): void {
+  this.pendingMove = null;
+  this.state.lastWorld = null;
+  this.state.hitNow.clear();
+  if (!this.state.isErasing) {
+    this.state.hitAccum.clear();
+  }
+  this.onInvalidate?.();
+}
+```
+
+#### Step 2.2: Fix setPreviewProvider to Always Invalidate
+
+```typescript
+// OverlayRenderLoop.ts
+setPreviewProvider(provider: PreviewProvider | null): void {
+  this.previewProvider = provider;
+  this.invalidateAll(); // ALWAYS INVALIDATE
+
+  if (!provider) {
+    this.cachedPreview = null;
+    this.holdPreviewOneFrame = false;
+  }
+}
+```
+
+#### Step 2.3: Call clearHover on Pointer Leave
+
+```typescript
+// Canvas.tsx handlePointerLeave
+const handlePointerLeave = () => {
+  // Clear cursor when pointer leaves canvas
+  roomDoc.updateCursor(undefined, undefined);
+
+  // Clear tool hover state if it has the method
+  if (tool && 'clearHover' in tool) {
+    (tool as any).clearHover();
+  }
+};
+```
+
+#### Step 2.4: Add onInvalidate to commitErase and destroy
+
+```typescript
+// EraserTool.ts
+commitErase(): void {
+  // ... existing code ...
+  this.resetState();
+  this.onInvalidate?.(); // ADD THIS
+}
+
+destroy(): void {
+  if (this.rafId) {
+    cancelAnimationFrame(this.rafId);
+    this.rafId = null;
+  }
+  this.resetState();
+  this.onInvalidate?.(); // ADD THIS
+}
+```
+
+### Fix 3: Improve Dimming Visibility
+
+```typescript
+// eraser-dim.ts
+export function drawDimmedStrokes(
+  ctx: CanvasRenderingContext2D,
+  hitIds: string[],
+  snapshot: Snapshot,
+  baseOpacity: number,
+): void {
+  const hitSet = new Set(hitIds);
+  const cache = getStrokeCacheInstance();
+
+  ctx.save();
+
+  // Use source-over for more predictable darkening
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Render hit strokes with strong darkening
+  for (const stroke of snapshot.strokes) {
+    if (!hitSet.has(stroke.id)) continue;
+
+    const renderData = cache.getOrBuild(stroke);
+    if (!renderData.path || renderData.pointCount < 2) continue;
+
+    // Use baseOpacity parameter!
+    const toolFactor = stroke.style.tool === 'highlighter' ? 0.7 : 1.0;
+    const alpha = Math.min(1, Math.max(0.4, baseOpacity * toolFactor));
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = '#000000'; // Black for clear dimming
+    ctx.lineWidth = stroke.style.size + 3; // Thicker for visibility
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke(renderData.path);
+    ctx.restore();
+  }
+
+  // Render hit text blocks with strong overlay
+  for (const text of snapshot.texts) {
+    if (!hitSet.has(text.id)) continue;
+    ctx.fillStyle = `rgba(0, 0, 0, ${Math.max(0.4, baseOpacity * 0.8)})`;
+    ctx.fillRect(text.x, text.y, text.w, text.h);
+  }
+
+  ctx.restore();
+}
+```
+
+Also increase default dimOpacity in EraserTool:
+
+```typescript
+// EraserTool.ts getPreview()
+return {
+  kind: 'eraser',
+  circle: {
+    /* ... */
+  },
+  hitIds: Array.from(allHits),
+  dimOpacity: 0.6, // INCREASE FROM 0.35
+};
+```
+
+### Fix 4: Include Stroke Width in Hit Testing
+
+```typescript
+// EraserTool.ts updateHitTest()
+for (const stroke of snapshot.strokes) {
+  // Include stroke half-width
+  const halfWidth = (stroke.style?.size ?? 1) / 2;
+  const hitRadius = radiusWorld + halfWidth;
+
+  // Viewport prune
+  if (!this.isInBounds(stroke.bbox, visibleBounds)) continue;
+
+  // Inflated bbox test with stroke width
+  const inflatedBbox = this.inflateBbox(stroke.bbox, hitRadius);
+  if (!this.pointInBbox(worldX, worldY, inflatedBbox)) continue;
+
+  // Segment distance test with stroke width
+  if (this.strokeHitTest(worldX, worldY, stroke.points, hitRadius)) {
+    this.state.hitNow.add(stroke.id);
+  }
+  // ... rest
+}
+```
+
+### Fix 5: Add Resume Index for Performance
+
+```typescript
+// EraserTool.ts
+export class EraserTool {
+  private resumeIndex: number = 0;
+  private lastUpdateWorld: [number, number] | null = null;
+
+  private updateHitTest(worldX: number, worldY: number): void {
+    // Reset resume if pointer moved significantly
+    if (this.lastUpdateWorld) {
+      const dist = Math.hypot(worldX - this.lastUpdateWorld[0], worldY - this.lastUpdateWorld[1]);
+      if (dist > radiusWorld) {
+        this.resumeIndex = 0;
+      }
+    }
+    this.lastUpdateWorld = [worldX, worldY];
+
+    // Start from resume index
+    for (let i = this.resumeIndex; i < snapshot.strokes.length; i++) {
+      const stroke = snapshot.strokes[i];
+      // ... hit testing ...
+
+      if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
+        this.resumeIndex = i + 1; // Remember where to continue
+
+        // Schedule continuation
+        if (!this.rafId) {
+          this.rafId = requestAnimationFrame(() => {
+            this.updateHitTest(worldX, worldY); // Continue from resumeIndex
+            this.rafId = null;
+          });
+        }
+        return; // Don't reset resumeIndex yet
+      }
+    }
+
+    this.resumeIndex = 0; // Finished full scan
+    // ... test texts and update accumulator ...
+  }
+}
+```
+
+### Fix 6: Simple Spatial Index (Optional Performance Enhancement)
+
+```typescript
+// Create new file: client/src/lib/spatial/uniform-grid.ts
+export class UniformGrid<T> {
+  private cellSize: number;
+  private grid: Map<string, T[]> = new Map();
+
+  constructor(cellSize: number = 128) {
+    this.cellSize = cellSize;
+  }
+
+  private getKey(x: number, y: number): string {
+    const ix = Math.floor(x / this.cellSize);
+    const iy = Math.floor(y / this.cellSize);
+    return `${ix},${iy}`;
+  }
+
+  insert(item: T, bbox: [number, number, number, number]): void {
+    const [minX, minY, maxX, maxY] = bbox;
+    const minIx = Math.floor(minX / this.cellSize);
+    const minIy = Math.floor(minY / this.cellSize);
+    const maxIx = Math.floor(maxX / this.cellSize);
+    const maxIy = Math.floor(maxY / this.cellSize);
+
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      for (let iy = minIy; iy <= maxIy; iy++) {
+        const key = `${ix},${iy}`;
+        if (!this.grid.has(key)) {
+          this.grid.set(key, []);
+        }
+        this.grid.get(key)!.push(item);
+      }
+    }
+  }
+
+  query(cx: number, cy: number, radius: number): T[] {
+    const results = new Set<T>();
+    const minIx = Math.floor((cx - radius) / this.cellSize);
+    const minIy = Math.floor((cy - radius) / this.cellSize);
+    const maxIx = Math.floor((cx + radius) / this.cellSize);
+    const maxIy = Math.floor((cy + radius) / this.cellSize);
+
+    for (let ix = minIx; ix <= maxIx; ix++) {
+      for (let iy = minIy; iy <= maxIy; iy++) {
+        const key = `${ix},${iy}`;
+        const items = this.grid.get(key);
+        if (items) {
+          items.forEach((item) => results.add(item));
+        }
+      }
+    }
+
+    return Array.from(results);
+  }
+
+  clear(): void {
+    this.grid.clear();
+  }
+}
+```
+
+Then use in EraserTool:
+
+```typescript
+private spatialIndex: UniformGrid<StrokeView> | null = null;
+private indexedDocVersion: number = -1;
+
+private buildSpatialIndex(snapshot: Snapshot): void {
+  if (snapshot.docVersion === this.indexedDocVersion) return;
+
+  this.spatialIndex = new UniformGrid<StrokeView>(128);
+  for (const stroke of snapshot.strokes) {
+    const halfWidth = (stroke.style?.size ?? 1) / 2;
+    const inflatedBbox = this.inflateBbox(stroke.bbox, halfWidth);
+    this.spatialIndex.insert(stroke, inflatedBbox);
+  }
+  this.indexedDocVersion = snapshot.docVersion;
+}
+
+private updateHitTest(worldX: number, worldY: number): void {
+  const snapshot = this.room.currentSnapshot;
+  this.buildSpatialIndex(snapshot);
+
+  const candidates = this.spatialIndex?.query(worldX, worldY, radiusWorld) ?? snapshot.strokes;
+
+  for (const stroke of candidates) {
+    // ... hit test only candidates ...
+  }
+}
+```
+
+## Files to Modify
+
+1. `/client/src/lib/tools/EraserTool.ts` - Main fixes
+2. `/client/src/renderer/OverlayRenderLoop.ts` - setPreviewProvider fix
+3. `/client/src/renderer/layers/eraser-dim.ts` - Dimming improvements
+4. `/client/src/canvas/Canvas.tsx` - Pass getView, handle pointerLeave
+5. `/client/src/lib/spatial/uniform-grid.ts` - New file (optional)
+
 ### Architecture Overview
+
 Implement a whole-stroke eraser that follows the DrawingTool lifecycle pattern, uses the existing two-canvas overlay system, and commits deletions atomically for single-step undo. The tool integrates with the existing Canvas pointer event handling, ViewTransform system, and DirtyRectTracker for optimized rendering.
 
 ### Key Design Decisions
+
 - **Tool-local gating only**: `canBegin()` only checks `!isErasing` (tool-local state). Mobile and read-only gating handled by Canvas and mutate() respectively.
 - **Unified pointer interface**: Implement same method signatures as DrawingTool for polymorphic handling
 - **Preview union type**: Extend PreviewData as union of StrokePreview | EraserPreview with discriminant
@@ -20,16 +498,16 @@ import * as Y from 'yjs';
 
 // EraserSettings type from device-ui-store
 interface EraserSettings {
-  size: number;  // CSS pixels for cursor radius
+  size: number; // CSS pixels for cursor radius
 }
 
 interface EraserState {
   isErasing: boolean;
   pointerId: number | null;
-  radiusPx: number;           // CSS pixels from deviceUI
+  radiusPx: number; // CSS pixels from deviceUI
   lastWorld: [number, number] | null;
-  hitNow: Set<string>;        // IDs currently under cursor
-  hitAccum: Set<string>;      // IDs accumulated during drag
+  hitNow: Set<string>; // IDs currently under cursor
+  hitAccum: Set<string>; // IDs accumulated during drag
 }
 
 export class EraserTool {
@@ -47,7 +525,7 @@ export class EraserTool {
     settings: EraserSettings,
     userId: string,
     onInvalidate?: () => void,
-    getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number }
+    getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number },
   ) {
     this.room = room;
     this.settings = settings;
@@ -64,7 +542,7 @@ export class EraserTool {
       radiusPx: this.settings.size,
       lastWorld: null,
       hitNow: new Set(),
-      hitAccum: new Set()
+      hitAccum: new Set(),
     };
   }
 
@@ -94,7 +572,7 @@ export class EraserTool {
       radiusPx: this.settings.size,
       lastWorld: [worldX, worldY],
       hitNow: new Set(),
-      hitAccum: new Set()
+      hitAccum: new Set(),
     };
 
     this.updateHitTest(worldX, worldY);
@@ -215,12 +693,14 @@ export class EraserTool {
     px: number,
     py: number,
     points: ReadonlyArray<number>,
-    radius: number
+    radius: number,
   ): boolean {
     // Test each segment
     for (let i = 0; i < points.length - 2; i += 2) {
-      const x1 = points[i], y1 = points[i + 1];
-      const x2 = points[i + 2], y2 = points[i + 3];
+      const x1 = points[i],
+        y1 = points[i + 1];
+      const x2 = points[i + 2],
+        y2 = points[i + 3];
 
       const dist = this.pointToSegmentDistance(px, py, x1, y1, x2, y2);
       if (dist <= radius) return true;
@@ -229,11 +709,15 @@ export class EraserTool {
   }
 
   private pointToSegmentDistance(
-    px: number, py: number,
-    x1: number, y1: number,
-    x2: number, y2: number
+    px: number,
+    py: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
   ): number {
-    const dx = x2 - x1, dy = y2 - y1;
+    const dx = x2 - x1,
+      dy = y2 - y1;
 
     // Handle degenerate segment
     if (dx === 0 && dy === 0) {
@@ -241,9 +725,7 @@ export class EraserTool {
     }
 
     // Project point onto segment
-    const t = Math.max(0, Math.min(1,
-      ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
-    ));
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
 
     const projX = x1 + t * dx;
     const projY = y1 + t * dy;
@@ -288,12 +770,12 @@ export class EraserTool {
 
       // Get indices and sort descending (reverse order)
       const strokeIndices = Array.from(this.state.hitAccum)
-        .map(id => strokeIdToIndex.get(id))
+        .map((id) => strokeIdToIndex.get(id))
         .filter((idx): idx is number => idx !== undefined)
         .sort((a, b) => b - a);
 
       const textIndices = Array.from(this.state.hitAccum)
-        .map(id => textIdToIndex.get(id))
+        .map((id) => textIdToIndex.get(id))
         .filter((idx): idx is number => idx !== undefined)
         .sort((a, b) => b - a);
 
@@ -320,10 +802,10 @@ export class EraserTool {
       circle: {
         cx: this.state.lastWorld[0], // World coords, transformed by overlay
         cy: this.state.lastWorld[1],
-        r_px: this.state.radiusPx   // Screen pixels, fixed size
+        r_px: this.state.radiusPx, // Screen pixels, fixed size
       },
       hitIds: Array.from(allHits),
-      dimOpacity: 0.35
+      dimOpacity: 0.35,
     };
   }
 
@@ -346,36 +828,30 @@ export class EraserTool {
       minX: minWorldX - marginWorld,
       minY: minWorldY - marginWorld,
       maxX: maxWorldX + marginWorld,
-      maxY: maxWorldY + marginWorld
+      maxY: maxWorldY + marginWorld,
     };
   }
 
-  private isInBounds(bbox: number[] | [number, number, number, number], bounds: WorldBounds): boolean {
+  private isInBounds(
+    bbox: number[] | [number, number, number, number],
+    bounds: WorldBounds,
+  ): boolean {
     return !(
       bbox[2] < bounds.minX || // bbox right < viewport left
       bbox[0] > bounds.maxX || // bbox left > viewport right
       bbox[3] < bounds.minY || // bbox bottom < viewport top
-      bbox[1] > bounds.maxY    // bbox top > viewport bottom
+      bbox[1] > bounds.maxY // bbox top > viewport bottom
     );
   }
 
   private inflateBbox(
     bbox: number[] | [number, number, number, number],
-    radius: number
+    radius: number,
   ): [number, number, number, number] {
-    return [
-      bbox[0] - radius,
-      bbox[1] - radius,
-      bbox[2] + radius,
-      bbox[3] + radius
-    ];
+    return [bbox[0] - radius, bbox[1] - radius, bbox[2] + radius, bbox[3] + radius];
   }
 
-  private pointInBbox(
-    px: number,
-    py: number,
-    bbox: [number, number, number, number]
-  ): boolean {
+  private pointInBbox(px: number, py: number, bbox: [number, number, number, number]): boolean {
     return px >= bbox[0] && px <= bbox[2] && py >= bbox[1] && py <= bbox[3];
   }
 }
@@ -394,6 +870,7 @@ interface WorldBounds {
 **File:** `/client/src/lib/tools/types.ts`
 
 **Critical Changes:**
+
 1. Rename existing `PreviewData` interface to `StrokePreview`
 2. Add `kind: 'stroke'` discriminant to StrokePreview
 3. Create union type for PreviewData
@@ -402,7 +879,7 @@ interface WorldBounds {
 ```typescript
 // RENAME existing PreviewData to StrokePreview and add discriminant
 export interface StrokePreview {
-  kind: 'stroke';  // ADD THIS DISCRIMINANT
+  kind: 'stroke'; // ADD THIS DISCRIMINANT
   points: ReadonlyArray<number>; // [x,y, x,y, ...] in world coordinates
   tool: 'pen' | 'highlighter';
   color: string;
@@ -425,6 +902,7 @@ export type PreviewData = StrokePreview | EraserPreview;
 ```
 
 **Also update DrawingTool.getPreview()** in `/client/src/lib/tools/DrawingTool.ts`:
+
 ```typescript
 getPreview(): PreviewData | null {
   if (!this.state.isDrawing) return null;
@@ -503,6 +981,7 @@ private frame() {
 ```
 
 **Also need to add getSnapshot callback** to OverlayLoopConfig:
+
 ```typescript
 export interface OverlayLoopConfig {
   // ... existing properties ...
@@ -524,7 +1003,7 @@ export function drawDimmedStrokes(
   ctx: CanvasRenderingContext2D,
   hitIds: string[],
   snapshot: Snapshot,
-  baseOpacity: number
+  baseOpacity: number,
 ): void {
   const hitSet = new Set(hitIds);
   const cache = getStrokeCacheInstance();
@@ -539,9 +1018,10 @@ export function drawDimmedStrokes(
     if (!renderData.path || renderData.pointCount < 2) continue;
 
     // Adaptive opacity for highlighters
-    const opacity = stroke.style.tool === 'highlighter'
-      ? Math.max(0.15, baseOpacity * 0.6)  // Lighter for already-transparent
-      : baseOpacity;
+    const opacity =
+      stroke.style.tool === 'highlighter'
+        ? Math.max(0.15, baseOpacity * 0.6) // Lighter for already-transparent
+        : baseOpacity;
 
     ctx.globalAlpha = opacity;
     ctx.strokeStyle = stroke.style.color;
@@ -570,6 +1050,7 @@ export function drawDimmedStrokes(
 **File:** `/client/src/canvas/Canvas.tsx`
 
 **Key Changes:**
+
 1. Create a unified `PointerTool` type that both DrawingTool and EraserTool implement
 2. Branch only once during tool construction, not in event handlers
 3. Pass `getViewport` callback to EraserTool for hit-test pruning
@@ -588,8 +1069,8 @@ useEffect(() => {
   // ... existing guard checks ...
 
   // Mobile detection (Canvas handles this, not tools)
-  const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    || navigator.maxTouchPoints > 1;
+  const isMobile =
+    /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
   // Create appropriate tool based on activeTool (branch ONCE here)
   let tool: PointerTool | null = null;
@@ -598,7 +1079,7 @@ useEffect(() => {
     // Pass deviceUI.eraser directly (no adapter needed)
     tool = new EraserTool(
       roomDoc,
-      deviceUI.eraser,  // Direct from store, no adapter
+      deviceUI.eraser, // Direct from store, no adapter
       userId,
       () => overlayLoopRef.current?.invalidateAll(),
       // Pass viewport callback for hit-test pruning
@@ -608,11 +1089,11 @@ useEffect(() => {
           return {
             cssWidth: size.cssWidth,
             cssHeight: size.cssHeight,
-            dpr: size.dpr
+            dpr: size.dpr,
           };
         }
         return { cssWidth: 1, cssHeight: 1, dpr: 1 };
-      }
+      },
     );
   } else if (activeTool === 'pen' || activeTool === 'highlighter') {
     // Use adapter only for DrawingTool
@@ -620,14 +1101,11 @@ useEffect(() => {
       tool: activeTool,
       color: activeTool === 'pen' ? pen.color : highlighter.color,
       size: activeTool === 'pen' ? pen.size : highlighter.size,
-      opacity: activeTool === 'pen' ? (pen.opacity || 1) : highlighter.opacity
+      opacity: activeTool === 'pen' ? pen.opacity || 1 : highlighter.opacity,
     });
 
-    tool = new DrawingTool(
-      roomDoc,
-      adaptedUI,
-      userId,
-      () => overlayLoopRef.current?.invalidateAll()
+    tool = new DrawingTool(roomDoc, adaptedUI, userId, () =>
+      overlayLoopRef.current?.invalidateAll(),
     );
   } else {
     return; // Unsupported tool
@@ -636,7 +1114,7 @@ useEffect(() => {
   // Set preview provider (both tools implement getPreview())
   if (!isMobile && overlayLoopRef.current) {
     overlayLoopRef.current.setPreviewProvider({
-      getPreview: () => tool?.getPreview() || null
+      getPreview: () => tool?.getPreview() || null,
     });
   }
 
@@ -713,11 +1191,11 @@ useEffect(() => {
     overlayLoopRef.current?.setPreviewProvider(null);
     // ... remove listeners ...
   };
-
 }, [roomDoc, userId, activeTool, deviceUI, pen, highlighter, stageReady, screenToWorld]);
 ```
 
 **Critical Notes:**
+
 - Mobile gating happens in Canvas, not tools
 - `toolbarToDeviceUI` adapter used ONLY for DrawingTool, not eraser
 - All pointer handlers are tool-agnostic after construction
@@ -741,69 +1219,3 @@ export function getStrokeCacheInstance(): StrokeRenderCache {
 // Update strokes.ts to use shared instance
 // const strokeCache = getStrokeCacheInstance();
 ```
-
-### Implementation Checklist
-
-1. **Types & Interfaces**
-   - [ ] Rename `PreviewData` → `StrokePreview` and add `kind: 'stroke'` in types.ts
-   - [ ] Add `EraserPreview` interface with `kind: 'eraser'`
-   - [ ] Create union type `PreviewData = StrokePreview | EraserPreview`
-   - [ ] Update DrawingTool.getPreview() to return `{ kind: 'stroke', ... }`
-
-2. **Tool Implementation**
-   - [ ] Create EraserTool.ts with unified PointerTool methods
-   - [ ] Only check `!isErasing` in canBegin() (no mobile/read-only)
-   - [ ] Accept getViewport callback for hit-test pruning
-   - [ ] Export helper methods to separate hit-test.ts if reusable
-
-3. **Canvas Integration**
-   - [ ] Import both DrawingTool and EraserTool
-   - [ ] Branch only once during tool construction
-   - [ ] Pass deviceUI.eraser directly (no adapter)
-   - [ ] Pass viewport callback to EraserTool
-   - [ ] Use unified pointer handlers (no tool branching)
-   - [ ] Handle mobile gating in Canvas, not tools
-
-4. **Overlay Rendering**
-   - [ ] Update frame() to check preview.kind discriminant
-   - [ ] Import drawDimmedStrokes for eraser Pass A
-   - [ ] Add getSnapshot to OverlayLoopConfig
-   - [ ] Ensure setTransform(dpr,0,0,dpr,0,0) for cursor circle
-
-5. **Stroke Cache**
-   - [ ] Export getStrokeCacheInstance() singleton
-   - [ ] Update strokes.ts to use shared instance
-   - [ ] Use same cache in eraser-dim.ts
-
-6. **DrawingTool Updates**
-   - [ ] Add `begin()`, `end()`, `cancel()`, `isActive()` methods for interface compatibility
-   - [ ] Return `{ kind: 'stroke', ... }` from getPreview()
-
-### Key Implementation Notes
-
-1. **Coordinate Consistency**:
-   - Cursor: screen-space circle (fixed CSS pixels, drawn after DPR transform)
-   - Hit-testing: world-space using `radiusWorld = radiusPx / scale`
-   - Dimming: world-space rendering of hit strokes
-
-2. **Performance Budget**:
-   - RAF-coalesce pointer moves
-   - Cap hit-testing to ~6ms or ~100 segments per frame
-   - Defer remaining work to next frame
-   - Skip LOD strokes (<2px screen diagonal)
-
-3. **Atomic Operations**:
-   - Single mutate() = single undo step
-   - Build id→index maps, delete in reverse order
-   - Handle both strokes and texts in one transaction
-
-4. **Gating Philosophy**:
-   - Tools only check tool-local state (e.g., !isDrawing)
-   - Canvas handles mobile detection
-   - mutate() enforces read-only limits
-   - No duplicate gating across layers
-
-5. **Preview Rendering**:
-   - Pass A: World-space dimming with shared cache
-   - Pass B: Screen-space cursor after setTransform(dpr,0,0,dpr,0,0)
-   - holdPreviewForOneFrame() prevents commit flicker

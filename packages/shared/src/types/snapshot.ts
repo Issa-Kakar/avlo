@@ -2,6 +2,13 @@ import { SceneIdx, StrokeId, TextId } from './identifiers';
 import { PresenceView } from './awareness';
 import { ROOM_CONFIG } from '../config';
 
+// Forward declare the SpatialIndex interface
+export interface SpatialIndex {
+  queryCircle(cx: number, cy: number, radius: number): ReadonlyArray<StrokeView>;
+  queryRect(minX: number, minY: number, maxX: number, maxY: number): ReadonlyArray<StrokeView>;
+  getAllStrokes(): ReadonlyArray<StrokeView>;
+}
+
 // Immutable snapshot - NEVER null
 export interface Snapshot {
   docVersion: number; // Incremental version, replaces svKey
@@ -9,7 +16,7 @@ export interface Snapshot {
   strokes: ReadonlyArray<StrokeView>;
   texts: ReadonlyArray<TextView>;
   presence: PresenceView; // Derived + smoothed presence
-  spatialIndex: null; // Deferred, dormant field but deferred
+  spatialIndex: SpatialIndex | null; // Spatial index for efficient hit-testing
   view: ViewTransform; // World-to-canvas transform
   meta: SnapshotMeta;
   createdAt: number; // ms epoch when snapshot was frozen

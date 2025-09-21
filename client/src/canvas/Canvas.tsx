@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
+import React, { useRef, useCallback, useState, useEffect, useLayoutEffect } from 'react';
 import { createEmptySnapshot } from '@avlo/shared';
 import type { RoomId, Snapshot, ViewTransform } from '@avlo/shared';
 import { ulid } from 'ulid';
@@ -11,7 +11,6 @@ import type { ViewportInfo } from '../renderer/types';
 import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
-import type { DeviceUIState } from '@/lib/tools/types';
 import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 
@@ -157,23 +156,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
   // Phase 9: Updated to use new store structure
   const { activeTool, pen, highlighter, eraser } = useDeviceUIStore();
-
-  // Create a compatible toolbar object for the existing toolbarToDeviceUI function
-  const toolbar = useMemo(() => {
-    const currentSettings = activeTool === 'pen' ? pen : highlighter;
-    return {
-      tool: activeTool === 'pen' || activeTool === 'highlighter' ? activeTool : 'pen',
-      color: currentSettings.color,
-      size: currentSettings.size,
-      opacity: currentSettings.opacity || 1,
-    };
-  }, [activeTool, pen, highlighter]);
-
-  const deviceUI: DeviceUIState = useMemo(
-    () => toolbarToDeviceUI(toolbar),
-    // Re-create deviceUI when any toolbar property changes
-    [toolbar.tool, toolbar.color, toolbar.size, toolbar.opacity],
-  );
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref
@@ -490,7 +472,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Pass deviceUI.eraser directly (no adapter needed)
       tool = new EraserTool(
         roomDoc,
-        eraser,  // Direct from store, no adapter
+        eraser, // Direct from store, no adapter
         userId,
         () => overlayLoopRef.current?.invalidateAll(),
         // Pass viewport callback for hit-test pruning
@@ -500,11 +482,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
             return {
               cssWidth: size.cssWidth,
               cssHeight: size.cssHeight,
-              dpr: size.dpr
+              dpr: size.dpr,
             };
           }
           return { cssWidth: 1, cssHeight: 1, dpr: 1 };
-        }
+        },
+        // Pass live view transform for accurate hit-testing
+        () => viewTransformRef.current,
       );
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
       // Use adapter only for DrawingTool
@@ -512,19 +496,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         tool: activeTool,
         color: activeTool === 'pen' ? pen.color : highlighter.color,
         size: activeTool === 'pen' ? pen.size : highlighter.size,
-        opacity: activeTool === 'pen' ? (pen.opacity || 1) : (highlighter.opacity || 0.25)
+        opacity: activeTool === 'pen' ? pen.opacity || 1 : highlighter.opacity || 0.25,
       });
 
-      tool = new DrawingTool(
-        roomDoc,
-        adaptedUI,
-        userId,
-        (_bounds) => {
-          // During drawing, invalidate overlay (preview is there)
-          // The overlay will full-clear anyway, but this triggers a frame
-          overlayLoopRef.current?.invalidateAll();
-        },
-      );
+      tool = new DrawingTool(roomDoc, adaptedUI, userId, (_bounds) => {
+        // During drawing, invalidate overlay (preview is there)
+        // The overlay will full-clear anyway, but this triggers a frame
+        overlayLoopRef.current?.invalidateAll();
+      });
     } else {
       return; // Unsupported tool
     }
@@ -578,7 +557,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       try {
         canvas.releasePointerCapture(e.pointerId);
-      } catch {}
+      } catch {
+        // Pointer capture may already be released, ignore
+      }
 
       const worldCoords = screenToWorld(e.clientX, e.clientY);
       tool.end(worldCoords?.[0], worldCoords?.[1]);
@@ -590,7 +571,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       try {
         canvas.releasePointerCapture(e.pointerId);
-      } catch {}
+      } catch {
+        // Pointer capture may already be released, ignore
+      }
 
       tool?.cancel();
       roomDoc.updateActivity('idle');
@@ -604,6 +587,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const handlePointerLeave = () => {
       // Clear cursor when pointer leaves canvas
       roomDoc.updateCursor(undefined, undefined);
+
+      // Clear tool hover state if it has the method
+      if (tool && 'clearHover' in tool) {
+        (tool as any).clearHover();
+      }
     };
 
     // Set canvas styles (conditional for mobile)
@@ -632,7 +620,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       if (pointerId !== null) {
         try {
           canvas.releasePointerCapture(pointerId);
-        } catch {}
+        } catch {
+          // Pointer capture may already be released, ignore
+        }
       }
       tool?.cancel();
       tool?.destroy();

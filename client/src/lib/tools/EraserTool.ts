@@ -1,18 +1,19 @@
 import type { IRoomDocManager } from '../room-doc-manager';
+import type { StrokeView } from '@avlo/shared';
 import * as Y from 'yjs';
 
 // EraserSettings type from device-ui-store
 interface EraserSettings {
-  size: number;  // CSS pixels for cursor radius
+  size: number; // CSS pixels for cursor radius
 }
 
 interface EraserState {
   isErasing: boolean;
   pointerId: number | null;
-  radiusPx: number;           // CSS pixels from deviceUI
+  radiusPx: number; // CSS pixels from deviceUI
   lastWorld: [number, number] | null;
-  hitNow: Set<string>;        // IDs currently under cursor
-  hitAccum: Set<string>;      // IDs accumulated during drag
+  hitNow: Set<string>; // IDs currently under cursor
+  hitAccum: Set<string>; // IDs accumulated during drag
 }
 
 export class EraserTool {
@@ -24,19 +25,26 @@ export class EraserTool {
   private pendingMove: [number, number] | null = null;
   private onInvalidate?: () => void;
   private getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number };
+  private getView?: () => ViewTransform;
+
+  // Performance optimization: track which strokes we've already tested
+  private resumeIndex: number = 0;
+  private lastProcessedPosition: [number, number] | null = null;
 
   constructor(
     room: IRoomDocManager,
     settings: EraserSettings,
     userId: string,
     onInvalidate?: () => void,
-    getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number }
+    getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number },
+    getView?: () => ViewTransform,
   ) {
     this.room = room;
     this.settings = settings;
     this.userId = userId;
     this.onInvalidate = onInvalidate;
     this.getViewport = getViewport;
+    this.getView = getView;
     this.resetState();
   }
 
@@ -47,8 +55,11 @@ export class EraserTool {
       radiusPx: this.settings.size,
       lastWorld: null,
       hitNow: new Set(),
-      hitAccum: new Set()
+      hitAccum: new Set(),
     };
+    // Also reset performance tracking
+    this.resumeIndex = 0;
+    this.lastProcessedPosition = null;
   }
 
   // PointerTool interface compatibility - same signature as DrawingTool
@@ -77,7 +88,7 @@ export class EraserTool {
       radiusPx: this.settings.size,
       lastWorld: [worldX, worldY],
       hitNow: new Set(),
-      hitAccum: new Set()
+      hitAccum: new Set(),
     };
 
     this.updateHitTest(worldX, worldY);
@@ -100,7 +111,7 @@ export class EraserTool {
   }
 
   // PointerTool interface methods for polymorphic handling
-  end(worldX?: number, worldY?: number): void {
+  end(_worldX?: number, _worldY?: number): void {
     // Eraser doesn't use final coordinates, just commit
     this.commitErase();
   }
@@ -123,6 +134,7 @@ export class EraserTool {
       this.rafId = null;
     }
     this.resetState();
+    this.onInvalidate?.(); // Clear any preview
   }
 
   // Compatibility alias
@@ -130,9 +142,24 @@ export class EraserTool {
     return this.state.isErasing;
   }
 
+  // Clear hover state when pointer leaves canvas
+  clearHover(): void {
+    this.pendingMove = null;
+    this.state.lastWorld = null;
+    this.state.hitNow.clear();
+    if (!this.state.isErasing) {
+      this.state.hitAccum.clear();
+    }
+    // Reset performance tracking
+    this.resumeIndex = 0;
+    this.lastProcessedPosition = null;
+    this.onInvalidate?.();
+  }
+
   private updateHitTest(worldX: number, worldY: number): void {
     const snapshot = this.room.currentSnapshot;
-    const viewTransform = snapshot.view;
+    // USE LIVE VIEW, FALLBACK TO SNAPSHOT IF NOT PROVIDED
+    const viewTransform = this.getView ? this.getView() : snapshot.view;
 
     // Convert radius to world units
     const radiusWorld = this.state.radiusPx / viewTransform.scale;
@@ -140,8 +167,25 @@ export class EraserTool {
     // Get visible bounds for pruning
     const visibleBounds = this.getVisibleWorldBounds(viewTransform);
 
-    // Clear and rebuild hitNow
-    this.state.hitNow.clear();
+    // Check if position moved significantly - if so, reset resume index
+    if (this.lastProcessedPosition) {
+      const dist = Math.hypot(
+        worldX - this.lastProcessedPosition[0],
+        worldY - this.lastProcessedPosition[1],
+      );
+      if (dist > radiusWorld * 0.5) {
+        // Moved significantly, restart from beginning
+        this.resumeIndex = 0;
+      }
+    } else {
+      this.resumeIndex = 0;
+    }
+    this.lastProcessedPosition = [worldX, worldY];
+
+    // Clear hitNow only if we're starting fresh
+    if (this.resumeIndex === 0) {
+      this.state.hitNow.clear();
+    }
 
     // Performance budget tracking (higher limits since we have RAF coalescing)
     const startTime = performance.now();
@@ -149,31 +193,64 @@ export class EraserTool {
     let segmentCount = 0;
     const MAX_SEGMENTS = 500; // Increased from 100
 
-    // Test strokes
-    for (const stroke of snapshot.strokes) {
-      // Viewport prune
+    // Get candidate strokes from spatial index if available
+    let candidateStrokes: ReadonlyArray<StrokeView>;
+    if (snapshot.spatialIndex) {
+      // Use spatial index for efficient querying
+      candidateStrokes = snapshot.spatialIndex.queryCircle(
+        worldX,
+        worldY,
+        radiusWorld + 32, // Add max stroke width as buffer
+      );
+    } else {
+      // Fallback to all strokes
+      candidateStrokes = snapshot.strokes;
+    }
+
+    // Test strokes starting from resume index
+    for (let i = this.resumeIndex; i < candidateStrokes.length; i++) {
+      const stroke = candidateStrokes[i];
+
+      // Include stroke half-width
+      const halfWidth = (stroke.style?.size ?? 1) / 2;
+      const hitRadius = radiusWorld + halfWidth;
+
+      // Viewport prune (still useful even with spatial index)
       if (!this.isInBounds(stroke.bbox, visibleBounds)) continue;
 
-      // Inflated bbox test
-      const inflatedBbox = this.inflateBbox(stroke.bbox, radiusWorld);
+      // Inflated bbox test with stroke width
+      const inflatedBbox = this.inflateBbox(stroke.bbox, hitRadius);
       if (!this.pointInBbox(worldX, worldY, inflatedBbox)) continue;
 
-      // Segment distance test
-      if (this.strokeHitTest(worldX, worldY, stroke.points, radiusWorld)) {
+      // Segment distance test with stroke width
+      if (this.strokeHitTest(worldX, worldY, stroke.points, hitRadius)) {
         this.state.hitNow.add(stroke.id);
       }
 
       // Count actual segments (points - 1), not points
-      segmentCount += Math.max(0, (stroke.points.length / 2) - 1);
+      segmentCount += Math.max(0, stroke.points.length / 2 - 1);
 
-      // Only break if we're really taking too long
-      // Since we RAF-coalesce moves, we can afford slightly longer processing
+      // Check if we've exceeded our performance budget
       if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
-        // Optional: could store resume index for next frame
-        // For now, just continue until reasonable limits
-        break;
+        // Store where to resume next frame
+        this.resumeIndex = i + 1;
+
+        // Schedule continuation if we haven't finished
+        if (this.resumeIndex < candidateStrokes.length && !this.rafId) {
+          this.rafId = requestAnimationFrame(() => {
+            this.rafId = null;
+            // Continue from where we left off
+            this.updateHitTest(worldX, worldY);
+          });
+        }
+
+        // Early return to yield control
+        return;
       }
     }
+
+    // Finished all strokes, reset resume index
+    this.resumeIndex = 0;
 
     // Test text blocks (simple bbox intersection)
     for (const text of snapshot.texts) {
@@ -201,12 +278,14 @@ export class EraserTool {
     px: number,
     py: number,
     points: ReadonlyArray<number>,
-    radius: number
+    radius: number,
   ): boolean {
     // Test each segment
     for (let i = 0; i < points.length - 2; i += 2) {
-      const x1 = points[i], y1 = points[i + 1];
-      const x2 = points[i + 2], y2 = points[i + 3];
+      const x1 = points[i],
+        y1 = points[i + 1];
+      const x2 = points[i + 2],
+        y2 = points[i + 3];
 
       const dist = this.pointToSegmentDistance(px, py, x1, y1, x2, y2);
       if (dist <= radius) return true;
@@ -215,11 +294,15 @@ export class EraserTool {
   }
 
   private pointToSegmentDistance(
-    px: number, py: number,
-    x1: number, y1: number,
-    x2: number, y2: number
+    px: number,
+    py: number,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
   ): number {
-    const dx = x2 - x1, dy = y2 - y1;
+    const dx = x2 - x1,
+      dy = y2 - y1;
 
     // Handle degenerate segment
     if (dx === 0 && dy === 0) {
@@ -227,9 +310,7 @@ export class EraserTool {
     }
 
     // Project point onto segment
-    const t = Math.max(0, Math.min(1,
-      ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
-    ));
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
 
     const projX = x1 + t * dx;
     const projY = y1 + t * dy;
@@ -274,12 +355,12 @@ export class EraserTool {
 
       // Get indices and sort descending (reverse order)
       const strokeIndices = Array.from(this.state.hitAccum)
-        .map(id => strokeIdToIndex.get(id))
+        .map((id) => strokeIdToIndex.get(id))
         .filter((idx): idx is number => idx !== undefined)
         .sort((a, b) => b - a);
 
       const textIndices = Array.from(this.state.hitAccum)
-        .map(id => textIdToIndex.get(id))
+        .map((id) => textIdToIndex.get(id))
         .filter((idx): idx is number => idx !== undefined)
         .sort((a, b) => b - a);
 
@@ -293,6 +374,7 @@ export class EraserTool {
     });
 
     this.resetState();
+    this.onInvalidate?.(); // Clear preview after committing
   }
 
   getPreview(): EraserPreview | null {
@@ -306,10 +388,10 @@ export class EraserTool {
       circle: {
         cx: this.state.lastWorld[0], // World coords, transformed by overlay
         cy: this.state.lastWorld[1],
-        r_px: this.state.radiusPx   // Screen pixels, fixed size
+        r_px: this.state.radiusPx, // Screen pixels, fixed size
       },
       hitIds: Array.from(allHits),
-      dimOpacity: 0.35
+      dimOpacity: 0.6, // INCREASE FROM 0.35
     };
   }
 
@@ -332,36 +414,30 @@ export class EraserTool {
       minX: minWorldX - marginWorld,
       minY: minWorldY - marginWorld,
       maxX: maxWorldX + marginWorld,
-      maxY: maxWorldY + marginWorld
+      maxY: maxWorldY + marginWorld,
     };
   }
 
-  private isInBounds(bbox: number[] | [number, number, number, number], bounds: WorldBounds): boolean {
+  private isInBounds(
+    bbox: number[] | [number, number, number, number],
+    bounds: WorldBounds,
+  ): boolean {
     return !(
       bbox[2] < bounds.minX || // bbox right < viewport left
       bbox[0] > bounds.maxX || // bbox left > viewport right
       bbox[3] < bounds.minY || // bbox bottom < viewport top
-      bbox[1] > bounds.maxY    // bbox top > viewport bottom
+      bbox[1] > bounds.maxY // bbox top > viewport bottom
     );
   }
 
   private inflateBbox(
     bbox: number[] | [number, number, number, number],
-    radius: number
+    radius: number,
   ): [number, number, number, number] {
-    return [
-      bbox[0] - radius,
-      bbox[1] - radius,
-      bbox[2] + radius,
-      bbox[3] + radius
-    ];
+    return [bbox[0] - radius, bbox[1] - radius, bbox[2] + radius, bbox[3] + radius];
   }
 
-  private pointInBbox(
-    px: number,
-    py: number,
-    bbox: [number, number, number, number]
-  ): boolean {
+  private pointInBbox(px: number, py: number, bbox: [number, number, number, number]): boolean {
     return px >= bbox[0] && px <= bbox[2] && py >= bbox[1] && py <= bbox[3];
   }
 }
