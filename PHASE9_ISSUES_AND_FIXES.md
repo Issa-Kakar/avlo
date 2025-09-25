@@ -211,190 +211,130 @@ updateConfig(newConfig: TextToolConfig): void {
 
 ### Root Cause
 
-When the text size slider changes, it updates the `text` prop in the Zustand store, which triggers a complete re-run of the Canvas useEffect. This destroys and recreates the TextTool instance, but the old DOM editor element is still attached to a parent that gets replaced, causing the "node is no longer a child" error.
+When the text size slider changes while editing, the `text` prop change triggers Canvas useEffect to recreate the TextTool, causing DOM removal errors.
 
-### The Problem Flow:
+### Implementation Fix
 
-1. User places text → DOM editor created and attached to `editorHostRef`
-2. User moves size slider → `text` prop changes
-3. Canvas useEffect re-runs → tool destroyed → `tool.destroy()` called
-4. `closeEditor()` tries to call `this.state.editBox.remove()`
-5. But `editorHostRef` has been replaced, so the element is orphaned
-6. **Error**: "The node to be removed is no longer a child of this node"
-
-### Fix Approach 1: Guard the DOM Removal
+#### 1. Canvas.tsx - Prevent tool recreation during text editing
 
 ```typescript
-// File: /client/src/lib/tools/TextTool.ts
-// Lines 172-187 - Add safety check for DOM removal
-private closeEditor(commit: boolean): void {
-  if (!this.state.editBox) return;
-
-  if (commit) {
-    this.commitText();
-  }
-
-  // FIXED: Check if element is still in DOM before removing
-  if (this.state.editBox.parentNode) {
-    this.state.editBox.remove();
-  }
-
-  this.state.editBox = null;
-  this.state.isEditing = false;
-  this.state.content = '';
-  this.state.worldPosition = null;
-
-  this.room.updateActivity('idle');
-  this.onInvalidate?.();
-}
-```
-
-### Fix Approach 2: Prevent Tool Recreation (Better Solution)
-
-Don't include `text` config in the Canvas useEffect dependencies if the tool is active:
-
-```typescript
-// File: /client/src/canvas/Canvas.tsx
-// Lines 443-662 - Modify the useEffect to not recreate tool on config change
+// Add at beginning of useEffect (line 444)
 useEffect(() => {
-  // Skip recreation if text tool is active and editing
-  if (toolRef.current?.isActive() && activeTool === 'text') {
-    // Update config without recreating tool
-    if ('updateConfig' in toolRef.current) {
-      (toolRef.current as any).updateConfig(text);
+  // Special handling for text tool config changes during editing
+  // If text tool is actively editing, just update config without recreation
+  if (activeTool === 'text' && toolRef.current?.isActive()) {
+    const textTool = toolRef.current as any;
+    if ('updateConfig' in textTool) {
+      textTool.updateConfig(text);
+      return; // Skip recreation, just update config
     }
-    return;
   }
-
   // ... rest of existing effect logic
-}, [
-  roomDoc,
-  userId,
-  activeTool,
-  pen,
-  highlighter,
-  eraser,
-  // Remove text from deps or handle specially
-  stageReady,
-  screenToWorld,
-  worldToClient,
-]);
 ```
 
-And add config update method to TextTool:
-
-```typescript
-// File: /client/src/lib/tools/TextTool.ts
-// Add method to update config without recreation
-updateConfig(newConfig: TextToolConfig): void {
-  this.config = newConfig;
-
-  // Update live editor if it exists
-  if (this.state.editBox) {
-    this.state.editBox.style.fontSize = `${newConfig.size}px`;
-    this.state.editBox.style.color = newConfig.color;
-  }
-}
-```
+This leverages the existing `updateConfig()` method in TextTool to update colors/sizes without destroying the DOM editor.
 
 ---
 
-## Issue 4: UI/UX Improvements
+## Issue 4: UI/UX Improvements - Reuse ColorSizeDock for Text Tool
 
-### Current Problems:
+### Implementation Fix
 
-1. Text tool has its own size/color UI in ToolPanel that shows while editing
-2. Stamp tool settings are always visible
-3. ColorSizeDock only works for pen/highlighter
-4. Inconsistent UX between tools
-
-### Proposed Solution: Unified Tool Settings
-
-Extend the existing ColorSizeDock to handle ALL drawing tools:
+#### 1. ColorSizeDock.tsx - Add text tool support with dynamic range
 
 ```typescript
-// File: /client/src/pages/components/ColorSizeDock.tsx
-// Lines 90-99 - Extend to support text tool
-export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
-  const {
-    activeTool,
-    pen,
-    highlighter,
-    text,
-    setPenSettings,
-    setHighlighterSettings,
-    setTextSettings
-  } = useDeviceUIStore();
+// Update imports and state destructuring
+const {
+  activeTool,
+  pen,
+  highlighter,
+  text,
+  isTextEditing,  // NEW: track if text editor is active
+  setPenSettings,
+  setHighlighterSettings,
+  setTextSettings,  // NEW: text setter
+} = useDeviceUIStore();
 
-  // Show dock for pen, highlighter, AND text (before placement)
-  const showDock = activeTool === 'pen' ||
-                   activeTool === 'highlighter' ||
-                   activeTool === 'text';
+// Show dock for pen/highlighter/text, but hide when text is being edited
+const showDock = (activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'text') && !isTextEditing;
 
-  // Determine current settings based on active tool
-  const currentSettings = useMemo(() => {
-    switch(activeTool) {
-      case 'pen': return pen;
-      case 'highlighter': return highlighter;
-      case 'text': return {
-        color: text.color,
-        size: text.size,
-        opacity: 1
-      };
-      default: return pen;
-    }
-  }, [activeTool, pen, highlighter, text]);
+// Get current settings based on active tool
+const currentSettings = useMemo(() => {
+  if (activeTool === 'pen') return pen;
+  if (activeTool === 'highlighter') return highlighter;
+  if (activeTool === 'text') return { color: text.color, size: text.size, opacity: 1 };
+  return pen; // fallback
+}, [activeTool, pen, highlighter, text]);
 
-  // Adjust size range based on tool
-  const sizeRange = useMemo(() => {
-    if (activeTool === 'text') {
-      return { min: 10, max: 48 }; // Text needs larger range
-    }
-    return { min: 1, max: 20 }; // Pen/highlighter range
-  }, [activeTool]);
+// Adjust size range based on tool
+const sizeRange = useMemo(() => {
+  if (activeTool === 'text') {
+    return { min: 10, max: 48 };
+  }
+  return { min: 1, max: 20 };
+}, [activeTool]);
 
-  // ... rest of component with updated handlers
-
-  const handleSizeChange = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      const size = parseInt(event.target.value, 10);
-
-      if (activeTool === 'pen') {
-        setPenSettings({ size });
-      } else if (activeTool === 'highlighter') {
-        setHighlighterSettings({ size });
-      } else if (activeTool === 'text') {
-        setTextSettings({ size });
-      }
-
-      handleInteraction();
-    },
-    [activeTool, setPenSettings, setHighlighterSettings, setTextSettings, handleInteraction]
-  );
-
-  // Similar update for color handler...
-```
-
-### Remove Text Settings from ToolPanel
-
-```typescript
-// File: /client/src/pages/components/ToolPanel.tsx
-// Lines 302-336 - Remove the text settings section entirely
-// Delete the entire {activeTool === 'text' && ( ... )} block
-```
-
-### Hide ColorSizeDock When Text Editor is Active
-
-```typescript
-// File: /client/src/pages/components/ColorSizeDock.tsx
-// Add check for active text editing
-const textToolActive = activeTool === 'text' &&
-                       /* need way to check if editing */;
-
-if (!showDock || textToolActive) {
-  return null;
+// Update color handler to include text
+if (activeTool === 'text') {
+  setTextSettings({ color: newColor });
 }
+
+// Update size handler to include text
+if (activeTool === 'text') {
+  setTextSettings({ size });
+}
+
+// Update size input to use dynamic range
+<input
+  type="range"
+  min={sizeRange.min}
+  max={sizeRange.max}
+  aria-label={activeTool === 'text' ? 'Font size' : 'Brush size'}
+/>
 ```
+
+#### 2. device-ui-store.ts - Add text editing state
+
+```typescript
+// Add to DeviceUIState interface
+isTextEditing: boolean; // Track if text editor DOM is active
+
+// Add action
+setIsTextEditing: (editing: boolean) => void;
+
+// Add to initial state
+isTextEditing: false,
+
+// Implement action
+setIsTextEditing: (editing) => set({ isTextEditing: editing }),
+```
+
+#### 3. TextTool.ts - Notify store when editing starts/stops
+
+```typescript
+// Add import
+import { useDeviceUIStore } from '../../stores/device-ui-store';
+
+// In createEditor() after setting isEditing = true
+useDeviceUIStore.getState().setIsTextEditing(true);
+
+// In closeEditor() after setting isEditing = false
+useDeviceUIStore.getState().setIsTextEditing(false);
+```
+
+#### 4. ToolPanel.tsx - Remove text settings panel
+
+```typescript
+// Remove entire text settings block (lines 300-325)
+// Remove 'text' and 'setTextSettings' from useDeviceUIStore destructuring
+```
+
+This solution ensures:
+
+- ColorSizeDock appears when text tool is selected (for pre-placement config)
+- ColorSizeDock disappears when text editor is placed (during typing)
+- Consistent UI between all drawing tools
+- Proper size ranges (10-48px for text, 1-20px for strokes)
 
 ---
 

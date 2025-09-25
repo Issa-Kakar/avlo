@@ -87,18 +87,35 @@ const _COMMON_COLORS = [
 ];
 
 export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
-  const { activeTool, pen, highlighter, setPenSettings, setHighlighterSettings } =
-    useDeviceUIStore();
+  const {
+    activeTool,
+    pen,
+    highlighter,
+    text,
+    isTextEditing,
+    setPenSettings,
+    setHighlighterSettings,
+    setTextSettings,
+  } = useDeviceUIStore();
 
   // Auto-hide state
   const [isVisible, setIsVisible] = useState(true);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Show dock only for pen/highlighter
-  const showDock = activeTool === 'pen' || activeTool === 'highlighter';
-  const currentSettings = activeTool === 'pen' ? pen : highlighter;
+  // Show dock for pen/highlighter/text, but hide when text is being edited
+  const showDock =
+    (activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'text') &&
+    !isTextEditing;
 
-  // Reset visibility and timer when tool changes to pen/highlighter
+  // Get current settings based on active tool
+  const currentSettings = useMemo(() => {
+    if (activeTool === 'pen') return pen;
+    if (activeTool === 'highlighter') return highlighter;
+    if (activeTool === 'text') return { color: text.color, size: text.size, opacity: 1 };
+    return pen; // fallback
+  }, [activeTool, pen, highlighter, text]);
+
+  // Reset visibility and timer when tool changes to pen/highlighter/text
   useEffect(() => {
     if (showDock) {
       setIsVisible(true);
@@ -115,7 +132,7 @@ export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
 
       autoHideTimerRef.current = timer;
     } else {
-      // Clear timer when switching away from pen/highlighter
+      // Clear timer when switching away from drawing tools or when text editing starts
       if (autoHideTimerRef.current) {
         clearTimeout(autoHideTimerRef.current);
         autoHideTimerRef.current = null;
@@ -191,6 +208,8 @@ export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
         setPenSettings({ color: newColor });
       } else if (activeTool === 'highlighter') {
         setHighlighterSettings({ color: newColor });
+      } else if (activeTool === 'text') {
+        setTextSettings({ color: newColor });
       }
 
       handleInteraction();
@@ -200,6 +219,7 @@ export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
       getColorFromSliderValue,
       setPenSettings,
       setHighlighterSettings,
+      setTextSettings,
       handleInteraction,
     ],
   );
@@ -212,12 +232,22 @@ export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
         setPenSettings({ size });
       } else if (activeTool === 'highlighter') {
         setHighlighterSettings({ size });
+      } else if (activeTool === 'text') {
+        setTextSettings({ size });
       }
 
       handleInteraction();
     },
-    [activeTool, setPenSettings, setHighlighterSettings, handleInteraction],
+    [activeTool, setPenSettings, setHighlighterSettings, setTextSettings, handleInteraction],
   );
+
+  // Adjust size range based on tool
+  const sizeRange = useMemo(() => {
+    if (activeTool === 'text') {
+      return { min: 10, max: 48 };
+    }
+    return { min: 1, max: 20 };
+  }, [activeTool]);
 
   if (!showDock) {
     return null;
@@ -315,11 +345,11 @@ export function ColorSizeDock({ className = '' }: ColorSizeDockProps) {
         <input
           type="range"
           className="dock-slider size"
-          min="1"
-          max="20"
+          min={sizeRange.min}
+          max={sizeRange.max}
           value={currentSettings.size}
           onChange={handleSizeChange}
-          aria-label="Brush size"
+          aria-label={activeTool === 'text' ? 'Font size' : 'Brush size'}
         />
         <span className="size-readout" aria-label="Size in pixels">
           {currentSettings.size}px

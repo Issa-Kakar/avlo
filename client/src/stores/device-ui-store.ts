@@ -25,6 +25,7 @@ interface DeviceUIState {
   // UI state
   editorCollapsed: boolean;
   toolbarPos: { x: number; y: number };
+  isTextEditing: boolean; // Track if text editor DOM is active
 
   // Track last seen scene per room (for ghost preview after clear)
   lastSeenSceneByRoom: Record<string, number>;
@@ -49,6 +50,7 @@ interface DeviceUIState {
   setToolbarPosition: (pos: { x: number; y: number }) => void;
   updateLastSeenScene: (roomId: string, scene: number) => void;
   setCollaborationMode: (mode: 'server' | 'peer') => void;
+  setIsTextEditing: (editing: boolean) => void; // Track text editing state
 }
 
 // Export ToolbarState for backward compatibility
@@ -72,6 +74,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       editorCollapsed: false,
       toolbarPos: { x: 24, y: 24 },
+      isTextEditing: false,
 
       lastSeenSceneByRoom: {},
       collaborationMode: 'server',
@@ -117,6 +120,8 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         })),
 
       setCollaborationMode: (mode) => set({ collaborationMode: mode }),
+
+      setIsTextEditing: (editing) => set({ isTextEditing: editing }),
     }),
     {
       name: 'avlo.toolbar.v1', // Phase 9: updated localStorage key

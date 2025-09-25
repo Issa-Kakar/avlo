@@ -442,6 +442,16 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // IMPORTANT: viewTransform is NOT in dependencies to prevent mid-gesture teardown
   // stageReady IS in dependencies to ensure re-run when stage becomes available
   useEffect(() => {
+    // Special handling for text tool config changes during editing
+    // If text tool is actively editing, just update config without recreation
+    if (activeTool === 'text' && toolRef.current?.isActive()) {
+      const textTool = toolRef.current as any;
+      if ('updateConfig' in textTool) {
+        textTool.updateConfig(text);
+        return; // Skip recreation, just update config
+      }
+    }
+
     // Wait for all required dependencies
     const renderLoop = renderLoopRef.current;
     const canvas = baseStageRef.current?.getCanvasElement();

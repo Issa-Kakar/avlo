@@ -2,6 +2,7 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { TextPreview } from './types';
 import type { ViewTransform } from '@avlo/shared';
+import { useDeviceUIStore } from '../../stores/device-ui-store';
 
 export interface TextToolConfig {
   size: number;
@@ -228,6 +229,9 @@ export class TextTool {
 
     this.state.editBox = editor;
     this.state.isEditing = true;
+
+    // Notify store that text editing has started (hides ColorSizeDock)
+    useDeviceUIStore.getState().setIsTextEditing(true);
   }
 
   private closeEditor(commit: boolean): void {
@@ -245,6 +249,9 @@ export class TextTool {
 
     this.room.updateActivity('idle');
     this.onInvalidate?.();
+
+    // Notify store that text editing has ended (allows ColorSizeDock to show again)
+    useDeviceUIStore.getState().setIsTextEditing(false);
   }
 
   private commitText(): void {

@@ -32,11 +32,9 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
     activeTool,
     toolbarPos,
     editorCollapsed,
-    text,
     stamp,
     setActiveTool,
     setToolbarPosition,
-    setTextSettings,
     setStampSettings,
   } = useDeviceUIStore();
 
@@ -299,32 +297,6 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
       </button>
 
       {/* Tool Settings Panels */}
-      {activeTool === 'text' && (
-        <div className="tool-settings">
-          <div className="tool-divider" />
-          <label className="setting-row">
-            <span className="setting-label">Size</span>
-            <input
-              type="range"
-              min={10}
-              max={48}
-              value={text.size}
-              onChange={(e) => setTextSettings({ size: Number(e.target.value) })}
-              className="setting-slider"
-            />
-            <span className="setting-value">{text.size}px</span>
-          </label>
-          <label className="setting-row">
-            <span className="setting-label">Color</span>
-            <input
-              type="color"
-              value={text.color}
-              onChange={(e) => setTextSettings({ color: e.target.value })}
-              className="setting-color"
-            />
-          </label>
-        </div>
-      )}
 
       {activeTool === 'stamp' && (
         <div className="tool-settings">
