@@ -144,6 +144,105 @@ export class OverlayRenderLoop {
           ctx.stroke();
 
           ctx.restore();
+        } else if (previewToDraw.kind === 'text') {
+          // Text preview (world space)
+          ctx.save();
+          ctx.scale(view.scale, view.scale);
+          ctx.translate(-view.pan.x, -view.pan.y);
+
+          // Draw placement box with dashed outline
+          ctx.strokeStyle = previewToDraw.isPlacing
+            ? 'rgba(59, 130, 246, 0.5)'
+            : 'rgba(0, 0, 0, 0.3)';
+          ctx.lineWidth = 2 / view.scale; // Keep consistent visual thickness
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(
+            previewToDraw.box.x,
+            previewToDraw.box.y,
+            previewToDraw.box.w,
+            previewToDraw.box.h,
+          );
+
+          // Optional: Draw placement crosshair
+          if (previewToDraw.isPlacing) {
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+            ctx.lineWidth = 1 / view.scale;
+            ctx.setLineDash([]);
+            // Vertical line
+            ctx.beginPath();
+            ctx.moveTo(previewToDraw.box.x, previewToDraw.box.y - 5);
+            ctx.lineTo(previewToDraw.box.x, previewToDraw.box.y + 5);
+            ctx.stroke();
+            // Horizontal line
+            ctx.beginPath();
+            ctx.moveTo(previewToDraw.box.x - 5, previewToDraw.box.y);
+            ctx.lineTo(previewToDraw.box.x + 5, previewToDraw.box.y);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+        } else if (previewToDraw.kind === 'stamp') {
+          // Stamp preview (world space)
+          ctx.save();
+          ctx.scale(view.scale, view.scale);
+          ctx.translate(-view.pan.x, -view.pan.y);
+
+          // Draw ghost stamp based on shape type
+          ctx.globalAlpha = previewToDraw.opacity;
+          ctx.fillStyle = previewToDraw.color;
+
+          const size = previewToDraw.size;
+          const cx = previewToDraw.position.x;
+          const cy = previewToDraw.position.y;
+
+          ctx.save();
+          ctx.translate(cx, cy);
+
+          switch (previewToDraw.stampType) {
+            case 'circle':
+              ctx.beginPath();
+              ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+              ctx.fill();
+              break;
+            case 'square':
+              ctx.fillRect(-size / 2, -size / 2, size, size);
+              break;
+            case 'triangle':
+              ctx.beginPath();
+              ctx.moveTo(0, -size / 2);
+              ctx.lineTo(-size / 2, size / 2);
+              ctx.lineTo(size / 2, size / 2);
+              ctx.closePath();
+              ctx.fill();
+              break;
+            case 'star':
+              // Simple 5-point star
+              ctx.beginPath();
+              for (let i = 0; i < 10; i++) {
+                const radius = i % 2 === 0 ? size / 2 : size / 4;
+                const angle = (i * Math.PI) / 5;
+                const x = Math.cos(angle) * radius;
+                const y = Math.sin(angle) * radius;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+              }
+              ctx.closePath();
+              ctx.fill();
+              break;
+            case 'heart': {
+              // Simple heart shape
+              ctx.beginPath();
+              const s = size / 32; // Scale factor
+              ctx.moveTo(0, -8 * s);
+              ctx.bezierCurveTo(-16 * s, -20 * s, -16 * s, -8 * s, 0, 4 * s);
+              ctx.bezierCurveTo(16 * s, -8 * s, 16 * s, -20 * s, 0, -8 * s);
+              ctx.fill();
+              break;
+            }
+          }
+
+          ctx.restore();
+          ctx.restore();
         }
       });
 

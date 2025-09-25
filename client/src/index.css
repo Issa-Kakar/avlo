@@ -1,3 +1,102 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Text editor overlay styles */
+.text-editor-overlay {
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    sans-serif;
+  line-height: 1.4;
+  word-wrap: break-word;
+  max-width: 400px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: box-shadow 0.2s ease;
+}
+
+.text-editor-overlay:focus {
+  border-color: #3b82f6;
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.1),
+    0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* DOM overlay root - ensure it doesn't block events except for children */
+.dom-overlay-root {
+  pointer-events: none;
+}
+
+.dom-overlay-root > * {
+  pointer-events: auto;
+}
+
+/* Tool settings panel */
+.tool-settings {
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 0 0 8px 8px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+
+.setting-label {
+  min-width: 35px;
+  color: #64748b;
+}
+
+.setting-slider {
+  flex: 1;
+  height: 4px;
+}
+
+.setting-value {
+  min-width: 40px;
+  text-align: right;
+  color: #475569;
+}
+
+.setting-color {
+  width: 32px;
+  height: 24px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.stamp-picker {
+  display: flex;
+  gap: 4px;
+  padding: 8px 4px;
+  justify-content: space-around;
+}
+
+.stamp-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: white;
+  color: #64748b;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.stamp-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.stamp-btn.active {
+  background: #3b82f6;
+  color: white;
+  border-color: #3b82f6;
+}

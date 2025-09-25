@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'stamps' | 'pan' | 'select';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'stamp' | 'pan' | 'select';
 
 export interface ToolSettings {
   size: number;
@@ -16,6 +16,11 @@ interface DeviceUIState {
   highlighter: ToolSettings;
   eraser: { size: number };
   text: { size: number; color: string };
+  stamp: {
+    selected: 'circle' | 'square' | 'triangle' | 'star' | 'heart';
+    scale: number;
+    color: string;
+  }; // NEW: stamp settings
 
   // UI state
   editorCollapsed: boolean;
@@ -33,6 +38,13 @@ interface DeviceUIState {
   setHighlighterSettings: (settings: Partial<ToolSettings>) => void;
   setEraserSize: (size: number) => void;
   setTextSettings: (settings: Partial<{ size: number; color: string }>) => void;
+  setStampSettings: (
+    settings: Partial<{
+      selected: 'circle' | 'square' | 'triangle' | 'star' | 'heart';
+      scale: number;
+      color: string;
+    }>,
+  ) => void; // NEW: stamp setter
   toggleEditor: () => void;
   setToolbarPosition: (pos: { x: number; y: number }) => void;
   updateLastSeenScene: (roomId: string, scene: number) => void;
@@ -56,6 +68,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
       eraser: { size: 10 },
       text: { size: 16, color: '#0F172A' },
+      stamp: { selected: 'circle', scale: 1, color: '#666666' }, // NEW: stamp defaults
 
       editorCollapsed: false,
       toolbarPos: { x: 24, y: 24 },
@@ -84,6 +97,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setTextSettings: (settings) =>
         set((state) => ({
           text: { ...state.text, ...settings },
+        })),
+
+      setStampSettings: (settings) =>
+        set((state) => ({
+          stamp: { ...state.stamp, ...settings },
         })),
 
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),

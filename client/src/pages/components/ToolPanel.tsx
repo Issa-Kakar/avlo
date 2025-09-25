@@ -28,8 +28,17 @@ function ToolButton({ tool, isActive, onClick, tooltip, children }: ToolButtonPr
 }
 
 export function ToolPanel({ onToast }: ToolPanelProps) {
-  const { activeTool, toolbarPos, editorCollapsed, setActiveTool, setToolbarPosition } =
-    useDeviceUIStore();
+  const {
+    activeTool,
+    toolbarPos,
+    editorCollapsed,
+    text,
+    stamp,
+    setActiveTool,
+    setToolbarPosition,
+    setTextSettings,
+    setStampSettings,
+  } = useDeviceUIStore();
 
   const toolbarRef = useRef<HTMLDivElement>(null);
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -146,7 +155,7 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
   const handleToolClick = (tool: Tool) => {
     if (tool === 'pen' || tool === 'highlighter') {
       setActiveTool(tool);
-    } else if (tool === 'eraser' || tool === 'text' || tool === 'stamps' || tool === 'pan') {
+    } else if (tool === 'eraser' || tool === 'text' || tool === 'stamp' || tool === 'pan') {
       setActiveTool(tool);
       onToast?.(`${tool.charAt(0).toUpperCase() + tool.slice(1)} selected`);
     }
@@ -226,11 +235,11 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
 
       <div className="tool-divider" />
 
-      {/* SStamps Tools */}
+      {/* Stamps Tools */}
       <ToolButton
-        tool="stamps"
-        isActive={activeTool === 'stamps'}
-        onClick={() => handleToolClick('stamps')}
+        tool="stamp"
+        isActive={activeTool === 'stamp'}
+        onClick={() => handleToolClick('stamp')}
         tooltip="Stamps (V)"
       >
         <svg
@@ -288,6 +297,69 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           <path d="M3 17a9 9 0 019-9 9 9 0 016 2.3l3 2.7" />
         </svg>
       </button>
+
+      {/* Tool Settings Panels */}
+      {activeTool === 'text' && (
+        <div className="tool-settings">
+          <div className="tool-divider" />
+          <label className="setting-row">
+            <span className="setting-label">Size</span>
+            <input
+              type="range"
+              min={10}
+              max={48}
+              value={text.size}
+              onChange={(e) => setTextSettings({ size: Number(e.target.value) })}
+              className="setting-slider"
+            />
+            <span className="setting-value">{text.size}px</span>
+          </label>
+          <label className="setting-row">
+            <span className="setting-label">Color</span>
+            <input
+              type="color"
+              value={text.color}
+              onChange={(e) => setTextSettings({ color: e.target.value })}
+              className="setting-color"
+            />
+          </label>
+        </div>
+      )}
+
+      {activeTool === 'stamp' && (
+        <div className="tool-settings">
+          <div className="tool-divider" />
+          <div className="stamp-picker">
+            {['circle', 'square', 'triangle', 'star', 'heart'].map((shape) => (
+              <button
+                key={shape}
+                className={`stamp-btn ${stamp.selected === shape ? 'active' : ''}`}
+                onClick={() => setStampSettings({ selected: shape as any })}
+                aria-label={`Select ${shape} stamp`}
+              >
+                {shape === 'circle' && '○'}
+                {shape === 'square' && '□'}
+                {shape === 'triangle' && '△'}
+                {shape === 'star' && '☆'}
+                {shape === 'heart' && '♡'}
+              </button>
+            ))}
+          </div>
+          <label className="setting-row">
+            <span className="setting-label">Size</span>
+            <input
+              type="range"
+              min={0.5}
+              max={3}
+              step={0.1}
+              value={stamp.scale}
+              onChange={(e) => setStampSettings({ scale: Number(e.target.value) })}
+              className="setting-slider"
+            />
+            <span className="setting-value">{(stamp.scale * 100).toFixed(0)}%</span>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

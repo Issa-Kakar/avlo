@@ -47,10 +47,34 @@ export interface EraserPreview {
 }
 
 /**
+ * TextPreview is the preview data for text tool
+ * Used by TextTool and overlay rendering
+ */
+export interface TextPreview {
+  kind: 'text';
+  box: { x: number; y: number; w: number; h: number }; // World coords
+  content?: string; // Optional preview content
+  isPlacing?: boolean; // True when placing, false when editing
+}
+
+/**
+ * StampPreview is the preview data for stamp tool
+ * Used by StampTool and overlay rendering
+ */
+export interface StampPreview {
+  kind: 'stamp';
+  position: { x: number; y: number }; // World coords
+  stampType: 'circle' | 'square' | 'triangle' | 'star' | 'heart'; // Basic shapes
+  size: number; // World units (base 32px * scale)
+  color: string; // Fill color
+  opacity: number;
+}
+
+/**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData = StrokePreview | EraserPreview;
+export type PreviewData = StrokePreview | EraserPreview | TextPreview | StampPreview;
 
 // Simplified device UI for Phase 5 (no Zustand yet)
 export interface DeviceUIState {

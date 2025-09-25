@@ -11,11 +11,13 @@ import type { ViewportInfo } from '../renderer/types';
 import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
+import { TextTool } from '@/lib/tools/TextTool';
+import { StampTool } from '@/lib/tools/StampTool';
 import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 
-// Unified interface for both DrawingTool and EraserTool
-type PointerTool = DrawingTool | EraserTool;
+// Unified interface for all pointer tools
+type PointerTool = DrawingTool | EraserTool | TextTool | StampTool;
 
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
@@ -130,6 +132,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Replace single stageRef with two stages
   const baseStageRef = useRef<CanvasStageHandle>(null);
   const overlayStageRef = useRef<CanvasStageHandle>(null);
+  const editorHostRef = useRef<HTMLDivElement>(null); // NEW: DOM overlay for text/stamps
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
   const toolRef = useRef<PointerTool>();
@@ -155,7 +158,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
   // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter, eraser } = useDeviceUIStore();
+  const { activeTool, pen, highlighter, eraser, text, stamp } = useDeviceUIStore();
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref
@@ -504,6 +507,26 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         // The overlay will full-clear anyway, but this triggers a frame
         overlayLoopRef.current?.invalidateAll();
       });
+    } else if (activeTool === 'text') {
+      tool = new TextTool(
+        roomDoc,
+        text, // From Zustand store
+        userId,
+        {
+          worldToClient,
+          getView: () => viewTransformRef.current,
+          getEditorHost: () => editorHostRef.current, // Pass DOM overlay ref
+        },
+        () => overlayLoopRef.current?.invalidateAll(),
+      );
+    } else if (activeTool === 'stamp') {
+      // Note: singular 'stamp'
+      tool = new StampTool(
+        roomDoc,
+        stamp, // From Zustand store (includes selected, scale, color)
+        userId,
+        () => overlayLoopRef.current?.invalidateAll(),
+      );
     } else {
       return; // Unsupported tool
     }
@@ -637,7 +660,19 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
       canvas.removeEventListener('pointerleave', handlePointerLeave);
     };
-  }, [roomDoc, userId, activeTool, pen, highlighter, eraser, stageReady, screenToWorld]); // Include all tool dependencies
+  }, [
+    roomDoc,
+    userId,
+    activeTool,
+    pen,
+    highlighter,
+    eraser,
+    text,
+    stamp,
+    stageReady,
+    screenToWorld,
+    worldToClient,
+  ]); // Include all tool dependencies
 
   // 3F: Handle transform changes for both loops
   useEffect(() => {
@@ -646,6 +681,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // and automatically promote to full clear - we just need to trigger the frame
     renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
     overlayLoopRef.current?.invalidateAll(); // Overlay needs redraw on pan/zoom
+
+    // NEW: Notify tool of view change for DOM repositioning
+    if (toolRef.current && 'onViewChange' in toolRef.current) {
+      (toolRef.current as any).onViewChange();
+    }
   }, [viewTransform.scale, viewTransform.pan.x, viewTransform.pan.y]);
 
   // 3H: Update imperative handle for preview routing
@@ -691,6 +731,17 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           pointerEvents: 'none', // Critical: overlay doesn't block input
         }}
         onResize={handleOverlayResize}
+      />
+      {/* NEW: DOM overlay for interactive HTML elements (text editor) */}
+      <div
+        ref={editorHostRef}
+        className="dom-overlay-root"
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: 3,
+          pointerEvents: 'none', // Enable per-element when needed
+        }}
       />
     </div>
   );

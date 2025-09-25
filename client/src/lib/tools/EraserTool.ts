@@ -211,6 +211,28 @@ export class EraserTool {
     for (let i = this.resumeIndex; i < candidateStrokes.length; i++) {
       const stroke = candidateStrokes[i];
 
+      // CRITICAL: Special handling for stamps (single point, no segments)
+      if ((stroke as any).tool === 'stamp') {
+        // Use LIVE VIEW for accurate radius conversion
+        const view = this.getView ? this.getView() : snapshot.view;
+        const radiusEraserWorld = this.state.radiusPx / view.scale;
+
+        const [cx, cy] = stroke.points; // Center point only
+        const size = (stroke as any).size ?? stroke.style.size ?? 32;
+        const radiusStampWorld = size / 2;
+
+        // Check circle-circle collision
+        const dx = worldX - cx;
+        const dy = worldY - cy;
+        const distSq = dx * dx + dy * dy;
+        const totalRadius = radiusEraserWorld + radiusStampWorld;
+
+        if (distSq <= totalRadius * totalRadius) {
+          this.state.hitNow.add(stroke.id);
+        }
+        continue; // Skip segment test for stamps
+      }
+
       // Include stroke half-width
       const halfWidth = (stroke.style?.size ?? 1) / 2;
       const hitRadius = radiusWorld + halfWidth;

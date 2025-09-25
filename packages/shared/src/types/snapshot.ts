@@ -32,7 +32,7 @@ export interface StrokeView {
     color: string;
     size: number;
     opacity: number;
-    tool: 'pen' | 'highlighter';
+    tool: 'pen' | 'highlighter' | 'stamp';
   };
   bbox: [number, number, number, number];
   scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)

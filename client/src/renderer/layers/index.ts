@@ -6,6 +6,10 @@ import { drawCursors } from './presence-cursors';
 // Re-export the actual implementation
 export { drawStrokes, clearStrokeCache } from './strokes';
 
+// Import new implementations
+export { drawText } from './text';
+import { drawStamps } from './stamps';
+
 // Layer function signatures - all are stubs in Phase 3.3
 
 export function drawBackground(
@@ -22,30 +26,16 @@ export function drawBackground(
 }
 
 export function drawShapes(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
+  ctx: CanvasRenderingContext2D,
+  snapshot: Snapshot,
+  view: ViewTransform,
+  viewport: ViewportInfo,
 ): void {
-  // Future phase: Stamps and shapes
-  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] Shapes');
-  }
+  // Phase 9: Stamps rendering
+  drawStamps(ctx, snapshot, view, viewport);
 }
 
-export function drawText(
-  _ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Phase 11: Text rendering
-  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] Text', snapshot.texts.length);
-  }
-}
+// drawText is now imported from './text'
 
 export function drawAuthoringOverlays(
   _ctx: CanvasRenderingContext2D,

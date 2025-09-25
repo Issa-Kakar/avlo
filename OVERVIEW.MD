@@ -189,7 +189,7 @@ interface TextBlock {
   id: TextId;
   x: number; y: number;     // world units (anchor)
   w: number; h: number;     // layout box
-  content: string;          // committed once, immutable
+  content: string;          // committed once through mutate(fn), editable
   color: string;
   size: number;             // font px at scale=1
   scene: SceneIdx;          // assigned at commit time (on text commit) using currentScene
@@ -847,28 +847,8 @@ export interface EraserPreview {
 }
 ```
 
-**Shared Cache Access (Implemented):**
-- Singleton export: `getStrokeCacheInstance()` from stroke-builder module
-- Shared between base stroke rendering and eraser dimming overlay
-- FIFO cache with 1000 stroke limit
-- Path2D objects built once, reused across frames
-- Cache keyed by stroke ID (strokes immutable after commit)
+---
 
-**Performance Guards:**
-- Skip LOD strokes (<2px screen diagonal)
-- Time budget: 10ms per frame, 500 segments max
-- Resume index for hit-test continuation across frames
-- RAF coalescing for pointer moves
-- Spatial index query when available (128x128 world unit cells)
-- Skip dimming at >25 peers or <30 FPS
+# OVERVIEW\.MD — Proposed Update (Phase 9/10)
 
-**Mobile & Read-only:**
-- Mobile gating in Canvas.tsx (not in tools): prevents pointer events
-- Read-only gating in mutate() wrapper: rejects writes when room ≥15MB
-- Tool's canBegin() only checks tool-local state (not mobile/read-only)
-- Cursor hidden on mobile (no hover preview)
-
-**Scene & Edge Cases:**
-- Scene changes mid-gesture: id→index map handles missing IDs gracefully
-- Lost pointer capture: Clear state, invalidate overlay
-- Undo: Single mutate() = single undo step (per UndoManager with origin=userId)
+> Scope: add **Text**, **Stamps**, and a **Transform** tool that operates on strokes, stamps, and text. Keep all Phase-7/8 contracts (immutable snapshots, authoring overlays in world space, single atomic commits). Rotation & non-uniform scale are non-goals for MVP (can come later).
