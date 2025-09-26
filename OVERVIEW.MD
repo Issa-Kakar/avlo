@@ -750,7 +750,7 @@ this.room.mutate((ydoc) => {
 // In Canvas.tsx useEffect
 const tool = activeTool === 'eraser'
   ? new EraserTool(roomDoc, deviceUI.eraser, userId, onInvalidate)
-  : new DrawingTool(roomDoc, toolbarToDeviceUI(deviceUI), userId, onInvalidate);
+  : new DrawingTool(roomDoc, settings, toolType, userId, onInvalidate);
 
 // Set preview provider (polymorphic)
 overlayLoopRef.current?.setPreviewProvider({

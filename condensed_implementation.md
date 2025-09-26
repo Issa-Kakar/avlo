@@ -234,6 +234,18 @@ private getMeta(): Y.Map<unknown> { return this.getRoot().get('meta'); }
 - `/client/src/lib/tools/DrawingTool.ts`: Core drawing tool implementation
 - `/client/src/canvas/Canvas.tsx`: Pointer event handling and tool lifecycle
 
+**DrawingTool Constructor:**
+
+```typescript
+constructor(
+  room: IRoomDocManager,
+  settings: { size: number; color: string; opacity?: number },  // Direct settings
+  toolType: 'pen' | 'highlighter',  // Explicit tool type
+  userId: string,
+  onInvalidate?: (bounds: [number, number, number, number]) => void,
+)
+```
+
 **Implementation Details:**
 
 - Attach pointer events with `setPointerCapture` on pointerdown, release on up/cancel/lostcapture
@@ -429,7 +441,7 @@ Phase 6 establishes the complete persistence and sync infrastructure, connecting
 - `/client/src/hooks/use-connection-gates.ts`: Gate subscription with stable primitives
 - `/client/src/pages/RoomPage.tsx`: Dynamic room routing
 - `/client/src/stores/device-ui-store.ts`: Zustand store for UI state
-- `/client/src/lib/tools/types.ts`: `toolbarToDeviceUI` adapter
+- `/client/src/lib/tools/types.ts`: Tool type definitions and preview types
 
 **Gate Management:**
 
@@ -503,11 +515,16 @@ TODO IN FUTURE PHASE 7: **`G_AWARENESS_READY`** opens when WS connected (no time
 
 ### 6D.3 Zustand Store Integration
 
-Create guarded `toolbarToDeviceUI` adapter:
+**Direct Tool Configuration Pipeline:**
 
-- Default unknown tools to 'pen', clamp size 1-64, validate hex colors
-- Wire Canvas.tsx to use Zustand store instead of static deviceUI
-- Tool state frozen at pointer-down (existing DrawingTool mechanism)
+- **Source of Truth:** Zustand store holds all tool settings (pen, highlighter, eraser, text, etc.)
+- **Canvas.tsx Integration:** Reads settings directly from store, no intermediate adapters
+- **Tool Instantiation Pattern (consistent across all tools):**
+  - EraserTool: `new EraserTool(roomDoc, eraser, userId, ...)`
+  - DrawingTool: `new DrawingTool(roomDoc, settings, toolType, userId, ...)`
+  - TextTool: `new TextTool(roomDoc, text, userId, ...)`
+- **Tool State Management:** Settings frozen at pointer-down (existing DrawingTool mechanism)
+- **Benefits:** Simpler mental model, consistent pattern, easier to extend with new tools
 
 ## Phase 7: Awareness & Presence System
 
@@ -875,10 +892,8 @@ if (activeTool === 'eraser') {
     () => viewTransformRef.current, // Live view transform
   );
 } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-  const adaptedUI = toolbarToDeviceUI({
-    /* toolbar state */
-  });
-  tool = new DrawingTool(roomDoc, adaptedUI, userId /* ... */);
+  const settings = activeTool === 'pen' ? pen : highlighter;
+  tool = new DrawingTool(roomDoc, settings, activeTool, userId /* ... */);
 }
 
 // UNIFIED handlers - no tool branching

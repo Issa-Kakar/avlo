@@ -192,7 +192,6 @@ export interface StrokeView {
 - Scope: toolbar state, lastSeenScene - **never** mirror Yjs
 - Persistence: localStorage `avlo:vN:ui` - bump vN on shape changes, include migrate fn
 - Use selectors to avoid re-renders, keep slices tiny
-- toolbarToDeviceUI adapter: guards unknown tools→'pen', clamps size 1-64, validates hex
 - **Tools in Zustand:** pen, highlighter, text, eraser, pan, select (lasso placeholder).
 
 ### State Synchronization & Derivation
@@ -455,7 +454,8 @@ let tool: PointerTool | null = null;
 if (activeTool === 'eraser') {
   tool = new EraserTool(roomDoc, eraser, userId, ...callbacks);
 } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-  tool = new DrawingTool(roomDoc, adaptedUI, userId, ...);
+  const settings = activeTool === 'pen' ? pen : highlighter;
+  tool = new DrawingTool(roomDoc, settings, activeTool, userId, ...);
 }
 ```
 
