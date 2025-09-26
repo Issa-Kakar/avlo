@@ -694,15 +694,11 @@ interface PresenceView {
 
 **Critical Implementation Notes:**
 
-- **Publishing**: Presence-only updates clone previous snapshot (Option B-prime optimization)
+- **Publishing**: Presence-only updates clone previous snapshot
 - **Pipeline**: RoomDocManager → `buildPresenceView()` → inject into snapshot → overlay renders
 - **Single gate guard**: Draw presence ONLY when `G_AWARENESS_READY && G_FIRST_SNAPSHOT`
 - **No double-smoothing**: Manager interpolates, renderer draws as-is
 - **WebRTC deferred**: Phase 7 is WebSocket-only, RTC in future phase
-
-## Phase: RBush Spatial Indexing
-
-**Deferred.** Interfaces may remain reserved (e.g., `spatialIndex`) but are not populated
 
 ## Phase 8: Eraser Tool Implementation
 
@@ -1007,306 +1003,69 @@ export function getStrokeCacheInstance(): StrokeRenderCache {
 }
 ```
 
-**Critical Invariants:**
-
-- EraserTool never caches Y references (follows same rules as RoomDocManager)
-- All deletions in single transaction for atomic undo
 - Preview always cleared on commit/cancel via onInvalidate()
-- Spatial index rebuilt per snapshot (strokes immutable)
-- Mobile enforcement at Canvas level only
+- Spatial index rebuilt per snapshot (strokes immutable for now)
 
-## Phase 9: Text & Stamps
+## Phase 9: Text Tool (DOM overlay, atomic commit)
 
-## 0) Architecture recap (current, normative)
+### 9.1 Text Tool — End-to-end implementation
 
-- **Two renderers, one coordinate model**
-  - **Base render loop** draws world content; it already does world-space dirty-rect diffing for strokes and text via `diffBounds(prev,next)` and invalidates selectively. Text is included in the diff pass with `{x,y,w,h}` bounds. &#x20;
-  - **Overlay render loop** draws **authoring overlays** + **presence**. It clears fully per frame, applies the **view transform once** for world preview, and draws presence in **screen space** (DPR only). It supports a **preview provider** and a one-frame hold on commit. &#x20;
+**Purpose & constraints.**  
+Provide WYSIWYG text entry via a **DOM overlay editor** that visually matches final world-space rendering. Commit the text atomically to `texts[]` with a single mutate. No per-keystroke CRDT traffic; rendering happens in the base (world) canvas like strokes.
 
-- **View transform discipline**
-  - The base canvas applies the view transform before all world passes; **authoring overlays receive world coords** and must not reapply the view transform. Presence draws in screen space. (Contract already captured in the Transform spec; we keep it.) &#x20;
+#### 9.1.1 DOM overlay host & Canvas wiring
 
-- **Preview flow & invalidation**
-  - `OverlayRenderLoop.setPreviewProvider({ getPreview })` stores a provider, invalidates immediately, and can **hold** the last cached preview for a single frame to hide commit flashes. `Canvas` calls `overlayLoop.holdPreviewForOneFrame()` when a new snapshot publishes. &#x20;
+- We mount a **DOM overlay host** (z-index 3) above the base and overlay canvases. It is pointer-transparent by default; the active editor element enables pointer events while editing. Host stays pinned to the canvas container edges.
+- **Canvas → Tool handles**: TextTool is instantiated with a small “canvas handle”: `worldToClient`, `getView()`, and `getEditorHost()` so the tool can position the editor and respond to pan/zoom/resize without owning canvas concerns.
+- The **OverlayRenderLoop** continues to draw authoring previews for other tools and presence; TextTool itself returns **no overlay preview** because the DOM editor is the preview. (Overlay loop API: `setPreviewProvider`, `holdPreviewForOneFrame` remain available for other tools.)
 
-- **Tool selection & pointer routing**
-  - `Canvas` reads `activeTool` (plus pen/highlighter/eraser params) from Zustand, constructs exactly **one tool object**, sets the preview provider once, and attaches **unified pointer handlers** that call the tool’s polymorphic API. No branching inside handlers. &#x20;
+#### 9.1.2 Lifecycle & state machine
 
-- **Event isolation & commit discipline**
-  - Tools preview only during moves; **all writes** occur in a single `mutate(fn)` on commit (atomic; clean Undo). Your eraser already follows “single transact” + replace/delete at stable indices. We’ll preserve the same rule for Transform and Text. &#x20;
+`idle → placing → editing → (commit|cancel)`
 
-- **Overlay Canvas input pass-through**
-  - Overlay canvas has `pointer-events: none` to not block input. Keep that for all new overlays.&#x20;
+- **begin(x,y)**: on pointer-down, cache **world** anchor `(x,y)`, create the contenteditable element in the overlay host, and position it using world→screen→host conversions (see 9.1.3).
+- **move**: not used for text entry (cursor movement handled by the DOM).
+- **end / cancel**: blur/escape cancels; blur/Enter commits (see 9.1.5 Commit).
 
-## 1) Object model (additions)
+#### 9.1.3 Coordinate chain & scale discipline
 
-We keep `strokes[]` and `texts[]`. We add “stamps” in the simplest, lowest-churn way:
+- **Three spaces**: **world** (document), **screen** (CSS px), **host-relative** (DOM overlay). We compute host-relative `(left, top, width, height)` from the world anchor using `worldToClient` + view transform.
+- **Scale-aware rendering**: editor font size, padding, and border thickness scale with `view.scale` so the DOM editor looks identical to final canvas text at any zoom.
+- **Offset alignment**: apply `totalOffset = scaledBorderWidth + scaledPadding` to align the editor’s top-left to the intended world anchor.
+- **Pan/zoom**: on `onViewChange()` we recompute the editor’s CSS transform/size to track the view; this avoids re-creating the editor.
 
-- **Stamps (MVP)**: Represent as **special strokes** with `tool: 'stamp'` and a `stampId` (links to a raster atlas or SVG path). This keeps selection/transform unified with strokes. Dedicated `stamps[]` can be introduced later if you want separate draw ordering. (Renderer will draw “strokes” with a subtype handler that uses the atlas.)
+#### 9.1.4 Device UI → Text config pipeline
 
-- **TextBlock**: You already have the shape; relax earlier “immutable content” strictly enough to allow **atomic re-edits** while still replacing the object at the **same index** on commit. (Matches your Text Option A plan.) &#x20;
+- **Source of truth**: text **color** and **size** flow from the **device-UI store**, not from the tool instance; while the editor is active we set `isTextEditing=true` to hide the Color/Size dock (prevents overlapping UI).
+- **Live updates**: if the user changes text settings mid-edit (e.g., size/color), we **update the active tool config without re-creating the tool** (prevents DOM destruction).
 
-**Mutability policy (normative):**
+#### 9.1.5 Commit (atomic) & storage
 
-- **Transform (move, uniform scale)**: bake geometry and reinsert each updated object **at the same index**; IDs & `createdAt` unchanged.&#x20;
-- **Text edits**: commit as one atomic replace at the same index (content and possibly `w/h`), no streaming CRDT per keystroke.&#x20;
+- **Trigger**: Enter key or editor **blur**.
+- **Measure**: read `getBoundingClientRect()` of the editor, then divide width/height by `view.scale` to get world units.
+- **Mutate once**: **single** `mutate(fn)` appends the `TextBlock` to `texts[]` (or replaces at the same index if editing an existing block). Fields: `{id, x, y, w, h, content, color, size, scene, createdAt, userId}`.
+- **Invalidate & cleanup**: hide the editor, clear `isTextEditing`, and let the next snapshot render the text in the base loop. (Overlay can optionally hold one frame for other tools; not required for Text.)
 
-## 2) Tools & UI selection
+#### 9.1.6 Render (world pass)
 
-### 2.1 Device-local tool state (Zustand)
+- **Layer & order**: base canvas draws Text after strokes using the existing world renderer; **viewport culling** applies before issuing `fillText`. Baseline is `top`; font family is Inter/system UI.
+- **Dirty regions**: `diffBounds(prev,next)` already accounts for `texts[]` and returns dirty rects for text adds/moves/edits; base loop invalidates selectively.
 
-- `activeTool ∈ {'pen','highlighter','eraser','text','stamp','transform'}`.
-- `Canvas` **branches once** on `activeTool` to construct: `DrawingTool`, `EraserTool`, `TextTool` (new), `StampTool` (new, but trivial), `TransformTool` (new). This mirrors your existing pattern; handlers stay unified. &#x20;
+#### 9.1.7 **FUTURE** Undo/redo & z-order
 
-### 2.2 Pointer surface (unchanged)
+- The commit is a **single transaction**, producing one undo step. **FUTURE FEATURE**: When replacing an existing text, we write at the **same array index** to preserve z-order, consistent with strokes. (Matches snapshot diffing approach used elsewhere.)
 
-- Unified handlers call `tool.begin(pointerId, wx, wy)`, `tool.move(wx, wy)`, `tool.end(wx?, wy?)`, `tool.cancel()`, `tool.getPreview()`. The handlers already capture pointer, update awareness cursor, and clean up on leave/cancel. We reuse that verbatim. &#x20;
+#### 9.1.8 Failure & edge-case handling (minimum spec)
 
-## 3) Preview union (extend)
+- **Empty content** on commit → cancel (no write). \_(UI/behavior inherited from the DOM editor; not persisted.)
+- **Pan/zoom during edit** → `onViewChange()` repositions editor; no re-create.
+- **Config change mid-edit** → `updateConfig()`; do not tear down editor.
 
-Your union is currently `StrokePreview | EraserPreview`. Extend to:
+### 9.2 Integration contracts (unchanged but relevant to Text)
 
-```ts
-export type PreviewData = StrokePreview | EraserPreview | TransformPreview | TextEditorPreview;
-```
-
-- Keep **world coordinates** in previews that are drawn in Pass 1 (authoring overlays).
-- Use discriminants: `kind: 'transform' | 'text-editor'`. (Matches how overlay checks `kind` for stroke/eraser now.) &#x20;
-
-**TransformPreview**
-
-- `kind: 'transform'`
-- `lassoPolyWU: [x,y][]` (world polygon)
-- `selectionBBoxWU: {minX,minY,maxX,maxY}`
-- `centerWU: [cx,cy]`
-- `dragGhosts: { strokes: StrokeGhost[]; texts: TextGhost[] }` (world geometry with temporary Δ,k applied; ghosts draw at \~0.35 alpha)
-- `mode: 'idle' | 'lassoCapture' | 'selected' | 'dragMove' | 'dragScale'`
-- `ringRadiusWU: number` (world)
-- `ringHitAreaPx: number` (screen px)
-- Optional `lowConfidence: boolean` (for small/open lasso heuristics)
-
-**TextEditorPreview**
-
-- `kind: 'text-editor'`
-- `boxWU: {x,y,w,h}`
-- Optional `caretWU`, `selectionWU` (if you want to draw hints while editing)
-- Optional handles (for in-editor move/resize) — MVP can omit, since transform can do move/scale post-commit.
-
-> Overlays **must not** re-apply the view transform; the overlay loop already scales/translates before drawing world previews. Presence remains screen-space. &#x20;
-
-## 4) Rendering passes (single canvas pair)
-
-1. Background (world)
-2. Strokes (world)
-3. **Stamps** (world; inside strokes pass as subtype for MVP, or separate pass if you split arrays later)
-4. Text (world)
-5. **Authoring overlays** (world coordinates; Transform & TextEditor previews)
-6. Presence overlays (screen space)
-7. HUD (screen space)
-
-Contracts match your spec; view transform applied **once** before 1–5; presence/HUD draw with DPR only.&#x20;
-
-## 5) Text tool (Option A — overlay, atomic commit)
-
-**Lifecycle:** `idle → placing → editing → (commit|cancel)`
-
-- **Place:** Text tool active → pointer-down → `world = canvasToWorld(e)`. Spawn a positioned overlay input (`contenteditable` or `textarea`) at `(x,y)` with initial `(w,h)`. Mark awareness as `activity='typing'` (ephemeral) and set a soft lock for that block id (awareness hint only).&#x20;
-- **Edit:** Local only; clamp content length; optional in-overlay drag/resize (still local).
-- **Commit (Enter/blur):** a single `room.mutate(...)`:
-  - If **new**: build `TextBlock` `{ id, x,y,w,h, size, color, content, scene=currentScene, createdAt=now, userId }` and **push** to `root.texts`.&#x20;
-  - If **edit**: find index by id; **delete(idx,1)**, **insert(idx,\[updated])** (replace at same index). Then clear awareness and fade overlay out.&#x20;
-
-- **Rendering:** after commit, text is part of the **world text pass**; overlay disappears. Your diff pass already invalidates text bounds. &#x20;
-
-**Why Option A?** Lowest code surface; leverages your existing snapshot publisher and avoids per-keystroke CRDT traffic. One transact per user action; Undo is clean.&#x20;
-
-## 6) Stamps tool (MVP)
-
-- **Data:** add `tool:'stamp'` plus `stampId` to a stroke record (or `kind:'stamp'` union on StrokeView) so renderer can dispatch to an atlas draw path.
-- **Placement:** `StampTool` drops a stamp centered at `world` pointer on pointer-down with given size and opacity; commit once in `mutate(fn)` as a stroke-like object (points can be a 4-point rect “quad” for bbox or a single anchor with size).
-- **Selection/Transform:** stamps behave like strokes in selection predicates (hit by any point in selection poly or by bbox center).
-
-> Treating stamps as strokes avoids a new array and keeps transforms simple. If later you need z-order between strokes and stamps, we can split into `stamps[]` and keep replace-at-same-index discipline there too.
-
-## 7) Transform tool (universal: strokes + text + stamps)
-
-**Goal:** Single tool to **select**, **move**, and **uniformly scale** across object types; **deferred commit** (drag around freely, one click to bake). **Custom Lasso** is default; direct-click select is an optional shortcut. (Rotation & non-uniform scale are out of scope for MVP.) &#x20;
-
-### 7.1 State machine
-
-```
-idle
- └─(pointerDown on empty)→ lassoCapture → (pointerUp)→ selected
-selected
- ├─(drag inside)→ dragMove → (up)→ selected
- ├─(drag ring) → dragScale → (up)→ selected
- ├─(click/Enter)→ commit → idle
- └─(Esc)→ cancel → idle
-```
-
-(Mirror your detailed spec; add soft-locks awareness if desired.)&#x20;
-
-### 7.2 Selection region (lasso)
-
-- Capture freehand in **world** units; simplify (Douglas–Peucker); even-odd **point-in-polygon** semantics so “P/donut” shapes work. Strokes included if **any** point is inside; Text included if **center** is inside (configurable to rect-poly intersection). &#x20;
-
-### 7.3 Preview & handles (overlay)
-
-- Draw **marching-ants** outline of lasso; a **move** affordance inside; a **uniform-scale ring** around the selection bbox. Draw **ghosts** of affected objects at \~0.35 while dragging. **Do not** reapply the view transform in overlay (world coords only). &#x20;
-
-### 7.4 Math (uniform scale + translate)
-
-- Let `C = selectionBBox.center`. Preview transform per point:
-  `M(p) = T(Δ) · T(C) · S(k) · T(−C)`; accumulate `Δ_total, k_total` over drags. Clamp `k` to `[kMin,kMax]`.&#x20;
-
-### 7.5 Commit (single transact)
-
-- On **click** (or Enter), bake `Δ_total, k_total`:
-  - **Strokes**: map every `[x,y]` through `M`.
-  - **Text**: update `{x,y,w,h,size}` by uniform scale about `C`.
-  - For each, **replace at same index** to keep z-order stable. &#x20;
-
-### 7.6 Integration with existing loops
-
-- **Preview provider**
-  `TransformTool.getPreview()` returns `TransformPreview`. Overlay pass 1 will world-transform and draw ants + ring + ghosts. Your overlay loop already:
-  - Clears per frame
-  - Applies view transform once for world previews
-  - Renders presence in screen space
-    We’ll add two `if (preview.kind === 'transform')` branches inside the overlay’s `withContext` block: one to draw marching-ants/ring/handles and one (conditional) to draw ghosts. (Matches the existing stroke/eraser branches.) &#x20;
-
-- **Hold last preview on commit**
-  Keep your current pattern: when a doc write publishes a new snapshot, `Canvas` already calls `overlayLoop.holdPreviewForOneFrame()` so the last preview frame persists across the publish. Continue doing that for Transform commits. &#x20;
-
-- **Dirty-rects**
-  Your `diffBounds()` already includes text and strokes; stamps piggyback on strokes (or get their own pass if you split arrays later).&#x20;
-
-## 8) Canvas wiring (what changes, exactly)
-
-### 8.1 Add tools (construction)
-
-In the `useEffect` where you construct the tool **once** based on `activeTool`, add branches:
-
-- `transform` → `new TransformTool(roomDoc, onInvalidate, getViewport, getLiveView)`.
-  - `onInvalidate = () => overlayLoop.invalidateAll()`
-  - `getViewport` returns `{ cssWidth, cssHeight, dpr }` (you already pass this for eraser hit pruning).
-  - `getLiveView = () => viewTransformRef.current` for correct screen↔world math.
-
-- `text` → `new TextTool(roomDoc, onInvalidate, canvasHandle)` — It doesn’t need per-move writes; it spawns a DOM overlay and commits once on blur/Enter.
-- `stamp` → `new StampTool(…)` — trivial: click to place, one commit.
-
-This mirrors your `EraserTool` / `DrawingTool` construction and **preserves unified handlers**. &#x20;
-
-### 8.2 Preview provider route
-
-- Keep setting the **overlay** preview provider with a function that calls `tool.getPreview()`. (You already route the imperative handle to overlay rather than base.) &#x20;
-
-### 8.3 Pointer events
-
-- No changes to handlers. They already:
-  - Convert screen → world via the **latest** view transform held in a ref (avoids mid-gesture teardown)
-  - Capture/release pointer
-  - Update presence cursor
-  - Call `tool.move()` on hover to feed preview
-  - Cleanly tear down on unmount
-    All of this maps 1:1 to Transform and Text (Text uses DOM overlay but can still leverage move for “hover ring” affordances if desired). &#x20;
-
-## 9) Data flow end-to-end
-
-### 9.1 Transform (MVP flow)
-
-1. **Select** (lasso or direct click): build `SelectionState` from the current **immutable Snapshot**; no writes.
-2. **Preview**: while dragging, compute `Δ_total, k_total` → produce `TransformPreview` for overlay.
-3. **Commit** (click/Enter): single `mutate(fn)`:
-   - For each selected object, compute baked geometry and **replace at same index**.
-   - Publish new snapshot next rAF → `Canvas` sees `docVersion` change → calls `overlayLoop.holdPreviewForOneFrame()` and invalidates world/overlay.&#x20;
-
-### 9.2 Text (MVP flow)
-
-1. **Place** with Text tool → spawn DOM overlay; local edit only; soft-lock via awareness.
-2. **Commit** on Enter/blur → single `mutate(fn)` (push or replace-at-same-index); overlay fades; text appears in world pass.
-3. **Move/Resize** later via **Transform tool** (unified behavior). &#x20;
-
-### 9.3 Stamps (MVP flow)
-
-1. **Place** with Stamp tool → commit stroke-like record with `tool:'stamp'` and `stampId`.
-2. **Transform** later with the Transform tool (same path as strokes).
-
-## 10) Hit-testing (selection & future lasso)
-
-- Keep your current spatial index for strokes; for lasso selection, do a bbox prefilter from Snapshot, then run even-odd point-in-polygon. For text, test center-in-poly (configurable to rect-poly intersect). Resume across frames if needed (you already have resume indexes and budgets). &#x20;
-
-## 11) Presence / awareness
-
-- Presence remains a **screen-space pass** in the overlay loop; authoring previews are world-space. Your overlay loop already draws presence after previews with DPR only. Keep this order.&#x20;
-- Text editing: publish `activity='typing'` + optional `{ editing: { textId } }` hint (soft lock); no authoritative leases in MVP.&#x20;
-
-## 12) Performance & caches
-
-- Reuse your global **stroke Path2D cache** for transform ghosts and eraser dim. Never cache Y references; all preview geometry is derived from the **current Snapshot**’s immutable arrays. &#x20;
-- Keep `10ms / frame` work budgets and resume indices for large selections; degrade ghosts to bbox-only if FPS dips.
-
-## 13) Undo / Redo
-
-- One **transaction per user action**:
-  - Text new/edit = 1 transact
-  - Stamp place = 1 transact
-  - Transform commit = 1 transact (move/scale across N objects)
-
-- This maps perfectly to your UndoManager’s grouping since all writes funnel through a single `mutate(fn)`.&#x20;
-
-## 14) API & helper surface (public)
-
-Implement these helpers to keep the tool logic clean (as captured in your Transform spec; repeated here because they’re the seam between tool and doc):
-
-```ts
-// Selection (polygon variant)
-collectSelectionPoly(snapshot: Snapshot, poly: ReadonlyArray<[number,number]>): SelectionState;
-selectionBBox(snapshot: Snapshot, ids: {strokes: StrokeId[]; texts: TextId[]}): BBox;
-
-// Geometry
-applyUniformScalePoint(p: Vec2, C: Vec2, k: number, d: Vec2): Vec2;
-pointInPolygonEvenOdd(p: Vec2, poly: ReadonlyArray<Vec2>): boolean;
-
-// Array discipline
-findIndexById<T extends { id: string }>(arr: readonly T[], id: string): number;
-replaceAtSameIndex<K extends keyof Snapshot>(key: K, index: number, value: Snapshot[K][number]): void;
-
-// Mutations
-bakeTransform(selection: SelectionState, C: Vec2, k: number, d: Vec2): void;
-commitTextEdit(id: TextId, draft: { content: string; w?: number; h?: number }): void;
-```
-
-## 15) Configuration (defaults)
-
-```ts
-const TRANSFORM_CONFIG = {
-  kMin: 0.1,
-  kMax: 10,
-  ghostAlpha: 0.35,
-  hairlineMinPx: 1,
-  clickDistancePx: 8,
-  clickDwellMs: 150,
-  lasso: {
-    simplifyEpsilonWU: 0.75,
-    minPoints: 8,
-    minAreaPx2: 2500,
-    closeDistancePx: 12,
-    thinnessMax: 50,
-  },
-};
-```
-
-## 16) Acceptance criteria (MVP)
-
-- Text tool drops an overlay editor; commits once to `texts[]`; post-commit, text draws in world pass and participates in Transform selection.&#x20;
-- Stamp tool inserts a stamp (“stroke-like”) and can be transformed by the Transform tool.
-- Transform tool:
-  - Lasso selects strokes, stamps, and text with even-odd semantics, including donut/“P” cases.
-  - Drag inside = move; drag ring or pinch = uniform scale.
-  - Ghosts render at \~0.35 alpha while dragging; marching ants persist until commit/cancel.
-  - **Single atomic commit** replaces items at the same indices; IDs & `createdAt` unchanged.
-  - Overlay previews draw in world space; presence remains screen space.&#x20;
+- **Two-canvas model** remains: base (world) + overlay (preview/presence). Overlay clears fully, draws world previews with the **view transform once**, and draws presence in **screen space** (DPR only). `setPreviewProvider` & `holdPreviewForOneFrame()` are the stable overlay APIs.
+- **Dirty rects for text**: base loop already diffs text bounds for selective invalidation.
+- **Device-UI editing rule**: while TextTool is active, `isTextEditing=true` hides the dock; config changes update the active editor without recreating the tool.
 
 ---
 

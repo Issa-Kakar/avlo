@@ -6,14 +6,11 @@
 **Production Flags:**
 -   `ROOM_TTL_DAYS` default 14 (authoritative, Redis TTL), `AWARENESS_HZ_BASE`: RTC ≈20–30 Hz; WS-only ≈10–13 Hz
 
-**Problem & solution.** Synchronous sketching + quick code execution for demos, teaching, and brainstorming---without accounts, installs, or SSO friction. Link sharing grants edit access; persistence is simple but time-limited; scale is single-node MVP.
-
 **Tech Stack (MVP)** — Frontend (React/TS/Tailwind/Canvas/Monaco), Realtime & Offline (Yjs + y-websocket + y-indexeddb; optional y-webrtc), Execution (JS + Pyodide workers), Persistence (Redis AOF + Postgres metadata), PWA (offline app shell). **Exact versions & infra live in §9 Dependencies.**
-
 
 **Versioning & scripts.** Monorepo with `client` and `server` workspaces; asset bundling copies Vite build into `server/public` for Express to serve.
 
-**Scope (in/out).** In: pen/highlighter/stamps, whole-stroke eraser, "Clear board (for everyone)", cursor trails, users list, copy-link, minimap, PNG export, per-run code execution, installable PWA. Out: auth/permissions, admin tools, recovery of expired rooms, cold storage, partial eraser, shape editing/selection, CDN, multi-node scaling, **CRITICAL: RBUSH DEFERRED**
+**Scope (in/out).** In: pen/highlighter, whole-stroke eraser, "Clear board (for everyone)", cursor trails, users list, copy-link, minimap, PNG export, per-run code execution, installable PWA. Out: auth/permissions, admin tools, recovery of expired rooms, cold storage, partial eraser, CDN, multi-node scaling, **CRITICAL: RBUSH DEFERRED**
 
 **Write Path.** Writes use a mutate(fn) wrapper over yjs.transact; minimal client guards; Undo/Redo via Yjs UndoManager with origin=userId.
 
@@ -222,7 +219,7 @@ interface Meta {
     v: number,                       // schema version (start at 1);
     meta: Y.Map<Meta>,
     strokes: Y.Array<Stroke>,		//append only;
-    texts: Y.Array<TextBlock>,		//immutable once committed;
+    texts: Y.Array<TextBlock>,		//
     code: Y.Map<CodeCell>,
     outputs: Y.Array<Output>		//keep last 10;
   }
@@ -275,7 +272,6 @@ interface Awareness {
 ### 4.2 Timestamp Policy (Global)
 
 **Canonical timestamp formats**:
-
 -   **HTTP/WebSocket JSON**: ISO-8601 UTC strings (e.g., `"2025-08-19T12:34:56Z"`)
 -   **CRDT/Document fields**: `number` type (milliseconds since epoch)
 -   **Examples**:
@@ -290,6 +286,7 @@ interface Awareness {
 - **Scope:** small, **device-local** UI state only (e.g., toolbar, lastSeenScene). **Never** mirror Yjs doc.
 - **Persistence:** `localStorage` key `avlo:vN:ui`; bump `vN` on shape changes; include a `migrate` fn.
 - **Usage:** use selectors to avoid re-renders; keep slices tiny.
+- **Tools in Zustand:** pen, highlighter, text, eraser, pan, select (lasso placeholder).
 -**Last-scene export (device-local).** Track `lastSeenScene` per room in local storage/IDB; offer export of that scene on reconnect via snapshot filtering (preview-only). (Non-authoritative UI state.)
 
 ```
@@ -302,11 +299,8 @@ interface Awareness {
 **Whiteboard tools:**
 -   Pointer-down: preview only; **no write** until pointer-up commit.
 -   Pointer-up: build stroke, assign scene at commit using currentScene, commit inside one transact.
--   Whole-stroke eraser: hit-test via linear bbox scan over the current Snapshot; on hit, delete the entire stroke in a single transaction.
 
-Docked toolbar (left/pinned/expanded by default) with optional auto-hide; device-local toolbar state; keyboard navigable; tools: Pen/Highlighter/Stamps/Text; whole-object eraser; cursor trails with badges; minimal minimap; Undo/Redo via Yjs UndoManager with per-user origin.
-
-**Micro-UI.** Advanced size & hue, text overlay commit once, eraser preview & single-op delete, tooltips with shortcuts, zoom controls, cursor preview.
+Docked toolbar (left/pinned/expanded by default) with optional auto-hide; device-local toolbar state; keyboard navigable; tools: Pen/Highlighter/Text; whole-object eraser; cursor trails with badges; minimal minimap; Undo/Redo via Yjs UndoManager with per-user origin.
 
 **Page management.** **Clear board (for everyone)** appends a scene tick; on ClearBoard we append a tick; the renderer always filters by currentScene. 10 s local Undo window; Clear Board: client debounce ~300 ms; CRDT update is idempotent; no server semantic rate-limit in MVP.; no page history. **Scene tick** excluded from undo/redo.
 
@@ -318,9 +312,7 @@ Docked toolbar (left/pinned/expanded by default) with optional auto-hide; device
 
 **My Rooms.** Device-local list with provisional/published; delete only removes local entry; per-room `Y.Doc` persists until explicit **Delete local copy**.
 
-**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap.
-
-**Collaboration Mode.** Segmented control: **Server (default)** / **Peer Mode (P2P)**; persist per device; show header badge. 
+**UI requirements (non-visual).** 70/30 split, resizer, toggable IDE, copy-link toast, central toasts, dark mode (whiteboard and exports white), accessibility on ranges/popovers, connection indicator (Online/Offline/Read-only), stats pill at 13 MB and banner at 15 MB cap. **Collaboration Mode.** Segmented control: **Server (default)** / **Peer Mode (P2P)**; persist per device; show header badge. 
 
 **Undo/Redo**: Yjs UndoManager with per-user origin via origin = userId; **scene_tick** excluded.
 
@@ -335,9 +327,7 @@ Global Conventions
 7\. Non-Functional Requirements
 ===============================
 
-**Performance.** Render at 60 FPS via dirty-rect redraw + culling; publish measured p50/p95; **target** (non-normative) ≤ 125 ms p95 with ~50 users and ≤ 15 drawers.
-
-**Scalability.** Single-node MVP; multi-node later with pub/sub for Yjs.
+**Performance.** Render at 60 FPS via dirty-rect redraw + culling; publish measured p50/p95; **target** (non-normative) ≤ 125 ms p95 with ~100 users and ≤ 15 drawers.
 
 **Security.** CSP profile, HSTS after TLS stable; `nosniff`; `no-referrer`; WS frame cap 2 MB; no session tokens; upgrades validated with Origin + roomId; **Origin allowlist** config and 403 behavior. password in WebrtcProvider encrypts signaling and prevents MITM on public signaling servers; recommend a room-scoped HMAC.
 
@@ -347,15 +337,12 @@ Global Conventions
 
 **Transport runtime policy (additions).** Auto mode (default): start WS immediately; for rooms ≤ 12 peers, also bring up RTC and probe; keep only on a clear win; drop RTC if peers > 15, CPU hot, or ICE troubled. Direct mode: code pairing, hard cap 8 peers, same drop rules.
 
- **Async-apply contract (MVP pivot).** We **do not** use any svKey "two-line" recheck in the MVP. Cosmetic async (exports, hydrate) proceeds without an svKey guard; if the board changes mid-task, we accept that the result may be slightly stale. Awareness characteristics. Awareness is ephemeral, non-authoritative, lossy under backpressure; sequence-based drop rules apply. 
-
 8\. **Data Architecture & Flows**
 =================================
 
 **Stores.** Yjs doc (authoritative) → Redis TTL; Awareness → WS only; IndexedDB → per-room `Y.Doc`, **My Rooms**, aliases; localStorage → device-local UI state (toolbar, etc.). PostgreSQL → non-authoritative metadata.
 
-
-**Canvas & rendering.** LOD thresholds; render order (strokes → stamps/shapes → text); eraser hit-testing via linear bbox scan over the Snapshot; no auto-pan on remote actions.
+**Canvas & rendering.** LOD thresholds; render order (strokes → text); eraser hit-testing via spatialIndex in Snapshot; no auto-pan on remote actions.
 
 **Data transforms.** gzip level 4 before Redis; `size_bytes` equals last persisted compressed payload size. **Privacy/retention.** TTL extends only on accepted writes; awareness/views do not extend; expiry deletes permanently.
 
@@ -570,12 +557,12 @@ interface StrokeView {
     -   **Scene tick (Clear Board)**: Both canvases perform a full clear before drawing the new scene.
     -   **No auto-pan** due to remote actions.
     -   **Invalidation policy:** Base canvas invalidates only when `docVersion` changes (actual Y.Doc updates), uses InvalidateWorld and bbox diffing, lets DirtyRectTracker judge whether to promote to full clear. Overlay canvas invalidates on any presence or preview change.
-    -   **Hit-testing** uses a linear bbox scan over the current **Snapshot** (no live Y access).
-    -   **Draw order:** Base canvas: background → world layers (strokes → stamps/shapes → text) → authoring overlays → HUD. Overlay canvas: preview (world-space pass) → presence (screen-space pass).
+    -   **Hit-testing** uses a spatialIndex 
+    -   **Draw order:** Base canvas: background → world layers (strokes → text) → authoring overlays → HUD. Overlay canvas: preview (world-space pass) → presence (screen-space pass).
 
 **Base canvas layers:**
 1.  Background (export uses white background).
-2.  World layers: strokes → stamps/shapes → text.
+2.  World layers: strokes → text.
 3.  Authoring overlays: selection boxes/handles, text caret/selection.
 4.  HUD/UI overlays: minimap, update prompts, toasts (never included in export).
 
@@ -664,49 +651,14 @@ Export rule: include base layers (1)--(2); exclude authoring overlays, HUD, and 
 -   **Export path**:
 -   If export prep exceeds **2 s**, fall back to viewport export with toast; never block UI thread longer than **16 ms** bursts.
 
-23. Testing Requirements
-========================
+23\. Testing Requirements: **Registry Pattern for Tests:**: All tests involving RoomDocManager MUST use the registry pattern to ensure proper isolation and cleanup:
 
-**Registry Pattern for Tests:**
 
-All tests involving RoomDocManager MUST use the registry pattern to ensure proper isolation and cleanup:
-
-```typescript
-// ✅ CORRECT - Use createTestManager helper
-const { manager, cleanup } = createTestManager(roomId);
-// ... test code ...
-cleanup();
-
-// ❌ WRONG - Never instantiate directly
-const manager = new RoomDocManagerImpl(roomId); // NEVER DO THIS
-```
-
-This pattern ensures:
-- Complete isolation between tests (each gets its own registry)
-- Proper Y.Doc cleanup (prevents memory leaks)
-
-24. UI Integration Patterns
+24\. UI Integration Patterns
 ===========================
+**Stable Primitive Snapshots for Gate Subscription:**: To prevent infinite re-render loops with `useSyncExternalStore`, the `subscribeGates` method uses encoded string primitives, use queueMicrotask to defer callback execution, 150ms debounce prevents UI flicker during rapid gate changes:
 
-**Stable Primitive Snapshots for Gate Subscription:**
-
-To prevent infinite re-render loops with `useSyncExternalStore`, the `subscribeGates` method uses encoded string primitives:
-
-```typescript
-// Encode gates as stable string primitive: "0|1|0|1|1"
-type GateSnapshot = `${0|1}|${0|1}|${0|1}|${0|1}|${0|1}`;
-
-// Use queueMicrotask to defer callback execution
-const subscribe = (onStoreChange: () => void) => {
-  return room.subscribeGates(() => queueMicrotask(onStoreChange));
-};  // 150ms debounce prevents UI flicker during rapid gate changes
 ```
-
-**Routing Structure (Post-Phase 6):**
-
-- `/` → Test harness with hardcoded 'test-room-001'
-- `/room/:roomId` → Dynamic room pages with full UI
-- `/test` → Alternative test harness path
 
 25. Awareness Cursor Trail Implementation
 ==========================================
@@ -775,7 +727,7 @@ interface EraserState {
 
 **Commit Flow (Atomic Delete):**
 ```typescript
-roomDoc.mutate((ydoc) => {
+this.room.mutate((ydoc) => {
   const root = ydoc.getMap('root');
   const yStrokes = root.get('strokes') as Y.Array<any>;
   const yTexts = root.get('texts') as Y.Array<any>;
@@ -849,6 +801,164 @@ export interface EraserPreview {
 
 ---
 
-# OVERVIEW\.MD — Proposed Update (Phase 9/10)
+25\. Text Tool — End-to-end behavior 
+===========================
+-Let users place and edit text with a DOM editor that visually matches final world-space rendering, committing atomically to `texts[]` on Enter/blur. Rendering is world-space canvas text; no per-keystroke CRDT traffic.
+**Layering & hosts.** We mount a DOM overlay “editor host” above both canvases. The host is absolutely positioned, pointer-transparent by default; individual editor elements temporarily enable pointer events when active.
+**Coordinate chain.** We translate stored **world** coordinates to **screen (CSS px)** and then to **host-relative** DOM coordinates; all editor dimensions offset by scaled border/padding to remain visually aligned while zooming/panning. On pan/zoom, the tool listens for view changes and repositions/rescales live.
 
-> Scope: add **Text**, **Stamps**, and a **Transform** tool that operates on strokes, stamps, and text. Keep all Phase-7/8 contracts (immutable snapshots, authoring overlays in world space, single atomic commits). Rotation & non-uniform scale are non-goals for MVP (can come later).
+**Activation & lifecycle.**
+- **Place**: pointer-down stores world `(x,y)` and spawns a DOM editor at that anchor; state transitions `idle → placing → editing`. (Awareness can mark soft “typing” status.)
+- **Edit**: entirely local in the DOM; sizing may be direct (user resize) or auto-measured.
+- **Commit**: Enter/blur → measure editor’s client rect, convert `(w,h)` to world units by dividing by current `view.scale`, then append/replace a TextBlock in `texts[]` via a single `mutate(fn)`.
+    
+**Style & size source.** Text color/size come from device-local UI state; when the Text Tool is actively editing, the Color/Size dock hides; size range for text defaults to 10–48. The tool supports **live config updates without recreation**.
+**Overlay/preview discipline.** The DOM editor **is** the preview; TextTool returns `null` for overlay preview to avoid double rendering. (World overlays remain for other tools.)
+**Rendering after commit.** Text is rendered in the world pass directly on the base canvas using the committed `{x,y,w,h,content,color,size}`. The canvas layer uses simple fill text with `textBaseline='top'`; viewport culling applies.
+**Invalidation & diffs.** Base canvas rebuilds dirty regions by diffing previous vs next snapshot bounds for texts just like strokes; overlay is invalidated by the overlay loop when needed.
+
+26\. **Selection Tool** Lasso (selection) — WIP summary
+===========================
+### Goals & Principles
+- **Arbitrary shapes.** The selection polygon can be any shape (e.g., “Croatia shape,” donut letters like **P**) and uses an **even-odd** point-in-polygon test to respect holes. World-space throughout.
+- **No handles.** Move and scale from **anywhere inside** the selection; no edge/corner affordances. 
+- **Uniform scaling only.** Resizing is always isotropic (no non-uniform scale, no shear). 
+- **Clean preview.** During active transform there are **no ghosts** and no ants; the base filters out selected items and the overlay draws only the live transformed copies.
+- **Atomic commit.** One mutation on pointer-up replaces items **at the same indices** (similar with eraser behavior).
+- **Local preview, global commit.** Other users do not see in-progress motion; they see only the post-commit result.
+
+---
+### State Machine (simplified, normative)
+
+`idle → lassoCapture → selected → transforming(move|scale) → commit → selected                                                 ↘ (Esc) cancel → selected (selected) --(click-away / tool-change / new-lasso)→ idle`
+
+- Enter `transforming` on the **first move** after a drag begins inside the selection (do not wait for a distance threshold). While transforming: **ants hidden** and preview will have the **canvas base filters** selected IDs.
+
+---
+
+### Capture Phase (auto-close + simplify)
+
+1. **Pointer-down** begins freehand capture in **world** coords.
+2. **Pointer-move** accumulates points with RAF coalescing.
+3. **Auto-close** when the last point comes within **`12px_screen`** of the first point (convert via `12 / view.scale`) and you have ≥ 8 points.
+    
+4. **Pointer-up**:   
+    - Simplify with Douglas–Peucker (ε tuned, e.g., `ε≈0.75WU`).      
+    - Store as `lassoPolygon:number[]` (world).       
+    - **Hit-test** using two-phase selection:       
+        - Phase A: query **spatial index** with the polygon’s **AABB** to get candidate IDs.            
+        - Phase B: per candidate, run **even-odd** PIP.            
+    - **Selection rule:**      
+        - **Strokes:** selected if **any** point lies inside (even-odd).           
+        - **Texts:** selected if the **text rect center** lies inside (even-odd).       
+
+---
+
+### Selection Display (marching ants)
+- Draw the **simplified** polygon on the **overlay** in **world** space with an animated dash.
+- **Visibility:** ants show only when `mode==='selected'`; ants **hide** whenever `mode==='transforming'`.
+- **Stroke width:** specify in **world units** (e.g., `antsWidthWU = 1.5`), so ants look **smaller when zoomed out, larger when zoomed in**. (Optional: clamp to a minimum of ~0.5px screen if needed for visibility.) 
+- **Color/dash:** e.g., vibrant blue; `ctx.setLineDash([5,5])` with time-based offset.
+
+---
+
+### Input Map (move vs scale; accessibility)
+- **Move:** **Left-drag** (button `0`) anywhere inside the selection.
+- **Uniform Scale:**  
+    - **Right-drag** (button `2`) **or** **Shift+Left-drag** (trackpad/stylus fallback).       
+    - Suppress the context menu on right-drag.
+- **Keyboard:** **Esc** cancels the current transform (revert to selected); **Enter** commits (mirrors pointer-up).
+---
+
+### Transform Semantics (no handles; radial uniform model)
+**Transform origin.** The origin is the **center of the selection AABB**, captured **once** at transform start.
+
+**Move (left-drag):** `dx = pointerNow.x - pointerStart.x dy = pointerNow.y - pointerStart.y overlayTransform = { origin:center, dx, dy, scale:1 }`
+
+**Uniform scale (right-drag or Shift+Left-drag):** `r0 = max(distance(center, pointerStart), r_eps_world)   // r_eps_world from ~8px_screen r1 = distance(center, pointerNow) s  = clamp(r1 / r0, s_min, s_max)                       // e.g., [0.10, 10.0] overlayTransform = { origin:center, dx:0, dy:0, scale:s }`
+This **radial** definition guarantees uniform scaling **regardless of where** you click inside the polygon, with no handles required.
+
+**Preview drawing during transform:**
+- On entering `transforming`, **lock** the selection **ID set** and capture a **drag-baseline copy** of each selected object’s geometry/styles.
+- The **base** renderer **filters out** those IDs.
+- The **overlay** draws only the **transformed baseline copies** using `overlayTransform`.
+- Ants remain **hidden** until commit/cancel.
+
+---
+
+### What gets transformed (normative)
+
+- **Strokes:**   
+    - **Geometry:** transform **all points** around `origin` by the translation/scale.     
+    - **Style:** multiply `stroke.style.size` by `scale` (uniform thickness change).
+      
+- **TextBlocks (treated as objects):** 
+    - **Rect:** `(x,y,w,h)` translated/scaled around `origin`.  
+    - **Font size:** `text.size *= scale` (world units), clamped to a sane range (e.g., `[8,256]`).     
+    - **Implication for editing:** the **scaled** `text.size` is **persisted**. Later text edits (delete/insert text, or reflow) **replace at the same index** and **preserve** the scaled size as the authoritative value. This ensures the “previously committed rendered px” effect carries forward via the world→screen transform at the current zoom.
+
+---
+
+### Commit (atomic; replace-in-place)
+- **When:** pointer-up or **Enter**.
+  
+- **How:** a single `mutate(fn)` that, for each selected ID:  
+    1. Finds the current **array index**.        
+    2. **Deletes** originals in **descending** index order.   
+    3. **Inserts** transformed versions at the **same indices**.
+        
+- **After commit:**  
+    - Recompute the selection polygon by applying the same transform to `lassoPolygon`.       
+    - **Ants reappear** around the new polygon. 
+    - Selection remains active (`mode='selected'`).  
+    - Hold the transformed overlay for **one frame** while the base catches up, then clear.
+---
+
+### Concurrency & consistency
+- The **selection ID set** and **drag-baseline geometry** are captured at transform start and **do not change** mid-drag.
+- If remote edits delete a selected item during the drag, DO NOTHING!, it is silently **skipped** at commit.
+- **Z-order:** Replace-in-place minimizes drift; trivial reordering under concurrent changes is acceptable.
+
+---
+
+### Thresholds & constants (suggested starting points)
+- Auto-close proximity: **`12px_screen`** (converted to world with `1/view.scale`).   
+- Simplify ε: **`~0.75WU`** for capture polygon.   
+- Scale clamps: **`s_min=0.10`, `s_max=10.0`**.    
+- `r_eps_world`: distance equivalent of **`8px_screen`** at gesture start.
+- Ants stroke width: **`antsWidthWU = 1.5`** (world), optional min **0.5px** screen clamp.
+    
+---
+
+### Integration notes
+- **World-overlay discipline** is identical to other tools: overlay receives the same **view transform once**, draws in world space, and remains purely local. Base shows only committed state.
+- **Spatial index**: lasso uses the existing index used by eraser/drawing (AABB prefilter → precise PIP).
+- **No new types.** Lasso adds a preview variant but no new world objects.
+- **Tool switching:** selection clears on tool change; starting a new lasso immediately exits `selected` and enters `lassoCapture`.
+    
+---
+
+### Preview union (for completeness)
+`interface LassoPreview {   kind: 'lasso';   polygon: number[]; // simplified world poly   selectedIds: { strokes: string[]; texts: string[] };   isDragging: boolean; // hides ants when true   transform?: { dx: number; dy: number; scale: number; origin: {x:number;y:number} }; }`
+
+---
+
+27\. Perfect Shapes (lock → adjust in preview → commit on pointer-up)
+===========================
+What: During freehand capture, we can auto-recognize line, rectangle, square, equilateral triangle, circle and preview a canonical version of the shape.
+When it triggers: If the recognizer’s best candidate stays above threshold for 350 ms dwell, we lock to that shape and swap the overlay preview from scribble → perfect shape. No instant locks.
+Gesture model: Exactly like strokes.
+While pointer is down: show/update the perfect-shape overlay only.
+On pointer-up: commit once by synthesizing a polyline and writing a normal stroke. No Esc/Enter; no cancel.
+Adjustment while down:
+Line: anchor at first point p0; live endpoint p1 = pointerNow (no angle snap).
+Rect/Square/Triangle/Circle: anchor at center; scale uniformly by k = clamp(dist(center, pointerNow)/r0, kMin, kMax) where r0 is the center→pointer distance at lock (with an r_eps_world floor).
+Triangle: equilateral only; orientation fixed at lock; size scales with k.
+Rendering: Overlay renders the canonical geometry in world space; we include a preview bbox for dirty-rect invalidation and (optionally) hold the last preview for one frame at commit to avoid flicker.
+Commit path: Same as strokes → simplify → budget/size checks → bbox → single mutate. Result is a normal Stroke (no replace-in-place; the scribble is never staged).
+Defaults: dwell 350 ms; r_eps_world ≈ 8 px (at lock, converted to world); kMin=0.10, kMax=10.0; circle polyline baseline 32 segments.
+
+---
+
+
+

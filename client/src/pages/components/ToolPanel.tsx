@@ -28,15 +28,8 @@ function ToolButton({ tool, isActive, onClick, tooltip, children }: ToolButtonPr
 }
 
 export function ToolPanel({ onToast }: ToolPanelProps) {
-  const {
-    activeTool,
-    toolbarPos,
-    editorCollapsed,
-    stamp,
-    setActiveTool,
-    setToolbarPosition,
-    setStampSettings,
-  } = useDeviceUIStore();
+  const { activeTool, toolbarPos, editorCollapsed, setActiveTool, setToolbarPosition } =
+    useDeviceUIStore();
 
   const toolbarRef = useRef<HTMLDivElement>(null);
   const dragHandleRef = useRef<HTMLDivElement>(null);
@@ -153,7 +146,7 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
   const handleToolClick = (tool: Tool) => {
     if (tool === 'pen' || tool === 'highlighter') {
       setActiveTool(tool);
-    } else if (tool === 'eraser' || tool === 'text' || tool === 'stamp' || tool === 'pan') {
+    } else if (tool === 'eraser' || tool === 'text' || tool === 'select' || tool === 'pan') {
       setActiveTool(tool);
       onToast?.(`${tool.charAt(0).toUpperCase() + tool.slice(1)} selected`);
     }
@@ -233,28 +226,27 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
 
       <div className="tool-divider" />
 
-      {/* Stamps Tools */}
+      {/* Select Tool */}
       <ToolButton
-        tool="stamp"
-        isActive={activeTool === 'stamp'}
-        onClick={() => handleToolClick('stamp')}
-        tooltip="Stamps (V)"
+        tool="select"
+        isActive={activeTool === 'select'}
+        onClick={() => handleToolClick('select')}
+        tooltip="Select Tool (V)"
       >
         <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="24"
-          height="24"
+          className="icon"
+          width="20"
+          height="20"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          className="lucide lucide-shapes-icon lucide-shapes"
+          strokeWidth="2"
         >
-          <path d="M8.3 10a.7.7 0 0 1-.626-1.079L11.4 3a.7.7 0 0 1 1.198-.043L16.3 8.9a.7.7 0 0 1-.572 1.1Z" />
-          <rect x="3" y="14" width="7" height="7" rx="1" />
-          <circle cx="17.5" cy="17.5" r="3.5" />
+          {/* Lasso selection icon */}
+          <path
+            d="M 4 4 L 10 4 L 10 10 M 10 10 L 16 10 L 16 16 M 16 16 L 10 16 L 10 20 L 4 20 L 4 4"
+            strokeDasharray="2 2"
+          />
         </svg>
       </ToolButton>
 
@@ -297,41 +289,6 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
       </button>
 
       {/* Tool Settings Panels */}
-
-      {activeTool === 'stamp' && (
-        <div className="tool-settings">
-          <div className="tool-divider" />
-          <div className="stamp-picker">
-            {['circle', 'square', 'triangle', 'star', 'heart'].map((shape) => (
-              <button
-                key={shape}
-                className={`stamp-btn ${stamp.selected === shape ? 'active' : ''}`}
-                onClick={() => setStampSettings({ selected: shape as any })}
-                aria-label={`Select ${shape} stamp`}
-              >
-                {shape === 'circle' && '○'}
-                {shape === 'square' && '□'}
-                {shape === 'triangle' && '△'}
-                {shape === 'star' && '☆'}
-                {shape === 'heart' && '♡'}
-              </button>
-            ))}
-          </div>
-          <label className="setting-row">
-            <span className="setting-label">Size</span>
-            <input
-              type="range"
-              min={0.5}
-              max={3}
-              step={0.1}
-              value={stamp.scale}
-              onChange={(e) => setStampSettings({ scale: Number(e.target.value) })}
-              className="setting-slider"
-            />
-            <span className="setting-value">{(stamp.scale * 100).toFixed(0)}%</span>
-          </label>
-        </div>
-      )}
     </div>
   );
 }

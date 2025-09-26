@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'stamp' | 'pan' | 'select';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select';
 
 export interface ToolSettings {
   size: number;
@@ -16,11 +16,10 @@ interface DeviceUIState {
   highlighter: ToolSettings;
   eraser: { size: number };
   text: { size: number; color: string };
-  stamp: {
-    selected: 'circle' | 'square' | 'triangle' | 'star' | 'heart';
-    scale: number;
-    color: string;
-  }; // NEW: stamp settings
+  select: {
+    // Placeholder for future lasso implementation
+    enabled: boolean;
+  };
 
   // UI state
   editorCollapsed: boolean;
@@ -39,26 +38,12 @@ interface DeviceUIState {
   setHighlighterSettings: (settings: Partial<ToolSettings>) => void;
   setEraserSize: (size: number) => void;
   setTextSettings: (settings: Partial<{ size: number; color: string }>) => void;
-  setStampSettings: (
-    settings: Partial<{
-      selected: 'circle' | 'square' | 'triangle' | 'star' | 'heart';
-      scale: number;
-      color: string;
-    }>,
-  ) => void; // NEW: stamp setter
+  setSelectSettings: (settings: Partial<DeviceUIState['select']>) => void;
   toggleEditor: () => void;
   setToolbarPosition: (pos: { x: number; y: number }) => void;
   updateLastSeenScene: (roomId: string, scene: number) => void;
   setCollaborationMode: (mode: 'server' | 'peer') => void;
   setIsTextEditing: (editing: boolean) => void; // Track text editing state
-}
-
-// Export ToolbarState for backward compatibility
-export interface ToolbarState {
-  tool: Tool;
-  color: string;
-  size: number;
-  opacity: number;
 }
 
 export const useDeviceUIStore = create<DeviceUIState>()(
@@ -70,7 +55,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
       eraser: { size: 10 },
       text: { size: 16, color: '#0F172A' },
-      stamp: { selected: 'circle', scale: 1, color: '#666666' }, // NEW: stamp defaults
+      select: { enabled: false },
 
       editorCollapsed: false,
       toolbarPos: { x: 24, y: 24 },
@@ -102,9 +87,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           text: { ...state.text, ...settings },
         })),
 
-      setStampSettings: (settings) =>
+      setSelectSettings: (settings) =>
         set((state) => ({
-          stamp: { ...state.stamp, ...settings },
+          select: { ...state.select, ...settings },
         })),
 
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
@@ -137,6 +122,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
             eraser: { size: 10 },
             text: { size: 16, color: '#0F172A' },
+            select: { enabled: false },
             editorCollapsed: false,
             toolbarPos: { x: 24, y: 24 },
             lastSeenSceneByRoom: oldState.lastSeenSceneByRoom || {},

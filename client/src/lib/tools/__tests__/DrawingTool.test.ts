@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { DrawingTool } from '../DrawingTool';
-import type { DeviceUIState } from '../types';
+import type { ToolSettings } from '@/stores/device-ui-store';
 import {
   createTestManager,
   waitForSnapshot,
@@ -25,14 +25,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#FF0000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Verify initial state
       expect(tool.isDrawing()).toBe(false);
@@ -80,22 +79,21 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#FF0000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Start drawing with red pen
       tool.startDrawing(1, 0, 0);
 
       // Change device UI (simulating user changing tool mid-gesture)
-      deviceUI.color = '#0000FF';
-      deviceUI.size = 10;
-      deviceUI.tool = 'highlighter';
+      settings.color = '#0000FF';
+      settings.size = 10;
+      // Note: We can't change the tool type after construction with the new API
 
       // Continue drawing and commit
       tool.addPoint(100, 100);
@@ -116,14 +114,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'highlighter',
+      const settings: ToolSettings = {
         color: '#FFFF00',
         size: 20,
         opacity: 0.8, // This should be overridden
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'highlighter', 'test-user', undefined);
 
       tool.startDrawing(1, 0, 0);
       tool.commitStroke(100, 100);
@@ -142,14 +139,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       tool.startDrawing(1, 0, 0);
       tool.addPoint(100, 100);
@@ -173,14 +169,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Single point (click without move)
       tool.startDrawing(1, 100, 100);
@@ -198,8 +193,7 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
@@ -214,7 +208,7 @@ describe('DrawingTool integration tests', () => {
 
       frames.advanceFrame(0);
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Draw stroke - should be assigned scene 1 (after the tick we added)
       tool.startDrawing(1, 0, 0);
@@ -232,14 +226,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Create a massive stroke
       tool.startDrawing(1, 0, 0);
@@ -274,14 +267,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#FF0000',
         size: 8,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // No preview initially
       expect(tool.getPreview()).toBeNull();
@@ -312,8 +304,7 @@ describe('DrawingTool integration tests', () => {
       const { manager, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 10,
         opacity: 1,
@@ -321,7 +312,7 @@ describe('DrawingTool integration tests', () => {
 
       const invalidations: Array<[number, number, number, number]> = [];
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', (bounds) => {
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', (bounds) => {
         invalidations.push(bounds);
       });
 
@@ -351,8 +342,7 @@ describe('DrawingTool integration tests', () => {
       const { manager, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
@@ -360,7 +350,7 @@ describe('DrawingTool integration tests', () => {
 
       const invalidations: Array<[number, number, number, number]> = [];
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', (bounds) => {
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', (bounds) => {
         invalidations.push(bounds);
       });
 
@@ -392,14 +382,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Try to draw
       tool.startDrawing(1, 0, 0);
@@ -419,14 +408,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, frames, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       tool.startDrawing(1, 0, 0);
       tool.commitStroke(100, 100);
@@ -451,14 +439,13 @@ describe('DrawingTool integration tests', () => {
         meta.delete('scene_ticks');
       });
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       // Try to draw
       tool.startDrawing(1, 0, 0);
@@ -474,14 +461,13 @@ describe('DrawingTool integration tests', () => {
       const { manager, cleanup: testCleanup } = createTestManager('test-room');
       cleanup = testCleanup;
 
-      const deviceUI: DeviceUIState = {
-        tool: 'pen',
+      const settings: ToolSettings = {
         color: '#000000',
         size: 4,
         opacity: 1,
       };
 
-      const tool = new DrawingTool(manager, deviceUI, 'test-user', undefined);
+      const tool = new DrawingTool(manager, settings, 'pen', 'test-user', undefined);
 
       tool.startDrawing(1, 0, 0);
       tool.addPoint(100, 100);

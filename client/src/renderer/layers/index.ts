@@ -8,7 +8,6 @@ export { drawStrokes, clearStrokeCache } from './strokes';
 
 // Import new implementations
 export { drawText } from './text';
-import { drawStamps } from './stamps';
 
 // Layer function signatures - all are stubs in Phase 3.3
 
@@ -26,13 +25,13 @@ export function drawBackground(
 }
 
 export function drawShapes(
-  ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  view: ViewTransform,
-  viewport: ViewportInfo,
+  _ctx: CanvasRenderingContext2D,
+  _snapshot: Snapshot,
+  _view: ViewTransform,
+  _viewport: ViewportInfo,
 ): void {
-  // Phase 9: Stamps rendering
-  drawStamps(ctx, snapshot, view, viewport);
+  // Placeholder for future shape rendering
+  // Stamps have been removed in favor of perfect shapes
 }
 
 // drawText is now imported from './text'

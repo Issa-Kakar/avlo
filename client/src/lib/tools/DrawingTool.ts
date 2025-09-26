@@ -3,7 +3,8 @@ import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
 import { STROKE_CONFIG, ROOM_CONFIG } from '@avlo/shared';
 import { simplifyStroke, calculateBBox, estimateEncodedSize } from './simplification';
-import type { DrawingState, PreviewData, DeviceUIState } from './types';
+import type { DrawingState, PreviewData } from './types';
+import type { ToolSettings } from '@/stores/device-ui-store';
 
 // These constants are imported from @avlo/shared config
 // See Step 7 for the values to add to /packages/shared/src/config.ts
@@ -11,7 +12,8 @@ import type { DrawingState, PreviewData, DeviceUIState } from './types';
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
   private room: IRoomDocManager; // Use interface, not implementation
-  private deviceUI: DeviceUIState;
+  private settings: ToolSettings;
+  private toolType: 'pen' | 'highlighter';
   private userId: string; // Stable user ID for all strokes from this tool instance
 
   // RAF coalescing
@@ -24,12 +26,14 @@ export class DrawingTool {
 
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
-    deviceUI: DeviceUIState,
+    settings: ToolSettings,
+    toolType: 'pen' | 'highlighter',
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
   ) {
     this.room = room;
-    this.deviceUI = deviceUI;
+    this.settings = settings;
+    this.toolType = toolType;
     this.userId = userId; // Store the stable ID
     this.onInvalidate = onInvalidate;
     this.resetState();
@@ -41,10 +45,10 @@ export class DrawingTool {
       pointerId: null,
       points: [],
       config: {
-        tool: 'pen',
-        color: '#000000',
-        size: 4,
-        opacity: 1,
+        tool: this.toolType,
+        color: this.settings.color,
+        size: this.settings.size,
+        opacity: this.settings.opacity ?? (this.toolType === 'highlighter' ? 0.25 : 1),
       },
       startTime: 0,
     };
@@ -52,8 +56,7 @@ export class DrawingTool {
   }
 
   canStartDrawing(): boolean {
-    const tool = this.deviceUI.tool;
-    return !this.state.isDrawing && (tool === 'pen' || tool === 'highlighter');
+    return !this.state.isDrawing; // Tool type already validated in constructor
   }
 
   // PointerTool interface methods for polymorphic handling with EraserTool
@@ -100,13 +103,13 @@ export class DrawingTool {
       pointerId,
       points: [worldX, worldY],
       config: {
-        tool: this.deviceUI.tool,
-        color: this.deviceUI.color,
-        size: this.deviceUI.size,
+        tool: this.toolType,
+        color: this.settings.color,
+        size: this.settings.size,
         opacity:
-          this.deviceUI.tool === 'highlighter'
+          this.toolType === 'highlighter'
             ? STROKE_CONFIG.HIGHLIGHTER_DEFAULT_OPACITY
-            : this.deviceUI.opacity,
+            : (this.settings.opacity ?? 1),
       },
       startTime: Date.now(),
     };
@@ -168,14 +171,15 @@ export class DrawingTool {
     }
 
     return {
-      kind: 'stroke',  // Add discriminant for union type
+      kind: 'stroke', // Add discriminant for union type
       points: this.state.points,
       tool: this.state.config.tool,
       color: this.state.config.color,
       size: this.state.config.size,
-      opacity: this.state.config.tool === 'pen'
-        ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY        // 0.35 for pen preview
-        : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY,  // 0.15 for highlighter preview (lighter to prevent flicker)
+      opacity:
+        this.state.config.tool === 'pen'
+          ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY // 0.35 for pen preview
+          : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY, // 0.15 for highlighter preview (lighter to prevent flicker)
       bbox: this.lastBounds,
     };
   }

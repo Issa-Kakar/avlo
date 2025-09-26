@@ -12,12 +12,10 @@ import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
-import { StampTool } from '@/lib/tools/StampTool';
-import { toolbarToDeviceUI } from '@/lib/tools/types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 
 // Unified interface for all pointer tools
-type PointerTool = DrawingTool | EraserTool | TextTool | StampTool;
+type PointerTool = DrawingTool | EraserTool | TextTool;
 
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
@@ -132,7 +130,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Replace single stageRef with two stages
   const baseStageRef = useRef<CanvasStageHandle>(null);
   const overlayStageRef = useRef<CanvasStageHandle>(null);
-  const editorHostRef = useRef<HTMLDivElement>(null); // NEW: DOM overlay for text/stamps
+  const editorHostRef = useRef<HTMLDivElement>(null); // NEW: DOM overlay for text
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
   const toolRef = useRef<PointerTool>();
@@ -158,7 +156,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
   // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter, eraser, text, stamp } = useDeviceUIStore();
+  const { activeTool, pen, highlighter, eraser, text } = useDeviceUIStore();
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref
@@ -504,15 +502,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         () => viewTransformRef.current,
       );
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-      // Use adapter only for DrawingTool
-      const adaptedUI = toolbarToDeviceUI({
-        tool: activeTool,
-        color: activeTool === 'pen' ? pen.color : highlighter.color,
-        size: activeTool === 'pen' ? pen.size : highlighter.size,
-        opacity: activeTool === 'pen' ? pen.opacity || 1 : highlighter.opacity || 0.25,
-      });
+      // Pass settings directly to DrawingTool (no adapter needed)
+      const settings = activeTool === 'pen' ? pen : highlighter;
 
-      tool = new DrawingTool(roomDoc, adaptedUI, userId, (_bounds) => {
+      tool = new DrawingTool(roomDoc, settings, activeTool, userId, (_bounds) => {
         // During drawing, invalidate overlay (preview is there)
         // The overlay will full-clear anyway, but this triggers a frame
         overlayLoopRef.current?.invalidateAll();
@@ -527,14 +520,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           getView: () => viewTransformRef.current,
           getEditorHost: () => editorHostRef.current, // Pass DOM overlay ref
         },
-        () => overlayLoopRef.current?.invalidateAll(),
-      );
-    } else if (activeTool === 'stamp') {
-      // Note: singular 'stamp'
-      tool = new StampTool(
-        roomDoc,
-        stamp, // From Zustand store (includes selected, scale, color)
-        userId,
         () => overlayLoopRef.current?.invalidateAll(),
       );
     } else {
@@ -678,7 +663,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     highlighter,
     eraser,
     text,
-    stamp,
     stageReady,
     screenToWorld,
     worldToClient,

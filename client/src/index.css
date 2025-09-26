@@ -70,33 +70,3 @@
   border-radius: 4px;
   cursor: pointer;
 }
-
-.stamp-picker {
-  display: flex;
-  gap: 4px;
-  padding: 8px 4px;
-  justify-content: space-around;
-}
-
-.stamp-btn {
-  width: 28px;
-  height: 28px;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
-  background: white;
-  color: #64748b;
-  font-size: 16px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.stamp-btn:hover {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-}
-
-.stamp-btn.active {
-  background: #3b82f6;
-  color: white;
-  border-color: #3b82f6;
-}
