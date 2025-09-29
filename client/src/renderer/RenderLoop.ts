@@ -375,7 +375,7 @@ export class RenderLoop {
 
       drawBackground(ctx, snapshot, view, augmentedViewport);
       drawStrokes(ctx, snapshot, view, augmentedViewport); // Phase 4: actual stroke rendering
-      drawShapes(ctx, snapshot, view, augmentedViewport); // Future: stamps/shapes
+      drawShapes(ctx, snapshot, view, augmentedViewport); // NO LONGER IMPLEMENTED: stamps/shapes, DORMANT PLACEHOLDER
       drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
 
       // Authoring overlay - for future selection/handles

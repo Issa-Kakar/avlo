@@ -284,7 +284,7 @@ interface Awareness {
 ### Zustand (policy)
 
 - **Scope:** small, **device-local** UI state only (e.g., toolbar, lastSeenScene). **Never** mirror Yjs doc.
-- **Persistence:** `localStorage` key `avlo:vN:ui`; bump `vN` on shape changes; include a `migrate` fn.
+- **Persistence:** `localStorage` key `avlo:vN:ui`; bump `vN` if needed; include a `migrate` fn.
 - **Usage:** use selectors to avoid re-renders; keep slices tiny.
 - **Tools in Zustand:** pen, highlighter, text, eraser, pan, select (lasso placeholder).
 -**Last-scene export (device-local).** Track `lastSeenScene` per room in local storage/IDB; offer export of that scene on reconnect via snapshot filtering (preview-only). (Non-authoritative UI state.)
@@ -658,10 +658,9 @@ Export rule: include base layers (1)--(2); exclude authoring overlays, HUD, and 
 ===========================
 **Stable Primitive Snapshots for Gate Subscription:**: To prevent infinite re-render loops with `useSyncExternalStore`, the `subscribeGates` method uses encoded string primitives, use queueMicrotask to defer callback execution, 150ms debounce prevents UI flicker during rapid gate changes:
 
-```
 
-25. Awareness Cursor Trail Implementation
-==========================================
+25\. Awareness Cursor Trail Implementation
+===========================
 
 **Data Model**: Per remote user, maintain rolling buffer of 12-24 points `{x, y, t}` in world space. Trim points >600ms old or exceeding buffer size. Optional velocity `v` for thickness/alpha cues.
 
@@ -783,7 +782,7 @@ Canvas instantiates the appropriate tool once per effect run (based on `activeTo
 
 **Preview Union Type (normative):**
 ```typescript
-export type PreviewData = StrokePreview | EraserPreview;
+export type PreviewData = StrokePreview | EraserPreview | TextPreview;
 
 export interface EraserPreview {
   kind: 'eraser';
@@ -840,7 +839,7 @@ export interface EraserPreview {
 
 1. **Pointer-down** begins freehand capture in **world** coords.
 2. **Pointer-move** accumulates points with RAF coalescing.
-3. **Auto-close** when the last point comes within **`12px_screen`** of the first point (convert via `12 / view.scale`) and you have ≥ 8 points.
+3. **Auto-close** when the last point comes within **`12px_screen`** of the first point (convert via `12 / view.scale`) and you have ≥ 8 points. We only close on pointerup (so you can draw right past the anchor), then simplify.
     
 4. **Pointer-up**:   
     - Simplify with Douglas–Peucker (ε tuned, e.g., `ε≈0.75WU`).      
@@ -867,7 +866,6 @@ export interface EraserPreview {
 - **Uniform Scale:**  
     - **Right-drag** (button `2`) **or** **Shift+Left-drag** (trackpad/stylus fallback).       
     - Suppress the context menu on right-drag.
-- **Keyboard:** **Esc** cancels the current transform (revert to selected); **Enter** commits (mirrors pointer-up).
 ---
 
 ### Transform Semantics (no handles; radial uniform model)
@@ -900,7 +898,7 @@ This **radial** definition guarantees uniform scaling **regardless of where** yo
 ---
 
 ### Commit (atomic; replace-in-place)
-- **When:** pointer-up or **Enter**.
+- **When:** pointer-up:
   
 - **How:** a single `mutate(fn)` that, for each selected ID:  
     1. Finds the current **array index**.        
@@ -940,23 +938,6 @@ This **radial** definition guarantees uniform scaling **regardless of where** yo
 
 ### Preview union (for completeness)
 `interface LassoPreview {   kind: 'lasso';   polygon: number[]; // simplified world poly   selectedIds: { strokes: string[]; texts: string[] };   isDragging: boolean; // hides ants when true   transform?: { dx: number; dy: number; scale: number; origin: {x:number;y:number} }; }`
-
----
-
-27\. Perfect Shapes (lock → adjust in preview → commit on pointer-up)
-===========================
-What: During freehand capture, we can auto-recognize line, rectangle, square, equilateral triangle, circle and preview a canonical version of the shape.
-When it triggers: If the recognizer’s best candidate stays above threshold for 350 ms dwell, we lock to that shape and swap the overlay preview from scribble → perfect shape. No instant locks.
-Gesture model: Exactly like strokes.
-While pointer is down: show/update the perfect-shape overlay only.
-On pointer-up: commit once by synthesizing a polyline and writing a normal stroke. No Esc/Enter; no cancel.
-Adjustment while down:
-Line: anchor at first point p0; live endpoint p1 = pointerNow (no angle snap).
-Rect/Square/Triangle/Circle: anchor at center; scale uniformly by k = clamp(dist(center, pointerNow)/r0, kMin, kMax) where r0 is the center→pointer distance at lock (with an r_eps_world floor).
-Triangle: equilateral only; orientation fixed at lock; size scales with k.
-Rendering: Overlay renders the canonical geometry in world space; we include a preview bbox for dirty-rect invalidation and (optionally) hold the last preview for one frame at commit to avoid flicker.
-Commit path: Same as strokes → simplify → budget/size checks → bbox → single mutate. Result is a normal Stroke (no replace-in-place; the scribble is never staged).
-Defaults: dwell 350 ms; r_eps_world ≈ 8 px (at lock, converted to world); kMin=0.10, kMax=10.0; circle polyline baseline 32 segments.
 
 ---
 

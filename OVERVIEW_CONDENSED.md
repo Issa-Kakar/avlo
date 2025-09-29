@@ -184,7 +184,7 @@ export interface StrokeView {
 ```
 
 - **Never null:** EmptySnapshot created synchronously on construct with scene=0, empty arrays
-- Typed arrays constructed at render only, stored doc remains plain arrays
+- **Typed arrays** constructed at render only, stored doc remains plain arrays
 - **Publishing invariants:** docVersion only changes after Yjs update (dev-only assertion)
 
 ### Zustand (device-local UI only)
@@ -224,9 +224,7 @@ export interface StrokeView {
 - Undo/Redo via Yjs UndoManager with per-user origin
 
 **Clear Board:** Appends scene tick; renderer filters by currentScene; 10s local undo window
-
 **Export:** PNG for viewport/board (max 8192px edge), white background, 2s timeout fallback
-
 **Mobile:** View-only with banner, no cursor emission
 
 ## 5. Mutations & Write Path
@@ -357,7 +355,7 @@ type PointerTool = {
   - Hard downsample if still exceeds 10k points
 - **Size estimation:** ~16 bytes per coordinate + 500 metadata + 1024 envelope
 - **Commit:** Generate ULID, assign currentScene, push to strokes[]
-- **Invalidation:** Preview bounds AND simplified stroke bounds (critical)
+- **Invalidation:** Preview bounds AND simplified stroke bounds **CRITICAL: PREVIEW RENDERLOOP INVALIDATES ALL ANYWAY SO PARAMETERS ON PREVIEW DO NOT MATTER HERE**
 
 ### Eraser Tool (Phase 8)
 
@@ -375,12 +373,13 @@ interface EraserState {
 }
 ```
 
-**Hit-Testing Algorithm:**
+**Hit-Testing Algorithm (Spatial Index with Fallback):**
 
 1. Spatial query: Use `snapshot.spatialIndex.queryCircle()` when available
 2. Viewport prune: Skip strokes outside visible bounds + margin
 3. Stroke width: Inflate hit radius by `stroke.style.size / 2`
 4. Segment distance: Point-to-line distance for each segment
+5. Text blocks: Simple bbox-circle intersection (glyph precision deferred)
 5. Resume index: Track progress for continuation (10ms budget, 500 segments max)
 6. Live view: Uses `getView()` callback for accurate transforms
 
@@ -457,6 +456,52 @@ if (activeTool === 'eraser') {
   const settings = activeTool === 'pen' ? pen : highlighter;
   tool = new DrawingTool(roomDoc, settings, activeTool, userId, ...);
 }
+
+// Set preview provider (polymorphic)
+overlayLoopRef.current?.setPreviewProvider({
+  getPreview: () => tool.getPreview(), // Returns union type
+});
+
+// Hide OS cursor when eraser active
+canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
+```
+
+**Tool-Agnostic Pointer Surface**
+To keep Canvas uniform, both tools expose the same PointerTool interface:
+
+```typescript
+type PointerTool = {
+  canBegin(): boolean;
+  begin(pointerId: number, x: number, y: number): void;
+  move(x: number, y: number): void;
+  end(x?: number, y?: number): void;   // DrawingTool uses (x,y); EraserTool ignores final coords
+  cancel(): void;
+  isActive(): boolean;
+  getPointerId(): number | null;
+  getPreview(): PreviewData | null;
+  destroy(): void;
+  clearHover?(): void;  // Optional: EraserTool clears hover state on pointer leave
+};
+
+```
+Canvas instantiates the appropriate tool once per effect run (based on `activeTool`) and routes unified handlers to this surface. Mobile gating happens in Canvas, not tools. Live view transform passed via `getView()` callback for accurate hit-testing.
+
+**Preview Union Type:**
+```typescript
+export type PreviewData = StrokePreview | EraserPreview | TextPreview; //TextPreview is kept here but not used for the actual text preview
+
+export interface EraserPreview {
+  kind: 'eraser';
+  /**
+   * Center is in **world** coordinates (so overlay can handle transforms).
+   * Radius is in **screen pixels** (CSS px), fixed regardless of zoom.
+   */
+  circle: { cx: number; cy: number; r_px: number };
+  /** World object IDs to dim in pass A. */
+  hitIds: string[];
+  /** 0.2–0.6 base opacity; highlighters get a lighter treatment in renderer. */
+  dimOpacity: number;
+}
 ```
 
 **Unified Handlers (no tool branching):**
@@ -475,7 +520,7 @@ if (activeTool === 'eraser') {
 
 ## 8. Awareness & Presence
 
-**Cursor Interpolation (`ingestAwareness`):** , **Cursor Rendering:\*\***Cursor Trails:\*\*
+**Cursor Interpolation (`ingestAwareness`):** , **Cursor Rendering:** and **Cursor Trails**
 
 **Gates & Lifecycle:**
 
@@ -550,13 +595,6 @@ if (activeTool === 'eraser') {
 ### Commit
 
 Single `mutate()` replaces at same indices (preserves z-order)
-
-## 11. Perfect Shapes (Upcoming)
-
-**Recognition:** Line, rectangle, square, equilateral triangle, circle
-**Trigger:** 350ms dwell above threshold locks to shape
-**Adjustment:** Anchor at lock point, scale uniformly by pointer distance
-**Commit:** Synthesize polyline, write normal stroke
 
 ### Ownership Model
 
