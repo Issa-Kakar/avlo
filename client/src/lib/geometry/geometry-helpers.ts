@@ -66,15 +66,30 @@ export function angularCoverage(points: Vec2[], center: Vec2): number {
 
   // Find the maximum gap between consecutive angles
   let maxGap = 0;
+  let maxGapIdx = -1;
   for (let i = 0; i < n; i++) {
     const gap = i === n - 1
       ? (angles[0] + 2 * Math.PI) - angles[i]  // Gap wrapping around from last to first
       : angles[i + 1] - angles[i];
-    maxGap = Math.max(maxGap, gap);
+    if (gap > maxGap) {
+      maxGap = gap;
+      maxGapIdx = i;
+    }
   }
 
   // Coverage is the portion of the circle that IS covered
   const coverage = (2 * Math.PI - maxGap) / (2 * Math.PI);
+
+  // Debug logging for coverage analysis
+  console.log('   📐 Angular Coverage Analysis:');
+  console.log(`      Center: [${cx.toFixed(1)}, ${cy.toFixed(1)}]`);
+  console.log(`      Points analyzed: ${n}`);
+  console.log(`      Max gap: ${(maxGap * 180 / Math.PI).toFixed(1)}° at index ${maxGapIdx}`);
+  console.log(`      Coverage: ${(coverage * 360).toFixed(1)}° of 360°`);
+  if (coverage < 0.667) {
+    console.log(`      ⚠️ Below 240° threshold - not circular enough`);
+  }
+
   return Math.max(0, Math.min(1, coverage));
 }
 
@@ -89,10 +104,16 @@ export function detectCorners(
   minTurnAngleDeg: number = 45
 ): Corner[] {
   const n = points.length;
-  if (n < 3) return [];
+  if (n < 3) {
+    console.log('   📐 Corner Detection: Too few points for corners');
+    return [];
+  }
 
   const corners: Corner[] = [];
   const minTurnAngleRad = minTurnAngleDeg * Math.PI / 180;
+
+  let skippedShortSegments = 0;
+  let skippedSmallAngles = 0;
 
   for (let i = 1; i < n - 1; i++) {
     const [x0, y0] = points[i - 1];
@@ -102,7 +123,10 @@ export function detectCorners(
     // Check segment lengths
     const len1 = Math.hypot(x1 - x0, y1 - y0);
     const len2 = Math.hypot(x2 - x1, y2 - y1);
-    if (len1 < minSegmentLength || len2 < minSegmentLength) continue;
+    if (len1 < minSegmentLength || len2 < minSegmentLength) {
+      skippedShortSegments++;
+      continue;
+    }
 
     // Calculate turn angle
     const angle1 = Math.atan2(y1 - y0, x1 - x0);
@@ -122,7 +146,19 @@ export function detectCorners(
         angle: cornerAngleDeg,
         strength: Math.min(1, absTurnAngle / (Math.PI / 2))
       });
+    } else {
+      skippedSmallAngles++;
     }
+  }
+
+  console.log('   📐 Corner Detection Summary:');
+  console.log(`      Points analyzed: ${n - 2} potential corners`);
+  console.log(`      Corners found: ${corners.length}`);
+  console.log(`      Skipped (short segments): ${skippedShortSegments}`);
+  console.log(`      Skipped (angle < ${minTurnAngleDeg}°): ${skippedSmallAngles}`);
+  if (corners.length > 0) {
+    const angles = corners.map(c => c.angle.toFixed(1) + '°').join(', ');
+    console.log(`      Corner angles: [${angles}]`);
   }
 
   return corners;

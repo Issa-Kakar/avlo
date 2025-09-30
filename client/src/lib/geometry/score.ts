@@ -54,49 +54,79 @@ export function scoreRectangle(
   edges: Edge[],
   corners: Corner[]
 ): number {
+  console.group('🟦 Rectangle Scoring Analysis');
+  console.log('Input:', {
+    pointCount: points.length,
+    obb: { center: [obb.cx, obb.cy], angle: (obb.angle * 180/Math.PI).toFixed(1) + '°', halfExtents: [obb.hx.toFixed(1), obb.hy.toFixed(1)] },
+    edgeCount: edges.length,
+    cornerCount: corners.length
+  });
+
   // =========================================================================
   // Hard Gate: Must have at least 3 right-angle corners
   // =========================================================================
+  console.group('📐 Corner Detection');
+  console.log('All corners found:', corners.map(c => ({
+    index: c.index,
+    angle: c.angle.toFixed(1) + '°',
+    deviation: Math.abs(c.angle - 90).toFixed(1) + '°',
+    strength: c.strength.toFixed(2)
+  })));
+
   const rightAngleCorners = corners.filter(
     c => Math.abs(c.angle - 90) <= RECT_CORNER_TOLERANCE_DEG
   );
 
+  console.log(`Right-angle corners (±${RECT_CORNER_TOLERANCE_DEG}°):`, rightAngleCorners.length);
+  console.log(`Required: ${RECT_MIN_CORNERS}, Found: ${rightAngleCorners.length}`);
+
   if (rightAngleCorners.length < RECT_MIN_CORNERS) {
-    // Immediate rejection - not enough right angles to be a rectangle
+    console.log('❌ HARD GATE FAILED: Not enough right-angle corners');
+    console.groupEnd(); // Close Corner Detection
+    console.groupEnd(); // Close Rectangle Scoring
     return 0;
   }
+  console.log('✅ Corner gate passed');
+  console.groupEnd(); // Close Corner Detection
 
   // =========================================================================
   // Component 1: Corner Quality (40% weight)
-  // Average quality of the best 3 corners
   // =========================================================================
+  console.group('📊 Component Scores');
   const cornerQualities = rightAngleCorners.map(c => {
-    // Map angle deviation from 90° to quality score [0, 1]
-    // Perfect 90° = score 1, deviation at tolerance = score 0
     const deviation = Math.abs(c.angle - 90);
     return 1 - clamp01(deviation / RECT_CORNER_TOLERANCE_DEG);
   });
   const S_corners = top3Avg(cornerQualities);
+  console.log(`1. Corner Quality (${RECT_WEIGHT_CORNERS * 100}% weight):`);
+  console.log('   Individual qualities:', cornerQualities.map(q => q.toFixed(3)));
+  console.log('   Top-3 average:', S_corners.toFixed(3));
 
   // =========================================================================
   // Component 2: Parallel Edges (25% weight)
-  // How parallel are opposite edges?
   // =========================================================================
   const parallelErrorDeg = avgParallelError(edges);
   const S_parallel = 1 - clamp01(parallelErrorDeg / RECT_PARALLEL_TOLERANCE_DEG);
+  console.log(`2. Parallel Edges (${RECT_WEIGHT_PARALLEL * 100}% weight):`);
+  console.log(`   Average error: ${parallelErrorDeg.toFixed(1)}° (threshold: ${RECT_PARALLEL_TOLERANCE_DEG}°)`);
+  console.log('   Score:', S_parallel.toFixed(3));
 
   // =========================================================================
   // Component 3: Orthogonal Edges (20% weight)
-  // How perpendicular are adjacent edges?
   // =========================================================================
   const orthogonalErrorDeg = avgOrthogonalError(edges);
   const S_orthogonal = 1 - clamp01(orthogonalErrorDeg / RECT_ORTHOGONAL_TOLERANCE_DEG);
+  console.log(`3. Orthogonal Edges (${RECT_WEIGHT_ORTHOGONAL * 100}% weight):`);
+  console.log(`   Average error: ${orthogonalErrorDeg.toFixed(1)}° (threshold: ${RECT_ORTHOGONAL_TOLERANCE_DEG}°)`);
+  console.log('   Score:', S_orthogonal.toFixed(3));
 
   // =========================================================================
   // Component 4: Coverage (15% weight)
-  // Are points well-distributed across all four sides?
   // =========================================================================
   const S_coverage = coverageAcrossDistinctSides(points, obb);
+  console.log(`4. Coverage (${RECT_WEIGHT_COVERAGE * 100}% weight):`);
+  console.log('   Score:', S_coverage.toFixed(3));
+  console.groupEnd(); // Close Component Scores
 
   // =========================================================================
   // Final Weighted Score
@@ -106,6 +136,20 @@ export function scoreRectangle(
     RECT_WEIGHT_PARALLEL * S_parallel +
     RECT_WEIGHT_ORTHOGONAL * S_orthogonal +
     RECT_WEIGHT_COVERAGE * S_coverage;
+
+  console.group('🎯 Final Rectangle Score');
+  console.log('Weighted sum:', S_rect.toFixed(3));
+  console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
+
+  if (S_rect < SHAPE_CONFIDENCE_MIN) {
+    console.log(`❌ Below threshold: ${S_rect.toFixed(3)} < ${SHAPE_CONFIDENCE_MIN}`);
+    console.log('Returning: 0 (will trigger line fallback)');
+  } else {
+    console.log(`✅ Above threshold: ${S_rect.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN}`);
+    console.log(`Returning: ${S_rect.toFixed(3)}`);
+  }
+  console.groupEnd(); // Close Final Score
+  console.groupEnd(); // Close Rectangle Scoring
 
   // Only return non-zero score if it meets the global confidence threshold
   return S_rect >= SHAPE_CONFIDENCE_MIN ? S_rect : 0;
@@ -122,54 +166,94 @@ export function scoreCircle(
   points: Vec2[],
   fit: { cx: number; cy: number; r: number; residualRMS: number }
 ): number {
+  console.group('⭕ Circle Scoring Analysis');
+  console.log('Input:', {
+    pointCount: points.length,
+    fit: {
+      center: [fit.cx.toFixed(1), fit.cy.toFixed(1)],
+      radius: fit.r.toFixed(1),
+      residualRMS: fit.residualRMS.toFixed(2)
+    }
+  });
+
   // =========================================================================
   // Hard Gate 1: PCA Axis Ratio (roundness check)
   // =========================================================================
+  console.group('🔍 Hard Gates');
   const axisRatio = pcaAxisRatio(points);
+  console.log(`1. PCA Axis Ratio (Roundness):`);
+  console.log(`   Value: ${axisRatio.toFixed(3)} (threshold: ${CIRCLE_MAX_AXIS_RATIO})`);
+  console.log(`   Interpretation: ${axisRatio < 1.2 ? 'Very round' : axisRatio < 1.5 ? 'Somewhat elliptical' : 'Very elongated'}`);
+
   if (axisRatio > CIRCLE_MAX_AXIS_RATIO) {
-    // Too elongated to be a circle
+    console.log(`   ❌ FAILED: ${axisRatio.toFixed(3)} > ${CIRCLE_MAX_AXIS_RATIO} (too elongated)`);
+    console.groupEnd(); // Close Hard Gates
+    console.groupEnd(); // Close Circle Scoring
     return 0;
   }
+  console.log('   ✅ PASSED');
 
   // =========================================================================
   // Hard Gate 2: Angular Coverage
-  // Must cover at least 240° (2/3) of a circle
   // =========================================================================
   const coverage = angularCoverage(points, [fit.cx, fit.cy]);
+  const coverageDegrees = coverage * 360;
+  console.log(`2. Angular Coverage:`);
+  console.log(`   Value: ${coverage.toFixed(3)} (${coverageDegrees.toFixed(0)}°)`);
+  console.log(`   Required: ${CIRCLE_MIN_COVERAGE} (${(CIRCLE_MIN_COVERAGE * 360).toFixed(0)}°)`);
+
   if (coverage < CIRCLE_MIN_COVERAGE) {
-    // Not enough of a circle drawn
+    console.log(`   ❌ FAILED: ${coverage.toFixed(3)} < ${CIRCLE_MIN_COVERAGE} (not enough arc)`);
+    console.groupEnd(); // Close Hard Gates
+    console.groupEnd(); // Close Circle Scoring
     return 0;
   }
+  console.log('   ✅ PASSED');
 
   // =========================================================================
   // Hard Gate 3: Normalized RMS Residual
-  // How well points fit the ideal circle
   // =========================================================================
   const rmsNorm = fit.residualRMS / fit.r;
+  console.log(`3. Normalized RMS Residual:`);
+  console.log(`   Raw RMS: ${fit.residualRMS.toFixed(2)}, Radius: ${fit.r.toFixed(1)}`);
+  console.log(`   Normalized: ${rmsNorm.toFixed(3)} (threshold: ${CIRCLE_MAX_RMS_RATIO})`);
+  console.log(`   Interpretation: ${rmsNorm < 0.1 ? 'Excellent fit' : rmsNorm < 0.2 ? 'Good fit' : rmsNorm < 0.3 ? 'Acceptable fit' : 'Poor fit'}`);
+
   if (rmsNorm > CIRCLE_MAX_RMS_RATIO) {
-    // Points deviate too much from fitted circle
+    console.log(`   ❌ FAILED: ${rmsNorm.toFixed(3)} > ${CIRCLE_MAX_RMS_RATIO} (points deviate too much)`);
+    console.groupEnd(); // Close Hard Gates
+    console.groupEnd(); // Close Circle Scoring
     return 0;
   }
+  console.log('   ✅ PASSED');
+  console.log('All hard gates passed ✅');
+  console.groupEnd(); // Close Hard Gates
 
   // =========================================================================
-  // Component 1: Coverage Score (50% weight - dominant factor)
-  // Map coverage from [MIN_COVERAGE, 1] to [0, 1]
+  // Component Scores
   // =========================================================================
+  console.group('📊 Component Scores');
+
+  // Component 1: Coverage Score (50% weight - dominant factor)
   const coverageRange = 1 - CIRCLE_MIN_COVERAGE;
   const S_coverage = clamp01((coverage - CIRCLE_MIN_COVERAGE) / coverageRange);
+  console.log(`1. Coverage (${CIRCLE_WEIGHT_COVERAGE * 100}% weight):`);
+  console.log(`   Normalized coverage: ${S_coverage.toFixed(3)}`);
+  console.log(`   (Maps ${(CIRCLE_MIN_COVERAGE * 360).toFixed(0)}°-360° to 0-1)`);
 
-  // =========================================================================
   // Component 2: Fit Quality (30% weight)
-  // Based on normalized RMS - lower is better
-  // =========================================================================
   const S_fit = clamp01(1 - (rmsNorm / CIRCLE_MAX_RMS_RATIO));
+  console.log(`2. Fit Quality (${CIRCLE_WEIGHT_FIT * 100}% weight):`);
+  console.log(`   Score: ${S_fit.toFixed(3)}`);
+  console.log(`   (Inverted normalized RMS)`);
 
-  // =========================================================================
   // Component 3: Roundness (20% weight)
-  // Based on PCA axis ratio - closer to 1 is better
-  // =========================================================================
   const roundnessRange = CIRCLE_MAX_AXIS_RATIO - 1;
   const S_round = clamp01(1 - ((axisRatio - 1) / roundnessRange));
+  console.log(`3. Roundness (${CIRCLE_WEIGHT_ROUND * 100}% weight):`);
+  console.log(`   Score: ${S_round.toFixed(3)}`);
+  console.log(`   (Maps axis ratio 1-${CIRCLE_MAX_AXIS_RATIO} to 1-0)`);
+  console.groupEnd(); // Close Component Scores
 
   // =========================================================================
   // Final Weighted Score
@@ -178,6 +262,22 @@ export function scoreCircle(
     CIRCLE_WEIGHT_COVERAGE * S_coverage +
     CIRCLE_WEIGHT_FIT * S_fit +
     CIRCLE_WEIGHT_ROUND * S_round;
+
+  console.group('🎯 Final Circle Score');
+  console.log('Breakdown:');
+  console.log(`   Coverage:  ${CIRCLE_WEIGHT_COVERAGE} × ${S_coverage.toFixed(3)} = ${(CIRCLE_WEIGHT_COVERAGE * S_coverage).toFixed(3)}`);
+  console.log(`   Fit:       ${CIRCLE_WEIGHT_FIT} × ${S_fit.toFixed(3)} = ${(CIRCLE_WEIGHT_FIT * S_fit).toFixed(3)}`);
+  console.log(`   Roundness: ${CIRCLE_WEIGHT_ROUND} × ${S_round.toFixed(3)} = ${(CIRCLE_WEIGHT_ROUND * S_round).toFixed(3)}`);
+  console.log(`Total: ${S_circle.toFixed(3)}`);
+  console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
+
+  if (S_circle < SHAPE_CONFIDENCE_MIN) {
+    console.log(`⚠️ Score ${S_circle.toFixed(3)} < ${SHAPE_CONFIDENCE_MIN} (may lose to rectangle or trigger line)`);
+  } else {
+    console.log(`✅ Score ${S_circle.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN} (competitive)`);
+  }
+  console.groupEnd(); // Close Final Score
+  console.groupEnd(); // Close Circle Scoring
 
   return S_circle;
 }

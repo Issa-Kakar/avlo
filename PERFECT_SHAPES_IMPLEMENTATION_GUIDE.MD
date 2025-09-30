@@ -9,6 +9,7 @@ Shape recognition is **explicitly user-intentional via a 600 ms dwell**. We are 
 ## Implementation Status
 
 ### ✅ Implemented
+- **Live cursor synchronization fix** - Prevents "tiny dot" issue on first frame after snap
 - **Geometry algorithms** (`/client/src/lib/geometry/`):
   - `fit-circle.ts` - Taubin algebraic circle fitting
   - `fit-obb.ts` - PCA-based oriented bounding box
@@ -63,6 +64,7 @@ After snapping, moving the pointer updates only the shape's geometry
 1. **Hold detector stays active until snap** - Once shape recognition triggers (always succeeds due to line fallback), the hold detector is canceled
 2. **Single recognition per snap** - Once snapped, no re-recognition occurs
 3. Only compute bbox for perfect shapes on commit, not preview
+4. **Live cursor synchronization** - `liveCursorWU` is kept in sync throughout the gesture to prevent stale cursor on first frame after snap (prevents "tiny dot" issue)
 
 ---
 
@@ -296,6 +298,9 @@ begin(pointerId: number, wx: number, wy: number): void {
 }
 
 move(wx: number, wy: number): void {
+  // Always mirror the latest pointer in world space (prevents stale cursor on snap)
+  this.liveCursorWU = [wx, wy];
+
   // Keep hold jitter in SCREEN px prior to snap
   if (!this.snap && this.getView) {
     const [sx, sy] = this.getView().worldToCanvas(wx, wy);
@@ -303,8 +308,7 @@ move(wx: number, wy: number): void {
   }
 
   if (this.snap) {
-    // After snap: update ONLY the live cursor and request an overlay frame.
-    this.liveCursorWU = [wx, wy];
+    // After snap: just request an overlay frame (liveCursorWU already updated above)
     this.requestOverlayFrame?.();                // CRITICAL: drives overlay
     return;
   }
@@ -317,12 +321,18 @@ move(wx: number, wy: number): void {
 private onHoldFire(): void {
   if (this.snap) return;
 
+  // Make sure we use the freshest point
+  this.flushPending();  // Flush any pending RAF updates
+
   // Use latest pointer in WORLD units
   const len = this.state.points.length;
   if (len < 2) return;
   const pointerNowWU: [number, number] = [
     this.state.points[len - 2], this.state.points[len - 1]
   ];
+
+  // CRITICAL: Update live cursor to prevent stale cursor on first frame after snap
+  this.liveCursorWU = pointerNowWU;
 
   const result = recognizeOpenStroke({
     pointsWU: this.state.points,

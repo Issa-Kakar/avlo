@@ -14,7 +14,7 @@ export const SHAPE_CONFIDENCE_MIN = 0.58;
 // Circle Hard Gates (immediate rejection if not met)
 export const CIRCLE_MIN_COVERAGE = 0.667;   // Minimum angular coverage (≥240° of circle)
 export const CIRCLE_MAX_AXIS_RATIO = 1.70;  // Maximum PCA axis ratio sqrt(λ₁/λ₂) for roundness
-export const CIRCLE_MAX_RMS_RATIO = 0.24;   // Maximum normalized RMS residual (RMS/radius)
+export const CIRCLE_MAX_RMS_RATIO = 0.25;   // Maximum normalized RMS residual (RMS/radius)
 
 // Circle Scoring Weights (must sum to 1.0)
 export const CIRCLE_WEIGHT_COVERAGE = 0.50;  // Dominant factor - how complete the arc is
@@ -26,12 +26,12 @@ export const CIRCLE_WEIGHT_ROUND = 0.20;     // Roundness based on PCA axis rati
 // ============================================================================
 
 // Rectangle Hard Gates
-export const RECT_MIN_CORNERS = 3;           // Minimum number of right-angle corners required
-export const RECT_CORNER_TOLERANCE_DEG = 20; // Tolerance for corner angle from 90° (±20°)
+export const RECT_MIN_CORNERS = 1;           // Minimum number of right-angle corners required
+export const RECT_CORNER_TOLERANCE_DEG = 30; // Tolerance for corner angle from 90° (±20°)
 
 // Rectangle Soft Thresholds (for scoring, not hard rejection)
-export const RECT_PARALLEL_TOLERANCE_DEG = 15;   // Tolerance for opposite edges being parallel
-export const RECT_ORTHOGONAL_TOLERANCE_DEG = 15; // Tolerance for adjacent edges being perpendicular
+export const RECT_PARALLEL_TOLERANCE_DEG = 35;   // Tolerance for opposite edges being parallel
+export const RECT_ORTHOGONAL_TOLERANCE_DEG = 35; // Tolerance for adjacent edges being perpendicular
 
 // Rectangle Scoring Weights (must sum to 1.0)
 export const RECT_WEIGHT_CORNERS = 0.40;     // Quality of right-angle corners

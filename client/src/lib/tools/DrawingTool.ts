@@ -106,6 +106,9 @@ export class DrawingTool {
   }
 
   move(worldX: number, worldY: number): void {
+    // Always mirror the latest pointer in world space
+    this.liveCursorWU = [worldX, worldY];
+
     // Keep hold jitter in SCREEN px prior to snap
     if (!this.snap && this.getView) {
       const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
@@ -113,8 +116,7 @@ export class DrawingTool {
     }
 
     if (this.snap) {
-      // After snap: update ONLY the live cursor and request an overlay frame.
-      this.liveCursorWU = [worldX, worldY];
+      // After snap: just request an overlay frame (liveCursorWU already updated above)
       this.requestOverlayFrame?.();                // CRITICAL: drives overlay
       return;
     }
@@ -232,19 +234,26 @@ export class DrawingTool {
   private onHoldFire(): void {
     if (this.snap) return;
 
+    // Make sure we use the freshest point
+    this.flushPending();
+
     // Use latest pointer in WORLD units
     const len = this.state.points.length;
     if (len < 2) return;
     const pointerNowWU: [number, number] = [
       this.state.points[len - 2], this.state.points[len - 1]
     ];
-    console.log('Points', this.state.points.length / 2);
+
+    // ✨ NEW: keep the live cursor in sync at the moment of snapping
+    this.liveCursorWU = pointerNowWU;
+
+    console.group('🎯 Hold Detector Fired - Shape Recognition');
+    console.log(`Stroke has ${this.state.points.length / 2} points after 600ms dwell`);
 
     const result = recognizeOpenStroke({
       pointsWU: this.state.points,
       pointerNowWU
     });
-    console.log('Result', result.kind, result.score);
 
     // Recognizer enforces fallback; accept any result
     // - 'circle'/'box' only if score >= SHAPE_CONFIDENCE_MIN (0.58)
@@ -258,7 +267,8 @@ export class DrawingTool {
           ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
           : { kind: 'box',     anchors: { cx: result.box!.cx, cy: result.box!.cy, angle: result.box!.angle, hx0: result.box!.hx, hy0: result.box!.hy } }
       );
-      console.log('Result', result.kind, result.score);
+      console.log(`✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`);
+      console.groupEnd(); // Close Hold Detector group
       this.requestOverlayFrame?.();                // draw snapped preview immediately
       this.hold.cancel();                          // snap: hold no longer needed
     }
