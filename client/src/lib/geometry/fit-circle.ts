@@ -100,17 +100,43 @@ export function fitCircle(points: Vec2[]): {
   const cy = meanY + (Myz * (Mxx - x) - Mxz * Mxy) / (2 * DET);
 
   // Calculate radius
-  const r2 = (Mxx + Myy - 2 * x) / 2 + (cx - meanX) * (cx - meanX) + (cy - meanY) * (cy - meanY);
-  const r = Math.sqrt(Math.max(0, r2));
+  // OLD (BUGGY): Extra /2 incorrectly halves the variance term
+  const r2_OLD = (Mxx + Myy - 2 * x) / 2 + (cx - meanX) * (cx - meanX) + (cy - meanY) * (cy - meanY);
+  const r_OLD = Math.sqrt(Math.max(0, r2_OLD));
+
+  // NEW (CORRECTED): Moments already normalized by n, so no /2 needed
+  const r2_NEW = (cx - meanX) * (cx - meanX) + (cy - meanY) * (cy - meanY) + (Mxx + Myy) - 2 * x;
+  const r_NEW = Math.sqrt(Math.max(0, r2_NEW));
+
+  // Use corrected radius
+  const r = r_NEW;
 
   // Step 6: Compute RMS of residuals (distance from points to circle)
-  let sumSquaredResiduals = 0;
+  let sumSquaredResiduals_OLD = 0;
+  let sumSquaredResiduals_NEW = 0;
   for (const [px, py] of points) {
     const dist = Math.hypot(px - cx, py - cy);
-    const residual = dist - r;
-    sumSquaredResiduals += residual * residual;
-  }
-  const residualRMS = Math.sqrt(sumSquaredResiduals / n);
 
-  return { cx, cy, r, residualRMS };
+    const residual_OLD = dist - r_OLD;
+    sumSquaredResiduals_OLD += residual_OLD * residual_OLD;
+
+    const residual_NEW = dist - r_NEW;
+    sumSquaredResiduals_NEW += residual_NEW * residual_NEW;
+  }
+  const residualRMS_OLD = Math.sqrt(sumSquaredResiduals_OLD / n);
+  const residualRMS_NEW = Math.sqrt(sumSquaredResiduals_NEW / n);
+
+  // DEBUG: Log comparison
+  console.log('🔵 CIRCLE FIT COMPARISON:', {
+    radius_OLD: r_OLD.toFixed(2),
+    radius_NEW: r_NEW.toFixed(2),
+    radiusRatio: (r_NEW / r_OLD).toFixed(3),
+    rawRMS_OLD: residualRMS_OLD.toFixed(2),
+    rawRMS_NEW: residualRMS_NEW.toFixed(2),
+    normRMS_OLD: (residualRMS_OLD / r_OLD).toFixed(4),
+    normRMS_NEW: (residualRMS_NEW / r_NEW).toFixed(4),
+    normRatioImprovement: ((residualRMS_OLD / r_OLD) / (residualRMS_NEW / r_NEW)).toFixed(2) + 'x'
+  });
+
+  return { cx, cy, r, residualRMS: residualRMS_NEW };
 }
