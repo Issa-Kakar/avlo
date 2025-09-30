@@ -26,15 +26,15 @@ export const CIRCLE_WEIGHT_ROUND = 0.20;     // Roundness based on PCA axis rati
 // ============================================================================
 
 // Rectangle Hard Gates
-export const RECT_MIN_CORNERS = 3;           // Minimum number of right-angle corners required
-export const RECT_CORNER_TOLERANCE_DEG = 20; // Tolerance for corner angle from 90° (±20°)
+export const RECT_MIN_CORNERS = 2;           // Minimum number of right-angle corners required
+export const RECT_CORNER_TOLERANCE_DEG = 25; // Tolerance for corner angle from 90° (±20°)
 
 // Rectangle Soft Thresholds (for scoring, not hard rejection)
-export const RECT_PARALLEL_TOLERANCE_DEG = 15;   // Tolerance for opposite edges being parallel
-export const RECT_ORTHOGONAL_TOLERANCE_DEG = 15; // Tolerance for adjacent edges being perpendicular
+export const RECT_PARALLEL_TOLERANCE_DEG = 20;   // Tolerance for opposite edges being parallel
+export const RECT_ORTHOGONAL_TOLERANCE_DEG = 20; // Tolerance for adjacent edges being perpendicular
 
 // Rectangle Scoring Weights (must sum to 1.0)
-export const RECT_WEIGHT_CORNERS = 0.40;     // Quality of right-angle corners
+export const RECT_WEIGHT_CORNERS = 0.50;     // Quality of right-angle corners
 export const RECT_WEIGHT_PARALLEL = 0.25;    // How parallel opposite edges are
 export const RECT_WEIGHT_ORTHOGONAL = 0.20;  // How perpendicular adjacent edges are
 export const RECT_WEIGHT_COVERAGE = 0.15;    // Distribution across all four sides

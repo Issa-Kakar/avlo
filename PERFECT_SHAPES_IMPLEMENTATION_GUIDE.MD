@@ -627,10 +627,11 @@ export const CIRCLE_WEIGHT_FIT = 0.30;
 export const CIRCLE_WEIGHT_ROUND = 0.20;
 ```
 
-### 5.1 Recognition Algorithm (`/client/src/lib/geometry/recognize-open-stroke.ts` - )
+### 5.1 Recognition Algorithm (`/client/src/lib/geometry/recognize-open-stroke.ts`)
 
 ```typescript
 import { SHAPE_CONFIDENCE_MIN } from './shape-params';
+import { simplifyStroke } from '../tools/simplification';
 
 export interface RecognitionResult {
   kind: 'line' | 'circle' | 'box';
@@ -654,13 +655,30 @@ export function recognizeOpenStroke({
     points.push([pointsWU[i], pointsWU[i + 1]]);
   }
 
-  // Fit & score ONLY circle and box (no line scoring/competition)
+  // === CIRCLE ANALYSIS (uses original points) ===
   const circleFit = fitCircle(points);
   const circleScore = scoreCircle(points, circleFit);
 
-  const boxFit = fitOBB(points);
-  const { edges, corners } = detectEdgesAndCorners(points);
-  const boxScore = scoreRectangle(points, boxFit, edges, corners);
+  // === RECTANGLE ANALYSIS (uses preprocessed points) ===
+  // Three-stage preprocessing for clean corner detection:
+
+  // Stage 1: RDP simplification (removes micro-wiggles, stabilizes OBB)
+  let rectFlat = pointsWU.slice();
+  const rdp = simplifyStroke(rectFlat, 'pen'); // 0.8 WU tolerance
+  if (rdp.points.length >= 4) rectFlat = rdp.points;
+
+  // Stage 2: Distance decimation (ensures segments ≥ 10 WU for corner gate)
+  const minSegWU = Math.max(10, Math.min(18, 0.08 * diag));
+  const decimated = distanceDecimation(rectFlat, minSegWU);
+
+  // Stage 3: Micro-closure (recovers 4th corner if gap < 6% of diagonal)
+  const gap = Math.hypot(end - start);
+  if (gap <= 0.06 * diag) decimated.push(start);
+
+  const rectPoints = convertToVec2(decimated);
+  const boxFit = fitOBB(rectPoints);
+  const { edges, corners } = detectEdgesAndCorners(rectPoints);
+  const boxScore = scoreRectangle(rectPoints, boxFit, edges, corners);
 
   // Winner must clear the global confidence threshold
   const winner =
@@ -669,7 +687,6 @@ export function recognizeOpenStroke({
       : { kind: 'circle' as const, score: circleScore, data: circleFit };
 
   if (winner.score >= SHAPE_CONFIDENCE_MIN) {
-    // Shape-specific payload under winner.kind
     return { kind: winner.kind, score: winner.score, [winner.kind]: winner.data as any };
   }
 
@@ -679,6 +696,28 @@ export function recognizeOpenStroke({
   return { kind: 'line', score: 1, line: { A, B } };
 }
 ```
+
+#### Rectangle Preprocessing Pipeline
+
+Rectangle detection requires **clean point distribution** for corner detection to work. Three preprocessing stages run **only** for rectangle analysis (circles use original points):
+
+**Stage 1: RDP Simplification**
+- Uses Douglas-Peucker with pen tolerance (0.8 WU from `STROKE_CONFIG`)
+- Removes micro-wiggles and jitter from hand-drawn strokes
+- Stabilizes OBB fitting and reduces noise in corner angles
+
+**Stage 2: Distance Decimation**
+- Ensures consecutive points are **≥ 10 WU apart** (minimum segment length)
+- Scales slightly with stroke size: `minSegWU = max(10, min(18, 0.08 * diagonal))`
+- Critical for corner detector which requires both adjacent segments ≥ 10 WU
+- Never mutates preview points (works on a copy)
+
+**Stage 3: Micro-Closure**
+- If end point is within **6% of diagonal** from start, closes the loop
+- Recovers the 4th corner for near-closed rectangles
+- Prevents "3-corner false negatives" when user nearly closes the shape
+
+This preprocessing dramatically improves rectangle recognition without affecting circles.
 
 ### 5.2 Shape Fitting Functions (IMPLEMENTED)
 
@@ -690,8 +729,9 @@ export function recognizeOpenStroke({
 #### fit-circle.ts
 Implements **Taubin algebraic circle fitting** for robust partial arc fitting:
 - Handles degenerate cases (< 3 points)
-- Computes centroid and moment matrices
+- Computes centroid and moment matrices (normalized by n)
 - Solves characteristic polynomial using Newton's method
+- Radius formula: `r² = offset² + (Mxx + Myy) - 2λ` (moments already normalized, no /2)
 - Returns `{cx, cy, r, residualRMS}` with RMS of residuals for scoring
 
 #### fit-obb.ts

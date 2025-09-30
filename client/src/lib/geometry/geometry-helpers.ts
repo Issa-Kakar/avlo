@@ -97,11 +97,15 @@ export function angularCoverage(points: Vec2[], center: Vec2): number {
  * Detect corners in a stroke where angle changes significantly.
  * A corner is where the turn angle > 45° and both adjacent segments
  * are at least minSegmentLength world units.
+ *
+ * CRITICAL FIX: Now supports wrap-around corners for closed strokes
+ * and uses peak-at-90° strength instead of monotonic strength.
  */
 export function detectCorners(
   points: Vec2[],
   minSegmentLength: number = 10,
-  minTurnAngleDeg: number = 45
+  minTurnAngleDeg: number = 45,
+  closed: boolean = false
 ): Corner[] {
   const n = points.length;
   if (n < 3) {
@@ -115,10 +119,17 @@ export function detectCorners(
   let skippedShortSegments = 0;
   let skippedSmallAngles = 0;
 
-  for (let i = 1; i < n - 1; i++) {
-    const [x0, y0] = points[i - 1];
-    const [x1, y1] = points[i];
-    const [x2, y2] = points[i + 1];
+  // CRITICAL: Handle wrap-around for closed strokes
+  const iStart = closed ? 0 : 1;
+  const iEnd = closed ? n : n - 1;
+
+  // Helper to get point with wrap-around
+  const at = (k: number) => points[(k + n) % n];
+
+  for (let i = iStart; i < iEnd; i++) {
+    const [x0, y0] = at(i - 1);
+    const [x1, y1] = at(i);
+    const [x2, y2] = at(i + 1);
 
     // Check segment lengths
     const len1 = Math.hypot(x1 - x0, y1 - y0);
@@ -141,10 +152,16 @@ export function detectCorners(
     if (absTurnAngle > minTurnAngleRad) {
       // Convert to degrees for corner angle
       const cornerAngleDeg = Math.abs(turnAngle) * 180 / Math.PI;
+
+      // CRITICAL FIX: Peak-at-90° strength (triangle shape)
+      // Strength is 1.0 at 90°, falling off linearly to 0 at 45° and 135°
+      const deviation = Math.abs(cornerAngleDeg - 90);
+      const strength = Math.max(0, 1 - (deviation / 45));
+
       corners.push({
-        index: i,
+        index: (i + n) % n,  // Ensure valid index with wrap-around
         angle: cornerAngleDeg,
-        strength: Math.min(1, absTurnAngle / (Math.PI / 2))
+        strength
       });
     } else {
       skippedSmallAngles++;
@@ -152,13 +169,13 @@ export function detectCorners(
   }
 
   console.log('   📐 Corner Detection Summary:');
-  console.log(`      Points analyzed: ${n - 2} potential corners`);
+  console.log(`      Points analyzed: ${iEnd - iStart} potential corners ${closed ? '(closed)' : '(open)'}`);
   console.log(`      Corners found: ${corners.length}`);
   console.log(`      Skipped (short segments): ${skippedShortSegments}`);
   console.log(`      Skipped (angle < ${minTurnAngleDeg}°): ${skippedSmallAngles}`);
   if (corners.length > 0) {
-    const angles = corners.map(c => c.angle.toFixed(1) + '°').join(', ');
-    console.log(`      Corner angles: [${angles}]`);
+    const angles = corners.map(c => `${c.angle.toFixed(1)}° (s=${c.strength.toFixed(2)})`).join(', ');
+    console.log(`      Corner angles (with strength): [${angles}]`);
   }
 
   return corners;
@@ -218,75 +235,273 @@ export function detectEdgesAndCorners(
   points: Vec2[],
   minSegmentLength: number = 10,
   minTurnAngleDeg: number = 45,
-  minIndexDelta: number = 3
+  minIndexDelta: number = 3,
+  closed: boolean = false
 ): { edges: Edge[]; corners: Corner[] } {
-  const corners = detectCorners(points, minSegmentLength, minTurnAngleDeg);
+  const corners = detectCorners(points, minSegmentLength, minTurnAngleDeg, closed);
   const edges = detectEdges(points, corners, minIndexDelta);
   return { edges, corners };
 }
 
 /**
+ * Compute robust angle of a segment using PCA over all points.
+ * This is more stable than using just endpoints when strokes have wobble.
+ */
+function robustSegmentAngle(points: Vec2[], i0: number, i1: number): number {
+  const n = points.length;
+  const idxs: number[] = [];
+
+  // Collect all indices along the segment (handling wrap-around)
+  if (i1 >= i0) {
+    for (let k = i0; k <= i1; k++) idxs.push(k);
+  } else {
+    // Wrap-around edge
+    for (let k = i0; k < n; k++) idxs.push(k);
+    for (let k = 0; k <= i1; k++) idxs.push(k);
+  }
+
+  // If too few points, fall back to endpoint angle
+  if (idxs.length < 2) {
+    const [x0, y0] = points[i0];
+    const [x1, y1] = points[i1];
+    return Math.atan2(y1 - y0, x1 - x0);
+  }
+
+  // Compute PCA of segment
+  let cx = 0, cy = 0;
+  for (const j of idxs) {
+    cx += points[j][0];
+    cy += points[j][1];
+  }
+  cx /= idxs.length;
+  cy /= idxs.length;
+
+  let cxx = 0, cxy = 0, cyy = 0;
+  for (const j of idxs) {
+    const dx = points[j][0] - cx;
+    const dy = points[j][1] - cy;
+    cxx += dx * dx;
+    cxy += dx * dy;
+    cyy += dy * dy;
+  }
+
+  // Principal eigenvector of 2x2 covariance matrix
+  const trace = cxx + cyy;
+  const disc = Math.sqrt(Math.max(0, trace * trace - 4 * (cxx * cyy - cxy * cxy)));
+
+  if (disc === 0) {
+    // Degenerate case - fall back to endpoints
+    const [x0, y0] = points[i0];
+    const [x1, y1] = points[i1];
+    return Math.atan2(y1 - y0, x1 - x0);
+  }
+
+  // Eigenvector for largest eigenvalue
+  const lambda1 = (trace + disc) / 2;
+  const v = [2 * cxy, lambda1 - cxx];
+
+  // Normalize and compute angle
+  const angle = Math.atan2(v[1], v[0]);
+
+  return angle;
+}
+
+/**
+ * Reconstruct a closed 4-edge loop from detected corners for rectangle analysis.
+ *
+ * This ensures we always get exactly 4 edges in a proper cycle, which is
+ * critical for parallel/orthogonal error calculations.
+ *
+ * CRITICAL FIX: Now uses robust PCA-based angles for edges instead of just endpoints.
+ *
+ * Strategy:
+ * 1. Select the 4 best corners (highest strength)
+ * 2. Sort them by position along the stroke
+ * 3. Build edges between consecutive corners
+ * 4. Add a closing edge from last corner back to first
+ * 5. Filter edges by world-unit length (not index delta)
+ * 6. Compute edge angles using PCA over all segment points (not just endpoints)
+ */
+export function reconstructRectangleEdges(
+  points: Vec2[],
+  corners: Corner[],
+  minEdgeLengthWU: number = 8
+): Edge[] {
+  console.group('   🔧 Rectangle Edge Reconstruction');
+
+  if (corners.length < 3) {
+    console.log(`   ⚠️ Only ${corners.length} corners, need at least 3 for rectangle`);
+    console.groupEnd();
+    return [];
+  }
+
+  // Step 1: Select the 4 best corners by strength
+  const sorted = [...corners].sort((a, b) => b.strength - a.strength);
+  const bestCorners = sorted.slice(0, Math.min(4, sorted.length));
+
+  console.log(`   Selected ${bestCorners.length} best corners from ${corners.length} candidates`);
+
+  // Step 2: Sort by index (position along stroke)
+  bestCorners.sort((a, b) => a.index - b.index);
+
+  // Step 3: Build edges between consecutive corners + closing edge
+  const edges: Edge[] = [];
+  const n = bestCorners.length;
+
+  console.log('   Building edges:');
+
+  for (let i = 0; i < n; i++) {
+    const startIdx = bestCorners[i].index;
+    const endIdx = bestCorners[(i + 1) % n].index; // Wrap around for closing edge
+
+    const [x1, y1] = points[startIdx];
+    const [x2, y2] = points[endIdx];
+
+    const length = Math.hypot(x2 - x1, y2 - y1);
+
+    // Use world-unit length check (not index delta)
+    if (length < minEdgeLengthWU) {
+      console.log(`      Edge ${i} (corner ${startIdx}→${endIdx}): SKIPPED (length ${length.toFixed(1)} < ${minEdgeLengthWU} WU)`);
+      continue;
+    }
+
+    // CRITICAL FIX: Use robust PCA-based angle instead of just endpoints
+    const angle = robustSegmentAngle(points, startIdx, endIdx);
+
+    edges.push({
+      startIdx,
+      endIdx,
+      angle,
+      length
+    });
+
+    const isClosing = (i === n - 1);
+    console.log(`      Edge ${i} (corner ${startIdx}→${endIdx}): length=${length.toFixed(1)} WU, angle=${(angle * 180 / Math.PI).toFixed(1)}° ${isClosing ? '(CLOSING)' : ''}`);
+  }
+
+  console.log(`   ✅ Reconstructed ${edges.length} edges forming ${edges.length === 4 ? 'a proper 4-edge loop' : 'an incomplete cycle'}`);
+  console.groupEnd();
+
+  return edges;
+}
+
+/**
  * Calculate the average parallel error for opposite edges in a rectangle.
  * Used for rectangle scoring.
+ *
+ * CRITICAL: Parallel edges can point in opposite directions (0° or 180° apart).
+ * Both should be treated as perfectly parallel (0° error).
  */
 export function avgParallelError(edges: Edge[]): number {
-  if (edges.length < 2) return 180;
+  if (edges.length < 2) {
+    console.log('   ⚠️ Parallel check: <2 edges, returning max error');
+    return 180;
+  }
 
   let totalError = 0;
   let count = 0;
 
-  // Check pairs of edges
-  for (let i = 0; i < edges.length; i++) {
-    for (let j = i + 2; j < Math.min(i + 3, edges.length); j++) {
-      // Compare edge i with edge j (potentially opposite edges)
-      let angleDiff = Math.abs(edges[i].angle - edges[j].angle);
+  // For a rectangle, compare opposite edges (i with i+n/2)
+  const n = edges.length;
 
-      // Normalize to [0, π]
-      if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+  console.log(`   📏 Parallel Error Analysis (${n} edges):`);
 
-      // Convert to degrees
-      totalError += angleDiff * 180 / Math.PI;
-      count++;
-    }
+  for (let i = 0; i < n; i++) {
+    // Find the "opposite" edge (roughly n/2 positions away)
+    const j = (i + Math.floor(n / 2)) % n;
+    if (j <= i) continue; // Avoid duplicate pairs
+
+    const angle_i = edges[i].angle * 180 / Math.PI;
+    const angle_j = edges[j].angle * 180 / Math.PI;
+
+    // Compute angular difference in degrees, normalized to [0, 180)
+    const norm180 = (deg: number) => ((deg % 180) + 180) % 180;
+    const a = norm180(angle_i);
+    const b = norm180(angle_j);
+
+    // Distance between angles in [0, 180) space
+    let diff = Math.abs(a - b);
+
+    // CRITICAL FIX: Fold to [0, 90] so that 0° and 180° both map to 0° error
+    // This makes opposite-facing parallel edges register as 0° error
+    const parallelError = Math.min(diff, 180 - diff);
+
+    console.log(`      Edge ${i} (${angle_i.toFixed(1)}°) vs Edge ${j} (${angle_j.toFixed(1)}°): error = ${parallelError.toFixed(1)}°`);
+
+    totalError += parallelError;
+    count++;
   }
 
-  return count > 0 ? totalError / count : 180;
+  const avgError = count > 0 ? totalError / count : 180;
+  console.log(`   → Average parallel error: ${avgError.toFixed(1)}°`);
+
+  return avgError;
 }
 
 /**
  * Calculate the average orthogonal error for adjacent edges.
  * Used for rectangle scoring.
+ *
+ * CRITICAL FIX: Now uses length-weighted averaging so short noisy edges
+ * don't dominate the metric.
  */
 export function avgOrthogonalError(edges: Edge[]): number {
-  if (edges.length < 2) return 90;
+  if (edges.length < 2) {
+    console.log('   ⚠️ Orthogonal check: <2 edges, returning max error');
+    return 90;
+  }
 
-  let totalError = 0;
-  let count = 0;
+  let weightedError = 0;
+  let totalWeight = 0;
 
+  console.log(`   📐 Orthogonal Error Analysis (${edges.length} edges):`);
+
+  // Helper to compute error between two angles
+  const computeError = (a: number, b: number): number => {
+    let d = b - a;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    const errorFromRight = Math.abs(Math.abs(d) - Math.PI / 2);
+    return errorFromRight * 180 / Math.PI; // Convert to degrees
+  };
+
+  // Adjacent pairs
   for (let i = 0; i < edges.length - 1; i++) {
-    let angleDiff = edges[i + 1].angle - edges[i].angle;
+    const errorDeg = computeError(edges[i].angle, edges[i + 1].angle);
+    const weight = Math.min(edges[i].length, edges[i + 1].length); // Weight by shorter edge
 
-    // Normalize to [-π, π]
-    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+    const angleDiff = edges[i + 1].angle - edges[i].angle;
+    let normalizedDiff = angleDiff;
+    while (normalizedDiff > Math.PI) normalizedDiff -= 2 * Math.PI;
+    while (normalizedDiff < -Math.PI) normalizedDiff += 2 * Math.PI;
 
-    // Distance from 90 degrees
-    const errorFromRight = Math.abs(Math.abs(angleDiff) - Math.PI / 2);
-    totalError += errorFromRight * 180 / Math.PI;
-    count++;
+    console.log(`      Edge ${i}→${i + 1}: turn=${(normalizedDiff * 180 / Math.PI).toFixed(1)}°, error=${errorDeg.toFixed(1)}°, weight=${weight.toFixed(1)}`);
+
+    weightedError += errorDeg * weight;
+    totalWeight += weight;
   }
 
   // Also check last to first edge (closing the loop)
   if (edges.length >= 3) {
-    let angleDiff = edges[0].angle - edges[edges.length - 1].angle;
-    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-    const errorFromRight = Math.abs(Math.abs(angleDiff) - Math.PI / 2);
-    totalError += errorFromRight * 180 / Math.PI;
-    count++;
+    const i = edges.length - 1;
+    const errorDeg = computeError(edges[i].angle, edges[0].angle);
+    const weight = Math.min(edges[i].length, edges[0].length);
+
+    const angleDiff = edges[0].angle - edges[i].angle;
+    let normalizedDiff = angleDiff;
+    while (normalizedDiff > Math.PI) normalizedDiff -= 2 * Math.PI;
+    while (normalizedDiff < -Math.PI) normalizedDiff += 2 * Math.PI;
+
+    console.log(`      Edge ${i}→0 (closing): turn=${(normalizedDiff * 180 / Math.PI).toFixed(1)}°, error=${errorDeg.toFixed(1)}°, weight=${weight.toFixed(1)}`);
+
+    weightedError += errorDeg * weight;
+    totalWeight += weight;
   }
 
-  return count > 0 ? totalError / count : 90;
+  const avgError = totalWeight > 0 ? weightedError / totalWeight : 90;
+  console.log(`   → Average orthogonal error (length-weighted): ${avgError.toFixed(1)}°`);
+
+  return avgError;
 }
 
 /**

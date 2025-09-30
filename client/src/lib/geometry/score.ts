@@ -131,7 +131,7 @@ export function scoreRectangle(
   // =========================================================================
   // Final Weighted Score
   // =========================================================================
-  const S_rect =
+  let S_rect =
     RECT_WEIGHT_CORNERS * S_corners +
     RECT_WEIGHT_PARALLEL * S_parallel +
     RECT_WEIGHT_ORTHOGONAL * S_orthogonal +
@@ -139,6 +139,15 @@ export function scoreRectangle(
 
   console.group('🎯 Final Rectangle Score');
   console.log('Weighted sum:', S_rect.toFixed(3));
+
+  // CRITICAL: Add bias for rectangles with ≥3 right angles BEFORE threshold check
+  const rectBias = rightAngleCorners.length >= 3 ? 0.08 : 0.00;
+  if (rectBias > 0) {
+    console.log(`Rectangle bias: +${rectBias} (${rightAngleCorners.length} right-angle corners)`);
+    S_rect += rectBias;
+    console.log('Adjusted score:', S_rect.toFixed(3));
+  }
+
   console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
 
   if (S_rect < SHAPE_CONFIDENCE_MIN) {

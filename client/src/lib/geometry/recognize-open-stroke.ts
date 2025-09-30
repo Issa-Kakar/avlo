@@ -16,7 +16,7 @@ import type { Vec2 } from './types';
 import { SHAPE_CONFIDENCE_MIN } from './shape-params';
 import { fitCircle } from './fit-circle';
 import { fitOBB } from './fit-obb';
-import { detectEdgesAndCorners } from './geometry-helpers';
+import { detectCorners, reconstructRectangleEdges } from './geometry-helpers';
 import { scoreCircle, scoreRectangle } from './score';
 import { simplifyStroke } from '../tools/simplification';
 
@@ -188,7 +188,16 @@ export function recognizeOpenStroke({
 
   // Now use cleaned points for rectangle analysis
   const boxFit = fitOBB(rectPoints);
-  const { edges, corners } = detectEdgesAndCorners(rectPoints);
+
+  // CRITICAL: Pass the closed flag to corner detection
+  // This ensures wrap-around corners are detected on closed strokes
+  const isClosed = gap <= closeEps;
+  const corners = detectCorners(rectPoints, minSegWU, 45, isClosed);
+  console.log(`   Found ${corners.length} corners before reconstruction ${isClosed ? '(closed stroke)' : '(open stroke)'}`);
+
+  const edges = reconstructRectangleEdges(rectPoints, corners, minSegWU);
+  console.log(`   Reconstructed ${edges.length} edges for scoring`);
+
   const boxScore = scoreRectangle(rectPoints, boxFit, edges, corners);
 
   // =========================================================================
