@@ -505,11 +505,21 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Pass settings directly to DrawingTool (no adapter needed)
       const settings = activeTool === 'pen' ? pen : highlighter;
 
-      tool = new DrawingTool(roomDoc, settings, activeTool, userId, (_bounds) => {
-        // During drawing, invalidate overlay (preview is there)
-        // The overlay will full-clear anyway, but this triggers a frame
-        overlayLoopRef.current?.invalidateAll();
-      });
+      tool = new DrawingTool(
+        roomDoc,
+        settings,
+        activeTool,
+        userId,
+        (_bounds) => {
+          // During drawing, invalidate overlay (preview is there)
+          // The overlay will full-clear anyway, but this triggers a frame
+          overlayLoopRef.current?.invalidateAll();
+        },
+        // requestOverlayFrame: tools call this after snap or any preview change
+        () => overlayLoopRef.current?.invalidateAll(),
+        // getView: needed only for hold-jitter in SCREEN px (pre-snap)
+        () => viewTransformRef.current
+      );
     } else if (activeTool === 'text') {
       tool = new TextTool(
         roomDoc,

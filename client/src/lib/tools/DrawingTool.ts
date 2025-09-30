@@ -2,12 +2,18 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
 import { STROKE_CONFIG, ROOM_CONFIG } from '@avlo/shared';
+import type { ViewTransform } from '@avlo/shared';
 import { simplifyStroke, calculateBBox, estimateEncodedSize } from './simplification';
 import type { DrawingState, PreviewData } from './types';
 import type { ToolSettings } from '@/stores/device-ui-store';
+import { HoldDetector } from '../input/HoldDetector';
+import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
+import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
 
 // These constants are imported from @avlo/shared config
 // See Step 7 for the values to add to /packages/shared/src/config.ts
+
+type RequestOverlayFrame = () => void;
 
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
@@ -24,18 +30,36 @@ export class DrawingTool {
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
 
+  // NEW: Perfect shapes support
+  private hold: HoldDetector;
+  private snap:
+    | null
+    | (
+        | { kind: 'line';   anchors: { A: [number, number] } }
+        | { kind: 'circle'; anchors: { center: [number, number] } }
+        | { kind: 'box';    anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number } }
+      ) = null;
+  private liveCursorWU: [number, number] | null = null;
+  private getView?: () => ViewTransform;              // screen jitter (hold)
+  private requestOverlayFrame?: RequestOverlayFrame;  // NEW: nudge overlay loop
+
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
     settings: ToolSettings,
     toolType: 'pen' | 'highlighter',
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
+    requestOverlayFrame?: RequestOverlayFrame,     // NEW (overlay frames)
+    getView?: () => ViewTransform                  // stays (hold jitter)
   ) {
     this.room = room;
     this.settings = settings;
     this.toolType = toolType;
     this.userId = userId; // Store the stable ID
     this.onInvalidate = onInvalidate;
+    this.requestOverlayFrame = requestOverlayFrame;
+    this.getView = getView;
+    this.hold = new HoldDetector(() => this.onHoldFire());
     this.resetState();
   }
 
@@ -53,6 +77,8 @@ export class DrawingTool {
       startTime: 0,
     };
     this.lastBounds = null;
+    this.snap = null;
+    this.liveCursorWU = null;
   }
 
   canStartDrawing(): boolean {
@@ -66,13 +92,48 @@ export class DrawingTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     this.startDrawing(pointerId, worldX, worldY);
+
+    // NEW: Start hold detector in SCREEN px
+    if (this.getView) {
+      const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
+      this.hold.start({ x: sx, y: sy });
+    }
+
+    // Reset snap state for new gesture
+    this.snap = null;
+    this.liveCursorWU = [worldX, worldY];
+    this.requestOverlayFrame?.(); // draw first frame
   }
 
   move(worldX: number, worldY: number): void {
-    this.addPoint(worldX, worldY);
+    // Keep hold jitter in SCREEN px prior to snap
+    if (!this.snap && this.getView) {
+      const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
+      this.hold.move({ x: sx, y: sy });
+    }
+
+    if (this.snap) {
+      // After snap: update ONLY the live cursor and request an overlay frame.
+      this.liveCursorWU = [worldX, worldY];
+      this.requestOverlayFrame?.();                // CRITICAL: drives overlay
+      return;
+    }
+
+    // Before snap: freehand path behavior stays the same
+    this.addPoint(worldX, worldY);                         // will call updateBounds()
+    // updateBounds() → onInvalidate(bounds) → Canvas maps that to overlay invalidation
   }
 
   end(worldX?: number, worldY?: number): void {
+    this.hold.cancel();
+
+    if (this.snap && this.liveCursorWU) {
+      // Build polyline from (anchors + live cursor), compute bbox ONCE, commit.
+      this.commitPerfectShapeFromPreview();
+      return;
+    }
+
+    // Freehand path commit (existing)
     if (worldX !== undefined && worldY !== undefined) {
       this.commitStroke(worldX, worldY);
     } else {
@@ -87,6 +148,9 @@ export class DrawingTool {
   }
 
   cancel(): void {
+    this.hold.cancel();
+    this.snap = null;
+    this.liveCursorWU = null;
     this.cancelDrawing();
   }
 
@@ -165,11 +229,62 @@ export class DrawingTool {
     }
   }
 
+  private onHoldFire(): void {
+    if (this.snap) return;
+
+    // Use latest pointer in WORLD units
+    const len = this.state.points.length;
+    if (len < 2) return;
+    const pointerNowWU: [number, number] = [
+      this.state.points[len - 2], this.state.points[len - 1]
+    ];
+    console.log('Points', this.state.points.length / 2);
+
+    const result = recognizeOpenStroke({
+      pointsWU: this.state.points,
+      pointerNowWU
+    });
+    console.log('Result', result.kind, result.score);
+
+    // Recognizer enforces fallback; accept any result
+    // - 'circle'/'box' only if score >= SHAPE_CONFIDENCE_MIN (0.58)
+    // - otherwise it returns { kind:'line', score:1 }
+    if (result.kind === 'line' || result.score >= SHAPE_CONFIDENCE_MIN) {
+      // Freeze anchors; do NOT compute live geometry here.
+      this.snap = (
+        result.kind === 'line'
+          ? { kind: 'line',   anchors: { A: result.line!.A } }
+        : result.kind === 'circle'
+          ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
+          : { kind: 'box',     anchors: { cx: result.box!.cx, cy: result.box!.cy, angle: result.box!.angle, hx0: result.box!.hx, hy0: result.box!.hy } }
+      );
+      console.log('Result', result.kind, result.score);
+      this.requestOverlayFrame?.();                // draw snapped preview immediately
+      this.hold.cancel();                          // snap: hold no longer needed
+    }
+  }
+
   getPreview(): PreviewData | null {
-    if (!this.state.isDrawing || this.state.points.length < 2) {
-      return null;
+    if (!this.state.isDrawing) return null;
+
+    if (this.snap && this.liveCursorWU) {
+      const { color, size, tool } = this.state.config;
+      return {
+        kind: 'perfectShape',
+        shape: this.snap.kind,
+        color,
+        size,
+        opacity: tool === 'pen'
+          ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY
+          : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY,
+        anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
+        cursor: this.liveCursorWU,
+        bbox: null
+      };
     }
 
+    // Freehand (unchanged)
+    if (this.state.points.length < 2) return null;
     return {
       kind: 'stroke', // Add discriminant for union type
       points: this.state.points,
@@ -299,11 +414,102 @@ export class DrawingTool {
     }
   }
 
+  private commitPerfectShapeFromPreview(): void {
+    if (!this.snap || !this.liveCursorWU) return;
+
+    // Generate polyline from (anchors + final cursor)
+    let points: number[];
+    const finalCursor = this.liveCursorWU!;
+
+    if (this.snap.kind === 'line') {
+      const { A } = this.snap.anchors;
+      const B = finalCursor;
+      points = [A[0], A[1], B[0], B[1]];
+
+    } else if (this.snap.kind === 'circle') {
+      const { center } = this.snap.anchors;
+      const r = Math.hypot(finalCursor[0] - center[0], finalCursor[1] - center[1]);
+      const n = Math.max(24, Math.ceil(2 * Math.PI * r / 8));
+      points = [];
+      for (let i = 0; i <= n; i++) {
+        const angle = (i / n) * 2 * Math.PI;
+        points.push(center[0] + r * Math.cos(angle), center[1] + r * Math.sin(angle));
+      }
+
+    } else {  // box
+      const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
+      // Compute final scale from cursor
+      const dx = finalCursor[0] - cx;
+      const dy = finalCursor[1] - cy;
+      const cos = Math.cos(angle), sin = Math.sin(angle);
+      const localX =  dx *  cos + dy *  sin;
+      const localY = -dx *  sin + dy *  cos;
+      const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
+      const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
+      const hx = hx0 * sx;
+      const hy = hy0 * sy;
+
+      const corners = [
+        [-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]
+      ];
+      points = [];
+      for (const [lx, ly] of corners) {
+        points.push(
+          cx + lx * cos - ly * sin,
+          cy + lx * sin + ly * cos
+        );
+      }
+    }
+
+    // NOW compute bbox at commit time
+    const bbox = calculateBBox(points, this.state.config.size);
+
+    // Check size limits
+    const estimatedSize = estimateEncodedSize(points);
+    if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
+      console.error('Perfect shape too large for transport');
+      this.cancelDrawing();
+      return;
+    }
+
+    // Commit as regular stroke
+    const strokeId = ulid();
+    this.room.mutate((ydoc) => {
+      const root = ydoc.getMap('root');
+      const strokes = root.get('strokes') as Y.Array<any>;
+      const meta = root.get('meta') as Y.Map<any>;
+      const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
+      const currentScene = sceneTicks.length;
+
+      strokes.push([{
+        id: strokeId,
+        tool: this.state.config.tool,
+        color: this.state.config.color,
+        size: this.state.config.size,
+        opacity: this.state.config.opacity,
+        points,  // Generated polyline
+        bbox,    // Computed at commit
+        scene: currentScene,
+        createdAt: Date.now(),
+        userId: this.userId
+      }]);
+    });
+
+    // Invalidate and reset
+    if (bbox) this.onInvalidate?.(bbox);
+    this.resetState();
+    this.snap = null;
+    this.liveCursorWU = null;
+  }
+
   destroy(): void {
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null; // Ensure idempotent
     }
     this.resetState();
+    this.hold.cancel();
+    this.snap = null;
+    this.liveCursorWU = null;
   }
 }

@@ -6,6 +6,28 @@ Shape recognition is **explicitly user-intentional via a 600 ms dwell**. We are 
 
 ---
 
+## Implementation Status
+
+### ✅ Implemented
+- **Geometry algorithms** (`/client/src/lib/geometry/`):
+  - `fit-circle.ts` - Taubin algebraic circle fitting
+  - `fit-obb.ts` - PCA-based oriented bounding box
+  - `geometry-helpers.ts` - All helper functions (PCA, coverage, corner/edge detection, scoring helpers)
+  - `types.ts` - Vec2, Edge, Corner types
+  - `shape-params.ts` - Centralized constants for thresholds and scoring weights
+  - `score.ts` - Shape scoring functions for circle and rectangle
+  - `recognize-open-stroke.ts` - Main recognition algorithm with line fallback
+- HoldDetector (`/client/src/lib/input/HoldDetector.ts`)
+- PreviewData type updates in `/client/src/lib/tools/types.ts`
+- DrawingTool modifications for perfect shapes
+- OverlayRenderLoop perfect shape rendering
+- Perfect shape preview renderer (`/client/src/renderer/layers/perfect-shape-preview.ts`)
+- Canvas.tsx integration changes
+
+### ⏳ Not Yet Implemented
+
+---
+
 ## 1. Core Behavior & User Experience
 
 ### What Users Experience
@@ -595,7 +617,7 @@ export const CIRCLE_WEIGHT_FIT = 0.30;
 export const CIRCLE_WEIGHT_ROUND = 0.20;
 ```
 
-### 5.1 Recognition Algorithm (`/client/src/lib/geometry/recognize-open-stroke.ts`)
+### 5.1 Recognition Algorithm (`/client/src/lib/geometry/recognize-open-stroke.ts` - )
 
 ```typescript
 import { SHAPE_CONFIDENCE_MIN } from './shape-params';
@@ -648,45 +670,48 @@ export function recognizeOpenStroke({
 }
 ```
 
-### 5.2 Shape Fitting Functions (`/client/src/lib/geometry/fit-*.ts`)
+### 5.2 Shape Fitting Functions (IMPLEMENTED)
 
-```typescript
-// fit-circle.ts
-export function fitCircle(points: Vec2[]): {
-  cx: number; cy: number; r: number; residualRMS: number;
-} {
-  // Implement Pratt/Taubin algebraic fit
-  // Returns center and radius with residual RMS
-}
+**Files:**
+- `/client/src/lib/geometry/fit-circle.ts` - Taubin algebraic circle fitting
+- `/client/src/lib/geometry/fit-obb.ts` - PCA-based oriented bounding box fitting
+- `/client/src/lib/geometry/types.ts` - Common geometric types (Vec2, Edge, Corner)
 
-// fit-obb.ts
-export function fitOBB(points: Vec2[]): {
-  cx: number; cy: number; angle: number; hx: number; hy: number;
-} {
-  // PCA-based oriented bounding box
-  // Returns center, rotation angle, and half-extents
-}
-```
+#### fit-circle.ts
+Implements **Taubin algebraic circle fitting** for robust partial arc fitting:
+- Handles degenerate cases (< 3 points)
+- Computes centroid and moment matrices
+- Solves characteristic polynomial using Newton's method
+- Returns `{cx, cy, r, residualRMS}` with RMS of residuals for scoring
 
-#### 5.2.a Helpers & Definitions
+#### fit-obb.ts
+Implements **PCA-based Oriented Bounding Box** fitting:
+- Computes covariance matrix from points
+- Extracts principal axes via eigendecomposition
+- Projects points onto principal axes to find extents
+- Returns `{cx, cy, angle, hx, hy}` where angle is the box rotation and hx/hy are half-extents
 
-- **pcaAxisRatio(points)**: compute covariance eigenvalues λ₁ ≥ λ₂;
-  `axisRatio = sqrt(λ₁ / λ₂)`. Use λ₁'s eigenvector for OBB angle; use `axisRatio` for circle roundness gate/score.
+#### 5.2.a Helpers & Definitions (in `/client/src/lib/geometry/geometry-helpers.ts`)
 
-- **angularCoverage(points, center)**: sort points by angle around `center`, accumulate swept radians (with sign, dedup overlaps);
-  `coverage = unique_angle_span / (2π)`. We require **≥ 240°** coverage i.e. `≥ 0.667`.
+**Implemented helpers:**
 
-- **detectCorners(points)**: corner if `turnAngle > 45°` and both adjacent segments ≥ `minSegmentLength ≈ 10` world units.
+- **pcaAxisRatio(points)**: Computes covariance eigenvalues λ₁ ≥ λ₂ and returns `sqrt(λ₁ / λ₂)`. Used for circle roundness scoring and as a hard gate for circles (must be ≤ 1.70).
 
-- **detectEdges(points, corners)**: split edges at corners; ignore too-short edges with `indexDelta ≤ 3`.
+- **angularCoverage(points, center)**: Calculates the angular span of points around a center (0-1). Sorts points by angle, finds maximum gap, returns `(2π - maxGap) / 2π`. Circles require ≥ 0.667 (240°) coverage.
 
-- **detectEdgesAndCorners(points)**: combined helper that returns both edges and corners for efficiency.
+- **detectCorners(points)**: Identifies corners where turn angle > 45° and both adjacent segments are ≥ 10 world units. Returns array of `{index, angle, strength}`.
 
-- **Error/score primitives**:
-  - `circleRMSNorm = sqrt(mean((|p−center| − r)^2)) / r`
-  - `parallelError = |angle(edge_i) − angle(edge_opposite)|` (deg)
-  - `orthogonalError = |90° − angle(edge_i, edge_{i+1})|` (deg)
-  - `cornerConfidence = 1 − clamp(|θ − 90°| / 20°, 0, 1)` (use top 3)
+- **detectEdges(points, corners)**: Creates edges between consecutive corners. Skips edges with `indexDelta ≤ 3`. Returns array of `{startIdx, endIdx, angle, length}`.
+
+- **detectEdgesAndCorners(points)**: Combined function that efficiently detects both edges and corners in one pass.
+
+- **avgParallelError(edges)**: Calculates average angle difference between potentially opposite edges (in degrees). Used for rectangle scoring.
+
+- **avgOrthogonalError(edges)**: Calculates average deviation from 90° for adjacent edges. Used for rectangle scoring.
+
+- **coverageAcrossDistinctSides(points, obb)**: Evaluates how well points are distributed across all four sides of a rectangle (0-1 score).
+
+- **top3Avg(values)**: Returns average of top 3 values from an array. Used for corner confidence scoring.
 
 #### Geometry Internals
 
@@ -778,16 +803,4 @@ export function scoreCircle(
 
 // Note: No scoreLine function - line is a strict fallback, not a scored candidate
 ```
-
-### 5.4 Geometry Update Functions
-
-```typescript
-// Note: Box scaling is anisotropic (along its own local axes), not uniform
-// This is already correctly implemented in the preview renderer (lines 509-520)
-// and commit function (lines 388-410), using local axis projection.
-// The actual scaling logic projects the cursor into the box's local coordinate
-// system and scales each axis independently.
-```
-
-
 

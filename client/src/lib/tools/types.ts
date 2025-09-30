@@ -55,7 +55,35 @@ export interface TextPreview {
 }
 
 /**
+ * PerfectShapePreview is the preview data for perfect shapes (line, circle, box)
+ * Used by DrawingTool and overlay rendering
+ * NEW: Perfect Shape preview is inputs (anchors + live cursor),
+ * not final geometry. The renderer computes geometry.
+ */
+export interface PerfectShapePreview {
+  kind: 'perfectShape';
+  shape: 'line' | 'circle' | 'box';
+
+  // Tool styling frozen at pointer-down
+  color: string;
+  size: number;
+  opacity: number;
+
+  // Inputs in WORLD space:
+  // - anchors: frozen the moment we snap (shape-specific)
+  // - cursor: live pointer in world units
+  anchors:
+    | { kind: 'line';   A: [number, number] }                // line: fixed A
+    | { kind: 'circle'; center: [number, number] }           // circle: fixed center
+    | { kind: 'box';    cx: number; cy: number; angle: number; hx0: number; hy0: number }; // box: frozen OBB seed
+  cursor: [number, number];
+
+  // Overlay previews never carry a bbox (base canvas ignores them)
+  bbox: null;
+}
+
+/**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData = StrokePreview | EraserPreview | TextPreview;
+export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview;

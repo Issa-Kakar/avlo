@@ -2,6 +2,7 @@ import type { PresenceView, ViewTransform, Snapshot } from '@avlo/shared';
 import type { PreviewData } from '@/lib/tools/types';
 import { drawPreview } from './layers/preview';
 import { drawDimmedStrokes } from './layers/eraser-dim';
+import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 
 export interface PreviewProvider {
   getPreview(): PreviewData | null;
@@ -180,6 +181,13 @@ export class OverlayRenderLoop {
             ctx.stroke();
           }
 
+          ctx.restore();
+        } else if (previewToDraw.kind === 'perfectShape') {
+          // Perfect shape preview (world space)
+          ctx.save();
+          ctx.scale(view.scale, view.scale);
+          ctx.translate(-view.pan.x, -view.pan.y);
+          drawPerfectShapePreview(ctx, previewToDraw);
           ctx.restore();
         }
       });
