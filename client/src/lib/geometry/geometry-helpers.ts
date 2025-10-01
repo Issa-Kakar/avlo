@@ -572,3 +572,83 @@ export function top3Avg(values: number[]): number {
   const top3 = sorted.slice(0, 3);
   return top3.reduce((sum, v) => sum + v, 0) / top3.length;
 }
+
+/**
+ * Distance from a point to the nearest AABB edge.
+ * Used for scoring how well points follow rectangle sides.
+ */
+export function aabbSideDist(
+  x: number,
+  y: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): number {
+  // Distance to each side
+  const dx = Math.min(Math.abs(x - minX), Math.abs(x - maxX));
+  const dy = Math.min(Math.abs(y - minY), Math.abs(y - maxY));
+
+  // Check if point is inside bbox
+  const insideX = x >= minX && x <= maxX;
+  const insideY = y >= minY && y <= maxY;
+
+  if (insideX && insideY) {
+    return Math.min(dx, dy); // Distance to nearest side
+  }
+
+  if (!insideX && insideY) {
+    return Math.abs(x < minX ? minX - x : x - maxX);
+  }
+
+  if (insideX && !insideY) {
+    return Math.abs(y < minY ? minY - y : y - maxY);
+  }
+
+  // Outside corner - distance to nearest corner
+  const cx = x < minX ? minX : maxX;
+  const cy = y < minY ? minY : maxY;
+  return Math.hypot(x - cx, y - cy);
+}
+
+/**
+ * Score how well points follow the AABB sides.
+ * Returns fraction of points within epsilon of any side.
+ */
+export function aabbSideFitScore(
+  points: Vec2[],
+  aabb: { minX: number; minY: number; maxX: number; maxY: number },
+  epsilonWU: number
+): number {
+  let nearCount = 0;
+  for (const [x, y] of points) {
+    const dist = aabbSideDist(x, y, aabb.minX, aabb.minY, aabb.maxX, aabb.maxY);
+    if (dist <= epsilonWU) {
+      nearCount++;
+    }
+  }
+  return nearCount / Math.max(1, points.length);
+}
+
+/**
+ * Calculate how many distinct sides of AABB are visited.
+ * Returns 0-1 score (0.25 per side visited).
+ */
+export function aabbSideCoverage(
+  points: Vec2[],
+  aabb: { minX: number; minY: number; maxX: number; maxY: number },
+  epsilonWU: number
+): number {
+  const sides = { left: false, right: false, top: false, bottom: false };
+
+  for (const [x, y] of points) {
+    if (Math.abs(x - aabb.minX) <= epsilonWU) sides.left = true;
+    if (Math.abs(x - aabb.maxX) <= epsilonWU) sides.right = true;
+    if (Math.abs(y - aabb.minY) <= epsilonWU) sides.top = true;
+    if (Math.abs(y - aabb.maxY) <= epsilonWU) sides.bottom = true;
+  }
+
+  const count = (sides.left ? 1 : 0) + (sides.right ? 1 : 0) +
+                (sides.top ? 1 : 0) + (sides.bottom ? 1 : 0);
+  return count / 4;
+}

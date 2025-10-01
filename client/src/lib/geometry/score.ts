@@ -7,20 +7,24 @@
 import type { Vec2, Edge, Corner } from './types';
 import {
   SHAPE_CONFIDENCE_MIN,
+  SHAPE_DEBUG_SCORES,
   CIRCLE_MIN_COVERAGE,
   CIRCLE_MAX_AXIS_RATIO,
   CIRCLE_MAX_RMS_RATIO,
-  RECT_MIN_CORNERS,
-  RECT_CORNER_TOLERANCE_DEG,
-  RECT_PARALLEL_TOLERANCE_DEG,
-  RECT_ORTHOGONAL_TOLERANCE_DEG,
-  RECT_WEIGHT_CORNERS,
-  RECT_WEIGHT_PARALLEL,
-  RECT_WEIGHT_ORTHOGONAL,
-  RECT_WEIGHT_COVERAGE,
   CIRCLE_WEIGHT_COVERAGE,
   CIRCLE_WEIGHT_FIT,
-  CIRCLE_WEIGHT_ROUND
+  CIRCLE_WEIGHT_ROUND,
+  // AABB parameters
+  RECT_SIDE_EPSILON_FACTOR,
+  RECT_MIN_SIDE_EPSILON,
+  RECT_CORNER_SOFT_TOLERANCE_DEG,
+  RECT_PARALLEL_SOFT_TOLERANCE_DEG,
+  RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG,
+  RECT_WEIGHT_SIDEDIST,
+  RECT_WEIGHT_SIDECOV,
+  RECT_WEIGHT_CORNERS,
+  RECT_WEIGHT_PARALLEL,
+  RECT_WEIGHT_ORTHOGONAL
 } from './shape-params';
 
 import {
@@ -28,8 +32,10 @@ import {
   angularCoverage,
   avgParallelError,
   avgOrthogonalError,
-  coverageAcrossDistinctSides,
-  top3Avg
+  top3Avg,
+  // AABB helpers
+  aabbSideFitScore,
+  aabbSideCoverage
 } from './geometry-helpers';
 
 /**
@@ -39,129 +45,111 @@ function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
 
+
 /**
- * Scores how well a stroke matches a rectangle shape.
+ * Scores how well a stroke matches an axis-aligned rectangle.
+ * ALL SOFT SCORING - NO HARD GATES
  *
  * @param points - The stroke points
- * @param obb - The fitted oriented bounding box
- * @param edges - Detected edges in the stroke
- * @param corners - Detected corners in the stroke
- * @returns Score in [0, 1], or 0 if hard gates not met
+ * @param aabb - The fitted axis-aligned bounding box
+ * @param edges - Detected edges (optional, for soft scoring)
+ * @param corners - Detected corners (optional, for soft scoring)
+ * @returns Score in [0, 1], never hard-fails to 0
  */
-export function scoreRectangle(
+export function scoreRectangleAABB(
   points: Vec2[],
-  obb: { cx: number; cy: number; angle: number; hx: number; hy: number },
-  edges: Edge[],
-  corners: Corner[]
+  aabb: { cx: number; cy: number; hx: number; hy: number; minX: number; minY: number; maxX: number; maxY: number },
+  edges: Edge[] = [],
+  corners: Corner[] = []
 ): number {
-  console.group('🟦 Rectangle Scoring Analysis');
-  console.log('Input:', {
-    pointCount: points.length,
-    obb: { center: [obb.cx, obb.cy], angle: (obb.angle * 180/Math.PI).toFixed(1) + '°', halfExtents: [obb.hx.toFixed(1), obb.hy.toFixed(1)] },
-    edgeCount: edges.length,
-    cornerCount: corners.length
+  console.group('🟦 AABB Rectangle Scoring (Soft)');
+
+  const diag = Math.hypot(aabb.maxX - aabb.minX, aabb.maxY - aabb.minY) || 1;
+  const epsilon = Math.max(RECT_MIN_SIDE_EPSILON, RECT_SIDE_EPSILON_FACTOR * diag);
+
+  console.log('AABB parameters:', {
+    center: [aabb.cx.toFixed(1), aabb.cy.toFixed(1)],
+    size: [(aabb.maxX - aabb.minX).toFixed(1), (aabb.maxY - aabb.minY).toFixed(1)],
+    epsilon: epsilon.toFixed(1)
   });
 
   // =========================================================================
-  // Hard Gate: Must have at least 3 right-angle corners
+  // Component 1: Side Distance Score (40% weight) - PRIMARY SIGNAL
   // =========================================================================
-  console.group('📐 Corner Detection');
-  console.log('All corners found:', corners.map(c => ({
-    index: c.index,
-    angle: c.angle.toFixed(1) + '°',
-    deviation: Math.abs(c.angle - 90).toFixed(1) + '°',
-    strength: c.strength.toFixed(2)
-  })));
+  const S_sideDist = aabbSideFitScore(points, aabb, epsilon);
+  console.log(`1. Side Proximity (${RECT_WEIGHT_SIDEDIST * 100}%): ${S_sideDist.toFixed(3)}`);
+  console.log(`   Points within ${epsilon.toFixed(1)} of sides: ${(S_sideDist * 100).toFixed(1)}%`);
 
-  const rightAngleCorners = corners.filter(
-    c => Math.abs(c.angle - 90) <= RECT_CORNER_TOLERANCE_DEG
-  );
+  // =========================================================================
+  // Component 2: Side Coverage (25% weight) - ENCOURAGES COMPLETE RECTANGLES
+  // =========================================================================
+  const S_sideCov = aabbSideCoverage(points, aabb, epsilon);
+  const sidesVisited = Math.round(S_sideCov * 4);
+  console.log(`2. Side Coverage (${RECT_WEIGHT_SIDECOV * 100}%): ${S_sideCov.toFixed(3)}`);
+  console.log(`   Distinct sides visited: ${sidesVisited}/4`);
 
-  console.log(`Right-angle corners (±${RECT_CORNER_TOLERANCE_DEG}°):`, rightAngleCorners.length);
-  console.log(`Required: ${RECT_MIN_CORNERS}, Found: ${rightAngleCorners.length}`);
+  // =========================================================================
+  // Component 3: Corner Quality (15% weight) - SOFT CONTRIBUTION ONLY
+  // =========================================================================
+  let S_corners = 0;
+  if (corners.length > 0) {
+    const rightAngleScores = corners.map(c => {
+      const deviation = Math.abs(c.angle - 90);
+      return Math.max(0, 1 - deviation / RECT_CORNER_SOFT_TOLERANCE_DEG);
+    });
 
-  if (rightAngleCorners.length < RECT_MIN_CORNERS) {
-    console.log('❌ HARD GATE FAILED: Not enough right-angle corners');
-    console.groupEnd(); // Close Corner Detection
-    console.groupEnd(); // Close Rectangle Scoring
-    return 0;
+    // Take average of top 3 corners (or all if fewer)
+    const topN = Math.min(3, rightAngleScores.length);
+    rightAngleScores.sort((a, b) => b - a);
+    S_corners = rightAngleScores.slice(0, topN).reduce((a, b) => a + b, 0) / topN;
+
+    console.log(`3. Corner Quality (${RECT_WEIGHT_CORNERS * 100}%): ${S_corners.toFixed(3)}`);
+    console.log(`   Found ${corners.length} corners, top-${topN} average quality`);
+  } else {
+    console.log(`3. Corner Quality (${RECT_WEIGHT_CORNERS * 100}%): 0.000 (no corners detected)`);
   }
-  console.log('✅ Corner gate passed');
-  console.groupEnd(); // Close Corner Detection
 
   // =========================================================================
-  // Component 1: Corner Quality (40% weight)
+  // Component 4 & 5: Parallel/Orthogonal (20% combined) - SOFT HINTS
   // =========================================================================
-  console.group('📊 Component Scores');
-  const cornerQualities = rightAngleCorners.map(c => {
-    const deviation = Math.abs(c.angle - 90);
-    return 1 - clamp01(deviation / RECT_CORNER_TOLERANCE_DEG);
-  });
-  const S_corners = top3Avg(cornerQualities);
-  console.log(`1. Corner Quality (${RECT_WEIGHT_CORNERS * 100}% weight):`);
-  console.log('   Individual qualities:', cornerQualities.map(q => q.toFixed(3)));
-  console.log('   Top-3 average:', S_corners.toFixed(3));
+  let S_parallel = 0.5; // Default neutral if no edges
+  let S_orthogonal = 0.5;
+
+  if (edges.length >= 2) {
+    const parallelError = avgParallelError(edges);
+    const orthogonalError = avgOrthogonalError(edges);
+
+    S_parallel = Math.max(0, 1 - parallelError / RECT_PARALLEL_SOFT_TOLERANCE_DEG);
+    S_orthogonal = Math.max(0, 1 - orthogonalError / RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG);
+
+    console.log(`4. Parallel Edges (${RECT_WEIGHT_PARALLEL * 100}%): ${S_parallel.toFixed(3)}`);
+    console.log(`5. Orthogonal Edges (${RECT_WEIGHT_ORTHOGONAL * 100}%): ${S_orthogonal.toFixed(3)}`);
+  } else {
+    console.log(`4-5. Edge metrics: neutral (insufficient edges)`);
+  }
 
   // =========================================================================
-  // Component 2: Parallel Edges (25% weight)
+  // Final Weighted Score - NO HARD GATES, ALL SOFT
   // =========================================================================
-  const parallelErrorDeg = avgParallelError(edges);
-  const S_parallel = 1 - clamp01(parallelErrorDeg / RECT_PARALLEL_TOLERANCE_DEG);
-  console.log(`2. Parallel Edges (${RECT_WEIGHT_PARALLEL * 100}% weight):`);
-  console.log(`   Average error: ${parallelErrorDeg.toFixed(1)}° (threshold: ${RECT_PARALLEL_TOLERANCE_DEG}°)`);
-  console.log('   Score:', S_parallel.toFixed(3));
-
-  // =========================================================================
-  // Component 3: Orthogonal Edges (20% weight)
-  // =========================================================================
-  const orthogonalErrorDeg = avgOrthogonalError(edges);
-  const S_orthogonal = 1 - clamp01(orthogonalErrorDeg / RECT_ORTHOGONAL_TOLERANCE_DEG);
-  console.log(`3. Orthogonal Edges (${RECT_WEIGHT_ORTHOGONAL * 100}% weight):`);
-  console.log(`   Average error: ${orthogonalErrorDeg.toFixed(1)}° (threshold: ${RECT_ORTHOGONAL_TOLERANCE_DEG}°)`);
-  console.log('   Score:', S_orthogonal.toFixed(3));
-
-  // =========================================================================
-  // Component 4: Coverage (15% weight)
-  // =========================================================================
-  const S_coverage = coverageAcrossDistinctSides(points, obb);
-  console.log(`4. Coverage (${RECT_WEIGHT_COVERAGE * 100}% weight):`);
-  console.log('   Score:', S_coverage.toFixed(3));
-  console.groupEnd(); // Close Component Scores
-
-  // =========================================================================
-  // Final Weighted Score
-  // =========================================================================
-  let S_rect =
+  const score =
+    RECT_WEIGHT_SIDEDIST * S_sideDist +
+    RECT_WEIGHT_SIDECOV * S_sideCov +
     RECT_WEIGHT_CORNERS * S_corners +
     RECT_WEIGHT_PARALLEL * S_parallel +
-    RECT_WEIGHT_ORTHOGONAL * S_orthogonal +
-    RECT_WEIGHT_COVERAGE * S_coverage;
+    RECT_WEIGHT_ORTHOGONAL * S_orthogonal;
 
-  console.group('🎯 Final Rectangle Score');
-  console.log('Weighted sum:', S_rect.toFixed(3));
-
-  // CRITICAL: Add bias for rectangles with ≥3 right angles BEFORE threshold check
-  const rectBias = rightAngleCorners.length >= 3 ? 0.08 : 0.00;
-  if (rectBias > 0) {
-    console.log(`Rectangle bias: +${rectBias} (${rightAngleCorners.length} right-angle corners)`);
-    S_rect += rectBias;
-    console.log('Adjusted score:', S_rect.toFixed(3));
-  }
-
+  console.log(`🎯 Final AABB Score: ${score.toFixed(3)}`);
   console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
 
-  if (S_rect < SHAPE_CONFIDENCE_MIN) {
-    console.log(`❌ Below threshold: ${S_rect.toFixed(3)} < ${SHAPE_CONFIDENCE_MIN}`);
-    console.log('Returning: 0 (will trigger line fallback)');
+  if (score >= SHAPE_CONFIDENCE_MIN) {
+    console.log(`✅ Above threshold - competitive rectangle`);
   } else {
-    console.log(`✅ Above threshold: ${S_rect.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN}`);
-    console.log(`Returning: ${S_rect.toFixed(3)}`);
+    console.log(`⚠️ Below threshold - may not win or trigger ambiguity`);
   }
-  console.groupEnd(); // Close Final Score
-  console.groupEnd(); // Close Rectangle Scoring
 
-  // Only return non-zero score if it meets the global confidence threshold
-  return S_rect >= SHAPE_CONFIDENCE_MIN ? S_rect : 0;
+  console.groupEnd();
+
+  return Math.max(0, Math.min(1, score)); // Clamp to [0,1]
 }
 
 /**

@@ -255,9 +255,16 @@ export class DrawingTool {
       pointerNowWU
     });
 
-    // Recognizer enforces fallback; accept any result
-    // - 'circle'/'box' only if score >= SHAPE_CONFIDENCE_MIN (0.58)
-    // - otherwise it returns { kind:'line', score:1 }
+    // Handle near-miss result - don't snap, continue freehand
+    if (result.ambiguous) {
+      console.log('🤷 Near-miss detected - NO SNAP, user likely intended a shape but didn\'t quite make it');
+      console.groupEnd();
+      // Don't set snap, don't cancel hold, just continue drawing
+      // This prevents the annoying line snap when user almost drew a shape
+      return;
+    }
+
+    // Handle recognized shapes (line, circle, box)
     if (result.kind === 'line' || result.score >= SHAPE_CONFIDENCE_MIN) {
       // Freeze anchors; do NOT compute live geometry here.
       this.snap = (
@@ -265,12 +272,18 @@ export class DrawingTool {
           ? { kind: 'line',   anchors: { A: result.line!.A } }
         : result.kind === 'circle'
           ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
-          : { kind: 'box',     anchors: { cx: result.box!.cx, cy: result.box!.cy, angle: result.box!.angle, hx0: result.box!.hx, hy0: result.box!.hy } }
+          : { kind: 'box',     anchors: {
+              cx: result.box!.cx,
+              cy: result.box!.cy,
+              angle: 0,  // ALWAYS 0 for AABB
+              hx0: result.box!.hx,
+              hy0: result.box!.hy
+            }}
       );
       console.log(`✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`);
-      console.groupEnd(); // Close Hold Detector group
-      this.requestOverlayFrame?.();                // draw snapped preview immediately
-      this.hold.cancel();                          // snap: hold no longer needed
+      console.groupEnd();
+      this.requestOverlayFrame?.();
+      this.hold.cancel();
     }
   }
 
