@@ -18,11 +18,20 @@ import {
   SHAPE_AMBIGUITY_DELTA,
   RECT_CORNER_TIE_TOLERANCE_DEG,
   RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE,
-  RECT_MAX_RIGHT_ANGLES
+  RECT_MAX_RIGHT_ANGLES,
+  LINE_SELF_INTERSECT_AMBIGUOUS,
+  LINE_SELF_INTERSECT_EPSILON_FACTOR,
+  LINE_SELF_INTERSECT_MIN_EPSILON,
+  LINE_NEAR_CLOSURE_AMBIGUOUS,
+  LINE_CLOSE_GAP_RATIO,
+  LINE_NEAR_TOUCH_AMBIGUOUS,
+  LINE_NEAR_TOUCH_EPSILON_FACTOR,
+  LINE_NEAR_TOUCH_MIN_EPSILON,
+  LINE_NEAR_TOUCH_STROKE_SIZE_FACTOR
 } from './shape-params';
 import { fitCircle } from './fit-circle';
 import { fitAABB } from './fit-aabb';
-import { detectCorners, reconstructRectangleEdges } from './geometry-helpers';
+import { detectCorners, reconstructRectangleEdges, hasSelfIntersection, hasNearTouch } from './geometry-helpers';
 import { scoreCircle, scoreRectangleAABB } from './score';
 import { simplifyStroke } from '../tools/simplification';
 
@@ -361,7 +370,85 @@ export function recognizeOpenStroke({
     };
   }
 
-  // Case 6: Clear failure - fallback to line
+  // Case 6: Self-intersection check - prevent line snap for self-intersecting strokes
+  if (LINE_SELF_INTERSECT_AMBIGUOUS) {
+    // Calculate epsilon tolerance based on diagonal
+    const epsWU = Math.max(
+      LINE_SELF_INTERSECT_MIN_EPSILON,
+      LINE_SELF_INTERSECT_EPSILON_FACTOR * diag
+    );
+
+    // Use the already decimated points from Track-B (jitter-free, minimum segment length)
+    // This is the same array we used for corner detection
+    if (hasSelfIntersection(decimated, epsWU)) {
+      console.log(`🔄 SELF-INTERSECTION detected - AMBIGUOUS to prevent line snap`);
+      console.log(`📝 NO SNAP - Stroke crosses itself, continue freehand`);
+      console.groupEnd();
+      console.groupEnd();
+
+      const A = points[0];
+      return {
+        kind: 'line',
+        score: 1,
+        ambiguous: true,  // Signal to DrawingTool: don't snap, continue freehand
+        line: { A: [A[0], A[1]], B: pointerNowWU }
+      };
+    }
+  }
+
+  // Case 7: Near-closure check - prevent line snap for nearly-closed loops
+  if (LINE_NEAR_CLOSURE_AMBIGUOUS && points.length >= 3) {
+    // Check if start and end points are very close
+    const firstPoint = points[0];
+    const lastPoint = points[points.length - 1];
+    const closeGapWU = Math.hypot(lastPoint[0] - firstPoint[0], lastPoint[1] - firstPoint[1]);
+    const closeGapThreshold = LINE_CLOSE_GAP_RATIO * diag;
+
+    if (closeGapWU <= closeGapThreshold) {
+      console.log(`🔁 NEAR-CLOSURE detected - AMBIGUOUS to prevent line snap`);
+      console.log(`   Gap: ${closeGapWU.toFixed(1)} WU <= ${closeGapThreshold.toFixed(1)} WU (${(LINE_CLOSE_GAP_RATIO * 100).toFixed(0)}% of diagonal)`);
+      console.log(`📝 NO SNAP - Stroke nearly closes on itself, continue freehand`);
+      console.groupEnd();
+      console.groupEnd();
+
+      const A = points[0];
+      return {
+        kind: 'line',
+        score: 1,
+        ambiguous: true,  // Signal to DrawingTool: don't snap, continue freehand
+        line: { A: [A[0], A[1]], B: pointerNowWU }
+      };
+    }
+  }
+
+  // Case 8: Near self-touch check - prevent line snap for strokes that nearly touch themselves
+  if (LINE_NEAR_TOUCH_AMBIGUOUS) {
+    // Calculate epsilon tolerance based on diagonal
+    // Note: We don't have stroke size here, so we use a conservative estimate
+    const nearTouchEpsWU = Math.max(
+      LINE_NEAR_TOUCH_MIN_EPSILON,
+      LINE_NEAR_TOUCH_EPSILON_FACTOR * diag
+    );
+
+    // Use the already decimated points from Track-B
+    if (hasNearTouch(decimated, nearTouchEpsWU)) {
+      console.log(`👆 NEAR SELF-TOUCH detected - AMBIGUOUS to prevent line snap`);
+      console.log(`   Segments come within ${nearTouchEpsWU.toFixed(1)} WU of each other`);
+      console.log(`📝 NO SNAP - Stroke nearly touches itself, continue freehand`);
+      console.groupEnd();
+      console.groupEnd();
+
+      const A = points[0];
+      return {
+        kind: 'line',
+        score: 1,
+        ambiguous: true,  // Signal to DrawingTool: don't snap, continue freehand
+        line: { A: [A[0], A[1]], B: pointerNowWU }
+      };
+    }
+  }
+
+  // Case 9: Clear failure - fallback to line
   console.log(`❌ Score too low: ${maxScore.toFixed(3)} < ${nearMissThreshold.toFixed(3)}`);
   console.log('📏 FALLBACK: LINE (clear failure, user didn\'t intend a shape)');
   console.groupEnd();

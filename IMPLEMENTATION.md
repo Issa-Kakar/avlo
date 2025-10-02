@@ -26,17 +26,6 @@
 
 - RoomDocManagerImpl class is private - NEVER export directly
 - Access only via RoomDocManagerRegistry (singleton per room guarantee)
-- Registry methods: acquire()/release() for ref counting
-- Test helper: createTestManager() for isolated test instances
-
-**Y.Doc Reference Rules (NEVER VIOLATE):**
-
-```typescript
-// Helpers traverse 'root' on demand - no cached Y references
-private getRoot(): Y.Map<unknown> { return this.ydoc.getMap('root'); }
-private getStrokes(): Y.Array<Stroke> { return this.getRoot().get('strokes'); }
-private getMeta(): Y.Map<unknown> { return this.getRoot().get('meta'); }
-```
 
 **Initialization:**
 
@@ -1083,6 +1072,13 @@ Provide WYSIWYG text entry via a **DOM overlay editor** that visually matches fi
 - **Device-UI editing rule**: while TextTool is active, `isTextEditing=true` hides the dock; config changes update the active editor without recreating the tool.
 
 ---
+### Perfect Shapes (IMPLEMENTED)
+
+- **600ms dwell trigger:** HoldDetector fires after pointer stillness, runs recognition on stroke
+- **Shape detection:** Circle (Taubin fit, coverage ≥67%) vs Rectangle (AABB not OBB, soft scoring) vs Line (strict fallback)
+- **Locked refinement:** Post-snap, pointer drags adjust geometry only (radius/box-scale/line-endpoint)
+- **Near-miss handling:** Shapes scoring within 0.10 of confidence (0.48-0.58) don't snap, preventing annoying line fallbacks
+- **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage
 
 ## Phase 10: Undo/Redo System
 

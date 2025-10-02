@@ -696,3 +696,215 @@ export function aabbCoverageAcrossDistinctSides(
   const coverage = sidesWithPoints / 4;
   return coverage * 0.7 + evenness * 0.3; // identical to OBB weighting
 }
+
+/**
+ * Check if a stroke self-intersects (excluding adjacent segments and endpoints).
+ * Uses a naive O(n²) segment intersection test with fast bbox rejection.
+ *
+ * @param pointsFlat - Flat array of points [x0,y0, x1,y1, ...] (decimated/cleaned)
+ * @param epsWU - World unit tolerance for intersection detection
+ * @returns true if the stroke self-intersects
+ */
+export function hasSelfIntersection(pointsFlat: number[], epsWU: number): boolean {
+  const n = pointsFlat.length;
+  if (n < 8) return false; // fewer than 4 points => <=3 segments, can't self-intersect
+
+  // Build segments (skip degenerate ones shorter than epsWU)
+  interface Segment {
+    x1: number; y1: number;
+    x2: number; y2: number;
+    minx: number; miny: number;
+    maxx: number; maxy: number;
+  }
+
+  const segs: Segment[] = [];
+  for (let i = 0; i <= n - 4; i += 2) {
+    const x1 = pointsFlat[i],   y1 = pointsFlat[i+1];
+    const x2 = pointsFlat[i+2], y2 = pointsFlat[i+3];
+
+    // Skip degenerate segments
+    if (Math.hypot(x2 - x1, y2 - y1) < epsWU) continue;
+
+    segs.push({
+      x1, y1, x2, y2,
+      minx: Math.min(x1, x2) - epsWU,
+      miny: Math.min(y1, y2) - epsWU,
+      maxx: Math.max(x1, x2) + epsWU,
+      maxy: Math.max(y1, y2) + epsWU
+    });
+  }
+
+  if (segs.length < 3) return false; // Need at least 3 segments to self-intersect
+
+  // Helper: Check if two bounding boxes overlap
+  const boxesOverlap = (a: Segment, b: Segment): boolean => {
+    return !(a.maxx < b.minx || b.maxx < a.minx ||
+             a.maxy < b.miny || b.maxy < a.miny);
+  };
+
+  // Helper: Compute orientation of ordered triplet (a,b,c)
+  // Returns: 0 if collinear, 1 if CW, -1 if CCW
+  const orient = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number => {
+    const val = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if (Math.abs(val) < epsWU * epsWU) return 0; // Near-collinear
+    return Math.sign(val);
+  };
+
+  // Helper: Check if two segments properly intersect (excluding endpoints)
+  const properIntersect = (a: Segment, b: Segment): boolean => {
+    // Fast bbox rejection
+    if (!boxesOverlap(a, b)) return false;
+
+    // Compute orientations
+    const o1 = orient(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1);
+    const o2 = orient(a.x1, a.y1, a.x2, a.y2, b.x2, b.y2);
+    const o3 = orient(b.x1, b.y1, b.x2, b.y2, a.x1, a.y1);
+    const o4 = orient(b.x1, b.y1, b.x2, b.y2, a.x2, a.y2);
+
+    // Collinear segments are not considered as crossing
+    // (avoids over-firing on nearly straight lines with micro-wobbles)
+    if (o1 === 0 && o2 === 0 && o3 === 0 && o4 === 0) return false;
+
+    // Proper intersection: segments must have endpoints on opposite sides
+    return (o1 * o2 < 0) && (o3 * o4 < 0);
+  };
+
+  // Check all segment pairs (skip adjacent and first-last)
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      // Skip adjacent segments (share a point)
+      if (j === i + 1) continue;
+
+      // Skip first-last pair if stroke is closed (shared endpoint)
+      if (i === 0 && j === segs.length - 1) {
+        // Check if endpoints are close (closed stroke)
+        const dx = segs[j].x2 - segs[0].x1;
+        const dy = segs[j].y2 - segs[0].y1;
+        if (dx * dx + dy * dy < epsWU * epsWU) continue;
+      }
+
+      if (properIntersect(segs[i], segs[j])) {
+        return true; // Found self-intersection
+      }
+    }
+  }
+
+  return false; // No self-intersections found
+}
+
+/**
+ * Calculate the minimum distance from a point to a line segment.
+ * Used for near-touch detection.
+ *
+ * @param px - Point X coordinate
+ * @param py - Point Y coordinate
+ * @param x1 - Segment start X
+ * @param y1 - Segment start Y
+ * @param x2 - Segment end X
+ * @param y2 - Segment end Y
+ * @returns Distance from point to segment
+ */
+function pointToSegmentDistance(
+  px: number, py: number,
+  x1: number, y1: number,
+  x2: number, y2: number
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  if (dx === 0 && dy === 0) {
+    // Degenerate segment - just point distance
+    return Math.hypot(px - x1, py - y1);
+  }
+
+  // Project point onto line (parameterized by t)
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
+
+  // Find closest point on segment
+  const closestX = x1 + t * dx;
+  const closestY = y1 + t * dy;
+
+  return Math.hypot(px - closestX, py - closestY);
+}
+
+/**
+ * Check if a stroke has segments that come very close to each other
+ * without actually crossing (near self-touch).
+ *
+ * @param pointsFlat - Flat array of points [x0,y0, x1,y1, ...] (decimated/cleaned)
+ * @param epsWU - World unit tolerance for near-touch detection
+ * @returns true if the stroke has near self-touches
+ */
+export function hasNearTouch(pointsFlat: number[], epsWU: number): boolean {
+  const n = pointsFlat.length;
+  if (n < 8) return false; // Need at least 4 points for non-adjacent segments
+
+  // Build segments (skip degenerate ones)
+  interface Segment {
+    x1: number; y1: number;
+    x2: number; y2: number;
+    minx: number; miny: number;
+    maxx: number; maxy: number;
+  }
+
+  const segs: Segment[] = [];
+  for (let i = 0; i <= n - 4; i += 2) {
+    const x1 = pointsFlat[i],   y1 = pointsFlat[i+1];
+    const x2 = pointsFlat[i+2], y2 = pointsFlat[i+3];
+
+    // Skip degenerate segments
+    if (Math.hypot(x2 - x1, y2 - y1) < epsWU) continue;
+
+    segs.push({
+      x1, y1, x2, y2,
+      minx: Math.min(x1, x2) - epsWU,
+      miny: Math.min(y1, y2) - epsWU,
+      maxx: Math.max(x1, x2) + epsWU,
+      maxy: Math.max(y1, y2) + epsWU
+    });
+  }
+
+  if (segs.length < 3) return false; // Need at least 3 segments for near-touch
+
+  // Helper: Check if two bounding boxes overlap
+  const boxesOverlap = (a: Segment, b: Segment): boolean => {
+    return !(a.maxx < b.minx || b.maxx < a.minx ||
+             a.maxy < b.miny || b.maxy < a.miny);
+  };
+
+  // Helper: Compute minimum distance between two segments
+  const segmentDistance = (a: Segment, b: Segment): number => {
+    // Quick bbox rejection
+    if (!boxesOverlap(a, b)) return Infinity;
+
+    // Check all 4 point-to-segment distances
+    const d1 = pointToSegmentDistance(a.x1, a.y1, b.x1, b.y1, b.x2, b.y2);
+    const d2 = pointToSegmentDistance(a.x2, a.y2, b.x1, b.y1, b.x2, b.y2);
+    const d3 = pointToSegmentDistance(b.x1, b.y1, a.x1, a.y1, a.x2, a.y2);
+    const d4 = pointToSegmentDistance(b.x2, b.y2, a.x1, a.y1, a.x2, a.y2);
+
+    return Math.min(d1, d2, d3, d4);
+  };
+
+  // Check all non-adjacent segment pairs
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      // Skip adjacent segments (they share a point)
+      if (j === i + 1) continue;
+
+      // Skip first-last pair if stroke is closed
+      if (i === 0 && j === segs.length - 1) {
+        // Check if endpoints are close (closed stroke)
+        const dx = segs[j].x2 - segs[0].x1;
+        const dy = segs[j].y2 - segs[0].y1;
+        if (dx * dx + dy * dy < epsWU * epsWU) continue;
+      }
+
+      if (segmentDistance(segs[i], segs[j]) < epsWU) {
+        return true; // Found near-touch
+      }
+    }
+  }
+
+  return false; // No near-touches found
+}

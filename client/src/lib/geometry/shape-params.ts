@@ -53,12 +53,31 @@ export const RECT_TWO_RIGHT_ANGLES_PENALTY = 0.03;       // Subtract from score 
 export const RECT_MAX_RIGHT_ANGLES = 4;                  // More than 4 right angles = ambiguous
 
 // Rectangle AABB Scoring Weights (MUST sum to 1.0)
-export const RECT_WEIGHT_SIDEDIST = 0.30;    // Primary: proximity to sides (40%)
+export const RECT_WEIGHT_SIDEDIST = 0.40;    // Primary: proximity to sides (40%)
 export const RECT_WEIGHT_SIDECOV = 0.20;     // Secondary: side coverage (25%)
-export const RECT_WEIGHT_CORNERS = 0.50;     // Tertiary: corner quality - soft (15%)
+export const RECT_WEIGHT_CORNERS = 0.40;     // Tertiary: corner quality - soft (15%)
 export const RECT_WEIGHT_PARALLEL = 0.00;    // Gentle parallel hint (10%)
 export const RECT_WEIGHT_ORTHOGONAL = 0.00;  // Gentle orthogonal hint (10%)
 // Total: 0.40 + 0.25 + 0.15 + 0.10 + 0.10 = 1.00 ✓
 
 // Debug - set to false in production
 export const SHAPE_DEBUG_SCORES = true;  // Show detailed score breakdown in console
+
+// ============================================================================
+// Line Fallback Ambiguity Detection
+// ============================================================================
+
+// Self-intersection detection
+export const LINE_SELF_INTERSECT_AMBIGUOUS = true;  // If true, self-intersecting strokes won't snap to lines
+export const LINE_SELF_INTERSECT_EPSILON_FACTOR = 0.02;  // 2% of diagonal as base tolerance
+export const LINE_SELF_INTERSECT_MIN_EPSILON = 1.5;       // Minimum tolerance in world units
+
+// Near-closure detection (start point ≈ end point)
+export const LINE_NEAR_CLOSURE_AMBIGUOUS = true;  // If true, nearly-closed loops won't snap to lines
+export const LINE_CLOSE_GAP_RATIO = 0.06;  // Same as rectangle micro-closure threshold (6% of diagonal)
+
+// Near self-touch detection (segments come close without crossing)
+export const LINE_NEAR_TOUCH_AMBIGUOUS = true;  // If true, strokes that nearly touch themselves won't snap to lines
+export const LINE_NEAR_TOUCH_EPSILON_FACTOR = 0.015;  // 1.5% of diagonal as base tolerance
+export const LINE_NEAR_TOUCH_MIN_EPSILON = 1.5;  // Minimum tolerance in world units
+export const LINE_NEAR_TOUCH_STROKE_SIZE_FACTOR = 0.6;  // Factor of stroke size to add to tolerance

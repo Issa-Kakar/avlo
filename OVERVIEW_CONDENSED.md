@@ -592,9 +592,15 @@ export interface EraserPreview {
 - **Scale:** Right-drag or Shift+left-drag (radial from center)
 - **Transform:** `s = clamp(distance(center, now) / distance(center, start), 0.1, 10)`
 
-### Commit
+**Commit**: Single `mutate()` replaces at same indices (preserves z-order)
 
-Single `mutate()` replaces at same indices (preserves z-order)
+### Perfect Shapes (IMPLEMENTED)
+
+- **600ms dwell trigger:** HoldDetector fires after pointer stillness, runs recognition on stroke
+- **Shape detection:** Circle (Taubin fit, coverage ≥67%) vs Rectangle (AABB not OBB, soft scoring) vs Line (strict fallback)
+- **Locked refinement:** Post-snap, pointer drags adjust geometry only (radius/box-scale/line-endpoint)
+- **Near-miss handling:** Shapes scoring within 0.10 of confidence (0.48-0.58) don't snap, preventing annoying line fallbacks
+- **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage
 
 ### Ownership Model
 
