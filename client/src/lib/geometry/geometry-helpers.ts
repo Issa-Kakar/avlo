@@ -1,4 +1,5 @@
 import { Vec2, Edge, Corner } from './types';
+import { RECT_AABB_COVERAGE_TOLERANCE_FACTOR, RECT_AABB_COVERAGE_MIN_TOL } from './shape-params';
 
 /**
  * Compute the axis ratio from PCA eigenvalues.
@@ -651,4 +652,47 @@ export function aabbSideCoverage(
   const count = (sides.left ? 1 : 0) + (sides.right ? 1 : 0) +
                 (sides.top ? 1 : 0) + (sides.bottom ? 1 : 0);
   return count / 4;
+}
+
+/**
+ * Calculate coverage across distinct sides of an AABB rectangle.
+ * This mirrors the OBB implementation exactly but for axis-aligned boxes.
+ * Returns a combined score of side coverage and evenness of distribution.
+ */
+export function aabbCoverageAcrossDistinctSides(
+  points: Vec2[],
+  aabb: { minX: number; minY: number; maxX: number; maxY: number }
+): number {
+  if (points.length < 4) return 0;
+
+  const width  = Math.max(1, aabb.maxX - aabb.minX);
+  const height = Math.max(1, aabb.maxY - aabb.minY);
+  const tol = Math.max(RECT_AABB_COVERAGE_MIN_TOL, RECT_AABB_COVERAGE_TOLERANCE_FACTOR * Math.min(width, height));
+
+  let top = 0, bottom = 0, left = 0, right = 0;
+
+  for (const [x, y] of points) {
+    // Check proximity to each side with tolerance
+    const nearTop    = Math.abs(y - aabb.minY) <= tol && x >= aabb.minX - tol && x <= aabb.maxX + tol;
+    const nearBottom = Math.abs(y - aabb.maxY) <= tol && x >= aabb.minX - tol && x <= aabb.maxX + tol;
+    const nearLeft   = Math.abs(x - aabb.minX) <= tol && y >= aabb.minY - tol && y <= aabb.maxY + tol;
+    const nearRight  = Math.abs(x - aabb.maxX) <= tol && y >= aabb.minY - tol && y <= aabb.maxY + tol;
+
+    if (nearTop) top++;
+    if (nearBottom) bottom++;
+    if (nearLeft) left++;
+    if (nearRight) right++;
+  }
+
+  const sidesWithPoints = (top > 0 ? 1 : 0) + (bottom > 0 ? 1 : 0) + (left > 0 ? 1 : 0) + (right > 0 ? 1 : 0);
+  const total = top + bottom + left + right;
+  if (total === 0) return 0;
+
+  // Calculate distribution evenness
+  const distribution = [top, bottom, left, right].map(c => c / total);
+  const maxDistribution = Math.max(...distribution);
+  const evenness = 1 - (maxDistribution - 0.25) / 0.75; // identical to OBB
+
+  const coverage = sidesWithPoints / 4;
+  return coverage * 0.7 + evenness * 0.3; // identical to OBB weighting
 }

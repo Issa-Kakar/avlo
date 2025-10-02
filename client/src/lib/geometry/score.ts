@@ -24,7 +24,12 @@ import {
   RECT_WEIGHT_SIDECOV,
   RECT_WEIGHT_CORNERS,
   RECT_WEIGHT_PARALLEL,
-  RECT_WEIGHT_ORTHOGONAL
+  RECT_WEIGHT_ORTHOGONAL,
+  // New right-angle constants
+  RECT_MIN_RIGHT_ANGLES_FOR_VALIDITY,
+  RECT_NO_RIGHT_ANGLE_MULTIPLIER,
+  RECT_TWO_RIGHT_ANGLES_PENALTY,
+  RECT_CORNER_TIE_TOLERANCE_DEG
 } from './shape-params';
 
 import {
@@ -35,7 +40,8 @@ import {
   top3Avg,
   // AABB helpers
   aabbSideFitScore,
-  aabbSideCoverage
+  aabbSideCoverage,
+  aabbCoverageAcrossDistinctSides
 } from './geometry-helpers';
 
 /**
@@ -81,12 +87,11 @@ export function scoreRectangleAABB(
   console.log(`   Points within ${epsilon.toFixed(1)} of sides: ${(S_sideDist * 100).toFixed(1)}%`);
 
   // =========================================================================
-  // Component 2: Side Coverage (25% weight) - ENCOURAGES COMPLETE RECTANGLES
+  // Component 2: Side Coverage (20% weight) - NOW WITH EVENNESS
   // =========================================================================
-  const S_sideCov = aabbSideCoverage(points, aabb, epsilon);
-  const sidesVisited = Math.round(S_sideCov * 4);
-  console.log(`2. Side Coverage (${RECT_WEIGHT_SIDECOV * 100}%): ${S_sideCov.toFixed(3)}`);
-  console.log(`   Distinct sides visited: ${sidesVisited}/4`);
+  const S_sideCov = aabbCoverageAcrossDistinctSides(points, aabb);
+  console.log(`2. Side Coverage with Evenness (${RECT_WEIGHT_SIDECOV * 100}%): ${S_sideCov.toFixed(3)}`);
+  console.log(`   Coverage accounts for both sides visited and distribution evenness`);
 
   // =========================================================================
   // Component 3: Corner Quality (15% weight) - SOFT CONTRIBUTION ONLY
@@ -138,10 +143,32 @@ export function scoreRectangleAABB(
     RECT_WEIGHT_PARALLEL * S_parallel +
     RECT_WEIGHT_ORTHOGONAL * S_orthogonal;
 
-  console.log(`🎯 Final AABB Score: ${score.toFixed(3)}`);
+  // Count right-angle corners (within stricter tolerance for validity checks)
+  const rightAngleCorners = corners.filter(
+    c => Math.abs(c.angle - 90) <= RECT_CORNER_TIE_TOLERANCE_DEG
+  );
+  const rightAngleCount = rightAngleCorners.length;
+
+  // Apply right-angle corner penalties/multipliers
+  let finalScore = score;
+
+  // Severe penalty if no right angles
+  if (rightAngleCount < RECT_MIN_RIGHT_ANGLES_FOR_VALIDITY) {
+    console.log(`⚠️ NO right-angle corners detected - applying ${RECT_NO_RIGHT_ANGLE_MULTIPLIER}x multiplier`);
+    finalScore *= RECT_NO_RIGHT_ANGLE_MULTIPLIER;
+  }
+
+  // Additional penalty for exactly 2 right angles
+  if (rightAngleCount === 2) {
+    console.log(`📉 Exactly 2 right angles - subtracting ${RECT_TWO_RIGHT_ANGLES_PENALTY} from score`);
+    finalScore -= RECT_TWO_RIGHT_ANGLES_PENALTY;
+  }
+
+  console.log(`🎯 Final AABB Score: ${finalScore.toFixed(3)} (base: ${score.toFixed(3)})`);
+  console.log(`Right-angle corners: ${rightAngleCount}`);
   console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
 
-  if (score >= SHAPE_CONFIDENCE_MIN) {
+  if (finalScore >= SHAPE_CONFIDENCE_MIN) {
     console.log(`✅ Above threshold - competitive rectangle`);
   } else {
     console.log(`⚠️ Below threshold - may not win or trigger ambiguity`);
@@ -149,7 +176,7 @@ export function scoreRectangleAABB(
 
   console.groupEnd();
 
-  return Math.max(0, Math.min(1, score)); // Clamp to [0,1]
+  return Math.max(0, Math.min(1, finalScore)); // Return modified score
 }
 
 /**

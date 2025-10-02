@@ -29,24 +29,35 @@ export const CIRCLE_WEIGHT_ROUND = 0.20;     // Roundness based on PCA axis rati
 // ============================================================================
 
 // Rectangle AABB parameters
-export const RECT_SIDE_EPSILON_FACTOR = 0.04;  // Tolerance = 4% of diagonal
+export const RECT_SIDE_EPSILON_FACTOR = 0.035;  // Tolerance = 4% of diagonal
 export const RECT_MIN_SIDE_EPSILON = 1.5;      // Minimum tolerance in world units
 
 // Corner tolerances
 export const RECT_CORNER_TIE_TOLERANCE_DEG = 25;  // For the ≥2-corners tie-breaker (stricter)
-export const RECT_CORNER_TOLERANCE_DEG = 25; // Legacy tolerance (kept for compatibility)
+export const RECT_CORNER_TOLERANCE_DEG = 10; // Legacy tolerance (kept for compatibility)
 
 // Soft thresholds for gentle corner/edge scoring
 export const RECT_CORNER_SOFT_TOLERANCE_DEG = 25;    // Wider tolerance for soft scoring
 export const RECT_PARALLEL_SOFT_TOLERANCE_DEG = 25;  // Soft parallel check
 export const RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG = 25; // Soft orthogonal check
 
+// AABB Coverage parameters (mirroring OBB)
+export const RECT_AABB_COVERAGE_TOLERANCE_FACTOR = 0.15; // 15% of min(width,height), mirrors OBB
+export const RECT_AABB_COVERAGE_MIN_TOL = 1.5;           // keep a floor in WU so tiny boxes don't collapse
+
+// Right-angle corner requirements and penalties
+export const RECT_MIN_RIGHT_ANGLES_FOR_VALIDITY = 1;     // Need at least 1 right angle to be valid
+export const RECT_NO_RIGHT_ANGLE_MULTIPLIER = 0.5;        // Severe penalty if no right angles
+export const RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE = 2;   // Need at least 2 to avoid ambiguity
+export const RECT_TWO_RIGHT_ANGLES_PENALTY = 0.03;       // Subtract from score if exactly 2 right angles
+export const RECT_MAX_RIGHT_ANGLES = 4;                  // More than 4 right angles = ambiguous
+
 // Rectangle AABB Scoring Weights (MUST sum to 1.0)
-export const RECT_WEIGHT_SIDEDIST = 0.40;    // Primary: proximity to sides (40%)
-export const RECT_WEIGHT_SIDECOV = 0.25;     // Secondary: side coverage (25%)
-export const RECT_WEIGHT_CORNERS = 0.15;     // Tertiary: corner quality - soft (15%)
-export const RECT_WEIGHT_PARALLEL = 0.10;    // Gentle parallel hint (10%)
-export const RECT_WEIGHT_ORTHOGONAL = 0.10;  // Gentle orthogonal hint (10%)
+export const RECT_WEIGHT_SIDEDIST = 0.30;    // Primary: proximity to sides (40%)
+export const RECT_WEIGHT_SIDECOV = 0.20;     // Secondary: side coverage (25%)
+export const RECT_WEIGHT_CORNERS = 0.50;     // Tertiary: corner quality - soft (15%)
+export const RECT_WEIGHT_PARALLEL = 0.00;    // Gentle parallel hint (10%)
+export const RECT_WEIGHT_ORTHOGONAL = 0.00;  // Gentle orthogonal hint (10%)
 // Total: 0.40 + 0.25 + 0.15 + 0.10 + 0.10 = 1.00 ✓
 
 // Debug - set to false in production

@@ -13,7 +13,13 @@
  */
 
 import type { Vec2 } from './types';
-import { SHAPE_CONFIDENCE_MIN, SHAPE_AMBIGUITY_DELTA, RECT_CORNER_TIE_TOLERANCE_DEG } from './shape-params';
+import {
+  SHAPE_CONFIDENCE_MIN,
+  SHAPE_AMBIGUITY_DELTA,
+  RECT_CORNER_TIE_TOLERANCE_DEG,
+  RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE,
+  RECT_MAX_RIGHT_ANGLES
+} from './shape-params';
 import { fitCircle } from './fit-circle';
 import { fitAABB } from './fit-aabb';
 import { detectCorners, reconstructRectangleEdges } from './geometry-helpers';
@@ -222,13 +228,33 @@ export function recognizeOpenStroke({
   console.log(`Right-angle corners (within ±${RECT_CORNER_TIE_TOLERANCE_DEG}°): ${rightAngleCorners.length}`);
 
   // =========================================================================
-  // Step 5: Apply confidence logic with tie-breaker and near-miss detection
+  // Step 5: Apply confidence logic with enhanced right-angle rules
   // =========================================================================
+
+  // Count right-angle corners for all decision logic
+  const rightAngleCount = rightAngleCorners.length;
+
+  console.log(`Right-angle corners count: ${rightAngleCount}`);
+
+  // Check for too many right angles (>4) - always ambiguous
+  if (rightAngleCount > RECT_MAX_RIGHT_ANGLES) {
+    console.log(`⚠️ TOO MANY right angles (${rightAngleCount} > 4) - AMBIGUOUS to prevent line snap`);
+    console.groupEnd();
+    console.groupEnd();
+
+    const A = points[0];
+    return {
+      kind: 'line',
+      score: Math.max(circleScore, boxScore),
+      ambiguous: true,
+      line: { A: [A[0], A[1]], B: pointerNowWU }
+    };
+  }
 
   // Case 1: Rectangle tie-breaker - both pass confidence + ≥2 right angles
   if (circleScore >= SHAPE_CONFIDENCE_MIN && boxScore >= SHAPE_CONFIDENCE_MIN) {
-    if (rightAngleCorners.length >= 2) {
-      console.log(`🎯 TIE-BREAKER: Rectangle wins (both pass confidence + ${rightAngleCorners.length} right angles)`);
+    if (rightAngleCount >= 2) {
+      console.log(`🎯 TIE-BREAKER: Rectangle wins (both pass confidence + ${rightAngleCount} right angles)`);
       console.groupEnd();
       console.groupEnd();
 
@@ -257,7 +283,38 @@ export function recognizeOpenStroke({
     console.log(`Winner: CIRCLE (${circleScore.toFixed(3)})`);
   }
 
-  // Case 3: Winner passes confidence threshold
+  // Case 3: Check for ambiguity based on right angles
+  // If rectangle wins with <2 right angles, make ambiguous
+  if (winner.kind === 'box' && winner.score >= SHAPE_CONFIDENCE_MIN && rightAngleCount < RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE) {
+    console.log(`⚠️ Rectangle wins but has <2 right angles (${rightAngleCount}) - AMBIGUOUS`);
+    console.groupEnd();
+    console.groupEnd();
+
+    const A = points[0];
+    return {
+      kind: 'line',
+      score: winner.score,
+      ambiguous: true,
+      line: { A: [A[0], A[1]], B: pointerNowWU }
+    };
+  }
+
+  // If circle wins but there are right angles, make ambiguous
+  if (winner.kind === 'circle' && winner.score >= SHAPE_CONFIDENCE_MIN && rightAngleCount >= 1) {
+    console.log(`⚠️ Circle wins but ${rightAngleCount} right angle(s) detected - AMBIGUOUS`);
+    console.groupEnd();
+    console.groupEnd();
+
+    const A = points[0];
+    return {
+      kind: 'line',
+      score: winner.score,
+      ambiguous: true,
+      line: { A: [A[0], A[1]], B: pointerNowWU }
+    };
+  }
+
+  // Case 4: Winner passes confidence threshold (and passed ambiguity checks above)
   if (winner.score >= SHAPE_CONFIDENCE_MIN) {
     console.log(`✅ RECOGNIZED: ${winner.kind.toUpperCase()} (score ${winner.score.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN})`);
     console.groupEnd();
@@ -284,7 +341,7 @@ export function recognizeOpenStroke({
     }
   }
 
-  // Case 4: Near-miss - any shape was close to confidence threshold
+  // Case 5: Near-miss - any shape was close to confidence threshold
   const maxScore = Math.max(circleScore, boxScore);
   const nearMissThreshold = SHAPE_CONFIDENCE_MIN - SHAPE_AMBIGUITY_DELTA;
 
@@ -304,7 +361,7 @@ export function recognizeOpenStroke({
     };
   }
 
-  // Case 5: Clear failure - fallback to line
+  // Case 6: Clear failure - fallback to line
   console.log(`❌ Score too low: ${maxScore.toFixed(3)} < ${nearMissThreshold.toFixed(3)}`);
   console.log('📏 FALLBACK: LINE (clear failure, user didn\'t intend a shape)');
   console.groupEnd();
