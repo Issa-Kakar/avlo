@@ -137,9 +137,17 @@ export class OverlayRenderLoop {
             previewToDraw.circle.cy,
           );
 
-          // Draw circle outline
-          ctx.strokeStyle = 'rgba(0, 0, 0, 0.8)';
-          ctx.lineWidth = 1; // Device pixel for crisp line
+          // Draw cursor with double ring for better visibility (works on any background)
+          // Outer dark stroke for contrast
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(screenX, screenY, previewToDraw.circle.r_px, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Inner light stroke for visibility
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+          ctx.lineWidth = 1.25;
           ctx.beginPath();
           ctx.arc(screenX, screenY, previewToDraw.circle.r_px, 0, Math.PI * 2);
           ctx.stroke();

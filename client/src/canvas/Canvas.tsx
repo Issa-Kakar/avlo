@@ -134,6 +134,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
   const { transform: viewTransform } = useViewTransform();
   const toolRef = useRef<PointerTool>();
+  const lastMouseClientRef = useRef<{ x: number; y: number } | null>(null); // Track last mouse position for tool seeding
   const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
   const renderLoopRef = useRef<RenderLoop | null>(null); // existing
@@ -548,6 +549,15 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // Update cursor style
     canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
 
+    // Seed the eraser preview using the last known mouse position (for keyboard shortcuts)
+    if (!isMobile && activeTool === 'eraser' && lastMouseClientRef.current) {
+      const { x, y } = lastMouseClientRef.current;
+      const world = screenToWorld(x, y);
+      if (world) {
+        tool.move(world[0], world[1]);
+      }
+    }
+
     // UNIFIED POINTER HANDLERS - No tool branching here!
     const handlePointerDown = (e: PointerEvent) => {
       // Canvas gates for mobile (not tool)
@@ -566,6 +576,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     };
 
     const handlePointerMove = (e: PointerEvent) => {
+      // Track last mouse position for tool seeding
+      lastMouseClientRef.current = { x: e.clientX, y: e.clientY };
+
       // Update awareness cursor (not on mobile)
       if (!isMobile) {
         const worldCoords = screenToWorld(e.clientX, e.clientY);

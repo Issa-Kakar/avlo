@@ -111,9 +111,20 @@ export class EraserTool {
   }
 
   // PointerTool interface methods for polymorphic handling
-  end(_worldX?: number, _worldY?: number): void {
-    // Eraser doesn't use final coordinates, just commit
+  end(worldX?: number, worldY?: number): void {
+    // Remember where the pointer ended (or fall back to last hover)
+    const pos = (worldX != null && worldY != null)
+      ? [worldX, worldY] as [number, number]
+      : this.state.lastWorld;
+
+    // Commit the deletion (this resets state)
     this.commitErase();
+
+    // Re-prime the hover so the cursor remains visible even without movement
+    if (pos) {
+      this.state.lastWorld = pos;
+      this.updateHitTest(pos[0], pos[1]);
+    }
   }
 
   cancel(): void {
@@ -154,6 +165,14 @@ export class EraserTool {
     this.resumeIndex = 0;
     this.lastProcessedPosition = null;
     this.onInvalidate?.();
+  }
+
+  // Update hit-testing when view transforms (pan/zoom) while stationary
+  onViewChange(): void {
+    const p = this.state.lastWorld;
+    if (p) {
+      this.updateHitTest(p[0], p[1]);
+    }
   }
 
   private updateHitTest(worldX: number, worldY: number): void {
