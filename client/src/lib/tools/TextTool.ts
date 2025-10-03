@@ -29,6 +29,7 @@ export class TextTool {
     worldPosition: null,
     content: '',
   };
+  private committing = false;
 
   constructor(
     private room: any, // RoomDoc type
@@ -67,7 +68,7 @@ export class TextTool {
   }
 
   cancel(): void {
-    this.closeEditor(false);
+    this.cancelEdit();
   }
 
   isActive(): boolean {
@@ -85,7 +86,7 @@ export class TextTool {
   }
 
   destroy(): void {
-    this.closeEditor(false);
+    this.teardownEditor();
   }
 
   // Update config without recreating tool (useful when slider changes)
@@ -175,6 +176,9 @@ export class TextTool {
     const adjustedX = hostRelativeX - totalOffset;
     const adjustedY = hostRelativeY - totalOffset;
 
+    // Calculate max width to prevent infinite horizontal growth
+    const maxWidth = Math.max(24, hostRect.width - adjustedX - 8); // 8px safety margin
+
     // Create contenteditable div
     const editor = document.createElement('div');
     editor.contentEditable = 'true';
@@ -184,6 +188,7 @@ export class TextTool {
       left: ${adjustedX}px;
       top: ${adjustedY}px;
       min-width: ${scaledMinWidth}px;
+      max-width: ${maxWidth}px;
       min-height: ${scaledMinHeight}px;
       padding: ${scaledPadding}px;
       font-size: ${scaledFontSize}px;
@@ -199,30 +204,34 @@ export class TextTool {
       pointer-events: auto;
       transform-origin: top left;
       white-space: pre-wrap;
-      word-wrap: break-word;
+      overflow-wrap: break-word;
     `;
 
-    // Handle Enter key
-    editor.addEventListener('keydown', (e) => {
+    // Handle Enter key - just blur to trigger commit
+    const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        this.commitText();
+        // Let blur be the single commit path
+        (e.currentTarget as HTMLDivElement).blur();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        this.closeEditor(false);
+        this.cancelEdit();
       }
-    });
+    };
 
-    // Handle blur
-    editor.addEventListener('blur', () => {
-      this.commitText();
-    });
+    // Handle blur - single commit path
+    const onBlur = () => this.commitTextOnce();
 
-    // Handle input
-    editor.addEventListener('input', () => {
+    // Handle input - store content for preview
+    const onInput = () => {
+      // Store content temporarily for preview purposes
       this.state.content = editor.textContent || '';
       this.onInvalidate?.();
-    });
+    };
+
+    editor.addEventListener('keydown', onKeyDown);
+    editor.addEventListener('blur', onBlur, { once: true }); // Fire only once
+    editor.addEventListener('input', onInput);
 
     host.appendChild(editor);
     editor.focus();
@@ -234,74 +243,85 @@ export class TextTool {
     useDeviceUIStore.getState().setIsTextEditing(true);
   }
 
-  private closeEditor(commit: boolean): void {
-    if (!this.state.editBox) return;
-
-    if (commit) {
-      this.commitText();
+  private teardownEditor(): void {
+    const el = this.state.editBox;
+    if (el) {
+      // Defensive: remove listeners/pointer events before removing
+      el.style.pointerEvents = 'none';
+      // Safe remove even if parent changed
+      try {
+        el.remove();
+      } catch {
+        /* ignore */
+      }
     }
-
-    this.state.editBox.remove();
     this.state.editBox = null;
     this.state.isEditing = false;
     this.state.content = '';
     this.state.worldPosition = null;
-
     this.room.updateActivity('idle');
     this.onInvalidate?.();
-
-    // Notify store that text editing has ended (allows ColorSizeDock to show again)
     useDeviceUIStore.getState().setIsTextEditing(false);
   }
 
-  private commitText(): void {
-    if (!this.state.content || !this.state.worldPosition || !this.state.editBox) {
-      this.closeEditor(false);
-      return;
-    }
+  private cancelEdit(): void {
+    // Cancel without commit
+    this.teardownEditor();
+  }
 
-    // Measure DOM element
-    const rect = this.state.editBox.getBoundingClientRect();
-    const viewTransform = this.canvasHandle.getView?.() || { scale: 1 };
+  // Back-compat shim
+  private closeEditor(_commit: boolean): void {
+    this.teardownEditor();
+  }
 
-    // Convert to world units
-    const w = rect.width / viewTransform.scale;
-    const h = rect.height / viewTransform.scale;
-
-    // Commit to Y.Doc
-    const textId = ulid();
-
+  private commitTextOnce(): void {
+    if (this.committing) return;
+    this.committing = true;
     try {
-      this.room.mutate((ydoc: Y.Doc) => {
-        const root = ydoc.getMap('root');
-        const texts = root.get('texts') as Y.Array<any>;
-        const meta = root.get('meta') as Y.Map<any>;
-
-        // Get current scene
-        const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
-        const currentScene = sceneTicks ? sceneTicks.length : 0;
-
-        // Push new text
-        texts.push([
-          {
-            id: textId,
-            x: this.state.worldPosition!.x,
-            y: this.state.worldPosition!.y,
-            w,
-            h,
-            content: this.state.content,
-            color: this.config.color,
-            size: this.config.size,
-            scene: currentScene,
-            createdAt: Date.now(),
-            userId: this.userId,
-          },
-        ]);
-      });
-    } catch (err) {
-      console.error('Failed to commit text:', err);
+      this.commitTextCore();
     } finally {
-      this.closeEditor(false);
+      this.teardownEditor();
+      this.committing = false;
     }
+  }
+
+  private commitTextCore(): void {
+    if (!this.state.worldPosition || !this.state.editBox) return;
+
+    // Use textContent to get raw text (innerText doesn't actually capture soft wraps)
+    const raw = this.state.editBox.textContent ?? '';
+    const content = raw.replace(/\r\n?/g, '\n'); // don't .trim() to keep trailing blank lines
+    if (!content.replace(/\s+/g, '')) return; // empty/whitespace-only → cancel
+
+    // Measure DOM box for width/height in world units
+    const rect = this.state.editBox.getBoundingClientRect();
+    const view = this.canvasHandle.getView?.() || { scale: 1 };
+    const w = rect.width / view.scale;
+    const h = rect.height / view.scale;
+
+    const id = ulid();
+    this.room.mutate((ydoc: Y.Doc) => {
+      const root = ydoc.getMap('root');
+      const texts = root.get('texts') as Y.Array<any>;
+      const meta = root.get('meta') as Y.Map<any>;
+      const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
+      const currentScene = sceneTicks ? sceneTicks.length : 0;
+
+      texts.push([
+        {
+          id,
+          x: this.state.worldPosition!.x,
+          y: this.state.worldPosition!.y,
+          w,
+          h,
+          content, // <- preserves the wrapped lines
+          color: this.config.color,
+          size: this.config.size,
+          scene: currentScene,
+          createdAt: Date.now(),
+          userId: this.userId,
+        },
+      ]);
+    });
   }
 }
