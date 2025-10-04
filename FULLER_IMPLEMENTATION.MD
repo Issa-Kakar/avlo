@@ -223,7 +223,7 @@ private getMeta(): Y.Map<unknown> { return this.getRoot().get('meta'); }
 
 - FIFO eviction when cache exceeds 1000 strokes
 - Cache cleared on scene change (tracked via lastScene)
-- Cache keyed by stroke.id (strokes immutable post-commit)
+- Cache keyed by stroke.id (strokes temporarily, at this point in time, are immutable post-commit(will change later))
 
 ## Phase 5: Drawing Input System
 

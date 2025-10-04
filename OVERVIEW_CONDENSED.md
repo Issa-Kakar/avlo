@@ -320,7 +320,7 @@ ctx.scale(scale, scale) THEN ctx.translate(-pan.x, -pan.y)
 
 **Render Order:**
 
-- Base: Background → Strokes → Text → Authoring overlays → HUD
+- Base: Background (white + adaptive dot grid) → Strokes → Text → Authoring overlays → HUD
 - Overlay: Preview (world-space) → Presence (screen-space with DPR only)
 
 ## 7. Tool Implementations
@@ -348,7 +348,7 @@ type PointerTool = {
 
 - **State frozen at pointer-down** (stored in state.config)
 - **RAF-coalesced pointermove** via pendingPoint buffer
-- **Preview opacity:** 0.35 (pen), 0.15 (highlighter) to prevent commit flicker
+- **Preview opacity:** Matches commit (pen: 1.0, highlighter: 0.45)
 - **Simplification:** Douglas-Peucker iterative (prevents stack overflow)
   - Base tolerance: pen 0.8, highlighter 0.5 world units
   - One retry with tol \*= 1.4 if over limits
@@ -369,7 +369,7 @@ interface EraserState {
   lastWorld: [number, number] | null;
   hitNow: Set<string>; // Current cursor
   hitAccum: Set<string>; // Accumulated during drag
-  dimOpacity: number; // 0.35 base, adjusted for highlighters
+  dimOpacity: number; // 0.75 for strong effect
 }
 ```
 
@@ -385,10 +385,9 @@ interface EraserState {
 
 **Visual Feedback (Two-Pass Overlay):**
 
-- **Pass A (World):** Adaptive dimming based on brightness
-  - Dark (<80): White overlay with 'screen' blend
-  - Mid (80-180): Inverted overlay
-  - Light (>180): Black overlay
+- **Pass A (World):** Uniform white lighten effect
+  - White overlay (#ffffff) with 'screen' blend mode
+  - 0.75 opacity for strong "will be erased" feedback
   - Shared stroke cache (`getStrokeCacheInstance()`) for Path2D reuse
 - **Pass B (Screen):** Cursor circle after `setTransform(dpr,0,0,dpr,0,0)`
   - 1px stroke at ~0.8 alpha, no fill
@@ -499,7 +498,7 @@ export interface EraserPreview {
   circle: { cx: number; cy: number; r_px: number };
   /** World object IDs to dim in pass A. */
   hitIds: string[];
-  /** 0.2–0.6 base opacity; highlighters get a lighter treatment in renderer. */
+  /** 0.75 opacity for strong effect (uniform white lighten). */
   dimOpacity: number;
 }
 ```

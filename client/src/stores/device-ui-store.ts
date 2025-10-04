@@ -52,7 +52,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Phase 9: Enhanced default state
       activeTool: 'pen',
       pen: { size: 4, color: '#0F172A' },
-      highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
+      highlighter: { size: 8, color: '#F59E0B', opacity: 0.45 },
       eraser: { size: 10 },
       text: { size: 16, color: '#0F172A' },
       select: { enabled: false },
@@ -119,7 +119,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           return {
             activeTool: oldState.toolbar?.tool || 'pen',
             pen: { size: 4, color: oldState.toolbar?.color || '#0F172A' },
-            highlighter: { size: 8, color: '#F59E0B', opacity: 0.25 },
+            highlighter: { size: 8, color: '#F59E0B', opacity: 0.45 },
             eraser: { size: 10 },
             text: { size: 16, color: '#0F172A' },
             select: { enabled: false },

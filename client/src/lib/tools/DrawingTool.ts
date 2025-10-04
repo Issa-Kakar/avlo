@@ -297,9 +297,7 @@ export class DrawingTool {
         shape: this.snap.kind,
         color,
         size,
-        opacity: tool === 'pen'
-          ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY
-          : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY,
+        opacity: this.state.config.opacity, // Use actual commit opacity
         anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
         cursor: this.liveCursorWU,
         bbox: null
@@ -314,10 +312,7 @@ export class DrawingTool {
       tool: this.state.config.tool,
       color: this.state.config.color,
       size: this.state.config.size,
-      opacity:
-        this.state.config.tool === 'pen'
-          ? STROKE_CONFIG.CURSOR_PREVIEW_OPACITY // 0.35 for pen preview
-          : STROKE_CONFIG.HIGHLIGHTER_PREVIEW_OPACITY, // 0.15 for highlighter preview (lighter to prevent flicker)
+      opacity: this.state.config.opacity, // Use actual commit opacity
       bbox: this.lastBounds,
     };
   }

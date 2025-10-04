@@ -410,7 +410,7 @@ export class EraserTool {
         r_px: this.state.radiusPx, // Screen pixels, fixed size
       },
       hitIds: Array.from(allHits),
-      dimOpacity: 0.6, // INCREASE FROM 0.35
+      dimOpacity: 0.75, // Stronger effect for clear feedback
     };
   }
 

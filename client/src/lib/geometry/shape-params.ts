@@ -29,17 +29,17 @@ export const CIRCLE_WEIGHT_ROUND = 0.20;     // Roundness based on PCA axis rati
 // ============================================================================
 
 // Rectangle AABB parameters
-export const RECT_SIDE_EPSILON_FACTOR = 0.035;  // Tolerance = 4% of diagonal
+export const RECT_SIDE_EPSILON_FACTOR = 0.03;  // Tolerance = 4% of diagonal
 export const RECT_MIN_SIDE_EPSILON = 1.5;      // Minimum tolerance in world units
 
 // Corner tolerances
-export const RECT_CORNER_TIE_TOLERANCE_DEG = 25;  // For the ≥2-corners tie-breaker (stricter)
+export const RECT_CORNER_TIE_TOLERANCE_DEG = 20;  // For the ≥2-corners tie-breaker (stricter)
 export const RECT_CORNER_TOLERANCE_DEG = 10; // Legacy tolerance (kept for compatibility)
 
 // Soft thresholds for gentle corner/edge scoring
-export const RECT_CORNER_SOFT_TOLERANCE_DEG = 25;    // Wider tolerance for soft scoring
-export const RECT_PARALLEL_SOFT_TOLERANCE_DEG = 25;  // Soft parallel check
-export const RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG = 25; // Soft orthogonal check
+export const RECT_CORNER_SOFT_TOLERANCE_DEG = 20;    // Wider tolerance for soft scoring
+export const RECT_PARALLEL_SOFT_TOLERANCE_DEG = 20;  // Soft parallel check
+export const RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG = 20; // Soft orthogonal check
 
 // AABB Coverage parameters (mirroring OBB)
 export const RECT_AABB_COVERAGE_TOLERANCE_FACTOR = 0.15; // 15% of min(width,height), mirrors OBB

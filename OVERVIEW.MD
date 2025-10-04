@@ -218,7 +218,7 @@ interface Meta {
   Y.Doc → `root: Y.Map` → {
     v: number,                       // schema version (start at 1);
     meta: Y.Map<Meta>,
-    strokes: Y.Array<Stroke>,		//append only;
+    strokes: Y.Array<Stroke>,		//strokes can change ownership;
     texts: Y.Array<TextBlock>,		//
     code: Y.Map<CodeCell>,
     outputs: Y.Array<Output>		//keep last 10;
@@ -342,7 +342,7 @@ Global Conventions
 
 **Stores.** Yjs doc (authoritative) → Redis TTL; Awareness → WS only; IndexedDB → per-room `Y.Doc`, **My Rooms**, aliases; localStorage → device-local UI state (toolbar, etc.). PostgreSQL → non-authoritative metadata.
 
-**Canvas & rendering.** LOD thresholds; render order (strokes → text); eraser hit-testing via spatialIndex in Snapshot; no auto-pan on remote actions.
+**Canvas & rendering.** LOD thresholds; render order (strokes → text); eraser hit-testing via spatialIndex in Snapshot; 
 
 **Data transforms.** gzip level 4 before Redis; `size_bytes` equals last persisted compressed payload size. **Privacy/retention.** TTL extends only on accepted writes; awareness/views do not extend; expiry deletes permanently.
 
@@ -561,7 +561,7 @@ interface StrokeView {
     -   **Draw order:** Base canvas: background → world layers (strokes → text) → authoring overlays → HUD. Overlay canvas: preview (world-space pass) → presence (screen-space pass).
 
 **Base canvas layers:**
-1.  Background (export uses white background).
+1.  Background (white #F5F5F5) with adaptive dot grid: 8px spacing at ≥1.8x zoom, 20px at 1x, 50px at ≤0.4x zoom. Dots fade below 0.15x zoom. Subtle opacity curve (0.12-0.20).
 2.  World layers: strokes → text.
 3.  Authoring overlays: selection boxes/handles, text caret/selection.
 4.  HUD/UI overlays: minimap, update prompts, toasts (never included in export).

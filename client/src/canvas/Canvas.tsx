@@ -731,7 +731,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // 3J: Update JSX to render two canvases
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full" style={{ backgroundColor: '#FFFFFF' }}>
       <CanvasStage
         ref={baseStageRef}
         className={className}

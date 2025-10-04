@@ -95,10 +95,48 @@ export const STROKE_CONFIG = {
   MAX_STROKE_UPDATE_BYTES: getEnvNumber('MAX_STROKE_UPDATE_BYTES', 128 * 1024), // 128 KB per-stroke limit
 
   // Opacity defaults
-  HIGHLIGHTER_DEFAULT_OPACITY: getEnvNumber('HIGHLIGHTER_DEFAULT_OPACITY', 0.25),
-  CURSOR_PREVIEW_OPACITY: getEnvNumber('CURSOR_PREVIEW_OPACITY', 0.35),
-  // Lighter preview for highlighter to prevent double-blend flicker when holding preview on commit
-  HIGHLIGHTER_PREVIEW_OPACITY: getEnvNumber('HIGHLIGHTER_PREVIEW_OPACITY', 0.15),
+  HIGHLIGHTER_DEFAULT_OPACITY: getEnvNumber('HIGHLIGHTER_DEFAULT_OPACITY', 0.45), // Increased for better visibility
+  CURSOR_PREVIEW_OPACITY: getEnvNumber('CURSOR_PREVIEW_OPACITY', 1.0), // Preview matches commit opacity
+  // Preview now matches commit opacity (no lightening)
+  HIGHLIGHTER_PREVIEW_OPACITY: getEnvNumber('HIGHLIGHTER_PREVIEW_OPACITY', 0.45),
+} as const;
+
+// ============================================
+// CANVAS STYLE CONFIGURATION
+// ============================================
+
+export const CANVAS_STYLE_CONFIG = {
+  // Background
+  BACKGROUND_COLOR: '#F5F5F5',
+
+  // Dot grid
+  GRID_COLOR: 'C1C7D0 ',
+  GRID_DOT_RADIUS_PX: 1.1, // fixed CSS px (screen-space)
+
+  // Opacity curve (subtle, with 0.24 at 1x zoom)
+  GRID_OPACITY_AT_025X: 0.12,
+  GRID_OPACITY_AT_05X: 0.18,
+  GRID_OPACITY_AT_1X: 0.20, // Much more subtle than original 0.6
+  GRID_OPACITY_AT_2X: 0.2,
+
+  // Spacing tiers (at 100% zoom)
+  GRID_SPACING_SUB_10: 8, // ≥ 2x zoom
+  GRID_SPACING_BASE_20: 20, // 1x
+  GRID_SPACING_BIG_40: 50, // ≤ 0.5x
+
+  // Zoom thresholds
+  GRID_HIDE_BELOW: 0.15, // < 0.25x → hide
+  GRID_SWITCH_TO_40_AT: 0.4, // ≤ 0.5x → 40 px
+  GRID_SWITCH_TO_10_AT: 1.8, // ≥ 2x   → 10 px
+
+  // Crossfade bands around thresholds (removes pops)
+  GRID_BAND_NEAR_025: 0.05,
+  GRID_BAND_NEAR_05: 0.08,
+  GRID_BAND_NEAR_2: 0.2,
+
+  // Optional: grow dots above 1x with cap (OFF by default)
+  GRID_DOT_SCALE_ABOVE_1X: false,
+  GRID_DOT_RADIUS_CAP_PX: 2.5,
 } as const;
 
 // ============================================
@@ -249,9 +287,9 @@ export const PERFORMANCE_CONFIG = {
   EXPORT_TIMEOUT_MS: getEnvNumber('EXPORT_TIMEOUT_MS', 2000),
 
   // Zoom limits
-  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.1),
-  MAX_ZOOM: getEnvNumber('MAX_ZOOM', 10),
-  MAX_PAN_DISTANCE: getEnvNumber('MAX_PAN_DISTANCE', 50000), // Maximum pan distance from origin in world units
+  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.01),
+  MAX_ZOOM: getEnvNumber('MAX_ZOOM', 5),
+  MAX_PAN_DISTANCE: getEnvNumber('MAX_PAN_DISTANCE', 1_000_000), // Maximum pan distance from origin in world units
 
   // Canvas size limits (prevent memory exhaustion)
   MAX_CANVAS_DIMENSION: getEnvNumber('MAX_CANVAS_DIMENSION', 16384), // Max width or height in pixels

@@ -256,7 +256,7 @@ constructor(
 **Implementation Details:**
 
 - `setPreviewProvider()` bridges DrawingTool to OverlayRenderLoop
-- Preview opacity: **0.35 for pen**, **0.15 for highlighter** (prevents commit flicker)
+- Preview opacity: **matches commit opacity** (pen: 1.0, highlighter: 0.45)
 - Render on overlay canvas in world coordinates (transform already applied)
 - `updateBounds()`: Invalidates old bounds first, then new bounds
 - `holdPreviewForOneFrame()`: Prevents flicker on stroke commit
@@ -775,10 +775,10 @@ export interface EraserPreview {
   kind: 'eraser'; // Discriminant
   circle: { cx: number; cy: number; r_px: number }; // Center in world, radius in CSS px
   hitIds: string[];
-  dimOpacity: number; // 0.6 default
+  dimOpacity: number; // 0.75 default
 }
 
-export type PreviewData = StrokePreview | EraserPreview;
+export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview;
 ```
 
 ### 8.3 Overlay Rendering Integration
