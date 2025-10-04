@@ -12,10 +12,13 @@ import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
+import { PanTool } from '@/lib/tools/PanTool';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { calculateZoomTransform } from './internal/transforms';
+import { ZoomAnimator } from './animation/ZoomAnimator';
 
 // Unified interface for all pointer tools
-type PointerTool = DrawingTool | EraserTool | TextTool;
+type PointerTool = DrawingTool | EraserTool | TextTool | PanTool;
 
 // Epsilon equality for floating point comparison
 function bboxEquals(a: number[], b: number[]): boolean {
@@ -132,13 +135,39 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const overlayStageRef = useRef<CanvasStageHandle>(null);
   const editorHostRef = useRef<HTMLDivElement>(null); // NEW: DOM overlay for text
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
-  const { transform: viewTransform } = useViewTransform();
+  const { transform: viewTransform, setScale, setPan } = useViewTransform();
   const toolRef = useRef<PointerTool>();
   const lastMouseClientRef = useRef<{ x: number; y: number } | null>(null); // Track last mouse position for tool seeding
   const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
   const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
   const renderLoopRef = useRef<RenderLoop | null>(null); // existing
   const overlayLoopRef = useRef<OverlayRenderLoop | null>(null); // new
+
+  // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
+  // Phase 9: Updated to use new store structure
+  const { activeTool, pen, highlighter, eraser, text } = useDeviceUIStore();
+
+  // Add setter and tool refs for stable callbacks (Step 1.1)
+  const setScaleRef = useRef<(scale: number) => void>();
+  const setPanRef = useRef<(pan: { x: number; y: number }) => void>();
+  const activeToolRef = useRef<string>(activeTool); // Track current tool for stable cursor
+
+  // Step 3.1: Add state refs for MMB pan
+  // Tracks ephemeral MMB pan without touching Zustand
+  const mmbPanRef = useRef<{
+    active: boolean;
+    pointerId: number | null;
+    lastClient: { x: number; y: number } | null;
+  }>({ active: false, pointerId: null, lastClient: null });
+
+  // Cursor override that beats the tool's base cursor
+  const cursorOverrideRef = useRef<string | null>(null);
+
+  // Suppress tool preview during MMB pan (hides eraser ring)
+  const suppressToolPreviewRef = useRef(false);
+
+  // Zoom animator for smooth transitions
+  const zoomAnimatorRef = useRef<ZoomAnimator | null>(null);
 
   // Generate stable user ID (Phase 5 placeholder)
   // IMPORTANT: This will be replaced by proper awareness management in Phase 6
@@ -155,10 +184,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     return id;
   });
 
-  // Get toolbar state from Zustand store and convert to DrawingTool's DeviceUIState
-  // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter, eraser, text } = useDeviceUIStore();
-
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref
   // instead of state to prevent React render storms at 60+ FPS. This maintains the architectural
@@ -169,9 +194,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Keep view transform ref updated (no re-render)
   // Use useLayoutEffect to ensure ref is updated before drawing tool effect reads it
+  // Step 1.3: Update refs in layout effect
   useLayoutEffect(() => {
     viewTransformRef.current = viewTransform;
-  }, [viewTransform]);
+    setScaleRef.current = setScale;
+    setPanRef.current = setPan;
+    activeToolRef.current = activeTool; // Keep tool ref in sync
+  }, [viewTransform, setScale, setPan, activeTool]);
 
   // Subscribe to snapshots via public API (stores in ref to avoid re-renders)
   // 3C: Update snapshot subscription to check docVersion
@@ -253,21 +282,47 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Convert world coordinates to client (CSS) coordinates
   // Used for positioning UI elements
-  const worldToClient = useCallback(
-    (worldX: number, worldY: number): [number, number] => {
-      if (!baseStageRef.current) return [worldX, worldY];
+  // Step 1.4: FIXED - No dependencies, reads from ref
+  const worldToClient = useCallback((worldX: number, worldY: number): [number, number] => {
+    const stage = baseStageRef.current;
+    const vt = viewTransformRef.current; // Read latest from ref
+    if (!stage || !vt) return [worldX, worldY];
 
-      // World to canvas (returns CSS pixels)
-      const [canvasX, canvasY] = viewTransform.worldToCanvas(worldX, worldY);
+    // World to canvas (returns CSS pixels)
+    const [canvasX, canvasY] = vt.worldToCanvas(worldX, worldY);
 
-      // Get canvas element position
-      const rect = baseStageRef.current.getBounds();
+    // Get canvas element position
+    const rect = stage.getBounds();
 
-      // Canvas to screen (both in CSS pixels) - NO DPR division
-      return [canvasX + rect.left, canvasY + rect.top];
-    },
-    [viewTransform],
-  );
+    // Canvas to screen (both in CSS pixels) - NO DPR division
+    return [canvasX + rect.left, canvasY + rect.top];
+  }, []); // ✅ Empty deps = stable function
+
+  // Step 3.2: Add cursor management function
+  // CRITICAL: Stable function that reads from ref to avoid stale closures
+  const applyCursor = useCallback(() => {
+    const canvas = baseStageRef.current?.getCanvasElement();
+    if (!canvas) return;
+
+    // Priority 1: Explicit override (MMB dragging)
+    if (cursorOverrideRef.current) {
+      canvas.style.cursor = cursorOverrideRef.current;
+      return;
+    }
+
+    // Priority 2: Tool-based default (read from ref for stability)
+    const currentTool = activeToolRef.current;
+    switch (currentTool) {
+      case 'eraser':
+        canvas.style.cursor = 'none'; // Overlay draws ring
+        break;
+      case 'pan':
+        canvas.style.cursor = 'grab'; // Open hand idle
+        break;
+      default:
+        canvas.style.cursor = 'crosshair';
+    }
+  }, []); // ✅ Empty deps - reads from refs
 
   // 3G: Handle resize for both stages
   const handleBaseResize = useCallback((info: ResizeInfo) => {
@@ -436,6 +491,20 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     };
   }, [roomDoc]);
 
+  // Initialize ZoomAnimator for smooth zoom transitions
+  useEffect(() => {
+    zoomAnimatorRef.current = new ZoomAnimator(
+      () => viewTransformRef.current,
+      (s) => setScaleRef.current?.(s),
+      (p) => setPanRef.current?.(p),
+    );
+
+    return () => {
+      zoomAnimatorRef.current?.destroy();
+      zoomAnimatorRef.current = null;
+    };
+  }, []); // Mount once
+
   // CRITICAL FIX: Combined initialization and event listener effect
   // This ensures everything is wired up atomically when dependencies are ready
   // IMPORTANT: viewTransform is NOT in dependencies to prevent mid-gesture teardown
@@ -533,21 +602,35 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         },
         () => overlayLoopRef.current?.invalidateAll(),
       );
+    } else if (activeTool === 'pan') {
+      tool = new PanTool(
+        () => viewTransformRef.current,
+        (pan) => setPanRef.current?.(pan), // Value setter, not functional updater
+        () => overlayLoopRef.current?.invalidateAll(),
+        applyCursor,
+        (cursor) => { cursorOverrideRef.current = cursor; }
+      );
     } else {
       return; // Unsupported tool
     }
 
     toolRef.current = tool;
 
+    // Step 3.3: Wrap the preview provider to support suppression
     // Set preview provider on overlay loop (both tools implement getPreview())
     if (!isMobile && overlayLoopRef.current) {
       overlayLoopRef.current.setPreviewProvider({
-        getPreview: () => tool?.getPreview() || null,
+        getPreview: () => {
+          if (suppressToolPreviewRef.current) return null; // Hide during MMB
+          return tool?.getPreview() || null;
+        },
       });
     }
 
     // Update cursor style
-    canvas.style.cursor = activeTool === 'eraser' ? 'none' : 'crosshair';
+    // Update cursor based on current tool/override
+    cursorOverrideRef.current = null; // belt-and-suspenders reset
+    applyCursor()
 
     // Seed the eraser preview using the last known mouse position (for keyboard shortcuts)
     if (!isMobile && activeTool === 'eraser' && lastMouseClientRef.current) {
@@ -557,83 +640,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         tool.move(world[0], world[1]);
       }
     }
-
-    // UNIFIED POINTER HANDLERS - No tool branching here!
-    const handlePointerDown = (e: PointerEvent) => {
-      // Canvas gates for mobile (not tool)
-      if (isMobile) return;
-      if (!tool?.canBegin()) return;
-
-      const worldCoords = screenToWorld(e.clientX, e.clientY);
-      if (!worldCoords) return;
-
-      e.preventDefault();
-      canvas.setPointerCapture(e.pointerId);
-
-      // Polymorphic call - works for any tool
-      tool.begin(e.pointerId, worldCoords[0], worldCoords[1]);
-      roomDoc.updateActivity('drawing'); // Same for pen/eraser
-    };
-
-    const handlePointerMove = (e: PointerEvent) => {
-      // Track last mouse position for tool seeding
-      lastMouseClientRef.current = { x: e.clientX, y: e.clientY };
-
-      // Update awareness cursor (not on mobile)
-      if (!isMobile) {
-        const worldCoords = screenToWorld(e.clientX, e.clientY);
-        if (worldCoords) {
-          roomDoc.updateCursor(worldCoords[0], worldCoords[1]);
-
-          // Always forward movement to the tool (for hover preview)
-          if (tool) {
-            tool.move(worldCoords[0], worldCoords[1]);
-          }
-        }
-      }
-    };
-
-    const handlePointerUp = (e: PointerEvent) => {
-      if (!tool?.isActive() || e.pointerId !== tool.getPointerId()) return;
-
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {
-        // Pointer capture may already be released, ignore
-      }
-
-      const worldCoords = screenToWorld(e.clientX, e.clientY);
-      tool.end(worldCoords?.[0], worldCoords?.[1]);
-      roomDoc.updateActivity('idle');
-    };
-
-    const handlePointerCancel = (e: PointerEvent) => {
-      if (e.pointerId !== tool?.getPointerId()) return;
-
-      try {
-        canvas.releasePointerCapture(e.pointerId);
-      } catch {
-        // Pointer capture may already be released, ignore
-      }
-
-      tool?.cancel();
-      roomDoc.updateActivity('idle');
-    };
-
-    const handleLostPointerCapture = (e: PointerEvent) => {
-      if (e.pointerId !== tool?.getPointerId()) return;
-      tool?.cancel();
-    };
-
-    const handlePointerLeave = () => {
-      // Clear cursor when pointer leaves canvas
-      roomDoc.updateCursor(undefined, undefined);
-
-      // Clear tool hover state if it has the method
-      if (tool && 'clearHover' in tool) {
-        (tool as any).clearHover();
-      }
-    };
 
     // Set canvas styles (conditional for mobile)
     if (!isMobile) {
@@ -645,14 +651,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // Check your stylesheets - mobile MUST preserve touch-action: auto for scrolling
     // Note: Canvas CSS size should be set by CanvasStage
     // Physical size (width/height) = CSS size * DPR (handled by CanvasStage)
-
-    // Attach listeners with non-passive flag for preventDefault
-    canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
-    canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
-    canvas.addEventListener('pointerup', handlePointerUp, { passive: false });
-    canvas.addEventListener('pointercancel', handlePointerCancel, { passive: false });
-    canvas.addEventListener('lostpointercapture', handleLostPointerCapture, { passive: false });
-    canvas.addEventListener('pointerleave', handlePointerLeave, { passive: false });
 
     // CLEANUP - comprehensive cleanup on any dependency change
     return () => {
@@ -670,13 +668,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       toolRef.current = undefined;
       overlayLoopRef.current?.setPreviewProvider(null);
 
-      // Remove event listeners
-      canvas.removeEventListener('pointerdown', handlePointerDown);
-      canvas.removeEventListener('pointermove', handlePointerMove);
-      canvas.removeEventListener('pointerup', handlePointerUp);
-      canvas.removeEventListener('pointercancel', handlePointerCancel);
-      canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
-      canvas.removeEventListener('pointerleave', handlePointerLeave);
+      // Reset MMB state if active (Step 4 cleanup)
+      if (mmbPanRef.current.active) {
+        mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
+        cursorOverrideRef.current = null;
+        suppressToolPreviewRef.current = false;
+      }
     };
   }, [
     roomDoc,
@@ -688,8 +685,279 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     text,
     stageReady,
     screenToWorld,
-    worldToClient,
+    worldToClient, // Now stable with empty deps, safe to include
+    applyCursor, // Stable function with empty deps
   ]); // Include all tool dependencies
+
+  // Effect A: Stable event listeners (mount once) - Step 2.1
+  useEffect(() => {
+    const canvas = baseStageRef.current?.getCanvasElement();
+    if (!canvas || !stageReady) return;
+
+    // All handlers read from refs - no closure dependencies
+    // Step 4.1: Pointer Down Handler
+    const handlePointerDown = (e: PointerEvent) => {
+      // Mobile check (use ref or stable function)
+      const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                       navigator.maxTouchPoints > 1;
+      if (isMobile) return;
+
+      // --- MMB EPHEMERAL PAN ---
+      if (e.button === 1) {
+        e.preventDefault(); // Stop OS autoscroll
+
+        // Don't steal capture if tool is active
+        if (toolRef.current?.isActive()) return;
+
+        const canvas = baseStageRef.current?.getCanvasElement();
+        if (!canvas) return;
+        canvas.setPointerCapture(e.pointerId);
+
+        mmbPanRef.current = {
+          active: true,
+          pointerId: e.pointerId,
+          lastClient: { x: e.clientX, y: e.clientY },
+        };
+
+        cursorOverrideRef.current = 'grabbing';
+        suppressToolPreviewRef.current = true; // Hide tool preview
+        applyCursor();
+        overlayLoopRef.current?.invalidateAll(); // Redraw without preview
+        return;
+      }
+
+      // --- NORMAL TOOLS ---
+      if (e.button !== 0) return; // Only left button for tools
+
+      const tool = toolRef.current;
+      if (!tool?.canBegin()) return;
+
+      const worldCoords = screenToWorld(e.clientX, e.clientY);
+      if (!worldCoords) return;
+
+      e.preventDefault();
+      const captureCanvas = baseStageRef.current?.getCanvasElement();
+      if (captureCanvas) {
+        captureCanvas.setPointerCapture(e.pointerId);
+      }
+
+      // Pass client coords for PanTool seeding (will be implemented later)
+      if (activeToolRef.current === 'pan' && 'begin' in tool) {
+        (tool as any).begin(e.pointerId, worldCoords[0], worldCoords[1], e.clientX, e.clientY);
+      } else {
+        tool.begin(e.pointerId, worldCoords[0], worldCoords[1]);
+      }
+
+      // Pan tool doesn't need 'drawing' activity
+      if (activeToolRef.current !== 'pan') {
+        roomDoc.updateActivity('drawing');
+      }
+    };
+
+    // Step 4.2: Pointer Move Handler
+    const handlePointerMove = (e: PointerEvent) => {
+      // Track for tool seeding
+      lastMouseClientRef.current = { x: e.clientX, y: e.clientY };
+
+      // Check mobile
+      const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                       navigator.maxTouchPoints > 1;
+
+      // ALWAYS update presence first (unless mobile)
+      if (!isMobile) {
+        const world = screenToWorld(e.clientX, e.clientY);
+        if (world) {
+          roomDoc.updateCursor(world[0], world[1]);
+        }
+      }
+
+      // MMB pan in progress?
+      if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
+        const last = mmbPanRef.current.lastClient!;
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        mmbPanRef.current.lastClient = { x: e.clientX, y: e.clientY };
+
+        // Pan using world units (negative because we're dragging the canvas)
+        const view = viewTransformRef.current;
+        if (view && setPanRef.current) {
+          const newPan = {
+            x: view.pan.x - dx / view.scale,
+            y: view.pan.y - dy / view.scale,
+          };
+          setPanRef.current(newPan);
+        }
+
+        overlayLoopRef.current?.invalidateAll();
+        return; // Skip tool move during MMB pan
+      }
+
+      // Special handling for PanTool (only when actually dragging)
+      const tool = toolRef.current;
+      if (tool && activeToolRef.current === 'pan' && 'updatePan' in tool) {
+        (tool as any).updatePan(e.clientX, e.clientY);
+        // Only return early if actually dragging
+        if (tool.isActive()) return;
+        // Fall through to normal tool.move() for hover when not dragging
+      }
+
+      // Normal tool hover/preview (pen, eraser, etc)
+      if (!isMobile && tool) {
+        const world = screenToWorld(e.clientX, e.clientY);
+        if (world) {
+          tool.move(world[0], world[1]);
+        }
+      }
+    };
+
+    // Step 4.3: Pointer Up/Cancel/Lost Handlers
+    const handlePointerUp = (e: PointerEvent) => {
+      // Handle MMB release
+      if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
+        try {
+          baseStageRef.current?.getCanvasElement()?.releasePointerCapture(e.pointerId);
+        } catch {
+          // Pointer capture may already be released
+        }
+
+        mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
+        cursorOverrideRef.current = null;
+        suppressToolPreviewRef.current = false; // Show tool preview again
+        applyCursor();
+        overlayLoopRef.current?.invalidateAll(); // Redraw with preview
+        return;
+      }
+
+      // Normal tool end
+      const tool = toolRef.current;
+      if (!tool?.isActive() || e.pointerId !== tool.getPointerId()) return;
+
+      try {
+        baseStageRef.current?.getCanvasElement()?.releasePointerCapture(e.pointerId);
+      } catch {
+        // Pointer capture may already be released
+      }
+
+      const world = screenToWorld(e.clientX, e.clientY);
+      tool.end(world?.[0], world?.[1]);
+      roomDoc.updateActivity('idle');
+    };
+
+    const handlePointerCancel = (e: PointerEvent) => {
+      // Handle MMB cancel
+      if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
+        // Same as pointer up for MMB
+        mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
+        cursorOverrideRef.current = null;
+        suppressToolPreviewRef.current = false;
+        applyCursor();
+        overlayLoopRef.current?.invalidateAll();
+        return;
+      }
+
+      // Normal tool cancel
+      if (e.pointerId !== toolRef.current?.getPointerId()) return;
+
+      try {
+        baseStageRef.current?.getCanvasElement()?.releasePointerCapture(e.pointerId);
+      } catch {
+        // Pointer capture may already be released
+      }
+
+      toolRef.current?.cancel();
+      roomDoc.updateActivity('idle');
+    };
+
+    const handleLostPointerCapture = (e: PointerEvent) => {
+      // Handle MMB lost capture
+      if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
+        mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
+        cursorOverrideRef.current = null;
+        suppressToolPreviewRef.current = false;
+        applyCursor();
+        overlayLoopRef.current?.invalidateAll();
+        return;
+      }
+
+      // Normal tool lost capture
+      if (e.pointerId === toolRef.current?.getPointerId()) {
+        toolRef.current?.cancel();
+        roomDoc.updateActivity('idle');
+        if ('clearHover' in toolRef.current) {
+          (toolRef.current as any).clearHover?.();
+        }
+      }
+    };
+
+    const handlePointerLeave = () => {
+      roomDoc.updateCursor(undefined, undefined);
+
+      if (toolRef.current && 'clearHover' in toolRef.current) {
+        (toolRef.current as any).clearHover();
+      }
+    };
+
+    // Step 5: Implement Wheel Zoom
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+
+      // Block wheel during MMB pan
+      if (mmbPanRef.current.active) return;
+
+      // OPTIONAL: Block wheel during active tool gesture
+      // if (toolRef.current?.isActive()) return;
+
+      const canvas = baseStageRef.current?.getCanvasElement();
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+
+      // Normalize wheel delta
+      let deltaY = e.deltaY;
+      if (e.deltaMode === 1) deltaY *= 40;  // Lines
+      else if (e.deltaMode === 2) deltaY *= 800; // Pages
+      const steps = deltaY / 120;
+
+      // Calculate zoom factor (~9% per step)
+      const ZOOM_STEP = Math.log(1.09);
+      const factor = Math.exp(-steps * ZOOM_STEP);
+
+      // Read LATEST transform from ref
+      const v = viewTransformRef.current;
+      if (!v) return;
+
+      // Use existing calculateZoomTransform utility
+      const { scale: targetScale, pan: targetPan } = calculateZoomTransform(
+        v.scale,
+        v.pan,
+        factor,
+        { x: canvasX, y: canvasY }
+      );
+
+      // Use ZoomAnimator for smooth transitions
+      zoomAnimatorRef.current?.to(targetScale, targetPan);
+    };
+
+    // Attach ALL listeners with { passive: false }
+    canvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
+    canvas.addEventListener('pointermove', handlePointerMove, { passive: false });
+    canvas.addEventListener('pointerup', handlePointerUp, { passive: false });
+    canvas.addEventListener('pointercancel', handlePointerCancel, { passive: false });
+    canvas.addEventListener('lostpointercapture', handleLostPointerCapture, { passive: false });
+    canvas.addEventListener('pointerleave', handlePointerLeave, { passive: false });
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('pointerdown', handlePointerDown);
+      canvas.removeEventListener('pointermove', handlePointerMove);
+      canvas.removeEventListener('pointerup', handlePointerUp);
+      canvas.removeEventListener('pointercancel', handlePointerCancel);
+      canvas.removeEventListener('lostpointercapture', handleLostPointerCapture);
+      canvas.removeEventListener('pointerleave', handlePointerLeave);
+      canvas.removeEventListener('wheel', handleWheel);
+    };
+  }, [stageReady, applyCursor, roomDoc, screenToWorld]); // Added stable deps to silence ESLint
 
   // 3F: Handle transform changes for both loops
   useEffect(() => {
@@ -726,7 +994,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         }
       },
     }),
-    [screenToWorld, worldToClient],
+    [screenToWorld, worldToClient], // Both are now stable with empty deps
   );
 
   // 3J: Update JSX to render two canvases
