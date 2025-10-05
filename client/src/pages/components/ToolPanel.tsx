@@ -28,7 +28,7 @@ function ToolButton({ tool, isActive, onClick, tooltip, children }: ToolButtonPr
 }
 
 export function ToolPanel({ onToast }: ToolPanelProps) {
-  const { activeTool, toolbarPos, editorCollapsed, setActiveTool, setToolbarPosition } =
+  const { activeTool, toolbarPos, editorCollapsed, shape, setActiveTool, setToolbarPosition, setShapeSettings } =
     useDeviceUIStore();
 
   const toolbarRef = useRef<HTMLDivElement>(null);
@@ -152,22 +152,46 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
     }
   };
 
+  const handleShapeClick = (variant: 'rectangle' | 'ellipse' | 'arrow' | 'line') => {
+    setActiveTool('shape');
+    setShapeSettings({ variant });
+  };
+
   const handleUndoRedo = (action: 'undo' | 'redo') => {
     onToast?.(action.toUpperCase());
   };
 
   return (
-    <div
-      ref={toolbarRef}
-      className="tool-panel"
-      style={{
-        left: toolbarPos.x,
-        top: toolbarPos.y,
-        cursor: isDragging ? 'grabbing' : 'default',
-      }}
-      onMouseDown={handleMouseDown}
-    >
-      {/* Drag Handle */}
+    <>
+      <style>{`
+        .tool-panel .tool-btn {
+          width: 40px;
+          height: 40px;
+        }
+        .tool-panel .icon {
+          width: 18px;
+          height: 18px;
+        }
+        .tool-panel .drag-handle {
+          margin: 2px 4px 4px;
+        }
+        .tool-panel .tool-divider {
+          margin: 4px 6px;
+        }
+      `}</style>
+      <div
+        ref={toolbarRef}
+        className="tool-panel"
+        style={{
+          left: toolbarPos.x,
+          top: toolbarPos.y,
+          cursor: isDragging ? 'grabbing' : 'default',
+          padding: '6px',
+          gap: '4px',
+        }}
+        onMouseDown={handleMouseDown}
+      >
+        {/* Drag Handle */}
       <div
         ref={dragHandleRef}
         className="drag-handle"
@@ -223,6 +247,54 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           <path d="M4 7V4h16v3M9 20h6M12 4v16" />
         </svg>
       </ToolButton>
+
+      <div className="tool-divider" />
+
+      {/* Shape Tools */}
+      <button
+        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'rectangle' ? 'active' : ''}`}
+        data-tooltip="Rectangle (R)"
+        onClick={() => handleShapeClick('rectangle')}
+        aria-label="Rectangle"
+      >
+        <svg className="icon" viewBox="0 0 24 24">
+          <rect x="5" y="6" width="14" height="12" rx="2" />
+        </svg>
+      </button>
+
+      <button
+        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'ellipse' ? 'active' : ''}`}
+        data-tooltip="Ellipse (O)"
+        onClick={() => handleShapeClick('ellipse')}
+        aria-label="Ellipse"
+      >
+        <svg className="icon" viewBox="0 0 24 24">
+          <ellipse cx="12" cy="12" rx="7" ry="7" />
+        </svg>
+      </button>
+
+      <button
+        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'arrow' ? 'active' : ''}`}
+        data-tooltip="Arrow (A)"
+        onClick={() => handleShapeClick('arrow')}
+        aria-label="Arrow"
+      >
+        <svg className="icon" viewBox="0 0 24 24">
+          <path d="M4 12h12" />
+          <path d="M12 6l6 6-6 6" />
+        </svg>
+      </button>
+
+      <button
+        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'line' ? 'active' : ''}`}
+        data-tooltip="Line (L)"
+        onClick={() => handleShapeClick('line')}
+        aria-label="Line"
+      >
+        <svg className="icon" viewBox="0 0 24 24">
+          <path d="M4 20 20 4" />
+        </svg>
+      </button>
 
       <div className="tool-divider" />
 
@@ -289,6 +361,7 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
       </button>
 
       {/* Tool Settings Panels */}
-    </div>
+      </div>
+    </>
   );
 }
