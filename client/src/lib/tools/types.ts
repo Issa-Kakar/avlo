@@ -55,6 +55,17 @@ export interface TextPreview {
 }
 
 /**
+ * PerfectShapeAnchors defines anchor points for each shape type
+ */
+export type PerfectShapeAnchors =
+  | { kind: 'line';        A: [number, number] }                                             // line: fixed A
+  | { kind: 'circle';      center: [number, number] }                                        // circle: fixed center (hold detector)
+  | { kind: 'box';         cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen OBB seed (hold detector)
+  | { kind: 'rect';        A: [number, number] }                                             // corner-anchored AABB
+  | { kind: 'ellipseRect'; A: [number, number] }                                             // corner-anchored ellipse
+  | { kind: 'arrow';       A: [number, number] };                                            // arrow: fixed start point
+
+/**
  * PerfectShapePreview is the preview data for perfect shapes (line, circle, box)
  * Used by DrawingTool and overlay rendering
  * NEW: Perfect Shape preview is inputs (anchors + live cursor),
@@ -62,7 +73,7 @@ export interface TextPreview {
  */
 export interface PerfectShapePreview {
   kind: 'perfectShape';
-  shape: 'line' | 'circle' | 'box';
+  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow';
 
   // Tool styling frozen at pointer-down
   color: string;
@@ -72,10 +83,7 @@ export interface PerfectShapePreview {
   // Inputs in WORLD space:
   // - anchors: frozen the moment we snap (shape-specific)
   // - cursor: live pointer in world units
-  anchors:
-    | { kind: 'line';   A: [number, number] }                // line: fixed A
-    | { kind: 'circle'; center: [number, number] }           // circle: fixed center
-    | { kind: 'box';    cx: number; cy: number; angle: number; hx0: number; hy0: number }; // box: frozen OBB seed
+  anchors: PerfectShapeAnchors;
   cursor: [number, number];
 
   // Overlay previews never carry a bbox (base canvas ignores them)

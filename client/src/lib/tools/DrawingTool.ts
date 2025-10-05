@@ -14,6 +14,7 @@ import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
 // See Step 7 for the values to add to /packages/shared/src/config.ts
 
 type RequestOverlayFrame = () => void;
+type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow';
 
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
@@ -35,13 +36,17 @@ export class DrawingTool {
   private snap:
     | null
     | (
-        | { kind: 'line';   anchors: { A: [number, number] } }
-        | { kind: 'circle'; anchors: { center: [number, number] } }
-        | { kind: 'box';    anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number } }
+        | { kind: 'line';        anchors: { A: [number, number] } }
+        | { kind: 'circle';      anchors: { center: [number, number] } }
+        | { kind: 'box';         anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number } }
+        | { kind: 'rect';        anchors: { A: [number, number] } }
+        | { kind: 'ellipseRect'; anchors: { A: [number, number] } }
+        | { kind: 'arrow';       anchors: { A: [number, number] } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
   private getView?: () => ViewTransform;              // screen jitter (hold)
   private requestOverlayFrame?: RequestOverlayFrame;  // NEW: nudge overlay loop
+  private opts: { forceSnapKind?: ForcedSnapKind } = {};
 
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
@@ -50,7 +55,8 @@ export class DrawingTool {
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
     requestOverlayFrame?: RequestOverlayFrame,     // NEW (overlay frames)
-    getView?: () => ViewTransform                  // stays (hold jitter)
+    getView?: () => ViewTransform,                 // stays (hold jitter)
+    opts?: { forceSnapKind?: ForcedSnapKind }      // NEW parameter
   ) {
     this.room = room;
     this.settings = settings;
@@ -59,6 +65,7 @@ export class DrawingTool {
     this.onInvalidate = onInvalidate;
     this.requestOverlayFrame = requestOverlayFrame;
     this.getView = getView;
+    this.opts = opts ?? {};
     this.hold = new HoldDetector(() => this.onHoldFire());
     this.resetState();
   }
@@ -93,16 +100,30 @@ export class DrawingTool {
   begin(pointerId: number, worldX: number, worldY: number): void {
     this.startDrawing(pointerId, worldX, worldY);
 
-    // NEW: Start hold detector in SCREEN px
+    // If Shape tool requested forced snap, seed it immediately
+    if (this.opts.forceSnapKind) {
+      const k = this.opts.forceSnapKind;
+      this.snap =
+        k === 'line'        ? { kind: 'line',        anchors: { A: [worldX, worldY] } }
+      : k === 'circle'      ? { kind: 'circle',      anchors: { center: [worldX, worldY] } }
+      : k === 'box'         ? { kind: 'box',         anchors: { cx: worldX, cy: worldY, angle: 0, hx0: 0.5, hy0: 0.5 } }
+      : k === 'rect'        ? { kind: 'rect',        anchors: { A: [worldX, worldY] } }
+      : k === 'ellipseRect' ? { kind: 'ellipseRect', anchors: { A: [worldX, worldY] } }
+      : /* arrow */           { kind: 'arrow',       anchors: { A: [worldX, worldY] } };
+
+      this.liveCursorWU = [worldX, worldY];
+      this.requestOverlayFrame?.(); // Start preview immediately
+      return; // Skip HoldDetector in forced mode
+    }
+
+    // Existing freehand flow with HoldDetector
     if (this.getView) {
       const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
       this.hold.start({ x: sx, y: sy });
     }
-
-    // Reset snap state for new gesture
     this.snap = null;
     this.liveCursorWU = [worldX, worldY];
-    this.requestOverlayFrame?.(); // draw first frame
+    this.requestOverlayFrame?.();
   }
 
   move(worldX: number, worldY: number): void {
@@ -454,7 +475,7 @@ export class DrawingTool {
         points.push(center[0] + r * Math.cos(angle), center[1] + r * Math.sin(angle));
       }
 
-    } else {  // box
+    } else if (this.snap.kind === 'box') {
       const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
       // Compute final scale from cursor
       const dx = finalCursor[0] - cx;
@@ -477,6 +498,67 @@ export class DrawingTool {
           cy + lx * sin + ly * cos
         );
       }
+
+    } else if (this.snap.kind === 'rect') {
+      // Corner-anchored AABB rectangle
+      const { A } = this.snap.anchors;
+      const C = finalCursor;
+      const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
+      const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+      // Create closed polyline
+      points = [
+        A[0], A[1],
+        maxX, minY,
+        maxX, maxY,
+        minX, maxY,
+        A[0], A[1]
+      ];
+
+    } else if (this.snap.kind === 'ellipseRect') {
+      // Corner-anchored ellipse inscribed in AABB
+      const { A } = this.snap.anchors;
+      const C = finalCursor;
+      const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
+      const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      const rx = Math.max(0.0001, (maxX - minX) / 2);
+      const ry = Math.max(0.0001, (maxY - minY) / 2);
+      // Approximate perimeter for point density
+      const perim = Math.PI * (3*(rx+ry) - Math.sqrt((3*rx+ry)*(rx+3*ry)));
+      const n = Math.max(24, Math.ceil(perim / 8));
+      points = [];
+      for (let i = 0; i <= n; i++) {
+        const t = (i / n) * 2 * Math.PI;
+        points.push(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
+      }
+
+    } else if (this.snap.kind === 'arrow') {
+      // Arrow with dynamic head size
+      const { A } = this.snap.anchors;
+      const B = finalCursor;
+      const vx = B[0] - A[0], vy = B[1] - A[1];
+      const len = Math.hypot(vx, vy) || 1;
+      const headSize = Math.min(40, len * 0.25);
+      const spread = Math.PI / 7; // ~25 degrees
+      const theta = Math.atan2(vy, vx);
+      const H1: [number, number] = [
+        B[0] - headSize * Math.cos(theta + spread),
+        B[1] - headSize * Math.sin(theta + spread)
+      ];
+      const H2: [number, number] = [
+        B[0] - headSize * Math.cos(theta - spread),
+        B[1] - headSize * Math.sin(theta - spread)
+      ];
+      // Single continuous polyline: shaft + head
+      points = [A[0], A[1], B[0], B[1], H1[0], H1[1], B[0], B[1], H2[0], H2[1]];
+
+    } else {
+      // Exhaustive check - TypeScript ensures all cases are handled
+      const _exhaustive: never = this.snap;
+      console.error('Unknown snap kind:', _exhaustive);
+      this.cancelDrawing();
+      return;
     }
 
     // NOW compute bbox at commit time

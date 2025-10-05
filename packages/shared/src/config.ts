@@ -107,16 +107,16 @@ export const STROKE_CONFIG = {
 
 export const CANVAS_STYLE_CONFIG = {
   // Background
-  BACKGROUND_COLOR: '#F5F5F5',
+  BACKGROUND_COLOR: '#FFFFFF',
 
   // Dot grid
-  GRID_COLOR: 'C1C7D0 ',
-  GRID_DOT_RADIUS_PX: 1.1, // fixed CSS px (screen-space)
+  GRID_COLOR: '#DADADA',
+  GRID_DOT_RADIUS_PX: 0.0, // fixed CSS px (screen-space)
 
   // Opacity curve (subtle, with 0.24 at 1x zoom)
   GRID_OPACITY_AT_025X: 0.12,
   GRID_OPACITY_AT_05X: 0.18,
-  GRID_OPACITY_AT_1X: 0.20, // Much more subtle than original 0.6
+  GRID_OPACITY_AT_1X: 0.90, // Much more subtle than original 0.6
   GRID_OPACITY_AT_2X: 0.2,
 
   // Spacing tiers (at 100% zoom)

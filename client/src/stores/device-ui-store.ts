@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape';
+export type ShapeVariant = 'line' | 'rectangle' | 'ellipse' | 'arrow';
 
 export interface ToolSettings {
   size: number;
@@ -16,6 +17,10 @@ interface DeviceUIState {
   highlighter: ToolSettings;
   eraser: { size: number };
   text: { size: number; color: string };
+  shape: {
+    variant: ShapeVariant;
+    settings: ToolSettings;
+  };
   select: {
     // Placeholder for future lasso implementation
     enabled: boolean;
@@ -38,6 +43,7 @@ interface DeviceUIState {
   setHighlighterSettings: (settings: Partial<ToolSettings>) => void;
   setEraserSize: (size: number) => void;
   setTextSettings: (settings: Partial<{ size: number; color: string }>) => void;
+  setShapeSettings: (settings: Partial<{ variant: ShapeVariant } & ToolSettings>) => void;
   setSelectSettings: (settings: Partial<DeviceUIState['select']>) => void;
   toggleEditor: () => void;
   setToolbarPosition: (pos: { x: number; y: number }) => void;
@@ -55,6 +61,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       highlighter: { size: 8, color: '#F59E0B', opacity: 0.45 },
       eraser: { size: 10 },
       text: { size: 16, color: '#0F172A' },
+      shape: { variant: 'rectangle', settings: { size: 4, color: '#0F172A' } },
       select: { enabled: false },
 
       editorCollapsed: false,
@@ -85,6 +92,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setTextSettings: (settings) =>
         set((state) => ({
           text: { ...state.text, ...settings },
+        })),
+
+      setShapeSettings: (settings) =>
+        set((state) => ({
+          shape: { ...state.shape, ...settings },
         })),
 
       setSelectSettings: (settings) =>
@@ -122,6 +134,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             highlighter: { size: 8, color: '#F59E0B', opacity: 0.45 },
             eraser: { size: 10 },
             text: { size: 16, color: '#0F172A' },
+            shape: { variant: 'rectangle', settings: { size: 4, color: '#0F172A' } },
             select: { enabled: false },
             editorCollapsed: false,
             toolbarPos: { x: 24, y: 24 },

@@ -145,7 +145,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
   // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter, eraser, text } = useDeviceUIStore();
+  const { activeTool, pen, highlighter, eraser, text, shape } = useDeviceUIStore();
 
   // Add setter and tool refs for stable callbacks (Step 1.1)
   const setScaleRef = useRef<(scale: number) => void>();
@@ -590,6 +590,27 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         // getView: needed only for hold-jitter in SCREEN px (pre-snap)
         () => viewTransformRef.current
       );
+    } else if (activeTool === 'shape') {
+      // Map shape variant to forced snap kind
+      const variant = shape?.variant ?? 'rectangle';
+      const forceSnapKind =
+        variant === 'rectangle' ? 'rect' :
+        variant === 'ellipse'   ? 'ellipseRect' :
+        variant === 'arrow'     ? 'arrow' : 'line';
+
+      // Use shape settings or fall back to pen settings
+      const settings = shape?.settings ?? pen;
+
+      tool = new DrawingTool(
+        roomDoc,
+        settings,
+        'pen', // Shape tool uses pen mechanics
+        userId,
+        (_bounds) => overlayLoopRef.current?.invalidateAll(),
+        () => overlayLoopRef.current?.invalidateAll(),
+        () => viewTransformRef.current,
+        { forceSnapKind } // Pass forced snap configuration
+      );
     } else if (activeTool === 'text') {
       tool = new TextTool(
         roomDoc,
@@ -683,6 +704,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     highlighter,
     eraser,
     text,
+    shape,
     stageReady,
     screenToWorld,
     worldToClient, // Now stable with empty deps, safe to include

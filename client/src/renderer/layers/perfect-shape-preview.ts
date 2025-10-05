@@ -30,6 +30,77 @@ export function drawPerfectShapePreview(
     return;
   }
 
+  if (anchors.kind === 'arrow') {
+    // Arrow: shaft from A to cursor plus dynamic arrowhead
+    const { A } = anchors;
+    const B = cursor;
+
+    // Draw shaft
+    ctx.beginPath();
+    ctx.moveTo(A[0], A[1]);
+    ctx.lineTo(B[0], B[1]);
+    ctx.stroke();
+
+    // Draw arrowhead
+    const vx = B[0] - A[0], vy = B[1] - A[1];
+    const len = Math.hypot(vx, vy) || 1;
+    const headSize = Math.min(40, len * 0.25);
+    const spread = Math.PI / 7;
+    const theta = Math.atan2(vy, vx);
+
+    ctx.beginPath();
+    ctx.moveTo(B[0], B[1]);
+    ctx.lineTo(
+      B[0] - headSize * Math.cos(theta + spread),
+      B[1] - headSize * Math.sin(theta + spread)
+    );
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(B[0], B[1]);
+    ctx.lineTo(
+      B[0] - headSize * Math.cos(theta - spread),
+      B[1] - headSize * Math.sin(theta - spread)
+    );
+    ctx.stroke();
+
+    return;
+  }
+
+  if (anchors.kind === 'rect') {
+    // Corner-anchored AABB rectangle
+    const { A } = anchors;
+    const C = cursor;
+    const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
+    const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+
+    ctx.beginPath();
+    ctx.moveTo(A[0], A[1]);
+    ctx.lineTo(maxX, minY);
+    ctx.lineTo(maxX, maxY);
+    ctx.lineTo(minX, maxY);
+    ctx.closePath();
+    ctx.stroke();
+    return;
+  }
+
+  if (anchors.kind === 'ellipseRect') {
+    // Corner-anchored ellipse inscribed in AABB
+    const { A } = anchors;
+    const C = cursor;
+    const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
+    const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const rx = Math.max(0.0001, (maxX - minX) / 2);
+    const ry = Math.max(0.0001, (maxY - minY) / 2);
+
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    return;
+  }
+
   if (anchors.kind === 'circle') {
     // Circle: draw with fixed center and radius based on cursor distance
     const { center } = anchors;
