@@ -26,8 +26,7 @@ import {
   LINE_CLOSE_GAP_RATIO,
   LINE_NEAR_TOUCH_AMBIGUOUS,
   LINE_NEAR_TOUCH_EPSILON_FACTOR,
-  LINE_NEAR_TOUCH_MIN_EPSILON,
-  LINE_NEAR_TOUCH_STROKE_SIZE_FACTOR
+  LINE_NEAR_TOUCH_MIN_EPSILON
 } from './shape-params';
 import { fitCircle } from './fit-circle';
 import { fitAABB } from './fit-aabb';

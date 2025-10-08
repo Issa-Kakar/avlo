@@ -16,7 +16,7 @@
 
 **Principle:** Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. Writes are coarse-grained through `mutate(fn)`. No component reads live Y structures.
 
-**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, Spatial index (UniformGrid), and publish loop.
+**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, Spatial index (UniformGrid), publish loop, cursor interpolation, snapshot construction.
 
 **Registry Pattern:** RoomDocManager instances accessed exclusively through **RoomDocManagerRegistry** (singleton-per-room guarantee):
 
@@ -71,8 +71,8 @@ export interface RoomDocManager {
 - Set dirty flag when: Yjs updates, local edits, presence updates
 - Schedule one RAF callback when dirty
 - Default 60 FPS, switch to 30 FPS on mobile/battery/heavy scenes
-- **Option B-prime optimization:** Presence-only updates clone previous snapshot with updated presence
-- Document changes trigger full snapshot rebuild from Y.Doc
+- **Presence-only updates clone previous snapshot with updated presence**
+- Document changes(docVersion++) trigger full snapshot rebuild from Y.Doc
 - Typed arrays: Store `number[]` in Yjs, construct `Float32Array` at render time only
 - **Snapshot versioning:** Each carries `docVersion: number` (monotonic) that increments on Y.Doc changes only (not presence)
 
@@ -124,7 +124,6 @@ interface Meta {
 ```
 
 **Constraints:**
-
 - `MAX_POINTS_PER_STROKE = 10_000`, `MAX_TOTAL_STROKES = 5_000`
 - Stroke simplification at pointer-up (Douglas-Peucker in world units)
 - Base tolerance: pen 0.8px, highlighter 0.5px
@@ -132,12 +131,10 @@ interface Meta {
 - If over limits: retry once with tol \*= 1.4; if still over, uniform downsample
 
 **Timestamp Policy:**
-
 - CRDT/Document fields: `number` type (milliseconds since epoch)
 - Examples: REST `{ "expires_at": "2025-08-19T12:34:56Z" }`, Yjs `{ createdAt: 1724070000123 }`
 
 **Awareness (ephemeral, never persisted):**
-
 ```typescript
 interface Awareness {
   userId: string;
@@ -149,7 +146,6 @@ interface Awareness {
   ts: number;
 }
 ```
-
 ### Snapshot current Structures
 
 ```typescript
@@ -182,35 +178,44 @@ export interface StrokeView {
   userId: string;
 }
 ```
-
 - **Never null:** EmptySnapshot created synchronously on construct with scene=0, empty arrays
 - **Typed arrays** constructed at render only, stored doc remains plain arrays
 - **Publishing invariants:** docVersion only changes after Yjs update (dev-only assertion)
 
-### Zustand (device-local UI only)
+### Zustand (device-local UI only): **File:** `/client/src/stores/device-ui-store.ts`
+**Scope:** Small, device-local UI state only (toolbar, lastSeenScene). NEVER mirror Yjs doc. Persistence: localStorage key `avlo:vN:ui`; bump `vN` if needed; include migrate fn. Usage: Use selectors to avoid re-renders; keep slices tiny.
+**Tools in Zustand:**
+```typescript
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape';
+export type ShapeVariant = 'line' | 'rectangle' | 'ellipse' | 'arrow';
+interface DeviceUIState {
+  activeTool: Tool;
+  pen: ToolSettings;         // { size: number; color: string; opacity?: number }
+  highlighter: ToolSettings;
+  eraser: { size: number };  // CSS pixels for cursor ring
+  text: { size: number; color: string };
+  shape: { variant: ShapeVariant; settings: ToolSettings };
+  pan: {};                   // Pan tool has no settings
+  select: {};                // Lasso placeholder
+  // Actions: setActiveTool, setPenSettings, setHighlighterSettings, setEraserSize, setTextSettings, setShapeSettings
+}
+```
 
-- Scope: toolbar state, lastSeenScene - **never** mirror Yjs
-- Persistence: localStorage `avlo:vN:ui` - bump vN on shape changes, include migrate fn
-- Use selectors to avoid re-renders, keep slices tiny
-- **Tools in Zustand:** pen, highlighter, text, eraser, pan, select (lasso placeholder).
-
+**Shape Tool Integration (Phase: Shape Tools):** Shape variant maps to forced snap kind in Canvas.tsx: `rectangle` → `'rect'`, `ellipse` → `'ellipseRect'`, `arrow` → `'arrow'`, `line` → `'line'`. Shape tool uses DrawingTool with `opts: { forceSnapKind }` to bypass HoldDetector and start in "already snapped" mode.
 ### State Synchronization & Derivation
 
 **Sources:**
-
 - Authoritative: Yjs doc (Redis mirror)
 - Ephemeral: Awareness (WS/RTC)
 - Local: Device UI state (localStorage)
 - Metadata: `/api/rooms/{id}/metadata` (size, expiry)
 
 **Derived State (computed inside manager on publish):**
-
 - `currentScene = meta.scene_ticks.length`
 - `docStats = { bytes, cap: 15MB }` from metadata poll
 - `presenceView` throttled & interpolated
 
 **Consistency Rules:**
-
 - Never write derived values into Yjs (bbox MAY be stored to avoid recompute)
 - Snapshot carries docVersion that increments on Y.Doc change only, not Presence only updates
 
@@ -236,7 +241,6 @@ export interface StrokeView {
 - Frame >2MB → cap rejection
 
 **Write Flow (Draw Stroke Example):**
-
 1. **UI** captures pointer stream → local preview (no writes)
 2. On **pointer-up**:
    - Derive world points from screen coords
@@ -249,16 +253,15 @@ export interface StrokeView {
 6. **Transport**: y-websocket sends delta, server persists, Redis TTL extended
 
 **Clear Board Flow:**
-
 - Append to `root.meta.scene_ticks[]`; currentScene = length
 - Rendering includes only elements with scene === currentScene
-
 **Undo/Redo:** Yjs UndoManager with `origin = userId` (per-user history), scene ticks excluded from undo scope
 **Backpressure:** Coalesce pointer-move on rAF, drop stale events if queue backs up
 
 ## 6. Canvas & Rendering
 
 ### Two-Canvas Architecture
+**Files:** `/client/src/canvas/Canvas.tsx` (main orchestrator), `/client/src/canvas/CanvasStage.tsx` (low-level substrate), `/client/src/renderer/RenderLoop.ts` (base canvas), `/client/src/renderer/OverlayRenderLoop.ts` (overlay canvas)
 
 - **Base canvas:** World content, invalidates ONLY on `docVersion` change, dirty-rect optimization
 - **Overlay canvas:** Preview + presence, full clear each frame, `pointer-events: none`
@@ -266,7 +269,6 @@ export interface StrokeView {
 - **No auto-pan** due to remote actions
 
 **RenderLoop (Base Canvas) Implementation:**
-
 - **EVENT-DRIVEN:** Only schedules RAF when needsFrame=true (via invalidation)
 - DirtyRectTracker manages partial redraws vs full clears based on area threshold
 - Transform changes force full clear (tracked via lastTransformState)
@@ -276,14 +278,12 @@ export interface StrokeView {
 - **LOD:** Skip strokes with bbox diagonal <2px in screen space
 
 **OverlayRenderLoop:**
-
 - Lightweight loop for local preview (drawing in progress) and global presence (cursors)
 - Preview accessed via PreviewProvider interface (set by active tool)
 - Always does full clear (cheap for sparse overlay content)
 - `holdPreviewForOneFrame()`: Prevents flicker on stroke commit
 
 **Canvas.tsx Integration:**
-
 - Subscribes to snapshots via `roomDoc.subscribeSnapshot()`
 - Stores snapshot in ref (not state) to avoid React re-renders at 60 FPS
 - `diffBounds()` computes dirty regions between snapshots for base canvas
@@ -307,22 +307,96 @@ interface ViewTransform {
 // Transform formulas (authoritative):
 worldToCanvas: [(x - pan.x) * scale, (y - pan.y) * scale]
 canvasToWorld: [x / scale + pan.x, y / scale + pan.y]
-
 // Context transform order:
 ctx.scale(scale, scale) THEN ctx.translate(-pan.x, -pan.y)
 ```
 
 **DPR Handling:**
-
 - Canvas backing store sized to device pixels (width _ dpr, height _ dpr)
 - Apply DPR ONCE with `setTransform(dpr,0,0,dpr,0,0)` - never mix into view transforms
 - Clear() uses identity transform + device pixel dimensions
 
 **Render Order:**
-
 - Base: Background (white + adaptive dot grid) → Strokes → Text → Authoring overlays → HUD
 - Overlay: Preview (world-space) → Presence (screen-space with DPR only)
 
+**Viewport Culling (`isStrokeVisible`):**
+```typescript
+// File: /client/src/renderer/layers/strokes.ts
+function isStrokeVisible(stroke: StrokeView, viewportBounds: Bounds, viewTransform: ViewTransform): boolean {
+  // Converts viewport to world bounds with margin (50px / scale)
+  // Inflates stroke bbox by half stroke width for accurate culling
+  // Uses CSS pixels for transforms, not device pixels
+}
+
+```
+### Stroke Rendering Pipeline & Caching
+
+**Files:** `/client/src/renderer/stroke-builder/path-builder.ts` (buildStrokeRenderData), `/client/src/renderer/stroke-builder/stroke-cache.ts` (StrokeRenderCache, getStrokeCacheInstance), `/client/src/renderer/layers/strokes.ts` (drawStrokes)
+
+**Typed Array Construction (Render Time Only):**
+```typescript
+// File: /client/src/renderer/stroke-builder/path-builder.ts
+export function buildStrokeRenderData(points: readonly number[]): {
+  polyline: Float32Array;
+  path: Path2D | null; // null if Path2D not supported (test environments)
+} {
+  // Constructs Float32Array from plain number[] at render time
+  // Builds Path2D for hardware-accelerated rendering
+  // Path2D feature detection for test environments (falls back to manual path building)
+}
+
+```
+**Stroke Cache (Singleton, FIFO Eviction):**
+```typescript
+// File: /client/src/renderer/stroke-builder/stroke-cache.ts
+export function getStrokeCacheInstance(): StrokeRenderCache {
+  if (!globalCacheInstance) {
+    globalCacheInstance = new StrokeRenderCache(1000); // Max 1000 strokes
+  }
+  return globalCacheInstance;
+}
+// Module-level cache persists across frames
+// FIFO eviction when cache exceeds 1000 strokes
+// Cache cleared on scene change (tracked via lastScene in strokes.ts)
+// Cache keyed by stroke.id (strokes immutable post-commit)
+// Shared by both base canvas (stroke rendering) and overlay canvas (eraser dim layer)
+```
+**Stroke Rendering Loop:**
+```typescript
+// File: /client/src/renderer/layers/strokes.ts
+export function drawStrokes(ctx: CanvasRenderingContext2D, snapshot: Snapshot, viewport: Viewport) {
+  const cache = getStrokeCacheInstance();
+  for (const stroke of snapshot.strokes) {
+    if (!isStrokeVisible(stroke, viewport, snapshot.view)) continue; // Viewport culling
+    if (shouldSkipLOD(stroke, snapshot.view)) continue; // LOD check
+    let renderData = cache.get(stroke.id);
+    if (!renderData) {
+      renderData = buildStrokeRenderData(stroke.points); // Build Float32Array + Path2D
+      cache.set(stroke.id, renderData);
+    }
+    ctx.save();
+    ctx.strokeStyle = stroke.style.color;
+    ctx.lineWidth = stroke.style.size; // World units
+    ctx.globalAlpha = stroke.style.opacity;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (renderData.path) {
+      ctx.stroke(renderData.path); // Hardware-accelerated Path2D
+    } else {
+      // Fallback: manual path building from polyline
+      ctx.beginPath();
+      for (let i = 0; i < renderData.polyline.length; i += 2) {
+        if (i === 0) ctx.moveTo(renderData.polyline[i], renderData.polyline[i + 1]);
+        else ctx.lineTo(renderData.polyline[i], renderData.polyline[i + 1]);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+```
 ## 7. Tool Implementations
 
 ### PointerTool Interface (Polymorphic)
@@ -380,8 +454,8 @@ interface EraserState {
 3. Stroke width: Inflate hit radius by `stroke.style.size / 2`
 4. Segment distance: Point-to-line distance for each segment
 5. Text blocks: Simple bbox-circle intersection (glyph precision deferred)
-5. Resume index: Track progress for continuation (10ms budget, 500 segments max)
-6. Live view: Uses `getView()` callback for accurate transforms
+6. Resume index: Track progress for continuation (10ms budget, 500 segments max)
+7. Live view: Uses `getView()` callback for accurate transforms
 
 **Visual Feedback (Two-Pass Overlay):**
 
@@ -485,21 +559,40 @@ type PointerTool = {
 ```
 Canvas instantiates the appropriate tool once per effect run (based on `activeTool`) and routes unified handlers to this surface. Mobile gating happens in Canvas, not tools. Live view transform passed via `getView()` callback for accurate hit-testing.
 
-**Preview Union Type:**
+****Preview Union Type:**
 ```typescript
-export type PreviewData = StrokePreview | EraserPreview | TextPreview; //TextPreview is kept here but not used for the actual text preview
+// File: /client/src/lib/tools/types.ts
+export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview;
+
+export interface StrokePreview {
+  kind: 'stroke';
+  points: ReadonlyArray<number>;
+  tool: 'pen' | 'highlighter';
+  color: string;
+  size: number;
+  opacity: number;
+  bbox: [number, number, number, number] | null;
+}
 
 export interface EraserPreview {
   kind: 'eraser';
-  /**
-   * Center is in **world** coordinates (so overlay can handle transforms).
-   * Radius is in **screen pixels** (CSS px), fixed regardless of zoom.
-   */
-  circle: { cx: number; cy: number; r_px: number };
-  /** World object IDs to dim in pass A. */
-  hitIds: string[];
-  /** 0.75 opacity for strong effect (uniform white lighten). */
-  dimOpacity: number;
+  circle: { cx: number; cy: number; r_px: number }; // Center in world, radius in CSS px
+  hitIds: string[];                                  // World object IDs to dim
+  dimOpacity: number;                                // 0.75 for strong "will be erased" effect
+}
+
+export interface TextPreview {
+  kind: 'text';
+  // TextTool returns null preview (DOM editor IS the preview)
+}
+
+export interface PerfectShapePreview {
+  kind: 'perfect_shape';
+  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow';
+  anchors: PerfectShapeAnchors; // Discriminated union based on shape
+  cursor: [number, number];     // Live cursor in world coords
+  style: { color: string; size: number; opacity: number };
+  // No bbox for overlay previews; computed once at commit
 }
 ```
 
@@ -593,19 +686,18 @@ export interface EraserPreview {
 
 **Commit**: Single `mutate()` replaces at same indices (preserves z-order)
 
-### Perfect Shapes (IMPLEMENTED)
+**Perfect Shape Recognition Details (Phase: Perfect Shapes):**
 
-- **600ms dwell trigger:** HoldDetector fires after pointer stillness, runs recognition on stroke
-- **Shape detection:** Circle (Taubin fit, coverage ≥67%) vs Rectangle (AABB not OBB, soft scoring) vs Line (strict fallback)
-- **Locked refinement:** Post-snap, pointer drags adjust geometry only (radius/box-scale/line-endpoint)
-- **Near-miss handling:** Shapes scoring within 0.10 of confidence (0.48-0.58) don't snap, preventing annoying line fallbacks
-- **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage
+- **600ms dwell trigger:** HoldDetector fires after pointer stillness (6px screen-space jitter tolerance). File: `/client/src/lib/input/HoldDetector.ts`.
+- **Shape detection:** Circle (Taubin fit, coverage ≥67%, axis ratio ≤1.70, RMS ≤0.24) vs Rectangle (AABB with trimmed percentiles, soft scoring: 30% side proximity + 20% side coverage evenness + 50% corner quality) vs Line (strict fallback, score 1.0).
+- **Near-miss handling:** Shapes scoring within 0.10 of confidence threshold (0.48-0.58) don't snap, preventing annoying line fallbacks.
+- **Ambiguity guards:** Self-intersection detection, near-closure check (gap <6% diagonal), near self-touch detection. Files: `/client/src/lib/geometry/recognize-open-stroke.ts`, `/client/src/lib/geometry/fit-circle.ts`, `/client/src/lib/geometry/fit-aabb.ts`, `/client/src/lib/geometry/score.ts`.
+- **Locked refinement:** Post-snap, pointer drags adjust geometry only (circle: radius from center; box: X/Y scale from center; rect/ellipse: corner-to-corner AABB; arrow/line: endpoint).
+- **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage.
 
 ### Ownership Model
-
 - **Single ownership:** RoomDocManager owns providers and solely observes Y types
 - **Centralized subscription:** UI relies on subscriptions only, no direct Y observers
-
 ---
 
 ## Backend/Infrastructure (Stubbed)
@@ -618,3 +710,14 @@ export interface EraserPreview {
 ### Room Lifecycle - Local creation → online publish → TTL extension on writes
 
 ### Service Worker - Cache HTML/assets, no `/api/**` or `/yjs/**` caching
+
+## 10. Tool Preview Summary
+
+| Tool | Preview Kind | Overlay Rendering | Commit |
+|------|--------------|-------------------|--------|
+| Pen/Highlighter | `'stroke'` | Freehand polyline (world-space) | Simplified stroke to Y.Array<Stroke> |
+| Eraser | `'eraser'` | Two-pass: dim hit strokes (world), cursor circle (screen) | Atomic delete in reverse index order |
+| Text | `null` | DOM editor IS the preview | Measure rect, commit TextBlock to Y.Array<TextBlock> |
+| Pan | `null` | No preview | No commit (updates view transform only) |
+| Perfect Shapes (Hold) | `'perfect_shape'` | Computed geometry from anchors + cursor | Convert to polyline stroke |
+| Shape Tools (Dedicated) | `'perfect_shape'` | Same as perfect shapes (forced snap, no hold) | Convert to polyline stroke |

@@ -110,8 +110,9 @@ export const CANVAS_STYLE_CONFIG = {
   BACKGROUND_COLOR: '#FFFFFF',
 
   // Dot grid
+  GRID_ENABLED: getEnvBoolean('GRID_ENABLED', false), // Toggle grid on/off
   GRID_COLOR: '#DADADA',
-  GRID_DOT_RADIUS_PX: 0.0, // fixed CSS px (screen-space)
+  GRID_DOT_RADIUS_PX: 1.0, // fixed CSS px (screen-space)
 
   // Opacity curve (subtle, with 0.24 at 1x zoom)
   GRID_OPACITY_AT_025X: 0.12,

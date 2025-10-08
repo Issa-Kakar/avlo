@@ -68,20 +68,19 @@ export function drawPerfectShapePreview(
   }
 
   if (anchors.kind === 'rect') {
-    // Corner-anchored AABB rectangle
+    // Corner-anchored rectangle (A = fixed corner, C = cursor/opposite)
     const { A } = anchors;
     const C = cursor;
-    const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-    const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+    const B: [number, number] = [C[0], A[1]];
+    const D: [number, number] = [A[0], C[1]];
 
     ctx.beginPath();
     ctx.moveTo(A[0], A[1]);
-    ctx.lineTo(maxX, minY);
-    ctx.lineTo(maxX, maxY);
-    ctx.lineTo(minX, maxY);
+    ctx.lineTo(B[0], B[1]);
+    ctx.lineTo(C[0], C[1]);
+    ctx.lineTo(D[0], D[1]);
     ctx.closePath();
     ctx.stroke();
-    return;
   }
 
   if (anchors.kind === 'ellipseRect') {
@@ -111,40 +110,42 @@ export function drawPerfectShapePreview(
     return;
   }
 
-  // Box: scale from frozen half-extents based on cursor position
-  const { cx, cy, angle, hx0, hy0 } = anchors;
+  if (anchors.kind === 'box') {
+    // Box: scale from frozen half-extents based on cursor position
+    const { cx, cy, angle, hx0, hy0 } = anchors;
 
-  // Compute scale factors from cursor position
-  const dx = cursor[0] - cx;
-  const dy = cursor[1] - cy;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
+    // Compute scale factors from cursor position
+    const dx = cursor[0] - cx;
+    const dy = cursor[1] - cy;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
 
-  // Project live vector into box's local axes
-  const localX =  dx *  cos + dy *  sin;
-  const localY = -dx *  sin + dy *  cos;
+    // Project live vector into box's local axes
+    const localX =  dx *  cos + dy *  sin;
+    const localY = -dx *  sin + dy *  cos;
 
-  // Calculate scale factors (prevent division by zero)
-  const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
-  const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
+    // Calculate scale factors (prevent division by zero)
+    const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
+    const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
 
-  // Apply scale to get final half-extents
-  const hx = hx0 * sx;
-  const hy = hy0 * sy;
+    // Apply scale to get final half-extents
+    const hx = hx0 * sx;
+    const hy = hy0 * sy;
 
-  // Draw rotated rectangle from (cx,cy), angle, half-extents (hx,hy)
-  const corners = [[-hx,-hy],[hx,-hy],[hx,hy],[-hx,hy]];
-  ctx.beginPath();
-  for (let i = 0; i < corners.length; i++) {
-    const [lx, ly] = corners[i];
-    const wx = cx + lx * cos - ly * sin;
-    const wy = cy + lx * sin + ly * cos;
-    if (i === 0) {
-      ctx.moveTo(wx, wy);
-    } else {
-      ctx.lineTo(wx, wy);
+    // Draw rotated rectangle from (cx,cy), angle, half-extents (hx,hy)
+    const corners = [[-hx,-hy],[hx,-hy],[hx,hy],[-hx,hy]];
+    ctx.beginPath();
+    for (let i = 0; i < corners.length; i++) {
+      const [lx, ly] = corners[i];
+      const wx = cx + lx * cos - ly * sin;
+      const wy = cy + lx * sin + ly * cos;
+      if (i === 0) {
+        ctx.moveTo(wx, wy);
+      } else {
+        ctx.lineTo(wx, wy);
+      }
     }
+    ctx.closePath();
+    ctx.stroke();
   }
-  ctx.closePath();
-  ctx.stroke();
 }

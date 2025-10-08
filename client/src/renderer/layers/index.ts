@@ -104,6 +104,9 @@ export function drawBackground(
   // After restore(), we're back to the world transform that RenderLoop applied
 
   // Step 2: Draw dots in world space (transform already applied)
+  // Early exit if grid is disabled
+  if (!Cfg.GRID_ENABLED) return;
+
   const s = view.scale;
   const baseAlpha = gridAlpha(s);
   const dotRadiusPx = Cfg.GRID_DOT_RADIUS_PX;

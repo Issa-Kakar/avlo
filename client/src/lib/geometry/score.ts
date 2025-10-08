@@ -7,7 +7,6 @@
 import type { Vec2, Edge, Corner } from './types';
 import {
   SHAPE_CONFIDENCE_MIN,
-  SHAPE_DEBUG_SCORES,
   CIRCLE_MIN_COVERAGE,
   CIRCLE_MAX_AXIS_RATIO,
   CIRCLE_MAX_RMS_RATIO,
@@ -37,10 +36,8 @@ import {
   angularCoverage,
   avgParallelError,
   avgOrthogonalError,
-  top3Avg,
   // AABB helpers
   aabbSideFitScore,
-  aabbSideCoverage,
   aabbCoverageAcrossDistinctSides
 } from './geometry-helpers';
 

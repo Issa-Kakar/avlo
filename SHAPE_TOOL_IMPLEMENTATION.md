@@ -1,19 +1,4 @@
 # Shape Tool Implementation Guide
-<ToolButton tool="rectangle" isActive={activeTool === 'rectangle'} onClick={() => setActiveTool('rectangle')} tooltip="Rectangle (R)">
-  <svg className="icon" viewBox="0 0 24 24"><rect x="5" y="6" width="14" height="12" rx="2"/></svg>
-</ToolButton>
-<ToolButton tool="ellipse"   isActive={activeTool === 'ellipse'}   onClick={() => setActiveTool('ellipse')}   tooltip="Ellipse (O)">
-  <svg className="icon" viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="7" ry="7"/></svg>
-</ToolButton>
-<ToolButton tool="line"      isActive={activeTool === 'line'}      onClick={() => setActiveTool('line')}      tooltip="Line (L)">
-  <svg className="icon" viewBox="0 0 24 24"><path d="M4 20 20 4"/></svg>
-</ToolButton>
-<ToolButton tool="arrow"     isActive={activeTool === 'arrow'}     onClick={() => setActiveTool('arrow')}     tooltip="Arrow (A)">
-  <svg className="icon" viewBox="0 0 24 24"><path d="M4 12h12"/><path d="M12 6l6 6-6 6"/></svg>
-</ToolButton>
-<ToolButton tool="image"     isActive={activeTool === 'image'}     onClick={() => setActiveTool('image')}     tooltip="Image (I)">
-  <svg className="icon" viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 13l3-3 5 6"/><circle cx="9" cy="10" r="1.2"/></svg>
-</ToolButton>
 
 ## Overview
 We're implementing dedicated shape tools (Rectangle, Ellipse, Arrow, Line) that bypass the hold detector and start in "already snapped" mode. **These tools will be corner-anchored (not center-anchored** like the existing perfect shapes from hold detection for the existing box and circle), reusing the existing DrawingTool infrastructure with a forced snap mode.
@@ -152,19 +137,17 @@ begin(pointerId: number, worldX: number, worldY: number): void {
 }
 
 // Update commitPerfectShapeFromPreview (add after line 456, before closing brace)
-} else if (this.snap.kind === 'rect') {
-  // Corner-anchored AABB rectangle
-  const { A } = this.snap.anchors;
-  const C = finalCursor;
-  const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-  const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
-  // Create closed polyline
-  points = [
-    A[0], A[1],
-    maxX, minY,
-    maxX, maxY,
-    minX, maxY,
-    A[0], A[1]
+  } else if (this.snap.kind === 'rect') {
+    const { A } = this.snap.anchors;
+    const C = finalCursor;
+    const B: [number, number] = [C[0], A[1]];
+    const D: [number, number] = [A[0], C[1]];
+    points = [
+      A[0], A[1],
+      B[0], B[1],
+      C[0], C[1],
+      D[0], D[1],
+      A[0], A[1],
   ];
 
 } else if (this.snap.kind === 'ellipseRect') {
@@ -299,22 +282,21 @@ if (anchors.kind === 'arrow') {
   return;
 }
 
-if (anchors.kind === 'rect') {
-  // Corner-anchored AABB rectangle
-  const { A } = anchors;
-  const C = cursor;
-  const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-  const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+  if (anchors.kind === 'rect') {
+    // Corner-anchored rectangle (A = fixed corner, C = cursor/opposite)
+    const { A } = anchors;
+    const C = cursor;
+    const B: [number, number] = [C[0], A[1]];
+    const D: [number, number] = [A[0], C[1]];
 
-  ctx.beginPath();
-  ctx.moveTo(A[0], A[1]);
-  ctx.lineTo(maxX, minY);
-  ctx.lineTo(maxX, maxY);
-  ctx.lineTo(minX, maxY);
-  ctx.closePath();
-  ctx.stroke();
-  return;
-}
+    ctx.beginPath();
+    ctx.moveTo(A[0], A[1]);
+    ctx.lineTo(B[0], B[1]);
+    ctx.lineTo(C[0], C[1]);
+    ctx.lineTo(D[0], D[1]);
+    ctx.closePath();
+    ctx.stroke();
+  }
 
 // Add after circle check (line 40)
 if (anchors.kind === 'ellipseRect') {

@@ -312,7 +312,7 @@ export class DrawingTool {
     if (!this.state.isDrawing) return null;
 
     if (this.snap && this.liveCursorWU) {
-      const { color, size, tool } = this.state.config;
+      const { color, size } = this.state.config;
       return {
         kind: 'perfectShape',
         shape: this.snap.kind,
@@ -500,19 +500,18 @@ export class DrawingTool {
       }
 
     } else if (this.snap.kind === 'rect') {
-      // Corner-anchored AABB rectangle
       const { A } = this.snap.anchors;
       const C = finalCursor;
-      const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-      const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
-      // Create closed polyline
+      const B: [number, number] = [C[0], A[1]];
+      const D: [number, number] = [A[0], C[1]];
       points = [
         A[0], A[1],
-        maxX, minY,
-        maxX, maxY,
-        minX, maxY,
-        A[0], A[1]
+        B[0], B[1],
+        C[0], C[1],
+        D[0], D[1],
+        A[0], A[1],
       ];
+    
 
     } else if (this.snap.kind === 'ellipseRect') {
       // Corner-anchored ellipse inscribed in AABB
