@@ -443,14 +443,14 @@ export class DrawingTool {
     const finalBbox = calculateBBox(rawPoints, this.state.config.size);
 
     // 9) Compute final outline with last:true for held frame (CRITICAL for preview-commit match)
-    const finalOutline = getStroke(canonicalTuples, {
+    const finalOutline: number[][] = getStroke(canonicalTuples, {
       ...PF_OPTIONS_BASE,
       size: this.state.config.size,
       last: true, // Finalized geometry
     });
 
     // 10) Store held frame state (persists after reset for overlay's final frame)
-    //this.finalOutline = finalOutline;
+    this.finalOutline = finalOutline;
     this.finalOutlineStyle = {
       tool: this.state.config.tool,
       color: this.state.config.color,
