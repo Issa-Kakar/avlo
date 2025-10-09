@@ -33,6 +33,16 @@ export class DrawingTool {
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
 
+  // NEW: Held frame state (persists after reset for overlay's final frame)
+  private finalOutline: number[][] | null = null; // PF returns [x, y, pressure][]
+  private finalOutlineStyle: {
+    tool: 'pen' | 'highlighter';
+    color: string;
+    size: number;
+    opacity: number;
+    bbox: [number, number, number, number] | null;
+  } | null = null;
+
   // NEW: Perfect shapes support
   private hold: HoldDetector;
   private snap:
@@ -101,6 +111,10 @@ export class DrawingTool {
   }
 
   begin(pointerId: number, worldX: number, worldY: number): void {
+    // Clear held frame state from previous gesture (CRITICAL: must happen before new gesture)
+    this.finalOutline = null;
+    this.finalOutlineStyle = null;
+
     this.startDrawing(pointerId, worldX, worldY);
 
     // If Shape tool requested forced snap, seed it immediately
@@ -315,6 +329,22 @@ export class DrawingTool {
   }
 
   getPreview(): PreviewData | null {
+    // CRITICAL: Check held frame outline FIRST (persists after reset for overlay's final frame)
+    if (this.finalOutline && this.finalOutlineStyle) {
+      // Convert PF outline [x,y,pressure][] to [x,y][] for preview
+      const outline = this.finalOutline.map(pt => [pt[0], pt[1]] as [number, number]);
+      return {
+        kind: 'strokeFinal',
+        outline,
+        tool: this.finalOutlineStyle.tool,
+        color: this.finalOutlineStyle.color,
+        size: this.finalOutlineStyle.size,
+        opacity: this.finalOutlineStyle.opacity,
+        bbox: this.finalOutlineStyle.bbox,
+      };
+    }
+
+    // Normal drawing state checks
     if (!this.state.isDrawing) return null;
 
     if (this.snap && this.liveCursorWU) {
@@ -363,36 +393,43 @@ export class DrawingTool {
   commitStroke(finalX: number, finalY: number): void {
     if (!this.state.isDrawing) return;
 
-    // CRITICAL: Flush RAF before commit
+    // 1) CRITICAL: Flush RAF before commit
     this.flushPending();
 
-    // Add final point if different
+    // 2) Add final point to BOTH arrays (lockstep critical!)
     const len = this.state.points.length;
-    if (len < 2 || this.state.points[len - 2] !== finalX || this.state.points[len - 1] !== finalY) {
+    const needsFinal = len < 2 || this.state.points[len - 2] !== finalX || this.state.points[len - 1] !== finalY;
+    if (needsFinal) {
       this.state.points.push(finalX, finalY);
+      this.state.pointsPF.push([finalX, finalY]); // CRITICAL: Keep PF tuples in lockstep
     }
 
-    // Validate minimum points
+    // 3) Validate minimum points
     if (this.state.points.length < 4) {
       this.cancelDrawing();
       return;
     }
 
-    // Store preview bounds before simplification
+    // 4) Store preview bounds for invalidation
     const previewBounds = this.lastBounds;
 
-    // Simplify FIRST, then check size
-    const { points: simplified } = simplifyStroke(this.state.points, this.state.config.tool);
+    // 5) NO SIMPLIFICATION for freehand - use raw centerline
+    const rawPoints = this.state.points;
 
-    // Check if simplification rejected the stroke (empty points means exceeded 128KB budget)
-    if (simplified.length === 0) {
-      // TODO: Show user toast about stroke being too complex
-      this.cancelDrawing();
-      return;
+    // 6) Canonical PF tuples = exact tuple buffer used for preview (clone for immutability)
+    const canonicalTuples = this.state.pointsPF.slice();
+
+    // DEBUG: Verify arrays are in sync (dev mode only)
+    if (import.meta.env.DEV) {
+      console.assert(
+        canonicalTuples.length === rawPoints.length / 2,
+        'CRITICAL: PF tuples not in lockstep with flat points',
+        { tuples: canonicalTuples.length, flat: rawPoints.length / 2 }
+      );
     }
 
-    // Check frame size AFTER simplification (2MB transport limit)
-    const estimatedSize = estimateEncodedSize(simplified);
+    // 7) Size check on raw centerline (transport limit)
+    const estimatedSize = estimateEncodedSize(rawPoints);
     if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
       console.error(
         `Stroke too large for transport: ${estimatedSize} bytes (max: ${ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES})`,
@@ -402,12 +439,29 @@ export class DrawingTool {
       return;
     }
 
-    // Calculate final bbox for the simplified stroke
-    const simplifiedBbox = calculateBBox(simplified, this.state.config.size);
+    // 8) Compute final bbox from raw centerline
+    const finalBbox = calculateBBox(rawPoints, this.state.config.size);
 
-    // Commit to Y.Doc
+    // 9) Compute final outline with last:true for held frame (CRITICAL for preview-commit match)
+    const finalOutline = getStroke(canonicalTuples, {
+      ...PF_OPTIONS_BASE,
+      size: this.state.config.size,
+      last: true, // Finalized geometry
+    });
+
+    // 10) Store held frame state (persists after reset for overlay's final frame)
+    //this.finalOutline = finalOutline;
+    this.finalOutlineStyle = {
+      tool: this.state.config.tool,
+      color: this.state.config.color,
+      size: this.state.config.size,
+      opacity: this.state.config.opacity,
+      bbox: finalBbox,
+    };
+
+    // 11) Commit to Y.Doc with BOTH raw points and canonical tuples
     const strokeId = ulid();
-    const userId = this.userId; // Use stable ID stored at construction
+    const userId = this.userId;
 
     try {
       this.room.mutate((ydoc) => {
@@ -415,47 +469,42 @@ export class DrawingTool {
         const strokes = root.get('strokes') as Y.Array<any>;
         const meta = root.get('meta') as Y.Map<any>;
 
-        // Get scene_ticks (MUST be initialized by RoomDocManager in Phase 2)
         const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
         if (!sceneTicks) {
-          // This is a CRITICAL error - scene_ticks MUST be initialized in Phase 2
           console.error('CRITICAL: scene_ticks not initialized - Phase 2 implementation is broken');
-          // TODO: Show user toast/banner about room metadata not initialized
-          // Surface this error visibly so it's not silent
           return;
         }
 
-        // Scene assigned AT COMMIT TIME
         const currentScene = sceneTicks.length;
 
         strokes.push([
           {
             id: strokeId,
-            tool: this.state.config.tool, // Frozen at start
-            color: this.state.config.color, // Frozen at start
-            size: this.state.config.size, // Frozen at start
-            opacity: this.state.config.opacity, // Frozen at start
-            points: simplified, // Plain number[]
-            bbox: simplifiedBbox,
+            tool: this.state.config.tool,
+            color: this.state.config.color,
+            size: this.state.config.size,
+            opacity: this.state.config.opacity,
+            points: rawPoints,              // Raw flat centerline (backward compat)
+            pointsTuples: canonicalTuples,  // CRITICAL: Canonical PF tuples (authoritative for rendering)
+            bbox: finalBbox,
             scene: currentScene,
             createdAt: Date.now(),
             userId,
-            kind: 'freehand', // NEW: explicit semantic flag
+            kind: 'freehand',
           },
         ]);
       });
     } catch (err) {
       console.error('Failed to commit stroke:', err);
     } finally {
-      // CRITICAL: Invalidate BOTH preview bounds AND simplified stroke bounds
-      // The preview bounds clear the preview rendering
-      // The simplified bounds ensure the new stroke area is redrawn
+      // 12) Invalidate preview + final bbox
       if (previewBounds) {
         this.onInvalidate?.(previewBounds);
       }
-      if (simplifiedBbox) {
-        this.onInvalidate?.(simplifiedBbox);
+      if (finalBbox) {
+        this.onInvalidate?.(finalBbox);
       }
+      // 13) Reset state (finalOutline persists for held frame)
       this.resetState();
     }
   }

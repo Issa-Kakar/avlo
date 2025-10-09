@@ -85,6 +85,7 @@ describe('Snapshot Types', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'user-123',
+        kind: 'freehand', // Required semantic flag
       };
 
       expect(strokeView.polyline).toBeNull();
