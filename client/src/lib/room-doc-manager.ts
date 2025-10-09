@@ -1692,6 +1692,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         id: s.id,
         points: s.points, // Include points for renderer to build Float32Array
         // CRITICAL: Float32Array MUST be created at render time only, never in snapshot
+        pointsTuples: (s as any).pointsTuples ?? null, // NEW: Pass through tuples
         polyline: null as unknown as Float32Array | null, // Will be created at render time from points
         style: {
           color: s.color,
@@ -1703,6 +1704,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         scene: s.scene, // Include scene field (assigned at commit time, used for filtering)
         createdAt: s.createdAt,
         userId: s.userId,
+        kind: (s as any).kind ?? 'shape', // NEW: copy kind with back-compat default
       }));
 
     // Build text views using helper (filter by current scene)

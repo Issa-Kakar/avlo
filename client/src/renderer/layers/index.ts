@@ -10,6 +10,13 @@ export { drawStrokes, clearStrokeCache } from './strokes';
 // Import new implementations
 export { drawText } from './text';
 
+// NEW: ID-keyed geometry cache eviction (used by Canvas on bbox changes/removals)
+import { getStrokeCacheInstance } from '../stroke-builder/stroke-cache';
+
+export function invalidateStrokeCacheByIds(ids: Iterable<string>) {
+  getStrokeCacheInstance().invalidateMany(ids);
+}
+
 // Helper functions for adaptive grid
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;

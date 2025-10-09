@@ -14,6 +14,7 @@ describe('StrokeRenderCache', () => {
     scene: 0,
     createdAt: Date.now(),
     userId: 'test-user',
+    kind: 'shape', // Use shape kind for polyline tests
   });
 
   beforeEach(() => {
@@ -39,8 +40,10 @@ describe('StrokeRenderCache', () => {
       const data2 = cache.getOrBuild(stroke2);
 
       expect(data1).not.toBe(data2);
-      expect(data1.polyline[0]).toBe(0);
-      expect(data2.polyline[0]).toBe(200);
+      expect(data1.kind).toBe('polyline');
+      expect(data2.kind).toBe('polyline');
+      if (data1.kind === 'polyline') expect(data1.polyline[0]).toBe(0);
+      if (data2.kind === 'polyline') expect(data2.polyline[0]).toBe(200);
       expect(cache.size).toBe(2);
     });
 
@@ -238,7 +241,8 @@ describe('StrokeRenderCache', () => {
       const data = cache.getOrBuild(emptyStroke);
 
       expect(data.pointCount).toBe(0);
-      expect(data.polyline.length).toBe(0);
+      expect(data.kind).toBe('polyline');
+      if (data.kind === 'polyline') expect(data.polyline.length).toBe(0);
       expect(cache.size).toBe(1);
     });
 

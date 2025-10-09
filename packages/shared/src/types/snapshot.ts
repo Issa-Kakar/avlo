@@ -26,6 +26,7 @@ export interface Snapshot {
 export interface StrokeView {
   id: StrokeId;
   points: ReadonlyArray<number>; // Raw points from Y.Doc (stored as number[], never Float32Array)
+  pointsTuples?: [number, number][] | null; // NEW: Add this line
   polyline: Float32Array | null; // Built at RENDER time ONLY from points
   // Will be null in snapshot, created during canvas render from points
   style: {
@@ -38,6 +39,11 @@ export interface StrokeView {
   scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)
   createdAt: number;
   userId: string;
+  /**
+   * Same semantic flag as in Stroke (copied through snapshot pipeline).
+   * Renderer maps kind -> geometry pipeline (polygon vs polyline).
+   */
+  kind: 'freehand' | 'shape';
 }
 
 // Text view for rendering

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide implements Perfect Freehand library integration for smooth, jaggy-free freehand stroke rendering while maintaining perfect shapes as-is. The implementation uses an explicit `kind: 'freehand' | 'shape'` semantic flag to distinguish rendering paths.
+This guide implements Perfect Freehand library integration for smooth, jaggy-free freehand stroke rendering while maintaining perfect shapes as-is. The implementation uses an explicit `kind: 'freehand' | 'shape'` semantic flag to distinguish rendering paths. 
 
 ## Installation
 
@@ -25,6 +25,10 @@ npm i perfect-freehand
 - **Perfect shapes** (snap via hold detector or shape tool) → render as **stroked polyline** (unchanged)
 - **Commit path:** Both store simplified centerline (RDP for freehand, generated polyline for shapes)
 - **Render time:** Geometry pipeline branches on `kind` field. Freehand will compute the perfect freehand render once from the centerline.
+
+**Terminology**: Stroke width = visual thickness. In the model this is style.size. Perfect Freehand’s size option is fed from style.size.
+Object size = geometric scaling. This does not change Stroke width. It’s a later-phase select/lasso feature and is independent of PF.
+Shapes vs Freehand: Shapes render as stroked polylines (width-independent geometry). Freehand renders as a PF polygon fill (width-dependent geometry), built at render time from the stored centerline.
 
 ### File Changes Summary
 
@@ -99,6 +103,44 @@ export interface StrokeView {
 }
 ```
 
+#### File: `client/src/lib/tools/types.ts`
+
+**Add dual array storage to `DrawingState` for zero-conversion preview:**
+
+```typescript
+export interface DrawingState {
+  isDrawing: boolean;
+  pointerId: number | null;
+  points: number[];             // flat centerline [x,y, x,y, ...] for commit/simplify
+  pointsPF: [number, number][]; // PF-native live buffer [[x,y], [x,y], ...] for preview only
+
+  // Tool settings frozen at gesture start
+  config: DrawingToolConfig;
+  startTime: number;
+}
+```
+
+**Update `StrokePreview` to use PF-native tuples:**
+
+```typescript
+/**
+ * StrokePreview is the preview data for drawing strokes
+ * Used by DrawingTool and RenderLoop
+ * IMPORTANT: Points are PF-native tuples to avoid per-frame conversions in overlay
+ */
+export interface StrokePreview {
+  kind: 'stroke'; // Discriminant for union type
+  points: [number, number][]; // PF-native tuples: [[x,y], [x,y], ...] in world coordinates
+  tool: 'pen' | 'highlighter';
+  color: string;
+  size: number; // World units
+  opacity: number;
+  bbox: [number, number, number, number] | null; // Used for dirty rect tracking
+}
+```
+
+**Rationale:** DrawingTool maintains both arrays in lockstep during drawing. The flat `points` array is used for commit (simplification, bbox calculation). The `pointsPF` tuple array is returned by `getPreview()` for zero-conversion rendering—Perfect Freehand accepts and returns tuples natively, so we avoid per-frame flat↔tuple conversions in the hot preview path.
+
 ---
 
 ### 2. DrawingTool Commit Paths
@@ -146,6 +188,15 @@ strokes.push([{
   kind: 'shape', // NEW: explicit semantic flag
 }]);
 ```
+
+**Important:** DrawingTool must maintain both `state.points` (flat) and `state.pointsPF` (tuples) in lockstep:
+- In `resetState()`: initialize both as empty arrays `[]`
+- In `startDrawing()`: initialize both with first point: `points: [x, y]` and `pointsPF: [[x, y]]`
+- In `addPoint()` RAF callback: push to both: `points.push(...pending)` and `pointsPF.push([pending[0], pending[1]])`
+- In `flushPending()`: push to both arrays
+- In `getPreview()`: return `pointsPF` for freehand preview (not `points`)
+
+This ensures zero-conversion overhead in the preview rendering hot path.
 
 ---
 
@@ -235,18 +286,18 @@ export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePrevie
   ctx.save();
   ctx.globalAlpha = preview.opacity; // Tool-specific opacity
 
-  // Freehand strokes → Perfect Freehand polygon fill
-  const poly = getStroke(preview.points, {
+  // PF input: [x,y][]; output: [x,y][] (not flat)
+  const outline = getStroke(preview.points, {
     ...PF_OPTIONS_BASE,
     size: preview.size,
-    last: false, // Preview is live (not finalized)
+    last: false, // live preview
   });
 
-  if (poly.length >= 2) {
+  if (outline.length > 0) {
     const path = new Path2D();
-    path.moveTo(poly[0], poly[1]);
-    for (let i = 2; i < poly.length; i += 2) {
-      path.lineTo(poly[i], poly[i + 1]);
+    path.moveTo(outline[0][0], outline[0][1]);
+    for (let i = 1; i < outline.length; i++) {
+      path.lineTo(outline[i][0], outline[i][1]);
     }
     path.closePath();
     ctx.fillStyle = preview.color;
@@ -357,21 +408,45 @@ export function buildPolylineRenderData(stroke: StrokeView): PolylineData {
   return { kind: 'polyline', path, polyline, bounds, pointCount };
 }
 
+// Use a MUTABLE 2-tuple to match PF's accepted point type
+type Vec2 =  [number, number];
+
+/**
+ * Convert flat points array to PF-native tuples (one-time conversion at cache build).
+ */
+function flatToPairs(points: ReadonlyArray<number>): Vec2[] {
+  const n = (points.length / 2) | 0;
+  const out = new Array<Vec2>(n);
+  // i = source index (flat), j = tuple index
+  for (let i = 0, j = 0; j < n; j++, i += 2) {
+    // as const ensures each element is treated as a readonly 2-tuple
+    out[j] = [points[i], points[i + 1]] as const;
+  }
+  return out;
+}
+
 /**
  * Builds PF POLYGON render data (for freehand).
  * Uses fixed-width PF (no thinning), polygon is filled at render.
  */
 export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
   const size = stroke.style.size;
-  const poly = getStroke(stroke.points, {
+
+  // Convert flat→tuples once, then call PF with last:true
+  const outline = getStroke(flatToPairs(stroke.points), {
     ...PF_OPTIONS_BASE,
     size,
-    last: true, // Commit-time / base-canvas build
-  }) as number[];
+    last: true, // finalized geometry on the base canvas
+  });
 
-  const pointCount = Math.floor(poly.length / 2);
-  const polygon = new Float32Array(poly.length);
-  polygon.set(poly);
+  // PF returns [[x,y], ...]; flatten once into a typed array for draw
+  const polygon = new Float32Array(outline.length * 2);
+  for (let i = 0; i < outline.length; i++) {
+    polygon[i * 2] = outline[i][0];
+    polygon[i * 2 + 1] = outline[i][1];
+  }
+
+  const pointCount = outline.length;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hasPath2D = typeof (globalThis as any).Path2D === 'function';
@@ -498,7 +573,8 @@ export class StrokeRenderCache {
   /**
    * Invalidate a specific stroke ID (all variants).
    */
-  invalidate(strokeId: string): void {
+
+  invalidate(strokeId: string): void {      
     this.lru.delete(strokeId);
   }
 
@@ -653,9 +729,34 @@ export function invalidateStrokeCacheByIds(ids: Iterable<string>) {
 
 #### File: `client/src/canvas/Canvas.tsx`
 
-**Update imports - around line 11:**
+---
 
-```typescript
+# 0) Quick model of “how the cache actually works” (so Canvas can play nice)
+
+* **Cache entry scope:** one entry **per stroke id**.
+* **Variants:** each entry holds a tiny map of **geometry variants**, keyed by a **geokey**:
+
+  * Shapes (stroked polyline) ⇒ geometry is **width-independent** → geokey `'pl'`.
+  * Freehand (PF polygon) ⇒ geometry **depends on width** → geokey like
+    `pf:s=<size>;sm=0.5;sl=0.5;th=0;pr=0`.
+  * The cache decides which builder to run (polyline vs PF polygon) by the stroke’s semantic `kind`. 
+* **LRU policy:** map insertion order acts as LRU over **stroke ids**. When over the cap, pop the oldest id. Invalidating an id drops **all its variants**.  
+
+---
+
+# 1) What `Canvas.tsx` does today that we must extend
+
+* `diffBounds()` only looks at **bbox equality** to decide dirty rectangles for strokes (and positions/sizes for texts). That correctly catches adds/removes and **geometry** edits, but it **misses style-only changes** (color/opacity/width) because those typically don’t modify the bbox. 
+
+* In the snapshot subscription, you compute `changedBounds` using that function and call `invalidateWorld(bounds)` for base canvas; overlay is separately handled and already has a “hold one frame” to avoid flicker at commit. We’ll keep that, we’ll just teach the diff to also notice style-only changes and to emit **evict ids** where necessary.  
+
+---
+
+# 2) Minimal, low-churn changes to `Canvas.tsx`
+
+Then import it in `Canvas.tsx`:
+
+```ts
 import {
   clearStrokeCache,
   drawPresenceOverlays,
@@ -663,169 +764,145 @@ import {
 } from '../renderer/layers';
 ```
 
-**Replace `diffBounds()` function with `diffBoundsAndEvicts()` - around line 41:**
+(These are exactly what your PF guide sketched.)  
 
-```typescript
-interface WorldBounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
+## 2.b Replace `diffBounds` with `diffBoundsAndEvicts`
+
+Add a style equality helper and return both **dirty bounds** and **ids to evict**. The principle:
+
+* **Evict** ids when a stroke **disappears** or its **bbox changed** (i.e., geometry changed).
+* **Dirty-only** when **style changed but bbox didn’t**.
+
+
+```ts
+type EvictId = string;
+type DiffResult = {
+  dirty: WorldBounds[];
+  evictIds: EvictId[];
+};
+
+function stylesEqual(
+  a: { color: string; size: number; opacity: number},
+  b: { color: string; size: number; opacity: number},
+) {
+  return a.color === b.color && a.size === b.size && a.opacity === b.opacity;
 }
 
-/**
- * Compute world-space dirty bounds AND which stroke IDs should evict geometry cache.
- * Evict policy:
- *  - removed IDs → evict
- *  - bbox changed (geometry changed) → evict
- *  - added IDs → no eviction needed (no cache existed)
- *  - style-only changes → bbox unchanged → no eviction
- */
-function diffBoundsAndEvicts(
-  prev: Snapshot,
-  next: Snapshot,
-): { bounds: WorldBounds[]; evictIds: string[] } {
-  const prevStrokeMap = new Map(prev.strokes.map((s) => [s.id, s]));
-  const nextStrokeMap = new Map(next.strokes.map((s) => [s.id, s]));
+
+function bboxToBounds(b: [number, number, number, number]): WorldBounds {
+  return { minX: b[0], minY: b[1], maxX: b[2], maxY: b[3] };
+}
+
+function diffBoundsAndEvicts(prev: Snapshot, next: Snapshot): DiffResult {
+  const prevSt = new Map(prev.strokes.map(s => [s.id, s]));
+  const nextSt = new Map(next.strokes.map(s => [s.id, s]));
   const dirty: WorldBounds[] = [];
   const evict = new Set<string>();
 
-  // Added/modified strokes
-  for (const [id, stroke] of nextStrokeMap) {
-    const prevStroke = prevStrokeMap.get(id);
-    if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-      // Don't inflate here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: stroke.bbox[0],
-        minY: stroke.bbox[1],
-        maxX: stroke.bbox[2],
-        maxY: stroke.bbox[3],
-      });
-      // Evict only if it existed before (i.e., geometry changed); adds don't need eviction
-      if (prevStroke && !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-        evict.add(id);
-      }
+  // Added / modified
+  for (const [id, n] of nextSt) {
+    const p = prevSt.get(id);
+    if (!p) {
+      // Added: repaint only (cache had no entry)
+      dirty.push(bboxToBounds(n.bbox));
+      continue;
     }
-  }
 
-  // Removed strokes
-  for (const [id, stroke] of prevStrokeMap) {
-    if (!nextStrokeMap.has(id)) {
-      // Don't inflate here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: stroke.bbox[0],
-        minY: stroke.bbox[1],
-        maxX: stroke.bbox[2],
-        maxY: stroke.bbox[3],
-      });
+    const bboxChanged = !bboxEquals(p.bbox, n.bbox);
+    const styleChanged = !styleEquals(p.style, n.style); // ← compare .size here
+
+    if (bboxChanged) {
+      // Geometry changed → evict, and repaint old+new footprint
       evict.add(id);
+      bounds.push(bboxToBounds(p.bbox));
+      bounds.push(bboxToBounds(n.bbox));
+    } else if (styleChanged) {
+      // Style only → repaint, no eviction (low churn)
+      dirty.push(bboxToBounds(n.bbox));
     }
   }
 
-  // Handle text blocks
-  const prevTextMap = new Map(prev.texts.map((t) => [t.id, t]));
-  const nextTextMap = new Map(next.texts.map((t) => [t.id, t]));
-
-  // Added/modified texts
-  for (const [id, text] of nextTextMap) {
-    const prevText = prevTextMap.get(id);
-    if (
-      !prevText ||
-      prevText.x !== text.x ||
-      prevText.y !== text.y ||
-      prevText.w !== text.w ||
-      prevText.h !== text.h
-    ) {
-      // Don't add padding here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: text.x,
-        minY: text.y,
-        maxX: text.x + text.w,
-        maxY: text.y + text.h,
-      });
-      // If text bbox changed, evict any future text geometry cache (none today; harmless no-op)
-      if (prevText) evict.add(id);
-    }
-  }
-
-  // Removed texts
-  for (const [id, text] of prevTextMap) {
-    if (!nextTextMap.has(id)) {
-      // Don't add padding here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: text.x,
-        minY: text.y,
-        maxX: text.x + text.w,
-        maxY: text.y + text.h,
-      });
+  // Removed
+  for (const [id, p] of prevSt) {
+    if (!nextSt.has(id)) {
       evict.add(id);
+      dirty.push(bboxToBounds(p.bbox));
     }
   }
 
-  return { bounds: dirty, evictIds: Array.from(evict) }; // Let DirtyRectTracker coalesce
+  // --- Text blocks ---
+  const prevTxt = new Map(prev.texts.map(t => [t.id, t]));
+  const nextTxt = new Map(next.texts.map(t => [t.id, t]));
+
+  for (const [id, n] of nextTxt) {
+    const p = prevTxt.get(id);
+    const rectChanged = !p || p.x !== n.x || p.y !== n.y || p.w !== n.w || p.h !== n.h;
+    const styleOrContentChanged = !!p && (p.color !== n.color || p.size !== n.size || p.content !== n.content);
+    if (rectChanged || styleOrContentChanged) {
+      dirty.push({ minX: n.x, minY: n.y, maxX: n.x + n.w, maxY: n.y + n.h });
+      if (p && rectChanged) dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
+    }
+  }
+  for (const [id, p] of prevTxt) {
+    if (!nextTxt.has(id)) {
+      dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
+    }
+  }
+
+  return { dirty, evictIds: [...evict] };
 }
 ```
 
-**Update snapshot subscription handler to use new function - search for `roomDoc.subscribeSnapshot` in the file:**
+> Note: your `DirtyRectTracker` already inflates and coalesces; keep emitting **raw world bboxes** here (no manual padding). 
 
-```typescript
-const unsubscribe = roomDoc.subscribeSnapshot((newSnapshot) => {
-  const prevSnapshot = snapshotRef.current;
-  snapshotRef.current = newSnapshot;
+## 2.c Use the new diff in the snapshot subscription
 
-  if (!renderLoopRef.current || !overlayLoopRef.current) return;
+Inside the `subscribeSnapshot` handler in `Canvas.tsx`, replace the old callsite:
 
-  // Check if scene changed (requires full clear on both)
-  if (!prevSnapshot || prevSnapshot.scene !== newSnapshot.scene) {
-    renderLoopRef.current.invalidateAll('scene-change');
-    overlayLoopRef.current.invalidateAll();
-    lastDocVersion = newSnapshot.docVersion;
-    return;
-  }
+```ts
+// was:
+const changedBounds = diffBounds(prevSnapshot, newSnapshot);
+for (const bounds of changedBounds) {
+  renderLoopRef.current.invalidateWorld(bounds);
+}
+overlayLoopRef.current.invalidateAll();
+```
 
-  // Check if document content changed (not just presence)
-  // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
-  if (newSnapshot.docVersion !== lastDocVersion) {
-    lastDocVersion = newSnapshot.docVersion;
+with:
 
-    // Hold preview for one frame to prevent flash on commit
-    overlayLoopRef.current.holdPreviewForOneFrame();
+```ts
+const { dirty, evictIds } = diffBoundsAndEvicts(prevSnapshot, newSnapshot);
 
-    // Use bbox diffing for targeted invalidation + compute eviction IDs
-    const { bounds: changedBounds, evictIds } = diffBoundsAndEvicts(prevSnapshot, newSnapshot);
+// Evict geometry for ids whose geometry footprint changed or were removed
+if (evictIds.length) {
+  invalidateStrokeCacheByIds(evictIds);
+}
 
-    // Use optimized dirty rect invalidation for all changes
-    // The translucent check in RenderLoop will promote to full clear when needed
-    for (const bounds of changedBounds) {
-      renderLoopRef.current.invalidateWorld(bounds);
-    }
+// Repaint everything that changed style or geometry, additions/removals, etc.
+// (DirtyRectTracker will coalesce or promote to full clear if appropriate.)
+for (const b of dirty) {
+  renderLoopRef.current.invalidateWorld(b);
+}
 
-    // Evict any stale geometry (PF polygon width change, move/resize, deletions, text resize)
-    if (evictIds.length) {
-      invalidateStrokeCacheByIds(evictIds);
-    }
-
-    overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
-  } else {
-    // Presence-only change - update overlay only
-    overlayLoopRef.current.invalidateAll();
-  }
-});
+overlayLoopRef.current.invalidateAll();
 ```
 
 ---
+
 
 ## Cache Eviction Behavior Matrix
 
 | Change Type                         | Freehand (PF polygon)           | Perfect Shape (polyline)       |
 |-------------------------------------|---------------------------------|--------------------------------|
-| **Color/Opacity change**            | No evict (bbox unchanged)       | No evict (bbox unchanged)      |
-| **Size change**                     | **Evict** (polygon changes)     | No evict (render-time width)   |
+| **Color/Opacity/ change**           | No evict (bbox unchanged)       | No evict (bbox unchanged)      |
+| **Size(width) change**              | No evict (Cache stores new Variant) | No evict (render-time width)   |
 | **Move/Resize (points change)**     | **Evict** (bbox changes)        | **Evict** (bbox changes)       |
 | **Delete**                          | **Evict**                       | **Evict**                      |
 | **Add new**                         | No evict (no prior cache)       | No evict (no prior cache)      |
-
-**Key insight:** PF polygon geometry depends on stroke width (size), so size changes trigger bbox changes and eviction. Polyline stroke width is applied at render time via `ctx.lineWidth`, so size-only changes don't affect cached geometry.
+Style-only change (color, opacity, width) with bbox unchanged:
+Dirty: YES (you need a repaint).
+Evict: NO (geometry didn’t change)
+* **Text repaint**: adding the style/content check ensures color/font changes repaint even when the box is stable (previously missed). The dirty rectangles for text still lean on the tracker to inflate/coalesce. (Your overview shows text is drawn by the base canvas after strokes, so this is sufficient.) 
 
 ---
 
@@ -843,30 +920,16 @@ const unsubscribe = roomDoc.subscribeSnapshot((newSnapshot) => {
 - [ ] Dirty rect invalidation still works correctly
 - [ ] Scene change clears cache properly
 
-### Edge Cases
-- [ ] Back-compat: Old strokes (no `kind` field) render as shapes
-- [ ] Empty strokes don't crash
-- [ ] Very large strokes (near 10k points) render correctly
-- [ ] Highlighter opacity (0.25) works with PF polygon fill
-
 ---
 
 ## Architecture Notes
 
-### Why `kind` is Semantic, Not Implementation Detail
-
 The `kind: 'freehand' | 'shape'` field describes **what the user drew**, not **how to render it**. This semantic approach:
-
-1. **Future-proof:** If we switch freehand to a different polygon algorithm, `kind` remains valid
-2. **Clear intent:** Renderer knows user intent, not just "was RDP applied?"
-3. **Editable:** Future select/resize tools can preserve stroke kind through transforms
-4. **No heuristics:** No guessing based on point count or simplification flags
-
-### Why Two Builders (Polyline vs Polygon)
+**Clear intent:** Renderer knows user intent, not just "was RDP applied?"
+**Editable:** Future select/resize tools can preserve stroke kind through transforms
 
 - **Polyline builder** (`buildPolylineRenderData`): Fast, width-independent, used for perfect shapes
-- **Polygon builder** (`buildPFPolygonRenderData`): Width-dependent, filled, used for freehand
-
+- **Polygon builder** (`buildPFPolygonRenderData`): Width-dependent(but not evicted), filled, used for freehand
 Both produce `Path2D` + typed arrays for hardware-accelerated rendering.
 
 ### Why LRU Over FIFO
@@ -883,19 +946,7 @@ Both produce `Path2D` + typed arrays for hardware-accelerated rendering.
 
 ---
 
-## Migration Path
-
-### Phase 1: Deploy with Back-Compat
-- All new strokes have `kind` field
-- Old strokes default to `'shape'` (preserves visual appearance)
-- No data migration needed
-
-### Phase 2: Monitor (Optional)
-- Add metrics for cache hit/miss rate
-- Monitor LRU eviction frequency
-- Validate performance on large boards
-
-### Phase 3: Future Enhancements (Out of Scope)
+## Future Enhancements (Out of Scope)
 - Stroke background fills (trivial: PF polygon is already a fill)
 - Shape fills (geometric, not PF-based)
 - Lasso/select/resize with ID-keyed invalidation

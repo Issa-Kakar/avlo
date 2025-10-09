@@ -9,6 +9,8 @@ import type { ToolSettings } from '@/stores/device-ui-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
+import { getStroke } from 'perfect-freehand';
+import { PF_OPTIONS_BASE } from '@/renderer/stroke-builder/pf-config';
 
 // These constants are imported from @avlo/shared config
 // See Step 7 for the values to add to /packages/shared/src/config.ts
@@ -75,6 +77,7 @@ export class DrawingTool {
       isDrawing: false,
       pointerId: null,
       points: [],
+      pointsPF: [],
       config: {
         tool: this.toolType,
         color: this.settings.color,
@@ -189,6 +192,7 @@ export class DrawingTool {
       isDrawing: true,
       pointerId,
       points: [worldX, worldY],
+      pointsPF: [[worldX, worldY]],
       config: {
         tool: this.toolType,
         color: this.settings.color,
@@ -213,6 +217,7 @@ export class DrawingTool {
         // Double-check state in case tool was destroyed during RAF
         if (this.pendingPoint && this.state.isDrawing) {
           this.state.points.push(...this.pendingPoint);
+          this.state.pointsPF.push([this.pendingPoint[0], this.pendingPoint[1]]);
           this.updateBounds();
         }
         this.pendingPoint = null;
@@ -228,6 +233,7 @@ export class DrawingTool {
     }
     if (this.pendingPoint && this.state.isDrawing) {
       this.state.points.push(...this.pendingPoint);
+      this.state.pointsPF.push([this.pendingPoint[0], this.pendingPoint[1]]);
       this.pendingPoint = null;
     }
   }
@@ -325,15 +331,15 @@ export class DrawingTool {
       };
     }
 
-    // Freehand (unchanged)
-    if (this.state.points.length < 2) return null;
+    // Freehand: return PF-native tuples for zero-conversion preview
+    if (this.state.pointsPF.length < 2) return null;
     return {
-      kind: 'stroke', // Add discriminant for union type
-      points: this.state.points,
+      kind: 'stroke',
+      points: this.state.pointsPF, // PF-native tuples
       tool: this.state.config.tool,
       color: this.state.config.color,
       size: this.state.config.size,
-      opacity: this.state.config.opacity, // Use actual commit opacity
+      opacity: this.state.config.opacity,
       bbox: this.lastBounds,
     };
   }
@@ -434,6 +440,7 @@ export class DrawingTool {
             scene: currentScene,
             createdAt: Date.now(),
             userId,
+            kind: 'freehand', // NEW: explicit semantic flag
           },
         ]);
       });
@@ -590,7 +597,8 @@ export class DrawingTool {
         bbox,    // Computed at commit
         scene: currentScene,
         createdAt: Date.now(),
-        userId: this.userId
+        userId: this.userId,
+        kind: 'shape', // NEW: explicit semantic flag
       }]);
     });
 

@@ -72,7 +72,9 @@ export function drawStrokes(
 
 /**
  * Renders a single stroke.
- * Handles tool-specific rendering (pen vs highlighter).
+ * Branches on stroke.kind to use different geometry pipelines:
+ * - Freehand (PF polygon) → fill
+ * - Shapes (polyline) → stroke
  *
  * Note: viewTransform is passed for consistency but not used here since
  * RenderLoop has already applied the world transform to the context.
@@ -82,45 +84,57 @@ function renderStroke(
   stroke: StrokeView,
   _viewTransform: ViewTransform,
 ): void {
-  // Get or build render data
+  // Get or build render data (cache selects geometry based on stroke.kind)
   const renderData = strokeCache.getOrBuild(stroke);
 
   if (renderData.pointCount < 2) {
     return; // Need at least 2 points for a line
   }
 
-  // Save context state for this stroke
   ctx.save();
-
-  // Apply stroke style
-  ctx.strokeStyle = stroke.style.color;
-  ctx.lineWidth = stroke.style.size; // World units - transform handles scaling
   ctx.globalAlpha = stroke.style.opacity;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
 
-  // Tool-specific adjustments
-  if (stroke.style.tool === 'highlighter') {
-    // Highlighter uses normal blending at lower opacity
-    // Default opacity is typically 0.25
-    ctx.globalCompositeOperation = 'source-over';
-  }
-
-  // Stroke the path (with fallback for test environments)
-  if (renderData.path) {
-    ctx.stroke(renderData.path);
-  } else {
-    // Fallback when Path2D not available (tests)
-    ctx.beginPath();
-    const pl = renderData.polyline;
-    ctx.moveTo(pl[0], pl[1]);
-    for (let i = 2; i < pl.length; i += 2) {
-      ctx.lineTo(pl[i], pl[i + 1]);
+  if (renderData.kind === 'polygon') {
+    // FREEHAND (PF polygon) → fill
+    ctx.fillStyle = stroke.style.color;
+    if (renderData.path) {
+      ctx.fill(renderData.path);
+    } else {
+      // Rare test fallback (no Path2D)
+      ctx.beginPath();
+      const pg = renderData.polygon;
+      ctx.moveTo(pg[0], pg[1]);
+      for (let i = 2; i < pg.length; i += 2) {
+        ctx.lineTo(pg[i], pg[i + 1]);
+      }
+      ctx.closePath();
+      ctx.fill();
     }
-    ctx.stroke();
+  } else {
+    // SHAPES (polyline) → stroke
+    ctx.strokeStyle = stroke.style.color;
+    ctx.lineWidth = stroke.style.size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (stroke.style.tool === 'highlighter') {
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    if (renderData.path) {
+      ctx.stroke(renderData.path);
+    } else {
+      // Fallback when Path2D not available (tests)
+      ctx.beginPath();
+      const pl = renderData.polyline;
+      ctx.moveTo(pl[0], pl[1]);
+      for (let i = 2; i < pl.length; i += 2) {
+        ctx.lineTo(pl[i], pl[i + 1]);
+      }
+      ctx.stroke();
+    }
   }
 
-  // Restore context state
   ctx.restore();
 }
 

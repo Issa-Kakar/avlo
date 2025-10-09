@@ -10,7 +10,8 @@ export interface DrawingToolConfig {
 export interface DrawingState {
   isDrawing: boolean;
   pointerId: number | null;
-  points: number[]; // [x,y, x,y, ...] in world coordinates
+  points: number[];             // flat centerline [x,y, x,y, ...] for commit/simplify
+  pointsPF: [number, number][]; // PF-native live buffer [[x,y], [x,y], ...] for preview only
 
   // Tool settings frozen at gesture start
   config: DrawingToolConfig;
@@ -20,10 +21,11 @@ export interface DrawingState {
 /**
  * StrokePreview is the preview data for drawing strokes
  * Used by DrawingTool and RenderLoop
+ * IMPORTANT: Points are PF-native tuples to avoid per-frame conversions in overlay
  */
 export interface StrokePreview {
   kind: 'stroke'; // Discriminant for union type
-  points: ReadonlyArray<number>; // [x,y, x,y, ...] in world coordinates
+  points: [number, number][]; // PF-native tuples: [[x,y], [x,y], ...] in world coordinates
   tool: 'pen' | 'highlighter';
   color: string;
   size: number; // World units
@@ -91,7 +93,20 @@ export interface PerfectShapePreview {
 }
 
 /**
+ * StrokeFinalPreview is the final frame preview with pre-computed outline
+ * Used for the held frame to match base canvas exactly
+ */
+export interface StrokeFinalPreview {
+  kind: 'strokeFinal';
+  outline: [number, number][]; // Pre-computed PF outline
+  tool: 'pen' | 'highlighter';
+  color: string;
+  size: number;
+  opacity: number;
+  bbox: [number, number, number, number] | null;
+}
+/**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview;
+export type PreviewData = StrokePreview | StrokeFinalPreview | EraserPreview | TextPreview | PerfectShapePreview;

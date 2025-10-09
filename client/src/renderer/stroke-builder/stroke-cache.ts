@@ -1,52 +1,77 @@
 import type { StrokeView } from '@avlo/shared';
-import { buildStrokeRenderData, type StrokeRenderData } from './path-builder';
+import {
+  buildPolylineRenderData,
+  buildPFPolygonRenderData,
+  type StrokeRenderData,
+} from './path-builder';
 
 /**
- * Simple render cache for stroke paths.
- * Keyed by stroke ID since strokes are immutable after commit.
+ * Stroke render cache (LRU) with geometry variants per stroke ID.
+ * - Entry keyed by stroke.id
+ * - Variant keyed by a small "geometry key"
+ *   • polyline: independent of style.size (stroke width does not affect geometry)
+ *   • polygon (Perfect Freehand): depends on style.size (width affects geometry)
  *
- * This is a UI-local cache only, never persisted.
- * Phase 4 keeps it simple - no style stamping or complex keys.
+ * Style-only edits (color, opacity, polyline width) DO NOT invalidate geometry.
  */
+type GeomKey = string;
+type Variants = Map<GeomKey, StrokeRenderData>;
+type Entry = { id: string; variants: Variants };
+
 export class StrokeRenderCache {
-  private cache = new Map<string, StrokeRenderData>();
+  private lru = new Map<string, Entry>(); // Insertion-ordered LRU over stroke IDs
   private maxSize: number;
 
   constructor(maxSize = 1000) {
-    this.maxSize = maxSize;
+    this.maxSize = Math.max(1, maxSize | 0);
   }
 
-  /**
-   * Get or build render data for a stroke.
-   * Strokes are immutable after commit, so ID is sufficient key.
-   */
   getOrBuild(stroke: StrokeView): StrokeRenderData {
-    const cached = this.cache.get(stroke.id);
-    if (cached) {
-      return cached;
+    // Derive geometry kind from stroke.kind
+    const desired = stroke.kind === 'freehand'
+      ? { kind: 'polygon' as const }
+      : { kind: 'polyline' as const };
+
+    const key = computeGeomKey(stroke, desired);
+
+    // LRU touch / lookup
+    let entry = this.lru.get(stroke.id);
+    if (entry) {
+      // Touch: move to back
+      this.lru.delete(stroke.id);
+      this.lru.set(stroke.id, entry);
+      const hit = entry.variants.get(key);
+      if (hit) return hit;
+    } else {
+      entry = { id: stroke.id, variants: new Map() };
+      this.lru.set(stroke.id, entry);
     }
 
-    // Build new render data
-    const renderData = buildStrokeRenderData(stroke);
+    // Build the requested geometry
+    const built =
+      desired.kind === 'polygon'
+        ? buildPFPolygonRenderData(stroke)
+        : buildPolylineRenderData(stroke);
 
-    // FIFO eviction if cache is full (simple for Phase 4)
-    if (this.cache.size >= this.maxSize) {
-      const firstKey = this.cache.keys().next().value;
-      if (firstKey) {
-        this.cache.delete(firstKey);
-      }
-    }
-
-    this.cache.set(stroke.id, renderData);
-    return renderData;
+    entry.variants.set(key, built);
+    this.evictIfNeeded();
+    return built;
   }
 
   /**
-   * Clear a specific stroke from cache.
-   * Called when stroke is deleted (Phase 10).
+   * Invalidate a specific stroke ID (all variants).
    */
   invalidate(strokeId: string): void {
-    this.cache.delete(strokeId);
+    this.lru.delete(strokeId);
+  }
+
+  /**
+   * Invalidate multiple stroke IDs.
+   */
+  invalidateMany(ids: Iterable<string>): void {
+    for (const id of ids) {
+      this.lru.delete(id);
+    }
   }
 
   /**
@@ -54,18 +79,26 @@ export class StrokeRenderCache {
    * Called on scene change or major updates.
    */
   clear(): void {
-    this.cache.clear();
+    this.lru.clear();
   }
 
   /**
    * Get current cache size for monitoring.
    */
   get size(): number {
-    return this.cache.size;
+    return this.lru.size;
+  }
+
+  private evictIfNeeded(): void {
+    while (this.lru.size > this.maxSize) {
+      const firstKey = this.lru.keys().next().value as string | undefined;
+      if (!firstKey) break;
+      this.lru.delete(firstKey);
+    }
   }
 }
 
-// Add singleton export for shared access
+// Singleton export for shared access
 let globalCacheInstance: StrokeRenderCache | null = null;
 
 export function getStrokeCacheInstance(): StrokeRenderCache {
@@ -73,4 +106,19 @@ export function getStrokeCacheInstance(): StrokeRenderCache {
     globalCacheInstance = new StrokeRenderCache(1000);
   }
   return globalCacheInstance;
+}
+
+// --- Helpers ---
+
+function computeGeomKey(
+  stroke: StrokeView,
+  want: { kind: 'polyline' | 'polygon' }
+): GeomKey {
+  if (want.kind === 'polyline') {
+    // Polyline geometry ignores style.size
+    return 'pl';
+  }
+  // PF polygon geometry depends on width (size). PF knobs are fixed for now.
+  const s = stroke.style.size;
+  return `pf:s=${s};sm=0.5;sl=0.5;th=0;pr=0`;
 }

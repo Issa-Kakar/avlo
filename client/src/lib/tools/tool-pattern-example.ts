@@ -66,6 +66,7 @@ export class DrawingToolExample {
         scene: currentScene, // CRITICAL: Scene assigned at commit time!
         createdAt: Date.now(),
         userId: 'user-id', // Would come from manager's userId
+        kind: 'freehand', // Pen tool creates freehand strokes
       };
       
       strokes.push([stroke]);

@@ -8,7 +8,11 @@ import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
 import { OverlayRenderLoop } from '../renderer/OverlayRenderLoop';
 import type { ViewportInfo } from '../renderer/types';
-import { clearStrokeCache, drawPresenceOverlays } from '../renderer/layers';
+import {
+  clearStrokeCache,
+  drawPresenceOverlays,
+  invalidateStrokeCacheByIds, // NEW: for cache eviction on geometry changes
+} from '../renderer/layers';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
@@ -38,76 +42,85 @@ interface WorldBounds {
   maxY: number;
 }
 
-function diffBounds(prev: Snapshot, next: Snapshot): WorldBounds[] {
-  const prevStrokeMap = new Map(prev.strokes.map((s) => [s.id, s]));
-  const nextStrokeMap = new Map(next.strokes.map((s) => [s.id, s]));
-  const dirty: WorldBounds[] = [];
+// Helper to check if styles are equal
+function stylesEqual(
+  a: { color: string; size: number; opacity: number },
+  b: { color: string; size: number; opacity: number },
+): boolean {
+  return a.color === b.color && a.size === b.size && a.opacity === b.opacity;
+}
 
-  // Added/modified strokes
-  for (const [id, stroke] of nextStrokeMap) {
-    const prevStroke = prevStrokeMap.get(id);
-    if (!prevStroke || !bboxEquals(prevStroke.bbox, stroke.bbox)) {
-      // Don't inflate here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: stroke.bbox[0],
-        minY: stroke.bbox[1],
-        maxX: stroke.bbox[2],
-        maxY: stroke.bbox[3],
-      });
+// Helper to convert bbox array to WorldBounds
+function bboxToBounds(b: [number, number, number, number]): WorldBounds {
+  return { minX: b[0], minY: b[1], maxX: b[2], maxY: b[3] };
+}
+
+// Result type for diff operation
+type EvictId = string;
+type DiffResult = {
+  dirty: WorldBounds[];
+  evictIds: EvictId[];
+};
+
+function diffBoundsAndEvicts(prev: Snapshot, next: Snapshot): DiffResult {
+  const prevSt = new Map(prev.strokes.map((s) => [s.id, s]));
+  const nextSt = new Map(next.strokes.map((s) => [s.id, s]));
+  const dirty: WorldBounds[] = [];
+  const evict = new Set<string>();
+
+  // Added / modified strokes
+  for (const [id, n] of nextSt) {
+    const p = prevSt.get(id);
+    if (!p) {
+      // Added: repaint only (cache had no entry)
+      dirty.push(bboxToBounds(n.bbox));
+      continue;
+    }
+
+    const bboxChanged = !bboxEquals(p.bbox, n.bbox);
+    const styleChanged = !stylesEqual(p.style, n.style);
+
+    if (bboxChanged) {
+      // Geometry changed → evict, and repaint old+new footprint
+      evict.add(id);
+      dirty.push(bboxToBounds(p.bbox));
+      dirty.push(bboxToBounds(n.bbox));
+    } else if (styleChanged) {
+      // Style only → repaint, no eviction (cache handles variants)
+      dirty.push(bboxToBounds(n.bbox));
     }
   }
 
   // Removed strokes
-  for (const [id, stroke] of prevStrokeMap) {
-    if (!nextStrokeMap.has(id)) {
-      // Don't inflate here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: stroke.bbox[0],
-        minY: stroke.bbox[1],
-        maxX: stroke.bbox[2],
-        maxY: stroke.bbox[3],
-      });
+  for (const [id, p] of prevSt) {
+    if (!nextSt.has(id)) {
+      evict.add(id);
+      dirty.push(bboxToBounds(p.bbox));
     }
   }
 
-  // Handle text blocks
-  const prevTextMap = new Map(prev.texts.map((t) => [t.id, t]));
-  const nextTextMap = new Map(next.texts.map((t) => [t.id, t]));
+  // --- Text blocks ---
+  const prevTxt = new Map(prev.texts.map((t) => [t.id, t]));
+  const nextTxt = new Map(next.texts.map((t) => [t.id, t]));
 
-  // Added/modified texts
-  for (const [id, text] of nextTextMap) {
-    const prevText = prevTextMap.get(id);
-    if (
-      !prevText ||
-      prevText.x !== text.x ||
-      prevText.y !== text.y ||
-      prevText.w !== text.w ||
-      prevText.h !== text.h
-    ) {
-      // Don't add padding here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: text.x,
-        minY: text.y,
-        maxX: text.x + text.w,
-        maxY: text.y + text.h,
-      });
+  for (const [id, n] of nextTxt) {
+    const p = prevTxt.get(id);
+    const rectChanged = !p || p.x !== n.x || p.y !== n.y || p.w !== n.w || p.h !== n.h;
+    const styleOrContentChanged =
+      !!p && (p.color !== n.color || p.size !== n.size || p.content !== n.content);
+    if (rectChanged || styleOrContentChanged) {
+      dirty.push({ minX: n.x, minY: n.y, maxX: n.x + n.w, maxY: n.y + n.h });
+      if (p && rectChanged)
+        dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
+    }
+  }
+  for (const [id, p] of prevTxt) {
+    if (!nextTxt.has(id)) {
+      dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
     }
   }
 
-  // Removed texts
-  for (const [id, text] of prevTextMap) {
-    if (!nextTextMap.has(id)) {
-      // Don't add padding here - DirtyRectTracker will handle it
-      dirty.push({
-        minX: text.x,
-        minY: text.y,
-        maxX: text.x + text.w,
-        maxY: text.y + text.h,
-      });
-    }
-  }
-
-  return dirty; // Let DirtyRectTracker handle coalescing
+  return { dirty, evictIds: [...evict] };
 }
 
 export interface CanvasProps {
@@ -229,13 +242,18 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         // Hold preview for one frame to prevent flash on commit
         overlayLoopRef.current.holdPreviewForOneFrame();
 
-        // Use bbox diffing for targeted invalidation
-        const changedBounds = diffBounds(prevSnapshot, newSnapshot);
+        // Use bbox diffing for targeted invalidation with cache eviction
+        const { dirty, evictIds } = diffBoundsAndEvicts(prevSnapshot, newSnapshot);
 
-        // Use optimized dirty rect invalidation for all changes
-        // The translucent check in RenderLoop will promote to full clear when needed
-        for (const bounds of changedBounds) {
-          renderLoopRef.current.invalidateWorld(bounds);
+        // Evict geometry for ids whose geometry footprint changed or were removed
+        if (evictIds.length) {
+          invalidateStrokeCacheByIds(evictIds);
+        }
+
+        // Repaint everything that changed style or geometry, additions/removals, etc.
+        // (DirtyRectTracker will coalesce or promote to full clear if appropriate.)
+        for (const b of dirty) {
+          renderLoopRef.current.invalidateWorld(b);
         }
 
         overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc

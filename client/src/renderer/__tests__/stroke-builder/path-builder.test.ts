@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildStrokeRenderData, isStrokeVisible } from '../../stroke-builder/path-builder';
+import { buildPolylineRenderData, isStrokeVisible } from '../../stroke-builder/path-builder';
 import type { StrokeView } from '@avlo/shared';
 
 describe('Path Builder', () => {
-  describe('buildStrokeRenderData', () => {
+  describe('buildPolylineRenderData', () => {
     it('should handle empty points array', () => {
       const stroke: StrokeView = {
         id: 'test-1',
@@ -14,9 +14,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(0);
       expect(result.polyline.length).toBe(0);
@@ -33,9 +34,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(3);
       expect(result.polyline.length).toBe(6); // 3 points * 2 coords
@@ -55,9 +57,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(3);
       expect(result.polyline.length).toBe(6); // 3 points * 2 coords
@@ -73,9 +76,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(3); // 6 values / 2 = 3 points
     });
@@ -90,9 +94,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(7); // 14 values / 2 = 7 points
       expect(result.polyline.length).toBe(14);
@@ -108,9 +113,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       // Using plain object bounds, not DOMRect
       expect(result.bounds.x).toBe(25);
@@ -129,9 +135,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       expect(result.pointCount).toBe(1);
       expect(result.polyline.length).toBe(2);
@@ -148,9 +155,10 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
-      const result = buildStrokeRenderData(stroke);
+      const result = buildPolylineRenderData(stroke);
 
       // In Node/Vitest, Path2D won't exist
       expect(result.path).toBe(null);
@@ -169,6 +177,7 @@ describe('Path Builder', () => {
       scene: 0,
       createdAt: Date.now(),
       userId: 'test-user',
+      kind: 'shape',
     };
 
     it('should return true for stroke fully in viewport', () => {
@@ -209,6 +218,7 @@ describe('Path Builder', () => {
         scene: 0,
         createdAt: Date.now(),
         userId: 'test-user',
+        kind: 'shape',
       };
 
       // Viewport that starts right at the stroke

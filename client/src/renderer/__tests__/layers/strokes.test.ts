@@ -48,6 +48,7 @@ function createTestStroke(id: string, options: Partial<StrokeView> = {}): Stroke
     scene: 0,
     createdAt: Date.now(),
     userId: 'user-1',
+    kind: 'freehand',
     ...options,
   };
 }
