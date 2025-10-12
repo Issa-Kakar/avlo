@@ -95,9 +95,10 @@ function renderStroke(
   ctx.globalAlpha = stroke.style.opacity;
 
   if (renderData.kind === 'polygon') {
-    // FREEHAND (PF polygon) → fill
+    // FREEHAND (PF polygon) → fill with default nonzero rule (no closing)
     ctx.fillStyle = stroke.style.color;
     if (renderData.path) {
+      // Use default nonzero fill rule for open PF outlines
       ctx.fill(renderData.path);
     } else {
       // Rare test fallback (no Path2D)
@@ -107,7 +108,7 @@ function renderStroke(
       for (let i = 2; i < pg.length; i += 2) {
         ctx.lineTo(pg[i], pg[i + 1]);
       }
-      ctx.closePath();
+      // CRITICAL: Do NOT closePath() - PF already provides complete outline
       ctx.fill();
     }
   } else {

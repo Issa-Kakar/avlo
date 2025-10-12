@@ -1,6 +1,7 @@
 import type { StrokePreview, StrokeFinalPreview } from '@/lib/tools/types';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE } from '../stroke-builder/pf-config';
+import { getSvgPathFromStroke } from '../stroke-builder/pf-svg';
 
 /**
  * Draw preview stroke
@@ -20,16 +21,16 @@ export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePrevie
     ...PF_OPTIONS_BASE,
     size: preview.size,
     last: false, // live preview
+    
   });
 
-  if (outline.length > 0) {
-    const path = new Path2D();
-    path.moveTo(outline[0][0], outline[0][1]);
-    for (let i = 1; i < outline.length; i++) {
-      path.lineTo(outline[i][0], outline[i][1]);
-    }
-    path.closePath();
+  if (outline.length > 1) {
+    // Convert PF outline to smooth SVG path with quadratic Bézier curves
+    // CRITICAL: Do NOT close the path - PF already provides a complete outline
+    const svgPath = getSvgPathFromStroke(outline, false);
+    const path = new Path2D(svgPath);
     ctx.fillStyle = preview.color;
+    // Use default nonzero fill rule (not even-odd) for open PF outlines
     ctx.fill(path);
   }
 
@@ -46,17 +47,16 @@ export function drawFinalPreview(ctx: CanvasRenderingContext2D, preview: StrokeF
 }
 
 /**
- * Helper to draw PF outline
+ * Helper to draw PF outline with smooth Bézier curves
  */
-function drawOutline(ctx: CanvasRenderingContext2D, outline: [number, number][], color: string): void {
-  if (outline.length > 0) {
-    const path = new Path2D();
-    path.moveTo(outline[0][0], outline[0][1]);
-    for (let i = 1; i < outline.length; i++) {
-      path.lineTo(outline[i][0], outline[i][1]);
-    }
-    path.closePath();
+function drawOutline(ctx: CanvasRenderingContext2D, outline: number[][], color: string): void {
+  if (outline.length > 1) {
+    // Convert PF outline to smooth SVG path with quadratic Bézier curves
+    // CRITICAL: Do NOT close the path - PF already provides a complete outline
+    const svgPath = getSvgPathFromStroke(outline, false);
+    const path = new Path2D(svgPath);
     ctx.fillStyle = color;
+    // Use default nonzero fill rule (not even-odd) for open PF outlines
     ctx.fill(path);
   }
 }

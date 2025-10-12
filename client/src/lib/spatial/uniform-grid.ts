@@ -50,8 +50,32 @@ export class UniformGrid<T extends { id: string }> {
         this.grid.get(key)!.add(item);
       }
     }
+    const cols = maxIx - minIx + 1;
+    const rows = maxIy - minIy + 1;
+    const totalCells = cols * rows;
+    // Log suspicious but allowed ranges
+    if (totalCells > 1000) {
+      console.log('[🚨 UNIFORM GRID] Large cell range', {
+        totalCells,
+        bbox: bbox.map(v => v.toFixed(2)),
+        indices: { minIx, maxIx, minIy, maxIy }
+      });
+    }
+    if (totalCells > 100000) {
+      console.log('[⚠️ UNIFORM GRID] Excessive cell count detected!', {
+        cols,
+        rows,
+        totalCells,
+        minIx, maxIx,
+        minIy, maxIy,
+        bbox,
+        cellSize: this.cellSize,
+        item: { id: item.id },
+        timestamp: performance.now().toFixed(2)
+      });
+    }
   }
-
+  
   /**
    * Query items within a radius of a point
    * Returns unique items that are in cells that could contain the query circle

@@ -3,14 +3,14 @@ import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
 import { STROKE_CONFIG, ROOM_CONFIG } from '@avlo/shared';
 import type { ViewTransform } from '@avlo/shared';
-import { simplifyStroke, calculateBBox, estimateEncodedSize } from './simplification';
+import {  calculateBBox, estimateEncodedSize } from './simplification';
 import type { DrawingState, PreviewData } from './types';
 import type { ToolSettings } from '@/stores/device-ui-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
-import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE } from '@/renderer/stroke-builder/pf-config';
+// import { getStroke } from 'perfect-freehand';
+// import { PF_OPTIONS_BASE } from '@/renderer/stroke-builder/pf-config';
 
 // These constants are imported from @avlo/shared config
 // See Step 7 for the values to add to /packages/shared/src/config.ts
@@ -25,23 +25,21 @@ export class DrawingTool {
   private toolType: 'pen' | 'highlighter';
   private userId: string; // Stable user ID for all strokes from this tool instance
 
-  // RAF coalescing
-  private rafId: number | null = null;
-  private pendingPoint: [number, number] | null = null;
+  // Bounds tracking for commit (preview doesn't use bbox anymore)
   private lastBounds: [number, number, number, number] | null = null;
 
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
 
   // NEW: Held frame state (persists after reset for overlay's final frame)
-  private finalOutline: number[][] | null = null; // PF returns [x, y, pressure][]
-  private finalOutlineStyle: {
-    tool: 'pen' | 'highlighter';
-    color: string;
-    size: number;
-    opacity: number;
-    bbox: [number, number, number, number] | null;
-  } | null = null;
+  // private finalOutline: number[][] | null = null; // PF returns [x, y, pressure][]
+  // private finalOutlineStyle: {
+  //   tool: 'pen' | 'highlighter';
+  //   color: string;
+  //   size: number;
+  //   opacity: number;
+  //   bbox: [number, number, number, number] | null;
+  // } | null = null;
 
   // NEW: Perfect shapes support
   private hold: HoldDetector;
@@ -112,8 +110,8 @@ export class DrawingTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     // Clear held frame state from previous gesture (CRITICAL: must happen before new gesture)
-    this.finalOutline = null;
-    this.finalOutlineStyle = null;
+    // this.finalOutline = null;
+    // this.finalOutlineStyle = null;
 
     this.startDrawing(pointerId, worldX, worldY);
 
@@ -223,52 +221,37 @@ export class DrawingTool {
   addPoint(worldX: number, worldY: number): void {
     if (!this.state.isDrawing) return;
 
-    // Coalesce to RAF
-    this.pendingPoint = [worldX, worldY];
+    // Drop exact duplicate (but DO NOT decimate otherwise)
+    const pts = this.state.points;
+    const L = pts.length;
+    if (L >= 2 && pts[L - 2] === worldX && pts[L - 1] === worldY) return;
 
-    if (!this.rafId) {
-      this.rafId = requestAnimationFrame(() => {
-        // Double-check state in case tool was destroyed during RAF
-        if (this.pendingPoint && this.state.isDrawing) {
-          this.state.points.push(...this.pendingPoint);
-          this.state.pointsPF.push([this.pendingPoint[0], this.pendingPoint[1]]);
-          this.updateBounds();
-        }
-        this.pendingPoint = null;
-        this.rafId = null;
-      });
-    }
+    // Append immediately; keep both buffers in lockstep for PF + commit
+    this.state.points.push(worldX, worldY);
+    this.state.pointsPF.push([worldX, worldY]);
+
+    // Invalidate dirty region and ensure overlay rAF runs promptly
+    this.updateBounds();           // canvas maps this to overlay invalidation
+    this.requestOverlayFrame?.();  // nudge overlay even if bounds didn't expand
   }
 
   private flushPending(): void {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
-    if (this.pendingPoint && this.state.isDrawing) {
-      this.state.points.push(...this.pendingPoint);
-      this.state.pointsPF.push([this.pendingPoint[0], this.pendingPoint[1]]);
-      this.pendingPoint = null;
-    }
+    // No-op: preview capture no longer buffers by rAF.
   }
 
   private updateBounds(): void {
-    // Calculate bounds WITH stroke width inflation
+    // Calculate bounds for commit time (preview doesn't use bbox with dual canvas)
     const bounds = calculateBBox(this.state.points, this.state.config.size);
 
-    // Invalidate old region first (if exists)
-    if (this.lastBounds) {
-      this.onInvalidate?.(this.lastBounds);
+    // Store for commit and final invalidation
+    if (bounds) {
+      this.lastBounds = bounds;
     }
 
-    // Then invalidate new region
-    // CRITICAL: RenderLoop MUST internally union all invalidated regions
-    // within a single frame to avoid redundant redraws
-    // This is a Phase 3 RenderLoop responsibility, not DrawingTool's
-    // DrawingTool can call invalidate multiple times; RenderLoop handles deduplication
-    if (bounds) {
-      this.onInvalidate?.(bounds);
-      this.lastBounds = bounds;
+    // Trigger overlay invalidation (overlay does full clear, no dirty rects for preview)
+    // Canvas maps onInvalidate to overlay invalidation regardless of bounds
+    if (this.lastBounds) {
+      this.onInvalidate?.(this.lastBounds);
     }
   }
 
@@ -329,20 +312,6 @@ export class DrawingTool {
   }
 
   getPreview(): PreviewData | null {
-    // CRITICAL: Check held frame outline FIRST (persists after reset for overlay's final frame)
-    if (this.finalOutline && this.finalOutlineStyle) {
-      // Convert PF outline [x,y,pressure][] to [x,y][] for preview
-      const outline = this.finalOutline.map(pt => [pt[0], pt[1]] as [number, number]);
-      return {
-        kind: 'strokeFinal',
-        outline,
-        tool: this.finalOutlineStyle.tool,
-        color: this.finalOutlineStyle.color,
-        size: this.finalOutlineStyle.size,
-        opacity: this.finalOutlineStyle.opacity,
-        bbox: this.finalOutlineStyle.bbox,
-      };
-    }
 
     // Normal drawing state checks
     if (!this.state.isDrawing) return null;
@@ -362,7 +331,7 @@ export class DrawingTool {
     }
 
     // Freehand: return PF-native tuples for zero-conversion preview
-    if (this.state.pointsPF.length < 2) return null;
+    if (this.state.pointsPF.length < 1) return null;
     return {
       kind: 'stroke',
       points: this.state.pointsPF, // PF-native tuples
@@ -405,7 +374,7 @@ export class DrawingTool {
     }
 
     // 3) Validate minimum points
-    if (this.state.points.length < 4) {
+    if (this.state.points.length < 2) {
       this.cancelDrawing();
       return;
     }
@@ -441,23 +410,6 @@ export class DrawingTool {
 
     // 8) Compute final bbox from raw centerline
     const finalBbox = calculateBBox(rawPoints, this.state.config.size);
-
-    // 9) Compute final outline with last:true for held frame (CRITICAL for preview-commit match)
-    const finalOutline: number[][] = getStroke(canonicalTuples, {
-      ...PF_OPTIONS_BASE,
-      size: this.state.config.size,
-      last: true, // Finalized geometry
-    });
-
-    // 10) Store held frame state (persists after reset for overlay's final frame)
-    this.finalOutline = finalOutline;
-    this.finalOutlineStyle = {
-      tool: this.state.config.tool,
-      color: this.state.config.color,
-      size: this.state.config.size,
-      opacity: this.state.config.opacity,
-      bbox: finalBbox,
-    };
 
     // 11) Commit to Y.Doc with BOTH raw points and canonical tuples
     const strokeId = ulid();
@@ -659,10 +611,6 @@ export class DrawingTool {
   }
 
   destroy(): void {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null; // Ensure idempotent
-    }
     this.resetState();
     this.hold.cancel();
     this.snap = null;

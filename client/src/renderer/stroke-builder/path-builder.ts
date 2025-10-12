@@ -1,6 +1,7 @@
 import type { StrokeView } from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE } from './pf-config';
+import { getSvgPathFromStroke } from './pf-svg';
 
 export type PolylineData = {
   kind: 'polyline';
@@ -88,20 +89,20 @@ export function buildPolylineRenderData(stroke: StrokeView): PolylineData {
 }
 
 // Use a MUTABLE 2-tuple to match PF's accepted point type
-type Vec2 = [number, number];
+//type Vec2 = [number, number];
 
 /**
  * Convert flat points array to PF-native tuples (one-time conversion at cache build).
  */
-function flatToPairs(points: ReadonlyArray<number>): Vec2[] {
-  const n = (points.length / 2) | 0;
-  const out = new Array<Vec2>(n);
-  // i = source index (flat), j = tuple index
-  for (let i = 0, j = 0; j < n; j++, i += 2) {
-    out[j] = [points[i], points[i + 1]]; //perfect freehand expects a mutable 2-tuple
-  }
-  return out;
-}
+// function flatToPairs(points: ReadonlyArray<number>): Vec2[] {
+//   const n = (points.length / 2) | 0;
+//   const out = new Array<Vec2>(n);
+//   // i = source index (flat), j = tuple index
+//   for (let i = 0, j = 0; j < n; j++, i += 2) {
+//     out[j] = [points[i], points[i + 1]]; //perfect freehand expects a mutable 2-tuple
+//   }
+//   return out;
+// }
 
 /**
  * Builds PF POLYGON render data (for freehand).
@@ -110,8 +111,8 @@ function flatToPairs(points: ReadonlyArray<number>): Vec2[] {
 export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
   const size = stroke.style.size;
 
-  // CRITICAL FIX: Prefer canonical tuples if available
-  const inputTuples = stroke.pointsTuples ?? flatToPairs(stroke.points);
+  // CRITICAL FIX: canonical tuples for polygon
+  const inputTuples = stroke.pointsTuples ?? [];
 
   // Use the canonical tuples or fallback conversion
   const outline = getStroke(inputTuples, {
@@ -119,6 +120,7 @@ export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
     size,
     last: true, // finalized geometry on base canvas
   });
+  
 
   // PF returns [[x,y], ...]; flatten once into typed array for draw
   const polygon = new Float32Array(outline.length * 2);
@@ -131,15 +133,12 @@ export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hasPath2D = typeof (globalThis as any).Path2D === 'function';
-  const path = hasPath2D ? new Path2D() : null;
 
-  if (path && pointCount > 0) {
-    path.moveTo(polygon[0], polygon[1]);
-    for (let i = 2; i < polygon.length; i += 2) {
-      path.lineTo(polygon[i], polygon[i + 1]);
-    }
-    path.closePath();
-  }
+  // Build smooth SVG path from outline points instead of lineTo segments
+  // CRITICAL: Do NOT close the path - PF already provides a complete outline
+  const path = hasPath2D && pointCount > 1
+    ? new Path2D(getSvgPathFromStroke(outline, false))
+    : null;
 
   // Bounds from polygon (not centerline) for accurate dirty-rects
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

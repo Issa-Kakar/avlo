@@ -14,7 +14,7 @@ const cursorTrails = new Map<string, CursorTrail>();
 // Optimal whiteboard UX: smooth digital ink that flows naturally
 const MAX_TRAIL_POINTS = 22;           // More points for ultra-smooth curves
 const MAX_TRAIL_AGE = 550;             // ms, longer visibility for gesture clarity
-const TRAIL_DECAY_TAU = 260;           // ms, slower fade for better visibility
+const TRAIL_DECAY_TAU = 120;           // ms, slower fade for better visibility
 const MIN_POINT_DIST = 0.35;           // world units, finer sampling for smoothness
 const MIN_POINT_DT = 8;                // ms, 125Hz sampling for fluid motion
 const MAX_TRAIL_LENGTH = 200;          // world units, comfortable trail length

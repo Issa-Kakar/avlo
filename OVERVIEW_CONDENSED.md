@@ -62,7 +62,6 @@ export interface RoomDocManager {
 
    **Y references never cached** - always traverse from root on demand
 
-2. **UI components MUST NOT import Yjs** (ESLint enforced)
 3. **Helpers return Y types only for internal use** (never expose from public methods)
 
 **Publishing Discipline (Event-driven RAF):**
@@ -73,7 +72,7 @@ export interface RoomDocManager {
 - Default 60 FPS, switch to 30 FPS on mobile/battery/heavy scenes
 - **Presence-only updates clone previous snapshot with updated presence**
 - Document changes(docVersion++) trigger full snapshot rebuild from Y.Doc
-- Typed arrays: Store `number[]` in Yjs, construct `Float32Array` at render time only
+- Typed arrays: Store `[number, number][]` in Yjs, construct `Float32Array` at render time only
 - **Snapshot versioning:** Each carries `docVersion: number` (monotonic) that increments on Y.Doc changes only (not presence)
 
 ## 3. Data Models & Schema
@@ -81,26 +80,34 @@ export interface RoomDocManager {
 ### Yjs Document Structure
 
 ```typescript
-// Y.Doc → root: Y.Map → {
-//   v: number,                    // schema version
-//   meta: Y.Map<Meta>,
-//   strokes: Y.Array<Stroke>,     // append only
-//   texts: Y.Array<TextBlock>,
-//   code: Y.Map<CodeCell>,
-//   outputs: Y.Array<Output>      // keep last 10
-// }
+Y.Doc → root: Y.Map → {
+  v: number,                    // schema version
+  meta: Y.Map<Meta>,
+  strokes: Y.Array<Stroke>,     // append only
+  texts: Y.Array<TextBlock>,
+  code: Y.Map<CodeCell>,
+  outputs: Y.Array<Output>      // keep last 10
+}
 
 interface Stroke {
-  id: StrokeId; // ULID
+  id: StrokeId;
   tool: 'pen' | 'highlighter';
-  color: string; // #RRGGBB
-  size: number; // world units
-  opacity: number; // 0..1
-  points: number[]; // [x0,y0, x1,y1, ...] NEVER Float32Array
-  bbox: [number, number, number, number];
-  scene: SceneIdx; // assigned at commit from currentScene
-  createdAt: number;
-  userId: string;
+  color: string; // #RRGGBB format
+  size: number; // world units (px at scale=1)
+  opacity: number; // 0..1; highlighter default 0.45
+  points: number[]; // CRITICAL: flattened [x0,y0, x1,y1, ...]
+  // NEVER Float32Array in storage
+  pointsTuples?: [number, number][]; // NEW: Regular non shape stroke points (Perfect Freehand)
+  bbox: [number, number, number, number]; // [minX, minY, maxX, maxY] world units
+  scene: SceneIdx; // assigned at commit time
+  createdAt: number; // ms epoch timestamp
+  userId: UserId; // awareness id at commit
+  /**
+   * Semantic origin of the geometry:
+   *  - 'freehand' => renderer builds a Perfect Freehand polygon and fills it
+   *  - 'shape'    => renderer strokes the polyline as-is (perfect/snap shapes)
+   */
+  kind: 'freehand' | 'shape';
 }
 
 interface TextBlock {
@@ -125,10 +132,7 @@ interface Meta {
 
 **Constraints:**
 - `MAX_POINTS_PER_STROKE = 10_000`, `MAX_TOTAL_STROKES = 5_000`
-- Stroke simplification at pointer-up (Douglas-Peucker in world units)
-- Base tolerance: pen 0.8px, highlighter 0.5px
 - Ensure points.length/2 ≤ 10_000 and encoded update ≤ 128KB
-- If over limits: retry once with tol \*= 1.4; if still over, uniform downsample
 
 **Timestamp Policy:**
 - CRDT/Document fields: `number` type (milliseconds since epoch)
@@ -164,6 +168,7 @@ export interface Snapshot {
 export interface StrokeView {
   id: StrokeId;
   points: ReadonlyArray<number>; // Raw points from Y.Doc (stored as number[], never Float32Array)
+  pointsTuples?: [number, number][] | null; // NEW: Perfect Freehand Canonical Points
   polyline: Float32Array | null; // Built at RENDER time ONLY from points
   // Will be null in snapshot, created during canvas render from points
   style: {
@@ -176,6 +181,7 @@ export interface StrokeView {
   scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)
   createdAt: number;
   userId: string;
+  kind: 'freehand' | 'shape'; //Renderer maps kind -> geometry pipeline(polygon vs polyline)
 }
 ```
 - **Never null:** EmptySnapshot created synchronously on construct with scene=0, empty arrays
@@ -244,7 +250,6 @@ interface DeviceUIState {
 1. **UI** captures pointer stream → local preview (no writes)
 2. On **pointer-up**:
    - Derive world points from screen coords
-   - Simplify per rules (Douglas-Peucker)
    - Compute bbox with stroke width inflation
    - **Assign scene at commit using currentScene**
 3. **mutate(fn)** with minimal guards
@@ -290,7 +295,6 @@ interface DeviceUIState {
 - Handles viewport/resize events, propagates to both render loops
 - Bridges tool preview to OverlayRenderLoop via `setPreviewProvider()`
 - **Pointer Events:** `setPointerCapture` on down, release on up/cancel/lost
-- RAF-coalesce pointermove via `pendingPoint` buffer
 - Event listeners with `{ passive: false }` for preventDefault
 - Comprehensive cleanup on unmount
 
@@ -317,119 +321,281 @@ ctx.scale(scale, scale) THEN ctx.translate(-pan.x, -pan.y)
 - Clear() uses identity transform + device pixel dimensions
 
 **Render Order:**
-- Base: Background (white + adaptive dot grid) → Strokes → Text → Authoring overlays → HUD
+- Base: Background (white) → Strokes → Text → Authoring overlays → HUD
 - Overlay: Preview (world-space) → Presence (screen-space with DPR only)
 
 **Viewport Culling (`isStrokeVisible`):**
-```typescript
-// File: /client/src/renderer/layers/strokes.ts
-function isStrokeVisible(stroke: StrokeView, viewportBounds: Bounds, viewTransform: ViewTransform): boolean {
-  // Converts viewport to world bounds with margin (50px / scale)
-  // Inflates stroke bbox by half stroke width for accurate culling
-  // Uses CSS pixels for transforms, not device pixels
-}
 
 ```
 ### Stroke Rendering Pipeline & Caching
 
 **Files:** `/client/src/renderer/stroke-builder/path-builder.ts` (buildStrokeRenderData), `/client/src/renderer/stroke-builder/stroke-cache.ts` (StrokeRenderCache, getStrokeCacheInstance), `/client/src/renderer/layers/strokes.ts` (drawStrokes)
 
+**CRITICAL** PERFECT FREEHAND LIBRARY FULL IMPLEMENTED. DRAWING TOOL AUTOMATICALLY DRAWS WITH THIS UNTIL A SHAPE IS DETECTED OR IF SHAPE TOOL IS USED
+
 **Typed Array Construction (Render Time Only):**
+```
 ```typescript
 // File: /client/src/renderer/stroke-builder/path-builder.ts
-export function buildStrokeRenderData(points: readonly number[]): {
-  polyline: Float32Array;
-  path: Path2D | null; // null if Path2D not supported (test environments)
-} {
+export type PolylineData = {
+  kind: 'polyline';
+  path: Path2D | null;
+  polyline: Float32Array;
+  bounds: { x: number; y: number; width: number; height: number };
+  pointCount: number;
+};
+
+export type PolygonData = {
+  kind: 'polygon';
+  path: Path2D | null;
+  polygon: Float32Array;
+  bounds: { x: number; y: number; width: number; height: number };
+  pointCount: number;
+};
+
+export type StrokeRenderData = PolylineData | PolygonData;
   // Constructs Float32Array from plain number[] at render time
   // Builds Path2D for hardware-accelerated rendering
-  // Path2D feature detection for test environments (falls back to manual path building)
-}
 
+//excerpt from polygon data:
+export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
+  const size = stroke.style.size;
+
+  // CRITICAL FIX: canonical tuples for polygon
+  const inputTuples = stroke.pointsTuples ?? [];
+  // Use the canonical tuples or fallback conversion
+  const outline = getStroke(inputTuples, {
+    ...PF_OPTIONS_BASE,
+    size,
+    last: true, // finalized geometry on base canvas
+  });
+  // PF returns [[x,y], ...]; flatten once into typed array for draw
+  const polygon = new Float32Array(outline.length * 2);
+  for (let i = 0; i < outline.length; i++) {
+    polygon[i * 2] = outline[i][0];
+    polygon[i * 2 + 1] = outline[i][1];
+  }
+
+  const pointCount = outline.length;
+  // Build smooth SVG path from outline points instead of lineTo segments
+  // CRITICAL: Do NOT close the path - PF already provides a complete outline
+  const path = hasPath2D && pointCount > 1
+    ? new Path2D(getSvgPathFromStroke(outline, false))
+    : null;
+  // Bounds from polygon (not centerline) for accurate dirty-rects
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let i = 0; i < polygon.length; i += 2) {
+    const x = polygon[i], y = polygon[i + 1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const bounds = {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+  return { kind: 'polygon', path, polygon, bounds, pointCount };
 ```
-**Stroke Cache (Singleton, FIFO Eviction):**
+**PERFECT FREEHAND GET SVG PATH FROM STROKE**
+```typescript
+//client/src/renderer/stroke-builder/pf-svg.ts
+export function getSvgPathFromStroke(
+  points: number[][],
+  closed = true
+): string {
+  const len = points.length;
+  if (len < 2) return '';
+
+  const avg = (a: number, b: number) => (a + b) / 2;
+  // Handle degenerate case with exactly 2 points
+  if (len === 2) {
+    const [a, b] = points;
+    return `M${a[0]},${a[1]} L${b[0]},${b[1]}${closed ? ' Z' : ''}`;
+  }
+  // Build smooth quadratic Bézier path
+  let a = points[0];
+  let b = points[1];
+  let c = points[2];
+  // Start with M (moveTo), then Q (quadratic curve) to midpoint
+  let d = `M${a[0]},${a[1]} Q${b[0]},${b[1]} ${avg(b[0], c[0])},${avg(b[1], c[1])} T`;
+  // Continue with T (smooth quadratic) commands for continuous tangents
+  for (let i = 2; i < len - 1; i++) {
+    a = points[i];
+    b = points[i + 1];
+    d += `${avg(a[0], b[0])},${avg(a[1], b[1])} `;
+  }
+  // Close the path if requested
+  if (closed) d += 'Z';
+  return d;
+}
+//client/src/renderer/stroke-builder/pf-config.ts
+export const PF_OPTIONS_BASE = {
+  // 'size' will be supplied at call-site to match stroke.style.size
+  thinning: 0.60,
+  smoothing: 0.6,
+  streamline: 0.5,
+  simulatePressure: true
+  
+} as const;
+```
+**Stroke Cache:**
 ```typescript
 // File: /client/src/renderer/stroke-builder/stroke-cache.ts
-export function getStrokeCacheInstance(): StrokeRenderCache {
-  if (!globalCacheInstance) {
-    globalCacheInstance = new StrokeRenderCache(1000); // Max 1000 strokes
-  }
-  return globalCacheInstance;
-}
+
 // Module-level cache persists across frames
-// FIFO eviction when cache exceeds 1000 strokes
+/**
+ * Stroke render cache (LRU) with geometry variants per stroke ID.
+ * - Entry keyed by stroke.id
+ * - Variant keyed by a small "geometry key"
+ *   • polyline: independent of style.size (stroke width does not affect geometry)
+ *   • polygon (Perfect Freehand): depends on style.size (width affects geometry)
+ *
+ * Style-only edits (color, opacity, polyline width) DO NOT invalidate geometry.
+ */
 // Cache cleared on scene change (tracked via lastScene in strokes.ts)
-// Cache keyed by stroke.id (strokes immutable post-commit)
 // Shared by both base canvas (stroke rendering) and overlay canvas (eraser dim layer)
+
 ```
 **Stroke Rendering Loop:**
 ```typescript
 // File: /client/src/renderer/layers/strokes.ts
-export function drawStrokes(ctx: CanvasRenderingContext2D, snapshot: Snapshot, viewport: Viewport) {
-  const cache = getStrokeCacheInstance();
-  for (const stroke of snapshot.strokes) {
-    if (!isStrokeVisible(stroke, viewport, snapshot.view)) continue; // Viewport culling
-    if (shouldSkipLOD(stroke, snapshot.view)) continue; // LOD check
-    let renderData = cache.get(stroke.id);
-    if (!renderData) {
-      renderData = buildStrokeRenderData(stroke.points); // Build Float32Array + Path2D
-      cache.set(stroke.id, renderData);
-    }
-    ctx.save();
-    ctx.strokeStyle = stroke.style.color;
-    ctx.lineWidth = stroke.style.size; // World units
-    ctx.globalAlpha = stroke.style.opacity;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    if (renderData.path) {
-      ctx.stroke(renderData.path); // Hardware-accelerated Path2D
-    } else {
-      // Fallback: manual path building from polyline
-      ctx.beginPath();
-      for (let i = 0; i < renderData.polyline.length; i += 2) {
-        if (i === 0) ctx.moveTo(renderData.polyline[i], renderData.polyline[i + 1]);
-        else ctx.lineTo(renderData.polyline[i], renderData.polyline[i + 1]);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
+export function drawStrokes(
+  ctx: CanvasRenderingContext2D,
+  snapshot: Snapshot,
+  viewTransform: ViewTransform,
+  viewport: ViewportInfo,
+): void {
+  // Clear cache on scene change
+  if (snapshot.scene !== lastScene) {
+    strokeCache.clear();
+    lastScene = snapshot.scene;
+  }
+  // Calculate visible world bounds for culling
+  const visibleBounds = getVisibleWorldBounds(viewTransform, viewport);
+  // Filter and render strokes
+  const strokes = snapshot.strokes;
+  let renderedCount = 0;
+  let culledCount = 0;
+  for (const stroke of strokes) {
+    // Scene filtering already done in snapshot
+    // Just check visibility
+    if (!isStrokeVisible(stroke, visibleBounds));
+    // Apply LOD: Skip tiny strokes (< 2px diagonal in screen space)
+    if (shouldSkipLOD(stroke, viewTransform)) ;
+  }
+  renderStroke(ctx, stroke, viewTransform);
 }
 
-```
-## 7. Tool Implementations
+/**
+ * Renders a single stroke.
+ * Branches on stroke.kind to use different geometry pipelines:
+ * - Freehand (PF polygon) → fill
+ * - Shapes (polyline) → stroke
+ *
+ * Note: viewTransform is passed for consistency but not used here since
+ * RenderLoop has already applied the world transform to the context.
+ */
+function renderStroke(
+  ctx: CanvasRenderingContext2D,
+  stroke: StrokeView,
+  _viewTransform: ViewTransform,
+): void {
+  // Get or build render data (cache selects geometry based on stroke.kind)
+  const renderData = strokeCache.getOrBuild(stroke);
 
-### PointerTool Interface (Polymorphic)
+  if (renderData.pointCount < 2) {
+    return; // Need at least 2 points for a line
+  }
 
-All tools (DrawingTool, EraserTool, future LassoTool) implement:
+  ctx.save();
+  ctx.globalAlpha = stroke.style.opacity;
 
-```typescript
-type PointerTool = {
-  canBegin(): boolean;
-  begin(pointerId: number, x: number, y: number): void;
-  move(x: number, y: number): void;
-  end(x?: number, y?: number): void;
-  cancel(): void;
-  isActive(): boolean;
-  getPointerId(): number | null;
-  getPreview(): PreviewData | null;
-  destroy(): void;
-  clearHover?(): void; // Optional (EraserTool)
-};
+  if (renderData.kind === 'polygon') {
+    // FREEHAND (PF polygon) → fill with default nonzero rule (no closing)
+    ctx.fillStyle = stroke.style.color;
+    if (renderData.path) {
+      // Use default nonzero fill rule for open PF outlines
+      ctx.fill(renderData.path);
+    } else {
+      // Rare test fallback (no Path2D)
+      ctx.beginPath();
+      const pg = renderData.polygon;
+      ctx.moveTo(pg[0], pg[1]);
+      for (let i = 2; i < pg.length; i += 2) {
+        ctx.lineTo(pg[i], pg[i + 1]);
+      }
+      // CRITICAL: Do NOT closePath() - PF already provides complete outline
+      ctx.fill();
+    }
+  } else {
+    // SHAPES (polyline) → stroke
+    ctx.strokeStyle = stroke.style.color;
+    ctx.lineWidth = stroke.style.size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    if (stroke.style.tool === 'highlighter') {
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    if (renderData.path) {
+      ctx.stroke(renderData.path);
+    } 
+  }
+  ctx.restore();
+}
+
+function shouldSkipLOD(stroke: StrokeView, viewTransform: ViewTransform): boolean {
+  const [minX, minY, maxX, maxY] = stroke.bbox;
+  const diagonal = Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2);
+  const screenDiagonal = diagonal * viewTransform.scale;
+
+  // Skip if less than 2 CSS pixels
+  return screenDiagonal < 2;
+}
+
+/**
+ * Calculate visible world bounds for culling.
+ * Converts viewport to world coordinates.
+ *
+ * CRITICAL: Uses CSS pixels from viewport, not device pixels.
+ * The ViewTransform operates in CSS coordinate space.
+ * ViewportInfo provides both:
+ * - pixelWidth/pixelHeight: Device pixels for canvas operations
+ * - cssWidth/cssHeight: CSS pixels for coordinate transforms
+ */
+function getVisibleWorldBounds(
+  viewTransform: ViewTransform,
+  viewport: ViewportInfo,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  // Convert viewport corners to world space using CSS pixels (NOT device pixels)
+  const [minX, minY] = viewTransform.canvasToWorld(0, 0);
+  const [maxX, maxY] = viewTransform.canvasToWorld(viewport.cssWidth, viewport.cssHeight);
+
+  // Add small margin for strokes partially in view
+  const margin = 50 / viewTransform.scale; // 50px margin in world units
+
+  return {
+    minX: minX - margin,
+    minY: minY - margin,
+    maxX: maxX + margin,
+    maxY: maxY + margin,
+  };
+}
 ```
 
 ### Drawing Tool
 
 - **State frozen at pointer-down** (stored in state.config)
-- **RAF-coalesced pointermove** via pendingPoint buffer
+- **Invalidate renderloop every pointer move for full clear** 
 - **Preview opacity:** Matches commit (pen: 1.0, highlighter: 0.45)
-- **Simplification:** Douglas-Peucker iterative (prevents stack overflow)
-  - Base tolerance: pen 0.8, highlighter 0.5 world units
-  - One retry with tol \*= 1.4 if over limits
-  - Hard downsample if still exceeds 10k points
+- Simplification: **SKIPPED FOR OPTIMAL VISUAL UX**
 - **Size estimation:** ~16 bytes per coordinate + 500 metadata + 1024 envelope
 - **Commit:** Generate ULID, assign currentScene, push to strokes[]
-- **Invalidation:** Preview bounds AND simplified stroke bounds **CRITICAL: PREVIEW RENDERLOOP INVALIDATES ALL ANYWAY SO PARAMETERS ON PREVIEW DO NOT MATTER HERE**
+- **Invalidation:** Preview bounds AND commit **CRITICAL: PREVIEW RENDERLOOP INVALIDATES ALL ANYWAY SO PARAMETERS ON PREVIEW DO NOT MATTER HERE**
 
 ### Eraser Tool (Phase 8)
 
@@ -565,13 +731,13 @@ Canvas instantiates the appropriate tool once per effect run (based on `activeTo
 export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview;
 
 export interface StrokePreview {
-  kind: 'stroke';
-  points: ReadonlyArray<number>;
+  kind: 'stroke'; // Discriminant for union type
+  points: [number, number][]; // PF-native tuples: [[x,y], [x,y], ...] in world coordinates
   tool: 'pen' | 'highlighter';
   color: string;
-  size: number;
+  size: number; // World units
   opacity: number;
-  bbox: [number, number, number, number] | null;
+  bbox: [number, number, number, number] | null; 
 }
 
 export interface EraserPreview {
@@ -610,6 +776,35 @@ export interface PerfectShapePreview {
 - Cursor: 'none' for eraser, 'crosshair' for drawing
 - Mobile gating at Canvas level (not in tools)
 
+**PERFECT FREEHAND(NON SHAPES) STROKE PREVIEW**:
+```typescript
+export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePreview): void {
+  if (!preview || preview.points.length < 2) return;
+
+  ctx.save();
+  ctx.globalAlpha = preview.opacity; // Tool-specific opacity
+
+  // PF input: [x,y][]; output: [x,y][] (not flat)
+  const outline = getStroke(preview.points, {
+    ...PF_OPTIONS_BASE,
+    size: preview.size,
+    last: false, // live preview
+    
+  });
+
+  if (outline.length > 1) {
+    // Convert PF outline to smooth SVG path with quadratic Bézier curves
+    // CRITICAL: Do NOT close the path - PF already provides a complete outline
+    const svgPath = getSvgPathFromStroke(outline, false);
+    const path = new Path2D(svgPath);
+    ctx.fillStyle = preview.color;
+    // Use default nonzero fill rule (not even-odd) for open PF outlines
+    ctx.fill(path);
+  }
+
+  ctx.restore();
+}
+```
 ## 8. Awareness & Presence
 
 **Cursor Interpolation (`ingestAwareness`):** , **Cursor Rendering:** and **Cursor Trails**
@@ -711,13 +906,24 @@ export interface PerfectShapePreview {
 
 ### Service Worker - Cache HTML/assets, no `/api/**` or `/yjs/**` caching
 
-## 10. Tool Preview Summary
+### The "Monster Effect" Root Cause (FIXED)
+The `worldToClient` callback previously had `viewTransform` as a dependency, causing recreation on every pan/zoom. This has been fixed by making it stable with empty dependencies, reading the latest transform from a ref.
+## Implementation Details
+### 1. Fixed Temporal Dead Zone (TDZ) Error
+**File**: `client/src/canvas/Canvas.tsx`
+Moved `useDeviceUIStore()` call BEFORE `activeToolRef` initialization to prevent TDZ error:
+### 2. Stabilized Callbacks and Refs
+Added refs for stable access to context setters and transforms:
+### 3. Stabilized worldToClient Function
+Made `worldToClient` stable with empty dependencies:
+### 4. Fixed Effect Dependencies
+Added `worldToClient` and `applyCursor` to Tool Lifecycle effect dependencies (both are now stable):
 
-| Tool | Preview Kind | Overlay Rendering | Commit |
-|------|--------------|-------------------|--------|
-| Pen/Highlighter | `'stroke'` | Freehand polyline (world-space) | Simplified stroke to Y.Array<Stroke> |
-| Eraser | `'eraser'` | Two-pass: dim hit strokes (world), cursor circle (screen) | Atomic delete in reverse index order |
-| Text | `null` | DOM editor IS the preview | Measure rect, commit TextBlock to Y.Array<TextBlock> |
-| Pan | `null` | No preview | No commit (updates view transform only) |
-| Perfect Shapes (Hold) | `'perfect_shape'` | Computed geometry from anchors + cursor | Convert to polyline stroke |
-| Shape Tools (Dedicated) | `'perfect_shape'` | Same as perfect shapes (forced snap, no hold) | Convert to polyline stroke |
+2. **Tool state in refs** - Survives React re-renders at 60 FPS
+3. **Event handlers read from refs** - No closure dependencies (critical for mount-once pattern)
+4. **MMB is ephemeral** - Never touches Zustand store
+5. **Single tool branch point** - Route events polymorphically
+6. **Transform math** - Pan is in world units, not screen pixels
+7. **Presence first** - Update cursor position before handling gestures
+8. **Stable callbacks** - Functions with empty deps read everything from refs
+9. **Value setter for pan** - Context uses `setPan(pan)`, not `setPan((prev) => ...)`

@@ -5,10 +5,9 @@
 The Perfect Freehand preview-commit mismatch occurs because:
 1. **Simplification runs even at tolerance 0** - deduplication and point removal changes corner weights
 2. **Data conversion from flat to tuples** - creates new arrays with different precision
-3. **Last flag mismatch** - preview uses `last: false`, commit uses `last: true`
 4. **No canonical data preserved** - PF tuples are recreated rather than reused
 
-This guide provides **exact, line-by-line implementation instructions** to fix these issues permanently.
+
 
 ## Core Principle
 
@@ -18,7 +17,7 @@ We will:
 1. Preserve the exact PF tuple array created during drawing
 2. Bypass ALL simplification for freehand strokes
 3. Store tuples alongside flat arrays for backward compatibility
-4. Use the same tuples and same `last:true` flag for final frame
+4. Use the same tuples and for commit and preview
 
 ## Complete Data Flow Map
 
@@ -143,7 +142,7 @@ After line 34 (add new private fields):
   private shouldUseFinalOutline = false;
 ```
 
-**CHANGE 2: Modify commitStroke method (starting at line 361)**
+**CHANGE: Modify commitStroke method (starting at line 361)**
 The current freehand commit path does run simplification and only appends the final point to the flat array, not the PF tuple buffer, which can desync the last few points (exactly where corners are most sensitive). Both are core causes of your “ripple/chip” at sharp turns. 
 There are two commit paths. commitStroke(...) is the freehand path; perfect shapes go through commitPerfectShapeFromPreview()
 Concrete change:

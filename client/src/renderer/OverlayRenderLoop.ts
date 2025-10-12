@@ -1,6 +1,6 @@
 import type { PresenceView, ViewTransform, Snapshot } from '@avlo/shared';
 import type { PreviewData } from '@/lib/tools/types';
-import { drawPreview, drawFinalPreview } from './layers/preview';
+import { drawPreview, } from './layers/preview';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 
@@ -112,13 +112,13 @@ export class OverlayRenderLoop {
           ctx.translate(-view.pan.x, -view.pan.y);
           drawPreview(ctx, previewToDraw); // Existing preview function
           ctx.restore();
-        } else if (previewToDraw.kind === 'strokeFinal') {
-          // NEW: Final stroke preview with pre-computed outline
-          ctx.save();
-          ctx.scale(view.scale, view.scale);
-          ctx.translate(-view.pan.x, -view.pan.y);
-          drawFinalPreview(ctx, previewToDraw);
-          ctx.restore();
+        // } else if (previewToDraw.kind === 'strokeFinal') {
+        //   // NEW: Final stroke preview with pre-computed outline
+        //   ctx.save();
+        //   ctx.scale(view.scale, view.scale);
+        //   ctx.translate(-view.pan.x, -view.pan.y);
+        //   drawFinalPreview(ctx, previewToDraw);
+        //   ctx.restore();
         } else if (previewToDraw.kind === 'eraser') {
           // New eraser preview (two passes)
           const snapshot = getSnapshot(); // Need snapshot for dimming

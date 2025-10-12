@@ -374,7 +374,7 @@ export class RenderLoop {
       // DPR is already applied by CanvasStage via initial setTransform(dpr, 0, 0, dpr, 0, 0)
 
       drawBackground(ctx, snapshot, view, augmentedViewport);
-      drawStrokes(ctx, snapshot, view, augmentedViewport); // Phase 4: actual stroke rendering
+      drawStrokes(ctx, snapshot, view, augmentedViewport); // Phase 4: actual stroke rendering (shapes commit as a stroke)
       drawShapes(ctx, snapshot, view, augmentedViewport); // NO LONGER IMPLEMENTED: stamps/shapes, DORMANT PLACEHOLDER
       drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
 
