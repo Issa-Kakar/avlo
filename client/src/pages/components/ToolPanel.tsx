@@ -1,23 +1,293 @@
-import React, { useRef, useState, useEffect } from 'react';
-import { useDeviceUIStore, Tool } from '../../stores/device-ui-store';
+import React, { useState, useEffect, useRef } from 'react';
+import { useDeviceUIStore } from '../../stores/device-ui-store';
+
+// Import icon components from Phase 5
+import {
+  IconSelect,
+  IconPen,
+  IconHighlighter,
+  IconEraser,
+  IconText,
+  IconRectangle,
+  IconEllipse,
+  IconArrow,
+  IconLine,
+  IconImage,
+  IconPan,
+  IconFill,
+} from '../icons';
 
 interface ToolPanelProps {
   onToast?: (message: string) => void;
 }
 
+export function ToolPanel({ onToast }: ToolPanelProps) {
+  const {
+    activeTool,
+    pen,
+    highlighter,
+    eraser,
+    text,
+    shape,
+    fixedColors,
+    recentColors,
+    isColorPopoverOpen,
+    fillEnabledUI,
+    setActiveTool,
+    setShapeSettings,
+    setCurrentToolSize,
+    setCurrentToolColor,
+    addRecentColor,
+    setColorPopoverOpen,
+    setFillEnabledUI,
+  } = useDeviceUIStore();
+
+  const popoverRef = useRef<HTMLDivElement>(null);
+
+  // Determine if inspector should show
+  const showInspector = ['pen', 'highlighter', 'text', 'select', 'shape', 'eraser'].includes(
+    activeTool,
+  );
+  const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
+  const showSizes = !['pan', 'image'].includes(activeTool);
+  const showFillToggle =
+    activeTool === 'shape' || activeTool === 'pen' || activeTool === 'highlighter';
+
+  // Get current settings based on active tool
+  const getCurrentSettings = () => {
+    switch (activeTool) {
+      case 'pen':
+        return pen;
+      case 'highlighter':
+        return highlighter;
+      case 'eraser':
+        return { ...eraser, color: '#000000' }; // Add dummy color for eraser
+      case 'text':
+        return text;
+      case 'shape':
+        return shape.settings;
+      default:
+        return pen;
+    }
+  };
+
+  const currentSettings = getCurrentSettings();
+
+  // Size presets
+  const getSizePresets = () => {
+    if (activeTool === 'text') return [20, 30, 40, 50];
+    return [10, 14, 18, 22]; // Same for pen, highlighter, eraser, shapes
+  };
+
+  const sizePresets = getSizePresets();
+  const sizeLabels = ['S', 'M', 'L', 'XL'];
+
+  // Close popover on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
+        setColorPopoverOpen(false);
+      }
+    };
+
+    if (isColorPopoverOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isColorPopoverOpen, setColorPopoverOpen]);
+
+  return (
+    <div className="tool-dock-wrap">
+      {/* Main toolbar */}
+      <div className="tool-dock">
+        {/* Tools in order: Select, Pen, Highlighter, Eraser, Text, Rectangle, Ellipse, Arrow, Line, Image, Pan */}
+        <ToolButton
+          tool="select"
+          isActive={activeTool === 'select'}
+          onClick={() => setActiveTool('select')}
+          tooltip="Select (V)"
+        >
+          <IconSelect className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="pen"
+          isActive={activeTool === 'pen'}
+          onClick={() => setActiveTool('pen')}
+          tooltip="Pen (P)"
+        >
+          <IconPen className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="highlighter"
+          isActive={activeTool === 'highlighter'}
+          onClick={() => setActiveTool('highlighter')}
+          tooltip="Highlighter (H)"
+        >
+          <IconHighlighter className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="eraser"
+          isActive={activeTool === 'eraser'}
+          onClick={() => setActiveTool('eraser')}
+          tooltip="Eraser (E)"
+        >
+          <IconEraser className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="text"
+          isActive={activeTool === 'text'}
+          onClick={() => setActiveTool('text')}
+          tooltip="Text (T)"
+        >
+          <IconText className="icon" />
+        </ToolButton>
+
+        <div className="tool-divider" />
+
+        {/* Shape tools - CRITICAL: Set both activeTool='shape' AND the variant */}
+        <ToolButton
+          tool="rectangle"
+          isActive={activeTool === 'shape' && shape.variant === 'rectangle'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeSettings({ variant: 'rectangle' });
+          }}
+          tooltip="Rectangle (R)"
+        >
+          <IconRectangle className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="ellipse"
+          isActive={activeTool === 'shape' && shape.variant === 'ellipse'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeSettings({ variant: 'ellipse' });
+          }}
+          tooltip="Ellipse (O)"
+        >
+          <IconEllipse className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="arrow"
+          isActive={activeTool === 'shape' && shape.variant === 'arrow'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeSettings({ variant: 'arrow' });
+          }}
+          tooltip="Arrow (A)"
+        >
+          <IconArrow className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="line"
+          isActive={activeTool === 'shape' && shape.variant === 'line'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeSettings({ variant: 'line' });
+          }}
+          tooltip="Line (L)"
+        >
+          <IconLine className="icon" />
+        </ToolButton>
+
+        <div className="tool-divider" />
+
+        <ToolButton
+          tool="image"
+          isActive={activeTool === 'image'}
+          onClick={() => {
+            setActiveTool('image');
+            onToast?.('Image tool coming soon!');
+          }}
+          tooltip="Image (I)"
+        >
+          <IconImage className="icon" />
+        </ToolButton>
+
+        <ToolButton
+          tool="pan"
+          isActive={activeTool === 'pan'}
+          onClick={() => setActiveTool('pan')}
+          tooltip="Pan (Space)"
+        >
+          <IconPan className="icon" />
+        </ToolButton>
+      </div>
+
+      {/* Inspector with new color system */}
+      {showInspector && (
+        <Inspector
+          showColors={showColors}
+          showSizes={showSizes}
+          showFillToggle={showFillToggle}
+          fixedColors={fixedColors}
+          recentColors={recentColors}
+          sizePresets={sizePresets}
+          sizeLabels={sizeLabels}
+          currentColor={currentSettings.color}
+          currentSize={currentSettings.size}
+          isColorPopoverOpen={isColorPopoverOpen}
+          fillEnabledUI={fillEnabledUI}
+          onColorChange={setCurrentToolColor}
+          onSizeChange={setCurrentToolSize}
+          onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
+          onFillToggle={() => setFillEnabledUI(!fillEnabledUI)}
+          addRecentColor={addRecentColor}
+          popoverRef={popoverRef}
+        />
+      )}
+
+      {/* Undo/Redo micro buttons - positioned after inspector */}
+      <div className="undo-redo-inline">
+        <button className="micro-ghost" aria-label="Undo" onClick={() => onToast?.('UNDO')}>
+          <svg viewBox="0 0 24 24" className="micro-icon">
+            <path
+              d="M9 5l-5 5 5 5M20 12H5"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+        <button className="micro-ghost" aria-label="Redo" onClick={() => onToast?.('REDO')}>
+          <svg viewBox="0 0 24 24" className="micro-icon">
+            <path
+              d="M15 5l5 5-5 5M4 12h15"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Tool Button Component
 interface ToolButtonProps {
-  tool: Tool;
+  tool: string;
   isActive: boolean;
   onClick: () => void;
   tooltip: string;
   children: React.ReactNode;
 }
 
-function ToolButton({ tool, isActive, onClick, tooltip, children }: ToolButtonProps) {
+function ToolButton({ isActive, onClick, tooltip, children }: ToolButtonProps) {
   return (
     <button
       className={`tool-btn ${isActive ? 'active' : ''}`}
-      data-tool={tool}
       data-tooltip={tooltip}
       onClick={onClick}
       aria-label={tooltip}
@@ -27,341 +297,201 @@ function ToolButton({ tool, isActive, onClick, tooltip, children }: ToolButtonPr
   );
 }
 
-export function ToolPanel({ onToast }: ToolPanelProps) {
-  const { activeTool, toolbarPos, editorCollapsed, shape, setActiveTool, setToolbarPosition, setShapeSettings } =
-    useDeviceUIStore();
+// Enhanced Inspector Component with new color system
+interface InspectorProps {
+  showColors: boolean;
+  showSizes: boolean;
+  showFillToggle: boolean;
+  fixedColors: string[];
+  recentColors: string[];
+  sizePresets: number[];
+  sizeLabels: string[];
+  currentColor: string;
+  currentSize: number;
+  isColorPopoverOpen: boolean;
+  fillEnabledUI: boolean;
+  onColorChange: (color: string) => void;
+  onSizeChange: (size: number) => void;
+  onColorPopoverToggle: () => void;
+  onFillToggle: () => void;
+  addRecentColor: (color: string) => void;
+  popoverRef: React.RefObject<HTMLDivElement>;
+}
 
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const dragHandleRef = useRef<HTMLDivElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const isDraggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
+function Inspector({
+  showColors,
+  showSizes,
+  showFillToggle,
+  fixedColors,
+  recentColors,
+  sizePresets,
+  sizeLabels,
+  currentColor,
+  currentSize,
+  isColorPopoverOpen,
+  fillEnabledUI,
+  onColorChange,
+  onSizeChange,
+  onColorPopoverToggle,
+  onFillToggle,
+  addRecentColor,
+  popoverRef,
+}: InspectorProps) {
+  const [hexInput, setHexInput] = useState('#');
 
-  const startDrag = (clientX: number, clientY: number) => {
-    setIsDragging(true);
-    isDraggingRef.current = true;
-    dragStartRef.current = { x: clientX - toolbarPos.x, y: clientY - toolbarPos.y };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.addEventListener('pointermove', handlePointerMove);
-    document.addEventListener('pointerup', handlePointerUp);
+  const isCustomColor = (color: string) => {
+    return !fixedColors.map((c) => c.toLowerCase()).includes(color?.toLowerCase());
   };
 
-  const updatePosition = (clientX: number, clientY: number) => {
-    if (!isDraggingRef.current) return;
-
-    const newX = clientX - dragStartRef.current.x;
-    const newY = clientY - dragStartRef.current.y;
-
-    // Get dynamic bounds based on actual layout
-    const headerHeight = 56; // Header is 56px tall
-
-    // Get actual toolbar dimensions
-    const toolbarElement = toolbarRef.current;
-    const toolbarWidth = toolbarElement?.offsetWidth || 62;
-    const toolbarHeight = toolbarElement?.offsetHeight || 446;
-
-    // Determine right boundary using actual editor panel position
-    const editorElement = document.querySelector('.editor-panel') as HTMLElement | null;
-    const editorLeft =
-      !editorCollapsed && editorElement
-        ? editorElement.getBoundingClientRect().left
-        : window.innerWidth;
-
-    // Set bounds with proper margins
-    const leftMargin = 20;
-    const topMargin = headerHeight + 24; // Header + extra margin (slightly more)
-    const rightMargin = 20; // Same as left margin
-    const bottomMargin = 20;
-
-    // Max X is up to the editor panel's left edge
-    const maxX = editorLeft - rightMargin - toolbarWidth;
-
-    const boundedX = Math.max(leftMargin, Math.min(newX, maxX));
-    const boundedY = Math.max(
-      topMargin,
-      Math.min(newY, window.innerHeight - bottomMargin - toolbarHeight),
-    );
-
-    setToolbarPosition({ x: boundedX, y: boundedY });
-  };
-
-  const endDrag = () => {
-    setIsDragging(false);
-    isDraggingRef.current = false;
-    document.removeEventListener('mousemove', handleMouseMove);
-    document.removeEventListener('mouseup', handleMouseUp);
-    document.removeEventListener('pointermove', handlePointerMove);
-    document.removeEventListener('pointerup', handlePointerUp);
-  };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.target !== dragHandleRef.current) return;
-    e.preventDefault();
-    startDrag(e.clientX, e.clientY);
-  };
-
-  const handleMouseMove = (e: MouseEvent) => {
-    updatePosition(e.clientX, e.clientY);
-  };
-
-  const handleMouseUp = () => {
-    endDrag();
-  };
-
-  const handlePointerMove = (e: PointerEvent) => {
-    updatePosition(e.clientX, e.clientY);
-  };
-
-  const handlePointerUp = () => {
-    endDrag();
-  };
-
-  // Ensure initial position respects bounds
-  useEffect(() => {
-    const headerHeight = 56;
-    const toolbarWidth = 62;
-    const editorElement = document.querySelector('.editor-panel') as HTMLElement | null;
-    const editorLeft =
-      !editorCollapsed && editorElement
-        ? editorElement.getBoundingClientRect().left
-        : window.innerWidth;
-    const _leftMargin = 20;
-    const topMargin = headerHeight + 24;
-    const rightMargin = 20;
-
-    const maxX = editorLeft - rightMargin - toolbarWidth;
-    const minY = topMargin;
-
-    // Check if current position is out of bounds and adjust if needed
-    if (toolbarPos.x > maxX || toolbarPos.y < minY) {
-      setToolbarPosition({
-        x: Math.min(toolbarPos.x, maxX),
-        y: Math.max(toolbarPos.y, minY),
-      });
+  const handleColorSelect = (color: string, isCustom: boolean) => {
+    onColorChange(color);
+    if (isCustom) {
+      addRecentColor(color);
     }
-  }, [editorCollapsed, toolbarPos, setToolbarPosition]);
+    onColorPopoverToggle(); // Close popover
+  };
 
-  const handleToolClick = (tool: Tool) => {
-    if (tool === 'pen' || tool === 'highlighter') {
-      setActiveTool(tool);
-    } else if (tool === 'eraser' || tool === 'text' || tool === 'select' || tool === 'pan') {
-      setActiveTool(tool);
-      onToast?.(`${tool.charAt(0).toUpperCase() + tool.slice(1)} selected`);
+  const handleHexSubmit = () => {
+    const h = hexInput.trim();
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(h)) {
+      handleColorSelect(h, true);
+      setHexInput('#');
     }
   };
 
-  const handleShapeClick = (variant: 'rectangle' | 'ellipse' | 'arrow' | 'line') => {
-    setActiveTool('shape');
-    setShapeSettings({ variant });
-  };
-
-  const handleUndoRedo = (action: 'undo' | 'redo') => {
-    onToast?.(action.toUpperCase());
-  };
+  // More colors for the extended palette
+  const moreColors = [
+    '#FFFFFF', // White
+    '#8B5E3C', // Brown
+    '#06B6D4', // Cyan
+    '#EC4899', // Pink
+    '#84CC16', // Lime
+    '#1E3A8A', // Navy
+    '#14B8A6', // Teal
+    '#0EA5E9', // Sky
+    '#A855F7', // Purple
+    '#F43F5E', // Rose
+    '#F5E7C6', // Sand
+    '#374151', // Slate
+  ];
 
   return (
-    <>
-      <style>{`
-        .tool-panel .tool-btn {
-          width: 40px;
-          height: 40px;
-        }
-        .tool-panel .icon {
-          width: 18px;
-          height: 18px;
-        }
-        .tool-panel .drag-handle {
-          margin: 2px 4px 4px;
-        }
-        .tool-panel .tool-divider {
-          margin: 4px 6px;
-        }
-      `}</style>
-      <div
-        ref={toolbarRef}
-        className="tool-panel"
-        style={{
-          left: toolbarPos.x,
-          top: toolbarPos.y,
-          cursor: isDragging ? 'grabbing' : 'default',
-          padding: '6px',
-          gap: '4px',
-        }}
-        onMouseDown={handleMouseDown}
-      >
-        {/* Drag Handle */}
-      <div
-        ref={dragHandleRef}
-        className="drag-handle"
-        aria-label="Move toolbar"
-        style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
-      />
+    <div className="inspector">
+      {showColors && (
+        <div className="inspector-colors">
+          <div className="swatch-row">
+            {/* Fixed 8 colors */}
+            {fixedColors.map((c) => (
+              <button
+                key={c}
+                className={`swatch ${currentColor === c ? 'is-active-fixed' : ''}`}
+                style={{ backgroundColor: c }}
+                aria-label={`Color ${c}`}
+                onClick={() => onColorChange(c)}
+              />
+            ))}
 
-      {/* Drawing Tools */}
-      <ToolButton
-        tool="pen"
-        isActive={activeTool === 'pen'}
-        onClick={() => handleToolClick('pen')}
-        tooltip="Pen (P)"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M12 19l7-7 3 3-7 7-3-3z" />
-          <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-          <path d="M2 2l7.586 7.586" />
-        </svg>
-      </ToolButton>
+            {/* "+" button for more colors */}
+            <button
+              className={`swatch swatch-plus ${isCustomColor(currentColor) ? 'custom-outline' : ''}`}
+              style={isCustomColor(currentColor) ? { borderColor: currentColor } : {}}
+              onClick={onColorPopoverToggle}
+              aria-haspopup="dialog"
+              aria-expanded={isColorPopoverOpen}
+              aria-label="More colors"
+            >
+              <span>+</span>
+            </button>
 
-      <ToolButton
-        tool="highlighter"
-        isActive={activeTool === 'highlighter'}
-        onClick={() => handleToolClick('highlighter')}
-        tooltip="Highlighter (H)"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="m9 11-6 6v3h9l3-3" />
-          <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
-        </svg>
-      </ToolButton>
+            {/* Fill toggle button */}
+            {showFillToggle && (
+              <button
+                className={`icon-btn ${fillEnabledUI ? 'on' : ''}`}
+                onClick={onFillToggle}
+                aria-label="Fill"
+                title="Fill"
+              >
+                <IconFill className="icon" />
+              </button>
+            )}
+          </div>
 
-      <ToolButton
-        tool="eraser"
-        isActive={activeTool === 'eraser'}
-        onClick={() => handleToolClick('eraser')}
-        tooltip="Eraser (E)"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
-          <path d="M22 21H7" />
-        </svg>
-      </ToolButton>
+          {/* Color Popover */}
+          {isColorPopoverOpen && (
+            <div className="color-popover" role="dialog" aria-modal="true" ref={popoverRef}>
+              {/* Recent Colors */}
+              {recentColors.length > 0 && (
+                <div className="popover-section">
+                  <h6>RECENT</h6>
+                  <div className="swatch-grid">
+                    {recentColors.map((c, i) => (
+                      <button
+                        key={`recent-${i}`}
+                        className="swatch"
+                        style={{ backgroundColor: c }}
+                        onClick={() => handleColorSelect(c, true)}
+                        aria-label={`Recent color ${c}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
 
-      <ToolButton
-        tool="text"
-        isActive={activeTool === 'text'}
-        onClick={() => handleToolClick('text')}
-        tooltip="Text (T)"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M4 7V4h16v3M9 20h6M12 4v16" />
-        </svg>
-      </ToolButton>
+              {/* More Colors */}
+              <div className="popover-section">
+                <h6>MORE</h6>
+                <div className="swatch-grid">
+                  {moreColors.map((c) => (
+                    <button
+                      key={c}
+                      className="swatch"
+                      style={{ backgroundColor: c }}
+                      onClick={() => handleColorSelect(c, true)}
+                      aria-label={`Color ${c}`}
+                    />
+                  ))}
+                </div>
+              </div>
 
-      <div className="tool-divider" />
+              {/* Hex Input */}
+              <div className="popover-section">
+                <h6>HEX CODE</h6>
+                <div className="hex-row">
+                  <input
+                    type="text"
+                    value={hexInput}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setHexInput(v.startsWith('#') ? v : '#' + v);
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleHexSubmit()}
+                    placeholder="#"
+                    aria-label="Hex code"
+                  />
+                  <button className="hex-apply" onClick={handleHexSubmit} aria-label="Apply hex">
+                    ↵
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
-      {/* Shape Tools */}
-      <button
-        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'rectangle' ? 'active' : ''}`}
-        data-tooltip="Rectangle (R)"
-        onClick={() => handleShapeClick('rectangle')}
-        aria-label="Rectangle"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <rect x="5" y="6" width="14" height="12" rx="2" />
-        </svg>
-      </button>
-
-      <button
-        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'ellipse' ? 'active' : ''}`}
-        data-tooltip="Ellipse (O)"
-        onClick={() => handleShapeClick('ellipse')}
-        aria-label="Ellipse"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <ellipse cx="12" cy="12" rx="7" ry="7" />
-        </svg>
-      </button>
-
-      <button
-        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'arrow' ? 'active' : ''}`}
-        data-tooltip="Arrow (A)"
-        onClick={() => handleShapeClick('arrow')}
-        aria-label="Arrow"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M4 12h12" />
-          <path d="M12 6l6 6-6 6" />
-        </svg>
-      </button>
-
-      <button
-        className={`tool-btn ${activeTool === 'shape' && shape.variant === 'line' ? 'active' : ''}`}
-        data-tooltip="Line (L)"
-        onClick={() => handleShapeClick('line')}
-        aria-label="Line"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M4 20 20 4" />
-        </svg>
-      </button>
-
-      <div className="tool-divider" />
-
-      {/* Select Tool */}
-      <ToolButton
-        tool="select"
-        isActive={activeTool === 'select'}
-        onClick={() => handleToolClick('select')}
-        tooltip="Select Tool (V)"
-      >
-        <svg
-          className="icon"
-          width="20"
-          height="20"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          {/* Lasso selection icon */}
-          <path
-            d="M 4 4 L 10 4 L 10 10 M 10 10 L 16 10 L 16 16 M 16 16 L 10 16 L 10 20 L 4 20 L 4 4"
-            strokeDasharray="2 2"
-          />
-        </svg>
-      </ToolButton>
-
-      <ToolButton
-        tool="pan"
-        isActive={activeTool === 'pan'}
-        onClick={() => handleToolClick('pan')}
-        tooltip="Pan (Space)"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M3 12h18M12 3v18" />
-        </svg>
-      </ToolButton>
-
-      <div className="tool-divider" />
-
-      {/* Undo/Redo */}
-      <button
-        className="tool-btn"
-        data-tooltip="Undo (⌘Z)"
-        onClick={() => handleUndoRedo('undo')}
-        aria-label="Undo"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M3 7v6h6" />
-          <path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13" />
-        </svg>
-      </button>
-
-      <button
-        className="tool-btn"
-        data-tooltip="Redo (⌘Y)"
-        onClick={() => handleUndoRedo('redo')}
-        aria-label="Redo"
-      >
-        <svg className="icon" viewBox="0 0 24 24">
-          <path d="M21 7v6h-6" />
-          <path d="M3 17a9 9 0 019-9 9 9 0 016 2.3l3 2.7" />
-        </svg>
-      </button>
-
-      {/* Tool Settings Panels */}
-      </div>
-    </>
+      {showSizes && sizePresets.length > 1 && (
+        <div className="row sizes">
+          {sizePresets.map((px, i) => (
+            <button
+              key={px}
+              className={`size-pill ${currentSize === px ? 'active' : ''}`}
+              onClick={() => onSizeChange(px)}
+              aria-label={`Size ${sizeLabels[i]}`}
+            >
+              {sizeLabels[i]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

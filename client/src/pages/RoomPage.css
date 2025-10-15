@@ -63,6 +63,46 @@
   /* Minimal Animation */
   --transition-fast: 150ms ease;
   --transition-base: 200ms ease;
+
+  /* UI Redesign - New Brand Palette for 48px toolbar */
+  --dock-bg: #2d2d2d; /* Toolbar/inspector background */
+  --dock-border: #3a3a3a; /* Subtle outline */
+  --dock-hover: #383838; /* Hover on dark */
+  --dock-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+
+  --accent: #74a12e; /* Matcha - selected state */
+  --accent-hover: #6a952b; /* Hover for selected */
+  --accent-border: #5c8426; /* Focus/active border */
+
+  --icon-muted: #f5f5f5; /* Default icon color */
+  --icon-selected: #000000; /* Selected icon on accent */
+  --text-muted: #e9e9e9;
+  --text-weak: #bfbfbf;
+
+  --divider: #3a3a3a;
+  --ring: #9dd65a; /* Focus ring */
+  --ring-offset: 2px;
+
+  /* Component metrics - UPDATED FOR 48px RAIL */
+  --dock-h: 48px; /* New baseline height */
+  --btn: 36px; /* Button hit target */
+  --btn-radius: 10px; /* Slightly larger radius */
+  --dock-radius: 12px; /* Rounder for taller rail */
+  --icon: 22px; /* Icon render size */
+  --divider-h: 18px; /* Divider height */
+
+  /* Inspector - kept tiny */
+  --swatch: 14px; /* True circles */
+  --swatch-ring: 2px; /* Faint selection ring */
+  --pill-h: 22px; /* Size pill height */
+  --pill-font: 11px; /* Size pill font */
+  --pill-radius: 999px;
+
+  /* Spacing scale */
+  --gap-xxs: 4px;
+  --gap-xs: 6px;
+  --gap-s: 8px;
+  --gap-m: 12px;
 }
 
 /* Dark Theme */
@@ -379,13 +419,14 @@
   transform: translateY(-50%) scale(1);
 }
 
-/* ===== Bottom Tool Dock (Color + Size) ===== */
+/* ===== Bottom Tool Dock (Old - Commented Out) ===== */
+/* NOTE: These old styles are commented out as they conflict with the new UI Redesign toolbar
 .tool-dock {
   position: absolute;
   left: 50%;
   bottom: var(--space-lg);
   transform: translateX(-50%);
-  display: none; /* shown for pen/highlighter */
+  display: none;
   gap: var(--space-lg);
   align-items: center;
   padding: 10px 14px;
@@ -421,6 +462,7 @@
     transform var(--transition-fast),
     visibility 0s var(--transition-fast);
 }
+*/
 
 .dock-group {
   display: flex;
@@ -881,7 +923,520 @@
     left: var(--space-md);
   }
 
-  .tool-dock {
-    bottom: calc(var(--space-md) + 56px); /* keep above mobile UI */
+  /* Old tool-dock mobile style removed - using new UI redesign toolbar */
+}
+
+/* ===== Micro Cluster (UI Redesign) ===== */
+.micro-cluster {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.micro {
+  height: 20px;
+  min-width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 6px;
+  color: #6b7280;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 120ms ease;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: var(--font-stack);
+}
+
+[data-theme='dark'] .micro {
+  background: rgba(17, 24, 39, 0.92);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: #9ca3af;
+}
+
+.micro:hover {
+  background: #f9fafb;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] .micro:hover {
+  background: #1f2937;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.micro-kebab {
+  width: 20px;
+  padding: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.micro-kebab .dot {
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: #9ca3af;
+  display: block;
+}
+
+.micro-trash {
+  width: 20px;
+  padding: 0;
+}
+
+.icon-14 {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+.micro-invite {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #4b5563;
+}
+
+[data-theme='dark'] .micro-invite {
+  color: #cbd5e1;
+}
+
+/* User Avatar Cluster Styles */
+.user-avatar-cluster {
+  display: flex;
+  align-items: center;
+  gap: -3px; /* Overlap avatars slightly */
+  cursor: pointer;
+}
+
+.micro-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  border: 1.5px solid white;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: transform 100ms ease;
+  position: relative;
+  background: var(--bg-primary);
+}
+
+[data-theme='dark'] .micro-avatar {
+  border-color: var(--bg-primary);
+}
+
+.micro-avatar-initials {
+  font-size: 8px;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.micro-avatar:hover {
+  transform: scale(1.1);
+  z-index: 1;
+}
+
+.micro-avatar-me {
+  background: #74a12e;
+  color: white;
+}
+
+.user-overflow {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 600;
+}
+
+[data-theme='dark'] .user-overflow {
+  color: #9ca3af;
+}
+
+/* ===== UI Redesign: 48px Fixed Top Toolbar ===== */
+
+/* Remove header styles */
+.header {
+  display: none;
+}
+
+/* Workspace takes full height */
+.workspace {
+  height: 100vh;
+  position: relative;
+}
+
+/* Canvas container full size */
+.canvas-container {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  background: white;
+}
+
+/* Fixed top toolbar container */
+.tool-dock-wrap {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 380;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The main toolbar dock bar */
+.tool-dock {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--dock-h);
+  padding: 0 10px;
+  border-radius: var(--dock-radius);
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  box-shadow: var(--dock-shadow);
+  backdrop-filter: blur(6px);
+}
+
+/* Tool buttons */
+.tool-dock .tool-btn {
+  width: var(--btn);
+  height: var(--btn);
+  display: grid;
+  place-items: center;
+  border-radius: var(--btn-radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--icon-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  cursor: pointer;
+}
+
+.tool-dock .tool-btn .icon {
+  width: var(--icon);
+  height: var(--icon);
+  color: inherit;
+}
+
+.tool-dock .tool-btn:hover {
+  background: var(--dock-hover);
+}
+
+.tool-dock .tool-btn.active {
+  background: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--icon-selected);
+}
+
+.tool-dock .tool-btn.active:hover {
+  background: var(--accent-hover);
+}
+
+.tool-dock .tool-btn:active {
+  transform: translateY(0.5px);
+}
+
+.tool-dock .tool-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.tool-dock .tool-divider {
+  width: 1px;
+  height: var(--divider-h);
+  background: var(--divider);
+  margin: 0 2px;
+}
+
+/* Inspector */
+.inspector {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--dock-h);
+  padding: 0 8px;
+  border-radius: var(--dock-radius);
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  box-shadow: var(--dock-shadow);
+  margin-left: 8px; /* Add spacing between toolbar and inspector */
+}
+
+.inspector .row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Color swatches */
+.swatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+}
+
+.swatch {
+  width: var(--swatch);
+  height: var(--swatch);
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  outline: none;
+  cursor: pointer;
+  transition:
+    transform 90ms ease,
+    box-shadow 120ms ease;
+}
+
+.swatch:hover {
+  transform: scale(0.98) translateY(-0.5px);
+}
+
+.swatch.is-active-fixed {
+  box-shadow: 0 0 0 var(--swatch-ring) rgba(157, 214, 90, 0.35);
+  border-color: var(--accent-border);
+}
+
+/* "+" button for more colors */
+.swatch-plus {
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 12px;
+  color: #e5e7eb;
+  background: transparent;
+  border: 1px dashed rgba(229, 231, 235, 0.25);
+}
+
+.swatch-plus.custom-outline {
+  border-style: solid;
+  border-width: 2px;
+}
+
+.swatch:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+/* Size pills */
+.size-pill {
+  height: var(--pill-h);
+  padding: 0 8px;
+  border-radius: var(--pill-radius);
+  background: transparent;
+  border: 1px solid var(--dock-border);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  cursor: pointer;
+}
+
+.size-pill:hover {
+  background: var(--dock-hover);
+}
+
+.size-pill.active {
+  background: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--icon-selected);
+}
+
+.size-pill:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+/* Color Popover */
+.color-popover {
+  position: absolute;
+  z-index: 500;
+  top: calc(var(--dock-h) + 8px);
+  left: 0;
+  width: 232px;
+  padding: 10px;
+  background: #1f1f1f;
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  transform: translateY(8px) scale(0.98);
+  opacity: 0;
+  animation: pop-enter 160ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@keyframes pop-enter {
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
   }
+}
+
+.color-popover.closing {
+  animation: pop-exit 130ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@keyframes pop-exit {
+  to {
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+  }
+}
+
+.popover-section {
+  margin-bottom: 8px;
+}
+
+.popover-section:last-child {
+  margin-bottom: 0;
+}
+
+.popover-section h6 {
+  margin: 0 0 6px 0;
+  font:
+    600 11px/1 Inter,
+    ui-sans-serif,
+    system-ui;
+  letter-spacing: 0.02em;
+  color: #bfbfbf;
+  text-transform: uppercase;
+}
+
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(6, var(--swatch));
+  gap: 6px;
+}
+
+.hex-row {
+  display: flex;
+  gap: 6px;
+}
+
+.hex-row input {
+  flex: 1;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #111;
+  color: #e5e7eb;
+  padding: 0 8px;
+  font:
+    12px Inter,
+    ui-sans-serif,
+    system-ui;
+}
+
+.hex-row .hex-apply {
+  width: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #171717;
+  color: #e5e7eb;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 140ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.hex-row .hex-apply:hover {
+  background: #1f2937;
+}
+
+/* Fill button */
+.icon-btn {
+  width: var(--btn);
+  height: var(--btn);
+  border-radius: var(--btn-radius);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #e5e7eb;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.icon-btn.on {
+  background: rgba(116, 161, 46, 0.14);
+  border-color: #5c8426;
+}
+
+.icon-btn:hover {
+  background: var(--dock-hover);
+}
+
+/* Undo/Redo inline buttons (UI Redesign) */
+.undo-redo-inline {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 8px;
+  align-items: center;
+}
+
+/* Old Undo/Redo micro buttons (deprecated) */
+.undo-redo-micro {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 381;
+  display: inline-flex;
+  gap: 6px;
+  opacity: 0.95;
+}
+
+.micro-ghost {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  color: var(--icon-muted);
+  box-shadow: var(--dock-shadow);
+  transition: all 120ms ease;
+  cursor: pointer;
+}
+
+.micro-ghost:hover {
+  background: var(--dock-hover);
+}
+
+.micro-ghost:active {
+  transform: translateY(0.5px);
+}
+
+.micro-icon {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
 }
