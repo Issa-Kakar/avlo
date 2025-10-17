@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useEffect, useCallback } from 'react';
 import { usePresence } from '@/hooks/use-presence';
 
 interface UsersModalProps {
@@ -10,12 +10,46 @@ interface UsersModalProps {
 export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
   const presence = usePresence(roomId);
 
-  if (!isOpen) return null;
+  // Close on Escape key
+  useEffect(() => {
+    if (!isOpen) return;
 
-  // Get entries (userId, user) for stable React keys
-  const userEntries = Array.from(presence.users.entries());
-  const activeCount = userEntries.filter(([_, u]) => u.activity === 'drawing').length;
-  const typingCount = userEntries.filter(([_, u]) => u.activity === 'typing').length;
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isOpen, onClose]);
+
+  // Memoize user entries for stable rendering
+  const { userEntries, activeCount, typingCount } = useMemo(() => {
+    // Get entries (userId, user) for stable React keys
+    const entries = Array.from(presence.users.entries());
+    const drawing = entries.filter(([_, u]) => u.activity === 'drawing').length;
+    const typing = entries.filter(([_, u]) => u.activity === 'typing').length;
+
+    return {
+      userEntries: entries,
+      activeCount: drawing,
+      typingCount: typing,
+    };
+  }, [presence.users]);
+
+  // Format last seen time
+  const formatLastSeen = useCallback((lastSeen: number): string => {
+    const now = Date.now();
+    const diff = now - lastSeen;
+
+    if (diff < 5000) return 'now';
+    if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    return 'inactive';
+  }, []);
+
+  if (!isOpen) return null;
 
   return (
     <div
@@ -128,11 +162,15 @@ export function UsersModal({ roomId, isOpen, onClose }: UsersModalProps) {
                   height: '12px',
                   borderRadius: '50%',
                   backgroundColor: user.color,
+                  flexShrink: 0,
                 }}
               />
               <span style={{ flex: 1, color: 'var(--text-primary)' }}>{user.name}</span>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)', marginRight: '8px' }}>
                 {user.activity}
+              </span>
+              <span style={{ fontSize: '11px', color: 'var(--text-weak)', opacity: 0.7 }}>
+                {formatLastSeen(user.lastSeen)}
               </span>
             </div>
           ))}

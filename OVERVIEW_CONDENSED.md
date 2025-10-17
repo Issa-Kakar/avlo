@@ -208,6 +208,7 @@ interface DeviceUIState {
 ```
 
 **Shape Tool Integration (Phase: Shape Tools):** Shape variant maps to forced snap kind in Canvas.tsx: `rectangle` → `'rect'`, `ellipse` → `'ellipseRect'`, `arrow` → `'arrow'`, `line` → `'line'`. Shape tool uses DrawingTool with `opts: { forceSnapKind }` to bypass HoldDetector and start in "already snapped" mode.
+
 ### State Synchronization & Derivation
 
 **Sources:**

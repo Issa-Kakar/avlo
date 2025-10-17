@@ -1,8 +1,8 @@
 /**
- * Phase 9: RoomPage Component with Modern UI
+ * UI Redesign: RoomPage Component without Header
  *
- * Complete redesign with floating tools, collapsible panels, and smooth interactions.
- * High-performance draggable elements and responsive design.
+ * Implements new top-left micro cluster with trash, users, and invite buttons.
+ * Fixed top toolbar at 48px with Inspector extension.
  */
 
 import { useEffect, useState } from 'react';
@@ -10,14 +10,14 @@ import { useParams } from 'react-router-dom';
 import { ViewTransformProvider } from '../canvas/ViewTransformContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
-// Phase 9 Components
-import { Header } from './components/Header';
+// Components
 import { Canvas } from '../canvas/Canvas';
 import { ToolPanel } from './components/ToolPanel';
-import { ColorSizeDock } from './components/ColorSizeDock';
+// ColorSizeDock removed - integrated into ToolPanel with Inspector
 import { ZoomControls } from './components/ZoomControls';
-import { EditorPanel } from './components/EditorPanel';
+// import { EditorPanel } from './components/EditorPanel'; // Keep dormant for future code editor
 import { UsersModal } from './components/UsersModal';
+import { UserAvatarCluster } from './components/UserAvatarCluster';
 import { ToastProvider, useToast } from './components/Toast';
 
 // Hooks
@@ -33,23 +33,8 @@ interface RoomCanvasProps {
 
 function RoomCanvas({ roomId }: RoomCanvasProps) {
   const [usersModalOpen, setUsersModalOpen] = useState(false);
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const { showToast } = useToast();
   const clearScene = useClearScene(roomId);
-
-  // Theme management
-  useEffect(() => {
-    const savedTheme = (localStorage.getItem('theme') as 'light' | 'dark') || 'light';
-    setTheme(savedTheme);
-    document.documentElement.setAttribute('data-theme', savedTheme);
-  }, []);
-
-  const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    document.documentElement.setAttribute('data-theme', newTheme);
-    localStorage.setItem('theme', newTheme);
-  };
 
   const handleClear = () => {
     if (window.confirm('Clear the board for everyone? This cannot be undone.')) {
@@ -60,6 +45,16 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
         console.error('Failed to clear board:', error);
         showToast('Failed to clear board');
       }
+    }
+  };
+
+  const handleInvite = async () => {
+    try {
+      await navigator.clipboard?.writeText(window.location.href);
+      showToast('Link copied to clipboard!');
+    } catch (error) {
+      console.error('Failed to copy link:', error);
+      showToast('Failed to copy link');
     }
   };
 
@@ -81,15 +76,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
 
   return (
     <div className="app-container">
-      {/* Header */}
-      <Header
-        roomId={roomId}
-        onThemeToggle={toggleTheme}
-        onUsersClick={() => setUsersModalOpen(true)}
-        onToast={showToast}
-      />
-
-      {/* Workspace */}
+      {/* Workspace - now full height without header */}
       <div className="workspace">
         {/* Canvas Container */}
         <div className="canvas-container">
@@ -99,14 +86,54 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           {/* Main Canvas */}
           <Canvas roomId={roomId} className="canvas" />
 
+          {/* Top-left micro cluster */}
+          <div className="micro-cluster">
+            {/* Kebab menu (placeholder for future features) */}
+            <button className="micro micro-kebab" aria-label="More options">
+              <span className="dot"></span>
+              <span className="dot"></span>
+              <span className="dot"></span>
+            </button>
+
+            {/* Trash (Clear board) */}
+            <button
+              className="micro micro-trash"
+              onClick={handleClear}
+              aria-label="Clear board"
+              title="Clear board"
+            >
+              <svg viewBox="0 0 24 24" className="icon-14">
+                <path
+                  d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+              </svg>
+            </button>
+
+            {/* Users avatars cluster */}
+            <UserAvatarCluster roomId={roomId} onShowModal={() => setUsersModalOpen(true)} />
+
+            {/* Invite button */}
+            <button
+              className="micro micro-invite"
+              onClick={handleInvite}
+              title="Copy invite link"
+            >
+              Invite
+            </button>
+          </div>
+
           {/* Floating UI elements */}
           <ToolPanel onToast={showToast} />
-          <ColorSizeDock />
+          {/* ColorSizeDock removed - now integrated into ToolPanel */}
           <ZoomControls />
         </div>
 
-        {/* Editor Panel (30% width) */}
-        <EditorPanel />
+        {/* EditorPanel removed from UI - keep dormant in store for future code editor */}
       </div>
 
       {/* Users Modal */}
