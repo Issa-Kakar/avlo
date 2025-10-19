@@ -30,17 +30,6 @@ export class DrawingTool {
 
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
-
-  // NEW: Held frame state (persists after reset for overlay's final frame)
-  // private finalOutline: number[][] | null = null; // PF returns [x, y, pressure][]
-  // private finalOutlineStyle: {
-  //   tool: 'pen' | 'highlighter';
-  //   color: string;
-  //   size: number;
-  //   opacity: number;
-  //   bbox: [number, number, number, number] | null;
-  // } | null = null;
-
   // NEW: Perfect shapes support
   private hold: HoldDetector;
   private snap:
@@ -109,10 +98,7 @@ export class DrawingTool {
   }
 
   begin(pointerId: number, worldX: number, worldY: number): void {
-    // Clear held frame state from previous gesture (CRITICAL: must happen before new gesture)
-    // this.finalOutline = null;
-    // this.finalOutlineStyle = null;
-
+    
     this.startDrawing(pointerId, worldX, worldY);
 
     // If Shape tool requested forced snap, seed it immediately

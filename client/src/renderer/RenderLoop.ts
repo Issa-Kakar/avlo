@@ -300,9 +300,25 @@ export class RenderLoop {
       );
 
       // Check if any translucent stroke intersects the viewport
-      const hasTranslucentInView = snapshot.strokes.some(
-        (stroke) => stroke.style.opacity < 1 && boxesIntersect(visibleBounds, stroke.bbox),
-      );
+      let hasTranslucentInView = false;
+
+      if (snapshot.spatialIndex) {
+        // Use spatial query for efficiency
+        const visibleStrokes = snapshot.spatialIndex.queryRect(
+          visibleBounds.minX,
+          visibleBounds.minY,
+          visibleBounds.maxX,
+          visibleBounds.maxY,
+        );
+        hasTranslucentInView = visibleStrokes.some(
+          (stroke) => stroke.style.opacity < 1
+        );
+      } else {
+        // Fallback to linear scan
+        hasTranslucentInView = snapshot.strokes.some(
+          (stroke) => stroke.style.opacity < 1 && boxesIntersect(visibleBounds, stroke.bbox),
+        );
+      }
 
       // Promote to full clear if we have translucent content visible
       if (hasTranslucentInView) {
@@ -362,9 +378,48 @@ export class RenderLoop {
         view.pan,
       );
 
+      // CRITICAL: Apply clipping if we have dirty rects
+      let clipRegion: DirtyClipRegion | undefined;
+      if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
+        // Convert device pixel rects to world coordinates for clipping
+        clipRegion = {
+          worldRects: clearInstructions.rects.map(rect => {
+            // Convert device pixels → CSS pixels → world
+            const cssX = rect.x / viewport.dpr;
+            const cssY = rect.y / viewport.dpr;
+            const cssW = rect.width / viewport.dpr;
+            const cssH = rect.height / viewport.dpr;
+
+            const [worldX1, worldY1] = view.canvasToWorld(cssX, cssY);
+            const [worldX2, worldY2] = view.canvasToWorld(cssX + cssW, cssY + cssH);
+
+            return {
+              minX: worldX1,
+              minY: worldY1,
+              maxX: worldX2,
+              maxY: worldY2,
+            };
+          })
+        };
+
+        // Create clipping path for all dirty regions
+        ctx.save();
+        ctx.beginPath();
+        for (const rect of clearInstructions.rects) {
+          // Clip in device pixels (transform already applied)
+          const x = rect.x / viewport.dpr / view.scale + view.pan.x;
+          const y = rect.y / viewport.dpr / view.scale + view.pan.y;
+          const w = rect.width / viewport.dpr / view.scale;
+          const h = rect.height / viewport.dpr / view.scale;
+          ctx.rect(x, y, w, h);
+        }
+        ctx.clip();
+      }
+
       const augmentedViewport = {
         ...viewport,
         visibleWorldBounds: visibleBounds,
+        clipRegion, // NEW: Pass dirty regions for spatial queries
       };
 
       // Draw world layers only
@@ -380,6 +435,11 @@ export class RenderLoop {
 
       // Authoring overlay - for future selection/handles
       drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport);
+
+      // Restore clipping state
+      if (clipRegion) {
+        ctx.restore();
+      }
 
       // ⛔️ Preview moved to overlay canvas - no longer drawn here
     });

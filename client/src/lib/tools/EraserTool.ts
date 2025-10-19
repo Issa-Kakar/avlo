@@ -1,5 +1,4 @@
 import type { IRoomDocManager } from '../room-doc-manager';
-import type { StrokeView } from '@avlo/shared';
 import * as Y from 'yjs';
 
 // EraserSettings type from device-ui-store
@@ -212,73 +211,84 @@ export class EraserTool {
     let segmentCount = 0;
     const MAX_SEGMENTS = 500; // Increased from 100
 
-    // Get candidate strokes from spatial index if available
-    let candidateStrokes: ReadonlyArray<StrokeView>;
-    if (snapshot.spatialIndex) {
-      // Use spatial index for efficient querying
-      candidateStrokes = snapshot.spatialIndex.queryCircle(
-        worldX,
-        worldY,
-        radiusWorld + 32, // Add max stroke width as buffer
+    // CRITICAL FIX: Use combined query for both strokes AND texts
+    if (snapshot.spatialIndex && 'queryRectAll' in snapshot.spatialIndex) {
+      // Query with eraser's bounding square
+      // Since bbox already includes stroke width, no extra inflation needed!
+      const results = (snapshot.spatialIndex as any).queryRectAll(
+        worldX - radiusWorld,
+        worldY - radiusWorld,
+        worldX + radiusWorld,
+        worldY + radiusWorld,
       );
-    } else {
-      // Fallback to all strokes
-      candidateStrokes = snapshot.strokes;
-    }
 
-    // Test strokes starting from resume index
-    for (let i = this.resumeIndex; i < candidateStrokes.length; i++) {
-      const stroke = candidateStrokes[i];
-
-      // Include stroke half-width
-      const halfWidth = (stroke.style?.size ?? 1) / 2;
-      const hitRadius = radiusWorld + halfWidth;
-
-      // Viewport prune (still useful even with spatial index)
-      if (!this.isInBounds(stroke.bbox, visibleBounds)) continue;
-
-      // Inflated bbox test with stroke width
-      const inflatedBbox = this.inflateBbox(stroke.bbox, hitRadius);
-      if (!this.pointInBbox(worldX, worldY, inflatedBbox)) continue;
-
-      // Segment distance test with stroke width
-      if (this.strokeHitTest(worldX, worldY, stroke.points, hitRadius)) {
-        this.state.hitNow.add(stroke.id);
+      // Test strokes - bbox already includes stroke width
+      for (const stroke of results.strokes) {
+        // Fine-grained segment test (bbox already has stroke width)
+        if (this.strokeHitTest(worldX, worldY, stroke.points, radiusWorld)) {
+          this.state.hitNow.add(stroke.id);
+        }
       }
 
-      // Count actual segments (points - 1), not points
-      segmentCount += Math.max(0, stroke.points.length / 2 - 1);
+      // Test texts - simple circle-rect intersection
+      for (const text of results.texts) {
+        // Check if eraser circle overlaps text rect
+        if (this.circleRectIntersect(
+          worldX, worldY, radiusWorld,
+          text.x, text.y, text.w, text.h
+        )) {
+          this.state.hitNow.add(text.id);
+        }
+      }
+    } else {
+      // Fallback without spatial index (original logic but fixed inflation)
+      const candidateStrokes = snapshot.strokes;
 
-      // Check if we've exceeded our performance budget
-      if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
-        // Store where to resume next frame
-        this.resumeIndex = i + 1;
+      // Test strokes starting from resume index
+      for (let i = this.resumeIndex; i < candidateStrokes.length; i++) {
+        const stroke = candidateStrokes[i];
 
-        // Schedule continuation if we haven't finished
-        if (this.resumeIndex < candidateStrokes.length && !this.rafId) {
-          this.rafId = requestAnimationFrame(() => {
-            this.rafId = null;
-            // Continue from where we left off
-            this.updateHitTest(worldX, worldY);
-          });
+        // Viewport prune
+        if (!this.isInBounds(stroke.bbox, visibleBounds)) continue;
+
+        // FIX: bbox already includes stroke width, so just test with radiusWorld
+        if (this.strokeHitTest(worldX, worldY, stroke.points, radiusWorld)) {
+          this.state.hitNow.add(stroke.id);
         }
 
-        // Early return to yield control
-        return;
+        // Count actual segments (points - 1), not points
+        segmentCount += Math.max(0, stroke.points.length / 2 - 1);
+
+        // Check if we've exceeded our performance budget
+        if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
+          // Store where to resume next frame
+          this.resumeIndex = i + 1;
+
+          // Schedule continuation if we haven't finished
+          if (this.resumeIndex < candidateStrokes.length && !this.rafId) {
+            this.rafId = requestAnimationFrame(() => {
+              this.rafId = null;
+              // Continue from where we left off
+              this.updateHitTest(worldX, worldY);
+            });
+          }
+
+          // Early return to yield control
+          return;
+        }
       }
-    }
 
-    // Finished all strokes, reset resume index
-    this.resumeIndex = 0;
+      // Finished all strokes, reset resume index
+      this.resumeIndex = 0;
 
-    // Test text blocks (simple bbox intersection)
-    for (const text of snapshot.texts) {
-      const textBbox = [text.x, text.y, text.x + text.w, text.y + text.h];
-      if (!this.isInBounds(textBbox, visibleBounds)) continue;
-
-      const inflatedBbox = this.inflateBbox(textBbox, radiusWorld);
-      if (this.pointInBbox(worldX, worldY, inflatedBbox)) {
-        this.state.hitNow.add(text.id);
+      // Test text blocks (simple bbox intersection)
+      for (const text of snapshot.texts) {
+        if (this.circleRectIntersect(
+          worldX, worldY, radiusWorld,
+          text.x, text.y, text.w, text.h
+        )) {
+          this.state.hitNow.add(text.id);
+        }
       }
     }
 
@@ -458,6 +468,21 @@ export class EraserTool {
 
   private pointInBbox(px: number, py: number, bbox: [number, number, number, number]): boolean {
     return px >= bbox[0] && px <= bbox[2] && py >= bbox[1] && py <= bbox[3];
+  }
+
+  // Helper for circle-rect intersection
+  private circleRectIntersect(
+    cx: number, cy: number, r: number,
+    x: number, y: number, w: number, h: number
+  ): boolean {
+    // Find closest point on rect to circle center
+    const closestX = Math.max(x, Math.min(cx, x + w));
+    const closestY = Math.max(y, Math.min(cy, y + h));
+
+    // Check if distance is within radius
+    const dx = cx - closestX;
+    const dy = cy - closestY;
+    return (dx * dx + dy * dy) <= (r * r);
   }
 }
 

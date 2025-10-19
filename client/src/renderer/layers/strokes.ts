@@ -1,6 +1,6 @@
 import type { Snapshot, StrokeView, ViewTransform } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import { getStrokeCacheInstance, isStrokeVisible } from '../stroke-builder';
+import { getStrokeCacheInstance,  } from '../stroke-builder';
 
 // Use shared singleton cache for stroke rendering
 const strokeCache = getStrokeCacheInstance();
@@ -37,20 +37,47 @@ export function drawStrokes(
   // Calculate visible world bounds for culling
   const visibleBounds = getVisibleWorldBounds(viewTransform, viewport);
 
-  // Filter and render strokes
-  const strokes = snapshot.strokes;
+  // Use spatial index for efficient querying
+  let candidateStrokes: ReadonlyArray<StrokeView>;
+
+  if (snapshot.spatialIndex) {
+    if (viewport.clipRegion?.worldRects) {
+      // OPTIMIZATION: Query each dirty rect and union results
+      const strokeSet = new Set<StrokeView>();
+
+      for (const rect of viewport.clipRegion.worldRects) {
+        const results = snapshot.spatialIndex.queryRect(
+          rect.minX,
+          rect.minY,
+          rect.maxX,
+          rect.maxY,
+        );
+        for (const stroke of results) {
+          strokeSet.add(stroke);
+        }
+      }
+
+      candidateStrokes = Array.from(strokeSet);
+    } else {
+      // Full viewport query
+      candidateStrokes = snapshot.spatialIndex.queryRect(
+        visibleBounds.minX,
+        visibleBounds.minY,
+        visibleBounds.maxX,
+        visibleBounds.maxY,
+      );
+    }
+  } else {
+    // Fallback to all strokes
+    candidateStrokes = snapshot.strokes;
+  }
+
   let renderedCount = 0;
   let culledCount = 0;
 
-  for (const stroke of strokes) {
-    // Scene filtering already done in snapshot
-    // Just check visibility
-    if (!isStrokeVisible(stroke, visibleBounds)) {
-      culledCount++;
-      continue;
-    }
-
-    // Apply LOD: Skip tiny strokes (< 2px diagonal in screen space)
+  // Process only candidate strokes
+  for (const stroke of candidateStrokes) {
+    // LOD check still needed (spatial query is coarse)
     if (shouldSkipLOD(stroke, viewTransform)) {
       culledCount++;
       continue;
@@ -65,7 +92,7 @@ export function drawStrokes(
   if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS && renderedCount > 0) {
     // eslint-disable-next-line no-console
     console.debug(
-      `[Strokes] Rendered ${renderedCount}/${strokes.length} strokes (${culledCount} culled)`,
+      `[Strokes] Rendered ${renderedCount}/${candidateStrokes.length} candidates (${culledCount} LOD culled)`,
     );
   }
 }

@@ -17,6 +17,17 @@ export interface ViewportInfo {
   cssHeight: number; // CSS pixels
   dpr: number;
   visibleWorldBounds?: { minX: number; minY: number; maxX: number; maxY: number };
+  clipRegion?: DirtyClipRegion; // NEW: For spatial query optimization
+}
+
+// Add type for clip region
+export interface DirtyClipRegion {
+  worldRects: Array<{
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }>;
 }
 
 // Invalidation types

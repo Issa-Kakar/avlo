@@ -22,7 +22,7 @@ export class StrokeRenderCache {
   private lru = new Map<string, Entry>(); // Insertion-ordered LRU over stroke IDs
   private maxSize: number;
 
-  constructor(maxSize = 1000) {
+  constructor(maxSize = 3000) {
     this.maxSize = Math.max(1, maxSize | 0);
   }
 
@@ -103,7 +103,7 @@ let globalCacheInstance: StrokeRenderCache | null = null;
 
 export function getStrokeCacheInstance(): StrokeRenderCache {
   if (!globalCacheInstance) {
-    globalCacheInstance = new StrokeRenderCache(1000);
+    globalCacheInstance = new StrokeRenderCache(3000);
   }
   return globalCacheInstance;
 }

@@ -35,3 +35,7 @@ export * from './schemas';
 
 // Export utilities
 export { ulid } from './utils/ulid';
+
+// Export spatial indexing
+export { RBushSpatialIndex, DefaultSpatialIndex } from './spatial';
+export type { IndexEntry } from './spatial';

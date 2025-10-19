@@ -88,26 +88,7 @@ export function buildPolylineRenderData(stroke: StrokeView): PolylineData {
   return { kind: 'polyline', path, polyline, bounds, pointCount };
 }
 
-// Use a MUTABLE 2-tuple to match PF's accepted point type
-//type Vec2 = [number, number];
 
-/**
- * Convert flat points array to PF-native tuples (one-time conversion at cache build).
- */
-// function flatToPairs(points: ReadonlyArray<number>): Vec2[] {
-//   const n = (points.length / 2) | 0;
-//   const out = new Array<Vec2>(n);
-//   // i = source index (flat), j = tuple index
-//   for (let i = 0, j = 0; j < n; j++, i += 2) {
-//     out[j] = [points[i], points[i + 1]]; //perfect freehand expects a mutable 2-tuple
-//   }
-//   return out;
-// }
-
-/**
- * Builds PF POLYGON render data (for freehand).
- * Uses fixed-width PF (no thinning), polygon is filled at render.
- */
 export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
   const size = stroke.style.size;
 
