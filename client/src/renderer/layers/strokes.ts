@@ -72,11 +72,33 @@ export function drawStrokes(
     candidateStrokes = snapshot.strokes;
   }
 
+  // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========
+  // WHY: RBush query order is non-deterministic across:
+  //   - Different tabs (tree shape differs based on insertion order)
+  //   - Refresh (hydration order may differ from incremental builds)
+  //   - Viewport changes (query bounding box affects traversal)
+  //
+  // SOLUTION: ULID (stroke.id) provides:
+  //   - Lexicographic total ordering (monotonic time-based)
+  //   - Globally consistent across all clients
+  //   - Independent of RBush internal structure
+  //
+  // COST: O(K log K) where K = visible strokes (cheap because K << N)
+  //
+  // RESULT: Same z-order on all tabs, regardless of:
+  //   - When they joined
+  //   - How they zoomed/panned
+  //   - Whether they refreshed
+  const sortedCandidates = [...candidateStrokes].sort((a, b) => {
+    // Lexicographic comparison (ULID is time-ordered string)
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
   let renderedCount = 0;
   let culledCount = 0;
 
-  // Process only candidate strokes
-  for (const stroke of candidateStrokes) {
+  // Draw in ULID order (oldest first → newest on top)
+  for (const stroke of sortedCandidates) {
     // LOD check still needed (spatial query is coarse)
     if (shouldSkipLOD(stroke, viewTransform)) {
       culledCount++;
@@ -92,7 +114,7 @@ export function drawStrokes(
   if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS && renderedCount > 0) {
     // eslint-disable-next-line no-console
     console.debug(
-      `[Strokes] Rendered ${renderedCount}/${candidateStrokes.length} candidates (${culledCount} LOD culled)`,
+      `[Strokes] Rendered ${renderedCount}/${sortedCandidates.length} candidates (${culledCount} LOD culled)`,
     );
   }
 }

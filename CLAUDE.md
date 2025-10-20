@@ -1,5 +1,5 @@
 # AVLO Project Overview (Frontend-Focused)
-
+**CRITICAL: IN FUTURE: SCENE TICKS WILL BE REMOVED, INSTEAD THE CLEAR BOARD WILL BE A PER USER CLEAR BOARD, WITH A YJS ATOMIC DELETE ON ALL OBJECTS TAGGED WITH ITS USERID**
 ## 1. Executive Summary
 
 **Purpose:** Link-based, account-less, offline-first collaborative whiteboard with integrated code editor and execution. MVP targets ≤125ms p95 latency, ~100 concurrent users, offline via IndexedDB + CRDT, Redis-backed rooms (14-day TTL).
@@ -16,11 +16,11 @@
 
 **Principle:** Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. No component reads live Y structures, tools can traverse root to perform  `mutate(fn)` for any action.
 
-**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, Spatial index (RBush with incremental updates), publish loop, cursor interpolation, snapshot construction, Y.Array observers, journal system.
+**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, authoritative registries (strokesById/textsById Maps), spatial index (RBush R-tree, acceleration structure), publish loop, cursor interpolation, snapshot construction, Y.Array observers with direct updates.
 
 **Registry Pattern:** RoomDocManager instances accessed exclusively through **RoomDocManagerRegistry** (singleton-per-room guarantee):
 
-- Production: `useRoomDocRegistry()` hook or `registry.acquire(roomId)`
+- Production: `useRoomDoc()` hook or `registry.acquire(roomId)`
 - Tests: `createTestManager()` helper for isolated instances
 - Interface-based access only (IRoomDocManager) - implementation never exposed
 - Reference counting with acquire/release for lifecycle management
@@ -43,14 +43,8 @@ export interface RoomDocManager {
 
 **Y.Doc Reference Rules (CRITICAL - NEVER VIOLATE):**
 
-1. **No cached Y references as class fields**:
-
+1. **No cached Y references as class fields**. **Y references never cached** - always traverse from root on demand:
    ```typescript
-   // ❌ WRONG
-   class RoomDocManager {
-     private yStrokes: Y.Array<any>; // NEVER
-   }
-
    // ✅ CORRECT
    class RoomDocManager {
      private getRoot(): Y.Map<any> {
@@ -61,19 +55,17 @@ export interface RoomDocManager {
      }
    }
    ```
-
-   **Y references never cached** - always traverse from root on demand
-
-3. **Helpers return Y types only for internal use** (never expose from public methods)
+- **Helpers return Y types only for internal use** (never expose from public methods)
 
 **Publishing Discipline (Event-driven RAF):**
 
 - Continuous RAF loop starts on manager creation (never stops until destroy)
-- Set dirty flag when: Yjs updates, local edits, presence updates
+- Set dirty flag when: Yjs updates (docVersion++) or presence updates
 - Schedule one RAF callback when dirty
-- Default 60 FPS, switch to 30 FPS on mobile/battery/heavy scenes
+- Default 60 FPS for base canvas, switch to 30 FPS on mobile/battery/heavy scenes
+- Overlay Canvas(previews, presence) is native device FPS(i.e. 144hz)
 - **Presence-only updates clone previous snapshot with updated presence**
-- Document changes(docVersion++) trigger full snapshot rebuild from Y.Doc
+- Document changes(docVersion++) trigger incremental snapshot rebuild from Y.Doc
 - Typed arrays: Store `[number, number][]` in Yjs, construct `Float32Array` at render time only
 - **Snapshot versioning:** Each carries `docVersion: number` (monotonic) that increments on Y.Doc changes only (not presence)
 
@@ -92,7 +84,7 @@ Y.Doc → root: Y.Map → {
 }
 
 interface Stroke {
-  id: StrokeId;
+  id: StrokeId;  // ulid generated on pointer up
   tool: 'pen' | 'highlighter';
   color: string; // #RRGGBB format
   size: number; // world units (px at scale=1)
@@ -185,9 +177,15 @@ export interface StrokeView {
   userId: string;
   kind: 'freehand' | 'shape'; //Renderer maps kind -> geometry pipeline(polygon vs polyline)
 }
-
 //TextView as well
 
+interface GateStatus {
+idbReady: boolean;
+wsConnected: boolean;
+wsSynced: boolean;
+awarenessReady: boolean;
+firstSnapshot: boolean;
+}
 ```
 - **Never null:** EmptySnapshot created synchronously on construct with scene=0, empty arrays
 - **Typed arrays** constructed at render only, stored doc remains plain arrays
@@ -264,6 +262,7 @@ interface DeviceUIState {
 **Clear Board Flow:**
 - Append to `root.meta.scene_ticks[]`; currentScene = length
 - Rendering includes only elements with scene === currentScene
+
 **Undo/Redo:** Yjs UndoManager with `origin = userId` (per-user history), scene ticks excluded from undo scope
 **Backpressure:** Coalesce pointer-move on rAF, drop stale events if queue backs up
 
@@ -290,7 +289,7 @@ interface DeviceUIState {
 - Runs at native device FPS (intentionally higher FPS for preview responsiveness)
 - Lightweight loop for local preview (drawing in progress) and global presence (cursors)
 - Preview accessed via PreviewProvider interface (set by active tool)
-- Always does full clear when dirty (cheap for sparse overlay content)
+- Always does full clear on invalidate (cheap for sparse overlay content)
 - `holdPreviewForOneFrame()`: Prevents flicker on stroke commit
 
 **Canvas.tsx Integration:**
@@ -379,7 +378,7 @@ export const PF_OPTIONS_BASE = {
   simulatePressure: true
 } as const;
 ```
-**Stroke Cache (stroke-cache.ts):**
+**Stroke Cache (client/src/renderer/stroke-builder/stroke-cache.ts):**
 
 Module-level LRU cache with geometry variants per stroke ID. Each entry maps geometry keys to render data:
 - **Polyline (shapes):** Width-independent → single variant key `'pl'`
@@ -392,19 +391,16 @@ Module-level LRU cache with geometry variants per stroke ID. Each entry maps geo
 **Main Loop (`drawStrokes`):**
 1. Clear cache on scene change
 2. Calculate visible world bounds from viewport (CSS pixels, 50px margin)
-3. Filter strokes: Spatial query (RBush `queryRect`) + viewport culling + LOD (<2px diagonal)
-4. Render each stroke via `renderStroke()`
+3. Spatial query: RBush `queryRect` for visible bounds (viewport culling), 50px margin in world units padded through getVisibleWorldBounds()
+4. **CRITICAL, CRITICAL**: Sort results by ULID (deterministic z-order across tabs)
+5. Filter: LOD (<2px screen diagonal)
+6. Render each stroke via `renderStroke()`
 
 **Render Branching (`renderStroke`):**
 - Get cached render data via `strokeCache.getOrBuild(stroke)`
 - **Freehand (kind='freehand'):** Fill PF polygon with Path2D (nonzero rule, no close)
 - **Shapes (kind='shape'):** Stroke polyline with round caps/joins
 
-**Optimizations:**
-- LOD: Skip strokes <2px screen diagonal
-- Viewport culling: 50px margin in world units (via Rbush Query and padded through getVisibleWorldBounds())
-- Spatial query: RBush `queryRect` for visible bounds (O(log N))
-- Cache: Path2D geometry persists across frames
 **Canvas.tsx Cache Invalidation:**
 
 Snapshot diffing determines both dirty regions (for repaint) and cache evictions (for geometry changes).
@@ -437,14 +433,14 @@ overlayLoopRef.current.invalidateAll();
 ```
 **Cache Eviction Behavior Matrix**
 Change Type	Freehand (PF polygon)	/ Perfect Shape PS (polyline)
-PF: Color/Opacity/ change	No evict (bbox unchanged)	/ PS: No evict (bbox unchanged)
-PF: Size(width) change	No evict (Cache stores new Variant)	/ PS: No evict (render-time width)
-PF: Move/Resize (points change)	Evict (bbox changes) /	PS: Evict (bbox changes)
-PF: Delete	Evict	/ Evict
-PF: Add new	No evict (no prior cache)	/ PS: No evict (no prior cache)
-PF/ PS: Style-only change (color, opacity, width) with bbox unchanged:		
-Dirty: YES (you need a repaint).		
-Evict: NO (geometry didn’t change)
+- PF: Color/Opacity/ change	No evict (bbox unchanged)	/ PS: No evict (bbox unchanged)
+- PF: Size(width) change	No evict (Cache stores new Variant)	/ PS: No evict (render-time width)
+- PF: Move/Resize (points change)	Evict (bbox changes) /	PS: Evict (bbox changes)
+- PF: Delete	Evict	/ Evict
+- PF: Add new	No evict (no prior cache)	/ PS: No evict (no prior cache)
+- PF/ PS: Style-only change (color, opacity, width) with bbox unchanged:		
+- Dirty: YES (you need a repaint).		
+- Evict: NO (geometry didn’t change)
 
 Cache entry scope: one entry per stroke id.
 Variants: each entry holds a tiny map of geometry variants, keyed by a geokey:
@@ -517,41 +513,52 @@ this.room.mutate((ydoc) => {
 
 **Location:** `packages/shared/src/spatial/rbush-spatial-index.ts`
 
-**Architecture:** Incrementally-maintained R-tree using RBush library with journal-based updates from Y.Array observers.
+**Architecture:** R-tree acceleration structure maintained via two-epoch model: rebuild on initialization/scene-change, incremental updates during steady-state.
 
-**Key Components:**
+**RBush Adapter (Pure Spatial Structure):**
 
 ```typescript
 export class RBushSpatialIndex implements SpatialIndex {
   private tree: RBush<IndexEntry>;
-  private strokesById: Map<string, StrokeView>;
-  private textsById: Map<string, TextView>;
+  private strokesById: Map<string, StrokeView>;  // RBush internal bookkeeping
+  private textsById: Map<string, TextView>;      // RBush internal bookkeeping
 
   // Methods
-  bulkLoad(strokes, texts): void;      // Initial load or scene change
-  insertStroke(stroke): void;          // Incremental add
-  insertText(text): void;              // Incremental add
-  removeById(id): void;                // Incremental delete
-  queryRect(...): StrokeView[];        // Strokes only
-  queryRectAll(...): {strokes, texts}; // Both strokes and texts
+  bulkLoad(strokes, texts): void;      // Rebuild epoch: O(N log N)
+  insertStroke(stroke): void;          // Steady-state: O(log N)
+  insertText(text): void;              // Steady-state: O(log N)
+  removeById(id): void;                // Steady-state: O(log N)
+  queryRect(...): StrokeView[];        // Strokes only, O(log N + K)
+  queryRectAll(...): {strokes, texts}; // Both types, O(log N + K)
 }
 ```
 
-**RoomDocManager Integration:**
+**RoomDocManager Two-Epoch Model:**
 
-1. **Y.Array Observers:** Shallow observe `strokes` and `texts` arrays, recording deltas in journals
-2. **Journals:** Track `{ adds: [], dels: [] }` per transaction, cleared after each publish
-3. **Incremental Updates:** Apply journal entries to RBush during snapshot build
-   - Deletions: Remove entries by ID
-   - Additions: Insert new entries
-4. **Rebuild Triggers:** Scene changes force full `clear()` + `bulkLoad()`
-5. **Initialization Order (CRITICAL):** Observers attached AFTER IDB/WS structures initialized
+**Authoritative State:**
+- `strokesById: Map<string, StrokeView>` - Single source of truth for all strokes
+- `textsById: Map<string, TextView>` - Single source of truth for all texts
+- `spatialIndex: RBushSpatialIndex` - Derived acceleration structure (queryable facade)
+- `needsSpatialRebuild: boolean` - Epoch flag (rebuild vs steady-state)
 
-**Hydration Check:** On first snapshot after page load, if `prevStrokeViews` empty but Y.Arrays have content, directly hydrate from Y.Doc to avoid empty snapshots.
-- Rendering culling: `queryRect()` filters visible strokes before LOD/draw
+**Epoch 1: Rebuild (needsSpatialRebuild = true)**
+- Triggered by: First attach, scene change, sanity check failures
+- Flow: `hydrateViewsFromY()` (walk Y.Arrays → build Maps) → `rebuildSpatialIndexFromViews()` (clear + bulkLoad RBush from Maps) → reset flag
+- Complexity: O(N) map build + O(N log N) bulk-load
+- Observers ignored during rebuild (upcoming hydration reads fresh Y.Doc state)
 
+**Epoch 2: Steady-State (needsSpatialRebuild = false)**
+- Observers update Maps and RBush directly on each Y.Array change
+- Insert deltas: Build StrokeView/TextView → add to Map → `spatialIndex.insertStroke()`
+- Delete deltas: Extract IDs from `event.changes.deleted.getContent()` → remove from Map → `spatialIndex.removeById()`
+**Snapshot Composition:**
+- Snapshot arrays derived from Maps via `Array.from(strokesById.values())`
+- Map insertion order is NOT semantic (renderer sorts by ULID before drawing)
+- Spatial index shared live (not cloned, read-only facade)
 
-**Bbox Invariant:** Stored bbox already includes `(strokeSize * 0.5 + 1)` inflation. RBush uses stored bbox directly without re-inflation.
+**Initialization Order (CRITICAL):**
+- Wait for Yjs structures to inititialize, **Then attach observers** via `setupArrayObservers()` (after structures exist)
+- Set `needsSpatialRebuild = true` to trigger first hydration
 
 ### Text Tool (Phase 9)
 
@@ -702,6 +709,7 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
    - Connect immediately (do not wait for IDB)
    - Gate `G_WS_CONNECTED` on open
    - Gate `G_WS_SYNCED` after first syncStep2/state-vector exchange
+**NOTE** - **WS-aware seeding.** Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a short 350 ms grace. If `root.has('meta')` is still false, run `initializeYjsStructures()` **once** and never reassign `root.*` thereafter.
 4. **Start awareness (WS-only in Phase 7)**
    - Gate `G_AWARENESS_READY` when WS awareness is live
 5. **Snapshot publishing**
@@ -742,22 +750,11 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 
 `idle → lassoCapture → selected → transforming → commit → selected`
 
-### Mechanics
-
-- **Auto-close:** Within 12px_screen of start with ≥8 points
-- **Selection:** Strokes if any point inside, texts if center inside
-- **Move:** Left-drag anywhere inside
-- **Scale:** Right-drag or Shift+left-drag (radial from center)
-- **Transform:** `s = clamp(distance(center, now) / distance(center, start), 0.1, 10)`
-
-**Commit**: Single `mutate()` replaces at same indices (preserves z-order)
-
 ### **Perfect Shape Recognition Details (Phase: Perfect Shapes):**
 
 - **600ms dwell trigger:** HoldDetector fires after pointer stillness (6px screen-space jitter tolerance). File: `/client/src/lib/input/HoldDetector.ts`.
-- **RDP SIMPLIFICATION DUPLICATE PASS RUN ON SHAPE RECOGNIZOR FOR CORNER DETECTION**
+- **RDP RECURSIVE SIMPLIFICATION DUPLICATE PASS RUN ON SHAPE RECOGNIZOR FOR CORNER DETECTION**
 - **Shape detection:** Circle (Taubin fit, coverage ≥67%, axis ratio ≤1.70, RMS ≤0.24) vs Rectangle (AABB with trimmed percentiles, soft scoring: 30% side proximity + 20% side coverage evenness + 50% corner quality) vs Line (strict fallback, score 1.0).
-- **Near-miss handling:** Shapes scoring within 0.10 of confidence threshold (0.48-0.58) don't snap, preventing annoying line fallbacks.
 - **Ambiguity guards:** Self-intersection detection, near-closure check (gap <6% diagonal), near self-touch detection. Files: `/client/src/lib/geometry/recognize-open-stroke.ts`, `/client/src/lib/geometry/fit-circle.ts`, `/client/src/lib/geometry/fit-aabb.ts`, `/client/src/lib/geometry/score.ts`.
 - **Locked refinement:** Post-snap, pointer drags adjust geometry only (circle: radius from center; box: X/Y scale from center; rect/ellipse: corner-to-corner AABB; arrow/line: endpoint).
 - **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage.

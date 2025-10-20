@@ -95,7 +95,7 @@ export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
   // CRITICAL FIX: canonical tuples for polygon
   const inputTuples = stroke.pointsTuples ?? [];
 
-  // Use the canonical tuples or fallback conversion
+  // Use the canonical tuples 
   const outline = getStroke(inputTuples, {
     ...PF_OPTIONS_BASE,
     size,

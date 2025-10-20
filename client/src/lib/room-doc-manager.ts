@@ -243,26 +243,19 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private _strokesObserver: ((event: Y.YArrayEvent<any>) => void) | null = null;
   private _textsObserver: ((event: Y.YArrayEvent<any>) => void) | null = null;
 
-  // Spatial index (manager-owned, incrementally maintained)
+  // ============================================================
+  // TWO-EPOCH ARCHITECTURE: Minimal State
+  // ============================================================
+
+  // Authoritative registries (flat maps, no scene filtering)
+  private strokesById = new Map<string, StrokeView>();
+  private textsById = new Map<string, TextView>();
+
+  // Spatial index (rebuilt once, then updated incrementally)
   private spatialIndex: RBushSpatialIndex | null = null;
 
-  // Journal for incremental updates (cleared each publish)
-  private strokeJournal: {
-    adds: { idx: number; items: any[] }[];
-    dels: { idx: number; count: number }[];
-  } = { adds: [], dels: [] };
-
-  private textJournal: {
-    adds: { idx: number; items: any[] }[];
-    dels: { idx: number; count: number }[];
-  } = { adds: [], dels: [] };
-
-  // Track if we need to rebuild (scene change)
+  // Epoch flag (triggers full rebuild)
   private needsSpatialRebuild = true;
-
-  // Previous snapshot arrays for splice optimization
-  private prevStrokeViews: ReadonlyArray<StrokeView> = [];
-  private prevTextViews: ReadonlyArray<TextView> = [];
 
   // Track previous scene for change detection
   private prevScene: number = 0;
@@ -1189,15 +1182,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex = null;
     }
 
-    // Clear journals
-    this.strokeJournal.adds = [];
-    this.strokeJournal.dels = [];
-    this.textJournal.adds = [];
-    this.textJournal.dels = [];
-
-    // Clear previous snapshot references
-    this.prevStrokeViews = [];
-    this.prevTextViews = [];
+    // Clear maps
+    this.strokesById.clear();
+    this.textsById.clear();
 
     // Clear subscriptions
     this.snapshotSubscribers.clear();
@@ -1305,78 +1292,254 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  // Phase 2: Y.Array Observers for incremental updates
+  // ============================================================
+  // PART 2: Array Observers (Direct Updates, No Journals)
+  // ============================================================
   private setupArrayObservers(): void {
-    // Make idempotent - only attach once
+    // Idempotent - only attach once
     if (this._arraysObserved) return;
 
-    // Get the root to check if structures exist
     const root = this.getRoot();
     const strokes = root.get('strokes');
     const texts = root.get('texts');
 
-    // Hard assert: if this trips, the call ordering regressed
+    // Hard assert: structures must exist
     if (!(strokes instanceof Y.Array) || !(texts instanceof Y.Array)) {
       throw new Error('setupArrayObservers(): structures not initialized');
     }
 
-    // Shallow observe strokes array
-    this._strokesObserver = (event) => {
-      // Clear journal for this transaction
-      this.strokeJournal.adds = [];
-      this.strokeJournal.dels = [];
+    // ——— STROKES OBSERVER ———
+    this._strokesObserver = (event: Y.YArrayEvent<any>) => {
+      // CRITICAL: Ignore incremental updates during rebuild epoch
+      // The upcoming rebuild will rehydrate from Y fresh
+      if (this.needsSpatialRebuild) return;
 
-      let idx = 0;
+      // Process INSERTS from delta
       for (const delta of event.changes.delta) {
-        if ('retain' in delta) {
-          idx += delta.retain!;
-        } else if ('delete' in delta) {
-          this.strokeJournal.dels.push({ idx, count: delta.delete! });
-          // idx doesn't move on delete (deleted items are gone)
-        } else if ('insert' in delta) {
+        if ('insert' in delta) {
           const items = delta.insert as any[];
-          this.strokeJournal.adds.push({ idx, items });
-          idx += items.length;
+          for (const raw of items) {
+            // Build StrokeView once
+            const view: StrokeView = {
+              id: raw.id,
+              points: raw.points,
+              pointsTuples: raw.pointsTuples ?? null,
+              polyline: null, // Built at render time
+              style: {
+                color: raw.color,
+                size: raw.size,
+                opacity: raw.opacity,
+                tool: raw.tool,
+              },
+              bbox: raw.bbox,
+              scene: raw.scene,
+              createdAt: raw.createdAt,
+              userId: raw.userId,
+              kind: raw.kind ?? 'shape',
+            };
+
+            // Update map
+            this.strokesById.set(view.id, view);
+
+            // Update spatial index (O(log N))
+            if (this.spatialIndex) {
+              this.spatialIndex.insertStroke(view);
+            }
+          }
         }
       }
 
-      // Note: publishState.isDirty is already set by the Y.Doc update observer
-      // No need to set it again here
+      // Process DELETES from changes.deleted
+      // CRITICAL: Y.js gives us the actual deleted items via getContent()
+      const deleted = event.changes.deleted as Set<any>;
+      deleted.forEach((item: any) => {
+        const content = item?.content;
+        if (!content || typeof content.getContent !== 'function') return;
+
+        const removedItems = content.getContent() as any[];
+        for (const raw of removedItems) {
+          const id = raw?.id;
+          if (!id) continue;
+
+          // Update map
+          this.strokesById.delete(id);
+
+          // Update spatial index (O(log N))
+          if (this.spatialIndex) {
+            this.spatialIndex.removeById(id);
+          }
+        }
+      });
+
+      // publishState.isDirty already set by Y.Doc 'update' handler
     };
     strokes.observe(this._strokesObserver);
 
-    // Shallow observe texts array
-    this._textsObserver = (event) => {
-      // Clear journal for this transaction
-      this.textJournal.adds = [];
-      this.textJournal.dels = [];
+    // ——— TEXTS OBSERVER (same pattern) ———
+    this._textsObserver = (event: Y.YArrayEvent<any>) => {
+      if (this.needsSpatialRebuild) return;
 
-      let idx = 0;
+      // Process INSERTS
       for (const delta of event.changes.delta) {
-        if ('retain' in delta) {
-          idx += delta.retain!;
-          } else if ('delete' in delta) {
-            this.textJournal.dels.push({ idx, count: delta.delete! });
-            // idx doesn't move on delete (deleted items are gone)
-          } else if ('insert' in delta) {
-            const items = delta.insert as any[];
-            this.textJournal.adds.push({ idx, items });
-            idx += items.length;
+        if ('insert' in delta) {
+          const items = delta.insert as any[];
+          for (const raw of items) {
+            const view: TextView = {
+              id: raw.id,
+              x: raw.x,
+              y: raw.y,
+              w: raw.w,
+              h: raw.h,
+              content: raw.content,
+              color: raw.color,
+              size: raw.size,
+              scene: raw.scene,
+              createdAt: raw.createdAt,
+              userId: raw.userId,
+            };
+
+            this.textsById.set(view.id, view);
+
+            if (this.spatialIndex) {
+              this.spatialIndex.insertText(view);
+            }
           }
         }
+      }
 
-        // Note: publishState.isDirty is already set by the Y.Doc update observer
-        // No need to set it again here
-      };
-      texts.observe(this._textsObserver);
+      // Process DELETES
+      const deleted = event.changes.deleted as Set<any>;
+      deleted.forEach((item: any) => {
+        const content = item?.content;
+        if (!content || typeof content.getContent !== 'function') return;
 
-    // Mark observers as attached
+        const removedItems = content.getContent() as any[];
+        for (const raw of removedItems) {
+          const id = raw?.id;
+          if (!id) continue;
+
+          this.textsById.delete(id);
+
+          if (this.spatialIndex) {
+            this.spatialIndex.removeById(id);
+          }
+        }
+      });
+    };
+    texts.observe(this._textsObserver);
+
+    // Mark attached
     this._arraysObserved = true;
 
-    // First-time sync: we may have missed some edits before observers attached.
-    // Force one full rebuild path once, then journals take over.
+    // Force one rebuild on first attach
     this.needsSpatialRebuild = true;
     this.publishState.isDirty = true;
+  }
+
+  // ============================================================
+  // PART 3: Rebuild Epoch (Hydrate from Y.Arrays)
+  // ============================================================
+
+  private hydrateViewsFromY(): void {
+    // Clear all maps
+    this.strokesById.clear();
+    this.textsById.clear();
+
+    // Walk Y.Arrays once, build each view exactly once
+    const yStrokes = this.getStrokes();
+    for (let i = 0; i < yStrokes.length; i++) {
+      const raw = yStrokes.get(i);
+
+      const view: StrokeView = {
+        id: raw.id,
+        points: raw.points,
+        pointsTuples: raw.pointsTuples ?? null,
+        polyline: null,
+        style: {
+          color: raw.color,
+          size: raw.size,
+          opacity: raw.opacity,
+          tool: raw.tool,
+        },
+        bbox: raw.bbox,
+        scene: raw.scene,
+        createdAt: raw.createdAt,
+        userId: raw.userId,
+        kind: raw.kind ?? 'shape',
+      };
+
+      this.strokesById.set(view.id, view);
+    }
+
+    const yTexts = this.getTexts();
+    for (let i = 0; i < yTexts.length; i++) {
+      const raw = yTexts.get(i);
+
+      const view: TextView = {
+        id: raw.id,
+        x: raw.x,
+        y: raw.y,
+        w: raw.w,
+        h: raw.h,
+        content: raw.content,
+        color: raw.color,
+        size: raw.size,
+        scene: raw.scene,
+        createdAt: raw.createdAt,
+        userId: raw.userId,
+      };
+
+      this.textsById.set(view.id, view);
+    }
+  }
+
+  private rebuildSpatialIndexFromViews(): void {
+    if (!this.spatialIndex) {
+      this.spatialIndex = new RBushSpatialIndex();
+    }
+
+    this.spatialIndex.clear();
+
+    // BulkLoad from current maps (NOT from snapshot arrays)
+    // This is RDM-owned, only called during rebuild epoch
+    const strokes = Array.from(this.strokesById.values());
+    const texts = Array.from(this.textsById.values());
+
+    this.spatialIndex.bulkLoad(strokes, texts);
+  }
+
+  // ============================================================
+  // PART 5: Snapshot Composition (Arrays = Derived Outputs)
+  // ============================================================
+
+  private composeSnapshotFromMaps(): Snapshot {
+    const currentScene = this.getCurrentScene();
+
+    // Filter maps by current scene for snapshot arrays
+    const strokes = Array.from(this.strokesById.values()).filter(s => s.scene === currentScene);
+    const texts = Array.from(this.textsById.values()).filter(t => t.scene === currentScene);
+
+    // Build metadata with proper type
+    const meta: SnapshotMeta = {
+      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
+      readOnly: this.roomStats?.bytes
+        ? this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES
+        : false,
+      bytes: this.roomStats?.bytes,
+      expiresAt: this.roomStats?.expiresAt,
+    };
+
+    return {
+      docVersion: this.docVersion,
+      scene: currentScene,
+      strokes, // Order unspecified - renderer sorts by ID before drawing
+      texts,
+      presence: this.buildPresenceView(),
+      spatialIndex: this.spatialIndex, // Live index, not cloned
+      view: this.getViewTransform(),
+      meta,
+      createdAt: Date.now(),
+    };
   }
 
   // Arrow function property ensures stable reference for event listener cleanup
@@ -1813,7 +1976,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
     });
   }
 
-  // Private: Build immutable snapshot from Y.Doc
+  // ============================================================
+  // PART 4: buildSnapshot (Simplified Two-Epoch Model)
+  // ============================================================
+
   private buildSnapshot(): Snapshot {
     // Early return if not initialized
     const root = this.getRoot();
@@ -1822,297 +1988,53 @@ class RoomDocManagerImpl implements IRoomDocManager {
       return this._currentSnapshot;
     }
 
-    // Get current scene
-    const currentScene = this.getCurrentScene();
-
-    // Check if scene changed (triggers rebuild)
-    if (this.prevScene !== currentScene) {
-      this.needsSpatialRebuild = true;
-      this.prevScene = currentScene;
-      // Clear previous arrays on scene change
-      this.prevStrokeViews = [];
-      this.prevTextViews = [];
-    }
-
-    // Build stroke and text views with incremental updates
-    const { strokes, texts } = this.buildViewsIncrementally(currentScene);
-
-    // Update spatial index incrementally
+    // Ensure spatial index exists
     if (!this.spatialIndex) {
       this.spatialIndex = new RBushSpatialIndex();
       this.needsSpatialRebuild = true;
     }
 
-    if (this.needsSpatialRebuild) {
-      // Full rebuild (scene change or first load)
-      this.spatialIndex.clear();
-      this.spatialIndex.bulkLoad(strokes, texts);
-      this.needsSpatialRebuild = false;
-    } else {
-      // Apply incremental updates from journals
-      this.applyJournalToSpatialIndex(strokes, texts);
+    // Detect scene change (triggers rebuild)
+    const currentScene = this.getCurrentScene();
+    if (this.prevScene !== currentScene) {
+      this.needsSpatialRebuild = true;
+      this.prevScene = currentScene;
     }
 
-    // Build presence view
-    const presence = this.buildPresenceView();
+    // ========== TWO-EPOCH BRANCHING ==========
 
-    // Build view transform
-    const view: ViewTransform = this.getViewTransform();
+    if (this.needsSpatialRebuild) {
+      // ——— REBUILD EPOCH ———
+      // Hydrate maps from Y.Arrays (ignores any stale incremental state)
+      this.hydrateViewsFromY();
 
-    // Build metadata
-    const meta2: SnapshotMeta = {
-      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
-      readOnly: this.roomStats?.bytes
-        ? this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES
-        : false,
-      bytes: this.roomStats?.bytes,
-      expiresAt: this.roomStats?.expiresAt,
-    };
+      // BulkLoad RBush from freshly built maps
+      this.rebuildSpatialIndexFromViews();
 
-    // Create frozen snapshot
-    const snapshot: Snapshot = {
-      docVersion: this.docVersion,
-      scene: currentScene,
-      strokes: Object.freeze(strokes) as ReadonlyArray<StrokeView>,
-      texts: Object.freeze(texts) as ReadonlyArray<TextView>,
-      presence,
-      spatialIndex: this.spatialIndex, // Use live index
-      view,
-      meta: meta2,
-      createdAt: Date.now(),
-    };
+      // Reset flag
+      this.needsSpatialRebuild = false;
+    }
 
-    // Store for next incremental update
-    this.prevStrokeViews = snapshot.strokes;
-    this.prevTextViews = snapshot.texts;
+    // ——— STEADY-STATE EPOCH ———
+    // No else block needed!
+    // Observers already updated strokesById/textsById/spatialIndex incrementally
 
-    // Open G_FIRST_SNAPSHOT if needed
+    // Compose snapshot from current maps
+    const snapshot = this.composeSnapshotFromMaps();
+
+    // Open G_FIRST_SNAPSHOT gate if needed
     if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
       this.openGate('firstSnapshot');
     }
 
-    // Freeze in development
+    // Optional: Freeze top-level only in development (not deep freeze)
     if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-      Object.freeze(strokes);
-      strokes.forEach((s) => Object.freeze(s));
-      Object.freeze(texts);
-      texts.forEach((t) => Object.freeze(t));
       return Object.freeze(snapshot);
     }
 
     return snapshot;
   }
 
-  private buildViewsIncrementally(currentScene: number): {
-    strokes: ReadonlyArray<StrokeView>;
-    texts: ReadonlyArray<TextView>;
-  } {
-    // CRITICAL: Hydration check for first load or refresh
-    // If we have no previous views but Y.Arrays have content, we need to hydrate
-    if (this.prevStrokeViews.length === 0 && this.prevTextViews.length === 0 ) {
-      // Check if Y.Arrays have content that needs hydration
-      const yStrokes = this.getStrokes();
-      const yTexts = this.getTexts();
-
-      if (yStrokes.length > 0 || yTexts.length > 0) {
-        // Hydrate from Y.Arrays directly
-        const hydratedStrokes: StrokeView[] = [];
-        const hydratedTexts: TextView[] = [];
-
-        // Build stroke views from Y.Array
-        for (let i = 0; i < yStrokes.length; i++) {
-          const raw = yStrokes.get(i);
-          if (raw.scene !== currentScene) continue;
-
-          const view: StrokeView = {
-            id: raw.id,
-            points: raw.points,
-            pointsTuples: raw.pointsTuples ?? null,
-            polyline: null, // Built at render time
-            style: {
-              color: raw.color,
-              size: raw.size,
-              opacity: raw.opacity,
-              tool: raw.tool,
-            },
-            bbox: raw.bbox,
-            scene: raw.scene,
-            createdAt: raw.createdAt,
-            userId: raw.userId,
-            kind: raw.kind ?? 'shape',
-          };
-          hydratedStrokes.push(view);
-        }
-
-        // Build text views from Y.Array
-        for (let i = 0; i < yTexts.length; i++) {
-          const raw = yTexts.get(i);
-          if (raw.scene !== currentScene) continue;
-
-          const view: TextView = {
-            id: raw.id,
-            x: raw.x,
-            y: raw.y,
-            w: raw.w,
-            h: raw.h,
-            content: raw.content,
-            color: raw.color,
-            size: raw.size,
-            scene: raw.scene,
-            createdAt: raw.createdAt,
-            userId: raw.userId,
-          };
-          hydratedTexts.push(view);
-        }
-
-        // Return hydrated views (will be stored in prevStrokeViews/prevTextViews after)
-        return {
-          strokes: hydratedStrokes,
-          texts: hydratedTexts,
-        };
-      }
-    }
-
-    // If journals are empty and we have previous views, reuse them
-    if (
-      this.strokeJournal.adds.length === 0 &&
-      this.strokeJournal.dels.length === 0 &&
-      this.textJournal.adds.length === 0 &&
-      this.textJournal.dels.length === 0 &&
-      this.prevStrokeViews.length > 0
-    ) {
-      return {
-        strokes: this.prevStrokeViews,
-        texts: this.prevTextViews,
-      };
-    }
-
-    // Start with copies of previous arrays
-    let strokes = [...this.prevStrokeViews];
-    let texts = [...this.prevTextViews];
-
-    // Apply stroke deletions (reverse order to preserve indices)
-    const strokeDels = [...this.strokeJournal.dels].sort((a, b) => b.idx - a.idx);
-    for (const del of strokeDels) {
-      strokes.splice(del.idx, del.count);
-    }
-
-    // Apply stroke additions
-    for (const add of this.strokeJournal.adds) {
-      const mapped: StrokeView[] = [];
-      for (const raw of add.items) {
-        if (raw.scene !== currentScene) continue;
-
-        // Map to view (same as current mapStroke logic)
-        const view: StrokeView = {
-          id: raw.id,
-          points: raw.points,
-          pointsTuples: raw.pointsTuples ?? null,
-          polyline: null, // Built at render time
-          style: {
-            color: raw.color,
-            size: raw.size,
-            opacity: raw.opacity,
-            tool: raw.tool,
-          },
-          bbox: raw.bbox,
-          scene: raw.scene,
-          createdAt: raw.createdAt,
-          userId: raw.userId,
-          kind: raw.kind ?? 'shape',
-        };
-        mapped.push(view);
-      }
-
-      strokes.splice(add.idx, 0, ...mapped);
-    }
-
-    // Apply text deletions
-    const textDels = [...this.textJournal.dels].sort((a, b) => b.idx - a.idx);
-    for (const del of textDels) {
-      texts.splice(del.idx, del.count);
-    }
-
-    // Apply text additions
-    for (const add of this.textJournal.adds) {
-      const mapped: TextView[] = [];
-      for (const raw of add.items) {
-        if (raw.scene !== currentScene) continue;
-
-        const view: TextView = {
-          id: raw.id,
-          x: raw.x,
-          y: raw.y,
-          w: raw.w,
-          h: raw.h,
-          content: raw.content,
-          color: raw.color,
-          size: raw.size,
-          scene: raw.scene,
-          createdAt: raw.createdAt,
-          userId: raw.userId,
-        };
-        mapped.push(view);
-      }
-
-      texts.splice(add.idx, 0, ...mapped);
-    }
-
-    return { strokes, texts };
-  }
-
-  private applyJournalToSpatialIndex(
-    currentStrokes: ReadonlyArray<StrokeView>,
-    currentTexts: ReadonlyArray<TextView>
-  ): void {
-    if (!this.spatialIndex) return;
-
-    // Build ID maps for current data
-    const strokesById = new Map(currentStrokes.map(s => [s.id, s]));
-    const textsById = new Map(currentTexts.map(t => [t.id, t]));
-
-    // Process stroke deletions
-    for (const del of this.strokeJournal.dels) {
-      const removed = this.prevStrokeViews.slice(del.idx, del.idx + del.count);
-      for (const stroke of removed) {
-        this.spatialIndex.removeById(stroke.id);
-      }
-    }
-
-    // Process stroke additions
-    for (const add of this.strokeJournal.adds) {
-      for (const raw of add.items) {
-        const view = strokesById.get(raw.id);
-        if (view) {
-          this.spatialIndex.insertStroke(view);
-        }
-      }
-    }
-
-    // Process text deletions
-    for (const del of this.textJournal.dels) {
-      const removed = this.prevTextViews.slice(del.idx, del.idx + del.count);
-      for (const text of removed) {
-        this.spatialIndex.removeById(text.id);
-      }
-    }
-
-    // Process text additions
-    for (const add of this.textJournal.adds) {
-      for (const raw of add.items) {
-        const view = textsById.get(raw.id);
-        if (view) {
-          this.spatialIndex.insertText(view);
-        }
-      }
-    }
-
-    // Clear journals after applying
-    this.strokeJournal.adds = [];
-    this.strokeJournal.dels = [];
-    this.textJournal.adds = [];
-    this.textJournal.dels = [];
-  }
 
   // Method to handle persist acknowledgments from server
   handlePersistAck(ack: { sizeBytes: number; timestamp: string }): void {

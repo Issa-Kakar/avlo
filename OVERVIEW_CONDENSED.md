@@ -2,11 +2,11 @@
 
 ## 1. Executive Summary
 
-**Purpose:** Link-based, account-less, offline-first collaborative whiteboard with integrated code execution. MVP targets ≤125ms p95 latency, ~100 concurrent users, offline via IndexedDB + CRDT, Redis-backed rooms (14-day TTL).
+**Purpose:** Link-based, account-less, offline-first collaborative whiteboard with integrated code editor and execution. MVP targets ≤125ms p95 latency, ~100 concurrent users, offline via IndexedDB + CRDT, Redis-backed rooms (14-day TTL).
 
-**Tech Stack:** Frontend (React/TS/Tailwind/Canvas/Monaco), Realtime (Yjs + y-websocket + y-indexeddb), Execution (JS/Pyodide workers), Persistence (Redis + Postgres), PWA.
+**Tech Stack:** Frontend (React/TS/Tailwind/Canvas/Monaco), Realtime (Yjs + y-websocket (future hybrid with y-webrtc) + y-indexeddb), Execution (JS/Pyodide workers), Persistence (Redis + Postgres), PWA, Service Workers, TanStackQuery, Express, PostgreSQL(non-authoritative metadata), Prisma
 
-**Scope (Out):** auth/permissions, minimap, admin tools, recovery, CDN, multi-node scaling, **RBUSH DEFERRED TEMPORARILY**.
+**Scope (Out):** auth/permissions, minimap, admin tools, recovery, CDN, multi-node scaling
 
 **Write Path:** UI → `mutate(fn)` wrapper → guards → `yjs.transact` → Y.Doc update → providers sync → Redis persist
 
@@ -14,9 +14,9 @@
 
 ### The RoomDocManager Model (Unified)
 
-**Principle:** Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. Writes are coarse-grained through `mutate(fn)`. No component reads live Y structures.
+**Principle:** Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. No component reads live Y structures, tools can traverse root to perform  `mutate(fn)` for any action.
 
-**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, Spatial index (UniformGrid), publish loop, cursor interpolation, snapshot construction.
+**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, Spatial index (RBush with incremental updates), publish loop, cursor interpolation, snapshot construction, Y.Array observers, journal system.
 
 **Registry Pattern:** RoomDocManager instances accessed exclusively through **RoomDocManagerRegistry** (singleton-per-room guarantee):
 
@@ -33,6 +33,8 @@ export interface RoomDocManager {
   subscribeRoomStats(cb: (s: { bytes: number; cap: number } | null) => void): Unsub;
   subscribeGates(cb: (gates: Readonly<GateStatus>) => void): Unsub;
   getGateStatus(): Readonly<GateStatus>;
+  updateCursor(worldX: number | undefined, worldY: number | undefined): void;
+  updateActivity(activity): void;
   mutate(fn: (ydoc: Y.Doc) => void): void;
   extendTTL(): void;
   destroy(): void;
@@ -183,6 +185,9 @@ export interface StrokeView {
   userId: string;
   kind: 'freehand' | 'shape'; //Renderer maps kind -> geometry pipeline(polygon vs polyline)
 }
+
+//TextView as well
+
 ```
 - **Never null:** EmptySnapshot created synchronously on construct with scene=0, empty arrays
 - **Typed arrays** constructed at render only, stored doc remains plain arrays
@@ -207,8 +212,6 @@ interface DeviceUIState {
 }
 ```
 
-**Shape Tool Integration (Phase: Shape Tools):** Shape variant maps to forced snap kind in Canvas.tsx: `rectangle` → `'rect'`, `ellipse` → `'ellipseRect'`, `arrow` → `'arrow'`, `line` → `'line'`. Shape tool uses DrawingTool with `opts: { forceSnapKind }` to bypass HoldDetector and start in "already snapped" mode.
-
 ### State Synchronization & Derivation
 
 **Sources:**
@@ -232,7 +235,7 @@ interface DeviceUIState {
 
 - Pointer-down: preview only, commit on pointer-up
 - Scene assigned at commit using currentScene
-- Docked toolbar (top/pinned) with Pen/Highlighter/Text/Eraser/Lasso/Undo/Redo/Ellipse/Rectangle/Line/Arrow
+- Docked toolbar (top/pinned) with Pen/Highlighter/Text/Eraser/Select/Ellipse/Rectangle/Line/Arrow
 - Undo/Redo via Yjs UndoManager with per-user origin
 
 **Clear Board:** Appends scene tick; renderer filters by currentScene; 10s local undo window
@@ -284,6 +287,7 @@ interface DeviceUIState {
 - **LOD:** Skip strokes with bbox diagonal <2px in screen space
 
 **OverlayRenderLoop:**
+- Runs at native device FPS (intentionally higher FPS for preview responsiveness)
 - Lightweight loop for local preview (drawing in progress) and global presence (cursors)
 - Preview accessed via PreviewProvider interface (set by active tool)
 - Always does full clear when dirty (cheap for sparse overlay content)
@@ -325,15 +329,12 @@ ctx.scale(scale, scale) THEN ctx.translate(-pan.x, -pan.y)
 - Base: Background (white) → Strokes → Text → Authoring overlays → HUD
 - Overlay: Preview (world-space) → Presence (screen-space with DPR only)
 
-**Viewport Culling (`isStrokeVisible`):**
-
 ```
 ### Stroke Rendering Pipeline & Caching
-
+```
 **Files:** `/client/src/renderer/stroke-builder/path-builder.ts` (buildStrokeRenderData), `/client/src/renderer/stroke-builder/stroke-cache.ts` (StrokeRenderCache, getStrokeCacheInstance), `/client/src/renderer/layers/strokes.ts` (drawStrokes)
 
-**CRITICAL** PERFECT FREEHAND LIBRARY FULL IMPLEMENTED. DRAWING TOOL AUTOMATICALLY DRAWS WITH THIS UNTIL A SHAPE IS DETECTED OR IF SHAPE TOOL IS USED
-
+```
 **Typed Array Construction (Render Time Only):**
 ```
 ```typescript
@@ -358,344 +359,99 @@ export type StrokeRenderData = PolylineData | PolygonData;
   // Constructs Float32Array from plain number[] at render time
   // Builds Path2D for hardware-accelerated rendering
 
-//excerpt from polygon data:
-export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
-  const size = stroke.style.size;
+**Polygon Builder (`buildPFPolygonRenderData`):**
+1. Extract canonical `pointsTuples` from stroke
+2. Call Perfect Freehand `getStroke()` with `last: true` (finalized geometry)
+3. Flatten outline to Float32Array for rendering
+4. Build Path2D via `getSvgPathFromStroke(outline, false)` (no close)
+5. Compute tight bounds from polygon points (not centerline)
+6. Return `{ kind: 'polygon', path, polygon, bounds, pointCount }`
+**Perfect Freehand Integration:**
 
-  // CRITICAL FIX: canonical tuples for polygon
-  const inputTuples = stroke.pointsTuples ?? [];
-  // Use the canonical tuples or fallback conversion
-  const outline = getStroke(inputTuples, {
-    ...PF_OPTIONS_BASE,
-    size,
-    last: true, // finalized geometry on base canvas
-  });
-  // PF returns [[x,y], ...]; flatten once into typed array for draw
-  const polygon = new Float32Array(outline.length * 2);
-  for (let i = 0; i < outline.length; i++) {
-    polygon[i * 2] = outline[i][0];
-    polygon[i * 2 + 1] = outline[i][1];
-  }
+**SVG Path Builder (`pf-svg.ts`):** Converts PF outline points to smooth quadratic Bézier SVG path. Uses `M` (moveTo), `Q` (quadratic curve), and `T` (smooth continuation) commands. Never closes path for PF outlines.
 
-  const pointCount = outline.length;
-  // Build smooth SVG path from outline points instead of lineTo segments
-  // CRITICAL: Do NOT close the path - PF already provides a complete outline
-  const path = hasPath2D && pointCount > 1
-    ? new Path2D(getSvgPathFromStroke(outline, false))
-    : null;
-  // Bounds from polygon (not centerline) for accurate dirty-rects
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (let i = 0; i < polygon.length; i += 2) {
-    const x = polygon[i], y = polygon[i + 1];
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-  }
-  const bounds = {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
-  };
-  return { kind: 'polygon', path, polygon, bounds, pointCount };
-```
-**PERFECT FREEHAND GET SVG PATH FROM STROKE**
+**PF Options (`pf-config.ts`):**
 ```typescript
-//client/src/renderer/stroke-builder/pf-svg.ts
-export function getSvgPathFromStroke(
-  points: number[][],
-  closed = true
-): string {
-  const len = points.length;
-  if (len < 2) return '';
-
-  const avg = (a: number, b: number) => (a + b) / 2;
-  // Handle degenerate case with exactly 2 points
-  if (len === 2) {
-    const [a, b] = points;
-    return `M${a[0]},${a[1]} L${b[0]},${b[1]}${closed ? ' Z' : ''}`;
-  }
-  // Build smooth quadratic Bézier path
-  let a = points[0];
-  let b = points[1];
-  let c = points[2];
-  // Start with M (moveTo), then Q (quadratic curve) to midpoint
-  let d = `M${a[0]},${a[1]} Q${b[0]},${b[1]} ${avg(b[0], c[0])},${avg(b[1], c[1])} T`;
-  // Continue with T (smooth quadratic) commands for continuous tangents
-  for (let i = 2; i < len - 1; i++) {
-    a = points[i];
-    b = points[i + 1];
-    d += `${avg(a[0], b[0])},${avg(a[1], b[1])} `;
-  }
-  // Close the path if requested
-  if (closed) d += 'Z';
-  return d;
-}
-//client/src/renderer/stroke-builder/pf-config.ts
 export const PF_OPTIONS_BASE = {
-  // 'size' will be supplied at call-site to match stroke.style.size
   thinning: 0.60,
   smoothing: 0.6,
   streamline: 0.5,
   simulatePressure: true
-  
 } as const;
 ```
-**Stroke Cache:**
+**Stroke Cache (stroke-cache.ts):**
+
+Module-level LRU cache with geometry variants per stroke ID. Each entry maps geometry keys to render data:
+- **Polyline (shapes):** Width-independent → single variant key `'pl'`
+- **Polygon (PF freehand):** Width-dependent → key includes size `'pf:s=<size>;...'`
+
+**Invalidation:** Style-only changes (color, opacity) don't evict geometry. Scene changes trigger full clear. Shared by base canvas and overlay eraser dim layer.
+
+**Stroke Rendering (strokes.ts):**
+
+**Main Loop (`drawStrokes`):**
+1. Clear cache on scene change
+2. Calculate visible world bounds from viewport (CSS pixels, 50px margin)
+3. Filter strokes: Spatial query (RBush `queryRect`) + viewport culling + LOD (<2px diagonal)
+4. Render each stroke via `renderStroke()`
+
+**Render Branching (`renderStroke`):**
+- Get cached render data via `strokeCache.getOrBuild(stroke)`
+- **Freehand (kind='freehand'):** Fill PF polygon with Path2D (nonzero rule, no close)
+- **Shapes (kind='shape'):** Stroke polyline with round caps/joins
+
+**Optimizations:**
+- LOD: Skip strokes <2px screen diagonal
+- Viewport culling: 50px margin in world units (via Rbush Query and padded through getVisibleWorldBounds())
+- Spatial query: RBush `queryRect` for visible bounds (O(log N))
+- Cache: Path2D geometry persists across frames
+**Canvas.tsx Cache Invalidation:**
+
+Snapshot diffing determines both dirty regions (for repaint) and cache evictions (for geometry changes).
+
 ```typescript
-// File: /client/src/renderer/stroke-builder/stroke-cache.ts
-
-// Module-level cache persists across frames
-/**
- * Stroke render cache (LRU) with geometry variants per stroke ID.
- * - Entry keyed by stroke.id
- * - Variant keyed by a small "geometry key"
- *   • polyline: independent of style.size (stroke width does not affect geometry)
- *   • polygon (Perfect Freehand): depends on style.size (width affects geometry)
- *
- * Style-only edits (color, opacity, polyline width) DO NOT invalidate geometry.
- */
-// Cache cleared on scene change (tracked via lastScene in strokes.ts)
-// Shared by both base canvas (stroke rendering) and overlay canvas (eraser dim layer)
-
-```
-**Stroke Rendering Loop:**
-```typescript
-// File: /client/src/renderer/layers/strokes.ts
-export function drawStrokes(
-  ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  viewTransform: ViewTransform,
-  viewport: ViewportInfo,
-): void {
-  // Clear cache on scene change
-  if (snapshot.scene !== lastScene) {
-    strokeCache.clear();
-    lastScene = snapshot.scene;
-  }
-  // Calculate visible world bounds for culling
-  const visibleBounds = getVisibleWorldBounds(viewTransform, viewport);
-  // Filter and render strokes
-  const strokes = snapshot.strokes;
-  let renderedCount = 0;
-  let culledCount = 0;
-  for (const stroke of strokes) {
-    // Scene filtering already done in snapshot
-    // Just check visibility
-    if (!isStrokeVisible(stroke, visibleBounds));
-    // Apply LOD: Skip tiny strokes (< 2px diagonal in screen space)
-    if (shouldSkipLOD(stroke, viewTransform)) ;
-  }
-  renderStroke(ctx, stroke, viewTransform);
-}
-
-/**
- * Renders a single stroke.
- * Branches on stroke.kind to use different geometry pipelines:
- * - Freehand (PF polygon) → fill
- * - Shapes (polyline) → stroke
- *
- * Note: viewTransform is passed for consistency but not used here since
- * RenderLoop has already applied the world transform to the context.
- */
-function renderStroke(
-  ctx: CanvasRenderingContext2D,
-  stroke: StrokeView,
-  _viewTransform: ViewTransform,
-): void {
-  // Get or build render data (cache selects geometry based on stroke.kind)
-  const renderData = strokeCache.getOrBuild(stroke);
-
-  if (renderData.pointCount < 2) {
-    return; // Need at least 2 points for a line
-  }
-
-  ctx.save();
-  ctx.globalAlpha = stroke.style.opacity;
-
-  if (renderData.kind === 'polygon') {
-    // FREEHAND (PF polygon) → fill with default nonzero rule (no closing)
-    ctx.fillStyle = stroke.style.color;
-    if (renderData.path) {
-      // Use default nonzero fill rule for open PF outlines
-      ctx.fill(renderData.path);
-    } else {
-      // Rare test fallback (no Path2D)
-      ctx.beginPath();
-      const pg = renderData.polygon;
-      ctx.moveTo(pg[0], pg[1]);
-      for (let i = 2; i < pg.length; i += 2) {
-        ctx.lineTo(pg[i], pg[i + 1]);
-      }
-      // CRITICAL: Do NOT closePath() - PF already provides complete outline
-      ctx.fill();
-    }
-  } else {
-    // SHAPES (polyline) → stroke
-    ctx.strokeStyle = stroke.style.color;
-    ctx.lineWidth = stroke.style.size;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    if (stroke.style.tool === 'highlighter') {
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    if (renderData.path) {
-      ctx.stroke(renderData.path);
-    } 
-  }
-  ctx.restore();
-}
-
-function shouldSkipLOD(stroke: StrokeView, viewTransform: ViewTransform): boolean {
-  const [minX, minY, maxX, maxY] = stroke.bbox;
-  const diagonal = Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2);
-  const screenDiagonal = diagonal * viewTransform.scale;
-
-  // Skip if less than 2 CSS pixels
-  return screenDiagonal < 2;
-}
-
-/**
- * Calculate visible world bounds for culling.
- * Converts viewport to world coordinates.
- *
- * CRITICAL: Uses CSS pixels from viewport, not device pixels.
- * The ViewTransform operates in CSS coordinate space.
- * ViewportInfo provides both:
- * - pixelWidth/pixelHeight: Device pixels for canvas operations
- * - cssWidth/cssHeight: CSS pixels for coordinate transforms
- */
-function getVisibleWorldBounds(
-  viewTransform: ViewTransform,
-  viewport: ViewportInfo,
-): { minX: number; minY: number; maxX: number; maxY: number } {
-  // Convert viewport corners to world space using CSS pixels (NOT device pixels)
-  const [minX, minY] = viewTransform.canvasToWorld(0, 0);
-  const [maxX, maxY] = viewTransform.canvasToWorld(viewport.cssWidth, viewport.cssHeight);
-
-  // Add small margin for strokes partially in view
-  const margin = 50 / viewTransform.scale; // 50px margin in world units
-
-  return {
-    minX: minX - margin,
-    minY: minY - margin,
-    maxX: maxX + margin,
-    maxY: maxY + margin,
-  };
-}
-```
-**Canvas.tsx cache invalidation:** 
-- Replace diffBounds with diffBoundsAndEvicts
-Add a style equality helper and return both dirty bounds and ids to evict. The principle:
-
-Evict ids when a stroke disappears or its bbox changed (i.e., geometry changed).
-Dirty-only when style changed but bbox didn’t.
-```typescript
-type EvictId = string;
 type DiffResult = {
   dirty: WorldBounds[];
-  evictIds: EvictId[];
+  evictIds: string[];
 };
+```
 
-function stylesEqual(
-  a: { color: string; size: number; opacity: number},
-  b: { color: string; size: number; opacity: number},
-) {
-  return a.color === b.color && a.size === b.size && a.opacity === b.opacity;
-}
+**Principle:** Evict cache when stroke disappears or bbox changes (geometry changed). Mark dirty-only when style changed but bbox unchanged.
 
+**Algorithm:**
+1. Build ID maps for prev/next strokes and texts
+2. For each stroke: Compare bbox and style separately
+   - **Bbox changed** → Evict + mark old/new regions dirty
+   - **Style-only changed** → Mark region dirty (no eviction)
+   - **Added** → Mark region dirty
+   - **Removed** → Evict + mark region dirty
+3. Apply similar logic for text blocks
+4. Return `{ dirty, evictIds }`
 
-function bboxToBounds(b: [number, number, number, number]): WorldBounds {
-  return { minX: b[0], minY: b[1], maxX: b[2], maxY: b[3] };
-}
-
-function diffBoundsAndEvicts(prev: Snapshot, next: Snapshot): DiffResult {
-  const prevSt = new Map(prev.strokes.map(s => [s.id, s]));
-  const nextSt = new Map(next.strokes.map(s => [s.id, s]));
-  const dirty: WorldBounds[] = [];
-  const evict = new Set<string>();
-
-  // Added / modified
-  for (const [id, n] of nextSt) {
-    const p = prevSt.get(id);
-    if (!p) {
-      // Added: repaint only (cache had no entry)
-      dirty.push(bboxToBounds(n.bbox));
-      continue;
-    }
-
-    const bboxChanged = !bboxEquals(p.bbox, n.bbox);
-    const styleChanged = !styleEquals(p.style, n.style); // ← compare .size here
-
-    if (bboxChanged) {
-      // Geometry changed → evict, and repaint old+new footprint
-      evict.add(id);
-      bounds.push(bboxToBounds(p.bbox));
-      bounds.push(bboxToBounds(n.bbox));
-    } else if (styleChanged) {
-      // Style only → repaint, no eviction (low churn)
-      dirty.push(bboxToBounds(n.bbox));
-    }
-  }
-
-  // Removed
-  for (const [id, p] of prevSt) {
-    if (!nextSt.has(id)) {
-      evict.add(id);
-      dirty.push(bboxToBounds(p.bbox));
-    }
-  }
-
-  // --- Text blocks ---
-  const prevTxt = new Map(prev.texts.map(t => [t.id, t]));
-  const nextTxt = new Map(next.texts.map(t => [t.id, t]));
-
-  for (const [id, n] of nextTxt) {
-    const p = prevTxt.get(id);
-    const rectChanged = !p || p.x !== n.x || p.y !== n.y || p.w !== n.w || p.h !== n.h;
-    const styleOrContentChanged = !!p && (p.color !== n.color || p.size !== n.size || p.content !== n.content);
-    if (rectChanged || styleOrContentChanged) {
-      dirty.push({ minX: n.x, minY: n.y, maxX: n.x + n.w, maxY: n.y + n.h });
-      if (p && rectChanged) dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
-    }
-  }
-  for (const [id, p] of prevTxt) {
-    if (!nextTxt.has(id)) {
-      dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
-    }
-  }
-
-  return { dirty, evictIds: [...evict] };
-}
-//later on
+**Usage:**
+```typescript
 const { dirty, evictIds } = diffBoundsAndEvicts(prevSnapshot, newSnapshot);
-
-// Evict geometry for ids whose geometry footprint changed or were removed
-if (evictIds.length) {
-  invalidateStrokeCacheByIds(evictIds);
-}
-
-// Repaint everything that changed style or geometry, additions/removals, etc.
-// (DirtyRectTracker will coalesce or promote to full clear if appropriate.)
-for (const b of dirty) {
-  renderLoopRef.current.invalidateWorld(b);
-}
-
+if (evictIds.length) invalidateStrokeCacheByIds(evictIds);
+for (const b of dirty) renderLoopRef.current.invalidateWorld(b);
 overlayLoopRef.current.invalidateAll();
 ```
 **Cache Eviction Behavior Matrix**
-Change Type	Freehand (PF polygon)	/ Perfect Shape (polyline)
-Color/Opacity/ change	No evict (bbox unchanged)	/ No evict (bbox unchanged)
-Size(width) change	No evict (Cache stores new Variant)	/ No evict (render-time width)
-Move/Resize (points change)	Evict (bbox changes) /	Evict (bbox changes)
-Delete	Evict	/ Evict
-Add new	No evict (no prior cache)	/ No evict (no prior cache)
-Style-only change (color, opacity, width) with bbox unchanged:		
+Change Type	Freehand (PF polygon)	/ Perfect Shape PS (polyline)
+PF: Color/Opacity/ change	No evict (bbox unchanged)	/ PS: No evict (bbox unchanged)
+PF: Size(width) change	No evict (Cache stores new Variant)	/ PS: No evict (render-time width)
+PF: Move/Resize (points change)	Evict (bbox changes) /	PS: Evict (bbox changes)
+PF: Delete	Evict	/ Evict
+PF: Add new	No evict (no prior cache)	/ PS: No evict (no prior cache)
+PF/ PS: Style-only change (color, opacity, width) with bbox unchanged:		
 Dirty: YES (you need a repaint).		
-Evict: NO (geometry didn’t change)	
+Evict: NO (geometry didn’t change)
+
+Cache entry scope: one entry per stroke id.
+Variants: each entry holds a tiny map of geometry variants, keyed by a geokey:
+Shapes (stroked polyline) ⇒ geometry is width-independent → geokey 'pl'.
+Freehand (PF polygon) ⇒ geometry depends on width → geokey like pf:s=<size>;sm=0.5;sl=0.5;th=0;pr=0.
+The cache decides which builder to run (polyline vs PF polygon) by the stroke’s semantic kind.
+LRU policy: map insertion order acts as LRU over stroke ids. When over the cap, pop the oldest id. Invalidating an id drops all its variants. **Cache size 3000 currently**
 
 ### Drawing Tool
 
@@ -723,15 +479,16 @@ interface EraserState {
 }
 ```
 
-**Hit-Testing Algorithm (Spatial Index with Fallback):**
+**Hit-Testing Algorithm (RBush Spatial Query):**
 
-1. Spatial query: Use `snapshot.spatialIndex.queryCircle()` when available
-2. Viewport prune: Skip strokes outside visible bounds + margin
-3. Stroke width: Inflate hit radius by `stroke.style.size / 2`
-4. Segment distance: Point-to-line distance for each segment
-5. Text blocks: Simple bbox-circle intersection (glyph precision deferred)
-6. Resume index: Track progress for continuation (10ms budget, 500 segments max)
-7. Live view: Uses `getView()` callback for accurate transforms
+1. Convert eraser radius to world units: `radiusWorld = radiusPx / viewTransform.scale`
+2. Query RBush with bounding rect: `queryRectAll(cx-r, cy-r, cx+r, cy+r)` returns both strokes AND texts
+3. **Strokes:** Segment-level distance test (stored bbox already includes stroke width)
+4. **Texts:** Circle-rect intersection test
+5. Accumulate hits in `hitNow` set; merge to `hitAccum` during drag
+6. Live view: Uses `getView()` callback for accurate transforms
+
+**Critical Fix Applied:** Stored bbox already includes `(strokeSize * 0.5 + 1)` inflation from commit time. No additional inflation needed during hit-testing.
 
 **Visual Feedback (Two-Pass Overlay):**
 
@@ -756,13 +513,45 @@ this.room.mutate((ydoc) => {
 });
 ```
 
-### Spatial Index (UniformGrid)
+### Spatial Index (RBush R-tree)
 
-- Divides world into 128×128 unit cells
-- Items inserted into all overlapping cells
-- Query returns unique items from relevant cells
-- Built per snapshot (strokes immutable)
-- Integration: `buildSpatialIndex()` in RoomDocManager
+**Location:** `packages/shared/src/spatial/rbush-spatial-index.ts`
+
+**Architecture:** Incrementally-maintained R-tree using RBush library with journal-based updates from Y.Array observers.
+
+**Key Components:**
+
+```typescript
+export class RBushSpatialIndex implements SpatialIndex {
+  private tree: RBush<IndexEntry>;
+  private strokesById: Map<string, StrokeView>;
+  private textsById: Map<string, TextView>;
+
+  // Methods
+  bulkLoad(strokes, texts): void;      // Initial load or scene change
+  insertStroke(stroke): void;          // Incremental add
+  insertText(text): void;              // Incremental add
+  removeById(id): void;                // Incremental delete
+  queryRect(...): StrokeView[];        // Strokes only
+  queryRectAll(...): {strokes, texts}; // Both strokes and texts
+}
+```
+
+**RoomDocManager Integration:**
+
+1. **Y.Array Observers:** Shallow observe `strokes` and `texts` arrays, recording deltas in journals
+2. **Journals:** Track `{ adds: [], dels: [] }` per transaction, cleared after each publish
+3. **Incremental Updates:** Apply journal entries to RBush during snapshot build
+   - Deletions: Remove entries by ID
+   - Additions: Insert new entries
+4. **Rebuild Triggers:** Scene changes force full `clear()` + `bulkLoad()`
+5. **Initialization Order (CRITICAL):** Observers attached AFTER IDB/WS structures initialized
+
+**Hydration Check:** On first snapshot after page load, if `prevStrokeViews` empty but Y.Arrays have content, directly hydrate from Y.Doc to avoid empty snapshots.
+- Rendering culling: `queryRect()` filters visible strokes before LOD/draw
+
+
+**Bbox Invariant:** Stored bbox already includes `(strokeSize * 0.5 + 1)` inflation. RBush uses stored bbox directly without re-inflation.
 
 ### Text Tool (Phase 9)
 
@@ -884,35 +673,9 @@ export interface PerfectShapePreview {
 - Cursor: 'none' for eraser, 'crosshair' for drawing
 - Mobile gating at Canvas level (not in tools)
 
-**PERFECT FREEHAND(NON SHAPES) STROKE PREVIEW**:
-```typescript
-export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePreview): void {
-  if (!preview || preview.points.length < 2) return;
+**Freehand Preview Rendering:**
 
-  ctx.save();
-  ctx.globalAlpha = preview.opacity; // Tool-specific opacity
-
-  // PF input: [x,y][]; output: [x,y][] (not flat)
-  const outline = getStroke(preview.points, {
-    ...PF_OPTIONS_BASE,
-    size: preview.size,
-    last: false, // live preview
-    
-  });
-
-  if (outline.length > 1) {
-    // Convert PF outline to smooth SVG path with quadratic Bézier curves
-    // CRITICAL: Do NOT close the path - PF already provides a complete outline
-    const svgPath = getSvgPathFromStroke(outline, false);
-    const path = new Path2D(svgPath);
-    ctx.fillStyle = preview.color;
-    // Use default nonzero fill rule (not even-odd) for open PF outlines
-    ctx.fill(path);
-  }
-
-  ctx.restore();
-}
-```
+Preview strokes use Perfect Freehand with `last: false` (live preview mode). Generate outline, convert to SVG path (no close), create Path2D, and fill with nonzero rule. Matches commit rendering except for `last` flag.
 ## 8. Awareness & Presence
 
 **Cursor Interpolation (`ingestAwareness`):** , **Cursor Rendering:** and **Cursor Trails**
@@ -989,15 +752,35 @@ export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePrevie
 
 **Commit**: Single `mutate()` replaces at same indices (preserves z-order)
 
-**Perfect Shape Recognition Details (Phase: Perfect Shapes):**
+### **Perfect Shape Recognition Details (Phase: Perfect Shapes):**
 
 - **600ms dwell trigger:** HoldDetector fires after pointer stillness (6px screen-space jitter tolerance). File: `/client/src/lib/input/HoldDetector.ts`.
+- **RDP SIMPLIFICATION DUPLICATE PASS RUN ON SHAPE RECOGNIZOR FOR CORNER DETECTION**
 - **Shape detection:** Circle (Taubin fit, coverage ≥67%, axis ratio ≤1.70, RMS ≤0.24) vs Rectangle (AABB with trimmed percentiles, soft scoring: 30% side proximity + 20% side coverage evenness + 50% corner quality) vs Line (strict fallback, score 1.0).
 - **Near-miss handling:** Shapes scoring within 0.10 of confidence threshold (0.48-0.58) don't snap, preventing annoying line fallbacks.
 - **Ambiguity guards:** Self-intersection detection, near-closure check (gap <6% diagonal), near self-touch detection. Files: `/client/src/lib/geometry/recognize-open-stroke.ts`, `/client/src/lib/geometry/fit-circle.ts`, `/client/src/lib/geometry/fit-aabb.ts`, `/client/src/lib/geometry/score.ts`.
 - **Locked refinement:** Post-snap, pointer drags adjust geometry only (circle: radius from center; box: X/Y scale from center; rect/ellipse: corner-to-corner AABB; arrow/line: endpoint).
 - **Standard commit:** Perfect shapes convert to polyline strokes on pointer-up, no special storage.
 
+### **Shape Tool Integration (DESIGNATED SHAPE TOOL, DIFFERING FROM FREEHAND STROKE SHAPE DETECTOR ON PAUSE):** Shape variant maps to forced snap kind in Canvas.tsx: `rectangle` → `'rect'`, `ellipse` → `'ellipseRect'`, `arrow` → `'arrow'`, `line` → `'line'`. Shape tool uses DrawingTool with `opts: { forceSnapKind }` to bypass HoldDetector and start in "already snapped" mode.
+- Anchor Semantics:
+  - `rect` and `ellipseRect`: Point A is the fixed corner, cursor defines opposite corner
+  - `arrow` and `line`: Point A is the start, cursor defines the end
+  - `circle` (hold-detected): Center is fixed, cursor defines radius
+  - `box` (hold-detected): Center is fixed, cursor scales X/Y axes
+
+### Polyline Generation
+All shapes convert to polylines at commit time:
+- **Rectangle**: 5 points (closed)
+- **Ellipse**: Adaptive point density based on perimeter
+- **Arrow**: 5 points (shaft + two head segments)
+- **Line**: 2 points
+
+### Shape Tools Preview Flow
+1. Pointer down → uses the DrawingTool, seeds snap immediately (no hold)
+2. Pointer move → Updates liveCursorWU, requests overlay frame
+3. Overlay renders preview from anchors + cursor
+4. Pointer up → Generates polyline, commits as regular stroke
 ### Ownership Model
 - **Single ownership:** RoomDocManager owns providers and solely observes Y types
 - **Centralized subscription:** UI relies on subscriptions only, no direct Y observers

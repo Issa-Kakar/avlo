@@ -960,7 +960,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       const steps = deltaY / 120;
 
       // Calculate zoom factor (~9% per step)
-      const ZOOM_STEP = Math.log(1.09);
+      const ZOOM_STEP = Math.log(1.17);
       const factor = Math.exp(-steps * ZOOM_STEP);
 
       // Read LATEST transform from ref

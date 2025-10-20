@@ -9,6 +9,7 @@ import {
   FRAME_CONFIG,
   InvalidationReason,
   WorldBounds,
+  DirtyClipRegion,
   type CSSPixelRect,
 } from './types';
 import {
@@ -402,16 +403,17 @@ export class RenderLoop {
           })
         };
 
-        // Create clipping path for all dirty regions
+        // Create clipping path for all dirty regions in world space
         ctx.save();
         ctx.beginPath();
-        for (const rect of clearInstructions.rects) {
-          // Clip in device pixels (transform already applied)
-          const x = rect.x / viewport.dpr / view.scale + view.pan.x;
-          const y = rect.y / viewport.dpr / view.scale + view.pan.y;
-          const w = rect.width / viewport.dpr / view.scale;
-          const h = rect.height / viewport.dpr / view.scale;
-          ctx.rect(x, y, w, h);
+        for (const worldRect of clipRegion.worldRects) {
+          // Use already-computed world coordinates directly
+          ctx.rect(
+            worldRect.minX,
+            worldRect.minY,
+            worldRect.maxX - worldRect.minX,
+            worldRect.maxY - worldRect.minY
+          );
         }
         ctx.clip();
       }
