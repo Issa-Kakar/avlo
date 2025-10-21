@@ -1,43 +1,124 @@
+// presence-cursors.ts — Laser-pointer feel: tapered width, slightly longer age/length, no snap/spring.
+// Drop-in for your presence overlay drawer.
+
 import { PresenceView, ViewTransform } from '@avlo/shared';
 
+// ---------- Types ----------
+
+type Pt = { x: number; y: number; t: number };
+
 interface CursorTrail {
-  points: Array<{ x: number; y: number; t: number }>;
+  points: Pt[];                 // oldest -> newest (raw history)
   lastUpdate: number;
   lastPushTime: number;
-  lastMovement: number; // tracks when cursor actually moved (for stop detection)
-  lastPosition: { x: number; y: number } | null; // to detect actual movement
-  length: number; // total world-distance of the polyline
+  lastMovement: number;
+  lastPosition: { x: number; y: number } | null;
+  length: number;               // running world-length of polyline
+}
+
+interface TrailProfile {
+  // Pixi-like semantics / geometry
+  historyPoints: number;        // "historySize" — raw buffer length
+  resamplePoints: number;       // "ropeSize" — samples after cubic resample
+
+  // Visuals (screen-space)
+  headWidthPx: number;          // width near the cursor (fatter)
+  tailWidthPx: number;          // width at the tail (thinner, tapered)
+
+  // Multi-pass (normal compositing; subtle)
+  outerWidthMul: number; outerAlpha: number;
+  innerWidthMul: number; innerAlpha: number;
+  mainWidthMul:  number; mainAlpha:  number;
+
+  // Lifetime (fade window)
+  decayMs: number;              // ultra short but a touch longer now
 }
 
 const cursorTrails = new Map<string, CursorTrail>();
+const peerProfiles = new Map<string, TrailProfile>();
 
-// Optimal whiteboard UX: smooth digital ink that flows naturally
-const MAX_TRAIL_POINTS = 22;           // More points for ultra-smooth curves
-const MAX_TRAIL_AGE = 550;             // ms, longer visibility for gesture clarity
-const TRAIL_DECAY_TAU = 120;           // ms, slower fade for better visibility
-const MIN_POINT_DIST = 0.35;           // world units, finer sampling for smoothness
-const MIN_POINT_DT = 8;                // ms, 125Hz sampling for fluid motion
-const MAX_TRAIL_LENGTH = 200;          // world units, comfortable trail length
+// ---------- Defaults tuned for "minimal laser pointer" ----------
 
-// Natural stop behavior - no jarring transitions
-const STOP_THRESHOLD = 80;             // ms of no movement = "stopped" 
-const STOP_FADE_MULTIPLIER = 0.45;     // Gentle fade when stopped (55% reduction)
-const MOVEMENT_EPSILON = 0.08;         // world units, sensitive movement detection
+const DEFAULT_TRAIL_PROFILE: TrailProfile = {
+  historyPoints: 20,      // Pixi historySize
+  resamplePoints: 100,    // Pixi ropeSize (smooth cubic)
 
-// Visual polish for professional feel
-const TRAIL_LINE_WIDTH_MAX = 2.2;      // px at head, slightly thicker
-const TRAIL_LINE_WIDTH_MIN = 0.4;      // px at tail, thinner taper
-const FADE_POWER = 1.5;                // Gentler power curve for natural fade
+  headWidthPx: 2.0,       // slightly thicker at the head
+  tailWidthPx: 0.6,       // tapered, thin tail
 
-// Helper to check if user prefers reduced motion
+  // Subtle three-pass (no additive)
+  outerWidthMul: 1.6, outerAlpha: 0.05,
+  innerWidthMul: 1.2, innerAlpha: 0.12,
+  mainWidthMul:  1.0, mainAlpha:  0.75, // a hair stronger core for legibility
+
+  decayMs: 140,           // was 80 — keep short but a tad longer for “laser”
+};
+
+// Perf/behavior guards
+const REDUCED_MOTION_PEER_CAP = 25; // same guard you already use :contentReference[oaicite:2]{index=2}
+const MIN_POINT_DIST = 0.25;        // world units; modest sampling threshold
+const MIN_POINT_DT   = 8;           // ms; up to ~125 Hz sampling
+const MOVE_EPSILON   = 0.06;        // world units; detect meaningful movement
+const MAX_TRAIL_LENGTH = 260;       // world units; slightly longer rope
+const MAX_TRAIL_AGE_MS = 300;       // peer cleanup if vanished
+const STILL_CLEAR_MS   = 70;        // if idle briefly, clear immediately (no lingering)
+
+// ---------- Public API ----------
+
+export function clearCursorTrails(): void {
+  cursorTrails.clear();
+  peerProfiles.clear();
+}
+
+// Optional per-peer tuning at runtime
+export function setPeerTrailProfile(userId: string, partial: Partial<TrailProfile>): void {
+  const base = peerProfiles.get(userId) ?? DEFAULT_TRAIL_PROFILE;
+  peerProfiles.set(userId, { ...base, ...partial });
+}
+export function resetPeerTrailProfile(userId: string): void {
+  peerProfiles.delete(userId);
+}
+
+// ---------- Utilities ----------
+
 function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-// Clear all cursor trails (call on disconnect or room change)
-export function clearCursorTrails(): void {
-  cursorTrails.clear();
+// Catmull–Rom cubic interpolation for Pixi-like rope sampling
+function catmullRom(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: number): Pt {
+  const t2 = t * t, t3 = t2 * t;
+  return {
+    x: 0.5 * (
+      (2 * p1.x) + (-p0.x + p2.x) * t +
+      (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+      (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
+    ),
+    y: 0.5 * (
+      (2 * p1.y) + (-p0.y + p2.y) * t +
+      (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+      (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+    ),
+    t: p1.t + t * (p2.t - p1.t),
+  };
 }
+
+function resampleTrail(raw: Pt[], totalSamples: number): Pt[] {
+  if (raw.length < 4 || totalSamples <= raw.length) return raw;
+  const out: Pt[] = [];
+  const segments = raw.length - 3;
+  const perSeg = Math.max(1, Math.floor(totalSamples / segments));
+  for (let i = 0; i < segments; i++) {
+    const p0 = raw[i], p1 = raw[i + 1], p2 = raw[i + 2], p3 = raw[i + 3];
+    for (let s = 0; s < perSeg; s++) {
+      out.push(catmullRom(p0, p1, p2, p3, s / perSeg));
+    }
+  }
+  out.push(raw[raw.length - 1]);
+  return out;
+}
+
+// ---------- Main entry (overlay render loop) ----------
 
 export function drawCursors(
   ctx: CanvasRenderingContext2D,
@@ -45,165 +126,160 @@ export function drawCursors(
   viewTransform: ViewTransform,
   gates: { awarenessReady: boolean; firstSnapshot: boolean },
 ): void {
-  // Single render guard: ONLY draw when both gates are open
-  // Presence intake continues always - we just don't render until both gates pass
-  if (!gates.awarenessReady || !gates.firstSnapshot) {
-    return;
-  }
+  // Respect your overlay gates (unchanged contract)
+  if (!gates.awarenessReady || !gates.firstSnapshot) return; // :contentReference[oaicite:3]{index=3}
 
   const now = Date.now();
-
-  // Performance optimizations based on peer count
   const peerCount = presence.users.size;
-  const enableTrails = peerCount <= 25 && !prefersReducedMotion();
+  const enableTrails = peerCount <= REDUCED_MOTION_PEER_CAP && !prefersReducedMotion();
 
-  // Update trails and render cursors
   presence.users.forEach((user, userId) => {
-    if (!user.cursor) {
-      // No cursor, skip rendering but keep trail aging
-      return;
-    }
+    const cursor = user.cursor;
+    if (!cursor) return;
 
-    // Update trail
+    const profile = peerProfiles.get(userId) ?? DEFAULT_TRAIL_PROFILE;
+
+    // --- Ensure per-peer trail bucket
     let trail = cursorTrails.get(userId);
     if (!trail) {
-      trail = { 
-        points: [], 
-        lastUpdate: now, 
-        lastPushTime: 0, 
+      trail = {
+        points: [],
+        lastUpdate: now,
+        lastPushTime: 0,
         lastMovement: now,
         lastPosition: null,
-        length: 0 
+        length: 0,
       };
       cursorTrails.set(userId, trail);
     }
 
-    // Check if cursor actually moved (for stop detection)
-    const hasMoved = !trail.lastPosition || 
-      Math.hypot(user.cursor.x - trail.lastPosition.x, user.cursor.y - trail.lastPosition.y) > MOVEMENT_EPSILON;
-    
-    if (hasMoved) {
+    // Movement detection (no smoothing or snap)
+    const moved =
+      !trail.lastPosition ||
+      Math.hypot(cursor.x - trail.lastPosition.x, cursor.y - trail.lastPosition.y) > MOVE_EPSILON;
+
+    if (moved) {
       trail.lastMovement = now;
-      trail.lastPosition = { x: user.cursor.x, y: user.cursor.y };
+      trail.lastPosition = { x: cursor.x, y: cursor.y };
+    } else {
+      // If idle briefly, clear trail so nothing lingers
+      if (now - trail.lastMovement > STILL_CLEAR_MS && trail.points.length) {
+        trail.points.length = 0;
+        trail.length = 0;
+      }
     }
 
-    // --- add or skip point
+    // --- Append point with light throttling
     const last = trail.points[trail.points.length - 1];
-    const dx = last ? (user.cursor.x - last.x) : 0;
-    const dy = last ? (user.cursor.y - last.y) : 0;
-    const moved = last ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY;
     const dt = last ? (now - trail.lastPushTime) : Number.POSITIVE_INFINITY;
+    const dx = last ? cursor.x - last.x : 0;
+    const dy = last ? cursor.y - last.y : 0;
+    const dist = last ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY;
 
-    if (moved >= MIN_POINT_DIST && dt >= MIN_POINT_DT) {
-      trail.points.push({ x: user.cursor.x, y: user.cursor.y, t: now });
+    if (dist >= MIN_POINT_DIST && dt >= MIN_POINT_DT) {
+      trail.points.push({ x: cursor.x, y: cursor.y, t: now });
       trail.lastPushTime = now;
-      trail.length += Number.isFinite(moved) ? moved : 0;
-    }
-    // Always refresh lastUpdate for cleanup tracking
-    trail.lastUpdate = now;
+      trail.length += Number.isFinite(dist) ? dist : 0;
 
-    // --- trim by age, count, and total length
+      // cap to historySize
+      while (trail.points.length > profile.historyPoints) {
+        const p0 = trail.points.shift()!;
+        const p1 = trail.points[0];
+        if (p1) trail.length -= Math.hypot(p1.x - p0.x, p1.y - p0.y);
+      }
+    }
+
+    // --- Trim by age/length (short & clean)
     while (
       trail.points.length > 1 &&
       (
-        (now - trail.points[0].t) > MAX_TRAIL_AGE ||
-        trail.points.length > MAX_TRAIL_POINTS ||
+        (now - trail.points[0].t) > profile.decayMs ||
         trail.length > MAX_TRAIL_LENGTH
       )
     ) {
       const p0 = trail.points.shift()!;
       const p1 = trail.points[0];
-      if (p1) {
-        trail.length -= Math.hypot(p1.x - p0.x, p1.y - p0.y);
-      }
+      if (p1) trail.length -= Math.hypot(p1.x - p0.x, p1.y - p0.y);
     }
 
-    // Draw trail only if enabled (based on peer count and motion preference)
-    if (enableTrails) {
-      drawTrail(ctx, trail, viewTransform, user.color, now);
+    trail.lastUpdate = now;
+
+    // --- Draw trail
+    if (enableTrails && trail.points.length > 1) {
+      drawTrailLaser(ctx, trail, viewTransform, user.color, profile, now);
     }
 
-    // Draw cursor pointer
-    const [canvasX, canvasY] = viewTransform.worldToCanvas(user.cursor.x, user.cursor.y);
-    drawCursorPointer(ctx, canvasX, canvasY, user.color);
-
-    // Draw name label
-    drawNameLabel(ctx, canvasX, canvasY, user.name, user.color);
+    // --- Draw cursor head + name at manager-smoothed position
+    const [cx, cy] = viewTransform.worldToCanvas(cursor.x, cursor.y);
+    drawCursorPointer(ctx, cx, cy, user.color);
+    drawNameLabel(ctx, cx, cy, user.name, user.color);
   });
 
-  // Cleanup old trails
+  // Cleanup for peers that vanished
   for (const [userId, trail] of cursorTrails.entries()) {
-    if (now - trail.lastUpdate > MAX_TRAIL_AGE && !presence.users.has(userId)) {
+    if (!presence.users.has(userId) && (now - trail.lastUpdate) > MAX_TRAIL_AGE_MS) {
       cursorTrails.delete(userId);
+      peerProfiles.delete(userId);
     }
   }
 }
 
-function drawTrail(
+// ---------- Drawing (tapered constant-width rope in screen-px, subtle) ----------
+
+function drawTrailLaser(
   ctx: CanvasRenderingContext2D,
   trail: CursorTrail,
   viewTransform: ViewTransform,
   color: string,
+  profile: TrailProfile,
   now: number,
 ): void {
-  if (trail.points.length < 2) return;
+  const raw = trail.points;
+  if (raw.length < 2) return;
+
+  // Pixi-like geometry: history → cubic → evenly sampled rope points
+  const pts = profile.resamplePoints > 0
+    ? resampleTrail(raw, profile.resamplePoints)
+    : raw;
 
   ctx.save();
+
+  // Keep normal compositing for minimal distraction (no additive)
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  ctx.strokeStyle = color;
 
-  // Detect if cursor has stopped moving
-  const timeSinceMovement = now - trail.lastMovement;
-  const isStopped = timeSinceMovement > STOP_THRESHOLD;
-  
-  // Apply aggressive fade multiplier when stopped
-  const stopFade = isStopped ? STOP_FADE_MULTIPLIER : 1.0;
-
-  // Three-pass rendering for ultra-smooth appearance
-  const passes = [
-    { widthMultiplier: 3.0, alphaMultiplier: 0.15 }, // Outer glow
-    { widthMultiplier: 1.8, alphaMultiplier: 0.35 }, // Inner glow
-    { widthMultiplier: 1.0, alphaMultiplier: 1.0 }   // Main stroke
+  const passes: Array<{ widthMul: number; alphaMul: number }> = [
+    { widthMul: profile.outerWidthMul, alphaMul: profile.outerAlpha },
+    { widthMul: profile.innerWidthMul, alphaMul: profile.innerAlpha },
+    { widthMul: profile.mainWidthMul,  alphaMul: profile.mainAlpha  },
   ];
 
   for (const pass of passes) {
-    ctx.strokeStyle = color;
-    
-    // Draw each segment with its own alpha and width for gradient effect
-    for (let i = 1; i < trail.points.length; i++) {
-      const a = trail.points[i - 1];
-      const b = trail.points[i];
+    // Draw segment-by-segment so we can taper and age-fade
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
 
-      // Calculate normalized position in trail (0 = tail, 1 = head)
-      const positionInTrail = i / trail.points.length;
-      
-      // Calculate age-based fade with smoother curve for visibility
+      // 0..1 along trail, tail→head; use a mild ease for nicer distribution
+      const pos = i / pts.length;
+      const posEase = Math.pow(pos, 0.65);
+
+      // Tapered width: tail→head
+      const baseWidthPx = profile.tailWidthPx + (profile.headWidthPx - profile.tailWidthPx) * posEase;
+      const widthPx = Math.max(0.5, baseWidthPx * pass.widthMul);
+
+      // Ultra-short age-based fade keyed to newer point
       const age = now - b.t;
-      const normalizedAge = Math.min(age / TRAIL_DECAY_TAU, 2.5); // cap at 2.5x tau
-      const baseFade = Math.max(0, 1 - Math.pow(normalizedAge, FADE_POWER));
-      
-      // Position-based fade with softer curve for smoother gradient
-      const positionFade = 0.3 + (0.7 * Math.pow(positionInTrail, 0.8));
-      
-      // Combine all fade factors
-      let alpha = baseFade * stopFade * positionFade * pass.alphaMultiplier;
-      
-      // Skip if too faint (lower threshold for better visibility)
-      if (alpha < 0.01) continue;
+      const k = Math.max(0, Math.min(1, 1 - age / profile.decayMs));
+      const alpha = k * pass.alphaMul;
+      if (alpha <= 0.01) continue;
 
-      // Smoother width taper for more elegant appearance
-      const widthCurve = 0.5 + (0.5 * Math.pow(positionInTrail, 0.7));
-      const baseWidth = TRAIL_LINE_WIDTH_MIN + 
-        (TRAIL_LINE_WIDTH_MAX - TRAIL_LINE_WIDTH_MIN) * widthCurve;
-      const width = baseWidth * pass.widthMultiplier;
-      
-      // Transform both points
       const [ax, ay] = viewTransform.worldToCanvas(a.x, a.y);
       const [bx, by] = viewTransform.worldToCanvas(b.x, b.y);
 
-      // Draw segment with calculated alpha and width
       ctx.globalAlpha = alpha;
-      ctx.lineWidth = width;
+      ctx.lineWidth = widthPx;
       ctx.beginPath();
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
@@ -214,6 +290,8 @@ function drawTrail(
   ctx.restore();
 }
 
+// ---------- Cursor glyph & label ----------
+
 function drawCursorPointer(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -222,16 +300,15 @@ function drawCursorPointer(
 ): void {
   ctx.save();
 
-  // Draw pointer shape (triangle with tail)
   ctx.fillStyle = color;
   ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
   ctx.lineWidth = 1;
 
   ctx.beginPath();
-  ctx.moveTo(x, y); // Tip
-  ctx.lineTo(x - 4, y + 10); // Left
-  ctx.lineTo(x + 1, y + 7); // Middle
-  ctx.lineTo(x + 6, y + 12); // Right
+  ctx.moveTo(x, y);            // tip
+  ctx.lineTo(x - 4, y + 10);
+  ctx.lineTo(x + 1, y + 7);
+  ctx.lineTo(x + 6, y + 12);
   ctx.closePath();
 
   ctx.fill();
@@ -249,25 +326,27 @@ function drawNameLabel(
 ): void {
   ctx.save();
 
-  // Position label below and right of cursor
   const labelX = x + 8;
   const labelY = y + 14;
 
-  // Measure text
   ctx.font = '11px system-ui, -apple-system, sans-serif';
   const metrics = ctx.measureText(name);
   const padding = 4;
   const width = metrics.width + padding * 2;
   const height = 16;
 
-  // Draw pill background
   ctx.fillStyle = color;
   ctx.globalAlpha = 0.9;
-  ctx.beginPath();
-  ctx.roundRect(labelX, labelY, width, height, height / 2);
+  // Use roundRect if available; otherwise fallback to rect
+  const rr = (ctx as any).roundRect;
+  if (typeof rr === 'function') {
+    rr.call(ctx, labelX, labelY, width, height, height / 2);
+  } else {
+    ctx.beginPath();
+    ctx.rect(labelX, labelY, width, height);
+  }
   ctx.fill();
 
-  // Draw text
   ctx.fillStyle = '#FFFFFF';
   ctx.globalAlpha = 1;
   ctx.fillText(name, labelX + padding, labelY + 12);

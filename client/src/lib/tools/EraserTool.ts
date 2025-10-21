@@ -20,15 +20,9 @@ export class EraserTool {
   private room: IRoomDocManager;
   private settings: EraserSettings;
   private userId: string;
-  private rafId: number | null = null;
-  private pendingMove: [number, number] | null = null;
   private onInvalidate?: () => void;
   private getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number };
   private getView?: () => ViewTransform;
-
-  // Performance optimization: track which strokes we've already tested
-  private resumeIndex: number = 0;
-  private lastProcessedPosition: [number, number] | null = null;
 
   constructor(
     room: IRoomDocManager,
@@ -56,9 +50,6 @@ export class EraserTool {
       hitNow: new Set(),
       hitAccum: new Set(),
     };
-    // Also reset performance tracking
-    this.resumeIndex = 0;
-    this.lastProcessedPosition = null;
   }
 
   // PointerTool interface compatibility - same signature as DrawingTool
@@ -94,19 +85,14 @@ export class EraserTool {
   }
 
   move(worldX: number, worldY: number): void {
-    // Always track hover position (not just when erasing)
-    this.pendingMove = [worldX, worldY];
+    // Always move the cursor immediately for best overlay tracking
+    this.state.lastWorld = [worldX, worldY];
 
-    if (!this.rafId) {
-      this.rafId = requestAnimationFrame(() => {
-        if (this.pendingMove) {
-          this.updateHitTest(this.pendingMove[0], this.pendingMove[1]);
-          this.state.lastWorld = this.pendingMove; // This drives getPreview()
-        }
-        this.pendingMove = null;
-        this.rafId = null;
-      });
-    }
+    // With RBush always present, sync hit-test is cheap (O(log N + K))
+    this.updateHitTest(worldX, worldY);
+
+    // Always invalidate overlay on every move for smooth cursor
+    this.onInvalidate?.();
   }
 
   // PointerTool interface methods for polymorphic handling
@@ -139,10 +125,6 @@ export class EraserTool {
   }
 
   destroy(): void {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
     this.resetState();
     this.onInvalidate?.(); // Clear any preview
   }
@@ -154,15 +136,11 @@ export class EraserTool {
 
   // Clear hover state when pointer leaves canvas
   clearHover(): void {
-    this.pendingMove = null;
     this.state.lastWorld = null;
     this.state.hitNow.clear();
     if (!this.state.isErasing) {
       this.state.hitAccum.clear();
     }
-    // Reset performance tracking
-    this.resumeIndex = 0;
-    this.lastProcessedPosition = null;
     this.onInvalidate?.();
   }
 
@@ -179,39 +157,14 @@ export class EraserTool {
     // USE LIVE VIEW, FALLBACK TO SNAPSHOT IF NOT PROVIDED
     const viewTransform = this.getView ? this.getView() : snapshot.view;
 
-    // Convert radius to world units
-    const radiusWorld = this.state.radiusPx / viewTransform.scale;
+    // Convert radius to world units with micro-slack for better feel
+    const ERASER_SLACK_PX = 0.9; // Tweak 0.5-1.0 for best feel
+    const radiusWorld = (this.state.radiusPx + ERASER_SLACK_PX) / viewTransform.scale;
 
-    // Get visible bounds for pruning
-    const visibleBounds = this.getVisibleWorldBounds(viewTransform);
+    // Clear hitNow for fresh hit-test
+    this.state.hitNow.clear();
 
-    // Check if position moved significantly - if so, reset resume index
-    if (this.lastProcessedPosition) {
-      const dist = Math.hypot(
-        worldX - this.lastProcessedPosition[0],
-        worldY - this.lastProcessedPosition[1],
-      );
-      if (dist > radiusWorld * 0.5) {
-        // Moved significantly, restart from beginning
-        this.resumeIndex = 0;
-      }
-    } else {
-      this.resumeIndex = 0;
-    }
-    this.lastProcessedPosition = [worldX, worldY];
-
-    // Clear hitNow only if we're starting fresh
-    if (this.resumeIndex === 0) {
-      this.state.hitNow.clear();
-    }
-
-    // Performance budget tracking (higher limits since we have RAF coalescing)
-    const startTime = performance.now();
-    const MAX_TIME_MS = 10; // Increased from 6ms
-    let segmentCount = 0;
-    const MAX_SEGMENTS = 500; // Increased from 100
-
-    // CRITICAL FIX: Use combined query for both strokes AND texts
+    // Spatial index is always available, use combined query for both strokes AND texts
     if (snapshot.spatialIndex && 'queryRectAll' in snapshot.spatialIndex) {
       // Query with eraser's bounding square
       // Since bbox already includes stroke width, no extra inflation needed!
@@ -240,56 +193,6 @@ export class EraserTool {
           this.state.hitNow.add(text.id);
         }
       }
-    } else {
-      // Fallback without spatial index (original logic but fixed inflation)
-      const candidateStrokes = snapshot.strokes;
-
-      // Test strokes starting from resume index
-      for (let i = this.resumeIndex; i < candidateStrokes.length; i++) {
-        const stroke = candidateStrokes[i];
-
-        // Viewport prune
-        if (!this.isInBounds(stroke.bbox, visibleBounds)) continue;
-
-        // FIX: bbox already includes stroke width, so just test with radiusWorld
-        if (this.strokeHitTest(worldX, worldY, stroke.points, radiusWorld)) {
-          this.state.hitNow.add(stroke.id);
-        }
-
-        // Count actual segments (points - 1), not points
-        segmentCount += Math.max(0, stroke.points.length / 2 - 1);
-
-        // Check if we've exceeded our performance budget
-        if (performance.now() - startTime > MAX_TIME_MS && segmentCount > MAX_SEGMENTS) {
-          // Store where to resume next frame
-          this.resumeIndex = i + 1;
-
-          // Schedule continuation if we haven't finished
-          if (this.resumeIndex < candidateStrokes.length && !this.rafId) {
-            this.rafId = requestAnimationFrame(() => {
-              this.rafId = null;
-              // Continue from where we left off
-              this.updateHitTest(worldX, worldY);
-            });
-          }
-
-          // Early return to yield control
-          return;
-        }
-      }
-
-      // Finished all strokes, reset resume index
-      this.resumeIndex = 0;
-
-      // Test text blocks (simple bbox intersection)
-      for (const text of snapshot.texts) {
-        if (this.circleRectIntersect(
-          worldX, worldY, radiusWorld,
-          text.x, text.y, text.w, text.h
-        )) {
-          this.state.hitNow.add(text.id);
-        }
-      }
     }
 
     // Update accumulator if dragging
@@ -309,6 +212,13 @@ export class EraserTool {
     points: ReadonlyArray<number>,
     radius: number,
   ): boolean {
+    // Handle single-point stroke (e.g., 1px dot)
+    if (points.length === 2) {
+      const dx = px - points[0];
+      const dy = py - points[1];
+      return (dx * dx + dy * dy) <= (radius * radius);
+    }
+
     // Test each segment
     for (let i = 0; i < points.length - 2; i += 2) {
       const x1 = points[i],
@@ -348,11 +258,6 @@ export class EraserTool {
   }
 
   cancelErasing(): void {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
-    this.pendingMove = null;
     this.resetState();
     this.onInvalidate?.(); // Clear any preview
   }
@@ -370,35 +275,20 @@ export class EraserTool {
       const root = ydoc.getMap('root');
       const yStrokes = root.get('strokes') as Y.Array<any>;
       const yTexts = root.get('texts') as Y.Array<any>;
+      const hit = this.state.hitAccum;
 
-      // Build id→index maps
-      const strokeIdToIndex = new Map<string, number>();
-      for (let i = 0; i < yStrokes.length; i++) {
-        strokeIdToIndex.set(yStrokes.get(i).id, i);
+      // Backward iteration - O(N) with no maps or sorting
+      // Delete from end to preserve earlier indices
+      for (let i = yStrokes.length - 1; i >= 0; i--) {
+        if (hit.has(yStrokes.get(i).id)) {
+          yStrokes.delete(i, 1);
+        }
       }
 
-      const textIdToIndex = new Map<string, number>();
-      for (let i = 0; i < yTexts.length; i++) {
-        textIdToIndex.set(yTexts.get(i).id, i);
-      }
-
-      // Get indices and sort descending (reverse order)
-      const strokeIndices = Array.from(this.state.hitAccum)
-        .map((id) => strokeIdToIndex.get(id))
-        .filter((idx): idx is number => idx !== undefined)
-        .sort((a, b) => b - a);
-
-      const textIndices = Array.from(this.state.hitAccum)
-        .map((id) => textIdToIndex.get(id))
-        .filter((idx): idx is number => idx !== undefined)
-        .sort((a, b) => b - a);
-
-      // Delete in reverse order to preserve indices
-      for (const idx of strokeIndices) {
-        yStrokes.delete(idx, 1);
-      }
-      for (const idx of textIndices) {
-        yTexts.delete(idx, 1);
+      for (let i = yTexts.length - 1; i >= 0; i--) {
+        if (hit.has(yTexts.get(i).id)) {
+          yTexts.delete(i, 1);
+        }
       }
     });
 
