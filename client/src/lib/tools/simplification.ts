@@ -10,7 +10,7 @@ export function calculateBBox(
   points: number[],
   strokeSize: number = 0,
 ): [number, number, number, number] | null {
-  if (points.length < 2) return null;
+  if (points.length < 1) return null;
 
   let minX = points[0];
   let minY = points[1];

@@ -16,16 +16,6 @@ This comprehensive audit examined all 47+ occurrences of `userId` across the AVL
 
 ---
 
-## Table of Contents
-
-1. [Current Implementation Analysis](#1-current-implementation-analysis)
-2. [Complete Usage Inventory](#2-complete-usage-inventory)
-3. [Critical Issues](#3-critical-issues)
-4. [Migration Requirements](#4-migration-requirements)
-5. [Implementation Plan](#5-implementation-plan)
-6. [Testing Strategy](#6-testing-strategy)
-7. [Appendices](#7-appendices)
-
 ---
 
 ## 1. Current Implementation Analysis
@@ -148,10 +138,6 @@ const [userId] = useState(() => {
 #### UI Components
 11. `/client/src/pages/components/UsersModal.tsx` - **1 occurrence** (React keys)
 12. `/client/src/pages/components/UserAvatarCluster.tsx` - **1 occurrence** (React keys)
-
-#### Test Utilities
-13. `/packages/shared/src/test-utils/generators.ts` - **2 occurrences** (test data)
-14-19. Test files (6 files) - Multiple occurrences in assertions/mocks
 
 ### 2.2 Usage by Category
 
@@ -286,629 +272,90 @@ mutate(fn: (ydoc: Y.Doc) => void): void {
 
 ---
 
-## 4. Migration Requirements
-
-### 4.1 Immediate Fix (Dual UserId Bug)
-
-**Objective:** Ensure single source of truth for userId within a tab session.
-
-**Changes Required:**
-
-#### Change 1: RoomDocManager Constructor
+File: **client/src/lib/user-identity.ts**
 ```typescript
-// File: /client/src/lib/room-doc-manager.ts
+// Random adjective-animal name lists
+const ADJECTIVES = [
+  'Swift',
+  'Bright',
+  'Happy',
+  'Clever',
+  'Bold',
+  'Calm',
+  'Eager',
+  'Gentle',
+  'Keen',
+  'Lively',
+  'Noble',
+  'Quick',
+  'Sharp',
+  'Wise',
+  'Zesty',
+];
 
-// BEFORE (Line 275)
-this.userId = ulid(); // User ID for this session
+const ANIMALS = [
+  'Fox',
+  'Bear',
+  'Wolf',
+  'Eagle',
+  'Owl',
+  'Hawk',
+  'Lion',
+  'Tiger',
+  'Lynx',
+  'Otter',
+  'Seal',
+  'Whale',
+  'Raven',
+  'Swan',
+  'Deer',
+];
 
-// AFTER
-constructor(
-  roomId: RoomId,
-  options?: RoomDocManagerOptions & { userId?: string }
-) {
-  this.roomId = roomId;
-  this.userId = options?.userId || ulid(); // Accept injected userId
-  // ...
-}
-```
+const COLORS = [
+  '#FF6B6B',
+  '#4ECDC4',
+  '#45B7D1',
+  '#96CEB4',
+  '#FFEAA7',
+  '#DDA0DD',
+  '#98D8C8',
+  '#F7DC6F',
+  '#85C1E2',
+  '#F8B739',
+  '#52B788',
+  '#E76F51',
+];
 
-#### Change 2: Canvas.tsx - Pass userId to Manager
-```typescript
-// File: /client/src/canvas/Canvas.tsx
-
-// Generate userId ONCE
-const [userId] = useState(() => {
-  let id = sessionStorage.getItem('avlo-user-id');
-  if (!id) {
-    id = 'user-' + ulid();
-    sessionStorage.setItem('avlo-user-id', id);
-  }
-  return id;
-});
-
-// Pass to RoomDocManager (via useRoomDoc hook or registry.acquire())
-const roomDoc = useRoomDoc(roomId, { userId }); // Updated signature
-```
-
-#### Change 3: Registry/Hook Signature
-```typescript
-// Update useRoomDoc hook to accept userId
-function useRoomDoc(
-  roomId: string,
-  options?: { userId?: string }
-): IRoomDocManager {
-  // Pass userId to registry.acquire()
-}
-```
-
-**Testing:**
-- ✅ Undo/redo works for committed strokes
-- ✅ Awareness userId matches stroke userId
-- ✅ Single userId throughout tab session
-
-### 4.2 Persistent UserId Implementation
-
-**Objective:** Cross-tab, cross-session persistent user identity.
-
-**Storage Strategy:** localStorage (browser-scoped, persistent)
-
-#### New File: `/client/src/lib/persistent-user-id.ts`
-
-```typescript
-import { ulid } from 'ulid';
-import { generateUserProfile, type UserProfile } from './user-identity';
-
-export interface PersistentUserIdentity {
-  userId: string;
-  profile: UserProfile;
-  createdAt: number;
-  lastActiveAt: number;
+export interface UserProfile {
+  name: string;
+  color: string;
 }
 
-const STORAGE_KEY = 'avlo:user:v1';
+export function generateUserProfile(): UserProfile {
+  // Generate random indices using crypto.getRandomValues
+  const randomValues = new Uint32Array(3);
+  crypto.getRandomValues(randomValues);
 
-export function getOrCreatePersistentUserId(): PersistentUserIdentity {
-  // 1. Try localStorage first
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const identity: PersistentUserIdentity = JSON.parse(stored);
+  // Random name from lists
+  const adjIndex = randomValues[0] % ADJECTIVES.length;
+  const animalIndex = randomValues[1] % ANIMALS.length;
+  const name = `${ADJECTIVES[adjIndex]} ${ANIMALS[animalIndex]}`;
 
-      // Update last active timestamp
-      identity.lastActiveAt = Date.now();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
+  // Random color from palette
+  const colorIndex = randomValues[2] % COLORS.length;
+  const color = COLORS[colorIndex];
 
-      return identity;
-    }
-  } catch (err) {
-    console.warn('[PersistentUserId] Failed to load from localStorage:', err);
-  }
-
-  // 2. Migrate from old sessionStorage (if exists)
-  try {
-    const oldId = sessionStorage.getItem('avlo-user-id');
-    if (oldId && oldId.startsWith('user-')) {
-      const identity: PersistentUserIdentity = {
-        userId: oldId,
-        profile: generateUserProfile(), // Generate fresh profile
-        createdAt: Date.now(),
-        lastActiveAt: Date.now(),
-      };
-
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
-      sessionStorage.removeItem('avlo-user-id'); // Clean up
-
-      return identity;
-    }
-  } catch (err) {
-    console.warn('[PersistentUserId] Migration from sessionStorage failed:', err);
-  }
-
-  // 3. Generate new persistent identity
-  const identity: PersistentUserIdentity = {
-    userId: 'user-' + ulid(),
-    profile: generateUserProfile(),
-    createdAt: Date.now(),
-    lastActiveAt: Date.now(),
-  };
-
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
-  } catch (err) {
-    console.error('[PersistentUserId] Failed to persist to localStorage:', err);
-    // Continue with in-memory identity (fallback)
-  }
-
-  return identity;
-}
-
-/**
- * Reset user identity (generate new userId and profile).
- * Useful for "New Identity" button in settings.
- */
-export function resetPersistentUserId(): PersistentUserIdentity {
-  const identity: PersistentUserIdentity = {
-    userId: 'user-' + ulid(),
-    profile: generateUserProfile(),
-    createdAt: Date.now(),
-    lastActiveAt: Date.now(),
-  };
-
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
-  return identity;
-}
-
-/**
- * Update user profile (name/color).
- */
-export function updateUserProfile(profile: UserProfile): void {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const identity: PersistentUserIdentity = JSON.parse(stored);
-      identity.profile = profile;
-      identity.lastActiveAt = Date.now();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(identity));
-    }
-  } catch (err) {
-    console.error('[PersistentUserId] Failed to update profile:', err);
-  }
+  return { name, color };
 }
 ```
-
-#### Update Canvas.tsx
-
-```typescript
-// File: /client/src/canvas/Canvas.tsx
-
-import { getOrCreatePersistentUserId } from '@/lib/persistent-user-id';
-
-// BEFORE (Lines 190-198)
-const [userId] = useState(() => {
-  let id = sessionStorage.getItem('avlo-user-id');
-  if (!id) {
-    id = 'user-' + ulid();
-    sessionStorage.setItem('avlo-user-id', id);
-  }
-  return id;
-});
-
-// AFTER
-const userIdentity = useMemo(() => getOrCreatePersistentUserId(), []);
-const userId = userIdentity.userId;
-```
-
-#### Update RoomDocManager
-
-```typescript
-// File: /client/src/lib/room-doc-manager.ts
-
-// BEFORE (Lines 275-278)
-this.userId = ulid();
-this.userProfile = generateUserProfile();
-
-// AFTER
-constructor(
-  roomId: RoomId,
-  options?: RoomDocManagerOptions & {
-    userId?: string;
-    userProfile?: UserProfile;
-  }
-) {
-  this.roomId = roomId;
-
-  // Accept injected identity from Canvas
-  if (options?.userId && options?.userProfile) {
-    this.userId = options.userId;
-    this.userProfile = options.userProfile;
-  } else {
-    // Fallback for tests/edge cases
-    const identity = getOrCreatePersistentUserId();
-    this.userId = identity.userId;
-    this.userProfile = identity.profile;
-  }
-
-  // ...rest of constructor
-}
-```
-
-#### Update Canvas Tool Instantiation
-
-```typescript
-// File: /client/src/canvas/Canvas.tsx
-
-// Pass persistent userId to manager via registry/hook
-const roomDoc = useRoomDoc(roomId, {
-  userId: userIdentity.userId,
-  userProfile: userIdentity.profile,
-});
-
-// Tools automatically receive correct userId (no change needed)
-tool = new DrawingTool(
-  roomDoc,
-  settings,
-  activeTool,
-  userId, // From userIdentity
-  // ...
-);
-```
-
-### 4.3 Type Definition Updates
-
-#### Update Snapshot Types for Consistency
-
-```typescript
-// File: /packages/shared/src/types/snapshot.ts
-
-// BEFORE (Line 41)
-export interface StrokeView {
-  userId: string;
-  // ...
-}
-
-// AFTER
-export interface StrokeView {
-  userId: UserId; // ← Change to UserId type
-  // ...
-}
-
-// Similarly for TextView (Line 61)
-```
-
-#### Update Type Comment
-
-```typescript
-// File: /packages/shared/src/types/identifiers.ts
-
-// BEFORE (Line 5)
-export type UserId = string; // format: "deviceULID:tabULID"
-
-// AFTER
-export type UserId = string; // format: "user-{ULID}" (persistent across sessions)
-```
-
----
-
-## 5. Implementation Plan
-
-### Phase 1: Critical Bug Fix (1-2 hours)
-
-**Goal:** Fix dual userId generation to restore undo/redo functionality.
-
-**Tasks:**
-1. ✅ Update RoomDocManager constructor to accept `userId` option
-2. ✅ Update Canvas.tsx to pass userId to RoomDocManager
-3. ✅ Update registry/hook signature to pass userId
-4. ✅ Test undo/redo works for committed strokes
-5. ✅ Test awareness userId matches stroke userId
-
-**Files Changed:**
-- `/client/src/lib/room-doc-manager.ts` (1 line)
-- `/client/src/canvas/Canvas.tsx` (update hook call)
-- `/client/src/hooks/useRoomDoc.ts` or registry (signature update)
-
-**Risk:** Low (backwards compatible, optional parameter)
-
-### Phase 2: Persistent UserId (2-4 hours)
-
-**Goal:** Implement localStorage-based persistent user identity.
-
-**Tasks:**
-1. ✅ Create `/client/src/lib/persistent-user-id.ts` module
-2. ✅ Implement `getOrCreatePersistentUserId()` with localStorage
-3. ✅ Add migration from sessionStorage
-4. ✅ Add error handling and fallbacks
-5. ✅ Update Canvas.tsx to use persistent identity
-6. ✅ Update RoomDocManager to accept userProfile
-7. ✅ Test cross-tab behavior (same userId in multiple tabs)
-8. ✅ Test cross-session persistence (close/reopen browser)
-
-**Files Changed:**
-- `/client/src/lib/persistent-user-id.ts` (NEW)
-- `/client/src/canvas/Canvas.tsx` (replace userId generation)
-- `/client/src/lib/room-doc-manager.ts` (accept userProfile)
-
-**Risk:** Low (localStorage widely supported, fallback to sessionStorage)
-
-### Phase 3: Type Consistency (30 minutes)
-
-**Goal:** Fix type inconsistencies for better type safety.
-
-**Tasks:**
-1. ✅ Change `StrokeView.userId` from `string` to `UserId`
-2. ✅ Change `TextView.userId` from `string` to `UserId`
-3. ✅ Update type comment in `identifiers.ts`
-4. ✅ Run TypeScript compiler, fix any new errors
-
-**Files Changed:**
-- `/packages/shared/src/types/snapshot.ts` (2 lines)
-- `/packages/shared/src/types/identifiers.ts` (1 comment)
-
-**Risk:** Very low (type-only change, no runtime impact)
-
-### Phase 4: Testing & Validation (2-3 hours)
-
-**Goal:** Comprehensive testing of persistent userId behavior.
-
-**Test Cases:**
-- [ ] userId persists across page refreshes
-- [ ] userId persists across browser restarts
-- [ ] Same userId in multiple tabs (cross-tab identity)
-- [ ] Undo/redo works across sessions (if Y.Doc persisted)
-- [ ] Stroke attribution shows correct creator
-- [ ] Text attribution shows correct creator
-- [ ] Presence shows single user (not duplicates)
-- [ ] Cursor trails persist across reconnects
-- [ ] Avatar cluster stable (no flicker on reconnect)
-- [ ] Migration from sessionStorage works
-- [ ] localStorage quota exceeded handled gracefully
-- [ ] Private browsing mode fallback works
-- [ ] Cross-browser compatibility (Chrome, Firefox, Safari)
-- [ ] Mobile Safari (iOS localStorage restrictions)
-
-**Files Changed:**
-- Test files (update generators and assertions)
-
-**Risk:** Low (test-only changes)
-
-### Phase 5: Optional Enhancements (Future)
-
-**Goal:** Additional features leveraging persistent userId.
-
-**Possible Enhancements:**
-- [ ] User profile editor (customize name/color)
-- [ ] "My Strokes" filter (show only own strokes)
-- [ ] Per-user clear board (clear only own strokes)
-- [ ] User statistics dashboard (stroke count, colors used)
-- [ ] Cross-device sync via auth provider
-- [ ] Server-side user accounts
-
----
-
-## 6. Testing Strategy
-
-### 6.1 Unit Tests
-
-#### Test: Persistent UserId Generation
-
-```typescript
-describe('getOrCreatePersistentUserId', () => {
-  beforeEach(() => {
-    localStorage.clear();
-    sessionStorage.clear();
-  });
-
-  it('generates new identity on first call', () => {
-    const identity = getOrCreatePersistentUserId();
-
-    expect(identity.userId).toMatch(/^user-[0-9A-Z]{26}$/);
-    expect(identity.profile.name).toBeTruthy();
-    expect(identity.profile.color).toMatch(/^#[0-9A-F]{6}$/);
-    expect(identity.createdAt).toBeCloseTo(Date.now(), -2);
-  });
-
-  it('returns same identity on subsequent calls', () => {
-    const identity1 = getOrCreatePersistentUserId();
-    const identity2 = getOrCreatePersistentUserId();
-
-    expect(identity1.userId).toBe(identity2.userId);
-    expect(identity1.profile.name).toBe(identity2.profile.name);
-    expect(identity1.profile.color).toBe(identity2.profile.color);
-  });
-
-  it('migrates from old sessionStorage format', () => {
-    sessionStorage.setItem('avlo-user-id', 'user-01HXYZ123ABC');
-
-    const identity = getOrCreatePersistentUserId();
-
-    expect(identity.userId).toBe('user-01HXYZ123ABC');
-    expect(sessionStorage.getItem('avlo-user-id')).toBeNull();
-    expect(localStorage.getItem('avlo:user:v1')).toBeTruthy();
-  });
-
-  it('handles localStorage unavailable', () => {
-    // Mock localStorage.setItem to throw
-    const setItemSpy = jest.spyOn(Storage.prototype, 'setItem')
-      .mockImplementation(() => {
-        throw new Error('QuotaExceededError');
-      });
-
-    const identity = getOrCreatePersistentUserId();
-
-    expect(identity.userId).toBeTruthy(); // Should still return valid ID
-
-    setItemSpy.mockRestore();
-  });
-});
-```
-
-#### Test: RoomDocManager UserId Injection
-
-```typescript
-describe('RoomDocManager userId injection', () => {
-  it('uses injected userId if provided', () => {
-    const customUserId = 'user-custom-12345';
-    const manager = new RoomDocManager('test-room', {
-      userId: customUserId,
-      userProfile: { name: 'Test User', color: '#FF0000' },
-    });
-
-    expect(manager.getUserId()).toBe(customUserId);
-  });
-
-  it('generates userId if not provided', () => {
-    const manager = new RoomDocManager('test-room');
-
-    expect(manager.getUserId()).toMatch(/^user-[0-9A-Z]{26}$/);
-  });
-
-  it('uses same userId for awareness and mutations', () => {
-    const customUserId = 'user-test-123';
-    const manager = new RoomDocManager('test-room', {
-      userId: customUserId,
-    });
-
-    // Check awareness
-    const awareness = manager.yAwareness.getLocalState();
-    expect(awareness.userId).toBe(customUserId);
-
-    // Check transaction origin
-    let capturedOrigin: string | undefined;
-    manager.ydoc.on('beforeTransaction', (tr) => {
-      capturedOrigin = tr.origin as string;
-    });
-
-    manager.mutate((ydoc) => {
-      // Trigger transaction
-    });
-
-    expect(capturedOrigin).toBe(customUserId);
-  });
-});
-```
-
-### 6.2 Integration Tests
-
-#### Test: Cross-Tab Identity
-
-```typescript
-describe('Cross-Tab Identity', () => {
-  it('uses same userId in multiple tabs', async () => {
-    // Simulate Tab 1
-    const identity1 = getOrCreatePersistentUserId();
-
-    // Simulate Tab 2 (same browser)
-    const identity2 = getOrCreatePersistentUserId();
-
-    expect(identity1.userId).toBe(identity2.userId);
-    expect(identity1.profile.name).toBe(identity2.profile.name);
-  });
-
-  it('shows single user in presence from multiple tabs', async () => {
-    // Setup: 2 RoomDocManagers with same userId
-    const sharedUserId = 'user-shared-123';
-    const manager1 = new RoomDocManager('room-1', { userId: sharedUserId });
-    const manager2 = new RoomDocManager('room-1', { userId: sharedUserId });
-
-    // Connect both to same awareness
-    // (In reality, this would be through WebSocket, mocked here)
-
-    const presence = manager1.currentSnapshot.presence;
-
-    // Should show only 1 user (the shared identity)
-    // Note: In practice, different tabs still have different awareness clientIds
-    // This test validates that the APPLICATION-LEVEL userId is consistent
-  });
-});
-```
-
-#### Test: Stroke Attribution Persistence
-
-```typescript
-describe('Stroke Attribution', () => {
-  it('attributes strokes to correct persistent userId', () => {
-    const userId = 'user-persistent-123';
-    const manager = new RoomDocManager('test-room', { userId });
-
-    // Commit a stroke
-    manager.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const strokes = root.get('strokes') as Y.Array<any>;
-      strokes.push([{
-        id: 'stroke-1',
-        userId: userId,
-        // ... other fields
-      }]);
-    });
-
-    // Read back from snapshot
-    const snapshot = manager.currentSnapshot;
-    const stroke = snapshot.strokes[0];
-
-    expect(stroke.userId).toBe(userId);
-  });
-
-  it('undo/redo works for strokes with matching userId', () => {
-    const userId = 'user-test-456';
-    const manager = new RoomDocManager('test-room', { userId });
-
-    // Commit stroke
-    manager.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const strokes = root.get('strokes') as Y.Array<any>;
-      strokes.push([{ id: 'stroke-1', userId }]);
-    });
-
-    expect(manager.currentSnapshot.strokes).toHaveLength(1);
-
-    // Undo
-    manager.undo();
-
-    expect(manager.currentSnapshot.strokes).toHaveLength(0);
-
-    // Redo
-    manager.redo();
-
-    expect(manager.currentSnapshot.strokes).toHaveLength(1);
-  });
-});
-```
-
-### 6.3 E2E Tests
-
-#### Test: Cross-Session Persistence
-
-```typescript
-describe('Cross-Session Persistence (E2E)', () => {
-  it('maintains userId across page refreshes', async () => {
-    // Visit page
-    await page.goto('/room/test-123');
-
-    // Get initial userId (extract from awareness or data-testid)
-    const initialUserId = await page.evaluate(() => {
-      return window.localStorage.getItem('avlo:user:v1');
-    });
-
-    expect(initialUserId).toBeTruthy();
-
-    // Refresh page
-    await page.reload();
-
-    // Get userId after refresh
-    const afterRefreshUserId = await page.evaluate(() => {
-      return window.localStorage.getItem('avlo:user:v1');
-    });
-
-    expect(afterRefreshUserId).toBe(initialUserId);
-  });
-
-  it('maintains userId across browser restarts', async () => {
-    // Visit page, get userId
-    await page.goto('/room/test-123');
-    const userId1 = await page.evaluate(() => {
-      const stored = window.localStorage.getItem('avlo:user:v1');
-      return JSON.parse(stored!).userId;
-    });
-
-    // Close browser (persist localStorage)
-    await browser.close();
-
-    // Reopen browser
-    browser = await puppeteer.launch();
-    page = await browser.newPage();
-
-    // Visit same page
-    await page.goto('/room/test-123');
-    const userId2 = await page.evaluate(() => {
-      const stored = window.localStorage.getItem('avlo:user:v1');
-      return JSON.parse(stored!).userId;
-    });
-
-    expect(userId2).toBe(userId1);
-  });
-});
-```
-
+later in room-doc-manager.ts:
+  constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
+    this.roomId = roomId;
+    this.userId = ulid(); // User ID for this session
+
+    // Generate random user profile per tab
+    this.userProfile = generateUserProfile(); 
+    ....
 ---
 
 ## 7. Appendices
@@ -971,184 +418,3 @@ describe('Cross-Session Persistence (E2E)', () => {
 - `/packages/shared/src/types/awareness.ts` Line 5: `Awareness.userId: UserId`
 - `/packages/shared/src/types/awareness.ts` Line 31: `PresenceView.localUserId: UserId`
 
-### Appendix B: Storage Format Comparison
-
-#### Current Format (sessionStorage)
-
-```json
-{
-  "key": "avlo-user-id",
-  "value": "user-01HXYZ123ABCDEFGHIJKLMNOPQ"
-}
-```
-
-#### Proposed Format (localStorage)
-
-```json
-{
-  "key": "avlo:user:v1",
-  "value": {
-    "userId": "user-01HXYZ123ABCDEFGHIJKLMNOPQ",
-    "profile": {
-      "name": "Swift Fox",
-      "color": "#4A90E2"
-    },
-    "createdAt": 1697654400000,
-    "lastActiveAt": 1697740800000
-  }
-}
-```
-
-**Key Benefits:**
-- Single source of truth for userId AND profile
-- Timestamp tracking for analytics
-- Versioned key (`v1`) for future migrations
-- JSON structure allows adding fields without breaking changes
-
-### Appendix C: Migration Checklist
-
-#### Pre-Migration
-- [ ] Audit complete (this document)
-- [ ] Implementation plan reviewed
-- [ ] Test strategy defined
-- [ ] Backup plan for localStorage failures
-
-#### Phase 1 (Dual UserId Fix)
-- [ ] Update RoomDocManager constructor signature
-- [ ] Update Canvas userId passing
-- [ ] Update registry/hook
-- [ ] Run existing undo/redo tests
-- [ ] Manual testing: undo/redo works
-- [ ] Deploy to staging
-- [ ] Monitor error rates
-
-#### Phase 2 (Persistent UserId)
-- [ ] Implement `persistent-user-id.ts` module
-- [ ] Add unit tests for generation/migration
-- [ ] Update Canvas to use persistent identity
-- [ ] Update RoomDocManager to accept userProfile
-- [ ] Add integration tests for cross-tab behavior
-- [ ] Test localStorage quota exceeded
-- [ ] Test private browsing mode
-- [ ] Deploy to staging
-- [ ] Monitor localStorage usage metrics
-
-#### Phase 3 (Type Consistency)
-- [ ] Update StrokeView/TextView types
-- [ ] Update type comment
-- [ ] Run TypeScript compiler
-- [ ] Fix any type errors
-- [ ] Update test assertions
-- [ ] Deploy to staging
-
-#### Phase 4 (Production)
-- [ ] All tests passing
-- [ ] No new errors in staging
-- [ ] Feature flag enabled for 10% users
-- [ ] Monitor metrics (undo/redo usage, localStorage errors)
-- [ ] Rollout to 100%
-
-### Appendix D: Rollback Plan
-
-**If persistent userId causes issues:**
-
-1. **Immediate Rollback (localStorage failures):**
-   - Add try/catch in `getOrCreatePersistentUserId()`
-   - Fallback to sessionStorage (current behavior)
-   - Log error to monitoring
-
-2. **Partial Rollback (undo/redo broken):**
-   - Revert RoomDocManager constructor changes
-   - Keep persistent userId for display only
-   - Fix undo/redo in separate PR
-
-3. **Full Rollback:**
-   - Revert all changes
-   - Return to dual userId (with bug)
-   - Schedule fix in next sprint
-
-### Appendix E: Future Enhancements
-
-#### Cross-Device Sync (Server-Based UserId)
-
-**Architecture:**
-```
-┌─────────────────────────────────────────┐
-│ Browser A (Desktop)                     │
-│  localStorage: { userId: "device-A" }   │
-│  Auth Token: "tok_abc123"               │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│ Server: User Accounts Table             │
-│  userId    authId       devices          │
-│  ────────  ──────────  ────────────────  │
-│  user-123  tok_abc123  [device-A, ...]   │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│ Browser B (Mobile)                      │
-│  localStorage: { userId: "device-B" }   │
-│  Auth Token: "tok_abc123"               │
-└─────────────────────────────────────────┘
-```
-
-**Implementation:**
-1. Add authentication provider (Clerk, Auth0, etc.)
-2. Link anonymous `device-*` userId to auth account
-3. Sync profile across devices via API
-4. Maintain `device-*` format for local-first operation
-5. Upgrade to `auth:{providerId}:{userId}` when authenticated
-
-#### Per-User Clear Board
-
-**Use Case:** User wants to clear only their own strokes, not entire board.
-
-**Implementation:**
-```typescript
-function clearMyStrokes(userId: string): void {
-  roomDoc.mutate((ydoc) => {
-    const root = ydoc.getMap('root');
-    const strokes = root.get('strokes') as Y.Array<any>;
-
-    // Find indices of user's strokes
-    const myIndices: number[] = [];
-    strokes.forEach((stroke, idx) => {
-      if (stroke.userId === userId) {
-        myIndices.push(idx);
-      }
-    });
-
-    // Delete in reverse order
-    myIndices.reverse().forEach(idx => {
-      strokes.delete(idx, 1);
-    });
-  });
-}
-```
-
-**UI:** Add "Clear My Strokes" button next to "Clear Board".
-
----
-
-**End of Audit Report**
-
----
-
-## Summary
-
-This audit identified 47+ occurrences of `userId` across 20 implementation files. The codebase is well-prepared for persistent userId migration, requiring changes to only **3 core files**:
-
-1. `/client/src/lib/persistent-user-id.ts` (NEW)
-2. `/client/src/lib/room-doc-manager.ts` (constructor updates)
-3. `/client/src/canvas/Canvas.tsx` (replace userId generation)
-
-**Critical finding:** Dual userId generation bug must be fixed immediately to restore undo/redo functionality.
-
-**Migration complexity:** Low - no storage schema changes, no network protocol changes, no breaking changes to rendering or UI.
-
-**Estimated effort:** 4-8 hours total (1-2 hours for bug fix, 2-4 hours for persistent userId, 1-2 hours for testing).
-
-**Recommendation:** Proceed with Phase 1 (dual userId fix) immediately, then Phase 2 (persistent userId) in next sprint.

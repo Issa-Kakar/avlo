@@ -92,6 +92,400 @@ pnpm add rbush@^4.0.1 --filter=@avlo/shared
 pnpm add @types/rbush@^3.0.5 --filter=@avlo/shared -D
 ```
 
+---
+
+## Core Implementation Details
+
+### IndexEntry Data Structure
+
+RBush stores items as **IndexEntry** objects that combine spatial bounds with object metadata:
+
+```typescript
+export interface IndexEntry {
+  minX: number;      // World coordinates (NOT screen pixels)
+  minY: number;
+  maxX: number;
+  maxY: number;
+  id: string;        // ULID for strokes/texts
+  kind: 'stroke' | 'text';  // Discriminant for filtering queries
+  data: StrokeView | TextView;  // Full object reference
+}
+```
+
+**Key Properties:**
+- **World-space bounds:** All coordinates are in world units (px at scale=1), never screen/device pixels
+- **Embedded discriminant:** `kind` field enables type-safe filtering without instanceof checks
+- **Full object reference:** `data` field holds complete StrokeView/TextView (not just ID)
+- **RBush protocol:** minX/minY/maxX/maxY are the ONLY required fields for RBush R-tree operations
+
+### RBush Tree Configuration
+
+```typescript
+constructor() {
+  // maxEntries = 9 is RBush default (optimal for most use cases)
+  this.tree = new RBush<IndexEntry>(9);
+  this.strokesById = new Map();
+  this.textsById = new Map();
+}
+```
+
+**maxEntries Parameter:**
+- Controls R-tree node fanout (branch factor)
+- Default `9` balances tree height vs node overhead
+- Lower values → taller tree, more traversals
+- Higher values → wider tree, more comparisons per node
+- `9` is empirically optimal for 2D spatial data (RBush author recommendation)
+
+### View Construction from Y.js Data
+
+**StrokeView Construction (Observer + Hydration):**
+```typescript
+// Inline construction (no helper function - code appears in two places)
+const view: StrokeView = {
+  id: raw.id,                        // ULID from commit
+  points: raw.points,                // Flattened [x,y,x,y,...] (plain number[])
+  pointsTuples: raw.pointsTuples ?? null,  // [[x,y],[x,y],...] for PF (nullable)
+  polyline: null,                    // Built at RENDER time only
+  style: {
+    color: raw.color,                // #RRGGBB hex string
+    size: raw.size,                  // World units (px at scale=1)
+    opacity: raw.opacity,            // 0..1 (pen: 1.0, highlighter: 0.45)
+    tool: raw.tool,                  // 'pen' | 'highlighter'
+  },
+  bbox: raw.bbox,                    // [minX, minY, maxX, maxY] ALREADY INFLATED
+  scene: raw.scene,                  // Scene index (assigned at commit)
+  createdAt: raw.createdAt,          // ms epoch timestamp
+  userId: raw.userId,                // Awareness ID at commit
+  kind: raw.kind ?? 'shape',         // 'freehand' | 'shape' (default 'shape' for old data)
+};
+```
+
+**TextView Construction:**
+```typescript
+const view: TextView = {
+  id: raw.id,
+  x: raw.x,           // World anchor (top-left corner)
+  y: raw.y,
+  w: raw.w,           // Layout box dimensions (world units)
+  h: raw.h,
+  content: raw.content,  // Plain text content
+  color: raw.color,
+  size: raw.size,        // Font size (world units)
+  scene: raw.scene,
+  createdAt: raw.createdAt,
+  userId: raw.userId,
+};
+```
+
+**Construction Locations:**
+1. **Observer (incremental):** `setupArrayObservers()` → `_strokesObserver` inline (lines 1323-1339)
+2. **Hydration (rebuild):** `hydrateViewsFromY()` inline (lines 1453-1469)
+
+**Why No Helper Function:**
+- Construction is trivial (direct field mapping)
+- Only two call sites (observer + hydration)
+- Inline code is clearer than abstraction overhead
+- TypeScript infers correct types from object literals
+
+### BBox Inflation Invariant (CRITICAL)
+
+**The Single Source of Truth:**
+
+Bboxes are inflated **ONCE** at commit time in `simplification.ts`:
+
+```typescript
+// File: client/src/lib/tools/simplification.ts
+export function calculateBBox(
+  points: [number, number][],
+  strokeSize: number
+): [number, number, number, number] {
+  // Find min/max from centerline points
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+
+  // CRITICAL: Inflate bounds for proper invalidation
+  // This is in WORLD units (DPR handled at canvas level)
+  const padding = strokeSize * 0.5 + 1;  // ← THE INFLATION FORMULA
+  return [minX - padding, minY - padding, maxX + padding, maxY + padding];
+}
+```
+
+**Inflation Formula Breakdown:**
+- `strokeSize * 0.5` → Stroke radius (half-width extends from centerline)
+- `+ 1` → Anti-aliasing margin (1 world unit = 1px at scale=1)
+- Applied to ALL four edges → Full visual bounds of rendered stroke
+
+**Why This Works:**
+- **Perfect Freehand polygons:** PF outline already wider than centerline + radius
+- **Stroked polylines:** Canvas stroke extends `lineWidth/2` from path
+- **1px margin:** Covers sub-pixel AA bleeding at any scale
+
+**Consumer Guarantee:**
+```typescript
+// ✅ RBush: Use bbox as-is, NEVER re-inflate
+if (stroke.bbox && stroke.bbox.length === 4) {
+  const [minX, minY, maxX, maxY] = stroke.bbox;  // Direct destructure
+  items.push({ minX, minY, maxX, maxY, id, kind: 'stroke', data: stroke });
+}
+
+// ✅ Eraser: Query with tool radius only (bbox already includes stroke width)
+const radiusWorld = eraserRadiusPx / viewTransform.scale;
+const results = spatialIndex.queryRectAll(
+  worldX - radiusWorld, worldY - radiusWorld,
+  worldX + radiusWorld, worldY + radiusWorld
+);
+// No additional stroke width inflation needed!
+```
+
+**Historical Bug (FIXED):**
+- Old code inflated AGAIN by `strokeWidth/2` during queries
+- Caused "ghost hits" where eraser detected strokes far from cursor
+- RBush implementation enforces single-inflation invariant
+
+### Text BBox Calculation
+
+**Texts compute bbox dynamically** (no stored bbox field in Y.js):
+
+```typescript
+// Texts use layout box directly (no inflation needed - text rendering is exact)
+insertText(text: TextView): void {
+  this.tree.insert({
+    minX: text.x,              // Top-left anchor
+    minY: text.y,
+    maxX: text.x + text.w,     // Bottom-right = anchor + dimensions
+    maxY: text.y + text.h,
+    id: text.id,
+    kind: 'text',
+    data: text,
+  });
+  this.textsById.set(text.id, text);
+}
+```
+
+**Why No Inflation:**
+- Text rendering is pixel-exact (no stroke width, no AA bleed)
+- Layout box (`w` × `h`) already matches visual bounds
+- Font metrics pre-computed during TextTool commit
+
+### Stroke vs Text Asymmetry Table
+
+| Property | Strokes | Texts |
+|----------|---------|-------|
+| **BBox Source** | Stored in Y.js (`bbox` field) | Computed from `x,y,w,h` |
+| **Inflation** | Applied at commit (`strokeSize*0.5+1`) | None (layout box is exact) |
+| **Coordinates** | Centerline points + bbox | Anchor + dimensions |
+| **Y.js Fields** | `points`, `bbox`, `kind`, `style` | `x`, `y`, `w`, `h`, `content` |
+| **Polyline** | Built at render time (null in storage) | N/A |
+| **Scene Filter** | Applied (only current scene indexed) | Applied (only current scene indexed) |
+
+### Query Operations (Internal Implementation)
+
+**queryRect (Strokes Only):**
+```typescript
+queryRect(minX: number, minY: number, maxX: number, maxY: number): ReadonlyArray<StrokeView> {
+  const results = this.tree.search({ minX, minY, maxX, maxY });
+
+  // Filter to strokes only
+  return results
+    .filter(item => item.kind === 'stroke')
+    .map(item => item.data as StrokeView);
+}
+```
+
+**queryRectAll (Strokes + Texts):**
+```typescript
+queryRectAll(minX: number, minY: number, maxX: number, maxY: number): {
+  strokes: ReadonlyArray<StrokeView>;
+  texts: ReadonlyArray<TextView>;
+} {
+  const results = this.tree.search({ minX, minY, maxX, maxY });
+
+  const strokes = results
+    .filter(item => item.kind === 'stroke')
+    .map(item => item.data as StrokeView);
+
+  const texts = results
+    .filter(item => item.kind === 'text')
+    .map(item => item.data as TextView);
+
+  return { strokes, texts };
+}
+```
+
+**queryCircle (Circle→Rect Approximation):**
+```typescript
+queryCircle(cx: number, cy: number, radius: number): ReadonlyArray<StrokeView> {
+  // Use bounding square as conservative query (cheap rect query)
+  const results = this.tree.search({
+    minX: cx - radius,
+    minY: cy - radius,
+    maxX: cx + radius,
+    maxY: cx + radius,
+  });
+
+  // Caller performs fine-grained circle test on results
+  return results
+    .filter(item => item.kind === 'stroke')
+    .map(item => item.data as StrokeView);
+}
+```
+
+**RBush.search() Internals:**
+- R-tree traversal from root
+- Prune branches with non-overlapping MBRs (minimum bounding rectangles)
+- Collect all leaf entries with overlapping bounds
+- Returns flat array of IndexEntry objects
+- **Order is non-deterministic** (depends on tree shape, traversal order)
+- Complexity: O(log N + K) where K = results
+
+**Why Filter After Query:**
+- RBush stores BOTH strokes and texts in same tree
+- Single unified spatial index (no separate trees)
+- Filter by `kind` to return requested type
+- `queryRectAll` returns BOTH types without filtering
+
+### Remove Operation (Tricky Equality)
+
+**The Challenge:**
+
+RBush.remove() requires **exact object match** by default (reference equality). Since we're creating NEW IndexEntry objects, we need a **custom comparator:**
+
+```typescript
+removeById(id: string): void {
+  const stroke = this.strokesById.get(id);
+  const text = this.textsById.get(id);
+
+  if (stroke && stroke.bbox) {
+    const [minX, minY, maxX, maxY] = stroke.bbox;
+    // Custom comparator: match by ID, not reference
+    this.tree.remove({
+      minX, minY, maxX, maxY,
+      id: stroke.id,
+      kind: 'stroke',
+      data: stroke,
+    } as any, (a, b) => a.id === b.id);  // ← CRITICAL: ID-based equality
+    this.strokesById.delete(id);
+  } else if (text) {
+    this.tree.remove({
+      minX: text.x,
+      minY: text.y,
+      maxX: text.x + text.w,
+      maxY: text.y + text.h,
+      id: text.id,
+      kind: 'text',
+      data: text,
+    } as any, (a, b) => a.id === b.id);  // ← CRITICAL: ID-based equality
+    this.textsById.delete(id);
+  }
+}
+```
+
+**Why This is Necessary:**
+- Default RBush.remove() uses `===` (reference equality)
+- We create a NEW IndexEntry object for removal (not same reference as inserted entry)
+- Custom comparator `(a, b) => a.id === b.id` matches by ID
+- RBush finds the entry with matching bounds AND matching ID
+- Removes it from the tree
+
+**Without Custom Comparator:**
+- RBush.remove() would fail silently (no match found)
+- Entry would remain in tree → memory leak + stale query results
+- Maps would be out-of-sync with tree
+
+### Bulk Load Operation
+
+**Optimized Initial Population:**
+
+```typescript
+bulkLoad(strokes: ReadonlyArray<StrokeView>, texts: ReadonlyArray<TextView>): void {
+  const items: IndexEntry[] = [];
+
+  // Add strokes - use stored bbox directly (already inflated)
+  for (const stroke of strokes) {
+    if (stroke.bbox && stroke.bbox.length === 4) {
+      const [minX, minY, maxX, maxY] = stroke.bbox;
+      items.push({ minX, minY, maxX, maxY, id: stroke.id, kind: 'stroke', data: stroke });
+      this.strokesById.set(stroke.id, stroke);
+    }
+  }
+
+  // Add texts - compute bbox from x,y,w,h
+  for (const text of texts) {
+    items.push({
+      minX: text.x,
+      minY: text.y,
+      maxX: text.x + text.w,
+      maxY: text.y + text.h,
+      id: text.id,
+      kind: 'text',
+      data: text,
+    });
+    this.textsById.set(text.id, text);
+  }
+
+  if (items.length > 0) {
+    this.tree.load(items);  // RBush.load() uses OMT (Overlap Minimizing Top-down) algorithm
+  }
+}
+```
+
+**RBush.load() vs RBush.insert():**
+
+| Operation | Algorithm | Complexity | Use Case |
+|-----------|-----------|------------|----------|
+| `load()` | OMT bulk-build | O(N log N) | Initial load, full rebuild |
+| `insert()` | Incremental R-tree insert | O(log N) | Single item add |
+
+**OMT Algorithm:**
+- Sorts items by spatial proximity
+- Builds balanced tree bottom-up
+- Minimizes bounding box overlap between nodes
+- Produces optimal tree structure (better query performance)
+- **Only works on empty tree** (clears tree first)
+
+**Why We Use load():**
+- Scene changes require full rebuild → clear + load
+- First snapshot after page load → load from IDB
+- Better tree quality than N sequential inserts
+- ~5-10x faster than insert() loop for large N
+
+### Internal Maps (Bookkeeping)
+
+**Dual-Purpose Design:**
+
+```typescript
+private strokesById: Map<string, StrokeView>;
+private textsById: Map<string, TextView>;
+```
+
+**Purpose 1: Fast ID→Object Lookup**
+- Used by `removeById()` to find entry for removal
+- Avoids O(N) tree scan to find entry by ID
+- Maps are O(1) lookup by ID
+
+**Purpose 2: getAllStrokes() / getAllTexts()**
+```typescript
+getAllStrokes(): ReadonlyArray<StrokeView> {
+  return Array.from(this.strokesById.values());
+}
+```
+- Faster than `this.tree.all().filter(...)` (no tree traversal + filter)
+- Used by fallback code paths when spatial index unavailable
+
+**Synchronization Invariants:**
+- Maps ALWAYS in sync with tree (updated together)
+- Insert: Add to both tree and map
+- Remove: Remove from both tree and map
+- Clear: Clear both tree and maps
+- **Never allow map/tree divergence** (would cause subtle bugs)
+
+---
+
 ### RoomDocManager Integration
 **File:** [`client/src/lib/room-doc-manager.ts`](client/src/lib/room-doc-manager.ts)
 
@@ -304,51 +698,6 @@ this.whenGateOpen('idbReady').then(async () => {
 - ✅ **Then attach observers** → Observers see valid Y.Array references
 
 ---
-
-## Removed Complexity (What We Don't Do)
-
-### ❌ Removed: Ordered ID Arrays
-```typescript
-// ❌ REMOVED (not needed)
-private orderedStrokeIds: string[] = [];
-private orderedTextIds: string[] = [];
-```
-**Why:** Y.js tells us deleted IDs via `event.changes.deleted.getContent()`. Eraser builds id→index map on-demand (only code that needs Y.Array indices).
-
-### ❌ Removed: ID Journals
-```typescript
-// ❌ REMOVED (not needed)
-private strokeAddedIds: string[] = [];
-private strokeDeletedIds: string[] = [];
-```
-**Why:** Observers update Maps and RBush **directly** - no buffering needed.
-
-### ❌ Removed: Index-Based Journals
-```typescript
-// ❌ REMOVED (not needed)
-private strokeJournal: {
-  adds: { idx: number; items: any[] }[];
-  dels: { idx: number; count: number }[];
-};
-```
-**Why:** Required complex splice logic. Observers extract IDs directly from Y.js events.
-
-### ❌ Removed: Previous Snapshot Arrays
-```typescript
-// ❌ REMOVED (not needed)
-private prevStrokeViews: ReadonlyArray<StrokeView> = [];
-private prevTextViews: ReadonlyArray<TextView> = [];
-```
-**Why:** Maps are persistent - no need for "previous" state. Snapshot arrays are derived outputs.
-
-### ❌ Removed: Deep Object.freeze
-```typescript
-// ❌ REMOVED from hot paths
-Object.freeze(strokes);
-strokes.forEach((s) => Object.freeze(s));
-```
-**Why:** O(N) cost every snapshot. Not needed - Maps are manager-internal, snapshots are read-only by convention.
-
 ---
 
 ## Performance Characteristics

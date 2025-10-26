@@ -191,7 +191,7 @@ firstSnapshot: boolean;
 - **Typed arrays** constructed at render only, stored doc remains plain arrays
 - **Publishing invariants:** docVersion only changes after Yjs update (dev-only assertion)
 
-### Zustand (device-local UI only): **File:** `/client/src/stores/device-ui-store.ts`
+### Zustand (device-local): **File:** `/client/src/stores/device-ui-store.ts`
 **Scope:** Small, device-local UI state only (toolbar, lastSeenScene). NEVER mirror Yjs doc. Persistence: localStorage key `avlo:vN:ui`; bump `vN` if needed; include migrate fn. Usage: Use selectors to avoid re-renders; keep slices tiny.
 **Tools in Zustand:**
 ```typescript
@@ -544,7 +544,6 @@ export class RBushSpatialIndex implements SpatialIndex {
 **Epoch 1: Rebuild (needsSpatialRebuild = true)**
 - Triggered by: First attach, scene change, sanity check failures
 - Flow: `hydrateViewsFromY()` (walk Y.Arrays → build Maps) → `rebuildSpatialIndexFromViews()` (clear + bulkLoad RBush from Maps) → reset flag
-- Complexity: O(N) map build + O(N log N) bulk-load
 - Observers ignored during rebuild (upcoming hydration reads fresh Y.Doc state)
 
 **Epoch 2: Steady-State (needsSpatialRebuild = false)**
@@ -726,7 +725,7 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 | `G_WS_SYNCED` | first Y sync | authoritative render | 10s | keep rendering from IDB |
 | `G_AWARENESS_READY` | WS connected | presence cursors | none | N/A |
 | `G_FIRST_SNAPSHOT` | first doc update | export, minimap | 1 rAF | N/A |
-
+- Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a short 350 ms 
 **Teardown Order:**
 
 1. Stop RAF publisher

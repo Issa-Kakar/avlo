@@ -63,7 +63,7 @@ export interface TextView {
 
 // Spatial index view
 export interface RBushIndexView {
-  // Deferred
+  // Legacy definition 
   _tree?: any; // RBush internal structure
 }
 
