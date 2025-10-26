@@ -4,13 +4,19 @@ import React from 'react';
 
 export const IconSelect: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor" {...props}>
-    <path d="M21 3L3 10.53v.98l6.84 2.65L12.48 21h.98L21 3z" />
+    <path d="M7.92098 2.29951C6.93571 1.5331 5.5 2.23523 5.5 3.48349V20.4923C5.5 21.9145 7.2945 22.5382 8.17661 21.4226L12.3676 16.1224C12.6806 15.7267 13.1574 15.4958 13.6619 15.4958H20.5143C21.9425 15.4958 22.5626 13.6887 21.4353 12.8119L7.92098 2.29951Z" />
   </svg>
 );
 
 export const IconPen: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="currentColor" {...props}>
-    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" {...props}>
+    <path
+      d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 
@@ -86,22 +92,40 @@ export const IconArrow: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
 );
 
 export const IconLine: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}>
-    <line x1="6" y1="18" x2="18" y2="6"
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" {...props}>
+    <line
+      x1="5"
+      y1="19"
+      x2="19"
+      y2="5"
       stroke="currentColor"
-      strokeWidth="2.25"
+      strokeWidth="2.5"
       strokeLinecap="round"
     />
-    <circle cx="6" cy="18" r="2.1" fill="currentColor" />
-    <circle cx="18" cy="6" r="2.1" fill="currentColor" />
   </svg>
 );
 
 export const IconImage: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
-  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}>
-    <rect x="3" y="5" width="18" height="14" rx="2" ry="2" fill="currentColor" />
-    <path d="M7 16l3.2-3.2 3.8 4.8 2.7-3.3L21 18H7z" fill="#2D2D2D" />
-    <circle cx="10" cy="9" r="1.6" fill="#2D2D2D" />
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" {...props}>
+    <rect
+      x="3"
+      y="3"
+      width="18"
+      height="18"
+      rx="2"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <circle cx="8.5" cy="8.5" r="1.5" stroke="currentColor" strokeWidth="2" />
+    <path
+      d="M21 15l-5-5L5 21"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 
