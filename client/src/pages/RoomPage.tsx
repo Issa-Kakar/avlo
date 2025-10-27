@@ -102,7 +102,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
               aria-label="Clear board"
               title="Clear board"
             >
-              <svg viewBox="0 0 24 24" className="icon-14">
+              <svg viewBox="0 0 24 24" className="icon-16">
                 <path
                   d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6"
                   stroke="currentColor"
@@ -113,7 +113,10 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
                 />
               </svg>
             </button>
+          </div>
 
+          {/* Top-right micro cluster */}
+          <div className="micro-cluster-right">
             {/* Users avatars cluster */}
             <UserAvatarCluster roomId={roomId} onShowModal={() => setUsersModalOpen(true)} />
 

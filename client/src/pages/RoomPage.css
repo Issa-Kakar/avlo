@@ -934,23 +934,33 @@
   z-index: 400;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+.micro-cluster-right {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .micro {
-  height: 20px;
-  min-width: 20px;
+  height: 32px;
+  min-width: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 6px;
+  padding: 0 10px;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 6px;
+  border-radius: 8px;
   color: #6b7280;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   transition: all 120ms ease;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   font-family: var(--font-stack);
@@ -973,28 +983,29 @@
 }
 
 .micro-kebab {
-  width: 20px;
+  width: 32px;
   padding: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .micro-kebab .dot {
-  width: 2px;
-  height: 2px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   background: #9ca3af;
   display: block;
 }
 
 .micro-trash {
-  width: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
 }
 
-.icon-14 {
-  width: 14px;
-  height: 14px;
+.icon-16 {
+  width: 16px;
+  height: 16px;
   stroke: currentColor;
   stroke-width: 2;
   stroke-linecap: round;
@@ -1003,13 +1014,29 @@
 }
 
 .micro-invite {
+  height: 26px;
+  min-width: 26px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  color: #4b5563;
+  background: #AE2775;
+  color: white;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.micro-invite:hover {
+  background: #961f63;
+  border-color: rgba(0, 0, 0, 0.1);
 }
 
 [data-theme='dark'] .micro-invite {
-  color: #cbd5e1;
+  background: #AE2775;
+  color: white;
+}
+
+[data-theme='dark'] .micro-invite:hover {
+  background: #961f63;
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 /* User Avatar Cluster Styles */
@@ -1021,15 +1048,15 @@
 }
 
 .micro-avatar {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: white;
-  border: 1.5px solid white;
+  border: 2px solid white;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
   transition: transform 100ms ease;
   position: relative;
@@ -1041,7 +1068,7 @@
 }
 
 .micro-avatar-initials {
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: -0.02em;
   text-transform: uppercase;
 }
@@ -1058,8 +1085,8 @@
 
 .user-overflow {
   margin-left: 4px;
-  padding: 0 4px;
-  font-size: 11px;
+  padding: 0 5px;
+  font-size: 12px;
   color: #6b7280;
   font-weight: 600;
 }
@@ -1096,7 +1123,7 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 380;
-  /* Simplified: just a positioning container, no flex layout */
+  /* Simple positioning container - no flex layout */
 }
 
 /* The main toolbar dock bar */
@@ -1416,53 +1443,65 @@
   background: var(--dock-hover);
 }
 
-/* Undo/Redo inline buttons (UI Redesign) */
-.undo-redo-inline {
+/* Compact Undo/Redo container (UI Redesign) */
+.undo-redo-compact {
+  position: absolute;
+  left: calc(100% + 4px); /* 4px to RIGHT of toolbar - tight spacing */
+  top: 50%; /* Center vertically */
+  transform: translateY(-50%); /* Center vertically */
   display: inline-flex;
-  gap: 6px;
-  margin-left: 8px;
   align-items: center;
-}
-
-/* Old Undo/Redo micro buttons (deprecated) */
-.undo-redo-micro {
-  position: fixed;
-  top: 12px;
-  right: 12px;
-  z-index: 381;
-  display: inline-flex;
-  gap: 6px;
-  opacity: 0.95;
-}
-
-.micro-ghost {
-  width: 18px;
-  height: 18px;
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
+  gap: 2px;
+  height: 36px;
+  padding: 3px;
+  border-radius: 10px;
   background: var(--dock-bg);
   border: 1px solid var(--dock-border);
-  color: var(--icon-muted);
   box-shadow: var(--dock-shadow);
-  transition: all 120ms ease;
+  backdrop-filter: blur(6px);
+}
+
+.undo-btn,
+.redo-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--icon-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
   cursor: pointer;
 }
 
-.micro-ghost:hover {
+.undo-btn:hover,
+.redo-btn:hover {
   background: var(--dock-hover);
 }
 
-.micro-ghost:active {
+.undo-btn:active,
+.redo-btn:active {
   transform: translateY(0.5px);
 }
 
-.micro-icon {
-  width: 12px;
-  height: 12px;
+.undo-btn:focus-visible,
+.redo-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.undo-icon,
+.redo-icon {
+  width: 16px;
+  height: 16px;
+  color: inherit;
+  fill: none;
   stroke: currentColor;
-  stroke-width: 2.2;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
-  fill: none;
 }

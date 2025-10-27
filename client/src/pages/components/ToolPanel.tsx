@@ -15,6 +15,8 @@ import {
   IconImage,
   IconPan,
   IconFill,
+  IconUndo,
+  IconRedo,
 } from '../icons';
 
 interface ToolPanelProps {
@@ -222,57 +224,39 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
         >
           <IconPan className="icon" />
         </ToolButton>
-      </div>
 
-      {/* Inspector with new color system */}
-      {showInspector && (
-        <Inspector
-          showColors={showColors}
-          showSizes={showSizes}
-          showFillToggle={showFillToggle}
-          fixedColors={fixedColors}
-          recentColors={recentColors}
-          sizePresets={sizePresets}
-          sizeLabels={sizeLabels}
-          currentColor={currentSettings.color}
-          currentSize={currentSettings.size}
-          isColorPopoverOpen={isColorPopoverOpen}
-          fillEnabledUI={fillEnabledUI}
-          onColorChange={setCurrentToolColor}
-          onSizeChange={setCurrentToolSize}
-          onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
-          onFillToggle={() => setFillEnabledUI(!fillEnabledUI)}
-          addRecentColor={addRecentColor}
-          popoverRef={popoverRef}
-        />
-      )}
+        {/* Inspector with new color system - moved inside toolbar */}
+        {showInspector && (
+          <Inspector
+            showColors={showColors}
+            showSizes={showSizes}
+            showFillToggle={showFillToggle}
+            fixedColors={fixedColors}
+            recentColors={recentColors}
+            sizePresets={sizePresets}
+            sizeLabels={sizeLabels}
+            currentColor={currentSettings.color}
+            currentSize={currentSettings.size}
+            isColorPopoverOpen={isColorPopoverOpen}
+            fillEnabledUI={fillEnabledUI}
+            onColorChange={setCurrentToolColor}
+            onSizeChange={setCurrentToolSize}
+            onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
+            onFillToggle={() => setFillEnabledUI(!fillEnabledUI)}
+            addRecentColor={addRecentColor}
+            popoverRef={popoverRef}
+          />
+        )}
 
-      {/* Undo/Redo micro buttons - positioned after inspector */}
-      <div className="undo-redo-inline">
-        <button className="micro-ghost" aria-label="Undo" onClick={() => onToast?.('UNDO')}>
-          <svg viewBox="0 0 24 24" className="micro-icon">
-            <path
-              d="M9 5l-5 5 5 5M20 12H5"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-        <button className="micro-ghost" aria-label="Redo" onClick={() => onToast?.('REDO')}>
-          <svg viewBox="0 0 24 24" className="micro-icon">
-            <path
-              d="M15 5l5 5-5 5M4 12h15"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
-          </svg>
-        </button>
+        {/* Compact Undo/Redo container - moved inside toolbar */}
+        <div className="undo-redo-compact">
+          <button className="undo-btn" aria-label="Undo" onClick={() => onToast?.('UNDO')}>
+            <IconUndo className="undo-icon" />
+          </button>
+          <button className="redo-btn" aria-label="Redo" onClick={() => onToast?.('REDO')}>
+            <IconRedo className="redo-icon" />
+          </button>
+        </div>
       </div>
     </div>
   );
