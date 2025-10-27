@@ -51,7 +51,10 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle =
-    activeTool === 'shape' || activeTool === 'pen' || activeTool === 'highlighter';
+    activeTool === 'shape' ||
+    activeTool === 'pen' ||
+    activeTool === 'highlighter' ||
+    activeTool === 'select';
 
   // Get current settings based on active tool
   const getCurrentSettings = () => {
@@ -377,11 +380,53 @@ function Inspector({
 
   return (
     <div className="inspector">
+      {/* REORDERED: Sizes on left, fill in middle, colors on right */}
+      {showSizes && sizePresets.length > 1 && (
+        <div className="row sizes">
+          {sizePresets.map((px, i) => (
+            <button
+              key={px}
+              className={`size-pill ${currentSize === px ? 'active' : ''}`}
+              onClick={() => onSizeChange(px)}
+              aria-label={`Size ${sizeLabels[i]}`}
+            >
+              {sizeLabels[i]}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Fill toggle button - between sizes and colors */}
+      {showFillToggle && (
+        <button
+          className={`icon-btn ${fillEnabledUI ? 'on' : ''}`}
+          onClick={onFillToggle}
+          aria-label="Fill"
+          title="Fill"
+        >
+          <IconFill className="icon" />
+        </button>
+      )}
+
       {showColors && (
         <div className="inspector-colors">
           <div className="swatch-row">
-            {/* Fixed 8 colors */}
-            {fixedColors.map((c) => (
+            {/* Rainbow circle for more colors - leftmost color, shows custom color dot when selected */}
+            <button
+              className="swatch swatch-plus"
+              onClick={onColorPopoverToggle}
+              aria-haspopup="dialog"
+              aria-expanded={isColorPopoverOpen}
+              aria-label="More colors"
+            >
+              {/* Show custom color dot overlay when custom color is selected */}
+              {isCustomColor(currentColor) && (
+                <div className="custom-color-dot" style={{ backgroundColor: currentColor }} />
+              )}
+            </button>
+
+            {/* Fixed 8 colors - REVERSED ORDER (right to left becomes left to right) */}
+            {[...fixedColors].reverse().map((c) => (
               <button
                 key={c}
                 className={`swatch ${currentColor === c ? 'is-active-fixed' : ''}`}
@@ -390,30 +435,6 @@ function Inspector({
                 onClick={() => onColorChange(c)}
               />
             ))}
-
-            {/* "+" button for more colors */}
-            <button
-              className={`swatch swatch-plus ${isCustomColor(currentColor) ? 'custom-outline' : ''}`}
-              style={isCustomColor(currentColor) ? { borderColor: currentColor } : {}}
-              onClick={onColorPopoverToggle}
-              aria-haspopup="dialog"
-              aria-expanded={isColorPopoverOpen}
-              aria-label="More colors"
-            >
-              <span>+</span>
-            </button>
-
-            {/* Fill toggle button */}
-            {showFillToggle && (
-              <button
-                className={`icon-btn ${fillEnabledUI ? 'on' : ''}`}
-                onClick={onFillToggle}
-                aria-label="Fill"
-                title="Fill"
-              >
-                <IconFill className="icon" />
-              </button>
-            )}
           </div>
 
           {/* Color Popover */}
@@ -475,21 +496,6 @@ function Inspector({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {showSizes && sizePresets.length > 1 && (
-        <div className="row sizes">
-          {sizePresets.map((px, i) => (
-            <button
-              key={px}
-              className={`size-pill ${currentSize === px ? 'active' : ''}`}
-              onClick={() => onSizeChange(px)}
-              aria-label={`Size ${sizeLabels[i]}`}
-            >
-              {sizeLabels[i]}
-            </button>
-          ))}
         </div>
       )}
     </div>

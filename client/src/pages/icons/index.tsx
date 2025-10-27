@@ -169,3 +169,43 @@ export const IconFill: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
     />
   </svg>
 );
+
+// Undo icon - curved arrow pointing left
+export const IconUndo: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" {...props}>
+    <path
+      d="M3 7v6h6"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-9 5"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+// Redo icon - curved arrow pointing right
+export const IconRedo: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" {...props}>
+    <path
+      d="M21 7v6h-6"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 9 5"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);

@@ -92,8 +92,8 @@
   --divider-h: 18px; /* Divider height */
 
   /* Inspector - kept tiny */
-  --swatch: 14px; /* True circles */
-  --swatch-ring: 2px; /* Faint selection ring */
+  --swatch: 18px; /* Increased from 14px to match pill height better */
+  --swatch-ring: 4px; /* Faint selection ring */
   --pill-h: 22px; /* Size pill height */
   --pill-font: 11px; /* Size pill font */
   --pill-radius: 999px;
@@ -1096,13 +1096,12 @@
   left: 50%;
   transform: translateX(-50%);
   z-index: 380;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  /* Simplified: just a positioning container, no flex layout */
 }
 
 /* The main toolbar dock bar */
 .tool-dock {
+  position: relative; /* Create positioning context for inspector */
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1175,29 +1174,32 @@
 
 /* Inspector */
 .inspector {
+  position: absolute;
+  right: calc(100% + 6px); /* Position 6px to the left of toolbar */
+  top: 50%; /* Center vertically */
+  transform: translateY(-50%); /* Center vertically */
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  height: var(--dock-h);
-  padding: 0 8px;
+  gap: 8px; /* Restored original horizontal spacing */
+  height: auto; /* Allow natural height based on content */
+  padding: 4px 8px; /* Tight vertical (4px), original horizontal (8px) */
   border-radius: var(--dock-radius);
   background: var(--dock-bg);
   border: 1px solid var(--dock-border);
   box-shadow: var(--dock-shadow);
-  margin-left: 8px; /* Add spacing between toolbar and inspector */
 }
 
 .inspector .row {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 6px; /* Original horizontal spacing restored */
 }
 
 /* Color swatches */
 .swatch-row {
   display: flex;
   align-items: center;
-  gap: var(--gap-xs);
+  gap: var(--gap-xs); /* Original spacing restored (6px) */
 }
 
 .swatch {
@@ -1221,20 +1223,34 @@
   border-color: var(--accent-border);
 }
 
-/* "+" button for more colors */
+/* "More colors" button - rainbow circle */
 .swatch-plus {
   display: grid;
   place-items: center;
-  font-weight: 700;
-  font-size: 12px;
-  color: #e5e7eb;
-  background: transparent;
-  border: 1px dashed rgba(229, 231, 235, 0.25);
+  position: relative;
+  background: conic-gradient(
+    from 0deg,
+    #ff0000 0deg,
+    #ff8000 45deg,
+    #ffff00 90deg,
+    #00ff00 135deg,
+    #00ffff 180deg,
+    #0080ff 225deg,
+    #8000ff 270deg,
+    #ff00ff 315deg,
+    #ff0000 360deg
+  );
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-.swatch-plus.custom-outline {
-  border-style: solid;
-  border-width: 2px;
+/* Custom color dot overlay (80% size, centered on rainbow circle) */
+.swatch-plus .custom-color-dot {
+  position: absolute;
+  width: 90%; /* Slightly smaller from 85% for better visual balance */
+  height: 93%;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  pointer-events: none;
 }
 
 .swatch:focus-visible {
@@ -1370,11 +1386,11 @@
   background: #1f2937;
 }
 
-/* Fill button */
-.icon-btn {
-  width: var(--btn);
-  height: var(--btn);
-  border-radius: var(--btn-radius);
+/* Fill button in inspector */
+.inspector .icon-btn {
+  width: 24px; /* Compact size for inspector */
+  height: 24px;
+  border-radius: 6px;
   display: grid;
   place-items: center;
   background: transparent;
@@ -1386,12 +1402,17 @@
     border-color 120ms ease;
 }
 
-.icon-btn.on {
+.inspector .icon-btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.inspector .icon-btn.on {
   background: rgba(46, 204, 113, 0.14);
   border-color: #22a85d;
 }
 
-.icon-btn:hover {
+.inspector .icon-btn:hover {
   background: var(--dock-hover);
 }
 

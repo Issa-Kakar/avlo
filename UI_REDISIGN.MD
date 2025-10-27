@@ -191,102 +191,6 @@ setColorPopoverOpen: (open) => set({ isColorPopoverOpen: open }),
 setFillEnabledUI: (enabled) => set({ fillEnabledUI: enabled }),
 ```
 
-## Phase 2: Remove Header & Add Top-Left Micro Cluster
-
-### 2.1 Update RoomPage.tsx
-
-**File:** `/client/src/pages/RoomPage.tsx`
-
-```tsx
-// Remove Header import
-// import { Header } from './components/Header';
-
-// Add new state for users modal
-const [usersModalOpen, setUsersModalOpen] = useState(false);
-
-// Remove Header component from JSX
-// Remove theme state and toggleTheme function (lines 36-53)
-
-// Add micro cluster after <Canvas /> inside canvas-container:
-<div className="micro-cluster">
-  {/* Kebab menu (placeholder) */}
-  <button className="micro micro-kebab" aria-label="More">
-    <span className="dot"></span>
-    <span className="dot"></span>
-    <span className="dot"></span>
-  </button>
-
-  {/* Trash (Clear) */}
-  <button className="micro micro-trash" onClick={handleClear} aria-label="Clear board">
-    <svg viewBox="0 0 24 24" className="icon-14">
-      <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M10 11v6M14 11v6" />
-    </svg>
-  </button>
-
-  {/* Users avatars */}
-  <UserAvatarCluster roomId={roomId} onShowModal={() => setUsersModalOpen(true)} />
-
-  {/* Invite button */}
-  <button
-    className="micro micro-invite"
-    onClick={() => {
-      navigator.clipboard?.writeText(window.location.href);
-      showToast('Link copied');
-    }}
-  >
-    Invite
-  </button>
-</div>;
-
-// Remove ColorSizeDock component (it will be integrated into toolbar)
-// Remove EditorPanel component from UI (keep dormant in store for future code editor)
-```
-
-### 2.2 Create UserAvatarCluster Component
-
-**New File:** `/client/src/pages/components/UserAvatarCluster.tsx`
-
-```tsx
-import { usePresence } from '@/hooks/use-presence';
-
-interface UserAvatarClusterProps {
-  roomId: string;
-  onShowModal: () => void;
-}
-
-export function UserAvatarCluster({ roomId, onShowModal }: UserAvatarClusterProps) {
-  const presence = usePresence(roomId);
-  const users = Array.from(presence.users.values());
-  const totalCount = users.length + 1; // +1 for self
-  const displayCount = Math.min(5, totalCount);
-  const overflow = totalCount > 5;
-
-  return (
-    <div className="user-avatar-cluster">
-      {/* Show up to 5 tiny avatars */}
-      {users.slice(0, displayCount - 1).map((user, i) => (
-        <div
-          key={user.userId || i}
-          className="micro-avatar"
-          style={{ backgroundColor: user.color }}
-          onClick={onShowModal}
-        >
-          {user.name?.charAt(0) || 'U'}
-        </div>
-      ))}
-
-      {/* Always show ME avatar */}
-      <div className="micro-avatar micro-avatar-me" onClick={onShowModal}>
-        ME
-      </div>
-
-      {/* Show +X if more than 5 users */}
-      {overflow && <span className="user-overflow">+{totalCount - 5}</span>}
-    </div>
-  );
-}
-```
-
 ## Phase 3: Rebuild ToolPanel with Inspector
 
 ### 3.1 New ToolPanel Component
@@ -1420,26 +1324,6 @@ export const IconFill: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
 );
 ```
 
-## Phase 6: Canvas Integration
-
-### 6.1 No Canvas Changes Required!
-
-The existing Canvas implementation already handles the shape tool perfectly through the variant system. The DrawingTool already knows how to handle `activeTool === 'shape'` with different variants.
-
-**The existing implementation remains unchanged.**
-
-## Phase 7: Cleanup & Migration
-
-### 7.1 Files to Delete
-
-- `/client/src/pages/components/Header.tsx` - No longer needed
-- `/client/src/pages/components/ColorSizeDock.tsx` - Integrated into toolbar
-- `/client/src/pages/components/EditorPanel.tsx` - Removed from UI (keep file for future code editor)
-
-### 7.2 Update Imports
-
-Throughout the codebase, remove imports for deleted components and update any references.
-
 ### 7.3 LocalStorage Migration
 
 Update the Zustand store migration to handle size changes only:
@@ -1534,61 +1418,6 @@ migrate: (persistedState: any, version: number) => {
 };
 ```
 
-## Testing Checklist
-
-### Visual Tests
-
-- [ ] Header is completely removed
-- [ ] Toolbar appears fixed at top center at 48px height
-- [ ] Inspector appears to the right of toolbar for applicable tools
-- [ ] Color scheme matches specification (charcoal #2D2D2D, matcha #74A12E)
-- [ ] Micro cluster appears top-left with 12px offset
-- [ ] Undo/redo buttons appear top-right with 12px offset
-- [ ] Buttons are 36px with 22px icons
-- [ ] Dividers are 18px tall
-
-### Color System Tests
-
-- [ ] 8 fixed color swatches appear as 14px circles
-- [ ] "+" button shows next to fixed colors
-- [ ] Click "+" opens popover with Recent/More/Hex sections
-- [ ] Popover animation is smooth (160ms easeOutQuad feel)
-- [ ] Custom color selection shows outline on "+" button
-- [ ] Fixed color selection shows faint matcha ring
-- [ ] Recent colors exclude fixed 8 and persist
-- [ ] Hex input accepts valid colors with Enter
-- [ ] Invalid hex input is silently ignored
-- [ ] Popover closes on outside click or Escape
-- [ ] More colors section shows 12 additional colors
-
-### Fill Toggle Tests
-
-- [ ] Fill icon appears for shape/pen/highlighter tools
-- [ ] Fill button has on/off state with matcha tint when active
-- [ ] Fill state is UI-only (no rendering changes yet)
-
-### Functional Tests
-
-- [ ] All tools activate correctly
-- [ ] Inspector shows/hides based on active tool
-- [ ] Size presets work (S/M/L/XL)
-- [ ] User avatars display correctly (max 5 + overflow)
-- [ ] Users modal opens on avatar click
-- [ ] Invite button copies link
-- [ ] Clear button works
-
-### Tool-Specific Tests
-
-- [ ] Pen: Color and size options available, fill toggle shown
-- [ ] Highlighter: Color and size options available, fill toggle shown
-- [ ] Eraser: No options panel (fixed size)
-- [ ] Text: Color and larger size options (20/30/40/50)
-- [ ] Shapes: Color and size options available, fill toggle shown
-- [ ] Pan: No options panel
-- [ ] Image: Placeholder (no functionality yet)
-- [ ] Select: Color/size for future implementation
-
-
 ## Known Limitations & Future Work
 
 1. **Fill Rendering**: Fill toggle is UI-only, actual rendering logic for shapes not implemented
@@ -1596,7 +1425,4 @@ migrate: (persistedState: any, version: number) => {
 3. **Select Tool**: Lasso functionality not yet implemented
 4. **Undo/Redo**: Currently shows toast only, needs actual implementation
 5. **Keyboard Shortcuts**: Need to be updated for new tools and color popover navigation
-6. **Mobile**: May need specific adjustments for 48px toolbar on small screens
-7. **Fill for Shapes**: Only visual UI toggle, renderer needs lighten() shader function
-8. **Popover Focus Management**: Focus trap and keyboard navigation could be enhanced
 
