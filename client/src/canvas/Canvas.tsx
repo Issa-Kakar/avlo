@@ -1,8 +1,8 @@
-import React, { useRef, useCallback, useState, useEffect, useLayoutEffect } from 'react';
+import React, { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createEmptySnapshot } from '@avlo/shared';
 import type { RoomId, Snapshot, ViewTransform } from '@avlo/shared';
-import { ulid } from 'ulid';
 import { CanvasStage, type CanvasStageHandle, type ResizeInfo } from './CanvasStage';
+import { userProfileManager } from '../lib/user-profile-manager';
 import { useRoomDoc } from '../hooks/use-room-doc';
 import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
@@ -182,20 +182,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Zoom animator for smooth transitions
   const zoomAnimatorRef = useRef<ZoomAnimator | null>(null);
 
-  // Generate stable user ID (Phase 5 placeholder)
-  // IMPORTANT: This will be replaced by proper awareness management in Phase 6
-  // For now, we generate a stable ID once per component mount (tab session)
-  // We use useState (not useRef) to ensure the ID is created exactly once
-  // and remains stable throughout the component lifecycle
-  const [userId] = useState(() => {
-    // Try to reuse existing ID from sessionStorage for consistency
-    let id = sessionStorage.getItem('avlo-user-id');
-    if (!id) {
-      id = 'user-' + ulid();
-      sessionStorage.setItem('avlo-user-id', id);
-    }
-    return id;
-  });
+  // Get stable user ID from singleton
+  const userId = useMemo(() => userProfileManager.getIdentity().userId, []);
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref

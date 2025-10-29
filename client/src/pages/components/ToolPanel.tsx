@@ -21,9 +21,11 @@ import {
 
 interface ToolPanelProps {
   onToast?: (message: string) => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
 }
 
-export function ToolPanel({ onToast }: ToolPanelProps) {
+export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   const {
     activeTool,
     pen,
@@ -250,10 +252,10 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
 
         {/* Compact Undo/Redo container - moved inside toolbar */}
         <div className="undo-redo-compact">
-          <button className="undo-btn" aria-label="Undo" onClick={() => onToast?.('UNDO')}>
+          <button className="undo-btn" aria-label="Undo" onClick={onUndo}>
             <IconUndo className="undo-icon" />
           </button>
-          <button className="redo-btn" aria-label="Redo" onClick={() => onToast?.('REDO')}>
+          <button className="redo-btn" aria-label="Redo" onClick={onRedo}>
             <IconRedo className="redo-icon" />
           </button>
         </div>

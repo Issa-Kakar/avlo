@@ -1,5 +1,18 @@
-# AVLO Project Overview (Frontend-Focused)
+# AVLO Project Overview for Agents (Frontend-Focused)
 **CRITICAL: IN FUTURE: SCENE TICKS WILL BE REMOVED, INSTEAD THE CLEAR BOARD WILL BE A PER USER CLEAR BOARD, WITH A YJS ATOMIC DELETE ON ALL OBJECTS TAGGED WITH ITS USERID**
+
+
+### Path Aliases
+- `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)
+- `@/*` → `./src/*` (within client workspace)
+## Essential Commands
+**DEV SERVER IS ALWAYS RUNNING, DON'T START WITHOUT USER PERMISSION, OR npm run build!**
+```bash
+# Core development
+npm install               # Install all dependencies
+npm run dev              # Start client & server
+npm run typecheck        # Type check all workspaces #RUN FROM ROOT!
+```
 ## 1. Executive Summary
 
 **Purpose:** Link-based, account-less, offline-first collaborative whiteboard with integrated code editor and execution. MVP targets ≤125ms p95 latency, ~100 concurrent users, offline via IndexedDB + CRDT, Redis-backed rooms (14-day TTL).

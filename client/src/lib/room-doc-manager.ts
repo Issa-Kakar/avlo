@@ -20,11 +20,11 @@ import {
   ROOM_CONFIG,
   TEXT_CONFIG,
   AWARENESS_CONFIG,
-  ulid,
 } from '@avlo/shared';
 import { clientConfig } from './config-schema';
 import { RollingGzipEstimator, GzipImpl } from './size-estimator';
-import { generateUserProfile, UserProfile } from './user-identity';
+import { UserProfile } from './user-identity';
+import { userProfileManager } from './user-profile-manager';
 import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type {
   RoomId,
@@ -71,6 +71,8 @@ export interface IRoomDocManager {
   mutate(fn: (ydoc: Y.Doc) => void): void;
   extendTTL(): void;
   destroy(): void;
+  undo(): void;
+  redo(): void;
 
   // Phase 6A: Gate status methods
   getGateStatus(): Readonly<{
@@ -149,6 +151,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Awareness instance (aliased to avoid collision with app's Awareness interface)
   private yAwareness?: YAwareness;
+
+  // Undo/Redo manager
+  private undoManager: Y.UndoManager | null = null;
 
   // Current state
   private _currentSnapshot: Snapshot;
@@ -265,10 +270,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
-    this.userId = ulid(); // User ID for this session
 
-    // Generate random user profile per tab
-    this.userProfile = generateUserProfile();
+    // Get stable identity from singleton
+    const identity = userProfileManager.getIdentity();
+    this.userId = identity.userId;
+    this.userProfile = {
+      name: identity.name,
+      color: identity.color
+    };
 
     // Initialize Y.Doc with room GUID
     this.ydoc = new Y.Doc({ guid: roomId });
@@ -345,6 +354,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Now that structures exist (either from IDB/WS or freshly initialized),
       // it's safe to attach array observers for incremental updates
       this.setupArrayObservers();
+
+      // Attach UndoManager after observers are set up
+      this.attachUndoManager();
     });
 
     // Start RAF loop
@@ -422,6 +434,30 @@ class RoomDocManagerImpl implements IRoomDocManager {
     const scene = sceneTicks.length;
     // Scene determined from scene ticks length
     return scene;
+  }
+
+  /**
+   * Attach UndoManager to track local changes
+   * CRITICAL: Only call after Y.Doc structures are initialized
+   */
+  private attachUndoManager(): void {
+    if (this.undoManager) {
+      console.warn('[RoomDocManager] UndoManager already attached');
+      return;
+    }
+
+    const root = this.getRoot();
+    const strokes = root.get('strokes') as Y.Array<any>;
+    const texts = root.get('texts') as Y.Array<any>;
+
+    // Create UndoManager scoped to strokes and texts
+    // Only track transactions with our userId as origin
+    this.undoManager = new Y.UndoManager([strokes, texts], {
+      trackedOrigins: new Set([this.userId]),
+      captureTimeout: 500, // Merge rapid changes within 500ms
+    });
+
+    console.log(`[RoomDocManager] UndoManager attached for userId: ${this.userId}`);
   }
 
   // Ingest awareness updates with seq-based ordering
@@ -509,6 +545,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
         lastSeen: number;
       }
     >();
+    
+    // When offline, show no remote users
+    if (!this.gates.awarenessReady) {
+      return {
+        users,  // Empty map
+        localUserId: this.userId,
+      };
+    }
 
     if (this.yAwareness) {
       this.yAwareness.getStates().forEach((state) => {
@@ -643,7 +687,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
     this.awarenessSeq++;
     this.yAwareness.setLocalState({
-      userId: this.userId, // Use existing per-tab userId
+      userId: this.userId, 
       name: this.userProfile.name,
       color: this.userProfile.color,
       cursor: isMobile ? undefined : this.localCursor, // No cursor on mobile
@@ -976,6 +1020,26 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.publishState.isDirty = true;
   }
 
+  undo(): void {
+    if (this.destroyed) return;
+    if (!this.undoManager) {
+      console.warn('[RoomDocManager] UndoManager not initialized');
+      return;
+    }
+
+    this.undoManager.undo();
+  }
+
+  redo(): void {
+    if (this.destroyed) return;
+    if (!this.undoManager) {
+      console.warn('[RoomDocManager] UndoManager not initialized');
+      return;
+    }
+
+    this.undoManager.redo();
+  }
+
   // Enhanced throttle utility function with cleanup
   private throttle<T extends (...args: any[]) => void>(
     func: T,
@@ -1143,6 +1207,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
       }
 
       this.yAwareness = undefined;
+    }
+
+    // Destroy UndoManager
+    if (this.undoManager) {
+      this.undoManager.destroy();
+      this.undoManager = null;
     }
 
     // Remove Y.Doc observers

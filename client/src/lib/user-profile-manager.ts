@@ -132,7 +132,7 @@ class UserProfileManager {
     if (this.storageAvailable) {
       try {
         localStorage.removeItem(STORAGE_KEY);
-      } catch (err) {
+      } catch {
         // Ignore errors when clearing
       }
     }
