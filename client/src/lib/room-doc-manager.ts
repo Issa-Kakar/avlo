@@ -187,7 +187,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private roomStats: RoomStats | null = null;
 
   // Size estimation for guards
-  // AUDIT NOTE: Clear board does NOT delete data, only increments scene counter
+ 
   // Size estimator remains valid across scene changes (tracks total doc size)
   // Will be enhanced with compaction/GC and persist_ack in later phases
   private sizeEstimator: RollingGzipEstimator;
@@ -1828,6 +1828,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private buildWebSocketUrl(basePath: string): string {
+    // Check for explicit WebSocket URL override (for tunneling scenarios)
+    if (clientConfig.VITE_WS_URL) {
+      // VITE_WS_URL should be a complete WebSocket URL base
+      // e.g., wss://server-tunnel.trycloudflare.com/ws
+      // Remove trailing slash if present to avoid double slashes
+      return clientConfig.VITE_WS_URL.replace(/\/$/, '');
+    }
+
     // Handle both relative and absolute URLs
     if (basePath.startsWith('ws://') || basePath.startsWith('wss://')) {
       return basePath;

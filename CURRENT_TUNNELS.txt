@@ -1,0 +1,38 @@
+🚀 CLOUDFLARE TUNNELS ARE ACTIVE!
+====================================
+
+✅ Setup Complete - Everything is running correctly!
+
+CLIENT URL (Access your app here):
+https://champions-portrait-cursor-organizer.trycloudflare.com
+
+SERVER URL (WebSocket backend):
+https://questions-fool-lighting-vic.trycloudflare.com
+
+TO TEST COLLABORATION:
+1. Open the client URL in your browser:
+   https://champions-portrait-cursor-organizer.trycloudflare.com/room/test-room
+
+2. Open the same URL in another browser/device/incognito window
+
+3. Draw on one screen - you should see it appear on the other in real-time!
+
+CURRENT CONFIGURATION:
+- Client dev server: Running on port 3000 with WebSocket URL configured
+- Server: Running on port 3001
+- Both Cloudflare tunnels: Active
+- WebSocket URL in .env.local: wss://questions-fool-lighting-vic.trycloudflare.com/ws
+
+TO STOP TUNNELS & RETURN TO LOCAL DEV:
+1. Kill all processes: pkill cloudflared && pkill -f "npm run dev"
+2. Edit client/.env.local and comment out the VITE_WS_URL line
+3. Run: npm run dev
+
+STATUS CHECKS:
+✓ Both dev servers running
+✓ Both tunnels established
+✓ WebSocket URL configured
+✓ Client restarted with new config
+✓ Ready for collaboration!
+
+Share the client URL with others to collaborate in real-time!

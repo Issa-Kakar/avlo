@@ -5,7 +5,7 @@
  * Fixed top toolbar at 48px with Inspector extension.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ViewTransformProvider } from '../canvas/ViewTransformContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';

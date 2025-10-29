@@ -13,6 +13,12 @@ export function setupMiddleware(app: Application, env: ServerEnv) {
         // Allow requests with no origin (mobile apps, Postman, etc)
         if (!origin) return callback(null, true);
 
+        // Allow Cloudflare tunnel origins (*.trycloudflare.com)
+        if (origin.endsWith('.trycloudflare.com')) {
+          callback(null, true);
+          return;
+        }
+
         if (env.ORIGIN_ALLOWLIST.includes(origin)) {
           callback(null, true);
         } else {

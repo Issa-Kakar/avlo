@@ -6,15 +6,13 @@
 
 **Tech Stack:** Frontend (React/TS/Tailwind/Canvas/Monaco), Realtime (Yjs + y-websocket (future hybrid with y-webrtc) + y-indexeddb), Execution (JS/Pyodide workers), Persistence (Redis + Postgres), PWA, Service Workers, TanStackQuery, Express, PostgreSQL(non-authoritative metadata), Prisma
 
-**Scope (Out):** auth/permissions, minimap, admin tools, recovery, CDN, multi-node scaling
-
 **Write Path:** UI → `mutate(fn)` wrapper → guards → `yjs.transact` → Y.Doc update → providers sync → Redis persist
 
 ## 2. Core Architecture
-
+**NOTE: THIS FILE IS INTENTIONALLY FOCUSED MORE ON FRONTEND TO SAVE CONTEXT**
 ### The RoomDocManager Model (Unified)
 
-**Principle:** Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. No component reads live Y structures, tools can traverse root to perform  `mutate(fn)` for any action.
+**Principle:** UI Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. No component reads live Y structures, tools can traverse root to perform  `mutate(fn)` for any action.
 
 **Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, authoritative registries (strokesById/textsById Maps), spatial index (RBush R-tree, acceleration structure), publish loop, cursor interpolation, snapshot construction, Y.Array observers with direct updates.
 
@@ -23,7 +21,6 @@
 - Production: `useRoomDoc()` hook or `registry.acquire(roomId)`
 - Tests: `createTestManager()` helper for isolated instances
 - Interface-based access only (IRoomDocManager) - implementation never exposed
-- Reference counting with acquire/release for lifecycle management
 
 ```typescript
 export interface RoomDocManager {
@@ -41,7 +38,7 @@ export interface RoomDocManager {
 }
 ```
 
-**Y.Doc Reference Rules (CRITICAL - NEVER VIOLATE):**
+**Y.Doc Reference:**
 
 1. **No cached Y references as class fields**. **Y references never cached** - always traverse from root on demand:
    ```typescript
@@ -59,7 +56,7 @@ export interface RoomDocManager {
 
 **Publishing Discipline (Event-driven RAF):**
 
-- Continuous RAF loop starts on manager creation (never stops until destroy)
+- Continuous event-driven RAF loop starts on manager creation (never stops until destroy)
 - Set dirty flag when: Yjs updates (docVersion++) or presence updates
 - Schedule one RAF callback when dirty
 - Default 60 FPS for base canvas, switch to 30 FPS on mobile/battery/heavy scenes
@@ -222,9 +219,6 @@ interface DeviceUIState {
 - `currentScene = meta.scene_ticks.length`
 - `docStats = { bytes, cap: 15MB }` from metadata poll
 - `presenceView` throttled & interpolated
-
-**Consistency Rules:**
-- Never write derived values into Yjs (bbox MAY be stored to avoid recompute)
 - Snapshot carries docVersion that increments on Y.Doc change only, not Presence only updates
 
 ## 4. Functional Requirements
@@ -243,7 +237,6 @@ interface DeviceUIState {
 ## 5. Mutations & Write Path
 
 **mutate(fn)- **Guards (immediate before transact):\*\*
-
 - Room ≥15MB → read-only rejection
 - Mobile → view-only rejection
 - Frame >2MB → cap rejection
@@ -263,8 +256,7 @@ interface DeviceUIState {
 - Append to `root.meta.scene_ticks[]`; currentScene = length
 - Rendering includes only elements with scene === currentScene
 
-**Undo/Redo:** Yjs UndoManager with `origin = userId` (per-user history), scene ticks excluded from undo scope
-**Backpressure:** Coalesce pointer-move on rAF, drop stale events if queue backs up
+**Undo/Redo:** Yjs UndoManager with `origin = userId` (per-user history)
 
 ## 6. Canvas & Rendering
 
@@ -489,12 +481,10 @@ interface EraserState {
 **Visual Feedback (Two-Pass Overlay):**
 
 - **Pass A (World):** Uniform white lighten effect
-  - White overlay (#ffffff) with 'screen' blend mode
-  - 0.75 opacity for strong "will be erased" feedback
   - Shared stroke cache (`getStrokeCacheInstance()`) for Path2D reuse
 - **Pass B (Screen):** Cursor circle after `setTransform(dpr,0,0,dpr,0,0)`
   - 1px stroke at ~0.8 alpha, no fill
-  - Fixed screen pixels (12-32px typical)
+  - Fixed screen pixels 
 
 **Atomic Commit:**
 
@@ -737,17 +727,8 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 7. Guard all public methods with `if (this._destroyed) return;`
 
 ## 10. Lasso Tool (Upcoming)
-
-### Goals
-
 - Arbitrary polygon selection with even-odd PIP test
-- No handles - move/scale from anywhere inside
-- Uniform scaling only
 - Atomic commit at same indices
-
-### State Machine
-
-`idle → lassoCapture → selected → transforming → commit → selected`
 
 ### **Perfect Shape Recognition Details (Phase: Perfect Shapes):**
 
@@ -777,9 +758,7 @@ All shapes convert to polylines at commit time:
 2. Pointer move → Updates liveCursorWU, requests overlay frame
 3. Overlay renders preview from anchors + cursor
 4. Pointer up → Generates polyline, commits as regular stroke
-### Ownership Model
-- **Single ownership:** RoomDocManager owns providers and solely observes Y types
-- **Centralized subscription:** UI relies on subscriptions only, no direct Y observers
+
 ---
 
 ## Backend/Infrastructure (Stubbed)

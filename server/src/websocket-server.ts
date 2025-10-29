@@ -31,9 +31,15 @@ export function setupWebSocketServer(server: HTTPServer, env: ServerEnv) {
 
     // Origin check
     const origin = req.headers.origin;
-    if (origin && !env.ORIGIN_ALLOWLIST.includes(origin)) {
-      ws.close(1008, 'Origin not allowed');
-      return;
+    if (origin) {
+      // Allow Cloudflare tunnel origins (*.trycloudflare.com)
+      const isCloudflareOrigin = origin.endsWith('.trycloudflare.com');
+      const isAllowedOrigin = env.ORIGIN_ALLOWLIST.includes(origin);
+
+      if (!isCloudflareOrigin && !isAllowedOrigin) {
+        ws.close(1008, 'Origin not allowed');
+        return;
+      }
     }
 
     // Capacity check
