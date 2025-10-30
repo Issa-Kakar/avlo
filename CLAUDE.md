@@ -736,7 +736,7 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 3. Unsubscribe awareness listeners
 4. Leave/close WS
 5. Flush pending mutations
-6. Close IDB (optional)
+6. Close IDB 
 7. Guard all public methods with `if (this._destroyed) return;`
 
 ## 10. Lasso Tool (Upcoming)

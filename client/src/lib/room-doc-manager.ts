@@ -222,7 +222,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   } | null = null;
 
   // Cursor interpolation fields (Phase 7 - interpolation)
-  private peerSmoothers = new Map<string, PeerSmoothing>();
+  private peerSmoothers = new Map<number, PeerSmoothing>(); // Keyed by clientId for proper cleanup
   private presenceAnimDeadlineMs = 0;
 
   // Gate tracking
@@ -461,11 +461,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Ingest awareness updates with seq-based ordering
-  private ingestAwareness(userId: string, state: any, now: number): void {
-    let ps = this.peerSmoothers.get(userId);
+  private ingestAwareness(clientId: number, state: any, now: number): void {
+    let ps = this.peerSmoothers.get(clientId);
     if (!ps) {
       ps = { hasCursor: false, lastSeq: -1 };
-      this.peerSmoothers.set(userId, ps);
+      this.peerSmoothers.set(clientId, ps);
     }
 
     const seq: number | undefined = state.seq;
@@ -545,28 +545,24 @@ class RoomDocManagerImpl implements IRoomDocManager {
         lastSeen: number;
       }
     >();
-    
-    // When offline, show no remote users
-    if (!this.gates.awarenessReady) {
-      return {
-        users,  // Empty map
-        localUserId: this.userId,
-      };
-    }
 
     if (this.yAwareness) {
-      this.yAwareness.getStates().forEach((state) => {
-        if (state.userId && state.userId !== this.userId) {
-          // Get or create smoother for this peer
-          let ps = this.peerSmoothers.get(state.userId);
+      // Cache the local clientID to avoid repeated access
+      const localClientId = this.yAwareness.clientID;
+      this.yAwareness.getStates().forEach((state, clientId) => {
+        // Check clientId instead of userId - exclude our own awareness
+        if (state.userId && clientId !== localClientId) {
+          // Get smoother by clientId
+          let ps = this.peerSmoothers.get(clientId);
           if (!ps) {
             ps = { hasCursor: false, lastSeq: -1 };
-            this.peerSmoothers.set(state.userId, ps);
+            this.peerSmoothers.set(clientId, ps);
           }
 
           // Get smoothed cursor position
           const displayCursor = this.getDisplayCursor(ps, now);
 
+          // Still output by userId for UI stability
           users.set(state.userId, {
             name: state.name || 'Anonymous',
             color: state.color || '#808080',
@@ -1767,18 +1763,23 @@ class RoomDocManagerImpl implements IRoomDocManager {
             ...(event.removed || []),
           ];
 
+          // Cache the local clientID to avoid repeated access and handle undefined case
+          const localClientId = this.yAwareness?.clientID;
           for (const clientId of changedClientIds) {
             const state = this.yAwareness?.getStates()?.get(clientId);
-            if (state && state.userId && state.userId !== this.userId) {
-              this.ingestAwareness(state.userId as string, state, now);
+            // Key change: check clientId !== localClientId (our own clientID)
+            if (state && state.userId && clientId !== localClientId) {
+              // Pass clientId, not userId!
+              this.ingestAwareness(clientId, state, now);
             } else if (!state && clientId) {
-              // Handle removed peers
-              const ps = this.peerSmoothers.get(String(clientId));
+              // Handle removed peers - This now works correctly!
+              const ps = this.peerSmoothers.get(clientId);
               if (ps) {
                 ps.hasCursor = false;
                 ps.prev = ps.last = ps.displayStart = undefined;
                 ps.animStartMs = ps.animEndMs = undefined;
               }
+              this.peerSmoothers.delete(clientId);
             }
           }
         }
