@@ -143,7 +143,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
 }
 
 function TestHarness() {
-  // Fixed room ID for testing - in production this would come from URL
+  // Legacy localhost:3000 testing, we use RoomPage.tsx for actual rooms
   const roomId = 'dev';
 
   return (

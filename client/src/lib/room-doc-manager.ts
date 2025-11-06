@@ -1,14 +1,5 @@
 /**
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
- *
- * ERROR BOUNDARY RECOMMENDATIONS (Phase 3+):
- * - Y.js operations rarely throw (CRDTs are designed for consistency)
- * - Critical error boundaries needed at:
- *   1. IndexedDB attach/open (Phase 6) - handle quota/corruption errors
- *   2. WebSocket connect/sync (Phase 6) - handle network failures
- *   3. WebRTC bring-up (Phase 17) - handle ICE/signaling failures
- * - React error boundary at app level for UI protection
- * - Current Phase 2 is resilient without explicit boundaries
  */
 
 import * as Y from 'yjs';

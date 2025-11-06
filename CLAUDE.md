@@ -1,6 +1,6 @@
 # AVLO Project Overview for Agents (Frontend-Focused)
 **CRITICAL: IN FUTURE: SCENE TICKS WILL BE REMOVED, INSTEAD THE CLEAR BOARD WILL BE A PER USER CLEAR BOARD, WITH A YJS ATOMIC DELETE ON ALL OBJECTS TAGGED WITH ITS USERID**
-
+**CRITICAL** VIEW THIS OVERVIEW AS A RECAP, WE WILL BE MAKING MANY CHANGES TO ARCHITECTURE SOON. THIS VERSION IS ALSO LACKING BACKEND DETAILED CONTEXT: THIS IS FRONTEND-FOCUS OVERVIEW 
 
 ### Path Aliases
 - `@avlo/shared` → `../packages/shared/src/*` (access shared config/types)
@@ -19,15 +19,15 @@ npm run typecheck        # Type check all workspaces #RUN FROM ROOT!
 
 **Tech Stack:** Frontend (React/TS/Tailwind/Canvas/Monaco), Realtime (Yjs + y-websocket (future hybrid with y-webrtc) + y-indexeddb), Execution (JS/Pyodide workers), Persistence (Redis + Postgres), PWA, Service Workers, TanStackQuery, Express, PostgreSQL(non-authoritative metadata), Prisma
 
-**Write Path:** UI → `mutate(fn)` wrapper → guards → `yjs.transact` → Y.Doc update → providers sync → Redis persist
+**Write Path:** UI → internal tools call `mutate(fn)` wrapper → guards → `yjs.transact` → Y.Doc update → providers sync → Redis persist
 
 ## 2. Core Architecture
 **NOTE: THIS FILE IS INTENTIONALLY FOCUSED MORE ON FRONTEND TO SAVE CONTEXT**
 ### The RoomDocManager Model (Unified)
 
-**Principle:** UI Components never receive `Y.Doc`, providers, or awareness directly. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`. No component reads live Y structures, tools can traverse root to perform  `mutate(fn)` for any action.
+**Principle:** UI Components subscribe to snapshots that reflect the global state of the room.  Yjs and awareness/providers allow access through helper methods or subscription. A single **RoomDocManager** per room owns them. Rendering reads immutable **Snapshots** published at most once per `requestAnimationFrame`.  tools can perform  `mutate(fn)` for any writes from the interface-based access(IRoomDocManager) .
 
-**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, UndoManager (Yjs), mutate(fn) wrapper, authoritative registries (strokesById/textsById Maps), spatial index (RBush R-tree, acceleration structure), publish loop, cursor interpolation, snapshot construction, Y.Array observers with direct updates.
+**Ownership:** RoomDocManager owns Y.Doc, y-indexeddb provider, y-websocket provider, Y.UndoManager (scoped to strokes/texts, origin-tracked by userId), mutate(fn) wrapper, authoritative registries (strokesById/textsById Maps), spatial index (RBush R-tree, acceleration structure), publish loop, cursor interpolation (keyed by clientId for proper cleanup), snapshot construction, Y.Array observers with direct updates.
 
 **Registry Pattern:** RoomDocManager instances accessed exclusively through **RoomDocManagerRegistry** (singleton-per-room guarantee):
 
@@ -46,14 +46,15 @@ export interface RoomDocManager {
   updateCursor(worldX: number | undefined, worldY: number | undefined): void;
   updateActivity(activity): void;
   mutate(fn: (ydoc: Y.Doc) => void): void;
+  undo(): void;  // Per-user undo via Yjs UndoManager
+  redo(): void;  // Per-user redo via Yjs UndoManager
   extendTTL(): void;
   destroy(): void;
 }
 ```
 
 **Y.Doc Reference:**
-
-1. **No cached Y references as class fields**. **Y references never cached** - always traverse from root on demand:
+Traverse from root initially if calling helpers for first time
    ```typescript
    // ✅ CORRECT
    class RoomDocManager {
@@ -65,9 +66,9 @@ export interface RoomDocManager {
      }
    }
    ```
-- **Helpers return Y types only for internal use** (never expose from public methods)
+- **Helpers return Y types, only tools mutate** 
 
-**Publishing Discipline (Event-driven RAF):**
+**Publishing (Event-driven RAF):**
 
 - Continuous event-driven RAF loop starts on manager creation (never stops until destroy)
 - Set dirty flag when: Yjs updates (docVersion++) or presence updates
@@ -87,7 +88,7 @@ export interface RoomDocManager {
 Y.Doc → root: Y.Map → {
   v: number,                    // schema version
   meta: Y.Map<Meta>,
-  strokes: Y.Array<Stroke>,     // append only
+  strokes: Y.Array<Stroke>,    
   texts: Y.Array<TextBlock>,
   code: Y.Map<CodeCell>,
   outputs: Y.Array<Output>      // keep last 10
@@ -129,7 +130,7 @@ interface TextBlock {
 }
 
 interface Meta {
-  scene_ticks: number[]; // append-only (excluded from undo)
+  scene_ticks: number[]; // (FUTURE REMOVAL) append-only (excluded from undo)
   canvas?: { baseW: number; baseH: number };
 }
 ```
@@ -149,16 +150,24 @@ interface Awareness {
   name: string;
   color: string;
   cursor?: { x: number; y: number }; // world coordinates
-  activity: 'idle' | 'drawing' | 'typing';
+  activity: 'idle' | 'drawing' | 'typing';  //useless, will probably change soon
   seq: number; // monotonic per-sender
   ts: number;
 }
 ```
+
+**Stable User IDs:**
+- **UserProfileManager** singleton (`/client/src/lib/user-profile-manager.ts`) provides stable userId across refresh
+- Persisted in localStorage as `avlo:user:v1` with graceful fallback for private browsing
+- Plain ULID format (no prefix) for consistency
+- Used as transaction origin for UndoManager tracking: `ydoc.transact(fn, this.userId)`
+- Accessed via `userProfileManager.getIdentity()` (synchronous, safe for constructors)
+
 ### Snapshot current Structures
 
 ```typescript
 export interface Snapshot {
-  docVersion: number; // Incremental version, replaces svKey
+  docVersion: number; // Incremental version
   scene: SceneIdx; // Current scene index
   strokes: ReadonlyArray<StrokeView>;
   texts: ReadonlyArray<TextView>;
@@ -202,7 +211,8 @@ firstSnapshot: boolean;
 - **Publishing invariants:** docVersion only changes after Yjs update (dev-only assertion)
 
 ### Zustand (device-local): **File:** `/client/src/stores/device-ui-store.ts`
-**Scope:** Small, device-local UI state only (toolbar, lastSeenScene). NEVER mirror Yjs doc. Persistence: localStorage key `avlo:vN:ui`; bump `vN` if needed; include migrate fn. Usage: Use selectors to avoid re-renders; keep slices tiny.
+**Scope:** Device-local UI state only (toolbar, lastSeenScene). Persistence: localStorage key `avlo:vN:ui`; bump `vN` if needed; include migrate fn. 
+- Canvas reads tools from zustand
 **Tools in Zustand:**
 ```typescript
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape';
@@ -262,7 +272,7 @@ interface DeviceUIState {
    - **Assign scene at commit using currentScene**
 3. **mutate(fn)** with minimal guards
 4. Execute in one `yjs.transact()` → append to `strokes[]`
-5. **DocManager**: Batches Y updates, publishes new Snapshot at next rAF
+5. **DocManager**: Publishes new Snapshot at next rAF
 6. **Transport**: y-websocket sends delta, server persists, Redis TTL extended
 
 **Clear Board Flow:**
@@ -362,7 +372,7 @@ export type PolygonData = {
 export type StrokeRenderData = PolylineData | PolygonData;
   // Constructs Float32Array from plain number[] at render time
   // Builds Path2D for hardware-accelerated rendering
-
+```
 **Polygon Builder (`buildPFPolygonRenderData`):**
 1. Extract canonical `pointsTuples` from stroke
 2. Call Perfect Freehand `getStroke()` with `last: true` (finalized geometry)
@@ -488,8 +498,8 @@ interface EraserState {
 4. **Texts:** Circle-rect intersection test
 5. Accumulate hits in `hitNow` set; merge to `hitAccum` during drag
 6. Live view: Uses `getView()` callback for accurate transforms
+- Stored bbox already includes `(strokeSize * 0.5 + 1)` inflation from commit time. No additional inflation needed during hit-testing.
 
-**Critical Fix Applied:** Stored bbox already includes `(strokeSize * 0.5 + 1)` inflation from commit time. No additional inflation needed during hit-testing.
 
 **Visual Feedback (Two-Pass Overlay):**
 
@@ -543,7 +553,7 @@ export class RBushSpatialIndex implements SpatialIndex {
 - `textsById: Map<string, TextView>` - Single source of truth for all texts
 - `spatialIndex: RBushSpatialIndex` - Derived acceleration structure (queryable facade)
 - `needsSpatialRebuild: boolean` - Epoch flag (rebuild vs steady-state)
-
+- all local, we build and maintain from the Yjs doc on room join for deterministic behaviour
 **Epoch 1: Rebuild (needsSpatialRebuild = true)**
 - Triggered by: First attach, scene change, sanity check failures
 - Flow: `hydrateViewsFromY()` (walk Y.Arrays → build Maps) → `rebuildSpatialIndexFromViews()` (clear + bulkLoad RBush from Maps) → reset flag
@@ -585,7 +595,6 @@ export class RBushSpatialIndex implements SpatialIndex {
 
 **Device UI Integration:**
 - Color/size from device-UI store (not tool instance)
-- Live config updates without tool recreation
 
 **Render:** Base canvas draws text after strokes, viewport culling applies
 
@@ -700,7 +709,7 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 
 ## 9. Initialization & Gates
 
-**Init Order (single tab, one room):**
+**Init Order:**
 
 1. **Construct RoomDocManager**
    - Create `Y.Doc({ guid: roomId })` exactly once, NEVER MUTATE GUID
@@ -712,13 +721,18 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
    - Gate `G_WS_CONNECTED` on open
    - Gate `G_WS_SYNCED` after first syncStep2/state-vector exchange
 **NOTE** - **WS-aware seeding.** Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a short 350 ms grace. If `root.has('meta')` is still false, run `initializeYjsStructures()` **once** and never reassign `root.*` thereafter.
-4. **Start awareness (WS-only in Phase 7)**
+4. **Attach UndoManager**
+   - Create `Y.UndoManager([strokes, texts], { trackedOrigins: new Set([this.userId]), captureTimeout: 500 })`
+   - Attached after `setupArrayObservers()` to ensure structures exist
+   - Scoped to strokes/texts arrays only (meta excluded)
+   - Origin-tracked: Only tracks transactions with matching userId
+5. **Start awareness (WS-only in Phase 7)**
    - Gate `G_AWARENESS_READY` when WS awareness is live
-5. **Snapshot publishing**
+6. **Snapshot publishing**
    - Build non-null EmptySnapshot synchronously
    - Gate `G_FIRST_SNAPSHOT` when first doc-derived snapshot published
    - Detection: `sawAnyDocUpdate === true`
-6. **Start rAF publisher** on manager creation
+7. **Start rAF publisher** on manager creation
 
 **Gates Table:**
 | Gate | Opens When | Unblocks | Timeout | On Timeout |
@@ -729,8 +743,8 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 | `G_AWARENESS_READY` | WS connected | presence cursors | none | N/A |
 | `G_FIRST_SNAPSHOT` | first doc update | export, minimap | 1 rAF | N/A |
 - Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a short 350 ms 
-**Teardown Order:**
 
+**Teardown Order(slightly outdated, needs update):**
 1. Stop RAF publisher
 2. Destroy RTC provider (if any)
 3. Unsubscribe awareness listeners
@@ -739,9 +753,8 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
 6. Close IDB 
 7. Guard all public methods with `if (this._destroyed) return;`
 
-## 10. Lasso Tool (Upcoming)
-- Arbitrary polygon selection with even-odd PIP test
-- Atomic commit at same indices
+## 10. Select Tool (Upcoming)
+
 
 ### **Perfect Shape Recognition Details (Phase: Perfect Shapes):**
 
