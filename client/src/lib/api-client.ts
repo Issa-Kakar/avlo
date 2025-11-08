@@ -13,64 +13,45 @@ export const RoomMetadataSchema = z.object({
 
 export type RoomMetadata = z.infer<typeof RoomMetadataSchema>;
 
-// API client
+// API client - STUBBED for Cloudflare migration
+// TODO: Implement these in Worker or remove metadata features
 class ApiClient {
-  private baseUrl: string;
-
-  constructor() {
-    this.baseUrl = clientConfig.VITE_API_BASE;
-  }
-
-  private async fetchJson<T>(
-    path: string,
-    options?: globalThis.RequestInit,
-    schema?: z.ZodSchema<T>,
-  ): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options?.headers,
-      },
-    });
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new Error('Room not found or expired');
-      }
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (schema) {
-      return schema.parse(data);
-    }
-
-    return data as T;
-  }
-
   async getRoomMetadata(roomId: string): Promise<RoomMetadata> {
-    return this.fetchJson(`/rooms/${roomId}/metadata`, undefined, RoomMetadataSchema);
+    // Return stub data for now
+    const now = new Date();
+    const expiresAt = new Date(now);
+    expiresAt.setDate(expiresAt.getDate() + 14); // 14 days from now
+
+    return {
+      id: roomId,
+      title: 'Untitled Room',
+      createdAt: now.toISOString(),
+      lastWriteAt: now.toISOString(),
+      sizeBytes: 0,
+      expiresAt: expiresAt.toISOString(),
+    };
   }
 
   async createRoom(title?: string): Promise<RoomMetadata> {
-    return this.fetchJson(
-      '/rooms',
-      {
-        method: 'POST',
-        body: JSON.stringify({ title }),
-      },
-      RoomMetadataSchema,
-    );
+    // Generate a random room ID
+    const roomId = Math.random().toString(36).substring(2, 15);
+    const now = new Date();
+    const expiresAt = new Date(now);
+    expiresAt.setDate(expiresAt.getDate() + 14);
+
+    return {
+      id: roomId,
+      title: title || 'Untitled Room',
+      createdAt: now.toISOString(),
+      lastWriteAt: now.toISOString(),
+      sizeBytes: 0,
+      expiresAt: expiresAt.toISOString(),
+    };
   }
 
   async renameRoom(roomId: string, title: string): Promise<{ title: string }> {
-    return this.fetchJson(`/rooms/${roomId}/rename`, {
-      method: 'PUT',
-      body: JSON.stringify({ title }),
-    });
+    // Just return the new title
+    return { title };
   }
 }
 

@@ -4,24 +4,26 @@
   "type": "module",
   "workspaces": [
     "client",
-    "server",
+    "worker",
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n client,server -c cyan,magenta \"npm run dev -w client\" \"npm run dev -w server\"",
-    "build": "npm run build -w client && npm run build -w server",
+    "dev": "concurrently \"npm run dev:worker\" \"npm run dev:client\"",
+    "dev:worker": "wrangler dev --port 8787",
+    "dev:client": "npm run dev -w client",
+    "dev:old": "npm run dev -w client",
+    "build": "npm run build -w client",
+    "deploy": "wrangler deploy",
     "test": "vitest run --config vitest.config.memory-safe.ts",
     "test:watch": "vitest",
     "test:client": "vitest run --config vitest.config.memory-safe.ts",
     "test:client:watch": "vitest",
-    "test:server": "npm run test -w server",
-    "test:server:watch": "npm run test:watch -w server",
-    "test:all": "npm run test:client && npm run test:server",
+    "test:all": "npm run test:client",
     "test:memory": "node --expose-gc test-memory-diagnostic.ts",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "typecheck": "npm run -w packages/shared build:types && npm run -w client typecheck && npm run -w server typecheck",
+    "typecheck": "npm run -w packages/shared build:types && npm run -w client typecheck && npm run -w worker typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -38,6 +40,7 @@
     ]
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
     "@playwright/test": "^1.49.0",
     "@rollup/rollup-linux-x64-gnu": "^4.46.3",
     "@testing-library/react": "^16.1.0",
@@ -46,7 +49,7 @@
     "@types/react-router-dom": "^5.3.3",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",
-    "@vitest/ui": "^2.1.8",
+    "@vitest/ui": "^4.0.0",
     "concurrently": "^8.2.2",
     "eslint": "^9.33.0",
     "eslint-plugin-react-hooks": "^5.1.0",
@@ -59,11 +62,14 @@
     "puppeteer": "^24.17.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.0.0",
+    "wrangler": "^4.46.0"
   },
   "dependencies": {
     "chalk": "^5.6.0",
+    "partyserver": "^0.0.75",
     "react-router-dom": "^7.8.2",
-    "y-leveldb": "^0.2.0"
+    "y-leveldb": "^0.2.0",
+    "y-partyserver": "^0.0.51"
   }
 }

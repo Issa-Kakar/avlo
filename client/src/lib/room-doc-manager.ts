@@ -4,7 +4,7 @@
 
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { WebsocketProvider } from 'y-websocket';
+import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
@@ -137,7 +137,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
-  private websocketProvider: WebsocketProvider | null = null;
+  private websocketProvider: YProvider | null = null;
   private webrtcProvider: unknown = null;
 
   // Awareness instance (aliased to avoid collision with app's Awareness interface)
@@ -1307,9 +1307,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
         };
 
         // Dev parity with buildSnapshot(): freeze the top-level object
-        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-          Object.freeze(snap);
-        }
+        // if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
+        //   Object.freeze(snap);
+        // }
 
         this.publishSnapshot(snap); // sets current + notifies subscribers
         this.publishState.presenceDirty = false;
@@ -1700,26 +1700,20 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   private initializeWebSocketProvider(): void {
     try {
-      // Get config (validated) - typically '/ws'
-      const wsBase = clientConfig.VITE_WS_BASE;
+      // Determine host (defaults to window.location.host)
+      const host = clientConfig.VITE_PARTY_HOST || window.location.host;
 
-      // Convert to WebSocket URL base (without room ID)
-      const wsUrl = this.buildWebSocketUrl(wsBase);
-
-      // Create WebSocket provider with standard signature
-      // y-websocket will append /<roomId> to the base URL automatically
-      // Result: ws://host/ws/<roomId>
-      this.websocketProvider = new WebsocketProvider(
-        wsUrl,
-        this.roomId, // Pass room ID separately (standard y-websocket contract)
+      // Create YProvider (replaces WebsocketProvider)
+      this.websocketProvider = new YProvider(
+        host,
+        this.roomId,  // Room name (not appended to URL)
         this.ydoc,
         {
-          // ENABLE AWARENESS
+          party: 'rooms',  // MUST match env binding name in wrangler.toml
           awareness: this.yAwareness,
-          // Reconnect settings
-          maxBackoffTime: 10000,
-          resyncInterval: 5000,
-        },
+          maxBackoffTime: 10_000,
+          resyncInterval: 5_000,
+        }
       );
 
       // Set up G_WS_CONNECTED gate with 5s timeout
@@ -1889,30 +1883,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  private buildWebSocketUrl(basePath: string): string {
-    // Check for explicit WebSocket URL override (for tunneling scenarios)
-    if (clientConfig.VITE_WS_URL) {
-      // VITE_WS_URL should be a complete WebSocket URL base
-      // e.g., wss://server-tunnel.trycloudflare.com/ws
-      // Remove trailing slash if present to avoid double slashes
-      return clientConfig.VITE_WS_URL.replace(/\/$/, '');
-    }
-
-    // Handle both relative and absolute URLs
-    if (basePath.startsWith('ws://') || basePath.startsWith('wss://')) {
-      return basePath;
-    }
-
-    // Build from current location
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-
-    // Ensure path starts with /
-    const cleanPath = basePath.startsWith('/') ? basePath : `/${basePath}`;
-
-    // Return base WebSocket URL (y-websocket will append room ID)
-    return `${protocol}//${host}${cleanPath}`;
-  }
 
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {

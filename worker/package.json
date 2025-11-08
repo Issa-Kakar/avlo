@@ -1,0 +1,17 @@
+{
+  "name": "@avlo/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "yjs": "^13.6.27"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251106.1",
+    "typescript": "^5.9.2"
+  }
+}

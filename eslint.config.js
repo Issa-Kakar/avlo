@@ -116,6 +116,32 @@ export default [
     },
   },
 
+  // Cloudflare Worker-specific rules
+  {
+    files: ['worker/**/*.{ts,js}'],
+    languageOptions: {
+      globals: {
+        // Remove Node.js globals for worker environment
+        ...Object.fromEntries(Object.keys(globals.node).map(key => [key, 'off'])),
+        // Add Cloudflare Workers globals
+        DurableObjectNamespace: 'readonly',
+        ExecutionContext: 'readonly',
+        ExportedHandler: 'readonly',
+        DurableObjectState: 'readonly',
+        DurableObjectStorage: 'readonly',
+        WebSocket: 'readonly',
+        Request: 'readonly',
+        Response: 'readonly',
+        fetch: 'readonly',
+        console: 'readonly',
+      },
+    },
+    rules: {
+      // Allow triple-slash references for type loading
+      '@typescript-eslint/triple-slash-reference': 'off',
+    },
+  },
+
   // Test-specific rules
   {
     files: [

@@ -1,38 +1,31 @@
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+
 import path from 'path';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@avlo/shared': path.resolve(__dirname, '../packages/shared/src'),
-    },
-  },
-  build: {
-    outDir: '../server/public',
-    emptyOutDir: true,
-    sourcemap: process.env.NODE_ENV !== 'production',
-    // Chunk splitting for lazy-loaded modules
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          monaco: ['monaco-editor'],
-          yjs: ['yjs', 'y-websocket', 'y-indexeddb', 'y-webrtc'],
-        },
-      },
-    },
+      '@avlo/shared': path.resolve(__dirname, '../packages/shared/src')
+    }
   },
   server: {
     port: 3000,
     proxy: {
-      '/api': 'http://localhost:3001',
-      '/ws': {
-        target: 'ws://localhost:3001',
+      // Proxy WebSocket connections to wrangler dev server
+      '/parties': {
+        target: 'ws://localhost:8787',
         ws: true,
-        changeOrigin: true,
+        changeOrigin: true
       },
-    },
-  },
+      // Also proxy regular HTTP requests to /parties
+      '/parties/*': {
+        target: 'http://localhost:8787',
+        changeOrigin: true
+      }
+    }
+  }
 });

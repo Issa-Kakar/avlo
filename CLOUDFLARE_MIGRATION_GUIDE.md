@@ -4,6 +4,24 @@
 
 This document provides a comprehensive guide for migrating AVLO from its current Express/Redis/PostgreSQL architecture to a serverless Cloudflare Durable Objects architecture with y-partyserver. This migration will provide horizontal scalability, edge computing benefits, and significant cost reductions while maintaining all current functionality.
 
+## Migration Status (2025-11-06)
+
+**Completed Steps (1-4):**
+- ✅ Discovered critical version conflict: @cloudflare/vite-plugin requires Vite ≥6.1
+- ✅ Upgraded Vite 5.4.11 → 7.x and Vitest 2.1.8 → 4.x for compatibility
+- ✅ Installed dependencies correctly (wrangler+partyserver at root, @cloudflare/vite-plugin in client)
+- ✅ Created wrangler.toml, worker.ts, and RoomDurableObject implementation
+- ✅ Updated client/vite.config.ts with Cloudflare plugin
+
+**Current State:** Untested - Steps 1-4 complete but need verification of PartyServer integration
+**Next Steps:** Continue from Step 5 (Update Client Provider)
+
+**Known Issues/Uncertainties:**
+- Vite 7 upgrade may have breaking changes to investigate
+- PartyServer integration with existing gate system needs testing
+- TypeScript types for y-partyserver may need adjustment
+- Development workflow with Cloudflare plugin needs validation
+
 **Migration Scope:**
 - Replace Express WebSocket server with Cloudflare Worker + Durable Objects
 - Replace Redis persistence with SQLite-backed Durable Objects (one per room)
@@ -125,14 +143,22 @@ return stub.fetch(request);                    // Handle WebSocket
 
 ### Step 1: Install Dependencies
 
+**CRITICAL: @cloudflare/vite-plugin requires Vite ≥6.1 (we had 5.4.11)**
+
 ```bash
 # Root directory
 npm uninstall express ws @y/websocket-server redis cors dotenv
-npm install -D wrangler @cloudflare/vite-plugin
-npm install partyserver y-partyserver
+npm install -D wrangler  # Keep at root for deployment
+npm install partyserver y-partyserver  # Server dependencies
 
-# Client workspace
+# Client workspace - MUST upgrade Vite first
+cd client
 npm uninstall y-websocket
+npm install -D vite@^7.0.0  # Upgrade from 5.4.11
+npm install -D @cloudflare/vite-plugin  # Now compatible
+
+# Root - Upgrade Vitest for Vite 7 compatibility
+npm install -D vitest@^4.0.0 @vitest/ui@^4.0.0  # Upgrade from 2.1.8
 ```
 
 ### Step 2: Create Wrangler Configuration
@@ -199,9 +225,11 @@ export { RoomDurableObject } from './parties/room';
 
 **Create `/src/parties/room.ts`:**
 ```typescript
-import { DurableObject } from 'cloudflare:workers';
 import * as Y from 'yjs';
 import { YServer } from 'y-partyserver';
+
+// Import Env type from worker (if not already defined there)
+import type { Env } from '../worker';
 
 export class RoomDurableObject extends YServer<Env> {
   // Tune persistence frequency
@@ -212,19 +240,36 @@ export class RoomDurableObject extends YServer<Env> {
 
   // Load state from SQLite on DO boot
   async onLoad(): Promise<Y.Doc | void> {
-    // 1. Ensure table exists
+    // 1. Create tables (storage.sql.exec is synchronous)
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS ydoc_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         state BLOB NOT NULL,
         updated_at INTEGER NOT NULL
-      )
+      );
+      CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `);
 
-    // 2. Load existing state
-    const row = this.ctx.storage.sql.exec(
-      'SELECT state FROM ydoc_state WHERE id = 1'
-    ).one<{ state?: ArrayBuffer }>();
+    // 2. Cache room ID for use in onAlarm() (where room.id is not available)
+    this.ctx.storage.sql.exec(
+      `INSERT INTO meta (key, value) VALUES ('room_id', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+      this.room.id
+    );
+
+    // 3. Load existing state with error handling
+    let row: { state?: ArrayBuffer } | undefined;
+    try {
+      row = this.ctx.storage.sql.exec(
+        'SELECT state FROM ydoc_state WHERE id = 1;'
+      ).one<{ state?: ArrayBuffer }>();
+    } catch {
+      // .one() throws if zero rows or >1 row - treat as empty
+      row = undefined;
+    }
 
     if (row?.state) {
       const doc = new Y.Doc();
@@ -232,7 +277,7 @@ export class RoomDurableObject extends YServer<Env> {
       return doc;  // YServer applies this to its internal document
     }
 
-    // 3. Return undefined for empty room (YServer creates new doc)
+    // 4. Return undefined for empty room (YServer creates new doc)
     return;
   }
 
@@ -241,45 +286,54 @@ export class RoomDurableObject extends YServer<Env> {
     const now = Date.now();
     const update = Y.encodeStateAsUpdate(this.document);
 
-    // Upsert into SQLite
+    // Upsert state vector
     this.ctx.storage.sql.exec(
-      `
-      INSERT INTO ydoc_state (id, state, updated_at)
-      VALUES (1, ?1, ?2)
-      ON CONFLICT(id) DO UPDATE SET
-        state = excluded.state,
-        updated_at = excluded.updated_at
-      `,
-      { '?1': update, '?2': now }
+      `INSERT INTO ydoc_state (id, state, updated_at)
+       VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         state = excluded.state,
+         updated_at = excluded.updated_at;`,
+      update,
+      now
     );
 
-    // Schedule R2 backup
-    await this.scheduleBackup(now);
+    // Schedule an alarm for a background R2 snapshot
+    await this.ctx.storage.setAlarm(now + 10_000);
   }
 
-  // Handle DO alarms for R2 backups
-  async alarm() {
-    const row = this.ctx.storage.sql.exec(
-      'SELECT state, updated_at FROM ydoc_state WHERE id = 1'
-    ).one<{ state?: ArrayBuffer; updated_at?: number }>();
+  // PartyServer hook for alarms (NOT alarm() - use onAlarm())
+  async onAlarm(): Promise<void> {
+    // Read cached room ID (room.id is NOT available in onAlarm())
+    let roomId = 'unknown';
+    try {
+      const meta = this.ctx.storage.sql
+        .exec(`SELECT value FROM meta WHERE key = 'room_id';`)
+        .one<{ value: string }>();
+      if (meta?.value) roomId = meta.value;
+    } catch {
+      // Ignore if meta lookup fails
+    }
+
+    // Load state for backup
+    let row: { state?: ArrayBuffer } | undefined;
+    try {
+      row = this.ctx.storage.sql
+        .exec('SELECT state FROM ydoc_state WHERE id = 1;')
+        .one<{ state?: ArrayBuffer }>();
+    } catch {
+      row = undefined;
+    }
 
     if (!row?.state) return;
 
     const state = new Uint8Array(row.state);
     const ts = Date.now();
-    const roomId = this.room.id;
 
     // Write versioned snapshot and latest pointer
     await Promise.all([
       this.env.R2_BACKUPS.put(`rooms/${roomId}/snapshots/${ts}.bin`, state),
       this.env.R2_BACKUPS.put(`rooms/${roomId}/latest.bin`, state)
     ]);
-  }
-
-  private async scheduleBackup(now: number) {
-    // Set alarm for 10 seconds from now
-    const at = new Date(now + 10_000);
-    await this.ctx.storage.alarms.set(at);
   }
 }
 ```
@@ -382,13 +436,16 @@ private initializeWebSocketProvider(): void {
 ```typescript
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { cloudflare } from '@cloudflare/vite-plugin';
+import cloudflare from '@cloudflare/vite-plugin';  // Note: default import
 import path from 'path';
 
 export default defineConfig({
   plugins: [
     react(),
-    cloudflare()  // Runs Worker in same dev server
+    cloudflare({
+      configPath: '../wrangler.toml',  // Point to root wrangler.toml
+      persistTo: '../.wrangler/state/v3',  // Persist DO state locally
+    })
   ],
   resolve: {
     alias: {
@@ -401,8 +458,16 @@ export default defineConfig({
     // DELETE all proxy config (Cloudflare plugin handles)
   },
   build: {
-    outDir: 'dist',
-    emptyOutDir: true
+    outDir: 'dist',  // Changed from '../server/public'
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          monaco: ['monaco-editor'],
+          yjs: ['yjs', 'y-indexeddb', 'y-webrtc']  // Removed 'y-websocket'
+        }
+      }
+    }
   }
 });
 ```
@@ -624,24 +689,6 @@ wrangler deploy --env preview
 - **Recovery:** Off-platform backup
 - **Compliance:** Data retention options
 - **Future:** Basis for time-travel features
-
----
-
-## Appendix B: Room ID Strategy
-
-**Current:** ULID format (e.g., `01FZQY8XABC123`)
-**Migration:** Keep same IDs (deterministic DO mapping)
-**Future:** Consider shorter IDs for URLs
-
-```typescript
-// Room ID → DO instance (always same mapping)
-const id = env.ROOM_DO.idFromName(roomId);
-
-// This ensures:
-// - Same room always → same DO
-// - SQLite data persists correctly
-// - No collisions across deployments
-```
 
 ---
 
