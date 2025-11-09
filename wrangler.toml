@@ -8,9 +8,14 @@ compatibility_flags = ["nodejs_compat"]
 name = "rooms"
 class_name = "RoomDurableObject"
 
-# Enable SQLite storage
+# R2 bucket for document persistence
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "avlo-docs"
+
+# Enable SQLite storage for Durable Objects
 [[migrations]]
-tag = "v2"
+tag = "v1"
 new_sqlite_classes = ["RoomDurableObject"]
 
 # Development settings

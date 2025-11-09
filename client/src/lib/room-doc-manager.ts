@@ -951,8 +951,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
         if (!r.has('meta')) {
           // Truly fresh doc even after IDB + grace → seed once.
           this.initializeYjsStructures();
+          console.log('seeded');
         }
         this.mutate(fn); // replay the write
+        console.log('mutated after seeding');
       });
       return;
     }
@@ -986,13 +988,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.ydoc.transact(() => {
         fn(this.ydoc);
       }, this.userId); // Origin for undo/redo tracking
-
+      console.log('transacted');
       // Check if the delta exceeds frame limit
       if (updateSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
         // The delta itself is too large
-        console.error(
-          `[RoomDocManager] Delta size (${updateSize} bytes) exceeds frame limit (${ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES} bytes)`,
-        );
+        // console.log(
+        //   `[RoomDocManager] Delta size (${updateSize} bytes) exceeds frame limit (${ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES} bytes)`,
+        // );
 
         // In production, we should ideally undo this transaction
         // For now, log warning to maintain backward compatibility
@@ -1307,9 +1309,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
         };
 
         // Dev parity with buildSnapshot(): freeze the top-level object
-        // if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-        //   Object.freeze(snap);
-        // }
+        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
+          Object.freeze(snap);
+        }
 
         this.publishSnapshot(snap); // sets current + notifies subscribers
         this.publishState.presenceDirty = false;

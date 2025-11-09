@@ -127,6 +127,10 @@ client/src/**/*.js
 !client/src/**/*.config.js
 packages/*/src/**/*.js
 
+# Wrangler/Miniflare development artifacts
+.wrangler/
+*/.wrangler/
+
 # Client test results (specific path)
 client/test-results/
 

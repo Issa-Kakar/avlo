@@ -424,7 +424,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const gateStatus = roomDoc.getGateStatus();
     if (gateStatus.firstSnapshot) {
       initialRenderTimeout = setTimeout(() => {
-        // Safety check - renderLoop might have been destroyed if component unmounted quickly
+    //     // Safety check - renderLoop might have been destroyed if component unmounted quickly
         if (renderLoopRef.current === renderLoop) {
           renderLoop.invalidateAll('content-change');
         }

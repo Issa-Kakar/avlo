@@ -1,20 +1,23 @@
 /// <reference types="@cloudflare/workers-types" />
 
-/**
- * Module declaration for the cloudflare:workers virtual module
- * This module only exists at runtime in the Cloudflare Workers environment
- * PartyServer imports DurableObject from this module
- */
 declare module "cloudflare:workers" {
-  // DurableObject class that PartyServer's Server extends
-  export class DurableObject {
-    constructor(ctx: DurableObjectState, env: any);
+  // Minimal ambient types for Workerd's virtual module so TypeScript is happy.
+  // partyserver.Server extends this class at type level.
+  export class DurableObject<Env = unknown> {
+    constructor(ctx: DurableObjectState, env: Env);
 
-    // Optional handler methods
     fetch?(request: Request): Response | Promise<Response>;
     alarm?(): void | Promise<void>;
-    webSocketMessage?(ws: WebSocket, message: string | ArrayBuffer): void | Promise<void>;
-    webSocketClose?(ws: WebSocket, code: number, reason: string, wasClean: boolean): void | Promise<void>;
+    webSocketMessage?(
+      ws: WebSocket,
+      message: ArrayBuffer | ArrayBufferView | string
+    ): void | Promise<void>;
+    webSocketClose?(
+      ws: WebSocket,
+      code: number,
+      reason: string,
+      wasClean: boolean
+    ): void | Promise<void>;
     webSocketError?(ws: WebSocket, error: unknown): void | Promise<void>;
   }
 }

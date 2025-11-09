@@ -1,43 +1,69 @@
-import * as Y from 'yjs';
-import { YServer } from 'y-partyserver';
-import type { Env } from '../index';
+import * as Y from "yjs";
+import { YServer } from "y-partyserver";
+import type { Env } from "../index";
+import type { Connection } from "partyserver";
+
+// One canonical head per room, V2-encoded at rest
+const headKey = (room: string) => `rooms/${room}/head.v2.bin`;
 
 export class RoomDurableObject extends YServer<Env> {
-  static callbackOptions = { debounceWait: 1000, debounceMaxWait: 5000 };
+  // R2-friendly cadence: fewer, bigger writes
+  static callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
 
+  /**
+   * Ensure hydration completes before the first sync step.
+   * YServer awaits onStart(), then onLoad(), installs debounced onSave(), then accepts sockets.
+   */
+  async onStart(): Promise<void> {
+    return super.onStart();
+  }
+
+  /**
+   * Hydrate from R2 (V2 bytes).
+   * Brand-new rooms have no head object yet — that's fine.
+   */
   async onLoad(): Promise<void> {
-    // Table for the single snapshot (legacy or small docs)
-    this.ctx.storage.sql.exec(`
-      CREATE TABLE IF NOT EXISTS ydoc_state (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        state BLOB NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    // Safe read: zero rows OK
-    const cur = this.ctx.storage.sql.exec(
-      'SELECT state FROM ydoc_state WHERE id = 1 LIMIT 1'
-    );
-    const row = cur.toArray()[0] as { state?: ArrayBuffer | Uint8Array } | undefined;
-
-    if (row?.state) {
-      const buf = row.state instanceof Uint8Array ? row.state : new Uint8Array(row.state);
-      Y.applyUpdate(this.document, buf);
-    }
-
+    const obj = await this.env.DOCS.get(headKey(this.name));
+    if (!obj) return;
+    const bytes = new Uint8Array(await obj.arrayBuffer());
+    if (bytes.byteLength === 0) return;
+    Y.applyUpdateV2(this.document, bytes);
   }
 
+  /**
+   * Debounced persistence: write a V2 snapshot to R2 as the canonical head.
+   */
   async onSave(): Promise<void> {
-    const state = Y.encodeStateAsUpdate(this.document);
-
-    const now = Date.now();
-    this.ctx.storage.sql.exec(
-      `INSERT INTO ydoc_state (id, state, updated_at)
-       VALUES (1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
-      state, now
-    );
+    const updateV2 = Y.encodeStateAsUpdateV2(this.document);
+    await this.env.DOCS.put(headKey(this.name), updateV2, {
+      httpMetadata: { contentType: "application/octet-stream" },
+      customMetadata: { ts: String(Date.now()) },
+    });
   }
 
-}
+  /**
+   * Hard flush when the last user leaves the room.
+   * This complements the debounced persistence and prevents "lost last edits"
+   * when users close their tabs right after a change.
+   */
+  async onClose(
+    connection: Connection<unknown>,
+    code: number,
+    reason: string,
+    wasClean: boolean
+  ): Promise<void> {
+    // First let YServer prune the connection and awareness state.
+    await super.onClose(connection, code, reason, wasClean);
 
+    // If the room is now empty, flush the doc immediately (non-debounced).
+    if (this.document.conns.size === 0) {
+      // One microturn in case a final Yjs update just landed
+      await Promise.resolve();
+      try {
+        await this.onSave();
+      } catch (err) {
+        console.error("flush-on-last-disconnect failed:", err);
+      }
+    }
+  }
+}
