@@ -332,14 +332,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.whenGateOpen('idbReady').then(async () => {
       await Promise.race([
         this.whenGateOpen('wsSynced'),
-        this.delay(350), // ~1–2 frames; prevents cross-tab fresh-room races
+        this.delay(5_000), // prevents cross-tab fresh-room races
       ]);
 
       const root = this.ydoc.getMap('root');
       if (!root.has('meta')) {
         this.initializeYjsStructures();
+        console.log('Initialized Y.js structures');
       } else {
-        this.logContainerIdentities('LOADED_FROM_IDB_OR_WS');
+        console.log('Loaded from IDB or WS');
       }
 
       // Now that structures exist (either from IDB/WS or freshly initialized),
@@ -750,6 +751,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Step 3: Initialize Y.js structures with proper setup
   private initializeYjsStructures(): void {
+    console.log('Initializing Y.js structures');
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
 
@@ -944,9 +946,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // compete with persisted ones from IDB or WS. Once 'meta' exists, structures are initialized.
     const root = this.ydoc.getMap('root');
     if (!root.has('meta')) {
-      // Defer writes until either (a) WS syncs, or (b) a short grace elapses after IDB.
+      // Defer writes until either (a) WS syncs, or (b) a long grace elapses after IDB.
       this.whenGateOpen('idbReady').then(async () => {
-        await Promise.race([this.whenGateOpen('wsSynced'), this.delay(350)]);
+        await Promise.race([this.whenGateOpen('wsSynced'), this.delay(5_000)]);
         const r = this.ydoc.getMap('root');
         if (!r.has('meta')) {
           // Truly fresh doc even after IDB + grace → seed once.
@@ -991,14 +993,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       console.log('transacted');
       // Check if the delta exceeds frame limit
       if (updateSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
-        // The delta itself is too large
-        // console.log(
-        //   `[RoomDocManager] Delta size (${updateSize} bytes) exceeds frame limit (${ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES} bytes)`,
-        // );
-
-        // In production, we should ideally undo this transaction
-        // For now, log warning to maintain backward compatibility
-        // TODO: Phase 3 - Implement proper rollback mechanism
+        // depracated, no guard here anymore
       }
     } finally {
       // Always clean up the update handler
@@ -1066,16 +1061,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     };
 
     return { throttled: throttled as T, cleanup };
-  }
-
-  // Helper to ensure RAF loop is running (only restarts if stopped)
-  private schedulePublish(): void {
-    // Only restart if the loop is truly stopped (e.g., after destroy/recreate)
-    if (this.publishState.rafId === -1 && !this.destroyed) {
-      this.publishState.isDirty = true; // ensure first tick publishes
-      this.startPublishLoop();
-    }
-    // If loop is already running, it will pick up dirty flags on next tick
   }
 
   // Update presence and notify subscribers (called when awareness changes)
@@ -1493,6 +1478,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Force one rebuild on first attach
     this.needsSpatialRebuild = true;
     this.publishState.isDirty = true;
+    console.log('setupArrayObservers: arrays observed');
   }
 
   // ============================================================
@@ -1667,9 +1653,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
         .then(() => {
           // IndexedDB whenSynced resolved
           this.handleIDBReady(); // Use unified handler
+          console.log('IndexedDB whenSynced resolved');
         })
         .catch((err: unknown) => {
-          console.warn('[RoomDocManager] IDB sync error (non-critical):', err);
+          console.log('[RoomDocManager] IDB sync error (non-critical):', err);
           // Still open gate on error - fallback to empty doc
           this.handleIDBReady(); // Use unified handler
         });
@@ -1677,7 +1664,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Note: No need to listen for 'synced' event to mark dirty
       // Y.Doc updates from IDB will trigger the existing doc update handler
     } catch (err: unknown) {
-      console.warn('[RoomDocManager] IDB initialization failed (non-critical):', err);
+      console.log('[RoomDocManager] IDB initialization failed (non-critical):', err);
       // Mark as failed but continue
       this.handleIDBReady(); // Use unified handler
     }
@@ -1690,6 +1677,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (timeout) {
       clearTimeout(timeout);
       this.gateTimeouts.delete('idbReady');
+      console.log('IDB ready timeout cleared');
     }
 
     // Log container identities after IDB is ready (either synced or timed out)
@@ -1698,6 +1686,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Open the gate - structure initialization is handled in constructor
     // via whenGateOpen('idbReady').then(...)
     this.openGate('idbReady');
+    console.log('IDB ready gate opened');
   }
 
   private initializeWebSocketProvider(): void {
@@ -1714,7 +1703,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           party: 'rooms',  // MUST match env binding name in wrangler.toml
           awareness: this.yAwareness,
           maxBackoffTime: 10_000,
-          resyncInterval: 5_000,
+          resyncInterval: -1,
         }
       );
 
@@ -1723,6 +1712,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         if (!this.gates.wsConnected && this.gates.idbReady) {
           // Proceed offline if IDB ready
           // WS connection timeout, proceeding offline
+          console.log('WS connection timeout, proceeding offline');
         }
       }, 5000);
       this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
@@ -1732,6 +1722,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         if (!this.gates.wsSynced) {
           // Keep rendering from IDB, continue trying to sync
           // WS sync timeout, continuing with local state
+          console.log('WS sync timeout, continuing with local state');
         }
       }, 10000);
       this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
@@ -1784,6 +1775,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         if (event.status === 'connected') {
           // Handle connection gates
           if (!this.gates.wsConnected) {
+            console.log('WS connected, opening gate');
             // Clear connection timeout
             const timeout = this.gateTimeouts.get('wsConnected');
             if (timeout) {
@@ -1791,6 +1783,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
               this.gateTimeouts.delete('wsConnected');
             }
             this.openGate('wsConnected');
+            console.log('WS connected gate opened');
           }
 
           // Open awareness gate immediately on WS connect
@@ -1812,9 +1805,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
         } else if (event.status === 'disconnected') {
           // Close connection gates if they're open
           if (this.gates.wsConnected) {
+            console.log('WS disconnected, closing gate');
             this.closeGate('wsConnected');
           }
           if (this.gates.wsSynced) {
+            console.log('WS disconnected, closing gate');
             this.closeGate('wsSynced');
           }
 
@@ -1861,6 +1856,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Listen for sync status (v3 uses 'sync' event, not 'synced')
       this.websocketProvider.on('sync', (isSynced: boolean) => {
         if (isSynced) {
+          console.log('WS synced, opening gate');
           // Clear sync timeout
           const timeout = this.gateTimeouts.get('wsSynced');
           if (timeout) {
@@ -1872,6 +1868,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           this.logContainerIdentities('AFTER_WS_SYNC');
           // WebSocket synced
         } else {
+          console.log('WS not synced, closing gate');
           this.closeGate('wsSynced');
         }
       });
@@ -1880,7 +1877,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
       // No need for additional provider-specific update listeners
     } catch (err: unknown) {
-      console.error('[RoomDocManager] WebSocket initialization failed:', err);
+      console.log('[RoomDocManager] WebSocket initialization failed:', err);
       // Keep offline mode functional
     }
   }
@@ -1888,6 +1885,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {
+    console.log('Opening gate:', gateName);
     const wasOpen = this.gates[gateName];
     if (wasOpen) return; // Already open
 
@@ -1920,6 +1918,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private closeGate(gateName: keyof typeof this.gates): void {
+    console.log('Closing gate:', gateName);
     if (!this.gates[gateName]) return; // Already closed
 
     this.gates[gateName] = false;
@@ -1930,7 +1929,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   private notifyGateChange(): void {
     const currentGates = this.getGateStatus();
-
+    console.log('Notifying gate change:', currentGates);
     // Only notify if gates actually changed (shallow compare)
     if (
       this.lastGateState &&
@@ -1955,7 +1954,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         try {
           cb(currentGates);
         } catch (err) {
-          console.error('Error in gate subscriber:', err);
+          console.log('Error in gate subscriber:', err);
         }
       });
       this.gateDebounceTimer = null;
@@ -1964,14 +1963,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
     if (this.gates[gateName]) {
+      console.log('Gate already open:', gateName);
       return Promise.resolve();
     }
 
     return new Promise((resolve) => {
       if (!this.gateCallbacks.has(gateName)) {
+        console.log('Setting new gate callback:', gateName);
         this.gateCallbacks.set(gateName, new Set());
       }
       this.gateCallbacks.get(gateName)!.add(resolve);
+      console.log('Added gate callback:', gateName);
     });
   }
 
@@ -1980,11 +1982,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   public isIndexedDBReady(): boolean {
+    console.log('Checking if IDB is ready:', this.gates.idbReady);
     return this.gates.idbReady;
   }
 
   // Phase 6C: Room stats support
   private updateRoomStats(stats: RoomStats | null): void {
+    console.log('Updating room stats:', stats);
     this.roomStats = stats;
 
     // Notify subscribers
@@ -1993,7 +1997,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Update read-only state if needed
     if (stats && stats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
       // Room is read-only due to size
-      console.warn('[RoomDocManager] Room is read-only due to size limit');
+      console.log('[RoomDocManager] Room is read-only due to size limit');
     }
   }
 
@@ -2049,12 +2053,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // ——— REBUILD EPOCH ———
       // Hydrate maps from Y.Arrays (ignores any stale incremental state)
       this.hydrateViewsFromY();
-
+      console.log('Hydrated views from Y');
       // BulkLoad RBush from freshly built maps
       this.rebuildSpatialIndexFromViews();
-
+      console.log('Rebuilt spatial index from views');
       // Reset flag
       this.needsSpatialRebuild = false;
+      console.log('Reset spatial rebuild flag');
     }
 
     // ——— STEADY-STATE EPOCH ———
@@ -2063,10 +2068,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Compose snapshot from current maps
     const snapshot = this.composeSnapshotFromMaps();
-
+    console.log('Composed snapshot from maps');
     // Open G_FIRST_SNAPSHOT gate if needed
     if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
       this.openGate('firstSnapshot');
+      console.log('Opened first snapshot gate');
     }
 
     // Optional: Freeze top-level only in development (not deep freeze)
@@ -2094,7 +2100,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Check if room became read-only
     if (ack.sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
-      console.warn('[RoomDocManager] Room is now read-only due to size limit');
+      console.log('[RoomDocManager] Room is now read-only due to size limit');
       // Could emit an event or update UI state here
     }
   }

@@ -9,7 +9,6 @@
 **DEV SERVER IS ALWAYS RUNNING, DON'T START WITHOUT USER PERMISSION, OR npm run build!**
 ```bash
 # Core development
-npm install               # Install all dependencies
 npm run dev              # Start client & server
 npm run typecheck        # Type check all workspaces #RUN FROM ROOT!
 ```
@@ -225,7 +224,7 @@ interface DeviceUIState {
   text: { size: number; color: string };
   shape: { variant: ShapeVariant; settings: ToolSettings };
   pan: {};                   // Pan tool has no settings
-  select: {};                // Lasso placeholder
+  select: {};                //  placeholder
   // Actions: setActiveTool, setPenSettings, setHighlighterSettings, setEraserSize, setTextSettings, setShapeSettings
 }
 ```
@@ -720,7 +719,7 @@ Preview strokes use Perfect Freehand with `last: false` (live preview mode). Gen
    - Connect immediately (do not wait for IDB)
    - Gate `G_WS_CONNECTED` on open
    - Gate `G_WS_SYNCED` after first syncStep2/state-vector exchange
-**NOTE** - **WS-aware seeding.** Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a short 350 ms grace. If `root.has('meta')` is still false, run `initializeYjsStructures()` **once** and never reassign `root.*` thereafter.
+**NOTE** - **WS-aware seeding.** Seed containers only **after** `G_IDB_READY` **and** either `G_WS_SYNCED` **or** a 5000 ms grace. If `root.has('meta')` is still false, run `initializeYjsStructures()` **once** and never reassign `root.*` thereafter.
 4. **Attach UndoManager**
    - Create `Y.UndoManager([strokes, texts], { trackedOrigins: new Set([this.userId]), captureTimeout: 500 })`
    - Attached after `setupArrayObservers()` to ensure structures exist

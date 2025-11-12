@@ -225,6 +225,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Check if document content changed (not just presence)
       // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
       if (newSnapshot.docVersion !== lastDocVersion) {
+        console.log('Document content changed, docVersion:', newSnapshot.docVersion);
         lastDocVersion = newSnapshot.docVersion;
 
         // Hold preview for one frame to prevent flash on commit
@@ -251,6 +252,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       }
     });
 
+    console.log('Subscribed to snapshots, lastDocVersion:', lastDocVersion);
     snapshotRef.current = roomDoc.currentSnapshot;
     lastDocVersion = roomDoc.currentSnapshot.docVersion;
 
@@ -273,7 +275,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const canvas = baseStageRef.current?.getCanvasElement();
     const transform = viewTransformRef.current; // Always get latest transform
     if (!canvas || !transform) {
-      console.warn('Cannot convert coordinates: canvas or transform not ready');
       return null; // Signal error to caller
     }
 
@@ -357,7 +358,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     const renderLoop = new RenderLoop();
     renderLoopRef.current = renderLoop;
-
+    console.log('Base render loop initialized');
     renderLoop.start({
       stageRef: baseStageRef,
       getView: () => viewTransformRef.current,
@@ -433,6 +434,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     return () => {
       if (initialRenderTimeout) {
+        console.log('Clearing initial render timeout');
         clearTimeout(initialRenderTimeout);
       }
       renderLoop.stop();

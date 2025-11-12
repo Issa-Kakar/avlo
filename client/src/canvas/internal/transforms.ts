@@ -9,8 +9,6 @@
  * ctx.scale(scale, scale) THEN ctx.translate(-pan.x, -pan.y)
  * This composes to: canvasPoint = (worldPoint - pan) × scale
  *
- * Note: IMPLEMENTATION.MD Phase 3.2 incorrectly says "Add pan offset"
- * but OVERVIEW.MD is authoritative and specifies subtract pan.
  *
  * @module canvas/internal/transforms
  */

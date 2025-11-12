@@ -18,6 +18,6 @@ bucket_name = "avlo-docs"
 tag = "v1"
 new_sqlite_classes = ["RoomDurableObject"]
 
-# Development settings
+# # Development settings
 [dev]
 port = 3000
