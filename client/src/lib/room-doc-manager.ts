@@ -21,11 +21,7 @@ import type {
   RoomId,
   Snapshot,
   PresenceView,
-  Stroke,
-  TextBlock,
   Output,
-  StrokeView,
-  TextView,
   ViewTransform,
   SnapshotMeta,
   RoomStats,
@@ -38,7 +34,9 @@ import {
   BrowserFrameScheduler,
   TimingOptions,
 } from './timing-abstractions';
-import { RBushSpatialIndex } from '@avlo/shared';
+import { ObjectSpatialIndex } from '@avlo/shared';
+import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
+import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
 
 // Type for unsubscribe function
 type Unsub = () => void;
@@ -47,11 +45,8 @@ type Unsub = () => void;
 // CRITICAL: Y.Map's generic parameter doesn't define the value shape
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
-type YStrokes = Y.Array<Stroke>;
-type YTexts = Y.Array<TextBlock>;
 type YCode = Y.Map<unknown>;
 type YOutputs = Y.Array<Output>;
-type YSceneTicks = Y.Array<number>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
@@ -235,29 +230,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private _onAwarenessUpdate: ((event: any) => void) | null = null;
   private _onWebSocketStatus: ((event: { status: string }) => void) | null = null;
 
-  // Array observer functions for cleanup
-  private _strokesObserver: ((event: Y.YArrayEvent<any>) => void) | null = null;
-  private _textsObserver: ((event: Y.YArrayEvent<any>) => void) | null = null;
-
   // ============================================================
   // TWO-EPOCH ARCHITECTURE: Minimal State
   // ============================================================
 
-  // Authoritative registries (flat maps, no scene filtering)
-  private strokesById = new Map<string, StrokeView>();
-  private textsById = new Map<string, TextView>();
-
-  // Spatial index (rebuilt once, then updated incrementally)
-  private spatialIndex: RBushSpatialIndex | null = null;
-
-  // Epoch flag (triggers full rebuild)
-  private needsSpatialRebuild = true;
-
-  // Track previous scene for change detection
-  private prevScene: number = 0;
-
-  // Track whether array observers have been attached
-  private _arraysObserved: boolean = false;
+  // NEW: Y.Map-based object storage
+  private objectsById = new Map<string, ObjectHandle>();
+  private spatialIndex: ObjectSpatialIndex | null = null;  // Created ONCE in buildSnapshot
+  private dirtyRects: WorldBounds[] = [];
+  private cacheEvictIds = new Set<string>();
+  private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
+  private needsSpatialRebuild = true;  // Start true, goes false after first hydration
 
   constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
     this.roomId = roomId;
@@ -308,7 +291,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
-    // NOTE: setupArrayObservers() will be called after Y.js structures are initialized
+    // NOTE: setupObjectsObserver() will be called after Y.js structures are initialized
     // to prevent errors when structures don't exist yet
 
     // Initialize throttled presence updates (30Hz = ~33ms)
@@ -322,7 +305,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL FIX: Attach IDB FIRST before creating any structures
     // This prevents race condition where fresh containers overwrite persisted ones
     this.initializeIndexedDBProvider();
-
     // Initialize WebSocket provider (Phase 6C)
     this.initializeWebSocketProvider();
 
@@ -345,7 +327,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
       // Now that structures exist (either from IDB/WS or freshly initialized),
       // it's safe to attach array observers for incremental updates
-      this.setupArrayObservers();
+      this.setupObjectsObserver();
 
       // Attach UndoManager after observers are set up
       this.attachUndoManager();
@@ -376,56 +358,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return meta as YMeta;
   }
 
-  private getSceneTicks(): YSceneTicks {
-    const meta = this.getMeta();
-    const ticks = meta.get('scene_ticks');
-    if (!(ticks instanceof Y.Array)) {
-      throw new Error('Scene ticks structure corrupted');
-    }
-    return ticks as YSceneTicks;
-  }
 
-  private getStrokes(): YStrokes {
-    const strokes = this.getRoot().get('strokes');
-    if (!(strokes instanceof Y.Array)) {
-      throw new Error('Strokes structure corrupted');
+  private getObjects(): Y.Map<Y.Map<any>> {
+    const root = this.getRoot();
+    const objects = root.get('objects');
+    if (!(objects instanceof Y.Map)) {
+      throw new Error('objects map not initialized');
     }
-    return strokes as YStrokes;
-  }
-
-  private getTexts(): YTexts {
-    const texts = this.getRoot().get('texts');
-    if (!(texts instanceof Y.Array)) {
-      throw new Error('Texts structure corrupted');
-    }
-    return texts as YTexts;
-  }
-
-  private getCode(): YCode {
-    const code = this.getRoot().get('code');
-    if (!(code instanceof Y.Map)) {
-      throw new Error('Code structure corrupted');
-    }
-    return code as YCode;
-  }
-
-  private getOutputs(): YOutputs {
-    const outputs = this.getRoot().get('outputs');
-    if (!(outputs instanceof Y.Array)) {
-      throw new Error('Outputs structure corrupted');
-    }
-    return outputs as YOutputs;
-  }
-
-  // Helper to get current scene
-  private getCurrentScene(): number {
-    const sceneTicks = this.getSceneTicks();
-    // Debug: sceneTicks length is the current scene
-    // AUDIT NOTE: Scene can never be negative by construction (array.length is always >= 0)
-    // Empty filtered stroke/text arrays are handled correctly by renderers
-    const scene = sceneTicks.length;
-    // Scene determined from scene ticks length
-    return scene;
+    return objects as Y.Map<Y.Map<any>>;
   }
 
   /**
@@ -438,13 +378,10 @@ class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
-    const root = this.getRoot();
-    const strokes = root.get('strokes') as Y.Array<any>;
-    const texts = root.get('texts') as Y.Array<any>;
+    const objects = this.getObjects();
 
-    // Create UndoManager scoped to strokes and texts
-    // Only track transactions with our userId as origin
-    this.undoManager = new Y.UndoManager([strokes, texts], {
+    // Track changes to objects map
+    this.undoManager = new Y.UndoManager([objects], {
       trackedOrigins: new Set([this.userId]),
       captureTimeout: 500, // Merge rapid changes within 500ms
     });
@@ -755,32 +692,21 @@ class RoomDocManagerImpl implements IRoomDocManager {
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
 
-      // Initialize schema version (CRITICAL: Required per OVERVIEW.MD line 235)
-      if (!root.has('v')) {
-        root.set('v', 1); // Schema version for future migrations
-      }
+      // Bump schema version for Y.Map migration
+      root.set('v', 2);
 
-      // Initialize meta if not present
+      // Keep meta
       if (!root.has('meta')) {
         const meta = new Y.Map();
-        const sceneTicks = new Y.Array<number>();
-        meta.set('scene_ticks', sceneTicks);
-        // Canvas reference is optional per OVERVIEW.MD
-        // meta.set('canvas', { baseW: 1920, baseH: 1080 }); // Optional
         root.set('meta', meta);
       }
 
-      // Initialize strokes array
-      if (!root.has('strokes')) {
-        root.set('strokes', new Y.Array<Stroke>());
+      // NEW: Create objects map instead of arrays
+      if (!root.has('objects')) {
+        root.set('objects', new Y.Map());
       }
 
-      // Initialize texts array
-      if (!root.has('texts')) {
-        root.set('texts', new Y.Array<TextBlock>());
-      }
-
-      // Initialize code cell
+      // Keep code and outputs for now (future migration)
       if (!root.has('code')) {
         const code = new Y.Map();
         code.set('lang', 'javascript');
@@ -789,7 +715,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
         root.set('code', code);
       }
 
-      // Initialize outputs array with enforcement wrapper
       if (!root.has('outputs')) {
         root.set('outputs', new Y.Array<Output>());
       }
@@ -805,72 +730,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Step 4: Add output with size enforcement
-  private addOutput(output: Output): void {
-    const outputs = this.getOutputs();
-
-    // Validate single output size
-    const outputSize = new TextEncoder().encode(output.text).length;
-    if (outputSize > TEXT_CONFIG.MAX_OUTPUT_BYTES_PER_RUN) {
-      throw new Error(`Output exceeds ${TEXT_CONFIG.MAX_OUTPUT_BYTES_PER_RUN} bytes limit`);
-    }
-
-    this.ydoc.transact(() => {
-      // Add new output
-      outputs.push([output]);
-
-      // Enforce max count (keep last N)
-      while (outputs.length > TEXT_CONFIG.MAX_OUTPUTS_COUNT) {
-        outputs.delete(0, 1);
-      }
-
-      // Validate total size
-      let totalSize = 0;
-      for (const out of outputs) {
-        totalSize += new TextEncoder().encode(out.text).length;
-      }
-
-      // If total exceeds limit, remove oldest until under limit
-      while (totalSize > TEXT_CONFIG.MAX_TOTAL_OUTPUT_BYTES && outputs.length > 0) {
-        const removed = outputs.get(0);
-        if (removed) {
-          totalSize -= new TextEncoder().encode(removed.text).length;
-        }
-        outputs.delete(0, 1);
-      }
-    }, 'add-output');
-  }
 
   // Step 6: Validate structure integrity
-  private validateStructure(): boolean {
-    try {
-      const root = this.getRoot();
-
-      // Check all required structures exist
-      if (!root.has('meta')) return false;
-      if (!root.has('strokes')) return false;
-      if (!root.has('texts')) return false;
-      if (!root.has('code')) return false;
-      if (!root.has('outputs')) return false;
-
-      // Validate meta structure
-      const meta = this.getMeta();
-      if (!meta.has('scene_ticks')) return false;
-
-      // Validate scene_ticks is array
-      const sceneTicks = meta.get('scene_ticks');
-      if (!(sceneTicks instanceof Y.Array)) return false;
-
-      // Validate code structure
-      const code = this.getCode();
-      if (!code.has('lang')) return false;
-      if (!code.has('body')) return false;
-      if (!code.has('version')) return false;
-
-      return true;
-    } catch {
-      return false;
-    }
-  }
 
   // Subscription methods
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
@@ -1194,30 +1055,15 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // is an arrow function property with stable identity (see setupObservers)
     this.ydoc.off('update', this.handleYDocUpdate);
 
-    // Remove Y.Array observers (Phase 2: RBush)
-    if (this._strokesObserver) {
+    // Remove objects observer
+    if (this.objectsObserver) {
       try {
-        const root = this.getRoot();
-        const strokes = root.get('strokes');
-        if (strokes instanceof Y.Array) {
-          strokes.unobserve(this._strokesObserver);
-        }
+        const objects = this.getObjects();
+        objects.unobserveDeep(this.objectsObserver);
       } catch {
         // Ignore errors during cleanup
       }
-      this._strokesObserver = null;
-    }
-    if (this._textsObserver) {
-      try {
-        const root = this.getRoot();
-        const texts = root.get('texts');
-        if (texts instanceof Y.Array) {
-          texts.unobserve(this._textsObserver);
-        }
-      } catch {
-        // Ignore errors during cleanup
-      }
-      this._textsObserver = null;
+      this.objectsObserver = null;
     }
 
     // Clean up spatial index
@@ -1226,9 +1072,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex = null;
     }
 
-    // Clear maps
-    this.strokesById.clear();
-    this.textsById.clear();
+    // Clear object maps
+    this.objectsById.clear();
 
     // Clear subscriptions
     this.snapshotSubscribers.clear();
@@ -1293,11 +1138,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
           createdAt: Date.now(), // fresh timestamp
         };
 
-        // Dev parity with buildSnapshot(): freeze the top-level object
-        if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-          Object.freeze(snap);
-        }
-
         this.publishSnapshot(snap); // sets current + notifies subscribers
         this.publishState.presenceDirty = false;
 
@@ -1339,253 +1179,184 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
   // PART 2: Array Observers (Direct Updates, No Journals)
   // ============================================================
-  private setupArrayObservers(): void {
-    // Idempotent - only attach once
-    if (this._arraysObserved) return;
+  private setupObjectsObserver(): void {
+    if (this.objectsObserver) return; // idempotent
 
-    const root = this.getRoot();
-    const strokes = root.get('strokes');
-    const texts = root.get('texts');
+    const objects = this.getObjects();
 
-    // Hard assert: structures must exist
-    if (!(strokes instanceof Y.Array) || !(texts instanceof Y.Array)) {
-      throw new Error('setupArrayObservers(): structures not initialized');
+    this.objectsObserver = (events, tx) => {
+      // CRITICAL: Ignore during rebuild epoch
+      if (this.needsSpatialRebuild) return;
+
+      const touchedIds = new Set<string>();
+      const deletedIds = new Set<string>();
+      const textOnlyIds = new Set<string>();
+
+      for (const ev of events) {
+        // Top-level object adds/deletes
+        if (ev.target === objects && ev instanceof Y.YMapEvent) {
+          for (const [key, change] of ev.changes.keys) {
+            const id = String(key);
+            if (change.action === 'delete') {
+              deletedIds.add(id);
+            } else {
+              touchedIds.add(id);
+            }
+          }
+          continue;
+        }
+
+        // Nested changes - path[0] is object ID
+        const path = ev.path as (string | number)[];
+        const id = String(path[0] ?? '');
+        if (!id) continue;
+
+        touchedIds.add(id);
+
+        // Track text-only changes for optimization
+        if (ev instanceof Y.YTextEvent) {
+          const field = String(path[1] ?? '');
+          if (field === 'text' || field === 'label') {
+            textOnlyIds.add(id);
+          }
+        }
+      }
+
+      if (touchedIds.size === 0 && deletedIds.size === 0) return;
+
+      this.applyObjectChanges({ touchedIds, deletedIds, textOnlyIds });
+      // No need to set isDirty - handleYDocUpdate already does that
+    };
+
+    objects.observeDeep(this.objectsObserver);
+    // needsSpatialRebuild is already true from initialization
+  }
+
+  private applyObjectChanges(args: {
+    touchedIds: Set<string>;
+    deletedIds: Set<string>;
+    textOnlyIds: Set<string>;
+  }): void {
+    const { touchedIds, deletedIds, textOnlyIds } = args;
+    const objects = this.getObjects();
+
+    // Process deletions
+    for (const id of deletedIds) {
+      const handle = this.objectsById.get(id);
+      if (!handle) continue;
+
+      // Update spatial index
+      if (this.spatialIndex) {
+        this.spatialIndex.remove(id, handle.bbox);
+      }
+
+      // Track for cache eviction
+      this.cacheEvictIds.add(id);
+
+      // Mark dirty
+      this.dirtyRects.push(bboxToBounds(handle.bbox));
+
+      // Remove from registry
+      this.objectsById.delete(id);
     }
 
-    // ——— STROKES OBSERVER ———
-    this._strokesObserver = (event: Y.YArrayEvent<any>) => {
-      // CRITICAL: Ignore incremental updates during rebuild epoch
-      // The upcoming rebuild will rehydrate from Y fresh
-      if (this.needsSpatialRebuild) return;
+    // Process additions/updates
+    for (const id of touchedIds) {
+      const yObj = objects.get(id);
+      if (!yObj) continue;
 
-      // Process INSERTS from delta
-      for (const delta of event.changes.delta) {
-        if ('insert' in delta) {
-          const items = delta.insert as any[];
-          for (const raw of items) {
-            // Build StrokeView once
-            const view: StrokeView = {
-              id: raw.id,
-              points: raw.points,
-              pointsTuples: raw.pointsTuples ?? null,
-              polyline: null, // Built at render time
-              style: {
-                color: raw.color,
-                size: raw.size,
-                opacity: raw.opacity,
-                tool: raw.tool,
-              },
-              bbox: raw.bbox,
-              scene: raw.scene,
-              createdAt: raw.createdAt,
-              userId: raw.userId,
-              kind: raw.kind ?? 'shape',
-            };
+      const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
+      const prev = this.objectsById.get(id);
+      const oldBBox = prev?.bbox ?? null;
 
-            // Update map
-            this.strokesById.set(view.id, view);
+      // Compute new bbox
+      const newBBox = computeBBoxFor(kind, yObj);
 
-            // Update spatial index (O(log N))
-            if (this.spatialIndex) {
-              this.spatialIndex.insertStroke(view);
-            }
-          }
+      const handle: ObjectHandle = {
+        id,
+        kind,
+        y: yObj,
+        bbox: newBBox
+      };
+
+      this.objectsById.set(id, handle);
+
+      // Update spatial index (already exists from buildSnapshot)
+      if (this.spatialIndex) {
+        if (oldBBox) {
+          this.spatialIndex.update(id, oldBBox, newBBox, kind);
+        } else {
+          this.spatialIndex.insert(id, newBBox, kind);
         }
       }
 
-      // Process DELETES from changes.deleted
-      // CRITICAL: Y.js gives us the actual deleted items via getContent()
-      const deleted = event.changes.deleted as Set<any>;
-      deleted.forEach((item: any) => {
-        const content = item?.content;
-        if (!content || typeof content.getContent !== 'function') return;
+      // Handle cache and dirty rects
+      const textOnly = textOnlyIds.has(id);
 
-        const removedItems = content.getContent() as any[];
-        for (const raw of removedItems) {
-          const id = raw?.id;
-          if (!id) continue;
+      if (!oldBBox) {
+        // New object
+        this.dirtyRects.push(bboxToBounds(newBBox));
+      } else {
+        const bboxChanged = !bboxEquals(oldBBox, newBBox);
 
-          // Update map
-          this.strokesById.delete(id);
-
-          // Update spatial index (O(log N))
-          if (this.spatialIndex) {
-            this.spatialIndex.removeById(id);
-          }
-        }
-      });
-
-      // publishState.isDirty already set by Y.Doc 'update' handler
-    };
-    strokes.observe(this._strokesObserver);
-
-    // ——— TEXTS OBSERVER (same pattern) ———
-    this._textsObserver = (event: Y.YArrayEvent<any>) => {
-      if (this.needsSpatialRebuild) return;
-
-      // Process INSERTS
-      for (const delta of event.changes.delta) {
-        if ('insert' in delta) {
-          const items = delta.insert as any[];
-          for (const raw of items) {
-            const view: TextView = {
-              id: raw.id,
-              x: raw.x,
-              y: raw.y,
-              w: raw.w,
-              h: raw.h,
-              content: raw.content,
-              color: raw.color,
-              size: raw.size,
-              scene: raw.scene,
-              createdAt: raw.createdAt,
-              userId: raw.userId,
-            };
-
-            this.textsById.set(view.id, view);
-
-            if (this.spatialIndex) {
-              this.spatialIndex.insertText(view);
-            }
+        if (bboxChanged) {
+          // Geometry changed (INCLUDING width changes since bbox includes width!)
+          this.cacheEvictIds.add(id);
+          this.dirtyRects.push(bboxToBounds(oldBBox));
+          this.dirtyRects.push(bboxToBounds(newBBox));
+        } else {
+          // Style-only change (color, opacity) - bbox unchanged
+          if (!textOnly) {
+            this.dirtyRects.push(bboxToBounds(newBBox));
           }
         }
       }
-
-      // Process DELETES
-      const deleted = event.changes.deleted as Set<any>;
-      deleted.forEach((item: any) => {
-        const content = item?.content;
-        if (!content || typeof content.getContent !== 'function') return;
-
-        const removedItems = content.getContent() as any[];
-        for (const raw of removedItems) {
-          const id = raw?.id;
-          if (!id) continue;
-
-          this.textsById.delete(id);
-
-          if (this.spatialIndex) {
-            this.spatialIndex.removeById(id);
-          }
-        }
-      });
-    };
-    texts.observe(this._textsObserver);
-
-    // Mark attached
-    this._arraysObserved = true;
-
-    // Force one rebuild on first attach
-    this.needsSpatialRebuild = true;
-    this.publishState.isDirty = true;
-    console.log('setupArrayObservers: arrays observed');
+    }
   }
 
   // ============================================================
   // PART 3: Rebuild Epoch (Hydrate from Y.Arrays)
   // ============================================================
 
-  private hydrateViewsFromY(): void {
-    // Clear all maps
-    this.strokesById.clear();
-    this.textsById.clear();
+  private hydrateObjectsFromY(): void {
+    const objects = this.getObjects();
 
-    // Walk Y.Arrays once, build each view exactly once
-    const yStrokes = this.getStrokes();
-    for (let i = 0; i < yStrokes.length; i++) {
-      const raw = yStrokes.get(i);
+    // Reset everything EXCEPT spatial index (already created in buildSnapshot)
+    this.objectsById.clear();
+    if (this.spatialIndex) {
+      this.spatialIndex.clear();
+    }
+    // Clear dirty tracking - this is a full rebuild
+    this.dirtyRects.length = 0;
+    this.cacheEvictIds.clear();
 
-      const view: StrokeView = {
-        id: raw.id,
-        points: raw.points,
-        pointsTuples: raw.pointsTuples ?? null,
-        polyline: null,
-        style: {
-          color: raw.color,
-          size: raw.size,
-          opacity: raw.opacity,
-          tool: raw.tool,
-        },
-        bbox: raw.bbox,
-        scene: raw.scene,
-        createdAt: raw.createdAt,
-        userId: raw.userId,
-        kind: raw.kind ?? 'shape',
-      };
+    // Build handles from Y.Doc
+    const handles: ObjectHandle[] = [];
+    objects.forEach((yObj, key) => {
+      const id = String(key);
+      const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
+      const bbox = computeBBoxFor(kind, yObj);
 
-      this.strokesById.set(view.id, view);
+      const handle: ObjectHandle = { id, kind, y: yObj, bbox };
+      this.objectsById.set(id, handle);
+      handles.push(handle);
+    });
+
+    // Bulk load spatial index
+    if (this.spatialIndex && handles.length > 0) {
+      this.spatialIndex.bulkLoad(handles);
     }
 
-    const yTexts = this.getTexts();
-    for (let i = 0; i < yTexts.length; i++) {
-      const raw = yTexts.get(i);
-
-      const view: TextView = {
-        id: raw.id,
-        x: raw.x,
-        y: raw.y,
-        w: raw.w,
-        h: raw.h,
-        content: raw.content,
-        color: raw.color,
-        size: raw.size,
-        scene: raw.scene,
-        createdAt: raw.createdAt,
-        userId: raw.userId,
-      };
-
-      this.textsById.set(view.id, view);
-    }
+    // No need to set isDirty - buildSnapshot will handle publishing
   }
 
-  private rebuildSpatialIndexFromViews(): void {
-    if (!this.spatialIndex) {
-      this.spatialIndex = new RBushSpatialIndex();
-    }
-
-    this.spatialIndex.clear();
-
-    // BulkLoad from current maps (NOT from snapshot arrays)
-    // This is RDM-owned, only called during rebuild epoch
-    const strokes = Array.from(this.strokesById.values());
-    const texts = Array.from(this.textsById.values());
-
-    this.spatialIndex.bulkLoad(strokes, texts);
-  }
+  // rebuildSpatialIndexFromViews no longer needed - integrated into hydrateObjectsFromY
 
   // ============================================================
   // PART 5: Snapshot Composition (Arrays = Derived Outputs)
   // ============================================================
 
-  private composeSnapshotFromMaps(): Snapshot {
-    const currentScene = this.getCurrentScene();
-
-    // Filter maps by current scene for snapshot arrays
-    const strokes = Array.from(this.strokesById.values()).filter(s => s.scene === currentScene);
-    const texts = Array.from(this.textsById.values()).filter(t => t.scene === currentScene);
-
-    // Build metadata with proper type
-    const meta: SnapshotMeta = {
-      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
-      readOnly: this.roomStats?.bytes
-        ? this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES
-        : false,
-      bytes: this.roomStats?.bytes,
-      expiresAt: this.roomStats?.expiresAt,
-    };
-
-    return {
-      docVersion: this.docVersion,
-      scene: currentScene,
-      strokes, // Order unspecified - renderer sorts by ID before drawing
-      texts,
-      presence: this.buildPresenceView(),
-      spatialIndex: this.spatialIndex, // Live index, not cloned
-      view: this.getViewTransform(),
-      meta,
-      createdAt: Date.now(),
-    };
-  }
+  // composeSnapshotFromMaps no longer needed - integrated into buildSnapshot
 
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
@@ -1617,7 +1388,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Y.Doc updated
     // Just mark dirty - RAF will handle publishing
     this.publishState.isDirty = true;
-
+    
     // Store update for metrics (keep ring buffer, it's useful)
     if (this.publishState.pendingUpdates) {
       this.publishState.pendingUpdates.push({
@@ -1656,7 +1427,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
           console.log('IndexedDB whenSynced resolved');
         })
         .catch((err: unknown) => {
-          console.log('[RoomDocManager] IDB sync error (non-critical):', err);
+          console.error('[RoomDocManager] IDB sync error (non-critical):', err);
           // Still open gate on error - fallback to empty doc
           this.handleIDBReady(); // Use unified handler
         });
@@ -1664,7 +1435,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Note: No need to listen for 'synced' event to mark dirty
       // Y.Doc updates from IDB will trigger the existing doc update handler
     } catch (err: unknown) {
-      console.log('[RoomDocManager] IDB initialization failed (non-critical):', err);
+      console.error('[RoomDocManager] IDB initialization failed (non-critical):', err);
       // Mark as failed but continue
       this.handleIDBReady(); // Use unified handler
     }
@@ -1805,11 +1576,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
         } else if (event.status === 'disconnected') {
           // Close connection gates if they're open
           if (this.gates.wsConnected) {
-            console.log('WS disconnected, closing gate');
             this.closeGate('wsConnected');
           }
           if (this.gates.wsSynced) {
-            console.log('WS disconnected, closing gate');
             this.closeGate('wsSynced');
           }
 
@@ -1918,7 +1687,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private closeGate(gateName: keyof typeof this.gates): void {
-    console.log('Closing gate:', gateName);
     if (!this.gates[gateName]) return; // Already closed
 
     this.gates[gateName] = false;
@@ -1954,7 +1722,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         try {
           cb(currentGates);
         } catch (err) {
-          console.log('Error in gate subscriber:', err);
+          console.error('Error in gate subscriber:', err);
         }
       });
       this.gateDebounceTimer = null;
@@ -1963,13 +1731,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
     if (this.gates[gateName]) {
-      console.log('Gate already open:', gateName);
       return Promise.resolve();
     }
 
     return new Promise((resolve) => {
       if (!this.gateCallbacks.has(gateName)) {
-        console.log('Setting new gate callback:', gateName);
         this.gateCallbacks.set(gateName, new Set());
       }
       this.gateCallbacks.get(gateName)!.add(resolve);
@@ -1982,13 +1748,11 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   public isIndexedDBReady(): boolean {
-    console.log('Checking if IDB is ready:', this.gates.idbReady);
     return this.gates.idbReady;
   }
 
   // Phase 6C: Room stats support
   private updateRoomStats(stats: RoomStats | null): void {
-    console.log('Updating room stats:', stats);
     this.roomStats = stats;
 
     // Notify subscribers
@@ -1997,7 +1761,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Update read-only state if needed
     if (stats && stats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
       // Room is read-only due to size
-      console.log('[RoomDocManager] Room is read-only due to size limit');
     }
   }
 
@@ -2027,60 +1790,63 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   private buildSnapshot(): Snapshot {
-    // Early return if not initialized
     const root = this.getRoot();
     const meta = root.get('meta') as Y.Map<unknown> | undefined;
-    if (!meta) {
+    const objects = root.get('objects') as Y.Map<Y.Map<any>> | undefined;
+
+    // Guard: structures must exist
+    if (!meta || !objects) {
       return this._currentSnapshot;
     }
 
-    // Ensure spatial index exists
+    // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
-      this.spatialIndex = new RBushSpatialIndex();
-      this.needsSpatialRebuild = true;
+      this.spatialIndex = new ObjectSpatialIndex();
+      // needsSpatialRebuild is already true from initialization
     }
 
-    // Detect scene change (triggers rebuild)
-    const currentScene = this.getCurrentScene();
-    if (this.prevScene !== currentScene) {
-      this.needsSpatialRebuild = true;
-      this.prevScene = currentScene;
-    }
-
-    // ========== TWO-EPOCH BRANCHING ==========
-
+    // Two-epoch model: rebuild on first run or when flagged
     if (this.needsSpatialRebuild) {
-      // ——— REBUILD EPOCH ———
-      // Hydrate maps from Y.Arrays (ignores any stale incremental state)
-      this.hydrateViewsFromY();
-      console.log('Hydrated views from Y');
-      // BulkLoad RBush from freshly built maps
-      this.rebuildSpatialIndexFromViews();
-      console.log('Rebuilt spatial index from views');
-      // Reset flag
+      this.hydrateObjectsFromY();
       this.needsSpatialRebuild = false;
-      console.log('Reset spatial rebuild flag');
     }
 
-    // ——— STEADY-STATE EPOCH ———
-    // No else block needed!
-    // Observers already updated strokesById/textsById/spatialIndex incrementally
+    // Build dirty patch from accumulated changes
+    let dirtyPatch: DirtyPatch | null = null;
+    if (this.dirtyRects.length > 0 || this.cacheEvictIds.size > 0) {
+      dirtyPatch = {
+        rects: this.dirtyRects.splice(0),
+        evictIds: Array.from(this.cacheEvictIds)
+      };
+      this.cacheEvictIds.clear();
+    }
 
-    // Compose snapshot from current maps
-    const snapshot = this.composeSnapshotFromMaps();
-    console.log('Composed snapshot from maps');
-    // Open G_FIRST_SNAPSHOT gate if needed
+    const metaData: SnapshotMeta = {
+      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
+      readOnly: this.roomStats?.bytes
+        ? this.roomStats.bytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES
+        : false,
+      bytes: this.roomStats?.bytes,
+      expiresAt: this.roomStats?.expiresAt,
+    };
+
+    const snap: Snapshot = {
+      docVersion: this.docVersion,
+      objectsById: this.objectsById,
+      spatialIndex: this.spatialIndex,
+      presence: this.buildPresenceView(),
+      view: this.getViewTransform(),
+      meta: metaData,
+      createdAt: Date.now(),
+      dirtyPatch,
+    } as Snapshot;
+
+    // Open first snapshot gate if applicable
     if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
       this.openGate('firstSnapshot');
-      console.log('Opened first snapshot gate');
     }
 
-    // Optional: Freeze top-level only in development (not deep freeze)
-    if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-      return Object.freeze(snapshot);
-    }
-
-    return snapshot;
+    return snap;
   }
 
 

@@ -404,33 +404,20 @@ export class DrawingTool {
     try {
       this.room.mutate((ydoc) => {
         const root = ydoc.getMap('root');
-        const strokes = root.get('strokes') as Y.Array<any>;
-        const meta = root.get('meta') as Y.Map<any>;
+        const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
-        const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
-        if (!sceneTicks) {
-          console.error('CRITICAL: scene_ticks not initialized - Phase 2 implementation is broken');
-          return;
-        }
+        const strokeMap = new Y.Map();
+        strokeMap.set('id', strokeId);
+        strokeMap.set('kind', 'stroke');
+        strokeMap.set('tool', this.state.config.tool);
+        strokeMap.set('color', this.state.config.color);
+        strokeMap.set('width', this.state.config.size);  // Renamed from 'size' to 'width' per migration spec
+        strokeMap.set('opacity', this.state.config.opacity);
+        strokeMap.set('points', canonicalTuples);  // Store as tuples (no more flat arrays)
+        strokeMap.set('ownerId', userId);
+        strokeMap.set('createdAt', Date.now());
 
-        const currentScene = sceneTicks.length;
-
-        strokes.push([
-          {
-            id: strokeId,
-            tool: this.state.config.tool,
-            color: this.state.config.color,
-            size: this.state.config.size,
-            opacity: this.state.config.opacity,
-            points: rawPoints,              // Raw flat centerline (backward compat)
-            pointsTuples: canonicalTuples,  // CRITICAL: Canonical PF tuples (authoritative for rendering)
-            bbox: finalBbox,
-            scene: currentScene,
-            createdAt: Date.now(),
-            userId,
-            kind: 'freehand',
-          },
-        ]);
+        objects.set(strokeId, strokeMap);
       });
     } catch (err) {
       console.error('Failed to commit stroke:', err);
@@ -565,28 +552,24 @@ export class DrawingTool {
       return;
     }
 
-    // Commit as regular stroke
-    const strokeId = ulid();
+    // Commit as shape object
+    const shapeId = ulid();
     this.room.mutate((ydoc) => {
       const root = ydoc.getMap('root');
-      const strokes = root.get('strokes') as Y.Array<any>;
-      const meta = root.get('meta') as Y.Map<any>;
-      const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
-      const currentScene = sceneTicks.length;
+      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
-      strokes.push([{
-        id: strokeId,
-        tool: this.state.config.tool,
-        color: this.state.config.color,
-        size: this.state.config.size,
-        opacity: this.state.config.opacity,
-        points,  // Generated polyline
-        bbox,    // Computed at commit
-        scene: currentScene,
-        createdAt: Date.now(),
-        userId: this.userId,
-        kind: 'shape', // NEW: explicit semantic flag
-      }]);
+      const shapeMap = new Y.Map();
+      shapeMap.set('id', shapeId);
+      shapeMap.set('kind', 'shape');
+      shapeMap.set('shapeType', this.snap!.kind);  // Store the shape type
+      shapeMap.set('strokeColor', this.state.config.color);
+      shapeMap.set('strokeWidth', this.state.config.size);
+      shapeMap.set('opacity', this.state.config.opacity);
+      shapeMap.set('frame', bbox ? [bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]] : [0, 0, 0, 0]);  // Convert bbox to frame [x, y, w, h]
+      shapeMap.set('ownerId', this.userId);
+      shapeMap.set('createdAt', Date.now());
+
+      objects.set(shapeId, shapeMap);
     });
 
     // Invalidate and reset

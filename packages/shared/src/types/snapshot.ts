@@ -1,70 +1,27 @@
-import { SceneIdx, StrokeId, TextId } from './identifiers';
 import { PresenceView } from './awareness';
 import { ROOM_CONFIG } from '../config';
+import { ObjectHandle, DirtyPatch } from './objects';
 
-// Forward declare the SpatialIndex interface
-export interface SpatialIndex {
-  queryCircle(cx: number, cy: number, radius: number): ReadonlyArray<StrokeView>;
-  queryRect(minX: number, minY: number, maxX: number, maxY: number): ReadonlyArray<StrokeView>;
-  getAllStrokes(): ReadonlyArray<StrokeView>;
+// Forward declare the ObjectSpatialIndex interface
+export interface ObjectSpatialIndex {
+  insert(id: string, bbox: [number, number, number, number], kind: string): void;
+  update(id: string, oldBBox: [number, number, number, number], newBBox: [number, number, number, number], kind: string): void;
+  remove(id: string, bbox: [number, number, number, number]): void;
+  query(bounds: { minX: number; minY: number; maxX: number; maxY: number }): any[];
+  bulkLoad(handles: ObjectHandle[]): void;
+  clear(): void;
 }
 
 // Immutable snapshot - NEVER null
 export interface Snapshot {
-  docVersion: number; // Incremental version, replaces svKey
-  scene: SceneIdx; // Current scene index
-  strokes: ReadonlyArray<StrokeView>;
-  texts: ReadonlyArray<TextView>;
-  presence: PresenceView; // Derived + smoothed presence
-  spatialIndex: SpatialIndex | null; // Spatial index for efficient hit-testing
-  view: ViewTransform; // World-to-canvas transform
+  docVersion: number;
+  objectsById: ReadonlyMap<string, ObjectHandle>;  // Live references
+  spatialIndex: ObjectSpatialIndex | null;
+  presence: PresenceView;
+  view: ViewTransform;
   meta: SnapshotMeta;
-  createdAt: number; // ms epoch when snapshot was frozen
-}
-
-// Stroke view for rendering
-export interface StrokeView {
-  id: StrokeId;
-  points: ReadonlyArray<number>; // Raw points from Y.Doc (stored as number[], never Float32Array)
-  pointsTuples?: [number, number][] | null; // NEW: Add this line
-  polyline: Float32Array | null; // Built at RENDER time ONLY from points
-  // Will be null in snapshot, created during canvas render from points
-  style: {
-    color: string;
-    size: number;
-    opacity: number;
-    tool: 'pen' | 'highlighter';
-  };
-  bbox: [number, number, number, number];
-  scene: SceneIdx; // Scene where stroke was committed (assigned at commit time using currentScene)
   createdAt: number;
-  userId: string;
-  /**
-   * Same semantic flag as in Stroke (copied through snapshot pipeline).
-   * Renderer maps kind -> geometry pipeline (polygon vs polyline).
-   */
-  kind: 'freehand' | 'shape';
-}
-
-// Text view for rendering
-export interface TextView {
-  id: TextId;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  content: string;
-  color: string; // Flattened for simpler access
-  size: number; // Flattened for simpler access
-  scene: SceneIdx; // Scene where text was committed (assigned at commit time using currentScene)
-  createdAt: number;
-  userId: string;
-}
-
-// Spatial index view
-export interface RBushIndexView {
-  // Legacy definition 
-  _tree?: any; // RBush internal structure
+  dirtyPatch?: DirtyPatch | null;
 }
 
 // View transform for coordinate conversion
@@ -85,11 +42,11 @@ export interface SnapshotMeta {
 
 // Empty snapshot constant shape
 export function createEmptySnapshot(): Snapshot {
-  return Object.freeze({
+  const emptyMap = new Map<string, ObjectHandle>();
+
+  const snapshot: Snapshot = {
     docVersion: 0, // Empty snapshot has version 0
-    scene: 0,
-    strokes: Object.freeze([]),
-    texts: Object.freeze([]),
+    objectsById: emptyMap,
     presence: {
       users: new Map(),
       localUserId: '',
@@ -106,5 +63,8 @@ export function createEmptySnapshot(): Snapshot {
       readOnly: false,
     },
     createdAt: Date.now(),
-  });
+    dirtyPatch: null,
+  };
+
+  return snapshot;
 }

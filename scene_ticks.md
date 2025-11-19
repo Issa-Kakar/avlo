@@ -90,48 +90,7 @@ if (this.prevScene !== currentScene) {
 ### New Clear Board Logic
 **File: `/home/issak/dev/avlo/client/src/hooks/useRoomIntegration.ts`**
 
-Replace `useClearScene` hook (lines 21-49) with new implementation:
-```typescript
-export function useClearScene(roomId: string | undefined) {
-  const clearScene = useCallback(() => {
-    if (!roomId) return;
-
-    const roomDoc = registry.acquire(roomId);
-    if (!roomDoc) return;
-
-    roomDoc.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const strokes = root.get('strokes') as Y.Array<any>;
-      const texts = root.get('texts') as Y.Array<any>;
-
-      // Get current user ID for per-user clear
-      const userId = userProfileManager.getIdentity().userId;
-
-      // Build indices of items to delete (in reverse order)
-      const strokeIndices: number[] = [];
-      const textIndices: number[] = [];
-
-      strokes.forEach((stroke, idx) => {
-        if (stroke.userId === userId) {
-          strokeIndices.push(idx);
-        }
-      });
-
-      texts.forEach((text, idx) => {
-        if (text.userId === userId) {
-          textIndices.push(idx);
-        }
-      });
-
-      // Delete in reverse order to preserve indices
-      strokeIndices.reverse().forEach(idx => strokes.delete(idx, 1));
-      textIndices.reverse().forEach(idx => texts.delete(idx, 1));
-    });
-  }, [roomId]);
-
-  return { clearScene };
-}
-```
+Stub: `useClearScene` hook (lines 21-49). Remove it but do not implement the clear board delete yet because we are migrating everything to using a Y.map in the future. So it will be pointless to implement it now. so just remove the scene ticks and stub it.
 
 **UPDATE UI Components:**
 - `/home/issak/dev/avlo/client/src/pages/components/Header.tsx` - No changes needed (uses hook)
@@ -153,9 +112,6 @@ export function useClearScene(roomId: string | undefined) {
 - ❌ REMOVE: Scene tick access (lines 307-308)
 - ❌ REMOVE: `scene: currentScene` from text block (line 320)
 
-**File: `/home/issak/dev/avlo/client/src/lib/tools/tool-pattern-example.ts`**
-- ❌ REMOVE: All scene-related code and comments (lines 25, 54-55, 66, 128-129, 140, 166-169)
-- ✏️ UPDATE: Clear board example to use deletion pattern
 
 ---
 
@@ -203,9 +159,6 @@ export function useClearScene(roomId: string | undefined) {
 **File: `/home/issak/dev/avlo/packages/shared/src/test-utils/generators.ts`**
 - ❌ REMOVE: `scene: 0` from test generators (line 28)
 
-### Add New Tests
-✅ ADD: Test for new clear board functionality (delete by userId)
-✅ ADD: Test for undo/redo with new clear mechanism
 
 ---
 
@@ -217,42 +170,6 @@ export function useClearScene(roomId: string | undefined) {
 
 ---
 
-## 9. MIGRATION STRATEGY
-
-### Phase 1: Type System & Core Changes
-1. Update all type definitions
-2. Modify RoomDocManager core methods
-3. Update snapshot composition
-
-### Phase 2: Tool Updates
-1. Remove scene assignment from DrawingTool
-2. Remove scene assignment from TextTool
-3. Update example patterns
-
-### Phase 3: Clear Board Implementation
-1. Implement new deletion-based clear
-2. Test undo/redo behavior
-3. Update UI hooks
-
-### Phase 4: Rendering Cleanup
-1. Remove scene change detection from render loops
-2. Remove scene-based cache invalidation
-3. Simplify Canvas.tsx snapshot handling
-
-### Phase 5: Test & Cleanup
-1. Update all tests
-2. Remove device UI store scene tracking
-3. Final cleanup and verification
-
----
-
-## 10. BENEFITS OF REMOVAL
-
-### Immediate Benefits
-- **Simpler codebase**: Remove ~200+ lines of scene management code
-- **Better UX**: Per-user clear with proper undo/redo
-- **Less state**: No scene tracking across components
-- **Cleaner types**: Remove SceneIdx type and scene fields
 
 ### Performance Benefits
 - **Fewer rebuilds**: No spatial index rebuild on scene change
@@ -265,14 +182,6 @@ export function useClearScene(roomId: string | undefined) {
 - **Better collaboration**: Users can clear their own work without affecting others
 
 ---
-
-## 11. RISKS & MITIGATIONS
-
-### Risk: Data Loss
-**Mitigation**: Yjs UndoManager already tracks deletions and can restore
-
-### Risk: Performance with Many Deletes
-**Mitigation**: Batch deletions in single transaction, delete in reverse order
 
 ### Risk: Breaking Existing Rooms
 **Mitigation**: This is development only, no production data
@@ -291,20 +200,4 @@ After implementation:
 - [ ] No performance regression
 
 ---
-
-## ESTIMATED EFFORT
-
-**Total Files to Modify**: ~25 files
-**Lines to Remove**: ~300-400 lines
-**Lines to Add**: ~50-100 lines (new clear implementation)
-**Complexity**: Medium (widespread but straightforward changes)
-**Time Estimate**: 2-3 hours for complete removal
-
----
-
-## NEXT STEPS
-
-1. Create a feature branch: `feature/remove-scene-ticks`
-2. Follow the migration phases in order
-3. Run tests after each phase
-4. Final validation with manual testing
+ 

@@ -107,7 +107,7 @@ export const STROKE_CONFIG = {
 
 export const CANVAS_STYLE_CONFIG = {
   // Background
-  BACKGROUND_COLOR: '#FFFFFF',
+  BACKGROUND_COLOR: '#f8f9fa',
 
   // Dot grid
   GRID_ENABLED: getEnvBoolean('GRID_ENABLED', false), // Toggle grid on/off
@@ -118,7 +118,7 @@ export const CANVAS_STYLE_CONFIG = {
   GRID_OPACITY_AT_025X: 0.12,
   GRID_OPACITY_AT_05X: 0.18,
   GRID_OPACITY_AT_1X: 0.90, // Much more subtle than original 0.6
-  GRID_OPACITY_AT_2X: 0.2,
+  GRID_OPACITY_AT_2X: 0.9,
 
   // Spacing tiers (at 100% zoom)
   GRID_SPACING_SUB_10: 8, // ≥ 2x zoom

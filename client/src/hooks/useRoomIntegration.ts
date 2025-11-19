@@ -17,31 +17,17 @@ export function useGates(roomId: string) {
 
 /**
  * Get clear scene function (optional, may be undefined)
+ * TODO: Implement per-user clear board with atomic delete of all objects tagged with userId
+ * This will be implemented when migrating to Y.Map structure
  */
 export function useClearScene(roomId: string) {
   const room = useRoomDoc(roomId);
 
   const clearScene = useCallback(() => {
-    // Phase 9: Safe check - if manager doesn't exist or doesn't have mutate, no-op
-    if (!room?.mutate) {
-      console.warn('Clear scene not available - room manager not ready');
-      return;
-    }
-
-    try {
-      room.mutate((ydoc) => {
-        const root = ydoc.getMap('root');
-        const meta = root.get('meta') as any;
-        if (meta) {
-          const sceneTicks = meta.get('scene_ticks') as any;
-          if (sceneTicks) {
-            sceneTicks.push([Date.now()]);
-          }
-        }
-      });
-    } catch (error) {
-      console.error('Failed to clear scene:', error);
-    }
+    // STUB: Scene ticks removed, clear board will be reimplemented with per-user deletion
+    console.warn('Clear board is currently disabled during migration to new architecture');
+    // TODO: Delete all strokes and texts with matching userId
+    // This requires the upcoming Y.Map migration
   }, [room]);
 
   // Return undefined if room is not available, making it optional

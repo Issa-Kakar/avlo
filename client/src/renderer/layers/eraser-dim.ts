@@ -1,8 +1,9 @@
 import type { Snapshot } from '@avlo/shared';
-import { getStrokeCacheInstance } from '../stroke-builder/stroke-cache';
+// TODO: Import object cache when Phase 6 is implemented
+// import { getObjectCacheInstance } from '../object-cache';
 
 /**
- * Draw dimmed strokes and text with a uniform white lighten effect.
+ * Draw dimmed objects with a uniform white lighten effect.
  * Uses 'screen' blend mode for consistent lightening regardless of color.
  */
 export function drawDimmedStrokes(
@@ -11,15 +12,16 @@ export function drawDimmedStrokes(
   snapshot: Snapshot,
   baseOpacity: number, // Will be 0.75 from EraserTool
 ): void {
+  // TODO: Implement with Y.Map objects in Phase 6
   const hitSet = new Set(hitIds);
-  const cache = getStrokeCacheInstance();
   const alpha = Math.max(0, Math.min(1, baseOpacity)); // Expect 0.75
 
   ctx.save();
 
-  // --- Strokes: lighten using proper geometry type ---
-  for (const stroke of snapshot.strokes) {
-    if (!hitSet.has(stroke.id)) continue;
+  // TODO: Iterate through objectsById and draw dimmed objects
+  /*
+  for (const [id, handle] of snapshot.objectsById) {
+    if (!hitSet.has(id)) continue;
 
     ctx.save();
     ctx.globalCompositeOperation = 'screen'; // Uniform lighten strategy
@@ -57,17 +59,7 @@ export function drawDimmedStrokes(
     ctx.restore();
   }
 
-  // --- Text: lighten block area uniformly ---
-  for (const text of snapshot.texts) {
-    if (!hitSet.has(text.id)) continue;
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(text.x, text.y, text.w, text.h);
-    ctx.restore();
-  }
+  */
 
   ctx.restore();
 }

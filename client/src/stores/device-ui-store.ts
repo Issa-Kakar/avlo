@@ -42,9 +42,6 @@ interface DeviceUIState {
   isColorPopoverOpen: boolean; // Color popover state
   fillEnabledUI: boolean; // UI-only fill toggle state for shapes
 
-  // Track last seen scene per room (for ghost preview after clear)
-  lastSeenSceneByRoom: Record<string, number>;
-
   // Collaboration mode preference
   collaborationMode: 'server' | 'peer';
 
@@ -65,7 +62,6 @@ interface DeviceUIState {
   ) => void;
   setSelectSettings: (settings: Partial<DeviceUIState['select']>) => void;
   toggleEditor: () => void; // Keep for future code editor
-  updateLastSeenScene: (roomId: string, scene: number) => void;
   setCollaborationMode: (mode: 'server' | 'peer') => void;
   setIsTextEditing: (editing: boolean) => void;
 
@@ -110,7 +106,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       isColorPopoverOpen: false,
       fillEnabledUI: false,
 
-      lastSeenSceneByRoom: {},
       collaborationMode: 'server',
 
       // Actions
@@ -155,14 +150,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         })),
 
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
-
-      updateLastSeenScene: (roomId, scene) =>
-        set((state) => ({
-          lastSeenSceneByRoom: {
-            ...state.lastSeenSceneByRoom,
-            [roomId]: scene,
-          },
-        })),
 
       setCollaborationMode: (mode) => set({ collaborationMode: mode }),
 
@@ -304,7 +291,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             // Keep some old state
             editorCollapsed: oldState.editorCollapsed || false,
             isTextEditing: oldState.isTextEditing || false,
-            lastSeenSceneByRoom: oldState.lastSeenSceneByRoom || {},
             collaborationMode: oldState.collaborationMode || 'server',
 
             // Add new color system fields

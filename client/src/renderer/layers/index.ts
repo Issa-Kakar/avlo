@@ -4,17 +4,17 @@ import type { ViewportInfo } from '../types';
 import type { GateStatus } from '@/hooks/use-connection-gates';
 import { drawCursors } from './presence-cursors';
 
-// Re-export the actual implementation
-export { drawStrokes, clearStrokeCache } from './strokes';
+// Export the unified objects renderer
+export { drawObjects } from './objects';
 
-// Import new implementations
-export { drawText } from './text';
-
-// NEW: ID-keyed geometry cache eviction (used by Canvas on bbox changes/removals)
-import { getStrokeCacheInstance } from '../stroke-builder/stroke-cache';
-
-export function invalidateStrokeCacheByIds(ids: Iterable<string>) {
-  getStrokeCacheInstance().invalidateMany(ids);
+// Temporary stub for drawText until fully migrated
+export function drawText(
+  _ctx: CanvasRenderingContext2D,
+  _snapshot: Snapshot,
+  _view: ViewTransform,
+  _viewport: ViewportInfo,
+): void {
+  // Text is now handled in drawObjects
 }
 
 // Helper functions for adaptive grid

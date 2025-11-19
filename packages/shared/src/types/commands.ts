@@ -1,4 +1,4 @@
-import { StrokeId, TextId, SceneIdx } from './identifiers';
+import { StrokeId, TextId } from './identifiers';
 
 // All possible commands that can be executed
 export type Command =
@@ -22,9 +22,7 @@ export interface DrawStrokeCommit {
   bbox: [number, number, number, number];
   startedAt: number;
   finishedAt: number;
-  scene: SceneIdx; // CRITICAL: Scene assigned at COMMIT time (pointer-up) using currentScene
 }
-// CRITICAL: Scene MUST be assigned at commit time to ensure strokes land in correct scene if ClearBoard happens during gesture
 
 // Erase multiple objects
 export interface EraseObjects {
@@ -44,7 +42,6 @@ export interface AddText {
   content: string;
   color: string;
   size: number;
-  scene: SceneIdx; // CRITICAL: Scene assigned at commit time using currentScene
 }
 
 // Clear board (append scene tick)

@@ -8,11 +8,8 @@ import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
 import { OverlayRenderLoop } from '../renderer/OverlayRenderLoop';
 import type { ViewportInfo } from '../renderer/types';
-import {
-  clearStrokeCache,
-  drawPresenceOverlays,
-  invalidateStrokeCacheByIds, // NEW: for cache eviction on geometry changes
-} from '../renderer/layers';
+import { drawPresenceOverlays } from '../renderer/layers';
+import { getObjectCacheInstance } from '../renderer/object-cache';
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
@@ -23,105 +20,6 @@ import { ZoomAnimator } from './animation/ZoomAnimator';
 
 // Unified interface for all pointer tools
 type PointerTool = DrawingTool | EraserTool | TextTool | PanTool;
-
-// Epsilon equality for floating point comparison
-function bboxEquals(a: number[], b: number[]): boolean {
-  const eps = 1e-3;
-  return (
-    Math.abs(a[0] - b[0]) < eps &&
-    Math.abs(a[1] - b[1]) < eps &&
-    Math.abs(a[2] - b[2]) < eps &&
-    Math.abs(a[3] - b[3]) < eps
-  );
-}
-
-interface WorldBounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
-
-// Helper to check if styles are equal
-function stylesEqual(
-  a: { color: string; size: number; opacity: number },
-  b: { color: string; size: number; opacity: number },
-): boolean {
-  return a.color === b.color && a.size === b.size && a.opacity === b.opacity;
-}
-
-// Helper to convert bbox array to WorldBounds
-function bboxToBounds(b: [number, number, number, number]): WorldBounds {
-  return { minX: b[0], minY: b[1], maxX: b[2], maxY: b[3] };
-}
-
-// Result type for diff operation
-type EvictId = string;
-type DiffResult = {
-  dirty: WorldBounds[];
-  evictIds: EvictId[];
-};
-
-function diffBoundsAndEvicts(prev: Snapshot, next: Snapshot): DiffResult {
-  const prevSt = new Map(prev.strokes.map((s) => [s.id, s]));
-  const nextSt = new Map(next.strokes.map((s) => [s.id, s]));
-  const dirty: WorldBounds[] = [];
-  const evict = new Set<string>();
-
-  // Added / modified strokes
-  for (const [id, n] of nextSt) {
-    const p = prevSt.get(id);
-    if (!p) {
-      // Added: repaint only (cache had no entry)
-      dirty.push(bboxToBounds(n.bbox));
-      continue;
-    }
-
-    const bboxChanged = !bboxEquals(p.bbox, n.bbox);
-    const styleChanged = !stylesEqual(p.style, n.style);
-
-    if (bboxChanged) {
-      // Geometry changed → evict, and repaint old+new footprint
-      evict.add(id);
-      dirty.push(bboxToBounds(p.bbox));
-      dirty.push(bboxToBounds(n.bbox));
-    } else if (styleChanged) {
-      // Style only → repaint, no eviction (cache handles variants)
-      dirty.push(bboxToBounds(n.bbox));
-    }
-  }
-
-  // Removed strokes
-  for (const [id, p] of prevSt) {
-    if (!nextSt.has(id)) {
-      evict.add(id);
-      dirty.push(bboxToBounds(p.bbox));
-    }
-  }
-
-  // --- Text blocks ---
-  const prevTxt = new Map(prev.texts.map((t) => [t.id, t]));
-  const nextTxt = new Map(next.texts.map((t) => [t.id, t]));
-
-  for (const [id, n] of nextTxt) {
-    const p = prevTxt.get(id);
-    const rectChanged = !p || p.x !== n.x || p.y !== n.y || p.w !== n.w || p.h !== n.h;
-    const styleOrContentChanged =
-      !!p && (p.color !== n.color || p.size !== n.size || p.content !== n.content);
-    if (rectChanged || styleOrContentChanged) {
-      dirty.push({ minX: n.x, minY: n.y, maxX: n.x + n.w, maxY: n.y + n.h });
-      if (p && rectChanged)
-        dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
-    }
-  }
-  for (const [id, p] of prevTxt) {
-    if (!nextTxt.has(id)) {
-      dirty.push({ minX: p.x, minY: p.y, maxX: p.x + p.w, maxY: p.y + p.h });
-    }
-  }
-
-  return { dirty, evictIds: [...evict] };
-}
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -209,40 +107,31 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     let lastDocVersion = -1;
 
     const unsubscribe = roomDoc.subscribeSnapshot((newSnapshot) => {
-      const prevSnapshot = snapshotRef.current;
       snapshotRef.current = newSnapshot;
 
       if (!renderLoopRef.current || !overlayLoopRef.current) return;
 
-      // Check if scene changed (requires full clear on both)
-      if (!prevSnapshot || prevSnapshot.scene !== newSnapshot.scene) {
-        renderLoopRef.current.invalidateAll('scene-change');
-        overlayLoopRef.current.invalidateAll();
-        lastDocVersion = newSnapshot.docVersion;
-        return;
-      }
-
       // Check if document content changed (not just presence)
       // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
       if (newSnapshot.docVersion !== lastDocVersion) {
-        console.log('Document content changed, docVersion:', newSnapshot.docVersion);
         lastDocVersion = newSnapshot.docVersion;
 
         // Hold preview for one frame to prevent flash on commit
         overlayLoopRef.current.holdPreviewForOneFrame();
 
-        // Use bbox diffing for targeted invalidation with cache eviction
-        const { dirty, evictIds } = diffBoundsAndEvicts(prevSnapshot, newSnapshot);
+        // SIMPLIFIED: Just use dirtyPatch from manager
+        // Manager already computed everything during observer callbacks
+        if (newSnapshot.dirtyPatch) {
+          const { rects, evictIds } = newSnapshot.dirtyPatch;
 
-        // Evict geometry for ids whose geometry footprint changed or were removed
-        if (evictIds.length) {
-          invalidateStrokeCacheByIds(evictIds);
-        }
+          // Evict from cache
+          const cache = getObjectCacheInstance();
+          cache.evictMany(evictIds);
 
-        // Repaint everything that changed style or geometry, additions/removals, etc.
-        // (DirtyRectTracker will coalesce or promote to full clear if appropriate.)
-        for (const b of dirty) {
-          renderLoopRef.current.invalidateWorld(b);
+          // Invalidate dirty regions
+          for (const bounds of rects) {
+            renderLoopRef.current.invalidateWorld(bounds);
+          }
         }
 
         overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
@@ -252,7 +141,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       }
     });
 
-    console.log('Subscribed to snapshots, lastDocVersion:', lastDocVersion);
     snapshotRef.current = roomDoc.currentSnapshot;
     lastDocVersion = roomDoc.currentSnapshot.docVersion;
 
@@ -358,7 +246,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     const renderLoop = new RenderLoop();
     renderLoopRef.current = renderLoop;
-    console.log('Base render loop initialized');
     renderLoop.start({
       stageRef: baseStageRef,
       getView: () => viewTransformRef.current,
@@ -425,7 +312,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const gateStatus = roomDoc.getGateStatus();
     if (gateStatus.firstSnapshot) {
       initialRenderTimeout = setTimeout(() => {
-    //     // Safety check - renderLoop might have been destroyed if component unmounted quickly
+        // Safety check - renderLoop might have been destroyed if component unmounted quickly
         if (renderLoopRef.current === renderLoop) {
           renderLoop.invalidateAll('content-change');
         }
@@ -434,15 +321,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     return () => {
       if (initialRenderTimeout) {
-        console.log('Clearing initial render timeout');
         clearTimeout(initialRenderTimeout);
       }
       renderLoop.stop();
       renderLoop.destroy();
       renderLoopRef.current = null;
-      // Clear stroke render cache on unmount
+      // TODO: Clear object cache on unmount when Phase 6 is implemented
       // This prevents memory leaks when switching rooms
-      clearStrokeCache();
+      getObjectCacheInstance().clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // NO DEPENDENCIES - stable render loop lifecycle, isMobile is a stable callback

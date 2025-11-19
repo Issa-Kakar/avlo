@@ -14,8 +14,7 @@ import {
 } from './types';
 import {
   drawBackground,
-  drawStrokes,
-  drawShapes,
+  drawObjects,
   drawText,
   drawAuthoringOverlays,
   drawHUD,
@@ -23,17 +22,17 @@ import {
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
 
 // Helper function to check if two bounding boxes intersect
-function boxesIntersect(
-  box1: { minX: number; minY: number; maxX: number; maxY: number },
-  box2: [number, number, number, number], // [minX, minY, maxX, maxY]
-): boolean {
-  return !(
-    box1.maxX < box2[0] || // box1 is left of box2
-    box1.minX > box2[2] || // box1 is right of box2
-    box1.maxY < box2[1] || // box1 is above box2
-    box1.minY > box2[3]    // box1 is below box2
-  );
-}
+// function boxesIntersect(
+//   box1: { minX: number; minY: number; maxX: number; maxY: number },
+//   box2: [number, number, number, number], // [minX, minY, maxX, maxY]
+// ): boolean {
+//   return !(
+//     box1.maxX < box2[0] || // box1 is left of box2
+//     box1.minX > box2[2] || // box1 is right of box2
+//     box1.maxY < box2[1] || // box1 is above box2
+//     box1.minY > box2[3]    // box1 is below box2
+//   );
+// }
 
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
@@ -61,7 +60,6 @@ export class RenderLoop {
   private rafId: number | null = null;
   private lastFrameTime = 0;
   private lastTransformState: { scale: number; pan: { x: number; y: number } } | null = null;
-  private lastRenderedScene = -1; // Track scene changes for full clear
   private skipNextFrame = false;
   private isHidden = false;
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
@@ -117,7 +115,6 @@ export class RenderLoop {
     this.config = null;
     this.dirtyTracker.reset();
     this.lastTransformState = null;
-    this.lastRenderedScene = -1; // Reset scene tracking
     this.needsFrame = false;
     this.framesSinceInvalidation = 0;
     this.skipNextFrame = false;
@@ -252,13 +249,6 @@ export class RenderLoop {
     // Update dirty tracker canvas size if changed
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
 
-    // Check for scene change FIRST - this triggers full clear
-    if (snapshot.scene !== this.lastRenderedScene) {
-      // Scene changed - forcing full clear
-      this.dirtyTracker.invalidateAll('scene-change');
-      this.lastRenderedScene = snapshot.scene;
-    }
-
     // Check for transform change only if it might have changed
     // This avoids calling notifyTransformChange on every frame unnecessarily
     if (
@@ -292,32 +282,29 @@ export class RenderLoop {
     // Check if we have translucent strokes in view that require full clear
     // This prevents alpha accumulation artifacts when using dirty rect optimization
     if (clearInstructions.type === 'dirty') {
-      // Calculate visible bounds early for the translucent check
-      const visibleBounds = getVisibleWorldBounds(
-        viewport.cssWidth,
-        viewport.cssHeight,
-        view.scale,
-        view.pan,
-      );
-
       // Check if any translucent stroke intersects the viewport
+      // TODO: Re-implement translucency check with Y.Map objects in Phase 6
       let hasTranslucentInView = false;
 
       if (snapshot.spatialIndex) {
-        // Use spatial query for efficiency
-        const visibleStrokes = snapshot.spatialIndex.queryRect(
-          visibleBounds.minX,
-          visibleBounds.minY,
-          visibleBounds.maxX,
-          visibleBounds.maxY,
+        const visibleBounds = getVisibleWorldBounds(
+          viewport.cssWidth,
+          viewport.cssHeight,
+          view.scale,
+          view.pan,
         );
-        hasTranslucentInView = visibleStrokes.some(
-          (stroke) => stroke.style.opacity < 1
-        );
-      } else {
-        // Fallback to linear scan
-        hasTranslucentInView = snapshot.strokes.some(
-          (stroke) => stroke.style.opacity < 1 && boxesIntersect(visibleBounds, stroke.bbox),
+      //   // Use spatial query for efficiency
+        const visibleObjects = snapshot.spatialIndex.query({
+          minX: visibleBounds.minX,
+          minY: visibleBounds.minY,
+          maxX: visibleBounds.maxX,
+          maxY: visibleBounds.maxY,
+        });
+        hasTranslucentInView = visibleObjects.some(
+          (entry) => {
+            const handle = snapshot.objectsById.get(entry.id);
+            return handle && handle.y.get('opacity') < 1;
+          }
         );
       }
 
@@ -325,7 +312,9 @@ export class RenderLoop {
       if (hasTranslucentInView) {
         this.dirtyTracker.invalidateAll('content-change');
         clearInstructions = this.dirtyTracker.getClearInstructions();
+        console.log('[RenderLoop] hasTranslucentInView', hasTranslucentInView);
       }
+      console.log('[RenderLoop] clearInstructions', clearInstructions);
     }
 
     // Early exit if nothing to do
@@ -431,8 +420,7 @@ export class RenderLoop {
       // DPR is already applied by CanvasStage via initial setTransform(dpr, 0, 0, dpr, 0, 0)
 
       drawBackground(ctx, snapshot, view, augmentedViewport);
-      drawStrokes(ctx, snapshot, view, augmentedViewport); // Phase 4: actual stroke rendering (shapes commit as a stroke)
-      drawShapes(ctx, snapshot, view, augmentedViewport); // NO LONGER IMPLEMENTED: stamps/shapes, DORMANT PLACEHOLDER
+      drawObjects(ctx, snapshot, view, augmentedViewport); // Unified object rendering (strokes, shapes, text, connectors)
       drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
 
       // Authoring overlay - for future selection/handles

@@ -1,4 +1,5 @@
-import type { StrokeView } from '@avlo/shared';
+// TODO: Import ObjectHandle when StrokeView is fully removed
+// import type { ObjectHandle } from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE } from './pf-config';
 import { getSvgPathFromStroke } from './pf-svg';
@@ -25,7 +26,8 @@ export type StrokeRenderData = PolylineData | PolygonData;
  * Builds POLYLINE render data (for perfect/snap shapes).
  * Creates Float32Array and Path2D at render time only.
  */
-export function buildPolylineRenderData(stroke: StrokeView): PolylineData {
+// TODO: Update to use ObjectHandle in Phase 6
+export function buildPolylineRenderData(stroke: any): PolylineData {
   const { points } = stroke;
   const stride = 2;
   const pointCount = Math.floor(points.length / stride);
@@ -89,7 +91,8 @@ export function buildPolylineRenderData(stroke: StrokeView): PolylineData {
 }
 
 
-export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
+// TODO: Update to use ObjectHandle in Phase 6
+export function buildPFPolygonRenderData(stroke: any): PolygonData {
   const size = stroke.style.size;
 
   // CRITICAL FIX: canonical tuples for polygon
@@ -146,8 +149,9 @@ export function buildPFPolygonRenderData(stroke: StrokeView): PolygonData {
  * Inflates bbox by half the stroke width since bbox is computed from points only.
  * Used for culling optimization.
  */
+// TODO: Update to use ObjectHandle in Phase 6
 export function isStrokeVisible(
-  stroke: StrokeView,
+  stroke: any,
   viewportBounds: { minX: number; minY: number; maxX: number; maxY: number },
 ): boolean {
   const [minX, minY, maxX, maxY] = stroke.bbox;

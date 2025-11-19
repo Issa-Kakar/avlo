@@ -6,6 +6,7 @@ export * from './types/commands';
 export * from './types/snapshot';
 export * from './types/validation';
 export * from './types/room-stats';
+export * from './types/objects';
 
 // Export config
 export * from './config';
@@ -37,5 +38,8 @@ export * from './schemas';
 export { ulid } from './utils/ulid';
 
 // Export spatial indexing
-export { RBushSpatialIndex, DefaultSpatialIndex } from './spatial';
+export { ObjectSpatialIndex } from './spatial';
 export type { IndexEntry } from './spatial';
+
+// Export bbox utilities
+export { computeBBoxFor, bboxEquals, bboxToBounds } from './utils/bbox';

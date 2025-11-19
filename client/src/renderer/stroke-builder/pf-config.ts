@@ -7,6 +7,6 @@ export const PF_OPTIONS_BASE = {
   thinning: 0.50,
   smoothing: 0.50,
   streamline: 0.6,
-  simulatePressure: true
+  simulatePressure: false
   
 } as const;

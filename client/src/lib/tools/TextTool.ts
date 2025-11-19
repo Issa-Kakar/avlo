@@ -302,26 +302,24 @@ export class TextTool {
     const id = ulid();
     this.room.mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
-      const texts = root.get('texts') as Y.Array<any>;
-      const meta = root.get('meta') as Y.Map<any>;
-      const sceneTicks = meta.get('scene_ticks') as Y.Array<number>;
-      const currentScene = sceneTicks ? sceneTicks.length : 0;
+      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
-      texts.push([
-        {
-          id,
-          x: this.state.worldPosition!.x,
-          y: this.state.worldPosition!.y,
-          w,
-          h,
-          content, // <- preserves the wrapped lines
-          color: this.config.color,
-          size: this.config.size,
-          scene: currentScene,
-          createdAt: Date.now(),
-          userId: this.userId,
-        },
-      ]);
+      const textMap = new Y.Map();
+      textMap.set('id', id);
+      textMap.set('kind', 'text');
+      textMap.set('frame', [this.state.worldPosition!.x, this.state.worldPosition!.y, w, h]); // [x, y, w, h]
+      textMap.set('text', content); // For now, using string. TODO: Use Y.Text in future for collaborative editing
+      textMap.set('color', this.config.color);
+      textMap.set('fontSize', this.config.size);  // Renamed from 'size' to 'fontSize' per migration spec
+      textMap.set('fontFamily', 'sans-serif');
+      textMap.set('fontWeight', 'normal');
+      textMap.set('fontStyle', 'normal');
+      textMap.set('textAlign', 'left');
+      textMap.set('opacity', 1);
+      textMap.set('ownerId', this.userId);
+      textMap.set('createdAt', Date.now());
+
+      objects.set(id, textMap);
     });
   }
 }

@@ -63,7 +63,7 @@ export class DrawingToolExample {
         opacity: 1,
         points: this.currentStroke!.points, // Flattened points (non-null asserted after check)
         bbox: this.calculateBBox(this.currentStroke!.points),
-        scene: currentScene, // CRITICAL: Scene assigned at commit time!
+        // scene field removed in Y.Map migration
         createdAt: Date.now(),
         userId: 'user-id', // Would come from manager's userId
         kind: 'freehand', // Pen tool creates freehand strokes
@@ -137,7 +137,7 @@ export class TextToolExample {
         content,
         color: '#000000',
         size: 16,
-        scene: currentScene, // Scene assigned at commit time!
+        // scene field removed in Y.Map migration
         createdAt: Date.now(),
         userId: 'user-id',
       };

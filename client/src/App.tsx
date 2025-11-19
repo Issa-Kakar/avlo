@@ -61,8 +61,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
           <h2 className="text-sm font-semibold text-gray-600">Drawing Test</h2>
           <p className="text-xs text-gray-500 mt-1">Click and drag to draw</p>
           <p className="text-xs text-gray-400 mt-1">Room: {roomId}</p>
-          <p className="text-xs text-gray-400 mt-1">Scene: {snapshot.scene}</p>
-          <p className="text-xs text-gray-400 mt-1">Strokes: {snapshot.strokes.length}</p>
+          <p className="text-xs text-gray-400 mt-1">Objects: {snapshot.objectsById.size}</p>
           <p className="text-xs text-gray-400 mt-1">Zoom: {Math.round(viewState.scale * 100)}%</p>
         </div>
 

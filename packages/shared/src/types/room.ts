@@ -1,4 +1,4 @@
-import { StrokeId, TextId, SceneIdx, UserId } from './identifiers';
+import { StrokeId, TextId, UserId } from './identifiers';
 
 // Individual stroke point with world coordinates
 export interface StrokePoint {
@@ -17,7 +17,6 @@ export interface Stroke {
   // NEVER Float32Array in storage
   pointsTuples?: [number, number][]; // NEW: Add this line
   bbox: [number, number, number, number]; // [minX, minY, maxX, maxY] world units
-  scene: SceneIdx; // assigned at commit time
   createdAt: number; // ms epoch timestamp
   userId: UserId; // awareness id at commit
   /**
@@ -38,7 +37,6 @@ export interface TextBlock {
   content: string; // committed once, immutable (max 500 chars)
   color: string; // #RRGGBB format
   size: number; // font px at scale=1
-  scene: SceneIdx; // scene index
   createdAt: number; // ms epoch
   userId: UserId; // creator id
 }
@@ -58,7 +56,6 @@ export interface Output {
 
 // Document metadata
 export interface Meta {
-  scene_ticks: number[]; // append-only scene ticks (excluded from global undo)
   canvas?: {
     // doc-level reference size (optional)
     baseW: number;

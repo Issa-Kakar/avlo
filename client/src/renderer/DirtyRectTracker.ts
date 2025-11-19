@@ -252,6 +252,7 @@ export class DirtyRectTracker {
     }
 
     if (this.rects.length === 0) {
+      console.log('[DirtyRectTracker] getClearInstructions: no rects');
       return { type: 'none' };
     }
 

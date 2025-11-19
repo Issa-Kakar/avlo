@@ -273,22 +273,12 @@ export class EraserTool {
     // This single mutate() constitutes ONE undo step per user (UndoManager origin=userId)
     this.room.mutate((ydoc) => {
       const root = ydoc.getMap('root');
-      const yStrokes = root.get('strokes') as Y.Array<any>;
-      const yTexts = root.get('texts') as Y.Array<any>;
+      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
       const hit = this.state.hitAccum;
 
-      // Backward iteration - O(N) with no maps or sorting
-      // Delete from end to preserve earlier indices
-      for (let i = yStrokes.length - 1; i >= 0; i--) {
-        if (hit.has(yStrokes.get(i).id)) {
-          yStrokes.delete(i, 1);
-        }
-      }
-
-      for (let i = yTexts.length - 1; i >= 0; i--) {
-        if (hit.has(yTexts.get(i).id)) {
-          yTexts.delete(i, 1);
-        }
+      // Direct deletion by ID from Y.Map
+      for (const id of hit) {
+        objects.delete(id);
       }
     });
 
