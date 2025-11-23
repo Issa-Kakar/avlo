@@ -1,6 +1,6 @@
-# Shape Tool Implementation Guide
+# Shape Tool Previous Implementation Guide
 
-## Overview
+## Overview(THIS IS A PREVIOUS DOCUMENT FOR REFERENCE)
 We're implementing dedicated shape tools (Rectangle, Ellipse, Arrow, Line) that bypass the hold detector and start in "already snapped" mode. **These tools will be corner-anchored (not center-anchored** like the existing perfect shapes from hold detection for the existing box and circle), reusing the existing DrawingTool infrastructure with a forced snap mode.
 
 ## Architecture Context
@@ -12,6 +12,85 @@ We're implementing dedicated shape tools (Rectangle, Ellipse, Arrow, Line) that 
 4. **Canvas.tsx** - Routes pointer events to tools, manages tool lifecycle
 5. **Zustand Store** - Manages tool state and settings
 
+## Existing Technical Pipeline
+
+### Complete Flow: Pointer-Down to Commit
+
+```
+User Input → Canvas Events → DrawingTool → Shape Recognition → Preview → Commit
+```
+
+### 1. Gesture Start (Pointer-Down)
+
+```typescript
+Canvas.handlePointerDown()
+  ↓ Convert to world coordinates
+DrawingTool.begin()
+  ├── Freeze tool settings (color, size, opacity)
+  ├── Start HoldDetector (600ms timer, 6px screen jitter)
+  ├── Initialize snap = null
+  └── Set liveCursorWU = [worldX, worldY]
+```
+
+### 2. Movement During Drawing
+
+```typescript
+Canvas.handlePointerMove()
+  ↓
+DrawingTool.move()
+  ├── Update liveCursorWU (always)
+  ├── If !snap:
+  │   ├── Update hold detector (screen space jitter check)
+  │   └── Add point to freehand path (RAF coalesced)
+  └── If snap:
+      └── Request overlay frame (geometry updates from cursor)
+```
+
+### 3. Hold Detection Fires (600ms Dwell)
+
+```typescript
+HoldDetector.onFire()
+  ↓
+DrawingTool.onHoldFire()
+  ├── Flush pending RAF updates
+  ├── Call recognizeOpenStroke()
+  │   ├── Fit circle (Taubin method on raw points)
+  │   ├── Fit AABB rectangle (two-channel approach)
+  │   ├── Score both shapes
+  │   ├── Apply tie-breakers and ambiguity rules
+  │   └── Return result (shape or ambiguous flag)
+  ├── If ambiguous: continue freehand (no snap)
+  └── If recognized: set snap state, cancel hold
+```
+
+### 4. Preview Generation & Rendering
+
+```typescript
+DrawingTool.getPreview()
+  ├── If snap: return PerfectShapePreview
+  │   └── Contains: anchors + liveCursorWU + style
+  └── Else: return StrokePreview (freehand)
+
+OverlayRenderLoop.frame()
+  ├── Clear overlay canvas
+  ├── Get preview from tool
+  └── Draw perfect shape (compute geometry from anchors + cursor)
+```
+
+### 5. Commit (Pointer-Up)
+
+```typescript
+Canvas.handlePointerUp()
+  ↓
+DrawingTool.end()
+  ├── Cancel hold detector
+  ├── If snap:
+  │   └── commitPerfectShapeFromPreview()
+  │       ├── Generate polyline from shape geometry
+  │       ├── Compute bbox (once)
+  │       └── Commit as regular stroke to Yjs
+  └── Else: commit freehand stroke
+```
 ### Key Behaviors to Preserve
 - Hold-to-perfect flow remains untouched for pen/highlighter tools
 - All shapes commit as regular strokes (polylines)

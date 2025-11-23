@@ -33,7 +33,7 @@ export const RECT_SIDE_EPSILON_FACTOR = 0.04;  // Tolerance = 4% of diagonal
 export const RECT_MIN_SIDE_EPSILON = 1.5;      // Minimum tolerance in world units
 
 // Corner tolerances
-export const RECT_CORNER_TIE_TOLERANCE_DEG = 20;  // For the ≥2-corners tie-breaker (stricter)
+export const RECT_CORNER_TIE_TOLERANCE_DEG = 28;  // For the ≥2-corners tie-breaker (stricter)
 export const RECT_CORNER_TOLERANCE_DEG = 25; // Legacy tolerance (kept for compatibility)
 
 // Soft thresholds for gentle corner/edge scoring

@@ -62,7 +62,7 @@ export interface TextPreview {
 export type PerfectShapeAnchors =
   | { kind: 'line';        A: [number, number] }                                             // line: fixed A
   | { kind: 'circle';      center: [number, number] }                                        // circle: fixed center (hold detector)
-  | { kind: 'box';         cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen OBB seed (hold detector)
+  | { kind: 'box';         cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen AABB seed (hold detector)
   | { kind: 'rect';        A: [number, number] }                                             // corner-anchored AABB
   | { kind: 'ellipseRect'; A: [number, number] }                                             // corner-anchored ellipse
   | { kind: 'arrow';       A: [number, number] };                                            // arrow: fixed start point
@@ -92,21 +92,9 @@ export interface PerfectShapePreview {
   bbox: null;
 }
 
-/**
- * StrokeFinalPreview is the final frame preview with pre-computed outline
- * Used for the held frame to match base canvas exactly
- */
-export interface StrokeFinalPreview {
-  kind: 'strokeFinal';
-  outline: [number, number][]; // Pre-computed PF outline
-  tool: 'pen' | 'highlighter';
-  color: string;
-  size: number;
-  opacity: number;
-  bbox: [number, number, number, number] | null;
-}
+
 /**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData = StrokePreview | StrokeFinalPreview | EraserPreview | TextPreview | PerfectShapePreview;
+export type PreviewData = StrokePreview| EraserPreview | TextPreview | PerfectShapePreview;

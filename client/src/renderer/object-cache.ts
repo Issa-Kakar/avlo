@@ -83,7 +83,7 @@ export class ObjectRenderCache {
             break;
           }
           case 'roundedRect': {
-            const r = Math.min((y.get('cornerRadius') as number) ?? 8, w / 2, h / 2);
+            const r = Math.min((y.get('cornerRadius') as number) ?? 20, w / 2, h / 2);
             roundedRect(path, x, y0, w, h, r);
             break;
           }

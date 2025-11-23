@@ -15,7 +15,7 @@ import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { calculateZoomTransform } from './internal/transforms';
+import { calculateZoomTransform, boundsIntersect, getVisibleWorldBounds } from './internal/transforms';
 import { ZoomAnimator } from './animation/ZoomAnimator';
 
 // Unified interface for all pointer tools
@@ -110,30 +110,50 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       snapshotRef.current = newSnapshot;
 
       if (!renderLoopRef.current || !overlayLoopRef.current) return;
-
+      console.log('newSnapshot.docVersion', newSnapshot.docVersion);
       // Check if document content changed (not just presence)
       // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
       if (newSnapshot.docVersion !== lastDocVersion) {
         lastDocVersion = newSnapshot.docVersion;
-
+        console.log('lastDocVersion', lastDocVersion);
         // Hold preview for one frame to prevent flash on commit
         overlayLoopRef.current.holdPreviewForOneFrame();
 
         // SIMPLIFIED: Just use dirtyPatch from manager
         // Manager already computed everything during observer callbacks
-        if (newSnapshot.dirtyPatch) {
+        if (newSnapshot.dirtyPatch ) {
           const { rects, evictIds } = newSnapshot.dirtyPatch;
 
           // Evict from cache
           const cache = getObjectCacheInstance();
           cache.evictMany(evictIds);
 
-          // Invalidate dirty regions
-          for (const bounds of rects) {
-            renderLoopRef.current.invalidateWorld(bounds);
+          const size = canvasSizeRef.current;
+          if (size) {
+            const viewport = getVisibleWorldBounds(
+              size.cssWidth,
+              size.cssHeight,
+              viewTransformRef.current.scale,
+              viewTransformRef.current.pan
+            );
+            // Only invalidate visible dirty regions
+            for (const bounds of rects) {
+              if (boundsIntersect(bounds, viewport)) {
+                renderLoopRef.current.invalidateWorld(bounds);
+                console.log('invalidateWorld', bounds);
+              }
+            }
+          } else {
+            // Fallback if viewport unknown
+            for (const bounds of rects) {
+              renderLoopRef.current.invalidateWorld(bounds);
+            }
           }
+        } else if (lastDocVersion < 2) {
+          // Initial load without dirtyPatch
+          renderLoopRef.current.invalidateAll('content-change');
+          console.log('initial load');
         }
-
         overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
       } else {
         // Presence-only change - update overlay only
@@ -562,10 +582,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.style.touchAction = 'none';
       // Don't override the cursor here - it was already set based on tool above
     }
-    // CRITICAL FIX: Ensure NO global CSS sets touch-action: none on canvas for mobile
-    // Check your stylesheets - mobile MUST preserve touch-action: auto for scrolling
-    // Note: Canvas CSS size should be set by CanvasStage
-    // Physical size (width/height) = CSS size * DPR (handled by CanvasStage)
 
     // CLEANUP - comprehensive cleanup on any dependency change
     return () => {

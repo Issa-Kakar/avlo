@@ -161,3 +161,11 @@ export function calculateZoomTransform(
 
   return { scale: newScale, pan: newPan };
 }
+
+export function boundsIntersect(
+  a: { minX: number; minY: number; maxX: number; maxY: number },
+  b: { minX: number; minY: number; maxX: number; maxY: number }
+): boolean {
+  return !(a.maxX < b.minX || a.minX > b.maxX ||
+           a.maxY < b.minY || a.minY > b.maxY);
+}

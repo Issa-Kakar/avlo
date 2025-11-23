@@ -5,7 +5,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
   switch (kind) {
     case 'stroke': {
       const points = (yMap.get('points') as [number, number][]) ?? [];
-      if (points.length < 2) return [0, 0, 0, 0];
+      if (points.length < 1) return [0, 0, 0, 0];
 
       let minX = points[0][0], minY = points[0][1];
       let maxX = minX, maxY = minY;

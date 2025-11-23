@@ -43,31 +43,17 @@ export function drawObjects(
   }
 
   // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========
-  // WHY: RBush query order is non-deterministic across:
-  //   - Different tabs (tree shape differs based on insertion order)
-  //   - Refresh (hydration order may differ from incremental builds)
-  //   - Viewport changes (query bounding box affects traversal)
-  //
-  // SOLUTION: ULID (object.id) provides:
-  //   - Lexicographic total ordering (monotonic time-based)
-  //   - Globally consistent across all clients
-  //   - Independent of RBush internal structure
-  //
-  // COST: O(K log K) where K = visible objects (cheap because K << N)
-  //
-  // RESULT: Same z-order on all tabs, regardless of:
-  //   - When they joined
-  //   - How they zoomed/panned
-  //   - Whether they refreshed
+  // WHY: RBush query order is non-deterministic 
+  // SOLUTION: ULID (object.id) provides globally consistent ordering
+
   const sortedCandidates = [...candidateEntries].sort((a, b) => {
-    // Lexicographic comparison (ULID is time-ordered string)
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 
   let renderedCount = 0;
   let culledCount = 0;
 
-  // Draw in ULID order (oldest first → newest on top)
+  // Draw in ULID order (oldest first -> newest on top)
   for (const entry of sortedCandidates) {
     const handle = objectsById.get(entry.id);
     if (!handle) continue;
@@ -161,6 +147,8 @@ function drawShape(
   if (strokeColor && strokeWidth > 0) {
     ctx.strokeStyle = strokeColor;
     ctx.lineWidth = strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.stroke(path);
   }
 
@@ -205,7 +193,7 @@ function drawTextBox(
   // Set up text styling
   ctx.fillStyle = color;
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as CanvasTextAlign;
+  ctx.textAlign = textAlign as unknown as 'left' | 'center' | 'right';
   ctx.textBaseline = 'top';
 
   // Calculate text position based on alignment
@@ -274,22 +262,6 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 
   return lines;
 }
-
-// function getVisibleWorldBounds(
-//   viewTransform: ViewTransform,
-//   viewport: ViewportInfo
-// ): { minX: number; minY: number; maxX: number; maxY: number } {
-//   const [minX, minY] = viewTransform.canvasToWorld(0, 0);
-//   const [maxX, maxY] = viewTransform.canvasToWorld(viewport.cssWidth, viewport.cssHeight);
-//   const margin = 50 / viewTransform.scale;
-
-//   return {
-//     minX: minX - margin,
-//     minY: minY - margin,
-//     maxX: maxX + margin,
-//     maxY: maxY + margin,
-//   };
-// }
 
 function shouldSkipLOD(
   bbox: [number, number, number, number],

@@ -9,7 +9,6 @@ import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
   ROOM_CONFIG,
-  TEXT_CONFIG,
   AWARENESS_CONFIG,
 } from '@avlo/shared';
 import { clientConfig } from './config-schema';
@@ -45,8 +44,8 @@ type Unsub = () => void;
 // CRITICAL: Y.Map's generic parameter doesn't define the value shape
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
-type YCode = Y.Map<unknown>;
-type YOutputs = Y.Array<Output>;
+// type YCode = Y.Map<unknown>;
+// type YOutputs = Y.Array<Output>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
@@ -126,14 +125,14 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
-  private readonly userId: string; // Session user ID for undo/redo origin
+  private readonly userId: string; // stable userId 
   private userProfile: UserProfile; // User name and color for awareness
   // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
   private websocketProvider: YProvider | null = null;
-  private webrtcProvider: unknown = null;
+  //private webrtcProvider: unknown = null;
 
   // Awareness instance (aliased to avoid collision with app's Awareness interface)
   private yAwareness?: YAwareness;
@@ -158,7 +157,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Timing abstractions (injected for testing)
   private clock: Clock;
   private frames: FrameScheduler;
-  private gzipImpl?: GzipImpl;
+
 
   // Simplified publish state for RAF loop
   private publishState = {
@@ -305,6 +304,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL FIX: Attach IDB FIRST before creating any structures
     // This prevents race condition where fresh containers overwrite persisted ones
     this.initializeIndexedDBProvider();
+    this.whenGateOpen('idbReady').then(() => {
+      const root = this.ydoc.getMap('root');
+      if (root.has('meta')) {
+        this.setupObjectsObserver();
+        this.attachUndoManager();
+      }
+    });
     // Initialize WebSocket provider (Phase 6C)
     this.initializeWebSocketProvider();
 
@@ -320,6 +326,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
       const root = this.ydoc.getMap('root');
       if (!root.has('meta')) {
         this.initializeYjsStructures();
+        this.setupObjectsObserver();
+        this.attachUndoManager();
         console.log('Initialized Y.js structures');
       } else {
         console.log('Loaded from IDB or WS');
@@ -328,11 +336,9 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Now that structures exist (either from IDB/WS or freshly initialized),
       // it's safe to attach array observers for incremental updates
       this.setupObjectsObserver();
-
       // Attach UndoManager after observers are set up
       this.attachUndoManager();
     });
-
     // Start RAF loop
     this.startPublishLoop();
   }
@@ -730,7 +736,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Step 4: Add output with size enforcement
-
   // Step 6: Validate structure integrity
 
   // Subscription methods
@@ -1184,7 +1189,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     const objects = this.getObjects();
 
-    this.objectsObserver = (events, tx) => {
+    this.objectsObserver = (events, _tx) => {
       // CRITICAL: Ignore during rebuild epoch
       if (this.needsSpatialRebuild) return;
 
@@ -1349,7 +1354,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // No need to set isDirty - buildSnapshot will handle publishing
   }
-
   // rebuildSpatialIndexFromViews no longer needed - integrated into hydrateObjectsFromY
 
   // ============================================================
@@ -1448,7 +1452,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
     if (timeout) {
       clearTimeout(timeout);
       this.gateTimeouts.delete('idbReady');
-      console.log('IDB ready timeout cleared');
     }
 
     // Log container identities after IDB is ready (either synced or timed out)
@@ -1471,6 +1474,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.roomId,  // Room name (not appended to URL)
         this.ydoc,
         {
+          connect: true,
           party: 'rooms',  // MUST match env binding name in wrangler.toml
           awareness: this.yAwareness,
           maxBackoffTime: 10_000,
@@ -1493,7 +1497,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
         if (!this.gates.wsSynced) {
           // Keep rendering from IDB, continue trying to sync
           // WS sync timeout, continuing with local state
-          console.log('WS sync timeout, continuing with local state');
         }
       }, 10000);
       this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
@@ -1586,21 +1589,17 @@ class RoomDocManagerImpl implements IRoomDocManager {
           // This ensures cursors hide immediately when offline
           if (this.gates.awarenessReady) {
             this.closeGate('awarenessReady');
-
             // Clear cursor trails to prevent stale data across sessions
             clearCursorTrails();
-
             // Mark presence dirty to trigger immediate UI update
             this.publishState.presenceDirty = true;
             // No need to call schedulePublish() - the loop is already running
 
             // Clear local cursor state
             this.localCursor = undefined;
-
             // NOTE: We keep awarenessIsDirty true if it was true,
             // and let sendAwareness() handle the retry logic when reconnected.
             // This ensures pending state changes are sent once back online.
-
             // Force awareness state clear to signal departure to peers
             if (this.yAwareness) {
               try {
@@ -1637,7 +1636,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
           this.logContainerIdentities('AFTER_WS_SYNC');
           // WebSocket synced
         } else {
-          console.log('WS not synced, closing gate');
           this.closeGate('wsSynced');
         }
       });
@@ -1654,7 +1652,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {
-    console.log('Opening gate:', gateName);
     const wasOpen = this.gates[gateName];
     if (wasOpen) return; // Already open
 
@@ -1697,7 +1694,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   private notifyGateChange(): void {
     const currentGates = this.getGateStatus();
-    console.log('Notifying gate change:', currentGates);
     // Only notify if gates actually changed (shallow compare)
     if (
       this.lastGateState &&
@@ -1739,7 +1735,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
         this.gateCallbacks.set(gateName, new Set());
       }
       this.gateCallbacks.get(gateName)!.add(resolve);
-      console.log('Added gate callback:', gateName);
     });
   }
 
@@ -1802,6 +1797,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
     // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
       this.spatialIndex = new ObjectSpatialIndex();
+      console.log('[RoomDocManager] spatialIndex created');
       // needsSpatialRebuild is already true from initialization
     }
 
@@ -1866,7 +1862,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Check if room became read-only
     if (ack.sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) {
-      console.log('[RoomDocManager] Room is now read-only due to size limit');
       // Could emit an event or update UI state here
     }
   }

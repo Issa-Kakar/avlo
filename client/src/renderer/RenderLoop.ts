@@ -492,6 +492,7 @@ export class RenderLoop {
   // Public invalidation APIs - EVENT-DRIVEN: These trigger frame scheduling
   invalidateWorld(bounds: WorldBounds): void {
     if (!this.config) return;
+    console.log('[RenderLoop] invalidateWorld', bounds);
     const view = this.config.getView();
     this.dirtyTracker.invalidateWorldBounds(bounds, view);
     this.markDirty();

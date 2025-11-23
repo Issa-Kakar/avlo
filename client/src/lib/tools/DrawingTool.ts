@@ -27,7 +27,7 @@ export class DrawingTool {
 
   // Bounds tracking for commit (preview doesn't use bbox anymore)
   private lastBounds: [number, number, number, number] | null = null;
-
+  private shapeType: 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | null = null;
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
   // NEW: Perfect shapes support
@@ -227,12 +227,12 @@ export class DrawingTool {
 
   private updateBounds(): void {
     // Calculate bounds for commit time (preview doesn't use bbox with dual canvas)
-    const bounds = calculateBBox(this.state.points, this.state.config.size);
+    //const bounds = calculateBBox(this.state.points, this.state.config.size);
 
     // Store for commit and final invalidation
-    if (bounds) {
-      this.lastBounds = bounds;
-    }
+    // if (bounds) {
+    //   this.lastBounds = bounds;
+    // }
 
     // Trigger overlay invalidation (overlay does full clear, no dirty rects for preview)
     // Canvas maps onInvalidate to overlay invalidation regardless of bounds
@@ -244,7 +244,7 @@ export class DrawingTool {
   private onHoldFire(): void {
     if (this.snap) return;
 
-    // Make sure we use the freshest point
+    // legacy
     this.flushPending();
 
     // Use latest pointer in WORLD units
@@ -254,7 +254,7 @@ export class DrawingTool {
       this.state.points[len - 2], this.state.points[len - 1]
     ];
 
-    // ✨ NEW: keep the live cursor in sync at the moment of snapping
+    //  keep the live cursor in sync at the moment of snapping
     this.liveCursorWU = pointerNowWU;
 
     console.group('🎯 Hold Detector Fired - Shape Recognition');
@@ -359,12 +359,6 @@ export class DrawingTool {
       this.state.pointsPF.push([finalX, finalY]); // CRITICAL: Keep PF tuples in lockstep
     }
 
-    // 3) Validate minimum points
-    if (this.state.points.length < 2) {
-      this.cancelDrawing();
-      return;
-    }
-
     // 4) Store preview bounds for invalidation
     const previewBounds = this.lastBounds;
 
@@ -373,15 +367,6 @@ export class DrawingTool {
 
     // 6) Canonical PF tuples = exact tuple buffer used for preview (clone for immutability)
     const canonicalTuples = this.state.pointsPF.slice();
-
-    // DEBUG: Verify arrays are in sync (dev mode only)
-    if (import.meta.env.DEV) {
-      console.assert(
-        canonicalTuples.length === rawPoints.length / 2,
-        'CRITICAL: PF tuples not in lockstep with flat points',
-        { tuples: canonicalTuples.length, flat: rawPoints.length / 2 }
-      );
-    }
 
     // 7) Size check on raw centerline (transport limit)
     const estimatedSize = estimateEncodedSize(rawPoints);
@@ -440,13 +425,14 @@ export class DrawingTool {
     // Generate polyline from (anchors + final cursor)
     let points: number[];
     const finalCursor = this.liveCursorWU!;
-
+    
     if (this.snap.kind === 'line') {
       const { A } = this.snap.anchors;
       const B = finalCursor;
       points = [A[0], A[1], B[0], B[1]];
 
     } else if (this.snap.kind === 'circle') {
+      this.shapeType = 'ellipse';
       const { center } = this.snap.anchors;
       const r = Math.hypot(finalCursor[0] - center[0], finalCursor[1] - center[1]);
       const n = Math.max(24, Math.ceil(2 * Math.PI * r / 8));
@@ -457,6 +443,7 @@ export class DrawingTool {
       }
 
     } else if (this.snap.kind === 'box') {
+      this.shapeType = 'rect';
       const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
       // Compute final scale from cursor
       const dx = finalCursor[0] - cx;
@@ -481,6 +468,7 @@ export class DrawingTool {
       }
 
     } else if (this.snap.kind === 'rect') {
+      this.shapeType = 'roundedRect' as const;
       const { A } = this.snap.anchors;
       const C = finalCursor;
       const B: [number, number] = [C[0], A[1]];
@@ -496,6 +484,7 @@ export class DrawingTool {
 
     } else if (this.snap.kind === 'ellipseRect') {
       // Corner-anchored ellipse inscribed in AABB
+      this.shapeType = 'ellipse';
       const { A } = this.snap.anchors;
       const C = finalCursor;
       const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
@@ -542,7 +531,7 @@ export class DrawingTool {
     }
 
     // NOW compute bbox at commit time
-    const bbox = calculateBBox(points, this.state.config.size);
+    const bbox = calculateBBox(points, 0);
 
     // Check size limits
     const estimatedSize = estimateEncodedSize(points);
@@ -561,9 +550,10 @@ export class DrawingTool {
       const shapeMap = new Y.Map();
       shapeMap.set('id', shapeId);
       shapeMap.set('kind', 'shape');
-      shapeMap.set('shapeType', this.snap!.kind);  // Store the shape type
+      shapeMap.set('shapeType', this.shapeType as 'rect' | 'ellipse' | 'diamond' | 'roundedRect');  // Store the shape type
       shapeMap.set('strokeColor', this.state.config.color);
       shapeMap.set('strokeWidth', this.state.config.size);
+      // shapeMap.set('fillColor', '#');
       shapeMap.set('opacity', this.state.config.opacity);
       shapeMap.set('frame', bbox ? [bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]] : [0, 0, 0, 0]);  // Convert bbox to frame [x, y, w, h]
       shapeMap.set('ownerId', this.userId);

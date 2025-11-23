@@ -138,6 +138,7 @@ export class DirtyRectTracker {
   // Force full clear
   invalidateAll(_reason: InvalidationReason): void {
     this.fullClearRequired = true;
+    console.log('[DirtyRectTracker] invalidateAll: full clear');
     this.rects = [];
   }
 
@@ -248,6 +249,7 @@ export class DirtyRectTracker {
   // Get clear instructions
   getClearInstructions(): { type: 'full' | 'dirty' | 'none'; rects?: DevicePixelRect[] } {
     if (this.fullClearRequired) {
+      console.log('[DirtyRectTracker] getClearInstructions: full clear');
       return { type: 'full' };
     }
 
@@ -255,7 +257,7 @@ export class DirtyRectTracker {
       console.log('[DirtyRectTracker] getClearInstructions: no rects');
       return { type: 'none' };
     }
-
+    console.log('[DirtyRectTracker] getClearInstructions: rects', this.rects);
     return { type: 'dirty', rects: [...this.rects] };
   }
 

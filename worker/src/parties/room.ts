@@ -9,7 +9,9 @@ const headKey = (room: string) => `rooms/${room}/head.v2.bin`;
 export class RoomDurableObject extends YServer<Env> {
   // R2-friendly cadence: fewer, bigger writes
   static callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
-
+  static options = {
+    hibernate: true,
+  }
   /**
    * Ensure hydration completes before the first sync step.
    * YServer awaits onStart(), then onLoad(), installs debounced onSave(), then accepts sockets.

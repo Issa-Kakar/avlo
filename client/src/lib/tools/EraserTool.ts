@@ -304,51 +304,6 @@ export class EraserTool {
     };
   }
 
-  // Helper methods
-  private getVisibleWorldBounds(viewTransform: ViewTransform): WorldBounds {
-    if (!this.getViewport) {
-      // Fallback: return large bounds if viewport not available
-      return { minX: -10000, minY: -10000, maxX: 10000, maxY: 10000 };
-    }
-
-    const vp = this.getViewport();
-    const marginPx = this.state.radiusPx + 50; // Add margin for partial visibility
-    const marginWorld = marginPx / viewTransform.scale;
-
-    // Convert viewport corners to world coordinates
-    const [minWorldX, minWorldY] = viewTransform.canvasToWorld(0, 0);
-    const [maxWorldX, maxWorldY] = viewTransform.canvasToWorld(vp.cssWidth, vp.cssHeight);
-
-    return {
-      minX: minWorldX - marginWorld,
-      minY: minWorldY - marginWorld,
-      maxX: maxWorldX + marginWorld,
-      maxY: maxWorldY + marginWorld,
-    };
-  }
-
-  private isInBounds(
-    bbox: number[] | [number, number, number, number],
-    bounds: WorldBounds,
-  ): boolean {
-    return !(
-      bbox[2] < bounds.minX || // bbox right < viewport left
-      bbox[0] > bounds.maxX || // bbox left > viewport right
-      bbox[3] < bounds.minY || // bbox bottom < viewport top
-      bbox[1] > bounds.maxY // bbox top > viewport bottom
-    );
-  }
-
-  private inflateBbox(
-    bbox: number[] | [number, number, number, number],
-    radius: number,
-  ): [number, number, number, number] {
-    return [bbox[0] - radius, bbox[1] - radius, bbox[2] + radius, bbox[3] + radius];
-  }
-
-  private pointInBbox(px: number, py: number, bbox: [number, number, number, number]): boolean {
-    return px >= bbox[0] && px <= bbox[2] && py >= bbox[1] && py <= bbox[3];
-  }
 
   // Helper for circle-rect intersection
   private circleRectIntersect(
@@ -366,13 +321,6 @@ export class EraserTool {
   }
 }
 
-// Type for world bounds used in hit testing
-interface WorldBounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
 
 // Type for ViewTransform (should match the one in room-doc-manager)
 interface ViewTransform {

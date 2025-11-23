@@ -22,7 +22,6 @@ The Perfect Shapes feature enables automatic shape recognition in a drawing appl
 ## Implementation Phases
 
 ### Phase 1: Base Perfect Shapes
-**Source:** `PERFECT_SHAPES_IMPLEMENTATION_GUIDE.MD`
 - Established core recognition system for circles, rectangles, and lines
 - Implemented 600ms hold detector for shape triggering
 - Added DrawingTool snap state management
@@ -30,7 +29,6 @@ The Perfect Shapes feature enables automatic shape recognition in a drawing appl
 - Implemented polyline conversion at commit
 
 ### Phase 2: AABB Rectangle Overhaul
-**Source:** `AABB_RECTANGLE_IMPLEMENTATION_GUIDE.md`
 - Replaced fragile OBB (Oriented Bounding Box) with robust AABB (Axis-Aligned Bounding Box)
 - Removed all hard gates - moved to soft scoring for rectangles
 - Added near-miss ambiguity detection (scores within 0.10 of threshold)
@@ -38,14 +36,12 @@ The Perfect Shapes feature enables automatic shape recognition in a drawing appl
 - Introduced two-channel preprocessing approach
 
 ### Phase 3: Coverage Fix
-**Source:** `AABB_COVERAGE_FIX_INSTRUCTIONS.md`
 - Added evenness metric to side coverage calculation
 - Implemented comprehensive right-angle corner rules
 - Added score penalties for missing or insufficient right angles
 - Enhanced ambiguity detection based on corner count
 
 ### Phase 4: Self-Intersection Guards
-**Source:** `PROMPT.MD`
 - Added self-intersection detection for crossing strokes
 - Implemented near-closure check for loops that nearly close
 - Added near self-touch detection for grazing strokes
@@ -420,33 +416,3 @@ LINE_NEAR_TOUCH_EPSILON_FACTOR = 0.015    // Near-touch epsilon
 8. **Regular Stroke Commit**: Perfect shapes are just polylines
 
 ---
-
-## Performance Characteristics
-
-**Recognition:** ~2-5ms for typical stroke (100-200 points)
-- Only runs once per 600ms hold
-- O(n log n) for AABB percentiles
-- O(m²) for self-intersection on decimated points
-
-**Rendering:** Event-driven, ~0.1ms per frame
-- Only renders on invalidation
-- Full clear + single shape draw
-- No continuous RAF loop
-
-**Memory:** Minimal allocations
-- RAF coalescing prevents churn
-- Temporary copies only during recognition
-- Single preview object cached
-
----
-
-## Summary
-
-The Perfect Shapes implementation represents a sophisticated shape recognition system built through iterative refinement across four phases. It successfully balances:
-
-- **User Experience**: Intentional triggering, intuitive refinement, smart ambiguity handling
-- **Technical Robustness**: Two-channel processing, soft scoring, comprehensive guards
-- **Performance**: Event-driven architecture, efficient algorithms, minimal allocations
-- **Maintainability**: Centralized parameters, clear separation of concerns, extensive documentation
-
-The system elegantly handles the complexity of recognizing imperfect human input while providing a smooth, predictable user experience through careful attention to edge cases and ambiguity detection.
