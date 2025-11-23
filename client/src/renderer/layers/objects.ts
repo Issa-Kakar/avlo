@@ -128,9 +128,10 @@ function drawShape(
 ): void {
   const { id, y } = handle;
 
+  // Try new field names first, fall back to old for backward compatibility
   const fillColor = y.get('fillColor') as string | undefined;
-  const strokeColor = y.get('strokeColor') as string | undefined;
-  const strokeWidth = (y.get('strokeWidth') as number) ?? 1;
+  const color = (y.get('color') ?? y.get('strokeColor')) as string | undefined;
+  const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
   const opacity = (y.get('opacity') as number) ?? 1;
 
   const cache = getObjectCacheInstance();
@@ -144,9 +145,9 @@ function drawShape(
     ctx.fill(path);
   }
 
-  if (strokeColor && strokeWidth > 0) {
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = strokeWidth;
+  if (color && width > 0) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke(path);

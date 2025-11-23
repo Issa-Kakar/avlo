@@ -1,14 +1,15 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
-import { STROKE_CONFIG, ROOM_CONFIG } from '@avlo/shared';
+import { STROKE_CONFIG } from '@avlo/shared';
 import type { ViewTransform } from '@avlo/shared';
-import {  calculateBBox, estimateEncodedSize } from './simplification';
+import { calculateBBox } from './simplification';
 import type { DrawingState, PreviewData } from './types';
-import type { ToolSettings } from '@/stores/device-ui-store';
+import type { DrawingSettings } from '@/stores/device-ui-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
+import { createFillFromStroke } from '@/lib/utils/color';
 // import { getStroke } from 'perfect-freehand';
 // import { PF_OPTIONS_BASE } from '@/renderer/stroke-builder/pf-config';
 
@@ -16,18 +17,29 @@ import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
 // See Step 7 for the values to add to /packages/shared/src/config.ts
 
 type RequestOverlayFrame = () => void;
-type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow';
+type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow' | 'diamond';
+
+// Helper function to map snap kinds to shape types for storage
+function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
+  const mapping: Record<string, 'rect' | 'ellipse' | 'diamond' | 'roundedRect'> = {
+    'box': 'rect',           // Hold-detected box → sharp rect
+    'circle': 'ellipse',     // Hold-detected circle → ellipse
+    'rect': 'roundedRect',   // Tool rect → rounded rect (default)
+    'ellipseRect': 'ellipse', // Tool ellipse → ellipse
+    'diamond': 'diamond'      // Diamond → diamond
+  };
+  return mapping[snapKind] ?? 'rect';
+}
 
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
   private room: IRoomDocManager; // Use interface, not implementation
-  private settings: ToolSettings;
+  private settings: DrawingSettings;
   private toolType: 'pen' | 'highlighter';
   private userId: string; // Stable user ID for all strokes from this tool instance
 
   // Bounds tracking for commit (preview doesn't use bbox anymore)
   private lastBounds: [number, number, number, number] | null = null;
-  private shapeType: 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | null = null;
   // Callbacks
   private onInvalidate?: (bounds: [number, number, number, number]) => void;
   // NEW: Perfect shapes support
@@ -41,6 +53,7 @@ export class DrawingTool {
         | { kind: 'rect';        anchors: { A: [number, number] } }
         | { kind: 'ellipseRect'; anchors: { A: [number, number] } }
         | { kind: 'arrow';       anchors: { A: [number, number] } }
+        | { kind: 'diamond';     anchors: { A: [number, number] } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
   private getView?: () => ViewTransform;              // screen jitter (hold)
@@ -49,7 +62,7 @@ export class DrawingTool {
 
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
-    settings: ToolSettings,
+    settings: DrawingSettings,
     toolType: 'pen' | 'highlighter',
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
@@ -73,8 +86,7 @@ export class DrawingTool {
     this.state = {
       isDrawing: false,
       pointerId: null,
-      points: [],
-      pointsPF: [],
+      points: [], // Now stores [number, number][] tuples only
       config: {
         tool: this.toolType,
         color: this.settings.color,
@@ -110,6 +122,7 @@ export class DrawingTool {
       : k === 'box'         ? { kind: 'box',         anchors: { cx: worldX, cy: worldY, angle: 0, hx0: 0.5, hy0: 0.5 } }
       : k === 'rect'        ? { kind: 'rect',        anchors: { A: [worldX, worldY] } }
       : k === 'ellipseRect' ? { kind: 'ellipseRect', anchors: { A: [worldX, worldY] } }
+      : k === 'diamond'     ? { kind: 'diamond',     anchors: { A: [worldX, worldY] } }
       : /* arrow */           { kind: 'arrow',       anchors: { A: [worldX, worldY] } };
 
       this.liveCursorWU = [worldX, worldY];
@@ -163,8 +176,9 @@ export class DrawingTool {
     } else {
       // Fallback to last point if no final coords provided
       const len = this.state.points.length;
-      if (len >= 2) {
-        this.commitStroke(this.state.points[len - 2], this.state.points[len - 1]);
+      if (len >= 1) {
+        const lastPoint = this.state.points[len - 1];
+        this.commitStroke(lastPoint[0], lastPoint[1]);
       } else {
         this.cancelDrawing();
       }
@@ -189,8 +203,7 @@ export class DrawingTool {
     this.state = {
       isDrawing: true,
       pointerId,
-      points: [worldX, worldY],
-      pointsPF: [[worldX, worldY]],
+      points: [[worldX, worldY]], // Store as tuples from the start
       config: {
         tool: this.toolType,
         color: this.settings.color,
@@ -210,11 +223,10 @@ export class DrawingTool {
     // Drop exact duplicate (but DO NOT decimate otherwise)
     const pts = this.state.points;
     const L = pts.length;
-    if (L >= 2 && pts[L - 2] === worldX && pts[L - 1] === worldY) return;
+    if (L >= 1 && pts[L - 1][0] === worldX && pts[L - 1][1] === worldY) return;
 
-    // Append immediately; keep both buffers in lockstep for PF + commit
-    this.state.points.push(worldX, worldY);
-    this.state.pointsPF.push([worldX, worldY]);
+    // Append immediately to tuple array
+    this.state.points.push([worldX, worldY]);
 
     // Invalidate dirty region and ensure overlay rAF runs promptly
     this.updateBounds();           // canvas maps this to overlay invalidation
@@ -249,19 +261,20 @@ export class DrawingTool {
 
     // Use latest pointer in WORLD units
     const len = this.state.points.length;
-    if (len < 2) return;
-    const pointerNowWU: [number, number] = [
-      this.state.points[len - 2], this.state.points[len - 1]
-    ];
+    if (len < 1) return;
+    const pointerNowWU: [number, number] = this.state.points[len - 1];
 
     //  keep the live cursor in sync at the moment of snapping
     this.liveCursorWU = pointerNowWU;
 
     console.group('🎯 Hold Detector Fired - Shape Recognition');
-    console.log(`Stroke has ${this.state.points.length / 2} points after 600ms dwell`);
+    console.log(`Stroke has ${this.state.points.length} points after 600ms dwell`);
+
+    // Convert tuples to flat array for shape recognition (temporary until RDP is updated)
+    const flatPoints = this.tupleArrayToFlat(this.state.points);
 
     const result = recognizeOpenStroke({
-      pointsWU: this.state.points,
+      pointsWU: flatPoints,
       pointerNowWU
     });
 
@@ -310,17 +323,18 @@ export class DrawingTool {
         color,
         size,
         opacity: this.state.config.opacity, // Use actual commit opacity
+        fill: (this.settings as any).fill,  // Include fill flag for preview
         anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
         cursor: this.liveCursorWU,
         bbox: null
       };
     }
 
-    // Freehand: return PF-native tuples for zero-conversion preview
-    if (this.state.pointsPF.length < 1) return null;
+    // Freehand: return tuples for zero-conversion preview
+    if (this.state.points.length < 1) return null;
     return {
       kind: 'stroke',
-      points: this.state.pointsPF, // PF-native tuples
+      points: this.state.points, // Direct tuple array
       tool: this.state.config.tool,
       color: this.state.config.color,
       size: this.state.config.size,
@@ -351,38 +365,20 @@ export class DrawingTool {
     // 1) CRITICAL: Flush RAF before commit
     this.flushPending();
 
-    // 2) Add final point to BOTH arrays (lockstep critical!)
+    // 2) Add final point to tuple array if needed
     const len = this.state.points.length;
-    const needsFinal = len < 2 || this.state.points[len - 2] !== finalX || this.state.points[len - 1] !== finalY;
+    const needsFinal = len < 1 || this.state.points[len - 1][0] !== finalX || this.state.points[len - 1][1] !== finalY;
     if (needsFinal) {
-      this.state.points.push(finalX, finalY);
-      this.state.pointsPF.push([finalX, finalY]); // CRITICAL: Keep PF tuples in lockstep
+      this.state.points.push([finalX, finalY]);
     }
 
-    // 4) Store preview bounds for invalidation
+    // 3) Store preview bounds for invalidation
     const previewBounds = this.lastBounds;
 
-    // 5) NO SIMPLIFICATION for freehand - use raw centerline
-    const rawPoints = this.state.points;
+    // 4) Compute final bbox from tuples (no clone needed - Yjs copies internally)
+    const finalBbox = calculateBBox(this.state.points, this.state.config.size);
 
-    // 6) Canonical PF tuples = exact tuple buffer used for preview (clone for immutability)
-    const canonicalTuples = this.state.pointsPF.slice();
-
-    // 7) Size check on raw centerline (transport limit)
-    const estimatedSize = estimateEncodedSize(rawPoints);
-    if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
-      console.error(
-        `Stroke too large for transport: ${estimatedSize} bytes (max: ${ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES})`,
-      );
-      // TODO: Show user toast about stroke being too complex
-      this.cancelDrawing();
-      return;
-    }
-
-    // 8) Compute final bbox from raw centerline
-    const finalBbox = calculateBBox(rawPoints, this.state.config.size);
-
-    // 11) Commit to Y.Doc with BOTH raw points and canonical tuples
+    // 5) Commit to Y.Doc with tuple points directly
     const strokeId = ulid();
     const userId = this.userId;
 
@@ -398,7 +394,7 @@ export class DrawingTool {
         strokeMap.set('color', this.state.config.color);
         strokeMap.set('width', this.state.config.size);  // Renamed from 'size' to 'width' per migration spec
         strokeMap.set('opacity', this.state.config.opacity);
-        strokeMap.set('points', canonicalTuples);  // Store as tuples (no more flat arrays)
+        strokeMap.set('points', this.state.points);  // Direct reference - Yjs copies internally
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
 
@@ -407,14 +403,14 @@ export class DrawingTool {
     } catch (err) {
       console.error('Failed to commit stroke:', err);
     } finally {
-      // 12) Invalidate preview + final bbox
+      // 6) Invalidate preview + final bbox
       if (previewBounds) {
         this.onInvalidate?.(previewBounds);
       }
       if (finalBbox) {
         this.onInvalidate?.(finalBbox);
       }
-      // 13) Reset state (finalOutline persists for held frame)
+      // 7) Reset state
       this.resetState();
     }
   }
@@ -422,28 +418,35 @@ export class DrawingTool {
   private commitPerfectShapeFromPreview(): void {
     if (!this.snap || !this.liveCursorWU) return;
 
-    // Generate polyline from (anchors + final cursor)
-    let points: number[];
     const finalCursor = this.liveCursorWU!;
-    
+    let frame: [number, number, number, number];
+    const shapeType = getShapeTypeFromSnapKind(this.snap.kind);
+
     if (this.snap.kind === 'line') {
-      const { A } = this.snap.anchors;
-      const B = finalCursor;
-      points = [A[0], A[1], B[0], B[1]];
+      // Line is not a shape object, skip for now
+      // TODO: Implement connector tool for lines and arrows
+      console.log('Line/Arrow shapes not yet supported as shape objects');
+      this.cancelDrawing();
+      return;
+
+    } else if (this.snap.kind === 'arrow') {
+      // Arrow is not a shape object, skip for now
+      console.log('Line/Arrow shapes not yet supported as shape objects');
+      this.cancelDrawing();
+      return;
 
     } else if (this.snap.kind === 'circle') {
-      this.shapeType = 'ellipse';
       const { center } = this.snap.anchors;
       const r = Math.hypot(finalCursor[0] - center[0], finalCursor[1] - center[1]);
-      const n = Math.max(24, Math.ceil(2 * Math.PI * r / 8));
-      points = [];
-      for (let i = 0; i <= n; i++) {
-        const angle = (i / n) * 2 * Math.PI;
-        points.push(center[0] + r * Math.cos(angle), center[1] + r * Math.sin(angle));
-      }
+      // Calculate frame directly: [x, y, width, height]
+      frame = [
+        center[0] - r,
+        center[1] - r,
+        r * 2,
+        r * 2
+      ];
 
     } else if (this.snap.kind === 'box') {
-      this.shapeType = 'rect';
       const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
       // Compute final scale from cursor
       const dx = finalCursor[0] - cx;
@@ -455,72 +458,58 @@ export class DrawingTool {
       const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
       const hx = hx0 * sx;
       const hy = hy0 * sy;
-
-      const corners = [
-        [-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, -hy]
+      // Calculate frame directly for AABB box
+      frame = [
+        cx - hx,
+        cy - hy,
+        hx * 2,
+        hy * 2
       ];
-      points = [];
-      for (const [lx, ly] of corners) {
-        points.push(
-          cx + lx * cos - ly * sin,
-          cy + lx * sin + ly * cos
-        );
-      }
 
     } else if (this.snap.kind === 'rect') {
-      this.shapeType = 'roundedRect' as const;
+      // Corner-anchored rectangle
       const { A } = this.snap.anchors;
       const C = finalCursor;
-      const B: [number, number] = [C[0], A[1]];
-      const D: [number, number] = [A[0], C[1]];
-      points = [
-        A[0], A[1],
-        B[0], B[1],
-        C[0], C[1],
-        D[0], D[1],
-        A[0], A[1],
+      const minX = Math.min(A[0], C[0]);
+      const minY = Math.min(A[1], C[1]);
+      const maxX = Math.max(A[0], C[0]);
+      const maxY = Math.max(A[1], C[1]);
+      frame = [
+        minX,
+        minY,
+        maxX - minX,
+        maxY - minY
       ];
-    
 
     } else if (this.snap.kind === 'ellipseRect') {
-      // Corner-anchored ellipse inscribed in AABB
-      this.shapeType = 'ellipse';
+      // Corner-anchored ellipse
       const { A } = this.snap.anchors;
       const C = finalCursor;
-      const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-      const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-      const rx = Math.max(0.0001, (maxX - minX) / 2);
-      const ry = Math.max(0.0001, (maxY - minY) / 2);
-      // Approximate perimeter for point density
-      const perim = Math.PI * (3*(rx+ry) - Math.sqrt((3*rx+ry)*(rx+3*ry)));
-      const n = Math.max(24, Math.ceil(perim / 8));
-      points = [];
-      for (let i = 0; i <= n; i++) {
-        const t = (i / n) * 2 * Math.PI;
-        points.push(cx + rx * Math.cos(t), cy + ry * Math.sin(t));
-      }
+      const minX = Math.min(A[0], C[0]);
+      const minY = Math.min(A[1], C[1]);
+      const maxX = Math.max(A[0], C[0]);
+      const maxY = Math.max(A[1], C[1]);
+      frame = [
+        minX,
+        minY,
+        maxX - minX,
+        maxY - minY
+      ];
 
-    } else if (this.snap.kind === 'arrow') {
-      // Arrow with dynamic head size
+    } else if (this.snap.kind === 'diamond') {
+      // Corner-anchored diamond (same as rect/ellipse)
       const { A } = this.snap.anchors;
-      const B = finalCursor;
-      const vx = B[0] - A[0], vy = B[1] - A[1];
-      const len = Math.hypot(vx, vy) || 1;
-      const headSize = Math.min(40, len * 0.25);
-      const spread = Math.PI / 7; // ~25 degrees
-      const theta = Math.atan2(vy, vx);
-      const H1: [number, number] = [
-        B[0] - headSize * Math.cos(theta + spread),
-        B[1] - headSize * Math.sin(theta + spread)
+      const C = finalCursor;
+      const minX = Math.min(A[0], C[0]);
+      const minY = Math.min(A[1], C[1]);
+      const maxX = Math.max(A[0], C[0]);
+      const maxY = Math.max(A[1], C[1]);
+      frame = [
+        minX,
+        minY,
+        maxX - minX,
+        maxY - minY
       ];
-      const H2: [number, number] = [
-        B[0] - headSize * Math.cos(theta - spread),
-        B[1] - headSize * Math.sin(theta - spread)
-      ];
-      // Single continuous polyline: shaft + head
-      points = [A[0], A[1], B[0], B[1], H1[0], H1[1], B[0], B[1], H2[0], H2[1]];
 
     } else {
       // Exhaustive check - TypeScript ensures all cases are handled
@@ -529,18 +518,7 @@ export class DrawingTool {
       this.cancelDrawing();
       return;
     }
-
-    // NOW compute bbox at commit time
-    const bbox = calculateBBox(points, 0);
-
-    // Check size limits
-    const estimatedSize = estimateEncodedSize(points);
-    if (estimatedSize > ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES) {
-      console.error('Perfect shape too large for transport');
-      this.cancelDrawing();
-      return;
-    }
-
+    console.log('frame', frame);
     // Commit as shape object
     const shapeId = ulid();
     this.room.mutate((ydoc) => {
@@ -550,20 +528,34 @@ export class DrawingTool {
       const shapeMap = new Y.Map();
       shapeMap.set('id', shapeId);
       shapeMap.set('kind', 'shape');
-      shapeMap.set('shapeType', this.shapeType as 'rect' | 'ellipse' | 'diamond' | 'roundedRect');  // Store the shape type
-      shapeMap.set('strokeColor', this.state.config.color);
-      shapeMap.set('strokeWidth', this.state.config.size);
-      // shapeMap.set('fillColor', '#');
+      shapeMap.set('shapeType', shapeType);  // Use the mapped shape type
+      shapeMap.set('color', this.state.config.color);  // Phase 3: Use 'color' not 'strokeColor'
+      shapeMap.set('width', this.state.config.size);   // Phase 3: Use 'width' not 'strokeWidth'
+
+      // Add fill color if enabled (passed through settings)
+      if ((this.settings as any).fill) {
+        const fillColor = createFillFromStroke(this.state.config.color);
+        shapeMap.set('fillColor', fillColor);
+      }
+
       shapeMap.set('opacity', this.state.config.opacity);
-      shapeMap.set('frame', bbox ? [bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]] : [0, 0, 0, 0]);  // Convert bbox to frame [x, y, w, h]
+      shapeMap.set('frame', frame);  // Direct frame, no conversion needed
       shapeMap.set('ownerId', this.userId);
       shapeMap.set('createdAt', Date.now());
 
       objects.set(shapeId, shapeMap);
     });
 
-    // Invalidate and reset
-    if (bbox) this.onInvalidate?.(bbox);
+    // Invalidate using frame bounds (with stroke width inflation)
+    const strokeWidth = this.state.config.size;
+    const padding = strokeWidth * 0.5 + 1;
+    const inflatedBounds: [number, number, number, number] = [
+      frame[0] - padding,
+      frame[1] - padding,
+      frame[0] + frame[2] + padding,
+      frame[1] + frame[3] + padding
+    ];
+    this.onInvalidate?.(inflatedBounds);
     this.resetState();
     this.snap = null;
     this.liveCursorWU = null;
@@ -575,4 +567,23 @@ export class DrawingTool {
     this.snap = null;
     this.liveCursorWU = null;
   }
+
+  // Helper functions for Vec2 conversion (temporary until RDP is updated to work with tuples)
+  private tupleArrayToFlat(tuples: [number, number][]): number[] {
+    const flat: number[] = [];
+    for (const [x, y] of tuples) {
+      flat.push(x, y);
+    }
+    return flat;
+  }
+
+  // private flatToTupleArray(flat: number[]): [number, number][] {
+  //   const tuples: [number, number][] = [];
+  //   for (let i = 0; i < flat.length; i += 2) {
+  //     if (i + 1 < flat.length) {
+  //       tuples.push([flat[i], flat[i + 1]]);
+  //     }
+  //   }
+  //   return tuples;
+  // }
 }

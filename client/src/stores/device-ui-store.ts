@@ -2,29 +2,34 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image';
-export type ShapeVariant = 'line' | 'rectangle' | 'ellipse' | 'arrow';
+export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'arrow';
 
 // Size types for new system
 export type SizePreset = 10 | 14 | 18 | 22; // For pen/highlighter/shapes
 export type TextSizePreset = 20 | 30 | 40 | 50; // For text
 
-export interface ToolSettings {
+// Global drawing settings that all tools share
+export interface DrawingSettings {
   size: SizePreset;
   color: string;
-  opacity?: number;
+  opacity: number;
+  fill: boolean;  // Whether fill is enabled (only affects shapes)
 }
 
 interface DeviceUIState {
-  // Tool state - keeping existing structure with updated size types
+  // Tool state
   activeTool: Tool;
-  pen: { size: SizePreset; color: string; opacity?: number };
-  highlighter: { size: SizePreset; color: string; opacity?: number };
-  eraser: { size: SizePreset }; // Use SizePreset like other tools
-  text: { size: TextSizePreset; color: string };
-  shape: {
-    variant: ShapeVariant;
-    settings: { size: SizePreset; color: string; opacity?: number };
-  };
+
+  // UNIFIED drawing settings - all tools use these
+  drawingSettings: DrawingSettings;
+
+  // Tool-specific settings that don't carry over
+  highlighterOpacity: number; // Highlighter always uses 0.45 opacity
+  eraserSize: SizePreset; // Eraser has its own size
+  textSize: TextSizePreset; // Text has different size scale
+  shapeVariant: ShapeVariant; // Which shape is selected
+
+  // Placeholder tools
   select: {
     enabled: boolean; // Placeholder for future implementation
   };
@@ -40,51 +45,59 @@ interface DeviceUIState {
   fixedColors: string[]; // 8 fixed palette colors
   recentColors: string[]; // Last 5 custom colors (excludes fixed)
   isColorPopoverOpen: boolean; // Color popover state
-  fillEnabledUI: boolean; // UI-only fill toggle state for shapes
 
   // Collaboration mode preference
   collaborationMode: 'server' | 'peer';
 
   // Actions
   setActiveTool: (tool: Tool) => void;
-  setPenSettings: (
-    settings: Partial<{ size: SizePreset; color: string; opacity?: number }>,
-  ) => void;
-  setHighlighterSettings: (
-    settings: Partial<{ size: SizePreset; color: string; opacity?: number }>,
-  ) => void;
+
+  // Unified drawing settings setters
+  setDrawingSettings: (settings: Partial<DrawingSettings>) => void;
+  setDrawingSize: (size: SizePreset) => void;
+  setDrawingColor: (color: string) => void;
+  setDrawingOpacity: (opacity: number) => void;
+  setFillEnabled: (enabled: boolean) => void;
+
+  // Tool-specific setters (these don't affect global settings)
+  setHighlighterOpacity: (opacity: number) => void;
   setEraserSize: (size: SizePreset) => void;
-  setTextSettings: (settings: Partial<{ size: TextSizePreset; color: string }>) => void;
-  setShapeSettings: (
-    settings: Partial<
-      { variant: ShapeVariant } & { size: SizePreset; color: string; opacity?: number }
-    >,
-  ) => void;
+  setTextSize: (size: TextSizePreset) => void;
+  setShapeVariant: (variant: ShapeVariant) => void;
+
   setSelectSettings: (settings: Partial<DeviceUIState['select']>) => void;
   toggleEditor: () => void; // Keep for future code editor
   setCollaborationMode: (mode: 'server' | 'peer') => void;
   setIsTextEditing: (editing: boolean) => void;
 
-  // New helper methods for inspector
-  setCurrentToolSize: (size: number | string) => void;
-  setCurrentToolColor: (color: string) => void;
+  // Helper methods for getting current tool settings
+  getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
 
   // New color system actions
   addRecentColor: (hex: string) => void;
   setColorPopoverOpen: (open: boolean) => void;
-  setFillEnabledUI: (enabled: boolean) => void;
 }
 
 export const useDeviceUIStore = create<DeviceUIState>()(
   persist(
-    (set) => ({
-      // Updated default state with new color palette and sizes
+    (set, get) => ({
+      // Updated default state with unified drawing settings
       activeTool: 'pen',
-      pen: { size: 10, color: '#262626' }, // Soft black ink
-      highlighter: { size: 14, color: '#EAB308', opacity: 0.45 }, // Yellow
-      eraser: { size: 14 }, // Medium size by default
-      text: { size: 30, color: '#262626' }, // Medium size, soft black
-      shape: { variant: 'rectangle', settings: { size: 10, color: '#262626' } },
+
+      // UNIFIED drawing settings - all tools use these
+      drawingSettings: {
+        size: 10,
+        color: '#262626', // Soft black ink
+        opacity: 1.0,
+        fill: false, // Fill off by default
+      },
+
+      // Tool-specific settings that don't carry over
+      highlighterOpacity: 0.45, // Highlighter always uses this
+      eraserSize: 14, // Eraser has its own size
+      textSize: 30, // Text has different size scale
+      shapeVariant: 'rectangle', // Default shape
+
       select: { enabled: false },
       image: { enabled: false }, // New placeholder
 
@@ -104,45 +117,66 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       ],
       recentColors: [],
       isColorPopoverOpen: false,
-      fillEnabledUI: false,
 
       collaborationMode: 'server',
 
       // Actions
       setActiveTool: (tool) => set({ activeTool: tool }),
 
-      setPenSettings: (settings) =>
+      // Unified drawing settings setters
+      setDrawingSettings: (settings) =>
         set((state) => ({
-          pen: { ...state.pen, ...settings },
+          drawingSettings: { ...state.drawingSettings, ...settings },
         })),
 
-      setHighlighterSettings: (settings) =>
+      setDrawingSize: (size) => {
+        // Validate size is actually a SizePreset (10, 14, 18, or 22)
+        if (![10, 14, 18, 22].includes(size)) {
+          console.error(`Invalid SizePreset: ${size}. Expected 10, 14, 18, or 22. Ignoring.`);
+          return;
+        }
         set((state) => ({
-          highlighter: { ...state.highlighter, ...settings },
+          drawingSettings: { ...state.drawingSettings, size },
+        }));
+      },
+
+      setDrawingColor: (color) =>
+        set((state) => ({
+          drawingSettings: { ...state.drawingSettings, color },
         })),
 
-      setEraserSize: (size) =>
+      setDrawingOpacity: (opacity) =>
         set((state) => ({
-          eraser: { ...state.eraser, size }, // Set the actual size passed
+          drawingSettings: { ...state.drawingSettings, opacity },
         })),
 
-      setTextSettings: (settings) =>
+      setFillEnabled: (enabled) =>
         set((state) => ({
-          text: { ...state.text, ...settings },
+          drawingSettings: { ...state.drawingSettings, fill: enabled },
         })),
 
-      setShapeSettings: (settings) =>
-        set((state) => ({
-          shape: {
-            variant: settings.variant ?? state.shape.variant,
-            settings: {
-              ...state.shape.settings,
-              ...(settings.size !== undefined && { size: settings.size }),
-              ...(settings.color !== undefined && { color: settings.color }),
-              ...(settings.opacity !== undefined && { opacity: settings.opacity }),
-            },
-          },
-        })),
+      // Tool-specific setters (these don't affect global settings)
+      setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
+
+      setEraserSize: (size) => {
+        // Validate eraser size is a valid SizePreset
+        if (![10, 14, 18, 22].includes(size)) {
+          console.error(`Invalid eraser size: ${size}. Expected 10, 14, 18, or 22. Ignoring.`);
+          return;
+        }
+        set({ eraserSize: size });
+      },
+
+      setTextSize: (size) => {
+        // Validate text size is a valid TextSizePreset
+        if (![20, 30, 40, 50].includes(size)) {
+          console.error(`Invalid text size: ${size}. Expected 20, 30, 40, or 50. Ignoring.`);
+          return;
+        }
+        set({ textSize: size });
+      },
+
+      setShapeVariant: (variant) => set({ shapeVariant: variant }),
 
       setSelectSettings: (settings) =>
         set((state) => ({
@@ -155,56 +189,54 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       setIsTextEditing: (editing) => set({ isTextEditing: editing }),
 
-      // New helper methods for inspector
-      setCurrentToolSize: (size) =>
-        set((state) => {
-          const t = state.activeTool;
+      // Helper method to get current tool settings
+      getCurrentToolSettings: () => {
+        const state = get();
+        const { activeTool, drawingSettings, highlighterOpacity, eraserSize, textSize } = state;
 
-          // Convert S/M/L/XL to pixel values
-          let mappedSize = typeof size === 'number' ? size : 10;
-          if (typeof size === 'string') {
-            const sizeMap: Record<string, number> = {
-              S: t === 'text' ? 20 : 10,
-              M: t === 'text' ? 30 : 14,
-              L: t === 'text' ? 40 : 18,
-              XL: t === 'text' ? 50 : 22,
-            };
-            mappedSize = sizeMap[size] || 10;
-          }
+        // Base settings from unified drawing settings
+        let settings = {
+          size: drawingSettings.size as number,
+          color: drawingSettings.color,
+          opacity: drawingSettings.opacity,
+          fill: drawingSettings.fill,
+        };
 
-          // Type guards for proper typing
-          const isTextSize = (s: number): s is TextSizePreset => [20, 30, 40, 50].includes(s);
-          const isNormalSize = (s: number): s is SizePreset => [10, 14, 18, 22].includes(s);
+        // Override with tool-specific settings
+        switch (activeTool) {
+          case 'highlighter':
+            settings.opacity = highlighterOpacity;
+            break;
+          case 'eraser':
+            settings.size = eraserSize;
+            break;
+          case 'text':
+            settings.size = textSize;
+            break;
+          case 'shape':
+            // Shapes use all unified settings including fill
+            settings.size = drawingSettings.size;
+            settings.color = drawingSettings.color as string;
+            settings.opacity = drawingSettings.opacity as number;
+            settings.fill = drawingSettings.fill as boolean;
+            break;
+          case 'pen':
+            // Pen uses unified settings, but fill doesn't apply
+            settings.size = drawingSettings.size;
+            settings.color = drawingSettings.color as string;
+            settings.opacity = drawingSettings.opacity as number;
+            settings.fill = drawingSettings.fill;
+            break;
+          default:
+            settings.size = drawingSettings.size as number;
+            settings.color = drawingSettings.color as string;
+            settings.opacity = drawingSettings.opacity as number;
+            settings.fill = drawingSettings.fill as boolean;
+            break;
+        }
 
-          if (t === 'pen' && isNormalSize(mappedSize))
-            return { pen: { ...state.pen, size: mappedSize } };
-          if (t === 'highlighter' && isNormalSize(mappedSize))
-            return { highlighter: { ...state.highlighter, size: mappedSize } };
-          if (t === 'eraser' && isNormalSize(mappedSize))
-            return { eraser: { ...state.eraser, size: mappedSize } };
-          if (t === 'text' && isTextSize(mappedSize))
-            return { text: { ...state.text, size: mappedSize } };
-          if (t === 'shape' && isNormalSize(mappedSize))
-            return {
-              shape: { ...state.shape, settings: { ...state.shape.settings, size: mappedSize } },
-            };
-          return {};
-        }),
-
-      setCurrentToolColor: (color) =>
-        set((state) => {
-          const t = state.activeTool;
-          if (t === 'eraser' || t === 'pan' || t === 'select' || t === 'image') return {};
-
-          if (t === 'pen') return { pen: { ...state.pen, color } };
-          if (t === 'highlighter') return { highlighter: { ...state.highlighter, color } };
-          if (t === 'text') return { text: { ...state.text, color } };
-          if (t === 'shape')
-            return {
-              shape: { ...state.shape, settings: { ...state.shape.settings, color } },
-            };
-          return {};
-        }),
+        return settings;
+      },
 
       // New color system actions
       addRecentColor: (hex) =>
@@ -224,12 +256,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         }),
 
       setColorPopoverOpen: (open) => set({ isColorPopoverOpen: open }),
-
-      setFillEnabledUI: (enabled) => set({ fillEnabledUI: enabled }),
     }),
     {
-      name: 'avlo.toolbar.v2', // Updated localStorage key for redesign
-      version: 3,
+      name: 'avlo.toolbar.v3', // New key for unified settings
+      version: 4,
       // Migration function for schema changes
       migrate: (persistedState: any, version: number) => {
         // Helper functions for migration
@@ -258,35 +288,45 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           return colorMap[oldColor] || oldColor;
         };
 
-        if (version < 3) {
+        if (version < 4) {
           const oldState = persistedState as any;
+
+          // Determine unified settings from the active tool's settings
+          let unifiedSize = 10 as SizePreset;
+          let unifiedColor = '#262626';
+          let unifiedOpacity = 1.0;
+
+          // Get settings from old active tool or pen as default
+          const activeTool = oldState.activeTool || 'pen';
+          if (oldState.pen && (activeTool === 'pen' || !oldState[activeTool])) {
+            unifiedSize = migrateSize(oldState.pen.size || 10);
+            unifiedColor = migrateColor(oldState.pen.color || '#262626');
+            unifiedOpacity = oldState.pen.opacity || 1.0;
+          } else if (oldState.shape?.settings && activeTool === 'shape') {
+            unifiedSize = migrateSize(oldState.shape.settings.size || 10);
+            unifiedColor = migrateColor(oldState.shape.settings.color || '#262626');
+            unifiedOpacity = oldState.shape.settings.opacity || 1.0;
+          }
+
           return {
             activeTool: oldState.activeTool || 'pen',
-            pen: {
-              size: migrateSize(oldState.pen?.size || 4),
-              color: migrateColor(oldState.pen?.color || '#262626'),
-              opacity: oldState.pen?.opacity,
+
+            // New unified drawing settings
+            drawingSettings: {
+              size: unifiedSize,
+              color: unifiedColor,
+              opacity: unifiedOpacity,
+              fill: oldState.fillEnabledUI || oldState.drawingSettings?.fill || false,
             },
-            highlighter: {
-              size: migrateSize(oldState.highlighter?.size || 8),
-              color: migrateColor(oldState.highlighter?.color || '#EAB308'),
-              opacity: oldState.highlighter?.opacity || 0.45,
-            },
-            eraser: { size: migrateSize(oldState.eraser?.size || 8) }, // Migrate old eraser size
-            text: {
-              size: migrateTextSize(oldState.text?.size || 16),
-              color: migrateColor(oldState.text?.color || '#262626'),
-            },
-            shape: {
-              variant: oldState.shape?.variant || 'rectangle',
-              settings: {
-                size: migrateSize(oldState.shape?.settings?.size || 4),
-                color: migrateColor(oldState.shape?.settings?.color || '#262626'),
-                opacity: oldState.shape?.settings?.opacity,
-              },
-            },
+
+            // Tool-specific settings
+            highlighterOpacity: oldState.highlighter?.opacity || 0.45,
+            eraserSize: migrateSize(oldState.eraser?.size || 14),
+            textSize: migrateTextSize(oldState.text?.size || 30),
+            shapeVariant: oldState.shape?.variant || 'rectangle',
+
             select: { enabled: oldState.select?.enabled || false },
-            image: { enabled: false }, // New
+            image: { enabled: false },
 
             // Keep some old state
             editorCollapsed: oldState.editorCollapsed || false,
@@ -306,7 +346,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             ],
             recentColors: oldState.recentColors || [],
             isColorPopoverOpen: false,
-            fillEnabledUI: oldState.fillEnabledUI || false,
           };
         }
         return persistedState as DeviceUIState;

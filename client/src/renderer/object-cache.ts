@@ -74,17 +74,26 @@ export class ObjectRenderCache {
             break;
           case 'diamond': {
             const cx = x + w / 2;
-            const cy = y0 + h / 2;
-            path.moveTo(cx, y0);
-            path.lineTo(x + w, cy);
-            path.lineTo(cx, y0 + h);
-            path.lineTo(x, cy);
+            const cy = y0 + h / 2;          
+            // Match preview logic exactly for WYSIWYG (20px max, or 10% of size)
+            const radius = Math.min(20, Math.min(w, h) * 0.1);
+            // Start on the top-right edge (midpoint)
+            path.moveTo(cx + w / 4, y0 + h / 4);
+            // Right Tip
+            // arcTo(cornerX, cornerY, destX, destY, radius)
+            path.arcTo(x + w, cy, cx, y0 + h, radius);
+            // Bottom Tip
+            path.arcTo(cx, y0 + h, x, cy, radius);
+            // Left Tip
+            path.arcTo(x, cy, cx, y0, radius);
+            // Top Tip
+            path.arcTo(cx, y0, x + w, cy, radius);
             path.closePath();
             break;
           }
           case 'roundedRect': {
-            const r = Math.min((y.get('cornerRadius') as number) ?? 20, w / 2, h / 2);
-            roundedRect(path, x, y0, w, h, r);
+            const radius = Math.min(20, w * 0.1, h * 0.1);
+            roundedRect(path, x, y0, w, h, radius);
             break;
           }
           default:

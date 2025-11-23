@@ -31,7 +31,20 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
       ];
     }
 
-    case 'shape':
+    case 'shape': {
+      const frame = (yMap.get('frame') as [number, number, number, number]) ?? [0, 0, 0, 0];
+      // Try new field name 'width' first, fall back to 'strokeWidth' for backward compatibility
+      const strokeWidth = ((yMap.get('width') ?? yMap.get('strokeWidth')) as number) ?? 1;
+      const padding = strokeWidth * 0.5 + 1;
+
+      return [
+        frame[0] - padding,
+        frame[1] - padding,
+        frame[0] + frame[2] + padding,
+        frame[1] + frame[3] + padding
+      ];
+    }
+
     case 'text': {
       const frame = (yMap.get('frame') as [number, number, number, number]) ?? [0, 0, 0, 0];
       return [

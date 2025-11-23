@@ -249,15 +249,12 @@ export class DirtyRectTracker {
   // Get clear instructions
   getClearInstructions(): { type: 'full' | 'dirty' | 'none'; rects?: DevicePixelRect[] } {
     if (this.fullClearRequired) {
-      console.log('[DirtyRectTracker] getClearInstructions: full clear');
       return { type: 'full' };
     }
 
     if (this.rects.length === 0) {
-      console.log('[DirtyRectTracker] getClearInstructions: no rects');
       return { type: 'none' };
     }
-    console.log('[DirtyRectTracker] getClearInstructions: rects', this.rects);
     return { type: 'dirty', rects: [...this.rects] };
   }
 

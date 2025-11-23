@@ -101,7 +101,7 @@ case 'text': {
 
 **Solution**:
 - Add stroke width inflation for shapes
-- Account for strokeWidth/2 padding around frame
+- Account for width/2 padding around frame
 
 ## Implementation Plan
 
@@ -271,19 +271,15 @@ case 'shape': {
    - Update calculateBBox to accept tuples
    - Or remove if not needed
 
-## Performance Considerations
-
-### Memory
-- Tuple arrays use same memory as flat arrays
-- No performance impact from migration
+## Notes
 
 ### Cache
 - Shape geometry cached by ID
-- Width changes should trigger eviction for shapes too
+- Width changes should trigger eviction for shapes too, this is **TEMPORARY** as in the future cache will be zero-origin
+- Future will not evict cache if bbox changed unconditionally on shapes: we will make it position-independent for path2d
 
 ### Rendering
-- Path2D construction unchanged
-- Preview rendering remains lightweight
+- for now Path2D construction unchanged
 
 ## Vec2 Processing Analysis (Additional Investigation)
 
@@ -378,13 +374,6 @@ function flatToTupleArray(flat: number[]): [number, number][] {
 - [ ] Corner detection finds same corners
 - [ ] Rectangle scoring unchanged
 - [ ] No performance regression from conversions
-
-## Rollback Plan
-
-If issues arise:
-1. Revert field name changes (easiest)
-2. Keep dual array storage temporarily
-3. Use feature flag for new behavior
 
 ## Success Metrics
 

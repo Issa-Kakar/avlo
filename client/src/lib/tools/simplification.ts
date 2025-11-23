@@ -7,21 +7,48 @@ export interface SimplificationResult {
 }
 
 export function calculateBBox(
-  points: number[],
+  points: number[] | [number, number][],
   strokeSize: number = 0,
 ): [number, number, number, number] | null {
-  if (points.length < 1) return null;
+  // Handle both flat arrays and tuple arrays
+  if (Array.isArray(points) && points.length === 0) return null;
 
-  let minX = points[0];
-  let minY = points[1];
-  let maxX = points[0];
-  let maxY = points[1];
+  let minX: number, minY: number, maxX: number, maxY: number;
 
-  for (let i = 2; i < points.length; i += 2) {
-    minX = Math.min(minX, points[i]);
-    maxX = Math.max(maxX, points[i]);
-    minY = Math.min(minY, points[i + 1]);
-    maxY = Math.max(maxY, points[i + 1]);
+  // Check if it's a tuple array
+  if (Array.isArray(points[0])) {
+    // Tuple array: [number, number][]
+    const tuplePoints = points as [number, number][];
+    if (tuplePoints.length < 1) return null;
+
+    minX = tuplePoints[0][0];
+    minY = tuplePoints[0][1];
+    maxX = tuplePoints[0][0];
+    maxY = tuplePoints[0][1];
+
+    for (let i = 1; i < tuplePoints.length; i++) {
+      const [x, y] = tuplePoints[i];
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+    }
+  } else {
+    // Flat array: number[]
+    const flatPoints = points as number[];
+    if (flatPoints.length < 2) return null;
+
+    minX = flatPoints[0];
+    minY = flatPoints[1];
+    maxX = flatPoints[0];
+    maxY = flatPoints[1];
+
+    for (let i = 2; i < flatPoints.length; i += 2) {
+      minX = Math.min(minX, flatPoints[i]);
+      maxX = Math.max(maxX, flatPoints[i]);
+      minY = Math.min(minY, flatPoints[i + 1]);
+      maxY = Math.max(maxY, flatPoints[i + 1]);
+    }
   }
 
   // CRITICAL: Inflate bounds for proper invalidation

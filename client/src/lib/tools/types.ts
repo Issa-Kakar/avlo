@@ -10,8 +10,7 @@ export interface DrawingToolConfig {
 export interface DrawingState {
   isDrawing: boolean;
   pointerId: number | null;
-  points: number[];             // flat centerline [x,y, x,y, ...] for commit/simplify
-  pointsPF: [number, number][]; // PF-native live buffer [[x,y], [x,y], ...] for preview only
+  points: [number, number][];   // Single tuple array for all uses (preview and commit)
 
   // Tool settings frozen at gesture start
   config: DrawingToolConfig;
@@ -65,7 +64,8 @@ export type PerfectShapeAnchors =
   | { kind: 'box';         cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen AABB seed (hold detector)
   | { kind: 'rect';        A: [number, number] }                                             // corner-anchored AABB
   | { kind: 'ellipseRect'; A: [number, number] }                                             // corner-anchored ellipse
-  | { kind: 'arrow';       A: [number, number] };                                            // arrow: fixed start point
+  | { kind: 'arrow';       A: [number, number] }                                             // arrow: fixed start point
+  | { kind: 'diamond';     A: [number, number] };                                            // corner-anchored diamond
 
 /**
  * PerfectShapePreview is the preview data for perfect shapes (line, circle, box)
@@ -75,7 +75,8 @@ export type PerfectShapeAnchors =
  */
 export interface PerfectShapePreview {
   kind: 'perfectShape';
-  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow';
+  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow' | 'diamond';
+  fill?: boolean; // Optional fill flag for shapes
 
   // Tool styling frozen at pointer-down
   color: string;

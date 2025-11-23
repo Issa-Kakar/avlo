@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useDeviceUIStore } from '../../stores/device-ui-store';
+import { DrawingSettings, SizePreset, TextSizePreset, useDeviceUIStore } from '../../stores/device-ui-store';
 
 // Import icon components from Phase 5
 import {
@@ -28,28 +28,43 @@ interface ToolPanelProps {
 export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   const {
     activeTool,
-    pen,
-    highlighter,
-    eraser,
-    text,
-    shape,
+    drawingSettings,
+    setFillEnabled,
+    setDrawingSize,
+    setTextSize,
+    setEraserSize,
+    shapeVariant,
     fixedColors,
     recentColors,
     isColorPopoverOpen,
-    fillEnabledUI,
     setActiveTool,
-    setShapeSettings,
-    setCurrentToolSize,
-    setCurrentToolColor,
+    setDrawingColor,
     addRecentColor,
     setColorPopoverOpen,
-    setFillEnabledUI,
+    setShapeVariant,
   } = useDeviceUIStore();
 
   const popoverRef = useRef<HTMLDivElement>(null);
 
+  // Handle size changes based on active tool - route to correct setter
+  const handleSizeChange = (size: number) => {
+    switch (activeTool) {
+      case 'text':
+        // Text uses different size scale (20/30/40/50)
+        setTextSize(size as TextSizePreset);
+        break;
+      case 'eraser':
+        // Eraser has its own size (10/14/18/22)
+        setEraserSize(size as SizePreset);
+        break;
+      default:
+        // Pen, highlighter, shapes use unified drawing size
+        setDrawingSize(size as SizePreset);
+    }
+  };
+
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'select', 'shape', 'eraser'].includes(
+  const showInspector = ['pen', 'highlighter', 'text', 'select', 'shape'].includes(
     activeTool,
   );
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
@@ -60,21 +75,24 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     activeTool === 'highlighter' ||
     activeTool === 'select';
 
-  // Get current settings based on active tool
+  // Get current settings based on active tool with proper tool-specific overrides
   const getCurrentSettings = () => {
+    const store = useDeviceUIStore.getState();
+    const base = drawingSettings;
+
     switch (activeTool) {
-      case 'pen':
-        return pen;
-      case 'highlighter':
-        return highlighter;
-      case 'eraser':
-        return { ...eraser, color: '#000000' }; // Add dummy color for eraser
       case 'text':
-        return text;
-      case 'shape':
-        return shape.settings;
+        // Text has its own size scale (20/30/40/50)
+        return { ...base, size: store.textSize };
+      case 'eraser':
+        // Eraser has its own size (10/14/18/22)
+        return { ...base, size: store.eraserSize };
+      case 'highlighter':
+        // Highlighter uses its own opacity
+        return { ...base, opacity: store.highlighterOpacity };
       default:
-        return pen;
+        // Pen, shape, etc use base unified settings
+        return base;
     }
   };
 
@@ -158,10 +176,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         {/* Shape tools - CRITICAL: Set both activeTool='shape' AND the variant */}
         <ToolButton
           tool="rectangle"
-          isActive={activeTool === 'shape' && shape.variant === 'rectangle'}
+          isActive={activeTool === 'shape' && shapeVariant === 'rectangle'}
           onClick={() => {
             setActiveTool('shape');
-            setShapeSettings({ variant: 'rectangle' });
+            setShapeVariant('rectangle');
           }}
           tooltip="Rectangle (R)"
         >
@@ -170,10 +188,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
 
         <ToolButton
           tool="ellipse"
-          isActive={activeTool === 'shape' && shape.variant === 'ellipse'}
+          isActive={activeTool === 'shape' && shapeVariant === 'ellipse'}
           onClick={() => {
             setActiveTool('shape');
-            setShapeSettings({ variant: 'ellipse' });
+            setShapeVariant('ellipse');
           }}
           tooltip="Ellipse (O)"
         >
@@ -182,10 +200,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
 
         <ToolButton
           tool="arrow"
-          isActive={activeTool === 'shape' && shape.variant === 'arrow'}
+          isActive={activeTool === 'shape' && shapeVariant === 'arrow'}
           onClick={() => {
             setActiveTool('shape');
-            setShapeSettings({ variant: 'arrow' });
+            setShapeVariant('arrow');
           }}
           tooltip="Arrow (A)"
         >
@@ -194,10 +212,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
 
         <ToolButton
           tool="line"
-          isActive={activeTool === 'shape' && shape.variant === 'line'}
+          isActive={activeTool === 'shape' && shapeVariant === 'diamond'}
           onClick={() => {
             setActiveTool('shape');
-            setShapeSettings({ variant: 'line' });
+            setShapeVariant('diamond');
           }}
           tooltip="Line (L)"
         >
@@ -230,23 +248,24 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         {/* Inspector with new color system - moved inside toolbar */}
         {showInspector && (
           <Inspector
+            fillEnabled={drawingSettings.fill}
+            drawingSettings={drawingSettings}
             showColors={showColors}
             showSizes={showSizes}
             showFillToggle={showFillToggle}
             fixedColors={fixedColors}
             recentColors={recentColors}
-            sizePresets={sizePresets}
+            sizePresets={sizePresets} 
             sizeLabels={sizeLabels}
             currentColor={currentSettings.color}
-            currentSize={currentSettings.size}
-            isColorPopoverOpen={isColorPopoverOpen}
-            fillEnabledUI={fillEnabledUI}
-            onColorChange={setCurrentToolColor}
-            onSizeChange={setCurrentToolSize}
-            onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
-            onFillToggle={() => setFillEnabledUI(!fillEnabledUI)}
-            addRecentColor={addRecentColor}
+            currentSize={currentSettings.size} 
+            isColorPopoverOpen={isColorPopoverOpen} 
             popoverRef={popoverRef}
+            onColorChange={setDrawingColor}
+            onSizeChange={handleSizeChange}
+            onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
+            onFillToggle={() => setFillEnabled(!drawingSettings.fill)}
+            addRecentColor={(color: string) => addRecentColor(color)}
           />
         )}
 
@@ -291,6 +310,7 @@ interface InspectorProps {
   showColors: boolean;
   showSizes: boolean;
   showFillToggle: boolean;
+  fillEnabled: DrawingSettings['fill'];
   fixedColors: string[];
   recentColors: string[];
   sizePresets: number[];
@@ -298,7 +318,7 @@ interface InspectorProps {
   currentColor: string;
   currentSize: number;
   isColorPopoverOpen: boolean;
-  fillEnabledUI: boolean;
+  drawingSettings: DrawingSettings;
   onColorChange: (color: string) => void;
   onSizeChange: (size: number) => void;
   onColorPopoverToggle: () => void;
@@ -311,14 +331,14 @@ function Inspector({
   showColors,
   showSizes,
   showFillToggle,
+  fillEnabled,
   fixedColors,
   recentColors,
   sizePresets,
   sizeLabels,
   currentColor,
   currentSize,
-  isColorPopoverOpen,
-  fillEnabledUI,
+  isColorPopoverOpen, 
   onColorChange,
   onSizeChange,
   onColorPopoverToggle,
@@ -385,7 +405,7 @@ function Inspector({
       {/* Fill toggle button - between sizes and colors */}
       {showFillToggle && (
         <button
-          className={`icon-btn ${fillEnabledUI ? 'on' : ''}`}
+          className={`icon-btn ${fillEnabled ? 'on' : ''}`}
           onClick={onFillToggle}
           aria-label="Fill"
           title="Fill"

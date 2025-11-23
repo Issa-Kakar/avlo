@@ -288,7 +288,7 @@ export const PERFORMANCE_CONFIG = {
   EXPORT_TIMEOUT_MS: getEnvNumber('EXPORT_TIMEOUT_MS', 2000),
 
   // Zoom limits
-  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.01),
+  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.05),
   MAX_ZOOM: getEnvNumber('MAX_ZOOM', 5),
   MAX_PAN_DISTANCE: getEnvNumber('MAX_PAN_DISTANCE', 1_000_000), // Maximum pan distance from origin in world units
 

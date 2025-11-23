@@ -70,9 +70,9 @@
   --dock-hover: #383838; /* Hover on dark */
   --dock-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 
-  --accent: #2ecc71; /* Green - selected state */
-  --accent-hover: #28b863; /* Hover for selected */
-  --accent-border: #22a85d; /* Focus/active border */
+  --accent: #1D4ED8; /* Green - selected state */
+  --accent-hover: #153E99; /* Hover for selected */
+  --accent-border: #1D4ED8; /* Focus/active border */
 
   --icon-muted: #ffffff; /* Default icon color - pure white */
   --icon-selected: #ffffff; /* Selected icon on accent - pure white outline */
@@ -80,7 +80,7 @@
   --text-weak: #bfbfbf;
 
   --divider: #4a4a4a; /* Lighter gray divider */
-  --ring: #2ecc71; /* Focus ring - matches accent */
+  --ring: #1D4ED8; /* Focus ring - matches accent */
   --ring-offset: 2px;
 
   /* Component metrics - UPDATED FOR 48px RAIL */
@@ -1079,7 +1079,7 @@
 }
 
 .micro-avatar-me {
-  background: #2ecc71;
+  background: #1D4ED8;
   color: white;
 }
 
@@ -1246,7 +1246,7 @@
 }
 
 .swatch.is-active-fixed {
-  box-shadow: 0 0 0 var(--swatch-ring) rgba(46, 204, 113, 0.35);
+  box-shadow: 0 0 0 var(--swatch-ring) rgba(29, 78, 216, 0.35);
   border-color: var(--accent-border);
 }
 
@@ -1276,7 +1276,7 @@
   width: 90%; /* Slightly smaller from 85% for better visual balance */
   height: 93%;
   border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   pointer-events: none;
 }
 

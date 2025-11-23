@@ -56,7 +56,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
   // Phase 9: Updated to use new store structure
-  const { activeTool, pen, highlighter, eraser, text, shape } = useDeviceUIStore();
+  const {
+    activeTool,
+    drawingSettings,
+    highlighterOpacity,
+    eraserSize,
+    textSize,
+    shapeVariant
+  } = useDeviceUIStore();
 
   // Add setter and tool refs for stable callbacks (Step 1.1)
   const setScaleRef = useRef<(scale: number) => void>();
@@ -429,7 +436,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     if (activeTool === 'text' && toolRef.current?.isActive()) {
       const textTool = toolRef.current as any;
       if ('updateConfig' in textTool) {
-        textTool.updateConfig(text);
+        // Create text config from unified settings
+        const textConfig = {
+          size: textSize,
+          color: drawingSettings.color
+        };
+        textTool.updateConfig(textConfig);
         return; // Skip recreation, just update config
       }
     }
@@ -464,10 +476,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     let tool: PointerTool | null = null;
 
     if (activeTool === 'eraser') {
-      // Pass deviceUI.eraser directly (no adapter needed)
+      // Eraser tool uses its own size setting
+      const eraserSettings = { size: eraserSize };
       tool = new EraserTool(
         roomDoc,
-        eraser, // Direct from store, no adapter
+        eraserSettings,
         userId,
         () => overlayLoopRef.current?.invalidateAll(),
         // Pass viewport callback for hit-test pruning
@@ -486,8 +499,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         () => viewTransformRef.current,
       );
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-      // Pass settings directly to DrawingTool (no adapter needed)
-      const settings = activeTool === 'pen' ? pen : highlighter;
+      // Use unified settings with tool-specific overrides
+      const settings = {
+        size: drawingSettings.size,
+        color: drawingSettings.color,
+        opacity: activeTool === 'highlighter' ? highlighterOpacity : drawingSettings.opacity,
+        fill: drawingSettings.fill  // Include fill for perfect shape recognition
+      };
 
       tool = new DrawingTool(
         roomDoc,
@@ -506,14 +524,19 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       );
     } else if (activeTool === 'shape') {
       // Map shape variant to forced snap kind
-      const variant = shape?.variant ?? 'rectangle';
       const forceSnapKind =
-        variant === 'rectangle' ? 'rect' :
-        variant === 'ellipse'   ? 'ellipseRect' :
-        variant === 'arrow'     ? 'arrow' : 'line';
+        shapeVariant === 'rectangle' ? 'rect' :
+        shapeVariant === 'ellipse'   ? 'ellipseRect' :
+        shapeVariant === 'diamond'   ? 'diamond' :
+        shapeVariant === 'arrow'     ? 'arrow' : 'line';
 
-      // Use shape settings or fall back to pen settings
-      const settings = shape?.settings ?? pen;
+      // Use unified drawing settings (shapes always use the unified settings)
+      const settings = {
+        size: drawingSettings.size,
+        color: drawingSettings.color,
+        opacity: drawingSettings.opacity,
+        fill: drawingSettings.fill  // Pass fill state for shapes
+      };
 
       tool = new DrawingTool(
         roomDoc,
@@ -526,9 +549,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         { forceSnapKind } // Pass forced snap configuration
       );
     } else if (activeTool === 'text') {
+      // Text tool uses unified color but its own size
+      const textSettings = {
+        size: textSize,
+        color: drawingSettings.color
+      };
       tool = new TextTool(
         roomDoc,
-        text, // From Zustand store
+        textSettings,
         userId,
         {
           worldToClient,
@@ -610,11 +638,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     roomDoc,
     userId,
     activeTool,
-    pen,
-    highlighter,
-    eraser,
-    text,
-    shape,
+    drawingSettings,
+    highlighterOpacity,
+    eraserSize,
+    textSize,
+    shapeVariant,
     stageReady,
     screenToWorld,
     worldToClient, // Now stable with empty deps, safe to include
