@@ -285,6 +285,100 @@ case 'shape': {
 - Path2D construction unchanged
 - Preview rendering remains lightweight
 
+## Vec2 Processing Analysis (Additional Investigation)
+
+### Current Vec2 Processing Flow
+
+The vec2 processing for corner detection in shape recognition follows this pattern:
+
+1. **Input**: DrawingTool provides flat array `pointsWU: number[]`
+2. **Conversion**: Shape recognition converts to `Vec2[]` (which is `[number, number][]`)
+3. **Dual Track Processing**:
+   - **Track A (rawPts)**: Original points as Vec2 for AABB fitting and scoring
+   - **Track B (cleanPts)**: Copy → RDP simplification (flat) → decimation → micro-closure → Vec2
+
+### Key Findings
+
+**Vec2 Type**: Already defined as `type Vec2 = [number, number]` - exactly our migration target
+
+**RDP Corner Detection Flow**:
+```typescript
+// Current flow in recognize-open-stroke.ts
+let flat = pointsWU.slice();  // Copy flat array
+const rdp = simplifyStroke(flat, 'pen');  // RDP expects flat array
+// ... decimation and micro-closure ...
+const cleanPts: Vec2[] = [];  // Convert back to Vec2 for corner detection
+```
+
+**Corner Detection Purpose**: The RDP-simplified points are used exclusively for detecting right-angle corners in rectangles, which is critical for scoring rectangle confidence.
+
+### Migration Impact on Vec2 Processing
+
+With tuple array migration:
+
+1. **DrawingTool** would store `points: [number, number][]`
+2. **Shape recognition** would receive tuples directly
+3. **Two options for RDP**:
+
+#### Option A: Convert Tuples → Flat → Tuples (Minimal Change)
+```typescript
+// In recognize-open-stroke.ts
+const flat = tupleArrayToFlat(pointsTuples);  // New helper
+const rdp = simplifyStroke(flat, 'pen');       // Unchanged
+const cleanPts = flatToTupleArray(rdp.points); // New helper
+```
+
+#### Option B: Update RDP to Accept Tuples (Cleaner)
+```typescript
+// Update simplifyStroke and douglasPeucker to work with tuples
+function douglasPeuckerTuples(points: [number, number][], tolerance: number): [number, number][] {
+  // Refactor to work with tuples directly
+}
+```
+
+### Recommendation
+
+**Short term (Phase 1)**: Use Option A - minimal changes, add conversion helpers
+**Long term (Phase 2)**: Migrate RDP to work with tuples natively
+
+### Helper Functions Needed
+
+```typescript
+// Convert tuple array to flat array
+function tupleArrayToFlat(tuples: [number, number][]): number[] {
+  const flat: number[] = [];
+  for (const [x, y] of tuples) {
+    flat.push(x, y);
+  }
+  return flat;
+}
+
+// Convert flat array to tuple array
+function flatToTupleArray(flat: number[]): [number, number][] {
+  const tuples: [number, number][] = [];
+  for (let i = 0; i < flat.length; i += 2) {
+    if (i + 1 < flat.length) {
+      tuples.push([flat[i], flat[i + 1]]);
+    }
+  }
+  return tuples;
+}
+```
+
+### No Changes Needed For
+
+- **Corner detection algorithm**: Already works with Vec2 (tuples)
+- **PCA axis ratio calculation**: Already uses Vec2
+- **Angular coverage calculation**: Already uses Vec2
+- **All geometry helpers**: Already use Vec2
+
+### Testing Vec2 Processing
+
+- [ ] RDP simplification produces same results after migration
+- [ ] Corner detection finds same corners
+- [ ] Rectangle scoring unchanged
+- [ ] No performance regression from conversions
+
 ## Rollback Plan
 
 If issues arise:
