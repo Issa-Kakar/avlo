@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 
 // Fixed radius configuration
 const ERASER_RADIUS_PX = 10; // Fixed screen-space radius
+const ERASER_SLACK_PX = 2.0; // Forgiving feel - don't require precise alignment
 
 interface EraserState {
   isErasing: boolean;
@@ -21,7 +22,7 @@ export class EraserTool {
   constructor(
     room: IRoomDocManager,
     _settings: any, // Unused - radius is fixed
-    userId: string,
+    _userId: string, // Unused - kept for interface compatibility
     onInvalidate?: () => void,
     _getViewport?: any, // Unused
     getView?: () => ViewTransform,
@@ -112,8 +113,8 @@ export class EraserTool {
     const snapshot = this.room.currentSnapshot;
     const viewTransform = this.getView ? this.getView() : snapshot.view;
     
-    // Convert fixed screen radius to world units
-    const radiusWorld = ERASER_RADIUS_PX / viewTransform.scale;
+    // Convert fixed screen radius to world units (with slack for forgiving feel)
+    const radiusWorld = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / viewTransform.scale;
 
     this.state.hitNow.clear();
 
@@ -151,9 +152,30 @@ export class EraserTool {
         case 'shape': {
           const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
           if (!frame) break;
-          
-          const [x, y, w, h] = frame;
-          if (this.circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
+
+          const shapeType = handle.y.get('shapeType') as string | undefined;
+          const strokeWidth = (handle.y.get('width') as number) ?? 1;
+          const fillColor = handle.y.get('fillColor') as string | undefined;
+          const isFilled = !!fillColor;
+
+          let hit = false;
+
+          switch (shapeType) {
+            case 'diamond':
+              hit = this.diamondHitTest(worldX, worldY, radiusWorld, frame, strokeWidth, isFilled);
+              break;
+            case 'ellipse':
+              hit = this.ellipseHitTest(worldX, worldY, radiusWorld, frame, strokeWidth, isFilled);
+              break;
+            case 'rect':
+            case 'roundedRect':
+            default:
+              // Rectangles can use the simpler rect test
+              hit = this.rectHitTest(worldX, worldY, radiusWorld, frame, strokeWidth, isFilled);
+              break;
+          }
+
+          if (hit) {
             this.state.hitNow.add(handle.id);
           }
           break;
@@ -236,6 +258,160 @@ export class EraserTool {
     const dx = cx - closestX;
     const dy = cy - closestY;
     return (dx * dx + dy * dy) <= (r * r);
+  }
+
+  /**
+   * Test if eraser circle intersects a diamond shape.
+   * Diamond vertices are at midpoints of frame edges.
+   */
+  private diamondHitTest(
+    cx: number, cy: number, r: number,
+    frame: [number, number, number, number],
+    strokeWidth: number,
+    isFilled: boolean
+  ): boolean {
+    const [x, y, w, h] = frame;
+    const halfStroke = strokeWidth / 2;
+
+    // Diamond vertices (midpoints of frame edges)
+    const top: [number, number] = [x + w / 2, y];
+    const right: [number, number] = [x + w, y + h / 2];
+    const bottom: [number, number] = [x + w / 2, y + h];
+    const left: [number, number] = [x, y + h / 2];
+
+    // For filled diamonds: check if point is inside OR near edges
+    if (isFilled) {
+      if (this.pointInDiamond(cx, cy, top, right, bottom, left)) {
+        return true;
+      }
+    }
+
+    // Check distance to each edge (4 line segments)
+    const edges: [[number, number], [number, number]][] = [
+      [top, right],
+      [right, bottom],
+      [bottom, left],
+      [left, top]
+    ];
+
+    for (const [p1, p2] of edges) {
+      const dist = this.pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+      if (dist <= r + halfStroke) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if point is inside a diamond (convex polygon test)
+   */
+  private pointInDiamond(
+    px: number, py: number,
+    top: [number, number],
+    right: [number, number],
+    bottom: [number, number],
+    left: [number, number]
+  ): boolean {
+    // Use cross product sign consistency for convex polygon
+    const vertices = [top, right, bottom, left];
+    let sign: number | null = null;
+
+    for (let i = 0; i < 4; i++) {
+      const [x1, y1] = vertices[i];
+      const [x2, y2] = vertices[(i + 1) % 4];
+
+      // Cross product of edge vector and point-to-vertex vector
+      const cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+
+      if (sign === null) {
+        sign = cross >= 0 ? 1 : -1;
+      } else if ((cross >= 0 ? 1 : -1) !== sign) {
+        return false; // Point is outside
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Test if eraser circle intersects an ellipse shape.
+   */
+  private ellipseHitTest(
+    cx: number, cy: number, r: number,
+    frame: [number, number, number, number],
+    strokeWidth: number,
+    isFilled: boolean
+  ): boolean {
+    const [x, y, w, h] = frame;
+    const halfStroke = strokeWidth / 2;
+
+    // Ellipse center and radii
+    const ecx = x + w / 2;
+    const ecy = y + h / 2;
+    const rx = w / 2;
+    const ry = h / 2;
+
+    // Avoid division by zero for degenerate ellipses
+    if (rx < 0.001 || ry < 0.001) {
+      return this.circleRectIntersect(cx, cy, r, x, y, w, h);
+    }
+
+    // Normalize point to unit circle space
+    const dx = (cx - ecx) / rx;
+    const dy = (cy - ecy) / ry;
+    const normalizedDist = Math.sqrt(dx * dx + dy * dy);
+
+    // Convert eraser radius to normalized space (approximate)
+    const avgRadius = (rx + ry) / 2;
+    const normalizedR = r / avgRadius;
+    const normalizedStroke = halfStroke / avgRadius;
+
+    if (isFilled) {
+      // For filled: hit if inside ellipse OR within stroke width of edge
+      return normalizedDist <= 1 + normalizedR + normalizedStroke;
+    } else {
+      // For unfilled: only hit if near the stroke
+      const distFromEdge = Math.abs(normalizedDist - 1);
+      return distFromEdge <= normalizedR + normalizedStroke;
+    }
+  }
+
+  /**
+   * Test if eraser circle intersects a rectangle shape (stroke only for unfilled).
+   */
+  private rectHitTest(
+    cx: number, cy: number, r: number,
+    frame: [number, number, number, number],
+    strokeWidth: number,
+    isFilled: boolean
+  ): boolean {
+    const [x, y, w, h] = frame;
+    const halfStroke = strokeWidth / 2;
+
+    if (isFilled) {
+      // For filled: use existing circle-rect intersection (anywhere inside counts)
+      // Expand rect by stroke width for edge hits
+      return this.circleRectIntersect(cx, cy, r + halfStroke, x, y, w, h);
+    }
+
+    // For unfilled: check distance to each edge segment
+    const edges: [[number, number], [number, number]][] = [
+      [[x, y], [x + w, y]],         // Top edge
+      [[x + w, y], [x + w, y + h]], // Right edge
+      [[x + w, y + h], [x, y + h]], // Bottom edge
+      [[x, y + h], [x, y]]          // Left edge
+    ];
+
+    for (const [p1, p2] of edges) {
+      const dist = this.pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+      if (dist <= r + halfStroke) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private commitErase(): void {

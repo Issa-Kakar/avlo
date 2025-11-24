@@ -59,7 +59,6 @@ export class ObjectRenderCache {
         // SHAPES ARE ALWAYS GEOMETRIC POLYLINES (built from frame)
         const shapeType = y.get('shapeType') as string;
         const frame = y.get('frame') as [number, number, number, number];
-        console.log(shapeType, frame);
         if (!frame) return new Path2D();
 
         const [x, y0, w, h] = frame;

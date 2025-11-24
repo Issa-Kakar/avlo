@@ -39,18 +39,22 @@ export function drawDimmedStrokes(
         // Strokes are filled polygons - dim the fill
         ctx.fill(path);
       } else if (kind === 'shape') {
-        // For shapes: dim the stroke
+        // For shapes: dim both fill (if present) and stroke
         const width = handle.y.get('width') as number | undefined;
-    
-        //  dim the stroke (no extra width needed for 1:1 dimming)
+        const fillColor = handle.y.get('fillColor') as string | undefined;
+
+        // Dim fill if shape is filled
+        if (fillColor) {
+          ctx.fill(path);
+        }
+
+        // Dim the stroke
         if (width && width > 0) {
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
           ctx.lineWidth = width;
           ctx.stroke(path);
         }
-        
-        
       } else if (kind === 'connector') {
         // Connectors are stroked lines
         const width = handle.y.get('width') as number | undefined;
