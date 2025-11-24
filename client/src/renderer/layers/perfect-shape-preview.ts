@@ -99,7 +99,7 @@ export function drawPerfectShapePreview(
     const minY = Math.min(A[1], C[1]);
     const width = Math.abs(C[0] - A[0]);
     const height = Math.abs(C[1] - A[1]);
-
+    if (width === 0 || height === 0) return;
     // Calculate corner radius (same logic as object-cache)
     const radius = Math.min(20, width * 0.1, height * 0.1);
 

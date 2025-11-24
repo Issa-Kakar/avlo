@@ -91,16 +91,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const userId = useMemo(() => userProfileManager.getIdentity().userId, []);
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
-  // We use the public subscription API (same as useRoomSnapshot hook) but store the result in a ref
-  // instead of state to prevent React render storms at 60+ FPS. This maintains the architectural
-  // boundary - we're still consuming immutable snapshots through the public API, just optimizing
-  // how we store them to avoid unnecessary React work.
   const snapshotRef = useRef<Snapshot>(createEmptySnapshot()); // Initialize with empty snapshot
   const viewTransformRef = useRef<ViewTransform>(viewTransform); // Store latest transform
 
   // Keep view transform ref updated (no re-render)
   // Use useLayoutEffect to ensure ref is updated before drawing tool effect reads it
-  // Step 1.3: Update refs in layout effect
   useLayoutEffect(() => {
     viewTransformRef.current = viewTransform;
     setScaleRef.current = setScale;
@@ -108,8 +103,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     activeToolRef.current = activeTool; // Keep tool ref in sync
   }, [viewTransform, setScale, setPan, activeTool]);
 
-  // Subscribe to snapshots via public API (stores in ref to avoid re-renders)
-  // 3C: Update snapshot subscription to check docVersion
+  // Subscribe to snapshots and check for document version changes
   useEffect(() => {
     let lastDocVersion = -1;
 
@@ -118,8 +112,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       if (!renderLoopRef.current || !overlayLoopRef.current) return;
       console.log('newSnapshot.docVersion', newSnapshot.docVersion);
-      // Check if document content changed (not just presence)
-      // CRITICAL: docVersion increments on Y.Doc changes, NOT on presence changes
+      // Check if document content changed (not just presence) s
       if (newSnapshot.docVersion !== lastDocVersion) {
         lastDocVersion = newSnapshot.docVersion;
         console.log('lastDocVersion', lastDocVersion);
@@ -236,7 +229,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const currentTool = activeToolRef.current;
     switch (currentTool) {
       case 'eraser':
-        canvas.style.cursor = 'none'; // Overlay draws ring
+        canvas.style.cursor = 'url("/cursors/eraser.cur") 16 16, auto';
         break;
       case 'pan':
         canvas.style.cursor = 'grab'; // Open hand idle
@@ -262,7 +255,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     overlayLoopRef.current?.invalidateAll();
   }, []);
 
-  // CRITICAL FIX: Compute stageReady to ensure effect re-runs when stage becomes available
+  // CRITICAL: Compute stageReady to ensure effect re-runs when stage becomes available
   // This prevents the initialization from silently failing if timing precondition is missed
   const stageReady = !!(renderLoopRef.current && baseStageRef.current?.getCanvasElement());
 

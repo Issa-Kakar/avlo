@@ -343,7 +343,7 @@ function drawNameLabel(
     rr.call(ctx, labelX, labelY, width, height, height / 2);
   } else {
     ctx.beginPath();
-    ctx.rect(labelX, labelY, width, height);
+    ctx.roundRect(labelX, labelY, width, height, height / 2);
   }
   ctx.fill();
 

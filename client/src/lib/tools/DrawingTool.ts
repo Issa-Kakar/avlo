@@ -59,6 +59,10 @@ export class DrawingTool {
   private getView?: () => ViewTransform;              // screen jitter (hold)
   private requestOverlayFrame?: RequestOverlayFrame;  // NEW: nudge overlay loop
   private opts: { forceSnapKind?: ForcedSnapKind } = {};
+  // Instant click-to-place mode for shape tool
+  private clickToPlaceStartTime: number = 0;
+  private clickToPlaceStartPos: [number, number] | null = null;
+
 
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
@@ -115,6 +119,10 @@ export class DrawingTool {
 
     // If Shape tool requested forced snap, seed it immediately
     if (this.opts.forceSnapKind) {
+      // Store time and position for click detection
+      this.clickToPlaceStartTime = Date.now();
+      this.clickToPlaceStartPos = [worldX, worldY];
+
       const k = this.opts.forceSnapKind;
       this.snap =
         k === 'line'        ? { kind: 'line',        anchors: { A: [worldX, worldY] } }
@@ -165,7 +173,47 @@ export class DrawingTool {
     this.hold.cancel();
 
     if (this.snap && this.liveCursorWU) {
-      // Build polyline from (anchors + live cursor), compute bbox ONCE, commit.
+      // Check if this is a click (not drag)
+      const timeDelta = Date.now() - this.clickToPlaceStartTime;
+      const isClick = timeDelta < 200;  // 200ms threshold for click
+
+      if (this.clickToPlaceStartPos && worldX !== undefined && worldY !== undefined) {
+        const distMoved = Math.hypot(
+          worldX - this.clickToPlaceStartPos[0],
+          worldY - this.clickToPlaceStartPos[1]
+        );
+        const isStationary = distMoved < 5;  // 5 world units threshold
+
+        if (isClick && isStationary && this.opts.forceSnapKind) {
+          // Place fixed-size shape at click position
+          const fixedSize = 180;  // Fixed size in world units
+
+          // Determine cursor position for fixed shape
+          let fixedCursor: [number, number];
+
+          if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
+            // For corner-anchored shapes, place centered at click
+            fixedCursor = [
+              this.clickToPlaceStartPos[0] + fixedSize,
+              this.clickToPlaceStartPos[1] + fixedSize
+            ];
+            // Adjust anchor to center the shape
+            this.snap.anchors.A = [
+              this.clickToPlaceStartPos[0] - fixedSize/2,
+              this.clickToPlaceStartPos[1] - fixedSize/2
+            ];
+          } else {
+            // Other shapes - adjust as needed
+            fixedCursor = [
+              this.clickToPlaceStartPos[0] + fixedSize/2,
+              this.clickToPlaceStartPos[1] + fixedSize/2
+            ];
+          }
+
+          this.liveCursorWU = fixedCursor;
+        }
+      }
+
       this.commitPerfectShapeFromPreview();
       return;
     }
@@ -362,7 +410,6 @@ export class DrawingTool {
   commitStroke(finalX: number, finalY: number): void {
     if (!this.state.isDrawing) return;
 
-    // 1) CRITICAL: Flush RAF before commit
     this.flushPending();
 
     // 2) Add final point to tuple array if needed

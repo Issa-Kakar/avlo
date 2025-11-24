@@ -1,4 +1,5 @@
-// TODO: Import ObjectHandle when StrokeView is fully removed
+// LEGACY 
+// TODO: Remove this file 
 // import type { ObjectHandle } from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE } from './pf-config';
