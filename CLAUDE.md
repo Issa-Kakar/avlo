@@ -268,7 +268,6 @@ interface DeviceUIState {
   };
   // Tool-specific overrides
   highlighterOpacity: number;    // 0.45 (always)
-  eraserSize: SizePreset;        // DEPRECATED - eraser uses fixed 10px radius
   textSize: TextSizePreset;      // 20 | 30 | 40 | 50 (different scale!)
   shapeVariant: ShapeVariant;    // 'diamond' | 'rectangle' | 'ellipse' | 'arrow'
   // UI state
@@ -292,7 +291,7 @@ interface DeviceUIState {
 - Shape tools: Set BOTH `activeTool='shape'` AND `shapeVariant` (e.g., 'rectangle')
 
 **Inspector (Conditional Rendering):**
-- **Shows when:** activeTool in ['pen', 'highlighter', 'text', 'select', 'shape']
+- **Shows when:** activeTool in ['pen', 'highlighter', 'text', 'shape']
 - **Components (left to right):** Sizes → Fill Toggle → Colors
 - **Sizes:** 4 presets as pills (S/M/L/XL) - routes to correct setter via `handleSizeChange()`
   - Text: 20/30/40/50 → `setTextSize()`
@@ -310,8 +309,18 @@ interface DeviceUIState {
 - Popover closes on color select or outside click
 
 **Settings Flow in Canvas.tsx:**
-- Tools created in effect with settings from `useDeviceUIStore()`
-- `DrawingTool(roomDoc, settings, tool, ...)` where settings = `{ size, color, opacity, fill }`
+- Canvas.tsx uses **narrow selectors** to avoid spurious rerenders:
+  ```typescript
+  const activeTool = useDeviceUIStore(s => s.activeTool);
+  const shapeVariant = useDeviceUIStore(s => s.shapeVariant);
+  const textSize = useDeviceUIStore(s => s.textSize);
+  const textColor = useDeviceUIStore(s => s.drawingSettings.color);
+  ```
+- **Tools read settings from store at `begin()` time** (not constructor params):
+  - `DrawingTool(roomDoc, toolType, userId, ...)` - no settings param
+  - `EraserTool(roomDoc, onInvalidate, getView)` - no settings param (fixed 10px radius)
+  - Tools call `useDeviceUIStore.getState()` at gesture start to freeze settings
+  - Exception: `fill` is read **LIVE** via `getFillEnabled()` for real-time toggle during preview
 - Shape tool uses DrawingTool with `{ forceSnapKind }` option
 - Variant mapping: 'rectangle' → 'rect', 'ellipse' → 'ellipseRect', 'diamond' → 'diamond'
 
