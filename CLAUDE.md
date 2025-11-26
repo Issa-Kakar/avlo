@@ -268,7 +268,7 @@ interface DeviceUIState {
   };
   // Tool-specific overrides
   highlighterOpacity: number;    // 0.45 (always)
-  eraserSize: SizePreset;        // 10 | 14 | 18 | 22
+  eraserSize: SizePreset;        // DEPRECATED - eraser uses fixed 10px radius
   textSize: TextSizePreset;      // 20 | 30 | 40 | 50 (different scale!)
   shapeVariant: ShapeVariant;    // 'diamond' | 'rectangle' | 'ellipse' | 'arrow'
   // UI state
@@ -296,8 +296,8 @@ interface DeviceUIState {
 - **Components (left to right):** Sizes → Fill Toggle → Colors
 - **Sizes:** 4 presets as pills (S/M/L/XL) - routes to correct setter via `handleSizeChange()`
   - Text: 20/30/40/50 → `setTextSize()`
-  - Eraser: 10/14/18/22 → `setEraserSize()`
   - Default: 10/14/18/22 → `setDrawingSize()`
+- **Note:** Eraser has NO inspector - fixed 10px radius, no configurable settings
 - **Fill Toggle:** Icon button, only visible for shape/pen/highlighter/select
 - **Colors:**
   - Rainbow swatch (leftmost) → opens popover, shows custom color dot when active
@@ -318,8 +318,8 @@ interface DeviceUIState {
 ### **Whiteboard Tools:**
 - Pen: Freehand drawing with Perfect Freehand (always filled polygon)
 - Highlighter: Freehand with 0.45 opacity
-- Eraser: Hit-test and delete 
-- Text: DOM overlay 
+- Eraser: Fixed radius hit-test with shape-aware geometry, custom `.cur` cursor, screen-space trail
+- Text: DOM overlay
 - Pan: Drag viewport (updates ViewTransform.pan)
 - Shapes(uses DrawingTool.ts under the hood): Forced snap to rect/ellipse/diamond/arrow (bypasses hold detector)
 **Undo/Redo:** Y.UndoManager with per-user origin tracking (500ms capture timeout)
@@ -722,11 +722,63 @@ The shape tool uses the first pointer down to create a corner anchored shape, ho
 - **Click-to-Place:** Stationary click creates 180 world-unit fixed-size perfect shape from Toolbar
 ---
 
-**EraserTool:**
-- Hit-testing: RBush `queryRectAll()` + segment distance test
-- Eraser slack: 0.9px added to radius
-- Visual feedback: Two-pass overlay (dim objects + cursor ring)
-- Atomic commit: Single `mutate()` deletes all accumulated hits
+**EraserTool:** **File:** `client/src/lib/tools/EraserTool.ts`
+
+**Fixed Radius (not configurable):**
+```typescript
+const ERASER_RADIUS_PX = 10;   // Fixed screen-space radius
+const ERASER_SLACK_PX = 2.0;   // Forgiving feel for touch
+// World radius = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / view.scale
+```
+
+**Cursor:** Custom `.cur` file at `/cursors/avloEraser.cur` (no overlay-drawn ring)
+
+**Hit-Testing Pipeline:**
+1. RBush spatial query with world-space bounding box
+2. For each candidate, dispatch by `handle.kind`:
+   - **Stroke/Connector:** Point-to-segment distance test on polyline
+   - **Shape:** Dispatch by `shapeType` with geometry-aware tests
+   - **Text:** Circle-rect intersection on frame
+
+**Shape-Specific Hit-Testing:**
+```typescript
+switch (shapeType) {
+  case 'diamond':
+    // Vertices at frame edge midpoints: top, right, bottom, left
+    // Test distance to 4 line segments (edges)
+    // For filled: also check point-in-diamond (cross product signs)
+    break;
+  case 'ellipse':
+    // Normalize to unit circle space: dx/rx, dy/ry
+    // For filled: normalizedDist <= 1 + tolerance
+    // For unfilled: |normalizedDist - 1| <= tolerance
+    break;
+  case 'rect':
+  case 'roundedRect':
+  default:
+    // For filled: circle-rect intersection (anywhere inside)
+    // For unfilled: test distance to 4 edge segments
+    break;
+}
+```
+
+**Fill Behavior:**
+- **Filled shapes** (`fillColor` present): Hit anywhere inside OR near stroke
+- **Unfilled shapes**: Hit ONLY near stroke edges (interior is "empty")
+
+**State & Dimming:**
+- `hitNow`: Objects under cursor this frame
+- `hitAccum`: Union of all hits during drag (stays dimmed until commit)
+- **Preview only during active erasing** (pointer down) - NO hover dimming
+- Dimming: `eraser-dim.ts` uses `globalCompositeOperation = 'screen'` with white overlay
+
+**Eraser Trail (Overlay):** **File:** `client/src/renderer/OverlayRenderLoop.ts`
+- Screen-space Perfect Freehand trail (decoupled from tool)
+- Age-based pseudo-pressure for thickness taper
+- 200ms lifetime, light grey, 0.35 alpha
+- Self-animating via `invalidateAll()` while trail exists
+
+**Atomic Commit:** Single `mutate()` deletes all `hitAccum` IDs on pointer-up
 
 **TextTool: WILL BE REPLACED**
 - DOM overlay: contenteditable div at world coordinates

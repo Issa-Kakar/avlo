@@ -64,7 +64,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'select', 'shape'].includes(
+  const showInspector = ['pen', 'highlighter', 'text', 'shape'].includes(
     activeTool,
   );
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);

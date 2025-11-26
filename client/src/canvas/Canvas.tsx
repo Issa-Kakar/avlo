@@ -36,9 +36,6 @@ export interface CanvasHandle {
 /**
  * Canvas component that integrates rendering with coordinate transforms.
  * Bridges between the low-level CanvasStage and high-level room data.
- *
- * Phase 3.3: Now uses RenderLoop with event-driven architecture
- * Phase 3.4: Fixed DPR handling in coordinate transforms
  */
 export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, className }, ref) => {
   // Replace single stageRef with two stages
@@ -229,7 +226,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     const currentTool = activeToolRef.current;
     switch (currentTool) {
       case 'eraser':
-        canvas.style.cursor = 'url("/cursors/eraser.cur") 16 16, auto';
+        canvas.style.cursor = 'url("/cursors/avloEraser.cur") 16 16, auto';
         break;
       case 'pan':
         canvas.style.cursor = 'grab'; // Open hand idle

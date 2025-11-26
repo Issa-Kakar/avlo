@@ -1018,24 +1018,24 @@
   min-width: 26px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  background: #AE2775;
+  background: #1dacd8;
   color: white;
   padding: 0 10px;
   font-size: 12px;
 }
 
 .micro-invite:hover {
-  background: #961f63;
-  border-color: rgba(0, 0, 0, 0.1);
+  background: #1dacd8 ;
+  border-color: #1dacd8;
 }
 
 [data-theme='dark'] .micro-invite {
-  background: #AE2775;
+  background: #1dacd8;
   color: white;
 }
 
 [data-theme='dark'] .micro-invite:hover {
-  background: #961f63;
+  background: #1dacd8;
   border-color: rgba(255, 255, 255, 0.1);
 }
 
