@@ -25,14 +25,10 @@ interface DeviceUIState {
 
   // Tool-specific settings that don't carry over
   highlighterOpacity: number; // Highlighter always uses 0.45 opacity
-  eraserSize: SizePreset; // Eraser has its own size
   textSize: TextSizePreset; // Text has different size scale
   shapeVariant: ShapeVariant; // Which shape is selected
 
   // Placeholder tools
-  select: {
-    enabled: boolean; // Placeholder for future implementation
-  };
   image: {
     enabled: boolean; // UI placeholder for image tool
   };
@@ -61,11 +57,9 @@ interface DeviceUIState {
 
   // Tool-specific setters (these don't affect global settings)
   setHighlighterOpacity: (opacity: number) => void;
-  setEraserSize: (size: SizePreset) => void;
   setTextSize: (size: TextSizePreset) => void;
   setShapeVariant: (variant: ShapeVariant) => void;
 
-  setSelectSettings: (settings: Partial<DeviceUIState['select']>) => void;
   toggleEditor: () => void; // Keep for future code editor
   setCollaborationMode: (mode: 'server' | 'peer') => void;
   setIsTextEditing: (editing: boolean) => void;
@@ -94,12 +88,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       // Tool-specific settings that don't carry over
       highlighterOpacity: 0.45, // Highlighter always uses this
-      eraserSize: 14, // Eraser has its own size
       textSize: 30, // Text has different size scale
       shapeVariant: 'rectangle', // Default shape
 
-      select: { enabled: false },
-      image: { enabled: false }, // New placeholder
+      image: { enabled: false }, // UI placeholder
 
       editorCollapsed: false, // Keep for future code editor
       isTextEditing: false,
@@ -158,15 +150,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Tool-specific setters (these don't affect global settings)
       setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
 
-      setEraserSize: (size) => {
-        // Validate eraser size is a valid SizePreset
-        if (![10, 14, 18, 22].includes(size)) {
-          console.error(`Invalid eraser size: ${size}. Expected 10, 14, 18, or 22. Ignoring.`);
-          return;
-        }
-        set({ eraserSize: size });
-      },
-
       setTextSize: (size) => {
         // Validate text size is a valid TextSizePreset
         if (![20, 30, 40, 50].includes(size)) {
@@ -178,11 +161,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       setShapeVariant: (variant) => set({ shapeVariant: variant }),
 
-      setSelectSettings: (settings) =>
-        set((state) => ({
-          select: { ...state.select, ...settings },
-        })),
-
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
 
       setCollaborationMode: (mode) => set({ collaborationMode: mode }),
@@ -192,10 +170,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Helper method to get current tool settings
       getCurrentToolSettings: () => {
         const state = get();
-        const { activeTool, drawingSettings, highlighterOpacity, eraserSize, textSize } = state;
+        const { activeTool, drawingSettings, highlighterOpacity, textSize } = state;
 
         // Base settings from unified drawing settings
-        let settings = {
+        const settings = {
           size: drawingSettings.size as number,
           color: drawingSettings.color,
           opacity: drawingSettings.opacity,
@@ -207,32 +185,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           case 'highlighter':
             settings.opacity = highlighterOpacity;
             break;
-          case 'eraser':
-            settings.size = eraserSize;
-            break;
           case 'text':
             settings.size = textSize;
             break;
-          case 'shape':
-            // Shapes use all unified settings including fill
-            settings.size = drawingSettings.size;
-            settings.color = drawingSettings.color as string;
-            settings.opacity = drawingSettings.opacity as number;
-            settings.fill = drawingSettings.fill as boolean;
-            break;
-          case 'pen':
-            // Pen uses unified settings, but fill doesn't apply
-            settings.size = drawingSettings.size;
-            settings.color = drawingSettings.color as string;
-            settings.opacity = drawingSettings.opacity as number;
-            settings.fill = drawingSettings.fill;
-            break;
-          default:
-            settings.size = drawingSettings.size as number;
-            settings.color = drawingSettings.color as string;
-            settings.opacity = drawingSettings.opacity as number;
-            settings.fill = drawingSettings.fill as boolean;
-            break;
+          // eraser uses fixed 10px radius - no size override needed
+          // pen/shape use unified settings
         }
 
         return settings;
@@ -321,11 +278,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
             // Tool-specific settings
             highlighterOpacity: oldState.highlighter?.opacity || 0.45,
-            eraserSize: migrateSize(oldState.eraser?.size || 14),
             textSize: migrateTextSize(oldState.text?.size || 30),
             shapeVariant: oldState.shape?.variant || 'rectangle',
 
-            select: { enabled: oldState.select?.enabled || false },
             image: { enabled: false },
 
             // Keep some old state

@@ -21,14 +21,10 @@ export class EraserTool {
 
   constructor(
     room: IRoomDocManager,
-    _settings: any, // Unused - radius is fixed
-    _userId: string, // Unused - kept for interface compatibility
     onInvalidate?: () => void,
-    _getViewport?: any, // Unused
     getView?: () => ViewTransform,
   ) {
     this.room = room;
-
     this.onInvalidate = onInvalidate;
     this.getView = getView;
     this.resetState();

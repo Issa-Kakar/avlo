@@ -32,7 +32,6 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     setFillEnabled,
     setDrawingSize,
     setTextSize,
-    setEraserSize,
     shapeVariant,
     fixedColors,
     recentColors,
@@ -53,10 +52,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         // Text uses different size scale (20/30/40/50)
         setTextSize(size as TextSizePreset);
         break;
-      case 'eraser':
-        // Eraser has its own size (10/14/18/22)
-        setEraserSize(size as SizePreset);
-        break;
+      // eraser uses fixed 10px radius - no size change needed
       default:
         // Pen, highlighter, shapes use unified drawing size
         setDrawingSize(size as SizePreset);
@@ -84,9 +80,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
       case 'text':
         // Text has its own size scale (20/30/40/50)
         return { ...base, size: store.textSize };
-      case 'eraser':
-        // Eraser has its own size (10/14/18/22)
-        return { ...base, size: store.eraserSize };
+      // eraser uses fixed 10px radius - no size override
       case 'highlighter':
         // Highlighter uses its own opacity
         return { ...base, opacity: store.highlighterOpacity };

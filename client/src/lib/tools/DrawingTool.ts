@@ -1,11 +1,10 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
-import { STROKE_CONFIG } from '@avlo/shared';
 import type { ViewTransform } from '@avlo/shared';
 import { calculateBBox } from './simplification';
 import type { DrawingState, PreviewData } from './types';
-import type { DrawingSettings } from '@/stores/device-ui-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
@@ -34,7 +33,6 @@ function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamo
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
   private room: IRoomDocManager; // Use interface, not implementation
-  private settings: DrawingSettings;
   private toolType: 'pen' | 'highlighter';
   private userId: string; // Stable user ID for all strokes from this tool instance
 
@@ -66,7 +64,6 @@ export class DrawingTool {
 
   constructor(
     room: IRoomDocManager, // Use interface for loose coupling
-    settings: DrawingSettings,
     toolType: 'pen' | 'highlighter',
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
@@ -75,7 +72,6 @@ export class DrawingTool {
     opts?: { forceSnapKind?: ForcedSnapKind }      // NEW parameter
   ) {
     this.room = room;
-    this.settings = settings;
     this.toolType = toolType;
     this.userId = userId; // Store the stable ID
     this.onInvalidate = onInvalidate;
@@ -86,16 +82,44 @@ export class DrawingTool {
     this.resetState();
   }
 
+  /**
+   * Read and freeze settings from store at gesture start.
+   * Called at begin() time to capture current settings.
+   */
+  private getFrozenSettings(): { size: number; color: string; opacity: number } {
+    const state = useDeviceUIStore.getState();
+    const base = state.drawingSettings;
+
+    return {
+      size: base.size,
+      color: base.color,
+      opacity: this.toolType === 'highlighter'
+        ? state.highlighterOpacity
+        : (base.opacity ?? 1),
+    };
+  }
+
+  /**
+   * Read fill flag LIVE from store (not frozen).
+   * Allows users to toggle fill during shape preview.
+   */
+  private getFillEnabled(): boolean {
+    return useDeviceUIStore.getState().drawingSettings.fill;
+  }
+
   private resetState(): void {
+    // Read current settings from store (will be frozen on begin())
+    const settings = this.getFrozenSettings();
+
     this.state = {
       isDrawing: false,
       pointerId: null,
       points: [], // Now stores [number, number][] tuples only
       config: {
         tool: this.toolType,
-        color: this.settings.color,
-        size: this.settings.size,
-        opacity: this.settings.opacity ?? (this.toolType === 'highlighter' ? 0.25 : 1),
+        color: settings.color,
+        size: settings.size,
+        opacity: settings.opacity,
       },
       startTime: 0,
     };
@@ -247,19 +271,18 @@ export class DrawingTool {
   startDrawing(pointerId: number, worldX: number, worldY: number): void {
     if (this.state.isDrawing) return;
 
-    // Freeze tool settings at gesture start (CRITICAL)
+    // CRITICAL: Freeze settings from store at gesture start
+    const frozen = this.getFrozenSettings();
+
     this.state = {
       isDrawing: true,
       pointerId,
       points: [[worldX, worldY]], // Store as tuples from the start
       config: {
         tool: this.toolType,
-        color: this.settings.color,
-        size: this.settings.size,
-        opacity:
-          this.toolType === 'highlighter'
-            ? STROKE_CONFIG.HIGHLIGHTER_DEFAULT_OPACITY
-            : (this.settings.opacity ?? 1),
+        color: frozen.color,
+        size: frozen.size,
+        opacity: frozen.opacity,
       },
       startTime: Date.now(),
     };
@@ -371,7 +394,7 @@ export class DrawingTool {
         color,
         size,
         opacity: this.state.config.opacity, // Use actual commit opacity
-        fill: (this.settings as any).fill,  // Include fill flag for preview
+        fill: this.getFillEnabled(),  // Read LIVE from store for real-time toggle
         anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
         cursor: this.liveCursorWU,
         bbox: null
@@ -579,8 +602,8 @@ export class DrawingTool {
       shapeMap.set('color', this.state.config.color);  // Phase 3: Use 'color' not 'strokeColor'
       shapeMap.set('width', this.state.config.size);   // Phase 3: Use 'width' not 'strokeWidth'
 
-      // Add fill color if enabled (passed through settings)
-      if ((this.settings as any).fill) {
+      // Add fill color if enabled (read LIVE from store at commit time)
+      if (this.getFillEnabled()) {
         const fillColor = createFillFromStroke(this.state.config.color);
         shapeMap.set('fillColor', fillColor);
       }

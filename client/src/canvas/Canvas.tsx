@@ -52,15 +52,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const overlayLoopRef = useRef<OverlayRenderLoop | null>(null); // new
 
   // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
-  // Phase 9: Updated to use new store structure
-  const {
-    activeTool,
-    drawingSettings,
-    highlighterOpacity,
-    eraserSize,
-    textSize,
-    shapeVariant
-  } = useDeviceUIStore();
+  // Use NARROW SELECTORS to prevent spurious rerenders when other settings change
+  // DrawingTool/EraserTool read settings from store at begin() time
+  const activeTool = useDeviceUIStore(s => s.activeTool);
+  const shapeVariant = useDeviceUIStore(s => s.shapeVariant);
+  const textSize = useDeviceUIStore(s => s.textSize);
+  const textColor = useDeviceUIStore(s => s.drawingSettings.color);
 
   // Add setter and tool refs for stable callbacks (Step 1.1)
   const setScaleRef = useRef<(scale: number) => void>();
@@ -108,11 +105,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       snapshotRef.current = newSnapshot;
 
       if (!renderLoopRef.current || !overlayLoopRef.current) return;
-      console.log('newSnapshot.docVersion', newSnapshot.docVersion);
       // Check if document content changed (not just presence) s
       if (newSnapshot.docVersion !== lastDocVersion) {
         lastDocVersion = newSnapshot.docVersion;
-        console.log('lastDocVersion', lastDocVersion);
         // Hold preview for one frame to prevent flash on commit
         overlayLoopRef.current.holdPreviewForOneFrame();
 
@@ -137,7 +132,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
             for (const bounds of rects) {
               if (boundsIntersect(bounds, viewport)) {
                 renderLoopRef.current.invalidateWorld(bounds);
-                console.log('invalidateWorld', bounds);
               }
             }
           } else {
@@ -149,7 +143,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         } else if (lastDocVersion < 2) {
           // Initial load without dirtyPatch
           renderLoopRef.current.invalidateAll('content-change');
-          console.log('initial load');
         }
         overlayLoopRef.current.invalidateAll(); // Also update overlay for new doc
       } else {
@@ -426,10 +419,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     if (activeTool === 'text' && toolRef.current?.isActive()) {
       const textTool = toolRef.current as any;
       if ('updateConfig' in textTool) {
-        // Create text config from unified settings
+        // Create text config from narrow selectors
         const textConfig = {
           size: textSize,
-          color: drawingSettings.color
+          color: textColor
         };
         textTool.updateConfig(textConfig);
         return; // Skip recreation, just update config
@@ -466,45 +459,20 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     let tool: PointerTool | null = null;
 
     if (activeTool === 'eraser') {
-      // Eraser tool uses its own size setting
-      const eraserSettings = { size: eraserSize };
+      // Eraser tool uses fixed 10px radius - no settings needed
       tool = new EraserTool(
         roomDoc,
-        eraserSettings,
-        userId,
         () => overlayLoopRef.current?.invalidateAll(),
-        // Pass viewport callback for hit-test pruning
-        () => {
-          const size = canvasSizeRef.current;
-          if (size) {
-            return {
-              cssWidth: size.cssWidth,
-              cssHeight: size.cssHeight,
-              dpr: size.dpr,
-            };
-          }
-          return { cssWidth: 1, cssHeight: 1, dpr: 1 };
-        },
-        // Pass live view transform for accurate hit-testing
         () => viewTransformRef.current,
       );
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-      // Use unified settings with tool-specific overrides
-      const settings = {
-        size: drawingSettings.size,
-        color: drawingSettings.color,
-        opacity: activeTool === 'highlighter' ? highlighterOpacity : drawingSettings.opacity,
-        fill: drawingSettings.fill  // Include fill for perfect shape recognition
-      };
-
+      // Settings are read from store at begin() time - no need to pass them
       tool = new DrawingTool(
         roomDoc,
-        settings,
         activeTool,
         userId,
         (_bounds) => {
           // During drawing, invalidate overlay (preview is there)
-          // The overlay will full-clear anyway, but this triggers a frame
           overlayLoopRef.current?.invalidateAll();
         },
         // requestOverlayFrame: tools call this after snap or any preview change
@@ -520,17 +488,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         shapeVariant === 'diamond'   ? 'diamond' :
         shapeVariant === 'arrow'     ? 'arrow' : 'line';
 
-      // Use unified drawing settings (shapes always use the unified settings)
-      const settings = {
-        size: drawingSettings.size,
-        color: drawingSettings.color,
-        opacity: drawingSettings.opacity,
-        fill: drawingSettings.fill  // Pass fill state for shapes
-      };
-
+      // Settings are read from store at begin() time - no need to pass them
       tool = new DrawingTool(
         roomDoc,
-        settings,
         'pen', // Shape tool uses pen mechanics
         userId,
         (_bounds) => overlayLoopRef.current?.invalidateAll(),
@@ -539,10 +499,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         { forceSnapKind } // Pass forced snap configuration
       );
     } else if (activeTool === 'text') {
-      // Text tool uses unified color but its own size
+      // Text tool uses narrow selector for color and its own size
       const textSettings = {
         size: textSize,
-        color: drawingSettings.color
+        color: textColor
       };
       tool = new TextTool(
         roomDoc,
@@ -628,16 +588,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     roomDoc,
     userId,
     activeTool,
-    drawingSettings,
-    highlighterOpacity,
-    eraserSize,
-    textSize,
-    shapeVariant,
+    textSize,      // Only for TextTool updateConfig
+    textColor,     // Only for TextTool updateConfig (narrow selector)
+    shapeVariant,  // Changes tool behavior (forceSnapKind)
     stageReady,
     screenToWorld,
     worldToClient, // Now stable with empty deps, safe to include
-    applyCursor, // Stable function with empty deps
-  ]); // Include all tool dependencies
+    applyCursor,   // Stable function with empty deps
+  ]); // DrawingTool/EraserTool read settings from store at begin() time
 
   // Effect A: Stable event listeners (mount once) - Step 2.1
   useEffect(() => {
