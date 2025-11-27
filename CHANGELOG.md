@@ -1,5 +1,157 @@
 # SelectTool Implementation Progress
 
+## Phase 3 Complete - Critical Bug Fixes
+
+**Branch:** `feature/select-tool`
+**Date:** 2025-01-26
+
+---
+
+### Bugs Fixed
+
+#### ✅ Bug 1: BBox Format Mismatch (FIXED)
+**Problem:** `handle.bbox` is `[minX, minY, maxX, maxY]` but code treated it as `[x, y, width, height]`
+
+**Fix in `computeSelectionBounds()`:**
+```typescript
+// BEFORE (wrong):
+const [bx, by, bw, bh] = handle.bbox;
+maxX = Math.max(maxX, bx + bw);  // Adding minX + maxX!
+
+// AFTER (correct):
+const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+maxX = Math.max(maxX, bMaxX);
+```
+
+**Result:** Selection boxes now tightly fit selected objects.
+
+---
+
+#### ✅ Bug 2: Empty Space Click Doesn't Clear Selection (FIXED)
+**Problem:** Clicking empty space went directly to `marquee` phase, skipping `clearSelection()`.
+
+**Fix:** All pointer downs now start in `pendingClick` phase. Marquee only starts when drag threshold exceeded.
+```typescript
+// In begin(): Always use pendingClick
+this.phase = 'pendingClick';
+
+// In move(): Start marquee only on drag
+if (dist > MOVE_THRESHOLD_PX) {
+  if (!this.hitAtDown) {
+    this.phase = 'marquee';
+    useSelectionStore.getState().beginMarquee(this.downWorld!);
+  }
+}
+```
+
+**Result:** Click on empty space → clears selection. Drag on empty space → marquee selection.
+
+---
+
+#### ✅ Bug 3: Marquee Uses Center-Point Instead of Intersection (FIXED)
+**Problem:** Only objects with center inside marquee were selected (too restrictive).
+
+**Fix:** Replaced center-point check with geometry-aware intersection testing.
+
+**New Geometry Functions Added (~200 lines):**
+- `pointInWorldRect()` - Point in WorldRect test
+- `rectsIntersect()` - AABB overlap test
+- `segmentsIntersect()` - CCW orientation-based line segment intersection
+- `segmentIntersectsRect()` - Line segment vs rect (endpoint + edge crossing tests)
+- `polylineIntersectsRect()` - Stroke/connector polyline vs rect (tests each segment)
+- `ellipseIntersectsRect()` - Ellipse vs rect (bounds check + corner-in-ellipse + 16-point perimeter sampling)
+- `diamondIntersectsRect()` - Diamond vs rect (vertex-in-rect + corner-in-diamond + edge intersection)
+- `objectIntersectsRect()` - Dispatch by object kind (stroke/connector → polyline, shape → by shapeType, text → rect)
+
+**Geometry Test Details:**
+```
+Ellipse: bounds check → center-in-rect → corners-in-ellipse → perimeter samples (16 points)
+Diamond: vertices-in-rect → rect-corners-in-diamond (cross-product) → edge-intersects-rect
+Stroke:  any-point-in-rect → any-segment-intersects-rect
+```
+
+**Result:** Marquee selection now works like Figma/Miro - any object that intersects the marquee is selected.
+
+---
+
+### What Works Now
+
+✅ Selection boxes tightly fit selected objects
+✅ Click empty space clears selection
+✅ Marquee selects on intersection (industry standard)
+✅ Geometry-aware marquee for ellipse/diamond shapes
+✅ Strokes selected when any segment crosses marquee
+
+---
+
+### Next Priority: Selection Highlighting
+
+**Problem:** During marquee selection, it's difficult to see which objects will be selected.
+
+**Recommendation: Blue Outline Stroke (Preferred UX)**
+
+Similar to how `eraser-dim.ts` dims hit objects with white screen blend, create `selection-highlight.ts` that:
+1. Uses the Path2D cache (`getObjectCacheInstance()`)
+2. Strokes selected object outlines in blue (razor thin, 1px visual)
+3. Does NOT fill - only strokes the exact shape boundary
+
+**Implementation Pattern (from eraser-dim.ts):**
+```typescript
+// New file: client/src/renderer/layers/selection-highlight.ts
+export function drawSelectionHighlight(
+  ctx: CanvasRenderingContext2D,
+  selectedIds: string[],
+  snapshot: Snapshot,
+  scale: number,  // For consistent 1px visual stroke
+): void {
+  const cache = getObjectCacheInstance();
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue
+  ctx.lineWidth = 1 / scale;  // 1px visual regardless of zoom
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  for (const id of selectedIds) {
+    const handle = snapshot.objectsById.get(id);
+    if (!handle) continue;
+
+    const path = cache.getOrBuild(id, handle);
+    ctx.stroke(path);  // Just stroke the outline, no fill
+  }
+
+  ctx.restore();
+}
+```
+
+**Where to Render:**
+- In `OverlayRenderLoop.ts` within the `'selection'` preview case
+- Render BEFORE the marquee rect and selection bounds
+- Show for both single selection and marquee selection
+
+**Why This Approach:**
+1. Uses existing Path2D cache (no new geometry calculation)
+2. Shows exact object shape (not bounding box)
+3. Cleaner than per-object selection boxes (Excalidraw style)
+4. Consistent with eraser-dim.ts pattern
+
+---
+
+### Also Noted: Hit Test Slack Needed
+
+**Problem:** SelectTool uses `HIT_RADIUS_PX = 6` for hit testing, but EraserTool adds `ERASER_SLACK_PX = 2.0` for forgiving feel.
+
+**Current EraserTool:**
+```typescript
+const ERASER_RADIUS_PX = 10;
+const ERASER_SLACK_PX = 2.0;  // Forgiving feel
+// World radius = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / view.scale
+```
+
+**SelectTool should add similar slack** for stroke edge hit testing to be more forgiving.
+
+---
+
 ## Phase 2 Complete (Steps 10-11) - Integration + Cursor Handling
 
 **Branch:** `feature/select-tool`

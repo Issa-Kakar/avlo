@@ -109,14 +109,9 @@ export class SelectTool {
     // Next, check if we hit an object
     this.hitAtDown = this.hitTestObjects(worldX, worldY);
 
-    if (this.hitAtDown) {
-      // Hit an object - might be click-select or drag-translate
-      this.phase = 'pendingClick';
-    } else {
-      // No hit - start marquee selection
-      this.phase = 'marquee';
-      useSelectionStore.getState().beginMarquee([worldX, worldY]);
-    }
+    // Always start with pendingClick - differentiate click vs drag in move()
+    // This ensures empty space clicks properly clear selection in end()
+    this.phase = 'pendingClick';
 
     this.invalidateOverlay();
   }
@@ -162,6 +157,12 @@ export class SelectTool {
               if (bounds) {
                 useSelectionStore.getState().beginTranslate(bounds);
               }
+            } else {
+              // No hit object - start marquee selection now
+              this.phase = 'marquee';
+              useSelectionStore.getState().beginMarquee(this.downWorld!);
+              useSelectionStore.getState().updateMarquee([worldX, worldY]);
+              this.updateMarqueeSelection();
             }
           }
         }
@@ -375,11 +376,12 @@ export class SelectTool {
       const handle = snapshot.objectsById.get(id);
       if (!handle) continue;
 
-      const [bx, by, bw, bh] = handle.bbox;
-      minX = Math.min(minX, bx);
-      minY = Math.min(minY, by);
-      maxX = Math.max(maxX, bx + bw);
-      maxY = Math.max(maxY, by + bh);
+      // bbox format is [minX, minY, maxX, maxY], NOT [x, y, width, height]
+      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+      minX = Math.min(minX, bMinX);
+      minY = Math.min(minY, bMinY);
+      maxX = Math.max(maxX, bMaxX);
+      maxY = Math.max(maxY, bMaxY);
     }
 
     if (!isFinite(minX)) return null;
@@ -486,32 +488,29 @@ export class SelectTool {
 
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
-    const marqueeRect = {
+    const marqueeRect: WorldRect = {
       minX: Math.min(marquee.anchor[0], marquee.current[0]),
       minY: Math.min(marquee.anchor[1], marquee.current[1]),
       maxX: Math.max(marquee.anchor[0], marquee.current[0]),
       maxY: Math.max(marquee.anchor[1], marquee.current[1]),
     };
 
-    // Query spatial index for objects intersecting marquee
+    // Query spatial index for objects with bbox intersecting marquee (fast filter)
     const snapshot = this.room.currentSnapshot;
     const index = snapshot.spatialIndex;
     if (!index) return;
 
     const results = index.query(marqueeRect);
 
-    // Select objects whose bbox center is inside marquee (intuitive behavior)
+    // Geometry-aware intersection test for each candidate
+    // Select objects whose actual geometry intersects marquee (industry standard)
     const selectedIds: string[] = [];
     for (const entry of results) {
-      const handle = snapshot.objectsById.get(entry.id);
+      const handle = snapshot.objectsById.get(entry.id) as ObjectHandle | undefined;
       if (!handle) continue;
 
-      const [bx, by, bw, bh] = handle.bbox;
-      const cx = bx + bw / 2;
-      const cy = by + bh / 2;
-
-      if (cx >= marqueeRect.minX && cx <= marqueeRect.maxX &&
-          cy >= marqueeRect.minY && cy <= marqueeRect.maxY) {
+      // Use precise geometry intersection test
+      if (this.objectIntersectsRect(handle, marqueeRect)) {
         selectedIds.push(entry.id);
       }
     }
@@ -918,5 +917,200 @@ export class SelectTool {
     }
 
     return (maxX - minX) * (maxY - minY);
+  }
+
+  // === Geometry Helpers for Marquee Selection ===
+
+  private pointInWorldRect(px: number, py: number, rect: WorldRect): boolean {
+    return px >= rect.minX && px <= rect.maxX && py >= rect.minY && py <= rect.maxY;
+  }
+
+  private rectsIntersect(a: WorldRect, b: WorldRect): boolean {
+    return a.minX <= b.maxX && a.maxX >= b.minX &&
+           a.minY <= b.maxY && a.maxY >= b.minY;
+  }
+
+  private segmentsIntersect(
+    x1: number, y1: number, x2: number, y2: number,
+    x3: number, y3: number, x4: number, y4: number
+  ): boolean {
+    // CCW orientation test
+    const ccw = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => {
+      return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
+    };
+
+    return (
+      ccw(x1, y1, x3, y3, x4, y4) !== ccw(x2, y2, x3, y3, x4, y4) &&
+      ccw(x1, y1, x2, y2, x3, y3) !== ccw(x1, y1, x2, y2, x4, y4)
+    );
+  }
+
+  private segmentIntersectsRect(
+    x1: number, y1: number, x2: number, y2: number,
+    rect: WorldRect
+  ): boolean {
+    // Check if either endpoint is inside rect
+    if (this.pointInWorldRect(x1, y1, rect) || this.pointInWorldRect(x2, y2, rect)) {
+      return true;
+    }
+
+    // Check if segment crosses any rect edge
+    const edges: [[number, number], [number, number]][] = [
+      [[rect.minX, rect.minY], [rect.maxX, rect.minY]], // Top
+      [[rect.maxX, rect.minY], [rect.maxX, rect.maxY]], // Right
+      [[rect.maxX, rect.maxY], [rect.minX, rect.maxY]], // Bottom
+      [[rect.minX, rect.maxY], [rect.minX, rect.minY]], // Left
+    ];
+
+    for (const [[ex1, ey1], [ex2, ey2]] of edges) {
+      if (this.segmentsIntersect(x1, y1, x2, y2, ex1, ey1, ex2, ey2)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private polylineIntersectsRect(points: [number, number][], rect: WorldRect): boolean {
+    // Check if any point is inside rect
+    for (const [px, py] of points) {
+      if (this.pointInWorldRect(px, py, rect)) return true;
+    }
+
+    // Check if any segment intersects rect
+    for (let i = 0; i < points.length - 1; i++) {
+      if (this.segmentIntersectsRect(
+        points[i][0], points[i][1],
+        points[i + 1][0], points[i + 1][1],
+        rect
+      )) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private ellipseIntersectsRect(
+    ecx: number, ecy: number, rx: number, ry: number,
+    rect: WorldRect
+  ): boolean {
+    // Quick bounds check first
+    const ellipseBounds: WorldRect = {
+      minX: ecx - rx, minY: ecy - ry,
+      maxX: ecx + rx, maxY: ecy + ry
+    };
+    if (!this.rectsIntersect(ellipseBounds, rect)) return false;
+
+    // Check if ellipse center is inside rect
+    if (this.pointInWorldRect(ecx, ecy, rect)) return true;
+
+    // Check if any rect corner is inside ellipse
+    const corners: [number, number][] = [
+      [rect.minX, rect.minY], [rect.maxX, rect.minY],
+      [rect.maxX, rect.maxY], [rect.minX, rect.maxY]
+    ];
+    for (const [cx, cy] of corners) {
+      const dx = (cx - ecx) / rx;
+      const dy = (cy - ecy) / ry;
+      if (dx * dx + dy * dy <= 1) return true;
+    }
+
+    // Check if ellipse edge intersects rect edges (sample ellipse perimeter)
+    const SAMPLES = 16;
+    for (let i = 0; i < SAMPLES; i++) {
+      const angle = (i / SAMPLES) * Math.PI * 2;
+      const px = ecx + rx * Math.cos(angle);
+      const py = ecy + ry * Math.sin(angle);
+      if (this.pointInWorldRect(px, py, rect)) return true;
+    }
+
+    return false;
+  }
+
+  private diamondIntersectsRect(
+    top: [number, number], right: [number, number],
+    bottom: [number, number], left: [number, number],
+    rect: WorldRect
+  ): boolean {
+    // Check if any diamond vertex is inside rect
+    for (const [vx, vy] of [top, right, bottom, left]) {
+      if (this.pointInWorldRect(vx, vy, rect)) return true;
+    }
+
+    // Check if any rect corner is inside diamond
+    const corners: [number, number][] = [
+      [rect.minX, rect.minY], [rect.maxX, rect.minY],
+      [rect.maxX, rect.maxY], [rect.minX, rect.maxY]
+    ];
+    for (const [cx, cy] of corners) {
+      if (this.pointInDiamond(cx, cy, top, right, bottom, left)) return true;
+    }
+
+    // Check if any diamond edge intersects rect
+    const diamondEdges: [[number, number], [number, number]][] = [
+      [top, right], [right, bottom], [bottom, left], [left, top]
+    ];
+    for (const [[x1, y1], [x2, y2]] of diamondEdges) {
+      if (this.segmentIntersectsRect(x1, y1, x2, y2, rect)) return true;
+    }
+
+    return false;
+  }
+
+  // === Marquee Selection Geometry Dispatch ===
+
+  private objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boolean {
+    const y = handle.y;
+
+    switch (handle.kind) {
+      case 'stroke':
+      case 'connector': {
+        const points = y.get('points') as [number, number][] | undefined;
+        if (!points || points.length === 0) return false;
+        return this.polylineIntersectsRect(points, rect);
+      }
+
+      case 'shape': {
+        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        if (!frame) return false;
+
+        const shapeType = (y.get('shapeType') as string) || 'rect';
+        const [x, yPos, w, h] = frame;
+
+        switch (shapeType) {
+          case 'ellipse': {
+            return this.ellipseIntersectsRect(
+              x + w / 2, yPos + h / 2, w / 2, h / 2, rect
+            );
+          }
+          case 'diamond': {
+            const top: [number, number] = [x + w / 2, yPos];
+            const right: [number, number] = [x + w, yPos + h / 2];
+            const bottom: [number, number] = [x + w / 2, yPos + h];
+            const left: [number, number] = [x, yPos + h / 2];
+            return this.diamondIntersectsRect(top, right, bottom, left, rect);
+          }
+          case 'rect':
+          case 'roundedRect':
+          default: {
+            // Rect vs rect intersection
+            const shapeBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
+            return this.rectsIntersect(shapeBounds, rect);
+          }
+        }
+      }
+
+      case 'text': {
+        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        if (!frame) return false;
+        const [x, yPos, w, h] = frame;
+        const textBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
+        return this.rectsIntersect(textBounds, rect);
+      }
+
+      default:
+        return false;
+    }
   }
 }
