@@ -14,12 +14,13 @@ import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
+import { SelectTool } from '@/lib/tools/SelectTool';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { calculateZoomTransform, boundsIntersect, getVisibleWorldBounds } from './internal/transforms';
 import { ZoomAnimator } from './animation/ZoomAnimator';
 
 // Unified interface for all pointer tools
-type PointerTool = DrawingTool | EraserTool | TextTool | PanTool;
+type PointerTool = DrawingTool | EraserTool | TextTool | PanTool | SelectTool;
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -223,6 +224,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         break;
       case 'pan':
         canvas.style.cursor = 'grab'; // Open hand idle
+        break;
+      case 'select':
+        canvas.style.cursor = 'default'; // Arrow cursor for selection
         break;
       default:
         canvas.style.cursor = 'crosshair';
@@ -523,6 +527,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         applyCursor,
         (cursor) => { cursorOverrideRef.current = cursor; }
       );
+    } else if (activeTool === 'select') {
+      tool = new SelectTool(roomDoc, {
+        invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
+        invalidateOverlay: () => overlayLoopRef.current?.invalidateAll(),
+        getView: () => viewTransformRef.current,
+        applyCursor,
+        setCursorOverride: (cursor) => { cursorOverrideRef.current = cursor; },
+      });
     } else {
       return; // Unsupported tool
     }
@@ -714,6 +726,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         const world = screenToWorld(e.clientX, e.clientY);
         if (world) {
           tool.move(world[0], world[1]);
+
+          // SelectTool: update handle hover cursor when idle
+          if (activeToolRef.current === 'select' && !tool.isActive()) {
+            (tool as SelectTool).updateHoverCursor(world[0], world[1]);
+          }
         }
       }
     };

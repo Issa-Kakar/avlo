@@ -1,5 +1,22 @@
 // Phase 5: Drawing Tool Types
 
+/**
+ * WorldRect represents a bounding box in world coordinates
+ * Used for selection bounds, dirty rects, and spatial queries
+ */
+export interface WorldRect {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/**
+ * HandleId identifies resize handles at selection corners
+ * nw = northwest (top-left), ne = northeast (top-right), etc.
+ */
+export type HandleId = 'nw' | 'ne' | 'se' | 'sw';
+
 export interface DrawingToolConfig {
   tool: 'pen' | 'highlighter';
   color: string;
@@ -95,7 +112,25 @@ export interface PerfectShapePreview {
 
 
 /**
+ * SelectionPreview is the preview data for selection tool
+ * Used by SelectTool and overlay rendering
+ */
+export interface SelectionPreview {
+  kind: 'selection';
+  /** Selection bounds in world coords (with transform applied for preview) */
+  selectionBounds: WorldRect | null;
+  /** Marquee rect in world coords (anchor to current point) */
+  marqueeRect: WorldRect | null;
+  /** Handle positions for resize (world coords) */
+  handles: { id: HandleId; x: number; y: number }[] | null;
+  /** Whether currently transforming (to hide handles during drag) */
+  isTransforming: boolean;
+  /** Always null for overlay previews */
+  bbox: null;
+}
+
+/**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData = StrokePreview| EraserPreview | TextPreview | PerfectShapePreview;
+export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview | SelectionPreview;

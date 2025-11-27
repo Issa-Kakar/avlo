@@ -283,6 +283,59 @@ export class OverlayRenderLoop {
           ctx.translate(-view.pan.x, -view.pan.y);
           drawPerfectShapePreview(ctx, previewToDraw);
           ctx.restore();
+
+        } else if (previewToDraw?.kind === 'selection') {
+          // Selection preview (world space for bounds, screen space for handle sizing)
+          ctx.save();
+          ctx.scale(view.scale, view.scale);
+          ctx.translate(-view.pan.x, -view.pan.y);
+
+          // Draw marquee rect if active (dashed, light blue fill)
+          if (previewToDraw.marqueeRect) {
+            const { minX, minY, maxX, maxY } = previewToDraw.marqueeRect;
+            ctx.fillStyle = 'rgba(59, 130, 246, 0.08)';
+            ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+            ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
+            ctx.lineWidth = 1 / view.scale;
+            ctx.setLineDash([4 / view.scale, 4 / view.scale]);
+            ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+            ctx.setLineDash([]);
+          }
+
+          // Draw selection bounds and handles (skip during active transform)
+          if (previewToDraw.selectionBounds && !previewToDraw.isTransforming) {
+            const { minX, minY, maxX, maxY } = previewToDraw.selectionBounds;
+
+            // Selection box stroke
+            ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
+            ctx.lineWidth = 1.5 / view.scale;
+            ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+            // Corner handles (8px screen size, scaled to world)
+            if (previewToDraw.handles) {
+              const handleSize = 8 / view.scale;
+              ctx.fillStyle = 'white';
+              ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
+              ctx.lineWidth = 1.5 / view.scale;
+
+              for (const h of previewToDraw.handles) {
+                ctx.fillRect(
+                  h.x - handleSize / 2,
+                  h.y - handleSize / 2,
+                  handleSize,
+                  handleSize
+                );
+                ctx.strokeRect(
+                  h.x - handleSize / 2,
+                  h.y - handleSize / 2,
+                  handleSize,
+                  handleSize
+                );
+              }
+            }
+          }
+
+          ctx.restore();
         }
       });
 

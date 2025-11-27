@@ -17,11 +17,11 @@ npm run typecheck        # Type check all workspaces (RUN FROM ROOT!)
 **Purpose:** Link-based offline-first collaborative whiteboard, with build in code blocks and execution. Offline via IndexedDB + CRDT.
 
 **Tech Stack:**
-- **Frontend:** React/TS/Tailwind/Canvas/Monaco(will change to Yjs code mirror)
+- **Frontend:** React/TS/Tailwind/Canvas
 - **Realtime:** Yjs + y-partyserver + y-indexeddb
 - **Backend:** Cloudflare Workers + Durable Objects + R2
 - **State:** Zustand (device-local), TanStack Query(dormant right now)
-- **PWA:** Service Workers for offline support
+- **PWA(Future):** Service Workers for offline support
 
 **Write Path:** UI → tool.commit() → mutate(fn) / ydoc.transact() / Y.Map.set() → Observer fire / providers sync → R2 persist
 
@@ -320,7 +320,7 @@ interface DeviceUIState {
   - `DrawingTool(roomDoc, toolType, userId, ...)` - no settings param
   - `EraserTool(roomDoc, onInvalidate, getView)` - no settings param (fixed 10px radius)
   - Tools call `useDeviceUIStore.getState()` at gesture start to freeze settings
-  - Exception: `fill` is read **LIVE** via `getFillEnabled()` for real-time toggle during preview
+  - Exception: `fill` is read **LIVE** via `getFillEnabled()` for real-time stroke->perfect shape cases during preview
 - Shape tool uses DrawingTool with `{ forceSnapKind }` option
 - Variant mapping: 'rectangle' → 'rect', 'ellipse' → 'ellipseRect', 'diamond' → 'diamond'
 
@@ -853,7 +853,7 @@ interface PerfectShapePreview {
    - Gate `idbReady` when initial load applies (2s timeout)
 
 3. **Initialize y-partyserver provider**
-   - Connect immediately (don't wait for IDB)
+   - Connect immediately (NEW: wait for IDB)
    - Gate `wsConnected` on open
    - Gate `wsSynced` after first sync
 4. **Seed structures**
