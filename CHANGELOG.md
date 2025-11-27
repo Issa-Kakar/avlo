@@ -1,717 +1,712 @@
 # SelectTool Implementation Progress
 
-## Phase 3 Complete - Critical Bug Fixes
+## Phase 5 - Scale Fix, Side Handles, Transform Commit (CURRENT)
 
 **Branch:** `feature/select-tool`
-**Date:** 2025-01-26
+**Date:** 2025-01-26 (Session 3)
+**Plan File:** `/home/issak/.claude/plans/splendid-singing-lake.md`
 
 ---
 
-### Bugs Fixed
+### ✅ Completed This Session
 
-#### ✅ Bug 1: BBox Format Mismatch (FIXED)
-**Problem:** `handle.bbox` is `[minX, minY, maxX, maxY]` but code treated it as `[x, y, width, height]`
+#### 1. HandleId Type Extended (DONE)
+**File:** `client/src/lib/tools/types.ts` (line 19)
 
-**Fix in `computeSelectionBounds()`:**
 ```typescript
-// BEFORE (wrong):
-const [bx, by, bw, bh] = handle.bbox;
-maxX = Math.max(maxX, bx + bw);  // Adding minX + maxX!
+// BEFORE:
+export type HandleId = 'nw' | 'ne' | 'se' | 'sw';
 
-// AFTER (correct):
-const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-maxX = Math.max(maxX, bMaxX);
+// AFTER:
+export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 ```
 
-**Result:** Selection boxes now tightly fit selected objects.
+#### 2. ScaleTransform Updated with handleId (DONE)
+**File:** `client/src/stores/selection-store.ts`
+
+- Added import: `import type { HandleId } from '@/lib/tools/types';`
+- Added `handleId: HandleId` to ScaleTransform interface (line 26)
+- Updated `beginScale` signature to accept handleId (line 59)
+- Updated `beginScale` implementation (line 109-110)
 
 ---
 
-#### ✅ Bug 2: Empty Space Click Doesn't Clear Selection (FIXED)
-**Problem:** Clicking empty space went directly to `marquee` phase, skipping `clearSelection()`.
+### ⏳ Remaining Tasks (In Order)
 
-**Fix:** All pointer downs now start in `pendingClick` phase. Marquee only starts when drag threshold exceeded.
+#### Task 1: Update computeHandles() - Add Side Handles
+**File:** `client/src/lib/tools/SelectTool.ts` (lines 417-424)
+
+**REPLACE WITH:**
 ```typescript
-// In begin(): Always use pendingClick
-this.phase = 'pendingClick';
+private computeHandles(bounds: WorldRect): { id: HandleId; x: number; y: number }[] {
+  const midX = (bounds.minX + bounds.maxX) / 2;
+  const midY = (bounds.minY + bounds.maxY) / 2;
 
-// In move(): Start marquee only on drag
-if (dist > MOVE_THRESHOLD_PX) {
-  if (!this.hitAtDown) {
-    this.phase = 'marquee';
-    useSelectionStore.getState().beginMarquee(this.downWorld!);
+  return [
+    // Corners
+    { id: 'nw', x: bounds.minX, y: bounds.minY },
+    { id: 'ne', x: bounds.maxX, y: bounds.minY },
+    { id: 'se', x: bounds.maxX, y: bounds.maxY },
+    { id: 'sw', x: bounds.minX, y: bounds.maxY },
+    // Sides (midpoints)
+    { id: 'n', x: midX, y: bounds.minY },
+    { id: 'e', x: bounds.maxX, y: midY },
+    { id: 's', x: midX, y: bounds.maxY },
+    { id: 'w', x: bounds.minX, y: midY },
+  ];
+}
+```
+
+---
+
+#### Task 2: Update hitTestHandle() - Test All 8 Handles
+**File:** `client/src/lib/tools/SelectTool.ts` (lines 534-560)
+
+**REPLACE WITH:**
+```typescript
+private hitTestHandle(worldX: number, worldY: number): HandleId | null {
+  const store = useSelectionStore.getState();
+  if (store.selectedIds.length === 0) return null;
+
+  const bounds = this.computeSelectionBounds();
+  if (!bounds) return null;
+
+  const view = this.getView();
+  const handleRadius = HANDLE_HIT_PX / view.scale;
+
+  // Use computeHandles to get all 8 handles
+  const handles = this.computeHandles(bounds);
+
+  for (const h of handles) {
+    const dx = worldX - h.x;
+    const dy = worldY - h.y;
+    if (dx * dx + dy * dy <= handleRadius * handleRadius) {
+      return h.id;
+    }
+  }
+
+  return null;
+}
+```
+
+---
+
+#### Task 3: Update getScaleOrigin() - Add Side Handle Origins
+**File:** `client/src/lib/tools/SelectTool.ts` (lines 426-434)
+
+**REPLACE WITH:**
+```typescript
+private getScaleOrigin(handle: HandleId, bounds: WorldRect): [number, number] {
+  const midX = (bounds.minX + bounds.maxX) / 2;
+  const midY = (bounds.minY + bounds.maxY) / 2;
+
+  // Scale origin is opposite edge/corner from the dragged handle
+  switch (handle) {
+    // Corners - opposite corner
+    case 'nw': return [bounds.maxX, bounds.maxY];
+    case 'ne': return [bounds.minX, bounds.maxY];
+    case 'se': return [bounds.minX, bounds.minY];
+    case 'sw': return [bounds.maxX, bounds.minY];
+    // Sides - opposite edge midpoint
+    case 'n': return [midX, bounds.maxY];
+    case 's': return [midX, bounds.minY];
+    case 'e': return [bounds.minX, midY];
+    case 'w': return [bounds.maxX, midY];
   }
 }
 ```
 
-**Result:** Click on empty space → clears selection. Drag on empty space → marquee selection.
-
 ---
 
-#### ✅ Bug 3: Marquee Uses Center-Point Instead of Intersection (FIXED)
-**Problem:** Only objects with center inside marquee were selected (too restrictive).
+#### Task 4: Fix computeScaleFactors() - CRITICAL BUG FIX
+**File:** `client/src/lib/tools/SelectTool.ts` (lines 436-462)
 
-**Fix:** Replaced center-point check with geometry-aware intersection testing.
+**BUGS IN CURRENT CODE:**
+1. Divides by `origWidth/2` instead of `origWidth` (2x scale error!)
+2. Uses `Math.abs()` which prevents negative scale (no flip/mirror)
+3. No side handle support
 
-**New Geometry Functions Added (~200 lines):**
-- `pointInWorldRect()` - Point in WorldRect test
-- `rectsIntersect()` - AABB overlap test
-- `segmentsIntersect()` - CCW orientation-based line segment intersection
-- `segmentIntersectsRect()` - Line segment vs rect (endpoint + edge crossing tests)
-- `polylineIntersectsRect()` - Stroke/connector polyline vs rect (tests each segment)
-- `ellipseIntersectsRect()` - Ellipse vs rect (bounds check + corner-in-ellipse + 16-point perimeter sampling)
-- `diamondIntersectsRect()` - Diamond vs rect (vertex-in-rect + corner-in-diamond + edge intersection)
-- `objectIntersectsRect()` - Dispatch by object kind (stroke/connector → polyline, shape → by shapeType, text → rect)
-
-**Geometry Test Details:**
-```
-Ellipse: bounds check → center-in-rect → corners-in-ellipse → perimeter samples (16 points)
-Diamond: vertices-in-rect → rect-corners-in-diamond (cross-product) → edge-intersects-rect
-Stroke:  any-point-in-rect → any-segment-intersects-rect
-```
-
-**Result:** Marquee selection now works like Figma/Miro - any object that intersects the marquee is selected.
-
----
-
-### What Works Now
-
-✅ Selection boxes tightly fit selected objects
-✅ Click empty space clears selection
-✅ Marquee selects on intersection (industry standard)
-✅ Geometry-aware marquee for ellipse/diamond shapes
-✅ Strokes selected when any segment crosses marquee
-
----
-
-### Next Priority: Selection Highlighting
-
-**Problem:** During marquee selection, it's difficult to see which objects will be selected.
-
-**Recommendation: Blue Outline Stroke (Preferred UX)**
-
-Similar to how `eraser-dim.ts` dims hit objects with white screen blend, create `selection-highlight.ts` that:
-1. Uses the Path2D cache (`getObjectCacheInstance()`)
-2. Strokes selected object outlines in blue (razor thin, 1px visual)
-3. Does NOT fill - only strokes the exact shape boundary
-
-**Implementation Pattern (from eraser-dim.ts):**
+**REPLACE WITH:**
 ```typescript
-// New file: client/src/renderer/layers/selection-highlight.ts
-export function drawSelectionHighlight(
-  ctx: CanvasRenderingContext2D,
-  selectedIds: string[],
-  snapshot: Snapshot,
-  scale: number,  // For consistent 1px visual stroke
-): void {
-  const cache = getObjectCacheInstance();
+private computeScaleFactors(worldX: number, worldY: number): { scaleX: number; scaleY: number } {
+  const store = useSelectionStore.getState();
+  const transform = store.transform;
+  if (transform.kind !== 'scale') return { scaleX: 1, scaleY: 1 };
 
-  ctx.save();
-  ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue
-  ctx.lineWidth = 1 / scale;  // 1px visual regardless of zoom
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
+  const { origin, originBounds, handleId } = transform;
+  const [ox, oy] = origin;
 
-  for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
-    if (!handle) continue;
+  // Original dimensions
+  const origWidth = originBounds.maxX - originBounds.minX;
+  const origHeight = originBounds.maxY - originBounds.minY;
 
-    const path = cache.getOrBuild(id, handle);
-    ctx.stroke(path);  // Just stroke the outline, no fill
+  // Vector from origin to cursor
+  const dx = worldX - ox;
+  const dy = worldY - oy;
+
+  // Get sign multipliers based on handle direction
+  const handleSignX = this.getHandleSignX(handleId);
+  const handleSignY = this.getHandleSignY(handleId);
+
+  let scaleX = 1;
+  let scaleY = 1;
+
+  const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
+  const isSideH = handleId === 'e' || handleId === 'w';
+  const isSideV = handleId === 'n' || handleId === 's';
+
+  if (isCorner) {
+    // Corner handles: free scale in both axes (SIGNED for flip)
+    scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
+    scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+  } else if (isSideH) {
+    // East/West handle: X scales, Y = 1
+    scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
+    scaleY = 1;
+  } else if (isSideV) {
+    // North/South handle: Y scales, X = 1
+    scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+    scaleX = 1;
   }
 
+  // Apply minimum scale magnitude (0.1) but preserve sign for flip
+  const minScale = 0.1;
+  scaleX = Math.sign(scaleX || 1) * Math.max(minScale, Math.abs(scaleX));
+  scaleY = Math.sign(scaleY || 1) * Math.max(minScale, Math.abs(scaleY));
+
+  return { scaleX, scaleY };
+}
+
+/** Returns +1 or -1 for X direction based on handle */
+private getHandleSignX(handleId: HandleId): number {
+  switch (handleId) {
+    case 'nw': case 'w': case 'sw': return -1;  // Left side
+    case 'ne': case 'e': case 'se': return 1;   // Right side
+    default: return 1;
+  }
+}
+
+/** Returns +1 or -1 for Y direction based on handle */
+private getHandleSignY(handleId: HandleId): number {
+  switch (handleId) {
+    case 'nw': case 'n': case 'ne': return -1;  // Top side
+    case 'sw': case 's': case 'se': return 1;   // Bottom side
+    default: return 1;
+  }
+}
+```
+
+---
+
+#### Task 5: Add getHandleCursor() Helper + Update Cursor Logic
+**File:** `client/src/lib/tools/SelectTool.ts`
+
+**ADD after getHandleSignY():**
+```typescript
+private getHandleCursor(handle: HandleId): string {
+  switch (handle) {
+    case 'nw': case 'se': return 'nwse-resize';
+    case 'ne': case 'sw': return 'nesw-resize';
+    case 'n': case 's': return 'ns-resize';
+    case 'e': case 'w': return 'ew-resize';
+    default: return 'default';
+  }
+}
+```
+
+**UPDATE move() scale phase (lines 143-147):**
+```typescript
+const cursor = this.getHandleCursor(this.activeHandle);
+this.setCursorOverride(cursor);
+this.applyCursor();
+```
+
+**UPDATE updateHoverCursor() (lines 336-340):**
+```typescript
+if (handle) {
+  const cursor = this.getHandleCursor(handle);
+  this.setCursorOverride(cursor);
+} else {
+  this.setCursorOverride(null);
+}
+```
+
+---
+
+#### Task 6: Update beginScale Call to Pass handleId
+**File:** `client/src/lib/tools/SelectTool.ts` (line 140)
+
+**CHANGE FROM:**
+```typescript
+useSelectionStore.getState().beginScale(bounds, origin);
+```
+
+**TO:**
+```typescript
+useSelectionStore.getState().beginScale(bounds, origin, this.activeHandle!);
+```
+
+---
+
+#### Task 7: Update objects.ts - Per-Object Scale (Strokes Always Uniform)
+**File:** `client/src/renderer/layers/objects.ts`
+
+**CRITICAL DESIGN:**
+- Strokes ALWAYS scale uniformly (preserve aspect ratio)
+- Shapes CAN scale non-uniformly (directional stretch with side handles)
+- For side handles: use the primary axis (X for e/w, Y for n/s)
+- For corner handles: use max(|scaleX|, |scaleY|) for strokes
+
+**ADD import at top:**
+```typescript
+import type { HandleId } from '@/lib/tools/types';
+```
+
+**REPLACE applySelectionTransform function (lines 299-310):**
+```typescript
+function applySelectionTransform(
+  ctx: CanvasRenderingContext2D,
+  transform: {
+    kind: string;
+    dx?: number;
+    dy?: number;
+    origin?: [number, number];
+    scaleX?: number;
+    scaleY?: number;
+    handleId?: HandleId;
+  },
+  objectKind: 'stroke' | 'shape' | 'text' | 'connector'
+): void {
+  if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
+    ctx.translate(transform.dx, transform.dy);
+  } else if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
+    const [ox, oy] = transform.origin;
+    let sx = transform.scaleX;
+    let sy = transform.scaleY;
+
+    // Strokes ALWAYS scale uniformly
+    if (objectKind === 'stroke' || objectKind === 'connector') {
+      const uniformScale = computeUniformScale(sx, sy, transform.handleId);
+      sx = uniformScale;
+      sy = uniformScale;
+    }
+
+    ctx.translate(ox, oy);
+    ctx.scale(sx, sy);
+    ctx.translate(-ox, -oy);
+  }
+}
+
+function computeUniformScale(scaleX: number, scaleY: number, handleId?: HandleId): number {
+  if (!handleId) {
+    return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+  }
+
+  switch (handleId) {
+    case 'e': case 'w': return scaleX;  // Horizontal: X is primary
+    case 'n': case 's': return scaleY;  // Vertical: Y is primary
+    default: return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+  }
+}
+```
+
+**UPDATE render loop call (around line 80):**
+```typescript
+if (needsTransform) {
+  ctx.save();
+  applySelectionTransform(ctx, transform, handle.kind);
+  drawObject(ctx, handle);
   ctx.restore();
 }
 ```
 
-**Where to Render:**
-- In `OverlayRenderLoop.ts` within the `'selection'` preview case
-- Render BEFORE the marquee rect and selection bounds
-- Show for both single selection and marquee selection
-
-**Why This Approach:**
-1. Uses existing Path2D cache (no new geometry calculation)
-2. Shows exact object shape (not bounding box)
-3. Cleaner than per-object selection boxes (Excalidraw style)
-4. Consistent with eraser-dim.ts pattern
-
 ---
 
-### Also Noted: Hit Test Slack Needed
+#### Task 8: Implement commitTranslate()
+**File:** `client/src/lib/tools/SelectTool.ts`
 
-**Problem:** SelectTool uses `HIT_RADIUS_PX = 6` for hit testing, but EraserTool adds `ERASER_SLACK_PX = 2.0` for forgiving feel.
-
-**Current EraserTool:**
+**ADD import at top:**
 ```typescript
-const ERASER_RADIUS_PX = 10;
-const ERASER_SLACK_PX = 2.0;  // Forgiving feel
-// World radius = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / view.scale
+import * as Y from 'yjs';
 ```
 
-**SelectTool should add similar slack** for stroke edge hit testing to be more forgiving.
-
----
-
-## Phase 2 Complete (Steps 10-11) - Integration + Cursor Handling
-
-**Branch:** `feature/select-tool`
-**Date:** 2025-01-26
-
----
-
-### Modified Files This Phase
-
-#### 1. `client/src/lib/tools/SelectTool.ts`
-Added cursor handling:
-- Extended `SelectToolOpts` interface with `applyCursor` and `setCursorOverride` callbacks
-- Added `updateHoverCursor(worldX, worldY)` - detects handle hover and sets resize cursors
-- Added `clearHover()` - clears cursor override on pointer leave
-- Added cursor override in `move()` when entering scale phase (nwse-resize/nesw-resize)
-- Added cursor cleanup in `end()` and `cancel()`
-
-#### 2. `client/src/canvas/Canvas.tsx`
-Full SelectTool integration:
-- Added `SelectTool` import
-- Added `SelectTool` to `PointerTool` type union
-- Added `'select'` case in `applyCursor()` → `'default'` cursor
-- Added SelectTool instantiation branch with cursor callbacks
-- Added hover cursor update call in `handlePointerMove` for idle state
-
-#### 3. `client/src/renderer/OverlayRenderLoop.ts`
-Added selection preview rendering:
-- Added `'selection'` case in preview dispatch
-- Marquee rect: dashed stroke, light blue fill (0.08 alpha)
-- Selection bounds: solid blue stroke (1.5px visual)
-- Corner handles: white fill, blue stroke (8px visual, 4 corners)
-- Handles hidden during active transform (`isTransforming`)
-
----
-
-### What Works Now
-
-✅ **SelectTool is fully wired up and testable**
-✅ Clicking 'select' tool in toolbar activates SelectTool
-✅ Click to select objects (geometry-aware, fill-aware)
-✅ Marquee drag to select multiple objects (center-in-bounds logic)
-✅ Selection box and handles render on overlay
-✅ Resize cursors on handle hover (`nwse-resize`, `nesw-resize`)
-✅ Resize cursor maintained during scale operation
-✅ Default arrow cursor during translate (per user preference)
-✅ Cursor clears on cancel/end/pointer leave
-✅ TypeScript compiles (no SelectTool-related errors)
-
----
-
-### What's NOT Done Yet (Transform doesn't persist)
-
-⚠️ **Step 6 (Transform Commit)** - TODOs remain in `end()`:
-- `translate` phase: `endTransform()` called but NO Y.Doc mutation
-- `scale` phase: `endTransform()` called but NO Y.Doc mutation
-- Objects don't actually move/scale - transforms are visual preview only
-
-⚠️ **Step 9 (objects.ts WYSIWYG)** - NOT implemented:
-- Base canvas doesn't apply transforms during render
-- During drag, objects stay in place (no WYSIWYG preview)
-- Selection box moves but objects don't
-
----
-
-### 🚨 CRITICAL BUGS DISCOVERED (Must Fix Before Testing)
-
-#### Bug 1: BBox Format Mismatch (Selection boxes way off to the right)
-
-**Root Cause:** `handle.bbox` is `[minX, minY, maxX, maxY]` but code treats it as `[x, y, width, height]`
-
-**Locations:**
-- `SelectTool.ts` line 378 in `computeSelectionBounds()`:
-  ```typescript
-  // WRONG:
-  const [bx, by, bw, bh] = handle.bbox;
-  maxX = Math.max(maxX, bx + bw);  // Adds minX + maxX = way too far right!
-  maxY = Math.max(maxY, by + bh);
-  ```
-- `SelectTool.ts` line 509 in `updateMarqueeSelection()`:
-  ```typescript
-  // WRONG:
-  const [bx, by, bw, bh] = handle.bbox;
-  const cx = bx + bw / 2;  // Computes (minX + maxX) / 2, not center!
-  const cy = by + bh / 2;
-  ```
-
-**Fix:**
+**ADD method after invalidateTransformPreview():**
 ```typescript
-// In computeSelectionBounds() - line 378:
-const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-minX = Math.min(minX, bMinX);
-minY = Math.min(minY, bMinY);
-maxX = Math.max(maxX, bMaxX);
-maxY = Math.max(maxY, bMaxY);
+private commitTranslate(selectedIds: string[], dx: number, dy: number): void {
+  const snapshot = this.room.currentSnapshot;
 
-// In updateMarqueeSelection() - line 509:
-const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-const cx = (bMinX + bMaxX) / 2;
-const cy = (bMinY + bMaxY) / 2;
-```
+  this.room.mutate((ydoc: Y.Doc) => {
+    const root = ydoc.getMap('root');
+    const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
 
-**Reference:** `packages/shared/src/utils/bbox.ts` confirms bbox format:
-```typescript
-// Line 96-102: bboxToBounds() shows the format
-export function bboxToBounds(bbox: [number, number, number, number]): WorldBounds {
-  return {
-    minX: bbox[0],
-    minY: bbox[1],
-    maxX: bbox[2],
-    maxY: bbox[3]
-  };
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle) continue;
+
+      const yMap = objects.get(id);
+      if (!yMap) continue;
+
+      if (handle.kind === 'stroke' || handle.kind === 'connector') {
+        const points = yMap.get('points') as [number, number][];
+        if (!points) continue;
+        const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
+        yMap.set('points', newPoints);
+      } else {
+        const frame = yMap.get('frame') as [number, number, number, number];
+        if (!frame) continue;
+        const [x, y, w, h] = frame;
+        yMap.set('frame', [x + dx, y + dy, w, h]);
+      }
+    }
+  });
 }
 ```
 
----
-
-#### Bug 2: Clicking Empty Space Doesn't Clear Selection (Blur issue)
-
-**Root Cause:** Clicking empty space goes directly to `marquee` phase, bypassing `pendingClick` where `clearSelection()` lives.
-
-**Location:** `SelectTool.ts` lines 112-119 in `begin()`:
+**REPLACE translate case in end() (lines 232-236):**
 ```typescript
-if (this.hitAtDown) {
-  this.phase = 'pendingClick';
-} else {
-  // No hit - start marquee selection
-  this.phase = 'marquee';  // <-- WRONG! Goes straight to marquee
-  useSelectionStore.getState().beginMarquee([worldX, worldY]);
-}
-```
-
-**Problem Flow:**
-1. Click empty space → `hitAtDown = null`
-2. Goes to `else` branch → `phase = 'marquee'`
-3. On `end()`, `marquee` case runs → calls `endMarquee()` only
-4. `clearSelection()` is in `pendingClick` case → **NEVER CALLED**
-
-**Fix Option A (Recommended):** Change empty clicks to use `pendingClick`, transition to `marquee` only on drag:
-```typescript
-// In begin():
-if (this.hitAtDown) {
-  this.phase = 'pendingClick';
-} else {
-  // No hit - could be click-to-clear or drag-to-marquee
-  this.phase = 'pendingClick';  // Don't start marquee yet
-}
-
-// In move() pendingClick case, add:
-if (dist > MOVE_THRESHOLD_PX) {
-  if (this.activeHandle) {
-    // ... scale
-  } else if (this.hitAtDown) {
-    // ... translate
-  } else {
-    // No hit, start marquee NOW
-    this.phase = 'marquee';
-    useSelectionStore.getState().beginMarquee(this.downWorld!);
-    useSelectionStore.getState().updateMarquee([worldX, worldY]);
-  }
-}
-
-// In end() pendingClick case (line 216-218) - already correct:
-} else {
-  // Clicked on empty space - clear selection
-  useSelectionStore.getState().clearSelection();
-}
-```
-
-**Fix Option B (Simpler):** Add clearSelection to marquee end if nothing selected:
-```typescript
-// In end() marquee case:
-case 'marquee': {
-  useSelectionStore.getState().endMarquee();
-  // Clear selection if marquee selected nothing
-  if (useSelectionStore.getState().selectedIds.length === 0) {
-    // Selection was already empty or marquee found nothing - ensure cleared
-  }
-  break;
-}
-```
-
----
-
-#### Bug 3: Marquee Uses Center-in-Bounds Instead of Intersection
-
-**Root Cause:** After spatial index returns intersecting objects, code filters to only those whose CENTER is inside marquee.
-
-**Location:** `SelectTool.ts` lines 501-517 in `updateMarqueeSelection()`:
-```typescript
-const results = index.query(marqueeRect);  // Returns ALL intersecting objects
-
-// Then filters to center-in-bounds (too restrictive):
-const selectedIds: string[] = [];
-for (const entry of results) {
-  const handle = snapshot.objectsById.get(entry.id);
-  if (!handle) continue;
-
-  const [bx, by, bw, bh] = handle.bbox;  // Also has Bug 1!
-  const cx = bx + bw / 2;
-  const cy = by + bh / 2;
-
-  if (cx >= marqueeRect.minX && cx <= marqueeRect.maxX &&
-      cy >= marqueeRect.minY && cy <= marqueeRect.maxY) {
-    selectedIds.push(entry.id);
-  }
-}
-```
-
-**User Expectation:** Any object that INTERSECTS the marquee should be selected (like Figma/other whiteboard apps).
-
-**Fix:** Just use the spatial index results directly (they're already intersection-based):
-```typescript
-const results = index.query(marqueeRect);
-
-// Use intersection results directly
-const selectedIds = results.map(entry => entry.id);
-```
-
-Or if you want partial intersection behavior (object must have some overlap, not just bbox touch):
-```typescript
-const results = index.query(marqueeRect);
-const selectedIds = results
-  .filter(entry => {
-    // Spatial index already ensures bbox intersection
-    // Could add more precise geometry tests here if needed
-    return true;
-  })
-  .map(entry => entry.id);
-```
-
----
-
-### Cursor Behavior Reference
-
-| Handle | Cursor |
-|--------|--------|
-| `nw` (top-left) | `nwse-resize` |
-| `se` (bottom-right) | `nwse-resize` |
-| `ne` (top-right) | `nesw-resize` |
-| `sw` (bottom-left) | `nesw-resize` |
-
-| State | Cursor |
-|-------|--------|
-| Idle (no selection) | `default` |
-| Idle (with selection, not on handle) | `default` |
-| Hover on handle | Resize cursor per handle |
-| Translating | `default` (no override) |
-| Scaling | Resize cursor per active handle |
-
----
-
-### Next Steps
-
-#### Priority 1: Step 6 - Transform Commit to Y.Doc
-Implement the actual persistence in `SelectTool.end()`:
-
-```typescript
-// In end() for translate phase:
 case 'translate': {
   const store = useSelectionStore.getState();
-  const { dx, dy } = store.transform as TranslateTransform;
-
-  if (dx !== 0 || dy !== 0) {
-    this.room.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
-
-      for (const id of store.selectedIds) {
-        const obj = objects.get(id);
-        if (!obj) continue;
-
-        const kind = obj.get('kind');
-        if (kind === 'stroke' || kind === 'connector') {
-          // Offset all points
-          const points = obj.get('points') as [number, number][];
-          const newPoints = points.map(([x, y]) => [x + dx, y + dy] as [number, number]);
-          obj.set('points', newPoints);
-        } else {
-          // Offset frame (shapes, text)
-          const frame = obj.get('frame') as [number, number, number, number];
-          obj.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
-        }
-      }
-    });
+  if (store.transform.kind !== 'translate') {
+    store.endTransform();
+    break;
   }
 
-  useSelectionStore.getState().endTransform();
+  const { dx, dy } = store.transform;
+  const { selectedIds } = store;
+
+  if (dx === 0 && dy === 0) {
+    store.endTransform();
+    break;
+  }
+
+  // Clear transform BEFORE mutate
+  store.endTransform();
+  this.commitTranslate(selectedIds, dx, dy);
   break;
 }
+```
 
-// In end() for scale phase:
-case 'scale': {
-  const store = useSelectionStore.getState();
-  const { origin, scaleX, scaleY } = store.transform as ScaleTransform;
+---
+
+#### Task 9: Implement commitScale() with Per-Object Uniform Logic
+**File:** `client/src/lib/tools/SelectTool.ts`
+
+**ADD methods after commitTranslate():**
+```typescript
+private commitScale(
+  selectedIds: string[],
+  origin: [number, number],
+  scaleX: number,
+  scaleY: number,
+  handleId: HandleId
+): void {
+  const snapshot = this.room.currentSnapshot;
   const [ox, oy] = origin;
 
-  if (scaleX !== 1 || scaleY !== 1) {
-    this.room.mutate((ydoc) => {
-      // Scale geometry around origin, NOT stroke width
-      // ...
-    });
+  this.room.mutate((ydoc: Y.Doc) => {
+    const root = ydoc.getMap('root');
+    const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
+
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle) continue;
+
+      const yMap = objects.get(id);
+      if (!yMap) continue;
+
+      if (handle.kind === 'stroke' || handle.kind === 'connector') {
+        // Strokes: ALWAYS uniform scale
+        const uniformScale = this.computeUniformScaleForCommit(scaleX, scaleY, handleId);
+
+        const points = yMap.get('points') as [number, number][];
+        if (!points) continue;
+        const newPoints: [number, number][] = points.map(([x, y]) => [
+          ox + (x - ox) * uniformScale,
+          oy + (y - oy) * uniformScale
+        ]);
+        yMap.set('points', newPoints);
+      } else {
+        // Shapes/text: non-uniform allowed
+        const frame = yMap.get('frame') as [number, number, number, number];
+        if (!frame) continue;
+        const [x, y, w, h] = frame;
+
+        const newX1 = ox + (x - ox) * scaleX;
+        const newY1 = oy + (y - oy) * scaleY;
+        const newX2 = ox + ((x + w) - ox) * scaleX;
+        const newY2 = oy + ((y + h) - oy) * scaleY;
+
+        // Handle negative scale (flip)
+        yMap.set('frame', [
+          Math.min(newX1, newX2),
+          Math.min(newY1, newY2),
+          Math.abs(newX2 - newX1),
+          Math.abs(newY2 - newY1)
+        ]);
+      }
+    }
+  });
+}
+
+private computeUniformScaleForCommit(scaleX: number, scaleY: number, handleId: HandleId): number {
+  switch (handleId) {
+    case 'e': case 'w': return scaleX;
+    case 'n': case 's': return scaleY;
+    default: return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+  }
+}
+```
+
+**REPLACE scale case in end() (lines 239-243):**
+```typescript
+case 'scale': {
+  const store = useSelectionStore.getState();
+  if (store.transform.kind !== 'scale') {
+    store.endTransform();
+    break;
   }
 
-  useSelectionStore.getState().endTransform();
+  const { origin, scaleX, scaleY, handleId } = store.transform;
+  const { selectedIds } = store;
+
+  if (scaleX === 1 && scaleY === 1) {
+    store.endTransform();
+    break;
+  }
+
+  store.endTransform();
+  this.commitScale(selectedIds, origin, scaleX, scaleY, handleId);
   break;
 }
 ```
 
-#### Priority 2: Step 9 - objects.ts WYSIWYG Transform
-For visual preview during drag (objects move as you drag):
+---
 
+#### Task 10: Fix Selection Highlighting for Strokes (Use BBox)
+**File:** `client/src/renderer/OverlayRenderLoop.ts` (lines 304-321)
+
+**REPLACE selection highlighting loop:**
 ```typescript
-// In renderer/layers/objects.ts:
-import { useSelectionStore } from '@/stores/selection-store';
+for (const id of previewToDraw.selectedIds) {
+  const handle = snapshot.objectsById.get(id);
+  if (!handle) continue;
 
-// In drawObjects():
-const selection = useSelectionStore.getState();
-const selectedSet = new Set(selection.selectedIds);
-
-for (const entry of sortedCandidates) {
-  const isSelected = selectedSet.has(entry.id);
-  const needsTransform = selection.transform.kind !== 'none' && isSelected;
-
-  if (needsTransform) {
-    ctx.save();
-    applySelectionTransform(ctx, selection.transform);
-    drawObject(ctx, handle);
-    ctx.restore();
-  } else {
-    drawObject(ctx, handle);
+  // Text: stroke the frame rect
+  if (handle.kind === 'text') {
+    const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+    if (frame) {
+      const [x, y, w, h] = frame;
+      ctx.strokeRect(x, y, w, h);
+    }
+    continue;
   }
+
+  // Strokes/Connectors: draw bbox rectangle (avoids PF "ball" end cap)
+  if (handle.kind === 'stroke' || handle.kind === 'connector') {
+    const [minX, minY, maxX, maxY] = handle.bbox;
+    ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+    continue;
+  }
+
+  // Shapes: stroke the cached Path2D
+  const path = cache.getOrBuild(id, handle);
+  ctx.stroke(path);
 }
 ```
 
 ---
 
-## Phase 1 Complete (Steps 1-4) - Foundation
+#### Task 11: Fix Dirty Rect Invalidation
+**File:** `client/src/lib/tools/SelectTool.ts`
 
-**Branch:** `feature/select-tool`
-**Date:** 2025-01-26
-
----
-
-### Created Files
-
-#### 1. `client/src/stores/selection-store.ts`
-Transient Zustand store (NOT persisted) for selection state.
-
-**State:**
-- `selectedIds: string[]` - Currently selected object IDs
-- `mode: 'none' | 'single' | 'multi'` - Selection mode
-- `transform: TransformState` - Active transform (`none` | `translate` | `scale`)
-- `marquee: MarqueeState` - Active marquee selection box
-
-**Actions:**
-- `setSelection(ids)` / `clearSelection()` - Manage selection
-- `beginTranslate/updateTranslate/endTransform/cancelTransform` - Translation lifecycle
-- `beginScale/updateScale/endTransform/cancelTransform` - Scale lifecycle
-- `beginMarquee/updateMarquee/endMarquee/cancelMarquee` - Marquee lifecycle
-
-#### 2. `client/src/lib/tools/SelectTool.ts`
-Full SelectTool implementation with:
-
-**PointerTool Interface:**
-- `canBegin()`, `begin()`, `move()`, `end()`, `cancel()`
-- `isActive()`, `getPointerId()`, `getPreview()`, `destroy()`
-- `onViewChange()` - Re-invalidate on view changes
-
-**State Machine Phases:**
-- `idle` - No active gesture
-- `pendingClick` - Pointer down, waiting to distinguish click vs drag
-- `marquee` - Drawing marquee selection rectangle
-- `translate` - Dragging to translate selected objects
-- `scale` - Dragging handle to scale selected objects
-
-**Hit-Testing (Geometry Utilities):**
-- `hitTestObjects()` - Main entry, queries spatial index
-- `hitTestHandle()` - Tests resize handle hit
-- `strokeHitTest()` - Polyline distance test
-- `pointToSegmentDistance()` - Core geometry
-- `pointInRect()`, `pointInDiamond()` - Point-in-shape tests
-- `shapeHitTestForSelection()` - Shape-specific with interior detection
-- `shapeEdgeHitTest()` - Edge distance for shapes
-- `pointInsideShape()` - Interior test for rect/ellipse/diamond
-
-**Selection Priority Logic (`pickBestCandidate`):**
-1. Prefer objects where cursor is inside interior
-2. Kind priority: text > stroke/connector > shape
-3. Smaller area wins (nested shapes)
-4. ULID tie-breaker (topmost = newest)
-
-**Key Difference from Eraser:**
-Unfilled shapes ARE selectable by clicking inside (Figma-style), unlike eraser which only hits stroke edges.
-
-**Dirty Rect Tracking:**
-- `prevPreviewBounds: WorldRect | null` - Tracks previous transformed bounds
-- `invalidateTransformPreview()` - Unions prev + current for minimal dirty rect
-
----
-
-### Modified Files
-
-#### `client/src/lib/tools/types.ts`
-Added:
-- `WorldRect` interface - Bounding box in world coordinates
-- `HandleId` type - `'nw' | 'ne' | 'se' | 'sw'`
-- `SelectionPreview` interface - Preview data for overlay rendering
-- Updated `PreviewData` union to include `SelectionPreview`
-
----
-
-### What Works
-
-✅ Selection store with full state management
-✅ SelectTool skeleton implementing PointerTool interface
-✅ Complete state machine (idle → pendingClick → marquee/translate/scale)
-✅ Hit-testing for all object types (stroke, shape, text, connector)
-✅ Fill-aware, interior-click selection for shapes
-✅ Priority selection for overlapping objects
-✅ Handle hit-testing for scale operations
-✅ Bounds computation (`computeSelectionBounds`)
-✅ Transform application to bounds (`applyTransformToBounds`)
-✅ Dirty rect optimization (`prevPreviewBounds` tracking)
-✅ Preview generation (`getPreview()`)
-✅ Marquee selection with center-in-bounds logic
-✅ TypeScript compiles with no errors
-
----
-
-### What's Stubbed (TODO markers)
-
-1. **Transform Commit (Step 6)** - `end()` method has TODOs:
-   - Translate: needs to offset points/frames in Y.Doc
-   - Scale: needs to scale geometry around origin in Y.Doc
-
----
-
-### Next Steps (Phase 2: Steps 5-8)
-
-#### Step 5: State Machine Refinement
-The state machine is implemented but may need:
-- Shift-key uniform scaling support
-- Cursor style changes during different phases
-
-#### Step 6: Transform Commit to Y.Doc
-**Critical Implementation:**
+**REPLACE invalidateTransformPreview() (lines 464-485):**
 ```typescript
-// In end() for translate:
-this.room.mutate((ydoc) => {
-  const objects = ydoc.getMap('root').get('objects');
-  for (const id of selectedIds) {
-    const obj = objects.get(id);
-    if (obj.get('kind') === 'stroke' || obj.get('kind') === 'connector') {
-      // Offset all points
-      const points = obj.get('points');
-      const newPoints = points.map(([x, y]) => [x + dx, y + dy]);
-      obj.set('points', newPoints);
-    } else {
-      // Offset frame
-      const frame = obj.get('frame');
-      obj.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
+private invalidateTransformPreview(): void {
+  const bounds = this.computeSelectionBounds();
+  if (!bounds) return;
+
+  const store = useSelectionStore.getState();
+  const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
+
+  if (this.prevPreviewBounds) {
+    // Subsequent moves: union previous with current
+    const unionBounds: WorldRect = {
+      minX: Math.min(this.prevPreviewBounds.minX, transformedBounds.minX),
+      minY: Math.min(this.prevPreviewBounds.minY, transformedBounds.minY),
+      maxX: Math.max(this.prevPreviewBounds.maxX, transformedBounds.maxX),
+      maxY: Math.max(this.prevPreviewBounds.maxY, transformedBounds.maxY),
+    };
+    this.invalidateWorld(unionBounds);
+  } else {
+    // FIRST MOVE: Invalidate BOTH original AND transformed bounds
+    const unionBounds: WorldRect = {
+      minX: Math.min(bounds.minX, transformedBounds.minX),
+      minY: Math.min(bounds.minY, transformedBounds.minY),
+      maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+      maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+    };
+    this.invalidateWorld(unionBounds);
+  }
+
+  this.prevPreviewBounds = transformedBounds;
+}
+```
+
+**ADD final invalidation before resetState() in end() (around line 245):**
+```typescript
+// Final invalidation for transform phases
+if (this.phase === 'translate' || this.phase === 'scale') {
+  const bounds = this.computeSelectionBounds();
+  if (bounds) {
+    this.invalidateWorld(bounds);
+  }
+}
+```
+
+**REPLACE cancel() (lines 255-263):**
+```typescript
+cancel(): void {
+  if (this.phase === 'translate' || this.phase === 'scale') {
+    const bounds = this.computeSelectionBounds();
+    if (bounds) {
+      const store = useSelectionStore.getState();
+      const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
+      const unionBounds: WorldRect = {
+        minX: Math.min(bounds.minX, transformedBounds.minX),
+        minY: Math.min(bounds.minY, transformedBounds.minY),
+        maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+        maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+      };
+      this.invalidateWorld(unionBounds);
     }
   }
-});
 
-// For scale: scale geometry around origin, NOT stroke width
+  useSelectionStore.getState().cancelTransform();
+  useSelectionStore.getState().cancelMarquee();
+  this.setCursorOverride(null);
+  this.applyCursor();
+  this.resetState();
+  this.invalidateOverlay();
+}
 ```
-
-#### Step 7: Bounds Helpers
-Already implemented: `computeSelectionBounds`, `applyTransformToBounds`, `computeHandles`
-
-#### Step 8: Preview Enhancement
-`getPreview()` is implemented but may need polish for edge cases.
 
 ---
 
-### Pending Integration (Phase 3: Steps 9-12)
+#### Task 12: Update Overlay Handle Rendering (Circles for Sides)
+**File:** `client/src/renderer/OverlayRenderLoop.ts` (lines 346-366)
 
-#### Step 9: `renderer/layers/objects.ts` Modification
-Import selection store and apply transforms during render:
+**REPLACE handle rendering:**
 ```typescript
-import { useSelectionStore } from '@/stores/selection-store';
+if (previewToDraw.handles) {
+  ctx.fillStyle = 'white';
+  ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
+  ctx.lineWidth = 1.5 / view.scale;
 
-// In drawObjects():
-const selection = useSelectionStore.getState();
-const selectedSet = new Set(selection.selectedIds);
+  for (const h of previewToDraw.handles) {
+    const isCorner = ['nw', 'ne', 'se', 'sw'].includes(h.id);
 
-for (const entry of sortedCandidates) {
-  const isSelected = selectedSet.has(entry.id);
-  const needsTransform = selection.transform.kind !== 'none' && isSelected;
-
-  if (needsTransform) {
-    ctx.save();
-    applySelectionTransform(ctx, selection.transform);
-    drawObject(ctx, handle);
-    ctx.restore();
-  } else {
-    drawObject(ctx, handle);
+    if (isCorner) {
+      // Square handles for corners
+      const handleSize = 8 / view.scale;
+      ctx.fillRect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+      ctx.strokeRect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+    } else {
+      // Circular handles for sides
+      const handleRadius = 4 / view.scale;
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, handleRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 }
 ```
 
-#### Step 10: `renderer/OverlayRenderLoop.ts` Modification
-Add selection preview rendering:
-- Marquee box (dashed stroke, light blue fill)
-- Selection bounds (solid blue stroke)
-- Corner handles (white fill, blue stroke)
+---
 
-#### Step 11: `canvas/Canvas.tsx` Integration
-- Add SelectTool import
-- Add tool creation branch for `activeTool === 'select'`
-- Add cursor style case
-- Add cleanup effect for selection store on unmount
+#### Task 13: Run Typecheck and Test
 
-#### Step 12: Testing & Polish
-- Single-click selection
-- Marquee multi-selection
-- Translate drag
-- Scale via handles
-- Undo/redo
-- Selection persistence across toolbar interactions
+```bash
+npm run typecheck
+```
+
+**Test scenarios:**
+- [ ] Corner handle scale (all 4 corners)
+- [ ] Side handle scale (all 4 sides)
+- [ ] Flip past origin (negative scale)
+- [ ] Mixed selection (strokes + shapes)
+- [ ] Strokes always uniform, shapes stretch with side handles
+- [ ] Translate commit persists
+- [ ] Scale commit persists
+- [ ] Undo/redo works
+- [ ] Selection highlighting shows bbox for strokes
+- [ ] No ghosting during transform
 
 ---
 
-### File Reference
+## Critical Implementation Notes
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `client/src/stores/selection-store.ts` | ~120 | Selection state management |
-| `client/src/lib/tools/SelectTool.ts` | ~800 | Tool implementation + hit-testing |
-| `client/src/lib/tools/types.ts` | +35 | WorldRect, HandleId, SelectionPreview |
+### Scale Formula (FIXED)
+```
+scale = (cursor - origin) * handleSign / origDimension
+```
+**NOT** `/ (origDimension / 2)` which was the bug!
+
+### Flip/Mirror Support
+- Keep scale SIGNED (can be negative)
+- Only use `Math.abs()` on final frame dimensions in commitScale
+
+### Stroke Uniform Scaling
+- Strokes ALWAYS scale uniformly regardless of handle type
+- For side handles: use primary axis (X for e/w, Y for n/s)
+- For corner handles: use max(|scaleX|, |scaleY|)
+
+### Mixed Selections
+- Per-object scale logic in BOTH objects.ts (preview) AND SelectTool.ts (commit)
+- Shapes: directional with side handles
+- Strokes: always uniform
+
+### Transform Order
+1. Clear transform state (`endTransform()`)
+2. THEN mutate Y.Doc
+This prevents double-transform visual glitch.
+
+### First-Move Dirty Rect
+Must invalidate union of BOTH original bounds AND transformed bounds to clear ghosting.
 
 ---
 
-### Architecture Notes
+## Files Summary
 
-**Store Access Pattern:**
-```typescript
-// Read (synchronous)
-const { selectedIds, transform } = useSelectionStore.getState();
+| File | Status | Changes |
+|------|--------|---------|
+| `client/src/lib/tools/types.ts` | ✅ DONE | Added side handles to HandleId |
+| `client/src/stores/selection-store.ts` | ✅ DONE | Added handleId to ScaleTransform |
+| `client/src/lib/tools/SelectTool.ts` | ⏳ PENDING | Scale fix, commit, dirty rects |
+| `client/src/renderer/layers/objects.ts` | ⏳ PENDING | Per-object scale logic |
+| `client/src/renderer/OverlayRenderLoop.ts` | ⏳ PENDING | Stroke bbox, side handle circles |
 
-// Write
-useSelectionStore.getState().setSelection([id1, id2]);
-useSelectionStore.getState().beginTranslate(originBounds);
-```
+---
 
-**Dirty Rect Flow:**
-```
-SelectTool.move()
-  → updateTranslate(dx, dy) in store
-  → invalidateTransformPreview()
-    → computes union(prevBounds, currentBounds)
-    → calls invalidateWorld(unionBounds)
-  → invalidateOverlay()
-```
+## Previous Sessions
 
-**Hit-Test Priority (overlapping objects):**
-```
-1. Interior hits preferred over edge hits
-2. text (priority 0) > stroke/connector (1) > shape (2)
-3. Smaller area wins (nested shapes)
-4. Higher ULID wins (topmost layer)
-```
+### Phase 4 (Session 2) - WYSIWYG Transform + Selection Highlighting
+- Added HIT_SLACK_PX for forgiving hit detection
+- Added selectedIds to SelectionPreview
+- Implemented selection highlighting on overlay
+- Implemented WYSIWYG transform preview in objects.ts
+
+### Phase 3 (Session 1) - Critical Bug Fixes
+- Fixed bbox format mismatch ([minX,minY,maxX,maxY] not [x,y,w,h])
+- Fixed empty space click not clearing selection
+- Fixed marquee using center-point instead of intersection
+
+### Phase 2 - Integration
+- Full Canvas.tsx integration
+- Cursor handling for handles
+- Overlay rendering for selection preview
+
+### Phase 1 - Foundation
+- Created selection-store.ts
+- Created SelectTool.ts with state machine
+- Hit testing with fill-awareness

@@ -1,9 +1,11 @@
 import type { IRoomDocManager } from '../room-doc-manager';
 import type { WorldRect, SelectionPreview, HandleId } from './types';
 import { useSelectionStore } from '@/stores/selection-store';
+import * as Y from 'yjs';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
+const HIT_SLACK_PX = 2.0;      // Forgiving feel for touch/click precision (like EraserTool)
 const HANDLE_HIT_PX = 10;      // Screen-space hit radius for handles
 const MOVE_THRESHOLD_PX = 4;   // Pixels before drag detected (screen space)
 
@@ -136,12 +138,10 @@ export class SelectTool {
               const bounds = this.computeSelectionBounds();
               if (bounds) {
                 const origin = this.getScaleOrigin(this.activeHandle, bounds);
-                useSelectionStore.getState().beginScale(bounds, origin);
+                useSelectionStore.getState().beginScale(bounds, origin, this.activeHandle);
               }
               // Set cursor for active handle
-              const cursor = (this.activeHandle === 'nw' || this.activeHandle === 'se')
-                ? 'nwse-resize'
-                : 'nesw-resize';
+              const cursor = this.getHandleCursor(this.activeHandle);
               this.setCursorOverride(cursor);
               this.applyCursor();
             } else if (this.hitAtDown) {
@@ -229,16 +229,42 @@ export class SelectTool {
       }
 
       case 'translate': {
-        // TODO: Step 6 - Commit translate to Y.Doc
-        // For now, just end the transform (no persistence)
-        useSelectionStore.getState().endTransform();
+        const store = useSelectionStore.getState();
+        if (store.transform.kind !== 'translate') {
+          store.endTransform();
+          break;
+        }
+
+        const { dx, dy } = store.transform;
+        const { selectedIds } = store;
+
+        // Clear transform BEFORE mutate to prevent double-transform visual glitch
+        store.endTransform();
+
+        // Only commit if there was actual movement
+        if (dx !== 0 || dy !== 0) {
+          this.commitTranslate(selectedIds, dx, dy);
+        }
         break;
       }
 
       case 'scale': {
-        // TODO: Step 6 - Commit scale to Y.Doc
-        // For now, just end the transform (no persistence)
-        useSelectionStore.getState().endTransform();
+        const store = useSelectionStore.getState();
+        if (store.transform.kind !== 'scale') {
+          store.endTransform();
+          break;
+        }
+
+        const { origin, scaleX, scaleY, handleId } = store.transform;
+        const { selectedIds } = store;
+
+        // Clear transform BEFORE mutate
+        store.endTransform();
+
+        // Only commit if there was actual scaling
+        if (scaleX !== 1 || scaleY !== 1) {
+          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId);
+        }
         break;
       }
     }
@@ -252,6 +278,23 @@ export class SelectTool {
   }
 
   cancel(): void {
+    // Invalidate dirty rect before clearing transform state
+    if (this.phase === 'translate' || this.phase === 'scale') {
+      const bounds = this.computeSelectionBounds();
+      if (bounds) {
+        const store = useSelectionStore.getState();
+        const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
+        // Union original + transformed bounds to clear any ghosting
+        const unionBounds: WorldRect = {
+          minX: Math.min(bounds.minX, transformedBounds.minX),
+          minY: Math.min(bounds.minY, transformedBounds.minY),
+          maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+          maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+        };
+        this.invalidateWorld(unionBounds);
+      }
+    }
+
     useSelectionStore.getState().cancelTransform();
     useSelectionStore.getState().cancelMarquee();
     // Clear any cursor override on cancel
@@ -304,6 +347,7 @@ export class SelectTool {
       marqueeRect,
       handles: isTransforming ? null : handles, // Hide handles during transform
       isTransforming,
+      selectedIds,
       bbox: null,
     };
   }
@@ -331,10 +375,7 @@ export class SelectTool {
 
     const handle = this.hitTestHandle(worldX, worldY);
     if (handle) {
-      // Map handle to cursor
-      const cursor = (handle === 'nw' || handle === 'se')
-        ? 'nwse-resize'
-        : 'nesw-resize';
+      const cursor = this.getHandleCursor(handle);
       this.setCursorOverride(cursor);
     } else {
       this.setCursorOverride(null);
@@ -422,12 +463,21 @@ export class SelectTool {
   }
 
   private getScaleOrigin(handle: HandleId, bounds: WorldRect): [number, number] {
-    // Scale origin is opposite corner from the dragged handle
+    const midX = (bounds.minX + bounds.maxX) / 2;
+    const midY = (bounds.minY + bounds.maxY) / 2;
+
+    // Scale origin is opposite edge/corner from the dragged handle
     switch (handle) {
-      case 'nw': return [bounds.maxX, bounds.maxY]; // Opposite is SE
-      case 'ne': return [bounds.minX, bounds.maxY]; // Opposite is SW
-      case 'se': return [bounds.minX, bounds.minY]; // Opposite is NW
-      case 'sw': return [bounds.maxX, bounds.minY]; // Opposite is NE
+      // Corners - opposite corner
+      case 'nw': return [bounds.maxX, bounds.maxY];
+      case 'ne': return [bounds.minX, bounds.maxY];
+      case 'se': return [bounds.minX, bounds.minY];
+      case 'sw': return [bounds.maxX, bounds.minY];
+      // Sides - opposite edge midpoint
+      case 'n': return [midX, bounds.maxY];
+      case 's': return [midX, bounds.minY];
+      case 'e': return [bounds.minX, midY];
+      case 'w': return [bounds.maxX, midY];
     }
   }
 
@@ -439,47 +489,210 @@ export class SelectTool {
       return { scaleX: 1, scaleY: 1 };
     }
 
-    const { origin, originBounds } = transform;
+    const { origin, originBounds, handleId } = transform;
     const [ox, oy] = origin;
 
-    // Original distances from origin to handle
+    // Original dimensions
     const origWidth = originBounds.maxX - originBounds.minX;
     const origHeight = originBounds.maxY - originBounds.minY;
 
-    // Determine which direction from origin based on handle
-    // For now, simple scale based on cursor distance from origin
+    // Vector from origin to cursor
     const dx = worldX - ox;
     const dy = worldY - oy;
 
-    // Compute scale factors based on original dimensions
-    // Avoid division by zero
-    const scaleX = origWidth > 0 ? Math.abs(dx) / (origWidth / 2) : 1;
-    const scaleY = origHeight > 0 ? Math.abs(dy) / (origHeight / 2) : 1;
+    // Get sign multipliers based on handle direction
+    const handleSignX = this.getHandleSignX(handleId);
+    const handleSignY = this.getHandleSignY(handleId);
 
-    return { scaleX: Math.max(0.1, scaleX), scaleY: Math.max(0.1, scaleY) };
+    let scaleX = 1;
+    let scaleY = 1;
+
+    const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
+    const isSideH = handleId === 'e' || handleId === 'w';
+    const isSideV = handleId === 'n' || handleId === 's';
+
+    if (isCorner) {
+      // Corner handles: free scale in both axes (SIGNED for flip)
+      scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
+      scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+    } else if (isSideH) {
+      // East/West handle: X scales, Y = 1
+      scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
+      scaleY = 1;
+    } else if (isSideV) {
+      // North/South handle: Y scales, X = 1
+      scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+      scaleX = 1;
+    }
+
+    // Apply minimum scale magnitude (0.1) but preserve sign for flip
+    const minScale = 0.1;
+    scaleX = Math.sign(scaleX || 1) * Math.max(minScale, Math.abs(scaleX));
+    scaleY = Math.sign(scaleY || 1) * Math.max(minScale, Math.abs(scaleY));
+
+    return { scaleX, scaleY };
+  }
+
+  /** Returns +1 or -1 for X direction based on handle */
+  private getHandleSignX(handleId: HandleId): number {
+    switch (handleId) {
+      case 'nw': case 'w': case 'sw': return -1;  // Left side
+      case 'ne': case 'e': case 'se': return 1;   // Right side
+      default: return 1;
+    }
+  }
+
+  /** Returns +1 or -1 for Y direction based on handle */
+  private getHandleSignY(handleId: HandleId): number {
+    switch (handleId) {
+      case 'nw': case 'n': case 'ne': return -1;  // Top side
+      case 'sw': case 's': case 'se': return 1;   // Bottom side
+      default: return 1;
+    }
+  }
+
+  /** Returns appropriate cursor for handle */
+  private getHandleCursor(handle: HandleId): string {
+    switch (handle) {
+      case 'nw': case 'se': return 'nwse-resize';
+      case 'ne': case 'sw': return 'nesw-resize';
+      case 'n': case 's': return 'ns-resize';
+      case 'e': case 'w': return 'ew-resize';
+      default: return 'default';
+    }
   }
 
   private invalidateTransformPreview(): void {
-    const bounds = this.computeSelectionBounds();
+    const bounds = this.computeSelectionBounds();  // Original bounds from Y.Map (spatial index location!)
     if (!bounds) return;
 
     const store = useSelectionStore.getState();
     const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
 
-    // Union with previous bounds for proper dirty rect
+    // CRITICAL: ALWAYS include original bounds in dirty rect!
+    // WHY: Spatial index has objects at ORIGINAL positions (Y.Map hasn't changed).
+    // If dirty rect doesn't include original bounds, spatial query won't find objects,
+    // and they won't be drawn - causing objects to disappear.
+    //
+    // Union: original + current transformed + (optionally) previous transformed
+    let unionBounds: WorldRect = {
+      minX: Math.min(bounds.minX, transformedBounds.minX),
+      minY: Math.min(bounds.minY, transformedBounds.minY),
+      maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+      maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+    };
+
+    // Also include previous transformed bounds to clear ghost from last frame
     if (this.prevPreviewBounds) {
-      const unionBounds: WorldRect = {
-        minX: Math.min(this.prevPreviewBounds.minX, transformedBounds.minX),
-        minY: Math.min(this.prevPreviewBounds.minY, transformedBounds.minY),
-        maxX: Math.max(this.prevPreviewBounds.maxX, transformedBounds.maxX),
-        maxY: Math.max(this.prevPreviewBounds.maxY, transformedBounds.maxY),
+      unionBounds = {
+        minX: Math.min(unionBounds.minX, this.prevPreviewBounds.minX),
+        minY: Math.min(unionBounds.minY, this.prevPreviewBounds.minY),
+        maxX: Math.max(unionBounds.maxX, this.prevPreviewBounds.maxX),
+        maxY: Math.max(unionBounds.maxY, this.prevPreviewBounds.maxY),
       };
-      this.invalidateWorld(unionBounds);
-    } else {
-      this.invalidateWorld(transformedBounds);
     }
 
+    this.invalidateWorld(unionBounds);
     this.prevPreviewBounds = transformedBounds;
+  }
+
+  // === Commit Methods ===
+
+  private commitTranslate(selectedIds: string[], dx: number, dy: number): void {
+    const snapshot = this.room.currentSnapshot;
+
+    this.room.mutate((ydoc: Y.Doc) => {
+      const root = ydoc.getMap('root');
+      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
+
+      for (const id of selectedIds) {
+        const handle = snapshot.objectsById.get(id);
+        if (!handle) continue;
+
+        const yMap = objects.get(id);
+        if (!yMap) continue;
+
+        if (handle.kind === 'stroke' || handle.kind === 'connector') {
+          // Offset all points
+          const points = yMap.get('points') as [number, number][];
+          if (!points) continue;
+          const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
+          yMap.set('points', newPoints);
+        } else {
+          // Offset frame (shapes, text)
+          const frame = yMap.get('frame') as [number, number, number, number];
+          if (!frame) continue;
+          const [x, y, w, h] = frame;
+          yMap.set('frame', [x + dx, y + dy, w, h]);
+        }
+      }
+    });
+  }
+
+  private commitScale(
+    selectedIds: string[],
+    origin: [number, number],
+    scaleX: number,
+    scaleY: number,
+    handleId: HandleId
+  ): void {
+    const snapshot = this.room.currentSnapshot;
+    const [ox, oy] = origin;
+
+    this.room.mutate((ydoc: Y.Doc) => {
+      const root = ydoc.getMap('root');
+      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
+
+      for (const id of selectedIds) {
+        const handle = snapshot.objectsById.get(id);
+        if (!handle) continue;
+
+        const yMap = objects.get(id);
+        if (!yMap) continue;
+
+        if (handle.kind === 'stroke' || handle.kind === 'connector') {
+          // Strokes: ALWAYS uniform scale
+          const uniformScale = this.computeUniformScaleForCommit(scaleX, scaleY, handleId);
+
+          const points = yMap.get('points') as [number, number][];
+          if (!points) continue;
+          const newPoints: [number, number][] = points.map(([x, y]) => [
+            ox + (x - ox) * uniformScale,
+            oy + (y - oy) * uniformScale,
+          ]);
+          yMap.set('points', newPoints);
+        } else {
+          // Shapes/text: non-uniform allowed
+          const frame = yMap.get('frame') as [number, number, number, number];
+          if (!frame) continue;
+          const [x, y, w, h] = frame;
+
+          // Scale corners around origin
+          const newX1 = ox + (x - ox) * scaleX;
+          const newY1 = oy + (y - oy) * scaleY;
+          const newX2 = ox + ((x + w) - ox) * scaleX;
+          const newY2 = oy + ((y + h) - oy) * scaleY;
+
+          // Handle negative scale (flip) - ensure positive dimensions
+          yMap.set('frame', [
+            Math.min(newX1, newX2),
+            Math.min(newY1, newY2),
+            Math.abs(newX2 - newX1),
+            Math.abs(newY2 - newY1),
+          ]);
+        }
+      }
+    });
+  }
+
+  private computeUniformScaleForCommit(scaleX: number, scaleY: number, handleId: HandleId): number {
+    switch (handleId) {
+      case 'e': case 'w': return scaleX;  // Horizontal: X is primary
+      case 'n': case 's': return scaleY;  // Vertical: Y is primary
+      default:
+        // Corners: use max scale (preserves sign from scaleX)
+        return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+    }
   }
 
   private updateMarqueeSelection(): void {
@@ -539,19 +752,45 @@ export class SelectTool {
     const view = this.getView();
     const handleRadius = HANDLE_HIT_PX / view.scale;
 
-    const handles: { id: HandleId; x: number; y: number }[] = [
+    // Test corners first (they take priority)
+    const corners: { id: HandleId; x: number; y: number }[] = [
       { id: 'nw', x: bounds.minX, y: bounds.minY },
       { id: 'ne', x: bounds.maxX, y: bounds.minY },
       { id: 'se', x: bounds.maxX, y: bounds.maxY },
       { id: 'sw', x: bounds.minX, y: bounds.maxY },
     ];
 
-    for (const h of handles) {
+    for (const h of corners) {
       const dx = worldX - h.x;
       const dy = worldY - h.y;
       if (dx * dx + dy * dy <= handleRadius * handleRadius) {
         return h.id;
       }
+    }
+
+    // Test side edges (not rendered, but for cursor/scaling)
+    // Check if point is near edge and within bounds extents
+    const edgeTolerance = handleRadius;
+
+    // North edge (top)
+    if (Math.abs(worldY - bounds.minY) <= edgeTolerance &&
+        worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+      return 'n';
+    }
+    // South edge (bottom)
+    if (Math.abs(worldY - bounds.maxY) <= edgeTolerance &&
+        worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+      return 's';
+    }
+    // West edge (left)
+    if (Math.abs(worldX - bounds.minX) <= edgeTolerance &&
+        worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+      return 'w';
+    }
+    // East edge (right)
+    if (Math.abs(worldX - bounds.maxX) <= edgeTolerance &&
+        worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+      return 'e';
     }
 
     return null;
@@ -560,7 +799,7 @@ export class SelectTool {
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
     const snapshot = this.room.currentSnapshot;
     const view = this.getView();
-    const radiusWorld = HIT_RADIUS_PX / view.scale;
+    const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / view.scale;
 
     const index = snapshot.spatialIndex;
     if (!index) return null;
@@ -603,7 +842,11 @@ export class SelectTool {
         const points = y.get('points') as [number, number][] | undefined;
         if (!points || points.length === 0) return null;
 
-        if (this.strokeHitTest(worldX, worldY, points, radiusWorld)) {
+        // Add stroke width to tolerance for more forgiving hit detection (like EraserTool)
+        const strokeWidth = (y.get('width') as number) ?? 2;
+        const tolerance = radiusWorld + strokeWidth / 2;
+
+        if (this.strokeHitTest(worldX, worldY, points, tolerance)) {
           return {
             id: handle.id,
             kind: handle.kind,

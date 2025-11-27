@@ -5,6 +5,7 @@ import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getStroke } from 'perfect-freehand';
 import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
+import { getObjectCacheInstance } from './object-cache';
 
 // Eraser Trail configuration
 interface EraserTrailPoint {
@@ -289,6 +290,43 @@ export class OverlayRenderLoop {
           ctx.save();
           ctx.scale(view.scale, view.scale);
           ctx.translate(-view.pan.x, -view.pan.y);
+
+          // === SELECTION HIGHLIGHTING (only when not transforming) ===
+          if (!previewToDraw.isTransforming && previewToDraw.selectedIds?.length > 0) {
+            const snapshot = getSnapshot();
+            const cache = getObjectCacheInstance();
+
+            ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue
+            ctx.lineWidth = 2 / view.scale;  // 2px visual regardless of zoom
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+
+            for (const id of previewToDraw.selectedIds) {
+              const handle = snapshot.objectsById.get(id);
+              if (!handle) continue;
+
+              // Text: stroke the frame rect
+              if (handle.kind === 'text') {
+                const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+                if (frame) {
+                  const [x, y, w, h] = frame;
+                  ctx.strokeRect(x, y, w, h);
+                }
+                continue;
+              }
+
+              // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
+              if (handle.kind === 'stroke' || handle.kind === 'connector') {
+                const [minX, minY, maxX, maxY] = handle.bbox;
+                ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+                continue;
+              }
+
+              // Shapes: stroke the cached Path2D (follows actual geometry)
+              const path = cache.getOrBuild(id, handle);
+              ctx.stroke(path);
+            }
+          }
 
           // Draw marquee rect if active (dashed, light blue fill)
           if (previewToDraw.marqueeRect) {

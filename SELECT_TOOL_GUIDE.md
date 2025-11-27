@@ -681,7 +681,7 @@ this.prevPreviewBounds = null;
 
 ### Cursor Styles
 - Idle with no selection: `'default'`
-- Hovering over selected object: `'move'`
+
 - Hovering over handle: `'nwse-resize'` / `'nesw-resize'`
 - During translate: `'grabbing'`
 - During scale: appropriate resize cursor

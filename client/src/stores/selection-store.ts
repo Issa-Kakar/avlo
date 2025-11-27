@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import type { HandleId } from '@/lib/tools/types';
 
 // === Types ===
 
@@ -22,6 +23,7 @@ export interface ScaleTransform {
   scaleX: number;
   scaleY: number;
   originBounds: WorldRect;
+  handleId: HandleId;  // Track which handle for uniform vs directional scaling
 }
 
 export type TransformState =
@@ -54,7 +56,7 @@ export interface SelectionActions {
   // Transform lifecycle
   beginTranslate: (originBounds: WorldRect) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (originBounds: WorldRect, origin: [number, number]) => void;
+  beginScale: (originBounds: WorldRect, origin: [number, number], handleId: HandleId) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
@@ -104,8 +106,8 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, dx, dy } };
   }),
 
-  beginScale: (originBounds, origin) => set({
-    transform: { kind: 'scale', origin, scaleX: 1, scaleY: 1, originBounds },
+  beginScale: (originBounds, origin, handleId) => set({
+    transform: { kind: 'scale', origin, scaleX: 1, scaleY: 1, originBounds, handleId },
   }),
 
   updateScale: (scaleX, scaleY) => set((state) => {

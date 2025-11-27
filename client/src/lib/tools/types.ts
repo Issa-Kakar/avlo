@@ -12,10 +12,11 @@ export interface WorldRect {
 }
 
 /**
- * HandleId identifies resize handles at selection corners
- * nw = northwest (top-left), ne = northeast (top-right), etc.
+ * HandleId identifies resize handles at selection corners and sides
+ * Corners: nw = northwest (top-left), ne = northeast (top-right), etc.
+ * Sides: n = north (top), e = east (right), s = south (bottom), w = west (left)
  */
-export type HandleId = 'nw' | 'ne' | 'se' | 'sw';
+export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 export interface DrawingToolConfig {
   tool: 'pen' | 'highlighter';
@@ -125,6 +126,8 @@ export interface SelectionPreview {
   handles: { id: HandleId; x: number; y: number }[] | null;
   /** Whether currently transforming (to hide handles during drag) */
   isTransforming: boolean;
+  /** IDs of selected objects (for rendering selection highlight) */
+  selectedIds: string[];
   /** Always null for overlay previews */
   bbox: null;
 }
