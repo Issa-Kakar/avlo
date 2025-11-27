@@ -64,6 +64,174 @@ Added selection preview rendering:
 
 ---
 
+### 🚨 CRITICAL BUGS DISCOVERED (Must Fix Before Testing)
+
+#### Bug 1: BBox Format Mismatch (Selection boxes way off to the right)
+
+**Root Cause:** `handle.bbox` is `[minX, minY, maxX, maxY]` but code treats it as `[x, y, width, height]`
+
+**Locations:**
+- `SelectTool.ts` line 378 in `computeSelectionBounds()`:
+  ```typescript
+  // WRONG:
+  const [bx, by, bw, bh] = handle.bbox;
+  maxX = Math.max(maxX, bx + bw);  // Adds minX + maxX = way too far right!
+  maxY = Math.max(maxY, by + bh);
+  ```
+- `SelectTool.ts` line 509 in `updateMarqueeSelection()`:
+  ```typescript
+  // WRONG:
+  const [bx, by, bw, bh] = handle.bbox;
+  const cx = bx + bw / 2;  // Computes (minX + maxX) / 2, not center!
+  const cy = by + bh / 2;
+  ```
+
+**Fix:**
+```typescript
+// In computeSelectionBounds() - line 378:
+const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+minX = Math.min(minX, bMinX);
+minY = Math.min(minY, bMinY);
+maxX = Math.max(maxX, bMaxX);
+maxY = Math.max(maxY, bMaxY);
+
+// In updateMarqueeSelection() - line 509:
+const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+const cx = (bMinX + bMaxX) / 2;
+const cy = (bMinY + bMaxY) / 2;
+```
+
+**Reference:** `packages/shared/src/utils/bbox.ts` confirms bbox format:
+```typescript
+// Line 96-102: bboxToBounds() shows the format
+export function bboxToBounds(bbox: [number, number, number, number]): WorldBounds {
+  return {
+    minX: bbox[0],
+    minY: bbox[1],
+    maxX: bbox[2],
+    maxY: bbox[3]
+  };
+}
+```
+
+---
+
+#### Bug 2: Clicking Empty Space Doesn't Clear Selection (Blur issue)
+
+**Root Cause:** Clicking empty space goes directly to `marquee` phase, bypassing `pendingClick` where `clearSelection()` lives.
+
+**Location:** `SelectTool.ts` lines 112-119 in `begin()`:
+```typescript
+if (this.hitAtDown) {
+  this.phase = 'pendingClick';
+} else {
+  // No hit - start marquee selection
+  this.phase = 'marquee';  // <-- WRONG! Goes straight to marquee
+  useSelectionStore.getState().beginMarquee([worldX, worldY]);
+}
+```
+
+**Problem Flow:**
+1. Click empty space → `hitAtDown = null`
+2. Goes to `else` branch → `phase = 'marquee'`
+3. On `end()`, `marquee` case runs → calls `endMarquee()` only
+4. `clearSelection()` is in `pendingClick` case → **NEVER CALLED**
+
+**Fix Option A (Recommended):** Change empty clicks to use `pendingClick`, transition to `marquee` only on drag:
+```typescript
+// In begin():
+if (this.hitAtDown) {
+  this.phase = 'pendingClick';
+} else {
+  // No hit - could be click-to-clear or drag-to-marquee
+  this.phase = 'pendingClick';  // Don't start marquee yet
+}
+
+// In move() pendingClick case, add:
+if (dist > MOVE_THRESHOLD_PX) {
+  if (this.activeHandle) {
+    // ... scale
+  } else if (this.hitAtDown) {
+    // ... translate
+  } else {
+    // No hit, start marquee NOW
+    this.phase = 'marquee';
+    useSelectionStore.getState().beginMarquee(this.downWorld!);
+    useSelectionStore.getState().updateMarquee([worldX, worldY]);
+  }
+}
+
+// In end() pendingClick case (line 216-218) - already correct:
+} else {
+  // Clicked on empty space - clear selection
+  useSelectionStore.getState().clearSelection();
+}
+```
+
+**Fix Option B (Simpler):** Add clearSelection to marquee end if nothing selected:
+```typescript
+// In end() marquee case:
+case 'marquee': {
+  useSelectionStore.getState().endMarquee();
+  // Clear selection if marquee selected nothing
+  if (useSelectionStore.getState().selectedIds.length === 0) {
+    // Selection was already empty or marquee found nothing - ensure cleared
+  }
+  break;
+}
+```
+
+---
+
+#### Bug 3: Marquee Uses Center-in-Bounds Instead of Intersection
+
+**Root Cause:** After spatial index returns intersecting objects, code filters to only those whose CENTER is inside marquee.
+
+**Location:** `SelectTool.ts` lines 501-517 in `updateMarqueeSelection()`:
+```typescript
+const results = index.query(marqueeRect);  // Returns ALL intersecting objects
+
+// Then filters to center-in-bounds (too restrictive):
+const selectedIds: string[] = [];
+for (const entry of results) {
+  const handle = snapshot.objectsById.get(entry.id);
+  if (!handle) continue;
+
+  const [bx, by, bw, bh] = handle.bbox;  // Also has Bug 1!
+  const cx = bx + bw / 2;
+  const cy = by + bh / 2;
+
+  if (cx >= marqueeRect.minX && cx <= marqueeRect.maxX &&
+      cy >= marqueeRect.minY && cy <= marqueeRect.maxY) {
+    selectedIds.push(entry.id);
+  }
+}
+```
+
+**User Expectation:** Any object that INTERSECTS the marquee should be selected (like Figma/other whiteboard apps).
+
+**Fix:** Just use the spatial index results directly (they're already intersection-based):
+```typescript
+const results = index.query(marqueeRect);
+
+// Use intersection results directly
+const selectedIds = results.map(entry => entry.id);
+```
+
+Or if you want partial intersection behavior (object must have some overlap, not just bbox touch):
+```typescript
+const results = index.query(marqueeRect);
+const selectedIds = results
+  .filter(entry => {
+    // Spatial index already ensures bbox intersection
+    // Could add more precise geometry tests here if needed
+    return true;
+  })
+  .map(entry => entry.id);
+```
+
+---
+
 ### Cursor Behavior Reference
 
 | Handle | Cursor |
