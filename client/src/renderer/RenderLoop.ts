@@ -21,19 +21,6 @@ import {
 } from './layers';
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
 
-// Helper function to check if two bounding boxes intersect
-// function boxesIntersect(
-//   box1: { minX: number; minY: number; maxX: number; maxY: number },
-//   box2: [number, number, number, number], // [minX, minY, maxX, maxY]
-// ): boolean {
-//   return !(
-//     box1.maxX < box2[0] || // box1 is left of box2
-//     box1.minX > box2[2] || // box1 is right of box2
-//     box1.maxY < box2[1] || // box1 is above box2
-//     box1.minY > box2[3]    // box1 is below box2
-//   );
-// }
-
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
   getView: () => ViewTransform;

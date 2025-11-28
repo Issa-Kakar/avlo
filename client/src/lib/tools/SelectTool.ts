@@ -1,6 +1,6 @@
 import type { IRoomDocManager } from '../room-doc-manager';
 import type { WorldRect, SelectionPreview, HandleId } from './types';
-import { useSelectionStore } from '@/stores/selection-store';
+import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
 import * as Y from 'yjs';
 
 // === Constants ===
@@ -80,8 +80,8 @@ export class SelectTool {
   private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
 
-  // Track previous bounds for dirty rect optimization
-  private prevPreviewBounds: WorldRect | null = null;
+  // Track accumulating envelope for dirty rect optimization (expands, never shrinks)
+  private transformEnvelope: WorldRect | null = null;
 
   constructor(room: IRoomDocManager, opts: SelectToolOpts) {
     this.room = room;
@@ -175,7 +175,9 @@ export class SelectTool {
             const bounds = this.computeSelectionBounds();
             if (bounds) {
               const origin = this.getScaleOrigin(this.activeHandle!, bounds);
-              useSelectionStore.getState().beginScale(bounds, origin, this.activeHandle!);
+              const store = useSelectionStore.getState();
+              const selectionKind = this.computeSelectionKind(store.selectedIds);
+              store.beginScale(bounds, origin, this.activeHandle!, selectionKind);
             }
             const cursor = this.getHandleCursor(this.activeHandle!);
             this.setCursorOverride(cursor);
@@ -354,7 +356,7 @@ export class SelectTool {
           break;
         }
 
-        const { origin, scaleX, scaleY, handleId } = store.transform;
+        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } = store.transform;
         const { selectedIds } = store;
 
         // Clear transform BEFORE mutate
@@ -362,7 +364,7 @@ export class SelectTool {
 
         // Only commit if there was actual scaling
         if (scaleX !== 1 || scaleY !== 1) {
-          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId);
+          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds);
         }
         break;
       }
@@ -501,7 +503,7 @@ export class SelectTool {
     this.activeHandle = null;
     this.downTarget = 'none';
     this.downTimeMs = 0;
-    this.prevPreviewBounds = null;
+    this.transformEnvelope = null;
   }
 
   // === Bounds Helpers ===
@@ -543,11 +545,16 @@ export class SelectTool {
 
     if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
       const [ox, oy] = transform.origin;
+      const x1 = ox + (bounds.minX - ox) * transform.scaleX;
+      const y1 = oy + (bounds.minY - oy) * transform.scaleY;
+      const x2 = ox + (bounds.maxX - ox) * transform.scaleX;
+      const y2 = oy + (bounds.maxY - oy) * transform.scaleY;
+      // CRITICAL: Normalize for negative scale (flip) - ensures minX < maxX, minY < maxY
       return {
-        minX: ox + (bounds.minX - ox) * transform.scaleX,
-        minY: oy + (bounds.minY - oy) * transform.scaleY,
-        maxX: ox + (bounds.maxX - ox) * transform.scaleX,
-        maxY: oy + (bounds.maxY - oy) * transform.scaleY,
+        minX: Math.min(x1, x2),
+        minY: Math.min(y1, y2),
+        maxX: Math.max(x1, x2),
+        maxY: Math.max(y1, y2),
       };
     }
 
@@ -668,30 +675,140 @@ export class SelectTool {
     if (!bounds) return;
 
     const store = useSelectionStore.getState();
-    const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
+    const transform = store.transform;
 
-    if (this.prevPreviewBounds) {
-      // Subsequent moves: union previous with current
-      const unionBounds: WorldRect = {
-        minX: Math.min(this.prevPreviewBounds.minX, transformedBounds.minX),
-        minY: Math.min(this.prevPreviewBounds.minY, transformedBounds.minY),
-        maxX: Math.max(this.prevPreviewBounds.maxX, transformedBounds.maxX),
-        maxY: Math.max(this.prevPreviewBounds.maxY, transformedBounds.maxY),
-      };
-      this.invalidateWorld(unionBounds);
-    } else {
-      // FIRST MOVE: Invalidate BOTH original AND transformed bounds
-      // This clears ghosting from objects at their original position
-      const unionBounds: WorldRect = {
-        minX: Math.min(bounds.minX, transformedBounds.minX),
-        minY: Math.min(bounds.minY, transformedBounds.minY),
-        maxX: Math.max(bounds.maxX, transformedBounds.maxX),
-        maxY: Math.max(bounds.maxY, transformedBounds.maxY),
-      };
-      this.invalidateWorld(unionBounds);
+    if (transform.kind === 'translate') {
+      // Translation: simple offset bounds
+      const transformedBounds = this.applyTransformToBounds(bounds, transform);
+
+      // First move: include original bounds
+      if (!this.transformEnvelope) {
+        this.transformEnvelope = {
+          minX: Math.min(bounds.minX, transformedBounds.minX),
+          minY: Math.min(bounds.minY, transformedBounds.minY),
+          maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+          maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+        };
+      } else {
+        // ACCUMULATE: expand envelope (never shrink)
+        this.transformEnvelope = {
+          minX: Math.min(this.transformEnvelope.minX, transformedBounds.minX),
+          minY: Math.min(this.transformEnvelope.minY, transformedBounds.minY),
+          maxX: Math.max(this.transformEnvelope.maxX, transformedBounds.maxX),
+          maxY: Math.max(this.transformEnvelope.maxY, transformedBounds.maxY),
+        };
+      }
+
+      this.invalidateWorld(this.transformEnvelope);
+      return;
     }
 
-    this.prevPreviewBounds = transformedBounds;
+    if (transform.kind === 'scale') {
+      // Scale: per-object bounds based on transform strategy
+      const snapshot = this.room.currentSnapshot;
+      const { selectionKind, handleKind, origin, scaleX, scaleY, originBounds } = transform;
+      const [ox, oy] = origin;
+
+      let combinedBounds: WorldRect | null = null;
+
+      for (const id of store.selectedIds) {
+        const handle = snapshot.objectsById.get(id);
+        if (!handle) continue;
+
+        const [minX, minY, maxX, maxY] = handle.bbox;
+        const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
+        let objBounds: WorldRect;
+
+        // CASE 1: Mixed + side + stroke = TRANSLATE (not scale)
+        if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
+          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin);
+          objBounds = {
+            minX: minX + dx,
+            minY: minY + dy,
+            maxX: maxX + dx,
+            maxY: maxY + dy,
+          };
+        } else if (isStroke) {
+          // CASE 2: Stroke scaling = uniform scale
+          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
+          const absScale = Math.abs(uniformScale);
+          const x1 = ox + (minX - ox) * uniformScale;
+          const y1 = oy + (minY - oy) * uniformScale;
+          const x2 = ox + (maxX - ox) * uniformScale;
+          const y2 = oy + (maxY - oy) * uniformScale;
+          objBounds = {
+            minX: Math.min(x1, x2),
+            minY: Math.min(y1, y2),
+            maxX: Math.max(x1, x2),
+            maxY: Math.max(y1, y2),
+          };
+          // Expand for scaled stroke width
+          const origWidth = (handle.y.get('width') as number) ?? 2;
+          const scaledWidth = origWidth * absScale;
+          const delta = (scaledWidth - origWidth) * 0.5;
+          if (delta > 0) {
+            objBounds.minX -= delta;
+            objBounds.minY -= delta;
+            objBounds.maxX += delta;
+            objBounds.maxY += delta;
+          }
+        } else {
+          // CASE 3: Shape/text scaling
+          let sx = scaleX, sy = scaleY;
+          if (selectionKind === 'mixed' && handleKind === 'corner') {
+            const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
+            sx = uniformScale;
+            sy = uniformScale;
+          }
+          const x1 = ox + (minX - ox) * sx;
+          const y1 = oy + (minY - oy) * sy;
+          const x2 = ox + (maxX - ox) * sx;
+          const y2 = oy + (maxY - oy) * sy;
+          objBounds = {
+            minX: Math.min(x1, x2),
+            minY: Math.min(y1, y2),
+            maxX: Math.max(x1, x2),
+            maxY: Math.max(y1, y2),
+          };
+        }
+
+        // Union with combined bounds
+        if (!combinedBounds) {
+          combinedBounds = objBounds;
+        } else {
+          combinedBounds = {
+            minX: Math.min(combinedBounds.minX, objBounds.minX),
+            minY: Math.min(combinedBounds.minY, objBounds.minY),
+            maxX: Math.max(combinedBounds.maxX, objBounds.maxX),
+            maxY: Math.max(combinedBounds.maxY, objBounds.maxY),
+          };
+        }
+      }
+
+      if (!combinedBounds) return;
+
+      // Include original bounds
+      combinedBounds = {
+        minX: Math.min(combinedBounds.minX, bounds.minX),
+        minY: Math.min(combinedBounds.minY, bounds.minY),
+        maxX: Math.max(combinedBounds.maxX, bounds.maxX),
+        maxY: Math.max(combinedBounds.maxY, bounds.maxY),
+      };
+
+      // ACCUMULATE envelope (expand, never shrink)
+      if (!this.transformEnvelope) {
+        this.transformEnvelope = combinedBounds;
+      } else {
+        this.transformEnvelope = {
+          minX: Math.min(this.transformEnvelope.minX, combinedBounds.minX),
+          minY: Math.min(this.transformEnvelope.minY, combinedBounds.minY),
+          maxX: Math.max(this.transformEnvelope.maxX, combinedBounds.maxX),
+          maxY: Math.max(this.transformEnvelope.maxY, combinedBounds.maxY),
+        };
+      }
+
+      this.invalidateWorld(this.transformEnvelope);
+    }
   }
 
   // === Commit Methods ===
@@ -732,7 +849,10 @@ export class SelectTool {
     origin: [number, number],
     scaleX: number,
     scaleY: number,
-    handleId: HandleId
+    _handleId: HandleId,
+    selectionKind: SelectionKind,
+    handleKind: HandleKind,
+    originBounds: StoreWorldRect
   ): void {
     const snapshot = this.room.currentSnapshot;
     const [ox, oy] = origin;
@@ -748,9 +868,23 @@ export class SelectTool {
         const yMap = objects.get(id);
         if (!yMap) continue;
 
-        if (handle.kind === 'stroke' || handle.kind === 'connector') {
-          // Strokes: ALWAYS uniform scale
-          const uniformScale = this.computeUniformScaleForCommit(scaleX, scaleY, handleId);
+        const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
+
+        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like behavior)
+        if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
+          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin);
+          const points = yMap.get('points') as [number, number][];
+          if (!points) continue;
+          const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
+          yMap.set('points', newPoints);
+          // Width UNCHANGED for translation
+          continue;
+        }
+
+        // CASE 2: Stroke scaling (strokesOnly or mixed+corner)
+        if (isStroke) {
+          // Use diagonal flip rule for strokes
+          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
 
           const points = yMap.get('points') as [number, number][];
           if (!points) continue;
@@ -759,38 +893,132 @@ export class SelectTool {
             oy + (y - oy) * uniformScale,
           ]);
           yMap.set('points', newPoints);
-        } else {
-          // Shapes/text: non-uniform allowed
-          const frame = yMap.get('frame') as [number, number, number, number];
-          if (!frame) continue;
-          const [x, y, w, h] = frame;
 
-          // Scale corners around origin
-          const newX1 = ox + (x - ox) * scaleX;
-          const newY1 = oy + (y - oy) * scaleY;
-          const newX2 = ox + ((x + w) - ox) * scaleX;
-          const newY2 = oy + ((y + h) - oy) * scaleY;
-
-          // Handle negative scale (flip) - ensure positive dimensions
-          yMap.set('frame', [
-            Math.min(newX1, newX2),
-            Math.min(newY1, newY2),
-            Math.abs(newX2 - newX1),
-            Math.abs(newY2 - newY1),
-          ]);
+          // CRITICAL: Scale stroke width for WYSIWYG
+          const oldWidth = (yMap.get('width') as number) ?? 2;
+          yMap.set('width', oldWidth * Math.abs(uniformScale));
+          continue;
         }
+
+        // CASE 3: Shape scaling
+        // Determine scale factors based on selection context
+        let sx = scaleX;
+        let sy = scaleY;
+
+        if (selectionKind === 'mixed' && handleKind === 'corner') {
+          // Mixed + corner: shapes use UNIFORM scale (consistent with strokes)
+          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
+          sx = uniformScale;
+          sy = uniformScale;
+        }
+        // Else: shapes-only or mixed+side: use raw scaleX/scaleY (non-uniform allowed)
+
+        const frame = yMap.get('frame') as [number, number, number, number];
+        if (!frame) continue;
+        const [x, y, w, h] = frame;
+
+        // Scale corners around origin
+        const newX1 = ox + (x - ox) * sx;
+        const newY1 = oy + (y - oy) * sy;
+        const newX2 = ox + ((x + w) - ox) * sx;
+        const newY2 = oy + ((y + h) - oy) * sy;
+
+        // Handle negative scale (flip) - ensure positive dimensions
+        yMap.set('frame', [
+          Math.min(newX1, newX2),
+          Math.min(newY1, newY2),
+          Math.abs(newX2 - newX1),
+          Math.abs(newY2 - newY1),
+        ]);
+        // Shape stroke width: UNCHANGED (preserved)
       }
     });
   }
 
-  private computeUniformScaleForCommit(scaleX: number, scaleY: number, handleId: HandleId): number {
-    switch (handleId) {
-      case 'e': case 'w': return scaleX;  // Horizontal: X is primary
-      case 'n': case 's': return scaleY;  // Vertical: Y is primary
-      default:
-        // Corners: use max scale (preserves sign from scaleX)
-        return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
+  /**
+   * Compute selection kind based on object types in selection.
+   * Returns 'strokesOnly', 'shapesOnly', 'mixed', or 'none'.
+   */
+  private computeSelectionKind(selectedIds: string[]): SelectionKind {
+    if (selectedIds.length === 0) return 'none';
+
+    const snapshot = this.room.currentSnapshot;
+    let hasStrokes = false;
+    let hasShapes = false;
+
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle) continue;
+
+      if (handle.kind === 'stroke' || handle.kind === 'connector') {
+        hasStrokes = true;
+      } else {
+        hasShapes = true;
+      }
+
+      // Early exit if mixed
+      if (hasStrokes && hasShapes) return 'mixed';
     }
+
+    if (hasStrokes && !hasShapes) return 'strokesOnly';
+    if (hasShapes && !hasStrokes) return 'shapesOnly';
+    return 'none';
+  }
+
+  /**
+   * Compute translation for a stroke in mixed + side handle scenario.
+   * Strokes maintain their relative position within the selection bounds.
+   */
+  private computeStrokeTranslation(
+    handle: ObjectHandle,
+    originBounds: WorldRect,
+    scaleX: number,
+    scaleY: number,
+    origin: [number, number]
+  ): { dx: number; dy: number } {
+    // Get stroke center from bbox
+    const [minX, minY, maxX, maxY] = handle.bbox;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    // Relative position in original bounds (0-1)
+    const bw = originBounds.maxX - originBounds.minX;
+    const bh = originBounds.maxY - originBounds.minY;
+    const relX = bw > 0 ? (cx - originBounds.minX) / bw : 0.5;
+    const relY = bh > 0 ? (cy - originBounds.minY) / bh : 0.5;
+
+    // Compute new bounds after scale
+    const [ox, oy] = origin;
+    const newMinX = ox + (originBounds.minX - ox) * scaleX;
+    const newMaxX = ox + (originBounds.maxX - ox) * scaleX;
+    const newMinY = oy + (originBounds.minY - oy) * scaleY;
+    const newMaxY = oy + (originBounds.maxY - oy) * scaleY;
+
+    // Normalize for flip (ensure min < max)
+    const actMinX = Math.min(newMinX, newMaxX);
+    const actMaxX = Math.max(newMinX, newMaxX);
+    const actMinY = Math.min(newMinY, newMaxY);
+    const actMaxY = Math.max(newMinY, newMaxY);
+
+    // New center (same relative position in new bounds)
+    const ncx = actMinX + relX * (actMaxX - actMinX);
+    const ncy = actMinY + relY * (actMaxY - actMinY);
+
+    return { dx: ncx - cx, dy: ncy - cy };
+  }
+
+  /**
+   * Compute uniform scale with diagonal flip rule for strokes.
+   * Returns scale factor that preserves aspect ratio.
+   * Flip only allowed when BOTH axes would flip (diagonal).
+   */
+  private computeUniformScaleWithDiagonalFlip(scaleX: number, scaleY: number): number {
+    const minScale = 0.05;
+    const absMax = Math.max(Math.abs(scaleX), Math.abs(scaleY), minScale);
+
+    // Diagonal flip: only when BOTH are negative
+    const flipped = scaleX < 0 && scaleY < 0;
+    return flipped ? -absMax : absMax;
   }
 
   private updateMarqueeSelection(): void {

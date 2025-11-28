@@ -1,9 +1,11 @@
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import type { HandleId } from '@/lib/tools/types';
 import { getObjectCacheInstance } from '../object-cache';
 import { getVisibleWorldBounds } from '@/canvas/internal/transforms';
-import { useSelectionStore } from '@/stores/selection-store';
+import { useSelectionStore, type ScaleTransform, type WorldRect } from '@/stores/selection-store';
+import { getStroke } from 'perfect-freehand';
+import { getSvgPathFromStroke } from '../stroke-builder/pf-svg';
+import { PF_OPTIONS_BASE } from '../stroke-builder/pf-config';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -77,19 +79,17 @@ export function drawObjects(
     const needsTransform = isTransforming && isSelected;
 
     if (needsTransform) {
-      if (handle.kind === 'stroke' || handle.kind === 'connector') {
-        // Strokes/Connectors: use canvas transform (uniform scale for strokes)
-        // TODO: Strokes should eventually also be WYSIWYG, but that's more complex
+      if (transform.kind === 'translate') {
+        // Translation: use ctx.translate with cached Path2D for all objects
         ctx.save();
-        applySelectionTransform(ctx, transform, handle.kind);
+        ctx.translate(transform.dx, transform.dy);
         drawObject(ctx, handle);
         ctx.restore();
-      } else if (handle.kind === 'shape') {
-        // Shapes: WYSIWYG - compute transformed frame, draw with original stroke width
-        drawShapeWithTransform(ctx, handle, transform);
-      } else if (handle.kind === 'text') {
-        // Text: WYSIWYG - compute transformed frame
-        drawTextWithTransform(ctx, handle, transform);
+      } else if (transform.kind === 'scale') {
+        // Scale: context-aware rendering based on selectionKind and handleKind
+        renderSelectedObjectWithScaleTransform(ctx, handle, transform);
+      } else {
+        drawObject(ctx, handle);
       }
     } else {
       drawObject(ctx, handle);
@@ -304,53 +304,8 @@ function shouldSkipLOD(
   return screenDiagonal < 2;
 }
 
-/**
- * Apply selection transform to canvas context for WYSIWYG preview
- * Strokes ALWAYS scale uniformly, shapes can scale non-uniformly
- */
-function applySelectionTransform(
-  ctx: CanvasRenderingContext2D,
-  transform: { kind: string; dx?: number; dy?: number; origin?: [number, number]; scaleX?: number; scaleY?: number; handleId?: HandleId },
-  objectKind: 'stroke' | 'shape' | 'text' | 'connector'
-): void {
-  if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
-    ctx.translate(transform.dx, transform.dy);
-  } else if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
-    const [ox, oy] = transform.origin;
-    let sx = transform.scaleX;
-    let sy = transform.scaleY;
-
-    // Strokes and connectors ALWAYS scale uniformly
-    if (objectKind === 'stroke' || objectKind === 'connector') {
-      const uniformScale = computeUniformScale(sx, sy, transform.handleId);
-      sx = uniformScale;
-      sy = uniformScale;
-    }
-
-    ctx.translate(ox, oy);
-    ctx.scale(sx, sy);
-    ctx.translate(-ox, -oy);
-  }
-}
-
-/**
- * Compute uniform scale for strokes/connectors
- * Side handles use primary axis, corners use max
- */
-function computeUniformScale(scaleX: number, scaleY: number, handleId?: HandleId): number {
-  if (!handleId) {
-    // Default: use max scale (preserves sign from scaleX)
-    return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
-  }
-
-  switch (handleId) {
-    case 'e': case 'w': return scaleX;  // Horizontal: X is primary
-    case 'n': case 's': return scaleY;  // Vertical: Y is primary
-    default:
-      // Corners: use max scale
-      return Math.sign(scaleX || 1) * Math.max(Math.abs(scaleX), Math.abs(scaleY));
-  }
-}
+// Note: applySelectionTransform and computeUniformScale removed - replaced by
+// context-aware rendering dispatch via renderSelectedObjectWithScaleTransform
 
 /**
  * Apply transform to frame mathematically (no canvas transform)
@@ -541,4 +496,206 @@ function drawTextWithTransform(
   }
 
   ctx.restore();
+}
+
+// === Scale Transform Rendering Functions ===
+
+/**
+ * Compute translation for stroke in mixed + side scenario.
+ * Strokes maintain relative position within selection bounds.
+ */
+function computeStrokeTranslationForRender(
+  handle: ObjectHandle,
+  originBounds: WorldRect,
+  scaleX: number,
+  scaleY: number,
+  origin: [number, number]
+): { dx: number; dy: number } {
+  const [minX, minY, maxX, maxY] = handle.bbox;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  const bw = originBounds.maxX - originBounds.minX;
+  const bh = originBounds.maxY - originBounds.minY;
+  const relX = bw > 0 ? (cx - originBounds.minX) / bw : 0.5;
+  const relY = bh > 0 ? (cy - originBounds.minY) / bh : 0.5;
+
+  const [ox, oy] = origin;
+  const newMinX = ox + (originBounds.minX - ox) * scaleX;
+  const newMaxX = ox + (originBounds.maxX - ox) * scaleX;
+  const newMinY = oy + (originBounds.minY - oy) * scaleY;
+  const newMaxY = oy + (originBounds.maxY - oy) * scaleY;
+
+  const actMinX = Math.min(newMinX, newMaxX);
+  const actMaxX = Math.max(newMinX, newMaxX);
+  const actMinY = Math.min(newMinY, newMaxY);
+  const actMaxY = Math.max(newMinY, newMaxY);
+
+  const ncx = actMinX + relX * (actMaxX - actMinX);
+  const ncy = actMinY + relY * (actMaxY - actMinY);
+
+  return { dx: ncx - cx, dy: ncy - cy };
+}
+
+/**
+ * Compute uniform scale with diagonal flip rule for strokes.
+ * Flip only when BOTH axes negative.
+ */
+function computeUniformScaleForRender(scaleX: number, scaleY: number): number {
+  const minScale = 0.05;
+  const absMax = Math.max(Math.abs(scaleX), Math.abs(scaleY), minScale);
+  const flipped = scaleX < 0 && scaleY < 0;
+  return flipped ? -absMax : absMax;
+}
+
+/**
+ * Draw stroke with scaled geometry and width using fresh PF outline.
+ * This is the WYSIWYG preview - generates new Path2D each frame.
+ */
+function drawScaledStrokePreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform
+): void {
+  const { y } = handle;
+  const points = y.get('points') as [number, number][];
+  const originalWidth = (y.get('width') as number) ?? 2;
+  const color = (y.get('color') as string) ?? '#000';
+  const opacity = (y.get('opacity') as number) ?? 1;
+  const tool = (y.get('tool') as string) ?? 'pen';
+
+  if (!points?.length) return;
+
+  const { origin, scaleX, scaleY } = transform;
+  const [ox, oy] = origin;
+
+  // Compute uniform scale with diagonal flip rule
+  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  // Transform points
+  const scaledPoints: [number, number][] = points.map(([x, yCoord]) => [
+    ox + (x - ox) * uniformScale,
+    oy + (yCoord - oy) * uniformScale,
+  ]);
+
+  // Scale width for WYSIWYG
+  const scaledWidth = originalWidth * absScale;
+
+  // Generate FRESH PF outline (not cached)
+  const outline = getStroke(scaledPoints, {
+    ...PF_OPTIONS_BASE,
+    size: scaledWidth,
+    last: true,
+  });
+
+  const path = new Path2D(getSvgPathFromStroke(outline, false));
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.fillStyle = color;
+  if (tool === 'highlighter') {
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.fill(path);
+  ctx.restore();
+}
+
+/**
+ * Draw shape with uniform scale (for mixed + corner selection).
+ */
+function drawShapeWithUniformScale(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform
+): void {
+  const { y } = handle;
+  const frame = y.get('frame') as [number, number, number, number];
+  if (!frame) return;
+
+  const { scaleX, scaleY } = transform;
+  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+
+  // Create modified transform with uniform scale
+  const uniformTransform = {
+    ...transform,
+    scaleX: uniformScale,
+    scaleY: uniformScale,
+  };
+
+  drawShapeWithTransform(ctx, handle, uniformTransform);
+}
+
+/**
+ * Draw text with uniform scale (for mixed + corner selection).
+ */
+function drawTextWithUniformScale(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform
+): void {
+  const { scaleX, scaleY } = transform;
+  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+
+  const uniformTransform = {
+    ...transform,
+    scaleX: uniformScale,
+    scaleY: uniformScale,
+  };
+
+  drawTextWithTransform(ctx, handle, uniformTransform);
+}
+
+/**
+ * Context-aware scale transform rendering for selected objects.
+ * Dispatches to correct rendering strategy based on selectionKind + handleKind.
+ */
+function renderSelectedObjectWithScaleTransform(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform
+): void {
+  const { selectionKind, handleKind, origin, scaleX, scaleY, originBounds } = transform;
+  const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
+
+  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like)
+  if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
+    const { dx, dy } = computeStrokeTranslationForRender(handle, originBounds, scaleX, scaleY, origin);
+    ctx.save();
+    ctx.translate(dx, dy);
+    drawObject(ctx, handle); // Use cached Path2D
+    ctx.restore();
+    return;
+  }
+
+  // CASE 2: Stroke scaling (strokesOnly OR mixed+corner) = PF-per-frame
+  if (isStroke) {
+    drawScaledStrokePreview(ctx, handle, transform);
+    return;
+  }
+
+  // CASE 3: Shape scaling
+  // Mixed + corner: uniform scale
+  // Shapes-only or mixed+side: non-uniform scale (existing behavior)
+  if (handle.kind === 'shape') {
+    if (selectionKind === 'mixed' && handleKind === 'corner') {
+      drawShapeWithUniformScale(ctx, handle, transform);
+    } else {
+      drawShapeWithTransform(ctx, handle, transform);
+    }
+    return;
+  }
+
+  // CASE 4: Text
+  if (handle.kind === 'text') {
+    if (selectionKind === 'mixed' && handleKind === 'corner') {
+      drawTextWithUniformScale(ctx, handle, transform);
+    } else {
+      drawTextWithTransform(ctx, handle, transform);
+    }
+    return;
+  }
+
+  // Fallback
+  drawObject(ctx, handle);
 }

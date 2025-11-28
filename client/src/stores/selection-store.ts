@@ -10,6 +10,10 @@ export interface WorldRect {
   maxY: number;
 }
 
+// Selection composition types for context-aware transforms
+export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';
+export type HandleKind = 'corner' | 'side';
+
 export interface TranslateTransform {
   kind: 'translate';
   dx: number;
@@ -24,6 +28,8 @@ export interface ScaleTransform {
   scaleY: number;
   originBounds: WorldRect;
   handleId: HandleId;  // Track which handle for uniform vs directional scaling
+  selectionKind: SelectionKind;  // Selection composition for context-aware behavior
+  handleKind: HandleKind;        // Corner vs side handle
 }
 
 export type TransformState =
@@ -56,7 +62,7 @@ export interface SelectionActions {
   // Transform lifecycle
   beginTranslate: (originBounds: WorldRect) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (originBounds: WorldRect, origin: [number, number], handleId: HandleId) => void;
+  beginScale: (originBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
@@ -106,9 +112,24 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, dx, dy } };
   }),
 
-  beginScale: (originBounds, origin, handleId) => set({
-    transform: { kind: 'scale', origin, scaleX: 1, scaleY: 1, originBounds, handleId },
-  }),
+  beginScale: (originBounds, origin, handleId, selectionKind) => {
+    // Compute handleKind from handleId (deterministic)
+    const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
+    const handleKind: HandleKind = isCorner ? 'corner' : 'side';
+
+    set({
+      transform: {
+        kind: 'scale',
+        origin,
+        scaleX: 1,
+        scaleY: 1,
+        originBounds,
+        handleId,
+        selectionKind,
+        handleKind,
+      },
+    });
+  },
 
   updateScale: (scaleX, scaleY) => set((state) => {
     if (state.transform.kind !== 'scale') return state;
