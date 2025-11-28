@@ -404,6 +404,10 @@ function drawShapeWithTransform(
 
   const transformedFrame = applyTransformToFrame(frame, transform);
 
+  // Skip render if dimensions collapsed to near-zero
+  const [, , w, h] = transformedFrame;
+  if (w < 0.001 || h < 0.001) return;
+
   // Get styling from Y.Map
   const shapeType = (y.get('shapeType') as string) || 'rect';
   const fillColor = y.get('fillColor') as string | undefined;
@@ -502,11 +506,12 @@ function drawTextWithTransform(
 
 /**
  * Compute translation for stroke in mixed + side scenario.
- * Strokes maintain relative position within selection bounds.
+ * Uses origin-based positioning (same math shapes use for corners).
+ * Points at origin stay fixed, points far from origin move proportionally.
  */
 function computeStrokeTranslationForRender(
   handle: ObjectHandle,
-  originBounds: WorldRect,
+  _originBounds: WorldRect, // Kept for API compat
   scaleX: number,
   scaleY: number,
   origin: [number, number]
@@ -514,38 +519,66 @@ function computeStrokeTranslationForRender(
   const [minX, minY, maxX, maxY] = handle.bbox;
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-
-  const bw = originBounds.maxX - originBounds.minX;
-  const bh = originBounds.maxY - originBounds.minY;
-  const relX = bw > 0 ? (cx - originBounds.minX) / bw : 0.5;
-  const relY = bh > 0 ? (cy - originBounds.minY) / bh : 0.5;
-
   const [ox, oy] = origin;
-  const newMinX = ox + (originBounds.minX - ox) * scaleX;
-  const newMaxX = ox + (originBounds.maxX - ox) * scaleX;
-  const newMinY = oy + (originBounds.minY - oy) * scaleY;
-  const newMaxY = oy + (originBounds.maxY - oy) * scaleY;
 
-  const actMinX = Math.min(newMinX, newMaxX);
-  const actMaxX = Math.max(newMinX, newMaxX);
-  const actMinY = Math.min(newMinY, newMaxY);
-  const actMaxY = Math.max(newMinY, newMaxY);
+  // Origin-based position (SAME math shapes use for corners)
+  const newCx = ox + (cx - ox) * scaleX;
+  const newCy = oy + (cy - oy) * scaleY;
 
-  const ncx = actMinX + relX * (actMaxX - actMinX);
-  const ncy = actMinY + relY * (actMaxY - actMinY);
-
-  return { dx: ncx - cx, dy: ncy - cy };
+  return { dx: newCx - cx, dy: newCy - cy };
 }
 
 /**
- * Compute uniform scale with diagonal flip rule for strokes.
- * Flip only when BOTH axes negative.
+ * Compute uniform scale for strokes with context-aware flip logic.
+ *
+ * FLIP RULES:
+ * 1. CORNER + DIAGONAL (both axes negative): Immediate flip - user is dragging past origin
+ * 2. CORNER + SIDEWAYS (one axis negative, dragging perpendicular): Use -1.0 threshold
+ * 3. SIDE HANDLES: Immediate flip when active axis < 0 (direct axis drag)
  */
 function computeUniformScaleForRender(scaleX: number, scaleY: number): number {
-  const minScale = 0.05;
-  const absMax = Math.max(Math.abs(scaleX), Math.abs(scaleY), minScale);
-  const flipped = scaleX < 0 && scaleY < 0;
-  return flipped ? -absMax : absMax;
+  const absX = Math.abs(scaleX);
+  const absY = Math.abs(scaleY);
+  const STROKE_MIN = 0.001;
+
+  // ============================================
+  // CORNER HANDLES: Check "both negative" FIRST
+  // ============================================
+  // If BOTH axes are negative, user is dragging diagonally past origin
+  // → Flip IMMEDIATELY, no threshold needed
+  if (scaleX < 0 && scaleY < 0) {
+    const magnitude = Math.max(absX, absY, STROKE_MIN);
+    return -magnitude;
+  }
+
+  // ============================================
+  // SIDE HANDLES: Immediate flip when < 0
+  // ============================================
+  // Side handles are DIRECT axis drags, not sideways - flip immediately
+  if (scaleY === 1 && scaleX !== 1) {
+    // Horizontal side handle (E/W) - X axis is active
+    const magnitude = Math.max(absX, STROKE_MIN);
+    return scaleX < 0 ? -magnitude : magnitude;
+  }
+  if (scaleX === 1 && scaleY !== 1) {
+    // Vertical side handle (N/S) - Y axis is active
+    const magnitude = Math.max(absY, STROKE_MIN);
+    return scaleY < 0 ? -magnitude : magnitude;
+  }
+
+  // ============================================
+  // CORNER HANDLES: Sideways drag (one axis negative, one positive)
+  // ============================================
+  // User is dragging perpendicular to resize direction
+  // Use -1.0 threshold to prevent accidental flips
+  const magnitude = Math.max(absX, absY, STROKE_MIN);
+  const dominantScale = absX >= absY ? scaleX : scaleY;
+
+  if (dominantScale <= -1.0) {
+    return -magnitude;
+  }
+
+  return magnitude;
 }
 
 /**
@@ -658,7 +691,7 @@ function renderSelectedObjectWithScaleTransform(
   const { selectionKind, handleKind, origin, scaleX, scaleY, originBounds } = transform;
   const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
 
-  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like)
+  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY 
   if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
     const { dx, dy } = computeStrokeTranslationForRender(handle, originBounds, scaleX, scaleY, origin);
     ctx.save();

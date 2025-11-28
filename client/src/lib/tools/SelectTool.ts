@@ -633,11 +633,9 @@ export class SelectTool {
       scaleX = 1;
     }
 
-    // Apply minimum scale magnitude (0.1) but preserve sign for flip
-    const minScale = 0.1;
-    scaleX = Math.sign(scaleX || 1) * Math.max(minScale, Math.abs(scaleX));
-    scaleY = Math.sign(scaleY || 1) * Math.max(minScale, Math.abs(scaleY));
-
+    // Raw scales pass through - no dead zone
+    // Shapes: Use raw negative scales for immediate flip
+    // Strokes: computeUniformScaleWithDiagonalFlip() handles flip logic
     return { scaleX, scaleY };
   }
 
@@ -967,11 +965,13 @@ export class SelectTool {
 
   /**
    * Compute translation for a stroke in mixed + side handle scenario.
-   * Strokes maintain their relative position within the selection bounds.
+   * Uses origin-based positioning (same math shapes use for corners).
+   * This gives natural anchor behavior: points at origin stay fixed,
+   * points far from origin move proportionally.
    */
   private computeStrokeTranslation(
     handle: ObjectHandle,
-    originBounds: WorldRect,
+    _originBounds: WorldRect, // Kept for API compat
     scaleX: number,
     scaleY: number,
     origin: [number, number]
@@ -980,45 +980,67 @@ export class SelectTool {
     const [minX, minY, maxX, maxY] = handle.bbox;
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-
-    // Relative position in original bounds (0-1)
-    const bw = originBounds.maxX - originBounds.minX;
-    const bh = originBounds.maxY - originBounds.minY;
-    const relX = bw > 0 ? (cx - originBounds.minX) / bw : 0.5;
-    const relY = bh > 0 ? (cy - originBounds.minY) / bh : 0.5;
-
-    // Compute new bounds after scale
     const [ox, oy] = origin;
-    const newMinX = ox + (originBounds.minX - ox) * scaleX;
-    const newMaxX = ox + (originBounds.maxX - ox) * scaleX;
-    const newMinY = oy + (originBounds.minY - oy) * scaleY;
-    const newMaxY = oy + (originBounds.maxY - oy) * scaleY;
 
-    // Normalize for flip (ensure min < max)
-    const actMinX = Math.min(newMinX, newMaxX);
-    const actMaxX = Math.max(newMinX, newMaxX);
-    const actMinY = Math.min(newMinY, newMaxY);
-    const actMaxY = Math.max(newMinY, newMaxY);
+    // Origin-based position (SAME math shapes use for corners)
+    // Points at origin stay fixed, points far from origin move proportionally
+    const newCx = ox + (cx - ox) * scaleX;
+    const newCy = oy + (cy - oy) * scaleY;
 
-    // New center (same relative position in new bounds)
-    const ncx = actMinX + relX * (actMaxX - actMinX);
-    const ncy = actMinY + relY * (actMaxY - actMinY);
-
-    return { dx: ncx - cx, dy: ncy - cy };
+    return { dx: newCx - cx, dy: newCy - cy };
   }
 
   /**
-   * Compute uniform scale with diagonal flip rule for strokes.
-   * Returns scale factor that preserves aspect ratio.
-   * Flip only allowed when BOTH axes would flip (diagonal).
+   * Compute uniform scale for strokes with context-aware flip logic.
+   *
+   * FLIP RULES:
+   * 1. CORNER + DIAGONAL (both axes negative): Immediate flip - user is dragging past origin
+   * 2. CORNER + SIDEWAYS (one axis negative, dragging perpendicular): Use -1.0 threshold
+   * 3. SIDE HANDLES: Immediate flip when active axis < 0 (direct axis drag)
    */
   private computeUniformScaleWithDiagonalFlip(scaleX: number, scaleY: number): number {
-    const minScale = 0.05;
-    const absMax = Math.max(Math.abs(scaleX), Math.abs(scaleY), minScale);
+    const absX = Math.abs(scaleX);
+    const absY = Math.abs(scaleY);
+    const STROKE_MIN = 0.001;
 
-    // Diagonal flip: only when BOTH are negative
-    const flipped = scaleX < 0 && scaleY < 0;
-    return flipped ? -absMax : absMax;
+    // ============================================
+    // CORNER HANDLES: Check "both negative" FIRST
+    // ============================================
+    // If BOTH axes are negative, user is dragging diagonally past origin
+    // → Flip IMMEDIATELY, no threshold needed
+    if (scaleX < 0 && scaleY < 0) {
+      const magnitude = Math.max(absX, absY, STROKE_MIN);
+      return -magnitude;
+    }
+
+    // ============================================
+    // SIDE HANDLES: Immediate flip when < 0
+    // ============================================
+    // Side handles are DIRECT axis drags, not sideways - flip immediately
+    if (scaleY === 1 && scaleX !== 1) {
+      // Horizontal side handle (E/W) - X axis is active
+      const magnitude = Math.max(absX, STROKE_MIN);
+      return scaleX < 0 ? -magnitude : magnitude;
+    }
+    if (scaleX === 1 && scaleY !== 1) {
+      // Vertical side handle (N/S) - Y axis is active
+      const magnitude = Math.max(absY, STROKE_MIN);
+      return scaleY < 0 ? -magnitude : magnitude;
+    }
+
+    // ============================================
+    // CORNER HANDLES: Sideways drag (one axis negative, one positive)
+    // ============================================
+    // User is dragging perpendicular to resize direction
+    // Use -1.0 threshold to prevent accidental flips
+    const magnitude = Math.max(absX, absY, STROKE_MIN);
+    const dominantScale = absX >= absY ? scaleX : scaleY;
+
+    if (dominantScale <= -1.0) {
+      return -magnitude;
+    }
+
+    return magnitude;
   }
 
   private updateMarqueeSelection(): void {
