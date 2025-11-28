@@ -682,8 +682,9 @@ this.prevPreviewBounds = null;
 ### Cursor Styles
 - Idle with no selection: `'default'`
 
-- Hovering over handle: `'nwse-resize'` / `'nesw-resize'`
-- During translate: `'grabbing'`
+- Hovering over corner handle: `'nwse-resize'` / `'nesw-resize'`
+- side handle: EW
+- During translate: `'default'`
 - During scale: appropriate resize cursor
 
 ### Shift Key for Uniform Scale

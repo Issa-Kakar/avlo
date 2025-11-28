@@ -8,10 +8,19 @@ const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
 const HIT_SLACK_PX = 2.0;      // Forgiving feel for touch/click precision (like EraserTool)
 const HANDLE_HIT_PX = 10;      // Screen-space hit radius for handles
 const MOVE_THRESHOLD_PX = 4;   // Pixels before drag detected (screen space)
+const CLICK_WINDOW_MS = 180;   // Time threshold for gap click disambiguation
 
 // === Types ===
 
 type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale';
+
+type DownTarget =
+  | 'none'
+  | 'handle'                   // Clicked resize handle
+  | 'objectInSelection'        // Clicked object that IS selected
+  | 'objectOutsideSelection'   // Clicked object that is NOT selected
+  | 'selectionGap'             // Empty space INSIDE selection bounds
+  | 'background';              // Empty space OUTSIDE selection bounds
 
 interface HitCandidate {
   id: string;
@@ -67,6 +76,10 @@ export class SelectTool {
   private hitAtDown: HitCandidate | null = null;
   private activeHandle: HandleId | null = null;
 
+  // Target classification for pointer down
+  private downTarget: DownTarget = 'none';
+  private downTimeMs: number = 0;
+
   // Track previous bounds for dirty rect optimization
   private prevPreviewBounds: WorldRect | null = null;
 
@@ -90,31 +103,49 @@ export class SelectTool {
 
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
+    this.downTimeMs = performance.now();
+    this.downTarget = 'none';
 
     // Convert to screen space for move threshold
     const view = this.getView();
     const [screenX, screenY] = view.worldToCanvas(worldX, worldY);
     this.downScreen = [screenX, screenY];
 
-    // First, check if we're clicking on a resize handle (existing selection)
     const store = useSelectionStore.getState();
+
+    // 1. Check handles first (requires existing selection)
     if (store.selectedIds.length > 0) {
       const handleHit = this.hitTestHandle(worldX, worldY);
       if (handleHit) {
         this.activeHandle = handleHit;
+        this.downTarget = 'handle';
         this.phase = 'pendingClick';
         this.invalidateOverlay();
         return;
       }
     }
 
-    // Next, check if we hit an object
-    this.hitAtDown = this.hitTestObjects(worldX, worldY);
+    // 2. Check object hit
+    const hit = this.hitTestObjects(worldX, worldY);
+    this.hitAtDown = hit;
 
-    // Always start with pendingClick - differentiate click vs drag in move()
-    // This ensures empty space clicks properly clear selection in end()
+    if (hit) {
+      const isSelected = store.selectedIds.includes(hit.id);
+      this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
+      this.phase = 'pendingClick';
+      this.invalidateOverlay();
+      return;
+    }
+
+    // 3. No object hit - check if inside selection bounds
+    const selectionBounds = this.computeSelectionBounds();
+    if (selectionBounds && this.pointInWorldRect(worldX, worldY, selectionBounds)) {
+      this.downTarget = 'selectionGap';
+    } else {
+      this.downTarget = 'background';
+    }
+
     this.phase = 'pendingClick';
-
     this.invalidateOverlay();
   }
 
@@ -124,46 +155,78 @@ export class SelectTool {
 
     switch (this.phase) {
       case 'pendingClick': {
-        // Check if we've moved past the drag threshold
-        if (this.downScreen) {
-          const dx = screenX - this.downScreen[0];
-          const dy = screenY - this.downScreen[1];
-          const dist = Math.sqrt(dx * dx + dy * dy);
+        // Compute distance and elapsed time for threshold checks
+        if (!this.downScreen) break;
 
-          if (dist > MOVE_THRESHOLD_PX) {
-            // Transition to actual drag mode
-            if (this.activeHandle) {
-              // Dragging a resize handle
-              this.phase = 'scale';
-              const bounds = this.computeSelectionBounds();
-              if (bounds) {
-                const origin = this.getScaleOrigin(this.activeHandle, bounds);
-                useSelectionStore.getState().beginScale(bounds, origin, this.activeHandle);
-              }
-              // Set cursor for active handle
-              const cursor = this.getHandleCursor(this.activeHandle);
-              this.setCursorOverride(cursor);
-              this.applyCursor();
-            } else if (this.hitAtDown) {
-              // Dragging selected object(s) - translate
-              // First, ensure the hit object is selected
-              const store = useSelectionStore.getState();
-              if (!store.selectedIds.includes(this.hitAtDown.id)) {
-                store.setSelection([this.hitAtDown.id]);
-              }
+        const dx = screenX - this.downScreen[0];
+        const dy = screenY - this.downScreen[1];
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const elapsed = performance.now() - this.downTimeMs;
 
-              this.phase = 'translate';
-              const bounds = this.computeSelectionBounds();
-              if (bounds) {
-                useSelectionStore.getState().beginTranslate(bounds);
-              }
-            } else {
-              // No hit object - start marquee selection now
-              this.phase = 'marquee';
-              useSelectionStore.getState().beginMarquee(this.downWorld!);
-              useSelectionStore.getState().updateMarquee([worldX, worldY]);
-              this.updateMarqueeSelection();
+        const passMove = dist > MOVE_THRESHOLD_PX;
+        const passTime = elapsed >= CLICK_WINDOW_MS;
+
+        // Target-aware branching
+        switch (this.downTarget) {
+          case 'handle': {
+            if (!passMove) break;
+            // Dragging a resize handle
+            this.phase = 'scale';
+            const bounds = this.computeSelectionBounds();
+            if (bounds) {
+              const origin = this.getScaleOrigin(this.activeHandle!, bounds);
+              useSelectionStore.getState().beginScale(bounds, origin, this.activeHandle!);
             }
+            const cursor = this.getHandleCursor(this.activeHandle!);
+            this.setCursorOverride(cursor);
+            this.applyCursor();
+            break;
+          }
+
+          case 'objectOutsideSelection': {
+            if (!passMove) break;
+            // Select this object, then translate
+            const store = useSelectionStore.getState();
+            store.setSelection([this.hitAtDown!.id]);
+            this.phase = 'translate';
+            const bounds = this.computeSelectionBounds();
+            if (bounds) {
+              useSelectionStore.getState().beginTranslate(bounds);
+            }
+            break;
+          }
+
+          case 'objectInSelection': {
+            if (!passMove) break;
+            // Keep selection as-is, translate group
+            this.phase = 'translate';
+            const bounds = this.computeSelectionBounds();
+            if (bounds) {
+              useSelectionStore.getState().beginTranslate(bounds);
+            }
+            break;
+          }
+
+          case 'selectionGap': {
+            // NEVER marquee from inside selection!
+            if (!passMove && !passTime) break;
+            // Drag intent → translate selection
+            this.phase = 'translate';
+            const bounds = this.computeSelectionBounds();
+            if (bounds) {
+              useSelectionStore.getState().beginTranslate(bounds);
+            }
+            break;
+          }
+
+          case 'background': {
+            if (!passMove && !passTime) break;
+            // Empty background drag → marquee
+            this.phase = 'marquee';
+            useSelectionStore.getState().beginMarquee(this.downWorld!);
+            useSelectionStore.getState().updateMarquee([worldX, worldY]);
+            this.updateMarqueeSelection();
+            break;
           }
         }
         break;
@@ -205,18 +268,54 @@ export class SelectTool {
     this.invalidateOverlay();
   }
 
-  end(_worldX?: number, _worldY?: number): void {
+  end(worldX?: number, worldY?: number): void {
     switch (this.phase) {
       case 'pendingClick': {
-        // Was a click, not a drag
-        if (this.activeHandle) {
-          // Clicked on handle but didn't drag - do nothing
-        } else if (this.hitAtDown) {
-          // Select the clicked object
-          useSelectionStore.getState().setSelection([this.hitAtDown.id]);
-        } else {
-          // Clicked on empty space - clear selection
-          useSelectionStore.getState().clearSelection();
+        // Was a click, not a drag - target-aware finalization
+        const store = useSelectionStore.getState();
+
+        // Compute distance and elapsed for selectionGap logic
+        let dist = 0;
+        const elapsed = performance.now() - this.downTimeMs;
+        if (this.downScreen && worldX !== undefined && worldY !== undefined) {
+          const view = this.getView();
+          const [screenX, screenY] = view.worldToCanvas(worldX, worldY);
+          const dx = screenX - this.downScreen[0];
+          const dy = screenY - this.downScreen[1];
+          dist = Math.sqrt(dx * dx + dy * dy);
+        }
+
+        switch (this.downTarget) {
+          case 'handle':
+            // Clicked handle but didn't drag → no-op
+            break;
+
+          case 'objectOutsideSelection':
+            // Click → select that object
+            store.setSelection([this.hitAtDown!.id]);
+            break;
+
+          case 'objectInSelection':
+            // Click on already-selected object → "drill down" if multi-select
+            if (store.selectedIds.length > 1) {
+              store.setSelection([this.hitAtDown!.id]);
+            }
+            break;
+
+          case 'selectionGap':
+            // Quick tap in gap → deselect
+            // Long hold or slight movement in gap → keep selection (user was trying to drag)
+            if (elapsed < CLICK_WINDOW_MS && dist <= MOVE_THRESHOLD_PX) {
+              store.clearSelection();
+            }
+            // Else: do nothing, selection stays
+            break;
+
+          case 'background':
+          default:
+            // Click on background → deselect
+            store.clearSelection();
+            break;
         }
         break;
       }
@@ -400,6 +499,8 @@ export class SelectTool {
     this.downScreen = null;
     this.hitAtDown = null;
     this.activeHandle = null;
+    this.downTarget = 'none';
+    this.downTimeMs = 0;
     this.prevPreviewBounds = null;
   }
 
@@ -563,36 +664,33 @@ export class SelectTool {
   }
 
   private invalidateTransformPreview(): void {
-    const bounds = this.computeSelectionBounds();  // Original bounds from Y.Map (spatial index location!)
+    const bounds = this.computeSelectionBounds();
     if (!bounds) return;
 
     const store = useSelectionStore.getState();
     const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
 
-    // CRITICAL: ALWAYS include original bounds in dirty rect!
-    // WHY: Spatial index has objects at ORIGINAL positions (Y.Map hasn't changed).
-    // If dirty rect doesn't include original bounds, spatial query won't find objects,
-    // and they won't be drawn - causing objects to disappear.
-    //
-    // Union: original + current transformed + (optionally) previous transformed
-    let unionBounds: WorldRect = {
-      minX: Math.min(bounds.minX, transformedBounds.minX),
-      minY: Math.min(bounds.minY, transformedBounds.minY),
-      maxX: Math.max(bounds.maxX, transformedBounds.maxX),
-      maxY: Math.max(bounds.maxY, transformedBounds.maxY),
-    };
-
-    // Also include previous transformed bounds to clear ghost from last frame
     if (this.prevPreviewBounds) {
-      unionBounds = {
-        minX: Math.min(unionBounds.minX, this.prevPreviewBounds.minX),
-        minY: Math.min(unionBounds.minY, this.prevPreviewBounds.minY),
-        maxX: Math.max(unionBounds.maxX, this.prevPreviewBounds.maxX),
-        maxY: Math.max(unionBounds.maxY, this.prevPreviewBounds.maxY),
+      // Subsequent moves: union previous with current
+      const unionBounds: WorldRect = {
+        minX: Math.min(this.prevPreviewBounds.minX, transformedBounds.minX),
+        minY: Math.min(this.prevPreviewBounds.minY, transformedBounds.minY),
+        maxX: Math.max(this.prevPreviewBounds.maxX, transformedBounds.maxX),
+        maxY: Math.max(this.prevPreviewBounds.maxY, transformedBounds.maxY),
       };
+      this.invalidateWorld(unionBounds);
+    } else {
+      // FIRST MOVE: Invalidate BOTH original AND transformed bounds
+      // This clears ghosting from objects at their original position
+      const unionBounds: WorldRect = {
+        minX: Math.min(bounds.minX, transformedBounds.minX),
+        minY: Math.min(bounds.minY, transformedBounds.minY),
+        maxX: Math.max(bounds.maxX, transformedBounds.maxX),
+        maxY: Math.max(bounds.maxY, transformedBounds.maxY),
+      };
+      this.invalidateWorld(unionBounds);
     }
 
-    this.invalidateWorld(unionBounds);
     this.prevPreviewBounds = transformedBounds;
   }
 
@@ -907,29 +1005,100 @@ export class SelectTool {
     }
   }
 
+  /**
+   * Z-order aware candidate selection.
+   * Scans from topmost (highest ULID) to bottommost, respecting visual occlusion.
+   *
+   * Key insight: Unfilled shape interiors are "transparent" for selection -
+   * we keep scanning for paint underneath. But they ARE selectable if nothing
+   * else is found.
+   */
   private pickBestCandidate(candidates: HitCandidate[]): HitCandidate {
-    // Separate interior vs edge hits
-    const interiorHits = candidates.filter(c => c.insideInterior);
-    const pool = interiorHits.length > 0 ? interiorHits : candidates;
+    if (candidates.length === 1) return candidates[0];
 
-    // Sort by priority
-    pool.sort((a, b) => {
-      // 1. Kind priority: text=0, stroke/connector=1, shape=2
-      const kindPriority = (c: HitCandidate) =>
-        c.kind === 'text' ? 0 :
-        (c.kind === 'stroke' || c.kind === 'connector') ? 1 : 2;
+    // Sort by Z: ULID descending = newest/topmost first
+    const sorted = [...candidates].sort((a, b) =>
+      a.id < b.id ? 1 : a.id > b.id ? -1 : 0
+    );
 
-      const kindDiff = kindPriority(a) - kindPriority(b);
-      if (kindDiff !== 0) return kindDiff;
+    type PaintClass = 'ink' | 'fill';
 
-      // 2. Smaller area wins (for shapes - nested shapes win)
-      if (a.area !== b.area) return a.area - b.area;
+    // Unfilled shape interior = transparent logical region (not paint)
+    const isFrameInterior = (c: HitCandidate): boolean =>
+      c.kind === 'shape' && !c.isFilled && c.insideInterior;
 
-      // 3. Topmost by ULID (higher = newer = on top, so reverse compare)
-      return b.id.localeCompare(a.id);
-    });
+    // Everything else that actually paints pixels at this point
+    const classifyPaint = (c: HitCandidate): PaintClass | null => {
+      if (c.kind === 'stroke' || c.kind === 'connector' || c.kind === 'text') {
+        return 'ink';
+      }
 
-    return pool[0];
+      if (c.kind === 'shape') {
+        if (c.isFilled) {
+          return 'fill';  // Filled shape interior or border
+        }
+        if (!c.isFilled && !c.insideInterior) {
+          return 'ink';   // Unfilled shape BORDER (outline stroke)
+        }
+        return null;      // Unfilled shape interior = transparent
+      }
+
+      return 'ink';  // Fallback: treat as paint
+    };
+
+    let bestFrame: HitCandidate | null = null;   // Smallest unfilled interior
+    let firstPaint: HitCandidate | null = null;  // First visible paint in Z
+    let firstPaintClass: PaintClass | null = null;
+
+    // Scan from topmost to bottommost, respecting occlusion
+    for (const c of sorted) {
+      if (isFrameInterior(c)) {
+        // Transparent frame region: remember smallest, keep scanning
+        if (!bestFrame || c.area < bestFrame.area) {
+          bestFrame = c;
+        }
+        continue;  // Don't stop - look for paint underneath
+      }
+
+      const paintClass = classifyPaint(c);
+      if (paintClass !== null) {
+        // Found first painted thing - this occludes everything below
+        firstPaint = c;
+        firstPaintClass = paintClass;
+        break;  // Stop scanning
+      }
+    }
+
+    // Case 1: Only frame interiors, no paint at this pixel
+    if (!firstPaint && bestFrame) {
+      return bestFrame;  // Return smallest frame (most nested)
+    }
+
+    // Case 2: No paint and no frames (shouldn't happen)
+    if (!firstPaint) {
+      return sorted[0];  // Fallback to topmost
+    }
+
+    // Case 3: First painted thing is ink (stroke/text/connector/border)
+    // Ink ALWAYS beats frames
+    if (firstPaintClass === 'ink') {
+      return firstPaint;
+    }
+
+    // Case 4: First painted thing is a filled shape interior
+    if (!bestFrame) {
+      return firstPaint;  // No frames to compare with
+    }
+
+    // Case 5: Both filled shape and frame(s) contain the cursor
+    // "More enclosed" = smaller region wins
+    if (bestFrame.area < firstPaint.area) return bestFrame;
+    if (firstPaint.area < bestFrame.area) return firstPaint;
+
+    // Equal areas: tie-break by Z (sorted is topmost-first)
+    const idxPaint = sorted.indexOf(firstPaint);
+    const idxFrame = sorted.indexOf(bestFrame);
+    return idxPaint <= idxFrame ? firstPaint : bestFrame;
   }
 
   // === Shape-Specific Hit Testing (Selection Mode) ===
