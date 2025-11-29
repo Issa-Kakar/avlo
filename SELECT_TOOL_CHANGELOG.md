@@ -112,13 +112,13 @@ function computePreservedPosition(
 
 ## Current Behavior Summary
 
-### Corner Handle Scaling (WORKING PERFECTLY ✓)
+### Corner Handle Scaling
 
-| Selection Type | Behavior |
-|----------------|----------|
-| **Strokes-only** | Uniform scale, no geometry inversion, position preserved |
-| **Mixed (strokes + shapes)** | Uniform scale, no geometry inversion, position preserved |
-| **Shapes-only** | Non-uniform scale (independent X/Y), corner-based |
+| Selection Type | Behavior | Status |
+|----------------|----------|--------|
+| **Strokes-only** | Uniform scale, no geometry inversion, position preserved | ✅ Perfect |
+| **Mixed (strokes + shapes)** | Uniform scale, no geometry inversion, position preserved | ✅ Perfect |
+| **Shapes-only** | Non-uniform scale (independent X/Y), corner-based | ⚠️ Has anchor issue |
 
 ### Side Handle Scaling
 
@@ -137,15 +137,21 @@ function computePreservedPosition(
 **Desired:** Normal resize behavior with flip support and preserved position
 **Approach:** Apply same pattern as corner handles - use preserved position, remove threshold snapping
 
-### 2. Shapes Selection Box "Sliding" Issue
-**Current:** When resizing shapes-only (any handle) or mixed (side handles), the selection box "slides" instead of anchoring
-**Desired:** Selection box should have a fixed anchor point (opposite corner/edge) like Figma and other apps
+### 2. Shapes Non-Uniform Scaling "Anchor Sliding" Issue
+**Current:** When using non-uniform scaling (shapes-only any handle, or mixed side handles), the selection box "slides" instead of staying anchored at the opposite corner/edge.
+**Desired:** Selection box should have a fixed anchor point like Figma and other apps - the opposite corner stays pinned while you drag.
+
 **Observed in:**
-- Shapes-only corner resize
+- Shapes-only corner resize (non-uniform X/Y scaling)
 - Shapes-only side resize
 - Mixed side resize (shapes portion)
 
-**Root cause:** May be using incorrect origin calculation or transform formula. The perfect shape preview during drawing DOES anchor correctly - need to investigate that code path.
+**NOT observed in:**
+- Strokes-only corner (uniform scale with preserved position ✅)
+- Mixed corner (uniform scale with preserved position ✅)
+- Perfect shape drawing preview (anchors correctly ✅)
+
+**Root cause:** The non-uniform scaling formula transforms both corners around an origin, but doesn't properly anchor. The perfect shape preview during drawing DOES anchor correctly (corner A fixed, cursor defines corner C) - that code path should inform the fix.
 
 ---
 
@@ -173,12 +179,14 @@ objects.ts:
 
 ## Quick Test Scenarios
 
-### Corner Handles (All Working ✓)
+### Corner Handles - Uniform Scale (Working ✓)
 1. **Two strokes diagonal:** Flip → positions preserved, geometry not inverted ✓
-2. **Two shapes (mixed selection):** Flip → positions preserved, geometry not inverted ✓
-3. **Mixed stroke + shape:** Flip → positions preserved, geometry not inverted ✓
-4. **Single object:** Flip → works correctly (t=0.5, 0.5 stays centered) ✓
-5. **Shrink without flip:** Normal scaling unchanged ✓
+2. **Mixed stroke + shape:** Flip → positions preserved, geometry not inverted ✓
+3. **Single stroke:** Flip → works correctly (t=0.5, 0.5 stays centered) ✓
+4. **Shrink without flip:** Normal scaling unchanged ✓
+
+### Corner Handles - Non-Uniform Scale (Has Anchor Issue)
+1. **Shapes-only corner:** Selection box slides instead of anchoring opposite corner ⚠️
 
 ### Side Handles (Needs Work)
 1. **Strokes-only side:** Has snapping, needs preserved position
