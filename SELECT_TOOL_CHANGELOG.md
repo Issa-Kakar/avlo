@@ -2,153 +2,150 @@
 
 **Date:** 2025-01-29
 **Branch:** `feature/select-tool`
-**Last Commit:** `a3966c9` - fix: remove dead zone flip + add proper diagonal/side handle flip logic
+**Last Commit:** `daea2d0` - feat: position preservation for corner handle uniform scaling
 
 ---
 
 ## Session Summary
 
-This session focused on fixing scale transform flip behavior for the SelectTool. Two main phases of work were completed.
+This document tracks the evolution of SelectTool scale transform behavior. Three main phases have been completed.
 
 ---
 
-## Phase 1: Dead Zone Fix (COMMITTED)
+## Phase 1: Dead Zone Fix (COMMITTED - a3966c9)
 
 ### Problem
-The `applyFlipDeadZone()` function was corrupting ALL scale values before any context-aware logic could run. This caused:
-- Shapes to "bounce back" instead of flipping when dragged past origin
-- Side handles to require dragging to -1.0 threshold when they should flip immediately
-- Diagonal corner drags to never trigger flip (both negative scales bounced to positive)
+The `applyFlipDeadZone()` function was corrupting ALL scale values before any context-aware logic could run.
 
-### Solution (Commit a3966c9)
-1. **Removed dead zone** from `computeScaleFactors()` - raw scales pass through
-2. **Deleted `applyFlipDeadZone()` method** entirely
-3. **Rewrote `computeUniformScaleWithDiagonalFlip()`** with proper flip rules:
-   - Both negative (diagonal past origin): immediate flip
-   - Side handles (direct axis): immediate flip when < 0
-   - Sideways corner drag: keeps -1.0 threshold
-
-### Behavior After Phase 1
-
-| Selection | Handle | Flip Trigger |
-|-----------|--------|--------------|
-| **Shapes-only** | Corner | scale < 0 (immediate) |
-| **Shapes-only** | Side | scale < 0 (immediate) |
-| **Strokes/Mixed** | Corner (diagonal) | Both < 0 (immediate) |
-| **Strokes/Mixed** | Corner (sideways) | dominant <= -1.0 |
-| **Strokes/Mixed** | Side | scale < 0 (immediate) |
+### Solution
+1. Removed dead zone from `computeScaleFactors()`
+2. Deleted `applyFlipDeadZone()` entirely
+3. Rewrote `computeUniformScaleWithDiagonalFlip()` with proper flip rules
 
 ---
 
-## Phase 2: Copy-Paste Flip Behavior (UNCOMMITTED)
+## Phase 2: No-Geometry-Inversion (COMMITTED - a3966c9)
 
-### Goal
-Implement Figma-style "copy-paste" flip behavior for strokes:
-- Stroke geometry should NEVER invert/mirror when flipping
-- Position should SNAP to quadrants (uniform scale for position)
-- Remove the -1.0 threshold entirely for immediate flipping
+### Problem
+When flipping, stroke geometry would mirror/invert visually.
 
-### Changes Made (Uncommitted)
-
-**New function: `computeUniformScaleNoThreshold()`**
-- Returns signed magnitude with NO threshold
-- Immediate flip when dominant axis < 0
-
-**Modified stroke scaling logic:**
+### Solution
+Used absolute scale (`absScale`) for geometry while allowing signed scale for position:
 ```typescript
-// Position uses uniform scale (SNAPS to quadrant)
 const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-const newCx = ox + (cx - ox) * uniformScale;
-const newCy = oy + (cy - oy) * uniformScale;
-
-// Geometry uses absolute scale (NO inversion)
 const absScale = Math.abs(uniformScale);
-const newPoints = points.map(([x, y]) => [
-  newCx + (x - cx) * absScale,
-  newCy + (y - cy) * absScale,
-]);
-```
-
-### Current Behavior (Uncommitted State)
-
-**What's working:**
-- ✅ Stroke geometry is NOT inverted when flipping (copy-paste visual)
-- ✅ No threshold - immediate flip when dominant axis < 0
-- ✅ Corner handles work perfectly for diagonal flipping
-
-**What's NOT working / Needs tweaking:**
-- ❌ Position is REVERSED when flipping (object on left goes to right and vice versa)
-- ❌ Corner handles still only allow diagonal flip (not 4-quadrant)
-- ❌ Side handle behavior for strokes-only needs redesign
-
----
-
-## Current Scale Functions
-
-### `computeUniformScaleNoThreshold()` (strokes - uncommitted)
-Used for stroke scaling. No threshold, immediate flip.
-```
-Both negative → -magnitude
-Side handle + axis < 0 → -magnitude
-Corner + dominant < 0 → -magnitude
-Else → +magnitude
-```
-
-### `computeUniformScaleWithDiagonalFlip()` (mixed/shapes - committed)
-Used for mixed selections. Has -1.0 threshold for sideways drags.
-```
-Both negative → -magnitude (immediate)
-Side handle + axis < 0 → -magnitude (immediate)
-Corner sideways + dominant <= -1.0 → -magnitude (threshold)
-Else → +magnitude
+// Geometry uses absScale (never inverts)
 ```
 
 ---
 
-## Files Modified
+## Phase 3: Position Preservation (COMMITTED - daea2d0)
 
-| File | Function | Status |
-|------|----------|--------|
-| `SelectTool.ts` | `computeScaleFactors()` | Committed (dead zone removed) |
-| `SelectTool.ts` | `applyFlipDeadZone()` | Committed (deleted) |
-| `SelectTool.ts` | `computeUniformScaleWithDiagonalFlip()` | Committed (both-negative + side handle fixes) |
-| `SelectTool.ts` | `computeUniformScaleNoThreshold()` | **Uncommitted** (new function) |
-| `SelectTool.ts` | `commitScale()` stroke case | **Uncommitted** (copy-paste behavior) |
-| `SelectTool.ts` | `invalidateTransformPreview()` stroke case | **Uncommitted** (copy-paste behavior) |
-| `objects.ts` | `computeUniformScaleForRender()` | Committed (both-negative + side handle fixes) |
-| `objects.ts` | `computeUniformScaleNoThreshold()` | **Uncommitted** (new function) |
-| `objects.ts` | `drawScaledStrokePreview()` | **Uncommitted** (copy-paste behavior) |
+### Problem
+When flipping diagonally with corner handles, object positions would invert within the selection box:
+- Object at top-left would end up at bottom-right after flip
+- Object at bottom-right would end up at top-left after flip
+
+**Example:** Selection with "3" at top-left and "S" at bottom-right:
+```
+BEFORE:                    OLD FLIP BEHAVIOR:         NEW BEHAVIOR:
+┌─────────────┐           ┌─────────────┐           ┌─────────────┐
+│ 3           │           │           S │           │ 3           │
+│             │    ──►    │             │    ──►    │             │
+│           S │           │ 3           │           │           S │
+└─────────────┘           └─────────────┘           └─────────────┘
+```
+
+### Solution
+Implemented `computePreservedPosition()` helper that:
+1. Computes object's normalized position (0-1) within the selection box
+2. Transforms the selection box corners with the scale
+3. Places the object at the same normalized position in the new (possibly flipped) box
+
+**Key Math:**
+```typescript
+function computePreservedPosition(
+  cx: number, cy: number,           // object center
+  originBounds: WorldRect,          // selection box
+  origin: [number, number],         // transform anchor
+  uniformScale: number              // signed scale
+): [number, number] {
+  const { minX, minY, maxX, maxY } = originBounds;
+  const boxWidth = maxX - minX;
+  const boxHeight = maxY - minY;
+
+  // 1. Relative position in original box (0-1)
+  const tx = boxWidth > 0 ? (cx - minX) / boxWidth : 0.5;
+  const ty = boxHeight > 0 ? (cy - minY) / boxHeight : 0.5;
+
+  // 2. Compute new box corners (both transform around origin)
+  const newCorner1X = ox + (minX - ox) * uniformScale;
+  const newCorner1Y = oy + (minY - oy) * uniformScale;
+  const newCorner2X = ox + (maxX - ox) * uniformScale;
+  const newCorner2Y = oy + (maxY - oy) * uniformScale;
+
+  // 3. Get actual min/max (handles flip)
+  const newMinX = Math.min(newCorner1X, newCorner2X);
+  const newMinY = Math.min(newCorner1Y, newCorner2Y);
+  const newBoxWidth = Math.abs(newCorner2X - newCorner1X);
+  const newBoxHeight = Math.abs(newCorner2Y - newCorner1Y);
+
+  // 4. Apply same relative position in new box
+  return [newMinX + tx * newBoxWidth, newMinY + ty * newBoxHeight];
+}
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `SelectTool.ts` | Added `computePreservedPosition()` helper |
+| `SelectTool.ts` | Updated stroke scaling in `commitScale()` to use preserved position |
+| `SelectTool.ts` | Updated stroke scaling in `invalidateTransformPreview()` to use preserved position |
+| `SelectTool.ts` | Updated shape scaling for mixed+corner to use center-based approach with absScale + preserved position |
+| `objects.ts` | Added `computePreservedPosition()` helper |
+| `objects.ts` | Updated `drawScaledStrokePreview()` to use preserved position |
+| `objects.ts` | Updated `drawShapeWithUniformScale()` to use center-based approach with absScale + preserved position |
+| `objects.ts` | Updated `drawTextWithUniformScale()` with same approach |
 
 ---
 
-## Desired Tweaks (Next Session)
+## Current Behavior Summary
 
-### 1. Position Reversal Issue
-**Current:** When flipping, stroke position reverses (left→right, top→bottom)
-**Desired:** Stroke should stay in roughly same position, just scale without position flip
+### Corner Handle Scaling (WORKING PERFECTLY ✓)
 
-**Potential approach:** Instead of using `uniformScale` for position, explore:
-- Keep position based on cursor (scaleX/scaleY) but clamp to positive?
-- Or compute position differently when scale is negative?
+| Selection Type | Behavior |
+|----------------|----------|
+| **Strokes-only** | Uniform scale, no geometry inversion, position preserved |
+| **Mixed (strokes + shapes)** | Uniform scale, no geometry inversion, position preserved |
+| **Shapes-only** | Non-uniform scale (independent X/Y), corner-based |
 
-### 2. Four-Quadrant Flipping
-**Current:** Corner handles only flip diagonally (both axes flip together)
-**Desired:** Ability to flip to any of 4 quadrants independently
+### Side Handle Scaling
 
-**Potential approach:** Use per-axis sign for position, but uniform magnitude for geometry?
+| Selection Type | Behavior | Status |
+|----------------|----------|--------|
+| **Strokes-only** | Resize with snapping | ❌ Needs work - remove snapping, add preserved position |
+| **Mixed** | Shapes scale, strokes translate | ✓ Working |
+| **Shapes-only** | Non-uniform scale (one axis) | ⚠️ Has anchor issue (see below) |
 
-### 3. Strokes-Only Side Handle Behavior
-**Options to explore:**
-1. Same as mixed (translate-only, no scaling) but require 2+ strokes selected
-2. Original resize behavior but without awkward snapping
-3. Corner-cursor-style behavior (approximate opposite corner based on hover position)
+---
 
-### 4. Threshold Tuning
-**Current state:**
-- `computeUniformScaleNoThreshold()` - NO threshold (immediate flip)
-- `computeUniformScaleWithDiagonalFlip()` - has -1.0 threshold for sideways
+## Known Issues / Future Work
 
-**May need:** Fine-tuning of when to use which, or unifying behavior
+### 1. Strokes-Only Side Handle Resize
+**Current:** Has awkward "snapping" behavior
+**Desired:** Normal resize behavior with flip support and preserved position
+**Approach:** Apply same pattern as corner handles - use preserved position, remove threshold snapping
+
+### 2. Shapes Selection Box "Sliding" Issue
+**Current:** When resizing shapes-only (any handle) or mixed (side handles), the selection box "slides" instead of anchoring
+**Desired:** Selection box should have a fixed anchor point (opposite corner/edge) like Figma and other apps
+**Observed in:**
+- Shapes-only corner resize
+- Shapes-only side resize
+- Mixed side resize (shapes portion)
+
+**Root cause:** May be using incorrect origin calculation or transform formula. The perfect shape preview during drawing DOES anchor correctly - need to investigate that code path.
 
 ---
 
@@ -156,45 +153,37 @@ Else → +magnitude
 
 ```
 SelectTool.ts:
-  - computeScaleFactors(): ~line 592
+  - computePreservedPosition(): ~line 1104
   - computeUniformScaleNoThreshold(): ~line 1022
-  - computeUniformScaleWithDiagonalFlip(): ~line 1054
-  - commitScale() stroke case: ~line 892
+  - computeUniformScaleWithDiagonalFlip(): ~line 1078 (now unused, prefixed _)
+  - commitScale() stroke case: ~line 891
+  - commitScale() shape case: ~line 924
   - invalidateTransformPreview() stroke case: ~line 729
+  - invalidateTransformPreview() shape case: ~line 761
 
 objects.ts:
+  - computePreservedPosition(): ~line 617
   - computeUniformScaleNoThreshold(): ~line 588
-  - computeUniformScaleForRender(): ~line 539
-  - drawScaledStrokePreview(): ~line 612
+  - drawScaledStrokePreview(): ~line 658
+  - drawShapeWithUniformScale(): ~line 719
+  - drawTextWithUniformScale(): ~line 788
 ```
-
----
-
-## Decision: Commit or Revert?
-
-The uncommitted changes implement copy-paste (no inversion) but with position reversal. Options:
-
-1. **Commit as-is** - Position reversal is a known issue to fix later
-2. **Revert to Phase 1** - Keep just the dead zone fix, discard copy-paste attempt
-3. **Further iteration** - Fix position reversal before committing
-
-User preference: Stop here, document state, iterate in next session.
 
 ---
 
 ## Quick Test Scenarios
 
-### Shape-only (should work perfectly)
-1. Select single shape → drag corner past opposite corner → smooth flip ✓
-2. Select single shape → drag side handle past opposite edge → smooth flip ✓
+### Corner Handles (All Working ✓)
+1. **Two strokes diagonal:** Flip → positions preserved, geometry not inverted ✓
+2. **Two shapes (mixed selection):** Flip → positions preserved, geometry not inverted ✓
+3. **Mixed stroke + shape:** Flip → positions preserved, geometry not inverted ✓
+4. **Single object:** Flip → works correctly (t=0.5, 0.5 stays centered) ✓
+5. **Shrink without flip:** Normal scaling unchanged ✓
 
-### Stroke-only (has position reversal issue)
-1. Select single stroke → drag corner diagonally → flips but position reverses
-2. Select single stroke → drag side handle → flips but position reverses
-
-### Mixed (uses different code path)
-1. Select shape + stroke → corner drag → uniform scale with -1.0 threshold for sideways
-2. Select shape + stroke → side drag → stroke translates, shape scales
+### Side Handles (Needs Work)
+1. **Strokes-only side:** Has snapping, needs preserved position
+2. **Shapes-only side:** Selection box slides (anchor issue)
+3. **Mixed side:** Shapes slide (anchor issue), strokes translate correctly
 
 ---
 
