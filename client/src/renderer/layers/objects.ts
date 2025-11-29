@@ -536,7 +536,7 @@ function computeStrokeTranslationForRender(
  * 2. CORNER + SIDEWAYS (one axis negative, dragging perpendicular): Use -1.0 threshold
  * 3. SIDE HANDLES: Immediate flip when active axis < 0 (direct axis drag)
  */
-function computeUniformScaleForRender(scaleX: number, scaleY: number): number {
+function _computeUniformScaleForRender(scaleX: number, scaleY: number): number {
   const absX = Math.abs(scaleX);
   const absY = Math.abs(scaleY);
   const STROKE_MIN = 0.001;
@@ -582,8 +582,78 @@ function computeUniformScaleForRender(scaleX: number, scaleY: number): number {
 }
 
 /**
+ * Compute uniform scale with NO threshold - immediate flip when dominant < 0.
+ * Used for stroke "copy-paste" behavior where we want snap positioning.
+ */
+function computeUniformScaleNoThreshold(scaleX: number, scaleY: number): number {
+  const absX = Math.abs(scaleX);
+  const absY = Math.abs(scaleY);
+  const STROKE_MIN = 0.001;
+  const magnitude = Math.max(absX, absY, STROKE_MIN);
+
+  // Both negative → immediate flip
+  if (scaleX < 0 && scaleY < 0) {
+    return -magnitude;
+  }
+
+  // Side handles → immediate flip when < 0
+  if (scaleY === 1 && scaleX !== 1) {
+    return scaleX < 0 ? -magnitude : magnitude;
+  }
+  if (scaleX === 1 && scaleY !== 1) {
+    return scaleY < 0 ? -magnitude : magnitude;
+  }
+
+  // Corner drag → immediate flip when dominant < 0 (NO threshold)
+  const dominantScale = absX >= absY ? scaleX : scaleY;
+  return dominantScale < 0 ? -magnitude : magnitude;
+}
+
+/**
+ * Compute position that preserves relative arrangement in selection box.
+ * When flipping, objects maintain their relative position (0-1) within the box
+ * instead of inverting (close-to-origin becomes far-from-origin).
+ */
+function computePreservedPosition(
+  cx: number,
+  cy: number,
+  originBounds: WorldRect,
+  origin: [number, number],
+  uniformScale: number
+): [number, number] {
+  const [ox, oy] = origin;
+  const { minX, minY, maxX, maxY } = originBounds;
+  const boxWidth = maxX - minX;
+  const boxHeight = maxY - minY;
+
+  // Relative position in original box (0-1)
+  const tx = boxWidth > 0 ? (cx - minX) / boxWidth : 0.5;
+  const ty = boxHeight > 0 ? (cy - minY) / boxHeight : 0.5;
+
+  // Compute new box corners (both transform around origin)
+  const newCorner1X = ox + (minX - ox) * uniformScale;
+  const newCorner1Y = oy + (minY - oy) * uniformScale;
+  const newCorner2X = ox + (maxX - ox) * uniformScale;
+  const newCorner2Y = oy + (maxY - oy) * uniformScale;
+
+  // Get actual min/max (handles flip)
+  const newMinX = Math.min(newCorner1X, newCorner2X);
+  const newMinY = Math.min(newCorner1Y, newCorner2Y);
+  const newBoxWidth = Math.abs(newCorner2X - newCorner1X);
+  const newBoxHeight = Math.abs(newCorner2Y - newCorner1Y);
+
+  // Apply same relative position in new box
+  return [newMinX + tx * newBoxWidth, newMinY + ty * newBoxHeight];
+}
+
+/**
  * Draw stroke with scaled geometry and width using fresh PF outline.
  * This is the WYSIWYG preview - generates new Path2D each frame.
+ *
+ * Uses "copy-paste" flip behavior with position preservation:
+ * - Position preserves relative arrangement in selection box
+ * - Geometry uses absolute magnitude (NEVER inverted/mirrored)
+ * - No threshold - immediate flip when dominant axis < 0
  */
 function drawScaledStrokePreview(
   ctx: CanvasRenderingContext2D,
@@ -599,17 +669,25 @@ function drawScaledStrokePreview(
 
   if (!points?.length) return;
 
-  const { origin, scaleX, scaleY } = transform;
-  const [ox, oy] = origin;
+  const { origin, scaleX, scaleY, originBounds } = transform;
 
-  // Compute uniform scale with diagonal flip rule
-  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+  // Get stroke center from bbox
+  const [minX, minY, maxX, maxY] = handle.bbox;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  // Compute uniform scale with SNAP behavior (no threshold)
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
   const absScale = Math.abs(uniformScale);
 
-  // Transform points
+  // Position preserves relative arrangement (no position swap on flip)
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  // Transform points: scale around original center, position at new center
+  // Geometry uses absolute scale (NO inversion - copy-paste behavior)
   const scaledPoints: [number, number][] = points.map(([x, yCoord]) => [
-    ox + (x - ox) * uniformScale,
-    oy + (yCoord - oy) * uniformScale,
+    newCx + (x - cx) * absScale,
+    newCy + (yCoord - cy) * absScale,
   ]);
 
   // Scale width for WYSIWYG
@@ -635,7 +713,8 @@ function drawScaledStrokePreview(
 }
 
 /**
- * Draw shape with uniform scale (for mixed + corner selection).
+ * Draw shape with uniform scale and position preservation (for mixed + corner selection).
+ * Uses center-based scaling with absScale (no geometry inversion) and preserved positions.
  */
 function drawShapeWithUniformScale(
   ctx: CanvasRenderingContext2D,
@@ -646,37 +725,134 @@ function drawShapeWithUniformScale(
   const frame = y.get('frame') as [number, number, number, number];
   if (!frame) return;
 
-  const { scaleX, scaleY } = transform;
-  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+  const [x, frameY, w, h] = frame;
+  const { scaleX, scaleY, origin, originBounds } = transform;
 
-  // Create modified transform with uniform scale
-  const uniformTransform = {
-    ...transform,
-    scaleX: uniformScale,
-    scaleY: uniformScale,
-  };
+  // Compute center and uniform scale
+  const cx = x + w / 2;
+  const cy = frameY + h / 2;
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
 
-  drawShapeWithTransform(ctx, handle, uniformTransform);
+  // Position preserves relative arrangement (no position swap on flip)
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  // Dimensions use absolute scale (no geometry inversion)
+  const newW = w * absScale;
+  const newH = h * absScale;
+
+  // Compute transformed frame from center
+  const transformedFrame: [number, number, number, number] = [
+    newCx - newW / 2,
+    newCy - newH / 2,
+    newW,
+    newH,
+  ];
+
+  // Skip render if dimensions collapsed to near-zero
+  if (newW < 0.001 || newH < 0.001) return;
+
+  // Get styling from Y.Map
+  const shapeType = (y.get('shapeType') as string) || 'rect';
+  const fillColor = y.get('fillColor') as string | undefined;
+  const color = (y.get('color') ?? y.get('strokeColor')) as string | undefined;
+  const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
+  const opacity = (y.get('opacity') as number) ?? 1;
+
+  // Build path from TRANSFORMED frame (not cached)
+  const path = buildShapePathFromFrame(shapeType, transformedFrame);
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  if (fillColor) {
+    ctx.fillStyle = fillColor;
+    ctx.fill(path);
+  }
+
+  if (color && width > 0) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;  // ORIGINAL width - NOT scaled!
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke(path);
+  }
+
+  ctx.restore();
 }
 
 /**
- * Draw text with uniform scale (for mixed + corner selection).
+ * Draw text with uniform scale and position preservation (for mixed + corner selection).
+ * Uses center-based scaling with absScale (no geometry inversion) and preserved positions.
  */
 function drawTextWithUniformScale(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
   transform: ScaleTransform
 ): void {
-  const { scaleX, scaleY } = transform;
-  const uniformScale = computeUniformScaleForRender(scaleX, scaleY);
+  const { y } = handle;
+  const frame = y.get('frame') as [number, number, number, number];
+  const textContent = y.get('text');
+  if (!frame || !textContent) return;
 
-  const uniformTransform = {
-    ...transform,
-    scaleX: uniformScale,
-    scaleY: uniformScale,
-  };
+  const [x, frameY, w, h] = frame;
+  const { scaleX, scaleY, origin, originBounds } = transform;
 
-  drawTextWithTransform(ctx, handle, uniformTransform);
+  // Compute center and uniform scale
+  const cx = x + w / 2;
+  const cy = frameY + h / 2;
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  // Position preserves relative arrangement (no position swap on flip)
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  // Dimensions use absolute scale (no geometry inversion)
+  const newW = w * absScale;
+  const newH = h * absScale;
+
+  // Compute transformed frame from center
+  const transformedX = newCx - newW / 2;
+  const transformedY = newCy - newH / 2;
+
+  // Get text styling
+  const color = (y.get('color') as string) ?? '#000';
+  const fontSize = (y.get('fontSize') as number) ?? 16;
+  const fontFamily = (y.get('fontFamily') as string) ?? 'sans-serif';
+  const fontWeight = (y.get('fontWeight') as string) ?? 'normal';
+  const fontStyle = (y.get('fontStyle') as string) ?? 'normal';
+  const textAlign = (y.get('textAlign') as string) ?? 'left';
+  const opacity = (y.get('opacity') as number) ?? 1;
+
+  // Get text content
+  let text = '';
+  if (typeof textContent === 'string') {
+    text = textContent;
+  } else if (textContent && typeof textContent.toString === 'function') {
+    text = textContent.toString();
+  }
+
+  if (!text) return;
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  // Set up text styling - font size NOT scaled
+  ctx.fillStyle = color;
+  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
+  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
+  ctx.textBaseline = 'top';
+
+  // Compute X position based on text alignment
+  let textX = transformedX;
+  if (textAlign === 'center') {
+    textX = transformedX + newW / 2;
+  } else if (textAlign === 'right') {
+    textX = transformedX + newW;
+  }
+
+  ctx.fillText(text, textX, transformedY);
+  ctx.restore();
 }
 
 /**

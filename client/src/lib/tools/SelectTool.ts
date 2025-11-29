@@ -727,19 +727,27 @@ export class SelectTool {
             maxY: maxY + dy,
           };
         } else if (isStroke) {
-          // CASE 2: Stroke scaling = uniform scale
-          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
+          // CASE 2: Stroke scaling with position preservation
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+          const halfW = (maxX - minX) / 2;
+          const halfH = (maxY - minY) / 2;
+
+          // Compute uniform scale with SNAP behavior (no threshold)
+          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
           const absScale = Math.abs(uniformScale);
-          const x1 = ox + (minX - ox) * uniformScale;
-          const y1 = oy + (minY - oy) * uniformScale;
-          const x2 = ox + (maxX - ox) * uniformScale;
-          const y2 = oy + (maxY - oy) * uniformScale;
+
+          // Position preserves relative arrangement (no position swap on flip)
+          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+          // Compute new bounds centered at newCx/newCy, scaled by absScale
           objBounds = {
-            minX: Math.min(x1, x2),
-            minY: Math.min(y1, y2),
-            maxX: Math.max(x1, x2),
-            maxY: Math.max(y1, y2),
+            minX: newCx - halfW * absScale,
+            minY: newCy - halfH * absScale,
+            maxX: newCx + halfW * absScale,
+            maxY: newCy + halfH * absScale,
           };
+
           // Expand for scaled stroke width
           const origWidth = (handle.y.get('width') as number) ?? 2;
           const scaledWidth = origWidth * absScale;
@@ -752,22 +760,40 @@ export class SelectTool {
           }
         } else {
           // CASE 3: Shape/text scaling
-          let sx = scaleX, sy = scaleY;
           if (selectionKind === 'mixed' && handleKind === 'corner') {
-            const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
-            sx = uniformScale;
-            sy = uniformScale;
+            // Mixed + corner: center-based with position preservation
+            const cx = (minX + maxX) / 2;
+            const cy = (minY + maxY) / 2;
+            const w = maxX - minX;
+            const h = maxY - minY;
+            const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+            const absScale = Math.abs(uniformScale);
+
+            // Position preserves relative arrangement (no position swap on flip)
+            const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+            // Dimensions use absolute scale (no geometry inversion)
+            const halfW = (w * absScale) / 2;
+            const halfH = (h * absScale) / 2;
+            objBounds = {
+              minX: newCx - halfW,
+              minY: newCy - halfH,
+              maxX: newCx + halfW,
+              maxY: newCy + halfH,
+            };
+          } else {
+            // Shapes-only or mixed+side: corner-based (non-uniform allowed)
+            const x1 = ox + (minX - ox) * scaleX;
+            const y1 = oy + (minY - oy) * scaleY;
+            const x2 = ox + (maxX - ox) * scaleX;
+            const y2 = oy + (maxY - oy) * scaleY;
+            objBounds = {
+              minX: Math.min(x1, x2),
+              minY: Math.min(y1, y2),
+              maxX: Math.max(x1, x2),
+              maxY: Math.max(y1, y2),
+            };
           }
-          const x1 = ox + (minX - ox) * sx;
-          const y1 = oy + (minY - oy) * sy;
-          const x2 = ox + (maxX - ox) * sx;
-          const y2 = oy + (maxY - oy) * sy;
-          objBounds = {
-            minX: Math.min(x1, x2),
-            minY: Math.min(y1, y2),
-            maxX: Math.max(x1, x2),
-            maxY: Math.max(y1, y2),
-          };
         }
 
         // Union with combined bounds
@@ -880,54 +906,77 @@ export class SelectTool {
         }
 
         // CASE 2: Stroke scaling (strokesOnly or mixed+corner)
+        // Uses "copy-paste" flip behavior with position preservation:
+        // - Position preserves relative arrangement in selection box
+        // - Geometry uses absolute magnitude (NEVER inverted/mirrored)
         if (isStroke) {
-          // Use diagonal flip rule for strokes
-          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
-
           const points = yMap.get('points') as [number, number][];
           if (!points) continue;
+
+          // Get stroke center from bbox
+          const [minX, minY, maxX, maxY] = handle.bbox;
+          const cx = (minX + maxX) / 2;
+          const cy = (minY + maxY) / 2;
+
+          // Compute uniform scale with SNAP behavior (no threshold)
+          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+          const absScale = Math.abs(uniformScale);
+
+          // Position preserves relative arrangement (no position swap on flip)
+          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+          // Transform points: scale around original center, position at new center
+          // Geometry uses absolute scale (NO inversion - copy-paste behavior)
           const newPoints: [number, number][] = points.map(([x, y]) => [
-            ox + (x - ox) * uniformScale,
-            oy + (y - oy) * uniformScale,
+            newCx + (x - cx) * absScale,
+            newCy + (y - cy) * absScale,
           ]);
           yMap.set('points', newPoints);
 
           // CRITICAL: Scale stroke width for WYSIWYG
           const oldWidth = (yMap.get('width') as number) ?? 2;
-          yMap.set('width', oldWidth * Math.abs(uniformScale));
+          yMap.set('width', oldWidth * absScale);
           continue;
         }
 
         // CASE 3: Shape scaling
-        // Determine scale factors based on selection context
-        let sx = scaleX;
-        let sy = scaleY;
-
-        if (selectionKind === 'mixed' && handleKind === 'corner') {
-          // Mixed + corner: shapes use UNIFORM scale (consistent with strokes)
-          const uniformScale = this.computeUniformScaleWithDiagonalFlip(scaleX, scaleY);
-          sx = uniformScale;
-          sy = uniformScale;
-        }
-        // Else: shapes-only or mixed+side: use raw scaleX/scaleY (non-uniform allowed)
-
         const frame = yMap.get('frame') as [number, number, number, number];
         if (!frame) continue;
         const [x, y, w, h] = frame;
 
-        // Scale corners around origin
-        const newX1 = ox + (x - ox) * sx;
-        const newY1 = oy + (y - oy) * sy;
-        const newX2 = ox + ((x + w) - ox) * sx;
-        const newY2 = oy + ((y + h) - oy) * sy;
+        if (selectionKind === 'mixed' && handleKind === 'corner') {
+          // Mixed + corner: shapes use center-based scaling with position preservation
+          // Matches stroke behavior: no geometry inversion, no position swap
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+          const absScale = Math.abs(uniformScale);
 
-        // Handle negative scale (flip) - ensure positive dimensions
-        yMap.set('frame', [
-          Math.min(newX1, newX2),
-          Math.min(newY1, newY2),
-          Math.abs(newX2 - newX1),
-          Math.abs(newY2 - newY1),
-        ]);
+          // Position preserves relative arrangement (no position swap on flip)
+          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+          // Dimensions use absolute scale (no geometry inversion)
+          const newW = w * absScale;
+          const newH = h * absScale;
+
+          // Reconstruct frame from center
+          yMap.set('frame', [newCx - newW / 2, newCy - newH / 2, newW, newH]);
+        } else {
+          // Shapes-only or mixed+side: use raw scaleX/scaleY (non-uniform allowed)
+          // Scale corners around origin
+          const newX1 = ox + (x - ox) * scaleX;
+          const newY1 = oy + (y - oy) * scaleY;
+          const newX2 = ox + ((x + w) - ox) * scaleX;
+          const newY2 = oy + ((y + h) - oy) * scaleY;
+
+          // Handle negative scale (flip) - ensure positive dimensions
+          yMap.set('frame', [
+            Math.min(newX1, newX2),
+            Math.min(newY1, newY2),
+            Math.abs(newX2 - newX1),
+            Math.abs(newY2 - newY1),
+          ]);
+        }
         // Shape stroke width: UNCHANGED (preserved)
       }
     });
@@ -991,6 +1040,34 @@ export class SelectTool {
   }
 
   /**
+   * Compute uniform scale with NO threshold - immediate flip when dominant < 0.
+   * Used for stroke "copy-paste" behavior where we want snap positioning.
+   */
+  private computeUniformScaleNoThreshold(scaleX: number, scaleY: number): number {
+    const absX = Math.abs(scaleX);
+    const absY = Math.abs(scaleY);
+    const STROKE_MIN = 0.001;
+    const magnitude = Math.max(absX, absY, STROKE_MIN);
+
+    // Both negative → immediate flip
+    if (scaleX < 0 && scaleY < 0) {
+      return -magnitude;
+    }
+
+    // Side handles → immediate flip when < 0
+    if (scaleY === 1 && scaleX !== 1) {
+      return scaleX < 0 ? -magnitude : magnitude;
+    }
+    if (scaleX === 1 && scaleY !== 1) {
+      return scaleY < 0 ? -magnitude : magnitude;
+    }
+
+    // Corner drag → immediate flip when dominant < 0 (NO threshold)
+    const dominantScale = absX >= absY ? scaleX : scaleY;
+    return dominantScale < 0 ? -magnitude : magnitude;
+  }
+
+  /**
    * Compute uniform scale for strokes with context-aware flip logic.
    *
    * FLIP RULES:
@@ -1041,6 +1118,43 @@ export class SelectTool {
     }
 
     return magnitude;
+  }
+
+  /**
+   * Compute position that preserves relative arrangement in selection box.
+   * When flipping, objects maintain their relative position (0-1) within the box
+   * instead of inverting (close-to-origin becomes far-from-origin).
+   */
+  private computePreservedPosition(
+    cx: number,
+    cy: number,
+    originBounds: StoreWorldRect,
+    origin: [number, number],
+    uniformScale: number
+  ): [number, number] {
+    const [ox, oy] = origin;
+    const { minX, minY, maxX, maxY } = originBounds;
+    const boxWidth = maxX - minX;
+    const boxHeight = maxY - minY;
+
+    // Relative position in original box (0-1)
+    const tx = boxWidth > 0 ? (cx - minX) / boxWidth : 0.5;
+    const ty = boxHeight > 0 ? (cy - minY) / boxHeight : 0.5;
+
+    // Compute new box corners (both transform around origin)
+    const newCorner1X = ox + (minX - ox) * uniformScale;
+    const newCorner1Y = oy + (minY - oy) * uniformScale;
+    const newCorner2X = ox + (maxX - ox) * uniformScale;
+    const newCorner2Y = oy + (maxY - oy) * uniformScale;
+
+    // Get actual min/max (handles flip)
+    const newMinX = Math.min(newCorner1X, newCorner2X);
+    const newMinY = Math.min(newCorner1Y, newCorner2Y);
+    const newBoxWidth = Math.abs(newCorner2X - newCorner1X);
+    const newBoxHeight = Math.abs(newCorner2Y - newCorner1Y);
+
+    // Apply same relative position in new box
+    return [newMinX + tx * newBoxWidth, newMinY + ty * newBoxHeight];
   }
 
   private updateMarqueeSelection(): void {
