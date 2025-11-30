@@ -11,7 +11,8 @@ import {
   IconRectangle,
   IconEllipse,
   IconArrow,
-  IconLine,
+  IconDiamond,
+  IconCode,
   IconImage,
   IconPan,
   IconFill,
@@ -119,7 +120,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     <div className="tool-dock-wrap">
       {/* Main toolbar */}
       <div className="tool-dock">
-        {/* Tools in order: Select, Pen, Highlighter, Eraser, Text, Rectangle, Ellipse, Arrow, Line, Image, Pan */}
+        {/* Tools in order: Select, Pen, Highlighter, Eraser, Text, Arrow, Rectangle, Diamond, Ellipse, Code, Image, Pan */}
         <ToolButton
           tool="select"
           isActive={activeTool === 'select'}
@@ -165,6 +166,18 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
           <IconText className="icon" />
         </ToolButton>
 
+        <ToolButton
+          tool="arrow"
+          isActive={activeTool === 'shape' && shapeVariant === 'arrow'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeVariant('arrow');
+          }}
+          tooltip="Arrow (A)"
+        >
+          <IconArrow className="icon" />
+        </ToolButton>
+
         <div className="tool-divider" />
 
         {/* Shape tools - CRITICAL: Set both activeTool='shape' AND the variant */}
@@ -181,6 +194,18 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         </ToolButton>
 
         <ToolButton
+          tool="diamond"
+          isActive={activeTool === 'shape' && shapeVariant === 'diamond'}
+          onClick={() => {
+            setActiveTool('shape');
+            setShapeVariant('diamond');
+          }}
+          tooltip="Diamond (D)"
+        >
+          <IconDiamond className="icon" />
+        </ToolButton>
+
+        <ToolButton
           tool="ellipse"
           isActive={activeTool === 'shape' && shapeVariant === 'ellipse'}
           onClick={() => {
@@ -193,27 +218,15 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         </ToolButton>
 
         <ToolButton
-          tool="arrow"
-          isActive={activeTool === 'shape' && shapeVariant === 'arrow'}
+          tool="code"
+          isActive={activeTool === 'code'}
           onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('arrow');
+            setActiveTool('code');
+            onToast?.('Code block coming soon!');
           }}
-          tooltip="Arrow (A)"
+          tooltip="Code"
         >
-          <IconArrow className="icon" />
-        </ToolButton>
-
-        <ToolButton
-          tool="line"
-          isActive={activeTool === 'shape' && shapeVariant === 'diamond'}
-          onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('diamond');
-          }}
-          tooltip="Line (L)"
-        >
-          <IconLine className="icon" />
+          <IconCode className="icon" />
         </ToolButton>
 
         <div className="tool-divider" />

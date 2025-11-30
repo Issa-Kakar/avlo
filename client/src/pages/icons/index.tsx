@@ -61,7 +61,7 @@ export const IconText: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
 
 export const IconRectangle: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}>
-    <rect x="5" y="6" width="14" height="12" rx="2"
+    <rect x="4" y="4" width="16" height="16" rx="1"
       stroke="currentColor"
       strokeWidth="2.2"
       fill="none"
@@ -101,6 +101,41 @@ export const IconLine: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
       stroke="currentColor"
       strokeWidth="2.5"
       strokeLinecap="round"
+    />
+  </svg>
+);
+
+export const IconDiamond: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}>
+    <path
+      d="M12 3 L21 12 L12 21 L3 12 Z"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinejoin="round"
+      fill="none"
+    />
+  </svg>
+);
+
+export const IconCode: React.FC<React.SVGProps<SVGSVGElement>> = (props) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {...props}>
+    {/* L-shape with subtle top stub and bottom uptick */}
+    <path
+      d="M1 4h3M1 4v17h21v-6"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
+    />
+    {/* </> code symbols - shifted up and right */}
+    <path
+      d="M13 3l-3 4 3 4M20 3l3 4-3 4"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      fill="none"
     />
   </svg>
 );
