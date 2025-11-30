@@ -565,9 +565,16 @@ function computeStrokeTranslationForRender(
       }
       dy = 0;
     } else {
-      // Interior stroke → origin-based translation
+      // Non-anchor stroke: origin-based translation + shift at flip
       const newCx = ox + (cx - ox) * scaleX;
       dx = newCx - cx;
+      // At flip (scaleX < 0), shift by half stroke width (OPPOSITE direction of anchor strokes)
+      if (scaleX < 0) {
+        const halfWidth = (maxX - minX) / 2;
+        // W handle: anchor shifts RIGHT, so non-anchor shifts LEFT (-)
+        // E handle: anchor shifts LEFT, so non-anchor shifts RIGHT (+)
+        dx += handleId === 'w' ? -halfWidth : halfWidth;
+      }
       dy = 0;
     }
   } else if (isVertical) {
@@ -588,9 +595,16 @@ function computeStrokeTranslationForRender(
       }
       dx = 0;
     } else {
+      // Non-anchor stroke: origin-based translation + shift at flip
       const newCy = oy + (cy - oy) * scaleY;
-      dx = 0;
       dy = newCy - cy;
+      // At flip (scaleY < 0), shift by half stroke height (OPPOSITE direction of anchor strokes)
+      if (scaleY < 0) {
+        const halfHeight = (maxY - minY) / 2;
+        // S handle: shift DOWN (+), N handle: shift UP (-)
+        dy += handleId === 's' ? halfHeight : -halfHeight;
+      }
+      dx = 0;
     }
   } else {
     // Corner handle (shouldn't reach here for mixed+side, but fallback)
