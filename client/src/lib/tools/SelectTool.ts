@@ -172,12 +172,25 @@ export class SelectTool {
             if (!passMove) break;
             // Dragging a resize handle
             this.phase = 'scale';
-            const bounds = this.computeSelectionBounds();
-            if (bounds) {
-              const origin = this.getScaleOrigin(this.activeHandle!, bounds);
-              const store = useSelectionStore.getState();
-              const selectionKind = this.computeSelectionKind(store.selectedIds);
-              store.beginScale(bounds, origin, this.activeHandle!, selectionKind);
+
+            const store = useSelectionStore.getState();
+            const selectionKind = this.computeSelectionKind(store.selectedIds);
+
+            // Geometry-based bounds for transform origin (fixes anchor sliding)
+            const transformBounds = this.computeTransformBoundsForScale();
+            // Padded bounds for dirty rects (visual coverage)
+            const bboxBounds = this.computeSelectionBounds();
+
+            if (transformBounds && bboxBounds) {
+              // CRITICAL: Use geometry bounds for origin
+              const origin = this.getScaleOrigin(this.activeHandle!, transformBounds);
+              // Compute initial delta: distance from origin to click position
+              // This ensures scale=1.0 exactly when cursor is at starting position
+              const initialDelta: [number, number] = [
+                this.downWorld![0] - origin[0],
+                this.downWorld![1] - origin[1],
+              ];
+              store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta);
             }
             const cursor = this.getHandleCursor(this.activeHandle!);
             this.setCursorOverride(cursor);
@@ -433,7 +446,15 @@ export class SelectTool {
     let handles: { id: HandleId; x: number; y: number }[] | null = null;
 
     if (selectedIds.length > 0) {
-      const baseBounds = this.computeSelectionBounds();
+      // During scale, use originBounds (geometry-based) so selection rect aligns with transform
+      // During idle/translate, use bbox-based bounds for visual stroke coverage
+      let baseBounds: WorldRect | null = null;
+      if (transform.kind === 'scale') {
+        baseBounds = transform.originBounds;
+      } else {
+        baseBounds = this.computeSelectionBounds();
+      }
+
       if (baseBounds) {
         selectionBounds = this.applyTransformToBounds(baseBounds, transform);
         handles = this.computeHandles(selectionBounds);
@@ -533,6 +554,56 @@ export class SelectTool {
     return { minX, minY, maxX, maxY };
   }
 
+  /**
+   * Compute geometry-based bounds for scale transforms.
+   * Unlike computeSelectionBounds() which uses padded bboxes,
+   * this extracts raw geometry bounds:
+   * - Shapes/text: raw frame [x, y, w, h]
+   * - Strokes/connectors: raw points min/max (no width inflation)
+   *
+   * Used for scale origin computation to prevent anchor sliding.
+   */
+  private computeTransformBoundsForScale(): WorldRect | null {
+    const store = useSelectionStore.getState();
+    const { selectedIds } = store;
+    if (selectedIds.length === 0) return null;
+
+    const snapshot = this.room.currentSnapshot;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle) continue;
+
+      const y = handle.y;
+
+      if (handle.kind === 'shape' || handle.kind === 'text') {
+        // Raw frame bounds (NO stroke width padding)
+        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        if (!frame) continue;
+        const [x, frameY, w, h] = frame;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, frameY);
+        maxX = Math.max(maxX, x + w);
+        maxY = Math.max(maxY, frameY + h);
+      } else {
+        // Stroke/connector: raw points min/max (NO width inflation)
+        const points = y.get('points') as [number, number][] | undefined;
+        if (!points || points.length === 0) continue;
+
+        for (const [px, py] of points) {
+          minX = Math.min(minX, px);
+          minY = Math.min(minY, py);
+          maxX = Math.max(maxX, px);
+          maxY = Math.max(maxY, py);
+        }
+      }
+    }
+
+    if (!isFinite(minX)) return null;
+    return { minX, minY, maxX, maxY };
+  }
+
   private applyTransformToBounds(bounds: WorldRect, transform: { kind: string; dx?: number; dy?: number; scaleX?: number; scaleY?: number; origin?: [number, number] }): WorldRect {
     if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
       return {
@@ -597,20 +668,13 @@ export class SelectTool {
       return { scaleX: 1, scaleY: 1 };
     }
 
-    const { origin, originBounds, handleId } = transform;
+    const { origin, initialDelta, handleId } = transform;
     const [ox, oy] = origin;
-
-    // Original dimensions
-    const origWidth = originBounds.maxX - originBounds.minX;
-    const origHeight = originBounds.maxY - originBounds.minY;
+    const [initDx, initDy] = initialDelta;
 
     // Vector from origin to cursor
     const dx = worldX - ox;
     const dy = worldY - oy;
-
-    // Get sign multipliers based on handle direction
-    const handleSignX = this.getHandleSignX(handleId);
-    const handleSignY = this.getHandleSignY(handleId);
 
     let scaleX = 1;
     let scaleY = 1;
@@ -619,42 +683,31 @@ export class SelectTool {
     const isSideH = handleId === 'e' || handleId === 'w';
     const isSideV = handleId === 'n' || handleId === 's';
 
+    // Use initialDelta as denominator (NOT selection bounds width)
+    // This ensures scaleX=1.0 exactly when cursor == downWorld (start position)
+    // Sign handling is implicit: if initDx is negative (left handle), scale sign is preserved
+    const MIN_DELTA = 0.001;
+    const safeDx = Math.abs(initDx) > MIN_DELTA ? initDx : (initDx >= 0 ? MIN_DELTA : -MIN_DELTA);
+    const safeDy = Math.abs(initDy) > MIN_DELTA ? initDy : (initDy >= 0 ? MIN_DELTA : -MIN_DELTA);
+
     if (isCorner) {
-      // Corner handles: free scale in both axes (SIGNED for flip)
-      scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
-      scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+      // Corner handles: free scale in both axes
+      scaleX = dx / safeDx;
+      scaleY = dy / safeDy;
     } else if (isSideH) {
       // East/West handle: X scales, Y = 1
-      scaleX = origWidth > 0 ? (dx * handleSignX) / origWidth : 1;
+      scaleX = dx / safeDx;
       scaleY = 1;
     } else if (isSideV) {
       // North/South handle: Y scales, X = 1
-      scaleY = origHeight > 0 ? (dy * handleSignY) / origHeight : 1;
+      scaleY = dy / safeDy;
       scaleX = 1;
     }
 
     // Raw scales pass through - no dead zone
     // Shapes: Use raw negative scales for immediate flip
-    // Strokes: computeUniformScaleWithDiagonalFlip() handles flip logic
+    // Strokes: computeUniformScaleNoThreshold() handles flip logic
     return { scaleX, scaleY };
-  }
-
-  /** Returns +1 or -1 for X direction based on handle */
-  private getHandleSignX(handleId: HandleId): number {
-    switch (handleId) {
-      case 'nw': case 'w': case 'sw': return -1;  // Left side
-      case 'ne': case 'e': case 'se': return 1;   // Right side
-      default: return 1;
-    }
-  }
-
-  /** Returns +1 or -1 for Y direction based on handle */
-  private getHandleSignY(handleId: HandleId): number {
-    switch (handleId) {
-      case 'nw': case 'n': case 'ne': return -1;  // Top side
-      case 'sw': case 's': case 'se': return 1;   // Bottom side
-      default: return 1;
-    }
   }
 
   /** Returns appropriate cursor for handle */
@@ -704,7 +757,7 @@ export class SelectTool {
     if (transform.kind === 'scale') {
       // Scale: per-object bounds based on transform strategy
       const snapshot = this.room.currentSnapshot;
-      const { selectionKind, handleKind, origin, scaleX, scaleY, originBounds } = transform;
+      const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
       const [ox, oy] = origin;
 
       let combinedBounds: WorldRect | null = null;
@@ -719,7 +772,7 @@ export class SelectTool {
 
         // CASE 1: Mixed + side + stroke = TRANSLATE (not scale)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin);
+          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           objBounds = {
             minX: minX + dx,
             minY: minY + dy,
@@ -811,12 +864,12 @@ export class SelectTool {
 
       if (!combinedBounds) return;
 
-      // Include original bounds
+      // Include padded bboxBounds for full visual coverage (stroke width padding)
       combinedBounds = {
-        minX: Math.min(combinedBounds.minX, bounds.minX),
-        minY: Math.min(combinedBounds.minY, bounds.minY),
-        maxX: Math.max(combinedBounds.maxX, bounds.maxX),
-        maxY: Math.max(combinedBounds.maxY, bounds.maxY),
+        minX: Math.min(combinedBounds.minX, bboxBounds.minX),
+        minY: Math.min(combinedBounds.minY, bboxBounds.minY),
+        maxX: Math.max(combinedBounds.maxX, bboxBounds.maxX),
+        maxY: Math.max(combinedBounds.maxY, bboxBounds.maxY),
       };
 
       // ACCUMULATE envelope (expand, never shrink)
@@ -873,7 +926,7 @@ export class SelectTool {
     origin: [number, number],
     scaleX: number,
     scaleY: number,
-    _handleId: HandleId,
+    handleId: HandleId,
     selectionKind: SelectionKind,
     handleKind: HandleKind,
     originBounds: StoreWorldRect
@@ -896,7 +949,7 @@ export class SelectTool {
 
         // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like behavior)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin);
+          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           const points = yMap.get('points') as [number, number][];
           if (!points) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
@@ -1014,29 +1067,100 @@ export class SelectTool {
 
   /**
    * Compute translation for a stroke in mixed + side handle scenario.
-   * Uses origin-based positioning (same math shapes use for corners).
-   * This gives natural anchor behavior: points at origin stay fixed,
-   * points far from origin move proportionally.
+   * Uses edge-pinning logic:
+   * - Anchor strokes (those that define the anchor edge) stay pinned
+   * - On scale flip (negative), anchor strokes shift to define the opposite edge
+   * - Interior strokes translate proportionally based on origin
    */
   private computeStrokeTranslation(
     handle: ObjectHandle,
-    _originBounds: WorldRect, // Kept for API compat
+    originBounds: WorldRect,
     scaleX: number,
     scaleY: number,
-    origin: [number, number]
+    origin: [number, number],
+    handleId: HandleId
   ): { dx: number; dy: number } {
-    // Get stroke center from bbox
-    const [minX, minY, maxX, maxY] = handle.bbox;
+    // Get stroke geometry (not bbox with width inflation)
+    const points = handle.y.get('points') as [number, number][] | undefined;
+    if (!points || points.length === 0) return { dx: 0, dy: 0 };
+
+    // Compute geometry bounds
+    let minX = points[0][0], maxX = points[0][0];
+    let minY = points[0][1], maxY = points[0][1];
+    for (const [px, py] of points) {
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+    }
+
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const [ox, oy] = origin;
 
-    // Origin-based position (SAME math shapes use for corners)
-    // Points at origin stay fixed, points far from origin move proportionally
-    const newCx = ox + (cx - ox) * scaleX;
-    const newCy = oy + (cy - oy) * scaleY;
+    const EPS = 1e-3;
+    const isHorizontal = handleId === 'e' || handleId === 'w';
+    const isVertical = handleId === 'n' || handleId === 's';
 
-    return { dx: newCx - cx, dy: newCy - cy };
+    let dx = 0;
+    let dy = 0;
+
+    if (isHorizontal) {
+      // E handle: anchor at minX (west edge), W handle: anchor at maxX (east edge)
+      const anchorX = handleId === 'e' ? originBounds.minX : originBounds.maxX;
+
+      const touchesLeft = Math.abs(minX - anchorX) < EPS;
+      const touchesRight = Math.abs(maxX - anchorX) < EPS;
+      const isAnchor = touchesLeft || touchesRight;
+
+      if (isAnchor) {
+        if (scaleX >= 0) {
+          // Pre-flip: pin original touching edge
+          const edgeX = touchesLeft ? minX : maxX;
+          dx = anchorX - edgeX; // ≈ 0 since edge ≈ anchor
+        } else {
+          // Post-flip: pin opposite edge (shift by stroke width)
+          const edgeX = touchesLeft ? maxX : minX;
+          dx = anchorX - edgeX;
+        }
+        dy = 0;
+      } else {
+        // Interior stroke → origin-based translation
+        const newCx = ox + (cx - ox) * scaleX;
+        dx = newCx - cx;
+        dy = 0;
+      }
+    } else if (isVertical) {
+      // S handle: anchor at minY (top edge), N handle: anchor at maxY (bottom edge)
+      const anchorY = handleId === 's' ? originBounds.minY : originBounds.maxY;
+
+      const touchesTop = Math.abs(minY - anchorY) < EPS;
+      const touchesBottom = Math.abs(maxY - anchorY) < EPS;
+      const isAnchor = touchesTop || touchesBottom;
+
+      if (isAnchor) {
+        if (scaleY >= 0) {
+          const edgeY = touchesTop ? minY : maxY;
+          dy = anchorY - edgeY;
+        } else {
+          const edgeY = touchesTop ? maxY : minY;
+          dy = anchorY - edgeY;
+        }
+        dx = 0;
+      } else {
+        const newCy = oy + (cy - oy) * scaleY;
+        dx = 0;
+        dy = newCy - cy;
+      }
+    } else {
+      // Corner handle (shouldn't reach here for mixed+side, but fallback)
+      const newCx = ox + (cx - ox) * scaleX;
+      const newCy = oy + (cy - oy) * scaleY;
+      dx = newCx - cx;
+      dy = newCy - cy;
+    }
+
+    return { dx, dy };
   }
 
   /**

@@ -110,7 +110,7 @@ function computePreservedPosition(
 
 ---
 
-## Current Behavior Summary
+## Current Behavior Summary (After Phase 4)
 
 ### Corner Handle Scaling
 
@@ -118,15 +118,15 @@ function computePreservedPosition(
 |----------------|----------|--------|
 | **Strokes-only** | Uniform scale, no geometry inversion, position preserved | ✅ Perfect |
 | **Mixed (strokes + shapes)** | Uniform scale, no geometry inversion, position preserved | ✅ Perfect |
-| **Shapes-only** | Non-uniform scale (independent X/Y), corner-based | ⚠️ Has anchor issue |
+| **Shapes-only** | Non-uniform scale (independent X/Y), corner-based, anchor fixed | ✅ Fixed |
 
 ### Side Handle Scaling
 
 | Selection Type | Behavior | Status |
 |----------------|----------|--------|
-| **Strokes-only** | Resize with snapping | ❌ Needs work - remove snapping, add preserved position |
-| **Mixed** | Shapes scale, strokes translate | ✓ Working |
-| **Shapes-only** | Non-uniform scale (one axis) | ⚠️ Has anchor issue (see below) |
+| **Strokes-only** | Resize with snapping | ⚠️ Has snapping behavior |
+| **Mixed** | Shapes scale, anchor strokes stay pinned, non-anchor strokes translate | ✅ Fixed |
+| **Shapes-only** | Non-uniform scale (one axis), anchor fixed | ✅ Fixed |
 
 ---
 
@@ -135,23 +135,73 @@ function computePreservedPosition(
 ### 1. Strokes-Only Side Handle Resize
 **Current:** Has awkward "snapping" behavior
 **Desired:** Normal resize behavior with flip support and preserved position
-**Approach:** Apply same pattern as corner handles - use preserved position, remove threshold snapping
+**Approach:** Apply same pattern as corner handles - use preserved position (already does, but needs to remove threshold snapping)
 
-### 2. Shapes Non-Uniform Scaling "Anchor Sliding" Issue
-**Current:** When using non-uniform scaling (shapes-only any handle, or mixed side handles), the selection box "slides" instead of staying anchored at the opposite corner/edge.
-**Desired:** Selection box should have a fixed anchor point like Figma and other apps - the opposite corner stays pinned while you drag.
+---
 
-**Observed in:**
-- Shapes-only corner resize (non-uniform X/Y scaling)
-- Shapes-only side resize
-- Mixed side resize (shapes portion)
+## Phase 4: Anchor Sliding Fix (IMPLEMENTED)
 
-**NOT observed in:**
-- Strokes-only corner (uniform scale with preserved position ✅)
-- Mixed corner (uniform scale with preserved position ✅)
-- Perfect shape drawing preview (anchors correctly ✅)
+**Date:** 2025-01-29
 
-**Root cause:** The non-uniform scaling formula transforms both corners around an origin, but doesn't properly anchor. The perfect shape preview during drawing DOES anchor correctly (corner A fixed, cursor defines corner C) - that code path should inform the fix.
+### The Problem
+
+Anchor sliding was caused by **two coordinate space mismatches**:
+1. **Transform bounds** computed from padded bboxes (`strokeWidth * 0.5 + 1`)
+2. **Stroke translation** (mixed+side) used bbox center, not geometry center
+
+**Example (before fix):**
+```
+Shape frame: [100, 100, 50, 50]  (left edge at x=100)
+Stroke width: 10 → Padding: 6
+BBox: [94, 94, 156, 156]  (left edge at x=94)
+
+Origin for E handle = [94, midY]  ← from padded bbox
+Transform: newX = 94 + (100 - 94) * 1.5 = 103  ← frame moves!
+
+RESULT: Left edge slides from 100 → 103 (3px drift)
+```
+
+### The Solution
+
+Implemented **geometry-based transform bounds** + **geometry-based stroke centers**:
+
+1. **Added `computeTransformBoundsForScale()`** - computes raw geometry bounds:
+   - Shapes/text: raw frame [x, y, w, h]
+   - Strokes/connectors: raw points min/max (no width inflation)
+
+2. **Updated `ScaleTransform` interface** to store both:
+   - `originBounds` - geometry-based (for position math)
+   - `bboxBounds` - padded (for dirty rect invalidation)
+
+3. **Updated `computeStrokeTranslation()`** to use geometry center:
+   - When stroke at x=0, origin at x=0 → `dx = 0` (no movement!)
+   - Anchor strokes stay pinned, non-anchor strokes translate proportionally
+
+### Why This Works
+
+When both origin AND stroke center come from raw geometry:
+```
+Stroke at x=0, width=10
+Geometry bounds: minX = 0, maxX = 0
+Geometry center: cx = 0
+Origin for E handle: ox = 0 (from geometry bounds)
+
+newCx = 0 + (0 - 0) * 0.75 = 0
+dx = 0  ← stroke stays pinned!
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `SelectTool.ts` | Added `computeTransformBoundsForScale()` helper |
+| `SelectTool.ts` | Updated scale initiation to use geometry bounds for origin |
+| `SelectTool.ts` | Updated `computeStrokeTranslation()` to use geometry center |
+| `SelectTool.ts` | Updated `getPreview()` to use originBounds during scale |
+| `SelectTool.ts` | Updated `invalidateTransformPreview()` to use bboxBounds |
+| `selection-store.ts` | Added `bboxBounds` to ScaleTransform interface |
+| `selection-store.ts` | Updated `beginScale()` to accept both bounds types |
+| `objects.ts` | Updated `computeStrokeTranslationForRender()` to use geometry center |
 
 ---
 
@@ -177,21 +227,74 @@ objects.ts:
 
 ---
 
+## Phase 5: Anchor Stroke Edge-Pinning (IMPLEMENTED)
+
+**Date:** 2025-01-29
+
+### The Problem
+
+After Phase 4 fixed shapes-only anchor sliding with geometry-based bounds, mixed selection + side handle transforms still had issues:
+- Anchor strokes (strokes that define the anchor edge) were translating when they should stay pinned
+- On scale flip (negative scale), anchor strokes should shift to define the opposite edge, then stay pinned again
+
+**Desired behavior:**
+- Pre-flip (scale >= 0): Anchor stroke stays pinned (dx ≈ 0)
+- At flip (scale crosses 0): Anchor stroke shifts by its width to define the opposite edge
+- Post-flip (scale < 0): Anchor stroke stays pinned again on the new edge
+
+### The Solution
+
+Replaced center-based stroke translation with edge-pinning logic:
+
+1. **Detect anchor strokes** - Check if stroke geometry touches the anchor line (within epsilon)
+2. **Pre-flip behavior** - Pin the edge that originally touched the anchor
+3. **Post-flip behavior** - Pin the opposite edge (shift by stroke width)
+4. **Interior strokes** - Continue using origin-based translation
+
+**Key Logic:**
+```typescript
+if (isAnchor) {
+  if (scaleX >= 0) {
+    // Pre-flip: pin original touching edge
+    const edgeX = touchesLeft ? minX : maxX;
+    dx = anchorX - edgeX; // ≈ 0 since edge ≈ anchor
+  } else {
+    // Post-flip: pin opposite edge (shift by stroke width)
+    const edgeX = touchesLeft ? maxX : minX;
+    dx = anchorX - edgeX;
+  }
+} else {
+  // Interior stroke → origin-based translation
+  const newCx = ox + (cx - ox) * scaleX;
+  dx = newCx - cx;
+}
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `SelectTool.ts` | Updated `computeStrokeTranslation()` with edge-pinning logic, added `handleId` parameter |
+| `objects.ts` | Updated `computeStrokeTranslationForRender()` with same edge-pinning logic, added `HandleId` import |
+
+---
+
 ## Quick Test Scenarios
 
-### Corner Handles - Uniform Scale (Working ✓)
+### Corner Handles - Uniform Scale
 1. **Two strokes diagonal:** Flip → positions preserved, geometry not inverted ✓
 2. **Mixed stroke + shape:** Flip → positions preserved, geometry not inverted ✓
 3. **Single stroke:** Flip → works correctly (t=0.5, 0.5 stays centered) ✓
 4. **Shrink without flip:** Normal scaling unchanged ✓
 
-### Corner Handles - Non-Uniform Scale (Has Anchor Issue)
-1. **Shapes-only corner:** Selection box slides instead of anchoring opposite corner ⚠️
+### Corner Handles - Non-Uniform Scale (After Phase 4 Fix)
+1. **Shapes-only corner:** Opposite corner stays fixed ✓
+2. **Shape with thick stroke (20px):** No sliding despite large padding ✓
 
-### Side Handles (Needs Work)
-1. **Strokes-only side:** Has snapping, needs preserved position
-2. **Shapes-only side:** Selection box slides (anchor issue)
-3. **Mixed side:** Shapes slide (anchor issue), strokes translate correctly
+### Side Handles (After Phase 4 Fix)
+1. **Strokes-only side:** Has snapping behavior (future improvement)
+2. **Shapes-only side:** Opposite edge stays fixed ✓
+3. **Mixed side:** Anchor strokes stay pinned, shapes scale correctly ✓
 
 ---
 

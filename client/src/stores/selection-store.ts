@@ -26,10 +26,12 @@ export interface ScaleTransform {
   origin: [number, number];  // Fixed point during scale
   scaleX: number;
   scaleY: number;
-  originBounds: WorldRect;
+  originBounds: WorldRect;   // Geometry-based bounds (for position math - no stroke padding)
+  bboxBounds: WorldRect;     // Padded bounds (for dirty rect invalidation)
   handleId: HandleId;  // Track which handle for uniform vs directional scaling
   selectionKind: SelectionKind;  // Selection composition for context-aware behavior
   handleKind: HandleKind;        // Corner vs side handle
+  initialDelta: [number, number];  // Distance from origin to initial click (for scale=1.0 at start)
 }
 
 export type TransformState =
@@ -62,7 +64,7 @@ export interface SelectionActions {
   // Transform lifecycle
   beginTranslate: (originBounds: WorldRect) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (originBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind) => void;
+  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number]) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
@@ -112,7 +114,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, dx, dy } };
   }),
 
-  beginScale: (originBounds, origin, handleId, selectionKind) => {
+  beginScale: (bboxBounds, transformBounds, origin, handleId, selectionKind, initialDelta) => {
     // Compute handleKind from handleId (deterministic)
     const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
     const handleKind: HandleKind = isCorner ? 'corner' : 'side';
@@ -123,10 +125,12 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
         origin,
         scaleX: 1,
         scaleY: 1,
-        originBounds,
+        originBounds: transformBounds,  // Geometry-based for position math
+        bboxBounds,                      // Padded for dirty rects
         handleId,
         selectionKind,
         handleKind,
+        initialDelta,
       },
     });
   },

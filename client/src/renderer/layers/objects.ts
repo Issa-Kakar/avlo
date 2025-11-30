@@ -1,5 +1,6 @@
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
+import type { HandleId } from '@/lib/tools/types';
 import { getObjectCacheInstance } from '../object-cache';
 import { getVisibleWorldBounds } from '@/canvas/internal/transforms';
 import { useSelectionStore, type ScaleTransform, type WorldRect } from '@/stores/selection-store';
@@ -506,26 +507,100 @@ function drawTextWithTransform(
 
 /**
  * Compute translation for stroke in mixed + side scenario.
- * Uses origin-based positioning (same math shapes use for corners).
- * Points at origin stay fixed, points far from origin move proportionally.
+ * Uses edge-pinning logic:
+ * - Anchor strokes (those that define the anchor edge) stay pinned
+ * - On scale flip (negative), anchor strokes shift to define the opposite edge
+ * - Interior strokes translate proportionally based on origin
  */
 function computeStrokeTranslationForRender(
   handle: ObjectHandle,
-  _originBounds: WorldRect, // Kept for API compat
+  originBounds: WorldRect,
   scaleX: number,
   scaleY: number,
-  origin: [number, number]
+  origin: [number, number],
+  handleId: HandleId
 ): { dx: number; dy: number } {
-  const [minX, minY, maxX, maxY] = handle.bbox;
+  // Get stroke geometry (not bbox with width inflation)
+  const points = handle.y.get('points') as [number, number][] | undefined;
+  if (!points || points.length === 0) return { dx: 0, dy: 0 };
+
+  // Compute geometry bounds
+  let minX = points[0][0], maxX = points[0][0];
+  let minY = points[0][1], maxY = points[0][1];
+  for (const [px, py] of points) {
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const [ox, oy] = origin;
 
-  // Origin-based position (SAME math shapes use for corners)
-  const newCx = ox + (cx - ox) * scaleX;
-  const newCy = oy + (cy - oy) * scaleY;
+  const EPS = 1e-3;
+  const isHorizontal = handleId === 'e' || handleId === 'w';
+  const isVertical = handleId === 'n' || handleId === 's';
 
-  return { dx: newCx - cx, dy: newCy - cy };
+  let dx = 0;
+  let dy = 0;
+
+  if (isHorizontal) {
+    // E handle: anchor at minX (west edge), W handle: anchor at maxX (east edge)
+    const anchorX = handleId === 'e' ? originBounds.minX : originBounds.maxX;
+
+    const touchesLeft = Math.abs(minX - anchorX) < EPS;
+    const touchesRight = Math.abs(maxX - anchorX) < EPS;
+    const isAnchor = touchesLeft || touchesRight;
+
+    if (isAnchor) {
+      if (scaleX >= 0) {
+        // Pre-flip: pin original touching edge
+        const edgeX = touchesLeft ? minX : maxX;
+        dx = anchorX - edgeX; // ≈ 0 since edge ≈ anchor
+      } else {
+        // Post-flip: pin opposite edge (shift by stroke width)
+        const edgeX = touchesLeft ? maxX : minX;
+        dx = anchorX - edgeX;
+      }
+      dy = 0;
+    } else {
+      // Interior stroke → origin-based translation
+      const newCx = ox + (cx - ox) * scaleX;
+      dx = newCx - cx;
+      dy = 0;
+    }
+  } else if (isVertical) {
+    // S handle: anchor at minY (top edge), N handle: anchor at maxY (bottom edge)
+    const anchorY = handleId === 's' ? originBounds.minY : originBounds.maxY;
+
+    const touchesTop = Math.abs(minY - anchorY) < EPS;
+    const touchesBottom = Math.abs(maxY - anchorY) < EPS;
+    const isAnchor = touchesTop || touchesBottom;
+
+    if (isAnchor) {
+      if (scaleY >= 0) {
+        const edgeY = touchesTop ? minY : maxY;
+        dy = anchorY - edgeY;
+      } else {
+        const edgeY = touchesTop ? maxY : minY;
+        dy = anchorY - edgeY;
+      }
+      dx = 0;
+    } else {
+      const newCy = oy + (cy - oy) * scaleY;
+      dx = 0;
+      dy = newCy - cy;
+    }
+  } else {
+    // Corner handle (shouldn't reach here for mixed+side, but fallback)
+    const newCx = ox + (cx - ox) * scaleX;
+    const newCy = oy + (cy - oy) * scaleY;
+    dx = newCx - cx;
+    dy = newCy - cy;
+  }
+
+  return { dx, dy };
 }
 
 /**
@@ -864,12 +939,12 @@ function renderSelectedObjectWithScaleTransform(
   handle: ObjectHandle,
   transform: ScaleTransform
 ): void {
-  const { selectionKind, handleKind, origin, scaleX, scaleY, originBounds } = transform;
+  const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
   const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
 
-  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY 
+  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
   if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-    const { dx, dy } = computeStrokeTranslationForRender(handle, originBounds, scaleX, scaleY, origin);
+    const { dx, dy } = computeStrokeTranslationForRender(handle, originBounds, scaleX, scaleY, origin, handleId);
     ctx.save();
     ctx.translate(dx, dy);
     drawObject(ctx, handle); // Use cached Path2D
