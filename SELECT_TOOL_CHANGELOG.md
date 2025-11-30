@@ -3,6 +3,7 @@
 **Date:** 2025-01-29
 **Branch:** `feature/select-tool`
 **Last Commit:** `5feed7f` - feat: non-anchor stroke flip shift for mixed+side transforms
+**Current Phase:** Phase 7 - Geometry Extraction Refactor (COMPLETED)
 
 ---
 
@@ -339,6 +340,63 @@ This creates the "flip but keep going" behavior where all strokes (anchor and no
 |------|---------|
 | `SelectTool.ts` | Updated `computeStrokeTranslation()` to add halfWidth shift for non-anchor strokes at flip |
 | `objects.ts` | Updated `computeStrokeTranslationForRender()` with same halfWidth shift logic |
+
+---
+
+## Phase 7: Pragmatic Refactor - Geometry Extraction (COMPLETED)
+
+**Date:** 2025-01-29
+
+### The Problem
+
+SelectTool.ts grew to ~2033 lines with duplicated geometry functions across:
+- SelectTool.ts and objects.ts (scale math: ~320 lines duplicated)
+- SelectTool.ts and EraserTool.ts (hit testing: ~70 lines duplicated)
+- Dead code (unused functions: ~90 lines)
+
+### The Solution
+
+Extract pure functions into two new shared modules:
+
+1. **`@/lib/geometry/scale-transform.ts`** (~206 lines)
+   - `computeUniformScaleNoThreshold()` - uniform scale with immediate flip
+   - `computePreservedPosition()` - maintains relative position in selection box
+   - `computeStrokeTranslation()` - edge-pinning logic for mixed+side transforms
+
+2. **`@/lib/geometry/hit-test-primitives.ts`** (~298 lines)
+   - `pointToSegmentDistance()` - distance from point to line segment
+   - `pointInRect()`, `pointInWorldRect()`, `pointInDiamond()` - point containment
+   - `strokeHitTest()` - polyline proximity test
+   - `circleRectIntersect()` - circle-rect intersection (for eraser)
+   - `rectsIntersect()`, `segmentsIntersect()`, `segmentIntersectsRect()` - intersection tests
+   - `polylineIntersectsRect()`, `ellipseIntersectsRect()`, `diamondIntersectsRect()` - geometry intersection tests
+   - `computePolylineArea()` - bounding box area for selection priority
+
+### Files Modified
+
+| File | Status | Changes |
+|------|--------|---------|
+| `scale-transform.ts` | ✅ CREATED | New shared module for scale math |
+| `hit-test-primitives.ts` | ✅ CREATED | New shared module for hit testing primitives |
+| `objects.ts` | ✅ UPDATED | Uses imports from scale-transform.ts, removed debug logging |
+| `SelectTool.ts` | ✅ UPDATED | Uses imports from both modules |
+| `EraserTool.ts` | ✅ UPDATED | Uses imports from hit-test-primitives.ts, deleted ~55 lines |
+
+### Outcomes
+
+| File | Before | After | Reduction |
+|------|--------|-------|-----------|
+| SelectTool.ts | ~1586 lines | ~1586 lines | (already extracted in prior sessions) |
+| objects.ts | ~774 lines | ~765 lines | ~9 lines (debug logging removed) |
+| EraserTool.ts | ~465 lines | ~384 lines | ~81 lines |
+
+### Changes Made This Session
+
+1. ✅ Updated EraserTool.ts to import from hit-test-primitives.ts
+2. ✅ Deleted duplicated `strokeHitTest`, `pointToSegmentDistance`, `circleRectIntersect` from EraserTool.ts
+3. ✅ Updated remaining method calls from `this.function()` to imported `function()`
+4. ✅ Removed debug console.log and unused counter variables from objects.ts
+5. ✅ Typecheck passes (pre-existing errors only, no new regressions)
 
 ---
 

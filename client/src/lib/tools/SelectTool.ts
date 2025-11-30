@@ -1,6 +1,23 @@
 import type { IRoomDocManager } from '../room-doc-manager';
 import type { WorldRect, SelectionPreview, HandleId } from './types';
 import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
+import {
+  computeUniformScaleNoThreshold,
+  computePreservedPosition,
+  computeStrokeTranslation,
+} from '@/lib/geometry/scale-transform';
+import {
+  pointToSegmentDistance,
+  pointInRect,
+  pointInWorldRect,
+  pointInDiamond,
+  strokeHitTest,
+  rectsIntersect,
+  polylineIntersectsRect,
+  ellipseIntersectsRect,
+  diamondIntersectsRect,
+  computePolylineArea,
+} from '@/lib/geometry/hit-test-primitives';
 import * as Y from 'yjs';
 
 // === Constants ===
@@ -139,7 +156,7 @@ export class SelectTool {
 
     // 3. No object hit - check if inside selection bounds
     const selectionBounds = this.computeSelectionBounds();
-    if (selectionBounds && this.pointInWorldRect(worldX, worldY, selectionBounds)) {
+    if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
       this.downTarget = 'selectionGap';
     } else {
       this.downTarget = 'background';
@@ -772,7 +789,7 @@ export class SelectTool {
 
         // CASE 1: Mixed + side + stroke = TRANSLATE (not scale)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
+          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           objBounds = {
             minX: minX + dx,
             minY: minY + dy,
@@ -787,11 +804,11 @@ export class SelectTool {
           const halfH = (maxY - minY) / 2;
 
           // Compute uniform scale with SNAP behavior (no threshold)
-          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
           const absScale = Math.abs(uniformScale);
 
           // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
 
           // Compute new bounds centered at newCx/newCy, scaled by absScale
           objBounds = {
@@ -819,11 +836,11 @@ export class SelectTool {
             const cy = (minY + maxY) / 2;
             const w = maxX - minX;
             const h = maxY - minY;
-            const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
             const absScale = Math.abs(uniformScale);
 
             // Position preserves relative arrangement (no position swap on flip)
-            const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+            const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
 
             // Dimensions use absolute scale (no geometry inversion)
             const halfW = (w * absScale) / 2;
@@ -949,7 +966,7 @@ export class SelectTool {
 
         // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like behavior)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = this.computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
+          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           const points = yMap.get('points') as [number, number][];
           if (!points) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
@@ -972,11 +989,11 @@ export class SelectTool {
           const cy = (minY + maxY) / 2;
 
           // Compute uniform scale with SNAP behavior (no threshold)
-          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
           const absScale = Math.abs(uniformScale);
 
           // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
 
           // Transform points: scale around original center, position at new center
           // Geometry uses absolute scale (NO inversion - copy-paste behavior)
@@ -1002,11 +1019,11 @@ export class SelectTool {
           // Matches stroke behavior: no geometry inversion, no position swap
           const cx = x + w / 2;
           const cy = y + h / 2;
-          const uniformScale = this.computeUniformScaleNoThreshold(scaleX, scaleY);
+          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
           const absScale = Math.abs(uniformScale);
 
           // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = this.computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
 
           // Dimensions use absolute scale (no geometry inversion)
           const newW = w * absScale;
@@ -1065,235 +1082,9 @@ export class SelectTool {
     return 'none';
   }
 
-  /**
-   * Compute translation for a stroke in mixed + side handle scenario.
-   * Uses edge-pinning logic:
-   * - Anchor strokes (those that define the anchor edge) stay pinned
-   * - On scale flip (negative), anchor strokes shift to define the opposite edge
-   * - Interior strokes translate proportionally based on origin
-   */
-  private computeStrokeTranslation(
-    handle: ObjectHandle,
-    originBounds: WorldRect,
-    scaleX: number,
-    scaleY: number,
-    origin: [number, number],
-    handleId: HandleId
-  ): { dx: number; dy: number } {
-    // Get stroke geometry (not bbox with width inflation)
-    const points = handle.y.get('points') as [number, number][] | undefined;
-    if (!points || points.length === 0) return { dx: 0, dy: 0 };
 
-    // Compute geometry bounds
-    let minX = points[0][0], maxX = points[0][0];
-    let minY = points[0][1], maxY = points[0][1];
-    for (const [px, py] of points) {
-      if (px < minX) minX = px;
-      if (px > maxX) maxX = px;
-      if (py < minY) minY = py;
-      if (py > maxY) maxY = py;
-    }
 
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const [ox, oy] = origin;
 
-    const EPS = 1e-3;
-    const isHorizontal = handleId === 'e' || handleId === 'w';
-    const isVertical = handleId === 'n' || handleId === 's';
-
-    let dx = 0;
-    let dy = 0;
-
-    if (isHorizontal) {
-      // E handle: anchor at minX (west edge), W handle: anchor at maxX (east edge)
-      const anchorX = handleId === 'e' ? originBounds.minX : originBounds.maxX;
-
-      const touchesLeft = Math.abs(minX - anchorX) < EPS;
-      const touchesRight = Math.abs(maxX - anchorX) < EPS;
-      const isAnchor = touchesLeft || touchesRight;
-
-      if (isAnchor) {
-        if (scaleX >= 0) {
-          // Pre-flip: pin original touching edge
-          const edgeX = touchesLeft ? minX : maxX;
-          dx = anchorX - edgeX; // ≈ 0 since edge ≈ anchor
-        } else {
-          // Post-flip: pin opposite edge (shift by stroke width)
-          const edgeX = touchesLeft ? maxX : minX;
-          dx = anchorX - edgeX;
-        }
-        dy = 0;
-      } else {
-        // Non-anchor stroke: origin-based translation + shift at flip
-        const newCx = ox + (cx - ox) * scaleX;
-        dx = newCx - cx;
-        // At flip (scaleX < 0), shift by half stroke width (OPPOSITE direction of anchor strokes)
-        if (scaleX < 0) {
-          const halfWidth = (maxX - minX) / 2;
-          // W handle: anchor shifts RIGHT, so non-anchor shifts LEFT (-)
-          // E handle: anchor shifts LEFT, so non-anchor shifts RIGHT (+)
-          dx += handleId === 'w' ? -halfWidth : halfWidth;
-        }
-        dy = 0;
-      }
-    } else if (isVertical) {
-      // S handle: anchor at minY (top edge), N handle: anchor at maxY (bottom edge)
-      const anchorY = handleId === 's' ? originBounds.minY : originBounds.maxY;
-
-      const touchesTop = Math.abs(minY - anchorY) < EPS;
-      const touchesBottom = Math.abs(maxY - anchorY) < EPS;
-      const isAnchor = touchesTop || touchesBottom;
-
-      if (isAnchor) {
-        if (scaleY >= 0) {
-          const edgeY = touchesTop ? minY : maxY;
-          dy = anchorY - edgeY;
-        } else {
-          const edgeY = touchesTop ? maxY : minY;
-          dy = anchorY - edgeY;
-        }
-        dx = 0;
-      } else {
-        // Non-anchor stroke: origin-based translation + shift at flip
-        const newCy = oy + (cy - oy) * scaleY;
-        dy = newCy - cy;
-        // At flip (scaleY < 0), shift by half stroke height (OPPOSITE direction of anchor strokes)
-        if (scaleY < 0) {
-          const halfHeight = (maxY - minY) / 2;
-          // S handle: shift DOWN (+), N handle: shift UP (-)
-          dy += handleId === 's' ? halfHeight : -halfHeight;
-        }
-        dx = 0;
-      }
-    } else {
-      // Corner handle (shouldn't reach here for mixed+side, but fallback)
-      const newCx = ox + (cx - ox) * scaleX;
-      const newCy = oy + (cy - oy) * scaleY;
-      dx = newCx - cx;
-      dy = newCy - cy;
-    }
-
-    return { dx, dy };
-  }
-
-  /**
-   * Compute uniform scale with NO threshold - immediate flip when dominant < 0.
-   * Used for stroke "copy-paste" behavior where we want snap positioning.
-   */
-  private computeUniformScaleNoThreshold(scaleX: number, scaleY: number): number {
-    const absX = Math.abs(scaleX);
-    const absY = Math.abs(scaleY);
-    const STROKE_MIN = 0.001;
-    const magnitude = Math.max(absX, absY, STROKE_MIN);
-
-    // Both negative → immediate flip
-    if (scaleX < 0 && scaleY < 0) {
-      return -magnitude;
-    }
-
-    // Side handles → immediate flip when < 0
-    if (scaleY === 1 && scaleX !== 1) {
-      return scaleX < 0 ? -magnitude : magnitude;
-    }
-    if (scaleX === 1 && scaleY !== 1) {
-      return scaleY < 0 ? -magnitude : magnitude;
-    }
-
-    // Corner drag → immediate flip when dominant < 0 (NO threshold)
-    const dominantScale = absX >= absY ? scaleX : scaleY;
-    return dominantScale < 0 ? -magnitude : magnitude;
-  }
-
-  /**
-   * Compute uniform scale for strokes with context-aware flip logic.
-   *
-   * FLIP RULES:
-   * 1. CORNER + DIAGONAL (both axes negative): Immediate flip - user is dragging past origin
-   * 2. CORNER + SIDEWAYS (one axis negative, dragging perpendicular): Use -1.0 threshold
-   * 3. SIDE HANDLES: Immediate flip when active axis < 0 (direct axis drag)
-   */
-  private computeUniformScaleWithDiagonalFlip(scaleX: number, scaleY: number): number {
-    const absX = Math.abs(scaleX);
-    const absY = Math.abs(scaleY);
-    const STROKE_MIN = 0.001;
-
-    // ============================================
-    // CORNER HANDLES: Check "both negative" FIRST
-    // ============================================
-    // If BOTH axes are negative, user is dragging diagonally past origin
-    // → Flip IMMEDIATELY, no threshold needed
-    if (scaleX < 0 && scaleY < 0) {
-      const magnitude = Math.max(absX, absY, STROKE_MIN);
-      return -magnitude;
-    }
-
-    // ============================================
-    // SIDE HANDLES: Immediate flip when < 0
-    // ============================================
-    // Side handles are DIRECT axis drags, not sideways - flip immediately
-    if (scaleY === 1 && scaleX !== 1) {
-      // Horizontal side handle (E/W) - X axis is active
-      const magnitude = Math.max(absX, STROKE_MIN);
-      return scaleX < 0 ? -magnitude : magnitude;
-    }
-    if (scaleX === 1 && scaleY !== 1) {
-      // Vertical side handle (N/S) - Y axis is active
-      const magnitude = Math.max(absY, STROKE_MIN);
-      return scaleY < 0 ? -magnitude : magnitude;
-    }
-
-    // ============================================
-    // CORNER HANDLES: Sideways drag (one axis negative, one positive)
-    // ============================================
-    // User is dragging perpendicular to resize direction
-    // Use -1.0 threshold to prevent accidental flips
-    const magnitude = Math.max(absX, absY, STROKE_MIN);
-    const dominantScale = absX >= absY ? scaleX : scaleY;
-
-    if (dominantScale <= -1.0) {
-      return -magnitude;
-    }
-
-    return magnitude;
-  }
-
-  /**
-   * Compute position that preserves relative arrangement in selection box.
-   * When flipping, objects maintain their relative position (0-1) within the box
-   * instead of inverting (close-to-origin becomes far-from-origin).
-   */
-  private computePreservedPosition(
-    cx: number,
-    cy: number,
-    originBounds: StoreWorldRect,
-    origin: [number, number],
-    uniformScale: number
-  ): [number, number] {
-    const [ox, oy] = origin;
-    const { minX, minY, maxX, maxY } = originBounds;
-    const boxWidth = maxX - minX;
-    const boxHeight = maxY - minY;
-
-    // Relative position in original box (0-1)
-    const tx = boxWidth > 0 ? (cx - minX) / boxWidth : 0.5;
-    const ty = boxHeight > 0 ? (cy - minY) / boxHeight : 0.5;
-
-    // Compute new box corners (both transform around origin)
-    const newCorner1X = ox + (minX - ox) * uniformScale;
-    const newCorner1Y = oy + (minY - oy) * uniformScale;
-    const newCorner2X = ox + (maxX - ox) * uniformScale;
-    const newCorner2Y = oy + (maxY - oy) * uniformScale;
-
-    // Get actual min/max (handles flip)
-    const newMinX = Math.min(newCorner1X, newCorner2X);
-    const newMinY = Math.min(newCorner1Y, newCorner2Y);
-    const newBoxWidth = Math.abs(newCorner2X - newCorner1X);
-    const newBoxHeight = Math.abs(newCorner2Y - newCorner1Y);
-
-    // Apply same relative position in new box
-    return [newMinX + tx * newBoxWidth, newMinY + ty * newBoxHeight];
-  }
 
   private updateMarqueeSelection(): void {
     const store = useSelectionStore.getState();
@@ -1446,13 +1237,13 @@ export class SelectTool {
         const strokeWidth = (y.get('width') as number) ?? 2;
         const tolerance = radiusWorld + strokeWidth / 2;
 
-        if (this.strokeHitTest(worldX, worldY, points, tolerance)) {
+        if (strokeHitTest(worldX, worldY, points, tolerance)) {
           return {
             id: handle.id,
             kind: handle.kind,
             distance: 0,
             insideInterior: false,
-            area: this.computePolylineArea(points),
+            area: computePolylineArea(points),
             isFilled: true, // Strokes are visually "solid"
           };
         }
@@ -1492,7 +1283,7 @@ export class SelectTool {
 
         const [x, yPos, w, h] = frame;
         // Text frames are always selectable by clicking inside
-        if (this.pointInRect(worldX, worldY, x, yPos, w, h)) {
+        if (pointInRect(worldX, worldY, x, yPos, w, h)) {
           return {
             id: handle.id,
             kind: 'text',
@@ -1644,7 +1435,7 @@ export class SelectTool {
         const right: [number, number] = [x + w, y + h / 2];
         const bottom: [number, number] = [x + w / 2, y + h];
         const left: [number, number] = [x, y + h / 2];
-        return this.pointInDiamond(cx, cy, top, right, bottom, left);
+        return pointInDiamond(cx, cy, top, right, bottom, left);
       }
 
       case 'ellipse': {
@@ -1665,7 +1456,7 @@ export class SelectTool {
       case 'rect':
       case 'roundedRect':
       default:
-        return this.pointInRect(cx, cy, x, y, w, h);
+        return pointInRect(cx, cy, x, y, w, h);
     }
   }
 
@@ -1692,7 +1483,7 @@ export class SelectTool {
 
         let minDist = Infinity;
         for (const [p1, p2] of edges) {
-          const dist = this.pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+          const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
           minDist = Math.min(minDist, dist);
         }
         return minDist <= tolerance ? minDist : null;
@@ -1728,248 +1519,12 @@ export class SelectTool {
 
         let minDist = Infinity;
         for (const [p1, p2] of edges) {
-          const dist = this.pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+          const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
           minDist = Math.min(minDist, dist);
         }
         return minDist <= tolerance ? minDist : null;
       }
     }
-  }
-
-  // === Geometry Utilities (from EraserTool) ===
-
-  private strokeHitTest(
-    px: number,
-    py: number,
-    points: [number, number][],
-    radius: number
-  ): boolean {
-    // Handle single-point stroke
-    if (points.length === 1) {
-      const [x, y] = points[0];
-      const dx = px - x;
-      const dy = py - y;
-      return dx * dx + dy * dy <= radius * radius;
-    }
-
-    // Test each segment
-    for (let i = 0; i < points.length - 1; i++) {
-      const [x1, y1] = points[i];
-      const [x2, y2] = points[i + 1];
-
-      if (this.pointToSegmentDistance(px, py, x1, y1, x2, y2) <= radius) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private pointToSegmentDistance(
-    px: number, py: number,
-    x1: number, y1: number,
-    x2: number, y2: number
-  ): number {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-
-    if (dx === 0 && dy === 0) {
-      return Math.hypot(px - x1, py - y1);
-    }
-
-    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
-    const projX = x1 + t * dx;
-    const projY = y1 + t * dy;
-
-    return Math.hypot(px - projX, py - projY);
-  }
-
-  private pointInRect(
-    px: number, py: number,
-    x: number, y: number, w: number, h: number
-  ): boolean {
-    return px >= x && px <= x + w && py >= y && py <= y + h;
-  }
-
-  private pointInDiamond(
-    px: number, py: number,
-    top: [number, number],
-    right: [number, number],
-    bottom: [number, number],
-    left: [number, number]
-  ): boolean {
-    // Use cross product sign consistency for convex polygon
-    const vertices = [top, right, bottom, left];
-    let sign: number | null = null;
-
-    for (let i = 0; i < 4; i++) {
-      const [x1, y1] = vertices[i];
-      const [x2, y2] = vertices[(i + 1) % 4];
-
-      // Cross product of edge vector and point-to-vertex vector
-      const cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
-
-      if (sign === null) {
-        sign = cross >= 0 ? 1 : -1;
-      } else if ((cross >= 0 ? 1 : -1) !== sign) {
-        return false; // Point is outside
-      }
-    }
-
-    return true;
-  }
-
-  private computePolylineArea(points: [number, number][]): number {
-    // Approximate area using bounding box (fast, good enough for selection priority)
-    if (points.length === 0) return 0;
-
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of points) {
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-    }
-
-    return (maxX - minX) * (maxY - minY);
-  }
-
-  // === Geometry Helpers for Marquee Selection ===
-
-  private pointInWorldRect(px: number, py: number, rect: WorldRect): boolean {
-    return px >= rect.minX && px <= rect.maxX && py >= rect.minY && py <= rect.maxY;
-  }
-
-  private rectsIntersect(a: WorldRect, b: WorldRect): boolean {
-    return a.minX <= b.maxX && a.maxX >= b.minX &&
-           a.minY <= b.maxY && a.maxY >= b.minY;
-  }
-
-  private segmentsIntersect(
-    x1: number, y1: number, x2: number, y2: number,
-    x3: number, y3: number, x4: number, y4: number
-  ): boolean {
-    // CCW orientation test
-    const ccw = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => {
-      return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
-    };
-
-    return (
-      ccw(x1, y1, x3, y3, x4, y4) !== ccw(x2, y2, x3, y3, x4, y4) &&
-      ccw(x1, y1, x2, y2, x3, y3) !== ccw(x1, y1, x2, y2, x4, y4)
-    );
-  }
-
-  private segmentIntersectsRect(
-    x1: number, y1: number, x2: number, y2: number,
-    rect: WorldRect
-  ): boolean {
-    // Check if either endpoint is inside rect
-    if (this.pointInWorldRect(x1, y1, rect) || this.pointInWorldRect(x2, y2, rect)) {
-      return true;
-    }
-
-    // Check if segment crosses any rect edge
-    const edges: [[number, number], [number, number]][] = [
-      [[rect.minX, rect.minY], [rect.maxX, rect.minY]], // Top
-      [[rect.maxX, rect.minY], [rect.maxX, rect.maxY]], // Right
-      [[rect.maxX, rect.maxY], [rect.minX, rect.maxY]], // Bottom
-      [[rect.minX, rect.maxY], [rect.minX, rect.minY]], // Left
-    ];
-
-    for (const [[ex1, ey1], [ex2, ey2]] of edges) {
-      if (this.segmentsIntersect(x1, y1, x2, y2, ex1, ey1, ex2, ey2)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private polylineIntersectsRect(points: [number, number][], rect: WorldRect): boolean {
-    // Check if any point is inside rect
-    for (const [px, py] of points) {
-      if (this.pointInWorldRect(px, py, rect)) return true;
-    }
-
-    // Check if any segment intersects rect
-    for (let i = 0; i < points.length - 1; i++) {
-      if (this.segmentIntersectsRect(
-        points[i][0], points[i][1],
-        points[i + 1][0], points[i + 1][1],
-        rect
-      )) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  private ellipseIntersectsRect(
-    ecx: number, ecy: number, rx: number, ry: number,
-    rect: WorldRect
-  ): boolean {
-    // Quick bounds check first
-    const ellipseBounds: WorldRect = {
-      minX: ecx - rx, minY: ecy - ry,
-      maxX: ecx + rx, maxY: ecy + ry
-    };
-    if (!this.rectsIntersect(ellipseBounds, rect)) return false;
-
-    // Check if ellipse center is inside rect
-    if (this.pointInWorldRect(ecx, ecy, rect)) return true;
-
-    // Check if any rect corner is inside ellipse
-    const corners: [number, number][] = [
-      [rect.minX, rect.minY], [rect.maxX, rect.minY],
-      [rect.maxX, rect.maxY], [rect.minX, rect.maxY]
-    ];
-    for (const [cx, cy] of corners) {
-      const dx = (cx - ecx) / rx;
-      const dy = (cy - ecy) / ry;
-      if (dx * dx + dy * dy <= 1) return true;
-    }
-
-    // Check if ellipse edge intersects rect edges (sample ellipse perimeter)
-    const SAMPLES = 16;
-    for (let i = 0; i < SAMPLES; i++) {
-      const angle = (i / SAMPLES) * Math.PI * 2;
-      const px = ecx + rx * Math.cos(angle);
-      const py = ecy + ry * Math.sin(angle);
-      if (this.pointInWorldRect(px, py, rect)) return true;
-    }
-
-    return false;
-  }
-
-  private diamondIntersectsRect(
-    top: [number, number], right: [number, number],
-    bottom: [number, number], left: [number, number],
-    rect: WorldRect
-  ): boolean {
-    // Check if any diamond vertex is inside rect
-    for (const [vx, vy] of [top, right, bottom, left]) {
-      if (this.pointInWorldRect(vx, vy, rect)) return true;
-    }
-
-    // Check if any rect corner is inside diamond
-    const corners: [number, number][] = [
-      [rect.minX, rect.minY], [rect.maxX, rect.minY],
-      [rect.maxX, rect.maxY], [rect.minX, rect.maxY]
-    ];
-    for (const [cx, cy] of corners) {
-      if (this.pointInDiamond(cx, cy, top, right, bottom, left)) return true;
-    }
-
-    // Check if any diamond edge intersects rect
-    const diamondEdges: [[number, number], [number, number]][] = [
-      [top, right], [right, bottom], [bottom, left], [left, top]
-    ];
-    for (const [[x1, y1], [x2, y2]] of diamondEdges) {
-      if (this.segmentIntersectsRect(x1, y1, x2, y2, rect)) return true;
-    }
-
-    return false;
   }
 
   // === Marquee Selection Geometry Dispatch ===
@@ -1982,7 +1537,7 @@ export class SelectTool {
       case 'connector': {
         const points = y.get('points') as [number, number][] | undefined;
         if (!points || points.length === 0) return false;
-        return this.polylineIntersectsRect(points, rect);
+        return polylineIntersectsRect(points, rect);
       }
 
       case 'shape': {
@@ -1994,7 +1549,7 @@ export class SelectTool {
 
         switch (shapeType) {
           case 'ellipse': {
-            return this.ellipseIntersectsRect(
+            return ellipseIntersectsRect(
               x + w / 2, yPos + h / 2, w / 2, h / 2, rect
             );
           }
@@ -2003,14 +1558,14 @@ export class SelectTool {
             const right: [number, number] = [x + w, yPos + h / 2];
             const bottom: [number, number] = [x + w / 2, yPos + h];
             const left: [number, number] = [x, yPos + h / 2];
-            return this.diamondIntersectsRect(top, right, bottom, left, rect);
+            return diamondIntersectsRect(top, right, bottom, left, rect);
           }
           case 'rect':
           case 'roundedRect':
           default: {
             // Rect vs rect intersection
             const shapeBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
-            return this.rectsIntersect(shapeBounds, rect);
+            return rectsIntersect(shapeBounds, rect);
           }
         }
       }
@@ -2020,7 +1575,7 @@ export class SelectTool {
         if (!frame) return false;
         const [x, yPos, w, h] = frame;
         const textBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
-        return this.rectsIntersect(textBounds, rect);
+        return rectsIntersect(textBounds, rect);
       }
 
       default:
