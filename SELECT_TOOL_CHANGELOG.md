@@ -2,7 +2,7 @@
 
 **Date:** 2025-01-29
 **Branch:** `feature/select-tool`
-**Last Commit:** `daea2d0` - feat: position preservation for corner handle uniform scaling
+**Last Commit:** `5feed7f` - feat: non-anchor stroke flip shift for mixed+side transforms
 
 ---
 
@@ -110,7 +110,7 @@ function computePreservedPosition(
 
 ---
 
-## Current Behavior Summary (After Phase 4)
+## Current Behavior Summary (After Phase 6)
 
 ### Corner Handle Scaling
 
@@ -125,7 +125,7 @@ function computePreservedPosition(
 | Selection Type | Behavior | Status |
 |----------------|----------|--------|
 | **Strokes-only** | Resize with snapping | ⚠️ Has snapping behavior |
-| **Mixed** | Shapes scale, anchor strokes stay pinned, non-anchor strokes translate | ✅ Fixed |
+| **Mixed** | Shapes scale, anchor strokes edge-pin, non-anchor strokes flip-shift | ✅ Perfect |
 | **Shapes-only** | Non-uniform scale (one axis), anchor fixed | ✅ Fixed |
 
 ---
@@ -279,6 +279,69 @@ if (isAnchor) {
 
 ---
 
+## Phase 6: Non-Anchor Stroke Flip Shift (COMMITTED - 5feed7f)
+
+**Date:** 2025-01-29
+
+### The Problem
+
+After Phase 5 fixed anchor stroke edge-pinning, non-anchor strokes (strokes NOT touching the anchor edge) had inconsistent flip behavior:
+- Anchor strokes jumped discretely at flip (shifted by their width)
+- Non-anchor strokes moved continuously through the flip (no jump)
+- This created a visual disconnect where anchor strokes "snapped" but non-anchor strokes didn't
+
+**Mental Model:**
+Non-anchor strokes are conceptually "anchored to the moving handle". When the moving handle crosses the anchor and flips to the other side, non-anchor strokes should also flip.
+
+### The Solution
+
+At the flip point (scale < 0), non-anchor strokes shift by **half their width** in the **opposite direction** of anchor strokes:
+
+| Handle | Anchor Stroke Shift | Non-Anchor Stroke Shift |
+|--------|---------------------|-------------------------|
+| W | RIGHT (+width) | LEFT (-halfWidth) |
+| E | LEFT (-width) | RIGHT (+halfWidth) |
+| S | UP (-height) | DOWN (+halfHeight) |
+| N | DOWN (+height) | UP (-halfHeight) |
+
+**Why half width?**
+At scale=0, the stroke center is at the anchor. The stroke spans `[anchor - width/2, anchor + width/2]`. The amount that has "crossed" the anchor is exactly half the stroke width.
+
+**Key Logic:**
+```typescript
+} else {
+  // Non-anchor stroke: origin-based translation + shift at flip
+  const newCx = ox + (cx - ox) * scaleX;
+  dx = newCx - cx;
+
+  // At flip (scaleX < 0), shift by half stroke width (OPPOSITE direction of anchor strokes)
+  if (scaleX < 0) {
+    const halfWidth = (maxX - minX) / 2;
+    // W handle: anchor shifts RIGHT, so non-anchor shifts LEFT (-)
+    // E handle: anchor shifts LEFT, so non-anchor shifts RIGHT (+)
+    dx += handleId === 'w' ? -halfWidth : halfWidth;
+  }
+  dy = 0;
+}
+```
+
+### Resulting Behavior
+
+- **Pre-flip:** Non-anchor strokes move toward the anchor (continuous origin-based translation)
+- **At flip:** Non-anchor strokes jump by halfWidth to the opposite side of the anchor
+- **Post-flip:** Non-anchor strokes continue moving away from the anchor (same direction as before)
+
+This creates the "flip but keep going" behavior where all strokes (anchor and non-anchor) snap at the same moment, then continue in their original direction.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `SelectTool.ts` | Updated `computeStrokeTranslation()` to add halfWidth shift for non-anchor strokes at flip |
+| `objects.ts` | Updated `computeStrokeTranslationForRender()` with same halfWidth shift logic |
+
+---
+
 ## Quick Test Scenarios
 
 ### Corner Handles - Uniform Scale
@@ -291,10 +354,12 @@ if (isAnchor) {
 1. **Shapes-only corner:** Opposite corner stays fixed ✓
 2. **Shape with thick stroke (20px):** No sliding despite large padding ✓
 
-### Side Handles (After Phase 4 Fix)
+### Side Handles (After Phase 6 Fix)
 1. **Strokes-only side:** Has snapping behavior (future improvement)
 2. **Shapes-only side:** Opposite edge stays fixed ✓
-3. **Mixed side:** Anchor strokes stay pinned, shapes scale correctly ✓
+3. **Mixed side anchor strokes:** Stay pinned pre-flip, jump by width at flip, stay pinned post-flip ✓
+4. **Mixed side non-anchor strokes:** Translate toward anchor, jump by halfWidth at flip, continue away from anchor ✓
+5. **Mixed side flip consistency:** All strokes snap at the same moment, then continue in original direction ✓
 
 ---
 
