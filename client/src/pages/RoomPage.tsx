@@ -7,7 +7,6 @@
 
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ViewTransformProvider } from '../canvas/ViewTransformContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
 // Components
@@ -181,9 +180,7 @@ export default function RoomPage() {
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <ViewTransformProvider>
-          <RoomCanvas roomId={roomId} />
-        </ViewTransformProvider>
+        <RoomCanvas roomId={roomId} />
       </ToastProvider>
     </ErrorBoundary>
   );

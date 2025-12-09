@@ -2,15 +2,24 @@ import React, { useRef } from 'react';
 import { render } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Canvas, type CanvasHandle } from '../Canvas';
-import { ViewTransformProvider } from '../ViewTransformContext';
 import { RoomDocRegistryProvider } from '../../lib/room-doc-registry-context';
 import { createTestManager } from '../../lib/__tests__/test-helpers';
+import { useCameraStore } from '@/stores/camera-store';
 
 describe('Canvas with Transforms', () => {
   let testContext: ReturnType<typeof createTestManager>;
 
   beforeEach(() => {
     testContext = createTestManager('test-room');
+
+    // Reset camera store to initial state before each test
+    useCameraStore.setState({
+      scale: 1,
+      pan: { x: 0, y: 0 },
+      cssWidth: 800,
+      cssHeight: 600,
+      dpr: 1,
+    });
 
     // Note: ResizeObserver is mocked locally in CanvasStage tests
     // This is better than global mocking as it provides test isolation
@@ -38,12 +47,10 @@ describe('Canvas with Transforms', () => {
     testContext.cleanup();
   });
 
-  it('renders canvas element with transform context', () => {
+  it('renders canvas element with camera store', () => {
     const { container } = render(
       <RoomDocRegistryProvider registry={testContext.registry}>
-        <ViewTransformProvider>
-          <Canvas roomId="test-room" />
-        </ViewTransformProvider>
+        <Canvas roomId="test-room" />
       </RoomDocRegistryProvider>,
     );
 
@@ -91,9 +98,7 @@ describe('Canvas with Transforms', () => {
 
       render(
         <RoomDocRegistryProvider registry={testContext.registry}>
-          <ViewTransformProvider>
-            <TestComponent />
-          </ViewTransformProvider>
+          <TestComponent />
         </RoomDocRegistryProvider>,
       );
     });
@@ -121,9 +126,7 @@ describe('Canvas with Transforms', () => {
 
       render(
         <RoomDocRegistryProvider registry={testContext.registry}>
-          <ViewTransformProvider>
-            <TestComponent />
-          </ViewTransformProvider>
+          <TestComponent />
         </RoomDocRegistryProvider>,
       );
     });
@@ -177,9 +180,7 @@ describe('Canvas with Transforms', () => {
 
       render(
         <RoomDocRegistryProvider registry={testContext.registry}>
-          <ViewTransformProvider>
-            <TestComponent />
-          </ViewTransformProvider>
+          <TestComponent />
         </RoomDocRegistryProvider>,
       );
     });

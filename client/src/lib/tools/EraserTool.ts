@@ -5,6 +5,7 @@ import {
   circleRectIntersect,
   pointInDiamond,
 } from '@/lib/geometry/hit-test-primitives';
+import { useCameraStore } from '@/stores/camera-store';
 import * as Y from 'yjs';
 
 // Fixed radius configuration
@@ -23,16 +24,13 @@ export class EraserTool {
   private state!: EraserState;
   private room: IRoomDocManager;
   private onInvalidate?: () => void;
-  private getView?: () => ViewTransform;
 
   constructor(
     room: IRoomDocManager,
     onInvalidate?: () => void,
-    getView?: () => ViewTransform,
   ) {
     this.room = room;
     this.onInvalidate = onInvalidate;
-    this.getView = getView;
     this.resetState();
   }
 
@@ -113,10 +111,10 @@ export class EraserTool {
 
   private updateHitTest(worldX: number, worldY: number): void {
     const snapshot = this.room.currentSnapshot;
-    const viewTransform = this.getView ? this.getView() : snapshot.view;
-    
+    const { scale } = useCameraStore.getState();
+
     // Convert fixed screen radius to world units (with slack for forgiving feel)
-    const radiusWorld = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / viewTransform.scale;
+    const radiusWorld = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / scale;
 
     this.state.hitNow.clear();
 
@@ -367,13 +365,6 @@ export class EraserTool {
       dimOpacity: 0.75,
     };
   }
-}
-
-interface ViewTransform {
-  worldToCanvas: (x: number, y: number) => [number, number];
-  canvasToWorld: (x: number, y: number) => [number, number];
-  scale: number;
-  pan: { x: number; y: number };
 }
 
 export interface EraserPreview {

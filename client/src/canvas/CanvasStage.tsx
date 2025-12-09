@@ -1,6 +1,7 @@
-import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useRef, useEffect, useImperativeHandle, forwardRef, useCallback } from 'react';
 import { PERFORMANCE_CONFIG } from '@avlo/shared';
 import { configureContext2D } from './internal/context2d';
+import { useCameraStore, setCanvasElement } from '@/stores/camera-store';
 
 /**
  * CanvasStage - A render substrate for the whiteboard
@@ -73,8 +74,8 @@ export interface CanvasStageHandle {
  */
 export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
   ({ className, style, onResize }, ref) => {
-    // Canvas element reference
-    const canvasRef = useRef<HTMLCanvasElement>(null);
+    // Canvas element reference - use mutable ref pattern for ref callback
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
     // 2D rendering context (obtained once, reused)
     const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -93,6 +94,13 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
 
     // Media query listener for DPR changes
     const dprChangeListenerRef = useRef<(MediaQueryList & { handler?: () => void }) | null>(null);
+
+    // Synchronous ref callback - registers canvas with camera store IMMEDIATELY
+    // This fires during React's commit phase, before any effects run
+    const canvasRefCallback = useCallback((el: HTMLCanvasElement | null) => {
+      canvasRef.current = el;
+      setCanvasElement(el); // Synchronous! Available before effects run
+    }, []);
 
     // Expose imperative API to parent components
     useImperativeHandle(
@@ -172,7 +180,10 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
               ctxRef.current.setTransform(newDpr, 0, 0, newDpr, 0, 0);
             }
 
-            // Notify parent
+            // Update camera store with new viewport dimensions
+            useCameraStore.getState().setViewport(rect.width, rect.height, newDpr);
+
+            // Notify parent (for backward compatibility during migration)
             onResize?.({
               cssWidth: rect.width,
               cssHeight: rect.height,
@@ -225,7 +236,13 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
           // Apply device scale transform for DPR-aware rendering
           ctxRef.current.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-          // Notify parent
+          // Canvas element already registered synchronously via ref callback
+          // ResizeObserver only updates dimensions
+
+          // Update camera store with viewport dimensions
+          useCameraStore.getState().setViewport(width, height, dpr);
+
+          // Notify parent (for backward compatibility during migration)
           onResize?.({
             cssWidth: width,
             cssHeight: height,
@@ -254,6 +271,9 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
           }
         }
 
+        // Clear canvas element from camera store
+        setCanvasElement(null);
+
         // Null all refs
         ctxRef.current = null;
         resizeObserverRef.current = null;
@@ -263,7 +283,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
 
     return (
       <canvas
-        ref={canvasRef}
+        ref={canvasRefCallback}
         style={{
           display: 'block', // Remove inline spacing
           width: '100%', // Fill parent width

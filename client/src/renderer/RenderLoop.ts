@@ -20,12 +20,19 @@ import {
   drawHUD,
 } from './layers';
 import { getVisibleWorldBounds } from '../canvas/internal/transforms';
+import {
+  useCameraStore,
+  getViewTransform,
+  getViewportInfo,
+} from '@/stores/camera-store';
 
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
-  getView: () => ViewTransform;
+  /** @deprecated Use camera store instead. Will be removed in future. */
+  getView?: () => ViewTransform;
   getSnapshot: () => Snapshot;
-  getViewport: () => ViewportInfo;
+  /** @deprecated Use camera store instead. Will be removed in future. */
+  getViewport?: () => ViewportInfo;
   getGates: () => GateStatus; // Phase 7: Gate status for presence rendering
   onStats?: (stats: FrameStats) => void;
   isMobile?: () => boolean; // For mobile FPS throttling
@@ -70,8 +77,8 @@ export class RenderLoop {
     this.config = config;
     this.lastFrameTime = performance.now();
 
-    // Get initial viewport for tracker sizing
-    const viewport = config.getViewport();
+    // Get initial viewport for tracker sizing from camera store
+    const viewport = getViewportInfo();
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
 
     // EVENT-DRIVEN: Don't schedule frame on start - wait for invalidation
@@ -198,7 +205,7 @@ export class RenderLoop {
 
     const startTime = performance.now();
     this.lastFrameTime = startTime;
-    const { stageRef, getView, getSnapshot, getViewport } = this.config;
+    const { stageRef, getSnapshot } = this.config;
 
     // Clear the needsFrame flag - will be set again if new work arrives
     this.needsFrame = false;
@@ -215,9 +222,15 @@ export class RenderLoop {
     const stage = stageRef.current;
     if (!stage) return;
 
-    const view = getView();
+    // Read view and viewport from camera store
+    const view = getViewTransform();
     const snapshot = getSnapshot();
-    const viewport = getViewport();
+    const viewport = getViewportInfo();
+
+    // Early exit if viewport is not yet sized
+    if (viewport.cssWidth <= 0 || viewport.cssHeight <= 0) {
+      return;
+    }
 
     // Validate view transform to prevent rendering issues
     if (
@@ -480,17 +493,19 @@ export class RenderLoop {
   invalidateWorld(bounds: WorldBounds): void {
     if (!this.config) return;
     console.log('[RenderLoop] invalidateWorld', bounds);
-    const view = this.config.getView();
+    // Read view from camera store
+    const view = getViewTransform();
     this.dirtyTracker.invalidateWorldBounds(bounds, view);
     this.markDirty();
   }
 
   invalidateCanvas(rect: CSSPixelRect): void {
     if (!this.config) return;
-    const view = this.config.getView();
-    const viewport = this.config.getViewport();
+    // Read view and viewport from camera store
+    const { scale } = useCameraStore.getState();
+    const viewport = getViewportInfo();
     // Pass CSS pixel rect - dirtyTracker converts to device pixels internally
-    this.dirtyTracker.invalidateCanvasPixels(rect, view.scale, viewport.dpr);
+    this.dirtyTracker.invalidateCanvasPixels(rect, scale, viewport.dpr);
     this.markDirty();
   }
 

@@ -1,8 +1,8 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { TextPreview } from './types';
-import type { ViewTransform } from '@avlo/shared';
 import { useDeviceUIStore } from '../../stores/device-ui-store';
+import { useCameraStore, worldToClient as cameraWorldToClient } from '@/stores/camera-store';
 
 export interface TextToolConfig {
   size: number;
@@ -10,8 +10,6 @@ export interface TextToolConfig {
 }
 
 export interface CanvasHandle {
-  worldToClient: (worldX: number, worldY: number) => [number, number];
-  getView: () => ViewTransform; // REQUIRED for live transforms
   getEditorHost: () => HTMLElement | null; // REQUIRED for DOM mounting
 }
 
@@ -50,7 +48,7 @@ export class TextTool {
     this.state.worldPosition = { x: worldX, y: worldY };
 
     // Convert to screen coordinates
-    const [clientX, clientY] = this.canvasHandle.worldToClient(worldX, worldY);
+    const [clientX, clientY] = cameraWorldToClient(worldX, worldY);
 
     // Create DOM editor overlay
     this.createEditor(clientX, clientY);
@@ -95,8 +93,8 @@ export class TextTool {
 
     // Update live editor if it exists
     if (this.state.editBox) {
-      const view = this.canvasHandle.getView();
-      const scaledFontSize = newConfig.size * view.scale;
+      const { scale } = useCameraStore.getState();
+      const scaledFontSize = newConfig.size * scale;
       this.state.editBox.style.fontSize = `${scaledFontSize}px`;
       this.state.editBox.style.color = newConfig.color;
     }
@@ -106,11 +104,11 @@ export class TextTool {
   onViewChange(): void {
     if (!this.state.isEditing || !this.state.worldPosition || !this.state.editBox) return;
 
-    // Get current view transform
-    const view = this.canvasHandle.getView();
+    // Get current scale from camera store
+    const { scale } = useCameraStore.getState();
 
-    // Recompute screen position from world position using live view
-    const [clientX, clientY] = this.canvasHandle.worldToClient(
+    // Recompute screen position from world position using camera store
+    const [clientX, clientY] = cameraWorldToClient(
       this.state.worldPosition.x,
       this.state.worldPosition.y,
     );
@@ -123,12 +121,12 @@ export class TextTool {
 
     // CRITICAL: Scale all dimensions with zoom to maintain world-space size
     // This ensures the text appears at the correct size relative to the canvas
-    const scaledFontSize = this.config.size * view.scale;
-    const scaledPadding = 4 * view.scale;
-    const scaledMinWidth = 200 * view.scale;
-    const scaledMinHeight = 30 * view.scale;
-    const scaledBorderWidth = Math.max(1, 2 * view.scale);
-    const scaledBorderRadius = 4 * view.scale;
+    const scaledFontSize = this.config.size * scale;
+    const scaledPadding = 4 * scale;
+    const scaledMinWidth = 200 * scale;
+    const scaledMinHeight = 30 * scale;
+    const scaledBorderWidth = Math.max(1, 2 * scale);
+    const scaledBorderRadius = 4 * scale;
 
     // Apply the same offset as in createEditor
     // This maintains the alignment between editor text and committed text position
@@ -159,17 +157,17 @@ export class TextTool {
     const hostRelativeX = clientX - hostRect.left;
     const hostRelativeY = clientY - hostRect.top;
 
-    // Get current view transform to scale the editor to world space
-    const view = this.canvasHandle.getView();
+    // Get current scale from camera store
+    const { scale } = useCameraStore.getState();
 
-    // CRITICAL: Scale font-size and dimensions by view.scale
+    // CRITICAL: Scale font-size and dimensions by scale
     // This ensures the text editor appears at the correct size relative to world space
-    const scaledFontSize = this.config.size * view.scale;
-    const scaledPadding = 4 * view.scale;
-    const scaledMinWidth = 200 * view.scale;
-    const scaledMinHeight = 30 * view.scale;
-    const scaledBorderWidth = Math.max(1, 2 * view.scale); // Ensure at least 1px border
-    const scaledBorderRadius = 4 * view.scale;
+    const scaledFontSize = this.config.size * scale;
+    const scaledPadding = 4 * scale;
+    const scaledMinWidth = 200 * scale;
+    const scaledMinHeight = 30 * scale;
+    const scaledBorderWidth = Math.max(1, 2 * scale); // Ensure at least 1px border
+    const scaledBorderRadius = 4 * scale;
 
     // Offset the editor position by border + padding so text content aligns with committed position
     const totalOffset = scaledBorderWidth + scaledPadding;
@@ -295,9 +293,9 @@ export class TextTool {
 
     // Measure DOM box for width/height in world units
     const rect = this.state.editBox.getBoundingClientRect();
-    const view = this.canvasHandle.getView?.() || { scale: 1 };
-    const w = rect.width / view.scale;
-    const h = rect.height / view.scale;
+    const { scale } = useCameraStore.getState();
+    const w = rect.width / scale;
+    const h = rect.height / scale;
 
     const id = ulid();
     this.room.mutate((ydoc: Y.Doc) => {

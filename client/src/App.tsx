@@ -10,16 +10,21 @@
 
 import { Routes, Route } from 'react-router-dom';
 import { RoomDocRegistryProvider } from './lib/room-doc-registry-context';
-import { ViewTransformProvider, useViewTransform } from './canvas/ViewTransformContext';
 import { Canvas } from './canvas/Canvas';
 import { useRoomDoc } from './hooks/use-room-doc';
 import { useRoomSnapshot } from './hooks/use-room-snapshot';
+import { useCameraStore } from '@/stores/camera-store';
 import RoomPage from './pages/RoomPage';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);
   const snapshot = useRoomSnapshot(roomId);
-  const { viewState, setScale, setPan, resetView } = useViewTransform();
+  // Use camera store instead of ViewTransformContext
+  const scale = useCameraStore((s) => s.scale);
+  const pan = useCameraStore((s) => s.pan);
+  const setScale = useCameraStore((s) => s.setScale);
+  const setPan = useCameraStore((s) => s.setPan);
+  const resetView = useCameraStore((s) => s.resetView);
 
   const handleClearCanvas = () => {
     // Clear button clicked - incrementing scene
@@ -40,17 +45,17 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
   };
 
   const handleZoomIn = () => {
-    setScale(viewState.scale * 1.2);
+    setScale(scale * 1.2);
   };
 
   const handleZoomOut = () => {
-    setScale(viewState.scale / 1.2);
+    setScale(scale / 1.2);
   };
 
   const handlePan = (dx: number, dy: number) => {
     setPan({
-      x: viewState.pan.x + dx,
-      y: viewState.pan.y + dy,
+      x: pan.x + dx,
+      y: pan.y + dy,
     });
   };
 
@@ -62,7 +67,7 @@ function CanvasWithControls({ roomId }: { roomId: string }) {
           <p className="text-xs text-gray-500 mt-1">Click and drag to draw</p>
           <p className="text-xs text-gray-400 mt-1">Room: {roomId}</p>
           <p className="text-xs text-gray-400 mt-1">Objects: {snapshot.objectsById.size}</p>
-          <p className="text-xs text-gray-400 mt-1">Zoom: {Math.round(viewState.scale * 100)}%</p>
+          <p className="text-xs text-gray-400 mt-1">Zoom: {Math.round(scale * 100)}%</p>
         </div>
 
         <div className="flex gap-1">
@@ -145,11 +150,8 @@ function TestHarness() {
   // Legacy localhost:3000 testing, we use RoomPage.tsx for actual rooms
   const roomId = 'dev';
 
-  return (
-    <ViewTransformProvider>
-      <CanvasWithControls roomId={roomId} />
-    </ViewTransformProvider>
-  );
+  // No ViewTransformProvider needed - camera store is the source of truth
+  return <CanvasWithControls roomId={roomId} />;
 }
 
 export default function App() {

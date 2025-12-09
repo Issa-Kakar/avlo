@@ -1,10 +1,10 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { IRoomDocManager } from '../room-doc-manager';
-import type { ViewTransform } from '@avlo/shared';
 import { calculateBBox } from './simplification';
 import type { DrawingState, PreviewData } from './types';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { worldToCanvas } from '@/stores/camera-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
@@ -54,8 +54,7 @@ export class DrawingTool {
         | { kind: 'diamond';     anchors: { A: [number, number] } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
-  private getView?: () => ViewTransform;              // screen jitter (hold)
-  private requestOverlayFrame?: RequestOverlayFrame;  // NEW: nudge overlay loop
+  private requestOverlayFrame?: RequestOverlayFrame;  // nudge overlay loop
   private opts: { forceSnapKind?: ForcedSnapKind } = {};
   // Instant click-to-place mode for shape tool
   private clickToPlaceStartTime: number = 0;
@@ -67,16 +66,14 @@ export class DrawingTool {
     toolType: 'pen' | 'highlighter',
     userId: string, // Pass stable ID, not a getter function
     onInvalidate?: (bounds: [number, number, number, number]) => void,
-    requestOverlayFrame?: RequestOverlayFrame,     // NEW (overlay frames)
-    getView?: () => ViewTransform,                 // stays (hold jitter)
-    opts?: { forceSnapKind?: ForcedSnapKind }      // NEW parameter
+    requestOverlayFrame?: RequestOverlayFrame,     // nudge overlay loop
+    opts?: { forceSnapKind?: ForcedSnapKind }      // forced shape kind
   ) {
     this.room = room;
     this.toolType = toolType;
     this.userId = userId; // Store the stable ID
     this.onInvalidate = onInvalidate;
     this.requestOverlayFrame = requestOverlayFrame;
-    this.getView = getView;
     this.opts = opts ?? {};
     this.hold = new HoldDetector(() => this.onHoldFire());
     this.resetState();
@@ -163,10 +160,8 @@ export class DrawingTool {
     }
 
     // Existing freehand flow with HoldDetector
-    if (this.getView) {
-      const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
-      this.hold.start({ x: sx, y: sy });
-    }
+    const [sx, sy] = worldToCanvas(worldX, worldY);
+    this.hold.start({ x: sx, y: sy });
     this.snap = null;
     this.liveCursorWU = [worldX, worldY];
     this.requestOverlayFrame?.();
@@ -177,8 +172,8 @@ export class DrawingTool {
     this.liveCursorWU = [worldX, worldY];
 
     // Keep hold jitter in SCREEN px prior to snap
-    if (!this.snap && this.getView) {
-      const [sx, sy] = this.getView().worldToCanvas(worldX, worldY);
+    if (!this.snap) {
+      const [sx, sy] = worldToCanvas(worldX, worldY);
       this.hold.move({ x: sx, y: sy });
     }
 

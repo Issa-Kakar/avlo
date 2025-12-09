@@ -6,6 +6,7 @@ import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getStroke } from 'perfect-freehand';
 import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
 import { getObjectCacheInstance } from './object-cache';
+import { getViewTransform, getViewportInfo } from '@/stores/camera-store';
 
 // Eraser Trail configuration
 interface EraserTrailPoint {
@@ -27,8 +28,14 @@ export interface OverlayLoopConfig {
     withContext: (fn: (ctx: CanvasRenderingContext2D) => void) => void;
     clear: () => void;
   };
-  getView: () => ViewTransform;
-  getViewport: () => { cssWidth: number; cssHeight: number; dpr: number };
+  /**
+   * @deprecated Use camera store directly via getViewTransform(). Will be removed.
+   */
+  getView?: () => ViewTransform;
+  /**
+   * @deprecated Use camera store directly via getViewportInfo(). Will be removed.
+   */
+  getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number };
   getGates: () => { awarenessReady: boolean; firstSnapshot: boolean };
   getPresence: () => PresenceView;
   getSnapshot: () => Snapshot; // Added for eraser dimming
@@ -177,17 +184,19 @@ export class OverlayRenderLoop {
 
   private frame() {
     if (!this.config) return;
-    const { stage, getView, getViewport, getPresence, getGates, drawPresence, getSnapshot } =
+    const { stage, getPresence, getGates, drawPresence, getSnapshot } =
       this.config;
 
-    // Get viewport first to check if ready
-    const vp = getViewport();
+    // Get viewport from camera store (single source of truth)
+    const vpInfo = getViewportInfo();
+    const vp = { cssWidth: vpInfo.cssWidth, cssHeight: vpInfo.cssHeight, dpr: vpInfo.dpr };
     if (vp.cssWidth <= 1 || vp.cssHeight <= 1) return;
 
     // Always full clear overlay (cheap for preview + presence)
     stage.clear();
 
-    const view = getView();
+    // Get view transform from camera store
+    const view = getViewTransform();
 
     // ---------- PASS 1: World-space preview (with world transform) ----------
     const preview = this.previewProvider?.getPreview();

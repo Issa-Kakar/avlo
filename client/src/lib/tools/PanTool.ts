@@ -1,6 +1,4 @@
-import type { ViewTransform } from '@avlo/shared';
-
-type Point = { x: number; y: number };
+import { useCameraStore } from '@/stores/camera-store';
 
 export class PanTool {
     private pointerId: number | null = null;
@@ -8,8 +6,6 @@ export class PanTool {
     private isDragging = false;
 
     constructor(
-      private getView: () => ViewTransform,
-      private setPan: (pan: Point) => void,
       private onInvalidateOverlay: () => void,
       private applyCursor: () => void,
       private setCursorOverride: (cursor: string | null) => void,
@@ -72,11 +68,10 @@ export class PanTool {
         const dx = clientX - this.lastClient.x;
         const dy = clientY - this.lastClient.y;
 
-        const view = this.getView();
-        // Use value setter, not functional updater
-        this.setPan({
-          x: view.pan.x - dx / view.scale,
-          y: view.pan.y - dy / view.scale,
+        const { scale, pan, setPan } = useCameraStore.getState();
+        setPan({
+          x: pan.x - dx / scale,
+          y: pan.y - dy / scale,
         });
 
         this.onInvalidateOverlay();

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useViewTransform } from '../../canvas/ViewTransformContext';
+import { useCameraStore, selectScale } from '@/stores/camera-store';
 import { PERFORMANCE_CONFIG } from '@avlo/shared';
 
 interface ZoomControlsProps {
@@ -7,15 +7,18 @@ interface ZoomControlsProps {
 }
 
 export function ZoomControls({ className = '' }: ZoomControlsProps) {
-  const { viewState, setScale, resetView } = useViewTransform();
+  // Use camera store instead of ViewTransformContext
+  const scale = useCameraStore(selectScale);
+  const setScale = useCameraStore((s) => s.setScale);
+  const resetView = useCameraStore((s) => s.resetView);
 
   const handleZoomIn = () => {
-    const newScale = Math.min(viewState.scale * 1.2, PERFORMANCE_CONFIG.MAX_ZOOM);
+    const newScale = Math.min(scale * 1.2, PERFORMANCE_CONFIG.MAX_ZOOM);
     setScale(newScale);
   };
 
   const handleZoomOut = () => {
-    const newScale = Math.max(viewState.scale / 1.2, PERFORMANCE_CONFIG.MIN_ZOOM);
+    const newScale = Math.max(scale / 1.2, PERFORMANCE_CONFIG.MIN_ZOOM);
     setScale(newScale);
   };
 
@@ -23,7 +26,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
     resetView();
   };
 
-  const zoomPercentage = Math.round(viewState.scale * 100);
+  const zoomPercentage = Math.round(scale * 100);
 
   return (
     <div className={`floating-controls ${className}`}>
@@ -31,7 +34,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
         <button
           className="zoom-btn"
           onClick={handleZoomOut}
-          disabled={viewState.scale <= PERFORMANCE_CONFIG.MIN_ZOOM}
+          disabled={scale <= PERFORMANCE_CONFIG.MIN_ZOOM}
           aria-label="Zoom out"
           title="Zoom Out"
         >
@@ -53,7 +56,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
         <button
           className="zoom-btn"
           onClick={handleZoomIn}
-          disabled={viewState.scale >= PERFORMANCE_CONFIG.MAX_ZOOM}
+          disabled={scale >= PERFORMANCE_CONFIG.MAX_ZOOM}
           aria-label="Zoom in"
           title="Zoom In"
         >

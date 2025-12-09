@@ -1,6 +1,7 @@
 import type { IRoomDocManager } from '../room-doc-manager';
 import type { WorldRect, SelectionPreview, HandleId } from './types';
 import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
   computeUniformScaleNoThreshold,
   computePreservedPosition,
@@ -51,17 +52,9 @@ interface HitCandidate {
 interface SelectToolOpts {
   invalidateWorld: (bounds: WorldRect) => void;
   invalidateOverlay: () => void;
-  getView: () => ViewTransform;
   // Cursor callbacks (same pattern as PanTool)
   applyCursor: () => void;
   setCursorOverride: (cursor: string | null) => void;
-}
-
-interface ViewTransform {
-  worldToCanvas: (x: number, y: number) => [number, number];
-  canvasToWorld: (x: number, y: number) => [number, number];
-  scale: number;
-  pan: { x: number; y: number };
 }
 
 interface ObjectHandle {
@@ -79,7 +72,6 @@ export class SelectTool {
   private room: IRoomDocManager;
   private invalidateWorld: (bounds: WorldRect) => void;
   private invalidateOverlay: () => void;
-  private getView: () => ViewTransform;
   private applyCursor: () => void;
   private setCursorOverride: (cursor: string | null) => void;
 
@@ -104,7 +96,6 @@ export class SelectTool {
     this.room = room;
     this.invalidateWorld = opts.invalidateWorld;
     this.invalidateOverlay = opts.invalidateOverlay;
-    this.getView = opts.getView;
     this.applyCursor = opts.applyCursor;
     this.setCursorOverride = opts.setCursorOverride;
   }
@@ -124,8 +115,7 @@ export class SelectTool {
     this.downTarget = 'none';
 
     // Convert to screen space for move threshold
-    const view = this.getView();
-    const [screenX, screenY] = view.worldToCanvas(worldX, worldY);
+    const [screenX, screenY] = worldToCanvas(worldX, worldY);
     this.downScreen = [screenX, screenY];
 
     const store = useSelectionStore.getState();
@@ -167,8 +157,7 @@ export class SelectTool {
   }
 
   move(worldX: number, worldY: number): void {
-    const view = this.getView();
-    const [screenX, screenY] = view.worldToCanvas(worldX, worldY);
+    const [screenX, screenY] = worldToCanvas(worldX, worldY);
 
     switch (this.phase) {
       case 'pendingClick': {
@@ -310,8 +299,7 @@ export class SelectTool {
         let dist = 0;
         const elapsed = performance.now() - this.downTimeMs;
         if (this.downScreen && worldX !== undefined && worldY !== undefined) {
-          const view = this.getView();
-          const [screenX, screenY] = view.worldToCanvas(worldX, worldY);
+          const [screenX, screenY] = worldToCanvas(worldX, worldY);
           const dx = screenX - this.downScreen[0];
           const dy = screenY - this.downScreen[1];
           dist = Math.sqrt(dx * dx + dy * dy);
@@ -1140,8 +1128,8 @@ export class SelectTool {
     const bounds = this.computeSelectionBounds();
     if (!bounds) return null;
 
-    const view = this.getView();
-    const handleRadius = HANDLE_HIT_PX / view.scale;
+    const { scale } = useCameraStore.getState();
+    const handleRadius = HANDLE_HIT_PX / scale;
 
     // Test corners first (they take priority)
     const corners: { id: HandleId; x: number; y: number }[] = [
@@ -1189,8 +1177,8 @@ export class SelectTool {
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
     const snapshot = this.room.currentSnapshot;
-    const view = this.getView();
-    const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / view.scale;
+    const { scale } = useCameraStore.getState();
+    const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
 
     const index = snapshot.spatialIndex;
     if (!index) return null;

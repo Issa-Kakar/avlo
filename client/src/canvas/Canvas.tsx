@@ -1,10 +1,9 @@
-import React, { useRef, useCallback, useState, useEffect, useLayoutEffect, useMemo } from 'react';
+import React, { useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createEmptySnapshot } from '@avlo/shared';
-import type { RoomId, Snapshot, ViewTransform } from '@avlo/shared';
-import { CanvasStage, type CanvasStageHandle, type ResizeInfo } from './CanvasStage';
+import type { RoomId, Snapshot } from '@avlo/shared';
+import { CanvasStage, type CanvasStageHandle } from './CanvasStage';
 import { userProfileManager } from '../lib/user-profile-manager';
 import { useRoomDoc } from '../hooks/use-room-doc';
-import { useViewTransform } from './ViewTransformContext';
 import { RenderLoop } from '../renderer/RenderLoop';
 import { OverlayRenderLoop } from '../renderer/OverlayRenderLoop';
 import type { ViewportInfo } from '../renderer/types';
@@ -16,7 +15,14 @@ import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { SelectTool } from '@/lib/tools/SelectTool';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { calculateZoomTransform, boundsIntersect, getVisibleWorldBounds } from './internal/transforms';
+import {
+  useCameraStore,
+  screenToWorld as cameraScreenToWorld,
+  screenToCanvas as cameraScreenToCanvas,
+  worldToClient as cameraWorldToClient,
+  getVisibleWorldBounds as cameraGetVisibleWorldBounds,
+} from '@/stores/camera-store';
+import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { ZoomAnimator } from './animation/ZoomAnimator';
 
 // Unified interface for all pointer tools
@@ -42,15 +48,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Replace single stageRef with two stages
   const baseStageRef = useRef<CanvasStageHandle>(null);
   const overlayStageRef = useRef<CanvasStageHandle>(null);
-  const editorHostRef = useRef<HTMLDivElement>(null); // NEW: DOM overlay for text
+  const editorHostRef = useRef<HTMLDivElement>(null); // DOM overlay for text
   const roomDoc = useRoomDoc(roomId); // MUST be called at top level, not inside useEffect
-  const { transform: viewTransform, setScale, setPan } = useViewTransform();
+  // Camera state is now in useCameraStore - no more useViewTransform()
   const toolRef = useRef<PointerTool>();
   const lastMouseClientRef = useRef<{ x: number; y: number } | null>(null); // Track last mouse position for tool seeding
-  const [_canvasSize, setCanvasSize] = useState<ResizeInfo | null>(null);
-  const canvasSizeRef = useRef<ResizeInfo | null>(null); // For access in closures
-  const renderLoopRef = useRef<RenderLoop | null>(null); // existing
-  const overlayLoopRef = useRef<OverlayRenderLoop | null>(null); // new
+  const renderLoopRef = useRef<RenderLoop | null>(null);
+  const overlayLoopRef = useRef<OverlayRenderLoop | null>(null);
 
   // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
   // Use NARROW SELECTORS to prevent spurious rerenders when other settings change
@@ -60,10 +64,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   const textSize = useDeviceUIStore(s => s.textSize);
   const textColor = useDeviceUIStore(s => s.drawingSettings.color);
 
-  // Add setter and tool refs for stable callbacks (Step 1.1)
-  const setScaleRef = useRef<(scale: number) => void>();
-  const setPanRef = useRef<(pan: { x: number; y: number }) => void>();
-  const activeToolRef = useRef<string>(activeTool); // Track current tool for stable cursor
+  // Track current tool for stable cursor (no longer need setScaleRef/setPanRef - use store directly)
+  const activeToolRef = useRef<string>(activeTool);
 
   // Step 3.1: Add state refs for MMB pan
   // Tracks ephemeral MMB pan without touching Zustand
@@ -87,16 +89,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   const snapshotRef = useRef<Snapshot>(createEmptySnapshot()); // Initialize with empty snapshot
-  const viewTransformRef = useRef<ViewTransform>(viewTransform); // Store latest transform
 
-  // Keep view transform ref updated (no re-render)
-  // Use useLayoutEffect to ensure ref is updated before drawing tool effect reads it
+  // Keep activeToolRef in sync (no re-render)
+  // Camera state is now read directly from useCameraStore.getState() - no ref needed
   useLayoutEffect(() => {
-    viewTransformRef.current = viewTransform;
-    setScaleRef.current = setScale;
-    setPanRef.current = setPan;
-    activeToolRef.current = activeTool; // Keep tool ref in sync
-  }, [viewTransform, setScale, setPan, activeTool]);
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
 
   // Subscribe to snapshots and check for document version changes
   useEffect(() => {
@@ -106,7 +104,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       snapshotRef.current = newSnapshot;
 
       if (!renderLoopRef.current || !overlayLoopRef.current) return;
-      // Check if document content changed (not just presence) s
+      // Check if document content changed (not just presence)
       if (newSnapshot.docVersion !== lastDocVersion) {
         lastDocVersion = newSnapshot.docVersion;
         // Hold preview for one frame to prevent flash on commit
@@ -114,30 +112,18 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
         // SIMPLIFIED: Just use dirtyPatch from manager
         // Manager already computed everything during observer callbacks
-        if (newSnapshot.dirtyPatch ) {
+        if (newSnapshot.dirtyPatch) {
           const { rects, evictIds } = newSnapshot.dirtyPatch;
 
           // Evict from cache
           const cache = getObjectCacheInstance();
           cache.evictMany(evictIds);
 
-          const size = canvasSizeRef.current;
-          if (size) {
-            const viewport = getVisibleWorldBounds(
-              size.cssWidth,
-              size.cssHeight,
-              viewTransformRef.current.scale,
-              viewTransformRef.current.pan
-            );
-            // Only invalidate visible dirty regions
-            for (const bounds of rects) {
-              if (boundsIntersect(bounds, viewport)) {
-                renderLoopRef.current.invalidateWorld(bounds);
-              }
-            }
-          } else {
-            // Fallback if viewport unknown
-            for (const bounds of rects) {
+          // Get visible world bounds directly from camera store
+          const viewport = cameraGetVisibleWorldBounds();
+          // Only invalidate visible dirty regions
+          for (const bounds of rects) {
+            if (boundsIntersect(bounds, viewport)) {
               renderLoopRef.current.invalidateWorld(bounds);
             }
           }
@@ -167,42 +153,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     );
   }, []);
 
-  // Convert screen coordinates (DOM event) to world coordinates (Y.Doc space)
-  // CRITICAL: This function is stable (no deps) to prevent effect re-runs
-  // It reads viewTransform from ref to always use the latest transform
-  const screenToWorld = useCallback((clientX: number, clientY: number): [number, number] | null => {
-    const canvas = baseStageRef.current?.getCanvasElement();
-    const transform = viewTransformRef.current; // Always get latest transform
-    if (!canvas || !transform) {
-      return null; // Signal error to caller
-    }
-
-    const rect = canvas.getBoundingClientRect();
-    // Screen → Canvas (CSS pixels)
-    const canvasX = clientX - rect.left;
-    const canvasY = clientY - rect.top;
-
-    // Canvas → World (using ViewTransform)
-    return transform.canvasToWorld(canvasX, canvasY);
-  }, []); // NO DEPENDENCIES - stable function that reads from refs
-
-  // Convert world coordinates to client (CSS) coordinates
-  // Used for positioning UI elements
-  // Step 1.4: FIXED - No dependencies, reads from ref
-  const worldToClient = useCallback((worldX: number, worldY: number): [number, number] => {
-    const stage = baseStageRef.current;
-    const vt = viewTransformRef.current; // Read latest from ref
-    if (!stage || !vt) return [worldX, worldY];
-
-    // World to canvas (returns CSS pixels)
-    const [canvasX, canvasY] = vt.worldToCanvas(worldX, worldY);
-
-    // Get canvas element position
-    const rect = stage.getBounds();
-
-    // Canvas to screen (both in CSS pixels) - NO DPR division
-    return [canvasX + rect.left, canvasY + rect.top];
-  }, []); // ✅ Empty deps = stable function
+  // COORDINATE TRANSFORM FUNCTIONS
+  // Pure functions imported from camera-store - use directly, no wrappers needed!
+  // cameraScreenToWorld(clientX, clientY) -> [worldX, worldY] | null
+  // cameraWorldToClient(worldX, worldY) -> [clientX, clientY]
 
   // Step 3.2: Add cursor management function
   // CRITICAL: Stable function that reads from ref to avoid stale closures
@@ -233,28 +187,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     }
   }, []); // ✅ Empty deps - reads from refs
 
-  // 3G: Handle resize for both stages
-  const handleBaseResize = useCallback((info: ResizeInfo) => {
-    setCanvasSize(info);
-    canvasSizeRef.current = info;
-    renderLoopRef.current?.setResizeInfo({
-      width: info.pixelWidth,
-      height: info.pixelHeight,
-      dpr: info.dpr,
-    });
-  }, []);
-
-  const handleOverlayResize = useCallback((_info: ResizeInfo) => {
-    // Overlay just needs to invalidate on resize
-    overlayLoopRef.current?.invalidateAll();
-  }, []);
-
-  // CRITICAL: Compute stageReady to ensure effect re-runs when stage becomes available
-  // This prevents the initialization from silently failing if timing precondition is missed
-  const stageReady = !!(renderLoopRef.current && baseStageRef.current?.getCanvasElement());
+  // NOTE: No stageReady gate needed!
+  // - Canvas element is registered synchronously via ref callback in CanvasStage
+  // - Event handlers guard with `if (!worldCoords) return` when canvas isn't ready
+  // - This is the imperative pattern: try and let guards handle edge cases
 
   // 3D: Initialize base render loop
   // Use useLayoutEffect to ensure render loop exists before drawing tool effect
+  // RenderLoop now reads view/viewport directly from camera store
   useLayoutEffect(() => {
     if (!baseStageRef.current) return;
 
@@ -262,45 +202,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     renderLoopRef.current = renderLoop;
     renderLoop.start({
       stageRef: baseStageRef,
-      getView: () => viewTransformRef.current,
+      // getView and getViewport are now optional - RenderLoop reads from camera store
       getSnapshot: () => snapshotRef.current,
-      getViewport: (): ViewportInfo => {
-        // Use cached canvas size if available for better performance
-        const cachedSize = canvasSizeRef.current;
-        if (cachedSize && cachedSize.cssWidth > 0 && cachedSize.cssHeight > 0) {
-          return {
-            pixelWidth: cachedSize.pixelWidth,
-            pixelHeight: cachedSize.pixelHeight,
-            cssWidth: cachedSize.cssWidth,
-            cssHeight: cachedSize.cssHeight,
-            dpr: cachedSize.dpr,
-          };
-        }
-
-        // Fallback to getBounds if canvasSize not yet set
-        const bounds = baseStageRef.current?.getBounds();
-        const dpr = window.devicePixelRatio || 1;
-
-        if (!bounds || bounds.width === 0 || bounds.height === 0) {
-          // Return minimal valid viewport for edge cases
-          return {
-            pixelWidth: 1,
-            pixelHeight: 1,
-            cssWidth: 1,
-            cssHeight: 1,
-            dpr,
-          };
-        }
-
-        return {
-          pixelWidth: Math.max(1, Math.round(bounds.width * dpr)),
-          pixelHeight: Math.max(1, Math.round(bounds.height * dpr)),
-          cssWidth: bounds.width,
-          cssHeight: bounds.height,
-          dpr,
-        };
-      },
-      getGates: () => roomDoc.getGateStatus(), // Phase 7: Provide gate status for presence rendering
+      getGates: () => roomDoc.getGateStatus(),
       isMobile,
       onStats: import.meta.env.DEV
         ? (stats) => {
@@ -348,6 +252,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   }, []); // NO DEPENDENCIES - stable render loop lifecycle, isMobile is a stable callback
 
   // 3E: Add overlay render loop initialization
+  // OverlayRenderLoop now reads view/viewport directly from camera store
   useLayoutEffect(() => {
     if (!overlayStageRef.current) return;
 
@@ -356,25 +261,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     overlayLoop.start({
       stage: overlayStageRef.current!,
-      getView: () => viewTransformRef.current!,
-      getViewport: () => {
-        const cachedSize = canvasSizeRef.current;
-        if (cachedSize && cachedSize.cssWidth > 0) {
-          return {
-            cssWidth: cachedSize.cssWidth,
-            cssHeight: cachedSize.cssHeight,
-            dpr: cachedSize.dpr,
-          };
-        }
-        // Fallback
-        const dpr = window.devicePixelRatio || 1;
-        return { cssWidth: 1, cssHeight: 1, dpr };
-      },
+      // getView and getViewport are now optional - OverlayRenderLoop reads from camera store
       getGates: () => roomDoc.getGateStatus(),
-      getPresence: () => snapshotRef.current.presence, // Get from current snapshot
-      getSnapshot: () => snapshotRef.current, // Added for eraser dimming
-      drawPresence: (ctx, presence, view, vp) => {
-        // Import drawPresenceOverlays from layers
+      getPresence: () => snapshotRef.current.presence,
+      getSnapshot: () => snapshotRef.current,
+      drawPresence: (ctx, _presence, view, vp) => {
         const viewport: ViewportInfo = {
           pixelWidth: Math.round(vp.cssWidth * vp.dpr),
           pixelHeight: Math.round(vp.cssHeight * vp.dpr),
@@ -384,7 +275,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         };
         drawPresenceOverlays(
           ctx,
-          snapshotRef.current, // Pass full snapshot (presence is already up-to-date)
+          snapshotRef.current,
           view,
           viewport,
           roomDoc.getGateStatus(),
@@ -400,12 +291,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   }, [roomDoc]);
 
   // Initialize ZoomAnimator for smooth zoom transitions
+  // ZoomAnimator now reads/writes directly to camera store (no callbacks needed)
   useEffect(() => {
-    zoomAnimatorRef.current = new ZoomAnimator(
-      () => viewTransformRef.current,
-      (s) => setScaleRef.current?.(s),
-      (p) => setPanRef.current?.(p),
-    );
+    zoomAnimatorRef.current = new ZoomAnimator();
 
     return () => {
       zoomAnimatorRef.current?.destroy();
@@ -436,19 +324,19 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // Wait for all required dependencies
     const renderLoop = renderLoopRef.current;
     const canvas = baseStageRef.current?.getCanvasElement();
-    const initialTransform = viewTransformRef.current; // Check initial availability
+    // Camera store always has valid state (defaults to scale:1, pan:{x:0,y:0})
+    // No need to check viewTransform availability
 
     // Guard: ensure all required components exist
     // This effect WILL re-run when stageReady changes (once)
-    if (!renderLoop || !canvas || !roomDoc || !initialTransform) {
+    if (!renderLoop || !canvas || !roomDoc) {
       // Only log in development mode
       if (import.meta.env.DEV) {
         // eslint-disable-next-line no-console
-        console.debug('DrawingTool waiting for dependencies:', {
+        console.debug('Tool waiting for dependencies:', {
           renderLoop: !!renderLoop,
           canvas: !!canvas,
           room: !!roomDoc,
-          viewTransform: !!initialTransform,
         });
       }
       return; // Dependencies not ready yet, will retry when stageReady changes
@@ -460,17 +348,20 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
 
     // Create appropriate tool based on activeTool (branch ONCE here)
+    // All tools now read camera state directly from useCameraStore
     let tool: PointerTool | null = null;
 
     if (activeTool === 'eraser') {
       // Eraser tool uses fixed 10px radius - no settings needed
+      // Constructor: (room, onInvalidate) - getView removed, reads from camera store
       tool = new EraserTool(
         roomDoc,
         () => overlayLoopRef.current?.invalidateAll(),
-        () => viewTransformRef.current,
       );
     } else if (activeTool === 'pen' || activeTool === 'highlighter') {
       // Settings are read from store at begin() time - no need to pass them
+      // Constructor: (room, toolType, userId, onInvalidate, requestOverlayFrame, opts?)
+      // getView removed - uses worldToCanvas from camera store for jitter detection
       tool = new DrawingTool(
         roomDoc,
         activeTool,
@@ -479,10 +370,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           // During drawing, invalidate overlay (preview is there)
           overlayLoopRef.current?.invalidateAll();
         },
-        // requestOverlayFrame: tools call this after snap or any preview change
         () => overlayLoopRef.current?.invalidateAll(),
-        // getView: needed only for hold-jitter in SCREEN px (pre-snap)
-        () => viewTransformRef.current
       );
     } else if (activeTool === 'shape') {
       // Map shape variant to forced snap kind
@@ -493,14 +381,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         shapeVariant === 'arrow'     ? 'arrow' : 'line';
 
       // Settings are read from store at begin() time - no need to pass them
+      // getView removed - opts is now 6th param (was 7th)
       tool = new DrawingTool(
         roomDoc,
         'pen', // Shape tool uses pen mechanics
         userId,
         (_bounds) => overlayLoopRef.current?.invalidateAll(),
         () => overlayLoopRef.current?.invalidateAll(),
-        () => viewTransformRef.current,
-        { forceSnapKind } // Pass forced snap configuration
+        { forceSnapKind },
       );
     } else if (activeTool === 'text') {
       // Text tool uses narrow selector for color and its own size
@@ -508,32 +396,32 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         size: textSize,
         color: textColor
       };
+      // CanvasHandle now only has getEditorHost - worldToClient and getView removed
+      // TextTool imports worldToClient and reads scale from camera store directly
       tool = new TextTool(
         roomDoc,
         textSettings,
         userId,
         {
-          worldToClient,
-          getView: () => viewTransformRef.current,
-          getEditorHost: () => editorHostRef.current, // Pass DOM overlay ref
+          getEditorHost: () => editorHostRef.current,
         },
         () => overlayLoopRef.current?.invalidateAll(),
       );
     } else if (activeTool === 'pan') {
+      // PanTool constructor: (onInvalidateOverlay, applyCursor, setCursorOverride)
+      // getView and setPan removed - reads/writes to camera store directly
       tool = new PanTool(
-        () => viewTransformRef.current,
-        (pan) => setPanRef.current?.(pan), // Value setter, not functional updater
         () => overlayLoopRef.current?.invalidateAll(),
         applyCursor,
-        (cursor) => { cursorOverrideRef.current = cursor; }
+        (cursor: string | null) => { cursorOverrideRef.current = cursor; },
       );
     } else if (activeTool === 'select') {
+      // SelectTool opts: getView removed - reads from camera store directly
       tool = new SelectTool(roomDoc, {
         invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
         invalidateOverlay: () => overlayLoopRef.current?.invalidateAll(),
-        getView: () => viewTransformRef.current,
         applyCursor,
-        setCursorOverride: (cursor) => { cursorOverrideRef.current = cursor; },
+        setCursorOverride: (cursor: string | null) => { cursorOverrideRef.current = cursor; },
       });
     } else {
       return; // Unsupported tool
@@ -560,7 +448,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // Seed the eraser preview using the last known mouse position (for keyboard shortcuts)
     if (!isMobile && activeTool === 'eraser' && lastMouseClientRef.current) {
       const { x, y } = lastMouseClientRef.current;
-      const world = screenToWorld(x, y);
+      const world = cameraScreenToWorld(x, y);
       if (world) {
         tool.move(world[0], world[1]);
       }
@@ -603,16 +491,15 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     textSize,      // Only for TextTool updateConfig
     textColor,     // Only for TextTool updateConfig (narrow selector)
     shapeVariant,  // Changes tool behavior (forceSnapKind)
-    stageReady,
-    screenToWorld,
-    worldToClient, // Now stable with empty deps, safe to include
     applyCursor,   // Stable function with empty deps
   ]); // DrawingTool/EraserTool read settings from store at begin() time
+  // Note: cameraScreenToWorld/cameraWorldToClient are pure functions from camera-store, not React deps
 
   // Effect A: Stable event listeners (mount once) - Step 2.1
+  // No stageReady gate - handlers guard themselves with screenToWorld null checks
   useEffect(() => {
     const canvas = baseStageRef.current?.getCanvasElement();
-    if (!canvas || !stageReady) return;
+    if (!canvas) return;
 
     // All handlers read from refs - no closure dependencies
     // Step 4.1: Pointer Down Handler
@@ -652,7 +539,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       const tool = toolRef.current;
       if (!tool?.canBegin()) return;
 
-      const worldCoords = screenToWorld(e.clientX, e.clientY);
+      const worldCoords = cameraScreenToWorld(e.clientX, e.clientY);
       if (!worldCoords) return;
 
       e.preventDefault();
@@ -685,7 +572,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       // ALWAYS update presence first (unless mobile)
       if (!isMobile) {
-        const world = screenToWorld(e.clientX, e.clientY);
+        const world = cameraScreenToWorld(e.clientX, e.clientY);
         if (world) {
           roomDoc.updateCursor(world[0], world[1]);
         }
@@ -699,14 +586,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         mmbPanRef.current.lastClient = { x: e.clientX, y: e.clientY };
 
         // Pan using world units (negative because we're dragging the canvas)
-        const view = viewTransformRef.current;
-        if (view && setPanRef.current) {
-          const newPan = {
-            x: view.pan.x - dx / view.scale,
-            y: view.pan.y - dy / view.scale,
-          };
-          setPanRef.current(newPan);
-        }
+        // Read scale/pan from camera store, then set new pan
+        const { scale, pan } = useCameraStore.getState();
+        const newPan = {
+          x: pan.x - dx / scale,
+          y: pan.y - dy / scale,
+        };
+        useCameraStore.getState().setPan(newPan);
 
         overlayLoopRef.current?.invalidateAll();
         return; // Skip tool move during MMB pan
@@ -723,7 +609,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
       // Normal tool hover/preview (pen, eraser, etc)
       if (!isMobile && tool) {
-        const world = screenToWorld(e.clientX, e.clientY);
+        const world = cameraScreenToWorld(e.clientX, e.clientY);
         if (world) {
           tool.move(world[0], world[1]);
 
@@ -763,7 +649,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         // Pointer capture may already be released
       }
 
-      const world = screenToWorld(e.clientX, e.clientY);
+      const world = cameraScreenToWorld(e.clientX, e.clientY);
       tool.end(world?.[0], world?.[1]);
       roomDoc.updateActivity('idle');
     };
@@ -832,11 +718,10 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // OPTIONAL: Block wheel during active tool gesture
       // if (toolRef.current?.isActive()) return;
 
-      const canvas = baseStageRef.current?.getCanvasElement();
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const canvasX = e.clientX - rect.left;
-      const canvasY = e.clientY - rect.top;
+      // Get canvas-relative cursor position for zoom pivot
+      const canvasCoords = cameraScreenToCanvas(e.clientX, e.clientY);
+      if (!canvasCoords) return; // Canvas not ready
+      const [canvasX, canvasY] = canvasCoords;
 
       // Normalize wheel delta
       let deltaY = e.deltaY;
@@ -848,14 +733,13 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       const ZOOM_STEP = Math.log(1.2);
       const factor = Math.exp(-steps * ZOOM_STEP);
 
-      // Read LATEST transform from ref
-      const v = viewTransformRef.current;
-      if (!v) return;
+      // Read LATEST transform from camera store
+      const { scale, pan } = useCameraStore.getState();
 
       // Use existing calculateZoomTransform utility
       const { scale: targetScale, pan: targetPan } = calculateZoomTransform(
-        v.scale,
-        v.pan,
+        scale,
+        pan,
         factor,
         { x: canvasX, y: canvasY }
       );
@@ -882,31 +766,60 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.removeEventListener('pointerleave', handlePointerLeave);
       canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [stageReady, applyCursor, roomDoc, screenToWorld]); // Added stable deps to silence ESLint
+  }, [applyCursor, roomDoc]); // cameraScreenToWorld is a pure function from store, not a React dep
 
-  // 3F: Handle transform changes for both loops
+  // 3F: Handle transform changes (scale/pan) for both loops
+  // Subscribe to camera store for scale/pan changes instead of React dependency array
   useEffect(() => {
-    // Trigger a frame when transform changes
-    // The DirtyRectTracker.notifyTransformChange() in tick() will detect the change
-    // and automatically promote to full clear - we just need to trigger the frame
-    renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
-    overlayLoopRef.current?.invalidateAll(); // Overlay needs redraw on pan/zoom
+    const unsubscribe = useCameraStore.subscribe(
+      // Selector: extract scale and pan
+      (state) => ({ scale: state.scale, pan: state.pan }),
+      // Callback: runs when selected values change
+      () => {
+        // Trigger a frame when transform changes
+        // The DirtyRectTracker.notifyTransformChange() in tick() will detect the change
+        // and automatically promote to full clear - we just need to trigger the frame
+        renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
+        overlayLoopRef.current?.invalidateAll(); // Overlay needs redraw on pan/zoom
 
-    // NEW: Notify tool of view change for DOM repositioning
-    if (toolRef.current && 'onViewChange' in toolRef.current) {
-      (toolRef.current as any).onViewChange();
-    }
-  }, [viewTransform.scale, viewTransform.pan.x, viewTransform.pan.y]);
+        // Notify tool of view change for DOM repositioning
+        if (toolRef.current && 'onViewChange' in toolRef.current) {
+          (toolRef.current as TextTool | EraserTool).onViewChange?.();
+        }
+      },
+      // Equality function for granular updates
+      { equalityFn: (a, b) => a.scale === b.scale && a.pan.x === b.pan.x && a.pan.y === b.pan.y }
+    );
+    return unsubscribe;
+  }, []); // Empty deps - subscription manages its own lifecycle
+
+  // 3G: Handle viewport changes (resize/DPR) - triggers full redraw
+  // Separate subscription because viewport changes need invalidateAll, not just dirty rect
+  useEffect(() => {
+    const unsubscribe = useCameraStore.subscribe(
+      // Selector: extract viewport dimensions
+      (state) => ({ cssWidth: state.cssWidth, cssHeight: state.cssHeight, dpr: state.dpr }),
+      // Callback: runs when viewport changes
+      () => {
+        // Viewport changed - need full redraw
+        renderLoopRef.current?.invalidateAll('geometry-change');
+        overlayLoopRef.current?.invalidateAll();
+      },
+      // Equality function
+      { equalityFn: (a, b) => a.cssWidth === b.cssWidth && a.cssHeight === b.cssHeight && a.dpr === b.dpr }
+    );
+    return unsubscribe;
+  }, []); // Empty deps - subscription manages its own lifecycle
 
   // 3H: Update imperative handle for preview routing
   React.useImperativeHandle(
     ref,
     () => ({
       screenToWorld: (clientX: number, clientY: number): [number, number] => {
-        const result = screenToWorld(clientX, clientY);
+        const result = cameraScreenToWorld(clientX, clientY);
         return result || [clientX, clientY]; // Fallback for compatibility
       },
-      worldToClient,
+      worldToClient: cameraWorldToClient,
       invalidateWorld: (bounds: { minX: number; minY: number; maxX: number; maxY: number }) => {
         renderLoopRef.current?.invalidateWorld(bounds);
       },
@@ -919,17 +832,17 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         }
       },
     }),
-    [screenToWorld, worldToClient], // Both are now stable with empty deps
+    [], // Pure functions from camera-store, no React deps
   );
 
   // 3J: Update JSX to render two canvases
+  // CanvasStage updates camera store directly via setViewport() - no onResize needed
   return (
     <div className="relative w-full h-full" style={{ backgroundColor: '#FFFFFF' }}>
       <CanvasStage
         ref={baseStageRef}
         className={className}
         style={{ position: 'absolute', inset: 0, zIndex: 1 }}
-        onResize={handleBaseResize}
       />
       <CanvasStage
         ref={overlayStageRef}
@@ -940,7 +853,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           zIndex: 2,
           pointerEvents: 'none', // Critical: overlay doesn't block input
         }}
-        onResize={handleOverlayResize}
       />
       {/* NEW: DOM overlay for interactive HTML elements (text editor) */}
       <div
