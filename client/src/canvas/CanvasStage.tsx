@@ -7,15 +7,6 @@ import { useCameraStore, setCanvasElement } from '@/stores/camera-store';
  * CanvasStage - A render substrate for the whiteboard
  *
  * This component provides a properly sized, DPR-aware canvas element
- * without any knowledge of Y.Doc or CRDT structures. It's a pure
- * rendering surface that will be driven by immutable snapshots.
- *
- * Architecture boundaries:
- * - NO imports of yjs, y-websocket, y-indexeddb, or y-webrtc
- * - Receives only immutable data structures
- * - Future ViewTransform (Phase 3.2) applied via withContext
- * - Render loop (Phase 3.3) will call withContext for drawing
- *
  * DPR Handling:
  * - Canvas backing store sized to device pixels (width * dpr)
  * - Default transform applies DPR scaling
@@ -172,8 +163,14 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
 
             // Reapply sizing and transforms with size limits
             const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
-            canvasRef.current.width = Math.min(rect.width * newDpr, maxDim);
-            canvasRef.current.height = Math.min(rect.height * newDpr, maxDim);
+            const newWidth = Math.min(rect.width * newDpr, maxDim);
+            const newHeight = Math.min(rect.height * newDpr, maxDim);
+
+            // Only set if changed - setting canvas dimensions ALWAYS clears the canvas!
+            if (canvasRef.current.width !== newWidth || canvasRef.current.height !== newHeight) {
+              canvasRef.current.width = newWidth;
+              canvasRef.current.height = newHeight;
+            }
 
             if (ctxRef.current) {
               configureContext2D(ctxRef.current);
@@ -208,17 +205,24 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
         for (const entry of entries) {
           // Use contentRect for content-box sizing to avoid feedback loops
           const { width, height } = entry.contentRect; // CSS pixels
-          const dpr = window.devicePixelRatio || 1;
+          // Use stored DPR - only DPR listener should update dprRef to avoid race conditions
+          // when browser updates window.devicePixelRatio before this callback fires
+          const dpr = dprRef.current;
 
-          // Store current values in refs for use in clear() and withContext()
-          dprRef.current = dpr;
+          // Store CSS dimensions (NOT dpr - that's handled by DPR listener)
           dimensionsRef.current = { cssWidth: width, cssHeight: height };
 
           // Set canvas buffer size (actual device pixels) with size limits
           // This changes backing store only, not CSS dimensions
           const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
-          canvas.width = Math.min(width * dpr, maxDim);
-          canvas.height = Math.min(height * dpr, maxDim);
+          const newWidth = Math.min(width * dpr, maxDim);
+          const newHeight = Math.min(height * dpr, maxDim);
+
+          // Only set if changed - setting canvas dimensions ALWAYS clears the canvas!
+          if (canvas.width !== newWidth || canvas.height !== newHeight) {
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+          }
 
           // Get context if first time
           if (!ctxRef.current) {

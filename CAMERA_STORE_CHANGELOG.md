@@ -612,3 +612,203 @@ Store.getState() for imperative access
 - **Selective subscriptions** - only re-render on relevant changes
 - **Simpler testing** - store can be reset/mocked easily
 - **Imperative pattern** - try operations, let guards handle edge cases
+
+---
+
+## 🚨 ONGOING: Viewport/DPR Blank Canvas Bug (Phase 14)
+
+### Symptom (STILL OCCURRING)
+Canvas goes blank after:
+1. Leaving tab idle overnight
+2. Switching monitors (DPR change) - specifically: going to monitor A, then B, then back to A while dragging
+
+**Workarounds that fix it:**
+- Zoom (triggers full clear via `notifyTransformChange()`)
+- Draw (reveals portions via dirty rect clear)
+
+**Key diagnostic clue:**
+- **Success case (4 logs):** 2 pairs of `[DirtyRectTracker] invalidateAll: full clear` + `[RenderLoop] geometry-change`
+- **Failure case (2 logs):** Only 1 pair of these logs
+- When there are 4 logs → canvas renders correctly
+- When there are 2 logs → canvas stays blank
+
+---
+
+### Phase 14a: DPR Race Condition Fix ✅ (PARTIAL - Bug Still Occurs)
+
+**Problem identified:** Both ResizeObserver and DPR listener read `window.devicePixelRatio` directly at callback time. When browser updates DPR before ResizeObserver fires, both see the same NEW value and make identical `setViewport()` calls. Zustand doesn't trigger subscribers when values are identical.
+
+**Fix applied to CanvasStage.tsx:**
+```typescript
+// BEFORE (line 211):
+const dpr = window.devicePixelRatio || 1;  // ❌ Reads potentially changed DPR
+dprRef.current = dpr;                       // ❌ Overwrites stored DPR
+
+// AFTER:
+const dpr = dprRef.current;  // ✅ Use stored DPR - only DPR listener updates this
+// DON'T update dprRef here
+```
+
+**Rationale:** ResizeObserver handles SIZE changes using confirmed DPR. DPR listener is the single source of truth for DPR value.
+
+---
+
+### Phase 14b: RenderLoop Transform Tracking Cleanup ✅
+
+Removed redundant `lastTransformState` tracking. Transform changes were tracked in TWO places:
+1. Subscription callback (detected changes, called `markDirty()`)
+2. `tick()` method (ALSO detected changes, called `notifyTransformChange()`)
+
+**Changes to RenderLoop.ts:**
+1. Added transform initialization in `start()`: `dirtyTracker.notifyTransformChange(initialView)`
+2. Updated subscription callback to call `notifyTransformChange()` directly for transform changes
+3. Removed `lastTransformState` field entirely
+4. Removed transform comparison block from `tick()`
+
+---
+
+### 🔴 ROOT CAUSE FOUND - Canvas Clearing Without Redraw
+
+**The actual bug is in CanvasStage.tsx, NOT in RenderLoop or DirtyRectTracker.**
+
+#### The Problem
+
+**Critical Canvas API fact**: Setting `canvas.width` or `canvas.height` **ALWAYS clears the canvas**, even if setting to the same value!
+
+CanvasStage unconditionally sets `canvas.width` and `canvas.height` in BOTH:
+- ResizeObserver callback (lines 221-222)
+- DPR handler (lines 175-176)
+
+#### The Bug Sequence
+
+```
+Initial: Monitor A (DPR 1), Store: {cssWidth: 1920, cssHeight: 1080, dpr: 1}
+Canvas has content drawn.
+
+=== Drag to Monitor B (DPR 2), then back to Monitor A ===
+
+1. DPR listener fires (DPR changed to 1):
+   - canvas.width = 1920 → CANVAS CLEARED BY BROWSER
+   - setViewport(1920, 1080, 1) → store changes (was dpr:2)
+   - Subscription fires → invalidateAll(), markDirty()
+   - tick() scheduled via rAF
+
+2. tick() runs (next animation frame):
+   - getClearInstructions() → 'full'
+   - Draw pass → content drawn
+   - reset() → fullClearRequired = false, needsFrame = false
+
+3. ResizeObserver fires AFTER tick() completed:
+   - dpr = dprRef.current = 1 (updated in step 1)
+   - canvas.width = 1920 → CANVAS CLEARED AGAIN!
+   - setViewport(1920, 1080, 1) → SAME VALUES as store
+   - Zustand: equalityFn returns true → NO subscription
+   - NO invalidateAll(), NO markDirty()
+   - CANVAS STAYS BLANK FOREVER!
+```
+
+#### Why 2 logs vs 4 logs
+
+- **4 logs (success)**: Both observers fire BEFORE tick(), both trigger subscriptions
+- **2 logs (failure)**: One fires, tick() runs, THEN second fires with same values → clears canvas but no redraw
+
+#### The Fix (Phase 14c)
+
+**Guard canvas.width/height assignments to only set when values actually change:**
+
+```typescript
+// In ResizeObserver callback:
+const newWidth = Math.min(width * dpr, maxDim);
+const newHeight = Math.min(height * dpr, maxDim);
+
+// Only set if changed - setting canvas dimensions clears the canvas!
+if (canvas.width !== newWidth || canvas.height !== newHeight) {
+  canvas.width = newWidth;
+  canvas.height = newHeight;
+}
+
+// Always reapply transform (DPR might have changed even if pixel dims same)
+ctxRef.current?.setTransform(dpr, 0, 0, dpr, 0, 0);
+```
+
+This needs to be applied in BOTH:
+1. **ResizeObserver callback** (lines 221-222)
+2. **DPR handler** (lines 175-176)
+
+---
+
+### Phase 14c: Check Before Assign Canvas Dimensions ✅ FIXED
+
+**Root Cause Confirmed:**
+When dragging a tab Monitor A → Monitor B → back to Monitor A (without pointer up), the canvas goes blank. Debug logs revealed:
+- **Success case (4 logs):** Two pairs of invalidation frames triggered
+- **Failure case (2 logs):** Only one pair - second ResizeObserver fires with SAME dimensions
+
+**The Bug Sequence:**
+1. Return to Monitor A → ResizeObserver fires with identical width/height/DPR
+2. `canvas.width = sameValue` executes → **Canvas API clears the canvas** (always happens on assignment!)
+3. Zustand equality check sees no change → **No `invalidateAll()` triggered**
+4. Canvas stays blank forever
+
+**The Fix (CanvasStage.tsx):**
+Added "check before assign" guards in BOTH ResizeObserver and DPR handler:
+
+```typescript
+// Calculate new dimensions
+const newWidth = Math.min(width * dpr, maxDim);
+const newHeight = Math.min(height * dpr, maxDim);
+
+// Only set if changed - setting canvas dimensions ALWAYS clears the canvas!
+if (canvas.width !== newWidth || canvas.height !== newHeight) {
+  canvas.width = newWidth;
+  canvas.height = newHeight;
+}
+```
+
+This prevents the canvas from being cleared when dimensions haven't actually changed, avoiding the race condition where the canvas is cleared but no redraw is triggered.
+
+**Also removed:** Debug console.log statements (lines 239-241)
+
+---
+
+### Files Changed in This Session (Phase 14a/14b/14c)
+
+| File | Changes |
+|------|---------|
+| `CanvasStage.tsx` | ResizeObserver now uses `dprRef.current` instead of `window.devicePixelRatio`, removed dprRef update from ResizeObserver, **added check-before-assign guards for canvas dimensions** |
+| `RenderLoop.ts` | Added transform init in start(), moved notifyTransformChange() to subscription callback, removed lastTransformState field and tick() transform check |
+
+---
+
+### Previous Attempts (Still in codebase)
+
+**Added RenderLoop camera store subscription:**
+```typescript
+// In start(), subscribes to camera store
+this.cameraUnsubscribe = useCameraStore.subscribe(
+  (state) => ({ scale, panX, panY, cssWidth, cssHeight, dpr }),
+  (curr, prev) => {
+    // Viewport changed -> full clear
+    if (cssWidth/cssHeight/dpr changed) {
+      this.dirtyTracker.setCanvasSize(pixelWidth, pixelHeight, dpr);
+      this.dirtyTracker.invalidateAll('geometry-change');
+      this.markDirty();
+      return;
+    }
+    // Transform changed -> notify tracker and schedule frame
+    if (scale/pan changed) {
+      this.dirtyTracker.notifyTransformChange({ scale, pan });
+      this.markDirty();
+    }
+  }
+);
+```
+
+**Added OverlayRenderLoop camera store subscription:**
+- Subscribes to camera store, calls `invalidateAll()` on any change
+
+**Removed Canvas.tsx redundant subscriptions:**
+- Kept only tool notification subscription (for TextTool/EraserTool DOM repositioning)
+
+**Migrated getVisibleWorldBounds:**
+- `objects.ts` and `RenderLoop.ts` use parameterless version from camera-store

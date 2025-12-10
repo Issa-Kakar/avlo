@@ -6,7 +6,7 @@ import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getStroke } from 'perfect-freehand';
 import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
 import { getObjectCacheInstance } from './object-cache';
-import { getViewTransform, getViewportInfo } from '@/stores/camera-store';
+import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 
 // Eraser Trail configuration
 interface EraserTrailPoint {
@@ -55,13 +55,44 @@ export class OverlayRenderLoop {
   private cachedPreview: PreviewData | null = null;
   private holdPreviewOneFrame = false;
   private eraserTrail: EraserTrailPoint[] | null = null;
+  private cameraUnsubscribe: (() => void) | null = null;
 
   start(config: OverlayLoopConfig) {
     this.config = config;
     this.eraserTrail = [];
+
+    // Subscribe to camera store for self-invalidation
+    // Overlay is cheap to redraw, so invalidate on any camera change
+    this.cameraUnsubscribe = useCameraStore.subscribe(
+      (state) => ({
+        scale: state.scale,
+        panX: state.pan.x,
+        panY: state.pan.y,
+        cssWidth: state.cssWidth,
+        cssHeight: state.cssHeight,
+        dpr: state.dpr,
+      }),
+      () => {
+        // Any camera change invalidates overlay (full clear is cheap)
+        this.invalidateAll();
+      },
+      {
+        equalityFn: (a, b) =>
+          a.scale === b.scale &&
+          a.panX === b.panX &&
+          a.panY === b.panY &&
+          a.cssWidth === b.cssWidth &&
+          a.cssHeight === b.cssHeight &&
+          a.dpr === b.dpr,
+      }
+    );
   }
 
   stop() {
+    // Cancel camera store subscription first
+    this.cameraUnsubscribe?.();
+    this.cameraUnsubscribe = null;
+
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.needsFrame = false;
@@ -407,6 +438,9 @@ export class OverlayRenderLoop {
   // Keep animating if trail exists
 
   destroy() {
+    // Ensure subscription is cleaned up
+    this.cameraUnsubscribe?.();
+    this.cameraUnsubscribe = null;
     this.stop();
     this.previewProvider = null;
   }

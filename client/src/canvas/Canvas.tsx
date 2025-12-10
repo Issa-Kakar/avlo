@@ -768,45 +768,21 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     };
   }, [applyCursor, roomDoc]); // cameraScreenToWorld is a pure function from store, not a React dep
 
-  // 3F: Handle transform changes (scale/pan) for both loops
-  // Subscribe to camera store for scale/pan changes instead of React dependency array
+  // 3F: Tool view change notification
+  // RenderLoop and OverlayRenderLoop now subscribe to camera store directly for invalidation
+  // This subscription ONLY handles tool DOM repositioning (TextTool, EraserTool)
   useEffect(() => {
     const unsubscribe = useCameraStore.subscribe(
-      // Selector: extract scale and pan
-      (state) => ({ scale: state.scale, pan: state.pan }),
-      // Callback: runs when selected values change
+      // Selector: extract scale and pan for tool positioning
+      (state) => ({ scale: state.scale, panX: state.pan.x, panY: state.pan.y }),
+      // Callback: notify tool of view change for DOM repositioning
       () => {
-        // Trigger a frame when transform changes
-        // The DirtyRectTracker.notifyTransformChange() in tick() will detect the change
-        // and automatically promote to full clear - we just need to trigger the frame
-        renderLoopRef.current?.invalidateCanvas({ x: 0, y: 0, width: 1, height: 1 });
-        overlayLoopRef.current?.invalidateAll(); // Overlay needs redraw on pan/zoom
-
-        // Notify tool of view change for DOM repositioning
         if (toolRef.current && 'onViewChange' in toolRef.current) {
           (toolRef.current as TextTool | EraserTool).onViewChange?.();
         }
       },
-      // Equality function for granular updates
-      { equalityFn: (a, b) => a.scale === b.scale && a.pan.x === b.pan.x && a.pan.y === b.pan.y }
-    );
-    return unsubscribe;
-  }, []); // Empty deps - subscription manages its own lifecycle
-
-  // 3G: Handle viewport changes (resize/DPR) - triggers full redraw
-  // Separate subscription because viewport changes need invalidateAll, not just dirty rect
-  useEffect(() => {
-    const unsubscribe = useCameraStore.subscribe(
-      // Selector: extract viewport dimensions
-      (state) => ({ cssWidth: state.cssWidth, cssHeight: state.cssHeight, dpr: state.dpr }),
-      // Callback: runs when viewport changes
-      () => {
-        // Viewport changed - need full redraw
-        renderLoopRef.current?.invalidateAll('geometry-change');
-        overlayLoopRef.current?.invalidateAll();
-      },
       // Equality function
-      { equalityFn: (a, b) => a.cssWidth === b.cssWidth && a.cssHeight === b.cssHeight && a.dpr === b.dpr }
+      { equalityFn: (a, b) => a.scale === b.scale && a.panX === b.panX && a.panY === b.panY }
     );
     return unsubscribe;
   }, []); // Empty deps - subscription manages its own lifecycle

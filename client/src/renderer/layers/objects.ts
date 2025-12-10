@@ -1,7 +1,7 @@
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
-import { getVisibleWorldBounds } from '@/canvas/internal/transforms';
+import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore, type ScaleTransform } from '@/stores/selection-store';
 import {
   computeUniformScaleNoThreshold,
@@ -27,8 +27,8 @@ export function drawObjects(
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
-  // Calculate visible world bounds for culling
-  const visibleBounds = getVisibleWorldBounds(viewport.cssWidth, viewport.cssHeight, viewTransform.scale, viewTransform.pan);
+  // Calculate visible world bounds for culling (reads from camera store)
+  const visibleBounds = getVisibleWorldBounds();
 
   // Use spatial index for efficient querying
   let candidateEntries: IndexEntry[];
@@ -55,6 +55,7 @@ export function drawObjects(
   } else {
     // Full viewport query
     candidateEntries = spatialIndex.query(visibleBounds);
+    console.log('viewport', viewport);
   }
 
   // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========

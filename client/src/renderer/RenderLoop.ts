@@ -1,11 +1,11 @@
 import type { RefObject } from 'react';
-import type { Snapshot, ViewTransform } from '@avlo/shared';
+import type { Snapshot } from '@avlo/shared';
 import type { CanvasStageHandle } from '../canvas/CanvasStage';
 import type { GateStatus } from '@/hooks/use-connection-gates';
 import { DirtyRectTracker } from './DirtyRectTracker';
 import {
   FrameStats,
-  ViewportInfo,
+
   FRAME_CONFIG,
   InvalidationReason,
   WorldBounds,
@@ -19,20 +19,16 @@ import {
   drawAuthoringOverlays,
   drawHUD,
 } from './layers';
-import { getVisibleWorldBounds } from '../canvas/internal/transforms';
 import {
   useCameraStore,
   getViewTransform,
   getViewportInfo,
+  getVisibleWorldBounds,
 } from '@/stores/camera-store';
 
 export interface RenderLoopConfig {
   stageRef: RefObject<CanvasStageHandle>;
-  /** @deprecated Use camera store instead. Will be removed in future. */
-  getView?: () => ViewTransform;
   getSnapshot: () => Snapshot;
-  /** @deprecated Use camera store instead. Will be removed in future. */
-  getViewport?: () => ViewportInfo;
   getGates: () => GateStatus; // Phase 7: Gate status for presence rendering
   onStats?: (stats: FrameStats) => void;
   isMobile?: () => boolean; // For mobile FPS throttling
@@ -41,6 +37,7 @@ export interface RenderLoopConfig {
 export class RenderLoop {
   private config: RenderLoopConfig | null = null;
   private dirtyTracker = new DirtyRectTracker();
+  private cameraUnsubscribe: (() => void) | null = null;
   private frameStats: FrameStats = {
     frameCount: 0,
     avgMs: 0,
@@ -53,7 +50,6 @@ export class RenderLoop {
 
   private rafId: number | null = null;
   private lastFrameTime = 0;
-  private lastTransformState: { scale: number; pan: { x: number; y: number } } | null = null;
   private skipNextFrame = false;
   private isHidden = false;
   private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
@@ -81,6 +77,55 @@ export class RenderLoop {
     const viewport = getViewportInfo();
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
 
+    // Initialize dirty tracker with current transform state
+    const initialView = getViewTransform();
+    this.dirtyTracker.notifyTransformChange(initialView);
+
+    // Subscribe to camera store for self-invalidation on viewport/transform changes
+    // This eliminates the need for Canvas.tsx to be a middleman
+    this.cameraUnsubscribe = useCameraStore.subscribe(
+      // Selector: extract all relevant camera state
+      (state) => ({
+        scale: state.scale,
+        panX: state.pan.x,
+        panY: state.pan.y,
+        cssWidth: state.cssWidth,
+        cssHeight: state.cssHeight,
+        dpr: state.dpr,
+      }),
+      // Callback: runs when selected values change
+      (curr, prev) => {
+        // Viewport changed -> update canvas size and full clear
+        if (curr.cssWidth !== prev.cssWidth || curr.cssHeight !== prev.cssHeight || curr.dpr !== prev.dpr) {
+          const pixelWidth = Math.round(curr.cssWidth * curr.dpr);
+          const pixelHeight = Math.round(curr.cssHeight * curr.dpr);
+          this.dirtyTracker.setCanvasSize(pixelWidth, pixelHeight, curr.dpr);
+          this.dirtyTracker.invalidateAll('geometry-change');
+          this.markDirty();
+          console.log('[RenderLoop] geometry-change');
+          return; // Full clear handles everything
+        }
+
+        // Transform changed -> notify tracker for full clear and schedule frame
+        if (curr.scale !== prev.scale || curr.panX !== prev.panX || curr.panY !== prev.panY) {
+          this.dirtyTracker.notifyTransformChange({
+            scale: curr.scale,
+            pan: { x: curr.panX, y: curr.panY }
+          });
+          this.markDirty();
+        }
+      },
+      {
+        equalityFn: (a, b) =>
+          a.scale === b.scale &&
+          a.panX === b.panX &&
+          a.panY === b.panY &&
+          a.cssWidth === b.cssWidth &&
+          a.cssHeight === b.cssHeight &&
+          a.dpr === b.dpr,
+      }
+    );
+
     // EVENT-DRIVEN: Don't schedule frame on start - wait for invalidation
     // Only start hidden loop if already hidden
     if (document.hidden) {
@@ -93,6 +138,10 @@ export class RenderLoop {
 
   // Stop the render loop
   stop(): void {
+    // Cancel camera store subscription first
+    this.cameraUnsubscribe?.();
+    this.cameraUnsubscribe = null;
+
     // Clear any pending animation frames first
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
@@ -108,7 +157,6 @@ export class RenderLoop {
     // Reset all state
     this.config = null;
     this.dirtyTracker.reset();
-    this.lastTransformState = null;
     this.needsFrame = false;
     this.framesSinceInvalidation = 0;
     this.skipNextFrame = false;
@@ -249,21 +297,8 @@ export class RenderLoop {
     // Update dirty tracker canvas size if changed
     this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
 
-    // Check for transform change only if it might have changed
-    // This avoids calling notifyTransformChange on every frame unnecessarily
-    if (
-      !this.lastTransformState ||
-      this.lastTransformState.scale !== view.scale ||
-      this.lastTransformState.pan.x !== view.pan.x ||
-      this.lastTransformState.pan.y !== view.pan.y
-    ) {
-      this.dirtyTracker.notifyTransformChange(view);
-      // Store only the values we need for comparison (not functions)
-      this.lastTransformState = {
-        scale: view.scale,
-        pan: { x: view.pan.x, y: view.pan.y },
-      };
-    }
+    // Transform changes are handled by the camera store subscription callback
+    // which calls dirtyTracker.notifyTransformChange() before marking dirty
 
     // Get clear instructions early to check if we need to do anything
     let clearInstructions = this.dirtyTracker.getClearInstructions();
@@ -287,13 +322,8 @@ export class RenderLoop {
       let hasTranslucentInView = false;
 
       if (snapshot.spatialIndex) {
-        const visibleBounds = getVisibleWorldBounds(
-          viewport.cssWidth,
-          viewport.cssHeight,
-          view.scale,
-          view.pan,
-        );
-      //   // Use spatial query for efficiency
+        const visibleBounds = getVisibleWorldBounds();
+        // Use spatial query for efficiency
         const visibleObjects = snapshot.spatialIndex.query({
           minX: visibleBounds.minX,
           minY: visibleBounds.minY,
@@ -358,15 +388,8 @@ export class RenderLoop {
       ctx.scale(view.scale, view.scale);
       ctx.translate(-view.pan.x, -view.pan.y);
 
-      // Calculate visible world bounds for culling
-      // IMPORTANT: getVisibleWorldBounds expects CSS pixels for viewport dimensions
-      // The transform math (world - pan) * scale operates in CSS coordinate space
-      const visibleBounds = getVisibleWorldBounds(
-        viewport.cssWidth, // CSS pixels (not device pixels)
-        viewport.cssHeight, // CSS pixels (not device pixels)
-        view.scale,
-        view.pan,
-      );
+      // Calculate visible world bounds for culling (reads from camera store)
+      const visibleBounds = getVisibleWorldBounds();
 
       // CRITICAL: Apply clipping if we have dirty rects
       let clipRegion: DirtyClipRegion | undefined;
@@ -438,12 +461,7 @@ export class RenderLoop {
     stage.withContext((ctx) => {
       const augmentedViewport = {
         ...viewport,
-        visibleWorldBounds: getVisibleWorldBounds(
-          viewport.cssWidth,
-          viewport.cssHeight,
-          view.scale,
-          view.pan,
-        ),
+        visibleWorldBounds: getVisibleWorldBounds(),
       };
 
       // ⛔️ Presence moved to overlay canvas - no longer drawn here
@@ -535,6 +553,9 @@ export class RenderLoop {
 
   // Cleanup
   destroy(): void {
+    // Ensure subscription is cleaned up (stop() also does this, but be explicit)
+    this.cameraUnsubscribe?.();
+    this.cameraUnsubscribe = null;
     this.stop();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
