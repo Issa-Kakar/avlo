@@ -341,15 +341,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   useEffect(() => {
     // Special handling for text tool config changes during editing
     // If text tool is actively editing, just update config without recreation
+    // PHASE 1.5: TextTool.updateConfig() now reads from store, no args needed
     if (activeTool === 'text' && toolRef.current?.isActive()) {
-      const textTool = toolRef.current as any;
+      const textTool = toolRef.current as TextTool;
       if ('updateConfig' in textTool) {
-        // Create text config from narrow selectors
-        const textConfig = {
-          size: textSize,
-          color: textColor
-        };
-        textTool.updateConfig(textConfig);
+        textTool.updateConfig();
         return; // Skip recreation, just update config
       }
     }
@@ -385,12 +381,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     let tool: PointerTool | null = null;
 
     if (activeTool === 'eraser') {
-      // Eraser tool uses fixed 10px radius - no settings needed
-      // Constructor: (room, onInvalidate) - getView removed, reads from camera store
-      tool = new EraserTool(
-        roomDoc,
-        () => overlayLoopRef.current?.invalidateAll(),
-      );
+      // PHASE 1.5: EraserTool now uses zero-arg constructor.
+      // All dependencies are read at runtime:
+      // - getActiveRoomDoc() for Y.Doc access (snapshot + mutations)
+      // - useCameraStore.getState() for scale
+      // - invalidateOverlay() for render loop updates
+      tool = new EraserTool();
     } else if (activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'shape') {
       // PHASE 1.5: DrawingTool now uses zero-arg constructor.
       // All dependencies are read at runtime:
@@ -400,22 +396,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // - invalidateOverlay() for render loop updates
       tool = new DrawingTool();
     } else if (activeTool === 'text') {
-      // Text tool uses narrow selector for color and its own size
-      const textSettings = {
-        size: textSize,
-        color: textColor
-      };
-      // CanvasHandle now only has getEditorHost - worldToClient and getView removed
-      // TextTool imports worldToClient and reads scale from camera store directly
-      tool = new TextTool(
-        roomDoc,
-        textSettings,
-        userId,
-        {
-          getEditorHost: () => editorHostRef.current,
-        },
-        () => overlayLoopRef.current?.invalidateAll(),
-      );
+      // PHASE 1.5: TextTool now uses zero-arg constructor.
+      // All dependencies are read at runtime:
+      // - getActiveRoomDoc() for Y.Doc mutations and activity updates
+      // - userProfileManager.getIdentity().userId for ownerId
+      // - useDeviceUIStore.getState() for text size and color
+      // - getEditorHost() for DOM mounting
+      // - invalidateOverlay() for render loop updates
+      tool = new TextTool();
     } else if (activeTool === 'pan') {
       // PanTool constructor: (onInvalidateOverlay, applyCursor, setCursorOverride)
       // getView and setPan removed - reads/writes to camera store directly

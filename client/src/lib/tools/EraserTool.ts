@@ -1,4 +1,3 @@
-import type { IRoomDocManager } from '../room-doc-manager';
 import {
   pointToSegmentDistance,
   strokeHitTest,
@@ -6,6 +5,8 @@ import {
   pointInDiamond,
 } from '@/lib/geometry/hit-test-primitives';
 import { useCameraStore } from '@/stores/camera-store';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import * as Y from 'yjs';
 
 // Fixed radius configuration
@@ -20,17 +21,26 @@ interface EraserState {
   hitAccum: Set<string>; // Objects accumulated during drag
 }
 
+/**
+ * EraserTool - Geometry-aware object deletion.
+ *
+ * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
+ * All dependencies are read at runtime from module-level singletons:
+ * - getActiveRoomDoc() for Y.Doc access (snapshot reading and mutations)
+ * - useCameraStore.getState() for scale (eraser radius conversion)
+ * - invalidateOverlay() for render loop updates
+ *
+ * This allows the tool to be constructed once as a singleton and reused
+ * across tool switches without React lifecycle involvement.
+ */
 export class EraserTool {
   private state!: EraserState;
-  private room: IRoomDocManager;
-  private onInvalidate?: () => void;
 
-  constructor(
-    room: IRoomDocManager,
-    onInvalidate?: () => void,
-  ) {
-    this.room = room;
-    this.onInvalidate = onInvalidate;
+  /**
+   * Zero-arg constructor. All dependencies are read at runtime.
+   * Can be constructed once and reused across gestures and tool switches.
+   */
+  constructor() {
     this.resetState();
   }
 
@@ -58,7 +68,7 @@ export class EraserTool {
     this.state.hitAccum.clear();
 
     this.updateHitTest(worldX, worldY);
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   move(worldX: number, worldY: number): void {
@@ -68,7 +78,7 @@ export class EraserTool {
     if (this.state.isErasing) {
       this.updateHitTest(worldX, worldY);
     }
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   end(_worldX?: number, _worldY?: number): void {
@@ -78,7 +88,7 @@ export class EraserTool {
 
   cancel(): void {
     this.resetState();
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   isActive(): boolean {
@@ -91,14 +101,14 @@ export class EraserTool {
 
   destroy(): void {
     this.resetState();
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   clearHover(): void {
     // No hover state in new design
     if (!this.state.isErasing) {
       this.state.lastWorld = null;
-      this.onInvalidate?.();
+      invalidateOverlay();
     }
   }
 
@@ -110,7 +120,8 @@ export class EraserTool {
   }
 
   private updateHitTest(worldX: number, worldY: number): void {
-    const snapshot = this.room.currentSnapshot;
+    const roomDoc = getActiveRoomDoc();
+    const snapshot = roomDoc.currentSnapshot;
     const { scale } = useCameraStore.getState();
 
     // Convert fixed screen radius to world units (with slack for forgiving feel)
@@ -120,7 +131,7 @@ export class EraserTool {
 
     const index = snapshot.spatialIndex;
     if (!index) {
-      this.onInvalidate?.();
+      invalidateOverlay();
       return;
     }
 
@@ -201,7 +212,7 @@ export class EraserTool {
       }
     }
 
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   /**
@@ -330,22 +341,25 @@ export class EraserTool {
   private commitErase(): void {
     if (this.state.hitAccum.size === 0) {
       this.resetState();
-      this.onInvalidate?.();
+      invalidateOverlay();
       return;
     }
 
+    // Get runtime dependency at commit time
+    const roomDoc = getActiveRoomDoc();
+
     // Delete all accumulated objects in one transaction
-    this.room.mutate((ydoc) => {
+    roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<any>>;
-      
+
       for (const id of this.state.hitAccum) {
         objects.delete(id);
       }
     });
 
     this.resetState();
-    this.onInvalidate?.();
+    invalidateOverlay();
   }
 
   getPreview(): EraserPreview | null {

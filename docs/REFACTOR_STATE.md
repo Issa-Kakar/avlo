@@ -1,7 +1,7 @@
 # Canvas Runtime Refactor - State & Progress
 
 **Branch:** `refactor/canvas-runtime-phase1`
-**Last Commit:** `ced7560` - refactor: Phase 1 canvas runtime modules + zero-arg DrawingTool
+**Last Update:** EraserTool + TextTool zero-arg refactor complete
 
 ---
 
@@ -27,7 +27,7 @@ Created 4 new modules in `client/src/canvas/`:
 | `cursor-manager.ts` | `applyCursor()` / `setCursorOverride()` | ⚠️ Created, not yet wired |
 | `editor-host-registry.ts` | `getEditorHost()` for TextTool DOM | ✅ Wired in Canvas.tsx |
 
-### Phase 1.5: DrawingTool Zero-Arg
+### Phase 1.5: DrawingTool Zero-Arg ✅
 
 **Before:**
 ```typescript
@@ -52,62 +52,103 @@ new DrawingTool()
 - `frozenForceSnapKind: ForcedSnapKind | null`
 - Settings (size, color, opacity)
 
----
+### Phase 1.5: EraserTool Zero-Arg ✅
 
-## Next: EraserTool Zero-Arg
-
-**Current constructor:**
+**Before:**
 ```typescript
-// In Canvas.tsx line ~389
-tool = new EraserTool(
-  roomDoc,
-  () => overlayLoopRef.current?.invalidateAll(),
-);
+new EraserTool(roomDoc, () => overlayLoopRef.current?.invalidateAll())
 ```
 
-**Target:**
+**After:**
 ```typescript
 new EraserTool()
 ```
 
-**Changes needed in `client/src/lib/tools/EraserTool.ts`:**
-1. Remove `room: IRoomDocManager` param → use `getActiveRoomDoc()` at delete time
-2. Remove `onInvalidate` callback → use `invalidateOverlay()` import
-3. Constructor becomes zero-arg
+**How it reads dependencies at runtime:**
+- `roomDoc` → `getActiveRoomDoc()` at `updateHitTest()` and `commitErase()` time
+- `scale` → `useCameraStore.getState().scale` for radius conversion
+- `invalidation` → `invalidateOverlay()` import
 
-**Verification:**
-- Eraser uses fixed 10px radius (no settings to freeze)
-- Deletes objects on pointer-up via `roomDoc.mutate()`
+**No settings to freeze** - eraser uses fixed 10px radius.
+
+### Phase 1.5: TextTool Zero-Arg ✅
+
+**Before:**
+```typescript
+new TextTool(roomDoc, textSettings, userId, { getEditorHost }, onInvalidate)
+```
+
+**After:**
+```typescript
+new TextTool()
+```
+
+**How it reads dependencies at runtime:**
+- `textSettings` → `useDeviceUIStore.getState()` for textSize and color at `begin()`
+- `roomDoc` → `getActiveRoomDoc()` at `commitTextCore()` and for activity updates
+- `userId` → `userProfileManager.getIdentity().userId` at `commitTextCore()`
+- `editorHost` → `getEditorHost()` import
+- `invalidation` → `invalidateOverlay()` import
+
+**Frozen per-gesture:**
+- `config: { size, color }` - captured at begin() time
+
+**Note:** TextTool is marked as PLACEHOLDER in CLAUDE.md - will be completely replaced.
+The select tool will automatically switch after placing initial text block.
 
 ---
 
-## Next: TextTool Zero-Arg
+## Next: PanTool Zero-Arg
 
 **Current constructor:**
 ```typescript
-// In Canvas.tsx line ~433
-tool = new TextTool(
-  roomDoc,
-  textSettings,
-  userId,
-  { getEditorHost: () => editorHostRef.current },
+tool = new PanTool(
   () => overlayLoopRef.current?.invalidateAll(),
+  applyCursor,
+  (cursor: string | null) => { cursorOverrideRef.current = cursor; },
 );
 ```
 
 **Target:**
 ```typescript
-new TextTool()
+new PanTool()
 ```
 
-**Changes needed in `client/src/lib/tools/TextTool.ts`:**
-1. Remove `room: IRoomDocManager` param → use `getActiveRoomDoc()`
-2. Remove `textSettings` param → read from `useDeviceUIStore.getState()` at begin()
-3. Remove `userId` param → use `userProfileManager.getIdentity().userId`
-4. Remove `canvasHandle.getEditorHost` → use `getEditorHost()` from editor-host-registry
-5. Remove `onInvalidate` callback → use `invalidateOverlay()`
+**Changes needed in `client/src/lib/tools/PanTool.ts`:**
+1. Remove `onInvalidateOverlay` callback → use `invalidateOverlay()` import
+2. Remove `applyCursor` callback → use `applyCursor()` from cursor-manager
+3. Remove `setCursorOverride` callback → use `setCursorOverride()` from cursor-manager
+4. Constructor becomes zero-arg
 
-**Note:** TextTool is marked as PLACEHOLDER in CLAUDE.md - will be completely replaced. May want to do minimal refactor or skip until replacement.
+**Dependency:** Requires wiring cursor-manager.ts in Canvas.tsx first (Phase 4).
+
+---
+
+## Next: SelectTool Zero-Arg
+
+**Current constructor:**
+```typescript
+tool = new SelectTool(roomDoc, {
+  invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
+  invalidateOverlay: () => overlayLoopRef.current?.invalidateAll(),
+  applyCursor,
+  setCursorOverride: (cursor: string | null) => { cursorOverrideRef.current = cursor; },
+});
+```
+
+**Target:**
+```typescript
+new SelectTool()
+```
+
+**Changes needed in `client/src/lib/tools/SelectTool.ts`:**
+1. Remove `room: IRoomDocManager` param → use `getActiveRoomDoc()`
+2. Remove `invalidateWorld` callback → use `invalidateWorld()` from invalidation-helpers
+3. Remove `invalidateOverlay` callback → use `invalidateOverlay()` from invalidation-helpers
+4. Remove `applyCursor` callback → use `applyCursor()` from cursor-manager
+5. Remove `setCursorOverride` callback → use `setCursorOverride()` from cursor-manager
+
+**Dependency:** Requires wiring cursor-manager.ts in Canvas.tsx first (Phase 4).
 
 ---
 
@@ -115,12 +156,13 @@ new TextTool()
 
 ### Phase 2: Remaining Tools
 
-| Tool | Constructor Args | Priority |
-|------|-----------------|----------|
-| `EraserTool` | `(room, onInvalidate)` | **Next** |
-| `TextTool` | `(room, config, userId, canvasHandle, onInvalidate)` | Low (placeholder) |
-| `PanTool` | `(onInvalidateOverlay, applyCursor, setCursorOverride)` | Medium |
-| `SelectTool` | `(room, opts)` | Medium |
+| Tool | Constructor Args | Status |
+|------|-----------------|--------|
+| `DrawingTool` | Zero-arg | ✅ Complete |
+| `EraserTool` | Zero-arg | ✅ Complete |
+| `TextTool` | Zero-arg | ✅ Complete |
+| `PanTool` | `(onInvalidateOverlay, applyCursor, setCursorOverride)` | Needs cursor-manager |
+| `SelectTool` | `(room, opts)` | Needs cursor-manager |
 
 ### Phase 3: CanvasRuntime Class
 
@@ -135,20 +177,17 @@ Consolidate into single imperative runtime:
 
 Replace Canvas.tsx's `applyCursor` callback and `cursorOverrideRef` with imports from cursor-manager.ts.
 
+**Required for:** PanTool and SelectTool zero-arg conversion.
+
 ---
 
 ## Files Modified This Session
 
 ```
-client/src/canvas/Canvas.tsx          - Wired Phase 1 modules, simplified DrawingTool creation
-client/src/canvas/cursor-manager.ts   - NEW: Centralized cursor control
-client/src/canvas/editor-host-registry.ts - NEW: DOM overlay host registry
-client/src/canvas/invalidation-helpers.ts - NEW: Global invalidation functions
-client/src/canvas/room-runtime.ts     - NEW: Active room context module
-client/src/lib/tools/DrawingTool.ts   - Zero-arg constructor refactor
-client/src/lib/tools/SelectTool.ts    - Minor cleanup
-docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md - Phase 1 design doc
-docs/REFACTOR_STATE.md                - THIS FILE
+client/src/canvas/Canvas.tsx            - Zero-arg EraserTool + TextTool construction
+client/src/lib/tools/EraserTool.ts      - Zero-arg constructor refactor
+client/src/lib/tools/TextTool.ts        - Zero-arg constructor refactor
+docs/REFACTOR_STATE.md                  - THIS FILE (updated)
 ```
 
 ---
@@ -183,7 +222,7 @@ cat docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Tools (Zero-Arg Ready)                        │
-│  DrawingTool ✅    EraserTool ⏳    TextTool ⏳                  │
+│  DrawingTool ✅    EraserTool ✅    TextTool ✅                  │
 │  PanTool ⏳        SelectTool ⏳                                 │
 └────────────────────────────────┬────────────────────────────────┘
                                  │

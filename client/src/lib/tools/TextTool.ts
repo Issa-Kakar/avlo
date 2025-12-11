@@ -3,14 +3,14 @@ import * as Y from 'yjs';
 import type { TextPreview } from './types';
 import { useDeviceUIStore } from '../../stores/device-ui-store';
 import { useCameraStore, worldToClient as cameraWorldToClient } from '@/stores/camera-store';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import { getEditorHost } from '@/canvas/editor-host-registry';
+import { userProfileManager } from '@/lib/user-profile-manager';
 
-export interface TextToolConfig {
+interface TextToolConfig {
   size: number;
   color: string;
-}
-
-export interface CanvasHandle {
-  getEditorHost: () => HTMLElement | null; // REQUIRED for DOM mounting
 }
 
 interface TextState {
@@ -20,6 +20,22 @@ interface TextState {
   content: string;
 }
 
+/**
+ * TextTool - DOM-based text editing overlay.
+ *
+ * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
+ * All dependencies are read at runtime from module-level singletons:
+ * - getActiveRoomDoc() for Y.Doc mutations and activity updates
+ * - userProfileManager.getIdentity().userId for ownerId
+ * - useDeviceUIStore.getState() for text size and color
+ * - getEditorHost() for DOM mounting
+ * - invalidateOverlay() for render loop updates
+ *
+ * NOTE: This tool is marked as PLACEHOLDER in CLAUDE.md and will be
+ * completely replaced. The text tool will be removed almost completely
+ * as the select tool will be switched to automatically after placing
+ * the initial text block.
+ */
 export class TextTool {
   private state: TextState = {
     isEditing: false,
@@ -29,13 +45,14 @@ export class TextTool {
   };
   private committing = false;
 
-  constructor(
-    private room: any, // RoomDoc type
-    private config: TextToolConfig,
-    private userId: string,
-    private canvasHandle: CanvasHandle,
-    private onInvalidate?: () => void,
-  ) {}
+  // Settings frozen at begin() time
+  private config: TextToolConfig = { size: 20, color: '#000000' };
+
+  /**
+   * Zero-arg constructor. All dependencies are read at runtime.
+   * Can be constructed once and reused across gestures and tool switches.
+   */
+  constructor() {}
 
   canBegin(): boolean {
     return !this.state.isEditing;
@@ -43,6 +60,13 @@ export class TextTool {
 
   begin(_pointerId: number, worldX: number, worldY: number): void {
     if (this.state.isEditing) return;
+
+    // PHASE 1.5: Freeze settings from store at gesture start
+    const uiState = useDeviceUIStore.getState();
+    this.config = {
+      size: uiState.textSize,
+      color: uiState.drawingSettings.color, // Text uses drawing color
+    };
 
     // Store world position
     this.state.worldPosition = { x: worldX, y: worldY };
@@ -54,7 +78,8 @@ export class TextTool {
     this.createEditor(clientX, clientY);
 
     // Update awareness
-    this.room.updateActivity('typing');
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.updateActivity('typing');
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -87,16 +112,24 @@ export class TextTool {
     this.teardownEditor();
   }
 
-  // Update config without recreating tool (useful when slider changes)
-  updateConfig(newConfig: TextToolConfig): void {
-    this.config = newConfig;
+  /**
+   * Refresh config from store (useful when toolbar settings change).
+   * NOTE: In current codebase, clicking toolbar blurs/commits anyway,
+   * so this is mostly a no-op. Will be removed when TextTool is replaced.
+   */
+  updateConfig(): void {
+    const uiState = useDeviceUIStore.getState();
+    this.config = {
+      size: uiState.textSize,
+      color: uiState.drawingSettings.color,
+    };
 
     // Update live editor if it exists
     if (this.state.editBox) {
       const { scale } = useCameraStore.getState();
-      const scaledFontSize = newConfig.size * scale;
+      const scaledFontSize = this.config.size * scale;
       this.state.editBox.style.fontSize = `${scaledFontSize}px`;
-      this.state.editBox.style.color = newConfig.color;
+      this.state.editBox.style.color = this.config.color;
     }
   }
 
@@ -114,7 +147,7 @@ export class TextTool {
     );
 
     // CRITICAL FIX: Convert screen coordinates to host-relative coordinates
-    const host = this.canvasHandle.getEditorHost?.() || document.body;
+    const host = getEditorHost() || document.body;
     const hostRect = host.getBoundingClientRect();
     const hostRelativeX = clientX - hostRect.left;
     const hostRelativeY = clientY - hostRect.top;
@@ -148,8 +181,8 @@ export class TextTool {
   }
 
   private createEditor(clientX: number, clientY: number): void {
-    // Get DOM overlay host from canvas
-    const host = this.canvasHandle.getEditorHost?.() || document.body;
+    // Get DOM overlay host from registry
+    const host = getEditorHost() || document.body;
 
     // CRITICAL FIX: Convert screen coordinates to host-relative coordinates
     // clientX/clientY are screen coordinates, but we need coordinates relative to the host container
@@ -224,7 +257,7 @@ export class TextTool {
     const onInput = () => {
       // Store content temporarily for preview purposes
       this.state.content = editor.textContent || '';
-      this.onInvalidate?.();
+      invalidateOverlay();
     };
 
     editor.addEventListener('keydown', onKeyDown);
@@ -257,18 +290,16 @@ export class TextTool {
     this.state.isEditing = false;
     this.state.content = '';
     this.state.worldPosition = null;
-    this.room.updateActivity('idle');
-    this.onInvalidate?.();
+
+    // Update awareness and invalidate
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.updateActivity('idle');
+    invalidateOverlay();
     useDeviceUIStore.getState().setIsTextEditing(false);
   }
 
   private cancelEdit(): void {
     // Cancel without commit
-    this.teardownEditor();
-  }
-
-  // Back-compat shim
-  private closeEditor(_commit: boolean): void {
     this.teardownEditor();
   }
 
@@ -297,10 +328,14 @@ export class TextTool {
     const w = rect.width / scale;
     const h = rect.height / scale;
 
+    // Get runtime dependencies at commit time
+    const roomDoc = getActiveRoomDoc();
+    const userId = userProfileManager.getIdentity().userId;
+
     const id = ulid();
-    this.room.mutate((ydoc: Y.Doc) => {
+    roomDoc.mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
+      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
 
       const textMap = new Y.Map();
       textMap.set('id', id);
@@ -314,7 +349,7 @@ export class TextTool {
       textMap.set('fontStyle', 'normal');
       textMap.set('textAlign', 'left');
       textMap.set('opacity', 1);
-      textMap.set('ownerId', this.userId);
+      textMap.set('ownerId', userId);
       textMap.set('createdAt', Date.now());
 
       objects.set(id, textMap);
