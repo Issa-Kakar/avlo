@@ -27,6 +27,7 @@ import { ZoomAnimator } from './animation/ZoomAnimator';
 import { setActiveRoom } from './room-runtime';
 import { setEditorHost } from './editor-host-registry';
 import { setWorldInvalidator, setOverlayInvalidator } from './invalidation-helpers';
+import { setCursorOverride } from './cursor-manager';
 
 // Unified interface for all pointer tools
 type PointerTool = DrawingTool | EraserTool | TextTool | PanTool | SelectTool;
@@ -78,8 +79,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     lastClient: { x: number; y: number } | null;
   }>({ active: false, pointerId: null, lastClient: null });
 
-  // Cursor override that beats the tool's base cursor
-  const cursorOverrideRef = useRef<string | null>(null);
+  // cursorOverrideRef REMOVED - now using cursor-manager.ts
 
   // Suppress tool preview during MMB pan (hides eraser ring)
   const suppressToolPreviewRef = useRef(false);
@@ -183,34 +183,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // cameraScreenToWorld(clientX, clientY) -> [worldX, worldY] | null
   // cameraWorldToClient(worldX, worldY) -> [clientX, clientY]
 
-  // Step 3.2: Add cursor management function
-  // CRITICAL: Stable function that reads from ref to avoid stale closures
-  const applyCursor = useCallback(() => {
-    const canvas = baseStageRef.current?.getCanvasElement();
-    if (!canvas) return;
-
-    // Priority 1: Explicit override (MMB dragging)
-    if (cursorOverrideRef.current) {
-      canvas.style.cursor = cursorOverrideRef.current;
-      return;
-    }
-
-    // Priority 2: Tool-based default (read from ref for stability)
-    const currentTool = activeToolRef.current;
-    switch (currentTool) {
-      case 'eraser':
-        canvas.style.cursor = 'url("/cursors/avloEraser.cur") 16 16, auto';
-        break;
-      case 'pan':
-        canvas.style.cursor = 'grab'; // Open hand idle
-        break;
-      case 'select':
-        canvas.style.cursor = 'default'; // Arrow cursor for selection
-        break;
-      default:
-        canvas.style.cursor = 'crosshair';
-    }
-  }, []); // ✅ Empty deps - reads from refs
+  // Cursor management moved to cursor-manager.ts module
+  // Use setCursorOverride() which calls applyCursor() internally
 
   // NOTE: No stageReady gate needed!
   // - Canvas element is registered synchronously via ref callback in CanvasStage
@@ -359,15 +333,6 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     // Guard: ensure all required components exist
     // This effect WILL re-run when stageReady changes (once)
     if (!renderLoop || !canvas || !roomDoc) {
-      // Only log in development mode
-      if (import.meta.env.DEV) {
-        // eslint-disable-next-line no-console
-        console.debug('Tool waiting for dependencies:', {
-          renderLoop: !!renderLoop,
-          canvas: !!canvas,
-          room: !!roomDoc,
-        });
-      }
       return; // Dependencies not ready yet, will retry when stageReady changes
     }
 
@@ -405,21 +370,19 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // - invalidateOverlay() for render loop updates
       tool = new TextTool();
     } else if (activeTool === 'pan') {
-      // PanTool constructor: (onInvalidateOverlay, applyCursor, setCursorOverride)
-      // getView and setPan removed - reads/writes to camera store directly
-      tool = new PanTool(
-        () => overlayLoopRef.current?.invalidateAll(),
-        applyCursor,
-        (cursor: string | null) => { cursorOverrideRef.current = cursor; },
-      );
+      // PHASE 1.5: PanTool now uses zero-arg constructor.
+      // All dependencies are read at runtime:
+      // - useCameraStore.getState() for scale/pan
+      // - cursor-manager.ts for cursor control
+      // - invalidation-helpers.ts for overlay invalidation
+      tool = new PanTool();
     } else if (activeTool === 'select') {
-      // SelectTool opts: getView removed - reads from camera store directly
-      tool = new SelectTool(roomDoc, {
-        invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
-        invalidateOverlay: () => overlayLoopRef.current?.invalidateAll(),
-        applyCursor,
-        setCursorOverride: (cursor: string | null) => { cursorOverrideRef.current = cursor; },
-      });
+      // PHASE 1.5: SelectTool now uses zero-arg constructor.
+      // All dependencies are read at runtime:
+      // - getActiveRoomDoc() for Y.Doc access (snapshot + mutations)
+      // - invalidation-helpers.ts for world/overlay invalidation
+      // - cursor-manager.ts for cursor control
+      tool = new SelectTool();
     } else {
       return; // Unsupported tool
     }
@@ -439,8 +402,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
     // Update cursor style
     // Update cursor based on current tool/override
-    cursorOverrideRef.current = null; // belt-and-suspenders reset
-    applyCursor()
+    setCursorOverride(null); // belt-and-suspenders reset (also calls applyCursor)
 
     // Seed the eraser preview using the last known mouse position (for keyboard shortcuts)
     if (!isMobile && activeTool === 'eraser' && lastMouseClientRef.current) {
@@ -477,7 +439,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Reset MMB state if active (Step 4 cleanup)
       if (mmbPanRef.current.active) {
         mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
-        cursorOverrideRef.current = null;
+        setCursorOverride(null);
         suppressToolPreviewRef.current = false;
       }
     };
@@ -487,7 +449,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     activeTool,
     textSize,      // Only for TextTool updateConfig
     textColor,     // Only for TextTool updateConfig (narrow selector)
-    applyCursor,   // Stable function with empty deps
+    // applyCursor removed - now imported from cursor-manager module
   ]); // DrawingTool reads settings + shapeVariant from store at begin() time
   // Note: cameraScreenToWorld/cameraWorldToClient are pure functions from camera-store, not React deps
 
@@ -522,9 +484,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
           lastClient: { x: e.clientX, y: e.clientY },
         };
 
-        cursorOverrideRef.current = 'grabbing';
+        setCursorOverride('grabbing'); // Also calls applyCursor()
         suppressToolPreviewRef.current = true; // Hide tool preview
-        applyCursor();
         overlayLoopRef.current?.invalidateAll(); // Redraw without preview
         return;
       }
@@ -628,9 +589,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         }
 
         mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
-        cursorOverrideRef.current = null;
+        setCursorOverride(null); // Also calls applyCursor()
         suppressToolPreviewRef.current = false; // Show tool preview again
-        applyCursor();
         overlayLoopRef.current?.invalidateAll(); // Redraw with preview
         return;
       }
@@ -655,9 +615,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
         // Same as pointer up for MMB
         mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
-        cursorOverrideRef.current = null;
+        setCursorOverride(null); // Also calls applyCursor()
         suppressToolPreviewRef.current = false;
-        applyCursor();
         overlayLoopRef.current?.invalidateAll();
         return;
       }
@@ -679,9 +638,8 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       // Handle MMB lost capture
       if (mmbPanRef.current.active && e.pointerId === mmbPanRef.current.pointerId) {
         mmbPanRef.current = { active: false, pointerId: null, lastClient: null };
-        cursorOverrideRef.current = null;
+        setCursorOverride(null); // Also calls applyCursor()
         suppressToolPreviewRef.current = false;
-        applyCursor();
         overlayLoopRef.current?.invalidateAll();
         return;
       }
@@ -762,7 +720,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       canvas.removeEventListener('pointerleave', handlePointerLeave);
       canvas.removeEventListener('wheel', handleWheel);
     };
-  }, [applyCursor, roomDoc]); // cameraScreenToWorld is a pure function from store, not a React dep
+  }, [roomDoc]); // applyCursor removed (now imported module function), cameraScreenToWorld is a pure function from store
 
   // 3F: Tool view change notification
   // RenderLoop and OverlayRenderLoop now subscribe to camera store directly for invalidation
@@ -815,6 +773,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         ref={baseStageRef}
         className={className}
         style={{ position: 'absolute', inset: 0, zIndex: 1 }}
+        registerAsPointerTarget // Only base canvas registers for cursor management
       />
       <CanvasStage
         ref={overlayStageRef}

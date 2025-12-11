@@ -1,7 +1,7 @@
 # Canvas Runtime Refactor - State & Progress
 
 **Branch:** `refactor/canvas-runtime-phase1`
-**Last Update:** EraserTool + TextTool zero-arg refactor complete
+**Last Update:** All tools now zero-arg (PanTool + SelectTool complete)
 
 ---
 
@@ -24,8 +24,14 @@ Created 4 new modules in `client/src/canvas/`:
 |--------|---------|--------|
 | `room-runtime.ts` | `getActiveRoomDoc()` for imperative room access | ✅ Wired in Canvas.tsx |
 | `invalidation-helpers.ts` | `invalidateOverlay()` / `invalidateWorld()` | ✅ Wired in Canvas.tsx |
-| `cursor-manager.ts` | `applyCursor()` / `setCursorOverride()` | ⚠️ Created, not yet wired |
+| `cursor-manager.ts` | `applyCursor()` / `setCursorOverride()` | ✅ Wired in Canvas.tsx |
 | `editor-host-registry.ts` | `getEditorHost()` for TextTool DOM | ✅ Wired in Canvas.tsx |
+
+### Phase 1.1: CanvasStage Canvas Registration Fix ✅
+
+**Problem:** Both base and overlay canvases called `setCanvasElement()`. Overlay (with `pointer-events: none`) won, breaking cursor-manager.
+
+**Solution:** Added `registerAsPointerTarget` prop to CanvasStage. Only base canvas registers.
 
 ### Phase 1.5: DrawingTool Zero-Arg ✅
 
@@ -96,11 +102,9 @@ new TextTool()
 **Note:** TextTool is marked as PLACEHOLDER in CLAUDE.md - will be completely replaced.
 The select tool will automatically switch after placing initial text block.
 
----
+### Phase 1.5: PanTool Zero-Arg ✅
 
-## Next: PanTool Zero-Arg
-
-**Current constructor:**
+**Before:**
 ```typescript
 tool = new PanTool(
   () => overlayLoopRef.current?.invalidateAll(),
@@ -109,24 +113,19 @@ tool = new PanTool(
 );
 ```
 
-**Target:**
+**After:**
 ```typescript
 new PanTool()
 ```
 
-**Changes needed in `client/src/lib/tools/PanTool.ts`:**
-1. Remove `onInvalidateOverlay` callback → use `invalidateOverlay()` import
-2. Remove `applyCursor` callback → use `applyCursor()` from cursor-manager
-3. Remove `setCursorOverride` callback → use `setCursorOverride()` from cursor-manager
-4. Constructor becomes zero-arg
+**How it reads dependencies at runtime:**
+- `scale/pan` → `useCameraStore.getState()` for viewport panning
+- `cursor` → `setCursorOverride()` from cursor-manager (internally calls applyCursor)
+- `invalidation` → `invalidateOverlay()` from invalidation-helpers
 
-**Dependency:** Requires wiring cursor-manager.ts in Canvas.tsx first (Phase 4).
+### Phase 1.5: SelectTool Zero-Arg ✅
 
----
-
-## Next: SelectTool Zero-Arg
-
-**Current constructor:**
+**Before:**
 ```typescript
 tool = new SelectTool(roomDoc, {
   invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
@@ -136,57 +135,80 @@ tool = new SelectTool(roomDoc, {
 });
 ```
 
-**Target:**
+**After:**
 ```typescript
 new SelectTool()
 ```
 
-**Changes needed in `client/src/lib/tools/SelectTool.ts`:**
-1. Remove `room: IRoomDocManager` param → use `getActiveRoomDoc()`
-2. Remove `invalidateWorld` callback → use `invalidateWorld()` from invalidation-helpers
-3. Remove `invalidateOverlay` callback → use `invalidateOverlay()` from invalidation-helpers
-4. Remove `applyCursor` callback → use `applyCursor()` from cursor-manager
-5. Remove `setCursorOverride` callback → use `setCursorOverride()` from cursor-manager
-
-**Dependency:** Requires wiring cursor-manager.ts in Canvas.tsx first (Phase 4).
+**How it reads dependencies at runtime:**
+- `roomDoc` → `getActiveRoomDoc()` for snapshot and mutations
+- `invalidateWorld` → `invalidateWorld()` from invalidation-helpers
+- `invalidateOverlay` → `invalidateOverlay()` from invalidation-helpers
+- `cursor` → `applyCursor()` / `setCursorOverride()` from cursor-manager
 
 ---
 
-## Future Phases
+## Canvas.tsx Cleanup Done
 
-### Phase 2: Remaining Tools
+**Removed from Canvas.tsx:**
+- `cursorOverrideRef` - now using cursor-manager.ts
+- Local `applyCursor` useCallback - now imported from cursor-manager.ts
+- Callback-based tool construction - all tools now zero-arg
+
+**Still in Canvas.tsx (for future phases):**
+- `mmbPanRef` - MMB pan state (will be unified with PanTool when tools become singletons)
+- `suppressToolPreviewRef` - Preview suppression during MMB pan
+- `activeToolRef` - Tool type mirror for stable closures
+- `lastMouseClientRef` - Mouse position for eraser seeding
+
+---
+
+## Next: Tool Registry / CanvasRuntime
+
+Now that all tools are zero-arg, the next phase can proceed:
+
+### Option A: Tool Registry Module (User preference)
+
+Create `client/src/canvas/tool-registry.ts`:
+- Self-constructing tools on module load
+- Export singleton instances
+- MMB pan can directly call `panTool.begin()`
+
+### Option B: CanvasRuntime Class
+
+Create `client/src/canvas/CanvasRuntime.ts`:
+- Owns tool singletons
+- Owns RenderLoop + OverlayRenderLoop
+- Owns ZoomAnimator
+- Handles pointer event dispatch
+- Canvas.tsx becomes thin React wrapper
+
+**After tool registry/runtime:**
+- Remove `mmbPanRef` from Canvas.tsx
+- Unify MMB pan with PanTool singleton
+- Remove duplicate pan math
+
+---
+
+## All Tools Status
 
 | Tool | Constructor Args | Status |
 |------|-----------------|--------|
 | `DrawingTool` | Zero-arg | ✅ Complete |
 | `EraserTool` | Zero-arg | ✅ Complete |
 | `TextTool` | Zero-arg | ✅ Complete |
-| `PanTool` | `(onInvalidateOverlay, applyCursor, setCursorOverride)` | Needs cursor-manager |
-| `SelectTool` | `(room, opts)` | Needs cursor-manager |
-
-### Phase 3: CanvasRuntime Class
-
-Consolidate into single imperative runtime:
-- Owns RenderLoop + OverlayRenderLoop
-- Owns ZoomAnimator
-- Owns tool singleton registry
-- Handles pointer event dispatch
-- Canvas.tsx becomes thin React wrapper
-
-### Phase 4: Wire cursor-manager.ts
-
-Replace Canvas.tsx's `applyCursor` callback and `cursorOverrideRef` with imports from cursor-manager.ts.
-
-**Required for:** PanTool and SelectTool zero-arg conversion.
+| `PanTool` | Zero-arg | ✅ Complete |
+| `SelectTool` | Zero-arg | ✅ Complete |
 
 ---
 
 ## Files Modified This Session
 
 ```
-client/src/canvas/Canvas.tsx            - Zero-arg EraserTool + TextTool construction
-client/src/lib/tools/EraserTool.ts      - Zero-arg constructor refactor
-client/src/lib/tools/TextTool.ts        - Zero-arg constructor refactor
+client/src/canvas/CanvasStage.tsx       - Added registerAsPointerTarget prop
+client/src/canvas/Canvas.tsx            - Wired cursor-manager, zero-arg all tools
+client/src/lib/tools/PanTool.ts         - Zero-arg constructor refactor
+client/src/lib/tools/SelectTool.ts      - Zero-arg constructor refactor
 docs/REFACTOR_STATE.md                  - THIS FILE (updated)
 ```
 
@@ -205,6 +227,7 @@ npm run typecheck
 # Key files to read for context
 cat docs/REFACTOR_STATE.md
 cat docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md
+cat docs/REFACTOR_PAN_CURSOR_SYSTEM.md
 ```
 
 ---
@@ -221,9 +244,9 @@ cat docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Tools (Zero-Arg Ready)                        │
+│                    Tools (ALL Zero-Arg Now!)                     │
 │  DrawingTool ✅    EraserTool ✅    TextTool ✅                  │
-│  PanTool ⏳        SelectTool ⏳                                 │
+│  PanTool ✅        SelectTool ✅                                 │
 └────────────────────────────────┬────────────────────────────────┘
                                  │
                                  ▼
@@ -232,5 +255,6 @@ cat docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md
 │  - Mounts/unmounts runtime modules                              │
 │  - Creates tools (will become singleton registry)               │
 │  - Dispatches pointer events to tools                           │
+│  - MMB pan (to be unified with PanTool singleton)               │
 └─────────────────────────────────────────────────────────────────┘
 ```

@@ -1,4 +1,3 @@
-import type { IRoomDocManager } from '../room-doc-manager';
 import type { WorldRect, SelectionPreview, HandleId } from './types';
 import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
@@ -20,6 +19,9 @@ import {
   computePolylineArea,
 } from '@/lib/geometry/hit-test-primitives';
 import * as Y from 'yjs';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
+import { applyCursor, setCursorOverride } from '@/canvas/cursor-manager';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
@@ -49,13 +51,10 @@ interface HitCandidate {
   isFilled: boolean;
 }
 
-interface SelectToolOpts {
-  invalidateWorld: (bounds: WorldRect) => void;
-  invalidateOverlay: () => void;
-  // Cursor callbacks (same pattern as PanTool)
-  applyCursor: () => void;
-  setCursorOverride: (cursor: string | null) => void;
-}
+// SelectToolOpts REMOVED - now using module-level imports from:
+// - room-runtime.ts (getActiveRoomDoc)
+// - invalidation-helpers.ts (invalidateWorld, invalidateOverlay)
+// - cursor-manager.ts (applyCursor, setCursorOverride)
 
 interface ObjectHandle {
   id: string;
@@ -68,13 +67,16 @@ interface ObjectHandle {
 
 // === SelectTool Class ===
 
+/**
+ * SelectTool - Object selection, translation, and scaling tool
+ *
+ * Zero-arg constructor: reads all dependencies from module-level singletons.
+ * - Room: getActiveRoomDoc()
+ * - Invalidation: invalidation-helpers.ts
+ * - Cursor: cursor-manager.ts
+ * - Camera/Selection: Zustand stores
+ */
 export class SelectTool {
-  private room: IRoomDocManager;
-  private invalidateWorld: (bounds: WorldRect) => void;
-  private invalidateOverlay: () => void;
-  private applyCursor: () => void;
-  private setCursorOverride: (cursor: string | null) => void;
-
   // State machine
   private phase: Phase = 'idle';
   private pointerId: number | null = null;
@@ -92,13 +94,7 @@ export class SelectTool {
   // Track accumulating envelope for dirty rect optimization (expands, never shrinks)
   private transformEnvelope: WorldRect | null = null;
 
-  constructor(room: IRoomDocManager, opts: SelectToolOpts) {
-    this.room = room;
-    this.invalidateWorld = opts.invalidateWorld;
-    this.invalidateOverlay = opts.invalidateOverlay;
-    this.applyCursor = opts.applyCursor;
-    this.setCursorOverride = opts.setCursorOverride;
-  }
+  constructor() {}
 
   // === PointerTool Interface ===
 
@@ -127,7 +123,7 @@ export class SelectTool {
         this.activeHandle = handleHit;
         this.downTarget = 'handle';
         this.phase = 'pendingClick';
-        this.invalidateOverlay();
+        invalidateOverlay();
         return;
       }
     }
@@ -140,7 +136,7 @@ export class SelectTool {
       const isSelected = store.selectedIds.includes(hit.id);
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
-      this.invalidateOverlay();
+      invalidateOverlay();
       return;
     }
 
@@ -153,7 +149,7 @@ export class SelectTool {
     }
 
     this.phase = 'pendingClick';
-    this.invalidateOverlay();
+    invalidateOverlay();
   }
 
   move(worldX: number, worldY: number): void {
@@ -199,8 +195,8 @@ export class SelectTool {
               store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta);
             }
             const cursor = this.getHandleCursor(this.activeHandle!);
-            this.setCursorOverride(cursor);
-            this.applyCursor();
+            setCursorOverride(cursor);
+            applyCursor();
             break;
           }
 
@@ -286,7 +282,7 @@ export class SelectTool {
       }
     }
 
-    this.invalidateOverlay();
+    invalidateOverlay();
   }
 
   end(worldX?: number, worldY?: number): void {
@@ -389,11 +385,11 @@ export class SelectTool {
     }
 
     // Clear any cursor override on gesture end
-    this.setCursorOverride(null);
-    this.applyCursor();
+    setCursorOverride(null);
+    applyCursor();
 
     this.resetState();
-    this.invalidateOverlay();
+    invalidateOverlay();
   }
 
   cancel(): void {
@@ -410,17 +406,17 @@ export class SelectTool {
           maxX: Math.max(bounds.maxX, transformedBounds.maxX),
           maxY: Math.max(bounds.maxY, transformedBounds.maxY),
         };
-        this.invalidateWorld(unionBounds);
+        invalidateWorld(unionBounds);
       }
     }
 
     useSelectionStore.getState().cancelTransform();
     useSelectionStore.getState().cancelMarquee();
     // Clear any cursor override on cancel
-    this.setCursorOverride(null);
-    this.applyCursor();
+    setCursorOverride(null);
+    applyCursor();
     this.resetState();
-    this.invalidateOverlay();
+    invalidateOverlay();
   }
 
   isActive(): boolean {
@@ -485,7 +481,7 @@ export class SelectTool {
 
   onViewChange(): void {
     // Re-invalidate overlay when view changes
-    this.invalidateOverlay();
+    invalidateOverlay();
   }
 
   /**
@@ -495,27 +491,27 @@ export class SelectTool {
   updateHoverCursor(worldX: number, worldY: number): void {
     const store = useSelectionStore.getState();
     if (store.selectedIds.length === 0) {
-      this.setCursorOverride(null);
-      this.applyCursor();
+      setCursorOverride(null);
+      applyCursor();
       return;
     }
 
     const handle = this.hitTestHandle(worldX, worldY);
     if (handle) {
       const cursor = this.getHandleCursor(handle);
-      this.setCursorOverride(cursor);
+      setCursorOverride(cursor);
     } else {
-      this.setCursorOverride(null);
+      setCursorOverride(null);
     }
-    this.applyCursor();
+    applyCursor();
   }
 
   /**
    * Called when pointer leaves canvas - clears any hover cursor state.
    */
   clearHover(): void {
-    this.setCursorOverride(null);
-    this.applyCursor();
+    setCursorOverride(null);
+    applyCursor();
   }
 
   // === Private Helpers ===
@@ -539,7 +535,7 @@ export class SelectTool {
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
     for (const id of selectedIds) {
@@ -573,7 +569,7 @@ export class SelectTool {
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
     for (const id of selectedIds) {
@@ -755,13 +751,13 @@ export class SelectTool {
         };
       }
 
-      this.invalidateWorld(this.transformEnvelope);
+      invalidateWorld(this.transformEnvelope);
       return;
     }
 
     if (transform.kind === 'scale') {
       // Scale: per-object bounds based on transform strategy
-      const snapshot = this.room.currentSnapshot;
+      const snapshot = getActiveRoomDoc().currentSnapshot;
       const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
       const [ox, oy] = origin;
 
@@ -889,16 +885,16 @@ export class SelectTool {
         };
       }
 
-      this.invalidateWorld(this.transformEnvelope);
+      invalidateWorld(this.transformEnvelope);
     }
   }
 
   // === Commit Methods ===
 
   private commitTranslate(selectedIds: string[], dx: number, dy: number): void {
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
 
-    this.room.mutate((ydoc: Y.Doc) => {
+    getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
 
@@ -936,10 +932,10 @@ export class SelectTool {
     handleKind: HandleKind,
     originBounds: StoreWorldRect
   ): void {
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     const [ox, oy] = origin;
 
-    this.room.mutate((ydoc: Y.Doc) => {
+    getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
 
@@ -1047,7 +1043,7 @@ export class SelectTool {
   private computeSelectionKind(selectedIds: string[]): SelectionKind {
     if (selectedIds.length === 0) return 'none';
 
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     let hasStrokes = false;
     let hasShapes = false;
 
@@ -1085,7 +1081,7 @@ export class SelectTool {
     };
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     const index = snapshot.spatialIndex;
     if (!index) return;
 
@@ -1173,7 +1169,7 @@ export class SelectTool {
   }
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
-    const snapshot = this.room.currentSnapshot;
+    const snapshot = getActiveRoomDoc().currentSnapshot;
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
 

@@ -28,6 +28,12 @@ export interface CanvasStageProps {
   className?: string;
   style?: React.CSSProperties;
   onResize?: (info: ResizeInfo) => void;
+  /**
+   * When true, registers this canvas with camera-store for cursor management
+   * and coordinate transforms. Only the base canvas (with pointer events)
+   * should set this to true.
+   */
+  registerAsPointerTarget?: boolean;
 }
 
 export interface CanvasStageHandle {
@@ -64,7 +70,7 @@ export interface CanvasStageHandle {
  * imperative methods for clearing and context access.
  */
 export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
-  ({ className, style, onResize }, ref) => {
+  ({ className, style, onResize, registerAsPointerTarget }, ref) => {
     // Canvas element reference - use mutable ref pattern for ref callback
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -86,12 +92,15 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
     // Media query listener for DPR changes
     const dprChangeListenerRef = useRef<(MediaQueryList & { handler?: () => void }) | null>(null);
 
-    // Synchronous ref callback - registers canvas with camera store IMMEDIATELY
+    // Synchronous ref callback - optionally registers canvas with camera store IMMEDIATELY
     // This fires during React's commit phase, before any effects run
+    // Only the base canvas (with pointer events) should register
     const canvasRefCallback = useCallback((el: HTMLCanvasElement | null) => {
       canvasRef.current = el;
-      setCanvasElement(el); // Synchronous! Available before effects run
-    }, []);
+      if (registerAsPointerTarget) {
+        setCanvasElement(el); // Synchronous! Available before effects run
+      }
+    }, [registerAsPointerTarget]);
 
     // Expose imperative API to parent components
     useImperativeHandle(
@@ -275,15 +284,17 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(
           }
         }
 
-        // Clear canvas element from camera store
-        setCanvasElement(null);
+        // Clear canvas element from camera store (only if we registered it)
+        if (registerAsPointerTarget) {
+          setCanvasElement(null);
+        }
 
         // Null all refs
         ctxRef.current = null;
         resizeObserverRef.current = null;
         dprChangeListenerRef.current = null;
       };
-    }, [onResize]);
+    }, [onResize, registerAsPointerTarget]);
 
     return (
       <canvas
