@@ -1,21 +1,16 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { IRoomDocManager } from '../room-doc-manager';
-import { calculateBBox } from './simplification';
 import type { DrawingState, PreviewData } from './types';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas } from '@/stores/camera-store';
 import { HoldDetector } from '../input/HoldDetector';
 import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
 import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
 import { createFillFromStroke } from '@/lib/utils/color';
-// import { getStroke } from 'perfect-freehand';
-// import { PF_OPTIONS_BASE } from '@/renderer/stroke-builder/pf-config';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import { userProfileManager } from '@/lib/user-profile-manager';
 
-// These constants are imported from @avlo/shared config
-// See Step 7 for the values to add to /packages/shared/src/config.ts
-
-type RequestOverlayFrame = () => void;
 type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow' | 'diamond';
 
 // Helper function to map snap kinds to shape types for storage
@@ -30,17 +25,53 @@ function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamo
   return mapping[snapKind] ?? 'rect';
 }
 
+/**
+ * Map shapeVariant from device-ui-store to ForcedSnapKind for shape mode.
+ * Called at begin() time to determine shape behavior.
+ */
+function getForceSnapKindFromVariant(variant: ShapeVariant): ForcedSnapKind {
+  switch (variant) {
+    case 'rectangle': return 'rect';
+    case 'ellipse': return 'ellipseRect';
+    case 'diamond': return 'diamond';
+    case 'arrow': return 'arrow';
+    default: return 'rect';
+  }
+}
+
+/**
+ * Determine tool type ('pen' | 'highlighter') from activeTool.
+ * Shape tool uses 'pen' mechanics internally.
+ */
+function getToolTypeFromActiveTool(activeTool: Tool): 'pen' | 'highlighter' {
+  if (activeTool === 'highlighter') return 'highlighter';
+  return 'pen'; // pen, shape, and others default to pen mechanics
+}
+
+/**
+ * DrawingTool - Handles pen, highlighter, and shape drawing.
+ *
+ * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
+ * All dependencies are read at runtime from module-level stores:
+ * - getActiveRoomDoc() for Y.Doc mutations
+ * - userProfileManager.getIdentity().userId for ownerId
+ * - useDeviceUIStore.getState() for tool type, settings, shape variant
+ * - invalidateOverlay() for render loop updates
+ *
+ * This allows the tool to be constructed once as a singleton and reused
+ * across tool switches without React lifecycle involvement.
+ */
 export class DrawingTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
-  private room: IRoomDocManager; // Use interface, not implementation
-  private toolType: 'pen' | 'highlighter';
-  private userId: string; // Stable user ID for all strokes from this tool instance
+
+  // Gesture-frozen values (captured at begin() time)
+  private frozenToolType: 'pen' | 'highlighter' = 'pen';
+  private frozenForceSnapKind: ForcedSnapKind | null = null;
 
   // Bounds tracking for commit (preview doesn't use bbox anymore)
   private lastBounds: [number, number, number, number] | null = null;
-  // Callbacks
-  private onInvalidate?: (bounds: [number, number, number, number]) => void;
-  // NEW: Perfect shapes support
+
+  // Perfect shapes support
   private hold: HoldDetector;
   private snap:
     | null
@@ -54,27 +85,17 @@ export class DrawingTool {
         | { kind: 'diamond';     anchors: { A: [number, number] } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
-  private requestOverlayFrame?: RequestOverlayFrame;  // nudge overlay loop
-  private opts: { forceSnapKind?: ForcedSnapKind } = {};
+
   // Instant click-to-place mode for shape tool
   private clickToPlaceStartTime: number = 0;
   private clickToPlaceStartPos: [number, number] | null = null;
 
 
-  constructor(
-    room: IRoomDocManager, // Use interface for loose coupling
-    toolType: 'pen' | 'highlighter',
-    userId: string, // Pass stable ID, not a getter function
-    onInvalidate?: (bounds: [number, number, number, number]) => void,
-    requestOverlayFrame?: RequestOverlayFrame,     // nudge overlay loop
-    opts?: { forceSnapKind?: ForcedSnapKind }      // forced shape kind
-  ) {
-    this.room = room;
-    this.toolType = toolType;
-    this.userId = userId; // Store the stable ID
-    this.onInvalidate = onInvalidate;
-    this.requestOverlayFrame = requestOverlayFrame;
-    this.opts = opts ?? {};
+  /**
+   * Zero-arg constructor. All dependencies are read at runtime.
+   * Can be constructed once and reused across gestures and tool switches.
+   */
+  constructor() {
     this.hold = new HoldDetector(() => this.onHoldFire());
     this.resetState();
   }
@@ -82,6 +103,7 @@ export class DrawingTool {
   /**
    * Read and freeze settings from store at gesture start.
    * Called at begin() time to capture current settings.
+   * Uses frozenToolType which is set at the start of begin().
    */
   private getFrozenSettings(): { size: number; color: string; opacity: number } {
     const state = useDeviceUIStore.getState();
@@ -90,7 +112,7 @@ export class DrawingTool {
     return {
       size: base.size,
       color: base.color,
-      opacity: this.toolType === 'highlighter'
+      opacity: this.frozenToolType === 'highlighter'
         ? state.highlighterOpacity
         : (base.opacity ?? 1),
     };
@@ -113,7 +135,7 @@ export class DrawingTool {
       pointerId: null,
       points: [], // Now stores [number, number][] tuples only
       config: {
-        tool: this.toolType,
+        tool: this.frozenToolType,
         color: settings.color,
         size: settings.size,
         opacity: settings.opacity,
@@ -123,10 +145,11 @@ export class DrawingTool {
     this.lastBounds = null;
     this.snap = null;
     this.liveCursorWU = null;
+    this.frozenForceSnapKind = null;
   }
 
   canStartDrawing(): boolean {
-    return !this.state.isDrawing; // Tool type already validated in constructor
+    return !this.state.isDrawing;
   }
 
   // PointerTool interface methods for polymorphic handling with EraserTool
@@ -135,16 +158,29 @@ export class DrawingTool {
   }
 
   begin(pointerId: number, worldX: number, worldY: number): void {
-    
+    // PHASE 1.5: Read and freeze tool state at gesture start
+    const uiState = useDeviceUIStore.getState();
+    const activeTool = uiState.activeTool;
+
+    // Freeze tool type for this gesture
+    this.frozenToolType = getToolTypeFromActiveTool(activeTool);
+
+    // Freeze forceSnapKind for shape tool
+    if (activeTool === 'shape') {
+      this.frozenForceSnapKind = getForceSnapKindFromVariant(uiState.shapeVariant);
+    } else {
+      this.frozenForceSnapKind = null;
+    }
+
     this.startDrawing(pointerId, worldX, worldY);
 
     // If Shape tool requested forced snap, seed it immediately
-    if (this.opts.forceSnapKind) {
+    if (this.frozenForceSnapKind) {
       // Store time and position for click detection
       this.clickToPlaceStartTime = Date.now();
       this.clickToPlaceStartPos = [worldX, worldY];
 
-      const k = this.opts.forceSnapKind;
+      const k = this.frozenForceSnapKind;
       this.snap =
         k === 'line'        ? { kind: 'line',        anchors: { A: [worldX, worldY] } }
       : k === 'circle'      ? { kind: 'circle',      anchors: { center: [worldX, worldY] } }
@@ -155,7 +191,7 @@ export class DrawingTool {
       : /* arrow */           { kind: 'arrow',       anchors: { A: [worldX, worldY] } };
 
       this.liveCursorWU = [worldX, worldY];
-      this.requestOverlayFrame?.(); // Start preview immediately
+      invalidateOverlay(); // Start preview immediately
       return; // Skip HoldDetector in forced mode
     }
 
@@ -164,7 +200,7 @@ export class DrawingTool {
     this.hold.start({ x: sx, y: sy });
     this.snap = null;
     this.liveCursorWU = [worldX, worldY];
-    this.requestOverlayFrame?.();
+    invalidateOverlay();
   }
 
   move(worldX: number, worldY: number): void {
@@ -179,13 +215,13 @@ export class DrawingTool {
 
     if (this.snap) {
       // After snap: just request an overlay frame (liveCursorWU already updated above)
-      this.requestOverlayFrame?.();                // CRITICAL: drives overlay
+      invalidateOverlay();                // CRITICAL: drives overlay
       return;
     }
 
     // Before snap: freehand path behavior stays the same
     this.addPoint(worldX, worldY);                         // will call updateBounds()
-    // updateBounds() → onInvalidate(bounds) → Canvas maps that to overlay invalidation
+    // updateBounds() → invalidateOverlay() for preview
   }
 
   end(worldX?: number, worldY?: number): void {
@@ -203,7 +239,7 @@ export class DrawingTool {
         );
         const isStationary = distMoved < 5;  // 5 world units threshold
 
-        if (isClick && isStationary && this.opts.forceSnapKind) {
+        if (isClick && isStationary && this.frozenForceSnapKind) {
           // Place fixed-size shape at click position
           const fixedSize = 180;  // Fixed size in world units
 
@@ -267,6 +303,7 @@ export class DrawingTool {
     if (this.state.isDrawing) return;
 
     // CRITICAL: Freeze settings from store at gesture start
+    // Note: frozenToolType is already set by begin() before calling this
     const frozen = this.getFrozenSettings();
 
     this.state = {
@@ -274,7 +311,7 @@ export class DrawingTool {
       pointerId,
       points: [[worldX, worldY]], // Store as tuples from the start
       config: {
-        tool: this.toolType,
+        tool: this.frozenToolType,
         color: frozen.color,
         size: frozen.size,
         opacity: frozen.opacity,
@@ -295,8 +332,8 @@ export class DrawingTool {
     this.state.points.push([worldX, worldY]);
 
     // Invalidate dirty region and ensure overlay rAF runs promptly
-    this.updateBounds();           // canvas maps this to overlay invalidation
-    this.requestOverlayFrame?.();  // nudge overlay even if bounds didn't expand
+    this.updateBounds();           // Legacy bounds tracking
+    invalidateOverlay();           // Nudge overlay for preview update
   }
 
   private flushPending(): void {
@@ -304,19 +341,8 @@ export class DrawingTool {
   }
 
   private updateBounds(): void {
-    // Calculate bounds for commit time (preview doesn't use bbox with dual canvas)
-    //const bounds = calculateBBox(this.state.points, this.state.config.size);
-
-    // Store for commit and final invalidation
-    // if (bounds) {
-    //   this.lastBounds = bounds;
-    // }
-
-    // Trigger overlay invalidation (overlay does full clear, no dirty rects for preview)
-    // Canvas maps onInvalidate to overlay invalidation regardless of bounds
-    if (this.lastBounds) {
-      this.onInvalidate?.(this.lastBounds);
-    }
+    // Legacy bounds tracking - no longer needed since overlay uses full clear
+    // Kept as no-op for now in case we re-add dirty rect optimization later
   }
 
   private onHoldFire(): void {
@@ -371,7 +397,7 @@ export class DrawingTool {
       );
       console.log(`✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`);
       console.groupEnd();
-      this.requestOverlayFrame?.();
+      invalidateOverlay();
       this.hold.cancel();
     }
   }
@@ -419,9 +445,8 @@ export class DrawingTool {
 
   cancelDrawing(): void {
     this.flushPending();
-    if (this.lastBounds) {
-      this.onInvalidate?.(this.lastBounds);
-    }
+    // Invalidate overlay to clear any preview
+    invalidateOverlay();
     this.resetState();
   }
 
@@ -437,18 +462,15 @@ export class DrawingTool {
       this.state.points.push([finalX, finalY]);
     }
 
-    // 3) Store preview bounds for invalidation
-    const previewBounds = this.lastBounds;
+    // 3) Get runtime dependencies (bbox no longer needed - overlay uses full clear)
+    const roomDoc = getActiveRoomDoc();
+    const userId = userProfileManager.getIdentity().userId;
 
-    // 4) Compute final bbox from tuples (no clone needed - Yjs copies internally)
-    const finalBbox = calculateBBox(this.state.points, this.state.config.size);
-
-    // 5) Commit to Y.Doc with tuple points directly
+    // 4) Commit to Y.Doc with tuple points directly
     const strokeId = ulid();
-    const userId = this.userId;
 
     try {
-      this.room.mutate((ydoc) => {
+      roomDoc.mutate((ydoc) => {
         const root = ydoc.getMap('root');
         const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
@@ -468,14 +490,8 @@ export class DrawingTool {
     } catch (err) {
       console.error('Failed to commit stroke:', err);
     } finally {
-      // 6) Invalidate preview + final bbox
-      if (previewBounds) {
-        this.onInvalidate?.(previewBounds);
-      }
-      if (finalBbox) {
-        this.onInvalidate?.(finalBbox);
-      }
-      // 7) Reset state
+      // 5) Invalidate overlay to clear preview and reset state
+      invalidateOverlay();
       this.resetState();
     }
   }
@@ -486,6 +502,10 @@ export class DrawingTool {
     const finalCursor = this.liveCursorWU!;
     let frame: [number, number, number, number];
     const shapeType = getShapeTypeFromSnapKind(this.snap.kind);
+
+    // Get runtime dependencies
+    const roomDoc = getActiveRoomDoc();
+    const userId = userProfileManager.getIdentity().userId;
 
     if (this.snap.kind === 'line') {
       // Line is not a shape object, skip for now
@@ -586,7 +606,7 @@ export class DrawingTool {
     console.log('frame', frame);
     // Commit as shape object
     const shapeId = ulid();
-    this.room.mutate((ydoc) => {
+    roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
@@ -605,22 +625,14 @@ export class DrawingTool {
 
       shapeMap.set('opacity', this.state.config.opacity);
       shapeMap.set('frame', frame);  // Direct frame, no conversion needed
-      shapeMap.set('ownerId', this.userId);
+      shapeMap.set('ownerId', userId);
       shapeMap.set('createdAt', Date.now());
 
       objects.set(shapeId, shapeMap);
     });
 
-    // Invalidate using frame bounds (with stroke width inflation)
-    const strokeWidth = this.state.config.size;
-    const padding = strokeWidth * 0.5 + 1;
-    const inflatedBounds: [number, number, number, number] = [
-      frame[0] - padding,
-      frame[1] - padding,
-      frame[0] + frame[2] + padding,
-      frame[1] + frame[3] + padding
-    ];
-    this.onInvalidate?.(inflatedBounds);
+    // Invalidate overlay to clear preview
+    invalidateOverlay();
     this.resetState();
     this.snap = null;
     this.liveCursorWU = null;
@@ -642,13 +654,4 @@ export class DrawingTool {
     return flat;
   }
 
-  // private flatToTupleArray(flat: number[]): [number, number][] {
-  //   const tuples: [number, number][] = [];
-  //   for (let i = 0; i < flat.length; i += 2) {
-  //     if (i + 1 < flat.length) {
-  //       tuples.push([flat[i], flat[i + 1]]);
-  //     }
-  //   }
-  //   return tuples;
-  // }
 }

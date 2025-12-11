@@ -24,6 +24,9 @@ import {
 } from '@/stores/camera-store';
 import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { ZoomAnimator } from './animation/ZoomAnimator';
+import { setActiveRoom } from './room-runtime';
+import { setEditorHost } from './editor-host-registry';
+import { setWorldInvalidator, setOverlayInvalidator } from './invalidation-helpers';
 
 // Unified interface for all pointer tools
 type PointerTool = DrawingTool | EraserTool | TextTool | PanTool | SelectTool;
@@ -58,9 +61,9 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
 
   // Get toolbar state from Zustand store - MUST come before activeToolRef initialization
   // Use NARROW SELECTORS to prevent spurious rerenders when other settings change
-  // DrawingTool/EraserTool read settings from store at begin() time
+  // DrawingTool reads all settings from store at begin() time (including shapeVariant)
   const activeTool = useDeviceUIStore(s => s.activeTool);
-  const shapeVariant = useDeviceUIStore(s => s.shapeVariant);
+  // Note: shapeVariant removed - DrawingTool reads it at begin() time from store
   const textSize = useDeviceUIStore(s => s.textSize);
   const textColor = useDeviceUIStore(s => s.drawingSettings.color);
 
@@ -84,13 +87,35 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
   // Zoom animator for smooth transitions
   const zoomAnimatorRef = useRef<ZoomAnimator | null>(null);
 
-  // Get stable user ID from singleton
+  // Get stable user ID from singleton (still needed for TextTool until it's refactored)
   const userId = useMemo(() => userProfileManager.getIdentity().userId, []);
 
   // PERFORMANCE OPTIMIZATION: Store in ref to avoid React re-renders
   const snapshotRef = useRef<Snapshot>(createEmptySnapshot()); // Initialize with empty snapshot
 
-  // Keep activeToolRef in sync (no re-render)
+  // ============================================
+  // PHASE 1 RUNTIME INITIALIZATION
+  // Order matters: room context first, then helpers, then refs
+  // ============================================
+
+  // 1. Set active room context for imperative access (FOUNDATIONAL)
+  // This enables tools and render loops to call getActiveRoomDoc() without prop drilling
+  useLayoutEffect(() => {
+    setActiveRoom({ roomId, roomDoc });
+    return () => {
+      // Only clear if this Canvas set it (handles race conditions)
+      // The getActiveRoom() will throw after this, which is correct
+      setActiveRoom(null);
+    };
+  }, [roomId, roomDoc]);
+
+  // 2. Set editor host for TextTool DOM access
+  useLayoutEffect(() => {
+    setEditorHost(editorHostRef.current);
+    return () => setEditorHost(null);
+  }, []);
+
+  // 3. Keep activeToolRef in sync (no re-render)
   // Camera state is now read directly from useCameraStore.getState() - no ref needed
   useLayoutEffect(() => {
     activeToolRef.current = activeTool;
@@ -222,25 +247,29 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         : undefined,
     });
 
+    // Phase 1: Register global world invalidator for imperative access
+    setWorldInvalidator((bounds) => renderLoopRef.current?.invalidateWorld(bounds));
+
     // Trigger initial render if we have content
     // Use gate status instead of svKey comparison
     // Use setTimeout(0) instead of queueMicrotask for better safety
     // This ensures the render loop is fully initialized and avoids race conditions
-    let initialRenderTimeout: ReturnType<typeof setTimeout> | undefined;
-    const gateStatus = roomDoc.getGateStatus();
-    if (gateStatus.firstSnapshot) {
-      initialRenderTimeout = setTimeout(() => {
-        // Safety check - renderLoop might have been destroyed if component unmounted quickly
-        if (renderLoopRef.current === renderLoop) {
-          renderLoop.invalidateAll('content-change');
-        }
-      }, 0);
-    }
+    // let initialRenderTimeout: ReturnType<typeof setTimeout> | undefined;
+    // const gateStatus = roomDoc.getGateStatus();
+    // if (gateStatus.firstSnapshot) {
+    //   initialRenderTimeout = setTimeout(() => {
+    //     // Safety check - renderLoop might have been destroyed if component unmounted quickly
+    //     if (renderLoopRef.current === renderLoop) {
+    //       renderLoop.invalidateAll('content-change');
+    //     }
+    //   }, 0);
+    // }
 
     return () => {
-      if (initialRenderTimeout) {
-        clearTimeout(initialRenderTimeout);
-      }
+      // if (initialRenderTimeout) {
+      //   clearTimeout(initialRenderTimeout);
+      // }
+      setWorldInvalidator(null); // Phase 1: Clear global invalidator
       renderLoop.stop();
       renderLoop.destroy();
       renderLoopRef.current = null;
@@ -283,7 +312,11 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       },
     });
 
+    // Phase 1: Register global overlay invalidator for imperative access
+    setOverlayInvalidator(() => overlayLoopRef.current?.invalidateAll());
+
     return () => {
+      setOverlayInvalidator(null); // Phase 1: Clear global invalidator
       overlayLoop.stop();
       overlayLoop.destroy();
       overlayLoopRef.current = null;
@@ -358,38 +391,14 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
         roomDoc,
         () => overlayLoopRef.current?.invalidateAll(),
       );
-    } else if (activeTool === 'pen' || activeTool === 'highlighter') {
-      // Settings are read from store at begin() time - no need to pass them
-      // Constructor: (room, toolType, userId, onInvalidate, requestOverlayFrame, opts?)
-      // getView removed - uses worldToCanvas from camera store for jitter detection
-      tool = new DrawingTool(
-        roomDoc,
-        activeTool,
-        userId,
-        (_bounds) => {
-          // During drawing, invalidate overlay (preview is there)
-          overlayLoopRef.current?.invalidateAll();
-        },
-        () => overlayLoopRef.current?.invalidateAll(),
-      );
-    } else if (activeTool === 'shape') {
-      // Map shape variant to forced snap kind
-      const forceSnapKind =
-        shapeVariant === 'rectangle' ? 'rect' :
-        shapeVariant === 'ellipse'   ? 'ellipseRect' :
-        shapeVariant === 'diamond'   ? 'diamond' :
-        shapeVariant === 'arrow'     ? 'arrow' : 'line';
-
-      // Settings are read from store at begin() time - no need to pass them
-      // getView removed - opts is now 6th param (was 7th)
-      tool = new DrawingTool(
-        roomDoc,
-        'pen', // Shape tool uses pen mechanics
-        userId,
-        (_bounds) => overlayLoopRef.current?.invalidateAll(),
-        () => overlayLoopRef.current?.invalidateAll(),
-        { forceSnapKind },
-      );
+    } else if (activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'shape') {
+      // PHASE 1.5: DrawingTool now uses zero-arg constructor.
+      // All dependencies are read at runtime:
+      // - getActiveRoomDoc() for Y.Doc mutations
+      // - userProfileManager.getIdentity().userId for ownerId
+      // - useDeviceUIStore.getState() for tool type, settings, shape variant
+      // - invalidateOverlay() for render loop updates
+      tool = new DrawingTool();
     } else if (activeTool === 'text') {
       // Text tool uses narrow selector for color and its own size
       const textSettings = {
@@ -486,13 +495,12 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
     };
   }, [
     roomDoc,
-    userId,
+    userId,        // For TextTool (DrawingTool reads from userProfileManager)
     activeTool,
     textSize,      // Only for TextTool updateConfig
     textColor,     // Only for TextTool updateConfig (narrow selector)
-    shapeVariant,  // Changes tool behavior (forceSnapKind)
     applyCursor,   // Stable function with empty deps
-  ]); // DrawingTool/EraserTool read settings from store at begin() time
+  ]); // DrawingTool reads settings + shapeVariant from store at begin() time
   // Note: cameraScreenToWorld/cameraWorldToClient are pure functions from camera-store, not React deps
 
   // Effect A: Stable event listeners (mount once) - Step 2.1
@@ -730,7 +738,7 @@ export const Canvas = React.forwardRef<CanvasHandle, CanvasProps>(({ roomId, cla
       const steps = deltaY / 120;
 
       // Calculate zoom factor (~16% per step)
-      const ZOOM_STEP = Math.log(1.2);
+      const ZOOM_STEP = Math.log(1.16);
       const factor = Math.exp(-steps * ZOOM_STEP);
 
       // Read LATEST transform from camera store

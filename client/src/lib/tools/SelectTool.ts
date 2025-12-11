@@ -1071,9 +1071,6 @@ export class SelectTool {
   }
 
 
-
-
-
   private updateMarqueeSelection(): void {
     const store = useSelectionStore.getState();
     const { marquee } = store;
