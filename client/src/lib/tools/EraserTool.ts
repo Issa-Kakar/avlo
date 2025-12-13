@@ -104,8 +104,8 @@ export class EraserTool {
     invalidateOverlay();
   }
 
-  clearHover(): void {
-    // No hover state in new design
+  onPointerLeave(): void {
+    // Clear cursor state when pointer leaves canvas
     if (!this.state.isErasing) {
       this.state.lastWorld = null;
       invalidateOverlay();

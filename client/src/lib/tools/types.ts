@@ -137,3 +137,46 @@ export interface SelectionPreview {
  * Discriminated by 'kind' field
  */
 export type PreviewData = StrokePreview | EraserPreview | TextPreview | PerfectShapePreview | SelectionPreview;
+
+/**
+ * PointerTool - Interface for tools that handle pointer gestures.
+ * All methods required. Use no-ops where not applicable.
+ *
+ * All tools receive world coordinates from CanvasRuntime.
+ * Tools that need screen coordinates (like PanTool for delta calculation)
+ * convert internally using worldToCanvas().
+ */
+export interface PointerTool {
+  /** Returns true if the tool can begin a new gesture */
+  canBegin(): boolean;
+
+  /** Begin a gesture at the given world coordinates */
+  begin(pointerId: number, worldX: number, worldY: number): void;
+
+  /** Update during gesture with current world coordinates (also handles hover when idle) */
+  move(worldX: number, worldY: number): void;
+
+  /** End the gesture, optionally with final world coordinates */
+  end(worldX?: number, worldY?: number): void;
+
+  /** Cancel the gesture without committing */
+  cancel(): void;
+
+  /** Returns true if a gesture is currently in progress */
+  isActive(): boolean;
+
+  /** Returns the pointer ID for the active gesture, or null if idle */
+  getPointerId(): number | null;
+
+  /** Returns preview data for overlay rendering, or null if no preview */
+  getPreview(): PreviewData | null;
+
+  /** Called when pointer leaves the canvas - clear any hover state */
+  onPointerLeave(): void;
+
+  /** Called when view transform changes (pan/zoom) - update any position-dependent state */
+  onViewChange(): void;
+
+  /** Cleanup when tool is destroyed */
+  destroy(): void;
+}

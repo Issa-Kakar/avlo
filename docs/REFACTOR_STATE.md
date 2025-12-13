@@ -1,20 +1,359 @@
 # Canvas Runtime Refactor - State & Progress
 
-**Branch:** `refactor/canvas-runtime-phase1`
-**Last Update:** All tools now zero-arg (PanTool + SelectTool complete)
+**Last Updated:** Phase 2B Prerequisites (PointerTool Interface & Tool Updates)
 
 ---
 
-## Goal
+## Progress Summary
 
-Decouple tools, render loops, and Canvas.tsx from React lifecycle by:
-1. Creating module-level runtime infrastructure
-2. Making tools zero-arg constructable (singleton-ready)
-3. Eventually consolidating into a single `CanvasRuntime.ts` class
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1.0 | Runtime Modules (room-runtime, cursor-manager, etc.) | ✅ Complete |
+| 1.1 | CanvasStage pointer target fix | ✅ Complete |
+| 1.5 | All tools zero-arg constructors | ✅ Complete |
+| 1.6 | Explicit transforms in render loops | ✅ Complete |
+| 2A | Eliminate CanvasStage & Imperative Handle | ✅ Complete |
+| 2B-prereq | PointerTool interface + tool updates | ✅ Complete |
+| 2B | Tool Registry & Preview Coupling | 🔲 Next |
+| 2C | Create CanvasRuntime.ts | 🔲 Pending |
+| 2D | Create InputManager.ts | 🔲 Pending |
+| 2E | Move event handling to CanvasRuntime | 🔲 Pending |
+| 2F | Simplify Canvas.tsx (~100 lines) | 🔲 Pending |
 
 ---
 
-## Completed
+## Master Architecture Document
+
+**📋 See [CANVAS_RUNTIME_END_GOAL.md](./CANVAS_RUNTIME_END_GOAL.md)** for:
+- Complete end-state architecture vision
+- CanvasRuntime class specification
+- Tool singleton pattern
+- MMB pan unification strategy
+- etc.
+
+---
+
+## Phase 2B Prerequisites ✅ COMPLETE
+
+**Goal:** Prepare tools and render loops for the full runtime transition by creating a unified PointerTool interface and updating all tools to implement it.
+
+### What Was Done
+
+#### 1. Created `PointerTool` Interface
+
+**Location:** `client/src/lib/tools/types.ts`
+
+Unified interface for all tools that handle pointer gestures:
+
+```typescript
+export interface PointerTool {
+  canBegin(): boolean;
+  begin(pointerId: number, worldX: number, worldY: number): void;
+  move(worldX: number, worldY: number): void;
+  end(worldX?: number, worldY?: number): void;
+  cancel(): void;
+  isActive(): boolean;
+  getPointerId(): number | null;
+  getPreview(): PreviewData | null;
+  onPointerLeave(): void;   // NEW: Called when pointer leaves canvas
+  onViewChange(): void;     // NEW: Called when view transform changes
+  destroy(): void;
+}
+```
+
+#### 2. Updated RenderLoop - Truly Zero-Arg
+
+**Before:**
+```typescript
+export interface RenderLoopConfig {
+  _placeholder?: never;
+}
+start(config: RenderLoopConfig = {}): void
+```
+
+**After:**
+```typescript
+// No config interface - removed entirely
+start(): void  // No arguments!
+```
+
+- Removed `RenderLoopConfig` interface
+- Changed internal `this.config` to `this.started` boolean
+- Updated all guards from `if (!this.config)` to `if (!this.started)`
+
+#### 3. Updated OverlayRenderLoop - Truly Zero-Arg
+
+Same changes as RenderLoop:
+- Removed `OverlayLoopConfig` interface
+- Changed `this.config` to `this.started` boolean
+- `start()` now takes no arguments
+
+#### 4. Updated SelectTool - Hover in move()
+
+**Key change:** Hover cursor detection moved INTO `move()` method:
+
+```typescript
+move(worldX: number, worldY: number): void {
+  switch (this.phase) {
+    case 'idle': {
+      // Handle hover cursor when not in a gesture
+      this.handleHoverCursor(worldX, worldY);
+      break;
+    }
+    // ... other phases
+  }
+}
+```
+
+- Added `case 'idle':` to `move()` switch statement
+- Added private `handleHoverCursor()` method
+- Renamed `clearHover()` → `onPointerLeave()`
+- Removed public `updateHoverCursor()` (no longer needed)
+
+#### 5. Updated EraserTool
+
+- Renamed `clearHover()` → `onPointerLeave()`
+- Kept existing `onViewChange()` (re-computes hit test)
+
+#### 6. Updated DrawingTool
+
+Added no-op implementations:
+```typescript
+onPointerLeave(): void {
+  // DrawingTool has no hover state to clear
+}
+
+onViewChange(): void {
+  // DrawingTool doesn't need to reposition on view change
+}
+```
+
+#### 7. Updated PanTool
+
+Added no-op implementations:
+```typescript
+onPointerLeave(): void {
+  // PanTool has no hover state to clear
+}
+
+onViewChange(): void {
+  // PanTool doesn't need to reposition on view change
+  // (it's driving the view change!)
+}
+```
+
+#### 8. Updated TextTool
+
+Added no-op:
+```typescript
+onPointerLeave(): void {
+  // TextTool has no hover state to clear
+  // DOM editor handles its own focus/blur
+}
+```
+
+(TextTool already had `onViewChange()` for DOM repositioning)
+
+#### 9. Added Helpers to room-runtime.ts
+
+```typescript
+export function updatePresenceCursor(worldX: number, worldY: number): void {
+  getActiveRoomDoc().updateCursor(worldX, worldY);
+}
+
+export function clearPresenceCursor(): void {
+  getActiveRoomDoc().updateCursor(undefined, undefined);
+}
+```
+
+#### 10. Added Helpers to camera-store.ts
+
+```typescript
+export function capturePointer(pointerId: number): void {
+  try {
+    canvasElement?.setPointerCapture(pointerId);
+  } catch {}
+}
+
+export function releasePointer(pointerId: number): void {
+  try {
+    canvasElement?.releasePointerCapture(pointerId);
+  } catch {}
+}
+```
+
+#### 11. Updated Canvas.tsx
+
+- Removed special case for `SelectTool.updateHoverCursor()` (now in `move()`)
+- Changed `clearHover` calls to `onPointerLeave` calls
+
+### Files Modified
+
+```
+client/src/lib/tools/types.ts          - Added PointerTool interface
+client/src/renderer/RenderLoop.ts      - Removed config, truly zero-arg start()
+client/src/renderer/OverlayRenderLoop.ts - Removed config, truly zero-arg start()
+client/src/lib/tools/SelectTool.ts     - Hover in move(), onPointerLeave
+client/src/lib/tools/EraserTool.ts     - Renamed clearHover → onPointerLeave
+client/src/lib/tools/DrawingTool.ts    - Added onPointerLeave, onViewChange no-ops
+client/src/lib/tools/PanTool.ts        - Added onPointerLeave, onViewChange no-ops
+client/src/lib/tools/TextTool.ts       - Added onPointerLeave no-op
+client/src/canvas/room-runtime.ts      - Added presence cursor helpers
+client/src/stores/camera-store.ts      - Added capturePointer, releasePointer
+client/src/canvas/Canvas.tsx           - Updated to use onPointerLeave
+```
+
+### Known Issues (Tests Outdated)
+
+The following test files have outdated code and will be removed:
+- `RenderLoop.test.ts` - Still passes config to `start()`
+- `Canvas.test.tsx` - Unused React import
+
+These tests are outdated and will be deleted as part of test cleanup.
+
+### Success Criteria ✅
+
+1. ✅ `PointerTool` interface created in types.ts
+2. ✅ All tools have `onPointerLeave()` method
+3. ✅ All tools have `onViewChange()` method
+4. ✅ SelectTool hover cursor moved into `move()` - no external special case
+5. ✅ RenderLoop.start() takes no arguments
+6. ✅ OverlayRenderLoop.start() takes no arguments
+7. ✅ Presence cursor helpers added to room-runtime
+8. ✅ Pointer capture helpers added to camera-store
+9. ✅ Canvas.tsx updated to use `onPointerLeave` instead of `clearHover`
+
+---
+
+## Next Steps
+
+### Remaining for Phase 2B: Tool Registry
+
+1. Create `tool-registry.ts` with self-constructing singletons
+2. Have tools `implements PointerTool` (type annotations)
+3. OverlayRenderLoop self-manages preview via `getActivePreview()`
+4. Canvas.tsx uses `getCurrentTool()` instead of constructing tools
+5. Unify MMB pan with `panTool` singleton
+
+### Then Phase 2C-F: CanvasRuntime
+
+See [PHASE_2_COMPLETE_RUNTIME.md](./PHASE_2_COMPLETE_RUNTIME.md) for full implementation plan.
+
+---
+
+## Phase 2A: CanvasStage Elimination ✅ COMPLETE
+
+(Previous documentation preserved below for reference)
+
+**Goal:** Delete `CanvasStage.tsx` and React imperative handles, create SurfaceManager for resize/DPR logic, update render loops to read from module registries.
+
+### What Was Done
+
+#### 1. Created `SurfaceManager.ts`
+
+**Location:** `client/src/canvas/SurfaceManager.ts`
+
+Imperative class that handles resize observation and DPR changes. Will be owned by CanvasRuntime in future phases.
+
+```typescript
+export class SurfaceManager {
+  private container: HTMLElement;
+  private baseCanvas: HTMLCanvasElement;
+  private overlayCanvas: HTMLCanvasElement;
+  private resizeObserver: ResizeObserver | null = null;
+  private dprCleanup: (() => void) | null = null;
+  private currentDpr = window.devicePixelRatio || 1;
+
+  constructor(container, baseCanvas, overlayCanvas) { ... }
+
+  start(): void {
+    // Single ResizeObserver on container (not individual canvases)
+    // DPR change listener with recursive re-setup
+    // Triggers initial sizing
+  }
+
+  stop(): void { ... }
+
+  private updateCanvasSize(cssWidth, cssHeight, dpr): void {
+    // CRITICAL FIX: Compute effective DPR when dimensions are clamped
+    // This fixes bug where camera store received raw DPR but canvas was clamped
+    const effectiveDpr = Math.min(pixelW / cssWidth, pixelH / cssHeight);
+
+    // Only set if changed (setting dimensions clears canvas!)
+    // Update camera store with EFFECTIVE DPR
+    useCameraStore.getState().setViewport(cssWidth, cssHeight, effectiveDpr);
+  }
+
+  private setupDprListener(): () => void { ... }
+}
+```
+
+**Key improvements:**
+- Single ResizeObserver on container (not per-canvas)
+- **Fixes effective DPR bug** - computes actual DPR when clamped to MAX_CANVAS_DIMENSION
+- Recursive DPR listener re-setup for device changes
+- Atomic update of both canvases
+
+#### 2. Created `canvas-context-registry.ts`
+
+**Location:** `client/src/canvas/canvas-context-registry.ts`
+
+Module-level storage for canvas 2D contexts, following same pattern as room-runtime.ts and cursor-manager.ts.
+
+```typescript
+let baseCtx: CanvasRenderingContext2D | null = null;
+let overlayCtx: CanvasRenderingContext2D | null = null;
+
+export function setBaseContext(ctx: CanvasRenderingContext2D | null): void;
+export function setOverlayContext(ctx: CanvasRenderingContext2D | null): void;
+export function getBaseContext(): CanvasRenderingContext2D | null;
+export function getOverlayContext(): CanvasRenderingContext2D | null;
+```
+
+#### 3. Extended `room-runtime.ts`
+
+Added convenience wrappers for render loops to read snapshot and gates directly:
+
+```typescript
+export type GateStatus = ReturnType<IRoomDocManager['getGateStatus']>;
+
+export function getCurrentSnapshot(): Snapshot {
+  return getActiveRoomDoc().currentSnapshot;
+}
+
+export function getGateStatus(): GateStatus {
+  return getActiveRoomDoc().getGateStatus();
+}
+```
+
+#### 4. Added `isMobile()` to `camera-store.ts`
+
+```typescript
+let mobileDetected: boolean | null = null;
+
+export function isMobile(): boolean {
+  if (mobileDetected === null) {
+    mobileDetected =
+      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+      navigator.maxTouchPoints > 1;
+  }
+  return mobileDetected;
+}
+```
+
+#### 5-7. Updated Render Loops and Canvas.tsx
+
+(See previous documentation - render loops now read from modules, Canvas.tsx uses raw canvas elements)
+
+#### 8. Deleted Files
+
+- `client/src/canvas/CanvasStage.tsx` - **DELETED**
+- `client/src/canvas/internal/context2d.ts` - **DELETED**
+- `client/src/canvas/__tests__/CanvasStage.test.tsx` - **DELETED**
+
+---
+
+## Completed Phases (Summary)
 
 ### Phase 1: Runtime Modules (Foundation)
 
@@ -27,170 +366,7 @@ Created 4 new modules in `client/src/canvas/`:
 | `cursor-manager.ts` | `applyCursor()` / `setCursorOverride()` | ✅ Wired in Canvas.tsx |
 | `editor-host-registry.ts` | `getEditorHost()` for TextTool DOM | ✅ Wired in Canvas.tsx |
 
-### Phase 1.1: CanvasStage Canvas Registration Fix ✅
-
-**Problem:** Both base and overlay canvases called `setCanvasElement()`. Overlay (with `pointer-events: none`) won, breaking cursor-manager.
-
-**Solution:** Added `registerAsPointerTarget` prop to CanvasStage. Only base canvas registers.
-
-### Phase 1.5: DrawingTool Zero-Arg ✅
-
-**Before:**
-```typescript
-new DrawingTool(roomDoc, toolType, userId, onInvalidate, requestOverlay, { forceSnapKind })
-```
-
-**After:**
-```typescript
-new DrawingTool()
-```
-
-**How it reads dependencies at runtime:**
-- `activeTool` → `useDeviceUIStore.getState().activeTool` at `begin()`
-- `shapeVariant` → `useDeviceUIStore.getState().shapeVariant` at `begin()`
-- `settings` → `useDeviceUIStore.getState().drawingSettings` at `begin()`
-- `roomDoc` → `getActiveRoomDoc()` at `commit*()` time
-- `userId` → `userProfileManager.getIdentity().userId` at `commit*()` time
-- `invalidation` → `invalidateOverlay()` import
-
-**Frozen per-gesture:**
-- `frozenToolType: 'pen' | 'highlighter'`
-- `frozenForceSnapKind: ForcedSnapKind | null`
-- Settings (size, color, opacity)
-
-### Phase 1.5: EraserTool Zero-Arg ✅
-
-**Before:**
-```typescript
-new EraserTool(roomDoc, () => overlayLoopRef.current?.invalidateAll())
-```
-
-**After:**
-```typescript
-new EraserTool()
-```
-
-**How it reads dependencies at runtime:**
-- `roomDoc` → `getActiveRoomDoc()` at `updateHitTest()` and `commitErase()` time
-- `scale` → `useCameraStore.getState().scale` for radius conversion
-- `invalidation` → `invalidateOverlay()` import
-
-**No settings to freeze** - eraser uses fixed 10px radius.
-
-### Phase 1.5: TextTool Zero-Arg ✅
-
-**Before:**
-```typescript
-new TextTool(roomDoc, textSettings, userId, { getEditorHost }, onInvalidate)
-```
-
-**After:**
-```typescript
-new TextTool()
-```
-
-**How it reads dependencies at runtime:**
-- `textSettings` → `useDeviceUIStore.getState()` for textSize and color at `begin()`
-- `roomDoc` → `getActiveRoomDoc()` at `commitTextCore()` and for activity updates
-- `userId` → `userProfileManager.getIdentity().userId` at `commitTextCore()`
-- `editorHost` → `getEditorHost()` import
-- `invalidation` → `invalidateOverlay()` import
-
-**Frozen per-gesture:**
-- `config: { size, color }` - captured at begin() time
-
-**Note:** TextTool is marked as PLACEHOLDER in CLAUDE.md - will be completely replaced.
-The select tool will automatically switch after placing initial text block.
-
-### Phase 1.5: PanTool Zero-Arg ✅
-
-**Before:**
-```typescript
-tool = new PanTool(
-  () => overlayLoopRef.current?.invalidateAll(),
-  applyCursor,
-  (cursor: string | null) => { cursorOverrideRef.current = cursor; },
-);
-```
-
-**After:**
-```typescript
-new PanTool()
-```
-
-**How it reads dependencies at runtime:**
-- `scale/pan` → `useCameraStore.getState()` for viewport panning
-- `cursor` → `setCursorOverride()` from cursor-manager (internally calls applyCursor)
-- `invalidation` → `invalidateOverlay()` from invalidation-helpers
-
-### Phase 1.5: SelectTool Zero-Arg ✅
-
-**Before:**
-```typescript
-tool = new SelectTool(roomDoc, {
-  invalidateWorld: (bounds) => renderLoopRef.current?.invalidateWorld(bounds),
-  invalidateOverlay: () => overlayLoopRef.current?.invalidateAll(),
-  applyCursor,
-  setCursorOverride: (cursor: string | null) => { cursorOverrideRef.current = cursor; },
-});
-```
-
-**After:**
-```typescript
-new SelectTool()
-```
-
-**How it reads dependencies at runtime:**
-- `roomDoc` → `getActiveRoomDoc()` for snapshot and mutations
-- `invalidateWorld` → `invalidateWorld()` from invalidation-helpers
-- `invalidateOverlay` → `invalidateOverlay()` from invalidation-helpers
-- `cursor` → `applyCursor()` / `setCursorOverride()` from cursor-manager
-
----
-
-## Canvas.tsx Cleanup Done
-
-**Removed from Canvas.tsx:**
-- `cursorOverrideRef` - now using cursor-manager.ts
-- Local `applyCursor` useCallback - now imported from cursor-manager.ts
-- Callback-based tool construction - all tools now zero-arg
-
-**Still in Canvas.tsx (for future phases):**
-- `mmbPanRef` - MMB pan state (will be unified with PanTool when tools become singletons)
-- `suppressToolPreviewRef` - Preview suppression during MMB pan
-- `activeToolRef` - Tool type mirror for stable closures
-- `lastMouseClientRef` - Mouse position for eraser seeding
-
----
-
-## Next: Tool Registry / CanvasRuntime
-
-Now that all tools are zero-arg, the next phase can proceed:
-
-### Option A: Tool Registry Module (User preference)
-
-Create `client/src/canvas/tool-registry.ts`:
-- Self-constructing tools on module load
-- Export singleton instances
-- MMB pan can directly call `panTool.begin()`
-
-### Option B: CanvasRuntime Class
-
-Create `client/src/canvas/CanvasRuntime.ts`:
-- Owns tool singletons
-- Owns RenderLoop + OverlayRenderLoop
-- Owns ZoomAnimator
-- Handles pointer event dispatch
-- Canvas.tsx becomes thin React wrapper
-
-**After tool registry/runtime:**
-- Remove `mmbPanRef` from Canvas.tsx
-- Unify MMB pan with PanTool singleton
-- Remove duplicate pan math
-
----
-
-## All Tools Status
+### Phase 1.5: All Tools Zero-Arg ✅
 
 | Tool | Constructor Args | Status |
 |------|-----------------|--------|
@@ -200,61 +376,65 @@ Create `client/src/canvas/CanvasRuntime.ts`:
 | `PanTool` | Zero-arg | ✅ Complete |
 | `SelectTool` | Zero-arg | ✅ Complete |
 
----
+### Phase 1.6: Explicit Transforms ✅
 
-## Files Modified This Session
-
-```
-client/src/canvas/CanvasStage.tsx       - Added registerAsPointerTarget prop
-client/src/canvas/Canvas.tsx            - Wired cursor-manager, zero-arg all tools
-client/src/lib/tools/PanTool.ts         - Zero-arg constructor refactor
-client/src/lib/tools/SelectTool.ts      - Zero-arg constructor refactor
-docs/REFACTOR_STATE.md                  - THIS FILE (updated)
-```
+All render loop passes now use explicit `ctx.setTransform()` with full DPR × scale × translate matrix combined. No more implicit DPR from CanvasStage.
 
 ---
 
-## Quick Resume Commands
+## Current State: Canvas.tsx
+
+**After Phase 2B Prerequisites:**
+- Uses raw `<canvas>` elements (no CanvasStage)
+- SurfaceManager handles resize/DPR
+- Render loops started with zero-arg `start()`
+- Tools use unified `onPointerLeave()` method
+- ~740 lines (was ~850)
+
+**Still in Canvas.tsx (will be removed in future phases):**
+- `mmbPanRef` - MMB pan state (will be unified with PanTool)
+- `suppressToolPreviewRef` - Preview suppression during MMB pan
+- `activeToolRef` - Tool type mirror for stable closures
+- `lastMouseClientRef` - Mouse position for eraser seeding
+- Tool construction (will move to tool-registry)
+- Event handlers (will move to InputManager/CanvasRuntime)
+
+---
+
+## Architecture Diagram (Current State)
+
+```
+Canvas.tsx (~740 lines)
+├── Mounts raw <canvas> elements + editor host div
+├── Creates SurfaceManager (resize/DPR)
+├── Creates RenderLoop (zero-arg start)
+├── Creates OverlayRenderLoop (zero-arg start)
+├── Creates ZoomAnimator
+├── Constructs tools on activeTool change
+├── Handles all pointer events
+└── MMB pan logic (duplicated from PanTool)
+
+Tools (PointerTool interface)
+├── DrawingTool   - onPointerLeave(), onViewChange() no-ops
+├── EraserTool    - onPointerLeave(), onViewChange() (hit test)
+├── TextTool      - onPointerLeave() no-op, onViewChange() (DOM)
+├── PanTool       - onPointerLeave(), onViewChange() no-ops
+└── SelectTool    - onPointerLeave(), hover in move()
+
+Module Registries (Imperative Access)
+├── room-runtime.ts        → getActiveRoomDoc(), updatePresenceCursor(), clearPresenceCursor()
+├── canvas-context-registry.ts → getBaseContext(), getOverlayContext()
+├── camera-store.ts        → transforms, viewport, capturePointer(), releasePointer()
+├── cursor-manager.ts      → applyCursor(), setCursorOverride()
+├── invalidation-helpers.ts → invalidateWorld(), invalidateOverlay()
+└── editor-host-registry.ts → getEditorHost()
+```
+
+---
+
+## Test Commands
 
 ```bash
-# Check current state
-git log --oneline -3
-git status
-
-# Run typecheck (from repo root)
-npm run typecheck
-
-# Key files to read for context
-cat docs/REFACTOR_STATE.md
-cat docs/REFACTOR_PHASE_1_ROOM_RUNTIME.md
-cat docs/REFACTOR_PAN_CURSOR_SYSTEM.md
-```
-
----
-
-## Architecture Reference
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Module-Level Singletons                      │
-│  room-runtime.ts     cursor-manager.ts    invalidation-helpers  │
-│  editor-host-registry.ts    camera-store.ts    device-ui-store  │
-│  userProfileManager                                              │
-└────────────────────────────────┬────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Tools (ALL Zero-Arg Now!)                     │
-│  DrawingTool ✅    EraserTool ✅    TextTool ✅                  │
-│  PanTool ✅        SelectTool ✅                                 │
-└────────────────────────────────┬────────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                 Canvas.tsx (React Wrapper)                       │
-│  - Mounts/unmounts runtime modules                              │
-│  - Creates tools (will become singleton registry)               │
-│  - Dispatches pointer events to tools                           │
-│  - MMB pan (to be unified with PanTool singleton)               │
-└─────────────────────────────────────────────────────────────────┘
+npm run typecheck  # From project root (tests are outdated, will fail)
+npm run dev        # Manual testing (if permitted)
 ```

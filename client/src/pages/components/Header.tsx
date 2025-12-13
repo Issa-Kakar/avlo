@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useClearScene } from '../../hooks/useRoomIntegration';
 import { usePresence } from '../../hooks/use-presence';
 

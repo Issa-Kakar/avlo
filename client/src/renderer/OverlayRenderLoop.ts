@@ -1,12 +1,14 @@
-import type { PresenceView, ViewTransform, Snapshot } from '@avlo/shared';
 import type { PreviewData } from '@/lib/tools/types';
-import { drawPreview, } from './layers/preview';
+import { drawPreview } from './layers/preview';
+import { drawPresenceOverlays } from './layers';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getStroke } from 'perfect-freehand';
 import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
+import { getOverlayContext } from '@/canvas/canvas-context-registry';
+import { getCurrentSnapshot, getGateStatus } from '@/canvas/room-runtime';
 
 // Eraser Trail configuration
 interface EraserTrailPoint {
@@ -23,32 +25,8 @@ export interface PreviewProvider {
   getPreview(): PreviewData | null;
 }
 
-export interface OverlayLoopConfig {
-  stage: {
-    withContext: (fn: (ctx: CanvasRenderingContext2D) => void) => void;
-    clear: () => void;
-  };
-  /**
-   * @deprecated Use camera store directly via getViewTransform(). Will be removed.
-   */
-  getView?: () => ViewTransform;
-  /**
-   * @deprecated Use camera store directly via getViewportInfo(). Will be removed.
-   */
-  getViewport?: () => { cssWidth: number; cssHeight: number; dpr: number };
-  getGates: () => { awarenessReady: boolean; firstSnapshot: boolean };
-  getPresence: () => PresenceView;
-  getSnapshot: () => Snapshot; // Added for eraser dimming
-  drawPresence: (
-    ctx: CanvasRenderingContext2D,
-    presence: PresenceView,
-    view: ViewTransform,
-    viewport: { cssWidth: number; cssHeight: number; dpr: number },
-  ) => void;
-}
-
 export class OverlayRenderLoop {
-  private config: OverlayLoopConfig | null = null;
+  private started = false;
   private rafId: number | null = null;
   private needsFrame = false;
   private previewProvider: PreviewProvider | null = null;
@@ -57,8 +35,12 @@ export class OverlayRenderLoop {
   private eraserTrail: EraserTrailPoint[] | null = null;
   private cameraUnsubscribe: (() => void) | null = null;
 
-  start(config: OverlayLoopConfig) {
-    this.config = config;
+  /**
+   * Start the overlay render loop.
+   * All dependencies are read from module registries - no config needed.
+   */
+  start(): void {
+    this.started = true;
     this.eraserTrail = [];
 
     // Subscribe to camera store for self-invalidation
@@ -88,7 +70,7 @@ export class OverlayRenderLoop {
     );
   }
 
-  stop() {
+  stop(): void {
     // Cancel camera store subscription first
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
@@ -96,7 +78,7 @@ export class OverlayRenderLoop {
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.needsFrame = false;
-    this.config = null;
+    this.started = false;
   }
 
   setPreviewProvider(provider: PreviewProvider | null): void {
@@ -124,8 +106,8 @@ export class OverlayRenderLoop {
     this.invalidateAll(); // Ensure we draw a frame
   }
 
-  private schedule() {
-    if (this.rafId || !this.config) return;
+  private schedule(): void {
+    if (this.rafId || !this.started) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null;
       this.needsFrame = false;
@@ -213,10 +195,12 @@ export class OverlayRenderLoop {
     ctx.restore();
   }
 
-  private frame() {
-    if (!this.config) return;
-    const { stage, getPresence, getGates, drawPresence, getSnapshot } =
-      this.config;
+  private frame(): void {
+    if (!this.started) return;
+
+    // Get context from registry (replaces stage)
+    const ctx = getOverlayContext();
+    if (!ctx) return;
 
     // Get viewport from camera store (single source of truth)
     const vpInfo = getViewportInfo();
@@ -224,7 +208,11 @@ export class OverlayRenderLoop {
     if (vp.cssWidth <= 1 || vp.cssHeight <= 1) return;
 
     // Always full clear overlay (cheap for preview + presence)
-    stage.clear();
+    // Inline clear: reset transform, clear device pixels
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, vp.cssWidth * vp.dpr, vp.cssHeight * vp.dpr);
+    ctx.restore();
 
     // Get view transform from camera store
     const view = getViewTransform();
@@ -251,40 +239,49 @@ export class OverlayRenderLoop {
     this.decayEraserTrail(now);
   }
     if (previewToDraw) {
-      stage.withContext((ctx) => {
-        // Check preview kind using discriminant
-        if (previewToDraw?.kind === 'stroke') {
+      ctx.save();
+      // Check preview kind using discriminant
+      if (previewToDraw?.kind === 'stroke') {
           // Existing stroke preview (world space)
-          ctx.save();
-          ctx.scale(view.scale, view.scale);
-          ctx.translate(-view.pan.x, -view.pan.y);
+          // Explicit world transform: DPR × scale × translate combined
+          ctx.setTransform(
+            vp.dpr * view.scale, 0,
+            0, vp.dpr * view.scale,
+            -view.pan.x * vp.dpr * view.scale,
+            -view.pan.y * vp.dpr * view.scale
+          );
           drawPreview(ctx, previewToDraw); // Existing preview function
-          ctx.restore();
 
         } else if (previewToDraw?.kind === 'eraser') {
           // New eraser preview (two passes)
-          const snapshot = getSnapshot();
-          
+          const snapshot = getCurrentSnapshot();
+
           // Pass A: World-space dimming
+          // Explicit world transform: DPR × scale × translate combined
           if (previewToDraw.hitIds.length > 0) {
-            ctx.save();
-            ctx.scale(view.scale, view.scale);
-            ctx.translate(-view.pan.x, -view.pan.y);
+            ctx.setTransform(
+              vp.dpr * view.scale, 0,
+              0, vp.dpr * view.scale,
+              -view.pan.x * vp.dpr * view.scale,
+              -view.pan.y * vp.dpr * view.scale
+            );
             drawDimmedStrokes(ctx, previewToDraw.hitIds, snapshot, previewToDraw.dimOpacity);
-            ctx.restore();
           }
 
           // Pass B: Screen-space trail (no cursor ring)
-          ctx.save();
+          // Explicit DPR-only transform for screen-space elements
           ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
           this.drawEraserTrail(ctx, now, vp.dpr);
-          ctx.restore();
 
         } else if (previewToDraw?.kind === 'text') {
           // Text preview (world space)
-          ctx.save();
-          ctx.scale(view.scale, view.scale);
-          ctx.translate(-view.pan.x, -view.pan.y);
+          // Explicit world transform: DPR × scale × translate combined
+          ctx.setTransform(
+            vp.dpr * view.scale, 0,
+            0, vp.dpr * view.scale,
+            -view.pan.x * vp.dpr * view.scale,
+            -view.pan.y * vp.dpr * view.scale
+          );
 
           // Draw placement box with dashed outline
           ctx.strokeStyle = previewToDraw.isPlacing
@@ -315,25 +312,32 @@ export class OverlayRenderLoop {
             ctx.lineTo(previewToDraw.box.x + 5, previewToDraw.box.y);
             ctx.stroke();
           }
-
-          ctx.restore();
         } else if (previewToDraw?.kind === 'perfectShape') {
           // Perfect shape preview (world space)
-          ctx.save();
-          ctx.scale(view.scale, view.scale);
-          ctx.translate(-view.pan.x, -view.pan.y);
+          // Explicit world transform: DPR × scale × translate combined
+          ctx.setTransform(
+            vp.dpr * view.scale, 0,
+            0, vp.dpr * view.scale,
+            -view.pan.x * vp.dpr * view.scale,
+            -view.pan.y * vp.dpr * view.scale
+          );
           drawPerfectShapePreview(ctx, previewToDraw);
-          ctx.restore();
 
         } else if (previewToDraw?.kind === 'selection') {
           // Selection preview (world space for bounds, screen space for handle sizing)
+          // Save for lineDash state management (restore happens at end of selection block)
           ctx.save();
-          ctx.scale(view.scale, view.scale);
-          ctx.translate(-view.pan.x, -view.pan.y);
+          // Explicit world transform: DPR × scale × translate combined
+          ctx.setTransform(
+            vp.dpr * view.scale, 0,
+            0, vp.dpr * view.scale,
+            -view.pan.x * vp.dpr * view.scale,
+            -view.pan.y * vp.dpr * view.scale
+          );
 
           // === SELECTION HIGHLIGHTING (only when not transforming) ===
           if (!previewToDraw.isTransforming && previewToDraw.selectedIds?.length > 0) {
-            const snapshot = getSnapshot();
+            const snapshot = getCurrentSnapshot();
             const cache = getObjectCacheInstance();
 
             ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue
@@ -415,7 +419,7 @@ export class OverlayRenderLoop {
 
           ctx.restore();
         }
-      });
+      ctx.restore();
 
       // Clear the hold flag and cache after drawing the held frame
       if (this.holdPreviewOneFrame && !preview) {
@@ -425,12 +429,20 @@ export class OverlayRenderLoop {
     }
 
     // ---------- PASS 2: Screen-space presence (DPR only) ----------
-    const gates = getGates();
+    const gates = getGateStatus();
     if (gates.awarenessReady && gates.firstSnapshot) {
-      const presence = getPresence();
-      stage.withContext((ctx) => {
-        drawPresence(ctx, presence, view, vp);
-      });
+      const snapshot = getCurrentSnapshot();
+      ctx.save();
+      // Explicit DPR-only transform for screen-space presence
+      ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
+      drawPresenceOverlays(ctx, snapshot, view, {
+        pixelWidth: Math.round(vp.cssWidth * vp.dpr),
+        pixelHeight: Math.round(vp.cssHeight * vp.dpr),
+        cssWidth: vp.cssWidth,
+        cssHeight: vp.cssHeight,
+        dpr: vp.dpr,
+      }, gates);
+      ctx.restore();
     }
     if (this.hasEraserTrail()) this.invalidateAll();
   }

@@ -1,11 +1,6 @@
-import type { RefObject } from 'react';
-import type { Snapshot } from '@avlo/shared';
-import type { CanvasStageHandle } from '../canvas/CanvasStage';
-import type { GateStatus } from '@/hooks/use-connection-gates';
 import { DirtyRectTracker } from './DirtyRectTracker';
 import {
   FrameStats,
-
   FRAME_CONFIG,
   InvalidationReason,
   WorldBounds,
@@ -24,18 +19,13 @@ import {
   getViewTransform,
   getViewportInfo,
   getVisibleWorldBounds,
+  isMobile,
 } from '@/stores/camera-store';
-
-export interface RenderLoopConfig {
-  stageRef: RefObject<CanvasStageHandle>;
-  getSnapshot: () => Snapshot;
-  getGates: () => GateStatus; // Phase 7: Gate status for presence rendering
-  onStats?: (stats: FrameStats) => void;
-  isMobile?: () => boolean; // For mobile FPS throttling
-}
+import { getBaseContext } from '@/canvas/canvas-context-registry';
+import { getCurrentSnapshot } from '@/canvas/room-runtime';
 
 export class RenderLoop {
-  private config: RenderLoopConfig | null = null;
+  private started = false;
   private dirtyTracker = new DirtyRectTracker();
   private cameraUnsubscribe: (() => void) | null = null;
   private frameStats: FrameStats = {
@@ -63,14 +53,17 @@ export class RenderLoop {
     }
   }
 
-  // Start the render loop
-  start(config: RenderLoopConfig): void {
-    if (this.config) {
+  /**
+   * Start the render loop.
+   * All dependencies are read from module registries - no config needed.
+   */
+  start(): void {
+    if (this.started) {
       console.warn('RenderLoop already started');
       return;
     }
 
-    this.config = config;
+    this.started = true;
     this.lastFrameTime = performance.now();
 
     // Get initial viewport for tracker sizing from camera store
@@ -155,7 +148,7 @@ export class RenderLoop {
     }
 
     // Reset all state
-    this.config = null;
+    this.started = false;
     this.dirtyTracker.reset();
     this.needsFrame = false;
     this.framesSinceInvalidation = 0;
@@ -201,15 +194,15 @@ export class RenderLoop {
 
   // Low FPS loop for hidden tabs
   private startHiddenLoop(): void {
-    if (this.hiddenIntervalId || !this.config) return;
+    if (this.hiddenIntervalId || !this.started) return;
 
     const intervalMs = 1000 / FRAME_CONFIG.HIDDEN_FPS;
     this.hiddenIntervalId = window.setInterval(() => {
-      // Safety check - config might have been cleared if stopped
-      if (this.config && this.needsFrame) {
+      // Safety check - might have been stopped
+      if (this.started && this.needsFrame) {
         this.tick();
-      } else if (!this.config && this.hiddenIntervalId !== null) {
-        // Clean up interval if config was cleared
+      } else if (!this.started && this.hiddenIntervalId !== null) {
+        // Clean up interval if stopped
         clearInterval(this.hiddenIntervalId);
         this.hiddenIntervalId = null;
       }
@@ -218,10 +211,10 @@ export class RenderLoop {
 
   // EVENT-DRIVEN: Schedule frame only when needed
   private scheduleFrameIfNeeded(): void {
-    if (!this.config || this.isHidden || this.rafId !== null) return;
+    if (!this.started || this.isHidden || this.rafId !== null) return;
 
-    // Check if we should throttle FPS on mobile
-    const targetFPS = this.config.isMobile?.() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS;
+    // Check if we should throttle FPS on mobile (isMobile from camera-store)
+    const targetFPS = isMobile() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS;
     const targetMs = 1000 / targetFPS;
 
     // NEVER throttle the first frame after invalidation for instant response
@@ -249,11 +242,10 @@ export class RenderLoop {
 
   // Main render tick
   private tick(): void {
-    if (!this.config) return;
+    if (!this.started) return;
 
     const startTime = performance.now();
     this.lastFrameTime = startTime;
-    const { stageRef, getSnapshot } = this.config;
 
     // Clear the needsFrame flag - will be set again if new work arrives
     this.needsFrame = false;
@@ -266,13 +258,14 @@ export class RenderLoop {
       return;
     }
 
-    // Get current state
-    const stage = stageRef.current;
-    if (!stage) return;
+    // Get context from registry (replaces stageRef.current)
+    const ctx = getBaseContext();
+    if (!ctx) return;
 
     // Read view and viewport from camera store
     const view = getViewTransform();
-    const snapshot = getSnapshot();
+    // Read snapshot from room-runtime (replaces getSnapshot callback)
+    const snapshot = getCurrentSnapshot();
     const viewport = getViewportInfo();
 
     // Early exit if viewport is not yet sized
@@ -355,120 +348,106 @@ export class RenderLoop {
     }
 
     // Clear pass (identity transform)
-    stage.withContext((ctx) => {
-      // Save current transform
-      ctx.save();
+    ctx.save();
+    // Reset to identity for clearing
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-      // Reset to identity for clearing (DPR already applied by CanvasStage)
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-      if (clearInstructions.type === 'full') {
-        // Full clear in device pixels
-        ctx.clearRect(0, 0, viewport.pixelWidth, viewport.pixelHeight);
-        this.frameStats.lastClearType = 'full';
-        this.frameStats.rectCount = 0; // Reset rect count on full clear
-      } else if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
-        // Dirty rectangle clears - rects are already in device pixels
-        for (const rect of clearInstructions.rects) {
-          ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
-        }
-        this.frameStats.lastClearType = 'dirty';
-        this.frameStats.rectCount = clearInstructions.rects.length;
+    if (clearInstructions.type === 'full') {
+      // Full clear in device pixels
+      ctx.clearRect(0, 0, viewport.pixelWidth, viewport.pixelHeight);
+      this.frameStats.lastClearType = 'full';
+      this.frameStats.rectCount = 0; // Reset rect count on full clear
+    } else if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
+      // Dirty rectangle clears - rects are already in device pixels
+      for (const rect of clearInstructions.rects) {
+        ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
       }
-
-      // Restore transform
-      ctx.restore();
-    });
+      this.frameStats.lastClearType = 'dirty';
+      this.frameStats.rectCount = clearInstructions.rects.length;
+    }
+    ctx.restore();
 
     // Draw pass 1: World content (world transform)
-    stage.withContext((ctx) => {
-      // Apply world transform: scale first, then translate
-      // Note: withContext starts with the base DPR transform from CanvasStage
-      // The operations below compose with it: DPR × scale × translate
-      ctx.scale(view.scale, view.scale);
-      ctx.translate(-view.pan.x, -view.pan.y);
+    ctx.save();
+    // Apply explicit world transform: DPR × scale × translate combined
+    const { dpr } = viewport;
+    ctx.setTransform(
+      dpr * view.scale, 0,
+      0, dpr * view.scale,
+      -view.pan.x * dpr * view.scale,
+      -view.pan.y * dpr * view.scale
+    );
 
-      // Calculate visible world bounds for culling (reads from camera store)
-      const visibleBounds = getVisibleWorldBounds();
+    // Calculate visible world bounds for culling (reads from camera store)
+    const visibleBounds = getVisibleWorldBounds();
 
-      // CRITICAL: Apply clipping if we have dirty rects
-      let clipRegion: DirtyClipRegion | undefined;
-      if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
-        // Convert device pixel rects to world coordinates for clipping
-        clipRegion = {
-          worldRects: clearInstructions.rects.map(rect => {
-            // Convert device pixels → CSS pixels → world
-            const cssX = rect.x / viewport.dpr;
-            const cssY = rect.y / viewport.dpr;
-            const cssW = rect.width / viewport.dpr;
-            const cssH = rect.height / viewport.dpr;
+    // CRITICAL: Apply clipping if we have dirty rects
+    let clipRegion: DirtyClipRegion | undefined;
+    if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
+      // Convert device pixel rects to world coordinates for clipping
+      clipRegion = {
+        worldRects: clearInstructions.rects.map(rect => {
+          // Convert device pixels → CSS pixels → world
+          const cssX = rect.x / viewport.dpr;
+          const cssY = rect.y / viewport.dpr;
+          const cssW = rect.width / viewport.dpr;
+          const cssH = rect.height / viewport.dpr;
 
-            const [worldX1, worldY1] = view.canvasToWorld(cssX, cssY);
-            const [worldX2, worldY2] = view.canvasToWorld(cssX + cssW, cssY + cssH);
+          const [worldX1, worldY1] = view.canvasToWorld(cssX, cssY);
+          const [worldX2, worldY2] = view.canvasToWorld(cssX + cssW, cssY + cssH);
 
-            return {
-              minX: worldX1,
-              minY: worldY1,
-              maxX: worldX2,
-              maxY: worldY2,
-            };
-          })
-        };
-
-        // Create clipping path for all dirty regions in world space
-        ctx.save();
-        ctx.beginPath();
-        for (const worldRect of clipRegion.worldRects) {
-          // Use already-computed world coordinates directly
-          ctx.rect(
-            worldRect.minX,
-            worldRect.minY,
-            worldRect.maxX - worldRect.minX,
-            worldRect.maxY - worldRect.minY
-          );
-        }
-        ctx.clip();
-      }
-
-      const augmentedViewport = {
-        ...viewport,
-        visibleWorldBounds: visibleBounds,
-        clipRegion, // NEW: Pass dirty regions for spatial queries
+          return {
+            minX: worldX1,
+            minY: worldY1,
+            maxX: worldX2,
+            maxY: worldY2,
+          };
+        })
       };
 
-      // Draw world layers only
-      // LINE WIDTH POLICY:
-      // - World content (strokes): ctx.lineWidth = style.size (world units)
-      // - Hairlines/HUD: ctx.lineWidth = 1 / view.scale (targets ~1 CSS pixel, becomes DPR device pixels)
-      // DPR is already applied by CanvasStage via initial setTransform(dpr, 0, 0, dpr, 0, 0)
-
-      drawBackground(ctx, snapshot, view, augmentedViewport);
-      drawObjects(ctx, snapshot, view, augmentedViewport); // Unified object rendering (strokes, shapes, text, connectors)
-      drawText(ctx, snapshot, view, augmentedViewport); // Phase 11: text blocks
-
-      // Authoring overlay - for future selection/handles
-      drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport);
-
-      // Restore clipping state
-      if (clipRegion) {
-        ctx.restore();
+      // Create clipping path for all dirty regions in world space
+      ctx.save();
+      ctx.beginPath();
+      for (const worldRect of clipRegion.worldRects) {
+        ctx.rect(
+          worldRect.minX,
+          worldRect.minY,
+          worldRect.maxX - worldRect.minX,
+          worldRect.maxY - worldRect.minY
+        );
       }
+      ctx.clip();
+    }
 
-      // ⛔️ Preview moved to overlay canvas - no longer drawn here
-    });
+    const augmentedViewport = {
+      ...viewport,
+      visibleWorldBounds: visibleBounds,
+      clipRegion, // Pass dirty regions for spatial queries
+    };
+
+    // Draw world layers only
+    drawBackground(ctx, snapshot, view, augmentedViewport);
+    drawObjects(ctx, snapshot, view, augmentedViewport);
+    drawText(ctx, snapshot, view, augmentedViewport);
+    drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport);
+
+    // Restore clipping state
+    if (clipRegion) {
+      ctx.restore();
+    }
+    ctx.restore();
 
     // Draw pass 2: HUD only (screen space with DPR only)
-    stage.withContext((ctx) => {
-      const augmentedViewport = {
-        ...viewport,
-        visibleWorldBounds: getVisibleWorldBounds(),
-      };
+    ctx.save();
+    // Explicit DPR-only transform for screen-space HUD elements
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // ⛔️ Presence moved to overlay canvas - no longer drawn here
-
-      // Keep HUD on base canvas
-      drawHUD(ctx, snapshot, view, augmentedViewport); // Future: minimap, toasts (never exported)
-    });
+    const hudViewport = {
+      ...viewport,
+      visibleWorldBounds: getVisibleWorldBounds(),
+    };
+    drawHUD(ctx, snapshot, view, hudViewport);
+    ctx.restore();
 
     // Reset dirty tracker for next frame
     this.dirtyTracker.reset();
@@ -480,11 +459,6 @@ export class RenderLoop {
     // Check if we should skip next frame
     if (frameDuration > FRAME_CONFIG.SKIP_THRESHOLD_MS) {
       this.skipNextFrame = true;
-    }
-
-    // Notify stats listener
-    if (this.config.onStats) {
-      this.config.onStats(this.frameStats);
     }
   }
 
@@ -509,7 +483,7 @@ export class RenderLoop {
 
   // Public invalidation APIs - EVENT-DRIVEN: These trigger frame scheduling
   invalidateWorld(bounds: WorldBounds): void {
-    if (!this.config) return;
+    if (!this.started) return;
     console.log('[RenderLoop] invalidateWorld', bounds);
     // Read view from camera store
     const view = getViewTransform();
@@ -518,7 +492,7 @@ export class RenderLoop {
   }
 
   invalidateCanvas(rect: CSSPixelRect): void {
-    if (!this.config) return;
+    if (!this.started) return;
     // Read view and viewport from camera store
     const { scale } = useCameraStore.getState();
     const viewport = getViewportInfo();
@@ -541,8 +515,8 @@ export class RenderLoop {
 
   // EVENT-DRIVEN: Mark dirty and schedule frame if needed
   private markDirty(): void {
-    // Safety check - don't schedule if config is null (stopped)
-    if (!this.config) return;
+    // Safety check - don't schedule if not started
+    if (!this.started) return;
 
     if (!this.needsFrame) {
       this.needsFrame = true;

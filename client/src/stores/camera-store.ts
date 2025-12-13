@@ -80,6 +80,50 @@ export function getCanvasElement(): HTMLCanvasElement | null {
   return canvasElement;
 }
 
+/**
+ * Capture pointer on the canvas element.
+ * Called from CanvasRuntime at gesture start.
+ */
+export function capturePointer(pointerId: number): void {
+  try {
+    canvasElement?.setPointerCapture(pointerId);
+  } catch {
+    // Ignore errors (pointer may already be captured or released)
+  }
+}
+
+/**
+ * Release pointer capture on the canvas element.
+ * Called from CanvasRuntime at gesture end.
+ */
+export function releasePointer(pointerId: number): void {
+  try {
+    canvasElement?.releasePointerCapture(pointerId);
+  } catch {
+    // Ignore errors (pointer may already be released)
+  }
+}
+
+// ============================================
+// MOBILE DETECTION
+// ============================================
+
+/** Cached mobile detection result */
+let mobileDetected: boolean | null = null;
+
+/**
+ * Check if running on a mobile device.
+ * Result is cached on first call.
+ */
+export function isMobile(): boolean {
+  if (mobileDetected === null) {
+    mobileDetected =
+      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+      navigator.maxTouchPoints > 1;
+  }
+  return mobileDetected;
+}
+
 // ============================================
 // STORE CREATION
 // ============================================

@@ -156,6 +156,12 @@ export class SelectTool {
     const [screenX, screenY] = worldToCanvas(worldX, worldY);
 
     switch (this.phase) {
+      case 'idle': {
+        // Handle hover cursor when not in a gesture
+        this.handleHoverCursor(worldX, worldY);
+        break;
+      }
+
       case 'pendingClick': {
         // Compute distance and elapsed time for threshold checks
         if (!this.downScreen) break;
@@ -485,10 +491,18 @@ export class SelectTool {
   }
 
   /**
-   * Called on pointer move when idle (no active gesture).
-   * Detects handle hover and sets appropriate cursor.
+   * Called when pointer leaves canvas - clears any hover cursor state.
    */
-  updateHoverCursor(worldX: number, worldY: number): void {
+  onPointerLeave(): void {
+    setCursorOverride(null);
+    applyCursor();
+  }
+
+  /**
+   * Handle hover cursor detection when idle.
+   * Called by move() when phase is 'idle'.
+   */
+  private handleHoverCursor(worldX: number, worldY: number): void {
     const store = useSelectionStore.getState();
     if (store.selectedIds.length === 0) {
       setCursorOverride(null);
@@ -503,14 +517,6 @@ export class SelectTool {
     } else {
       setCursorOverride(null);
     }
-    applyCursor();
-  }
-
-  /**
-   * Called when pointer leaves canvas - clears any hover cursor state.
-   */
-  clearHover(): void {
-    setCursorOverride(null);
     applyCursor();
   }
 

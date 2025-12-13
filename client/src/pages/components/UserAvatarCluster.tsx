@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { usePresence } from '@/hooks/use-presence';
 
 interface UserAvatarClusterProps {

@@ -108,6 +108,11 @@ export class TextTool {
     return null;
   }
 
+  onPointerLeave(): void {
+    // TextTool has no hover state to clear
+    // DOM editor handles its own focus/blur
+  }
+
   destroy(): void {
     this.teardownEditor();
   }

@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useCallback } from 'react';
+import { useMemo, useEffect, useCallback } from 'react';
 import { usePresence } from '@/hooks/use-presence';
 
 interface UsersModalProps {

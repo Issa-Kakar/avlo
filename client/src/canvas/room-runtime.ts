@@ -12,8 +12,11 @@
  * @module canvas/room-runtime
  */
 
-import type { RoomId } from '@avlo/shared';
+import type { RoomId, Snapshot } from '@avlo/shared';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
+
+/** Gate status type from IRoomDocManager.getGateStatus() */
+export type GateStatus = ReturnType<IRoomDocManager['getGateStatus']>;
 
 interface RoomContext {
   roomId: RoomId;
@@ -62,4 +65,42 @@ export function getActiveRoomId(): RoomId {
  */
 export function hasActiveRoom(): boolean {
   return activeRoom !== null;
+}
+
+/**
+ * Get the current snapshot from the active room.
+ * Convenience wrapper for getActiveRoomDoc().currentSnapshot
+ * Use this in render loops and tools to avoid prop drilling.
+ */
+export function getCurrentSnapshot(): Snapshot {
+  return getActiveRoomDoc().currentSnapshot;
+}
+
+/**
+ * Get the gate status from the active room.
+ * Convenience wrapper for getActiveRoomDoc().getGateStatus()
+ * Use this in render loops to check initialization gates.
+ */
+export function getGateStatus(): GateStatus {
+  return getActiveRoomDoc().getGateStatus();
+}
+
+// ============================================
+// PRESENCE CURSOR HELPERS
+// ============================================
+
+/**
+ * Update the presence cursor position.
+ * Called from CanvasRuntime on pointer move.
+ */
+export function updatePresenceCursor(worldX: number, worldY: number): void {
+  getActiveRoomDoc().updateCursor(worldX, worldY);
+}
+
+/**
+ * Clear the presence cursor (pointer left canvas).
+ * Called from CanvasRuntime on pointer leave.
+ */
+export function clearPresenceCursor(): void {
+  getActiveRoomDoc().updateCursor(undefined, undefined);
 }

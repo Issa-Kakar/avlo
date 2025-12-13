@@ -1,4 +1,3 @@
-import React from 'react';
 import { useCameraStore, selectScale } from '@/stores/camera-store';
 import { PERFORMANCE_CONFIG } from '@avlo/shared';
 

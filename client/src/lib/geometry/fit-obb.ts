@@ -57,7 +57,7 @@ export function fitOBB(points: Vec2[]): {
   const discriminant = Math.sqrt(Math.max(0, trace * trace - 4 * det));
 
   const lambda1 = (trace + discriminant) / 2; // Larger eigenvalue
-  const _lambda2 = (trace - discriminant) / 2; // Smaller eigenvalue (unused but computed for clarity)
+  // Note: lambda2 = (trace - discriminant) / 2 (smaller eigenvalue, not needed for OBB)
 
   // Step 4: Find the eigenvector for the larger eigenvalue (principal direction)
   let angle: number;

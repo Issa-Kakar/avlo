@@ -68,7 +68,7 @@ export class DrawingTool {
   private frozenToolType: 'pen' | 'highlighter' = 'pen';
   private frozenForceSnapKind: ForcedSnapKind | null = null;
 
-  // Bounds tracking for commit (preview doesn't use bbox anymore)
+  // Legacy Bounds tracking for commit (preview doesn't use bbox anymore)
   private lastBounds: [number, number, number, number] | null = null;
 
   // Perfect shapes support
@@ -636,6 +636,15 @@ export class DrawingTool {
     this.resetState();
     this.snap = null;
     this.liveCursorWU = null;
+  }
+
+  onPointerLeave(): void {
+    // DrawingTool has no hover state to clear
+  }
+
+  onViewChange(): void {
+    // DrawingTool doesn't need to reposition on view change
+    // Preview is drawn in world coordinates by overlay loop
   }
 
   destroy(): void {

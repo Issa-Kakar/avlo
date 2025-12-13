@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { clientConfig } from './config-schema';
 
 // Response schemas
 export const RoomMetadataSchema = z.object({
@@ -49,8 +48,8 @@ class ApiClient {
     };
   }
 
-  async renameRoom(roomId: string, title: string): Promise<{ title: string }> {
-    // Just return the new title
+  async renameRoom(_roomId: string, title: string): Promise<{ title: string }> {
+    // Just return the new title (stub - roomId will be used with real backend)
     return { title };
   }
 }

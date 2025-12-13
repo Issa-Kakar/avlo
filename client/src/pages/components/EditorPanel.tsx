@@ -1,4 +1,3 @@
-import React from 'react';
 import { useDeviceUIStore } from '../../stores/device-ui-store';
 
 interface EditorPanelProps {

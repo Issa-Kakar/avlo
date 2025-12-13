@@ -60,6 +60,15 @@ export class PanTool {
     return null; // Pan tool has no preview
   }
 
+  onPointerLeave(): void {
+    // PanTool has no hover state to clear
+  }
+
+  onViewChange(): void {
+    // PanTool doesn't need to reposition on view change
+    // (it's driving the view change!)
+  }
+
   destroy(): void {
     // Cleanup if needed
   }
