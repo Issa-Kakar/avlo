@@ -22,7 +22,7 @@ import { ZoomAnimator } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import { setWorldInvalidator, setOverlayInvalidator } from './invalidation-helpers';
+import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
 import { setBaseContext, setOverlayContext } from './canvas-context-registry';
 import { updatePresenceCursor, clearPresenceCursor } from './room-runtime';
 import {
@@ -77,6 +77,7 @@ export class CanvasRuntime {
     this.overlayLoop = new OverlayRenderLoop();
     this.overlayLoop.start();
     setOverlayInvalidator(() => this.overlayLoop?.invalidateAll());
+    setHoldPreviewFn(() => this.overlayLoop?.holdPreviewForOneFrame());
 
     // 4. Zoom animator
     this.zoomAnimator = new ZoomAnimator();
@@ -107,6 +108,7 @@ export class CanvasRuntime {
     this.renderLoop?.destroy();
 
     setOverlayInvalidator(null);
+    setHoldPreviewFn(null);
     this.overlayLoop?.stop();
     this.overlayLoop?.destroy();
 
