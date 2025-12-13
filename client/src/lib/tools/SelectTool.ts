@@ -1,4 +1,4 @@
-import type { WorldRect, SelectionPreview, HandleId } from './types';
+import type { WorldRect, HandleId, PointerTool, PreviewData } from './types';
 import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
@@ -76,7 +76,7 @@ interface ObjectHandle {
  * - Cursor: cursor-manager.ts
  * - Camera/Selection: Zustand stores
  */
-export class SelectTool {
+export class SelectTool implements PointerTool {
   // State machine
   private phase: Phase = 'idle';
   private pointerId: number | null = null;
@@ -433,7 +433,7 @@ export class SelectTool {
     return this.pointerId;
   }
 
-  getPreview(): SelectionPreview | null {
+  getPreview(): PreviewData | null {
     const store = useSelectionStore.getState();
     const { selectedIds, transform, marquee } = store;
 

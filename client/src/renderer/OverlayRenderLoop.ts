@@ -9,6 +9,8 @@ import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/canvas-context-registry';
 import { getCurrentSnapshot, getGateStatus } from '@/canvas/room-runtime';
+import { getActivePreview } from '@/canvas/tool-registry';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 
 // Eraser Trail configuration
 interface EraserTrailPoint {
@@ -21,23 +23,21 @@ const TRAIL_MIN_DIST_PX = 0;
 const TRAIL_MAX_POINTS = 10;
 const TRAIL_BASE_WIDTH_PX = 14;
 const TRAIL_BASE_ALPHA = 0.35;
-export interface PreviewProvider {
-  getPreview(): PreviewData | null;
-}
 
 export class OverlayRenderLoop {
   private started = false;
   private rafId: number | null = null;
   private needsFrame = false;
-  private previewProvider: PreviewProvider | null = null;
   private cachedPreview: PreviewData | null = null;
   private holdPreviewOneFrame = false;
   private eraserTrail: EraserTrailPoint[] | null = null;
   private cameraUnsubscribe: (() => void) | null = null;
+  private toolUnsubscribe: (() => void) | null = null;
 
   /**
    * Start the overlay render loop.
    * All dependencies are read from module registries - no config needed.
+   * Preview is self-managed via tool-registry's getActivePreview().
    */
   start(): void {
     this.started = true;
@@ -68,29 +68,31 @@ export class OverlayRenderLoop {
           a.dpr === b.dpr,
       }
     );
+
+    // Subscribe to tool changes - clear cached preview when tool switches
+    let lastTool = useDeviceUIStore.getState().activeTool;
+    this.toolUnsubscribe = useDeviceUIStore.subscribe((state) => {
+      if (state.activeTool !== lastTool) {
+        lastTool = state.activeTool;
+        // Tool changed - clear any cached preview and ensure redraw
+        this.cachedPreview = null;
+        this.holdPreviewOneFrame = false;
+        this.invalidateAll();
+      }
+    });
   }
 
   stop(): void {
-    // Cancel camera store subscription first
+    // Cancel store subscriptions first
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
+    this.toolUnsubscribe?.();
+    this.toolUnsubscribe = null;
 
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.needsFrame = false;
     this.started = false;
-  }
-
-  setPreviewProvider(provider: PreviewProvider | null): void {
-    this.previewProvider = provider;
-    // Always invalidate to ensure preview updates or clears
-    this.invalidateAll();
-
-    // Clear cached preview when provider is removed
-    if (!provider) {
-      this.cachedPreview = null;
-      this.holdPreviewOneFrame = false;
-    }
   }
 
   invalidateAll() {
@@ -101,7 +103,7 @@ export class OverlayRenderLoop {
   }
 
   holdPreviewForOneFrame(): void {
-    if (this.previewProvider?.getPreview()?.kind === 'eraser') return;
+    if (getActivePreview()?.kind === 'eraser') return;
     this.holdPreviewOneFrame = true;
     this.invalidateAll(); // Ensure we draw a frame
   }
@@ -218,7 +220,8 @@ export class OverlayRenderLoop {
     const view = getViewTransform();
 
     // ---------- PASS 1: World-space preview (with world transform) ----------
-    const preview = this.previewProvider?.getPreview();
+    // Self-managed: read preview from tool registry instead of external provider
+    const preview = getActivePreview();
     const now = performance.now();
     // Cache the latest preview if we have one
     if (preview && preview.kind !== 'eraser') {
@@ -450,10 +453,11 @@ export class OverlayRenderLoop {
   // Keep animating if trail exists
 
   destroy() {
-    // Ensure subscription is cleaned up
+    // Ensure subscriptions are cleaned up
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
+    this.toolUnsubscribe?.();
+    this.toolUnsubscribe = null;
     this.stop();
-    this.previewProvider = null;
   }
 }

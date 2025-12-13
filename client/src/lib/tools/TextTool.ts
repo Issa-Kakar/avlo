@@ -1,6 +1,6 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { TextPreview } from './types';
+import type { PointerTool, PreviewData } from './types';
 import { useDeviceUIStore } from '../../stores/device-ui-store';
 import { useCameraStore, worldToClient as cameraWorldToClient } from '@/stores/camera-store';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
@@ -36,7 +36,7 @@ interface TextState {
  * as the select tool will be switched to automatically after placing
  * the initial text block.
  */
-export class TextTool {
+export class TextTool implements PointerTool {
   private state: TextState = {
     isEditing: false,
     editBox: null,
@@ -102,7 +102,7 @@ export class TextTool {
     return null; // Text tool doesn't track pointer
   }
 
-  getPreview(): TextPreview | null {
+  getPreview(): PreviewData | null {
     // Don't show preview box - the actual DOM editor IS the preview
     // This makes the experience cohesive: what you type is exactly where it will be
     return null;

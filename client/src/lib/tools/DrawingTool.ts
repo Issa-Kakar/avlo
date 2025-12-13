@@ -1,6 +1,6 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { DrawingState, PreviewData } from './types';
+import type { DrawingState, PreviewData, PointerTool } from './types';
 import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas } from '@/stores/camera-store';
 import { HoldDetector } from '../input/HoldDetector';
@@ -61,7 +61,7 @@ function getToolTypeFromActiveTool(activeTool: Tool): 'pen' | 'highlighter' {
  * This allows the tool to be constructed once as a singleton and reused
  * across tool switches without React lifecycle involvement.
  */
-export class DrawingTool {
+export class DrawingTool implements PointerTool {
   private state!: DrawingState; // Will be initialized in resetState called from constructor
 
   // Gesture-frozen values (captured at begin() time)

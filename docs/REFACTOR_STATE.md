@@ -1,6 +1,6 @@
 # Canvas Runtime Refactor - State & Progress
 
-**Last Updated:** Phase 2B Prerequisites (PointerTool Interface & Tool Updates)
+**Last Updated:** Phase 2B Complete (Tool Registry, CanvasRuntime Shell, InputManager)
 
 ---
 
@@ -14,10 +14,10 @@
 | 1.6 | Explicit transforms in render loops | ✅ Complete |
 | 2A | Eliminate CanvasStage & Imperative Handle | ✅ Complete |
 | 2B-prereq | PointerTool interface + tool updates | ✅ Complete |
-| 2B | Tool Registry & Preview Coupling | 🔲 Next |
-| 2C | Create CanvasRuntime.ts | 🔲 Pending |
-| 2D | Create InputManager.ts | 🔲 Pending |
-| 2E | Move event handling to CanvasRuntime | 🔲 Pending |
+| 2B | Tool Registry & Preview Coupling | ✅ Complete |
+| 2C | CanvasRuntime.ts shell created | ✅ Complete |
+| 2D | InputManager.ts shell created | ✅ Complete |
+| 2E | Wire CanvasRuntime into Canvas.tsx | 🔲 Next |
 | 2F | Simplify Canvas.tsx (~100 lines) | 🔲 Pending |
 
 ---
@@ -225,17 +225,180 @@ These tests are outdated and will be deleted as part of test cleanup.
 
 ---
 
+## Phase 2B: Tool Registry & CanvasRuntime Shell ✅ COMPLETE
+
+**Goal:** Create tool-registry.ts with self-constructing singletons, update OverlayRenderLoop to self-manage preview, create CanvasRuntime and InputManager shells.
+
+### What Was Done
+
+#### 1. Created `tool-registry.ts`
+
+**Location:** `client/src/canvas/tool-registry.ts`
+
+Module that creates and exports tool singletons at module load time:
+
+```typescript
+// Singletons - constructed at module load
+const drawingTool = new DrawingTool();
+const eraserTool = new EraserTool();
+const textTool = new TextTool();
+const panTool = new PanTool();
+const selectTool = new SelectTool();
+
+// Helpers
+export function getCurrentTool(): PointerTool | undefined;
+export function getToolById(toolId: ToolId): PointerTool | undefined;
+export function getActivePreview(): PreviewData | null;
+export function canStartMMBPan(): boolean;
+
+// Direct export for MMB pan
+export { panTool };
+```
+
+#### 2. Rewrote `PanTool.ts` - World Coordinate Interface
+
+**Key change:** PanTool now receives world coordinates like all other tools and converts to screen internally for delta calculation.
+
+Key insight: `worldToCanvas(screenToWorld(S)) = S` always! Even when pan changes mid-gesture, converting world→screen gives the correct screen position.
+
+```typescript
+export class PanTool implements PointerTool {
+  private lastScreen: [number, number] | null = null;
+
+  begin(pointerId: number, worldX: number, worldY: number): void {
+    // Convert world to screen and store
+    this.lastScreen = worldToCanvas(worldX, worldY);
+    // ...
+  }
+
+  move(worldX: number, worldY: number): void {
+    // Convert world to screen for accurate delta
+    const currentScreen = worldToCanvas(worldX, worldY);
+    const dx = currentScreen[0] - this.lastScreen[0];
+    const dy = currentScreen[1] - this.lastScreen[1];
+    // ...
+  }
+}
+```
+
+- Removed `updatePan(clientX, clientY)` method
+- No more clientX/clientY parameters in begin()
+- Unified interface - no special casing needed
+
+#### 3. Added `implements PointerTool` to All Tools
+
+All tools now explicitly implement the PointerTool interface:
+- `DrawingTool implements PointerTool`
+- `EraserTool implements PointerTool`
+- `TextTool implements PointerTool`
+- `PanTool implements PointerTool`
+- `SelectTool implements PointerTool`
+
+#### 4. Updated `OverlayRenderLoop.ts` - Self-Managed Preview
+
+**Key changes:**
+- Removed `setPreviewProvider()` method and `PreviewProvider` interface
+- Removed `previewProvider` field
+- Now reads preview directly from tool-registry via `getActivePreview()`
+- Subscribes to device-ui-store for tool changes to clear cached preview
+
+```typescript
+// Before (external provider)
+const preview = this.previewProvider?.getPreview();
+
+// After (self-managed via tool-registry)
+const preview = getActivePreview();
+```
+
+#### 5. Created `InputManager.ts` Shell
+
+**Location:** `client/src/canvas/InputManager.ts`
+
+Dumb DOM event forwarder - only attaches/detaches listeners and forwards raw events to CanvasRuntime:
+
+```typescript
+export class InputManager {
+  constructor(private runtime: CanvasRuntime) {}
+  attach(): void;
+  detach(): void;
+  // Forwards: pointerdown, pointermove, pointerup, pointercancel,
+  //           pointerleave, lostpointercapture, wheel
+}
+```
+
+#### 6. Created `CanvasRuntime.ts` Shell
+
+**Location:** `client/src/canvas/CanvasRuntime.ts`
+
+The "brain" of the canvas system - shell with full event handler implementations:
+
+```typescript
+export class CanvasRuntime {
+  start(config: RuntimeConfig): void;
+  stop(): void;
+
+  // Event handlers (called by InputManager)
+  handlePointerDown(e: PointerEvent): void;
+  handlePointerMove(e: PointerEvent): void;
+  handlePointerUp(e: PointerEvent): void;
+  handlePointerCancel(e: PointerEvent): void;
+  handlePointerLeave(e: PointerEvent): void;
+  handleLostPointerCapture(e: PointerEvent): void;
+  handleWheel(e: WheelEvent): void;
+}
+```
+
+Features:
+- Uses `getCurrentTool()` and `panTool` from tool-registry
+- MMB pan via `canStartMMBPan()` helper
+- Coordinates converted via `screenToWorld()`
+- Presence cursor updates via room-runtime helpers
+- Wheel zoom via ZoomAnimator
+
+#### 7. Updated `Canvas.tsx`
+
+- Removed `setPreviewProvider()` calls (now self-managed)
+- OverlayRenderLoop preview coupling removed
+
+### Files Modified
+
+```
+client/src/canvas/tool-registry.ts      - NEW: Tool singletons
+client/src/canvas/InputManager.ts       - NEW: Dumb event forwarder
+client/src/canvas/CanvasRuntime.ts      - NEW: Central orchestrator shell
+client/src/lib/tools/PanTool.ts         - Rewritten with world coords
+client/src/lib/tools/DrawingTool.ts     - Added implements PointerTool
+client/src/lib/tools/EraserTool.ts      - Added implements PointerTool
+client/src/lib/tools/TextTool.ts        - Added implements PointerTool
+client/src/lib/tools/SelectTool.ts      - Added implements PointerTool
+client/src/renderer/OverlayRenderLoop.ts - Self-managed preview
+client/src/canvas/Canvas.tsx            - Removed setPreviewProvider calls
+```
+
+### Success Criteria ✅
+
+1. ✅ `tool-registry.ts` created with self-constructing singletons
+2. ✅ All tools `implements PointerTool`
+3. ✅ PanTool uses world coords (converts to screen internally)
+4. ✅ OverlayRenderLoop self-manages preview via `getActivePreview()`
+5. ✅ `InputManager.ts` created (dumb event forwarder)
+6. ✅ `CanvasRuntime.ts` created with full event handler implementations
+7. ✅ `canStartMMBPan()` helper for gesture blocking
+8. ✅ All typecheck passes
+
+---
+
 ## Next Steps
 
-### Remaining for Phase 2B: Tool Registry
+### Phase 2E: Wire CanvasRuntime into Canvas.tsx
 
-1. Create `tool-registry.ts` with self-constructing singletons
-2. Have tools `implements PointerTool` (type annotations)
-3. OverlayRenderLoop self-manages preview via `getActivePreview()`
-4. Canvas.tsx uses `getCurrentTool()` instead of constructing tools
-5. Unify MMB pan with `panTool` singleton
+1. Replace manual tool construction with tool-registry imports
+2. Create CanvasRuntime instance in useLayoutEffect
+3. Remove event handlers from Canvas.tsx
+4. Remove mmbPanRef (handled by panTool singleton)
+5. Remove suppressToolPreviewRef (no longer needed)
 
-### Then Phase 2C-F: CanvasRuntime
+### Phase 2F: Simplify Canvas.tsx (~100 lines)
 
 See [PHASE_2_COMPLETE_RUNTIME.md](./PHASE_2_COMPLETE_RUNTIME.md) for full implementation plan.
 
@@ -435,6 +598,5 @@ Module Registries (Imperative Access)
 ## Test Commands
 
 ```bash
-npm run typecheck  # From project root (tests are outdated, will fail)
-npm run dev        # Manual testing (if permitted)
+npm run typecheck  # From project root 
 ```

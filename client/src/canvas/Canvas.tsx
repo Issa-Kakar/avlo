@@ -346,16 +346,8 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
 
     toolRef.current = tool;
 
-    // Step 3.3: Wrap the preview provider to support suppression
-    // Set preview provider on overlay loop (both tools implement getPreview())
-    if (!isMobile && overlayLoopRef.current) {
-      overlayLoopRef.current.setPreviewProvider({
-        getPreview: () => {
-          if (suppressToolPreviewRef.current) return null; // Hide during MMB
-          return tool?.getPreview() || null;
-        },
-      });
-    }
+    // NOTE: Preview provider removed - OverlayRenderLoop now self-manages
+    // preview via tool-registry's getActivePreview()
 
     // Update cursor style
     // Update cursor based on current tool/override
@@ -391,7 +383,6 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
       tool?.cancel();
       tool?.destroy();
       toolRef.current = undefined;
-      overlayLoopRef.current?.setPreviewProvider(null);
 
       // Reset MMB state if active (Step 4 cleanup)
       if (mmbPanRef.current.active) {

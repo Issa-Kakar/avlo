@@ -1,47 +1,79 @@
-import { useCameraStore } from '@/stores/camera-store';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { setCursorOverride } from '@/canvas/cursor-manager';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import type { PointerTool, PreviewData } from './types';
 
 /**
  * PanTool - Viewport panning tool
+ *
+ * Implements PointerTool interface using world coordinates.
+ * Internally converts to screen space for delta calculation.
+ *
+ * Key insight: worldToCanvas(screenToWorld(S)) = S always!
+ * Even when pan changes mid-gesture, converting world→screen
+ * gives the correct screen position for delta calculation.
+ *
+ * Trace through:
+ * Frame 1: Screen (100,100), pan=(0,0)
+ *   → World (100,100)
+ *   → Store lastScreen = worldToCanvas(100,100) = (100,100)
+ *
+ * Frame 2: Drag to screen (110,100), pan=(0,0)
+ *   → World (110,100)
+ *   → currentScreen = worldToCanvas(110,100) = (110,100)
+ *   → dx = 10, apply pan → pan=(-10,0)
+ *
+ * Frame 3: Pointer still at screen (110,100), pan=(-10,0)
+ *   → World = screenToWorld(110,100) = (100,100)  // Changed!
+ *   → currentScreen = worldToCanvas(100,100) = (110,100)  // Same screen pos!
+ *   → dx = 0 ✓
  *
  * Zero-arg constructor: reads all dependencies from module-level singletons.
  * - Camera state: useCameraStore.getState()
  * - Cursor: cursor-manager.ts
  * - Invalidation: invalidation-helpers.ts
  */
-export class PanTool {
+export class PanTool implements PointerTool {
   private pointerId: number | null = null;
-  private lastClient: { x: number; y: number } | null = null;
-  private isDragging = false;
+  private lastScreen: [number, number] | null = null;
 
   constructor() {}
 
-  // PointerTool interface implementation
   canBegin(): boolean {
     return this.pointerId === null;
   }
 
-  begin(pointerId: number, _worldX: number, _worldY: number, clientX?: number, clientY?: number): void {
+  begin(pointerId: number, worldX: number, worldY: number): void {
     this.pointerId = pointerId;
-    this.isDragging = true;
-    // CRITICAL: Seed lastClient to avoid losing first delta
-    if (clientX !== undefined && clientY !== undefined) {
-      this.lastClient = { x: clientX, y: clientY };
-    }
-    setCursorOverride('grabbing'); // Also calls applyCursor()
+    // Convert world to screen and store
+    this.lastScreen = worldToCanvas(worldX, worldY);
+    setCursorOverride('grabbing');
+    invalidateOverlay();
   }
 
-  move(_worldX: number, _worldY: number): void {
-    // Pan is handled in Canvas.tsx using screen deltas
-    // This is just for interface compliance
+  move(worldX: number, worldY: number): void {
+    if (!this.lastScreen) return;
+
+    // Convert world to screen for accurate delta
+    const currentScreen = worldToCanvas(worldX, worldY);
+
+    const dx = currentScreen[0] - this.lastScreen[0];
+    const dy = currentScreen[1] - this.lastScreen[1];
+    this.lastScreen = currentScreen;
+
+    const { scale, pan, setPan } = useCameraStore.getState();
+    setPan({
+      x: pan.x - dx / scale,
+      y: pan.y - dy / scale,
+    });
+    invalidateOverlay();
   }
 
   end(_worldX?: number, _worldY?: number): void {
     this.pointerId = null;
-    this.lastClient = null;
-    this.isDragging = false;
-    setCursorOverride(null); // Also calls applyCursor()
+    this.lastScreen = null;
+    setCursorOverride(null);
+    invalidateOverlay();
   }
 
   cancel(): void {
@@ -56,7 +88,7 @@ export class PanTool {
     return this.pointerId;
   }
 
-  getPreview(): null {
+  getPreview(): PreviewData | null {
     return null; // Pan tool has no preview
   }
 
@@ -70,26 +102,6 @@ export class PanTool {
   }
 
   destroy(): void {
-    // Cleanup if needed
-  }
-
-  // Pan-specific method for screen delta updates
-  updatePan(clientX: number, clientY: number): void {
-    if (!this.isDragging) return;
-
-    if (this.lastClient) {
-      const dx = clientX - this.lastClient.x;
-      const dy = clientY - this.lastClient.y;
-
-      const { scale, pan, setPan } = useCameraStore.getState();
-      setPan({
-        x: pan.x - dx / scale,
-        y: pan.y - dy / scale,
-      });
-
-      invalidateOverlay();
-    }
-
-    this.lastClient = { x: clientX, y: clientY };
+    this.cancel();
   }
 }

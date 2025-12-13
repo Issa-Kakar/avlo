@@ -8,6 +8,7 @@ import { useCameraStore } from '@/stores/camera-store';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import * as Y from 'yjs';
+import type { PointerTool } from './types';
 
 // Fixed radius configuration
 const ERASER_RADIUS_PX = 10; // Fixed screen-space radius
@@ -33,7 +34,7 @@ interface EraserState {
  * This allows the tool to be constructed once as a singleton and reused
  * across tool switches without React lifecycle involvement.
  */
-export class EraserTool {
+export class EraserTool implements PointerTool {
   private state!: EraserState;
 
   /**
