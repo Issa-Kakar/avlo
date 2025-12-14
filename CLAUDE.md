@@ -781,7 +781,6 @@ interface SelectionPreview {
 
 ## Stale / To Remove
 
-- `client/src/renderer/stroke-builder/path-builder.ts` - Marked for removal (legacy)
 - Dormant size guards, mobile restrictions, TTL checks - Will be removed
 
 ## Deleted Files (Migration Complete)
@@ -790,6 +789,8 @@ interface SelectionPreview {
 - `client/src/hooks/use-coordinate-transform.ts` - Replaced by camera-store.ts pure functions
 - `client/src/canvas/CanvasStage.tsx` - Consolidated into Canvas.tsx
 - `client/src/canvas/cursor-manager.ts` - Merged into device-ui-store.ts
+- `client/src/renderer/stroke-builder/` - Folder deleted; PF utilities consolidated into `renderer/types.ts`
+- `client/src/renderer/layers/preview.ts` - Renamed to `stroke-preview.ts`
 - `client/src/canvas/canvas-context-registry.ts` - Merged into SurfaceManager.ts
 - `client/src/canvas/editor-host-registry.ts` - Merged into SurfaceManager.ts
 

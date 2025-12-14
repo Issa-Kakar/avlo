@@ -9,8 +9,7 @@ import {
   computeStrokeTranslation,
 } from '@/lib/geometry/scale-transform';
 import { getStroke } from 'perfect-freehand';
-import { getSvgPathFromStroke } from '../stroke-builder/pf-svg';
-import { PF_OPTIONS_BASE } from '../stroke-builder/pf-config';
+import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,

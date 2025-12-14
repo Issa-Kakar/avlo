@@ -1,7 +1,6 @@
 import type { ObjectHandle } from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE } from './stroke-builder/pf-config';
-import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
+import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
 
 // Helper function to create rounded rectangle
 function roundedRect(path: Path2D, x: number, y: number, w: number, h: number, r: number): void {

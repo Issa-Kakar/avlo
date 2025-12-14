@@ -1,16 +1,14 @@
 import type { StrokePreview} from '@/lib/tools/types';
 import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE } from '../stroke-builder/pf-config';
-import { getSvgPathFromStroke } from '../stroke-builder/pf-svg';
+import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 
 /**
- * Draw preview stroke
+ * Draw stroke preview using Perfect Freehand
  * CRITICAL: This is called INSIDE world transform scope
  * The context has the world transform already applied when this is called
- * The preview is drawn as an authoring overlay AFTER world content but BEFORE transform restore
  * Preview points are in world coordinates and will be transformed to canvas automatically
  */
-export function drawPreview(ctx: CanvasRenderingContext2D, preview: StrokePreview): void {
+export function drawStrokePreview(ctx: CanvasRenderingContext2D, preview: StrokePreview): void {
   if (!preview || preview.points.length < 2) return;
 
   ctx.save();

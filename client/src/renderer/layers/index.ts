@@ -7,16 +7,6 @@ import { drawCursors } from './presence-cursors';
 // Export the unified objects renderer
 export { drawObjects } from './objects';
 
-// Temporary stub for drawText until fully migrated
-export function drawText(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Text is now handled in drawObjects
-}
-
 // Helper functions for adaptive grid
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
@@ -157,31 +147,6 @@ export function drawBackground(
   drawDotLayer(ctx, Cfg.GRID_SPACING_SUB_10, view, viewport, dotRadiusPx, baseAlpha);
 }
 
-export function drawShapes(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Placeholder for future shape rendering
-  // Stamps have been removed in favor of perfect shapes
-}
-
-// drawText is now imported from './text'
-
-export function drawAuthoringOverlays(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Future: Selection boxes, handles, text cursor
-  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] Authoring Overlays');
-  }
-}
-
 export function drawPresenceOverlays(
   ctx: CanvasRenderingContext2D,
   snapshot: Snapshot,
@@ -209,18 +174,4 @@ export function drawPresenceOverlays(
     awarenessReady: gates.awarenessReady,
     firstSnapshot: gates.firstSnapshot,
   });
-}
-
-export function drawHUD(
-  _ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
-  _view: ViewTransform,
-  _viewport: ViewportInfo,
-): void {
-  // Future: Minimap, toasts, update prompts
-  // Note: Never included in export
-  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] HUD');
-  }
 }

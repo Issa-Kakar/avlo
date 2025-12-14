@@ -1,10 +1,10 @@
 import type { PreviewData } from '@/lib/tools/types';
-import { drawPreview } from './layers/preview';
+import { drawStrokePreview } from './layers/stroke-preview';
 import { drawPresenceOverlays } from './layers';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getStroke } from 'perfect-freehand';
-import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
+import { getSvgPathFromStroke } from './types';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
@@ -253,7 +253,7 @@ export class OverlayRenderLoop {
             -view.pan.x * vp.dpr * view.scale,
             -view.pan.y * vp.dpr * view.scale
           );
-          drawPreview(ctx, previewToDraw); // Existing preview function
+          drawStrokePreview(ctx, previewToDraw);
 
         } else if (previewToDraw?.kind === 'eraser') {
           // New eraser preview (two passes)

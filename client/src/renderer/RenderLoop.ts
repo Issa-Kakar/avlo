@@ -10,9 +10,6 @@ import {
 import {
   drawBackground,
   drawObjects,
-  drawText,
-  drawAuthoringOverlays,
-  drawHUD,
 } from './layers';
 import {
   useCameraStore,
@@ -425,28 +422,14 @@ export class RenderLoop {
       clipRegion, // Pass dirty regions for spatial queries
     };
 
-    // Draw world layers only
+    // Draw world layers
     drawBackground(ctx, snapshot, view, augmentedViewport);
     drawObjects(ctx, snapshot, view, augmentedViewport);
-    drawText(ctx, snapshot, view, augmentedViewport);
-    drawAuthoringOverlays(ctx, snapshot, view, augmentedViewport);
 
     // Restore clipping state
     if (clipRegion) {
       ctx.restore();
     }
-    ctx.restore();
-
-    // Draw pass 2: HUD only (screen space with DPR only)
-    ctx.save();
-    // Explicit DPR-only transform for screen-space HUD elements
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const hudViewport = {
-      ...viewport,
-      visibleWorldBounds: getVisibleWorldBounds(),
-    };
-    drawHUD(ctx, snapshot, view, hudViewport);
     ctx.restore();
 
     // Reset dirty tracker for next frame

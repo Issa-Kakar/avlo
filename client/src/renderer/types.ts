@@ -77,3 +77,41 @@ export const FRAME_CONFIG = {
   MOBILE_FPS: 30,
   SKIP_THRESHOLD_MS: 20, // Skip next frame if previous > 20ms
 } as const;
+
+// Perfect Freehand configuration
+export const PF_OPTIONS_BASE = {
+  thinning: 0.50,
+  smoothing: 0.50,
+  streamline: 0.6,
+  simulatePressure: true,
+} as const;
+
+/**
+ * Quadratic Bézier smoothing of Perfect Freehand outline points → SVG path string.
+ * Creates smooth curves instead of faceted lineTo segments.
+ */
+export function getSvgPathFromStroke(points: number[][], closed = true): string {
+  const len = points.length;
+  if (len < 2) return '';
+
+  const avg = (a: number, b: number) => (a + b) / 2;
+
+  if (len === 2) {
+    const [a, b] = points;
+    return `M${a[0]},${a[1]} L${b[0]},${b[1]}${closed ? ' Z' : ''}`;
+  }
+
+  let a = points[0];
+  let b = points[1];
+  let c = points[2];
+  let d = `M${a[0]},${a[1]} Q${b[0]},${b[1]} ${avg(b[0], c[0])},${avg(b[1], c[1])} T`;
+
+  for (let i = 2; i < len - 1; i++) {
+    a = points[i];
+    b = points[i + 1];
+    d += `${avg(a[0], b[0])},${avg(a[1], b[1])} `;
+  }
+
+  if (closed) d += 'Z';
+  return d;
+}
