@@ -15,32 +15,42 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 
 ## File Map
 
+### Canvas System (7 files, ~900 lines total)
+| File | Lines | Responsibility |
+|------|-------|----------------|
+| `client/src/canvas/Canvas.tsx` | ~95 | Thin React wrapper - mounts DOM, sets room context, creates runtime |
+| `client/src/canvas/CanvasRuntime.ts` | ~280 | Central orchestrator - events, subscriptions, tool dispatch |
+| `client/src/canvas/SurfaceManager.ts` | ~170 | DOM refs (contexts, editorHost) + resize/DPR observation |
+| `client/src/canvas/InputManager.ts` | ~70 | Dumb DOM event forwarder |
+| `client/src/canvas/tool-registry.ts` | ~107 | Self-constructing tool singletons + lookup helpers |
+| `client/src/canvas/room-runtime.ts` | ~107 | Module-level room context for imperative access |
+| `client/src/canvas/invalidation-helpers.ts` | ~68 | Setter/getter pattern for render loop invalidation |
+
 ### Core Files
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | `client/src/lib/room-doc-manager.ts` | 2075 | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
-| `client/src/canvas/Canvas.tsx` | 960 | Pointer events, tool dispatch, snapshot subscription, dirty rect bridge |
-| `client/src/renderer/RenderLoop.ts` | 528 | Base canvas 60 FPS loop, dirty rect optimization |
-| `client/src/renderer/OverlayRenderLoop.ts` | 404 | Preview + presence rendering, eraser trail |
+| `client/src/renderer/RenderLoop.ts` | 528 | Base canvas 60 FPS loop, dirty rect optimization, self-subscribing |
+| `client/src/renderer/OverlayRenderLoop.ts` | 404 | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | 763 | Object rendering dispatch, transform preview |
 | `client/src/renderer/DirtyRectTracker.ts` | 267 | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | 200 | Path2D cache by object ID |
 
-### Tools
+### Tools (All zero-arg constructors, singleton pattern)
 | File | Lines | Status |
 |------|-------|--------|
-| `client/src/lib/tools/SelectTool.ts` | 1585 | **Full** - Selection, translate, scale transforms |
-| `client/src/lib/tools/DrawingTool.ts` | 659 | **Full** - Pen, highlighter, AND shape drawing |
-| `client/src/lib/tools/EraserTool.ts` | 383 | **Full** - Geometry-aware hit testing |
-| `client/src/lib/tools/TextTool.ts` | 325 | **PLACEHOLDER** - Will be completely replaced |
-| `client/src/lib/tools/PanTool.ts` | 86 | **Full** - Viewport panning |
-| `client/src/lib/tools/types.ts` | 140 | Preview types, HandleId, WorldRect |
+| `client/src/lib/tools/types.ts` | ~183 | PointerTool interface + all preview types |
+| `client/src/lib/tools/SelectTool.ts` | ~1100 | **Full** - Selection, translate, scale transforms |
+| `client/src/lib/tools/DrawingTool.ts` | ~666 | **Full** - Pen, highlighter, AND shape drawing |
+| `client/src/lib/tools/EraserTool.ts` | ~390 | **Full** - Geometry-aware hit testing |
+| `client/src/lib/tools/TextTool.ts` | ~363 | **PLACEHOLDER** - Will be completely replaced |
+| `client/src/lib/tools/PanTool.ts` | ~108 | **Full** - Viewport panning |
 
 ### Stores
 | File | Responsibility |
 |------|----------------|
-| `client/src/stores/camera-store.ts` | Camera state (scale, pan, viewport), coordinate transforms (imperative) |
-| `client/src/stores/device-ui-store.ts` | Toolbar state, drawing settings, colors (persisted) |
+| `client/src/stores/camera-store.ts` | Camera state, coordinate transforms, canvas element registry, pointer capture |
+| `client/src/stores/device-ui-store.ts` | Toolbar state, drawing settings, cursor management (persisted) |
 | `client/src/stores/selection-store.ts` | Selection IDs, transform state, marquee (ephemeral) |
 
 ### Geometry Modules
@@ -63,11 +73,65 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | File | Responsibility |
 |------|----------------|
 | `client/src/pages/components/ToolPanel.tsx` | Toolbar + inspector UI |
-| `client/src/canvas/CanvasStage.tsx` | DOM container for canvases |
 
 ---
 
 ## Architecture Overview
+
+### System Hierarchy
+```
+Canvas.tsx (~95 lines) - THIN REACT WRAPPER
+│   Only does: mount DOM, set room context, create runtime
+│
+├── setActiveRoom(roomId, roomDoc)     → room-runtime.ts
+└── new CanvasRuntime().start({ container, baseCanvas, overlayCanvas, editorHost })
+                │
+                ▼
+ CanvasRuntime.ts (~280 lines) - THE BRAIN
+│   Owns all subsystems, handles events, manages subscriptions
+│
+├── SurfaceManager        - ALL DOM refs + resize/DPR observation
+│   ├── baseCtx, overlayCtx (module-level)
+│   ├── editorHost (module-level)
+│   ├── setCanvasElement() → camera-store
+│   └── applyCursor() → device-ui-store
+│
+├── RenderLoop            - base canvas 60fps, dirty rect optimization
+├── OverlayRenderLoop     - preview + presence, full clear each frame
+├── ZoomAnimator          - smooth zoom transitions
+├── InputManager          - dumb DOM event forwarder
+│
+├── Subscriptions:
+│   ├── camera-store      → tool.onViewChange() on pan/zoom
+│   └── snapshot          → dirty rect invalidation, cache eviction
+│
+└── Event Handlers:
+    ├── handlePointerDown → tool dispatch or MMB pan
+    ├── handlePointerMove → presence cursor + tool.move()
+    ├── handlePointerUp   → tool.end()
+    ├── handleWheel       → zoom via ZoomAnimator
+    └── handlePointerLeave → clear presence, tool.onPointerLeave()
+
+                │
+                ▼
+tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
+│   Tools created at module load, persist for app lifetime
+│
+├── drawingTool  (handles: pen, highlighter, shape)
+├── eraserTool
+├── textTool
+├── panTool      (used by both dedicated mode AND MMB)
+└── selectTool
+
+                │
+                ▼
+Module Registries - IMPERATIVE ACCESS PATTERNS
+├── room-runtime.ts           → getActiveRoomDoc(), presence helpers
+├── camera-store.ts           → transforms, viewport, pointer capture, canvas element
+├── device-ui-store.ts        → tool state, cursor management (applyCursor, setCursorOverride)
+├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
+└── invalidation-helpers.ts   → invalidateWorld(), invalidateOverlay()
+```
 
 ### Data Flow
 ```
@@ -76,18 +140,241 @@ Y.Doc (source of truth)
 RoomDocManager (objectsById, spatialIndex, dirtyPatch)
    ↓ 60 FPS RAF
 Snapshot (immutable view)
-   ↓ subscription
-Canvas.tsx → RenderLoop (base) + OverlayRenderLoop (preview)
-                     ↑
-              Camera Store (scale, pan, viewport)
-              ↑ subscriptions for self-invalidation
+   ↓ subscribeSnapshot()
+CanvasRuntime
+   ├─ cache.evictMany(dirtyPatch.evictIds)
+   ├─ renderLoop.invalidateWorld(bounds)
+   └─ overlayLoop.invalidateAll()
+         ↓
+   RenderLoop (base canvas, dirty-rect optimized)
+   OverlayRenderLoop (preview + presence, full clear)
+         ↑
+   Camera Store (scale, pan, viewport) - self-subscribed
 ```
 
 ### Write Path
 ```
-Tool.commit() → roomDoc.mutate(fn) → ydoc.transact() → Y.Map.set()
+Tool.begin/move/end() → user gesture
+   → tool.commit() → getActiveRoomDoc().mutate(fn)
+   → ydoc.transact() → Y.Map.set()
    → Observer fires → applyObjectChanges() → dirtyPatch computed
-   → Snapshot published → Canvas invalidates dirty rects
+   → Snapshot published → CanvasRuntime invalidates dirty rects
+```
+
+### Event Flow
+```
+User pointer event
+   ↓
+InputManager (dumb forwarder)
+   ↓
+CanvasRuntime.handlePointerDown/Move/Up()
+   ├─ screenToWorld(clientX, clientY) → world coords
+   ├─ updatePresenceCursor(worldX, worldY) → room-runtime
+   └─ getCurrentTool().begin/move/end(worldX, worldY)
+         ↓
+Tool updates internal state
+   ├─ invalidateOverlay() → preview changed
+   └─ invalidateWorld(bounds) → geometry changed (during transforms)
+         ↓
+Render loops schedule next frame
+```
+
+---
+
+## PointerTool Interface
+
+All tools implement this unified interface (defined in `lib/tools/types.ts`):
+
+```typescript
+interface PointerTool {
+  canBegin(): boolean;                              // Can start new gesture?
+  begin(pointerId, worldX, worldY): void;           // Start gesture
+  move(worldX, worldY): void;                       // Update (also hover when idle)
+  end(worldX?, worldY?): void;                      // Complete gesture
+  cancel(): void;                                   // Abort without commit
+  isActive(): boolean;                              // Gesture in progress?
+  getPointerId(): number | null;                    // Active pointer ID
+  getPreview(): PreviewData | null;                 // For overlay rendering
+  onPointerLeave(): void;                           // Clear hover state
+  onViewChange(): void;                             // React to pan/zoom
+  destroy(): void;                                  // Cleanup
+}
+```
+
+**Key Design:** All tools receive **world coordinates** from CanvasRuntime. Tools that need screen coords (like PanTool) convert internally via `worldToCanvas()`.
+
+---
+
+## Tool Registry & Singletons
+
+### Self-Constructing Pattern
+Tools are created once at module load and persist for app lifetime:
+
+```typescript
+// tool-registry.ts - constructed at import time
+const drawingTool = new DrawingTool();  // handles pen, highlighter, shape
+const eraserTool = new EraserTool();
+const textTool = new TextTool();
+const panTool = new PanTool();
+const selectTool = new SelectTool();
+```
+
+### Tool Map (ToolId → Instance)
+```typescript
+const toolMap = {
+  'pen' → drawingTool,        // Same instance!
+  'highlighter' → drawingTool, // Same instance!
+  'shape' → drawingTool,       // Same instance!
+  'eraser' → eraserTool,
+  'text' → textTool,
+  'pan' → panTool,
+  'select' → selectTool,
+  // 'image' and 'code' intentionally omitted (no impl)
+}
+```
+
+### Exported Helpers
+```typescript
+getCurrentTool(): PointerTool | undefined  // Reads activeTool from device-ui-store
+getToolById(toolId): PointerTool | undefined
+getActivePreview(): PreviewData | null     // For OverlayRenderLoop
+canStartMMBPan(): boolean                  // Blocks MMB if tool gesture active
+export { panTool }                         // Direct export for MMB pan
+```
+
+### Zero-Arg Constructor Pattern
+All tools have zero-arg constructors. Dependencies read at runtime:
+
+```typescript
+class DrawingTool implements PointerTool {
+  constructor() {
+    // NO dependencies passed in
+    this.resetState();
+  }
+
+  begin(pointerId, worldX, worldY) {
+    // Read settings from store AT GESTURE START
+    const uiState = useDeviceUIStore.getState();
+    this.frozenSettings = { size: uiState.drawingSettings.size, ... };
+  }
+
+  commit() {
+    // Get roomDoc AT COMMIT TIME
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.mutate((ydoc) => { ... });
+  }
+}
+```
+
+---
+
+## Room Runtime (`room-runtime.ts`)
+
+Module-level room context for imperative access. Eliminates prop drilling.
+
+### Set by Canvas.tsx
+```typescript
+// In Canvas.tsx useLayoutEffect:
+setActiveRoom({ roomId, roomDoc });
+// On unmount:
+setActiveRoom(null);
+```
+
+### Exports
+```typescript
+setActiveRoom(context: { roomId, roomDoc } | null): void
+getActiveRoom(): RoomContext                    // Throws if no room!
+getActiveRoomDoc(): IRoomDocManager             // Convenience
+getActiveRoomId(): RoomId
+hasActiveRoom(): boolean                        // Guard check
+getCurrentSnapshot(): Snapshot
+getGateStatus(): GateStatus
+
+// Presence helpers
+updatePresenceCursor(worldX, worldY): void     // Called from CanvasRuntime.handlePointerMove
+clearPresenceCursor(): void                     // Called from CanvasRuntime.handlePointerLeave
+```
+
+**Fail-Fast Design:** `getActiveRoomDoc()` throws if no room set, encouraging crash-early over silent failures.
+
+---
+
+## Invalidation Helpers
+
+Setter/getter pattern breaks circular dependencies between CanvasRuntime and tools.
+
+### Problem
+Tools need to call `invalidateOverlay()`, but:
+- tool-registry imports tools
+- CanvasRuntime imports tool-registry
+- If tools imported CanvasRuntime → CIRCULAR
+
+### Solution
+```typescript
+// Module-level function references (initially null)
+let worldInvalidator: ((bounds) => void) | null = null;
+let overlayInvalidator: (() => void) | null = null;
+
+// Setters (called by CanvasRuntime.start())
+setWorldInvalidator(fn)    // → renderLoop.invalidateWorld
+setOverlayInvalidator(fn)  // → overlayLoop.invalidateAll
+
+// Public API (called by tools, safe no-ops if not registered)
+invalidateWorld(bounds)    // Optional call
+invalidateOverlay()        // Optional call
+holdPreviewForOneFrame()   // Prevents flash on commit
+```
+
+---
+
+## Canvas Runtime Initialization
+
+### start() Sequence
+```typescript
+start(config: RuntimeConfig): void {
+  // 1. SurfaceManager - handles all DOM refs
+  this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
+  this.surfaceManager.start();
+  //   ├─ Get 2D contexts → store in module-level baseCtx, overlayCtx
+  //   ├─ setCanvasElement(baseCanvas) → camera-store
+  //   ├─ applyCursor() → initial cursor from device-ui-store
+  //   └─ ResizeObserver + DPR listener
+
+  // 2. Render loops (self-subscribing to camera store)
+  this.renderLoop = new RenderLoop();
+  this.renderLoop.start();
+  setWorldInvalidator((bounds) => this.renderLoop.invalidateWorld(bounds));
+
+  this.overlayLoop = new OverlayRenderLoop();
+  this.overlayLoop.start();
+  setOverlayInvalidator(() => this.overlayLoop.invalidateAll());
+  setHoldPreviewFn(() => this.overlayLoop.holdPreviewForOneFrame());
+
+  // 3. Zoom animation
+  this.zoomAnimator = new ZoomAnimator();
+
+  // 4. Input manager (dumb DOM event forwarder)
+  this.inputManager = new InputManager(this);
+  this.inputManager.attach();
+
+  // 5. Camera subscription → tool.onViewChange()
+  this.cameraUnsub = useCameraStore.subscribe(
+    (state) => ({ scale: state.scale, pan: state.pan }),
+    () => getCurrentTool()?.onViewChange()
+  );
+
+  // 6. Snapshot subscription → dirty rect invalidation
+  this.snapshotUnsub = roomDoc.subscribeSnapshot((snapshot) => {
+    if (snapshot.dirtyPatch) {
+      cache.evictMany(snapshot.dirtyPatch.evictIds);
+      for (const bounds of snapshot.dirtyPatch.rects) {
+        if (boundsIntersect(bounds, viewport)) {
+          this.renderLoop.invalidateWorld(bounds);
+        }
+      }
+    }
+  });
+}
 ```
 
 ---
@@ -179,9 +466,31 @@ subscribeSnapshot(cb)       // 60 FPS snapshots
 - **Base Canvas:** World content, dirty-rect optimized, 60 FPS (8 FPS hidden tab)
 - **Overlay Canvas:** Full clear, preview + presence, pointer-events: none
 
+### Render Loop Self-Subscription
+Both render loops subscribe to camera-store internally:
+```typescript
+// RenderLoop subscribes to viewport + transform changes
+this.cameraUnsubscribe = useCameraStore.subscribe(
+  (state) => ({ scale, panX, panY, cssWidth, cssHeight, dpr }),
+  (curr, prev) => {
+    if (viewportChanged) this.dirtyTracker.invalidateAll();
+    if (transformChanged) this.dirtyTracker.notifyTransformChange();
+    this.markDirty();
+  }
+);
+
+// OverlayRenderLoop also subscribes to tool changes
+this.toolUnsubscribe = useDeviceUIStore.subscribe((state) => {
+  if (state.activeTool !== lastTool) {
+    this.cachedPreview = null;
+    this.invalidateAll();
+  }
+});
+```
+
 ### Dirty Rect Flow
 ```
-Canvas.tsx (snapshot.dirtyPatch)
+CanvasRuntime.snapshotSubscription()
    → cache.evictMany(evictIds)
    → renderLoop.invalidateWorld(bounds)
    → DirtyRectTracker accumulates
@@ -215,7 +524,7 @@ canvasToWorld: [x / scale + pan.x, y / scale + pan.y]
 
 ## Camera Store (`camera-store.ts`)
 
-Centralized Zustand store for camera/viewport state. Replaces ViewTransformContext with imperative access.
+Centralized Zustand store for camera/viewport state.
 
 ### State & Actions
 ```typescript
@@ -231,6 +540,17 @@ interface CameraState {
 // All with automatic clamping (MIN_ZOOM/MAX_ZOOM, MAX_PAN_DISTANCE)
 ```
 
+### Module-Level Canvas Reference
+```typescript
+setCanvasElement(el)   // Called by SurfaceManager.start()
+getCanvasElement()     // Raw element access
+getCanvasRect()        // Bounding rect for coordinate conversion
+
+// Pointer capture helpers
+capturePointer(pointerId)   // Called by CanvasRuntime.handlePointerDown
+releasePointer(pointerId)   // Called by CanvasRuntime.handlePointerUp
+```
+
 ### Pure Transform Functions (Exported)
 ```typescript
 worldToCanvas(worldX, worldY): [number, number]
@@ -244,13 +564,6 @@ getViewportInfo(): { pixelWidth, pixelHeight, cssWidth, cssHeight, dpr }
 getViewTransform(): ViewTransform  // Compatibility helper
 ```
 
-### Module-Level Canvas Reference
-```typescript
-setCanvasElement(el)   // Called by CanvasStage via ref callback
-getCanvasElement()     // Raw element access
-getCanvasRect()        // Bounding rect for coordinate conversion
-```
-
 ### Usage Patterns
 ```typescript
 // Imperative (tools, event handlers, render loops):
@@ -259,14 +572,79 @@ useCameraStore.getState().setPan({ x: newX, y: newY });
 
 // Reactive (React components):
 const scale = useCameraStore(selectScale);
-const setScale = useCameraStore(s => s.setScale);
 
-// Self-invalidation (render loops subscribe internally):
-// RenderLoop and OverlayRenderLoop subscribe to camera store
-// and invalidate themselves on viewport/transform changes
+// Pointer capture (used by CanvasRuntime):
+capturePointer(e.pointerId);
+releasePointer(e.pointerId);
 ```
 
-**Key principle:** Tools and render loops access imperatively via `getState()`. No prop drilling or callback chains.
+---
+
+## Device UI Store & Cursor Management
+
+### State
+```typescript
+interface DeviceUIState {
+  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'image'|'code';
+  drawingSettings: { size: 10|14|18|22; color: string; opacity: number; fill: boolean };
+  highlighterOpacity: 0.45;  // Fixed
+  textSize: 20|30|40|50;
+  shapeVariant: 'diamond'|'rectangle'|'ellipse'|'arrow';
+  cursorOverride: string | null;  // e.g., 'grabbing' during pan
+}
+```
+
+### Cursor Management Functions
+```typescript
+// Compute base cursor from active tool
+function computeBaseCursor(): string {
+  switch (activeTool) {
+    case 'eraser': return 'url("/cursors/avloEraser.cur") 16 16, auto';
+    case 'pan': return 'grab';
+    case 'select': return 'default';
+    case 'text': return 'text';
+    default: return 'crosshair';  // pen, highlighter, shape
+  }
+}
+
+// Apply cursor to canvas (priority: override > tool-based)
+export function applyCursor(): void {
+  const canvas = getCanvasElement();
+  if (!canvas) return;
+  const override = useDeviceUIStore.getState().cursorOverride;
+  canvas.style.cursor = override ?? computeBaseCursor();
+}
+
+// Set manual override (pass null to clear)
+export function setCursorOverride(cursor: string | null): void {
+  useDeviceUIStore.getState().setCursorOverride(cursor);
+  // Note: setCursorOverride action calls applyCursor() internally
+}
+```
+
+### Self-Subscription Pattern
+At module load, device-ui-store subscribes to itself:
+```typescript
+useDeviceUIStore.subscribe((state, prevState) => {
+  if (state.activeTool !== prevState.activeTool) {
+    applyCursor();  // Auto-update cursor on tool change
+  }
+});
+```
+
+### Cursor Usage by Tools
+```typescript
+// PanTool
+begin() { setCursorOverride('grabbing'); }
+end()   { setCursorOverride(null); }
+
+// SelectTool (handle hover)
+handleHoverCursor() {
+  const handle = hitTestHandle(worldX, worldY);
+  setCursorOverride(handle ? 'nwse-resize' : null);
+  applyCursor();
+}
+```
 
 ---
 
@@ -370,7 +748,7 @@ interface SelectionState {
 ### PanTool
 - Screen-space delta → world pan offset via camera store
 - Reads scale/pan from `useCameraStore.getState()`, calls `setPan()`
-- Sets `grabbing` cursor
+- Sets cursor override: `setCursorOverride('grabbing')` on begin, `null` on end
 
 ---
 
@@ -388,22 +766,6 @@ interface SelectionPreview {
   selectedIds: string[];
 }
 ```
-
----
-
-## Device UI Store
-
-```typescript
-interface DeviceUIState {
-  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'image'|'code';
-  drawingSettings: { size: 10|14|18|22; color: string; opacity: number; fill: boolean };
-  highlighterOpacity: 0.45;  // Fixed
-  textSize: 20|30|40|50;
-  shapeVariant: 'diamond'|'rectangle'|'ellipse'|'arrow';
-}
-```
-
-Tools read settings at `begin()` via `getState()`.
 
 ---
 
@@ -425,7 +787,11 @@ Tools read settings at `begin()` via `getState()`.
 ## Deleted Files (Migration Complete)
 
 - `client/src/canvas/ViewTransformContext.tsx` - Replaced by camera-store.ts
-- `client/src/hooks/use-coordinate-transform.ts` - Replaced by pure functions in camera-store.ts
+- `client/src/hooks/use-coordinate-transform.ts` - Replaced by camera-store.ts pure functions
+- `client/src/canvas/CanvasStage.tsx` - Consolidated into Canvas.tsx
+- `client/src/canvas/cursor-manager.ts` - Merged into device-ui-store.ts
+- `client/src/canvas/canvas-context-registry.ts` - Merged into SurfaceManager.ts
+- `client/src/canvas/editor-host-registry.ts` - Merged into SurfaceManager.ts
 
 ---
 
@@ -453,6 +819,7 @@ class ObjectSpatialIndex {
 ```
 - Send rate: 15 Hz (8 Hz under backpressure)
 - Cursor interpolation with 66ms window
+- Presence updated via `updatePresenceCursor()` from room-runtime
 
 ---
 
@@ -465,6 +832,10 @@ class ObjectSpatialIndex {
 5. **DPR applied once:** `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` at start
 6. **userId is origin:** `ydoc.transact(fn, this.userId)` for undo tracking
 7. **Camera store is imperative:** Tools/loops use `getState()`, not React subscriptions
+8. **Tools are singletons:** Zero-arg constructors, created at module load, never destroyed
+9. **Stroke/Shape Settings frozen at begin():**  Those tools freeze UI settings when gesture starts
+10. **World coords everywhere:** Tools receive world coords, internal conversion as needed
+11. **Cursor via store:** Use `setCursorOverride()` + `applyCursor()`, not direct DOM
 
 ---
 
