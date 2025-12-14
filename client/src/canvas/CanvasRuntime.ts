@@ -24,7 +24,9 @@ import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
 import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
 import { setBaseContext, setOverlayContext } from './canvas-context-registry';
-import { updatePresenceCursor, clearPresenceCursor } from './room-runtime';
+import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
+import { getObjectCacheInstance } from '@/renderer/object-cache';
+import { applyCursor } from './cursor-manager';
 import {
   setCanvasElement,
   screenToWorld,
@@ -32,8 +34,9 @@ import {
   capturePointer,
   releasePointer,
   useCameraStore,
+  getVisibleWorldBounds,
 } from '@/stores/camera-store';
-import { calculateZoomTransform } from './internal/transforms';
+import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 
 export interface RuntimeConfig {
   container: HTMLElement;
@@ -48,6 +51,8 @@ export class CanvasRuntime {
   private overlayLoop: OverlayRenderLoop | null = null;
   private zoomAnimator: ZoomAnimator | null = null;
   private cameraUnsub: (() => void) | null = null;
+  private snapshotUnsub: (() => void) | null = null;
+  private lastDocVersion = -1;
 
   /**
    * Start the canvas runtime.
@@ -64,6 +69,10 @@ export class CanvasRuntime {
     setBaseContext(baseCtx);
     setOverlayContext(overlayCtx);
     setCanvasElement(baseCanvas);
+
+    // Apply initial cursor based on persisted active tool
+    // (cursor-manager self-subscribes for future tool changes)
+    applyCursor();
 
     // 2. Surface manager (resize/DPR)
     this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas);
@@ -92,6 +101,45 @@ export class CanvasRuntime {
       () => getCurrentTool()?.onViewChange(),
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py }
     );
+
+    // 7. Snapshot subscription for dirty rect invalidation
+    const roomDoc = getActiveRoomDoc();
+    this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
+    this.snapshotUnsub = roomDoc.subscribeSnapshot((snapshot) => {
+      // Check if document content changed (not just presence)
+      if (snapshot.docVersion !== this.lastDocVersion) {
+        this.lastDocVersion = snapshot.docVersion;
+
+        // Hold preview for one frame to prevent flash on commit
+        this.overlayLoop?.holdPreviewForOneFrame();
+
+        // Process dirty patch from manager
+        if (snapshot.dirtyPatch) {
+          const { rects, evictIds } = snapshot.dirtyPatch;
+
+          // Evict from cache
+          const cache = getObjectCacheInstance();
+          cache.evictMany(evictIds);
+
+          // Only invalidate visible dirty regions
+          const viewport = getVisibleWorldBounds();
+          for (const bounds of rects) {
+            if (boundsIntersect(bounds, viewport)) {
+              this.renderLoop?.invalidateWorld(bounds);
+            }
+          }
+        } else if (this.lastDocVersion < 2) {
+          // Initial load without dirtyPatch
+          this.renderLoop?.invalidateWorld(getVisibleWorldBounds());
+        }
+
+        // Update overlay for new doc content
+        this.overlayLoop?.invalidateAll();
+      } else {
+        // Presence-only change - update overlay only
+        this.overlayLoop?.invalidateAll();
+      }
+    });
   }
 
   /**
@@ -99,7 +147,10 @@ export class CanvasRuntime {
    * Cleans up all subsystems.
    */
   stop(): void {
+    // Unsubscribe from stores first
+    this.snapshotUnsub?.();
     this.cameraUnsub?.();
+
     this.inputManager?.detach();
     this.zoomAnimator?.destroy();
 
@@ -118,12 +169,17 @@ export class CanvasRuntime {
     setOverlayContext(null);
     setCanvasElement(null);
 
+    // Clear object cache
+    getObjectCacheInstance().clear();
+
     this.inputManager = null;
     this.surfaceManager = null;
     this.renderLoop = null;
     this.overlayLoop = null;
     this.zoomAnimator = null;
     this.cameraUnsub = null;
+    this.snapshotUnsub = null;
+    this.lastDocVersion = -1;
   }
 
   // === Event Handlers (called by InputManager) ===

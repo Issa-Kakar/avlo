@@ -58,3 +58,21 @@ export function applyCursor(): void {
   if (!canvas) return;
   canvas.style.cursor = override ?? computeBaseCursor();
 }
+
+// ===========================================
+// SELF-MANAGED SUBSCRIPTION
+// ===========================================
+
+/**
+ * Subscribe to tool changes at module load.
+ * When activeTool changes and canvas is available, apply the new cursor.
+ *
+ * This subscription is set up once at module initialization and lives
+ * for the lifetime of the app. It handles all cursor updates from tool
+ * switches, so CanvasRuntime doesn't need to manage this.
+ */
+useDeviceUIStore.subscribe((state, prevState) => {
+  if (state.activeTool !== prevState.activeTool) {
+    applyCursor();
+  }
+});
