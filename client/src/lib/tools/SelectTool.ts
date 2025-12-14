@@ -21,7 +21,7 @@ import {
 import * as Y from 'yjs';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
-import { applyCursor, setCursorOverride } from '@/canvas/cursor-manager';
+import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
@@ -54,7 +54,7 @@ interface HitCandidate {
 // SelectToolOpts REMOVED - now using module-level imports from:
 // - room-runtime.ts (getActiveRoomDoc)
 // - invalidation-helpers.ts (invalidateWorld, invalidateOverlay)
-// - cursor-manager.ts (applyCursor, setCursorOverride)
+// - device-ui-store.ts (applyCursor, setCursorOverride)
 
 interface ObjectHandle {
   id: string;
@@ -73,7 +73,7 @@ interface ObjectHandle {
  * Zero-arg constructor: reads all dependencies from module-level singletons.
  * - Room: getActiveRoomDoc()
  * - Invalidation: invalidation-helpers.ts
- * - Cursor: cursor-manager.ts
+ * - Cursor: useDeviceUIStore (applyCursor, setCursorOverride)
  * - Camera/Selection: Zustand stores
  */
 export class SelectTool implements PointerTool {

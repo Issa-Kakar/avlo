@@ -7,7 +7,7 @@ import { getStroke } from 'perfect-freehand';
 import { getSvgPathFromStroke } from './stroke-builder/pf-svg';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
-import { getOverlayContext } from '@/canvas/canvas-context-registry';
+import { getOverlayContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';

@@ -1,23 +1,61 @@
 /**
- * SurfaceManager - Imperative resize and DPR handling for dual-canvas setup
+ * SurfaceManager - Imperative resize/DPR handling + DOM registry for canvas system
  *
  * Manages both base and overlay canvases atomically:
  * - Single ResizeObserver on container (not individual canvases)
  * - DPR change listener with recursive re-setup
  * - Computes effective DPR when dimensions are clamped to MAX_CANVAS_DIMENSION
  *
- * Will be owned by CanvasRuntime in future phases.
+ * Also serves as the module-level registry for:
+ * - Base/overlay 2D rendering contexts
+ * - Editor host div for TextTool
+ *
+ * Owned by CanvasRuntime.
  *
  * @module canvas/SurfaceManager
  */
 
 import { PERFORMANCE_CONFIG } from '@avlo/shared';
-import { useCameraStore } from '@/stores/camera-store';
+import { useCameraStore, setCanvasElement } from '@/stores/camera-store';
+import { applyCursor } from '@/stores/device-ui-store';
+
+// ============================================
+// MODULE-LEVEL DOM REFS
+// ============================================
+
+let baseCtx: CanvasRenderingContext2D | null = null;
+let overlayCtx: CanvasRenderingContext2D | null = null;
+let editorHost: HTMLDivElement | null = null;
+
+/** Get base canvas 2D context. Returns null if not mounted. */
+export function getBaseContext(): CanvasRenderingContext2D | null {
+  return baseCtx;
+}
+
+/** Get overlay canvas 2D context. Returns null if not mounted. */
+export function getOverlayContext(): CanvasRenderingContext2D | null {
+  return overlayCtx;
+}
+
+/** Get editor host div. Returns null if not mounted. */
+export function getEditorHost(): HTMLDivElement | null {
+  return editorHost;
+}
+
+/** Set editor host div. Called by CanvasRuntime.start(). */
+export function setEditorHost(el: HTMLDivElement | null): void {
+  editorHost = el;
+}
+
+// ============================================
+// CLASS
+// ============================================
 
 export class SurfaceManager {
   private container: HTMLElement;
   private baseCanvas: HTMLCanvasElement;
   private overlayCanvas: HTMLCanvasElement;
+  private editorHostEl: HTMLDivElement;
   private resizeObserver: ResizeObserver | null = null;
   private dprCleanup: (() => void) | null = null;
   private currentDpr = window.devicePixelRatio || 1;
@@ -26,18 +64,38 @@ export class SurfaceManager {
     container: HTMLElement,
     baseCanvas: HTMLCanvasElement,
     overlayCanvas: HTMLCanvasElement,
+    editorHostEl: HTMLDivElement,
   ) {
     this.container = container;
     this.baseCanvas = baseCanvas;
     this.overlayCanvas = overlayCanvas;
+    this.editorHostEl = editorHostEl;
   }
 
   /**
    * Start observing resize and DPR changes.
+   * Also sets up all DOM refs: contexts, canvas element, editor host.
    * Call after canvases are mounted.
    */
   start(): void {
-    // Single ResizeObserver on container (not individual canvases)
+    // 1. Get and store 2D contexts
+    const base = this.baseCanvas.getContext('2d', { willReadFrequently: false });
+    const overlay = this.overlayCanvas.getContext('2d', { willReadFrequently: false });
+    if (!base || !overlay) throw new Error('Failed to get 2D contexts');
+    baseCtx = base;
+    overlayCtx = overlay;
+
+    // 2. Set editor host for TextTool DOM access
+    editorHost = this.editorHostEl;
+
+    // 3. Set canvas element for coordinate transforms
+    setCanvasElement(this.baseCanvas);
+
+    // 4. Apply initial cursor based on persisted active tool
+    // (device-ui-store self-subscribes for future tool changes)
+    applyCursor();
+
+    // 5. Single ResizeObserver on container (not individual canvases)
     this.resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -58,12 +116,19 @@ export class SurfaceManager {
 
   /**
    * Stop observing and clean up.
+   * Clears all DOM refs: contexts, canvas element, editor host.
    */
   stop(): void {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.dprCleanup?.();
     this.dprCleanup = null;
+
+    // Clear all DOM refs
+    baseCtx = null;
+    overlayCtx = null;
+    editorHost = null;
+    setCanvasElement(null);
   }
 
   /**

@@ -21,7 +21,7 @@ import {
   getVisibleWorldBounds,
   isMobile,
 } from '@/stores/camera-store';
-import { getBaseContext } from '@/canvas/canvas-context-registry';
+import { getBaseContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 
 export class RenderLoop {

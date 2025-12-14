@@ -1,6 +1,6 @@
 # Canvas Runtime Refactor - State & Architecture
 
-**Last Updated:** Phase 2 Complete - Core refactor done, cursor-manager self-subscribing
+**Last Updated:** Phase 3 Complete - Module consolidation done
 
 ---
 
@@ -8,31 +8,45 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1.0 | Runtime Modules (room-runtime, cursor-manager, etc.) | ✅ Complete |
+| 1.0 | Runtime Modules (room-runtime, etc.) | ✅ Complete |
 | 1.5 | All tools zero-arg constructors | ✅ Complete |
 | 1.6 | Explicit transforms in render loops | ✅ Complete |
 | 2A | Eliminate CanvasStage & Imperative Handle | ✅ Complete |
 | 2B | Tool Registry, PointerTool interface, Preview Coupling | ✅ Complete |
 | 2C-2G | CanvasRuntime, InputManager, Canvas.tsx simplification | ✅ Complete |
 | 2H | Cursor-manager self-subscription | ✅ Complete |
+| 3.0 | Module Consolidation | ✅ Complete |
+
+### Phase 3 Consolidation Summary
+
+**Files Deleted (3):**
+- `cursor-manager.ts` → merged into `device-ui-store.ts`
+- `canvas-context-registry.ts` → merged into `SurfaceManager.ts`
+- `editor-host-registry.ts` → merged into `SurfaceManager.ts`
+
+**Result:** 10 canvas files → 7 files
 
 ---
 
 ## Architecture Overview
 
 ```
-Canvas.tsx (~105 lines) - THIN REACT WRAPPER
-│   Only does: mount DOM, set room context, set editor host, create runtime
+Canvas.tsx (~95 lines) - THIN REACT WRAPPER
+│   Only does: mount DOM, set room context, create runtime
 │
 ├── setActiveRoom(roomId, roomDoc)     → room-runtime.ts
-├── setEditorHost(div)                 → editor-host-registry.ts
-└── new CanvasRuntime().start()
+└── new CanvasRuntime().start({ container, baseCanvas, overlayCanvas, editorHost })
                 │
                 ▼
 CanvasRuntime.ts (~280 lines) - THE BRAIN
 │   Owns all subsystems, handles events, manages subscriptions
 │
-├── SurfaceManager        - resize/DPR observation
+├── SurfaceManager        - ALL DOM refs + resize/DPR observation
+│   ├── baseCtx, overlayCtx (module-level)
+│   ├── editorHost (module-level)
+│   ├── setCanvasElement() → camera-store
+│   └── applyCursor() → device-ui-store
+│
 ├── RenderLoop            - base canvas 60fps, dirty rect optimization
 ├── OverlayRenderLoop     - preview + presence, full clear each frame
 ├── ZoomAnimator          - smooth zoom transitions
@@ -64,44 +78,54 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
                 ▼
 Module Registries - IMPERATIVE ACCESS PATTERNS
 ├── room-runtime.ts           → getActiveRoomDoc(), presence helpers
-├── canvas-context-registry.ts → getBaseContext(), getOverlayContext()
-├── camera-store.ts           → transforms, viewport, pointer capture
-├── cursor-manager.ts         → applyCursor(), setCursorOverride()
-│                               └─ SELF-SUBSCRIBES to device-ui-store
-├── invalidation-helpers.ts   → invalidateWorld(), invalidateOverlay()
-└── editor-host-registry.ts   → getEditorHost() for TextTool
+├── camera-store.ts           → transforms, viewport, pointer capture, canvas element
+├── device-ui-store.ts        → tool state, cursor management (applyCursor, setCursorOverride)
+├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
+└── invalidation-helpers.ts   → invalidateWorld(), invalidateOverlay()
 ```
 
 ---
 
 ## Core Files
 
-### Canvas.tsx (~105 lines)
+### Canvas.tsx (~95 lines)
 **Purpose:** Minimal React wrapper that bridges React lifecycle to imperative runtime.
 
 **Responsibilities:**
 - Renders 3 DOM elements: base canvas, overlay canvas, editor host div
 - Sets room context via `setActiveRoom()` (tools need `getActiveRoomDoc()`)
-- Sets editor host via `setEditorHost()` (TextTool mounts DOM here)
-- Creates/destroys CanvasRuntime on mount/unmount
+- Creates/destroys CanvasRuntime on mount/unmount, passing all 4 DOM refs
 
-**Does NOT do:** Event handling, tool logic, subscriptions, cursor management.
+**Does NOT do:** Event handling, tool logic, subscriptions, cursor management, editor host setup.
 
 ---
 
 ### CanvasRuntime.ts (~280 lines)
 **Purpose:** Central orchestrator - the "brain" of the canvas system.
 
+**RuntimeConfig:**
+```typescript
+interface RuntimeConfig {
+  container: HTMLElement;
+  baseCanvas: HTMLCanvasElement;
+  overlayCanvas: HTMLCanvasElement;
+  editorHost: HTMLDivElement;
+}
+```
+
 **Initialization (`start()`):**
-1. Get 2D contexts, register in `canvas-context-registry`
-2. Register canvas element in `camera-store` (for coordinate transforms)
-3. Call `applyCursor()` once for initial cursor based on persisted tool
-4. Create SurfaceManager → starts resize/DPR observation
-5. Create RenderLoop + OverlayRenderLoop → register invalidators
-6. Create ZoomAnimator
-7. Create InputManager → attaches DOM event listeners
-8. Subscribe to camera-store → calls `tool.onViewChange()` on pan/zoom
-9. Subscribe to snapshots → dirty rect invalidation + cache eviction
+1. Create SurfaceManager with all 4 DOM refs
+2. SurfaceManager.start() handles:
+   - Getting and storing 2D contexts
+   - Setting editor host for TextTool
+   - Setting canvas element for coordinate transforms
+   - Applying initial cursor
+   - Starting resize/DPR observation
+3. Create RenderLoop + OverlayRenderLoop → register invalidators
+4. Create ZoomAnimator
+5. Create InputManager → attaches DOM event listeners
+6. Subscribe to camera-store → calls `tool.onViewChange()` on pan/zoom
+7. Subscribe to snapshots → dirty rect invalidation + cache eviction
 
 **Event Handling:**
 - `handlePointerDown`: MMB (button 1) → `panTool.begin()`, LMB (button 0) → `getCurrentTool().begin()`
@@ -113,6 +137,40 @@ Module Registries - IMPERATIVE ACCESS PATTERNS
 
 ---
 
+### SurfaceManager.ts (~170 lines)
+**Purpose:** Single owner of all canvas-related DOM refs + resize/DPR handling.
+
+**Module-Level Refs (set by start(), cleared by stop()):**
+```typescript
+let baseCtx: CanvasRenderingContext2D | null = null;
+let overlayCtx: CanvasRenderingContext2D | null = null;
+let editorHost: HTMLDivElement | null = null;
+```
+
+**Exports:**
+- `getBaseContext()` → 2D context for base canvas (used by RenderLoop)
+- `getOverlayContext()` → 2D context for overlay canvas (used by OverlayRenderLoop)
+- `getEditorHost()` → DOM element for TextTool editor mounting
+- `setEditorHost()` → setter (only used internally now)
+
+**start() Flow:**
+1. Get and store 2D contexts
+2. Set editor host
+3. `setCanvasElement(baseCanvas)` → camera-store (for coordinate transforms)
+4. `applyCursor()` → device-ui-store (initial cursor from persisted tool)
+5. Start ResizeObserver on container
+6. Start DPR change listener
+
+**stop() Flow:**
+1. Disconnect ResizeObserver
+2. Clear DPR listener
+3. Clear all module-level refs (baseCtx, overlayCtx, editorHost)
+4. `setCanvasElement(null)`
+
+**Critical Fix:** When canvas dimensions are clamped to MAX_CANVAS_DIMENSION, computes **effective DPR** so camera-store transforms remain correct.
+
+---
+
 ### InputManager.ts (~70 lines)
 **Purpose:** Dumb DOM event forwarder. Zero intelligence.
 
@@ -121,19 +179,6 @@ Module Registries - IMPERATIVE ACCESS PATTERNS
 **Events forwarded:** pointerdown, pointermove, pointerup, pointercancel, pointerleave, lostpointercapture, wheel
 
 **Does NOT do:** Coordinate conversion, tool selection, state tracking, gesture blocking.
-
----
-
-### SurfaceManager.ts (~120 lines)
-**Purpose:** Imperative resize and DPR handling for dual-canvas setup.
-
-**Key Features:**
-- Single ResizeObserver on container (not individual canvases)
-- DPR change listener with recursive re-setup for device switches
-- Computes **effective DPR** when dimensions are clamped to MAX_CANVAS_DIMENSION
-- Updates camera-store viewport which triggers render loop invalidation
-
-**Critical Fix:** When canvas dimensions are clamped, the effective DPR differs from `window.devicePixelRatio`. Camera-store receives the effective value so transforms are correct.
 
 ---
 
@@ -161,7 +206,7 @@ const selectTool = new SelectTool();
 
 ## Module Registries
 
-These modules provide imperative access to values that would otherwise require React context or prop drilling. Pattern: module-level variable + getter/setter functions.
+These modules provide imperative access to values that would otherwise require React context or prop drilling.
 
 ### room-runtime.ts (~107 lines)
 **Purpose:** Active room context for tools and render loops.
@@ -177,41 +222,72 @@ These modules provide imperative access to values that would otherwise require R
 
 ---
 
-### canvas-context-registry.ts (~44 lines)
-**Purpose:** 2D rendering contexts for render loops.
+### camera-store.ts (~350 lines)
+**Purpose:** Centralized camera/viewport state + coordinate transforms.
 
-**Set by:** CanvasRuntime.start() via `setBaseContext()`, `setOverlayContext()`
+**State:**
+```typescript
+interface CameraState {
+  scale: number;
+  pan: { x: number; y: number };
+  cssWidth: number;
+  cssHeight: number;
+  dpr: number;
+}
+```
 
-**Exports:** `getBaseContext()`, `getOverlayContext()` → CanvasRenderingContext2D | null
+**Module-Level Canvas Reference:**
+- `setCanvasElement(el)` → called by SurfaceManager.start()
+- `getCanvasElement()` → raw element access
+- `getCanvasRect()` → bounding rect for coordinate conversion
+- `capturePointer(id)` / `releasePointer(id)` → pointer capture helpers
+
+**Transform Functions:**
+- `worldToCanvas(x, y)` → world to CSS pixels
+- `canvasToWorld(x, y)` → CSS pixels to world
+- `screenToCanvas(clientX, clientY)` → client coords to canvas-relative
+- `screenToWorld(clientX, clientY)` → client coords to world
+- `worldToClient(x, y)` → world to client coords
+- `getVisibleWorldBounds()` → viewport in world coords
 
 ---
 
-### editor-host-registry.ts (~33 lines)
-**Purpose:** DOM element for TextTool to mount editors.
+### device-ui-store.ts (~370 lines)
+**Purpose:** Toolbar state, drawing settings, and cursor management.
 
-**Set by:** Canvas.tsx via `setEditorHost(div)`
+**Cursor State (added in Phase 3):**
+```typescript
+cursorOverride: string | null;  // e.g., 'grabbing' during pan
+setCursorOverride: (cursor: string | null) => void;
+```
 
-**Exports:** `getEditorHost()` → HTMLDivElement | null
+**Cursor Functions (module-level, after store):**
+```typescript
+// Compute cursor based on active tool
+function computeBaseCursor(): string {
+  switch (activeTool) {
+    case 'eraser': return 'url("/cursors/avloEraser.cur") 16 16, auto';
+    case 'pan': return 'grab';
+    case 'select': return 'default';
+    case 'text': return 'text';
+    default: return 'crosshair';
+  }
+}
 
----
+// Apply cursor to canvas element (priority: override > tool-based)
+export function applyCursor(): void;
+```
 
-### cursor-manager.ts (~79 lines)
-**Purpose:** Centralized cursor control with priority system.
-
-**Priority:** Manual override (e.g., 'grabbing' during pan) > Tool-based cursor
-
-**Cursor Mapping:**
-- `eraser` → custom cursor URL
-- `pan` → 'grab'
-- `select` → 'default'
-- `text` → 'text'
-- default → 'crosshair'
-
-**Self-Subscribes:** At module load, subscribes to `device-ui-store`. When `activeTool` changes, calls `applyCursor()`. CanvasRuntime only calls `applyCursor()` once at startup for initial cursor.
+**Self-Subscription:** At module load, subscribes to itself. When `activeTool` changes, calls `applyCursor()`. This means cursor updates automatically on tool switch.
 
 **Exports:**
 - `applyCursor()` → apply current cursor to canvas element
 - `setCursorOverride(cursor)` → set manual override (pass null to clear)
+
+**Used by:**
+- `SurfaceManager.start()` → calls `applyCursor()` for initial cursor
+- `PanTool` → calls `setCursorOverride('grabbing')` / `setCursorOverride(null)`
+- `SelectTool` → calls `setCursorOverride()` for resize cursors
 
 ---
 
@@ -264,23 +340,26 @@ interface PointerTool {
 1. Canvas.tsx mounts
    │
    ├─ useLayoutEffect: setActiveRoom({ roomId, roomDoc })
-   ├─ useLayoutEffect: setEditorHost(div)
-   └─ useLayoutEffect: new CanvasRuntime().start()
+   └─ useLayoutEffect: new CanvasRuntime().start({ all 4 refs })
                          │
 2. CanvasRuntime.start()
    │
-   ├─ Get 2D contexts → setBaseContext(), setOverlayContext()
-   ├─ setCanvasElement(baseCanvas)  // for coordinate transforms
-   ├─ applyCursor()                 // initial cursor from persisted tool
+   └─ SurfaceManager(container, baseCanvas, overlayCanvas, editorHost)
+      │
+3. SurfaceManager.start()
    │
-   ├─ SurfaceManager.start()
-   │   └─ ResizeObserver + DPR listener → updates camera-store
+   ├─ Get 2D contexts → store in module-level baseCtx, overlayCtx
+   ├─ Set editorHost module-level ref
+   ├─ setCanvasElement(baseCanvas) → camera-store
+   ├─ applyCursor() → device-ui-store (initial cursor)
+   └─ ResizeObserver + DPR listener → updates camera-store viewport
+   │
+4. Back in CanvasRuntime.start()
    │
    ├─ RenderLoop.start() + setWorldInvalidator()
    ├─ OverlayRenderLoop.start() + setOverlayInvalidator()
-   │
+   ├─ ZoomAnimator creation
    ├─ InputManager.attach()  // DOM listeners now active
-   │
    ├─ camera-store.subscribe() → tool.onViewChange()
    └─ roomDoc.subscribeSnapshot() → dirty rects + cache eviction
 ```
@@ -309,36 +388,45 @@ interface PointerTool {
 
 ---
 
-## Next Focus: Module Consolidation
+## File Summary (canvas/ folder)
 
-The refactor is functionally complete. Future work explores consolidating helper modules.
+| File | Lines | Purpose |
+|------|-------|---------|
+| Canvas.tsx | ~95 | React wrapper - mounts DOM, sets room, creates runtime |
+| CanvasRuntime.ts | ~280 | Central orchestrator - events, subscriptions |
+| SurfaceManager.ts | ~170 | DOM refs (contexts, editorHost) + resize/DPR |
+| InputManager.ts | ~70 | Dumb DOM event forwarder |
+| tool-registry.ts | ~107 | Tool singletons + lookup helpers |
+| room-runtime.ts | ~107 | Active room context |
+| invalidation-helpers.ts | ~68 | Circular dep breaker for invalidation |
 
-### Options to Explore
+**Total:** 7 files, ~900 lines
+
+**Deleted in Phase 3:**
+- ~~cursor-manager.ts~~ → device-ui-store.ts
+- ~~canvas-context-registry.ts~~ → SurfaceManager.ts
+- ~~editor-host-registry.ts~~ → SurfaceManager.ts
+
+---
+
+## Future Considerations
+
+### Potential Further Consolidation
 
 **1. RenderController Pattern**
-- SurfaceManager → `RenderController` that owns both RenderLoops
+- SurfaceManager could own both RenderLoops
 - Centralizes: snapshot subscription, dirty rect invalidation, camera subscription
-- Since loops are zero-dependency, could inject ctx at render time
 - RenderLoops could become true singletons (one per app, not per room)
 
-**2. Cursor-Manager → device-ui-store**
-- Cursor logic is derived from `activeTool`
-- Could merge into device-ui-store as a computed/derived value
-- Store already owns tool state
-
-**3. DOM Registry Merge**
-- `canvas-context-registry.ts` + `editor-host-registry.ts` → `dom-registry.ts`
-- Both are simple "store a DOM reference" patterns
-
-**4. Direct Invalidation Export**
+**2. Direct Invalidation Export**
 - Circular deps only matter if values read at import time
 - Runtime calls (inside functions) can reference anything
-- Could export render loop refs directly, tools import and call
+- Could export render loop refs directly from SurfaceManager
 
 ### Key Constraint
 - `tool-registry` creates tools at module load (before CanvasRuntime exists)
 - Circular deps are only problematic if values are read at import time
-- Runtime calls can reference anything - the indirection may be unnecessary
+- Runtime calls can reference anything - the indirection in invalidation-helpers may be unnecessary
 
 ---
 

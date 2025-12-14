@@ -5,7 +5,7 @@ import { useDeviceUIStore } from '../../stores/device-ui-store';
 import { useCameraStore, worldToClient as cameraWorldToClient } from '@/stores/camera-store';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
-import { getEditorHost } from '@/canvas/editor-host-registry';
+import { getEditorHost } from '@/canvas/SurfaceManager';
 import { userProfileManager } from '@/lib/user-profile-manager';
 
 interface TextToolConfig {

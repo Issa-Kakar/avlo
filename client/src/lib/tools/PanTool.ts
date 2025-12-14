@@ -1,5 +1,5 @@
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { setCursorOverride } from '@/canvas/cursor-manager';
+import { setCursorOverride } from '@/stores/device-ui-store';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import type { PointerTool, PreviewData } from './types';
 
@@ -30,7 +30,7 @@ import type { PointerTool, PreviewData } from './types';
  *
  * Zero-arg constructor: reads all dependencies from module-level singletons.
  * - Camera state: useCameraStore.getState()
- * - Cursor: cursor-manager.ts
+ * - Cursor: setCursorOverride() from device-ui-store
  * - Invalidation: invalidation-helpers.ts
  */
 export class PanTool implements PointerTool {

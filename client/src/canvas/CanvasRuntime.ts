@@ -23,12 +23,9 @@ import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
 import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
-import { setBaseContext, setOverlayContext } from './canvas-context-registry';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
 import { getObjectCacheInstance } from '@/renderer/object-cache';
-import { applyCursor } from './cursor-manager';
 import {
-  setCanvasElement,
   screenToWorld,
   screenToCanvas,
   capturePointer,
@@ -42,6 +39,7 @@ export interface RuntimeConfig {
   container: HTMLElement;
   baseCanvas: HTMLCanvasElement;
   overlayCanvas: HTMLCanvasElement;
+  editorHost: HTMLDivElement;
 }
 
 export class CanvasRuntime {
@@ -56,26 +54,18 @@ export class CanvasRuntime {
 
   /**
    * Start the canvas runtime.
-   * Sets up all subsystems: contexts, surface manager, render loops, input.
+   * Sets up all subsystems: surface manager (contexts + resize), render loops, input.
    */
   start(config: RuntimeConfig): void {
-    const { container, baseCanvas, overlayCanvas } = config;
+    const { container, baseCanvas, overlayCanvas, editorHost } = config;
 
-    // 1. Register contexts
-    const baseCtx = baseCanvas.getContext('2d', { willReadFrequently: false });
-    const overlayCtx = overlayCanvas.getContext('2d', { willReadFrequently: false });
-    if (!baseCtx || !overlayCtx) throw new Error('Failed to get 2D contexts');
-
-    setBaseContext(baseCtx);
-    setOverlayContext(overlayCtx);
-    setCanvasElement(baseCanvas);
-
-    // Apply initial cursor based on persisted active tool
-    // (cursor-manager self-subscribes for future tool changes)
-    applyCursor();
-
-    // 2. Surface manager (resize/DPR)
-    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas);
+    // 1. Surface manager handles all DOM refs:
+    //    - Getting and storing 2D contexts
+    //    - Setting editor host for TextTool
+    //    - Setting canvas element for coordinate transforms
+    //    - Applying initial cursor
+    //    - Resize/DPR observation
+    this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
     this.surfaceManager.start();
 
     // 3. Render loops
@@ -163,11 +153,11 @@ export class CanvasRuntime {
     this.overlayLoop?.stop();
     this.overlayLoop?.destroy();
 
+    // SurfaceManager.stop() handles all DOM ref cleanup:
+    // - Clearing contexts
+    // - Clearing editor host
+    // - Clearing canvas element
     this.surfaceManager?.stop();
-
-    setBaseContext(null);
-    setOverlayContext(null);
-    setCanvasElement(null);
 
     // Clear object cache
     getObjectCacheInstance().clear();

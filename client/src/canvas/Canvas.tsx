@@ -3,7 +3,6 @@ import type { RoomId } from '@avlo/shared';
 import { useRoomDoc } from '../hooks/use-room-doc';
 import { CanvasRuntime } from './CanvasRuntime';
 import { setActiveRoom } from './room-runtime';
-import { setEditorHost } from './editor-host-registry';
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -39,23 +38,18 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     return () => setActiveRoom(null);
   }, [roomId, roomDoc]);
 
-  // 2. Set editor host for TextTool DOM access
-  useLayoutEffect(() => {
-    setEditorHost(editorHostRef.current);
-    return () => setEditorHost(null);
-  }, []);
-
-  // 3. Create and start CanvasRuntime
-  // Runtime handles: render loops, input, snapshot subscription, cursor updates
+  // 2. Create and start CanvasRuntime
+  // Runtime handles: render loops, input, snapshot subscription, cursor updates, editor host
   useLayoutEffect(() => {
     const container = containerRef.current;
     const baseCanvas = baseCanvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
-    if (!container || !baseCanvas || !overlayCanvas) return;
+    const editorHost = editorHostRef.current;
+    if (!container || !baseCanvas || !overlayCanvas || !editorHost) return;
 
     const runtime = new CanvasRuntime();
     runtimeRef.current = runtime;
-    runtime.start({ container, baseCanvas, overlayCanvas });
+    runtime.start({ container, baseCanvas, overlayCanvas, editorHost });
 
     return () => {
       runtime.stop();

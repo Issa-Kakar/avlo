@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getCanvasElement } from './camera-store';
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code';
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'arrow';
@@ -45,8 +46,12 @@ interface DeviceUIState {
   // Collaboration mode preference
   collaborationMode: 'server' | 'peer';
 
+  // Cursor override (e.g., 'grabbing' during pan)
+  cursorOverride: string | null;
+
   // Actions
   setActiveTool: (tool: Tool) => void;
+  setCursorOverride: (cursor: string | null) => void;
 
   // Unified drawing settings setters
   setDrawingSettings: (settings: Partial<DrawingSettings>) => void;
@@ -112,8 +117,15 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       collaborationMode: 'server',
 
+      // Cursor override - no override by default
+      cursorOverride: null,
+
       // Actions
       setActiveTool: (tool) => set({ activeTool: tool }),
+      setCursorOverride: (cursor) => {
+        set({ cursorOverride: cursor });
+        applyCursor();
+      },
 
       // Unified drawing settings setters
       setDrawingSettings: (settings) =>
@@ -308,3 +320,57 @@ export const useDeviceUIStore = create<DeviceUIState>()(
     },
   ),
 );
+
+// ============================================
+// CURSOR MANAGEMENT
+// ============================================
+
+/**
+ * Compute the appropriate cursor based on active tool.
+ */
+function computeBaseCursor(): string {
+  const { activeTool } = useDeviceUIStore.getState();
+  switch (activeTool) {
+    case 'eraser':
+      return 'url("/cursors/avloEraser.cur") 16 16, auto';
+    case 'pan':
+      return 'grab';
+    case 'select':
+      return 'default';
+    case 'text':
+      return 'text';
+    default:
+      return 'crosshair';
+  }
+}
+
+/**
+ * Apply the current cursor to the canvas element.
+ * Priority: override > tool-based cursor
+ */
+export function applyCursor(): void {
+  const canvas = getCanvasElement();
+  if (!canvas) return;
+  const override = useDeviceUIStore.getState().cursorOverride;
+  canvas.style.cursor = override ?? computeBaseCursor();
+}
+
+/**
+ * Set a cursor override that takes priority over tool-based cursor.
+ * Pass null to clear override.
+ */
+export function setCursorOverride(cursor: string | null): void {
+  useDeviceUIStore.getState().setCursorOverride(cursor);
+}
+
+/**
+ * Self-subscription for tool changes.
+ * When activeTool changes and canvas is available, apply the new cursor.
+ * This subscription is set up once at module initialization and lives
+ * for the lifetime of the app.
+ */
+useDeviceUIStore.subscribe((state, prevState) => {
+  if (state.activeTool !== prevState.activeTool) {
+    applyCursor();
+  }
+});
