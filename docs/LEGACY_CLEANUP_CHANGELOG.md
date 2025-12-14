@@ -2,17 +2,17 @@
 
 **Date:** 2025-12-14
 **Branch:** `cleanup/legacy-renderer-cleanup`
-**Status:** PARTIALLY COMPLETE - Next agent to finish
+**Status:** COMPLETE
 
 ---
 
 ## Summary
 
-Removed legacy room metadata, size guards, TTL management, and related infrastructure from the previous Redis/PostgreSQL architecture. The app now uses a simpler model where R2 will handle size measurement in the future.
+Removed legacy room metadata, size guards, TTL management, TanStack Query, and related infrastructure from the previous Redis/PostgreSQL architecture. The app now uses a simpler model where R2 will handle size measurement in the future.
 
 ---
 
-## Completed Changes
+## Phase 1: Shared Package & RoomDocManager Cleanup (Previous Agent)
 
 ### 1. `packages/shared/src/types/snapshot.ts`
 - **Removed:** `SnapshotMeta` interface
@@ -64,14 +64,14 @@ Removed legacy room metadata, size guards, TTL management, and related infrastru
 #### Methods Removed:
 - `subscribeRoomStats()`
 - `extendTTL()`
-- `isMobileDevice()` (user explicitly requested removal)
+- `isMobileDevice()` (mobile view-only pattern removed)
 - `updateRoomStats()`
 - `setRoomStats()`
 - `handlePersistAck()`
 
 #### Methods Simplified:
 - **`mutate()`:** Removed size guards, mobile check, temporary update observer for delta measurement. Now just executes transaction directly.
-- **`buildSnapshot()`:** Removed `SnapshotMeta` creation and `meta` property from snapshot
+- **`buildSnapshot()`:** Removed `SnapshotMeta` creation and `meta` property from snapshot; now uses `getMeta()` accessor
 - **`handleYDocUpdate()`:** Removed `sizeEstimator.observeDelta()` call
 - **`initializeWebSocketProvider()`:** Changed from `clientConfig.VITE_PARTY_HOST || window.location.host` to just `window.location.host`
 - **`destroy()`:** Removed `statsSubscribers.clear()` and `roomStats = null`
@@ -92,9 +92,60 @@ Removed legacy room metadata, size guards, TTL management, and related infrastru
 
 ---
 
+## Phase 2: File Deletions & Dependency Removal (Current Session)
+
+### Files DELETED (8 files, ~536 lines removed):
+
+| File | Lines | Reason |
+|------|-------|--------|
+| `client/src/lib/api-client.ts` | 58 | Stubbed legacy API client, unused |
+| `client/src/lib/config-schema.ts` | 35 | Legacy env config (VITE_API_BASE, VITE_ROOM_TTL_DAYS, VITE_PARTY_HOST) |
+| `client/src/hooks/use-room-metadata.ts` | 46 | Dead TanStack Query hook for HTTP API metadata |
+| `client/src/hooks/use-room-stats.ts` | 29 | Dead hook for room stats subscription |
+| `packages/shared/src/schemas/index.ts` | 54 | Entirely legacy schemas (EnvSchema, WSControlFrameSchema, etc.) |
+| `client/src/lib/size-estimator.ts` | 271 | Gzip estimation for legacy size guards |
+| `client/src/lib/__tests__/size-estimator.test.ts` | 35 | Tests for deleted file |
+| `packages/shared/src/types/room-stats.ts` | 8 | RoomStats type no longer needed |
+
+**Also deleted:** Empty `packages/shared/src/schemas/` directory
+
+### Files MODIFIED:
+
+#### `client/src/main.tsx`
+**Before:**
+```tsx
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+const queryClient = new QueryClient({...});
+<BrowserRouter>
+  <QueryClientProvider client={queryClient}>
+    <App />
+  </QueryClientProvider>
+</BrowserRouter>
+```
+**After:**
+```tsx
+<BrowserRouter>
+  <App />
+</BrowserRouter>
+```
+
+#### `client/package.json`
+- **Removed:** `"@tanstack/react-query": "^5.85.5"` dependency
+- Result: 21 packages removed from node_modules
+
+#### `client/src/lib/room-doc-manager.ts`
+- **Restored:** `getMeta()` private accessor (returns `YMeta | undefined`, doesn't throw)
+- **Updated:** `buildSnapshot()` now uses `this.getMeta()` instead of direct `root.get('meta')` access
+- **Kept:** `YMeta` type alias for future use (owner ID, read-only state)
+
+#### `client/src/hooks/use-room-doc.ts`
+- **Updated:** Removed stale `useRoomStats` from JSDoc comment
+
+---
+
 ## Critical Y.Doc Event Handling Analysis
 
-**Key concern addressed:** The user wanted to ensure the Y.Doc update handling remained intact.
+**Key concern addressed:** Ensuring Y.Doc update handling remained intact.
 
 ### What was KEPT (essential):
 1. **`setupObservers()`** - Sets up `this.ydoc.on('update', this.handleYDocUpdate)` - CRITICAL
@@ -107,104 +158,75 @@ Removed legacy room metadata, size guards, TTL management, and related infrastru
 4. **`publishState.isDirty` tracking** - drives the RAF publish loop
 
 ### What was REMOVED (safe):
-1. **Temporary update observer in `mutate()`** - This was ONLY for size measurement. The permanent `handleYDocUpdate` observer (set up in `setupObservers()`) handles all the important stuff.
+1. **Temporary update observer in `mutate()`** - Was ONLY for size measurement
 2. **`sizeEstimator.observeDelta()`** - Size tracking no longer needed
 
 ### Why this is safe:
-The permanent observer (`handleYDocUpdate`) is registered in `setupObservers()` during construction. When `mutate()` calls `ydoc.transact()`, the permanent observer fires and:
-- Increments `docVersion`
-- Sets `publishState.isDirty = true`
-- Triggers the RAF loop to publish snapshots
-
-The temporary observer was purely for measuring delta size for guards that are now removed.
+The permanent observer (`handleYDocUpdate`) is registered in `setupObservers()` during construction. When `mutate()` calls `ydoc.transact()`, the permanent observer fires and handles all critical state updates.
 
 ---
 
-## Remaining Work for Next Agent
+## Design Decisions
 
-### Files to DELETE (8 files):
+### Kept for Future Use:
+- **`YMeta` type alias** - Will store room owner (userId) and read-only state
+- **`getMeta()` accessor** - Encapsulated access pattern like `getObjects()`
+- **Mobile FPS throttling** - Camera store/render loop mobile detection for performance (NOT the removed "view-only" pattern)
+
+### Removed Patterns:
+- **Mobile view-only** - Was blocking mobile users from drawing
+- **Client-side size guards** - R2 will handle size measurement
+- **TTL management** - No longer needed with new architecture
+- **TanStack Query** - Was only used for dead HTTP API hooks
+
+---
+
+## Verification Results
+
+All checks passed:
+
 ```bash
-rm client/src/lib/api-client.ts
-rm client/src/lib/config-schema.ts
-rm client/src/hooks/use-room-metadata.ts
-rm client/src/hooks/use-room-stats.ts
-rm packages/shared/src/schemas/index.ts
-rm client/src/lib/size-estimator.ts
-rm client/src/lib/__tests__/size-estimator.test.ts
-rm packages/shared/src/types/room-stats.ts
-```
+npm run typecheck  # PASS - all workspaces
 
-### Files to UPDATE:
-
-1. **`client/src/main.tsx`** - Remove TanStack Query:
-```tsx
-// BEFORE:
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-const queryClient = new QueryClient({...});
-<QueryClientProvider client={queryClient}>
-  <App />
-</QueryClientProvider>
-
-// AFTER:
-<BrowserRouter>
-  <App />
-</BrowserRouter>
-```
-
-2. **`client/package.json`** - Remove dependency:
-```json
-// REMOVE:
-"@tanstack/react-query": "^5.85.5",
-```
-
-### Post-Cleanup:
-```bash
-# Run from root
-npm install
-npm run typecheck
+# Orphaned reference checks - all clean:
+grep -r "ROOM_CONFIG" client/src/ packages/shared/src/     # No matches
+grep -r "SnapshotMeta" client/src/ packages/shared/src/    # No matches
+grep -r "RoomStats" client/src/ packages/shared/src/       # No matches (only docs)
+grep -r "size-estimator" client/src/                       # No matches (only docs)
+grep -r "api-client" client/src/                           # No matches
+grep -r "config-schema" client/src/                        # No matches
+grep -r "@tanstack" client/src/                            # No matches
+grep -r "extendTTL" client/src/                            # No matches
+grep -r "handlePersistAck" client/src/                     # No matches
 ```
 
 ---
 
-## User Notes
+## Summary Statistics
 
-- **Tests:** User plans to delete all test files from codebase. Manual localhost testing is more effective for this app. Real tests will be created once app is finished.
-- **Mobile check:** Explicitly requested to be removed (no more view-only mode for mobile devices)
-- **Philosophy:** R2 will handle size measurement in future. No client-side size guards needed.
-
----
-
-## Files Modified (Summary)
-
-| File | Action |
-|------|--------|
-| `packages/shared/src/types/snapshot.ts` | Modified - removed SnapshotMeta |
-| `packages/shared/src/config.ts` | Modified - removed ROOM_CONFIG, SERVER_CONFIG, PROTOCOL_CONFIG |
-| `packages/shared/src/types/commands.ts` | Modified - removed ExtendTTL |
-| `packages/shared/src/index.ts` | Modified - removed legacy exports |
-| `client/src/lib/room-doc-manager.ts` | Modified - major cleanup |
-| `client/src/lib/__tests__/test-helpers.ts` | Modified - removed RoomStats |
-| `client/src/lib/__tests__/phase6-teardown.test.ts` | Modified - removed legacy calls |
-| `packages/shared/src/__tests__/config.test.ts` | Modified - removed legacy tests |
+| Metric | Count |
+|--------|-------|
+| Files deleted | 8 |
+| Lines removed (deleted files) | ~536 |
+| Lines removed (modifications) | ~300+ |
+| Dependencies removed | 1 (@tanstack/react-query) |
+| Packages removed from node_modules | 21 |
 
 ---
 
-## Verification Commands
+## What Remains in RoomDocManager
 
-After next agent completes:
-```bash
-# Type check
-npm run typecheck
+The following are **actively used** and should NOT be removed:
 
-# Search for orphaned references
-grep -r "ROOM_CONFIG" client/src/ packages/shared/src/
-grep -r "SnapshotMeta" client/src/ packages/shared/src/
-grep -r "RoomStats" client/src/ packages/shared/src/
-grep -r "size-estimator" client/src/
-grep -r "api-client" client/src/
-grep -r "config-schema" client/src/
-grep -r "@tanstack" client/src/
-grep -r "extendTTL" client/src/
-grep -r "handlePersistAck" client/src/
-grep -r "isMobileDevice" client/src/
-```
+- Y.Doc lifecycle (ydoc, providers, observers)
+- Snapshot publishing (60 FPS RAF loop)
+- Spatial index management
+- Presence/awareness system
+- Undo/redo (UndoManager)
+- Gates infrastructure (idbReady, wsConnected, wsSynced, etc.)
+- Object hydration (two-epoch model)
+- Dirty rect tracking
+
+---
+
+*Cleanup completed 2025-12-14*

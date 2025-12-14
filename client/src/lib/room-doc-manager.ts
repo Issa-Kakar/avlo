@@ -81,7 +81,10 @@ export interface IRoomDocManager {
 }
 
 // Extended options for RoomDocManager
-export interface RoomDocManagerOptions extends TimingOptions {}
+export interface RoomDocManagerOptions extends TimingOptions {
+  clock?: Clock;
+  frames?: FrameScheduler;
+}
 
 // Interpolation types for cursor smoothing
 type Pt = { x: number; y: number; t: number };
@@ -327,14 +330,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
     return this.ydoc.getMap('root');
   }
 
-  private getMeta(): YMeta {
+  private getMeta(): YMeta | undefined {
     const meta = this.getRoot().get('meta');
     if (!(meta instanceof Y.Map)) {
-      throw new Error('Meta structure corrupted');
+      return undefined;
     }
     return meta as YMeta;
   }
-
 
   private getObjects(): Y.Map<Y.Map<any>> {
     const root = this.getRoot();
@@ -1654,8 +1656,8 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   private buildSnapshot(): Snapshot {
+    const meta = this.getMeta();
     const root = this.getRoot();
-    const meta = root.get('meta') as Y.Map<unknown> | undefined;
     const objects = root.get('objects') as Y.Map<Y.Map<any>> | undefined;
 
     // Guard: structures must exist

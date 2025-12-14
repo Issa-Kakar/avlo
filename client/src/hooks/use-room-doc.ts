@@ -6,8 +6,8 @@ import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
 /**
  * Internal hook to get or create a RoomDocManager instance
  * NOTE: This is an internal hook. UI components should use
- * useSnapshot, usePresence, or useRoomStats instead to maintain
- * a narrow, hook-based surface as per the architecture.
+ * useSnapshot or usePresence instead to maintain a narrow,
+ * hook-based surface as per the architecture.
  * @internal
  */
 export function useRoomDoc(roomId: RoomId): IRoomDocManager {
