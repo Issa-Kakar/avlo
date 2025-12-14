@@ -18,9 +18,9 @@
  */
 
 import { vi } from 'vitest';
-import type { RoomId, Snapshot, PresenceView, RoomStats } from '@avlo/shared';
-import { 
-  RoomDocManagerRegistry, 
+import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
+import {
+  RoomDocManagerRegistry,
   createRoomDocManagerRegistry,
   RoomDocManager,
   __testonly
@@ -173,21 +173,6 @@ export function collectPresenceUpdates(
 }
 
 /**
- * Helper to simulate persist_ack message
- */
-export function simulatePersistAck(
-  manager: RoomDocManager,
-  sizeBytes: number,
-  timestamp: string = new Date().toISOString()
-) {
-  // Access the handlePersistAck method if it exists
-  const impl = manager as any;
-  if (impl.handlePersistAck) {
-    impl.handlePersistAck({ sizeBytes, timestamp });
-  }
-}
-
-/**
  * Helper to track subscription callbacks
  */
 export class SubscriptionTracker<T> {
@@ -212,20 +197,18 @@ export class SubscriptionTracker<T> {
  */
 export function verifyCleanup(testContext: ReturnType<typeof createTestManager>) {
   const { manager, registry, cleanup } = testContext;
-  
+
   // Create subscriptions
   const snapUnsub = manager.subscribeSnapshot(() => {});
   const presUnsub = manager.subscribePresence(() => {});
-  const statsUnsub = manager.subscribeRoomStats(() => {});
-  
+
   // Clean up subscriptions
   snapUnsub();
   presUnsub();
-  statsUnsub();
-  
+
   // Clean up manager and registry
   cleanup();
-  
+
   // Verify registry is empty
   return registry.size() === 0;
 }

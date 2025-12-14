@@ -1,5 +1,4 @@
 import { PresenceView } from './awareness';
-import { ROOM_CONFIG } from '../config';
 import { ObjectHandle, DirtyPatch } from './objects';
 
 // Forward declare the ObjectSpatialIndex interface
@@ -19,7 +18,6 @@ export interface Snapshot {
   spatialIndex: ObjectSpatialIndex | null;
   presence: PresenceView;
   view: ViewTransform;
-  meta: SnapshotMeta;
   createdAt: number;
   dirtyPatch?: DirtyPatch | null;
 }
@@ -30,14 +28,6 @@ export interface ViewTransform {
   canvasToWorld: (x: number, y: number) => [number, number];
   scale: number; // world px → canvas px
   pan: { x: number; y: number }; // world offset
-}
-
-// Snapshot metadata
-export interface SnapshotMeta {
-  bytes?: number; // Last persisted compressed size
-  cap: number; // Hard cap (15MB)
-  readOnly: boolean; // True when room is at/above cap
-  expiresAt?: number; // ms epoch TTL expiry
 }
 
 // Empty snapshot constant shape
@@ -57,10 +47,6 @@ export function createEmptySnapshot(): Snapshot {
       canvasToWorld: (x: number, y: number): [number, number] => [x, y],
       scale: 1,
       pan: { x: 0, y: 0 },
-    },
-    meta: {
-      cap: ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES,
-      readOnly: false,
     },
     createdAt: Date.now(),
     dirtyPatch: null,

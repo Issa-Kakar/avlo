@@ -5,13 +5,11 @@ export * from './types/awareness';
 export * from './types/commands';
 export * from './types/snapshot';
 export * from './types/validation';
-export * from './types/room-stats';
 export * from './types/objects';
 
 // Export config
 export * from './config';
 export {
-  ROOM_CONFIG,
   STROKE_CONFIG,
   TEXT_CONFIG,
   WEBRTC_CONFIG,
@@ -21,18 +19,12 @@ export {
   QUEUE_CONFIG,
   OFFLINE_THRESHOLD_CONFIG,
   PWA_CONFIG,
-  SERVER_CONFIG,
-  PROTOCOL_CONFIG,
   DEBUG_CONFIG,
-  isRoomReadOnly,
-  isRoomSizeWarning,
+  AWARENESS_CONFIG,
+  CANVAS_STYLE_CONFIG,
   calculateAwarenessInterval,
   applyJitter,
-  getRoomSizePercentage,
 } from './config';
-
-// Export schemas
-export * from './schemas';
 
 // Export utilities
 export { ulid } from './utils/ulid';

@@ -6,7 +6,6 @@ export type Command =
   | EraseObjects
   | AddText
   | ClearBoard
-  | ExtendTTL
   | CodeUpdate
   | CodeRun;
 
@@ -48,12 +47,6 @@ export interface AddText {
 export interface ClearBoard {
   type: 'ClearBoard';
   idempotencyKey: string; // Format: "scene_<beforeIdx>_<tsBucket>"
-}
-
-// Extend room TTL
-export interface ExtendTTL {
-  type: 'ExtendTTL';
-  idempotencyKey: string; // Format: "ttl_<timestamp>"
 }
 
 // Update code cell

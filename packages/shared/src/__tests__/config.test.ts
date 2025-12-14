@@ -1,27 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { 
-  ROOM_CONFIG, 
-  STROKE_CONFIG, 
+import { describe, it, expect } from 'vitest';
+import {
+  STROKE_CONFIG,
   TEXT_CONFIG,
-  isRoomReadOnly,
-  isRoomSizeWarning as isRoomWarning, // Import with correct name
   calculateAwarenessInterval
 } from '../config';
 
 describe('Configuration', () => {
   describe('Config Values', () => {
-    it('should have correct default room config values', () => {
-      expect(ROOM_CONFIG.ROOM_TTL_DAYS).toBe(14);
-      expect(ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES).toBe(13 * 1024 * 1024);
-      expect(ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES).toBe(15 * 1024 * 1024);
-      expect(ROOM_CONFIG.MAX_CLIENTS_PER_ROOM).toBe(105);
-      expect(ROOM_CONFIG.MAX_INBOUND_FRAME_BYTES).toBe(2 * 1024 * 1024);
-    });
-
     it('should have correct stroke config values', () => {
       expect(STROKE_CONFIG.MAX_POINTS_PER_STROKE).toBe(10_000);
       expect(STROKE_CONFIG.MAX_TOTAL_STROKES).toBe(5_000);
-      expect(STROKE_CONFIG.SIMPLIFY_TOLERANCE_PEN).toBe(0.8);
+      expect(STROKE_CONFIG.SIMPLIFY_TOLERANCE_PEN).toBe(0.0); // Updated default
       expect(STROKE_CONFIG.SIMPLIFY_TOLERANCE_HIGHLIGHTER).toBe(0.5);
       expect(STROKE_CONFIG.MAX_ENCODED_UPDATE_BYTES).toBe(128 * 1024);
     });
@@ -36,34 +25,6 @@ describe('Configuration', () => {
   });
 
   describe('Utility Functions', () => {
-    describe('isRoomReadOnly', () => {
-      it('should return true when size >= 15MB', () => {
-        expect(isRoomReadOnly(15 * 1024 * 1024)).toBe(true);
-        expect(isRoomReadOnly(16 * 1024 * 1024)).toBe(true);
-      });
-
-      it('should return false when size < 15MB', () => {
-        expect(isRoomReadOnly(14 * 1024 * 1024)).toBe(false);
-        expect(isRoomReadOnly(0)).toBe(false);
-      });
-
-      it('should handle undefined size', () => {
-        expect(isRoomReadOnly(undefined)).toBe(false);
-      });
-    });
-
-    describe('isRoomWarning', () => {
-      it('should return true when size >= 13MB', () => {
-        expect(isRoomWarning(13 * 1024 * 1024)).toBe(true);
-        expect(isRoomWarning(14 * 1024 * 1024)).toBe(true);
-      });
-
-      it('should return false when size < 13MB', () => {
-        expect(isRoomWarning(12 * 1024 * 1024)).toBe(false);
-        expect(isRoomWarning(0)).toBe(false);
-      });
-    });
-
     describe('calculateAwarenessInterval', () => {
       it('should return base interval for small peer counts', () => {
         expect(calculateAwarenessInterval(5)).toBe(50);
@@ -79,26 +40,6 @@ describe('Configuration', () => {
         expect(calculateAwarenessInterval(60)).toBe(150);
         expect(calculateAwarenessInterval(100)).toBe(150);
       });
-    });
-  });
-
-  describe('Environment Overrides', () => {
-    const originalEnv = process.env;
-
-    beforeEach(() => {
-      // Reset modules to test environment overrides
-      process.env = { ...originalEnv };
-    });
-
-    afterEach(() => {
-      process.env = originalEnv;
-    });
-
-    it('should respect environment variable overrides', () => {
-      // Note: Environment overrides would be tested if the config module
-      // supports runtime env reading. Currently config is static.
-      // This test documents expected behavior for future implementation.
-      expect(ROOM_CONFIG.ROOM_TTL_DAYS).toBeTypeOf('number');
     });
   });
 });

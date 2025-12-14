@@ -81,8 +81,6 @@ describe('Phase 6 Teardown Hygiene', () => {
       });
     }).not.toThrow();
 
-    expect(() => manager.extendTTL()).not.toThrow();
-
     const unsubSnapshot = manager.subscribeSnapshot(() => {
       throw new Error('Should not be called');
     });
@@ -94,12 +92,6 @@ describe('Phase 6 Teardown Hygiene', () => {
     });
     expect(unsubPresence).toBeDefined();
     unsubPresence();
-
-    const unsubStats = manager.subscribeRoomStats(() => {
-      throw new Error('Should not be called');
-    });
-    expect(unsubStats).toBeDefined();
-    unsubStats();
 
     // Double destroy should also be no-op
     expect(() => manager.destroy()).not.toThrow();

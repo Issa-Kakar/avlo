@@ -47,29 +47,6 @@ const getEnvBoolean = (key: string, defaultValue: boolean): boolean => {
 };
 
 // ============================================
-// ROOM & PERSISTENCE CONFIGURATION
-// ============================================
-
-export const ROOM_CONFIG = {
-  // TTL for rooms in Redis (days)
-  ROOM_TTL_DAYS: getEnvNumber('ROOM_TTL_DAYS', 14),
-
-  // Room size limits (bytes)
-  ROOM_SIZE_WARNING_BYTES: getEnvNumber('ROOM_SIZE_WARNING_BYTES', 13 * 1024 * 1024), // 13 MB
-  ROOM_SIZE_READONLY_BYTES: getEnvNumber('ROOM_SIZE_READONLY_BYTES', 15 * 1024 * 1024), // 15 MB
-
-  // Capacity limits
-  MAX_CLIENTS_PER_ROOM: getEnvNumber('MAX_CLIENTS_PER_ROOM', 105),
-  MAX_CONCURRENT_PER_IP: getEnvNumber('MAX_CONCURRENT_PER_IP', 8),
-
-  // Frame size limits
-  MAX_INBOUND_FRAME_BYTES: getEnvNumber('MAX_INBOUND_FRAME_BYTES', 2 * 1024 * 1024), // 2 MB
-
-  // Compression
-  GZIP_LEVEL: getEnvNumber('GZIP_LEVEL', 4),
-} as const;
-
-// ============================================
 // STROKE & DRAWING CONFIGURATION
 // ============================================
 
@@ -236,9 +213,6 @@ export const BACKOFF_CONFIG = {
   RTC_MAX_TRIES: getEnvNumber('RTC_MAX_TRIES', 5),
   RTC_FLAP_DEBOUNCE_MS: getEnvNumber('RTC_FLAP_DEBOUNCE_MS', 10_000),
 
-  // TTL extension
-  TTL_EXTEND_COOLDOWN_MS: getEnvNumber('TTL_EXTEND_COOLDOWN_MS', 10 * 60 * 1000), // 10 minutes
-
   // Awareness deduplication
   AWARENESS_WS_DROP_WINDOW_MS: getEnvNumber('AWARENESS_WS_DROP_WINDOW_MS', 100),
 } as const;
@@ -351,42 +325,9 @@ export const PWA_CONFIG = {
 } as const;
 
 // ============================================
-// API & SERVER CONFIGURATION
-// ============================================
-
-export const SERVER_CONFIG = {
-  PORT: getEnvNumber('PORT', 3001),
-  NODE_ENV: getEnvString('NODE_ENV', 'development'),
-
-  // Database
-  DATABASE_URL: getEnvString('DATABASE_URL', ''),
-  REDIS_URL: getEnvString('REDIS_URL', ''),
-
-  // Connection pooling
-  PG_POOL_MIN: getEnvNumber('PG_POOL_MIN', 10),
-  PG_POOL_MAX: getEnvNumber('PG_POOL_MAX', 20),
-
-  // Monitoring
-  SENTRY_DSN: getEnvString('SENTRY_DSN', ''),
-
-  // CORS
-  ALLOWED_ORIGINS: getEnvString('ALLOWED_ORIGINS', 'http://localhost:3000').split(','),
-} as const;
-
-// ============================================
-// PROTOCOL VERSIONS
-// ============================================
-
-export const PROTOCOL_CONFIG = {
-  WS_PROTOCOL_VERSION: getEnvNumber('WS_PROTOCOL_VERSION', 1),
-  AWARENESS_VERSION: getEnvNumber('AWARENESS_VERSION', 1),
-} as const;
-
-// ============================================
 // TYPE EXPORTS FOR TYPE SAFETY
 // ============================================
 
-export type RoomConfig = typeof ROOM_CONFIG;
 export type StrokeConfig = typeof STROKE_CONFIG;
 export type TextConfig = typeof TEXT_CONFIG;
 export type WebRTCConfig = typeof WEBRTC_CONFIG;
@@ -396,8 +337,6 @@ export type PerformanceConfig = typeof PERFORMANCE_CONFIG;
 export type QueueConfig = typeof QUEUE_CONFIG;
 export type OfflineThresholdConfig = typeof OFFLINE_THRESHOLD_CONFIG;
 export type PWAConfig = typeof PWA_CONFIG;
-export type ServerConfig = typeof SERVER_CONFIG;
-export type ProtocolConfig = typeof PROTOCOL_CONFIG;
 
 // ============================================
 // COMPUTED VALUES & UTILITIES
@@ -422,28 +361,6 @@ export function calculateAwarenessInterval(peerCount: number): number {
 export function applyJitter(value: number, jitterFactor: number): number {
   const jitter = (Math.random() - 0.5) * 2 * jitterFactor;
   return value * (1 + jitter);
-}
-
-/**
- * Check if room size is at warning threshold
- */
-export function isRoomSizeWarning(sizeBytes: number): boolean {
-  return sizeBytes >= ROOM_CONFIG.ROOM_SIZE_WARNING_BYTES;
-}
-
-/**
- * Check if room size is at read-only threshold
- */
-export function isRoomReadOnly(sizeBytes: number | undefined): boolean {
-  if (sizeBytes === undefined) return false;
-  return sizeBytes >= ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES;
-}
-
-/**
- * Get room size percentage (0-100)
- */
-export function getRoomSizePercentage(sizeBytes: number): number {
-  return Math.min(100, (sizeBytes / ROOM_CONFIG.ROOM_SIZE_READONLY_BYTES) * 100);
 }
 
 // ============================================
@@ -472,7 +389,6 @@ export const DEBUG_CONFIG = {
 
 if (getEnvString('NODE_ENV', 'development') !== 'production') {
   // Freeze all config objects to prevent accidental mutation
-  Object.freeze(ROOM_CONFIG);
   Object.freeze(STROKE_CONFIG);
   Object.freeze(TEXT_CONFIG);
   Object.freeze(WEBRTC_CONFIG);
@@ -483,14 +399,11 @@ if (getEnvString('NODE_ENV', 'development') !== 'production') {
   Object.freeze(QUEUE_CONFIG);
   Object.freeze(OFFLINE_THRESHOLD_CONFIG);
   Object.freeze(PWA_CONFIG);
-  Object.freeze(SERVER_CONFIG);
-  Object.freeze(PROTOCOL_CONFIG);
   Object.freeze(DEBUG_CONFIG);
 }
 
 // Default export for convenience
 export default {
-  ROOM: ROOM_CONFIG,
   STROKE: STROKE_CONFIG,
   TEXT: TEXT_CONFIG,
   WEBRTC: WEBRTC_CONFIG,
@@ -500,14 +413,9 @@ export default {
   QUEUE: QUEUE_CONFIG,
   OFFLINE_THRESHOLD: OFFLINE_THRESHOLD_CONFIG,
   PWA: PWA_CONFIG,
-  SERVER: SERVER_CONFIG,
-  PROTOCOL: PROTOCOL_CONFIG,
   DEBUG: DEBUG_CONFIG,
 
   // Utility functions
   calculateAwarenessInterval,
   applyJitter,
-  isRoomSizeWarning,
-  isRoomReadOnly,
-  getRoomSizePercentage,
 } as const;
