@@ -17,7 +17,6 @@ import type {
   RoomId,
   Snapshot,
   PresenceView,
-  Output,
   ViewTransform,
 } from '@avlo/shared';
 import { ObjectSpatialIndex } from '@avlo/shared';
@@ -31,6 +30,7 @@ type Unsub = () => void;
 // CRITICAL: Y.Map's generic parameter doesn't define the value shape
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
+type YObjects = Y.Map<Y.Map<unknown>>;
 // type YCode = Y.Map<unknown>;
 // type YOutputs = Y.Array<Output>;
 
@@ -53,19 +53,6 @@ export interface IRoomDocManager {
     firstSnapshot: boolean;
   }>;
   isIndexedDBReady(): boolean;
-
-  // Phase 7: Event-driven gate subscription
-  subscribeGates(
-    cb: (
-      gates: Readonly<{
-        idbReady: boolean;
-        wsConnected: boolean;
-        wsSynced: boolean;
-        awarenessReady: boolean;
-        firstSnapshot: boolean;
-      }>,
-    ) => void,
-  ): Unsub;
 
   // Phase 7: Awareness API
   updateCursor(worldX: number | undefined, worldY: number | undefined): void;
@@ -123,7 +110,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Subscription management
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
-  private gateSubscribers = new Set<(gates: Readonly<typeof this.gates>) => void>();
 
   // Throttled presence updates (30Hz = ~33ms)
   private updatePresenceThrottled: (() => void) | null = null;
@@ -176,10 +162,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   };
   private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private gateCallbacks: Map<string, Set<() => void>> = new Map();
-
-  // Gate subscription state for debouncing
-  private lastGateState: typeof this.gates | null = null;
-  private gateDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Awareness event handler storage for cleanup
   private _onAwarenessUpdate: ((event: any) => void) | null = null;
@@ -275,9 +257,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         this.initializeYjsStructures();
         this.setupObjectsObserver();
         this.attachUndoManager();
-        console.log('Initialized Y.js structures');
-      } else {
-        console.log('Loaded from IDB or WS');
       }
 
       // Now that structures exist (either from IDB/WS or freshly initialized),
@@ -311,13 +290,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return meta as YMeta;
   }
 
-  private getObjects(): Y.Map<Y.Map<any>> {
+  private getObjects(): YObjects {
     const root = this.getRoot();
     const objects = root.get('objects');
     if (!(objects instanceof Y.Map)) {
       throw new Error('objects map not initialized');
     }
-    return objects as Y.Map<Y.Map<any>>;
+    return objects as YObjects;
   }
 
   /**
@@ -640,35 +619,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Step 3: Initialize Y.js structures with proper setup
   private initializeYjsStructures(): void {
-    console.log('Initializing Y.js structures');
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
-
       // Bump schema version for Y.Map migration
       root.set('v', 2);
-
       // Keep meta
       if (!root.has('meta')) {
         const meta = new Y.Map();
         root.set('meta', meta);
       }
-
       // NEW: Create objects map instead of arrays
       if (!root.has('objects')) {
         root.set('objects', new Y.Map());
-      }
-
-      // Keep code and outputs for now (future migration)
-      if (!root.has('code')) {
-        const code = new Y.Map();
-        code.set('lang', 'javascript');
-        code.set('body', '');
-        code.set('version', 0);
-        root.set('code', code);
-      }
-
-      if (!root.has('outputs')) {
-        root.set('outputs', new Y.Array<Output>());
       }
     }, 'init-structures'); // Origin for debugging
   }
@@ -707,22 +669,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
-
-  subscribeGates(cb: (gates: Readonly<typeof this.gates>) => void): Unsub {
-    // Return no-op if destroyed
-    if (this.destroyed) {
-      return () => {};
-    }
-
-    this.gateSubscribers.add(cb);
-    // Immediately call with current gate status
-    cb(this.getGateStatus());
-
-    return () => {
-      this.gateSubscribers.delete(cb);
-    };
-  }
-
   // Simple mutate method
   mutate(fn: (ydoc: Y.Doc) => void): void {
     // Check if destroyed first
@@ -740,10 +686,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         if (!r.has('meta')) {
           // Truly fresh doc even after IDB + grace → seed once.
           this.initializeYjsStructures();
-          console.log('seeded');
         }
         this.mutate(fn); // replay the write
-        console.log('mutated after seeding');
       });
       return;
     }
@@ -843,12 +787,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.gateTimeouts.forEach((timeout) => clearTimeout(timeout));
     this.gateTimeouts.clear();
 
-    // Clear gate debounce timer
-    if (this.gateDebounceTimer) {
-      clearTimeout(this.gateDebounceTimer);
-      this.gateDebounceTimer = null;
-    }
-
     // Clear awareness timer and dirty flag
     if (this.awarenessSendTimer !== null) {
       clearTimeout(this.awarenessSendTimer);
@@ -947,7 +885,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear subscriptions
     this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
-    this.gateSubscribers.clear();
 
     // Clear cursor interpolation state
     this.peerSmoothers.clear();
@@ -982,20 +919,20 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       // Handle doc vs presence-only updates separately
       if (this.publishState.isDirty) {
-        // Document changed - build full snapshot (expensive)
+        // Document changed - build full snapshot 
         const newSnapshot = this.buildSnapshot();
         this.publishSnapshot(newSnapshot);
         this.publishState.isDirty = false;
         this.publishState.presenceDirty = false; // Clear both flags
         this.publishState.lastPublishTime = performance.now();
       } else if (this.publishState.presenceDirty) {
-        // Presence-only update - reuse last snapshot (cheap!)
+        // Presence-only update - reuse last snapshot but update presence
         const livePresence = this.buildPresenceView();
         const prev = this._currentSnapshot;
 
-        // Construct a fresh object so identity changes
+        // Construct a fresh object so presence changes
         const snap: Snapshot = {
-          ...prev, // reuses already-frozen arrays & fields
+          ...prev, // reuses fields from previous snapshot
           presence: livePresence, // new presence
           createdAt: Date.now(), // fresh timestamp
         };
@@ -1018,21 +955,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Phase 2.4 Component B: Y.Doc Observer Setup
   private setupObservers(): void {
-    // CRITICAL: Use 'update' event for batching, not deep observe
+    // CRITICAL: Use 'update' event for batching, not deep observe for objects
     // NOTE: handleYDocUpdate is an arrow function property (not a method), which creates
-    // a stable function reference bound to this instance. This ensures:
-    // 1. The same function identity is used for both on() and off()
-    // 2. Proper cleanup occurs in destroy() with no memory leak
-    // 3. 'this' context is correctly bound without .bind()
-    // This is the recommended pattern for event handlers in classes.
+    // a stable function reference bound to this instance.
     this.ydoc.on('update', this.handleYDocUpdate);
 
     // Optional: Track specific events for debugging
-    if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
-      this.ydoc.on('afterTransaction', (_transaction: Y.Transaction) => {
-        // Transaction origin tracked
-      });
-    }
+    //   this.ydoc.on('afterTransaction', (_transaction: Y.Transaction) => {
   }
 
   // ============================================================
@@ -1208,16 +1137,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // No need to set isDirty - buildSnapshot will handle publishing
   }
-  // rebuildSpatialIndexFromViews no longer needed - integrated into hydrateObjectsFromY
-
-  // ============================================================
-  // PART 5: Snapshot Composition (Arrays = Derived Outputs)
-  // ============================================================
-
-  // composeSnapshotFromMaps no longer needed - integrated into buildSnapshot
 
   // Arrow function property ensures stable reference for event listener cleanup
-  // This is NOT a memory leak - the same function reference is used for on() and off()
   private handleYDocUpdate = (_update: Uint8Array, _origin: unknown): void => {
     // Increment docVersion on ANY Y.Doc change
     this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
@@ -1246,7 +1167,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         .then(() => {
           // IndexedDB whenSynced resolved
           this.handleIDBReady(); // Use unified handler
-          console.log('IndexedDB whenSynced resolved');
         })
         .catch((err: unknown) => {
           console.error('[RoomDocManager] IDB sync error (non-critical):', err);
@@ -1478,15 +1398,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // No need to call schedulePublish() - the loop is already running
     }
 
-    // Notify subscribers
+    // Notify internal waiters (whenGateOpen promises)
     const callbacks = this.gateCallbacks.get(gateName);
     if (callbacks) {
       callbacks.forEach((cb) => cb());
       callbacks.clear();
     }
-
-    // Notify gate subscribers about the change
-    this.notifyGateChange();
 
     // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
     // Do NOT open it here based on other gates
@@ -1494,44 +1411,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private closeGate(gateName: keyof typeof this.gates): void {
     if (!this.gates[gateName]) return; // Already closed
-
     this.gates[gateName] = false;
-
-    // Notify gate subscribers about the change
-    this.notifyGateChange();
-  }
-
-  private notifyGateChange(): void {
-    const currentGates = this.getGateStatus();
-    // Only notify if gates actually changed (shallow compare)
-    if (
-      this.lastGateState &&
-      this.lastGateState.idbReady === currentGates.idbReady &&
-      this.lastGateState.wsConnected === currentGates.wsConnected &&
-      this.lastGateState.wsSynced === currentGates.wsSynced &&
-      this.lastGateState.awarenessReady === currentGates.awarenessReady &&
-      this.lastGateState.firstSnapshot === currentGates.firstSnapshot
-    ) {
-      return;
-    }
-
-    this.lastGateState = { ...currentGates };
-
-    // Debounce notifications by 150ms to prevent flicker
-    if (this.gateDebounceTimer) {
-      clearTimeout(this.gateDebounceTimer);
-    }
-
-    this.gateDebounceTimer = setTimeout(() => {
-      this.gateSubscribers.forEach((cb) => {
-        try {
-          cb(currentGates);
-        } catch (err) {
-          console.error('Error in gate subscriber:', err);
-        }
-      });
-      this.gateDebounceTimer = null;
-    }, 150);
   }
 
   private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
@@ -1577,7 +1457,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private buildSnapshot(): Snapshot {
     const meta = this.getMeta();
     const root = this.getRoot();
-    const objects = root.get('objects') as Y.Map<Y.Map<any>> | undefined;
+    const objects = root.get('objects') as YObjects | undefined;
 
     // Guard: structures must exist
     if (!meta || !objects) {
@@ -1587,7 +1467,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
       this.spatialIndex = new ObjectSpatialIndex();
-      console.log('[RoomDocManager] spatialIndex created');
       // needsSpatialRebuild is already true from initialization
     }
 
@@ -1625,6 +1504,4 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return snap;
   }
 
-
-  // Phase 2.4.4: Render cache methods for boot splash (cosmetic only)
 }

@@ -1,7 +1,6 @@
 import type { Snapshot, ViewTransform } from '@avlo/shared';
 import { CANVAS_STYLE_CONFIG as Cfg } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import type { GateStatus } from '@/hooks/use-connection-gates';
 import { drawCursors } from './presence-cursors';
 
 // Export the unified objects renderer
@@ -152,7 +151,7 @@ export function drawPresenceOverlays(
   snapshot: Snapshot,
   view: ViewTransform,
   _viewport: ViewportInfo,
-  gates: GateStatus,
+  gates: { awarenessReady: boolean; firstSnapshot: boolean },
 ): void {
   // Phase 7: Cursors and trails implementation
   // CRITICAL GATE CHECK: Only render when BOTH gates are open
