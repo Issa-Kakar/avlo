@@ -8,7 +8,7 @@ import { getSvgPathFromStroke } from './types';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
-import { getCurrentSnapshot, getGateStatus } from '@/canvas/room-runtime';
+import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 
@@ -434,11 +434,11 @@ export class OverlayRenderLoop {
     // ---------- PASS 2: Screen-space presence (DPR only) ----------
     const gates = getGateStatus();
     if (gates.awarenessReady && gates.firstSnapshot) {
-      const snapshot = getCurrentSnapshot();
+      const presence = getCurrentPresence();
       ctx.save();
       // Explicit DPR-only transform for screen-space presence
       ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
-      drawPresenceOverlays(ctx, snapshot, view, {
+      drawPresenceOverlays(ctx, presence, view, {
         pixelWidth: Math.round(vp.cssWidth * vp.dpr),
         pixelHeight: Math.round(vp.cssHeight * vp.dpr),
         cssWidth: vp.cssWidth,

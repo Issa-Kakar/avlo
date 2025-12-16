@@ -1,4 +1,4 @@
-import type { Snapshot, ViewTransform } from '@avlo/shared';
+import type { PresenceView, Snapshot, ViewTransform } from '@avlo/shared';
 import { CANVAS_STYLE_CONFIG as Cfg } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { drawCursors } from './presence-cursors';
@@ -148,7 +148,7 @@ export function drawBackground(
 
 export function drawPresenceOverlays(
   ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
+  presence: PresenceView,
   view: ViewTransform,
   _viewport: ViewportInfo,
   gates: { awarenessReady: boolean; firstSnapshot: boolean },
@@ -164,12 +164,12 @@ export function drawPresenceOverlays(
     console.log('[Layer] Presence Overlays', {
       awarenessReady: gates.awarenessReady,
       firstSnapshot: gates.firstSnapshot,
-      userCount: snapshot.presence.users.size,
+      userCount: presence.users.size,
     });
   }
 
   // Draw cursors with trails (Phase 7)
-  drawCursors(ctx, snapshot.presence, view, {
+  drawCursors(ctx, presence, view, {
     awarenessReady: gates.awarenessReady,
     firstSnapshot: gates.firstSnapshot,
   });

@@ -49,7 +49,8 @@ export class CanvasRuntime {
   private overlayLoop: OverlayRenderLoop | null = null;
   private zoomAnimator: ZoomAnimator | null = null;
   private cameraUnsub: (() => void) | null = null;
-  private snapshotUnsub: (() => void) | null = null;
+  private docSnapshotUnsub: (() => void) | null = null;
+  private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
 
   /**
@@ -92,20 +93,20 @@ export class CanvasRuntime {
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py }
     );
 
-    // 7. Snapshot subscription for dirty rect invalidation
+    // 7. Doc snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
-    this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
-    this.snapshotUnsub = roomDoc.subscribeSnapshot((snapshot) => {
-      // Check if document content changed (not just presence)
-      if (snapshot.docVersion !== this.lastDocVersion) {
-        this.lastDocVersion = snapshot.docVersion;
+    this.lastDocVersion = roomDoc.currentDocSnapshot.docVersion;
+    this.docSnapshotUnsub = roomDoc.subscribeDocSnapshot((docSnap) => {
+      // Doc content changed - event-driven, no presence polling
+      if (docSnap.docVersion !== this.lastDocVersion) {
+        this.lastDocVersion = docSnap.docVersion;
 
         // Hold preview for one frame to prevent flash on commit
         this.overlayLoop?.holdPreviewForOneFrame();
 
         // Process dirty patch from manager
-        if (snapshot.dirtyPatch) {
-          const { rects, evictIds } = snapshot.dirtyPatch;
+        if (docSnap.dirtyPatch) {
+          const { rects, evictIds } = docSnap.dirtyPatch;
 
           // Evict from cache
           const cache = getObjectCacheInstance();
@@ -125,10 +126,13 @@ export class CanvasRuntime {
 
         // Update overlay for new doc content
         this.overlayLoop?.invalidateAll();
-      } else {
-        // Presence-only change - update overlay only
-        this.overlayLoop?.invalidateAll();
       }
+    });
+
+    // 8. Presence subscription for overlay updates (separate from doc)
+    this.presenceUnsub = roomDoc.subscribePresence(() => {
+      // Presence changed - only update overlay (cursors, etc.)
+      this.overlayLoop?.invalidateAll();
     });
   }
 
@@ -138,7 +142,8 @@ export class CanvasRuntime {
    */
   stop(): void {
     // Unsubscribe from stores first
-    this.snapshotUnsub?.();
+    this.docSnapshotUnsub?.();
+    this.presenceUnsub?.();
     this.cameraUnsub?.();
 
     this.inputManager?.detach();
@@ -168,7 +173,8 @@ export class CanvasRuntime {
     this.overlayLoop = null;
     this.zoomAnimator = null;
     this.cameraUnsub = null;
-    this.snapshotUnsub = null;
+    this.docSnapshotUnsub = null;
+    this.presenceUnsub = null;
     this.lastDocVersion = -1;
   }
 

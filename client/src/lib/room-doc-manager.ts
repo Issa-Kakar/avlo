@@ -121,17 +121,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private docSnapshotSubscribers = new Set<(snap: DocSnapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
 
-  // Throttled presence updates (30Hz = ~33ms)
-  private updatePresenceThrottled: (() => void) | null = null;
-  // Cleanup function for throttled presence updates
-  private updatePresenceThrottledCleanup: (() => void) | null = null;
-
-  // Simplified publish state for RAF loop
+  // Presence animation state (RAF is now on-demand, not continuous)
+  // Doc changes are event-driven via handleYDocUpdate → publishDocSnapshotNow()
   private publishState = {
-    isDirty: false,
-    presenceDirty: false, // Track presence changes separately
-    rafId: -1, // RAF request ID (-1 = not scheduled)
-    lastPublishTime: 0, // When we last published (clock.now())
+    presenceDirty: false, // Track if presence needs republishing
+    rafId: -1, // Presence animation RAF ID (-1 = not scheduled)
   };
 
   // Track if destroyed for cleanup
@@ -216,12 +210,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // via the WebSocket status handler
     }
 
-    // Initialize state
+    // Initialize presence animation state (RAF is on-demand, not continuous)
     this.publishState = {
-      isDirty: false,
-      presenceDirty: false, // Track presence changes separately
+      presenceDirty: false,
       rafId: -1,
-      lastPublishTime: 0,
     };
 
     // Start with empty snapshots
@@ -232,14 +224,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.setupObservers();
     // NOTE: setupObjectsObserver() will be called after Y.js structures are initialized
     // to prevent errors when structures don't exist yet
-
-    // Initialize throttled presence updates (30Hz = ~33ms)
-    const presenceThrottle = this.throttle(
-      this.updatePresence.bind(this),
-      33, // 1000ms / 30Hz = ~33ms
-    );
-    this.updatePresenceThrottled = presenceThrottle.throttled;
-    this.updatePresenceThrottledCleanup = presenceThrottle.cleanup;
 
     // CRITICAL FIX: Attach IDB FIRST before creating any structures
     // This prevents race condition where fresh containers overwrite persisted ones
@@ -276,8 +260,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Attach UndoManager after observers are set up
       this.attachUndoManager();
     });
-    // Start RAF loop
-    this.startPublishLoop();
+
+    // NO startPublishLoop() - RAF is now ON-DEMAND:
+    // - Doc changes: event-driven via handleYDocUpdate → publishDocSnapshotNow()
+    // - Presence changes: triggered by awareness updates → triggerPresenceAnimation()
+    // RAF only runs during cursor interpolation windows (~66ms)
   }
 
   // Public getters
@@ -724,12 +711,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     // Execute in single transaction with user origin
+    // Doc changes are published immediately via handleYDocUpdate → publishDocSnapshotNow()
     this.ydoc.transact(() => {
       fn(this.ydoc);
     }, this.userId); // Origin for undo/redo tracking
-
-    // Mark dirty for publishing
-    this.publishState.isDirty = true;
   }
 
   undo(): void {
@@ -752,54 +737,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.undoManager.redo();
   }
 
-  // Enhanced throttle utility function with cleanup
-  private throttle<T extends (...args: any[]) => void>(
-    func: T,
-    wait: number,
-  ): { throttled: T; cleanup: () => void } {
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    let lastCallTime = 0;
-
-    const throttled = (...args: any[]) => {
-      const now = Date.now();
-      const timeSinceLastCall = now - lastCallTime;
-
-      if (timeSinceLastCall >= wait) {
-        // Enough time has passed, execute immediately
-        lastCallTime = now;
-        func.apply(this, args);
-      } else if (!timeout) {
-        // Schedule for later
-        const delay = wait - timeSinceLastCall;
-        timeout = setTimeout(() => {
-          lastCallTime = Date.now();
-          timeout = null;
-          func.apply(this, args);
-        }, delay);
-      }
-      // If timeout is already scheduled, skip this call (throttling)
-    };
-
-    // Cleanup function to clear any pending timeout
-    const cleanup = () => {
-      if (timeout !== null) {
-        clearTimeout(timeout);
-        timeout = null;
-      }
-    };
-
-    return { throttled: throttled as T, cleanup };
-  }
-
-  // Update presence and notify subscribers (called when awareness changes)
-  private updatePresence(): void {
-    const presence = this.buildPresenceView();
-    this.presenceSubscribers.forEach((cb) => cb(presence));
-
-    // Mark presence dirty to trigger snapshot publish
-    this.publishState.presenceDirty = true;
-  }
-
   // Lifecycle
   destroy(): void {
     // Check if already destroyed (makes it safe to call multiple times)
@@ -808,7 +745,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Set destroyed flag
     this.destroyed = true;
 
-    // Stop RAF loop
+    // Stop presence animation RAF (if running)
     if (this.publishState.rafId !== -1) {
       cancelAnimationFrame(this.publishState.rafId);
       this.publishState.rafId = -1;
@@ -922,13 +859,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.peerSmoothers.clear();
     this.presenceAnimDeadlineMs = 0;
 
-    // Clear throttled function and any pending timeouts
-    if (this.updatePresenceThrottledCleanup) {
-      this.updatePresenceThrottledCleanup();
-      this.updatePresenceThrottledCleanup = null;
-    }
-    this.updatePresenceThrottled = null;
-
     // Destroy Y.Doc
     this.ydoc.destroy();
 
@@ -939,50 +869,77 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // The registry that created this manager should handle cleanup
   }
 
-  // Simple RAF loop for publishing
-  private startPublishLoop(): void {
-    const rafLoop = () => {
-      // Keep publishing during presence animation window
+  // ============================================================
+  // ON-DEMAND PRESENCE ANIMATION (Replaces continuous RAF loop)
+  // ============================================================
+  //
+  // The RAF loop is NO LONGER continuous. It only runs during cursor
+  // interpolation windows (~66ms after receiving remote cursor updates).
+  // Doc changes are event-driven via publishDocSnapshotNow().
+
+  /**
+   * Trigger presence animation RAF loop (on-demand, not continuous).
+   * Only schedules RAF if:
+   * 1. Not already running
+   * 2. Not destroyed
+   * 3. Inside animation window OR presence is dirty
+   */
+  private triggerPresenceAnimation(): void {
+    // Already running - let current loop handle it
+    if (this.publishState.rafId !== -1) return;
+    // Destroyed - don't schedule
+    if (this.destroyed) return;
+
+    this.publishState.rafId = requestAnimationFrame(() => {
+      // Clear the RAF ID first (allows re-triggering)
+      this.publishState.rafId = -1;
+
+      // Guard: check destroyed again (could have changed during frame)
+      if (this.destroyed) return;
+
       const now = performance.now();
-      if (!this.publishState.presenceDirty && now < this.presenceAnimDeadlineMs) {
-        // Force a presence publish to progress the interpolation
-        this.publishState.presenceDirty = true;
+      const stillAnimating = now < this.presenceAnimDeadlineMs;
+
+      // Publish presence update
+      this.publishPresenceUpdate();
+
+      // Continue loop only if still within animation window
+      if (stillAnimating && !this.destroyed) {
+        this.triggerPresenceAnimation();
       }
+    });
+  }
 
-      // Handle doc vs presence-only updates separately
-      if (this.publishState.isDirty) {
-        // Document changed - build full snapshot 
-        const newSnapshot = this.buildSnapshot();
-        this.publishSnapshot(newSnapshot);
-        this.publishState.isDirty = false;
-        this.publishState.presenceDirty = false; // Clear both flags
-        this.publishState.lastPublishTime = performance.now();
-      } else if (this.publishState.presenceDirty) {
-        // Presence-only update - reuse last snapshot but update presence
-        const livePresence = this.buildPresenceView();
-        const prev = this._currentSnapshot;
+  /**
+   * Publish presence update to all subscribers.
+   * Called from triggerPresenceAnimation() during cursor interpolation.
+   */
+  private publishPresenceUpdate(): void {
+    const presence = this.buildPresenceView();
 
-        // Construct a fresh object so presence changes
-        const snap: Snapshot = {
-          ...prev, // reuses fields from previous snapshot
-          presence: livePresence, // new presence
-          createdAt: Date.now(), // fresh timestamp
-        };
-
-        this.publishSnapshot(snap); // sets current + notifies subscribers
-        this.publishState.presenceDirty = false;
-        this.publishState.lastPublishTime = performance.now();
+    // Notify presence-only subscribers
+    this.presenceSubscribers.forEach((cb) => {
+      try {
+        cb(presence);
+      } catch (e) {
+        console.error('[RoomDocManager] Presence subscriber error:', e);
       }
+    });
 
-      // Continue loop if not destroyed
-      // AUDIT NOTE: Proper guard prevents RAF callbacks after destroy()
-      if (!this.destroyed) {
-        this.publishState.rafId = requestAnimationFrame(rafLoop);
-      }
-    };
+    // COMPAT: Update legacy snapshot presence field for subscribeSnapshot users
+    // Note: We don't notify snapshot subscribers for presence-only changes -
+    // they should migrate to subscribePresence() for presence updates.
+    if (this._currentDocSnapshot) {
+      this._currentSnapshot = {
+        ...this._currentDocSnapshot,
+        presence,
+        view: this.getViewTransform(),
+        createdAt: Date.now(),
+      };
+    }
 
-    // Start the loop
-    this.publishState.rafId = requestAnimationFrame(rafLoop);
+    // Clear presence dirty flag
+    this.publishState.presenceDirty = false;
   }
 
   // Phase 2.4 Component B: Y.Doc Observer Setup
@@ -1045,7 +1002,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (touchedIds.size === 0 && deletedIds.size === 0) return;
 
       this.applyObjectChanges({ touchedIds, deletedIds, textOnlyIds });
-      // No need to set isDirty - handleYDocUpdate already does that
+      // No flag needed - handleYDocUpdate → publishDocSnapshotNow() handles publishing
     };
 
     objects.observeDeep(this.objectsObserver);
@@ -1166,8 +1123,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.spatialIndex && handles.length > 0) {
       this.spatialIndex.bulkLoad(handles);
     }
-
-    // No need to set isDirty - buildSnapshot will handle publishing
+    // Publishing happens via handleYDocUpdate → publishDocSnapshotNow()
   }
 
   // Arrow function property ensures stable reference for event listener cleanup
@@ -1176,8 +1132,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
     this.sawAnyDocUpdate = true; // We've now seen real doc data
 
-    // Y.Doc updated - mark dirty, RAF loop will handle publishing
-    this.publishState.isDirty = true;
+    // EVENT-DRIVEN: Publish immediately instead of setting dirty flag
+    // The objectsObserver has already updated objectsById and spatialIndex
+    this.publishDocSnapshotNow();
   };
 
   private initializeIndexedDBProvider(): void {
@@ -1302,12 +1259,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
         }
 
-        // Mark presence dirty for next RAF publish
-        this.publishState.presenceDirty = true;
-
-        // Trigger throttled presence update for subscribers
-        if (this.updatePresenceThrottled) {
-          this.updatePresenceThrottled();
+        // ON-DEMAND PRESENCE ANIMATION:
+        // If we're inside an animation window (cursor interpolation), start/continue RAF
+        // Otherwise, just publish once (no ongoing loop needed)
+        // Note: reuses `now` from line 1301
+        if (now < this.presenceAnimDeadlineMs) {
+          // Cursor interpolation in progress - trigger animation loop
+          this.triggerPresenceAnimation();
+        } else {
+          // No animation needed - publish immediately (one-shot)
+          this.publishPresenceUpdate();
         }
       };
 
@@ -1467,39 +1428,29 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return this.gates.idbReady;
   }
 
-  // Phase 2.4 Component E: Snapshot Building & Publishing
-  private publishSnapshot(newSnapshot: Snapshot): void {
-    // Update current snapshot
-    this._currentSnapshot = newSnapshot;
-
-    // Notify subscribers
-    this.snapshotSubscribers.forEach((cb) => {
-      try {
-        cb(newSnapshot);
-      } catch (error) {
-        console.error('[Snapshot] Subscriber error:', error);
-      }
-    });
-  }
-
   // ============================================================
-  // PART 4: buildSnapshot (Simplified Two-Epoch Model)
+  // PART 5: Event-Driven Doc Publishing
   // ============================================================
+  // NOTE: The old buildSnapshot() and publishSnapshot() methods have been
+  // removed. Doc publishing is now event-driven via publishDocSnapshotNow().
 
-  private buildSnapshot(): Snapshot {
+  /**
+   * Publish doc snapshot immediately (event-driven, no RAF delay)
+   * Called directly from handleYDocUpdate for immediate publishing.
+   */
+  private publishDocSnapshotNow(): void {
     const meta = this.getMeta();
     const root = this.getRoot();
     const objects = root.get('objects') as YObjects | undefined;
 
     // Guard: structures must exist
     if (!meta || !objects) {
-      return this._currentSnapshot;
+      return;
     }
 
     // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
       this.spatialIndex = new ObjectSpatialIndex();
-      // needsSpatialRebuild is already true from initialization
     }
 
     // Two-epoch model: rebuild on first run or when flagged
@@ -1513,27 +1464,62 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.dirtyRects.length > 0 || this.cacheEvictIds.size > 0) {
       dirtyPatch = {
         rects: this.dirtyRects.splice(0),
-        evictIds: Array.from(this.cacheEvictIds)
+        evictIds: Array.from(this.cacheEvictIds),
       };
       this.cacheEvictIds.clear();
     }
 
-    const snap: Snapshot = {
+    // Create DocSnapshot (no presence, no view - those are handled separately)
+    const docSnap: DocSnapshot = {
       docVersion: this.docVersion,
       objectsById: this.objectsById,
       spatialIndex: this.spatialIndex,
-      presence: this.buildPresenceView(),
-      view: this.getViewTransform(),
       createdAt: Date.now(),
       dirtyPatch,
     };
+
+    // Update current doc snapshot
+    this._currentDocSnapshot = docSnap;
+
+    // Notify doc snapshot subscribers (event-driven path)
+    this.docSnapshotSubscribers.forEach((cb) => {
+      try {
+        cb(docSnap);
+      } catch (error) {
+        console.error('[DocSnapshot] Subscriber error:', error);
+      }
+    });
 
     // Open first snapshot gate if applicable
     if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
       this.openGate('firstSnapshot');
     }
 
-    return snap;
+    // COMPAT: Also update legacy snapshot (with presence + view)
+    this.publishLegacySnapshot(docSnap);
+  }
+
+  /**
+   * Publish legacy snapshot for backward compatibility.
+   * Extends DocSnapshot with presence and view fields.
+   */
+  private publishLegacySnapshot(docSnap: DocSnapshot): void {
+    const snap: Snapshot = {
+      ...docSnap,
+      presence: this.buildPresenceView(),
+      view: this.getViewTransform(),
+    };
+
+    this._currentSnapshot = snap;
+
+    // Notify legacy snapshot subscribers
+    this.snapshotSubscribers.forEach((cb) => {
+      try {
+        cb(snap);
+      } catch (error) {
+        console.error('[Snapshot] Subscriber error:', error);
+      }
+    });
   }
 
 }
