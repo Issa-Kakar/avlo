@@ -11,15 +11,21 @@ export interface ObjectSpatialIndex {
   clear(): void;
 }
 
-// Immutable snapshot - NEVER null
-export interface Snapshot {
+// NEW: Doc-only snapshot (no presence, no view)
+// This is the event-driven snapshot type - published immediately on Y.Doc changes
+export interface DocSnapshot {
   docVersion: number;
   objectsById: ReadonlyMap<string, ObjectHandle>;  // Live references
   spatialIndex: ObjectSpatialIndex | null;
-  presence: PresenceView;
-  view: ViewTransform;
   createdAt: number;
   dirtyPatch?: DirtyPatch | null;
+}
+
+// LEGACY: Full snapshot with presence (for backward compatibility)
+// Will be deprecated once all consumers migrate to DocSnapshot + subscribePresence
+export interface Snapshot extends DocSnapshot {
+  presence: PresenceView;
+  view: ViewTransform;  // DEAD CODE - camera-store is source of truth
 }
 
 // View transform for coordinate conversion
@@ -30,27 +36,30 @@ export interface ViewTransform {
   pan: { x: number; y: number }; // world offset
 }
 
-// Empty snapshot constant shape
-export function createEmptySnapshot(): Snapshot {
-  const emptyMap = new Map<string, ObjectHandle>();
+// Helper to create empty doc snapshot (new event-driven type)
+export function createEmptyDocSnapshot(): DocSnapshot {
+  return {
+    docVersion: 0,
+    objectsById: new Map<string, ObjectHandle>(),
+    spatialIndex: null,
+    createdAt: Date.now(),
+    dirtyPatch: null,
+  };
+}
 
-  const snapshot: Snapshot = {
-    docVersion: 0, // Empty snapshot has version 0
-    objectsById: emptyMap,
+// Empty snapshot constant shape (legacy - includes presence and view)
+export function createEmptySnapshot(): Snapshot {
+  return {
+    ...createEmptyDocSnapshot(),
     presence: {
       users: new Map(),
       localUserId: '',
     },
-    spatialIndex: null,
     view: {
       worldToCanvas: (x: number, y: number): [number, number] => [x, y],
       canvasToWorld: (x: number, y: number): [number, number] => [x, y],
       scale: 1,
       pan: { x: 0, y: 0 },
     },
-    createdAt: Date.now(),
-    dirtyPatch: null,
   };
-
-  return snapshot;
 }

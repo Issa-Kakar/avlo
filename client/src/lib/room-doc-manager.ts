@@ -8,6 +8,7 @@ import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
   createEmptySnapshot, // Regular import, not type import - function needs to be callable
+  createEmptyDocSnapshot,
   AWARENESS_CONFIG,
 } from '@avlo/shared';
 import { UserProfile } from './user-identity';
@@ -16,6 +17,7 @@ import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type {
   RoomId,
   Snapshot,
+  DocSnapshot,
   PresenceView,
   ViewTransform,
 } from '@avlo/shared';
@@ -36,9 +38,15 @@ type YObjects = Y.Map<Y.Map<unknown>>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
+  // Legacy snapshot (includes presence + view) - use subscribeDocSnapshot for new code
   readonly currentSnapshot: Snapshot;
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
+
+  // NEW: Doc-only subscription (preferred - event-driven, no presence/view)
+  readonly currentDocSnapshot: DocSnapshot;
+  subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub;
+
   mutate(fn: (ydoc: Y.Doc) => void): void;
   destroy(): void;
   undo(): void;
@@ -106,9 +114,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Current state
   private _currentSnapshot: Snapshot;
+  private _currentDocSnapshot: DocSnapshot;
 
   // Subscription management
   private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
+  private docSnapshotSubscribers = new Set<(snap: DocSnapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
 
   // Throttled presence updates (30Hz = ~33ms)
@@ -214,8 +224,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       lastPublishTime: 0,
     };
 
-    // Start with empty snapshot
+    // Start with empty snapshots
     this._currentSnapshot = createEmptySnapshot();
+    this._currentDocSnapshot = createEmptyDocSnapshot();
 
     // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
@@ -272,6 +283,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Public getters
   get currentSnapshot(): Snapshot {
     return this._currentSnapshot;
+  }
+
+  get currentDocSnapshot(): DocSnapshot {
+    return this._currentDocSnapshot;
   }
 
   // CRITICAL: These are PRIVATE helpers for internal use only
@@ -654,6 +669,22 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
+  // NEW: Doc-only subscription (preferred - event-driven)
+  subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub {
+    // Return no-op if destroyed
+    if (this.destroyed) {
+      return () => {};
+    }
+
+    this.docSnapshotSubscribers.add(cb);
+    // Immediately call with current doc snapshot
+    cb(this._currentDocSnapshot);
+
+    return () => {
+      this.docSnapshotSubscribers.delete(cb);
+    };
+  }
+
   subscribePresence(cb: (p: PresenceView) => void): Unsub {
     // Return no-op if destroyed
     if (this.destroyed) {
@@ -884,6 +915,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Clear subscriptions
     this.snapshotSubscribers.clear();
+    this.docSnapshotSubscribers.clear();
     this.presenceSubscribers.clear();
 
     // Clear cursor interpolation state

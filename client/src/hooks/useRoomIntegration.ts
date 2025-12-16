@@ -5,15 +5,6 @@
 
 import { useCallback } from 'react';
 import { useRoomDoc } from './use-room-doc';
-import { useConnectionGates } from './use-connection-gates';
-
-/**
- * Get connection gates status (read-only)
- */
-export function useGates(roomId: string) {
-  const gates = useConnectionGates(roomId);
-  return gates;
-}
 
 /**
  * Get clear scene function (optional, may be undefined)
