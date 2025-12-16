@@ -115,7 +115,7 @@ THIS_PROMPT.md
 PHASE2_*.md
 WEBSOCKET_*.md
 prompt.md
-
+completed_tasks/
 # Temporary test files
 test-ws*.js
 
@@ -127,6 +127,7 @@ client/src/**/*.js
 !client/src/**/*.config.js
 packages/*/src/**/*.js
 
+completed_tasks
 # Wrangler/Miniflare development artifacts
 .wrangler/
 */.wrangler/

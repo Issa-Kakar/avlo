@@ -1,5 +1,5 @@
 import { createContext, useContext, useRef, ReactNode } from 'react';
-import { RoomDocManagerRegistry, createRoomDocManagerRegistry } from './room-doc-manager';
+import { RoomDocManagerRegistry, createRoomDocManagerRegistry } from './room-doc-registry';
 
 // Context type
 interface RoomDocRegistryContextValue {

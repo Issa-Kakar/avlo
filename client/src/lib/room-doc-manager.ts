@@ -20,14 +20,6 @@ import type {
   Output,
   ViewTransform,
 } from '@avlo/shared';
-import { UpdateRing } from './ring-buffer';
-import {
-  Clock,
-  FrameScheduler,
-  BrowserClock,
-  BrowserFrameScheduler,
-  TimingOptions,
-} from './timing-abstractions';
 import { ObjectSpatialIndex } from '@avlo/shared';
 import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
 import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
@@ -80,11 +72,9 @@ export interface IRoomDocManager {
   updateActivity(activity: 'idle' | 'drawing' | 'typing'): void;
 }
 
-// Extended options for RoomDocManager
-export interface RoomDocManagerOptions extends TimingOptions {
-  clock?: Clock;
-  frames?: FrameScheduler;
-}
+// Options for RoomDocManager (currently empty, but preserved for future use)
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface RoomDocManagerOptions {}
 
 // Interpolation types for cursor smoothing
 type Pt = { x: number; y: number; t: number };
@@ -107,8 +97,8 @@ interface PeerSmoothing {
 const INTERP_WINDOW_MS = 66; // ~1–2 frames @60 FPS
 const CURSOR_Q_STEP = 0.5; // world-unit quantization (matches sender)
 
-// Private implementation
-class RoomDocManagerImpl implements IRoomDocManager {
+// Implementation class (exported for registry use)
+export class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
@@ -140,23 +130,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
   // Cleanup function for throttled presence updates
   private updatePresenceThrottledCleanup: (() => void) | null = null;
 
-  // Timing abstractions (injected for testing)
-  private clock: Clock;
-  private frames: FrameScheduler;
-
-
   // Simplified publish state for RAF loop
   private publishState = {
     isDirty: false,
     presenceDirty: false, // Track presence changes separately
     rafId: -1, // RAF request ID (-1 = not scheduled)
     lastPublishTime: 0, // When we last published (clock.now())
-    publishCostMs: 0, // Track how long publish takes
-    pendingUpdates: null as UpdateRing<{
-      update: Uint8Array;
-      origin: unknown;
-      time: number;
-    }> | null,
   };
 
   // Track if destroyed for cleanup
@@ -218,7 +197,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
   private needsSpatialRebuild = true;  // Start true, goes false after first hydration
 
-  constructor(roomId: RoomId, options?: RoomDocManagerOptions) {
+  constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
 
     // Get stable identity from singleton
@@ -245,18 +224,12 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // via the WebSocket status handler
     }
 
-    // Initialize timing abstractions
-    this.clock = options?.clock || new BrowserClock();
-    this.frames = options?.frames || new BrowserFrameScheduler();
-
     // Initialize state
     this.publishState = {
       isDirty: false,
       presenceDirty: false, // Track presence changes separately
       rafId: -1,
       lastPublishTime: 0,
-      publishCostMs: 0,
-      pendingUpdates: new UpdateRing(16), // Keep ring buffer for metrics
     };
 
     // Start with empty snapshot
@@ -442,7 +415,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Build presence view from awareness
   private buildPresenceView(): PresenceView {
-    const now = this.clock.now();
+    const now = performance.now();
     const users = new Map<
       string,
       {
@@ -698,14 +671,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
         root.set('outputs', new Y.Array<Output>());
       }
     }, 'init-structures'); // Origin for debugging
-
-    // Log container identities right after initialization
-    this.logContainerIdentities('AFTER_INIT');
-  }
-
-  // Helper to log container identities for debugging
-  private logContainerIdentities(_phase: string): void {
-    // Debug logging method - disabled in production
   }
 
   // Step 4: Add output with size enforcement
@@ -870,7 +835,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
     // Stop RAF loop
     if (this.publishState.rafId !== -1) {
-      this.frames.cancel(this.publishState.rafId);
+      cancelAnimationFrame(this.publishState.rafId);
       this.publishState.rafId = -1;
     }
 
@@ -1009,7 +974,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
   private startPublishLoop(): void {
     const rafLoop = () => {
       // Keep publishing during presence animation window
-      const now = this.clock.now();
+      const now = performance.now();
       if (!this.publishState.presenceDirty && now < this.presenceAnimDeadlineMs) {
         // Force a presence publish to progress the interpolation
         this.publishState.presenceDirty = true;
@@ -1018,18 +983,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Handle doc vs presence-only updates separately
       if (this.publishState.isDirty) {
         // Document changed - build full snapshot (expensive)
-        const startTime = this.clock.now();
         const newSnapshot = this.buildSnapshot();
         this.publishSnapshot(newSnapshot);
         this.publishState.isDirty = false;
         this.publishState.presenceDirty = false; // Clear both flags
-
-        // Track timing for metrics
-        this.publishState.lastPublishTime = this.clock.now();
-        this.publishState.publishCostMs = this.clock.now() - startTime;
+        this.publishState.lastPublishTime = performance.now();
       } else if (this.publishState.presenceDirty) {
         // Presence-only update - reuse last snapshot (cheap!)
-        const startTime = this.clock.now();
         const livePresence = this.buildPresenceView();
         const prev = this._currentSnapshot;
 
@@ -1042,21 +1002,18 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
         this.publishSnapshot(snap); // sets current + notifies subscribers
         this.publishState.presenceDirty = false;
-
-        // Track timing for metrics
-        this.publishState.lastPublishTime = this.clock.now();
-        this.publishState.publishCostMs = this.clock.now() - startTime;
+        this.publishState.lastPublishTime = performance.now();
       }
 
       // Continue loop if not destroyed
       // AUDIT NOTE: Proper guard prevents RAF callbacks after destroy()
       if (!this.destroyed) {
-        this.publishState.rafId = this.frames.request(rafLoop);
+        this.publishState.rafId = requestAnimationFrame(rafLoop);
       }
     };
 
     // Start the loop
-    this.publishState.rafId = this.frames.request(rafLoop);
+    this.publishState.rafId = requestAnimationFrame(rafLoop);
   }
 
   // Phase 2.4 Component B: Y.Doc Observer Setup
@@ -1261,45 +1218,13 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Arrow function property ensures stable reference for event listener cleanup
   // This is NOT a memory leak - the same function reference is used for on() and off()
-  private handleYDocUpdate = (update: Uint8Array, origin: unknown): void => {
-    // Log transaction origin to track IDB vs local updates
-    const originStr =
-      typeof origin === 'string'
-        ? origin
-        : origin === this.indexeddbProvider
-          ? 'IDB_PROVIDER'
-          : origin === this.websocketProvider
-            ? 'WS_PROVIDER'
-            : origin
-              ? (origin as any).constructor?.name || 'unknown'
-              : 'null';
-
-    // Transaction origin tracked for debugging
-
-    // If this is from IDB, check if container identities changed
-    if (origin === this.indexeddbProvider || originStr === 'IDB_PROVIDER') {
-      // IDB update detected
-      this.logContainerIdentities('DURING_IDB_UPDATE');
-    }
-
+  private handleYDocUpdate = (_update: Uint8Array, _origin: unknown): void => {
     // Increment docVersion on ANY Y.Doc change
     this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
     this.sawAnyDocUpdate = true; // We've now seen real doc data
 
-    // Y.Doc updated
-    // Just mark dirty - RAF will handle publishing
+    // Y.Doc updated - mark dirty, RAF loop will handle publishing
     this.publishState.isDirty = true;
-    
-    // Store update for metrics
-    if (this.publishState.pendingUpdates) {
-      this.publishState.pendingUpdates.push({
-        update,
-        origin,
-        time: this.clock.now(),
-      });
-    }
-
-    // RAF loop will handle publishing
   };
 
   private initializeIndexedDBProvider(): void {
@@ -1347,9 +1272,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
       this.gateTimeouts.delete('idbReady');
     }
 
-    // Log container identities after IDB is ready (either synced or timed out)
-    this.logContainerIdentities('AFTER_IDB_READY');
-
     // Open the gate - structure initialization is handled in constructor
     // via whenGateOpen('idbReady').then(...)
     this.openGate('idbReady');
@@ -1396,7 +1318,7 @@ class RoomDocManagerImpl implements IRoomDocManager {
       // Store bound handlers for cleanup
       this._onAwarenessUpdate = (event: any) => {
         // Ingest awareness changes with interpolation
-        const now = this.clock.now();
+        const now = performance.now();
 
         // Process changed states
         if (event && typeof event === 'object') {
@@ -1522,9 +1444,6 @@ class RoomDocManagerImpl implements IRoomDocManager {
             this.gateTimeouts.delete('wsSynced');
           }
           this.openGate('wsSynced');
-          // Log identities after the first WS sync to verify origin of containers
-          this.logContainerIdentities('AFTER_WS_SYNC');
-          // WebSocket synced
         } else {
           this.closeGate('wsSynced');
         }
@@ -1709,208 +1628,3 @@ class RoomDocManagerImpl implements IRoomDocManager {
 
   // Phase 2.4.4: Render cache methods for boot splash (cosmetic only)
 }
-
-// Registry class for managing RoomDocManager instances
-export class RoomDocManagerRegistry {
-  private managers = new Map<RoomId, IRoomDocManager>();
-  private refCounts = new Map<RoomId, number>();
-  private defaultOptions?: RoomDocManagerOptions;
-
-  /**
-   * Set default options for all new managers
-   * Useful for test environments
-   */
-  setDefaultOptions(options: RoomDocManagerOptions): void {
-    this.defaultOptions = options;
-  }
-
-  /**
-   * Get or create a manager for a room
-   * Ensures singleton per room within this registry instance
-   * @deprecated Use acquire() instead for proper reference counting
-   */
-  get(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
-    console.warn(
-      `[Registry] DEPRECATED get() method called for roomId: ${roomId} - should use acquire() instead`,
-    );
-    // For backward compatibility, delegate to acquire
-    // But don't increment ref count (maintains old behavior for tests)
-    let manager = this.managers.get(roomId);
-
-    if (!manager) {
-      // Creating new RoomDocManager via deprecated get()
-      // Creating new RoomDocManager
-      // Use provided options, fall back to default options, or use browser defaults
-      const finalOptions = options ?? this.defaultOptions;
-      manager = new RoomDocManagerImpl(roomId, finalOptions);
-      this.managers.set(roomId, manager);
-      // Don't set ref count for backward compatibility with tests
-    } else {
-      // Reusing existing RoomDocManager via deprecated get()
-    }
-
-    return manager;
-  }
-
-  /**
-   * Acquire a reference to a manager for a room
-   * Creates the manager if it doesn't exist, increments reference count
-   * Must be paired with release() when done
-   */
-  acquire(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
-    let manager = this.managers.get(roomId);
-
-    if (!manager) {
-      // Creating new RoomDocManager via acquire()
-      // Creating new RoomDocManager
-      const finalOptions = options ?? this.defaultOptions;
-      manager = new RoomDocManagerImpl(roomId, finalOptions);
-      this.managers.set(roomId, manager);
-      this.refCounts.set(roomId, 0);
-    } else {
-      // Reusing existing RoomDocManager via acquire()
-    }
-
-    // Increment reference count
-    const currentCount = this.refCounts.get(roomId) || 0;
-    this.refCounts.set(roomId, currentCount + 1);
-    // Reference acquired
-
-    return manager;
-  }
-
-  /**
-   * Release a reference to a manager
-   * Decrements reference count and destroys manager if count reaches 0
-   */
-  release(roomId: RoomId): void {
-    const count = this.refCounts.get(roomId);
-    if (count === undefined) {
-      // If no refcount, this manager was created with legacy get() method
-      // Don't do anything to maintain backward compatibility
-      return;
-    }
-
-    const newCount = count - 1;
-    // Reference released
-
-    if (newCount <= 0) {
-      // Reference count reached 0, destroy and remove
-      const manager = this.managers.get(roomId);
-      if (manager) {
-        // Destroying RoomDocManager (refCount: 0)
-        manager.destroy();
-      }
-      this.managers.delete(roomId);
-      this.refCounts.delete(roomId);
-    } else {
-      this.refCounts.set(roomId, newCount);
-    }
-  }
-
-  /**
-   * Create an isolated manager instance for testing
-   * This manager is NOT tracked by the registry
-   */
-  createIsolated(roomId: RoomId, options?: RoomDocManagerOptions): IRoomDocManager {
-    const finalOptions = options ?? this.defaultOptions;
-    return new RoomDocManagerImpl(roomId, finalOptions);
-  }
-
-  has(roomId: RoomId): boolean {
-    return this.managers.has(roomId);
-  }
-
-  /**
-   * Get the reference count for a room (for debugging/testing)
-   */
-  getRefCount(roomId: RoomId): number {
-    return this.refCounts.get(roomId) || 0;
-  }
-
-  remove(roomId: RoomId): void {
-    const manager = this.managers.get(roomId);
-    if (manager) {
-      // Removing RoomDocManager
-      manager.destroy();
-      this.managers.delete(roomId);
-      this.refCounts.delete(roomId);
-    }
-  }
-
-  /**
-   * Destroy all managers and clear the registry
-   * Used for cleanup in tests and app teardown
-   * AUDIT NOTE: Simple forEach is sufficient - no inter-manager dependencies exist
-   * If future phases add inter-dependencies, implement topological sort
-   */
-  destroyAll(): void {
-    // Destroying all RoomDocManagers
-    this.managers.forEach((manager) => manager.destroy());
-    this.managers.clear();
-    this.refCounts.clear();
-    this.defaultOptions = undefined;
-  }
-
-  /**
-   * Reset the registry completely (for tests)
-   * More thorough than destroyAll - resets all state
-   */
-  reset(): void {
-    this.destroyAll();
-    // Any additional reset logic can go here
-  }
-
-  /**
-   * Get the count of managed instances (for debugging/testing)
-   */
-  size(): number {
-    return this.managers.size;
-  }
-}
-
-// Factory function to create a new registry
-export function createRoomDocManagerRegistry(): RoomDocManagerRegistry {
-  return new RoomDocManagerRegistry();
-}
-
-// Export manager type
-export type RoomDocManager = IRoomDocManager;
-
-// Re-export render cache for direct access if needed
-
-// Test-only exports - clearly marked for testing purposes only
-// These should NEVER be used in production code
-export const __testonly = {
-  RoomDocManagerImpl: process.env.NODE_ENV === 'test' ? RoomDocManagerImpl : null,
-  // Helper to observe Y.Doc behavior in tests without exposing Y types to app
-  attachDocObserver:
-    process.env.NODE_ENV === 'test'
-      ? (manager: IRoomDocManager, callback: (event: string, data?: unknown) => void) => {
-          // Type assertion to access private impl
-          const impl = manager as unknown as RoomDocManagerImpl;
-          // Access the private ydoc for test observation
-          const ydoc = (impl as any).ydoc;
-          if (!ydoc) return () => {};
-
-          // Observe update events
-          const updateHandler = (update: Uint8Array, origin: unknown) => {
-            callback('update', { updateSize: update.length, origin });
-          };
-
-          // Observe transaction events
-          const transactionHandler = (transaction: any) => {
-            callback('transaction', { origin: transaction.origin || null });
-          };
-
-          ydoc.on('update', updateHandler);
-          ydoc.on('afterTransaction', transactionHandler);
-
-          // Return cleanup function
-          return () => {
-            ydoc.off('update', updateHandler);
-            ydoc.off('afterTransaction', transactionHandler);
-          };
-        }
-      : null,
-};
