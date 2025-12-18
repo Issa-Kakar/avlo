@@ -35,8 +35,10 @@ export class EraserTrailAnimation implements AnimationJob {
 
   private points: TrailPoint[] = [];
   private active = false;
-  /** Last known cursor position - used to keep dot alive while stationary */
+  /** Last known cursor position - used to add points every frame */
   private lastActivePosition: { x: number; y: number } | null = null;
+  /** Timestamp from last update() - used by render() for consistent timing */
+  private lastUpdateTime = 0;
 
   /**
    * Called by EraserTool.begin() to start trail capture.
@@ -48,23 +50,13 @@ export class EraserTrailAnimation implements AnimationJob {
   }
 
   /**
-   * Called by EraserTool.move() to add a point.
-   * Points are in screen space (CSS pixels).
-   * Always adds a new point (matching old TRAIL_MIN_DIST_PX = 0 behavior).
+   * Called by EraserTool.move() to update cursor position.
+   * Actual point addition happens in update() every frame (matching old behavior).
    */
-  addPoint(screenX: number, screenY: number, now: number): void {
+  addPoint(screenX: number, screenY: number, _now: number): void {
     if (!this.active) return;
-
-    // Track last position for keep-alive during stationary periods
+    // Only update position - point addition happens in update()
     this.lastActivePosition = { x: screenX, y: screenY };
-
-    // Always push a new point (old code had dist >= 0 which is always true)
-    this.points.push({ x: screenX, y: screenY, t: now });
-
-    // Limit points
-    if (this.points.length > TRAIL_MAX_POINTS) {
-      this.points.shift();
-    }
   }
 
   /**
@@ -78,22 +70,34 @@ export class EraserTrailAnimation implements AnimationJob {
   }
 
   /**
-   * AnimationJob.update() - decay old points and maintain cursor dot.
+   * AnimationJob.update() - decay old points and add fresh point at cursor.
    * Called every frame by AnimationController.
+   *
+   * IMPORTANT: This matches the old updateEraserTrail() behavior where a point
+   * was added EVERY FRAME (since TRAIL_MIN_DIST_PX=0 meant dist>=0 was always true).
+   * Adding points every frame ensures all points have similar recent timestamps,
+   * avoiding the "tadpole effect" where older points have different pressure.
    */
   update(now: number, _deltaMs: number): boolean {
-    // Remove expired points
+    // Store timestamp for render() to use (ensures consistent timing)
+    this.lastUpdateTime = now;
+
+    // Remove expired points first
     this.points = this.points.filter((p) => now - p.t <= TRAIL_LIFETIME_MS);
 
-    // While active, ensure we always have at least 2 points at the cursor
-    // position so the dot renders even when stationary (render needs 2+ points)
+    // While active, add a fresh point at cursor position EVERY FRAME.
+    // This is the key fix - old code added a point every frame in the render loop.
+    // Without this, points age unevenly causing the "tadpole" pulsing effect.
     if (this.active && this.lastActivePosition) {
-      while (this.points.length < 2) {
-        this.points.push({
-          x: this.lastActivePosition.x,
-          y: this.lastActivePosition.y,
-          t: now,
-        });
+      this.points.push({
+        x: this.lastActivePosition.x,
+        y: this.lastActivePosition.y,
+        t: now,
+      });
+
+      // Limit points (matches old behavior)
+      if (this.points.length > TRAIL_MAX_POINTS) {
+        this.points.shift();
       }
     }
 
@@ -112,7 +116,8 @@ export class EraserTrailAnimation implements AnimationJob {
   ): void {
     if (this.points.length < 2) return;
 
-    const now = performance.now();
+    // Use timestamp from update() for consistent timing (old code used same `now` for both)
+    const now = this.lastUpdateTime;
 
     // Map to perfect-freehand points with age-based pressure
     const pfPoints = this.points.map((p) => {
@@ -167,5 +172,6 @@ export class EraserTrailAnimation implements AnimationJob {
     this.points = [];
     this.active = false;
     this.lastActivePosition = null;
+    this.lastUpdateTime = 0;
   }
 }
