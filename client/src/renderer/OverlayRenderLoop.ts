@@ -3,26 +3,17 @@ import { drawStrokePreview } from './layers/stroke-preview';
 import { drawPresenceOverlays } from './layers';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
-import { getStroke } from 'perfect-freehand';
-import { getSvgPathFromStroke } from './types';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-
-// Eraser Trail configuration
-interface EraserTrailPoint {
-  x: number; // CSS pixels
-  y: number; // CSS pixels
-  t: number; // timestamp
-}
-const TRAIL_LIFETIME_MS = 200;
-const TRAIL_MIN_DIST_PX = 0;
-const TRAIL_MAX_POINTS = 10;
-const TRAIL_BASE_WIDTH_PX = 14;
-const TRAIL_BASE_ALPHA = 0.35;
+import {
+  getAnimationController,
+  destroyAnimationController,
+  EraserTrailAnimation,
+} from '@/canvas/animation';
 
 export class OverlayRenderLoop {
   private started = false;
@@ -30,7 +21,6 @@ export class OverlayRenderLoop {
   private needsFrame = false;
   private cachedPreview: PreviewData | null = null;
   private holdPreviewOneFrame = false;
-  private eraserTrail: EraserTrailPoint[] | null = null;
   private cameraUnsubscribe: (() => void) | null = null;
   private toolUnsubscribe: (() => void) | null = null;
 
@@ -41,7 +31,10 @@ export class OverlayRenderLoop {
    */
   start(): void {
     this.started = true;
-    this.eraserTrail = [];
+
+    // Register animation jobs
+    const controller = getAnimationController();
+    controller.register(new EraserTrailAnimation());
 
     // Subscribe to camera store for self-invalidation
     // Overlay is cheap to redraw, so invalidate on any camera change
@@ -117,86 +110,6 @@ export class OverlayRenderLoop {
     });
   }
 
-  private updateEraserTrail(screenX: number, screenY: number, now: number): void {
-    // Remove old points
-    this.eraserTrail = this.eraserTrail?.filter(p => now - p.t <= TRAIL_LIFETIME_MS) ?? [];
-
-    const last = this.eraserTrail[this.eraserTrail.length - 1];
-    if (!last) {
-      this.eraserTrail.push({ x: screenX, y: screenY, t: now });
-      return;
-    }
-
-    const dx = screenX - last.x;
-    const dy = screenY - last.y;
-    const dist = Math.hypot(dx, dy);
-
-    if (dist >= TRAIL_MIN_DIST_PX) {
-      this.eraserTrail.push({ x: screenX, y: screenY, t: now });
-    } else {
-      // Keep dot alive when stationary
-      last.x = screenX;
-      last.y = screenY;
-      last.t = now;
-    }
-
-    // Limit points
-    if (this.eraserTrail.length > TRAIL_MAX_POINTS) {
-      this.eraserTrail.splice(0, this.eraserTrail.length - TRAIL_MAX_POINTS);
-    }
-  }
-
-  private hasEraserTrail(): boolean {
-    return !!(this.eraserTrail && this.eraserTrail.length > 0);
-  }
-
-  private decayEraserTrail(now: number): void {
-    if (!this.eraserTrail || this.eraserTrail.length === 0) return;
-    this.eraserTrail = this.eraserTrail.filter(p => now - p.t <= TRAIL_LIFETIME_MS);
-  }
-
-  private drawEraserTrail(ctx: CanvasRenderingContext2D, now: number, _dpr: number): void {
-    if (!this.eraserTrail || this.eraserTrail.length < 2) return;
-
-    // Map to perfect-freehand points with age-based pressure
-    const pfPoints = this.eraserTrail.map((p) => {
-      const age = Math.max(0, Math.min(1, (now - p.t) / TRAIL_LIFETIME_MS));
-      const strength = 1 - age;
-      const eased = 1 - (1 - strength) * (1 - strength); // easeOutQuad
-      return [p.x, p.y, eased] as [number, number, number];
-    });
-
-    const outline = getStroke(pfPoints, {
-
-      size: TRAIL_BASE_WIDTH_PX,
-      thinning: 0.5,
-      smoothing: 0.7,
-      streamline: 0.40,
-      simulatePressure:true,
-      easing: (t: number) => -t * t + 2 * t,
-      start: {
-        easing: (t: number) => t,
-        cap: true,
-      },
-      end: {
-        // easing: (t: number) => t,
-        cap: true,
-        easing: (t: number) => t,
-        taper: 0
-      },
-    });
-    if (!outline.length) return;
-
-    const path = new Path2D(getSvgPathFromStroke(outline, false));
-
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.globalAlpha = TRAIL_BASE_ALPHA;
-    ctx.fillStyle = 'rgb(140, 140, 140)';
-    ctx.fill(path);
-    ctx.restore();
-  }
-
   private frame(): void {
     if (!this.started) return;
 
@@ -208,6 +121,11 @@ export class OverlayRenderLoop {
     const vpInfo = getViewportInfo();
     const vp = { cssWidth: vpInfo.cssWidth, cssHeight: vpInfo.cssHeight, dpr: vpInfo.dpr };
     if (vp.cssWidth <= 1 || vp.cssHeight <= 1) return;
+
+    // Tick all animations (decay trails, interpolate cursors, etc.)
+    const now = performance.now();
+    const animController = getAnimationController();
+    animController.tick(now);
 
     // Always full clear overlay (cheap for preview + presence)
     // Inline clear: reset transform, clear device pixels
@@ -222,7 +140,6 @@ export class OverlayRenderLoop {
     // ---------- PASS 1: World-space preview (with world transform) ----------
     // Self-managed: read preview from tool registry instead of external provider
     const preview = getActivePreview();
-    const now = performance.now();
     // Cache the latest preview if we have one
     if (preview && preview.kind !== 'eraser') {
       this.cachedPreview = preview;
@@ -232,15 +149,6 @@ export class OverlayRenderLoop {
     !preview && this.holdPreviewOneFrame && this.cachedPreview;
     const previewToDraw = preview || (usingCached && this.cachedPreview) || null;
 
-  if (previewToDraw && previewToDraw.kind === 'eraser') {
-    const [screenX, screenY] = view.worldToCanvas(
-      previewToDraw.circle.cx,
-      previewToDraw.circle.cy,
-    );
-    this.updateEraserTrail(screenX, screenY, now);
-  } else {
-    this.decayEraserTrail(now);
-  }
     if (previewToDraw) {
       ctx.save();
       // Check preview kind using discriminant
@@ -256,11 +164,11 @@ export class OverlayRenderLoop {
           drawStrokePreview(ctx, previewToDraw);
 
         } else if (previewToDraw?.kind === 'eraser') {
-          // New eraser preview (two passes)
+          // Eraser preview: only draw dimmed strokes
+          // Trail is now handled by AnimationController
           const snapshot = getCurrentSnapshot();
 
-          // Pass A: World-space dimming
-          // Explicit world transform: DPR × scale × translate combined
+          // World-space dimming for objects under eraser
           if (previewToDraw.hitIds.length > 0) {
             ctx.setTransform(
               vp.dpr * view.scale, 0,
@@ -270,11 +178,6 @@ export class OverlayRenderLoop {
             );
             drawDimmedStrokes(ctx, previewToDraw.hitIds, snapshot, previewToDraw.dimOpacity);
           }
-
-          // Pass B: Screen-space trail (no cursor ring)
-          // Explicit DPR-only transform for screen-space elements
-          ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
-          this.drawEraserTrail(ctx, now, vp.dpr);
 
         } else if (previewToDraw?.kind === 'text') {
           // Text preview (world space)
@@ -447,10 +350,18 @@ export class OverlayRenderLoop {
       }, gates);
       ctx.restore();
     }
-    if (this.hasEraserTrail()) this.invalidateAll();
-  }
 
-  // Keep animating if trail exists
+    // ---------- PASS 3: Screen-space animations (eraser trail, etc.) ----------
+    ctx.save();
+    ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
+    animController.render(ctx, vpInfo, view);
+    ctx.restore();
+
+    // Continue animation loop if any animations are active
+    if (animController.hasActiveAnimations()) {
+      this.invalidateAll();
+    }
+  }
 
   destroy() {
     // Ensure subscriptions are cleaned up
@@ -458,6 +369,10 @@ export class OverlayRenderLoop {
     this.cameraUnsubscribe = null;
     this.toolUnsubscribe?.();
     this.toolUnsubscribe = null;
+
+    // Destroy animation controller
+    destroyAnimationController();
+
     this.stop();
   }
 }

@@ -4,9 +4,11 @@ import {
   circleRectIntersect,
   pointInDiamond,
 } from '@/lib/geometry/hit-test-primitives';
-import { useCameraStore } from '@/stores/camera-store';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import { getAnimationController } from '@/canvas/animation/AnimationController';
+import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
 import * as Y from 'yjs';
 import type { PointerTool } from './types';
 
@@ -68,6 +70,14 @@ export class EraserTool implements PointerTool {
     this.state.hitNow.clear();
     this.state.hitAccum.clear();
 
+    // Start eraser trail animation
+    const trailAnim = getAnimationController().get<EraserTrailAnimation>('eraser-trail');
+    if (trailAnim) {
+      trailAnim.start();
+      const [screenX, screenY] = worldToCanvas(worldX, worldY);
+      trailAnim.addPoint(screenX, screenY, performance.now());
+    }
+
     this.updateHitTest(worldX, worldY);
     invalidateOverlay();
   }
@@ -75,8 +85,13 @@ export class EraserTool implements PointerTool {
   move(worldX: number, worldY: number): void {
     this.state.lastWorld = [worldX, worldY];
 
-    // Only hit-test when actively erasing
+    // Update trail animation and hit-test when actively erasing
     if (this.state.isErasing) {
+      const trailAnim = getAnimationController().get<EraserTrailAnimation>('eraser-trail');
+      if (trailAnim) {
+        const [screenX, screenY] = worldToCanvas(worldX, worldY);
+        trailAnim.addPoint(screenX, screenY, performance.now());
+      }
       this.updateHitTest(worldX, worldY);
     }
     invalidateOverlay();
@@ -88,6 +103,10 @@ export class EraserTool implements PointerTool {
   }
 
   cancel(): void {
+    // Stop trail animation (it will decay naturally)
+    const trailAnim = getAnimationController().get<EraserTrailAnimation>('eraser-trail');
+    trailAnim?.stop();
+
     this.resetState();
     invalidateOverlay();
   }
@@ -340,6 +359,10 @@ export class EraserTool implements PointerTool {
   }
 
   private commitErase(): void {
+    // Stop trail animation (it will decay naturally)
+    const trailAnim = getAnimationController().get<EraserTrailAnimation>('eraser-trail');
+    trailAnim?.stop();
+
     if (this.state.hitAccum.size === 0) {
       this.resetState();
       invalidateOverlay();
