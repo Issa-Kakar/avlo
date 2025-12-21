@@ -25,7 +25,6 @@ export interface DocSnapshot {
 // Will be deprecated once all consumers migrate to DocSnapshot + subscribePresence
 export interface Snapshot extends DocSnapshot {
   presence: PresenceView;
-  view: ViewTransform;  // DEAD CODE - camera-store is source of truth
 }
 
 // View transform for coordinate conversion
@@ -47,19 +46,13 @@ export function createEmptyDocSnapshot(): DocSnapshot {
   };
 }
 
-// Empty snapshot constant shape (legacy - includes presence and view)
+// Empty snapshot constant shape (legacy - includes presence)
 export function createEmptySnapshot(): Snapshot {
   return {
     ...createEmptyDocSnapshot(),
     presence: {
       users: new Map(),
       localUserId: '',
-    },
-    view: {
-      worldToCanvas: (x: number, y: number): [number, number] => [x, y],
-      canvasToWorld: (x: number, y: number): [number, number] => [x, y],
-      scale: 1,
-      pan: { x: 0, y: 0 },
     },
   };
 }

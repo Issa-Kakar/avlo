@@ -19,7 +19,6 @@ import type {
   Snapshot,
   DocSnapshot,
   PresenceView,
-  ViewTransform,
 } from '@avlo/shared';
 import { ObjectSpatialIndex } from '@avlo/shared';
 import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
@@ -28,7 +27,7 @@ import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
 // Type for unsubscribe function
 type Unsub = () => void;
 
-// Type aliases for Y structures - internal use only
+// Type aliases for Y structures 
 // CRITICAL: Y.Map's generic parameter doesn't define the value shape
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
@@ -38,21 +37,20 @@ type YObjects = Y.Map<Y.Map<unknown>>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
-  // Legacy snapshot (includes presence + view) - use subscribeDocSnapshot for new code
+  // Legacy snapshot (includes presence) - use subscribeDocSnapshot for new code
   readonly currentSnapshot: Snapshot;
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
 
-  // NEW: Doc-only subscription (preferred - event-driven, no presence/view)
+  // NEW: Doc-only subscription (preferred - event-driven, no presence)
   readonly currentDocSnapshot: DocSnapshot;
   subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub;
-
   mutate(fn: (ydoc: Y.Doc) => void): void;
   destroy(): void;
   undo(): void;
   redo(): void;
 
-  // Phase 6A: Gate status methods
+  // Gate status methods
   getGateStatus(): Readonly<{
     idbReady: boolean;
     wsConnected: boolean;
@@ -62,7 +60,7 @@ export interface IRoomDocManager {
   }>;
   isIndexedDBReady(): boolean;
 
-  // Phase 7: Awareness API
+  // Awareness API
   updateCursor(worldX: number | undefined, worldY: number | undefined): void;
   updateActivity(activity: 'idle' | 'drawing' | 'typing'): void;
 }
@@ -99,12 +97,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private readonly ydoc: Y.Doc;
   private readonly userId: string; // stable userId 
   private userProfile: UserProfile; // User name and color for awareness
-  // NOTE: No cached Y structure references - all access via helper methods
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
   private websocketProvider: YProvider | null = null;
-  //private webrtcProvider: unknown = null;
 
   // Awareness instance (aliased to avoid collision with app's Awareness interface)
   private yAwareness?: YAwareness;
@@ -131,11 +127,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Track if destroyed for cleanup
   private destroyed = false;
 
-  // Document version tracking (replaces svKey)
+  // Document version tracking 
   private docVersion = 0; // Increments on every Y.Doc update
   private sawAnyDocUpdate = false; // Tracks if we've seen any doc updates
 
-  // Awareness state tracking (Phase 7)
+  // Awareness state tracking 
   private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
   private awarenessIsDirty = false;
 
@@ -152,7 +148,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     color: string;
   } | null = null;
 
-  // Cursor interpolation fields (Phase 7 - interpolation)
+  // Cursor interpolation fields 
   private peerSmoothers = new Map<number, PeerSmoothing>(); // Keyed by clientId for proper cleanup
   private presenceAnimDeadlineMs = 0;
 
@@ -175,7 +171,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // TWO-EPOCH ARCHITECTURE: Minimal State
   // ============================================================
 
-  // NEW: Y.Map-based object storage
+  //  Y.Map-based object storage
   private objectsById = new Map<string, ObjectHandle>();
   private spatialIndex: ObjectSpatialIndex | null = null;  // Created ONCE in buildSnapshot
   private dirtyRects: WorldBounds[] = [];
@@ -210,7 +206,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // via the WebSocket status handler
     }
 
-    // Initialize presence animation state (RAF is on-demand, not continuous)
+    // Initialize presence animation state 
     this.publishState = {
       presenceDirty: false,
       rafId: -1,
@@ -223,10 +219,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
     // NOTE: setupObjectsObserver() will be called after Y.js structures are initialized
-    // to prevent errors when structures don't exist yet
 
     // CRITICAL FIX: Attach IDB FIRST before creating any structures
-    // This prevents race condition where fresh containers overwrite persisted ones
     this.initializeIndexedDBProvider();
     this.whenGateOpen('idbReady').then(() => {
       const root = this.ydoc.getMap('root');
@@ -235,12 +229,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         this.attachUndoManager();
       }
     });
-    // Initialize WebSocket provider (Phase 6C)
+    // Initialize WebSocket provider 
     this.initializeWebSocketProvider();
 
     // Seed only after IDB is ready *and* we've given WS a brief chance to sync.
-    // This avoids a peer joining a fresh room and locally seeding just before WS
-    // delivers the authoritative (possibly non-empty) doc.
     this.whenGateOpen('idbReady').then(async () => {
       await Promise.race([
         this.whenGateOpen('wsSynced'),
@@ -275,10 +267,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   get currentDocSnapshot(): DocSnapshot {
     return this._currentDocSnapshot;
   }
-
-  // CRITICAL: These are PRIVATE helpers for internal use only
-  // NEVER expose these to external code or cache their return values
-  // Each call must go through the helper to ensure encapsulation
 
   private getRoot(): Y.Map<unknown> {
     return this.ydoc.getMap('root');
@@ -318,8 +306,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       trackedOrigins: new Set([this.userId]),
       captureTimeout: 500, // Merge rapid changes within 500ms
     });
-
-    console.log(`[RoomDocManager] UndoManager attached for userId: ${this.userId}`);
   }
 
   // Ingest awareness updates with seq-based ordering
@@ -609,17 +595,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  // Helper to get view transform (identity for now, will be populated in Phase 3)
-  private getViewTransform(): ViewTransform {
-    return {
-      worldToCanvas: (x: number, y: number) => [x, y],
-      canvasToWorld: (x: number, y: number) => [x, y],
-      scale: 1,
-      pan: { x: 0, y: 0 },
-    };
-  }
-
-  // Step 3: Initialize Y.js structures with proper setup
+  // Initialize Y.js structures with proper setup
   private initializeYjsStructures(): void {
     this.ydoc.transact(() => {
       const root = this.ydoc.getMap('root');
@@ -933,7 +909,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this._currentSnapshot = {
         ...this._currentDocSnapshot,
         presence,
-        view: this.getViewTransform(),
         createdAt: Date.now(),
       };
     }
@@ -954,7 +929,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // ============================================================
-  // PART 2: Array Observers (Direct Updates, No Journals)
+  // PART 2: Objects Observers (Deep observer on objects Y.Map)
   // ============================================================
   private setupObjectsObserver(): void {
     if (this.objectsObserver) return; // idempotent
@@ -1092,7 +1067,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // ============================================================
-  // PART 3: Rebuild Epoch (Hydrate from Y.Arrays)
+  // PART 3: Rebuild Epoch (Hydrate from Y.Map)
   // ============================================================
 
   private hydrateObjectsFromY(): void {
@@ -1180,11 +1155,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       clearTimeout(timeout);
       this.gateTimeouts.delete('idbReady');
     }
-
     // Open the gate - structure initialization is handled in constructor
     // via whenGateOpen('idbReady').then(...)
     this.openGate('idbReady');
-    console.log('IDB ready gate opened');
   }
 
   private initializeWebSocketProvider(): void {
@@ -1205,7 +1178,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           resyncInterval: -1,
         }
       );
-
       // Set up G_WS_CONNECTED gate with 5s timeout
       const wsConnectedTimeout = setTimeout(() => {
         if (!this.gates.wsConnected && this.gates.idbReady) {
@@ -1214,7 +1186,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       }, 5000);
       this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
-
       // Set up G_WS_SYNCED gate with 10s timeout
       const wsSyncedTimeout = setTimeout(() => {
         if (!this.gates.wsSynced) {
@@ -1286,7 +1257,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
 
           // Open awareness gate immediately on WS connect
-          // No need to wait for remote awareness states
           if (!this.gates.awarenessReady) {
             this.openGate('awarenessReady');
 
@@ -1298,7 +1268,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
             // Also mark presence dirty to ensure initial publish
             this.publishState.presenceDirty = true;
-            // No need to call schedulePublish() - the loop is already running
           }
           // WebSocket connected
         } else if (event.status === 'disconnected') {
@@ -1310,7 +1279,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             this.closeGate('wsSynced');
           }
 
-          // CRITICAL: Close awareness gate on disconnect
+          // Close awareness gate on disconnect
           // This ensures cursors hide immediately when offline
           if (this.gates.awarenessReady) {
             this.closeGate('awarenessReady');
@@ -1318,7 +1287,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             clearCursorTrails();
             // Mark presence dirty to trigger immediate UI update
             this.publishState.presenceDirty = true;
-            // No need to call schedulePublish() - the loop is already running
 
             // Clear local cursor state
             this.localCursor = undefined;
@@ -1349,7 +1317,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Listen for sync status (v3 uses 'sync' event, not 'synced')
       this.websocketProvider.on('sync', (isSynced: boolean) => {
         if (isSynced) {
-          console.log('WS synced, opening gate');
           // Clear sync timeout
           const timeout = this.gateTimeouts.get('wsSynced');
           if (timeout) {
@@ -1366,11 +1333,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
       // No need for additional provider-specific update listeners
     } catch (err: unknown) {
-      console.log('[RoomDocManager] WebSocket initialization failed:', err);
+      console.error('[RoomDocManager] WebSocket initialization failed:', err);
       // Keep offline mode functional
     }
   }
-
 
   // Gate management
   private openGate(gateName: keyof typeof this.gates): void {
@@ -1383,12 +1349,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // The RAF loop is already running from constructor, so just mark dirty
     if (!wasOpen && gateName === 'firstSnapshot' && this.gates.awarenessReady) {
       this.publishState.presenceDirty = true;
-      // No need to call schedulePublish() - the loop is already running
     }
     // Similar check if awarenessReady opens after firstSnapshot
     if (!wasOpen && gateName === 'awarenessReady' && this.gates.firstSnapshot) {
       this.publishState.presenceDirty = true;
-      // No need to call schedulePublish() - the loop is already running
     }
 
     // Notify internal waiters (whenGateOpen promises)
@@ -1440,11 +1404,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
    */
   private publishDocSnapshotNow(): void {
     const meta = this.getMeta();
-    const root = this.getRoot();
-    const objects = root.get('objects') as YObjects | undefined;
-
     // Guard: structures must exist
-    if (!meta || !objects) {
+    if (!meta) {
       return;
     }
 
@@ -1495,19 +1456,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.openGate('firstSnapshot');
     }
 
-    // COMPAT: Also update legacy snapshot (with presence + view)
+    // COMPAT: Also update legacy snapshot (with presence)
     this.publishLegacySnapshot(docSnap);
   }
 
   /**
    * Publish legacy snapshot for backward compatibility.
-   * Extends DocSnapshot with presence and view fields.
+   * Extends DocSnapshot with presence field.
    */
   private publishLegacySnapshot(docSnap: DocSnapshot): void {
     const snap: Snapshot = {
       ...docSnap,
       presence: this.buildPresenceView(),
-      view: this.getViewTransform(),
     };
 
     this._currentSnapshot = snap;
