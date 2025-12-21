@@ -3,11 +3,13 @@ import type { PerfectShapePreview } from '@/lib/tools/types';
 // Inline helper for color tinting (to avoid client utils import)
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return result ? {
-    r: parseInt(result[1], 16),
-    g: parseInt(result[2], 16),
-    b: parseInt(result[3], 16)
-  } : null;
+  return result
+    ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16),
+      }
+    : null;
 }
 
 /**
@@ -17,7 +19,7 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
  */
 export function drawPerfectShapePreview(
   ctx: CanvasRenderingContext2D,
-  preview: PerfectShapePreview
+  preview: PerfectShapePreview,
 ): void {
   // Apply tool styling
   ctx.globalAlpha = preview.opacity;
@@ -35,7 +37,7 @@ export function drawPerfectShapePreview(
       const tinted = {
         r: Math.round(rgb.r * 0.15 + 255 * 0.85),
         g: Math.round(rgb.g * 0.15 + 255 * 0.85),
-        b: Math.round(rgb.b * 0.15 + 255 * 0.85)
+        b: Math.round(rgb.b * 0.15 + 255 * 0.85),
       };
       ctx.fillStyle = `rgb(${tinted.r}, ${tinted.g}, ${tinted.b})`;
     }
@@ -51,43 +53,6 @@ export function drawPerfectShapePreview(
     ctx.moveTo(A[0], A[1]);
     ctx.lineTo(B[0], B[1]);
     ctx.stroke();
-    return;
-  }
-
-  if (anchors.kind === 'arrow') {
-    // Arrow: shaft from A to cursor plus dynamic arrowhead
-    const { A } = anchors;
-    const B = cursor;
-
-    // Draw shaft
-    ctx.beginPath();
-    ctx.moveTo(A[0], A[1]);
-    ctx.lineTo(B[0], B[1]);
-    ctx.stroke();
-
-    // Draw arrowhead
-    const vx = B[0] - A[0], vy = B[1] - A[1];
-    const len = Math.hypot(vx, vy) || 1;
-    const headSize = Math.min(40, len * 0.25);
-    const spread = Math.PI / 7;
-    const theta = Math.atan2(vy, vx);
-
-    ctx.beginPath();
-    ctx.moveTo(B[0], B[1]);
-    ctx.lineTo(
-      B[0] - headSize * Math.cos(theta + spread),
-      B[1] - headSize * Math.sin(theta + spread)
-    );
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.moveTo(B[0], B[1]);
-    ctx.lineTo(
-      B[0] - headSize * Math.cos(theta - spread),
-      B[1] - headSize * Math.sin(theta - spread)
-    );
-    ctx.stroke();
-
     return;
   }
 
@@ -124,8 +89,10 @@ export function drawPerfectShapePreview(
     // Corner-anchored ellipse inscribed in AABB
     const { A } = anchors;
     const C = cursor;
-    const minX = Math.min(A[0], C[0]), maxX = Math.max(A[0], C[0]);
-    const minY = Math.min(A[1], C[1]), maxY = Math.max(A[1], C[1]);
+    const minX = Math.min(A[0], C[0]),
+      maxX = Math.max(A[0], C[0]);
+    const minY = Math.min(A[1], C[1]),
+      maxY = Math.max(A[1], C[1]);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
     const rx = Math.max(0.0001, (maxX - minX) / 2);
@@ -178,10 +145,10 @@ export function drawPerfectShapePreview(
 
     ctx.closePath();
     if (fillEnabled) ctx.fill();
-      ctx.stroke();
-      return;
+    ctx.stroke();
+    return;
   }
-  
+
   if (anchors.kind === 'circle') {
     // Circle: draw with fixed center and radius based on cursor distance
     const { center } = anchors;
@@ -204,8 +171,8 @@ export function drawPerfectShapePreview(
     const sin = Math.sin(angle);
 
     // Project live vector into box's local axes
-    const localX =  dx *  cos + dy *  sin;
-    const localY = -dx *  sin + dy *  cos;
+    const localX = dx * cos + dy * sin;
+    const localY = -dx * sin + dy * cos;
 
     // Calculate scale factors (prevent division by zero)
     const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
@@ -216,7 +183,12 @@ export function drawPerfectShapePreview(
     const hy = hy0 * sy;
 
     // Draw rotated rectangle from (cx,cy), angle, half-extents (hx,hy)
-    const corners = [[-hx,-hy],[hx,-hy],[hx,hy],[-hx,hy]];
+    const corners = [
+      [-hx, -hy],
+      [hx, -hy],
+      [hx, hy],
+      [-hx, hy],
+    ];
     ctx.beginPath();
     for (let i = 0; i < corners.length; i++) {
       const [lx, ly] = corners[i];

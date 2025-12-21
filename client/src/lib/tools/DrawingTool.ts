@@ -11,16 +11,18 @@ import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
 
-type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'arrow' | 'diamond';
+type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond';
 
 // Helper function to map snap kinds to shape types for storage
-function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
+function getShapeTypeFromSnapKind(
+  snapKind: string,
+): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
   const mapping: Record<string, 'rect' | 'ellipse' | 'diamond' | 'roundedRect'> = {
-    'box': 'rect',           // Hold-detected box → sharp rect
-    'circle': 'ellipse',     // Hold-detected circle → ellipse
-    'rect': 'roundedRect',   // Tool rect → rounded rect (default)
-    'ellipseRect': 'ellipse', // Tool ellipse → ellipse
-    'diamond': 'diamond'      // Diamond → diamond
+    box: 'rect', // Hold-detected box → sharp rect
+    circle: 'ellipse', // Hold-detected circle → ellipse
+    rect: 'roundedRect', // Tool rect → rounded rect (default)
+    ellipseRect: 'ellipse', // Tool ellipse → ellipse
+    diamond: 'diamond', // Diamond → diamond
   };
   return mapping[snapKind] ?? 'rect';
 }
@@ -31,11 +33,14 @@ function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamo
  */
 function getForceSnapKindFromVariant(variant: ShapeVariant): ForcedSnapKind {
   switch (variant) {
-    case 'rectangle': return 'rect';
-    case 'ellipse': return 'ellipseRect';
-    case 'diamond': return 'diamond';
-    case 'arrow': return 'arrow';
-    default: return 'rect';
+    case 'rectangle':
+      return 'rect';
+    case 'ellipse':
+      return 'ellipseRect';
+    case 'diamond':
+      return 'diamond';
+    default:
+      return 'rect';
   }
 }
 
@@ -76,20 +81,21 @@ export class DrawingTool implements PointerTool {
   private snap:
     | null
     | (
-        | { kind: 'line';        anchors: { A: [number, number] } }
-        | { kind: 'circle';      anchors: { center: [number, number] } }
-        | { kind: 'box';         anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number } }
-        | { kind: 'rect';        anchors: { A: [number, number] } }
+        | { kind: 'line'; anchors: { A: [number, number] } }
+        | { kind: 'circle'; anchors: { center: [number, number] } }
+        | {
+            kind: 'box';
+            anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number };
+          }
+        | { kind: 'rect'; anchors: { A: [number, number] } }
         | { kind: 'ellipseRect'; anchors: { A: [number, number] } }
-        | { kind: 'arrow';       anchors: { A: [number, number] } }
-        | { kind: 'diamond';     anchors: { A: [number, number] } }
+        | { kind: 'diamond'; anchors: { A: [number, number] } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
 
   // Instant click-to-place mode for shape tool
   private clickToPlaceStartTime: number = 0;
   private clickToPlaceStartPos: [number, number] | null = null;
-
 
   /**
    * Zero-arg constructor. All dependencies are read at runtime.
@@ -112,9 +118,8 @@ export class DrawingTool implements PointerTool {
     return {
       size: base.size,
       color: base.color,
-      opacity: this.frozenToolType === 'highlighter'
-        ? state.highlighterOpacity
-        : (base.opacity ?? 1),
+      opacity:
+        this.frozenToolType === 'highlighter' ? state.highlighterOpacity : (base.opacity ?? 1),
     };
   }
 
@@ -182,13 +187,17 @@ export class DrawingTool implements PointerTool {
 
       const k = this.frozenForceSnapKind;
       this.snap =
-        k === 'line'        ? { kind: 'line',        anchors: { A: [worldX, worldY] } }
-      : k === 'circle'      ? { kind: 'circle',      anchors: { center: [worldX, worldY] } }
-      : k === 'box'         ? { kind: 'box',         anchors: { cx: worldX, cy: worldY, angle: 0, hx0: 0.5, hy0: 0.5 } }
-      : k === 'rect'        ? { kind: 'rect',        anchors: { A: [worldX, worldY] } }
-      : k === 'ellipseRect' ? { kind: 'ellipseRect', anchors: { A: [worldX, worldY] } }
-      : k === 'diamond'     ? { kind: 'diamond',     anchors: { A: [worldX, worldY] } }
-      : /* arrow */           { kind: 'arrow',       anchors: { A: [worldX, worldY] } };
+        k === 'line'
+          ? { kind: 'line', anchors: { A: [worldX, worldY] } }
+          : k === 'circle'
+            ? { kind: 'circle', anchors: { center: [worldX, worldY] } }
+            : k === 'box'
+              ? { kind: 'box', anchors: { cx: worldX, cy: worldY, angle: 0, hx0: 0.5, hy0: 0.5 } }
+              : k === 'rect'
+                ? { kind: 'rect', anchors: { A: [worldX, worldY] } }
+                : k === 'ellipseRect'
+                  ? { kind: 'ellipseRect', anchors: { A: [worldX, worldY] } }
+                  : /* diamond */ { kind: 'diamond', anchors: { A: [worldX, worldY] } };
 
       this.liveCursorWU = [worldX, worldY];
       invalidateOverlay(); // Start preview immediately
@@ -215,12 +224,12 @@ export class DrawingTool implements PointerTool {
 
     if (this.snap) {
       // After snap: just request an overlay frame (liveCursorWU already updated above)
-      invalidateOverlay();                // CRITICAL: drives overlay
+      invalidateOverlay(); // CRITICAL: drives overlay
       return;
     }
 
     // Before snap: freehand path behavior stays the same
-    this.addPoint(worldX, worldY);                         // will call updateBounds()
+    this.addPoint(worldX, worldY); // will call updateBounds()
     // updateBounds() → invalidateOverlay() for preview
   }
 
@@ -230,38 +239,42 @@ export class DrawingTool implements PointerTool {
     if (this.snap && this.liveCursorWU) {
       // Check if this is a click (not drag)
       const timeDelta = Date.now() - this.clickToPlaceStartTime;
-      const isClick = timeDelta < 200;  // 200ms threshold for click
+      const isClick = timeDelta < 200; // 200ms threshold for click
 
       if (this.clickToPlaceStartPos && worldX !== undefined && worldY !== undefined) {
         const distMoved = Math.hypot(
           worldX - this.clickToPlaceStartPos[0],
-          worldY - this.clickToPlaceStartPos[1]
+          worldY - this.clickToPlaceStartPos[1],
         );
-        const isStationary = distMoved < 5;  // 5 world units threshold
+        const isStationary = distMoved < 5; // 5 world units threshold
 
         if (isClick && isStationary && this.frozenForceSnapKind) {
           // Place fixed-size shape at click position
-          const fixedSize = 180;  // Fixed size in world units
+          const fixedSize = 180; // Fixed size in world units
 
           // Determine cursor position for fixed shape
           let fixedCursor: [number, number];
 
-          if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
+          if (
+            this.snap.kind === 'rect' ||
+            this.snap.kind === 'ellipseRect' ||
+            this.snap.kind === 'diamond'
+          ) {
             // For corner-anchored shapes, place centered at click
             fixedCursor = [
               this.clickToPlaceStartPos[0] + fixedSize,
-              this.clickToPlaceStartPos[1] + fixedSize
+              this.clickToPlaceStartPos[1] + fixedSize,
             ];
             // Adjust anchor to center the shape
             this.snap.anchors.A = [
-              this.clickToPlaceStartPos[0] - fixedSize/2,
-              this.clickToPlaceStartPos[1] - fixedSize/2
+              this.clickToPlaceStartPos[0] - fixedSize / 2,
+              this.clickToPlaceStartPos[1] - fixedSize / 2,
             ];
           } else {
             // Other shapes - adjust as needed
             fixedCursor = [
-              this.clickToPlaceStartPos[0] + fixedSize/2,
-              this.clickToPlaceStartPos[1] + fixedSize/2
+              this.clickToPlaceStartPos[0] + fixedSize / 2,
+              this.clickToPlaceStartPos[1] + fixedSize / 2,
             ];
           }
 
@@ -332,8 +345,8 @@ export class DrawingTool implements PointerTool {
     this.state.points.push([worldX, worldY]);
 
     // Invalidate dirty region and ensure overlay rAF runs promptly
-    this.updateBounds();           // Legacy bounds tracking
-    invalidateOverlay();           // Nudge overlay for preview update
+    this.updateBounds(); // Legacy bounds tracking
+    invalidateOverlay(); // Nudge overlay for preview update
   }
 
   private flushPending(): void {
@@ -367,12 +380,14 @@ export class DrawingTool implements PointerTool {
 
     const result = recognizeOpenStroke({
       pointsWU: flatPoints,
-      pointerNowWU
+      pointerNowWU,
     });
 
     // Handle near-miss result - don't snap, continue freehand
     if (result.ambiguous) {
-      console.log('🤷 Near-miss detected - NO SNAP, user likely intended a shape but didn\'t quite make it');
+      console.log(
+        "🤷 Near-miss detected - NO SNAP, user likely intended a shape but didn't quite make it",
+      );
       console.groupEnd();
       // Don't set snap, don't cancel hold, just continue drawing
       // This prevents the annoying line snap when user almost drew a shape
@@ -382,20 +397,24 @@ export class DrawingTool implements PointerTool {
     // Handle recognized shapes (line, circle, box)
     if (result.kind === 'line' || result.score >= SHAPE_CONFIDENCE_MIN) {
       // Freeze anchors; do NOT compute live geometry here.
-      this.snap = (
+      this.snap =
         result.kind === 'line'
-          ? { kind: 'line',   anchors: { A: result.line!.A } }
-        : result.kind === 'circle'
-          ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
-          : { kind: 'box',     anchors: {
-              cx: result.box!.cx,
-              cy: result.box!.cy,
-              angle: 0,  // ALWAYS 0 for AABB
-              hx0: result.box!.hx,
-              hy0: result.box!.hy
-            }}
+          ? { kind: 'line', anchors: { A: result.line!.A } }
+          : result.kind === 'circle'
+            ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
+            : {
+                kind: 'box',
+                anchors: {
+                  cx: result.box!.cx,
+                  cy: result.box!.cy,
+                  angle: 0, // ALWAYS 0 for AABB
+                  hx0: result.box!.hx,
+                  hy0: result.box!.hy,
+                },
+              };
+      console.log(
+        `✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`,
       );
-      console.log(`✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`);
       console.groupEnd();
       invalidateOverlay();
       this.hold.cancel();
@@ -403,7 +422,6 @@ export class DrawingTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
-
     // Normal drawing state checks
     if (!this.state.isDrawing) return null;
 
@@ -415,10 +433,10 @@ export class DrawingTool implements PointerTool {
         color,
         size,
         opacity: this.state.config.opacity, // Use actual commit opacity
-        fill: this.getFillEnabled(),  // Read LIVE from store for real-time toggle
+        fill: this.getFillEnabled(), // Read LIVE from store for real-time toggle
         anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
         cursor: this.liveCursorWU,
-        bbox: null
+        bbox: null,
       };
     }
 
@@ -457,7 +475,10 @@ export class DrawingTool implements PointerTool {
 
     // 2) Add final point to tuple array if needed
     const len = this.state.points.length;
-    const needsFinal = len < 1 || this.state.points[len - 1][0] !== finalX || this.state.points[len - 1][1] !== finalY;
+    const needsFinal =
+      len < 1 ||
+      this.state.points[len - 1][0] !== finalX ||
+      this.state.points[len - 1][1] !== finalY;
     if (needsFinal) {
       this.state.points.push([finalX, finalY]);
     }
@@ -479,9 +500,9 @@ export class DrawingTool implements PointerTool {
         strokeMap.set('kind', 'stroke');
         strokeMap.set('tool', this.state.config.tool);
         strokeMap.set('color', this.state.config.color);
-        strokeMap.set('width', this.state.config.size);  // Renamed from 'size' to 'width' per migration spec
+        strokeMap.set('width', this.state.config.size); // Renamed from 'size' to 'width' per migration spec
         strokeMap.set('opacity', this.state.config.opacity);
-        strokeMap.set('points', this.state.points);  // Direct reference - Yjs copies internally
+        strokeMap.set('points', this.state.points); // Direct reference - Yjs copies internally
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
 
@@ -509,48 +530,30 @@ export class DrawingTool implements PointerTool {
 
     if (this.snap.kind === 'line') {
       // Line is not a shape object, skip for now
-      // TODO: Implement connector tool for lines and arrows
-      console.log('Line/Arrow shapes not yet supported as shape objects');
+      // TODO: Implement connector tool for lines
+      console.log('Line shapes not yet supported as shape objects');
       this.cancelDrawing();
       return;
-
-    } else if (this.snap.kind === 'arrow') {
-      // Arrow is not a shape object, skip for now
-      console.log('Line/Arrow shapes not yet supported as shape objects');
-      this.cancelDrawing();
-      return;
-
     } else if (this.snap.kind === 'circle') {
       const { center } = this.snap.anchors;
       const r = Math.hypot(finalCursor[0] - center[0], finalCursor[1] - center[1]);
       // Calculate frame directly: [x, y, width, height]
-      frame = [
-        center[0] - r,
-        center[1] - r,
-        r * 2,
-        r * 2
-      ];
-
+      frame = [center[0] - r, center[1] - r, r * 2, r * 2];
     } else if (this.snap.kind === 'box') {
       const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
       // Compute final scale from cursor
       const dx = finalCursor[0] - cx;
       const dy = finalCursor[1] - cy;
-      const cos = Math.cos(angle), sin = Math.sin(angle);
-      const localX =  dx *  cos + dy *  sin;
-      const localY = -dx *  sin + dy *  cos;
+      const cos = Math.cos(angle),
+        sin = Math.sin(angle);
+      const localX = dx * cos + dy * sin;
+      const localY = -dx * sin + dy * cos;
       const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
       const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
       const hx = hx0 * sx;
       const hy = hy0 * sy;
       // Calculate frame directly for AABB box
-      frame = [
-        cx - hx,
-        cy - hy,
-        hx * 2,
-        hy * 2
-      ];
-
+      frame = [cx - hx, cy - hy, hx * 2, hy * 2];
     } else if (this.snap.kind === 'rect') {
       // Corner-anchored rectangle
       const { A } = this.snap.anchors;
@@ -559,13 +562,7 @@ export class DrawingTool implements PointerTool {
       const minY = Math.min(A[1], C[1]);
       const maxX = Math.max(A[0], C[0]);
       const maxY = Math.max(A[1], C[1]);
-      frame = [
-        minX,
-        minY,
-        maxX - minX,
-        maxY - minY
-      ];
-
+      frame = [minX, minY, maxX - minX, maxY - minY];
     } else if (this.snap.kind === 'ellipseRect') {
       // Corner-anchored ellipse
       const { A } = this.snap.anchors;
@@ -574,13 +571,7 @@ export class DrawingTool implements PointerTool {
       const minY = Math.min(A[1], C[1]);
       const maxX = Math.max(A[0], C[0]);
       const maxY = Math.max(A[1], C[1]);
-      frame = [
-        minX,
-        minY,
-        maxX - minX,
-        maxY - minY
-      ];
-
+      frame = [minX, minY, maxX - minX, maxY - minY];
     } else if (this.snap.kind === 'diamond') {
       // Corner-anchored diamond (same as rect/ellipse)
       const { A } = this.snap.anchors;
@@ -589,13 +580,7 @@ export class DrawingTool implements PointerTool {
       const minY = Math.min(A[1], C[1]);
       const maxX = Math.max(A[0], C[0]);
       const maxY = Math.max(A[1], C[1]);
-      frame = [
-        minX,
-        minY,
-        maxX - minX,
-        maxY - minY
-      ];
-
+      frame = [minX, minY, maxX - minX, maxY - minY];
     } else {
       // Exhaustive check - TypeScript ensures all cases are handled
       const _exhaustive: never = this.snap;
@@ -613,9 +598,9 @@ export class DrawingTool implements PointerTool {
       const shapeMap = new Y.Map();
       shapeMap.set('id', shapeId);
       shapeMap.set('kind', 'shape');
-      shapeMap.set('shapeType', shapeType);  // Use the mapped shape type
-      shapeMap.set('color', this.state.config.color);  // Phase 3: Use 'color' not 'strokeColor'
-      shapeMap.set('width', this.state.config.size);   // Phase 3: Use 'width' not 'strokeWidth'
+      shapeMap.set('shapeType', shapeType); // Use the mapped shape type
+      shapeMap.set('color', this.state.config.color); // Phase 3: Use 'color' not 'strokeColor'
+      shapeMap.set('width', this.state.config.size); // Phase 3: Use 'width' not 'strokeWidth'
 
       // Add fill color if enabled (read LIVE from store at commit time)
       if (this.getFillEnabled()) {
@@ -624,7 +609,7 @@ export class DrawingTool implements PointerTool {
       }
 
       shapeMap.set('opacity', this.state.config.opacity);
-      shapeMap.set('frame', frame);  // Direct frame, no conversion needed
+      shapeMap.set('frame', frame); // Direct frame, no conversion needed
       shapeMap.set('ownerId', userId);
       shapeMap.set('createdAt', Date.now());
 
@@ -662,5 +647,4 @@ export class DrawingTool implements PointerTool {
     }
     return flat;
   }
-
 }

@@ -2,8 +2,18 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
 
-export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code';
-export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'arrow';
+export type Tool =
+  | 'pen'
+  | 'highlighter'
+  | 'eraser'
+  | 'text'
+  | 'pan'
+  | 'select'
+  | 'shape'
+  | 'image'
+  | 'code'
+  | 'connector';
+export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
 
 // Size types for new system
 export type SizePreset = 10 | 14 | 18 | 22; // For pen/highlighter/shapes
@@ -14,7 +24,7 @@ export interface DrawingSettings {
   size: SizePreset;
   color: string;
   opacity: number;
-  fill: boolean;  // Whether fill is enabled (only affects shapes)
+  fill: boolean; // Whether fill is enabled (only affects shapes)
 }
 
 interface DeviceUIState {

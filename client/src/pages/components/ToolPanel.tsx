@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { DrawingSettings, SizePreset, TextSizePreset, useDeviceUIStore } from '../../stores/device-ui-store';
+import {
+  DrawingSettings,
+  SizePreset,
+  TextSizePreset,
+  useDeviceUIStore,
+} from '../../stores/device-ui-store';
 
 // Import icon components from Phase 5
 import {
@@ -61,9 +66,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape'].includes(
-    activeTool,
-  );
+  const showInspector = ['pen', 'highlighter', 'text', 'shape'].includes(activeTool);
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle =
@@ -167,13 +170,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         </ToolButton>
 
         <ToolButton
-          tool="arrow"
-          isActive={activeTool === 'shape' && shapeVariant === 'arrow'}
-          onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('arrow');
-          }}
-          tooltip="Arrow (A)"
+          tool="connector"
+          isActive={activeTool === 'connector'}
+          onClick={() => setActiveTool('connector')}
+          tooltip="Connector"
         >
           <IconArrow className="icon" />
         </ToolButton>
@@ -262,11 +262,11 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
             showFillToggle={showFillToggle}
             fixedColors={fixedColors}
             recentColors={recentColors}
-            sizePresets={sizePresets} 
+            sizePresets={sizePresets}
             sizeLabels={sizeLabels}
             currentColor={currentSettings.color}
-            currentSize={currentSettings.size} 
-            isColorPopoverOpen={isColorPopoverOpen} 
+            currentSize={currentSettings.size}
+            isColorPopoverOpen={isColorPopoverOpen}
             popoverRef={popoverRef}
             onColorChange={setDrawingColor}
             onSizeChange={handleSizeChange}
@@ -345,7 +345,7 @@ function Inspector({
   sizeLabels,
   currentColor,
   currentSize,
-  isColorPopoverOpen, 
+  isColorPopoverOpen,
   onColorChange,
   onSizeChange,
   onColorPopoverToggle,
