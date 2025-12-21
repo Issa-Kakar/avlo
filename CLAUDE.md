@@ -15,36 +15,36 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 
 ## File Map
 
-### Canvas System (7 files, ~900 lines total)
-| File | Lines | Responsibility |
-|------|-------|----------------|
-| `client/src/canvas/Canvas.tsx` | ~95 | Thin React wrapper - mounts DOM, sets room context, creates runtime |
-| `client/src/canvas/CanvasRuntime.ts` | ~280 | Central orchestrator - events, subscriptions, tool dispatch |
-| `client/src/canvas/SurfaceManager.ts` | ~170 | DOM refs (contexts, editorHost) + resize/DPR observation |
-| `client/src/canvas/InputManager.ts` | ~70 | Dumb DOM event forwarder |
-| `client/src/canvas/tool-registry.ts` | ~107 | Self-constructing tool singletons + lookup helpers |
-| `client/src/canvas/room-runtime.ts` | ~107 | Module-level room context for imperative access |
-| `client/src/canvas/invalidation-helpers.ts` | ~68 | Setter/getter pattern for render loop invalidation |
+### Canvas System (7 files)
+| File | Responsibility |
+|------|----------------|
+| `client/src/canvas/Canvas.tsx` | Thin React wrapper - mounts DOM, sets room context, creates runtime |
+| `client/src/canvas/CanvasRuntime.ts` | Central orchestrator - events, subscriptions, tool dispatch |
+| `client/src/canvas/SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR observation |
+| `client/src/canvas/InputManager.ts` | Dumb DOM event forwarder |
+| `client/src/canvas/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
+| `client/src/canvas/room-runtime.ts` | Module-level room context for imperative access |
+| `client/src/canvas/invalidation-helpers.ts` | Setter/getter pattern for render loop invalidation |
 
 ### Core Files
-| File | Lines | Responsibility |
-|------|-------|----------------|
-| `client/src/lib/room-doc-manager.ts` | 2075 | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
-| `client/src/renderer/RenderLoop.ts` | 528 | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
-| `client/src/renderer/OverlayRenderLoop.ts` | 404 | Preview + presence rendering, self-subscribing |
-| `client/src/renderer/layers/objects.ts` | 763 | Object rendering dispatch, transform preview |
-| `client/src/renderer/DirtyRectTracker.ts` | 267 | Dirty rect accumulation, promotion to full clear |
-| `client/src/renderer/object-cache.ts` | 200 | Path2D cache by object ID |
+| File | Responsibility |
+|------|----------------|
+| `client/src/lib/room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
+| `client/src/renderer/RenderLoop.ts` | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
+| `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
+| `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview |
+| `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
+| `client/src/renderer/object-cache.ts` | Path2D cache by object ID |
 
 ### Tools (All zero-arg constructors, singleton pattern)
-| File | Lines | Status |
-|------|-------|--------|
-| `client/src/lib/tools/types.ts` | ~183 | PointerTool interface + all preview types |
-| `client/src/lib/tools/SelectTool.ts` | ~1100 | **Full** - Selection, translate, scale transforms |
-| `client/src/lib/tools/DrawingTool.ts` | ~666 | **Full** - Pen, highlighter, AND shape drawing |
-| `client/src/lib/tools/EraserTool.ts` | ~390 | **Full** - Geometry-aware hit testing |
-| `client/src/lib/tools/TextTool.ts` | ~363 | **PLACEHOLDER** - Will be completely replaced |
-| `client/src/lib/tools/PanTool.ts` | ~108 | **Full** - Viewport panning |
+| File | Status |
+|------|--------|
+| `client/src/lib/tools/types.ts` | PointerTool interface + all preview types |
+| `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale transforms |
+| `client/src/lib/tools/DrawingTool.ts` | **Full** - Pen, highlighter, AND shape drawing |
+| `client/src/lib/tools/EraserTool.ts` | **Full** - Geometry-aware hit testing |
+| `client/src/lib/tools/TextTool.ts` | **PLACEHOLDER** - Will be completely replaced |
+| `client/src/lib/tools/PanTool.ts` | **Full** - Viewport panning |
 
 ### Stores
 | File | Responsibility |
@@ -287,7 +287,8 @@ getActiveRoom(): RoomContext                    // Throws if no room!
 getActiveRoomDoc(): IRoomDocManager             // Convenience
 getActiveRoomId(): RoomId
 hasActiveRoom(): boolean                        // Guard check
-getCurrentSnapshot(): Snapshot
+getCurrentSnapshot(): Snapshot                  // Doc-only (no presence)
+getCurrentPresence(): PresenceView              // Presence-only
 getGateStatus(): GateStatus
 
 // Presence helpers
@@ -303,13 +304,6 @@ clearPresenceCursor(): void                     // Called from CanvasRuntime.han
 
 Setter/getter pattern breaks circular dependencies between CanvasRuntime and tools.
 
-### Problem
-Tools need to call `invalidateOverlay()`, but:
-- tool-registry imports tools
-- CanvasRuntime imports tool-registry
-- If tools imported CanvasRuntime → CIRCULAR
-
-### Solution
 ```typescript
 // Module-level function references (initially null)
 let worldInvalidator: ((bounds) => void) | null = null;
@@ -455,8 +449,22 @@ interface ObjectHandle {
 ```typescript
 mutate(fn: (ydoc) => void)  // Transact with userId origin
 undo() / redo()             // Y.UndoManager (500ms capture)
-subscribeSnapshot(cb)       // Used by CanvasRuntime
+subscribeSnapshot(cb)       // Doc-only (no presence)
+subscribePresence(cb)       // Presence-only
 ```
+
+### Deep Observer & BBox Computation
+Objects Y.Map uses `observeDeep()` for incremental updates:
+```typescript
+objects.observeDeep(this.objectsObserver);  // Attached after rebuild epoch
+
+// applyObjectChanges() processes touched/deleted IDs
+// computeBBoxFor(kind, yObj) dispatches by ObjectKind:
+// - stroke/connector: iterate points, add width*0.5+1 padding
+// - shape: frame + strokeWidth*0.5+1 padding
+// - text: frame only (no padding)
+```
+BBox includes stroke width → width change = bbox change = cache eviction.
 
 ---
 
@@ -494,7 +502,7 @@ CanvasRuntime.snapshotSubscription()
    → cache.evictMany(evictIds)
    → renderLoop.invalidateWorld(bounds)
    → DirtyRectTracker accumulates
-   → Promotion check (>64 rects OR >33% area → full clear)
+   → Promotion check (>max rects allowed OR >33% area → full clear)
    → RenderLoop.tick() clears + clips
    → drawObjects() spatial queries clip region
 ```
@@ -509,6 +517,22 @@ for (entry of sortedByULID) {
   ctx.fill(path);
 }
 ```
+
+### Transform Preview in objects.ts
+During active SelectTool transforms, `drawObjects()` reads selection state:
+```typescript
+const selectionState = useSelectionStore.getState();
+const isTransforming = transform.kind !== 'none';
+
+// For selected objects during transform:
+if (transform.kind === 'translate') {
+  ctx.translate(transform.dx, transform.dy);
+  drawObject(ctx, handle);  // Uses cached Path2D
+} else if (transform.kind === 'scale') {
+  renderSelectedObjectWithScaleTransform(ctx, handle, transform);
+}
+```
+Non-selected objects render from snapshot; selected objects render with live transform state.
 
 ### Coordinate Spaces
 - **World:** Logical document coords
@@ -566,7 +590,7 @@ getViewTransform(): ViewTransform  // Compatibility helper
 
 ### Usage Patterns
 ```typescript
-// Imperative (tools, event handlers, render loops):
+// Imperative access (tools, event handlers, render loops):
 const { scale, pan } = useCameraStore.getState();
 useCameraStore.getState().setPan({ x: newX, y: newY });
 
@@ -775,24 +799,7 @@ interface SelectionPreview {
 - **Text Tool:** Full replacement planned (current is placeholder DOM overlay)
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes
-- **Code/outputs:** Legacy Y.Array, future migration to Y.Map
-
----
-
-## Stale / To Remove
-
-- Dormant size guards, mobile restrictions, TTL checks - Will be removed
-
-## Deleted Files (Migration Complete)
-
-- `client/src/canvas/ViewTransformContext.tsx` - Replaced by camera-store.ts
-- `client/src/hooks/use-coordinate-transform.ts` - Replaced by camera-store.ts pure functions
-- `client/src/canvas/CanvasStage.tsx` - Consolidated into Canvas.tsx
-- `client/src/canvas/cursor-manager.ts` - Merged into device-ui-store.ts
-- `client/src/renderer/stroke-builder/` - Folder deleted; PF utilities consolidated into `renderer/types.ts`
-- `client/src/renderer/layers/preview.ts` - Renamed to `stroke-preview.ts`
-- `client/src/canvas/canvas-context-registry.ts` - Merged into SurfaceManager.ts
-- `client/src/canvas/editor-host-registry.ts` - Merged into SurfaceManager.ts
+- **Images**
 
 ---
 
@@ -826,7 +833,7 @@ class ObjectSpatialIndex {
 
 ## Key Invariants
 
-1. **Points are tuples:** `[number, number][]` never flattened
+1. **Each new object feature needs updates everywhere throughout the codebase:** UI Store, Bbox calculations, Y.map schema, Rbush hit testing, Snapshot/objectHandle, EraserTool, SelectTool behaviour for each scenario, Toolbar UI updates, etc.
 2. **Y.Map is live:** Rendering reads directly from `handle.y.get()`
 3. **ULID is z-order:** Sort by ULID for deterministic stacking
 4. **Width affects bbox:** Width changes → bbox changes → cache eviction
