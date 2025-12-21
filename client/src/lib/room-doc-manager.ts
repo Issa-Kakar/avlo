@@ -7,7 +7,6 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
-  createEmptySnapshot, // Regular import, not type import - function needs to be callable
   createEmptyDocSnapshot,
   AWARENESS_CONFIG,
 } from '@avlo/shared';
@@ -16,7 +15,6 @@ import { userProfileManager } from './user-profile-manager';
 import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type {
   RoomId,
-  Snapshot,
   DocSnapshot,
   PresenceView,
 } from '@avlo/shared';
@@ -37,14 +35,15 @@ type YObjects = Y.Map<Y.Map<unknown>>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
-  // Legacy snapshot (includes presence) - use subscribeDocSnapshot for new code
-  readonly currentSnapshot: Snapshot;
-  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
-  subscribePresence(cb: (p: PresenceView) => void): Unsub;
-
-  // NEW: Doc-only subscription (preferred - event-driven, no presence)
+  // Doc snapshot - immutable view of Y.Doc state (no presence)
   readonly currentDocSnapshot: DocSnapshot;
   subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub;
+
+  // Presence - separate subscription for cursor/activity updates
+  readonly currentPresence: PresenceView;
+  subscribePresence(cb: (p: PresenceView) => void): Unsub;
+
+  // Mutations
   mutate(fn: (ydoc: Y.Doc) => void): void;
   destroy(): void;
   undo(): void;
@@ -109,11 +108,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private undoManager: Y.UndoManager | null = null;
 
   // Current state
-  private _currentSnapshot: Snapshot;
   private _currentDocSnapshot: DocSnapshot;
 
   // Subscription management
-  private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private docSnapshotSubscribers = new Set<(snap: DocSnapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
 
@@ -212,8 +209,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       rafId: -1,
     };
 
-    // Start with empty snapshots
-    this._currentSnapshot = createEmptySnapshot();
+    // Start with empty doc snapshot
     this._currentDocSnapshot = createEmptyDocSnapshot();
 
     // Setup observers (must be before IDB to catch updates)
@@ -260,12 +256,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // Public getters
-  get currentSnapshot(): Snapshot {
-    return this._currentSnapshot;
-  }
-
   get currentDocSnapshot(): DocSnapshot {
     return this._currentDocSnapshot;
+  }
+
+  get currentPresence(): PresenceView {
+    return this.buildPresenceView();
   }
 
   private getRoot(): Y.Map<unknown> {
@@ -617,22 +613,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Step 6: Validate structure integrity
 
   // Subscription methods
-  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
-    // Return no-op if destroyed
-    if (this.destroyed) {
-      return () => {};
-    }
-
-    this.snapshotSubscribers.add(cb);
-    // Immediately call with current snapshot
-    cb(this._currentSnapshot);
-
-    return () => {
-      this.snapshotSubscribers.delete(cb);
-    };
-  }
-
-  // NEW: Doc-only subscription (preferred - event-driven)
   subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub {
     // Return no-op if destroyed
     if (this.destroyed) {
@@ -656,7 +636,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.presenceSubscribers.add(cb);
     // Immediately call with current presence
-    cb(this._currentSnapshot.presence);
+    cb(this.buildPresenceView());
 
     return () => {
       this.presenceSubscribers.delete(cb);
@@ -827,7 +807,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.objectsById.clear();
 
     // Clear subscriptions
-    this.snapshotSubscribers.clear();
     this.docSnapshotSubscribers.clear();
     this.presenceSubscribers.clear();
 
@@ -838,9 +817,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Destroy Y.Doc
     this.ydoc.destroy();
 
-    // Clear references
-    this._currentSnapshot = createEmptySnapshot();
-
     // Note: Registry removal is handled externally
     // The registry that created this manager should handle cleanup
   }
@@ -848,10 +824,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
   // ON-DEMAND PRESENCE ANIMATION (Replaces continuous RAF loop)
   // ============================================================
-  //
-  // The RAF loop is NO LONGER continuous. It only runs during cursor
-  // interpolation windows (~66ms after receiving remote cursor updates).
-  // Doc changes are event-driven via publishDocSnapshotNow().
 
   /**
    * Trigger presence animation RAF loop (on-demand, not continuous).
@@ -893,7 +865,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private publishPresenceUpdate(): void {
     const presence = this.buildPresenceView();
 
-    // Notify presence-only subscribers
+    // Notify presence subscribers
     this.presenceSubscribers.forEach((cb) => {
       try {
         cb(presence);
@@ -901,17 +873,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         console.error('[RoomDocManager] Presence subscriber error:', e);
       }
     });
-
-    // COMPAT: Update legacy snapshot presence field for subscribeSnapshot users
-    // Note: We don't notify snapshot subscribers for presence-only changes -
-    // they should migrate to subscribePresence() for presence updates.
-    if (this._currentDocSnapshot) {
-      this._currentSnapshot = {
-        ...this._currentDocSnapshot,
-        presence,
-        createdAt: Date.now(),
-      };
-    }
 
     // Clear presence dirty flag
     this.publishState.presenceDirty = false;
@@ -1455,31 +1416,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
       this.openGate('firstSnapshot');
     }
-
-    // COMPAT: Also update legacy snapshot (with presence)
-    this.publishLegacySnapshot(docSnap);
-  }
-
-  /**
-   * Publish legacy snapshot for backward compatibility.
-   * Extends DocSnapshot with presence field.
-   */
-  private publishLegacySnapshot(docSnap: DocSnapshot): void {
-    const snap: Snapshot = {
-      ...docSnap,
-      presence: this.buildPresenceView(),
-    };
-
-    this._currentSnapshot = snap;
-
-    // Notify legacy snapshot subscribers
-    this.snapshotSubscribers.forEach((cb) => {
-      try {
-        cb(snap);
-      } catch (error) {
-        console.error('[Snapshot] Subscriber error:', error);
-      }
-    });
   }
 
 }

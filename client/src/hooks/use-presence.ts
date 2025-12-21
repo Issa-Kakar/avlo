@@ -8,7 +8,7 @@ import { useRoomDoc } from './use-room-doc';
  */
 export function usePresence(roomId: RoomId): PresenceView {
   const roomDoc = useRoomDoc(roomId);
-  const [presence, setPresence] = useState<PresenceView>(roomDoc.currentSnapshot.presence);
+  const [presence, setPresence] = useState<PresenceView>(roomDoc.currentPresence);
 
   useEffect(() => {
     // Subscribe to presence updates

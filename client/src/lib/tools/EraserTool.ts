@@ -5,7 +5,7 @@ import {
   pointInDiamond,
 } from '@/lib/geometry/hit-test-primitives';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { getActiveRoomDoc, getCurrentDocSnapshot } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getAnimationController } from '@/canvas/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
@@ -140,8 +140,7 @@ export class EraserTool implements PointerTool {
   }
 
   private updateHitTest(worldX: number, worldY: number): void {
-    const roomDoc = getActiveRoomDoc();
-    const snapshot = roomDoc.currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     const { scale } = useCameraStore.getState();
 
     // Convert fixed screen radius to world units (with slack for forgiving feel)

@@ -19,7 +19,7 @@ import {
   computePolylineArea,
 } from '@/lib/geometry/hit-test-primitives';
 import * as Y from 'yjs';
-import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { getActiveRoomDoc, getCurrentDocSnapshot } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 
@@ -541,7 +541,7 @@ export class SelectTool implements PointerTool {
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
     for (const id of selectedIds) {
@@ -575,7 +575,7 @@ export class SelectTool implements PointerTool {
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
     for (const id of selectedIds) {
@@ -763,7 +763,7 @@ export class SelectTool implements PointerTool {
 
     if (transform.kind === 'scale') {
       // Scale: per-object bounds based on transform strategy
-      const snapshot = getActiveRoomDoc().currentSnapshot;
+      const snapshot = getCurrentDocSnapshot();
       const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
       const [ox, oy] = origin;
 
@@ -898,7 +898,7 @@ export class SelectTool implements PointerTool {
   // === Commit Methods ===
 
   private commitTranslate(selectedIds: string[], dx: number, dy: number): void {
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
 
     getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
@@ -938,7 +938,7 @@ export class SelectTool implements PointerTool {
     handleKind: HandleKind,
     originBounds: StoreWorldRect
   ): void {
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     const [ox, oy] = origin;
 
     getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
@@ -1049,7 +1049,7 @@ export class SelectTool implements PointerTool {
   private computeSelectionKind(selectedIds: string[]): SelectionKind {
     if (selectedIds.length === 0) return 'none';
 
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     let hasStrokes = false;
     let hasShapes = false;
 
@@ -1087,7 +1087,7 @@ export class SelectTool implements PointerTool {
     };
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     const index = snapshot.spatialIndex;
     if (!index) return;
 
@@ -1175,7 +1175,7 @@ export class SelectTool implements PointerTool {
   }
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
-    const snapshot = getActiveRoomDoc().currentSnapshot;
+    const snapshot = getCurrentDocSnapshot();
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
 

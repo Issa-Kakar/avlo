@@ -1,4 +1,4 @@
-import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
+import type { DocSnapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
@@ -13,13 +13,12 @@ import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
+  snapshot: DocSnapshot,
   viewTransform: ViewTransform,
   viewport: ViewportInfo,
 ): void {
   const { spatialIndex, objectsById } = snapshot;
   if (!spatialIndex) return;
-
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
   const selectionState = useSelectionStore.getState();
   const selectedSet = new Set(selectionState.selectedIds);
@@ -54,7 +53,6 @@ export function drawObjects(
   } else {
     // Full viewport query
     candidateEntries = spatialIndex.query(visibleBounds);
-    console.log('viewport', viewport);
   }
 
   // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========

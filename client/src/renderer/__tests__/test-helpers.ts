@@ -1,7 +1,7 @@
 // @ts-nocheck - Tests are disabled during rapid refactor phase
 import { vi } from 'vitest';
-import type { Snapshot, ViewTransform } from '@avlo/shared';
-import { createEmptySnapshot } from '@avlo/shared';
+import type { DocSnapshot, ViewTransform } from '@avlo/shared';
+import { createEmptyDocSnapshot } from '@avlo/shared';
 
 /**
  * Mock Canvas Context for render testing

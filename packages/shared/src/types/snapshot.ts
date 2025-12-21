@@ -1,4 +1,3 @@
-import { PresenceView } from './awareness';
 import { ObjectHandle, DirtyPatch } from './objects';
 
 // Forward declare the ObjectSpatialIndex interface
@@ -11,7 +10,7 @@ export interface ObjectSpatialIndex {
   clear(): void;
 }
 
-// NEW: Doc-only snapshot (no presence, no view)
+// Doc-only snapshot (no presence, no view)
 // This is the event-driven snapshot type - published immediately on Y.Doc changes
 export interface DocSnapshot {
   docVersion: number;
@@ -19,12 +18,6 @@ export interface DocSnapshot {
   spatialIndex: ObjectSpatialIndex | null;
   createdAt: number;
   dirtyPatch?: DirtyPatch | null;
-}
-
-// LEGACY: Full snapshot with presence (for backward compatibility)
-// Will be deprecated once all consumers migrate to DocSnapshot + subscribePresence
-export interface Snapshot extends DocSnapshot {
-  presence: PresenceView;
 }
 
 // View transform for coordinate conversion
@@ -35,7 +28,7 @@ export interface ViewTransform {
   pan: { x: number; y: number }; // world offset
 }
 
-// Helper to create empty doc snapshot (new event-driven type)
+// Helper to create empty doc snapshot
 export function createEmptyDocSnapshot(): DocSnapshot {
   return {
     docVersion: 0,
@@ -43,16 +36,5 @@ export function createEmptyDocSnapshot(): DocSnapshot {
     spatialIndex: null,
     createdAt: Date.now(),
     dirtyPatch: null,
-  };
-}
-
-// Empty snapshot constant shape (legacy - includes presence)
-export function createEmptySnapshot(): Snapshot {
-  return {
-    ...createEmptyDocSnapshot(),
-    presence: {
-      users: new Map(),
-      localUserId: '',
-    },
   };
 }

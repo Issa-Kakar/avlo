@@ -19,7 +19,7 @@ import {
   isMobile,
 } from '@/stores/camera-store';
 import { getBaseContext } from '@/canvas/SurfaceManager';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getCurrentDocSnapshot } from '@/canvas/room-runtime';
 
 export class RenderLoop {
   private started = false;
@@ -92,7 +92,6 @@ export class RenderLoop {
           this.dirtyTracker.setCanvasSize(pixelWidth, pixelHeight, curr.dpr);
           this.dirtyTracker.invalidateAll('geometry-change');
           this.markDirty();
-          console.log('[RenderLoop] geometry-change');
           return; // Full clear handles everything
         }
 
@@ -262,7 +261,7 @@ export class RenderLoop {
     // Read view and viewport from camera store
     const view = getViewTransform();
     // Read snapshot from room-runtime (replaces getSnapshot callback)
-    const snapshot = getCurrentSnapshot();
+    const snapshot = getCurrentDocSnapshot();
     const viewport = getViewportInfo();
 
     // Early exit if viewport is not yet sized
@@ -332,9 +331,7 @@ export class RenderLoop {
       if (hasTranslucentInView) {
         this.dirtyTracker.invalidateAll('content-change');
         clearInstructions = this.dirtyTracker.getClearInstructions();
-        console.log('[RenderLoop] hasTranslucentInView', hasTranslucentInView);
       }
-      console.log('[RenderLoop] clearInstructions', clearInstructions);
     }
 
     // Early exit if nothing to do
@@ -467,7 +464,6 @@ export class RenderLoop {
   // Public invalidation APIs - EVENT-DRIVEN: These trigger frame scheduling
   invalidateWorld(bounds: WorldBounds): void {
     if (!this.started) return;
-    console.log('[RenderLoop] invalidateWorld', bounds);
     // Read view from camera store
     const view = getViewTransform();
     this.dirtyTracker.invalidateWorldBounds(bounds, view);

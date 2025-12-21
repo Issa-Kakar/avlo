@@ -12,13 +12,13 @@ import { Routes, Route } from 'react-router-dom';
 import { RoomDocRegistryProvider } from './lib/room-doc-registry-context';
 import { Canvas } from './canvas/Canvas';
 import { useRoomDoc } from './hooks/use-room-doc';
-import { useRoomSnapshot } from './hooks/use-room-snapshot';
+import { useDocSnapshot } from './hooks/use-doc-snapshot';
 import { useCameraStore } from '@/stores/camera-store';
 import RoomPage from './pages/RoomPage';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);
-  const snapshot = useRoomSnapshot(roomId);
+  const snapshot = useDocSnapshot(roomId);
   // Use camera store instead of ViewTransformContext
   const scale = useCameraStore((s) => s.scale);
   const pan = useCameraStore((s) => s.pan);

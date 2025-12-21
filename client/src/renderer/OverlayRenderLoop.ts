@@ -6,7 +6,7 @@ import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
-import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
+import { getCurrentDocSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import {
@@ -166,7 +166,7 @@ export class OverlayRenderLoop {
         } else if (previewToDraw?.kind === 'eraser') {
           // Eraser preview: only draw dimmed strokes
           // Trail is now handled by AnimationController
-          const snapshot = getCurrentSnapshot();
+          const snapshot = getCurrentDocSnapshot();
 
           // World-space dimming for objects under eraser
           if (previewToDraw.hitIds.length > 0) {
@@ -243,7 +243,7 @@ export class OverlayRenderLoop {
 
           // === SELECTION HIGHLIGHTING (only when not transforming) ===
           if (!previewToDraw.isTransforming && previewToDraw.selectedIds?.length > 0) {
-            const snapshot = getCurrentSnapshot();
+            const snapshot = getCurrentDocSnapshot();
             const cache = getObjectCacheInstance();
 
             ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue

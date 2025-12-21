@@ -1,4 +1,4 @@
-import type { Snapshot } from '@avlo/shared';
+import type { DocSnapshot } from '@avlo/shared';
 import { getObjectCacheInstance } from '../object-cache';
 
 /**
@@ -8,7 +8,7 @@ import { getObjectCacheInstance } from '../object-cache';
 export function drawDimmedStrokes(
   ctx: CanvasRenderingContext2D,
   hitIds: string[],
-  snapshot: Snapshot,
+  snapshot: DocSnapshot,
   baseOpacity: number,
 ): void {
   if (!hitIds.length) return;

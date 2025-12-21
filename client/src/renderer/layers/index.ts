@@ -1,4 +1,4 @@
-import type { PresenceView, Snapshot, ViewTransform } from '@avlo/shared';
+import type { PresenceView, DocSnapshot, ViewTransform } from '@avlo/shared';
 import { CANVAS_STYLE_CONFIG as Cfg } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { drawCursors } from './presence-cursors';
@@ -81,7 +81,7 @@ function drawDotLayer(
 
 export function drawBackground(
   ctx: CanvasRenderingContext2D,
-  _snapshot: Snapshot,
+  _snapshot: DocSnapshot,
   view: ViewTransform,
   viewport: ViewportInfo,
 ): void {
