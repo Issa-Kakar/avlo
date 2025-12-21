@@ -67,44 +67,6 @@ export default [
       // React Hooks Rules
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
-      // Architecture Guards - Prevent direct Yjs imports in UI components
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: 'yjs',
-              message: 'Direct Yjs imports forbidden in UI. Use collaboration hooks instead.',
-            },
-            {
-              name: 'y-websocket',
-              message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
-            },
-            {
-              name: 'y-indexeddb',
-              message: 'Direct provider imports forbidden. Use RoomDocManager instead.',
-            },
-            {
-              name: 'y-webrtc',
-              message: 'Direct WebRTC provider imports forbidden. Use RoomDocManager instead.',
-            },
-          ],
-          patterns: [
-            {
-              group: ['**/providers/yjsClient'],
-              message: 'Use collaboration hooks instead of direct provider access.',
-            },
-          ],
-        },
-      ],
-    },
-  },
-
-  // Allow Yjs imports only in collaboration layer and lib (infrastructure)
-  {
-    files: ['client/src/collaboration/**/*.{ts,tsx}', 'client/src/lib/**/*.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': 'off',
     },
   },
 

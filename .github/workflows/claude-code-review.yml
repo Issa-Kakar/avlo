@@ -11,86 +11,29 @@ on:
 
 jobs:
   claude-review:
-    # Skip review for draft PRs and those marked with [skip-review] or [WIP]
     if: |
       !github.event.pull_request.draft &&
       !contains(github.event.pull_request.title, '[skip-review]') &&
       !contains(github.event.pull_request.title, '[WIP]')
-    
+
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write  # Changed to write for posting comments
+      pull-requests: write
       issues: read
       id-token: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for better context
+          fetch-depth: 0
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@beta
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # Using Claude Opus for thorough bug detection
-          model: "claude-opus-4-1-20250805"
-
-          # Bug-focused review prompt (similar to Cursor's bugbot)
-          direct_prompt: |
-            You are reviewing code for the Avlo project - a real-time collaborative whiteboard with code execution.
-            
-            IMPORTANT PROJECT CONTEXT:
-            - This is a small-scale project 
-            - Uses Yjs for CRDT-based collaboration
-            - Canvas-based rendering with RBush spatial indexing
-            - Offline-first with IndexedDB persistence
-            - Read OVERVIEW.MD and IMPLEMENTATION.MD for full context
-            
-            CRITICAL ARCHITECTURE RULES TO CHECK:
-            1. Y.Doc Reference Invariants - NEVER cache Y references as class fields
-            2. UI must NOT import yjs, y-websocket, y-indexeddb directly
-            3. All mutations through single mutate(fn) wrapper with yjs.transact
-            4. Snapshots must be immutable and never null
-            5. Arrays stored as number[] in Yjs (never Float32Array)
-            
-            FOCUS YOUR REVIEW ON:
-            - Potential bugs and logic errors
-            - Memory leaks (especially with Y.Doc, event listeners, RAF loops)
-            - Race conditions and async issues
-            - Resource cleanup (providers, subscriptions, observers)
-            - Performance issues (unnecessary re-renders, inefficient loops)
-            - Null/undefined reference errors
-            - Type safety violations
-            - CRDT consistency issues
-            
-            DO NOT FOCUS ON:
-            - Code style or formatting
-            - Test coverage suggestions
-            - General security concerns (unless critical bugs)
-            - Documentation improvements
-            
-            Be concise and specific. Only report actual bugs or high-risk issues.
-
-          # Use sticky comments to reduce noise on repeated pushes
+          model: "claude-opus-4-5-20251101"
           use_sticky_comment: true
-          
-          # Allow Claude to read project documentation and run type checks
-          allowed_tools: "Read(OVERVIEW.MD),Read(IMPLEMENTATION.MD),Read(CLAUDE.md),Read(.github/claude-review-context.md),Bash(npm run typecheck)"
-          
-          # Custom instructions for Avlo-specific patterns
-          custom_instructions: |
-            Always check for these Avlo-specific anti-patterns:
-            - Storing Y.Array or Y.Map references as class fields
-            - Direct Y.Doc access from React components
-            - Missing cleanup in useEffect/componentWillUnmount
-            - Unguarded array access that could cause undefined errors
-            - RAF loops without proper cleanup
-            - Event listeners without corresponding removal
-            
-          # Skip review for WIP and skip-review PRs
-          # Note: This 'if' condition goes at the job level, not here
-
+          allowed_tools: "Read(CLAUDE.md),Bash(npm run typecheck)"

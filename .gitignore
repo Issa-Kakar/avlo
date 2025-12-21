@@ -116,6 +116,7 @@ PHASE2_*.md
 WEBSOCKET_*.md
 prompt.md
 completed_tasks/
+e2e_test_results/
 # Temporary test files
 test-ws*.js
 
@@ -131,13 +132,14 @@ completed_tasks
 # Wrangler/Miniflare development artifacts
 .wrangler/
 */.wrangler/
-
 # Client test results (specific path)
 client/test-results/
 
 # Development scripts (keep setup-dev.sh in repo)
+setup-dev.sh
 
 # Personal notes and changelogs
+docs(local)
 BRANCH_STATUS.md
 CLAUDE.MD
 NEW_OVERVIEW.MD
