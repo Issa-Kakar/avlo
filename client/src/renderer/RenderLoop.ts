@@ -19,7 +19,7 @@ import {
   isMobile,
 } from '@/stores/camera-store';
 import { getBaseContext } from '@/canvas/SurfaceManager';
-import { getCurrentDocSnapshot } from '@/canvas/room-runtime';
+import { getCurrentSnapshot } from '@/canvas/room-runtime';
 
 export class RenderLoop {
   private started = false;
@@ -261,7 +261,7 @@ export class RenderLoop {
     // Read view and viewport from camera store
     const view = getViewTransform();
     // Read snapshot from room-runtime (replaces getSnapshot callback)
-    const snapshot = getCurrentDocSnapshot();
+    const snapshot = getCurrentSnapshot();
     const viewport = getViewportInfo();
 
     // Early exit if viewport is not yet sized

@@ -7,7 +7,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
 import {
-  createEmptyDocSnapshot,
+  createEmptySnapshot,
   AWARENESS_CONFIG,
 } from '@avlo/shared';
 import { UserProfile } from './user-identity';
@@ -15,7 +15,7 @@ import { userProfileManager } from './user-profile-manager';
 import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type {
   RoomId,
-  DocSnapshot,
+  Snapshot,
   PresenceView,
 } from '@avlo/shared';
 import { ObjectSpatialIndex } from '@avlo/shared';
@@ -35,9 +35,9 @@ type YObjects = Y.Map<Y.Map<unknown>>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
-  // Doc snapshot - immutable view of Y.Doc state (no presence)
-  readonly currentDocSnapshot: DocSnapshot;
-  subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub;
+  // Snapshot - immutable view of Y.Doc state (no presence)
+  readonly currentSnapshot: Snapshot;
+  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
 
   // Presence - separate subscription for cursor/activity updates
   readonly currentPresence: PresenceView;
@@ -108,14 +108,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private undoManager: Y.UndoManager | null = null;
 
   // Current state
-  private _currentDocSnapshot: DocSnapshot;
+  private _currentSnapshot: Snapshot;
 
   // Subscription management
-  private docSnapshotSubscribers = new Set<(snap: DocSnapshot) => void>();
+  private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
   private presenceSubscribers = new Set<(p: PresenceView) => void>();
 
   // Presence animation state (RAF is now on-demand, not continuous)
-  // Doc changes are event-driven via handleYDocUpdate → publishDocSnapshotNow()
+  // Doc changes are event-driven via handleYDocUpdate → publishSnapshotNow()
   private publishState = {
     presenceDirty: false, // Track if presence needs republishing
     rafId: -1, // Presence animation RAF ID (-1 = not scheduled)
@@ -209,8 +209,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       rafId: -1,
     };
 
-    // Start with empty doc snapshot
-    this._currentDocSnapshot = createEmptyDocSnapshot();
+    // Start with empty snapshot
+    this._currentSnapshot = createEmptySnapshot();
 
     // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
@@ -250,14 +250,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     });
 
     // NO startPublishLoop() - RAF is now ON-DEMAND:
-    // - Doc changes: event-driven via handleYDocUpdate → publishDocSnapshotNow()
+    // - Doc changes: event-driven via handleYDocUpdate → publishSnapshotNow()
     // - Presence changes: triggered by awareness updates → triggerPresenceAnimation()
     // RAF only runs during cursor interpolation windows (~66ms)
   }
 
   // Public getters
-  get currentDocSnapshot(): DocSnapshot {
-    return this._currentDocSnapshot;
+  get currentSnapshot(): Snapshot {
+    return this._currentSnapshot;
   }
 
   get currentPresence(): PresenceView {
@@ -613,18 +613,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Step 6: Validate structure integrity
 
   // Subscription methods
-  subscribeDocSnapshot(cb: (snap: DocSnapshot) => void): Unsub {
+  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
     // Return no-op if destroyed
     if (this.destroyed) {
       return () => {};
     }
 
-    this.docSnapshotSubscribers.add(cb);
-    // Immediately call with current doc snapshot
-    cb(this._currentDocSnapshot);
+    this.snapshotSubscribers.add(cb);
+    // Immediately call with current snapshot
+    cb(this._currentSnapshot);
 
     return () => {
-      this.docSnapshotSubscribers.delete(cb);
+      this.snapshotSubscribers.delete(cb);
     };
   }
 
@@ -667,7 +667,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     // Execute in single transaction with user origin
-    // Doc changes are published immediately via handleYDocUpdate → publishDocSnapshotNow()
+    // Doc changes are published immediately via handleYDocUpdate → publishSnapshotNow()
     this.ydoc.transact(() => {
       fn(this.ydoc);
     }, this.userId); // Origin for undo/redo tracking
@@ -807,7 +807,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.objectsById.clear();
 
     // Clear subscriptions
-    this.docSnapshotSubscribers.clear();
+    this.snapshotSubscribers.clear();
     this.presenceSubscribers.clear();
 
     // Clear cursor interpolation state
@@ -938,7 +938,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (touchedIds.size === 0 && deletedIds.size === 0) return;
 
       this.applyObjectChanges({ touchedIds, deletedIds, textOnlyIds });
-      // No flag needed - handleYDocUpdate → publishDocSnapshotNow() handles publishing
+      // No flag needed - handleYDocUpdate → publishSnapshotNow() handles publishing
     };
 
     objects.observeDeep(this.objectsObserver);
@@ -1059,7 +1059,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.spatialIndex && handles.length > 0) {
       this.spatialIndex.bulkLoad(handles);
     }
-    // Publishing happens via handleYDocUpdate → publishDocSnapshotNow()
+    // Publishing happens via handleYDocUpdate → publishSnapshotNow()
   }
 
   // Arrow function property ensures stable reference for event listener cleanup
@@ -1070,7 +1070,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // EVENT-DRIVEN: Publish immediately instead of setting dirty flag
     // The objectsObserver has already updated objectsById and spatialIndex
-    this.publishDocSnapshotNow();
+    this.publishSnapshotNow();
   };
 
   private initializeIndexedDBProvider(): void {
@@ -1354,16 +1354,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   // ============================================================
-  // PART 5: Event-Driven Doc Publishing
+  // PART 5: Event-Driven Snapshot Publishing
   // ============================================================
   // NOTE: The old buildSnapshot() and publishSnapshot() methods have been
-  // removed. Doc publishing is now event-driven via publishDocSnapshotNow().
+  // removed. Doc publishing is now event-driven via publishSnapshotNow().
 
   /**
-   * Publish doc snapshot immediately (event-driven, no RAF delay)
+   * Publish snapshot immediately (event-driven, no RAF delay)
    * Called directly from handleYDocUpdate for immediate publishing.
    */
-  private publishDocSnapshotNow(): void {
+  private publishSnapshotNow(): void {
     const meta = this.getMeta();
     // Guard: structures must exist
     if (!meta) {
@@ -1391,8 +1391,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.cacheEvictIds.clear();
     }
 
-    // Create DocSnapshot (no presence, no view - those are handled separately)
-    const docSnap: DocSnapshot = {
+    // Create Snapshot (no presence, no view - those are handled separately)
+    const snap: Snapshot = {
       docVersion: this.docVersion,
       objectsById: this.objectsById,
       spatialIndex: this.spatialIndex,
@@ -1400,15 +1400,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       dirtyPatch,
     };
 
-    // Update current doc snapshot
-    this._currentDocSnapshot = docSnap;
+    // Update current snapshot
+    this._currentSnapshot = snap;
 
-    // Notify doc snapshot subscribers (event-driven path)
-    this.docSnapshotSubscribers.forEach((cb) => {
+    // Notify snapshot subscribers (event-driven path)
+    this.snapshotSubscribers.forEach((cb) => {
       try {
-        cb(docSnap);
+        cb(snap);
       } catch (error) {
-        console.error('[DocSnapshot] Subscriber error:', error);
+        console.error('[Snapshot] Subscriber error:', error);
       }
     });
 

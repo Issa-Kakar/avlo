@@ -30,7 +30,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | `client/src/lib/room-doc-manager.ts` | 2075 | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
-| `client/src/renderer/RenderLoop.ts` | 528 | Base canvas 60 FPS loop, dirty rect optimization, self-subscribing |
+| `client/src/renderer/RenderLoop.ts` | 528 | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
 | `client/src/renderer/OverlayRenderLoop.ts` | 404 | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | 763 | Object rendering dispatch, transform preview |
 | `client/src/renderer/DirtyRectTracker.ts` | 267 | Dirty rect accumulation, promotion to full clear |
@@ -138,7 +138,7 @@ Module Registries - IMPERATIVE ACCESS PATTERNS
 Y.Doc (source of truth)
    ↓ observers
 RoomDocManager (objectsById, spatialIndex, dirtyPatch)
-   ↓ 60 FPS RAF
+   ↓ RAF For Awareness Interpolation
 Snapshot (immutable view)
    ↓ subscribeSnapshot()
 CanvasRuntime
@@ -455,7 +455,7 @@ interface ObjectHandle {
 ```typescript
 mutate(fn: (ydoc) => void)  // Transact with userId origin
 undo() / redo()             // Y.UndoManager (500ms capture)
-subscribeSnapshot(cb)       // 60 FPS snapshots
+subscribeSnapshot(cb)       // Used by CanvasRuntime
 ```
 
 ---

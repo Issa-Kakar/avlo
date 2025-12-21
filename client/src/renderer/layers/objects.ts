@@ -1,4 +1,4 @@
-import type { DocSnapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
+import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
@@ -13,7 +13,7 @@ import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
-  snapshot: DocSnapshot,
+  snapshot: Snapshot,
   viewTransform: ViewTransform,
   viewport: ViewportInfo,
 ): void {

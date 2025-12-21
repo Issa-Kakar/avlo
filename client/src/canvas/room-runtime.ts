@@ -12,7 +12,7 @@
  * @module canvas/room-runtime
  */
 
-import type { RoomId, DocSnapshot, PresenceView } from '@avlo/shared';
+import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
 
 /** Gate status type from IRoomDocManager.getGateStatus() */
@@ -68,12 +68,12 @@ export function hasActiveRoom(): boolean {
 }
 
 /**
- * Get the current doc snapshot from the active room.
- * Convenience wrapper for getActiveRoomDoc().currentDocSnapshot
+ * Get the current snapshot from the active room.
+ * Convenience wrapper for getActiveRoomDoc().currentSnapshot
  * Use this in render loops and tools to avoid prop drilling.
  */
-export function getCurrentDocSnapshot(): DocSnapshot {
-  return getActiveRoomDoc().currentDocSnapshot;
+export function getCurrentSnapshot(): Snapshot {
+  return getActiveRoomDoc().currentSnapshot;
 }
 
 /**

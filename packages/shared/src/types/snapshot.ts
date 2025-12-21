@@ -10,9 +10,9 @@ export interface ObjectSpatialIndex {
   clear(): void;
 }
 
-// Doc-only snapshot (no presence, no view)
+// Snapshot - immutable view of Y.Doc state (no presence, no view)
 // This is the event-driven snapshot type - published immediately on Y.Doc changes
-export interface DocSnapshot {
+export interface Snapshot {
   docVersion: number;
   objectsById: ReadonlyMap<string, ObjectHandle>;  // Live references
   spatialIndex: ObjectSpatialIndex | null;
@@ -28,8 +28,8 @@ export interface ViewTransform {
   pan: { x: number; y: number }; // world offset
 }
 
-// Helper to create empty doc snapshot
-export function createEmptyDocSnapshot(): DocSnapshot {
+// Helper to create empty snapshot
+export function createEmptySnapshot(): Snapshot {
   return {
     docVersion: 0,
     objectsById: new Map<string, ObjectHandle>(),

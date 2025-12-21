@@ -49,7 +49,7 @@ export class CanvasRuntime {
   private overlayLoop: OverlayRenderLoop | null = null;
   private zoomAnimator: ZoomAnimator | null = null;
   private cameraUnsub: (() => void) | null = null;
-  private docSnapshotUnsub: (() => void) | null = null;
+  private snapshotUnsub: (() => void) | null = null;
   private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
 
@@ -93,20 +93,21 @@ export class CanvasRuntime {
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py }
     );
 
-    // 7. Doc snapshot subscription for dirty rect invalidation (event-driven)
+    // 7. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
-    this.lastDocVersion = roomDoc.currentDocSnapshot.docVersion;
-    this.docSnapshotUnsub = roomDoc.subscribeDocSnapshot((docSnap) => {
+    this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
+    this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
       // Doc content changed - event-driven, no presence polling
-      if (docSnap.docVersion !== this.lastDocVersion) {
-        this.lastDocVersion = docSnap.docVersion;
-
+      if (snap.docVersion !== this.lastDocVersion) {
+        this.lastDocVersion = snap.docVersion;
         // Hold preview for one frame to prevent flash on commit
         this.overlayLoop?.holdPreviewForOneFrame();
-
+        if (this.lastDocVersion < 3) {
+          this.renderLoop?.invalidateAll('content-change');
+        }
         // Process dirty patch from manager
-        if (docSnap.dirtyPatch) {
-          const { rects, evictIds } = docSnap.dirtyPatch;
+        else if (snap.dirtyPatch) {
+          const { rects, evictIds } = snap.dirtyPatch;
 
           // Evict from cache
           const cache = getObjectCacheInstance();
@@ -119,10 +120,7 @@ export class CanvasRuntime {
               this.renderLoop?.invalidateWorld(bounds);
             }
           }
-        } else if (this.lastDocVersion < 2) {
-          // Initial load without dirtyPatch
-          this.renderLoop?.invalidateWorld(getVisibleWorldBounds());
-        }
+        } 
 
         // Update overlay for new doc content
         this.overlayLoop?.invalidateAll();
@@ -142,7 +140,7 @@ export class CanvasRuntime {
    */
   stop(): void {
     // Unsubscribe from stores first
-    this.docSnapshotUnsub?.();
+    this.snapshotUnsub?.();
     this.presenceUnsub?.();
     this.cameraUnsub?.();
 
@@ -173,7 +171,7 @@ export class CanvasRuntime {
     this.overlayLoop = null;
     this.zoomAnimator = null;
     this.cameraUnsub = null;
-    this.docSnapshotUnsub = null;
+    this.snapshotUnsub = null;
     this.presenceUnsub = null;
     this.lastDocVersion = -1;
   }

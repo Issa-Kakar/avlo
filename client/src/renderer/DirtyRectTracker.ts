@@ -138,7 +138,6 @@ export class DirtyRectTracker {
   // Force full clear
   invalidateAll(_reason: InvalidationReason): void {
     this.fullClearRequired = true;
-    console.log('[DirtyRectTracker] invalidateAll: full clear');
     this.rects = [];
   }
 

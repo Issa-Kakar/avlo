@@ -81,11 +81,11 @@ describe('Phase 6 Teardown Hygiene', () => {
       });
     }).not.toThrow();
 
-    const unsubDocSnapshot = manager.subscribeDocSnapshot(() => {
+    const unsubSnapshot = manager.subscribeSnapshot(() => {
       throw new Error('Should not be called');
     });
-    expect(unsubDocSnapshot).toBeDefined();
-    unsubDocSnapshot(); // Should also be no-op
+    expect(unsubSnapshot).toBeDefined();
+    unsubSnapshot(); // Should also be no-op
 
     const unsubPresence = manager.subscribePresence(() => {
       throw new Error('Should not be called');
