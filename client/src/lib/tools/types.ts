@@ -82,7 +82,8 @@ export type PerfectShapeAnchors =
   | { kind: 'box'; cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen AABB seed (hold detector)
   | { kind: 'rect'; A: [number, number] } // corner-anchored AABB
   | { kind: 'ellipseRect'; A: [number, number] } // corner-anchored ellipse
-  | { kind: 'diamond'; A: [number, number] }; // corner-anchored diamond
+  | { kind: 'diamond'; A: [number, number] } // corner-anchored diamond (toolbar)
+  | { kind: 'diamondHold'; cx: number; cy: number; hx0: number; hy0: number }; // center-anchored diamond (hold detector)
 
 /**
  * PerfectShapePreview is the preview data for perfect shapes (line, circle, box)
@@ -92,7 +93,7 @@ export type PerfectShapeAnchors =
  */
 export interface PerfectShapePreview {
   kind: 'perfectShape';
-  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond';
+  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond' | 'diamondHold';
   fill?: boolean; // Optional fill flag for shapes
 
   // Tool styling frozen at pointer-down

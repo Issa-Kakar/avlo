@@ -4,8 +4,11 @@ import type { DrawingState, PreviewData, PointerTool } from './types';
 import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas } from '@/stores/camera-store';
 import { HoldDetector } from '../input/HoldDetector';
-import { recognizeOpenStroke } from '../geometry/recognize-open-stroke';
-import { SHAPE_CONFIDENCE_MIN } from '../geometry/shape-params';
+import {
+  recognizePerfectShapePointCloud,
+  debugRecognize,
+  computeBboxCenterExtents,
+} from '../geometry/pdollar-recognizer';
 import { createFillFromStroke } from '@/lib/utils/color';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -22,7 +25,8 @@ function getShapeTypeFromSnapKind(
     circle: 'ellipse', // Hold-detected circle → ellipse
     rect: 'roundedRect', // Tool rect → rounded rect (default)
     ellipseRect: 'ellipse', // Tool ellipse → ellipse
-    diamond: 'diamond', // Diamond → diamond
+    diamond: 'diamond', // Diamond (toolbar) → diamond
+    diamondHold: 'diamond', // Hold-detected diamond → diamond
   };
   return mapping[snapKind] ?? 'rect';
 }
@@ -90,6 +94,7 @@ export class DrawingTool implements PointerTool {
         | { kind: 'rect'; anchors: { A: [number, number] } }
         | { kind: 'ellipseRect'; anchors: { A: [number, number] } }
         | { kind: 'diamond'; anchors: { A: [number, number] } }
+        | { kind: 'diamondHold'; anchors: { cx: number; cy: number; hx0: number; hy0: number } }
       ) = null;
   private liveCursorWU: [number, number] | null = null;
 
@@ -358,6 +363,7 @@ export class DrawingTool implements PointerTool {
     // Kept as no-op for now in case we re-add dirty rect optimization later
   }
 
+  /* eslint-disable no-console */
   private onHoldFire(): void {
     if (this.snap) return;
 
@@ -372,54 +378,75 @@ export class DrawingTool implements PointerTool {
     //  keep the live cursor in sync at the moment of snapping
     this.liveCursorWU = pointerNowWU;
 
-    console.group('🎯 Hold Detector Fired - Shape Recognition');
+    console.group('🎯 Hold Detector Fired - $P Shape Recognition');
     console.log(`Stroke has ${this.state.points.length} points after 600ms dwell`);
 
-    // Convert tuples to flat array for shape recognition (temporary until RDP is updated)
-    const flatPoints = this.tupleArrayToFlat(this.state.points);
+    // Run $P point cloud recognition
+    const result = recognizePerfectShapePointCloud(this.state.points);
 
-    const result = recognizeOpenStroke({
-      pointsWU: flatPoints,
-      pointerNowWU,
-    });
+    // Debug logging for template tuning (remove in production)
+    debugRecognize(this.state.points);
 
-    // Handle near-miss result - don't snap, continue freehand
-    if (result.ambiguous) {
-      console.log(
-        "🤷 Near-miss detected - NO SNAP, user likely intended a shape but didn't quite make it",
-      );
+    // Handle null result (not enough points)
+    if (!result) {
+      console.log('❌ Not enough points for recognition');
       console.groupEnd();
-      // Don't set snap, don't cancel hold, just continue drawing
-      // This prevents the annoying line snap when user almost drew a shape
       return;
     }
 
-    // Handle recognized shapes (line, circle, box)
-    if (result.kind === 'line' || result.score >= SHAPE_CONFIDENCE_MIN) {
-      // Freeze anchors; do NOT compute live geometry here.
-      this.snap =
-        result.kind === 'line'
-          ? { kind: 'line', anchors: { A: result.line!.A } }
-          : result.kind === 'circle'
-            ? { kind: 'circle', anchors: { center: [result.circle!.cx, result.circle!.cy] } }
-            : {
-                kind: 'box',
-                anchors: {
-                  cx: result.box!.cx,
-                  cy: result.box!.cy,
-                  angle: 0, // ALWAYS 0 for AABB
-                  hx0: result.box!.hx,
-                  hy0: result.box!.hy,
-                },
-              };
-      console.log(
-        `✅ SNAP DECISION: ${result.kind.toUpperCase()} (score: ${result.score.toFixed(3)})`,
-      );
+    // Log recognition result
+    console.log(`Best: ${result.best.kind} (${result.best.templateId})`);
+    console.log(`Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`);
+
+    // Handle ambiguous result - don't snap, continue freehand
+    if (result.ambiguous) {
+      console.log('🤷 Ambiguous - NO SNAP, continuing freehand');
       console.groupEnd();
-      invalidateOverlay();
-      this.hold.cancel();
+      return;
     }
+
+    // Compute anchors from stroke bounding box
+    const bbox = computeBboxCenterExtents(this.state.points);
+
+    // Set snap based on recognized kind
+    switch (result.best.kind) {
+      case 'circle':
+        this.snap = {
+          kind: 'circle',
+          anchors: { center: [bbox.cx, bbox.cy] },
+        };
+        break;
+      case 'box':
+        this.snap = {
+          kind: 'box',
+          anchors: {
+            cx: bbox.cx,
+            cy: bbox.cy,
+            angle: 0, // AABB only
+            hx0: bbox.hx,
+            hy0: bbox.hy,
+          },
+        };
+        break;
+      case 'diamond':
+        this.snap = {
+          kind: 'diamondHold',
+          anchors: {
+            cx: bbox.cx,
+            cy: bbox.cy,
+            hx0: bbox.hx,
+            hy0: bbox.hy,
+          },
+        };
+        break;
+    }
+
+    console.log(`✅ SNAP: ${result.best.kind.toUpperCase()}`);
+    console.groupEnd();
+    invalidateOverlay();
+    this.hold.cancel();
   }
+  /* eslint-enable no-console */
 
   getPreview(): PreviewData | null {
     // Normal drawing state checks
@@ -581,6 +608,16 @@ export class DrawingTool implements PointerTool {
       const maxX = Math.max(A[0], C[0]);
       const maxY = Math.max(A[1], C[1]);
       frame = [minX, minY, maxX - minX, maxY - minY];
+    } else if (this.snap.kind === 'diamondHold') {
+      // Center-anchored diamond (hold-detected) - same logic as box
+      const { cx, cy, hx0, hy0 } = this.snap.anchors;
+      const dx = Math.abs(finalCursor[0] - cx);
+      const dy = Math.abs(finalCursor[1] - cy);
+      const sx = Math.max(0.0001, dx / Math.max(1e-6, hx0));
+      const sy = Math.max(0.0001, dy / Math.max(1e-6, hy0));
+      const hx = hx0 * sx;
+      const hy = hy0 * sy;
+      frame = [cx - hx, cy - hy, hx * 2, hy * 2];
     } else {
       // Exhaustive check - TypeScript ensures all cases are handled
       const _exhaustive: never = this.snap;
@@ -637,14 +674,5 @@ export class DrawingTool implements PointerTool {
     this.hold.cancel();
     this.snap = null;
     this.liveCursorWU = null;
-  }
-
-  // Helper functions for Vec2 conversion (temporary until RDP is updated to work with tuples)
-  private tupleArrayToFlat(tuples: [number, number][]): number[] {
-    const flat: number[] = [];
-    for (const [x, y] of tuples) {
-      flat.push(x, y);
-    }
-    return flat;
   }
 }

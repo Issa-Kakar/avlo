@@ -22,11 +22,10 @@ import { ObjectSpatialIndex } from '@avlo/shared';
 import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
 import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
 
-// Type for unsubscribe function
+
 type Unsub = () => void;
 
 // Type aliases for Y structures 
-// CRITICAL: Y.Map's generic parameter doesn't define the value shape
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
 type YObjects = Y.Map<Y.Map<unknown>>;
@@ -249,10 +248,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.attachUndoManager();
     });
 
-    // NO startPublishLoop() - RAF is now ON-DEMAND:
     // - Doc changes: event-driven via handleYDocUpdate → publishSnapshotNow()
     // - Presence changes: triggered by awareness updates → triggerPresenceAnimation()
-    // RAF only runs during cursor interpolation windows (~66ms)
   }
 
   // Public getters

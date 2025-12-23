@@ -41,7 +41,6 @@ export function RoomDocRegistryProvider({ children, registry }: RoomDocRegistryP
  */
 export function useRoomDocRegistry(): RoomDocManagerRegistry {
   const context = useContext(RoomDocRegistryContext);
-
   if (!context) {
     throw new Error(
       'useRoomDocRegistry must be used within a RoomDocRegistryProvider. ' +

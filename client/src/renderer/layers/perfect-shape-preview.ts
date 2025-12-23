@@ -203,5 +203,40 @@ export function drawPerfectShapePreview(
     ctx.closePath();
     if (fillEnabled) ctx.fill();
     ctx.stroke();
+    return;
+  }
+
+  if (anchors.kind === 'diamondHold') {
+    // Center-anchored diamond (hold-detected): scale from frozen half-extents
+    const { cx, cy, hx0, hy0 } = anchors;
+
+    // Compute scale factors from cursor position
+    const dx = Math.abs(cursor[0] - cx);
+    const dy = Math.abs(cursor[1] - cy);
+    const sx = Math.max(0.0001, dx / Math.max(1e-6, hx0));
+    const sy = Math.max(0.0001, dy / Math.max(1e-6, hy0));
+
+    // Apply scale to get final half-extents
+    const hx = hx0 * sx;
+    const hy = hy0 * sy;
+
+    // Calculate corner radius (same logic as corner-anchored diamond)
+    const radius = Math.min(20, Math.min(hx * 2, hy * 2) * 0.1);
+
+    // Draw diamond from center with computed half-extents
+    ctx.beginPath();
+    // Start at top
+    ctx.moveTo(cx, cy - hy);
+    // arcTo: right corner
+    ctx.arcTo(cx + hx, cy, cx, cy + hy, radius);
+    // arcTo: bottom corner
+    ctx.arcTo(cx, cy + hy, cx - hx, cy, radius);
+    // arcTo: left corner
+    ctx.arcTo(cx - hx, cy, cx, cy - hy, radius);
+    // arcTo: top corner (close)
+    ctx.arcTo(cx, cy - hy, cx + hx, cy, radius);
+    ctx.closePath();
+    if (fillEnabled) ctx.fill();
+    ctx.stroke();
   }
 }

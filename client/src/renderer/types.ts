@@ -84,6 +84,10 @@ export const PF_OPTIONS_BASE = {
   smoothing: 0.50,
   streamline: 0.6,
   simulatePressure: true,
+  start: {
+    cap: true,
+    taper: 0,
+  }
 } as const;
 
 /**
