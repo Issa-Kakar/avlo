@@ -13,17 +13,18 @@ This document provides comprehensive documentation for the $P point-cloud shape 
 ### What is $P?
 
 $P (Dollar P) is a gesture recognition algorithm from the paper:
+
 > Vatavu, R-D., Anthony, L., & Wobbrock, J.O. (2012). "Gestures as Point Clouds"
 
 It treats gestures as **unordered point clouds** and uses **greedy nearest-neighbor matching** with weighted distances.
 
 ### Why $P Over Parametric Fitting?
 
-| Approach | Problem |
-|----------|---------|
-| Parametric (circle fit, AABB fit) | Brittle with multiple shape-specific heuristics |
+| Approach                             | Problem                                            |
+| ------------------------------------ | -------------------------------------------------- |
+| Parametric (circle fit, AABB fit)    | Brittle with multiple shape-specific heuristics    |
 | Feature engineering (corners, edges) | Unstable across zoom/scale, 15+ tunable parameters |
-| $P | Single normalized space, ~3 tunable parameters |
+| $P                                   | Single normalized space, ~3 tunable parameters     |
 
 ### The Normalization Pipeline (Critical!)
 
@@ -38,6 +39,7 @@ Raw Points → Resample → Scale to Unit → Translate to Origin → Normalized
 3. **Translate to Origin**: Centroid at (0,0)
 
 This makes matching:
+
 - Scale-invariant (any size drawing)
 - Position-invariant (anywhere on canvas)
 - **Aspect-ratio-aware** (preserves width/height proportions)
@@ -66,7 +68,7 @@ Try multiple starting points and both directions (candidate→template and templ
 client/src/lib/geometry/
 ├── pdollar-recognizer.ts      # NEW: $P implementation (primary)
 ├── recognize-open-stroke.ts   # LEGACY: Parametric fitting (unused by hold detector)
-├── geometry-helpers.ts        # Corner/edge detection, side coverage
+├── geometry-helpers.ts        # OLDER: Corner/edge detection, side coverage
 ├── fit-circle.ts              # Circle least-squares fit
 ├── fit-aabb.ts                # AABB rectangle fit
 ├── score.ts                   # Scoring functions
@@ -102,13 +104,13 @@ private onHoldFire(): void {
 
 ### Template Counts (Current)
 
-| Shape   | Ratios | Variants | Total   |
-|---------|--------|----------|---------|
-| Box     | 23     | 5        | **115** |
-| Diamond | 11     | 5        | **55**  |
-| Circle  | 1      | 1        | **1**   |
-| Line    | 2      | 1        | **2**   |
-| **Total** |      |          | **173** |
+| Shape     | Ratios | Variants | Total   |
+| --------- | ------ | -------- | ------- |
+| Box       | 23     | 5        | **115** |
+| Diamond   | 11     | 5        | **55**  |
+| Circle    | 1      | 1        | **1**   |
+| Line      | 2      | 1        | **2**   |
+| **Total** |        |          | **173** |
 
 ### Template Ratios (Fixed Aspect Ratios)
 
@@ -118,14 +120,44 @@ The key fix in the current implementation: templates use **FIXED** aspect ratios
 const TEMPLATE_RATIOS = {
   // Box: log-spaced from 0.08 to 12.5
   box: [
-    1.0, 1.25, 1.6, 2.0, 2.5, 3.2, 4.0, 5.0, 6.3, 8.0, 10.0, 12.5, // wide
-    0.8, 0.625, 0.5, 0.4, 0.3125, 0.25, 0.2, 0.159, 0.125, 0.1, 0.08, // tall
+    1.0,
+    1.25,
+    1.6,
+    2.0,
+    2.5,
+    3.2,
+    4.0,
+    5.0,
+    6.3,
+    8.0,
+    10.0,
+    12.5, // wide
+    0.8,
+    0.625,
+    0.5,
+    0.4,
+    0.3125,
+    0.25,
+    0.2,
+    0.159,
+    0.125,
+    0.1,
+    0.08, // tall
   ],
 
   // Diamond: capped at 3:1 (prevents line-like degeneracy)
   diamond: [
-    1.0, 1.25, 1.6, 2.0, 2.5, 3.0, // wide
-    0.8, 0.625, 0.5, 0.4, 0.333,   // tall
+    1.0,
+    1.25,
+    1.6,
+    2.0,
+    2.5,
+    3.0, // wide
+    0.8,
+    0.625,
+    0.5,
+    0.4,
+    0.333, // tall
   ],
 
   // Circle: only 1:1
@@ -152,18 +184,18 @@ The "open" variants handle users who don't fully close their shapes.
 
 ```typescript
 // Circle: 64-point polyline around unit circle
-function circlePolyline(segments = 64): Point2[]
+function circlePolyline(segments = 64): Point2[];
 
 // Rectangle vertices at given width/height
-function rectVertices(w: number, h: number): Point2[]
+function rectVertices(w: number, h: number): Point2[];
 // Returns: [TL, TR, BR, BL]
 
 // Diamond vertices at given width/height
-function diamondVertices(w: number, h: number): Point2[]
+function diamondVertices(w: number, h: number): Point2[];
 // Returns: [top, right, bottom, left]
 
 // Create polyline from 4 vertices with n edges
-function polylineFromCycle(vertices, startIndex, edges: 3|4): Point2[]
+function polylineFromCycle(vertices, startIndex, edges: 3 | 4): Point2[];
 ```
 
 ---
@@ -172,22 +204,22 @@ function polylineFromCycle(vertices, startIndex, edges: 3|4): Point2[]
 
 ```typescript
 export const PDOLLAR_CONFIG = {
-  NUM_POINTS: 32,           // Resample count
-  MAX_DISTANCE: 6,          // Absolute acceptance gate (lower = stricter)
-  MIN_MARGIN: 0.1,          // Separation gate (10% between best/second)
-  CLOSE_EPS_RATIO: 0.12,    // Auto-close if gap <= 12% of diagonal
-  EPSILON: 0.5,             // Greedy step exponent (sqrt(n) starting points)
-  MIN_INPUT_POINTS: 6,      // Minimum points for recognition
+  NUM_POINTS: 32, // Resample count
+  MAX_DISTANCE: 6, // Absolute acceptance gate (lower = stricter)
+  MIN_MARGIN: 0.1, // Separation gate (10% between best/second)
+  CLOSE_EPS_RATIO: 0.12, // Auto-close if gap <= 12% of diagonal
+  EPSILON: 0.5, // Greedy step exponent (sqrt(n) starting points)
+  MIN_INPUT_POINTS: 6, // Minimum points for recognition
 };
 ```
 
 ### Tuning Guidelines
 
-| Parameter | Effect | Typical Adjustment |
-|-----------|--------|-------------------|
-| `MAX_DISTANCE` | Lower = stricter matching | Increase if good shapes rejected |
-| `MIN_MARGIN` | Higher = need more separation | Decrease if shapes too ambiguous |
-| `NUM_POINTS` | More = higher precision but slower | Usually keep at 32 |
+| Parameter      | Effect                             | Typical Adjustment               |
+| -------------- | ---------------------------------- | -------------------------------- |
+| `MAX_DISTANCE` | Lower = stricter matching          | Increase if good shapes rejected |
+| `MIN_MARGIN`   | Higher = need more separation      | Decrease if shapes too ambiguous |
+| `NUM_POINTS`   | More = higher precision but slower | Usually keep at 32               |
 
 ---
 
@@ -235,11 +267,13 @@ If !ambiguous → Set snap state → Render preview → Commit on pointer-up
 **Problem:** Mathematical circle template doesn't match human-drawn circles well.
 
 **Symptoms:**
+
 - Slightly oval circles get rejected
 - Almost-closed circles fail
 - Circles often match diamond better
 
 **Solution Direction:**
+
 - Add hand-drawn circle templates (capture real user circles)
 - Add ellipse templates at various aspect ratios
 - Use `serializePointCloud()` to capture user drawings
@@ -249,11 +283,13 @@ If !ambiguous → Set snap state → Render preview → Commit on pointer-up
 **Problem:** Any 3-side match counts as a shape, even if the 4th side is far from closed.
 
 **Current Behavior:**
+
 ```
 User draws U-shape → Matches box/open-s1 → Snaps to box
 ```
 
 **Solution Direction:**
+
 - Check if the stroke is "nearly closed" before accepting open templates
 - Use gap detection from legacy code: `gap <= closeEpsRatio * diagonal`
 - Only allow open templates when the unclosed edge is near the stroke start
@@ -263,10 +299,12 @@ User draws U-shape → Matches box/open-s1 → Snaps to box
 **Problem:** Diamond templates with matching aspect ratios score better than circles.
 
 **Root Cause:**
+
 - Only 1 circle template vs 55 diamond templates
 - Diamond vertices align well with normalized point clouds
 
 **Solution Direction:**
+
 - Add ellipse as a new shape kind
 - Add multiple ellipse aspect ratios (0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0)
 - Use corner detection to discriminate: circles have 0 corners, diamonds have 4
@@ -277,11 +315,13 @@ User draws U-shape → Matches box/open-s1 → Snaps to box
 
 **Observation:**
 The legacy code (`geometry-helpers.ts`) has robust corner detection:
+
 - `detectCorners()`: Finds turn angles > 45 degrees
 - `detectEdges()`: Finds straight segments between corners
 - `reconstructRectangleEdges()`: Builds 4-edge loop from best corners
 
 **Solution Direction:**
+
 - Hybrid approach: Use $P for shape classification, legacy corner detection for validation
 - Example: If best=$P says "box" but corner count < 3, mark ambiguous
 - Example: If best=$P says "circle" but corner count > 0, mark ambiguous
@@ -294,20 +334,21 @@ The legacy code (`geometry-helpers.ts`) has robust corner detection:
 
 ```typescript
 interface Corner {
-  index: number;      // Position in point array
-  angle: number;      // Turn angle in degrees
-  strength: number;   // Peak at 90 degrees (1.0 = perfect right angle)
+  index: number; // Position in point array
+  angle: number; // Turn angle in degrees
+  strength: number; // Peak at 90 degrees (1.0 = perfect right angle)
 }
 
 function detectCorners(
   points: Vec2[],
-  minSegmentLength: number = 10,  // WU
+  minSegmentLength: number = 10, // WU
   minTurnAngleDeg: number = 45,
-  closed: boolean = false
-): Corner[]
+  closed: boolean = false,
+): Corner[];
 ```
 
 **Key Logic:**
+
 - Iterates through points looking for angle changes > 45 degrees
 - Requires minimum segment length on both sides of corner
 - Strength peaks at 90 degrees (good for rectangles)
@@ -319,8 +360,8 @@ function detectCorners(
 function reconstructRectangleEdges(
   points: Vec2[],
   corners: Corner[],
-  minEdgeLengthWU: number = 8
-): Edge[]
+  minEdgeLengthWU: number = 8,
+): Edge[];
 ```
 
 - Takes best 4 corners by strength
@@ -331,10 +372,7 @@ function reconstructRectangleEdges(
 ### Side Coverage (AABB)
 
 ```typescript
-function aabbCoverageAcrossDistinctSides(
-  points: Vec2[],
-  aabb: { minX, minY, maxX, maxY }
-): number  // 0-1 score
+function aabbCoverageAcrossDistinctSides(points: Vec2[], aabb: { minX; minY; maxX; maxY }): number; // 0-1 score
 ```
 
 - Checks how many of 4 sides have points nearby
@@ -348,7 +386,14 @@ function aabbCoverageAcrossDistinctSides(
 ```typescript
 // Types in lib/tools/types.ts
 
-type ForcedSnapKind = 'line' | 'circle' | 'box' | 'diamondHold' | 'rect' | 'ellipseRect' | 'diamond';
+type ForcedSnapKind =
+  | 'line'
+  | 'circle'
+  | 'box'
+  | 'diamondHold'
+  | 'rect'
+  | 'ellipseRect'
+  | 'diamond';
 
 // Hold-detected shapes use:
 // - 'circle': { anchors: { center: [x, y] } }
@@ -359,11 +404,13 @@ type ForcedSnapKind = 'line' | 'circle' | 'box' | 'diamondHold' | 'rect' | 'elli
 ### Adding a New Shape (Ellipse Example)
 
 1. Add to `PerfectShapeKind` in pdollar-recognizer.ts:
+
    ```typescript
    export type PerfectShapeKind = 'circle' | 'box' | 'diamond' | 'line' | 'ellipse';
    ```
 
 2. Add template ratios:
+
    ```typescript
    ellipse: [0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0],
    ```
@@ -371,6 +418,7 @@ type ForcedSnapKind = 'line' | 'circle' | 'box' | 'diamondHold' | 'rect' | 'elli
 3. Add template generation (ellipse vertices at various ratios)
 
 4. Add snap kind to `ForcedSnapKind`:
+
    ```typescript
    | 'ellipseHold'
    ```
@@ -388,10 +436,11 @@ type ForcedSnapKind = 'line' | 'circle' | 'box' | 'diamondHold' | 'rect' | 'elli
 ### Console Logging
 
 ```typescript
-debugRecognize(points)  // Called automatically in onHoldFire()
+debugRecognize(points); // Called automatically in onHoldFire()
 ```
 
 Output:
+
 ```
 🔍 $P Recognition Debug
   Input: 530 points, aspect: 2.17
@@ -453,6 +502,7 @@ This outputs normalized coordinates that can be added as a custom template.
 Vatavu, R-D., Anthony, L., & Wobbrock, J.O. (2012). "Gestures as Point Clouds: A $P Recognizer for User Interface Prototypes". Proceedings of the 14th ACM International Conference on Multimodal Interaction (ICMI '12). Santa Monica, CA, USA.
 
 Key insights from paper:
+
 - Point clouds are order-independent (good for rough drawings)
 - Greedy matching is O(n²) but fast for n=32
 - Weighted matching (early points matter more) improves accuracy
