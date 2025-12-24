@@ -19,6 +19,7 @@ import { EraserTool } from '@/lib/tools/EraserTool';
 import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { SelectTool } from '@/lib/tools/SelectTool';
+import { ConnectorTool } from '@/lib/tools/ConnectorTool';
 import { useDeviceUIStore, type Tool as ToolId } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData } from '@/lib/tools/types';
 
@@ -31,6 +32,7 @@ const eraserTool = new EraserTool();
 const textTool = new TextTool();
 const panTool = new PanTool();
 const selectTool = new SelectTool();
+const connectorTool = new ConnectorTool();
 
 // ===========================================
 // TOOL LOOKUP
@@ -49,6 +51,7 @@ const toolMap = new Map<ToolId, PointerTool>([
   ['text', textTool],
   ['pan', panTool],
   ['select', selectTool],
+  ['connector', connectorTool],
   // 'image' and 'code' intentionally omitted - no tool implementation
 ]);
 
@@ -103,4 +106,4 @@ export function canStartMMBPan(): boolean {
 export { panTool };
 
 /** Export all tools for testing/debugging */
-export const allTools = { drawingTool, eraserTool, textTool, panTool, selectTool };
+export const allTools = { drawingTool, eraserTool, textTool, panTool, selectTool, connectorTool };

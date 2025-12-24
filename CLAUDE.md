@@ -793,7 +793,7 @@ interface SelectionPreview {
 
 ---
 
-## NOT Implemented / Planned
+## NOT Implemented Yet/ Planned
 
 - **Connector Tool:** Sticky arrows to shapes (just basic polyline exists)
 - **Text Tool:** Full replacement planned (current is placeholder DOM overlay)

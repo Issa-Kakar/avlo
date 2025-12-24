@@ -132,6 +132,56 @@ export interface SelectionPreview {
 }
 
 /**
+ * ConnectorPreview is the preview data for connector tool
+ * Used by ConnectorTool and overlay rendering
+ *
+ * DESIGN: Anchor dots ONLY appear when snapping would occur.
+ * If snapShapeId is set, the user WILL connect to this shape on release.
+ */
+export interface ConnectorPreview {
+  kind: 'connector';
+
+  // === Main connector path (world coords) ===
+  /** Full routed path including endpoints and waypoints */
+  points: [number, number][];
+
+  // === Styling ===
+  color: string;
+  width: number;
+  opacity: number;
+  startCap: 'arrow' | 'none';
+  endCap: 'arrow' | 'none';
+
+  // === Anchor visualization ===
+  // ONLY set when actually snapped - dots appear when snapped
+
+  /** Shape we're snapped to (null = not snapped, dots won't show) */
+  snapShapeId: string | null;
+  /** Frame of snapped shape [x, y, w, h] for dot placement */
+  snapShapeFrame: [number, number, number, number] | null;
+  /** Shape type for proper dot placement ('rect' | 'ellipse' | 'diamond') */
+  snapShapeType: string | null;
+  /** Which midpoint is active (snapped to t=0.5) */
+  activeMidpointSide: 'N' | 'E' | 'S' | 'W' | null;
+
+  // === Endpoint states ===
+  /** True if 'from' endpoint is attached to a shape */
+  fromIsAttached: boolean;
+  /** Position of 'from' endpoint in world coords */
+  fromPosition: [number, number] | null;
+  /** True if 'to' endpoint is attached to a shape */
+  toIsAttached: boolean;
+  /** Position of 'to' endpoint in world coords */
+  toPosition: [number, number] | null;
+
+  /** During creation: show cursor dot? */
+  showCursorDot: boolean;
+
+  /** Always null for overlay previews */
+  bbox: null;
+}
+
+/**
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
@@ -140,7 +190,8 @@ export type PreviewData =
   | EraserPreview
   | TextPreview
   | PerfectShapePreview
-  | SelectionPreview;
+  | SelectionPreview
+  | ConnectorPreview;
 
 /**
  * PointerTool - Interface for tools that handle pointer gestures.

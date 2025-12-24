@@ -3,6 +3,7 @@ import { drawStrokePreview } from './layers/stroke-preview';
 import { drawPresenceOverlays } from './layers';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
+import { drawConnectorPreview } from './layers/connector-preview';
 import { getObjectCacheInstance } from './object-cache';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
@@ -324,6 +325,16 @@ export class OverlayRenderLoop {
           }
 
           ctx.restore();
+        } else if (previewToDraw?.kind === 'connector') {
+          // Connector preview (world space)
+          // Explicit world transform: DPR × scale × translate combined
+          ctx.setTransform(
+            vp.dpr * view.scale, 0,
+            0, vp.dpr * view.scale,
+            -view.pan.x * vp.dpr * view.scale,
+            -view.pan.y * vp.dpr * view.scale
+          );
+          drawConnectorPreview(ctx, previewToDraw, view.scale);
         }
       ctx.restore();
 
