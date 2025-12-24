@@ -1,0 +1,404 @@
+/* ===== Selection Context Menu ===== */
+/* Visual spec for floating selection toolbar */
+
+.selection-context-menu {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 40px;
+  padding: 4px 6px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.08),
+    0 1px 4px rgba(0, 0, 0, 0.04);
+  z-index: 500;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Groups for logical separation */
+.scm-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+/* Divider between groups */
+.scm-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 4px;
+}
+
+/* Base button styles */
+.scm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #374151;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 100ms ease,
+    color 100ms ease;
+}
+
+.scm-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.scm-btn:active {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.scm-btn.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+.scm-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+/* Icon button (shape type) */
+.scm-btn-icon {
+  padding: 0 6px;
+  min-width: 32px;
+}
+
+.scm-btn-icon svg:first-child {
+  width: 18px;
+  height: 18px;
+}
+
+.scm-btn-icon svg:last-child {
+  width: 10px;
+  height: 10px;
+  opacity: 0.5;
+  margin-left: 2px;
+}
+
+/* Font selector button */
+.scm-btn-font {
+  min-width: 80px;
+  max-width: 120px;
+  padding: 0 8px;
+}
+
+.scm-font-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  text-align: left;
+}
+
+.scm-btn-font svg {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  opacity: 0.5;
+}
+
+/* Font size controls */
+.scm-size-group {
+  gap: 0;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.scm-size-btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  transition: all 100ms ease;
+}
+
+.scm-size-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #374151;
+}
+
+.scm-size-btn:active {
+  background: rgba(0, 0, 0, 0.1);
+  transform: scale(0.95);
+}
+
+.scm-size-value {
+  min-width: 28px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #1f2937;
+}
+
+/* Format buttons (Bold/Italic) */
+.scm-format-group {
+  gap: 2px;
+}
+
+.scm-btn-format {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.scm-format-b {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.scm-format-i {
+  font-size: 14px;
+  font-weight: 500;
+  font-style: italic;
+  font-family: 'Georgia', serif;
+}
+
+.scm-btn-format.active {
+  background: #1f2937;
+  color: #ffffff;
+}
+
+.scm-btn-format.active:hover {
+  background: #374151;
+}
+
+/* ===== Submenus ===== */
+.scm-submenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 140px;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  z-index: 510;
+  animation: scm-submenu-enter 120ms ease-out;
+}
+
+@keyframes scm-submenu-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.scm-submenu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #374151;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.scm-submenu-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.scm-submenu-item.selected {
+  background: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+.scm-submenu-item.selected:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.scm-submenu-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.scm-submenu-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.scm-submenu-label {
+  flex: 1;
+}
+
+/* Shape types submenu - grid layout */
+.scm-submenu-types {
+  min-width: 160px;
+}
+
+/* Font submenu */
+.scm-submenu-fonts {
+  min-width: 150px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.scm-submenu-fonts .scm-submenu-item {
+  font-size: 13px;
+}
+
+/* Scrollbar for font list */
+.scm-submenu-fonts::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scm-submenu-fonts::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scm-submenu-fonts::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+.scm-submenu-fonts::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* ===== Dark Theme Variant ===== */
+/* Apply this class to selection-context-menu for dark mode */
+.selection-context-menu.dark {
+  background: #1e1e1e;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.3),
+    0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.selection-context-menu.dark .scm-divider {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.selection-context-menu.dark .scm-btn {
+  color: #e5e7eb;
+}
+
+.selection-context-menu.dark .scm-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.selection-context-menu.dark .scm-btn:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.selection-context-menu.dark .scm-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.selection-context-menu.dark .scm-size-group {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.selection-context-menu.dark .scm-size-btn {
+  color: #9ca3af;
+}
+
+.selection-context-menu.dark .scm-size-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e5e7eb;
+}
+
+.selection-context-menu.dark .scm-size-value {
+  color: #f3f4f6;
+}
+
+.selection-context-menu.dark .scm-btn-format.active {
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.selection-context-menu.dark .scm-btn-format.active:hover {
+  background: #f3f4f6;
+}
+
+.selection-context-menu.dark .scm-submenu {
+  background: #252525;
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.4),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.selection-context-menu.dark .scm-submenu-item {
+  color: #e5e7eb;
+}
+
+.selection-context-menu.dark .scm-submenu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.selection-context-menu.dark .scm-submenu-item.selected {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+.selection-context-menu.dark .scm-submenu-fonts::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.selection-context-menu.dark .scm-submenu-fonts::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* ===== Responsive adjustments ===== */
+@media (max-width: 480px) {
+  .selection-context-menu {
+    padding: 3px 4px;
+    gap: 1px;
+  }
+
+  .scm-btn-font {
+    min-width: 60px;
+    max-width: 80px;
+  }
+
+  .scm-divider {
+    margin: 0 2px;
+  }
+}
