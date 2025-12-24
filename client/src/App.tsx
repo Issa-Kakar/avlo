@@ -15,6 +15,7 @@ import { useRoomDoc } from './hooks/use-room-doc';
 import { useSnapshot } from './hooks/use-snapshot';
 import { useCameraStore } from '@/stores/camera-store';
 import RoomPage from './pages/RoomPage';
+import { SelectionContextMenuDemo } from './pages/components/SelectionContextMenu';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);
@@ -165,6 +166,9 @@ export default function App() {
 
         {/* Room page for actual rooms */}
         <Route path="/room/:roomId" element={<RoomPage />} />
+
+        {/* UI Demo routes */}
+        <Route path="/demo/context-menu" element={<SelectionContextMenuDemo />} />
       </Routes>
     </RoomDocRegistryProvider>
   );
