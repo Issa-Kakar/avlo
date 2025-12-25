@@ -42,7 +42,15 @@ interface Terminal {
   kind: 'world' | 'shape';
   x: number;
   y: number;
-  dir: Dir;
+  /**
+   * Direction the jetty extends from this point (AWAY from any attached shape).
+   * - For shape-attached: SAME as snap.side (N side = jetty extends north, away from shape)
+   * - For free: Direction of travel toward the other endpoint
+   *
+   * Arrow head direction is derived from the last segment, which goes FROM toJetty TO to.pos,
+   * so arrow naturally points OPPOSITE of outwardDir (into the shape).
+   */
+  outwardDir: Dir;
   // Shape-specific (only set when kind === 'shape')
   shapeId?: string;
   side?: Dir;
@@ -101,23 +109,23 @@ export class ConnectorTool implements PointerTool {
     });
 
     if (snap) {
-      // Start attached to shape
+      // Start attached to shape - jetty extends outward (same as snap.side)
       this.from = {
         kind: 'shape',
         x: snap.position[0],
         y: snap.position[1],
-        dir: snap.side, // Exit direction = the side
+        outwardDir: snap.side, // Jetty extends away from shape
         shapeId: snap.shapeId,
         side: snap.side,
         t: snap.t,
       };
     } else {
-      // Free start point - default direction (will be refined on move)
+      // Free start point - will be refined on move based on drag direction
       this.from = {
         kind: 'world',
         x: worldX,
         y: worldY,
-        dir: 'E', // Default, will be refined based on drag direction
+        outwardDir: 'E', // Default, refined in move() based on drag direction
       };
     }
 
@@ -126,7 +134,7 @@ export class ConnectorTool implements PointerTool {
       kind: 'world',
       x: worldX,
       y: worldY,
-      dir: 'W', // Opposite of default from direction
+      outwardDir: 'W', // Opposite of default from direction
     };
 
     this.dragDir = null;
@@ -166,12 +174,13 @@ export class ConnectorTool implements PointerTool {
     this.prevSnap = snap;
 
     if (snap) {
-      // Snapped to shape - use shape attachment
+      // Snapped to shape - jetty extends outward from shape (same as snap.side)
+      // Arrow will point OPPOSITE of outwardDir (into the shape)
       this.to = {
         kind: 'shape',
         x: snap.position[0],
         y: snap.position[1],
-        dir: oppositeDir(snap.side), // Entry direction is opposite of side
+        outwardDir: snap.side, // Jetty extends AWAY from shape (NOT oppositeDir!)
         shapeId: snap.shapeId,
         side: snap.side,
         t: snap.t,
@@ -184,11 +193,16 @@ export class ConnectorTool implements PointerTool {
 
       this.dragDir = inferDragDirection(fromPos, cursorPos, this.dragDir);
 
+      // Update from.outwardDir for free starts so first segment updates with drag
+      if (this.from!.kind === 'world') {
+        this.from!.outwardDir = this.dragDir;
+      }
+
       this.to = {
         kind: 'world',
         x: worldX,
         y: worldY,
-        dir: oppositeDir(this.dragDir), // Entry is opposite of travel direction
+        outwardDir: oppositeDir(this.dragDir), // Approaching from opposite of travel
       };
     }
 
@@ -330,12 +344,12 @@ export class ConnectorTool implements PointerTool {
     const result = computeRoute(
       {
         pos: [this.from.x, this.from.y],
-        dir: this.from.dir,
+        dir: this.from.outwardDir,
         isAttached: this.from.kind === 'shape',
       },
       {
         pos: [this.to.x, this.to.y],
-        dir: this.to.dir,
+        dir: this.to.outwardDir,
         isAttached: this.to.kind === 'shape',
         shapeBounds: toShapeBounds,
       },

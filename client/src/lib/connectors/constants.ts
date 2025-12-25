@@ -37,10 +37,10 @@ export const SNAP_CONFIG = {
   INSIDE_DEPTH_PX: 8,
 
   /** Anchor dot visual radius */
-  DOT_RADIUS_PX: 5,
+  DOT_RADIUS_PX: 8,
 
   /** Connector endpoint handle radius */
-  ENDPOINT_RADIUS_PX: 6,
+  ENDPOINT_RADIUS_PX: 8,
 } as const;
 
 /**
@@ -56,7 +56,7 @@ export const ROUTING_CONFIG = {
   JETTY_W: 16,
 
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 8,
+  CORNER_RADIUS_W: 22,
 
   /** Dogleg offset when shapes are behind each other in world units */
   DOGLEG_W: 40,
