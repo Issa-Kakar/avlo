@@ -54,44 +54,72 @@ function computeFromOutwardDirOnSnap(
   shapeBounds: { x: number; y: number; w: number; h: number }
 ): Dir {
   const { x, y, w, h } = shapeBounds;
+  const shapeCenterX = x + w / 2;
+  const shapeCenterY = y + h / 2;
 
-  // The snapped side determines where toJetty is:
-  // N → toJetty is ABOVE shape (at y - JETTY_W)
-  // S → toJetty is BELOW shape (at y + h + JETTY_W)
-  // E → toJetty is RIGHT of shape (at x + w + JETTY_W)
-  // W → toJetty is LEFT of shape (at x - JETTY_W)
+  // The snapped side determines the FINAL APPROACH direction:
+  // - N/S snaps → final approach is VERTICAL (perpendicular to horizontal edge)
+  // - E/W snaps → final approach is HORIZONTAL (perpendicular to vertical edge)
   //
-  // We want from.outwardDir to position fromJetty optimally for A* routing:
-  // - Match the toJetty's direction when possible (puts both jetties on similar level)
-  // - Go perpendicular only when from is on the OPPOSITE side of the shape
+  // Three cases for from.outwardDir:
+  //
+  // 1. SAME SIDE: from is on the same side as the snap (e.g., above shape → top snap)
+  //    - Shape is NOT in the way
+  //    - Go PERPENDICULAR first (H for N/S snaps, V for E/W snaps) to align with snap
+  //    - This creates a clean L-shape with final segment going straight into shape
+  //
+  // 2. OPPOSITE SIDE (beside): from is on opposite side but outside shape extent
+  //    - Shape IS in the way, need to route around
+  //    - Go PARALLEL first (V for N/S snaps, H for E/W snaps) to clear shape
+  //
+  // 3. BEHIND SHAPE: from is opposite side AND within shape extent (horizontally/vertically)
+  //    - Can't go parallel directly (would hit shape)
+  //    - Go PERPENDICULAR first to exit shape extent, then route around
 
   switch (toSide) {
-    case 'N': // toJetty is above shape, final segment goes DOWN
-      // toJetty is at Y = shape.y - JETTY_W (above shape)
-      // Best: set from.outwardDir = 'N' so fromJetty also moves up toward toJetty's level
-      // Exception: if from is already above the shape, go 'S' to approach directly
+    case 'N': // Final approach is vertical (down into shape)
       if (fromPos[1] < y) {
-        return 'S'; // From is above shape, go down toward toJetty
+        // SAME SIDE: from is above shape
+        // Go horizontal first to align X, then vertical approach
+        return fromPos[0] < shapeCenterX ? 'E' : 'W';
+      } else if (fromPos[0] > x && fromPos[0] < x + w) {
+        // BEHIND SHAPE: from is below/beside AND horizontally within shape
+        // Go horizontal to exit shape width first
+        return fromPos[0] < shapeCenterX ? 'W' : 'E';
       }
-      return 'N'; // From is at or below shape, go up to match toJetty's level
+      // OPPOSITE SIDE (beside): go up to match toJetty level
+      return 'N';
 
-    case 'S': // toJetty is below shape, final segment goes UP
+    case 'S': // Final approach is vertical (up into shape)
       if (fromPos[1] > y + h) {
-        return 'N'; // From is below shape, go up toward toJetty
+        // SAME SIDE: from is below shape
+        return fromPos[0] < shapeCenterX ? 'E' : 'W';
+      } else if (fromPos[0] > x && fromPos[0] < x + w) {
+        // BEHIND SHAPE: horizontally within shape
+        return fromPos[0] < shapeCenterX ? 'W' : 'E';
       }
-      return 'S'; // From is at or above shape, go down to match toJetty's level
+      return 'S';
 
-    case 'E': // toJetty is right of shape, final segment goes LEFT
+    case 'E': // Final approach is horizontal (left into shape)
       if (fromPos[0] > x + w) {
-        return 'W'; // From is right of shape, go left toward toJetty
+        // SAME SIDE: from is right of shape
+        // Go vertical first to align Y, then horizontal approach
+        return fromPos[1] < shapeCenterY ? 'S' : 'N';
+      } else if (fromPos[1] > y && fromPos[1] < y + h) {
+        // BEHIND SHAPE: vertically within shape
+        return fromPos[1] < shapeCenterY ? 'N' : 'S';
       }
-      return 'E'; // From is at or left of shape, go right to match toJetty's level
+      return 'E';
 
-    case 'W': // toJetty is left of shape, final segment goes RIGHT
+    case 'W': // Final approach is horizontal (right into shape)
       if (fromPos[0] < x) {
-        return 'E'; // From is left of shape, go right toward toJetty
+        // SAME SIDE: from is left of shape
+        return fromPos[1] < shapeCenterY ? 'S' : 'N';
+      } else if (fromPos[1] > y && fromPos[1] < y + h) {
+        // BEHIND SHAPE: vertically within shape
+        return fromPos[1] < shapeCenterY ? 'N' : 'S';
       }
-      return 'W'; // From is at or right of shape, go left to match toJetty's level
+      return 'W';
   }
 }
 

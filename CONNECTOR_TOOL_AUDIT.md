@@ -5,6 +5,48 @@
 
 ---
 
+## Changelog
+
+### 2024-12-25: A* Manhattan Routing Redesign
+
+**Files Added:**
+- `routing-zroute.ts` - Simple 3-segment Z-routing for unsnapped endpoints
+- `routing-grid.ts` - Non-uniform grid construction with obstacle blocking
+- `routing-astar.ts` - A* pathfinding with direction seeding and cost function
+- `CONNECTOR_ROUTING_REDESIGN.md` - Implementation plan document
+
+**Files Modified:**
+- `routing.ts` - Now dispatcher between Z-route and A* based on snap state
+- `constants.ts` - Added `COST_CONFIG` and `OBSTACLE_PADDING_W`
+- `ConnectorTool.ts` - Added `computeFromOutwardDirOnSnap()` for optimal direction
+
+**Key Fixes:**
+
+1. **Blocking Bug (toJetty was blocked):**
+   - Root cause: `OBSTACLE_PADDING_W = 38` > `JETTY_W = 16`
+   - The toJetty cell was inside the padded blocked zone
+   - Fix: Block only shape interior, not padded region. Grid lines at padding for corridors.
+
+2. **from.outwardDir Not Updated on Snap:**
+   - Root cause: `from.outwardDir` kept old drag direction when snap occurred
+   - Fix: Added `computeFromOutwardDirOnSnap()` to compute optimal direction
+
+3. **from.outwardDir Direction Logic (Three Cases):**
+
+   | Case | Condition | First Segment | Reason |
+   |------|-----------|---------------|--------|
+   | SAME SIDE | from on same side as snap | PERPENDICULAR (H for N/S) | No obstacle, align first |
+   | OPPOSITE (beside) | from opposite, outside extent | PARALLEL (V for N/S) | Route around shape |
+   | BEHIND SHAPE | from opposite, within extent | PERPENDICULAR | Can't go parallel, exit first |
+
+**Known Issues (TODO):**
+- **Padding/Offset:** Routes still hug shape frame too closely. Arrow tip overlaps route.
+  - toJetty needs more offset (JETTY_W + ARROW_LENGTH + buffer)
+  - Grid padding lines should enforce minimum distance from shape
+- **A* vs Heuristic:** Could let A* choose first segment direction by including from.pos as a node
+
+---
+
 ## Table of Contents
 
 1. [File Structure Overview](#1-file-structure-overview)

@@ -675,35 +675,67 @@ function computeMoveCost(
 
 ## 9. Phase 6: ConnectorTool Integration
 
-### 9.1 Direction Computation for Unsnapped Start
+### 9.1 Direction Computation When Snapped (IMPLEMENTED)
 
-When `from.kind === 'world'` (free start) and `to.kind === 'shape'` (snapped end), we need to compute `from.outwardDir` based on relative position:
+When `to.kind === 'shape'` (snapped), compute `from.outwardDir` based on THREE cases:
+
+**The Final Approach Principle:**
+- N/S snaps → final approach is VERTICAL (perpendicular to horizontal edge)
+- E/W snaps → final approach is HORIZONTAL (perpendicular to vertical edge)
+
+**Three Cases:**
+
+| Case | Condition | First Segment | Reason |
+|------|-----------|---------------|--------|
+| SAME SIDE | from on same side as snap | PERPENDICULAR | No obstacle, align first, clean L-shape |
+| OPPOSITE (beside) | from opposite, outside extent | PARALLEL | Route around shape |
+| BEHIND SHAPE | from opposite, within extent | PERPENDICULAR | Exit extent first, then around |
 
 ```typescript
-function computeStartDirection(
+function computeFromOutwardDirOnSnap(
   fromPos: [number, number],
-  toPos: [number, number],
-  toSide: Dir
+  toSide: Dir,
+  shapeBounds: { x: number; y: number; w: number; h: number }
 ): Dir {
-  const dx = toPos[0] - fromPos[0];
-  const dy = toPos[1] - fromPos[1];
+  const { x, y, w, h } = shapeBounds;
+  const shapeCenterX = x + w / 2;
+  const shapeCenterY = y + h / 2;
 
-  // Determine which axis is dominant
-  const isTargetSideVertical = toSide === 'N' || toSide === 'S';
+  switch (toSide) {
+    case 'N': // Final approach is vertical (down into shape)
+      if (fromPos[1] < y) {
+        // SAME SIDE: from is above shape
+        // Go horizontal first to align X, then vertical approach
+        return fromPos[0] < shapeCenterX ? 'E' : 'W';
+      } else if (fromPos[0] > x && fromPos[0] < x + w) {
+        // BEHIND SHAPE: horizontally within shape extent
+        // Go horizontal to exit shape width first
+        return fromPos[0] < shapeCenterX ? 'W' : 'E';
+      }
+      // OPPOSITE SIDE (beside): go up to match toJetty level
+      return 'N';
 
-  // If target side is vertical (N/S), last segment is vertical
-  // So our approach should set up for horizontal final approach
-  // Vice versa for horizontal target side
-
-  if (Math.abs(dx) > Math.abs(dy)) {
-    // Horizontal dominant - start with horizontal move
-    return dx > 0 ? 'E' : 'W';
-  } else {
-    // Vertical dominant - start with vertical move
-    return dy > 0 ? 'S' : 'N';
+    // ... similar for S, E, W
   }
 }
 ```
+
+**Example Scenarios:**
+
+1. **SAME SIDE:** from at (50, 50), snap to TOP at (200, 100)
+   - from.y < shape.y → SAME SIDE
+   - Returns 'E' (go right to align, then down)
+   - Path: HV with clean vertical approach
+
+2. **OPPOSITE (beside):** from at (50, 250), snap to TOP at (200, 100)
+   - from.y > shape.y+h AND from.x outside shape → BESIDE
+   - Returns 'N' (go up to clear, then across)
+   - Path: VH routing around
+
+3. **BEHIND SHAPE:** from at (200, 250), snap to TOP at (200, 100)
+   - from.y > shape.y+h AND from.x inside shape → BEHIND
+   - Returns 'E' or 'W' (exit shape extent first)
+   - Path: HVH U-turn around
 
 ### 9.2 Updated move() Implementation
 
@@ -782,17 +814,38 @@ private updateRoute(): void {
 
 ### 10.1 New Files to Create
 
-- [ ] `client/src/lib/connectors/routing-astar.ts` - A* implementation
-- [ ] `client/src/lib/connectors/routing-grid.ts` - Non-uniform grid construction
-- [ ] `client/src/lib/connectors/routing-zroute.ts` - Z-route implementation
+- [x] `client/src/lib/connectors/routing-astar.ts` - A* implementation ✓
+- [x] `client/src/lib/connectors/routing-grid.ts` - Non-uniform grid construction ✓
+- [x] `client/src/lib/connectors/routing-zroute.ts` - Z-route implementation ✓
 
 ### 10.2 Files to Modify
 
-- [ ] `client/src/lib/connectors/routing.ts` - Replace with dispatcher
-- [ ] `client/src/lib/connectors/constants.ts` - Add cost config constants
-- [ ] `client/src/lib/tools/ConnectorTool.ts` - Update move() and updateRoute()
+- [x] `client/src/lib/connectors/routing.ts` - Replace with dispatcher ✓
+- [x] `client/src/lib/connectors/constants.ts` - Add COST_CONFIG + OBSTACLE_PADDING_W ✓
+- [x] `client/src/lib/tools/ConnectorTool.ts` - Added computeFromOutwardDirOnSnap() ✓
 
-### 10.3 Files to Delete (or gut)
+### 10.3 Known Issues (TODO)
+
+**Padding/Offset Problem:**
+Routes still hug the shape frame too closely. The arrow tip overlaps or precedes the routing waypoints.
+
+Root cause: toJetty is computed as `to.position - JETTY_W`, but:
+1. JETTY_W (16) is less than arrow length (~10-14)
+2. Grid blocking only blocks shape interior, not padding corridors
+3. Routes can pass close to shape edge
+
+**Proposed fix:**
+1. Increase toJetty offset: `JETTY_W + ARROW_MIN_LENGTH_W + buffer`
+2. Block cells within arrow-length of shape, not just interior
+3. Ensure routing waypoints stay outside arrow tip zone
+
+**A* vs Heuristic for First Segment:**
+Current `computeFromOutwardDirOnSnap()` uses quadrant heuristics. Alternative approach:
+- Include `from.position` as a graph node (not just fromJetty)
+- Let A* choose the optimal first direction
+- Only add guards for same-side edge cases
+
+### 10.4 Files to Delete (or gut)
 
 - [ ] Remove `pathCrossesRect` function (no longer needed)
 - [ ] Remove `generateRouteCandidates` function (replaced by A*)
