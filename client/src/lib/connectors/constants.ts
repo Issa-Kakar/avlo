@@ -62,6 +62,13 @@ export const ROUTING_CONFIG = {
   DOGLEG_W: 40,
 
   /**
+   * Obstacle padding beyond shape bounds (world units).
+   * Routes must stay this far from shapes to ensure arrow heads fit.
+   * = JETTY_W + ARROW_MIN_LENGTH_W + safety buffer
+   */
+  OBSTACLE_PADDING_W: 38,
+
+  /**
    * Arrow head sizing - scales with stroke width for visual balance.
    *
    * For filled triangle arrow heads:
@@ -76,6 +83,23 @@ export const ROUTING_CONFIG = {
   ARROW_WIDTH_FACTOR: 3,
   ARROW_MIN_LENGTH_W: 10,
   ARROW_MIN_WIDTH_W: 8,
+} as const;
+
+/**
+ * A* Routing Cost Configuration.
+ *
+ * These constants control how the A* algorithm evaluates paths.
+ * Higher penalties discourage certain path characteristics.
+ */
+export const COST_CONFIG = {
+  /** Penalty for changing direction (creating a bend) */
+  BEND_PENALTY: 1000,
+
+  /** Bonus for continuing in same direction (longer segments) */
+  CONTINUATION_BONUS: 10,
+
+  /** Penalty for short segments (less than JETTY_W) */
+  SHORT_SEGMENT_PENALTY: 50,
 } as const;
 
 /**

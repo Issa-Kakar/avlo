@@ -32,6 +32,69 @@ import {
   oppositeDir,
 } from '@/lib/connectors';
 
+/**
+ * Compute optimal from.outwardDir when to is snapped to a shape.
+ *
+ * The snapped side (toSide) determines the final approach axis:
+ * - N/S (horizontal edge) → final segment is vertical
+ * - E/W (vertical edge) → final segment is horizontal
+ *
+ * We compute from.outwardDir to help A* route cleanly around the obstacle:
+ * - If from is on the "approach" side (can reach directly), go toward the shape
+ * - If from must go around, use perpendicular direction based on quadrant
+ *
+ * @param fromPos - Start position [x, y]
+ * @param toSide - The side of the shape we're snapped to (N/E/S/W)
+ * @param shapeBounds - The shape's bounding box
+ * @returns Optimal from.outwardDir
+ */
+function computeFromOutwardDirOnSnap(
+  fromPos: [number, number],
+  toSide: Dir,
+  shapeBounds: { x: number; y: number; w: number; h: number }
+): Dir {
+  const { x, y, w, h } = shapeBounds;
+
+  // The snapped side determines where toJetty is:
+  // N → toJetty is ABOVE shape (at y - JETTY_W)
+  // S → toJetty is BELOW shape (at y + h + JETTY_W)
+  // E → toJetty is RIGHT of shape (at x + w + JETTY_W)
+  // W → toJetty is LEFT of shape (at x - JETTY_W)
+  //
+  // We want from.outwardDir to position fromJetty optimally for A* routing:
+  // - Match the toJetty's direction when possible (puts both jetties on similar level)
+  // - Go perpendicular only when from is on the OPPOSITE side of the shape
+
+  switch (toSide) {
+    case 'N': // toJetty is above shape, final segment goes DOWN
+      // toJetty is at Y = shape.y - JETTY_W (above shape)
+      // Best: set from.outwardDir = 'N' so fromJetty also moves up toward toJetty's level
+      // Exception: if from is already above the shape, go 'S' to approach directly
+      if (fromPos[1] < y) {
+        return 'S'; // From is above shape, go down toward toJetty
+      }
+      return 'N'; // From is at or below shape, go up to match toJetty's level
+
+    case 'S': // toJetty is below shape, final segment goes UP
+      if (fromPos[1] > y + h) {
+        return 'N'; // From is below shape, go up toward toJetty
+      }
+      return 'S'; // From is at or above shape, go down to match toJetty's level
+
+    case 'E': // toJetty is right of shape, final segment goes LEFT
+      if (fromPos[0] > x + w) {
+        return 'W'; // From is right of shape, go left toward toJetty
+      }
+      return 'E'; // From is at or left of shape, go right to match toJetty's level
+
+    case 'W': // toJetty is left of shape, final segment goes RIGHT
+      if (fromPos[0] < x) {
+        return 'E'; // From is left of shape, go right toward toJetty
+      }
+      return 'W'; // From is at or right of shape, go left to match toJetty's level
+  }
+}
+
 type Phase = 'idle' | 'creating';
 
 /**
@@ -186,6 +249,18 @@ export class ConnectorTool implements PointerTool {
         t: snap.t,
       };
       this.dragDir = null; // Reset drag direction when snapped
+
+      // CRITICAL: Update from.outwardDir based on snap position and side
+      // This ensures the first segment routes optimally around the obstacle
+      const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
+      if (handle) {
+        const frame = getShapeFrame(handle);
+        if (frame) {
+          const fromPos: [number, number] = [this.from!.x, this.from!.y];
+          const shapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
+          this.from!.outwardDir = computeFromOutwardDirOnSnap(fromPos, snap.side, shapeBounds);
+        }
+      }
     } else {
       // Free endpoint - infer direction from drag
       const fromPos: [number, number] = [this.from!.x, this.from!.y];
@@ -329,10 +404,24 @@ export class ConnectorTool implements PointerTool {
       return;
     }
 
-    // Get target shape bounds if snapped (for self-intersection avoidance)
+    const snapshot = getCurrentSnapshot();
+
+    // Get source shape bounds if attached (for bidirectional obstacle avoidance)
+    let fromShapeBounds: { x: number; y: number; w: number; h: number } | undefined;
+    if (this.from.kind === 'shape' && this.from.shapeId) {
+      const handle = snapshot.objectsById.get(this.from.shapeId);
+      if (handle) {
+        const frame = getShapeFrame(handle);
+        if (frame) {
+          fromShapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
+        }
+      }
+    }
+
+    // Get target shape bounds if snapped (for obstacle avoidance)
     let toShapeBounds: { x: number; y: number; w: number; h: number } | undefined;
     if (this.to.kind === 'shape' && this.hoverSnap) {
-      const handle = getCurrentSnapshot().objectsById.get(this.hoverSnap.shapeId);
+      const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
       if (handle) {
         const frame = getShapeFrame(handle);
         if (frame) {
@@ -346,6 +435,7 @@ export class ConnectorTool implements PointerTool {
         pos: [this.from.x, this.from.y],
         dir: this.from.outwardDir,
         isAttached: this.from.kind === 'shape',
+        shapeBounds: fromShapeBounds,
       },
       {
         pos: [this.to.x, this.to.y],

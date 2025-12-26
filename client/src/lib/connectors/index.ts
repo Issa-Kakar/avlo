@@ -7,7 +7,7 @@
  */
 
 // Constants
-export { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld } from './constants';
+export { SNAP_CONFIG, ROUTING_CONFIG, COST_CONFIG, pxToWorld } from './constants';
 
 // Shape utilities
 export {
@@ -37,6 +37,8 @@ export {
 export {
   type RouteResult,
   type RouteEndpoint,
+  type Terminal,
   computeRoute,
+  computeRouteFromTerminals,
   inferDragDirection,
 } from './routing';
