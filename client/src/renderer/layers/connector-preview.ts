@@ -15,7 +15,99 @@
  */
 
 import type { ConnectorPreview } from '@/lib/tools/types';
-import { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld } from '@/lib/connectors/constants';
+import { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld, computeArrowLength } from '@/lib/connectors/constants';
+
+/**
+ * Trim info for ending the polyline before the arrow head.
+ */
+interface EndTrimInfo {
+  /** The point where the polyline should end (arrow base) */
+  trimmedPoint: [number, number];
+  /** Unit direction vector of the final segment */
+  direction: [number, number];
+}
+
+/**
+ * Compute where to trim the polyline for an arrow cap.
+ *
+ * This accounts for the arc corner geometry - we can only trim from the
+ * "straight" portion of the final segment after the arc tangent point.
+ *
+ * For orthogonal connectors with 90° corners:
+ * - The arc tangent point is at distance `cornerRadius` from the corner
+ * - We can trim at most `segmentLength - cornerRadius` from the final segment
+ * - This ensures the polyline ends smoothly after the arc
+ *
+ * @param points - Full route points
+ * @param strokeWidth - Connector stroke width (for arrow sizing)
+ * @param position - Which end to trim ('start' or 'end')
+ * @returns Trim info or null if not enough points
+ */
+function computeEndTrim(
+  points: [number, number][],
+  strokeWidth: number,
+  position: 'start' | 'end'
+): EndTrimInfo | null {
+  if (points.length < 2) return null;
+
+  const arrowLength = computeArrowLength(strokeWidth);
+  const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
+
+  let tip: [number, number];
+  let prev: [number, number];
+  let cornerPrev: [number, number] | null = null; // The point before the corner
+
+  if (position === 'end') {
+    tip = points[points.length - 1];
+    prev = points[points.length - 2];
+    if (points.length >= 3) {
+      cornerPrev = points[points.length - 3];
+    }
+  } else {
+    tip = points[0];
+    prev = points[1];
+    if (points.length >= 3) {
+      cornerPrev = points[2];
+    }
+  }
+
+  // Final segment direction and length
+  const dx = tip[0] - prev[0];
+  const dy = tip[1] - prev[1];
+  const segLen = Math.hypot(dx, dy);
+
+  if (segLen < 0.001) return null;
+
+  const ux = dx / segLen;
+  const uy = dy / segLen;
+
+  // Calculate the arc radius that would be used at the corner (prev)
+  // This matches the logic in drawRoundedPolyline
+  let actualCornerRadius = 0;
+  if (cornerPrev) {
+    const lenIn = Math.hypot(prev[0] - cornerPrev[0], prev[1] - cornerPrev[1]);
+    const lenOut = segLen;
+    actualCornerRadius = Math.min(cornerRadius, lenIn / 2, lenOut / 2);
+    if (actualCornerRadius < 2) actualCornerRadius = 0; // Sharp corner
+  }
+
+  // The arc consumes `actualCornerRadius` of the final segment
+  // Available for trimming is the rest of the segment
+  const availableForTrim = Math.max(0, segLen - actualCornerRadius);
+
+  // Clamp the arrow trim to what's available
+  const actualTrim = Math.min(arrowLength, availableForTrim);
+
+  const trimmedPoint: [number, number] = [
+    tip[0] - ux * actualTrim,
+    tip[1] - uy * actualTrim,
+  ];
+
+  return {
+    trimmedPoint,
+    direction: [ux, uy],
+  };
+}
 
 /**
  * Draw connector preview on overlay canvas.
@@ -48,10 +140,13 @@ export function drawConnectorPreview(
   ctx.save();
   ctx.globalAlpha = opacity;
 
-  // 1. Draw main polyline with rounded corners
-  drawRoundedPolyline(ctx, points, color, width);
+  // 1. Compute trim info for arrow caps (polyline stops at arrow base)
+  const endTrim = endCap === 'arrow' ? computeEndTrim(points, width, 'end') : null;
 
-  // 2. Draw arrow heads at endpoints
+  // 2. Draw main polyline with rounded corners (trimmed for arrow if needed)
+  drawRoundedPolyline(ctx, points, color, width, endTrim ?? undefined);
+
+  // 3. Draw arrow heads at endpoints (at original positions - arrow fills the gap)
   if (endCap === 'arrow' && points.length >= 2) {
     drawArrowHead(ctx, points, color, width, 'end');
   }
@@ -61,12 +156,12 @@ export function drawConnectorPreview(
 
   ctx.restore();
 
-  // 3. Draw shape anchor dots (ONLY when snapped - dots = will connect here)
+  // 4. Draw shape anchor dots (ONLY when snapped - dots = will connect here)
   if (snapShapeFrame) {
     drawShapeAnchorDots(ctx, snapShapeFrame, activeMidpointSide, scale);
   }
 
-  // 4. Draw endpoint dots
+  // 5. Draw endpoint dots
   if (preview.fromPosition) {
     drawEndpointDot(ctx, preview.fromPosition, fromIsAttached, scale);
   }
@@ -78,12 +173,19 @@ export function drawConnectorPreview(
 /**
  * Draw the main connector polyline with rounded corners.
  * Uses arcTo for smooth corner transitions.
+ *
+ * @param ctx - Canvas context
+ * @param points - Route points
+ * @param color - Stroke color
+ * @param width - Stroke width
+ * @param endTrim - Optional trim info to stop polyline before arrow head
  */
 function drawRoundedPolyline(
   ctx: CanvasRenderingContext2D,
   points: [number, number][],
   color: string,
-  width: number
+  width: number,
+  endTrim?: EndTrimInfo
 ): void {
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
@@ -116,9 +218,14 @@ function drawRoundedPolyline(
     }
   }
 
-  // Final segment to last point
-  const last = points[points.length - 1];
-  ctx.lineTo(last[0], last[1]);
+  // Final segment - use trimmed point if provided (for arrow caps)
+  if (endTrim) {
+    ctx.lineTo(endTrim.trimmedPoint[0], endTrim.trimmedPoint[1]);
+  } else {
+    const last = points[points.length - 1];
+    ctx.lineTo(last[0], last[1]);
+  }
+
   ctx.stroke();
 }
 

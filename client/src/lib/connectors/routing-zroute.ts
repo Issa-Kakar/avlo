@@ -11,7 +11,7 @@
  * @module lib/connectors/routing-zroute
  */
 
-import { ROUTING_CONFIG } from './constants';
+import { computeApproachOffset } from './constants';
 import { getOutwardVector, isHorizontal, type Dir } from './shape-utils';
 
 /**
@@ -43,14 +43,21 @@ export interface RouteResult {
 /**
  * Compute jetty point (stub extending from terminal).
  *
+ * The jetty offset depends on strokeWidth because it must accommodate:
+ * 1. Arc corner (for perpendicular turns)
+ * 2. Straight segment (for stroke to straighten)
+ * 3. Arrow head
+ *
  * @param terminal - The terminal to compute jetty for
+ * @param strokeWidth - Connector stroke width
  * @returns Jetty point position
  */
-function computeJettyPoint(terminal: Terminal): [number, number] {
+function computeJettyPoint(terminal: Terminal, strokeWidth: number): [number, number] {
   const vec = getOutwardVector(terminal.outwardDir);
+  const offset = computeApproachOffset(strokeWidth);
   return [
-    terminal.position[0] + vec[0] * ROUTING_CONFIG.JETTY_W,
-    terminal.position[1] + vec[1] * ROUTING_CONFIG.JETTY_W,
+    terminal.position[0] + vec[0] * offset,
+    terminal.position[1] + vec[1] * offset,
   ];
 }
 
@@ -91,11 +98,12 @@ function simplifyOrthogonal(points: [number, number][]): [number, number][] {
  *
  * @param from - Start terminal
  * @param to - End terminal (must be unsnapped)
+ * @param strokeWidth - Connector stroke width (affects jetty offset)
  * @returns Route result with path and signature
  */
-export function computeZRoute(from: Terminal, to: Terminal): RouteResult {
-  const fromJetty = computeJettyPoint(from);
-  const toJetty = computeJettyPoint(to);
+export function computeZRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
+  const fromJetty = computeJettyPoint(from, strokeWidth);
+  const toJetty = computeJettyPoint(to, strokeWidth);
 
   // Determine HVH vs VHV based on from.outwardDir
   const isFromHorizontal = isHorizontal(from.outwardDir);

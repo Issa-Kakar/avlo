@@ -13,7 +13,7 @@
  * @module lib/connectors/routing-grid
  */
 
-import { ROUTING_CONFIG } from './constants';
+import { computeApproachOffset } from './constants';
 import type { Terminal } from './routing-zroute';
 
 /**
@@ -69,16 +69,18 @@ function pointInsideRect(x: number, y: number, rect: AABB): boolean {
 /**
  * Create cell grid with blocking based on obstacle bounds.
  *
- * CRITICAL: The blocking margin must be SMALLER than JETTY_W!
- * - We use full padding (OBSTACLE_PADDING_W) for grid line placement (routing corridors)
- * - We use small margin for blocking (just the shape interior)
- * - This ensures jetty endpoints are NOT blocked, so A* can reach the goal
+ * Blocks shape interior + approach offset margin to ensure routes
+ * stay far enough from shapes for arc corners + straight segment + arrow.
+ *
+ * Jetty endpoints are explicitly protected from blocking so A* can
+ * always reach the goal.
  *
  * @param xLines - Sorted X coordinates
  * @param yLines - Sorted Y coordinates
  * @param obstacle - Shape bounds to block (if any)
  * @param fromJetty - Start jetty position (must not be blocked)
  * @param toJetty - End jetty position (must not be blocked)
+ * @param strokeWidth - Connector stroke width (affects blocking offset)
  * @returns Grid structure
  */
 function createCellGrid(
@@ -86,21 +88,20 @@ function createCellGrid(
   yLines: number[],
   obstacle: AABB | null,
   fromJetty: [number, number],
-  toJetty: [number, number]
+  toJetty: [number, number],
+  strokeWidth: number
 ): Grid {
   const cells: GridCell[][] = [];
 
-  // Block only the ACTUAL shape interior (not the full padded region)
-  // This ensures jetty endpoints (which are JETTY_W away from shape) are NOT blocked
-  // Routes will still prefer the padded corridors due to bend penalties
+  // Block shape interior + approach offset margin
+  // This ensures routes stay far enough for: arc + straight + arrow
+  const approachOffset = computeApproachOffset(strokeWidth);
   const blockedBounds: AABB | null = obstacle
     ? {
-        // Small margin just for the shape itself (no padding)
-        // The jetty at JETTY_W=16 units away will NOT be blocked
-        x: obstacle.x,
-        y: obstacle.y,
-        w: obstacle.w,
-        h: obstacle.h,
+        x: obstacle.x - approachOffset,
+        y: obstacle.y - approachOffset,
+        w: obstacle.w + approachOffset * 2,
+        h: obstacle.h + approachOffset * 2,
       }
     : null;
 
@@ -145,16 +146,21 @@ function createCellGrid(
  * @param to - End terminal
  * @param fromJetty - Start jetty position
  * @param toJetty - End jetty position
+ * @param strokeWidth - Connector stroke width (affects grid line placement)
  * @returns Grid for A* routing
  */
 export function buildNonUniformGrid(
   from: Terminal,
   to: Terminal,
   fromJetty: [number, number],
-  toJetty: [number, number]
+  toJetty: [number, number],
+  strokeWidth: number
 ): Grid {
   const xLines: number[] = [];
   const yLines: number[] = [];
+
+  // Approach offset includes: arc + straight segment + arrow
+  const approachOffset = computeApproachOffset(strokeWidth);
 
   // === 1. Endpoint positions ===
   xLines.push(from.position[0], to.position[0]);
@@ -164,29 +170,27 @@ export function buildNonUniformGrid(
   xLines.push(fromJetty[0], toJetty[0]);
   yLines.push(fromJetty[1], toJetty[1]);
 
-  // === 3. Obstacle boundaries with GENEROUS padding ===
+  // === 3. Obstacle boundaries with approach offset padding ===
   if (to.shapeBounds) {
-    const padding = ROUTING_CONFIG.OBSTACLE_PADDING_W;
     const { x, y, w, h } = to.shapeBounds;
 
     // Inner boundaries (shape edge)
     xLines.push(x, x + w);
     yLines.push(y, y + h);
 
-    // Outer boundaries (padded - valid routing corridors)
-    xLines.push(x - padding, x + w + padding);
-    yLines.push(y - padding, y + h + padding);
+    // Outer boundaries (valid routing corridors at approach offset)
+    xLines.push(x - approachOffset, x + w + approachOffset);
+    yLines.push(y - approachOffset, y + h + approachOffset);
   }
 
   // Also handle from.shapeBounds for bi-directional obstacle avoidance
   if (from.shapeBounds) {
-    const padding = ROUTING_CONFIG.OBSTACLE_PADDING_W;
     const { x, y, w, h } = from.shapeBounds;
 
     xLines.push(x, x + w);
     yLines.push(y, y + h);
-    xLines.push(x - padding, x + w + padding);
-    yLines.push(y - padding, y + h + padding);
+    xLines.push(x - approachOffset, x + w + approachOffset);
+    yLines.push(y - approachOffset, y + h + approachOffset);
   }
 
   // === 4. Midpoints for Z-route flexibility ===
@@ -211,7 +215,7 @@ export function buildNonUniformGrid(
   // === 7. Build cell grid ===
   // Only consider target shape as obstacle (from is where we're coming FROM)
   // Pass jetty positions so they're explicitly not blocked
-  return createCellGrid(xSorted, ySorted, to.shapeBounds ?? null, fromJetty, toJetty);
+  return createCellGrid(xSorted, ySorted, to.shapeBounds ?? null, fromJetty, toJetty, strokeWidth);
 }
 
 /**

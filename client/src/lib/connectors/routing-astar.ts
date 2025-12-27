@@ -14,7 +14,7 @@
  * @module lib/connectors/routing-astar
  */
 
-import { ROUTING_CONFIG, COST_CONFIG } from './constants';
+import { ROUTING_CONFIG, COST_CONFIG, computeApproachOffset } from './constants';
 import { getOutwardVector, oppositeDir, type Dir } from './shape-utils';
 import {
   buildNonUniformGrid,
@@ -107,12 +107,16 @@ class MinHeap<T> {
 
 /**
  * Compute jetty point (stub extending from terminal).
+ *
+ * @param terminal - The terminal to compute jetty for
+ * @param strokeWidth - Connector stroke width (affects offset)
  */
-function computeJettyPoint(terminal: Terminal): [number, number] {
+function computeJettyPoint(terminal: Terminal, strokeWidth: number): [number, number] {
   const vec = getOutwardVector(terminal.outwardDir);
+  const offset = computeApproachOffset(strokeWidth);
   return [
-    terminal.position[0] + vec[0] * ROUTING_CONFIG.JETTY_W,
-    terminal.position[1] + vec[1] * ROUTING_CONFIG.JETTY_W,
+    terminal.position[0] + vec[0] * offset,
+    terminal.position[1] + vec[1] * offset,
   ];
 }
 
@@ -171,9 +175,9 @@ function computeMoveCost(
     cost -= COST_CONFIG.CONTINUATION_BONUS;
   }
 
-  // SHORT SEGMENT PENALTY
+  // SHORT SEGMENT PENALTY (segments shorter than corner radius look bad)
   const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
-  if (segmentLength < ROUTING_CONFIG.JETTY_W && arrivalDir !== null) {
+  if (segmentLength < ROUTING_CONFIG.CORNER_RADIUS_W && arrivalDir !== null) {
     cost += COST_CONFIG.SHORT_SEGMENT_PENALTY;
   }
 
@@ -339,15 +343,16 @@ function computeSignature(points: [number, number][]): string {
  *
  * @param from - Start terminal
  * @param to - End terminal (must be snapped)
+ * @param strokeWidth - Connector stroke width (affects offsets)
  * @returns Route result with path and signature
  */
-export function computeAStarRoute(from: Terminal, to: Terminal): RouteResult {
-  // 1. Compute jetty endpoints
-  const fromJetty = computeJettyPoint(from);
-  const toJetty = computeJettyPoint(to);
+export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
+  // 1. Compute jetty endpoints (offset depends on strokeWidth)
+  const fromJetty = computeJettyPoint(from, strokeWidth);
+  const toJetty = computeJettyPoint(to, strokeWidth);
 
   // 2. Build non-uniform grid with obstacles blocked
-  const grid = buildNonUniformGrid(from, to, fromJetty, toJetty);
+  const grid = buildNonUniformGrid(from, to, fromJetty, toJetty, strokeWidth);
 
   // 3. Find start and goal cells
   const startCell = findNearestCell(grid, fromJetty);

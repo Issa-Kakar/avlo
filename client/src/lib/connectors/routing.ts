@@ -56,12 +56,14 @@ function endpointToTerminal(endpoint: RouteEndpoint): Terminal {
  * @param from - Start endpoint
  * @param to - End endpoint
  * @param _prevSignature - Previous route signature (unused in new implementation)
+ * @param strokeWidth - Connector stroke width (affects routing offsets)
  * @returns Route result with path and signature
  */
 export function computeRoute(
   from: RouteEndpoint,
   to: RouteEndpoint,
-  _prevSignature: string | null
+  _prevSignature: string | null,
+  strokeWidth: number
 ): RouteResult {
   const fromTerm = endpointToTerminal(from);
   const toTerm = endpointToTerminal(to);
@@ -69,10 +71,10 @@ export function computeRoute(
   // Two-mode routing dispatch
   if (!to.isAttached) {
     // Free cursor - use simple Z-routing (no obstacle avoidance needed)
-    return computeZRoute(fromTerm, toTerm);
+    return computeZRoute(fromTerm, toTerm, strokeWidth);
   } else {
     // Snapped to shape - use A* Manhattan routing (obstacle avoidance)
-    return computeAStarRoute(fromTerm, toTerm);
+    return computeAStarRoute(fromTerm, toTerm, strokeWidth);
   }
 }
 
@@ -83,13 +85,14 @@ export function computeRoute(
  *
  * @param from - Start terminal
  * @param to - End terminal
+ * @param strokeWidth - Connector stroke width (affects routing offsets)
  * @returns Route result with path and signature
  */
-export function computeRouteFromTerminals(from: Terminal, to: Terminal): RouteResult {
+export function computeRouteFromTerminals(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
   if (to.kind === 'world') {
-    return computeZRoute(from, to);
+    return computeZRoute(from, to, strokeWidth);
   } else {
-    return computeAStarRoute(from, to);
+    return computeAStarRoute(from, to, strokeWidth);
   }
 }
 

@@ -471,7 +471,8 @@ export class ConnectorTool implements PointerTool {
         isAttached: this.to.kind === 'shape',
         shapeBounds: toShapeBounds,
       },
-      this.prevRouteSignature
+      this.prevRouteSignature,
+      this.frozenWidth
     );
 
     this.routedPoints = result.points;

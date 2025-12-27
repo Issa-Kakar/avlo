@@ -50,11 +50,19 @@ export const SNAP_CONFIG = {
  * Routing geometry is permanent (stored in Y.Doc) and must not
  * change based on zoom level. A connector drawn at any zoom
  * should have identical geometry.
+ *
+ * APPROACH OFFSET FORMULA:
+ * For perpendicular approach, the final segment needs room for:
+ * 1. Arc corner (CORNER_RADIUS_W) - where the curve happens
+ * 2. Straight segment (MIN_STRAIGHT_SEGMENT_W) - stroke straightens before arrow
+ * 3. Arrow head (arrowLength) - the actual arrow
+ *
+ * Total: CORNER_RADIUS_W + MIN_STRAIGHT_SEGMENT_W + arrowLength(strokeWidth)
+ *
+ * This ensures the stroked polyline visually "straightens out" before
+ * entering the arrow, rather than curving directly into the arrow's side.
  */
 export const ROUTING_CONFIG = {
-  /** Jetty length (stub before first turn) in world units */
-  JETTY_W: 16,
-
   /** Corner radius for arcTo rendering in world units */
   CORNER_RADIUS_W: 22,
 
@@ -62,11 +70,11 @@ export const ROUTING_CONFIG = {
   DOGLEG_W: 40,
 
   /**
-   * Obstacle padding beyond shape bounds (world units).
-   * Routes must stay this far from shapes to ensure arrow heads fit.
-   * = JETTY_W + ARROW_MIN_LENGTH_W + safety buffer
+   * Minimum straight segment before arrow head (world units).
+   * This ensures the stroked arc has room to straighten before the arrow.
+   * Without this, the arc's outer edge curves into the arrow's side.
    */
-  OBSTACLE_PADDING_W: 38,
+  MIN_STRAIGHT_SEGMENT_W: 8,
 
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
@@ -124,4 +132,52 @@ export const COST_CONFIG = {
  */
 export function pxToWorld(px: number, scale: number): number {
   return px / scale;
+}
+
+/**
+ * Compute arrow length based on stroke width.
+ *
+ * Used for rendering to determine how much to trim the polyline
+ * before the arrow head.
+ *
+ * @param strokeWidth - The connector stroke width
+ * @returns Arrow length in world units
+ */
+export function computeArrowLength(strokeWidth: number): number {
+  return Math.max(ROUTING_CONFIG.ARROW_MIN_LENGTH_W, strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR);
+}
+
+/**
+ * Compute approach offset based on stroke width.
+ *
+ * This is the total distance the final segment needs to accommodate:
+ * 1. Arc corner radius (for perpendicular turns)
+ * 2. Minimum straight segment (for stroke to straighten)
+ * 3. Arrow length (the actual arrow head)
+ *
+ * Used for:
+ * - Jetty computation (where the route turns toward the shape)
+ * - Obstacle blocking (routes can't come closer than this)
+ * - Grid line placement (valid routing corridors)
+ *
+ * @param strokeWidth - The connector stroke width
+ * @returns Approach offset in world units
+ */
+export function computeApproachOffset(strokeWidth: number): number {
+  const arrowLength = computeArrowLength(strokeWidth);
+  return (
+    ROUTING_CONFIG.CORNER_RADIUS_W +
+    ROUTING_CONFIG.MIN_STRAIGHT_SEGMENT_W +
+    arrowLength
+  );
+}
+
+/**
+ * Get the maximum approach offset for default stroke sizes (2-6).
+ * Used when strokeWidth isn't yet known (e.g., initial grid construction).
+ *
+ * For strokeWidth 6: 22 + 8 + 24 = 54
+ */
+export function getMaxApproachOffset(): number {
+  return computeApproachOffset(6);
 }
