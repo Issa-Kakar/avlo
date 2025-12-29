@@ -30,95 +30,130 @@ import {
   inferDragDirection,
   getShapeFrame,
   oppositeDir,
+  computeApproachOffset,
 } from '@/lib/connectors';
 
 /**
  * Compute optimal from.outwardDir when to is snapped to a shape.
  *
- * The snapped side (toSide) determines the final approach axis:
- * - N/S (horizontal edge) → final segment is vertical
- * - E/W (vertical edge) → final segment is horizontal
+ * CRITICAL: Uses offset-padded bounds for position checks.
+ * The "approach zone" extends approachOffset beyond the shape.
  *
- * We compute from.outwardDir to help A* route cleanly around the obstacle:
- * - If from is on the "approach" side (can reach directly), go toward the shape
- * - If from must go around, use perpendicular direction based on quadrant
+ * Scenarios:
+ * 1. OUTSIDE PADDING - standard routing (can approach directly or route around)
+ * 2. INSIDE PADDING, SAME SIDE - go OPPOSITE to escape (not perpendicular!)
+ *    This prevents the "loop around" issue where perpendicular escape creates
+ *    a path like: up → perpendicular → down → back instead of: down → across → up
+ * 3. INSIDE PADDING, OTHER SIDE - go perpendicular to escape
  *
  * @param fromPos - Start position [x, y]
  * @param toSide - The side of the shape we're snapped to (N/E/S/W)
  * @param shapeBounds - The shape's bounding box
+ * @param strokeWidth - Connector stroke width (affects padding calculation)
  * @returns Optimal from.outwardDir
  */
 function computeFromOutwardDirOnSnap(
   fromPos: [number, number],
   toSide: Dir,
-  shapeBounds: { x: number; y: number; w: number; h: number }
+  shapeBounds: { x: number; y: number; w: number; h: number },
+  strokeWidth: number
 ): Dir {
   const { x, y, w, h } = shapeBounds;
+  const offset = computeApproachOffset(strokeWidth);
+
+  // Padded bounds for position checks
+  const paddedMinX = x - offset;
+  const paddedMaxX = x + w + offset;
+  const paddedMinY = y - offset;
+  const paddedMaxY = y + h + offset;
+
   const shapeCenterX = x + w / 2;
   const shapeCenterY = y + h / 2;
 
-  // The snapped side determines the FINAL APPROACH direction:
-  // - N/S snaps → final approach is VERTICAL (perpendicular to horizontal edge)
-  // - E/W snaps → final approach is HORIZONTAL (perpendicular to vertical edge)
-  //
-  // Three cases for from.outwardDir:
-  //
-  // 1. SAME SIDE: from is on the same side as the snap (e.g., above shape → top snap)
-  //    - Shape is NOT in the way
-  //    - Go PERPENDICULAR first (H for N/S snaps, V for E/W snaps) to align with snap
-  //    - This creates a clean L-shape with final segment going straight into shape
-  //
-  // 2. OPPOSITE SIDE (beside): from is on opposite side but outside shape extent
-  //    - Shape IS in the way, need to route around
-  //    - Go PARALLEL first (V for N/S snaps, H for E/W snaps) to clear shape
-  //
-  // 3. BEHIND SHAPE: from is opposite side AND within shape extent (horizontally/vertically)
-  //    - Can't go parallel directly (would hit shape)
-  //    - Go PERPENDICULAR first to exit shape extent, then route around
+  // Is start inside the padding zone?
+  const insidePaddingX = fromPos[0] > paddedMinX && fromPos[0] < paddedMaxX;
+  const insidePaddingY = fromPos[1] > paddedMinY && fromPos[1] < paddedMaxY;
+  const insidePadding = insidePaddingX && insidePaddingY;
+
+  // Position relative to padded bounds (completely outside)
+  const isAbovePadding = fromPos[1] < paddedMinY;
+  const isBelowPadding = fromPos[1] > paddedMaxY;
+  const isLeftOfPadding = fromPos[0] < paddedMinX;
+  const isRightOfPadding = fromPos[0] > paddedMaxX;
+
+  // Position relative to shape edges (for detecting same-side padding)
+  const isAboveShape = fromPos[1] < y;
+  const isBelowShape = fromPos[1] > y + h;
+  const isLeftOfShape = fromPos[0] < x;
+  const isRightOfShape = fromPos[0] > x + w;
 
   switch (toSide) {
-    case 'N': // Final approach is vertical (down into shape)
-      if (fromPos[1] < y) {
-        // SAME SIDE: from is above shape
-        // Go horizontal first to align X, then vertical approach
+    case 'N': // Final approach is vertical (down into shape from north)
+      if (isAbovePadding) {
+        // CLEARLY ABOVE padding - standard approach, go horizontal to align
         return fromPos[0] < shapeCenterX ? 'E' : 'W';
-      } else if (fromPos[0] > x && fromPos[0] < x + w) {
-        // BEHIND SHAPE: from is below/beside AND horizontally within shape
-        // Go horizontal to exit shape width first
+      }
+      if (insidePadding) {
+        if (isAboveShape) {
+          // SAME SIDE PADDING - inside N-side padding, snapping to N
+          // Go OPPOSITE (South) to escape first, prevents loop-around
+          return 'N';
+        }
+        // OTHER SIDE PADDING - go horizontal to escape
         return fromPos[0] < shapeCenterX ? 'W' : 'E';
       }
-      // OPPOSITE SIDE (beside): go up to match toJetty level
+      // BESIDE (left or right of padded bounds) - go up to match approach level
       return 'N';
 
-    case 'S': // Final approach is vertical (up into shape)
-      if (fromPos[1] > y + h) {
-        // SAME SIDE: from is below shape
+    case 'S': // Final approach is vertical (up into shape from south)
+      if (isBelowPadding) {
+        // CLEARLY BELOW padding - standard approach
         return fromPos[0] < shapeCenterX ? 'E' : 'W';
-      } else if (fromPos[0] > x && fromPos[0] < x + w) {
-        // BEHIND SHAPE: horizontally within shape
-        return fromPos[0] < shapeCenterX ? 'W' : 'E';
       }
-      return 'S';
+      if (insidePadding) {
+        if (isBelowShape) {
+          // SAME SIDE PADDING - inside S-side padding, snapping to S
+          // Go OPPOSITE (North) to escape first
+          return 'N';
+        }
+        // OTHER SIDE PADDING - go horizontal to escape
+        return fromPos[0] < shapeCenterX ? 'E' : 'W';
+      }
+      // BESIDE - go down to match approach level
+      return 'N';
 
-    case 'E': // Final approach is horizontal (left into shape)
-      if (fromPos[0] > x + w) {
-        // SAME SIDE: from is right of shape
-        // Go vertical first to align Y, then horizontal approach
+    case 'E': // Final approach is horizontal (left into shape from east)
+      if (isRightOfPadding) {
+        // CLEARLY RIGHT of padding - standard approach
         return fromPos[1] < shapeCenterY ? 'S' : 'N';
-      } else if (fromPos[1] > y && fromPos[1] < y + h) {
-        // BEHIND SHAPE: vertically within shape
+      }
+      if (insidePadding) {
+        if (isRightOfShape) {
+          // SAME SIDE PADDING - inside E-side padding, snapping to E
+          // Go OPPOSITE (West) to escape first
+          return 'W';
+        }
+        // OTHER SIDE PADDING - go vertical to escape
         return fromPos[1] < shapeCenterY ? 'N' : 'S';
       }
+      // ABOVE/BELOW - go right to match approach level
       return 'E';
 
-    case 'W': // Final approach is horizontal (right into shape)
-      if (fromPos[0] < x) {
-        // SAME SIDE: from is left of shape
+    case 'W': // Final approach is horizontal (right into shape from west)
+      if (isLeftOfPadding) {
+        // CLEARLY LEFT of padding - standard approach
         return fromPos[1] < shapeCenterY ? 'S' : 'N';
-      } else if (fromPos[1] > y && fromPos[1] < y + h) {
-        // BEHIND SHAPE: vertically within shape
+      }
+      if (insidePadding) {
+        if (isLeftOfShape) {
+          // SAME SIDE PADDING - inside W-side padding, snapping to W
+          // Go OPPOSITE (East) to escape first
+          return 'E';
+        }
+        // OTHER SIDE PADDING - go vertical to escape
         return fromPos[1] < shapeCenterY ? 'N' : 'S';
       }
+      // ABOVE/BELOW - go left to match approach level
       return 'W';
   }
 }
@@ -286,7 +321,12 @@ export class ConnectorTool implements PointerTool {
         if (frame) {
           const fromPos: [number, number] = [this.from!.x, this.from!.y];
           const shapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
-          this.from!.outwardDir = computeFromOutwardDirOnSnap(fromPos, snap.side, shapeBounds);
+          this.from!.outwardDir = computeFromOutwardDirOnSnap(
+            fromPos,
+            snap.side,
+            shapeBounds,
+            this.frozenWidth
+          );
         }
       }
     } else {

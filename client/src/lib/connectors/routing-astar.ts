@@ -14,8 +14,8 @@
  * @module lib/connectors/routing-astar
  */
 
-import { ROUTING_CONFIG, COST_CONFIG, computeApproachOffset } from './constants';
-import { getOutwardVector, oppositeDir, type Dir } from './shape-utils';
+import { COST_CONFIG, computeJettyOffset } from './constants';
+import { getOutwardVector, type Dir } from './shape-utils';
 import {
   buildNonUniformGrid,
   findNearestCell,
@@ -108,12 +108,26 @@ class MinHeap<T> {
 /**
  * Compute jetty point (stub extending from terminal).
  *
+ * Cap-aware: anchored endpoints with arrow caps get full offset,
+ * unsnapped endpoints get no offset (they're free-floating).
+ *
  * @param terminal - The terminal to compute jetty for
  * @param strokeWidth - Connector stroke width (affects offset)
+ * @param hasCap - Whether this endpoint has an arrow cap
  */
-function computeJettyPoint(terminal: Terminal, strokeWidth: number): [number, number] {
+function computeJettyPoint(
+  terminal: Terminal,
+  strokeWidth: number,
+  hasCap: boolean
+): [number, number] {
+  const isAnchored = terminal.kind === 'shape';
+  const offset = computeJettyOffset(isAnchored, hasCap, strokeWidth);
+
+  if (offset === 0) {
+    return terminal.position;
+  }
+
   const vec = getOutwardVector(terminal.outwardDir);
-  const offset = computeApproachOffset(strokeWidth);
   return [
     terminal.position[0] + vec[0] * offset,
     terminal.position[1] + vec[1] * offset,
@@ -161,9 +175,9 @@ function computeMoveCost(
   let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
 
   // BACKWARDS PREVENTION - should be caught earlier, but double-check
-  if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
-    return Infinity;
-  }
+  // if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
+  //   return Infinity;
+  // }
 
   // BEND PENALTY (minimize direction changes)
   if (arrivalDir && moveDir !== arrivalDir) {
@@ -176,10 +190,10 @@ function computeMoveCost(
   }
 
   // SHORT SEGMENT PENALTY (segments shorter than corner radius look bad)
-  const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
-  if (segmentLength < ROUTING_CONFIG.CORNER_RADIUS_W && arrivalDir !== null) {
-    cost += COST_CONFIG.SHORT_SEGMENT_PENALTY;
-  }
+  // const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
+  // if (segmentLength < ROUTING_CONFIG.CORNER_RADIUS_W && arrivalDir !== null) {
+  //   cost += COST_CONFIG.SHORT_SEGMENT_PENALTY;
+  // }
 
   return cost;
 }
@@ -209,29 +223,28 @@ function cellKey(cell: GridCell): string {
 /**
  * Run A* pathfinding on the grid.
  *
+ * NO DIRECTION SEEDING: Grid structure constrains valid moves.
+ * NO U-TURN PREVENTION: Grid structure should prevent invalid paths by construction.
+ *
  * @param grid - The routing grid
  * @param start - Start cell
  * @param goal - Goal cell
- * @param fromOutwardDir - Initial direction (seeded from terminal)
  * @returns Array of cells forming the path
  */
-function astar(grid: Grid, start: GridCell, goal: GridCell, fromOutwardDir: Dir): GridCell[] {
+function astar(grid: Grid, start: GridCell, goal: GridCell): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
 
-  // PHASE 4: DIRECTION SEEDING
-  // Initial arrivalDir is the direction of the first segment (from terminal outward)
-  // This makes the first move "continue" the jetty direction, avoiding immediate turns
-  const initialArrivalDir = fromOutwardDir;
-
+  // NO DIRECTION SEEDING - start with null arrivalDir
+  // Grid structure constrains valid first moves
   const startNode: AStarNode = {
     cell: start,
     g: 0,
     h: manhattan(start, goal),
     f: manhattan(start, goal),
     parent: null,
-    arrivalDir: initialArrivalDir, // SEED THE INITIAL DIRECTION
+    arrivalDir: null, // No seeding - let A* explore freely
   };
 
   openSet.push(startNode);
@@ -260,12 +273,10 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, fromOutwardDir: Dir)
       // Compute move direction
       const moveDir = getDirection(current.cell, neighbor);
 
-      // BACKWARDS VISIT PREVENTION - skip U-turns
-      if (current.arrivalDir && moveDir === oppositeDir(current.arrivalDir)) {
-        continue;
-      }
+      // NO U-TURN PREVENTION - grid structure should prevent invalid paths
+      // The cost function still penalizes direction changes via bend penalty
 
-      // PHASE 5: COST FUNCTION
+      // COST FUNCTION with bend penalty
       const moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
 
       const tentativeG = current.g + moveCost;
@@ -341,36 +352,52 @@ function computeSignature(points: [number, number][]): string {
  * Used when to.kind === 'shape' (cursor snapped to shape).
  * Provides obstacle avoidance by routing around padded shape bounds.
  *
+ * Cap-aware jetty computation:
+ * - Anchored endpoints with arrow caps get full offset
+ * - Unsnapped endpoints get no offset (free-floating)
+ *
  * @param from - Start terminal
  * @param to - End terminal (must be snapped)
  * @param strokeWidth - Connector stroke width (affects offsets)
  * @returns Route result with path and signature
  */
 export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  // 1. Compute jetty endpoints (offset depends on strokeWidth)
-  const fromJetty = computeJettyPoint(from, strokeWidth);
-  const toJetty = computeJettyPoint(to, strokeWidth);
+  // Determine if endpoints have caps
+  // For now: startCap = 'none', endCap = 'arrow' (default)
+  // TODO: Pass actual cap settings from caller
+  const fromHasCap = false; // startCap = 'none' by default
+  const toHasCap = true; // endCap = 'arrow' by default
+
+  // 1. Compute jetty endpoints (cap-aware offset)
+  const fromJetty = computeJettyPoint(from, strokeWidth, fromHasCap);
+  const toJetty = computeJettyPoint(to, strokeWidth, toHasCap);
 
   // 2. Build non-uniform grid with obstacles blocked
   const grid = buildNonUniformGrid(from, to, fromJetty, toJetty, strokeWidth);
 
   // 3. Find start and goal cells
+  // For anchored endpoints, start/goal is at JETTY position (in routing space)
+  // For unsnapped endpoints, jetty IS the actual position (offset = 0)
   const startCell = findNearestCell(grid, fromJetty);
   const goalCell = findNearestCell(grid, toJetty);
 
-  // 4. Run A* with direction seeding
-  const path = astar(grid, startCell, goalCell, from.outwardDir);
+  // 4. Run A* (no direction seeding)
+  const path = astar(grid, startCell, goalCell);
 
-  // 5. Assemble full path: [from.pos, fromJetty, ...A*path..., toJetty, to.pos]
-  const fullPath: [number, number][] = [
-    from.position,
-    fromJetty,
-    ...path.map((cell) => [cell.x, cell.y] as [number, number]),
-    toJetty,
-    to.position,
-  ];
+  // 5. Assemble full path
+  // Path includes start and goal cells, which are at jetty positions
+  // We add actual endpoints at start and end
+  const fullPath: [number, number][] = [fromJetty];
 
-  // 6. Simplify collinear points
+  // Add A* path (includes jetty positions as first/last cells)
+  for (const cell of path) {
+    fullPath.push([cell.x, cell.y]);
+  }
+
+  // Add actual endpoint
+  fullPath.push(to.position);
+
+  // 6. Simplify collinear points (removes duplicates when jetty = position)
   const simplified = simplifyOrthogonal(fullPath);
 
   return {

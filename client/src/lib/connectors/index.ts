@@ -7,7 +7,15 @@
  */
 
 // Constants
-export { SNAP_CONFIG, ROUTING_CONFIG, COST_CONFIG, pxToWorld } from './constants';
+export {
+  SNAP_CONFIG,
+  ROUTING_CONFIG,
+  COST_CONFIG,
+  pxToWorld,
+  computeApproachOffset,
+  computeJettyOffset,
+  computeArrowLength,
+} from './constants';
 
 // Shape utilities
 export {

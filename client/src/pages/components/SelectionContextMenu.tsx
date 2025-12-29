@@ -695,7 +695,7 @@ function MoreMenuDropdown() {
 // LEGACY EXPORT (for backwards compatibility)
 // ============================================================================
 
-export function SelectionContextMenu({ x = 0, y = 0, demo = false }: { x?: number; y?: number; demo?: boolean }) {
+export function SelectionContextMenu({ x: _x = 0, y: _y = 0, demo = false }: { x?: number; y?: number; demo?: boolean }) {
   return <SingleObjectMenu variant="shape" demo={demo} />;
 }
 

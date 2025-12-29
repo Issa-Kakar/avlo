@@ -74,7 +74,7 @@ export const ROUTING_CONFIG = {
    * This ensures the stroked arc has room to straighten before the arrow.
    * Without this, the arc's outer edge curves into the arrow's side.
    */
-  MIN_STRAIGHT_SEGMENT_W: 8,
+  MIN_STRAIGHT_SEGMENT_W: 6,
 
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
@@ -180,4 +180,36 @@ export function computeApproachOffset(strokeWidth: number): number {
  */
 export function getMaxApproachOffset(): number {
   return computeApproachOffset(6);
+}
+
+/**
+ * Compute jetty offset based on endpoint characteristics.
+ *
+ * Anchored endpoints with arrow caps need full offset (arc + straight + arrow).
+ * Unsnapped endpoints need no offset (they're free-floating).
+ * Anchored endpoints without caps just need corner radius clearance.
+ *
+ * @param isAnchored - Is endpoint snapped to a shape?
+ * @param hasCap - Does this endpoint have an arrow cap?
+ * @param strokeWidth - Connector stroke width
+ * @returns Offset in world units
+ */
+export function computeJettyOffset(
+  isAnchored: boolean,
+  hasCap: boolean,
+  strokeWidth: number
+): number {
+  if (!isAnchored) {
+    // Free endpoints don't need offset - they're free-floating
+    // Could add corner radius here if we want clean turns at unsnapped ends
+    return 0;
+  }
+
+  if (!hasCap) {
+    // Anchored but no arrow - just need corner radius clearance
+    return ROUTING_CONFIG.CORNER_RADIUS_W;
+  }
+
+  // Full offset for anchored endpoints with arrow caps
+  return computeApproachOffset(strokeWidth);
 }

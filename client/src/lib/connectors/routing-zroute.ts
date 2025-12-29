@@ -11,7 +11,7 @@
  * @module lib/connectors/routing-zroute
  */
 
-import { computeApproachOffset } from './constants';
+import { computeJettyOffset } from './constants';
 import { getOutwardVector, isHorizontal, type Dir } from './shape-utils';
 
 /**
@@ -43,18 +43,27 @@ export interface RouteResult {
 /**
  * Compute jetty point (stub extending from terminal).
  *
- * The jetty offset depends on strokeWidth because it must accommodate:
- * 1. Arc corner (for perpendicular turns)
- * 2. Straight segment (for stroke to straighten)
- * 3. Arrow head
+ * Cap-aware: anchored endpoints with arrow caps get full offset,
+ * unsnapped endpoints get no offset (they're free-floating).
  *
  * @param terminal - The terminal to compute jetty for
  * @param strokeWidth - Connector stroke width
+ * @param hasCap - Whether this endpoint has an arrow cap
  * @returns Jetty point position
  */
-function computeJettyPoint(terminal: Terminal, strokeWidth: number): [number, number] {
+function computeJettyPoint(
+  terminal: Terminal,
+  strokeWidth: number,
+  hasCap: boolean
+): [number, number] {
+  const isAnchored = terminal.kind === 'shape';
+  const offset = computeJettyOffset(isAnchored, hasCap, strokeWidth);
+
+  if (offset === 0) {
+    return terminal.position;
+  }
+
   const vec = getOutwardVector(terminal.outwardDir);
-  const offset = computeApproachOffset(strokeWidth);
   return [
     terminal.position[0] + vec[0] * offset,
     terminal.position[1] + vec[1] * offset,
@@ -96,14 +105,24 @@ function simplifyOrthogonal(points: [number, number][]): [number, number][] {
  * Used when to.kind === 'world' (cursor not snapped to shape).
  * Generates a clean 3-segment path without obstacle avoidance.
  *
+ * Cap-aware jetty computation:
+ * - Anchored endpoints with arrow caps get full offset
+ * - Unsnapped endpoints get no offset (free-floating)
+ *
  * @param from - Start terminal
  * @param to - End terminal (must be unsnapped)
  * @param strokeWidth - Connector stroke width (affects jetty offset)
  * @returns Route result with path and signature
  */
 export function computeZRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  const fromJetty = computeJettyPoint(from, strokeWidth);
-  const toJetty = computeJettyPoint(to, strokeWidth);
+  // Determine if endpoints have caps
+  // For now: startCap = 'none', endCap = 'arrow' (default)
+  // TODO: Pass actual cap settings from caller
+  const fromHasCap = false; // startCap = 'none' by default
+  const toHasCap = true; // endCap = 'arrow' by default
+
+  const fromJetty = computeJettyPoint(from, strokeWidth, fromHasCap);
+  const toJetty = computeJettyPoint(to, strokeWidth, toHasCap);
 
   // Determine HVH vs VHV based on from.outwardDir
   const isFromHorizontal = isHorizontal(from.outwardDir);
@@ -157,7 +176,7 @@ export function inferDragDirection(
   from: [number, number],
   cursor: [number, number],
   prevDir: Dir | null,
-  hysteresisRatio: number = 1.2
+  hysteresisRatio: number = 1.05
 ): Dir {
   const dx = cursor[0] - from[0];
   const dy = cursor[1] - from[1];
