@@ -25,162 +25,24 @@ import { userProfileManager } from '@/lib/user-profile-manager';
 import {
   type Dir,
   type SnapTarget,
+  type Terminal,
   findBestSnapTarget,
   computeRoute,
   inferDragDirection,
   getShapeFrame,
   oppositeDir,
-  computeApproachOffset,
 } from '@/lib/connectors';
-
-/**
- * Compute optimal from.outwardDir when to is snapped to a shape.
- *
- * CRITICAL: Uses offset-padded bounds for position checks.
- * The "approach zone" extends approachOffset beyond the shape.
- *
- * Scenarios:
- * 1. OUTSIDE PADDING - standard routing (can approach directly or route around)
- * 2. INSIDE PADDING, SAME SIDE - go OPPOSITE to escape (not perpendicular!)
- *    This prevents the "loop around" issue where perpendicular escape creates
- *    a path like: up → perpendicular → down → back instead of: down → across → up
- * 3. INSIDE PADDING, OTHER SIDE - go perpendicular to escape
- *
- * @param fromPos - Start position [x, y]
- * @param toSide - The side of the shape we're snapped to (N/E/S/W)
- * @param shapeBounds - The shape's bounding box
- * @param strokeWidth - Connector stroke width (affects padding calculation)
- * @returns Optimal from.outwardDir
- */
-function computeFromOutwardDirOnSnap(
-  fromPos: [number, number],
-  toSide: Dir,
-  shapeBounds: { x: number; y: number; w: number; h: number },
-  strokeWidth: number
-): Dir {
-  const { x, y, w, h } = shapeBounds;
-  const offset = computeApproachOffset(strokeWidth);
-
-  // Padded bounds for position checks
-  const paddedMinX = x - offset;
-  const paddedMaxX = x + w + offset;
-  const paddedMinY = y - offset;
-  const paddedMaxY = y + h + offset;
-
-  const shapeCenterX = x + w / 2;
-  const shapeCenterY = y + h / 2;
-
-  // Is start inside the padding zone?
-  const insidePaddingX = fromPos[0] > paddedMinX && fromPos[0] < paddedMaxX;
-  const insidePaddingY = fromPos[1] > paddedMinY && fromPos[1] < paddedMaxY;
-  const insidePadding = insidePaddingX && insidePaddingY;
-
-  // Position relative to padded bounds (completely outside)
-  const isAbovePadding = fromPos[1] < paddedMinY;
-  const isBelowPadding = fromPos[1] > paddedMaxY;
-  const isLeftOfPadding = fromPos[0] < paddedMinX;
-  const isRightOfPadding = fromPos[0] > paddedMaxX;
-
-  // Position relative to shape edges (for detecting same-side padding)
-  const isAboveShape = fromPos[1] < y;
-  const isBelowShape = fromPos[1] > y + h;
-  const isLeftOfShape = fromPos[0] < x;
-  const isRightOfShape = fromPos[0] > x + w;
-
-  switch (toSide) {
-    case 'N': // Final approach is vertical (down into shape from north)
-      if (isAbovePadding) {
-        // CLEARLY ABOVE padding - standard approach, go horizontal to align
-        return fromPos[0] < shapeCenterX ? 'E' : 'W';
-      }
-      if (insidePadding) {
-        if (isAboveShape) {
-          // SAME SIDE PADDING - inside N-side padding, snapping to N
-          // Go OPPOSITE (South) to escape first, prevents loop-around
-          return 'N';
-        }
-        // OTHER SIDE PADDING - go horizontal to escape
-        return fromPos[0] < shapeCenterX ? 'W' : 'E';
-      }
-      // BESIDE (left or right of padded bounds) - go up to match approach level
-      return 'N';
-
-    case 'S': // Final approach is vertical (up into shape from south)
-      if (isBelowPadding) {
-        // CLEARLY BELOW padding - standard approach
-        return fromPos[0] < shapeCenterX ? 'E' : 'W';
-      }
-      if (insidePadding) {
-        if (isBelowShape) {
-          // SAME SIDE PADDING - inside S-side padding, snapping to S
-          // Go OPPOSITE (North) to escape first
-          return 'N';
-        }
-        // OTHER SIDE PADDING - go horizontal to escape
-        return fromPos[0] < shapeCenterX ? 'E' : 'W';
-      }
-      // BESIDE - go down to match approach level
-      return 'N';
-
-    case 'E': // Final approach is horizontal (left into shape from east)
-      if (isRightOfPadding) {
-        // CLEARLY RIGHT of padding - standard approach
-        return fromPos[1] < shapeCenterY ? 'S' : 'N';
-      }
-      if (insidePadding) {
-        if (isRightOfShape) {
-          // SAME SIDE PADDING - inside E-side padding, snapping to E
-          // Go OPPOSITE (West) to escape first
-          return 'W';
-        }
-        // OTHER SIDE PADDING - go vertical to escape
-        return fromPos[1] < shapeCenterY ? 'N' : 'S';
-      }
-      // ABOVE/BELOW - go right to match approach level
-      return 'E';
-
-    case 'W': // Final approach is horizontal (right into shape from west)
-      if (isLeftOfPadding) {
-        // CLEARLY LEFT of padding - standard approach
-        return fromPos[1] < shapeCenterY ? 'S' : 'N';
-      }
-      if (insidePadding) {
-        if (isLeftOfShape) {
-          // SAME SIDE PADDING - inside W-side padding, snapping to W
-          // Go OPPOSITE (East) to escape first
-          return 'E';
-        }
-        // OTHER SIDE PADDING - go vertical to escape
-        return fromPos[1] < shapeCenterY ? 'N' : 'S';
-      }
-      // ABOVE/BELOW - go left to match approach level
-      return 'W';
-  }
-}
 
 type Phase = 'idle' | 'creating';
 
 /**
- * Terminal describes an endpoint during interaction.
- * Can be a free world position or attached to a shape edge.
+ * Internal terminal state during interaction.
+ * Extends the routing Terminal with shape-specific commit info.
  */
-interface Terminal {
-  kind: 'world' | 'shape';
-  x: number;
-  y: number;
-  /**
-   * Direction the jetty extends from this point (AWAY from any attached shape).
-   * - For shape-attached: SAME as snap.side (N side = jetty extends north, away from shape)
-   * - For free: Direction of travel toward the other endpoint
-   *
-   * Arrow head direction is derived from the last segment, which goes FROM toJetty TO to.pos,
-   * so arrow naturally points OPPOSITE of outwardDir (into the shape).
-   */
-  outwardDir: Dir;
-  // Shape-specific (only set when kind === 'shape')
+interface ToolTerminal extends Terminal {
+  // Shape-specific (only set when isAnchored === true)
   shapeId?: string;
   side?: Dir;
-  t?: number;
 }
 
 /**
@@ -192,8 +54,8 @@ export class ConnectorTool implements PointerTool {
   private pointerId: number | null = null;
 
   // Gesture state
-  private from: Terminal | null = null;
-  private to: Terminal | null = null;
+  private from: ToolTerminal | null = null;
+  private to: ToolTerminal | null = null;
   private routedPoints: [number, number][] = [];
   private prevRouteSignature: string | null = null;
 
@@ -235,12 +97,12 @@ export class ConnectorTool implements PointerTool {
     });
 
     if (snap) {
-      // Start attached to shape - jetty extends outward (same as snap.side)
+      // Start attached to shape
       this.from = {
-        kind: 'shape',
-        x: snap.position[0],
-        y: snap.position[1],
-        outwardDir: snap.side, // Jetty extends away from shape
+        position: [snap.position[0], snap.position[1]],
+        outwardDir: snap.side, // Extends away from shape
+        isAnchored: true,
+        hasCap: false, // startCap = 'none'
         shapeId: snap.shapeId,
         side: snap.side,
         t: snap.t,
@@ -248,19 +110,19 @@ export class ConnectorTool implements PointerTool {
     } else {
       // Free start point - will be refined on move based on drag direction
       this.from = {
-        kind: 'world',
-        x: worldX,
-        y: worldY,
-        outwardDir: 'E', // Default, refined in move() based on drag direction
+        position: [worldX, worldY],
+        outwardDir: 'E', // Default, refined in move()
+        isAnchored: false,
+        hasCap: false,
       };
     }
 
     // Initialize 'to' at same position
     this.to = {
-      kind: 'world',
-      x: worldX,
-      y: worldY,
+      position: [worldX, worldY],
       outwardDir: 'W', // Opposite of default from direction
+      isAnchored: false,
+      hasCap: true, // endCap = 'arrow'
     };
 
     this.dragDir = null;
@@ -300,52 +162,41 @@ export class ConnectorTool implements PointerTool {
     this.prevSnap = snap;
 
     if (snap) {
-      // Snapped to shape - jetty extends outward from shape (same as snap.side)
-      // Arrow will point OPPOSITE of outwardDir (into the shape)
+      // Snapped to shape
+      const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
+      const frame = handle ? getShapeFrame(handle) : null;
+      const shapeBounds = frame ? { x: frame.x, y: frame.y, w: frame.w, h: frame.h } : undefined;
+
       this.to = {
-        kind: 'shape',
-        x: snap.position[0],
-        y: snap.position[1],
-        outwardDir: snap.side, // Jetty extends AWAY from shape (NOT oppositeDir!)
+        position: [snap.position[0], snap.position[1]],
+        outwardDir: snap.side, // Extends AWAY from shape
+        isAnchored: true,
+        hasCap: true, // endCap = 'arrow'
+        shapeBounds,
         shapeId: snap.shapeId,
         side: snap.side,
         t: snap.t,
       };
       this.dragDir = null; // Reset drag direction when snapped
 
-      // CRITICAL: Update from.outwardDir based on snap position and side
-      // This ensures the first segment routes optimally around the obstacle
-      const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
-      if (handle) {
-        const frame = getShapeFrame(handle);
-        if (frame) {
-          const fromPos: [number, number] = [this.from!.x, this.from!.y];
-          const shapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
-          this.from!.outwardDir = computeFromOutwardDirOnSnap(
-            fromPos,
-            snap.side,
-            shapeBounds,
-            this.frozenWidth
-          );
-        }
-      }
+      // Direction hints are now computed in routing layer
     } else {
       // Free endpoint - infer direction from drag
-      const fromPos: [number, number] = [this.from!.x, this.from!.y];
+      const fromPos = this.from!.position;
       const cursorPos: [number, number] = [worldX, worldY];
 
       this.dragDir = inferDragDirection(fromPos, cursorPos, this.dragDir);
 
       // Update from.outwardDir for free starts so first segment updates with drag
-      if (this.from!.kind === 'world') {
+      if (!this.from!.isAnchored) {
         this.from!.outwardDir = this.dragDir;
       }
 
       this.to = {
-        kind: 'world',
-        x: worldX,
-        y: worldY,
+        position: [worldX, worldY],
         outwardDir: oppositeDir(this.dragDir), // Approaching from opposite of travel
+        isAnchored: false,
+        hasCap: true, // endCap = 'arrow'
       };
     }
 
@@ -361,7 +212,9 @@ export class ConnectorTool implements PointerTool {
 
     // Only commit if we have a valid connector (at least 2 points with some distance)
     if (this.from && this.to && this.routedPoints.length >= 2) {
-      const dist = Math.hypot(this.to.x - this.from.x, this.to.y - this.from.y);
+      const [fx, fy] = this.from.position;
+      const [tx, ty] = this.to.position;
+      const dist = Math.hypot(tx - fx, ty - fy);
       if (dist > 5) {
         // Minimum distance threshold
         this.commitConnector();
@@ -423,10 +276,10 @@ export class ConnectorTool implements PointerTool {
       activeMidpointSide: this.hoverSnap?.isMidpoint ? this.hoverSnap.side : null,
 
       // Endpoint states
-      fromIsAttached: this.from?.kind === 'shape',
-      fromPosition: this.from ? [this.from.x, this.from.y] : null,
-      toIsAttached: this.to?.kind === 'shape',
-      toPosition: this.to ? [this.to.x, this.to.y] : null,
+      fromIsAttached: this.from?.isAnchored ?? false,
+      fromPosition: this.from?.position ?? null,
+      toIsAttached: this.to?.isAnchored ?? false,
+      toPosition: this.to?.position ?? null,
 
       showCursorDot: this.phase === 'creating',
 
@@ -476,7 +329,7 @@ export class ConnectorTool implements PointerTool {
 
     // Get source shape bounds if attached (for bidirectional obstacle avoidance)
     let fromShapeBounds: { x: number; y: number; w: number; h: number } | undefined;
-    if (this.from.kind === 'shape' && this.from.shapeId) {
+    if (this.from.isAnchored && this.from.shapeId) {
       const handle = snapshot.objectsById.get(this.from.shapeId);
       if (handle) {
         const frame = getShapeFrame(handle);
@@ -486,31 +339,29 @@ export class ConnectorTool implements PointerTool {
       }
     }
 
-    // Get target shape bounds if snapped (for obstacle avoidance)
-    let toShapeBounds: { x: number; y: number; w: number; h: number } | undefined;
-    if (this.to.kind === 'shape' && this.hoverSnap) {
-      const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
-      if (handle) {
-        const frame = getShapeFrame(handle);
-        if (frame) {
-          toShapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
-        }
-      }
-    }
+    // Build from terminal (already has shapeBounds from above)
+    const fromTerminal: Terminal = {
+      position: this.from.position,
+      outwardDir: this.from.outwardDir,
+      isAnchored: this.from.isAnchored,
+      hasCap: this.from.hasCap,
+      shapeBounds: fromShapeBounds,
+      t: this.from.t,
+    };
+
+    // Build to terminal (shapeBounds already set in move())
+    const toTerminal: Terminal = {
+      position: this.to.position,
+      outwardDir: this.to.outwardDir,
+      isAnchored: this.to.isAnchored,
+      hasCap: this.to.hasCap,
+      shapeBounds: this.to.shapeBounds,
+      t: this.to.t,
+    };
 
     const result = computeRoute(
-      {
-        pos: [this.from.x, this.from.y],
-        dir: this.from.outwardDir,
-        isAttached: this.from.kind === 'shape',
-        shapeBounds: fromShapeBounds,
-      },
-      {
-        pos: [this.to.x, this.to.y],
-        dir: this.to.outwardDir,
-        isAttached: this.to.kind === 'shape',
-        shapeBounds: toShapeBounds,
-      },
+      fromTerminal,
+      toTerminal,
       this.prevRouteSignature,
       this.frozenWidth
     );
@@ -536,19 +387,21 @@ export class ConnectorTool implements PointerTool {
       connectorMap.set('kind', 'connector');
 
       // Endpoint positions (always stored)
-      connectorMap.set('fromX', this.from!.x);
-      connectorMap.set('fromY', this.from!.y);
-      connectorMap.set('toX', this.to!.x);
-      connectorMap.set('toY', this.to!.y);
+      const [fromX, fromY] = this.from!.position;
+      const [toX, toY] = this.to!.position;
+      connectorMap.set('fromX', fromX);
+      connectorMap.set('fromY', fromY);
+      connectorMap.set('toX', toX);
+      connectorMap.set('toY', toY);
 
       // Anchor metadata (if attached to shape)
-      if (this.from!.kind === 'shape') {
+      if (this.from!.isAnchored) {
         connectorMap.set('fromShapeId', this.from!.shapeId);
         connectorMap.set('fromSide', this.from!.side);
         connectorMap.set('fromT', this.from!.t);
       }
 
-      if (this.to!.kind === 'shape') {
+      if (this.to!.isAnchored) {
         connectorMap.set('toShapeId', this.to!.shapeId);
         connectorMap.set('toSide', this.to!.side);
         connectorMap.set('toT', this.to!.t);

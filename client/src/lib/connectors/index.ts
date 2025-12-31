@@ -44,9 +44,7 @@ export {
 // Routing algorithm
 export {
   type RouteResult,
-  type RouteEndpoint,
   type Terminal,
   computeRoute,
-  computeRouteFromTerminals,
   inferDragDirection,
 } from './routing';

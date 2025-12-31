@@ -16,20 +16,26 @@ import { getOutwardVector, isHorizontal, type Dir } from './shape-utils';
 
 /**
  * Terminal describes an endpoint for routing.
+ *
+ * This is THE canonical endpoint type for all routing operations.
+ * Use `isAnchored` instead of `kind: 'world'|'shape'`.
  */
 export interface Terminal {
-  kind: 'world' | 'shape';
   position: [number, number];
   /**
    * Direction the jetty extends from this point.
-   * For shape-attached: same as the side we're on.
+   * For shape-attached: same as the side we're on (away from shape).
    * For free: direction toward other endpoint.
    */
   outwardDir: Dir;
-  shapeId?: string;
-  shapeSide?: Dir;
-  shapeT?: number;
+  /** True if snapped to a shape edge */
+  isAnchored: boolean;
+  /** True if this endpoint has an arrow cap (affects offset) */
+  hasCap: boolean;
+  /** Shape bounds for obstacle blocking (when isAnchored=true) */
   shapeBounds?: { x: number; y: number; w: number; h: number };
+  /** Edge position parameter for sliding hysteresis (0-1) */
+  t?: number;
 }
 
 /**
@@ -41,23 +47,17 @@ export interface RouteResult {
 }
 
 /**
- * Compute jetty point (stub extending from terminal).
+ * Compute approach point (stub extending from terminal).
  *
  * Cap-aware: anchored endpoints with arrow caps get full offset,
  * unsnapped endpoints get no offset (they're free-floating).
  *
- * @param terminal - The terminal to compute jetty for
+ * @param terminal - The terminal to compute approach point for
  * @param strokeWidth - Connector stroke width
- * @param hasCap - Whether this endpoint has an arrow cap
- * @returns Jetty point position
+ * @returns Approach point position
  */
-function computeJettyPoint(
-  terminal: Terminal,
-  strokeWidth: number,
-  hasCap: boolean
-): [number, number] {
-  const isAnchored = terminal.kind === 'shape';
-  const offset = computeJettyOffset(isAnchored, hasCap, strokeWidth);
+function computeApproachPoint(terminal: Terminal, strokeWidth: number): [number, number] {
+  const offset = computeJettyOffset(terminal.isAnchored, terminal.hasCap, strokeWidth);
 
   if (offset === 0) {
     return terminal.position;
@@ -102,27 +102,19 @@ function simplifyOrthogonal(points: [number, number][]): [number, number][] {
 /**
  * Compute simple Z-route for unsnapped endpoints.
  *
- * Used when to.kind === 'world' (cursor not snapped to shape).
+ * Used when to.isAnchored === false (cursor not snapped to shape).
  * Generates a clean 3-segment path without obstacle avoidance.
  *
- * Cap-aware jetty computation:
- * - Anchored endpoints with arrow caps get full offset
- * - Unsnapped endpoints get no offset (free-floating)
+ * Cap-aware offset computation uses terminal.hasCap directly.
  *
  * @param from - Start terminal
  * @param to - End terminal (must be unsnapped)
- * @param strokeWidth - Connector stroke width (affects jetty offset)
+ * @param strokeWidth - Connector stroke width (affects offset)
  * @returns Route result with path and signature
  */
 export function computeZRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  // Determine if endpoints have caps
-  // For now: startCap = 'none', endCap = 'arrow' (default)
-  // TODO: Pass actual cap settings from caller
-  const fromHasCap = false; // startCap = 'none' by default
-  const toHasCap = true; // endCap = 'arrow' by default
-
-  const fromJetty = computeJettyPoint(from, strokeWidth, fromHasCap);
-  const toJetty = computeJettyPoint(to, strokeWidth, toHasCap);
+  const fromApproach = computeApproachPoint(from, strokeWidth);
+  const toApproach = computeApproachPoint(to, strokeWidth);
 
   // Determine HVH vs VHV based on from.outwardDir
   const isFromHorizontal = isHorizontal(from.outwardDir);
@@ -131,28 +123,28 @@ export function computeZRoute(from: Terminal, to: Terminal, strokeWidth: number)
   let signature: string;
 
   if (isFromHorizontal) {
-    // HVH: horizontal from jetty, vertical middle, horizontal to jetty
-    const midX = (fromJetty[0] + toJetty[0]) / 2;
+    // HVH: horizontal from approach, vertical middle, horizontal to approach
+    const midX = (fromApproach[0] + toApproach[0]) / 2;
     midPoints = [
-      [midX, fromJetty[1]],
-      [midX, toJetty[1]],
+      [midX, fromApproach[1]],
+      [midX, toApproach[1]],
     ];
     signature = 'HVH';
   } else {
-    // VHV: vertical from jetty, horizontal middle, vertical to jetty
-    const midY = (fromJetty[1] + toJetty[1]) / 2;
+    // VHV: vertical from approach, horizontal middle, vertical to approach
+    const midY = (fromApproach[1] + toApproach[1]) / 2;
     midPoints = [
-      [fromJetty[0], midY],
-      [toJetty[0], midY],
+      [fromApproach[0], midY],
+      [toApproach[0], midY],
     ];
     signature = 'VHV';
   }
 
   const fullPath: [number, number][] = [
     from.position,
-    fromJetty,
+    fromApproach,
     ...midPoints,
-    toJetty,
+    toApproach,
     to.position,
   ];
 

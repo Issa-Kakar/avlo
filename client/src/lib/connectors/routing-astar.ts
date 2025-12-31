@@ -14,8 +14,8 @@
  * @module lib/connectors/routing-astar
  */
 
-import { COST_CONFIG, computeJettyOffset } from './constants';
-import { getOutwardVector, type Dir } from './shape-utils';
+import { COST_CONFIG, computeJettyOffset, computeApproachOffset } from './constants';
+import { getOutwardVector, oppositeDir, type Dir } from './shape-utils';
 import {
   buildNonUniformGrid,
   findNearestCell,
@@ -24,6 +24,122 @@ import {
   type GridCell,
 } from './routing-grid';
 import type { Terminal, RouteResult } from './routing-zroute';
+
+/**
+ * Check if a position is inside the padded region (but outside the shape).
+ *
+ * A point is "inside padded region" if:
+ * - Inside the padded AABB (shape + approachOffset on all sides)
+ * - BUT outside the actual shape bounds
+ *
+ * This is the "corridor" zone where we need special handling.
+ *
+ * @param pos - Position to check
+ * @param shapeBounds - Shape bounds
+ * @param strokeWidth - Connector stroke width
+ * @returns True if position is in the padded corridor
+ */
+function isInsidePaddedRegion(
+  pos: [number, number],
+  shapeBounds: { x: number; y: number; w: number; h: number },
+  strokeWidth: number
+): boolean {
+  const offset = computeApproachOffset(strokeWidth);
+
+  // Padded bounds
+  const pMinX = shapeBounds.x - offset;
+  const pMaxX = shapeBounds.x + shapeBounds.w + offset;
+  const pMinY = shapeBounds.y - offset;
+  const pMaxY = shapeBounds.y + shapeBounds.h + offset;
+
+  // Shape bounds
+  const sMinX = shapeBounds.x;
+  const sMaxX = shapeBounds.x + shapeBounds.w;
+  const sMinY = shapeBounds.y;
+  const sMaxY = shapeBounds.y + shapeBounds.h;
+
+  const insidePadded = pos[0] > pMinX && pos[0] < pMaxX &&
+                       pos[1] > pMinY && pos[1] < pMaxY;
+  const insideShape = pos[0] > sMinX && pos[0] < sMaxX &&
+                      pos[1] > sMinY && pos[1] < sMaxY;
+
+  return insidePadded && !insideShape;
+}
+
+/**
+ * Compute preferred first direction when starting INSIDE the padded region.
+ *
+ * Three distinct cases based on relationship between start zone and target side:
+ *
+ * 1. SAME SIDE: Start in N padding → Snap to N
+ *    → Escape away from shape (return N)
+ *
+ * 2. OPPOSITE SIDE: Start in S padding → Snap to N
+ *    → Go E/W toward target's X position (need to wrap around)
+ *
+ * 3. ADJACENT SIDE: Start in S padding → Snap to W
+ *    → Go directly toward target side (return W)
+ *    This creates clean L-routes without weird near-corner behavior
+ *
+ * @param fromPos - Start position (inside padded region)
+ * @param to - Target terminal (must be anchored with shapeBounds)
+ * @returns Preferred first direction
+ */
+function computePreferredFirstDir(
+  fromPos: [number, number],
+  to: Terminal
+): Dir {
+  if (!to.shapeBounds) {
+    return to.outwardDir;
+  }
+
+  const { x, y, w, h } = to.shapeBounds;
+  const toPos = to.position;
+  const toSide = to.outwardDir;
+
+  // Determine which side(s) of the shape we're on
+  // Note: corner positions will have two flags true (e.g., SW corner: isBelowShape && isLeftOfShape)
+  const isAboveShape = fromPos[1] < y;
+  const isBelowShape = fromPos[1] > y + h;
+  const isLeftOfShape = fromPos[0] < x;
+  const isRightOfShape = fromPos[0] > x + w;
+
+  // === SAME SIDE ===
+  // We're on the same side as the target - escape away from shape
+  const isSameSide =
+    (toSide === 'N' && isAboveShape) ||
+    (toSide === 'S' && isBelowShape) ||
+    (toSide === 'E' && isRightOfShape) ||
+    (toSide === 'W' && isLeftOfShape);
+
+  if (isSameSide) {
+    return toSide; // Escape in outward direction
+  }
+
+  // === OPPOSITE SIDE ===
+  // We're on the opposite side - need to wrap around the shape
+  // Use target position to decide which way around (E/W or N/S)
+  const isOppositeSide =
+    (toSide === 'N' && isBelowShape) ||
+    (toSide === 'S' && isAboveShape) ||
+    (toSide === 'E' && isLeftOfShape) ||
+    (toSide === 'W' && isRightOfShape);
+
+  if (isOppositeSide) {
+    if (toSide === 'N' || toSide === 'S') {
+      // Vertical target - decide E/W based on target X
+      return fromPos[0] < toPos[0] ? 'E' : 'W';
+    } else {
+      // Horizontal target - decide N/S based on target Y
+      return fromPos[1] < toPos[1] ? 'S' : 'N';
+    }
+  }
+
+  // === ADJACENT SIDE ===
+  // We're on a perpendicular side - go directly toward target side
+  // This creates clean L-shaped routes (e.g., S padding → W snap → go W first)
+  return toSide;
+}
 
 /**
  * A* node for priority queue.
@@ -106,22 +222,16 @@ class MinHeap<T> {
 }
 
 /**
- * Compute jetty point (stub extending from terminal).
+ * Compute approach point (stub extending from terminal).
  *
  * Cap-aware: anchored endpoints with arrow caps get full offset,
  * unsnapped endpoints get no offset (they're free-floating).
  *
- * @param terminal - The terminal to compute jetty for
+ * @param terminal - The terminal to compute approach point for
  * @param strokeWidth - Connector stroke width (affects offset)
- * @param hasCap - Whether this endpoint has an arrow cap
  */
-function computeJettyPoint(
-  terminal: Terminal,
-  strokeWidth: number,
-  hasCap: boolean
-): [number, number] {
-  const isAnchored = terminal.kind === 'shape';
-  const offset = computeJettyOffset(isAnchored, hasCap, strokeWidth);
+function computeApproachPoint(terminal: Terminal, strokeWidth: number): [number, number] {
+  const offset = computeJettyOffset(terminal.isAnchored, terminal.hasCap, strokeWidth);
 
   if (offset === 0) {
     return terminal.position;
@@ -223,28 +333,36 @@ function cellKey(cell: GridCell): string {
 /**
  * Run A* pathfinding on the grid.
  *
- * NO DIRECTION SEEDING: Grid structure constrains valid moves.
- * NO U-TURN PREVENTION: Grid structure should prevent invalid paths by construction.
+ * Direction hints are now used for soft preferences:
+ * - preferredFirstDir: Gives a bonus when first move matches this direction
+ * - requiredApproachDir: Gives a penalty when goal is approached from wrong direction
  *
  * @param grid - The routing grid
  * @param start - Start cell
  * @param goal - Goal cell
+ * @param preferredFirstDir - Direction to prefer for first move (soft bonus)
+ * @param requiredApproachDir - Direction to approach goal (penalty if wrong)
  * @returns Array of cells forming the path
  */
-function astar(grid: Grid, start: GridCell, goal: GridCell): GridCell[] {
+function astar(
+  grid: Grid,
+  start: GridCell,
+  goal: GridCell,
+  preferredFirstDir: Dir | null,
+  requiredApproachDir: Dir
+): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
 
-  // NO DIRECTION SEEDING - start with null arrivalDir
-  // Grid structure constrains valid first moves
+  // Start with null arrivalDir - direction hints applied via cost adjustments
   const startNode: AStarNode = {
     cell: start,
     g: 0,
     h: manhattan(start, goal),
     f: manhattan(start, goal),
     parent: null,
-    arrivalDir: null, // No seeding - let A* explore freely
+    arrivalDir: null,
   };
 
   openSet.push(startNode);
@@ -273,11 +391,21 @@ function astar(grid: Grid, start: GridCell, goal: GridCell): GridCell[] {
       // Compute move direction
       const moveDir = getDirection(current.cell, neighbor);
 
-      // NO U-TURN PREVENTION - grid structure should prevent invalid paths
-      // The cost function still penalizes direction changes via bend penalty
+      // Base cost with bend penalty
+      let moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
 
-      // COST FUNCTION with bend penalty
-      const moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
+      // FIRST DIRECTION BONUS - apply at start node when preferredFirstDir is set
+      // Only applied when starting inside padding or from anchored position
+      if (current.parent === null && preferredFirstDir && moveDir === preferredFirstDir) {
+        moveCost -= COST_CONFIG.FIRST_DIR_BONUS;
+      }
+
+      // APPROACH MISMATCH PENALTY - disabled (creates weird routes)
+      // if (neighbor.xi === goal.xi && neighbor.yi === goal.yi) {
+      //   if (moveDir !== requiredApproachDir) {
+      //     moveCost += COST_CONFIG.APPROACH_MISMATCH_PENALTY;
+      //   }
+      // }
 
       const tentativeG = current.g + moveCost;
       const existingG = gScores.get(neighborKey) ?? Infinity;
@@ -347,14 +475,41 @@ function computeSignature(points: [number, number][]): string {
 }
 
 /**
+ * Compute goal position from padding boundary intersection.
+ *
+ * For anchored endpoints, the goal is at the intersection of:
+ * - The anchor's fixed axis (X for E/W, Y for N/S)
+ * - The padding boundary
+ */
+function computeGoalPosition(to: Terminal, strokeWidth: number): [number, number] {
+  if (!to.isAnchored || !to.shapeBounds) {
+    return to.position;
+  }
+
+  const { x, y, w, h } = to.shapeBounds;
+  const offset = computeJettyOffset(to.isAnchored, to.hasCap, strokeWidth);
+
+  switch (to.outwardDir) {
+    case 'N':
+      return [to.position[0], y - offset];
+    case 'S':
+      return [to.position[0], y + h + offset];
+    case 'E':
+      return [x + w + offset, to.position[1]];
+    case 'W':
+      return [x - offset, to.position[1]];
+  }
+}
+
+/**
  * Compute A* routed path for snapped endpoints.
  *
- * Used when to.kind === 'shape' (cursor snapped to shape).
+ * Used when to.isAnchored === true (cursor snapped to shape).
  * Provides obstacle avoidance by routing around padded shape bounds.
  *
- * Cap-aware jetty computation:
- * - Anchored endpoints with arrow caps get full offset
- * - Unsnapped endpoints get no offset (free-floating)
+ * DYNAMIC BEHAVIOR based on start position:
+ * - If starting INSIDE padded region: uses smaller blocking bounds + seeds direction
+ * - If starting OUTSIDE: uses full padded bounds + lets A* decide naturally
  *
  * @param from - Start terminal
  * @param to - End terminal (must be snapped)
@@ -362,42 +517,55 @@ function computeSignature(points: [number, number][]): string {
  * @returns Route result with path and signature
  */
 export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  // Determine if endpoints have caps
-  // For now: startCap = 'none', endCap = 'arrow' (default)
-  // TODO: Pass actual cap settings from caller
-  const fromHasCap = false; // startCap = 'none' by default
-  const toHasCap = true; // endCap = 'arrow' by default
+  // 1. Compute approach points
+  const fromApproach = computeApproachPoint(from, strokeWidth);
+  const toApproach = computeApproachPoint(to, strokeWidth);
 
-  // 1. Compute jetty endpoints (cap-aware offset)
-  const fromJetty = computeJettyPoint(from, strokeWidth, fromHasCap);
-  const toJetty = computeJettyPoint(to, strokeWidth, toHasCap);
+  // 2. Compute goal position at padding intersection
+  const goalPos = computeGoalPosition(to, strokeWidth);
 
-  // 2. Build non-uniform grid with obstacles blocked
-  const grid = buildNonUniformGrid(from, to, fromJetty, toJetty, strokeWidth);
+  // 3. Check if starting inside padded region (for dynamic blocking + seeding)
+  const startInsidePadding = to.shapeBounds
+    ? isInsidePaddedRegion(from.position, to.shapeBounds, strokeWidth)
+    : false;
 
-  // 3. Find start and goal cells
-  // For anchored endpoints, start/goal is at JETTY position (in routing space)
-  // For unsnapped endpoints, jetty IS the actual position (offset = 0)
-  const startCell = findNearestCell(grid, fromJetty);
-  const goalCell = findNearestCell(grid, toJetty);
+  // 4. Build non-uniform grid with dynamic blocking
+  const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth, startInsidePadding);
 
-  // 4. Run A* (no direction seeding)
-  const path = astar(grid, startCell, goalCell);
+  // 5. Find start and goal cells
+  const startCell = findNearestCell(grid, fromApproach);
+  const goalCell = findNearestCell(grid, goalPos);
 
-  // 5. Assemble full path
-  // Path includes start and goal cells, which are at jetty positions
-  // We add actual endpoints at start and end
-  const fullPath: [number, number][] = [fromJetty];
+  // 6. Compute direction hints - CONDITIONAL SEEDING
+  // - Anchored start: always use outwardDir
+  // - Inside padding: compute escape direction toward target
+  // - Outside padding: null (let A* decide naturally)
+  let preferredFirstDir: Dir | null = null;
 
-  // Add A* path (includes jetty positions as first/last cells)
+  if (from.isAnchored) {
+    // Anchored start always uses outwardDir
+    preferredFirstDir = from.outwardDir;
+  } else if (startInsidePadding) {
+    // Only seed direction when starting in padded zone
+    preferredFirstDir = computePreferredFirstDir(from.position, to);
+  }
+  // else: null - let A* decide naturally (works well for normal cases)
+
+  // Required approach: must enter goal from opposite of to.outwardDir
+  // (kept for potential future use, currently APPROACH_MISMATCH_PENALTY is disabled)
+  const _requiredApproachDir = oppositeDir(to.outwardDir);
+
+  // 7. Run A* with direction hints
+  const path = astar(grid, startCell, goalCell, preferredFirstDir, _requiredApproachDir);
+
+  // 8. Assemble full path: actual start → A* path → actual end
+  const fullPath: [number, number][] = [from.position];
   for (const cell of path) {
     fullPath.push([cell.x, cell.y]);
   }
-
-  // Add actual endpoint
   fullPath.push(to.position);
 
-  // 6. Simplify collinear points (removes duplicates when jetty = position)
+  // 9. Simplify collinear points
   const simplified = simplifyOrthogonal(fullPath);
 
   return {

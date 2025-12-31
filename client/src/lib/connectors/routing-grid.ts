@@ -71,18 +71,22 @@ function pointStrictlyInsideRect(x: number, y: number, rect: AABB): boolean {
  * Create cell grid with blocking.
  *
  * BLOCKING STRATEGY:
- * - Block cells strictly INSIDE the padded obstacle bounds
- * - NEVER block start or goal positions (jetty or endpoint positions)
- * - Padding boundary cells are NOT blocked (they're the valid corridor)
+ * - Dynamic blocking based on start position:
+ *   - If starting inside padded region: block only shape bounds + stroke inflation
+ *     This creates a corridor between shape edge and padding boundary
+ *   - If starting outside: block full padded bounds (normal behavior)
+ * - NEVER block start or goal positions
+ * - Boundary cells are NOT blocked (they're the valid corridor)
  *
  * @param xLines - Sorted X coordinates
  * @param yLines - Sorted Y coordinates
  * @param obstacle - Shape bounds to block (if any)
  * @param startPos - Start position (must not be blocked)
  * @param goalPos - Goal position (must not be blocked)
- * @param fromJetty - Start jetty position (must not be blocked)
- * @param toJetty - End jetty position (must not be blocked)
+ * @param fromApproach - Start approach point (must not be blocked)
+ * @param toApproach - End approach point (must not be blocked)
  * @param strokeWidth - Connector stroke width (affects blocking offset)
+ * @param startInsidePadding - If true, use smaller blocking (shape + stroke only)
  * @returns Grid structure
  */
 function createCellGrid(
@@ -91,22 +95,38 @@ function createCellGrid(
   obstacle: AABB | null,
   startPos: [number, number],
   goalPos: [number, number],
-  fromJetty: [number, number],
-  toJetty: [number, number],
-  strokeWidth: number
+  _fromApproach: [number, number],
+  _toApproach: [number, number],
+  strokeWidth: number,
+  startInsidePadding?: boolean
 ): Grid {
   const cells: GridCell[][] = [];
 
-  // Compute padded obstacle bounds for blocking
+  // DYNAMIC BLOCKING BOUNDS
+  // When starting inside padded region, use smaller bounds to create escape corridor
   const approachOffset = computeApproachOffset(strokeWidth);
-  const blockedBounds: AABB | null = obstacle
-    ? {
+  const strokeInflation = strokeWidth * 0.5 + 1; // Match bbox computation
+
+  let blockedBounds: AABB | null = null;
+  if (obstacle) {
+    if (startInsidePadding) {
+      // Use shape bounds + stroke inflation only (creates corridor for escape)
+      blockedBounds = {
+        x: obstacle.x - strokeInflation,
+        y: obstacle.y - strokeInflation,
+        w: obstacle.w + strokeInflation * 2,
+        h: obstacle.h + strokeInflation * 2,
+      };
+    } else {
+      // Use full padded bounds (normal behavior)
+      blockedBounds = {
         x: obstacle.x - approachOffset,
         y: obstacle.y - approachOffset,
         w: obstacle.w + approachOffset * 2,
         h: obstacle.h + approachOffset * 2,
-      }
-    : null;
+      };
+    }
+  }
 
   for (let yi = 0; yi < yLines.length; yi++) {
     cells[yi] = [];
@@ -114,19 +134,17 @@ function createCellGrid(
       const cellX = xLines[xi];
       const cellY = yLines[yi];
 
-      // Cell is blocked if strictly INSIDE the padded bounds
+      // Cell is blocked if strictly INSIDE the computed bounds
       // (NOT on boundary - boundary is valid routing corridor)
       let blocked = blockedBounds ? pointStrictlyInsideRect(cellX, cellY, blockedBounds) : false;
 
-      // NEVER block start, goal, or jetty positions - A* needs to reach them
+      // NEVER block start, goal, or approach positions - A* needs to reach them
       if (blocked) {
         const eps = 0.001;
         const isStart = Math.abs(cellX - startPos[0]) < eps && Math.abs(cellY - startPos[1]) < eps;
         const isGoal = Math.abs(cellX - goalPos[0]) < eps && Math.abs(cellY - goalPos[1]) < eps;
-        const isFromJetty = Math.abs(cellX - fromJetty[0]) < eps && Math.abs(cellY - fromJetty[1]) < eps;
-        const isToJetty = Math.abs(cellX - toJetty[0]) < eps && Math.abs(cellY - toJetty[1]) < eps;
 
-        if (isStart || isGoal || isFromJetty || isToJetty) {
+        if (isStart || isGoal) {
           blocked = false;
         }
       }
@@ -140,9 +158,6 @@ function createCellGrid(
       };
     }
   }
-  console.log('xLines', xLines);
-  console.log('yLines', yLines);
-  console.log('cells', cells);
   return { cells, xLines, yLines };
 }
 
@@ -151,25 +166,31 @@ function createCellGrid(
  *
  * GRID LINE PHILOSOPHY:
  * - Lines exist only at positions where routing is valid
- * - Anchored endpoints: position + jetty (both axes needed for path assembly)
- * - Unsnapped endpoints: position (jetty = position when offset = 0)
+ * - Anchored endpoints: single axis at approach point (perpendicular to snap side)
+ * - Unsnapped endpoints: both axes at position
  * - Shape obstacle: ONLY padding boundary lines (NO shape edge lines)
- *   This prevents creating cells inside the blocked zone
  * - Midpoints for routing flexibility
+ *
+ * DYNAMIC BLOCKING:
+ * - When startInsidePadding is true, blocking uses smaller bounds (shape + stroke)
+ *   to create escape corridor for same-side scenarios
+ * - When false (default), uses full padded bounds
  *
  * @param from - Start terminal
  * @param to - End terminal
- * @param fromJetty - Start jetty position
- * @param toJetty - End jetty position
+ * @param fromApproach - Start approach point (where route begins in grid)
+ * @param toApproach - End approach point (where route ends in grid)
  * @param strokeWidth - Connector stroke width (affects grid line placement)
+ * @param startInsidePadding - If true, use smaller blocking bounds
  * @returns Grid for A* routing
  */
 export function buildNonUniformGrid(
   from: Terminal,
   to: Terminal,
-  fromJetty: [number, number],
-  toJetty: [number, number],
-  strokeWidth: number
+  fromApproach: [number, number],
+  toApproach: [number, number],
+  strokeWidth: number,
+  startInsidePadding?: boolean
 ): Grid {
   const xLines: number[] = [];
   const yLines: number[] = [];
@@ -177,80 +198,79 @@ export function buildNonUniformGrid(
   const approachOffset = computeApproachOffset(strokeWidth);
 
   // === 1. FROM endpoint ===
-  // Always add both axes for the endpoint position (needed for path assembly)
-    // === 1. FROM endpoint ===
-    if (from.kind === 'shape') {
-      // Anchored FROM: single-axis line at jetty position
-      // The axis is PERPENDICULAR to the snap side
-      if (from.outwardDir === 'N' || from.outwardDir === 'S') {
-        // Vertical exit → y-line at jetty
-        yLines.push(fromJetty[1]);
-        xLines.push(from.position[0]); // Keep x for path assembly
-      } else {
-        // Horizontal exit → x-line at jetty
-        xLines.push(fromJetty[0]);
-        yLines.push(from.position[1]); // Keep y for path assembly
-      }
+  // Anchored: single axis at approach point
+  // Free: both axes at position
+  if (from.isAnchored) {
+    if (from.outwardDir === 'N' || from.outwardDir === 'S') {
+      // Vertical exit → only Y line at approach point
+      yLines.push(fromApproach[1]);
     } else {
-      // Unsnapped FROM: both axes at position
-      xLines.push(from.position[0]);
-      yLines.push(from.position[1]);
+      // Horizontal exit → only X line at approach point
+      xLines.push(fromApproach[0]);
     }
-  
-    // === 2. TO endpoint ===
-    if (to.kind === 'shape') {
-      // Anchored TO: single-axis line at jetty position
-      if (to.outwardDir === 'N' || to.outwardDir === 'S') {
-        yLines.push(toJetty[1]);
-        xLines.push(toJetty[0]);
-      } else {
-        xLines.push(toJetty[0]);
-        yLines.push(toJetty[1]);
-      }
+  } else {
+    // Unsnapped: both axes at position
+    xLines.push(from.position[0]);
+    yLines.push(from.position[1]);
+  }
+
+  // === 2. TO endpoint (goal at padding intersection) ===
+  if (to.isAnchored && to.shapeBounds) {
+    const { y, h } = to.shapeBounds;
+
+    // Goal is at intersection of anchor's fixed axis and padding boundary
+    if (to.outwardDir === 'N' || to.outwardDir === 'S') {
+      // Vertical approach: fixed X from anchor, Y from padding boundary
+      xLines.push(toApproach[0]);
+      const goalY = to.outwardDir === 'N' ? y - approachOffset : y + h + approachOffset;
+      yLines.push(goalY);
     } else {
-      // Unsnapped TO: both axes
-      xLines.push(to.position[0]);
-      yLines.push(to.position[1]);
+      // Horizontal approach: fixed Y from anchor, X from padding boundary
+      yLines.push(toApproach[1]);
+      xLines.push(toApproach[0]);
     }
-  
-    // === 3. Obstacle padding boundaries (NOT shape edges) ===
-    if (to.shapeBounds) {
-      const { x, y, w, h } = to.shapeBounds;
-  
-      // Only add padding boundary lines (valid routing corridors)
-      // DO NOT add shape edge lines - those create blocked cells
-      xLines.push(x - approachOffset, x + w + approachOffset);
-      yLines.push(y - approachOffset, y + h + approachOffset);
-    }
-  
-    if (from.shapeBounds && from.shapeBounds !== to.shapeBounds) {
-      const { x, y, w, h } = from.shapeBounds;
-      xLines.push(x - approachOffset, x + w + approachOffset);
-      yLines.push(y - approachOffset, y + h + approachOffset);
-    }
-  
-    // === 4. Midpoints for routing flexibility ===
-    // These allow Z-routes that don't align with endpoints
-    const midX = (fromJetty[0] + toJetty[0]) / 2;
-    const midY = (fromJetty[1] + toJetty[1]) / 2;
-    xLines.push(midX);
-    yLines.push(midY);
-  
-    // === 5. Dedupe and sort ===
-    const xSorted = [...new Set(xLines)].sort((a, b) => a - b);
-    const ySorted = [...new Set(yLines)].sort((a, b) => a - b);
-  
-    // === 6. Build cell grid ===
-    return createCellGrid(
-      xSorted,
-      ySorted,
-      to.shapeBounds ?? null,
-      from.position,  // Start position (never blocked)
-      to.position,    // Goal position (never blocked)
-      fromJetty,
-      toJetty,
-      strokeWidth
-    );
+  } else {
+    // Unsnapped TO: both axes at position
+    xLines.push(to.position[0]);
+    yLines.push(to.position[1]);
+  }
+
+  // === 3. Obstacle padding boundaries ===
+  if (to.shapeBounds) {
+    const { x, y, w, h } = to.shapeBounds;
+    // Full padding boundary lines
+    xLines.push(x - approachOffset, x + w + approachOffset);
+    yLines.push(y - approachOffset, y + h + approachOffset);
+  }
+
+  if (from.shapeBounds && from.shapeBounds !== to.shapeBounds) {
+    const { x, y, w, h } = from.shapeBounds;
+    xLines.push(x - approachOffset, x + w + approachOffset);
+    yLines.push(y - approachOffset, y + h + approachOffset);
+  }
+
+  // === 4. Midpoints for routing flexibility ===
+  const midX = (fromApproach[0] + toApproach[0]) / 2;
+  const midY = (fromApproach[1] + toApproach[1]) / 2;
+  xLines.push(midX);
+  yLines.push(midY);
+
+  // === 5. Dedupe and sort ===
+  const xSorted = [...new Set(xLines)].sort((a, b) => a - b);
+  const ySorted = [...new Set(yLines)].sort((a, b) => a - b);
+
+  // === 6. Build cell grid ===
+  return createCellGrid(
+    xSorted,
+    ySorted,
+    to.shapeBounds ?? null,
+    from.position,
+    to.position,
+    fromApproach,
+    toApproach,
+    strokeWidth,
+    startInsidePadding
+  );
 }
 
 /**

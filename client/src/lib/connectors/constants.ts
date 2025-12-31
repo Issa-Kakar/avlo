@@ -64,7 +64,7 @@ export const SNAP_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 22,
+  CORNER_RADIUS_W: 20,
 
   /** Dogleg offset when shapes are behind each other in world units */
   DOGLEG_W: 40,
@@ -108,6 +108,12 @@ export const COST_CONFIG = {
 
   /** Penalty for short segments (less than JETTY_W) */
   SHORT_SEGMENT_PENALTY: 50,
+
+  /** Penalty for approaching goal from wrong direction */
+  APPROACH_MISMATCH_PENALTY: 2000,
+
+  /** Bonus for taking preferred first direction */
+  FIRST_DIR_BONUS: 500,
 } as const;
 
 /**
