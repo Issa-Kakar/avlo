@@ -122,3 +122,153 @@ export function isHorizontal(dir: Dir): boolean {
 export function isVertical(dir: Dir): boolean {
   return dir === 'N' || dir === 'S';
 }
+
+// ============================================================================
+// CLASSIFICATION HELPERS
+// ============================================================================
+
+/** Axis relationship between two directions */
+export type AxisRelation = 'same-axis' | 'cross-axis';
+
+/**
+ * Classify axis relationship between two directions.
+ * Same-axis: both vertical (N/S) or both horizontal (E/W)
+ * Cross-axis: one vertical, one horizontal
+ *
+ * @param dirA - First direction
+ * @param dirB - Second direction
+ * @returns Axis relationship
+ */
+export function classifyAxisRelation(dirA: Dir, dirB: Dir): AxisRelation {
+  const aVertical = isVertical(dirA);
+  const bVertical = isVertical(dirB);
+  return aVertical === bVertical ? 'same-axis' : 'cross-axis';
+}
+
+/** Direction relationship between two directions */
+export type DirRelation = 'opposite' | 'same' | 'perpendicular';
+
+/**
+ * Classify direction relationship.
+ * Opposite: N↔S, E↔W
+ * Same: N↔N, E↔E, etc.
+ * Perpendicular: N↔E, S↔W, etc.
+ *
+ * @param dirA - First direction
+ * @param dirB - Second direction
+ * @returns Direction relationship
+ */
+export function classifyDirRelation(dirA: Dir, dirB: Dir): DirRelation {
+  if (dirA === oppositeDir(dirB)) return 'opposite';
+  if (dirA === dirB) return 'same';
+  return 'perpendicular';
+}
+
+// ============================================================================
+// SPATIAL RELATIONSHIP HELPERS
+// ============================================================================
+
+/** AABB for spatial calculations (compatible with ShapeFrame) */
+export interface AABB {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Point-to-shape spatial relationship (for direction seeding) */
+export interface PointToShapeSpatial {
+  /** Point is to the left of shape (point.x < shape.x) */
+  pointIsLeftOf: boolean;
+  /** Point is to the right of shape (point.x > shape.x + shape.w) */
+  pointIsRightOf: boolean;
+  /** Point is above shape (point.y < shape.y) */
+  pointIsAbove: boolean;
+  /** Point is below shape (point.y > shape.y + shape.h) */
+  pointIsBelow: boolean;
+  /** Point X is within padded X range */
+  withinPaddedXRange: boolean;
+  /** Point Y is within padded Y range */
+  withinPaddedYRange: boolean;
+}
+
+/**
+ * Compute spatial relationship between a point and a shape.
+ * Used for direction seeding in A* routing.
+ *
+ * @param point - World position [x, y]
+ * @param shapeBounds - Shape AABB
+ * @param approachOffset - Padding offset for "within range" checks
+ * @returns Spatial relationship
+ */
+export function computePointToShapeSpatial(
+  point: [number, number],
+  shapeBounds: AABB,
+  approachOffset: number
+): PointToShapeSpatial {
+  const [px, py] = point;
+  const { x, y, w, h } = shapeBounds;
+
+  // Padded bounds
+  const pMinX = x - approachOffset;
+  const pMaxX = x + w + approachOffset;
+  const pMinY = y - approachOffset;
+  const pMaxY = y + h + approachOffset;
+
+  return {
+    pointIsLeftOf: px < x,
+    pointIsRightOf: px > x + w,
+    pointIsAbove: py < y,
+    pointIsBelow: py > y + h,
+    withinPaddedXRange: px >= pMinX && px <= pMaxX,
+    withinPaddedYRange: py >= pMinY && py <= pMaxY,
+  };
+}
+
+/** Shape-to-shape spatial relationship (for facing sides computation) */
+export interface ShapeToShapeSpatial {
+  /** End shape is to the right of start (end.x > start.x + start.w + padding) */
+  endIsRightOf: boolean;
+  /** End shape is to the left of start (end.x + end.w < start.x - padding) */
+  endIsLeftOf: boolean;
+  /** Shapes overlap on X axis */
+  overlapX: boolean;
+  /** End shape is below start (end.y > start.y + start.h + padding) */
+  endIsBelow: boolean;
+  /** End shape is above start (end.y + end.h < start.y - padding) */
+  endIsAbove: boolean;
+  /** Shapes overlap on Y axis */
+  overlapY: boolean;
+}
+
+/**
+ * Compute spatial relationship between two shapes.
+ * Used for facing sides computation in grid construction.
+ *
+ * NOTE: Uses actual shape bounds, NOT padded bounds. Spatial relations
+ * should be based on actual geometry, not padding-adjusted positions.
+ * Padding is only used for grid line placement, not spatial classification.
+ *
+ * @param startBounds - Start shape AABB
+ * @param endBounds - End shape AABB
+ * @returns Spatial relationship
+ */
+export function computeShapeToShapeSpatial(
+  startBounds: AABB,
+  endBounds: AABB
+): ShapeToShapeSpatial {
+  // Spatial relationships based on actual shape bounds (NO padding)
+  const endIsRightOf = endBounds.x > startBounds.x + startBounds.w;
+  const endIsLeftOf = endBounds.x + endBounds.w < startBounds.x;
+  const endIsBelow = endBounds.y > startBounds.y + startBounds.h;
+  const endIsAbove = endBounds.y + endBounds.h < startBounds.y;
+
+  return {
+    endIsRightOf,
+    endIsLeftOf,
+    overlapX: !endIsRightOf && !endIsLeftOf,
+    endIsBelow,
+    endIsAbove,
+    overlapY: !endIsBelow && !endIsAbove,
+  };
+}

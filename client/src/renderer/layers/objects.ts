@@ -121,7 +121,7 @@ function drawStroke(
   handle: ObjectHandle,
 ): void {
   const { id, y } = handle;
-
+  console.debug(`drawStroke: ${id}`);
   // Read style directly from Y.Map
   const color = (y.get('color') as string) ?? '#000';
   const opacity = (y.get('opacity') as number) ?? 1;
@@ -552,6 +552,8 @@ function drawScaledStrokePreview(
   });
 
   const path = new Path2D(getSvgPathFromStroke(outline, false));
+
+  console.debug(`drawScaledStrokePreview: ${handle.id}`);
 
   ctx.save();
   ctx.globalAlpha = opacity;

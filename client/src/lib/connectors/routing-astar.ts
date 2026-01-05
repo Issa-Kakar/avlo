@@ -23,7 +23,7 @@ import {
   type Grid,
   type GridCell,
 } from './routing-grid';
-import type { Terminal, RouteResult } from './routing-zroute';
+import { type Terminal, type RouteResult } from './routing-zroute';
 
 /**
  * Check if a position is inside the padded region (but outside the shape).
@@ -139,6 +139,106 @@ function computePreferredFirstDir(
   // We're on a perpendicular side - go directly toward target side
   // This creates clean L-shaped routes (e.g., S padding → W snap → go W first)
   return toSide;
+}
+
+/**
+ * Compute start direction for FREE endpoints.
+ *
+ * Uses spatial relationship between start position and target shape,
+ * NOT cursor drag direction. This ensures correct Z-route vs L-route selection.
+ *
+ * Three cases:
+ * 1. SAME SIDE (head-on): Z-route if primary axis matches anchor axis, else L-route
+ * 2. ADJACENT SIDES: Go directly toward anchor (L-route)
+ * 3. OPPOSITE SIDES (contained): Wrap around via shortest path
+ *
+ * @param from - Start terminal (must be free/unanchored)
+ * @param to - End terminal (should have shapeBounds)
+ * @param strokeWidth - For computing approach offset
+ * @returns Direction to seed for first move
+ */
+function computeFreeStartDirection(
+  from: Terminal,
+  to: Terminal,
+  strokeWidth: number
+): Dir {
+  // No target shape - fallback to from.outwardDir (drag-based)
+  if (!to.shapeBounds) {
+    return from.outwardDir;
+  }
+
+  const { x, y, w, h } = to.shapeBounds;
+  const [fx, fy] = from.position;
+  const [tx, ty] = to.position;
+  const offset = computeApproachOffset(strokeWidth);
+
+  // Compute primary axis from start→snap (NOT cursor)
+  const dx = tx - fx;
+  const dy = ty - fy;
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  const primaryAxis: 'H' | 'V' = ax >= ay ? 'H' : 'V';
+
+  // Position checks (NO padding for spatial relation)
+  const startLeftOf = fx < x;
+  const startRightOf = fx > x + w;
+  const startAbove = fy < y;
+  const startBelow = fy > y + h;
+
+  // Containment check (WITH padding - for wrap-around detection)
+  const withinPaddedX = fx >= (x - offset) && fx <= (x + w + offset);
+  const withinPaddedY = fy >= (y - offset) && fy <= (y + h + offset);
+  const containedInPaddedBounds = withinPaddedX && withinPaddedY;
+
+  const anchorDir = to.outwardDir;
+
+  // === SAME SIDE (Z-route possible) ===
+  // Start is on same side as anchor's OPPOSITE. E.g., start LEFT, anchor WEST.
+  const isSameSide =
+    (anchorDir === 'W' && startLeftOf) ||
+    (anchorDir === 'E' && startRightOf) ||
+    (anchorDir === 'N' && startAbove) ||
+    (anchorDir === 'S' && startBelow);
+
+  if (isSameSide) {
+    const anchorOnHorizontal = anchorDir === 'E' || anchorDir === 'W';
+    // Z-route ONLY valid when primary axis matches anchor axis
+    const zRouteValid = (anchorOnHorizontal && primaryAxis === 'H') ||
+                        (!anchorOnHorizontal && primaryAxis === 'V');
+
+    if (zRouteValid) {
+      // Z-route: go toward snap point on primary axis
+      return anchorOnHorizontal ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+    } else {
+      // L-route: go on perpendicular axis first
+      return primaryAxis === 'V' ? (dy >= 0 ? 'S' : 'N') : (dx >= 0 ? 'E' : 'W');
+    }
+  }
+
+  // === OPPOSITE SIDE (wrap around required) ===
+  // Start is on same side AS anchor. E.g., start LEFT, anchor EAST (behind shape).
+  const isOppositeSide =
+    (anchorDir === 'E' && startLeftOf) ||   // anchor right, start left
+    (anchorDir === 'W' && startRightOf) ||  // anchor left, start right
+    (anchorDir === 'N' && startBelow) ||    // anchor top, start below
+    (anchorDir === 'S' && startAbove);      // anchor bottom, start above
+
+  if (isOppositeSide && containedInPaddedBounds) {
+    // Must wrap around - pick shortest path
+    if (anchorDir === 'E' || anchorDir === 'W') {
+      // Horizontal anchor: go N or S based on start position relative to shape center
+      const shapeCenterY = y + h / 2;
+      return fy < shapeCenterY ? 'N' : 'S';
+    } else {
+      // Vertical anchor: go E or W based on start position relative to shape center
+      const shapeCenterX = x + w / 2;
+      return fx < shapeCenterX ? 'W' : 'E';
+    }
+  }
+
+  // === ADJACENT SIDES (L-route directly toward anchor) ===
+  // This catches adjacent sides + opposite-outside cases
+  return anchorDir;
 }
 
 /**
@@ -285,9 +385,9 @@ function computeMoveCost(
   let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
 
   // BACKWARDS PREVENTION - should be caught earlier, but double-check
-  // if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
-  //   return Infinity;
-  // }
+  if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
+    return Infinity;
+  }
 
   // BEND PENALTY (minimize direction changes)
   if (arrivalDir && moveDir !== arrivalDir) {
@@ -295,9 +395,9 @@ function computeMoveCost(
   }
 
   // CONTINUATION BONUS (prefer longer straight segments)
-  if (arrivalDir && moveDir === arrivalDir) {
-    cost -= COST_CONFIG.CONTINUATION_BONUS;
-  }
+  // if (arrivalDir && moveDir === arrivalDir) {
+  //   cost -= COST_CONFIG.CONTINUATION_BONUS;
+  // }
 
   // SHORT SEGMENT PENALTY (segments shorter than corner radius look bad)
   // const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
@@ -349,12 +449,11 @@ function astar(
   start: GridCell,
   goal: GridCell,
   preferredFirstDir: Dir | null,
-  requiredApproachDir: Dir
+  _requiredApproachDir: Dir
 ): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
-
   // Start with null arrivalDir - direction hints applied via cost adjustments
   const startNode: AStarNode = {
     cell: start,
@@ -393,7 +492,6 @@ function astar(
 
       // Base cost with bend penalty
       let moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
-
       // FIRST DIRECTION BONUS - apply at start node when preferredFirstDir is set
       // Only applied when starting inside padding or from anchored position
       if (current.parent === null && preferredFirstDir && moveDir === preferredFirstDir) {
@@ -402,14 +500,13 @@ function astar(
 
       // APPROACH MISMATCH PENALTY - disabled (creates weird routes)
       // if (neighbor.xi === goal.xi && neighbor.yi === goal.yi) {
-      //   if (moveDir !== requiredApproachDir) {
+      //   if (moveDir !== _requiredApproachDir) {
       //     moveCost += COST_CONFIG.APPROACH_MISMATCH_PENALTY;
       //   }
       // }
 
       const tentativeG = current.g + moveCost;
       const existingG = gScores.get(neighborKey) ?? Infinity;
-
       if (tentativeG < existingG) {
         const h = manhattan(neighbor, goal);
         const neighborNode: AStarNode = {
@@ -426,7 +523,7 @@ function astar(
       }
     }
   }
-
+  
   // No path found - return direct line (fallback)
   return [start, goal];
 }
@@ -520,10 +617,8 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
   // 1. Compute approach points
   const fromApproach = computeApproachPoint(from, strokeWidth);
   const toApproach = computeApproachPoint(to, strokeWidth);
-
   // 2. Compute goal position at padding intersection
   const goalPos = computeGoalPosition(to, strokeWidth);
-
   // 3. Check if starting inside padded region (for dynamic blocking + seeding)
   const startInsidePadding = to.shapeBounds
     ? isInsidePaddedRegion(from.position, to.shapeBounds, strokeWidth)
@@ -531,25 +626,26 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
 
   // 4. Build non-uniform grid with dynamic blocking
   const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth, startInsidePadding);
-
   // 5. Find start and goal cells
   const startCell = findNearestCell(grid, fromApproach);
   const goalCell = findNearestCell(grid, goalPos);
 
-  // 6. Compute direction hints - CONDITIONAL SEEDING
-  // - Anchored start: always use outwardDir
-  // - Inside padding: compute escape direction toward target
-  // - Outside padding: null (let A* decide naturally)
+  // 6. Compute direction hints - ALWAYS SEED for anchored and free endpoints
+  // - Anchored start: always use outwardDir (fixed by shape attachment)
+  // - Free + inside padding: compute escape direction (existing logic)
+  // - Free + outside padding: compute based on spatial relationship to target
   let preferredFirstDir: Dir | null = null;
 
   if (from.isAnchored) {
     // Anchored start always uses outwardDir
     preferredFirstDir = from.outwardDir;
   } else if (startInsidePadding) {
-    // Only seed direction when starting in padded zone
+    // Inside padded zone: use escape direction logic
     preferredFirstDir = computePreferredFirstDir(from.position, to);
+  } else {
+    // Free start outside padding: compute direction based on spatial relationship
+    preferredFirstDir = computeFreeStartDirection(from, to, strokeWidth);
   }
-  // else: null - let A* decide naturally (works well for normal cases)
 
   // Required approach: must enter goal from opposite of to.outwardDir
   // (kept for potential future use, currently APPROACH_MISMATCH_PENALTY is disabled)
@@ -570,6 +666,6 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
 
   return {
     points: simplified,
-    signature: computeSignature(simplified),
+    signature: computeSignature(simplified)
   };
 }

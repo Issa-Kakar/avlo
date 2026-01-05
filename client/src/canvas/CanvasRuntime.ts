@@ -102,7 +102,7 @@ export class CanvasRuntime {
         this.lastDocVersion = snap.docVersion;
         // Hold preview for one frame to prevent flash on commit
         this.overlayLoop?.holdPreviewForOneFrame();
-        if (this.lastDocVersion < 3) {
+        if (this.lastDocVersion < 2) {
           this.renderLoop?.invalidateAll('content-change');
         }
         // Process dirty patch from manager

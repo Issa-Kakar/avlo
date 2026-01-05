@@ -34,7 +34,7 @@ export const SNAP_CONFIG = {
   MIDPOINT_SNAP_OUT_PX: 20,
 
   /** Depth inside shape before forcing midpoint-only mode */
-  INSIDE_DEPTH_PX: 8,
+  INSIDE_DEPTH_PX: 10,
 
   /** Anchor dot visual radius */
   DOT_RADIUS_PX: 8,
@@ -64,7 +64,7 @@ export const SNAP_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 20,
+  CORNER_RADIUS_W: 24,
 
   /** Dogleg offset when shapes are behind each other in world units */
   DOGLEG_W: 40,

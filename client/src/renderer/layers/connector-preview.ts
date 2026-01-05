@@ -190,7 +190,7 @@ function drawRoundedPolyline(
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
   ctx.strokeStyle = color;
-  ctx.lineWidth = width;
+  ctx.lineWidth = width * 0.95;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 

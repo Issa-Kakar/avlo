@@ -168,7 +168,7 @@ export function inferDragDirection(
   from: [number, number],
   cursor: [number, number],
   prevDir: Dir | null,
-  hysteresisRatio: number = 1.05
+  hysteresisRatio: number = 1.04
 ): Dir {
   const dx = cursor[0] - from[0];
   const dy = cursor[1] - from[1];
