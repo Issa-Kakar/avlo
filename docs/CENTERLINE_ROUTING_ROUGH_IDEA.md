@@ -640,45 +640,6 @@ Centerline for horizontal corridor portion
 
 ---
 
-## Implementation Order
-
-### Step 1: Create `routing-spatial.ts`
-- [ ] Direction classification helpers (isSameAxis, isCrossAxis, isOpposing, classifyDirRelation)
-- [ ] PaddedBounds type and computePaddedBounds helper
-- [ ] Spatial relationship helpers (computeXRelation, computeYRelation)
-- [ ] FacingSides interface and computeFacingSides function
-- [ ] computeFacingSidesFromPoint for free→anchored
-- [ ] Export all from index.ts
-
-### Step 2: Update `constants.ts`
-- [ ] Add MIN_CENTERLINE_GAP_W constant
-
-### Step 3: Refactor `routing-grid.ts`
-- [ ] Import new spatial helpers
-- [ ] Modify buildNonUniformGrid to:
-  - [ ] Compute facing sides
-  - [ ] Replace midpoint logic with centerline from facing sides
-  - [ ] Conditionally add/omit facing side lines
-  - [ ] Add exterior (wrap) lines when needed
-- [ ] Modify createCellGrid to:
-  - [ ] Block facing side line cells when goal is on that line (except goal cell)
-
-### Step 4: Update `routing-astar.ts`
-- [ ] Import facing sides info
-- [ ] Pass facingSides through to direction seeding
-- [ ] Enhance preferredFirstDir logic based on facing sides
-
-### Step 5: Test and Validate
-- [ ] Test free→anchored head-on (should produce centered Z)
-- [ ] Test free→anchored L-route (should still work)
-- [ ] Test edge cases (very close shapes, overlapping, etc.)
-
-### Step 6: Documentation
-- [ ] Update CONNECTOR_ROUTING_SUMMARY.md with new architecture
-- [ ] Add inline comments explaining facing sides merging
-
----
-
 ## Code Simplification Opportunities
 
 While implementing, consider these cleanups:
@@ -734,3 +695,372 @@ Once free→anchored centerline routing works:
 2. **Two-Obstacle Blocking**: Grid construction with two blocked regions
 3. **Wrap Routing**: Same-direction cases with exterior line usage
 4. **Sticky Connectors**: Shape movement triggers route recomputation
+
+# CENTERLINE PREFERENCE: REFINED ALGORITHM
+
+## The Core Insight
+
+**Precise Rule:** For any segment that runs along a **SHAPE PADDING LINE ITSELF** (the actual padded AABB boundary), if:
+1. That padding line is a **FACING side** (interior side looking at the other shape)
+2. A **CENTERLINE** exists parallel to it with minimum space
+
+→ **Use centerline instead of the shape padding line.**
+
+**Key Distinction:**
+- We're not checking arbitrary parallel segments - we're checking if the path uses the **actual shape padding AABB lines**
+- Each shape has 4 padding lines: 2 X-lines (left_pad, right_pad), 2 Y-lines (top_pad, bottom_pad)
+- **Facing sides** = the interior sides that look at each other
+- **Exterior sides** = the outer sides used for wrapping around (neutral cost, hugging is fine)
+
+**The Two Choices:**
+When routing parallel to a facing side, there are only two options:
+1. Use the shape's padded AABB line (hugging)
+2. Use the centerline (preferred when available)
+
+**Cost Strategy:**
+- **Centerline:** BONUS (cheaper than neutral)
+- **Facing side padding lines:** PENALTY (more expensive than neutral)
+- **Exterior/non-facing padding lines:** NEUTRAL (hugging is acceptable here)
+
+## Detection Algorithm
+
+### Step 1: Identify Potential Facing Sides
+
+For two shapes A (start) and B (end):
+- If path would traverse a **vertical segment** parallel to A's E/W sides → those are facing candidates
+- If path would traverse a **horizontal segment** parallel to B's N/S sides → those are facing candidates
+
+### Step 2: Check Centerline Viability
+
+For each axis where parallel traversal detected:
+- X-centerline = (A.right_pad + B.left_pad) / 2 (for horizontal corridor)
+- Y-centerline = (A.bottom_pad + B.top_pad) / 2 (for vertical corridor)
+- Centerline viable if: gap >= MIN_CENTERLINE_SPACE
+
+### Step 3: Route Decision
+
+```
+IF segment runs parallel to facing side
+AND centerline exists on that axis
+THEN use centerline instead of facing side padding
+```
+
+---
+
+## Worked Examples
+
+### Example 1: Exit EAST, Enter WEST (Opposing Horizontal)
+
+```
+[Start]=→    ←=[End]
+        E    W
+```
+
+**Path structure:** H → V → H
+- Exit EAST (horizontal stub)
+- Vertical segment (parallel to start's E OR end's W)
+- Enter WEST (horizontal stub)
+
+**Facing sides:** Start's EAST, End's WEST (both vertical)
+**Vertical segment is parallel to facing sides** → Use X-centerline
+
+```
+HUGGING:                    CENTERLINE:
+[Start]=→↓                  [Start]=→→→→↓
+         ↓                              ↓
+         ↓←←←←←←=[End]                  ↓←←←←=[End]
+
+Down at start.right_pad     Down at midline_x
+```
+
+### Example 2: Exit EAST, Enter NORTH (Perpendicular, Wrong Quadrant)
+
+```
+    [End]
+      ↑N
+
+[Start]→E
+```
+
+Start is BELOW end. Cannot do direct L.
+
+**Path structure:** H → V → H → V
+- Exit EAST (stub)
+- Go UP (vertical)
+- Go LEFT (horizontal) ← **This is parallel to End's NORTH!**
+- Go DOWN into NORTH (stub)
+
+**Facing side:** End's NORTH (horizontal line)
+**Horizontal segment parallel to NORTH** → Use Y-centerline
+
+```
+HUGGING:                         CENTERLINE:
+[Start]→→→→↑                     [Start]→→→→↑
+           ↑                              ↑
+    [End]←←←                      ←←←←←←←←
+      ↑N   ↓                      ↓
+           ↓                      ↓
+                              [End]
+                                ↑N
+                                ↓
+
+LEFT along end.north_pad        LEFT along midline_y
+```
+
+### Example 3: Direct L (Perpendicular, Agreeing Quadrant)
+
+```
+[Start]→E
+        ↓
+      [End]
+        ↑N
+```
+
+**Path structure:** H → V (bend at intersection)
+- No segment parallel to any facing side
+- Direct L uses intersection point
+
+**No centerline needed** - the bend happens at the natural intersection.
+
+### Example 4: Same Direction - POSITION/ALIGNMENT CRITICAL
+
+#### Case 4a: Y-aligned, X-offset (start left of end)
+
+```
+←[Start]     [End]←
+  W            W
+```
+
+**Facing sides:** Start's EAST, End's WEST (both vertical, interior)
+**Path:** W stub → V down → H right → V up → W stub
+
+**Key observation:** The vertical segments (V down, V up) are on **EXTERIOR** sides:
+- Start's WEST (not facing - it's the exit direction side)
+- End's WEST (not facing - it's the entry direction side)
+
+**No parallel facing side segments used!** The E/W facing sides are never traversed parallel.
+This is a **U-shape** where centerline X doesn't help (we go around, not through).
+
+#### Case 4b: Diagonal offset (partial Y overlap)
+
+```
+←[Start]
+  W   ↖
+        ↖
+          [End]←
+            W
+```
+
+Start is top-left, end is bottom-right. Shapes have partial Y overlap.
+
+**Two sub-cases based on Y overlap amount:**
+
+**Sub-case: Small Y overlap (gap between N/S facing sides)**
+```
+Path: W → UP → RIGHT → UP → W(stub)
+                 ↑
+         This horizontal segment parallels N/S facing sides!
+```
+- Start's SOUTH and End's NORTH are now facing sides (horizontal)
+- The rightward horizontal segment runs parallel to these
+- **Centerline Y should be used** instead of hugging one shape's N/S padding
+
+**Sub-case: Large Y overlap (shapes close vertically)**
+```
+Path: W → DOWN → RIGHT → UP → W(stub)
+```
+- Must go DOWN first to clear start, then wrap around
+- The horizontal segment is now in different territory
+- Facing sides detection changes based on actual path geometry
+
+#### Case 4c: Vertically stacked, horizontally aligned
+
+```
+  [End]←
+    W
+
+←[Start]
+  W
+```
+
+Start is below end, X-aligned.
+
+**Facing sides:** Start's NORTH, End's SOUTH (horizontal lines)
+
+**Path options:**
+1. **U-shape around exterior:** W → DOWN → L/R → UP → UP → W
+   - Uses Start's WEST (exterior, neutral) for the DOWN segment
+   - This is acceptable when no centerline Y exists in the corridor
+
+2. **Snake through corridor with centerline:** W → UP → L/R → UP → W
+   - If there's a gap between shapes (corridor exists)
+   - The horizontal segment should use centerline Y, not hug N/S padding
+
+**Why position matters:**
+- If shapes are X-aligned and have a vertical corridor → centerline Y preferred for horizontal segments
+- If shapes have no corridor (too close) → must use U-shape around exterior
+
+#### The Exterior Parallel Segments Question
+
+**Concern:** What about exterior padding lines that are also parallel to the travel direction?
+
+**Answer:** For **non-facing exterior sides**, use **NEUTRAL cost** (hugging is acceptable).
+
+**Why this works:**
+1. Manhattan routing naturally gravitates toward the goal
+2. If centerline exists and has a BONUS, A* will prefer it over neutral exterior hugging
+3. If centerline doesn't exist (shapes overlapping), exterior hugging is the only option anyway
+
+**The rule simplification:**
+- **BONUS** for centerline (when it exists and is parallel to facing sides)
+- **PENALTY** for facing side padding lines (the interior sides)
+- **NEUTRAL** for everything else (exterior sides, stubs, perpendicular segments)
+
+This means we don't need to explicitly track exterior parallel segments - the cost structure naturally handles it:
+- Centerline beats neutral (A* will prefer centerline when available)
+- Neutral beats penalty (A* avoids facing side hugging when centerline is available)
+
+---
+
+## Implementation Strategy
+
+### Option A: Post-Path Analysis (Evaluate & Penalize)
+
+After A* finds initial path, analyze each segment:
+
+```typescript
+function evaluatePath(path: Point[], startShape: AABB, endShape: AABB): number {
+  let penalty = 0;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const segment = { from: path[i], to: path[i + 1] };
+    const isVertical = segment.from.x === segment.to.x;
+    const isHorizontal = segment.from.y === segment.to.y;
+
+    // Check if segment parallels a facing side
+    if (isVertical) {
+      const facingX = [startShape.right + PAD, endShape.left - PAD];
+      if (facingX.includes(segment.from.x)) {
+        // Check if X-centerline exists
+        const centerlineX = (facingX[0] + facingX[1]) / 2;
+        if (centerlineX exists && segment.from.x !== centerlineX) {
+          penalty += CENTERLINE_MISS_PENALTY;
+        }
+      }
+    }
+    // Similar for horizontal segments
+  }
+
+  return penalty;
+}
+```
+
+### Option B: Pre-Route Grid Modification (Block Facing Lines)
+
+Before running A*, modify grid to exclude facing side lines:
+
+```typescript
+function buildCenterlinePreferredGrid(from, to, corridor): Grid {
+  const xLines = [];
+  const yLines = [];
+
+  // Always add: start/goal positions, exterior padding, centerline
+  xLines.push(from.position[0], to.position[0]);
+  xLines.push(startShape.left - PAD, endShape.right + PAD); // exterior
+  xLines.push(corridor.centerlineX); // the preferred route
+
+  // DON'T add facing side lines: start.right + PAD, end.left - PAD
+  // This forces A* to use centerline for vertical segments in corridor
+
+  // BUT: need connection from start to centerline
+  // Start cell exists at start.x, and centerline exists
+  // A* will naturally go horizontal to reach centerline
+
+  return buildGrid(xLines, yLines, ...);
+}
+```
+
+
+### Option D: Three-Tier Cost Model (RECOMMENDED)
+
+Apply BONUS/PENALTY/NEUTRAL based on edge classification:
+
+```typescript
+const CENTERLINE_BONUS = -500;      // Cheaper than neutral
+const FACING_PENALTY = 1000;        // More expensive than neutral
+const EXTERIOR_NEUTRAL = 0;         // Normal cost
+
+function computeMoveCost(from, to, arrivalDir, moveDir, corridor): number {
+  let cost = baseCost(from, to, arrivalDir, moveDir);
+
+  // Determine edge classification
+  const edgeX = from.x; // or to.x for vertical edges
+  const edgeY = from.y; // or to.y for horizontal edges
+
+  if (corridor.exists) {
+    if (corridor.axis === 'x' && (moveDir === 'N' || moveDir === 'S')) {
+      // Vertical movement - check X position
+      if (Math.abs(edgeX - corridor.centerline) < EPSILON) {
+        cost += CENTERLINE_BONUS;  // Prefer this!
+      } else if (edgeX === corridor.facingSideStart || edgeX === corridor.facingSideEnd) {
+        cost += FACING_PENALTY;    // Avoid this
+      }
+      // Exterior sides get no modification (neutral)
+    }
+    // Similar for horizontal movement with Y-axis corridors
+  }
+
+  return cost;
+}
+```
+
+**Why this works:**
+- Centerline is cheaper than neutral → A* naturally prefers centerline
+- Facing sides are more expensive → A* avoids them when centerline exists
+- Exterior sides are neutral → A* uses them when necessary (wrapping)
+- If centerline doesn't exist, facing sides become the fallback (still reachable)
+
+---
+
+## Recommended Implementation: Three-Tier Cost Model
+
+1. **Detect Corridor** during grid construction (before A*)
+2. **Add all lines** (including facing sides) for fallback routing
+3. **Apply cost modifiers** in A* based on edge classification:
+   - CENTERLINE: **BONUS** (-500) - actively preferred
+   - FACING: **PENALTY** (+1000) - actively avoided
+   - EXTERIOR: **NEUTRAL** (0) - acceptable fallback
+
+```typescript
+interface Corridor {
+  exists: boolean;
+  axis: 'x' | 'y';              // 'x' = vertical centerline, 'y' = horizontal centerline
+  facingSideStart: number;      // e.g., startShape.right + PAD
+  facingSideEnd: number;        // e.g., endShape.left - PAD
+  centerline: number;           // (facingSideStart + facingSideEnd) / 2
+  hasMinSpace: boolean;         // gap >= MIN_CENTERLINE_SPACE
+}
+
+// Cost modifiers (added to base cost)
+const CENTERLINE_BONUS = -500;  // Cheaper than neutral
+const FACING_PENALTY = 1000;    // More expensive than neutral
+// Exterior/neutral = 0 (no modification)
+```
+
+**Key insight:** By using additive modifiers instead of multipliers:
+- Centerline is always preferred when available (bonus makes it cheaper)
+- Facing sides are avoided but still reachable (penalty is finite)
+- Exterior sides are neutral (natural fallback for wrapping)
+- Manhattan routing toward goal is preserved
+
+---
+
+## Key Invariants
+
+1. **Facing sides are INTERIOR sides** - the sides of shapes that look at each other (not the exit/entry sides)
+2. **Exterior sides are NEUTRAL** - hugging is acceptable, no penalty applied
+3. **Stubs are non-negotiable** - the initial/final segments are fixed by anchor direction
+4. **Centerline only applies when corridor exists** - if shapes overlap on that axis, no centerline available
+5. **Position/alignment determines facing sides** - which sides are "facing" depends on actual shape positions
+6. **The check is per-edge** - during A* expansion, check if the current X/Y position is a facing line, centerline, or exterior
+7. **Three-tier costs preserve fallback** - BONUS/PENALTY/NEUTRAL ensures paths always exist even when centerline is blocked

@@ -37,10 +37,10 @@ export const SNAP_CONFIG = {
   INSIDE_DEPTH_PX: 10,
 
   /** Anchor dot visual radius */
-  DOT_RADIUS_PX: 8,
+  DOT_RADIUS_PX: 7,
 
   /** Connector endpoint handle radius */
-  ENDPOINT_RADIUS_PX: 8,
+  ENDPOINT_RADIUS_PX: 7,
 } as const;
 
 /**
@@ -64,7 +64,7 @@ export const SNAP_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 24,
+  CORNER_RADIUS_W: 28,
 
   /** Dogleg offset when shapes are behind each other in world units */
   DOGLEG_W: 40,
@@ -74,7 +74,7 @@ export const ROUTING_CONFIG = {
    * This ensures the stroked arc has room to straighten before the arrow.
    * Without this, the arc's outer edge curves into the arrow's side.
    */
-  MIN_STRAIGHT_SEGMENT_W: 6,
+  MIN_STRAIGHT_SEGMENT_W: 0,
 
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
@@ -202,7 +202,7 @@ export function getMaxApproachOffset(): number {
  */
 export function computeJettyOffset(
   isAnchored: boolean,
-  hasCap: boolean,
+  _hasCap: boolean,
   strokeWidth: number
 ): number {
   if (!isAnchored) {
@@ -211,10 +211,10 @@ export function computeJettyOffset(
     return 0;
   }
 
-  if (!hasCap) {
-    // Anchored but no arrow - just need corner radius clearance
-    return ROUTING_CONFIG.CORNER_RADIUS_W;
-  }
+  // if (!hasCap) {
+  //   // Anchored but no arrow - just need corner radius clearance
+  //   return ROUTING_CONFIG.CORNER_RADIUS_W + 8;
+  // }
 
   // Full offset for anchored endpoints with arrow caps
   return computeApproachOffset(strokeWidth);

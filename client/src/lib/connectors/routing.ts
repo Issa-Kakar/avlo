@@ -40,7 +40,7 @@ export function computeRoute(
   strokeWidth: number
 ): RouteResult {
   // Two-mode routing dispatch
-  if (!to.isAnchored) {
+  if (!to.isAnchored && !from.isAnchored) {
     // Free cursor - use simple Z-routing (no obstacle avoidance needed)
     return computeZRoute(from, to, strokeWidth);
   } else {

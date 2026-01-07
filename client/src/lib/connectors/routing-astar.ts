@@ -15,7 +15,7 @@
  */
 
 import { COST_CONFIG, computeJettyOffset, computeApproachOffset } from './constants';
-import { getOutwardVector, oppositeDir, type Dir } from './shape-utils';
+import { getOutwardVector, oppositeDir, type Dir, type AABB } from './shape-utils';
 import {
   buildNonUniformGrid,
   findNearestCell,
@@ -24,6 +24,44 @@ import {
   type GridCell,
 } from './routing-grid';
 import { type Terminal, type RouteResult } from './routing-zroute';
+
+// ============================================================================
+// SEGMENT-AABB INTERSECTION (MIDPOINT CHECK)
+// ============================================================================
+
+/**
+ * Check if a segment's midpoint is inside an obstacle (with inflation).
+ *
+ * For orthogonal routing (H/V segments only), checking the midpoint is sufficient
+ * because if a segment passes through an obstacle, the midpoint will be inside.
+ * This avoids false positives from corner-clipping that occurs with full segment checks.
+ *
+ * Uses INFLATED bounds (shape + strokeInflation) for a buffer zone around shapes.
+ *
+ * @param x1, y1 - Segment start
+ * @param x2, y2 - Segment end
+ * @param aabb - Axis-aligned bounding box (strict shape bounds)
+ * @param strokeInflation - Inflation amount (typically strokeWidth * 0.5 + 1)
+ * @returns true if segment midpoint is inside the inflated AABB
+ */
+function segmentMidpointInObstacle(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  aabb: AABB,
+  strokeInflation: number
+): boolean {
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+
+  // Use inflated bounds for buffer zone
+  const minX = aabb.x - strokeInflation;
+  const maxX = aabb.x + aabb.w + strokeInflation;
+  const minY = aabb.y - strokeInflation;
+  const maxY = aabb.y + aabb.h + strokeInflation;
+
+  // Strict interior check (not on boundary)
+  return mx > minX && mx < maxX && my > minY && my < maxY;
+}
 
 /**
  * Check if a position is inside the padded region (but outside the shape).
@@ -142,6 +180,65 @@ function computePreferredFirstDir(
 }
 
 /**
+ * Compute escape direction when starting in a "sliver zone".
+ *
+ * A sliver zone is when we're within the padded range on at least one axis
+ * while being outside the shape. This creates situations where going directly
+ * toward the target would create awkward routes that bend around padding.
+ *
+ * The escape direction is OUTWARD on the axis where we're outside the shape,
+ * prioritizing the axis that aligns with the anchor direction.
+ *
+ * @param fx - Start X position
+ * @param fy - Start Y position
+ * @param shapeBounds - Target shape bounds
+ * @param offset - Approach offset (padding)
+ * @param anchorDir - Anchor direction (for prioritizing escape in corner cases)
+ * @returns Escape direction if in sliver zone, null otherwise
+ */
+function computeSliverZoneEscape(
+  fx: number,
+  fy: number,
+  shapeBounds: { x: number; y: number; w: number; h: number },
+  offset: number,
+  anchorDir: Dir
+): Dir | null {
+  const { x, y, w, h } = shapeBounds;
+
+  // Position relative to shape (no padding)
+  const startLeftOf = fx < x;
+  const startRightOf = fx > x + w;
+  const startAbove = fy < y;
+  const startBelow = fy > y + h;
+
+  // Padded range checks
+  const withinPaddedX = fx >= (x - offset) && fx <= (x + w + offset);
+  const withinPaddedY = fy >= (y - offset) && fy <= (y + h + offset);
+
+  // If outside BOTH padded ranges, we're in free space - no escape needed
+  if (!withinPaddedX && !withinPaddedY) return null;
+
+  // For corner positions (e.g., left AND below), prioritize based on anchor axis
+  const anchorIsHorizontal = anchorDir === 'E' || anchorDir === 'W';
+
+  if (anchorIsHorizontal) {
+    // Horizontal anchor: prioritize horizontal escape (W/E)
+    if (startLeftOf && withinPaddedY) return 'W';
+    if (startRightOf && withinPaddedY) return 'E';
+    if (startAbove && withinPaddedX) return 'N';
+    if (startBelow && withinPaddedX) return 'S';
+  } else {
+    // Vertical anchor: prioritize vertical escape (N/S)
+    if (startAbove && withinPaddedX) return 'N';
+    if (startBelow && withinPaddedX) return 'S';
+    if (startLeftOf && withinPaddedY) return 'W';
+    if (startRightOf && withinPaddedY) return 'E';
+  }
+
+  return null;
+}
+
+/**
  * Compute start direction for FREE endpoints.
  *
  * Uses spatial relationship between start position and target shape,
@@ -210,7 +307,11 @@ function computeFreeStartDirection(
       // Z-route: go toward snap point on primary axis
       return anchorOnHorizontal ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
     } else {
-      // L-route: go on perpendicular axis first
+      // L-route: check for sliver escape first
+      // If we're in the padding corridor, escape outward to create a U-shape
+      const sliverEscape = computeSliverZoneEscape(fx, fy, to.shapeBounds!, offset, anchorDir);
+      if (sliverEscape) return sliverEscape;
+      // Otherwise normal L-route: go on perpendicular axis first
       return primaryAxis === 'V' ? (dy >= 0 ? 'S' : 'N') : (dx >= 0 ? 'E' : 'W');
     }
   }
@@ -238,6 +339,9 @@ function computeFreeStartDirection(
 
   // === ADJACENT SIDES (L-route directly toward anchor) ===
   // This catches adjacent sides + opposite-outside cases
+  // Check for sliver escape first - if in padding corridor, escape outward
+  const sliverEscape = computeSliverZoneEscape(fx, fy, to.shapeBounds!, offset, anchorDir);
+  if (sliverEscape) return sliverEscape;
   return anchorDir;
 }
 
@@ -437,11 +541,16 @@ function cellKey(cell: GridCell): string {
  * - preferredFirstDir: Gives a bonus when first move matches this direction
  * - requiredApproachDir: Gives a penalty when goal is approached from wrong direction
  *
+ * Segment midpoint checking prevents routes from "jumping over" shapes
+ * when the grid is sparse (lines only at padding boundaries).
+ *
  * @param grid - The routing grid
  * @param start - Start cell
  * @param goal - Goal cell
  * @param preferredFirstDir - Direction to prefer for first move (soft bonus)
  * @param requiredApproachDir - Direction to approach goal (penalty if wrong)
+ * @param obstacles - Array of AABBs to check segment intersection against
+ * @param strokeWidth - Connector stroke width (for computing inflation)
  * @returns Array of cells forming the path
  */
 function astar(
@@ -449,11 +558,17 @@ function astar(
   start: GridCell,
   goal: GridCell,
   preferredFirstDir: Dir | null,
-  _requiredApproachDir: Dir
+  _requiredApproachDir: Dir,
+  obstacles: AABB[],
+  strokeWidth: number
 ): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
+
+  // Compute stroke inflation once (same formula as cell blocking)
+  const strokeInflation = strokeWidth * 0.5 + 1;
+
   // Start with null arrivalDir - direction hints applied via cost adjustments
   const startNode: AStarNode = {
     cell: start,
@@ -461,7 +576,7 @@ function astar(
     h: manhattan(start, goal),
     f: manhattan(start, goal),
     parent: null,
-    arrivalDir: null,
+    arrivalDir: preferredFirstDir,
   };
 
   openSet.push(startNode);
@@ -487,6 +602,22 @@ function astar(
       const neighborKey = cellKey(neighbor);
       if (closedSet.has(neighborKey)) continue;
 
+      // Check if segment midpoint is inside any obstacle
+      // Midpoint check naturally handles start/goal corridors because:
+      // - Start→neighbor: Midpoint is close to start, outside obstacle
+      // - Current→goal: Midpoint is close to goal (in padding corridor), outside obstacle
+      if (obstacles.length > 0) {
+        const segmentBlocked = obstacles.some(obs =>
+          segmentMidpointInObstacle(
+            current.cell.x, current.cell.y,
+            neighbor.x, neighbor.y,
+            obs,
+            strokeInflation
+          )
+        );
+        if (segmentBlocked) continue;
+      }
+
       // Compute move direction
       const moveDir = getDirection(current.cell, neighbor);
 
@@ -494,9 +625,9 @@ function astar(
       let moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
       // FIRST DIRECTION BONUS - apply at start node when preferredFirstDir is set
       // Only applied when starting inside padding or from anchored position
-      if (current.parent === null && preferredFirstDir && moveDir === preferredFirstDir) {
-        moveCost -= COST_CONFIG.FIRST_DIR_BONUS;
-      }
+      // if (current.parent === null && preferredFirstDir && moveDir === preferredFirstDir) {
+      //   moveCost -= COST_CONFIG.FIRST_DIR_BONUS;
+      // }
 
       // APPROACH MISMATCH PENALTY - disabled (creates weird routes)
       // if (neighbor.xi === goal.xi && neighbor.yi === goal.yi) {
@@ -599,38 +730,55 @@ function computeGoalPosition(to: Terminal, strokeWidth: number): [number, number
 }
 
 /**
- * Compute A* routed path for snapped endpoints.
+ * Compute A* routed path for connected endpoints.
  *
- * Used when to.isAnchored === true (cursor snapped to shape).
- * Provides obstacle avoidance by routing around padded shape bounds.
+ * Used when either endpoint is anchored to a shape.
+ * Provides obstacle avoidance by routing around shape bounds.
  *
- * DYNAMIC BEHAVIOR based on start position:
- * - If starting INSIDE padded region: uses smaller blocking bounds + seeds direction
- * - If starting OUTSIDE: uses full padded bounds + lets A* decide naturally
+ * Supports all endpoint combinations:
+ * - Free→Anchored: Uses to.shapeBounds as obstacle
+ * - Anchored→Free: Uses from.shapeBounds as obstacle
+ * - Anchored→Anchored: Uses both shapes as obstacles
  *
  * @param from - Start terminal
- * @param to - End terminal (must be snapped)
+ * @param to - End terminal
  * @param strokeWidth - Connector stroke width (affects offsets)
  * @returns Route result with path and signature
  */
 export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  // 1. Compute approach points
+  // 1. Compute approach points 
   const fromApproach = computeApproachPoint(from, strokeWidth);
   const toApproach = computeApproachPoint(to, strokeWidth);
-  // 2. Compute goal position at padding intersection
+
+  // 2. Compute goal/start positions
+  // For anchored endpoints, the goal/start is at padding boundary intersection
   const goalPos = computeGoalPosition(to, strokeWidth);
-  // 3. Check if starting inside padded region (for dynamic blocking + seeding)
+  //const startPos = from.isAnchored ? computeGoalPosition(from, strokeWidth) : from.position;
+
+  // 3. Collect obstacles for segment intersection checking
+  // Use strict shape bounds (not padded) for intersection checks
+  const obstacles: AABB[] = [];
+  if (to.shapeBounds) {
+    obstacles.push(to.shapeBounds);
+  }
+  if (from.shapeBounds && from.shapeBounds !== to.shapeBounds) {
+    obstacles.push(from.shapeBounds);
+  }
+
+  // 4. Check if starting inside padded region (for dynamic blocking + seeding)
+  // Only relevant when there's a target shape to be inside of
   const startInsidePadding = to.shapeBounds
     ? isInsidePaddedRegion(from.position, to.shapeBounds, strokeWidth)
     : false;
 
-  // 4. Build non-uniform grid with dynamic blocking
+  // 5. Build non-uniform grid with obstacles
   const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth, startInsidePadding);
-  // 5. Find start and goal cells
+
+  // 6. Find start and goal cells
   const startCell = findNearestCell(grid, fromApproach);
   const goalCell = findNearestCell(grid, goalPos);
 
-  // 6. Compute direction hints - ALWAYS SEED for anchored and free endpoints
+  // 7. Compute direction hints - ALWAYS SEED for anchored and free endpoints
   // - Anchored start: always use outwardDir (fixed by shape attachment)
   // - Free + inside padding: compute escape direction (existing logic)
   // - Free + outside padding: compute based on spatial relationship to target
@@ -642,26 +790,28 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
   } else if (startInsidePadding) {
     // Inside padded zone: use escape direction logic
     preferredFirstDir = computePreferredFirstDir(from.position, to);
-  } else {
+  } else if (to.shapeBounds) {
     // Free start outside padding: compute direction based on spatial relationship
     preferredFirstDir = computeFreeStartDirection(from, to, strokeWidth);
+  } else {
+    // Both free - use from.outwardDir (drag-based)
+    preferredFirstDir = from.outwardDir;
   }
 
   // Required approach: must enter goal from opposite of to.outwardDir
-  // (kept for potential future use, currently APPROACH_MISMATCH_PENALTY is disabled)
-  const _requiredApproachDir = oppositeDir(to.outwardDir);
+  const _requiredApproachDir = to.isAnchored ? oppositeDir(to.outwardDir) : to.outwardDir;
 
-  // 7. Run A* with direction hints
-  const path = astar(grid, startCell, goalCell, preferredFirstDir, _requiredApproachDir);
+  // 8. Run A* with direction hints AND segment midpoint checking
+  const path = astar(grid, startCell, goalCell, preferredFirstDir, _requiredApproachDir, obstacles, strokeWidth);
 
-  // 8. Assemble full path: actual start → A* path → actual end
+  // 9. Assemble full path: actual start → A* path → actual end
   const fullPath: [number, number][] = [from.position];
   for (const cell of path) {
     fullPath.push([cell.x, cell.y]);
   }
   fullPath.push(to.position);
 
-  // 9. Simplify collinear points
+  // 10. Simplify collinear points
   const simplified = simplifyOrthogonal(fullPath);
 
   return {
