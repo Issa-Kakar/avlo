@@ -21,6 +21,7 @@ export {
 export {
   type Dir,
   type ShapeFrame,
+  type Bounds,
   getShapeFrame,
   getMidpoints,
   getEdgePosition,
@@ -28,6 +29,9 @@ export {
   oppositeDir,
   isHorizontal,
   isVertical,
+  toBounds,
+  pointBounds,
+  isPointBounds,
 } from './shape-utils';
 
 // Snapping system
@@ -50,3 +54,7 @@ export {
   resolveFreeStartDir,
   computeFreeEndDir,
 } from './routing';
+
+// Routing context (new architecture)
+export { type RoutingContext, createRoutingContext } from './routing-context';
+export { buildSimpleGrid } from './routing-grid-simple';

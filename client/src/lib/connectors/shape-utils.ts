@@ -176,6 +176,32 @@ export interface AABB {
   h: number;
 }
 
+/**
+ * Facing sides between two shapes.
+ * Used to compute centerlines for preferred routing paths.
+ */
+export interface FacingSides {
+  // X-axis facing (vertical lines)
+  /** Start shape's facing X (e.g., start's right padding line) */
+  startFacingX: number | null;
+  /** End shape's facing X (e.g., end's left padding line) */
+  endFacingX: number | null;
+  /** Centerline X (midpoint between facing sides) */
+  centerlineX: number | null;
+  /** True if there's space for X centerline */
+  hasXCenterline: boolean;
+
+  // Y-axis facing (horizontal lines)
+  /** Start shape's facing Y (e.g., start's bottom padding line) */
+  startFacingY: number | null;
+  /** End shape's facing Y (e.g., end's top padding line) */
+  endFacingY: number | null;
+  /** Centerline Y (midpoint between facing sides) */
+  centerlineY: number | null;
+  /** True if there's space for Y centerline */
+  hasYCenterline: boolean;
+}
+
 /** Point-to-shape spatial relationship (for direction seeding) */
 export interface PointToShapeSpatial {
   /** Point is to the left of shape (point.x < shape.x) */
@@ -271,6 +297,79 @@ export function computeShapeToShapeSpatial(
     endIsAbove,
     overlapY: !endIsBelow && !endIsAbove,
   };
+}
+
+/**
+ * Check if a point is strictly inside a rectangle (not on boundary).
+ *
+ * @param x - Point X
+ * @param y - Point Y
+ * @param rect - Rectangle bounds
+ * @returns true if strictly inside (not on boundary)
+ */
+export function pointStrictlyInsideRect(x: number, y: number, rect: AABB): boolean {
+  return x > rect.x && x < rect.x + rect.w && y > rect.y && y < rect.y + rect.h;
+}
+
+// ============================================================================
+// EDGE-BASED BOUNDS (FOR ROUTING CONTEXT)
+// ============================================================================
+
+/**
+ * Edge-based bounds representation for routing AABBs.
+ *
+ * Using edges directly (instead of x,y,w,h) makes routing code cleaner:
+ * - Grid lines: `xLines.add(b.left)` vs `xLines.add(b.x)`
+ * - Centerline: `(a.right + b.left) / 2` vs `(a.x + a.w + b.x) / 2`
+ * - Facing checks: `a.right <= b.left` vs `a.x + a.w <= b.x`
+ */
+export interface Bounds {
+  left: number; // minX
+  top: number; // minY
+  right: number; // maxX
+  bottom: number; // maxY
+}
+
+/**
+ * Convert AABB {x,y,w,h} to edge-based Bounds.
+ *
+ * @param aabb - Shape bounds in x,y,w,h format
+ * @returns Edge-based bounds
+ */
+export function toBounds(aabb: AABB): Bounds {
+  return {
+    left: aabb.x,
+    top: aabb.y,
+    right: aabb.x + aabb.w,
+    bottom: aabb.y + aabb.h,
+  };
+}
+
+/**
+ * Create point-bounds where all edges converge to a single point.
+ * Used for free (non-anchored) endpoints in routing context.
+ *
+ * @param pos - World position [x, y]
+ * @returns Bounds collapsed to a point
+ */
+export function pointBounds(pos: [number, number]): Bounds {
+  return {
+    left: pos[0],
+    top: pos[1],
+    right: pos[0],
+    bottom: pos[1],
+  };
+}
+
+/**
+ * Check if bounds is a point (all sides equal).
+ * Point-bounds don't get padding applied - they stay at their position.
+ *
+ * @param b - Bounds to check
+ * @returns true if all edges converge to a point
+ */
+export function isPointBounds(b: Bounds): boolean {
+  return b.left === b.right && b.top === b.bottom;
 }
 
 // ============================================================================

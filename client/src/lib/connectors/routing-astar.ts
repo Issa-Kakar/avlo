@@ -6,24 +6,20 @@
  *
  * Key features:
  * - Non-uniform grid (sparse, meaningful positions only)
- * - Blocked cells inside padded obstacles (valid by construction)
+ * - Dynamic AABBs with centerlines baked in (no cell blocking needed)
  * - Direction seeding (initial jetty counts as previous turn)
  * - Backwards visit prevention (no U-turns)
  * - Bend penalty (minimize direction changes)
+ * - Segment intersection checking (prevents crossing through shapes)
  *
  * @module lib/connectors/routing-astar
  */
 
-import { COST_CONFIG, computeJettyOffset } from './constants';
-import { getOutwardVector, oppositeDir, segmentIntersectsAABB, type Dir, type AABB } from './shape-utils';
+import { COST_CONFIG } from './constants';
+import { oppositeDir, segmentIntersectsAABB, type Dir, type AABB } from './shape-utils';
 import { simplifyOrthogonal, computeSignature } from './routing';
-import {
-  buildNonUniformGrid,
-  findNearestCell,
-  getNeighbors,
-  type Grid,
-  type GridCell,
-} from './routing-grid';
+import { createRoutingContext } from './routing-context';
+import { buildSimpleGrid, findNearestCell, getNeighbors, type Grid, type GridCell } from './routing-grid-simple';
 import { type Terminal, type RouteResult } from './routing-zroute';
 
 /**
@@ -106,28 +102,6 @@ class MinHeap<T> {
   }
 }
 
-/**
- * Compute approach point (stub extending from terminal).
- *
- * Cap-aware: anchored endpoints with arrow caps get full offset,
- * unsnapped endpoints get no offset (they're free-floating).
- *
- * @param terminal - The terminal to compute approach point for
- * @param strokeWidth - Connector stroke width (affects offset)
- */
-function computeApproachPoint(terminal: Terminal, strokeWidth: number): [number, number] {
-  const offset = computeJettyOffset(terminal.isAnchored, terminal.hasCap, strokeWidth);
-
-  if (offset === 0) {
-    return terminal.position;
-  }
-
-  const vec = getOutwardVector(terminal.outwardDir);
-  return [
-    terminal.position[0] + vec[0] * offset,
-    terminal.position[1] + vec[1] * offset,
-  ];
-}
 
 /**
  * Get movement direction from one cell to another.
@@ -306,35 +280,11 @@ function astar(
   return [start, goal];
 }
 
-/**
- * Compute goal position from padding boundary intersection.
- *
- * For anchored endpoints, the goal is at the intersection of:
- * - The anchor's fixed axis (X for E/W, Y for N/S)
- * - The padding boundary
- */
-function computeGoalPosition(to: Terminal, strokeWidth: number): [number, number] {
-  if (!to.isAnchored || !to.shapeBounds) {
-    return to.position;
-  }
-
-  const { x, y, w, h } = to.shapeBounds;
-  const offset = computeJettyOffset(to.isAnchored, to.hasCap, strokeWidth);
-
-  switch (to.outwardDir) {
-    case 'N':
-      return [to.position[0], y - offset];
-    case 'S':
-      return [to.position[0], y + h + offset];
-    case 'E':
-      return [x + w + offset, to.position[1]];
-    case 'W':
-      return [x - offset, to.position[1]];
-  }
-}
 
 /**
  * Compute A* routed path for connected endpoints.
+ *
+ * NEW ARCHITECTURE: Uses routing context for all spatial analysis.
  *
  * Used when either endpoint is anchored to a shape.
  * Provides obstacle avoidance by routing around shape bounds.
@@ -344,57 +294,42 @@ function computeGoalPosition(to: Terminal, strokeWidth: number): [number, number
  * - Anchored→Free: Uses from.shapeBounds as obstacle
  * - Anchored→Anchored: Uses both shapes as obstacles
  *
- * @param from - Start terminal
- * @param to - End terminal
+ * @param from - Start terminal (direction already resolved)
+ * @param to - End terminal (direction already resolved)
  * @param strokeWidth - Connector stroke width (affects offsets)
  * @returns Route result with path and signature
  */
 export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
-  // 1. Compute approach points 
-  const fromApproach = computeApproachPoint(from, strokeWidth);
-  const toApproach = computeApproachPoint(to, strokeWidth);
+  // 1. Build routing context (ALL spatial intelligence happens here)
+  // - Computes centerlines from RAW bounds
+  // - Builds dynamic AABBs with centerline/padding baked in
+  // - Computes stub positions on AABB boundaries
+  // - Collects obstacles (raw shape bounds)
+  const ctx = createRoutingContext(from, to, strokeWidth);
 
-  // 2. Compute goal/start positions
-  // For anchored endpoints, the goal/start is at padding boundary intersection
-  const goalPos = computeGoalPosition(to, strokeWidth);
-  //const startPos = from.isAnchored ? computeGoalPosition(from, strokeWidth) : from.position;
+  // 2. Build simple grid from context (trivial - just AABB boundaries)
+  const grid = buildSimpleGrid(ctx);
 
-  // 3. Collect obstacles for segment intersection checking
-  // Use strict shape bounds (not padded) for intersection checks
-  const obstacles: AABB[] = [];
-  if (to.shapeBounds) {
-    obstacles.push(to.shapeBounds);
-  }
-  if (from.shapeBounds && from.shapeBounds !== to.shapeBounds) {
-    obstacles.push(from.shapeBounds);
-  }
+  // 3. Find start and goal cells (at stub positions)
+  const startCell = findNearestCell(grid, ctx.startStub);
+  const goalCell = findNearestCell(grid, ctx.endStub);
 
-  // 4. Build non-uniform grid with obstacles
-  const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth);
+  // 4. Run A* between stubs (seed with startDir)
+  const path = astar(grid, startCell, goalCell, ctx.startDir, ctx.obstacles);
 
-  // 5. Find start and goal cells
-  const startCell = findNearestCell(grid, fromApproach);
-  const goalCell = findNearestCell(grid, goalPos);
-
-  // 6. Direction already resolved before routing - just use from.outwardDir
-  // (Direction computation moved to routing.ts: resolveFreeStartDir/computeFreeEndDir)
-  const startDir = from.outwardDir;
-
-  // 7. Run A* with segment intersection checking
-  const path = astar(grid, startCell, goalCell, startDir, obstacles);
-
-  // 9. Assemble full path: actual start → A* path → actual end
+  // 5. Assemble full path: actual_start → A* path → actual_end
+  // This is key for dynamic offset - stubs may be on centerline, not padded boundary
   const fullPath: [number, number][] = [from.position];
   for (const cell of path) {
     fullPath.push([cell.x, cell.y]);
   }
   fullPath.push(to.position);
 
-  // 10. Simplify collinear points
+  // 6. Simplify collinear points
   const simplified = simplifyOrthogonal(fullPath);
 
   return {
     points: simplified,
-    signature: computeSignature(simplified)
+    signature: computeSignature(simplified),
   };
 }
