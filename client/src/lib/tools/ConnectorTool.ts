@@ -31,6 +31,8 @@ import {
   inferDragDirection,
   getShapeFrame,
   oppositeDir,
+  resolveFreeStartDir,
+  computeFreeEndDir,
 } from '@/lib/connectors';
 
 type Phase = 'idle' | 'creating';
@@ -339,23 +341,48 @@ export class ConnectorTool implements PointerTool {
       }
     }
 
-    // Build from terminal (already has shapeBounds from above)
+    // Get target shape bounds (already set in move() for to terminal)
+    const toShapeBounds = this.to.shapeBounds;
+
+    // Determine endpoint configuration
+    const fromAnchored = this.from.isAnchored;
+    const toAnchored = this.to.isAnchored;
+
+    // Resolve directions based on endpoint configuration
+    let resolvedFromDir = this.from.outwardDir;
+    let resolvedToDir = this.to.outwardDir;
+
+    if (!fromAnchored && toAnchored && toShapeBounds) {
+      // FREE→ANCHORED: Compute start direction from spatial relationship
+      resolvedFromDir = resolveFreeStartDir(
+        this.from.position,
+        { position: this.to.position, outwardDir: this.to.outwardDir, shapeBounds: toShapeBounds },
+        this.frozenWidth
+      );
+    } else if (fromAnchored && !toAnchored) {
+      // ANCHORED→FREE: Compute end direction from primary axis
+      resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
+    }
+    // Both free: Z-route uses inferDragDirection (already set in move())
+    // Both anchored: Both directions from snap.side (already set)
+
+    // Build from terminal with resolved direction
     const fromTerminal: Terminal = {
       position: this.from.position,
-      outwardDir: this.from.outwardDir,
+      outwardDir: resolvedFromDir,
       isAnchored: this.from.isAnchored,
       hasCap: this.from.hasCap,
       shapeBounds: fromShapeBounds,
       t: this.from.t,
     };
 
-    // Build to terminal (shapeBounds already set in move())
+    // Build to terminal with resolved direction
     const toTerminal: Terminal = {
       position: this.to.position,
-      outwardDir: this.to.outwardDir,
+      outwardDir: resolvedToDir,
       isAnchored: this.to.isAnchored,
       hasCap: this.to.hasCap,
-      shapeBounds: this.to.shapeBounds,
+      shapeBounds: toShapeBounds,
       t: this.to.t,
     };
 

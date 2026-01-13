@@ -14,7 +14,7 @@
  * @module lib/connectors/routing-astar
  */
 
-import { COST_CONFIG, computeJettyOffset, computeApproachOffset } from './constants';
+import { COST_CONFIG, computeJettyOffset } from './constants';
 import { getOutwardVector, oppositeDir, type Dir, type AABB } from './shape-utils';
 import {
   buildNonUniformGrid,
@@ -61,288 +61,6 @@ function segmentMidpointInObstacle(
 
   // Strict interior check (not on boundary)
   return mx > minX && mx < maxX && my > minY && my < maxY;
-}
-
-/**
- * Check if a position is inside the padded region (but outside the shape).
- *
- * A point is "inside padded region" if:
- * - Inside the padded AABB (shape + approachOffset on all sides)
- * - BUT outside the actual shape bounds
- *
- * This is the "corridor" zone where we need special handling.
- *
- * @param pos - Position to check
- * @param shapeBounds - Shape bounds
- * @param strokeWidth - Connector stroke width
- * @returns True if position is in the padded corridor
- */
-function isInsidePaddedRegion(
-  pos: [number, number],
-  shapeBounds: { x: number; y: number; w: number; h: number },
-  strokeWidth: number
-): boolean {
-  const offset = computeApproachOffset(strokeWidth);
-
-  // Padded bounds
-  const pMinX = shapeBounds.x - offset;
-  const pMaxX = shapeBounds.x + shapeBounds.w + offset;
-  const pMinY = shapeBounds.y - offset;
-  const pMaxY = shapeBounds.y + shapeBounds.h + offset;
-
-  // Shape bounds
-  const sMinX = shapeBounds.x;
-  const sMaxX = shapeBounds.x + shapeBounds.w;
-  const sMinY = shapeBounds.y;
-  const sMaxY = shapeBounds.y + shapeBounds.h;
-
-  const insidePadded = pos[0] > pMinX && pos[0] < pMaxX &&
-                       pos[1] > pMinY && pos[1] < pMaxY;
-  const insideShape = pos[0] > sMinX && pos[0] < sMaxX &&
-                      pos[1] > sMinY && pos[1] < sMaxY;
-
-  return insidePadded && !insideShape;
-}
-
-/**
- * Compute preferred first direction when starting INSIDE the padded region.
- *
- * Three distinct cases based on relationship between start zone and target side:
- *
- * 1. SAME SIDE: Start in N padding → Snap to N
- *    → Escape away from shape (return N)
- *
- * 2. OPPOSITE SIDE: Start in S padding → Snap to N
- *    → Go E/W toward target's X position (need to wrap around)
- *
- * 3. ADJACENT SIDE: Start in S padding → Snap to W
- *    → Go directly toward target side (return W)
- *    This creates clean L-routes without weird near-corner behavior
- *
- * @param fromPos - Start position (inside padded region)
- * @param to - Target terminal (must be anchored with shapeBounds)
- * @returns Preferred first direction
- */
-function computePreferredFirstDir(
-  fromPos: [number, number],
-  to: Terminal
-): Dir {
-  if (!to.shapeBounds) {
-    return to.outwardDir;
-  }
-
-  const { x, y, w, h } = to.shapeBounds;
-  const toPos = to.position;
-  const toSide = to.outwardDir;
-
-  // Determine which side(s) of the shape we're on
-  // Note: corner positions will have two flags true (e.g., SW corner: isBelowShape && isLeftOfShape)
-  const isAboveShape = fromPos[1] < y;
-  const isBelowShape = fromPos[1] > y + h;
-  const isLeftOfShape = fromPos[0] < x;
-  const isRightOfShape = fromPos[0] > x + w;
-
-  // === SAME SIDE ===
-  // We're on the same side as the target - escape away from shape
-  const isSameSide =
-    (toSide === 'N' && isAboveShape) ||
-    (toSide === 'S' && isBelowShape) ||
-    (toSide === 'E' && isRightOfShape) ||
-    (toSide === 'W' && isLeftOfShape);
-
-  if (isSameSide) {
-    return toSide; // Escape in outward direction
-  }
-
-  // === OPPOSITE SIDE ===
-  // We're on the opposite side - need to wrap around the shape
-  // Use target position to decide which way around (E/W or N/S)
-  const isOppositeSide =
-    (toSide === 'N' && isBelowShape) ||
-    (toSide === 'S' && isAboveShape) ||
-    (toSide === 'E' && isLeftOfShape) ||
-    (toSide === 'W' && isRightOfShape);
-
-  if (isOppositeSide) {
-    if (toSide === 'N' || toSide === 'S') {
-      // Vertical target - decide E/W based on target X
-      return fromPos[0] < toPos[0] ? 'E' : 'W';
-    } else {
-      // Horizontal target - decide N/S based on target Y
-      return fromPos[1] < toPos[1] ? 'S' : 'N';
-    }
-  }
-
-  // === ADJACENT SIDE ===
-  // We're on a perpendicular side - go directly toward target side
-  // This creates clean L-shaped routes (e.g., S padding → W snap → go W first)
-  return toSide;
-}
-
-/**
- * Compute escape direction when starting in a "sliver zone".
- *
- * A sliver zone is when we're within the padded range on at least one axis
- * while being outside the shape. This creates situations where going directly
- * toward the target would create awkward routes that bend around padding.
- *
- * The escape direction is OUTWARD on the axis where we're outside the shape,
- * prioritizing the axis that aligns with the anchor direction.
- *
- * @param fx - Start X position
- * @param fy - Start Y position
- * @param shapeBounds - Target shape bounds
- * @param offset - Approach offset (padding)
- * @param anchorDir - Anchor direction (for prioritizing escape in corner cases)
- * @returns Escape direction if in sliver zone, null otherwise
- */
-function computeSliverZoneEscape(
-  fx: number,
-  fy: number,
-  shapeBounds: { x: number; y: number; w: number; h: number },
-  offset: number,
-  anchorDir: Dir
-): Dir | null {
-  const { x, y, w, h } = shapeBounds;
-
-  // Position relative to shape (no padding)
-  const startLeftOf = fx < x;
-  const startRightOf = fx > x + w;
-  const startAbove = fy < y;
-  const startBelow = fy > y + h;
-
-  // Padded range checks
-  const withinPaddedX = fx >= (x - offset) && fx <= (x + w + offset);
-  const withinPaddedY = fy >= (y - offset) && fy <= (y + h + offset);
-
-  // If outside BOTH padded ranges, we're in free space - no escape needed
-  if (!withinPaddedX && !withinPaddedY) return null;
-
-  // For corner positions (e.g., left AND below), prioritize based on anchor axis
-  const anchorIsHorizontal = anchorDir === 'E' || anchorDir === 'W';
-
-  if (anchorIsHorizontal) {
-    // Horizontal anchor: prioritize horizontal escape (W/E)
-    if (startLeftOf && withinPaddedY) return 'W';
-    if (startRightOf && withinPaddedY) return 'E';
-    if (startAbove && withinPaddedX) return 'N';
-    if (startBelow && withinPaddedX) return 'S';
-  } else {
-    // Vertical anchor: prioritize vertical escape (N/S)
-    if (startAbove && withinPaddedX) return 'N';
-    if (startBelow && withinPaddedX) return 'S';
-    if (startLeftOf && withinPaddedY) return 'W';
-    if (startRightOf && withinPaddedY) return 'E';
-  }
-
-  return null;
-}
-
-/**
- * Compute start direction for FREE endpoints.
- *
- * Uses spatial relationship between start position and target shape,
- * NOT cursor drag direction. This ensures correct Z-route vs L-route selection.
- *
- * Three cases:
- * 1. SAME SIDE (head-on): Z-route if primary axis matches anchor axis, else L-route
- * 2. ADJACENT SIDES: Go directly toward anchor (L-route)
- * 3. OPPOSITE SIDES (contained): Wrap around via shortest path
- *
- * @param from - Start terminal (must be free/unanchored)
- * @param to - End terminal (should have shapeBounds)
- * @param strokeWidth - For computing approach offset
- * @returns Direction to seed for first move
- */
-function computeFreeStartDirection(
-  from: Terminal,
-  to: Terminal,
-  strokeWidth: number
-): Dir {
-  // No target shape - fallback to from.outwardDir (drag-based)
-  if (!to.shapeBounds) {
-    return from.outwardDir;
-  }
-
-  const { x, y, w, h } = to.shapeBounds;
-  const [fx, fy] = from.position;
-  const [tx, ty] = to.position;
-  const offset = computeApproachOffset(strokeWidth);
-
-  // Compute primary axis from start→snap (NOT cursor)
-  const dx = tx - fx;
-  const dy = ty - fy;
-  const ax = Math.abs(dx);
-  const ay = Math.abs(dy);
-  const primaryAxis: 'H' | 'V' = ax >= ay ? 'H' : 'V';
-
-  // Position checks (NO padding for spatial relation)
-  const startLeftOf = fx < x;
-  const startRightOf = fx > x + w;
-  const startAbove = fy < y;
-  const startBelow = fy > y + h;
-
-  // Containment check (WITH padding - for wrap-around detection)
-  const withinPaddedX = fx >= (x - offset) && fx <= (x + w + offset);
-  const withinPaddedY = fy >= (y - offset) && fy <= (y + h + offset);
-  const containedInPaddedBounds = withinPaddedX && withinPaddedY;
-
-  const anchorDir = to.outwardDir;
-
-  // === SAME SIDE (Z-route possible) ===
-  // Start is on same side as anchor's OPPOSITE. E.g., start LEFT, anchor WEST.
-  const isSameSide =
-    (anchorDir === 'W' && startLeftOf) ||
-    (anchorDir === 'E' && startRightOf) ||
-    (anchorDir === 'N' && startAbove) ||
-    (anchorDir === 'S' && startBelow);
-
-  if (isSameSide) {
-    const anchorOnHorizontal = anchorDir === 'E' || anchorDir === 'W';
-    // Z-route ONLY valid when primary axis matches anchor axis
-    const zRouteValid = (anchorOnHorizontal && primaryAxis === 'H') ||
-                        (!anchorOnHorizontal && primaryAxis === 'V');
-
-    if (zRouteValid) {
-      // Z-route: go toward snap point on primary axis
-      return anchorOnHorizontal ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
-    } else {
-      // L-route: check for sliver escape first
-      // If we're in the padding corridor, escape outward to create a U-shape
-      const sliverEscape = computeSliverZoneEscape(fx, fy, to.shapeBounds!, offset, anchorDir);
-      if (sliverEscape) return sliverEscape;
-      // Otherwise normal L-route: go on perpendicular axis first
-      return primaryAxis === 'V' ? (dy >= 0 ? 'S' : 'N') : (dx >= 0 ? 'E' : 'W');
-    }
-  }
-
-  // === OPPOSITE SIDE (wrap around required) ===
-  // Start is on same side AS anchor. E.g., start LEFT, anchor EAST (behind shape).
-  const isOppositeSide =
-    (anchorDir === 'E' && startLeftOf) ||   // anchor right, start left
-    (anchorDir === 'W' && startRightOf) ||  // anchor left, start right
-    (anchorDir === 'N' && startBelow) ||    // anchor top, start below
-    (anchorDir === 'S' && startAbove);      // anchor bottom, start above
-
-  if (isOppositeSide && containedInPaddedBounds) {
-    // Must wrap around - pick shortest path
-    if (anchorDir === 'E' || anchorDir === 'W') {
-      // Horizontal anchor: go N or S based on start position relative to shape center
-      const shapeCenterY = y + h / 2;
-      return fy < shapeCenterY ? 'N' : 'S';
-    } else {
-      // Vertical anchor: go E or W based on start position relative to shape center
-      const shapeCenterX = x + w / 2;
-      return fx < shapeCenterX ? 'W' : 'E';
-    }
-  }
-
-  // === ADJACENT SIDES (L-route directly toward anchor) ===
-  // This catches adjacent sides + opposite-outside cases
-  // Check for sliver escape first - if in padding corridor, escape outward
-  const sliverEscape = computeSliverZoneEscape(fx, fy, to.shapeBounds!, offset, anchorDir);
-  if (sliverEscape) return sliverEscape;
-  return anchorDir;
 }
 
 /**
@@ -765,44 +483,22 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
     obstacles.push(from.shapeBounds);
   }
 
-  // 4. Check if starting inside padded region (for dynamic blocking + seeding)
-  // Only relevant when there's a target shape to be inside of
-  const startInsidePadding = to.shapeBounds
-    ? isInsidePaddedRegion(from.position, to.shapeBounds, strokeWidth)
-    : false;
+  // 4. Build non-uniform grid with obstacles
+  const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth);
 
-  // 5. Build non-uniform grid with obstacles
-  const grid = buildNonUniformGrid(from, to, fromApproach, toApproach, strokeWidth, startInsidePadding);
-
-  // 6. Find start and goal cells
+  // 5. Find start and goal cells
   const startCell = findNearestCell(grid, fromApproach);
   const goalCell = findNearestCell(grid, goalPos);
 
-  // 7. Compute direction hints - ALWAYS SEED for anchored and free endpoints
-  // - Anchored start: always use outwardDir (fixed by shape attachment)
-  // - Free + inside padding: compute escape direction (existing logic)
-  // - Free + outside padding: compute based on spatial relationship to target
-  let preferredFirstDir: Dir | null = null;
-
-  if (from.isAnchored) {
-    // Anchored start always uses outwardDir
-    preferredFirstDir = from.outwardDir;
-  } else if (startInsidePadding) {
-    // Inside padded zone: use escape direction logic
-    preferredFirstDir = computePreferredFirstDir(from.position, to);
-  } else if (to.shapeBounds) {
-    // Free start outside padding: compute direction based on spatial relationship
-    preferredFirstDir = computeFreeStartDirection(from, to, strokeWidth);
-  } else {
-    // Both free - use from.outwardDir (drag-based)
-    preferredFirstDir = from.outwardDir;
-  }
+  // 6. Direction already resolved before routing - just use from.outwardDir
+  // (Direction computation moved to routing.ts: resolveFreeStartDir/computeFreeEndDir)
+  const startDir = from.outwardDir;
 
   // Required approach: must enter goal from opposite of to.outwardDir
   const _requiredApproachDir = to.isAnchored ? oppositeDir(to.outwardDir) : to.outwardDir;
 
-  // 8. Run A* with direction hints AND segment midpoint checking
-  const path = astar(grid, startCell, goalCell, preferredFirstDir, _requiredApproachDir, obstacles, strokeWidth);
+  // 7. Run A* with direction hints AND segment midpoint checking
+  const path = astar(grid, startCell, goalCell, startDir, _requiredApproachDir, obstacles, strokeWidth);
 
   // 9. Assemble full path: actual start → A* path → actual end
   const fullPath: [number, number][] = [from.position];

@@ -47,4 +47,6 @@ export {
   type Terminal,
   computeRoute,
   inferDragDirection,
+  resolveFreeStartDir,
+  computeFreeEndDir,
 } from './routing';
