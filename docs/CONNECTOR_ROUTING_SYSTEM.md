@@ -20,13 +20,13 @@ client/src/lib/connectors/
 ├── constants.ts       # SNAP_CONFIG (screen px), ROUTING_CONFIG (world), COST_CONFIG (A*)
 ├── shape-utils.ts     # Dir type, spatial helpers, classification functions
 ├── snap.ts            # Shape snapping with edge detection and midpoint hysteresis
-├── routing.ts         # Entry point: dispatches to Z-route or A*
+├── routing.ts         # Entry point + direction resolution for free endpoints
 ├── routing-zroute.ts  # Simple HVH/VHV 3-segment routing for free endpoints
 ├── routing-grid.ts    # Non-uniform grid construction with centerlines
-└── routing-astar.ts   # A* pathfinding with direction seeding
+└── routing-astar.ts   # A* pathfinding (receives pre-resolved directions)
 
 client/src/lib/tools/
-└── ConnectorTool.ts   # Main tool implementing PointerTool interface
+└── ConnectorTool.ts   # Main tool: resolves directions in updateRoute() before routing
 
 client/src/renderer/layers/
 └── connector-preview.ts  # Preview rendering with rounded corners and arrows
@@ -68,6 +68,11 @@ interface FacingSides {
 
 ## Routing Dispatch (`routing.ts`)
 
+**Direction Resolution (called before routing):**
+- `resolveFreeStartDir(fromPos, toTerminal, strokeWidth)` → FREE→ANCHORED start direction
+- `computeFreeEndDir(fromPos, toPos)` → ANCHORED→FREE end direction
+
+**Route Dispatch:**
 ```
 computeRoute(from, to, prevSignature, strokeWidth)
 ├── Both free → computeZRoute()      (simple 3-segment, no obstacles)
@@ -108,13 +113,12 @@ Used when **either** endpoint is anchored to a shape. Provides obstacle avoidanc
 1. **Compute approach points** - Offset from terminal based on cap and anchor status
 2. **Compute goal position** - For anchored endpoints, at padding boundary intersection
 3. **Collect obstacles** - Both `from.shapeBounds` and `to.shapeBounds`
-4. **Check startInsidePadding** - Whether start is in the padded corridor
-5. **Build non-uniform grid** - With centerlines and facing side blocking
-6. **Find start/goal cells** - Nearest cells in grid
-7. **Compute direction hints** - ALWAYS seed first direction
-8. **Run A*** - With segment midpoint checking
-9. **Assemble path** - `[from.position, ...gridPath, to.position]`
-10. **Simplify** - Remove collinear points
+4. **Build non-uniform grid** - With centerlines and facing side blocking
+5. **Find start/goal cells** - Nearest cells in grid
+6. **Use pre-resolved direction** - `startDir = from.outwardDir` (resolved before A* call)
+7. **Run A*** - With segment midpoint checking
+8. **Assemble path** - `[from.position, ...gridPath, to.position]`
+9. **Simplify** - Remove collinear points
 
 ### Approach Offset Formula
 ```
@@ -157,13 +161,13 @@ Lines exist only at meaningful routing positions:
 
 When two shapes face each other, we compute which sides "look at" each other:
 
-```
+
 ┌─────────┐                    ┌─────────┐
 │  Start  │ ←── facing ───→   │   End   │
 │  Shape  │  (right faces     │  Shape  │
 └─────────┘     left)          └─────────┘
-```
 
+```
 **Key rule:** Centerline uses ACTUAL shape edges, not padded boundaries:
 ```typescript
 // For endIsRightOf case:
@@ -240,21 +244,44 @@ Without special handling, A* chooses VH L-routes (1 bend) over VHV Z-routes (2 b
 
 ## Direction Seeding System
 
-Direction is **ALWAYS** seeded - no cursor-drag inference for first direction.
+**Terminal `outwardDir` is resolved BEFORE routing.** Directions are explicit and trustworthy:
+- Anchored endpoints: `outwardDir` from snap side (set in `move()`)
+- Free endpoints: Computed in `updateRoute()` before building terminals
 
-### Three Cases
+### Architecture
+
+Direction resolution happens in **ConnectorTool.updateRoute()**, NOT inside A*:
 
 ```typescript
-if (from.isAnchored) {
-  preferredFirstDir = from.outwardDir;           // Fixed by shape attachment
-} else if (startInsidePadding) {
-  preferredFirstDir = computePreferredFirstDir(from.position, to);  // Escape logic
-} else {
-  preferredFirstDir = computeFreeStartDirection(from, to, strokeWidth);  // Spatial
+// In updateRoute():
+if (!fromAnchored && toAnchored && toShapeBounds) {
+  // FREE→ANCHORED: Spatial relationship determines start direction
+  resolvedFromDir = resolveFreeStartDir(fromPos, toTerminal, strokeWidth);
+} else if (fromAnchored && !toAnchored) {
+  // ANCHORED→FREE: Primary axis + sign determines end direction
+  resolvedToDir = computeFreeEndDir(fromPos, toPos);
+}
+// Both free: inferDragDirection() already set in move()
+// Both anchored: snap.side already set in move()
+```
+
+A* simply uses `from.outwardDir` as `startDir` - no direction computation inside.
+
+### `resolveFreeStartDir()` - FREE→ANCHORED (routing.ts)
+
+Entry point that dispatches based on whether start is inside padding corridor:
+
+```typescript
+export function resolveFreeStartDir(fromPos, toTerminal, strokeWidth): Dir {
+  if (isInsidePaddedRegion(fromPos, toTerminal.shapeBounds, strokeWidth)) {
+    return computePreferredFirstDir(fromPos, toTerminal);   // Escape logic
+  } else {
+    return computeFreeStartDirection(fromPos, toTerminal, strokeWidth);  // Spatial
+  }
 }
 ```
 
-### `computeFreeStartDirection()` - Free Start Outside Padding
+#### Internal: `computeFreeStartDirection()` - Outside Padding
 
 Three sub-cases based on spatial relationship:
 
@@ -271,32 +298,33 @@ Three sub-cases based on spatial relationship:
 - Go directly toward anchor
 - Check for sliver escape first
 
-### `computePreferredFirstDir()` - Start Inside Padding
+#### Internal: `computePreferredFirstDir()` - Inside Padding
 
 Three sub-cases:
 1. **SAME SIDE**: In N padding → snap to N → escape N (away from shape)
 2. **OPPOSITE SIDE**: In S padding → snap to N → go E/W toward target X
 3. **ADJACENT SIDE**: In S padding → snap to W → go W directly
 
-### `computeSliverZoneEscape()` - Sliver Zones
+#### Internal: `computeSliverZoneEscape()` - Sliver Zones
 
-A "sliver zone" is when start is within padded range on one axis but outside the shape:
+A "sliver zone" is when start is within padded range on one axis but outside the shape. Escapes OUTWARD on the axis where we're outside, prioritizing based on anchor direction.
 
+### `computeFreeEndDir()` - ANCHORED→FREE (routing.ts)
+
+Simple primary axis + sign computation (no hysteresis unlike `inferDragDirection`):
+
+```typescript
+export function computeFreeEndDir(fromPos, toPos): Dir {
+  const dx = toPos[0] - fromPos[0];
+  const dy = toPos[1] - fromPos[1];
+  const axis = Math.abs(dx) >= Math.abs(dy) ? 'H' : 'V';
+  return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+}
 ```
-       withinPaddedY but outside shape X
-                    │
-        ┌───────────▼───────────┐
-        │   · · · · · · · · ·   │ ← padded Y boundary
-        │   · ┌───────────┐ ·   │
-        │   · │   SHAPE   │ ·   │
-withinPaddedX → │           │ ← withinPaddedX
-but outside   · │           │ ·   but outside
-  shape Y     · └───────────┘ ·     shape Y
-        │   · · · · · · · · ·   │
-        └───────────────────────┘
-```
 
-**Logic:** Escape OUTWARD on the axis where we're outside the shape, prioritizing based on anchor direction.
+**Why different from FREE→ANCHORED?**
+- FREE→ANCHORED uses complex spatial logic (padding escape, wrap-around, sliver zones)
+- ANCHORED→FREE is simpler: just compute primary axis from the two positions
 
 ---
 
@@ -374,26 +402,42 @@ end():
   └─ resetState()
 ```
 
-### Terminal Construction in updateRoute()
+### Direction Resolution + Terminal Construction in updateRoute()
 
 ```typescript
-// From terminal
+// 1. Resolve directions BEFORE building terminals
+let resolvedFromDir = this.from.outwardDir;
+let resolvedToDir = this.to.outwardDir;
+
+if (!fromAnchored && toAnchored && toShapeBounds) {
+  // FREE→ANCHORED: Spatial relationship
+  resolvedFromDir = resolveFreeStartDir(this.from.position, toTerminal, strokeWidth);
+} else if (fromAnchored && !toAnchored) {
+  // ANCHORED→FREE: Primary axis + sign
+  resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
+}
+// Both free: inferDragDirection already handled in move()
+// Both anchored: snap.side already set
+
+// 2. Build terminals with RESOLVED directions
 const fromTerminal: Terminal = {
   position: this.from.position,
-  outwardDir: this.from.outwardDir,
+  outwardDir: resolvedFromDir,     // ← Resolved, not raw
   isAnchored: this.from.isAnchored,
-  hasCap: false,  // startCap = 'none'
-  shapeBounds: fromShapeBounds,  // Fetched from snapshot if anchored
+  hasCap: false,
+  shapeBounds: fromShapeBounds,
 };
 
-// To terminal (shapeBounds already set in move() for anchored)
 const toTerminal: Terminal = {
   position: this.to.position,
-  outwardDir: this.to.outwardDir,
+  outwardDir: resolvedToDir,       // ← Resolved, not raw
   isAnchored: this.to.isAnchored,
-  hasCap: true,  // endCap = 'arrow'
+  hasCap: true,
   shapeBounds: this.to.shapeBounds,
 };
+
+// 3. Route with trustworthy terminal directions
+const result = computeRoute(fromTerminal, toTerminal, prevSig, strokeWidth);
 ```
 
 ### Commit Schema
@@ -514,7 +558,7 @@ COST_CONFIG = {
 3. **Z-route requires axis match** - Primary axis must match anchor axis
 4. **Stubs via cell blocking** - Facing side cells blocked except anchor
 5. **Midpoint check, not full segment** - For sparse grid obstacle detection
-6. **Always seed direction** - No cursor-drag inference for anchored routing
+6. **Directions resolved before routing** - `from.outwardDir` and `to.outwardDir` are trustworthy; A* just uses them
 7. **approachOffset = corner + straight + arrow** - Sufficient room for geometry
 8. **Start/goal never blocked** - Even if inside obstacle inflation zone
 
@@ -547,4 +591,4 @@ COST_CONFIG = {
 1. **No sticky connectors** - Shapes move, connectors don't follow (yet)
 2. **Start inside shape** - Behavior undefined (planned)
 3. **"End inside padding" for same-side** - Edge case handling (planned)
-4. **Code cleanup needed** - Utils extraction, AABB naming, function consolidation
+4. **Dynamic AABB redesign** - Centerline/offset logic to be simplified (see PROMPT.MD)
