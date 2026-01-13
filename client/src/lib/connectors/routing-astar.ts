@@ -15,7 +15,8 @@
  */
 
 import { COST_CONFIG, computeJettyOffset } from './constants';
-import { getOutwardVector, oppositeDir, type Dir, type AABB } from './shape-utils';
+import { getOutwardVector, oppositeDir, segmentIntersectsAABB, type Dir, type AABB } from './shape-utils';
+import { simplifyOrthogonal, computeSignature } from './routing';
 import {
   buildNonUniformGrid,
   findNearestCell,
@@ -24,44 +25,6 @@ import {
   type GridCell,
 } from './routing-grid';
 import { type Terminal, type RouteResult } from './routing-zroute';
-
-// ============================================================================
-// SEGMENT-AABB INTERSECTION (MIDPOINT CHECK)
-// ============================================================================
-
-/**
- * Check if a segment's midpoint is inside an obstacle (with inflation).
- *
- * For orthogonal routing (H/V segments only), checking the midpoint is sufficient
- * because if a segment passes through an obstacle, the midpoint will be inside.
- * This avoids false positives from corner-clipping that occurs with full segment checks.
- *
- * Uses INFLATED bounds (shape + strokeInflation) for a buffer zone around shapes.
- *
- * @param x1, y1 - Segment start
- * @param x2, y2 - Segment end
- * @param aabb - Axis-aligned bounding box (strict shape bounds)
- * @param strokeInflation - Inflation amount (typically strokeWidth * 0.5 + 1)
- * @returns true if segment midpoint is inside the inflated AABB
- */
-function segmentMidpointInObstacle(
-  x1: number, y1: number,
-  x2: number, y2: number,
-  aabb: AABB,
-  strokeInflation: number
-): boolean {
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2;
-
-  // Use inflated bounds for buffer zone
-  const minX = aabb.x - strokeInflation;
-  const maxX = aabb.x + aabb.w + strokeInflation;
-  const minY = aabb.y - strokeInflation;
-  const maxY = aabb.y + aabb.h + strokeInflation;
-
-  // Strict interior check (not on boundary)
-  return mx > minX && mx < maxX && my > minY && my < maxY;
-}
 
 /**
  * A* node for priority queue.
@@ -206,7 +169,7 @@ function computeMoveCost(
   // Base cost: Manhattan distance of this segment
   let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
 
-  // BACKWARDS PREVENTION - should be caught earlier, but double-check
+  // BACKWARDS PREVENTION 
   if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
     return Infinity;
   }
@@ -215,17 +178,6 @@ function computeMoveCost(
   if (arrivalDir && moveDir !== arrivalDir) {
     cost += COST_CONFIG.BEND_PENALTY;
   }
-
-  // CONTINUATION BONUS (prefer longer straight segments)
-  // if (arrivalDir && moveDir === arrivalDir) {
-  //   cost -= COST_CONFIG.CONTINUATION_BONUS;
-  // }
-
-  // SHORT SEGMENT PENALTY (segments shorter than corner radius look bad)
-  // const segmentLength = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
-  // if (segmentLength < ROUTING_CONFIG.CORNER_RADIUS_W && arrivalDir !== null) {
-  //   cost += COST_CONFIG.SHORT_SEGMENT_PENALTY;
-  // }
 
   return cost;
 }
@@ -265,27 +217,20 @@ function cellKey(cell: GridCell): string {
  * @param grid - The routing grid
  * @param start - Start cell
  * @param goal - Goal cell
- * @param preferredFirstDir - Direction to prefer for first move (soft bonus)
- * @param requiredApproachDir - Direction to approach goal (penalty if wrong)
+ * @param startDir - Direction to start from
  * @param obstacles - Array of AABBs to check segment intersection against
- * @param strokeWidth - Connector stroke width (for computing inflation)
  * @returns Array of cells forming the path
  */
 function astar(
   grid: Grid,
   start: GridCell,
   goal: GridCell,
-  preferredFirstDir: Dir | null,
-  _requiredApproachDir: Dir,
-  obstacles: AABB[],
-  strokeWidth: number
+  startDir: Dir,
+  obstacles: AABB[]
 ): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
-
-  // Compute stroke inflation once (same formula as cell blocking)
-  const strokeInflation = strokeWidth * 0.5 + 1;
 
   // Start with null arrivalDir - direction hints applied via cost adjustments
   const startNode: AStarNode = {
@@ -294,7 +239,7 @@ function astar(
     h: manhattan(start, goal),
     f: manhattan(start, goal),
     parent: null,
-    arrivalDir: preferredFirstDir,
+    arrivalDir: startDir,
   };
 
   openSet.push(startNode);
@@ -320,17 +265,13 @@ function astar(
       const neighborKey = cellKey(neighbor);
       if (closedSet.has(neighborKey)) continue;
 
-      // Check if segment midpoint is inside any obstacle
-      // Midpoint check naturally handles start/goal corridors because:
-      // - Start→neighbor: Midpoint is close to start, outside obstacle
-      // - Current→goal: Midpoint is close to goal (in padding corridor), outside obstacle
+      // Check if segment crosses any obstacle interior (full segment check)
       if (obstacles.length > 0) {
         const segmentBlocked = obstacles.some(obs =>
-          segmentMidpointInObstacle(
+          segmentIntersectsAABB(
             current.cell.x, current.cell.y,
             neighbor.x, neighbor.y,
-            obs,
-            strokeInflation
+            obs
           )
         );
         if (segmentBlocked) continue;
@@ -341,18 +282,6 @@ function astar(
 
       // Base cost with bend penalty
       let moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
-      // FIRST DIRECTION BONUS - apply at start node when preferredFirstDir is set
-      // Only applied when starting inside padding or from anchored position
-      // if (current.parent === null && preferredFirstDir && moveDir === preferredFirstDir) {
-      //   moveCost -= COST_CONFIG.FIRST_DIR_BONUS;
-      // }
-
-      // APPROACH MISMATCH PENALTY - disabled (creates weird routes)
-      // if (neighbor.xi === goal.xi && neighbor.yi === goal.yi) {
-      //   if (moveDir !== _requiredApproachDir) {
-      //     moveCost += COST_CONFIG.APPROACH_MISMATCH_PENALTY;
-      //   }
-      // }
 
       const tentativeG = current.g + moveCost;
       const existingG = gScores.get(neighborKey) ?? Infinity;
@@ -375,49 +304,6 @@ function astar(
   
   // No path found - return direct line (fallback)
   return [start, goal];
-}
-
-/**
- * Remove collinear points from path.
- */
-function simplifyOrthogonal(points: [number, number][]): [number, number][] {
-  if (points.length < 3) return points;
-
-  const result: [number, number][] = [points[0]];
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = result[result.length - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-
-    const sameX = Math.abs(prev[0] - curr[0]) < 0.001 && Math.abs(curr[0] - next[0]) < 0.001;
-    const sameY = Math.abs(prev[1] - curr[1]) < 0.001 && Math.abs(curr[1] - next[1]) < 0.001;
-
-    if (!sameX && !sameY) {
-      result.push(curr);
-    }
-  }
-
-  result.push(points[points.length - 1]);
-  return result;
-}
-
-/**
- * Compute route signature from simplified path.
- */
-function computeSignature(points: [number, number][]): string {
-  let sig = '';
-  for (let i = 0; i < points.length - 1; i++) {
-    const dx = points[i + 1][0] - points[i][0];
-    const dy = points[i + 1][1] - points[i][1];
-    if (Math.abs(dx) > Math.abs(dy)) {
-      sig += 'H';
-    } else if (Math.abs(dy) > Math.abs(dx)) {
-      sig += 'V';
-    }
-  }
-  // Deduplicate consecutive same chars
-  return sig.replace(/(.)(\1)+/g, '$1');
 }
 
 /**
@@ -494,11 +380,8 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
   // (Direction computation moved to routing.ts: resolveFreeStartDir/computeFreeEndDir)
   const startDir = from.outwardDir;
 
-  // Required approach: must enter goal from opposite of to.outwardDir
-  const _requiredApproachDir = to.isAnchored ? oppositeDir(to.outwardDir) : to.outwardDir;
-
-  // 7. Run A* with direction hints AND segment midpoint checking
-  const path = astar(grid, startCell, goalCell, startDir, _requiredApproachDir, obstacles, strokeWidth);
+  // 7. Run A* with segment intersection checking
+  const path = astar(grid, startCell, goalCell, startDir, obstacles);
 
   // 9. Assemble full path: actual start → A* path → actual end
   const fullPath: [number, number][] = [from.position];

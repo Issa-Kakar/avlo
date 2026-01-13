@@ -272,3 +272,72 @@ export function computeShapeToShapeSpatial(
     overlapY: !endIsBelow && !endIsAbove,
   };
 }
+
+// ============================================================================
+// SEGMENT-AABB INTERSECTION
+// ============================================================================
+
+/**
+ * Check if a line segment intersects the strict interior of an AABB.
+ *
+ * Uses the slab method (parametric intersection). Unlike a midpoint-only
+ * check, this handles:
+ * - Thin shapes that midpoint could miss
+ * - Any segment orientation (though we use H/V only)
+ * - Works correctly with raw shape bounds (no stroke inflation needed)
+ *
+ * @param x1, y1 - Segment start
+ * @param x2, y2 - Segment end
+ * @param aabb - Axis-aligned bounding box (raw shape bounds)
+ * @returns true if segment passes through AABB interior
+ */
+export function segmentIntersectsAABB(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  aabb: AABB
+): boolean {
+  const { x, y, w, h } = aabb;
+  const minX = x;
+  const maxX = x + w;
+  const minY = y;
+  const maxY = y + h;
+
+  // Direction vector
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  // Parametric bounds
+  let tMin = 0;
+  let tMax = 1;
+
+  // Check X slab
+  if (dx === 0) {
+    // Vertical line - check if X is strictly inside
+    if (x1 <= minX || x1 >= maxX) return false;
+  } else {
+    const t1 = (minX - x1) / dx;
+    const t2 = (maxX - x1) / dx;
+    const tEnter = Math.min(t1, t2);
+    const tExit = Math.max(t1, t2);
+    tMin = Math.max(tMin, tEnter);
+    tMax = Math.min(tMax, tExit);
+    if (tMin >= tMax) return false;
+  }
+
+  // Check Y slab
+  if (dy === 0) {
+    // Horizontal line - check if Y is strictly inside
+    if (y1 <= minY || y1 >= maxY) return false;
+  } else {
+    const t1 = (minY - y1) / dy;
+    const t2 = (maxY - y1) / dy;
+    const tEnter = Math.min(t1, t2);
+    const tExit = Math.max(t1, t2);
+    tMin = Math.max(tMin, tEnter);
+    tMax = Math.min(tMax, tExit);
+    if (tMin >= tMax) return false;
+  }
+
+  // Segment intersects the AABB interior
+  return true;
+}

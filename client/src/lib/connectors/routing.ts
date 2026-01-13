@@ -25,6 +25,66 @@ import type { Dir, AABB } from './shape-utils';
 export type { RouteResult, Terminal };
 
 // ============================================================================
+// PATH UTILITIES (shared by Z-route and A*)
+// ============================================================================
+
+/**
+ * Remove collinear points from orthogonal path.
+ *
+ * For H/V-only paths, removes intermediate points that lie on the same
+ * horizontal or vertical line as their neighbors.
+ *
+ * @param points - Input path
+ * @returns Simplified path without collinear intermediate points
+ */
+export function simplifyOrthogonal(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points;
+
+  const result: [number, number][] = [points[0]];
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = result[result.length - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+
+    // Check if collinear (all on same horizontal or vertical line)
+    const sameX = Math.abs(prev[0] - curr[0]) < 0.001 && Math.abs(curr[0] - next[0]) < 0.001;
+    const sameY = Math.abs(prev[1] - curr[1]) < 0.001 && Math.abs(curr[1] - next[1]) < 0.001;
+
+    if (!sameX && !sameY) {
+      result.push(curr);
+    }
+  }
+
+  result.push(points[points.length - 1]);
+  return result;
+}
+
+/**
+ * Compute route signature from simplified path.
+ *
+ * Encodes path as sequence of H (horizontal) and V (vertical) segments,
+ * with consecutive duplicates removed. E.g., "HVH", "VHV", "HV".
+ *
+ * @param points - Simplified path points
+ * @returns Signature string
+ */
+export function computeSignature(points: [number, number][]): string {
+  let sig = '';
+  for (let i = 0; i < points.length - 1; i++) {
+    const dx = points[i + 1][0] - points[i][0];
+    const dy = points[i + 1][1] - points[i][1];
+    if (Math.abs(dx) > Math.abs(dy)) {
+      sig += 'H';
+    } else if (Math.abs(dy) > Math.abs(dx)) {
+      sig += 'V';
+    }
+  }
+  // Deduplicate consecutive same chars
+  return sig.replace(/(.)(\1)+/g, '$1');
+}
+
+// ============================================================================
 // DIRECTION RESOLUTION FOR FREE ENDPOINTS
 // ============================================================================
 

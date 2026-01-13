@@ -13,6 +13,7 @@
 
 import { computeJettyOffset } from './constants';
 import { getOutwardVector, isHorizontal, type Dir } from './shape-utils';
+import { simplifyOrthogonal } from './routing';
 
 /**
  * Terminal describes an endpoint for routing.
@@ -68,35 +69,6 @@ function computeApproachPoint(terminal: Terminal, strokeWidth: number): [number,
     terminal.position[0] + vec[0] * offset,
     terminal.position[1] + vec[1] * offset,
   ];
-}
-
-/**
- * Remove collinear points from orthogonal path.
- *
- * @param points - Input path
- * @returns Simplified path without collinear intermediate points
- */
-function simplifyOrthogonal(points: [number, number][]): [number, number][] {
-  if (points.length < 3) return points;
-
-  const result: [number, number][] = [points[0]];
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = result[result.length - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-
-    // Check if collinear (all on same horizontal or vertical line)
-    const sameX = Math.abs(prev[0] - curr[0]) < 0.001 && Math.abs(curr[0] - next[0]) < 0.001;
-    const sameY = Math.abs(prev[1] - curr[1]) < 0.001 && Math.abs(curr[1] - next[1]) < 0.001;
-
-    if (!sameX && !sameY) {
-      result.push(curr);
-    }
-  }
-
-  result.push(points[points.length - 1]);
-  return result;
 }
 
 /**

@@ -9,7 +9,7 @@ The connector tool implements orthogonal (Manhattan) routing with centerline pre
 2. **Always-seed direction** - First move direction is always computed (no cursor-drag inference)
 3. **Stub effect** - Routes approach anchors perpendicular, never parallel along facing sides
 4. **Obstacle by construction** - Grid cells inside obstacles are blocked; A* never visits them
-5. **Segment midpoint checking** - For sparse grids, prevents routes from "jumping over" shapes
+5. **Full segment intersection** - Prevents routes from passing through shape interiors
 
 ---
 
@@ -18,9 +18,9 @@ The connector tool implements orthogonal (Manhattan) routing with centerline pre
 ```
 client/src/lib/connectors/
 ├── constants.ts       # SNAP_CONFIG (screen px), ROUTING_CONFIG (world), COST_CONFIG (A*)
-├── shape-utils.ts     # Dir type, spatial helpers, classification functions
+├── shape-utils.ts     # Dir type, spatial helpers, segment-AABB intersection
 ├── snap.ts            # Shape snapping with edge detection and midpoint hysteresis
-├── routing.ts         # Entry point + direction resolution for free endpoints
+├── routing.ts         # Entry point, direction resolution, path utilities
 ├── routing-zroute.ts  # Simple HVH/VHV 3-segment routing for free endpoints
 ├── routing-grid.ts    # Non-uniform grid construction with centerlines
 └── routing-astar.ts   # A* pathfinding (receives pre-resolved directions)
@@ -116,7 +116,7 @@ Used when **either** endpoint is anchored to a shape. Provides obstacle avoidanc
 4. **Build non-uniform grid** - With centerlines and facing side blocking
 5. **Find start/goal cells** - Nearest cells in grid
 6. **Use pre-resolved direction** - `startDir = from.outwardDir` (resolved before A* call)
-7. **Run A*** - With segment midpoint checking
+7. **Run A*** - With full segment intersection checking
 8. **Assemble path** - `[from.position, ...gridPath, to.position]`
 9. **Simplify** - Remove collinear points
 
@@ -128,22 +128,23 @@ For strokeWidth 2: `24 + 0 + 10 = 34` world units
 
 This ensures room for: arc corner, straight segment, and arrow head.
 
-### Segment Midpoint Intersection Check
+### Segment Intersection Check
 
-A* checks if each segment's **midpoint** is inside an obstacle. This prevents routes from "jumping over" shapes in sparse grids.
+A* checks if each segment passes through an obstacle's interior using full segment-AABB intersection (slab method). This prevents routes from crossing through shapes.
 
 ```typescript
 // For each neighbor expansion:
 const segmentBlocked = obstacles.some(obs =>
-  segmentMidpointInObstacle(current.x, current.y, neighbor.x, neighbor.y, obs, strokeInflation)
+  segmentIntersectsAABB(current.x, current.y, neighbor.x, neighbor.y, obs)
 );
 if (segmentBlocked) continue; // Skip this neighbor
 ```
 
-**Why midpoint, not full segment?**
-- Full segment checks create false positives at boundaries (corner clipping)
-- Midpoint is sufficient for H/V-only segments: if a segment crosses an obstacle, its midpoint is inside
-- Midpoint naturally allows start/goal cells in padding corridors
+**Implementation (`segmentIntersectsAABB` in shape-utils.ts):**
+- Uses parametric slab intersection for robust detection
+- Works with raw shape bounds (no stroke inflation needed)
+- Handles thin shapes correctly (unlike midpoint-only checks)
+- Strict interior check allows segments along AABB boundaries
 
 ---
 
@@ -557,10 +558,10 @@ COST_CONFIG = {
 2. **Facing sides merged** - When centerline exists, grid has single centerline instead of two facing lines
 3. **Z-route requires axis match** - Primary axis must match anchor axis
 4. **Stubs via cell blocking** - Facing side cells blocked except anchor
-5. **Midpoint check, not full segment** - For sparse grid obstacle detection
+5. **Full segment intersection** - Uses slab method on raw shape bounds (no stroke inflation)
 6. **Directions resolved before routing** - `from.outwardDir` and `to.outwardDir` are trustworthy; A* just uses them
 7. **approachOffset = corner + straight + arrow** - Sufficient room for geometry
-8. **Start/goal never blocked** - Even if inside obstacle inflation zone
+8. **Start/goal never blocked** - Even if near obstacle boundaries
 
 ---
 
