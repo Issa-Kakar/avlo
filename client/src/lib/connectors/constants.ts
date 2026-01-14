@@ -66,16 +66,6 @@ export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
   CORNER_RADIUS_W: 28,
 
-  /** Dogleg offset when shapes are behind each other in world units */
-  DOGLEG_W: 40,
-
-  /**
-   * Minimum straight segment before arrow head (world units).
-   * This ensures the stroked arc has room to straighten before the arrow.
-   * Without this, the arc's outer edge curves into the arrow's side.
-   */
-  MIN_STRAIGHT_SEGMENT_W: 0,
-
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
    *
@@ -103,17 +93,6 @@ export const COST_CONFIG = {
   /** Penalty for changing direction (creating a bend) */
   BEND_PENALTY: 1000,
 
-  /** Bonus for continuing in same direction (longer segments) */
-  CONTINUATION_BONUS: 10,
-
-  /** Penalty for short segments (less than JETTY_W) */
-  SHORT_SEGMENT_PENALTY: 50,
-
-  /** Penalty for approaching goal from wrong direction */
-  APPROACH_MISMATCH_PENALTY: 2000,
-
-  /** Bonus for taking preferred first direction */
-  FIRST_DIR_BONUS: 500,
 } as const;
 
 /**
@@ -173,49 +152,6 @@ export function computeApproachOffset(strokeWidth: number): number {
   const arrowLength = computeArrowLength(strokeWidth);
   return (
     ROUTING_CONFIG.CORNER_RADIUS_W +
-    ROUTING_CONFIG.MIN_STRAIGHT_SEGMENT_W +
     arrowLength
   );
-}
-
-/**
- * Get the maximum approach offset for default stroke sizes (2-6).
- * Used when strokeWidth isn't yet known (e.g., initial grid construction).
- *
- * For strokeWidth 6: 22 + 8 + 24 = 54
- */
-export function getMaxApproachOffset(): number {
-  return computeApproachOffset(6);
-}
-
-/**
- * Compute jetty offset based on endpoint characteristics.
- *
- * Anchored endpoints with arrow caps need full offset (arc + straight + arrow).
- * Unsnapped endpoints need no offset (they're free-floating).
- * Anchored endpoints without caps just need corner radius clearance.
- *
- * @param isAnchored - Is endpoint snapped to a shape?
- * @param hasCap - Does this endpoint have an arrow cap?
- * @param strokeWidth - Connector stroke width
- * @returns Offset in world units
- */
-export function computeJettyOffset(
-  isAnchored: boolean,
-  _hasCap: boolean,
-  strokeWidth: number
-): number {
-  if (!isAnchored) {
-    // Free endpoints don't need offset - they're free-floating
-    // Could add corner radius here if we want clean turns at unsnapped ends
-    return 0;
-  }
-
-  // if (!hasCap) {
-  //   // Anchored but no arrow - just need corner radius clearance
-  //   return ROUTING_CONFIG.CORNER_RADIUS_W + 8;
-  // }
-
-  // Full offset for anchored endpoints with arrow caps
-  return computeApproachOffset(strokeWidth);
 }

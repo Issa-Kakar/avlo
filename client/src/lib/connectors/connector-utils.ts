@@ -1,31 +1,220 @@
 /**
- * Connector Routing - Main Entry Point
+ * Connector Utilities
  *
- * Two-mode routing dispatch:
- * 1. Z-routing for free cursor (simple 3-segment HVH/VHV path)
- * 2. A* Manhattan routing for snapped endpoints (obstacle avoidance)
+ * Provides:
+ * - Shape frame extraction and midpoint calculation
+ * - Direction helpers (isHorizontal, isVertical, oppositeDir)
+ * - Bounds conversion utilities
+ * - Direction resolution for free endpoints
+ * - Path simplification utilities
  *
- * Also provides direction resolution functions for free endpoints.
- *
- * DESIGN PRINCIPLES:
- * - Obstacle elimination, not post-hoc filtering
- * - Grid cells overlapping obstacles are BLOCKED during construction
- * - A* never visits blocked cells (valid by construction)
- * - Generous padding ensures arrows and approach points fit
- *
- * @module lib/connectors/routing
+ * @module lib/connectors/connector-utils
  */
 
-import { computeZRoute, inferDragDirection, type Terminal, type RouteResult } from './routing-zroute';
-import { computeAStarRoute } from './routing-astar';
+import type { ObjectHandle } from '@avlo/shared';
+import type { Dir, ShapeFrame, AABB, Bounds } from './types';
 import { computeApproachOffset } from './constants';
-import type { Dir, AABB } from './shape-utils';
 
-// Re-export types
-export type { RouteResult, Terminal };
+/**
+ * Extract frame from shape handle.
+ * Works with 'shape' and 'text' object kinds.
+ *
+ * @param handle - Object handle from snapshot
+ * @returns ShapeFrame or null if not a shape/text or no frame
+ */
+export function getShapeFrame(handle: ObjectHandle): ShapeFrame | null {
+  if (handle.kind !== 'shape' && handle.kind !== 'text') return null;
+  const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+  if (!frame) return null;
+  return { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
+}
+
+/**
+ * Get midpoint positions for all 4 edges.
+ * For all shape types (rect, ellipse, diamond), midpoints are at frame edge centers.
+ *
+ * @param frame - Shape frame
+ * @returns Record mapping each direction to its midpoint [x, y]
+ */
+export function getMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
+  return {
+    N: [frame.x + frame.w / 2, frame.y],
+    E: [frame.x + frame.w, frame.y + frame.h / 2],
+    S: [frame.x + frame.w / 2, frame.y + frame.h],
+    W: [frame.x, frame.y + frame.h / 2],
+  };
+}
+
+/**
+ * Get position along edge for given t (0-1).
+ *
+ * @param frame - Shape frame
+ * @param side - Which edge (N/E/S/W)
+ * @param t - Position along edge (0 = start, 0.5 = midpoint, 1 = end)
+ * @returns World coordinates [x, y]
+ */
+export function getEdgePosition(frame: ShapeFrame, side: Dir, t: number): [number, number] {
+  const clampedT = Math.max(0, Math.min(1, t));
+  switch (side) {
+    case 'N':
+      return [frame.x + frame.w * clampedT, frame.y];
+    case 'S':
+      return [frame.x + frame.w * clampedT, frame.y + frame.h];
+    case 'W':
+      return [frame.x, frame.y + frame.h * clampedT];
+    case 'E':
+      return [frame.x + frame.w, frame.y + frame.h * clampedT];
+  }
+}
+
+/**
+ * Get opposite direction.
+ *
+ * @param dir - Input direction
+ * @returns Opposite direction
+ */
+export function oppositeDir(dir: Dir): Dir {
+  const map: Record<Dir, Dir> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+  return map[dir];
+}
+
+/**
+ * Check if a direction is horizontal (E or W).
+ *
+ * @param dir - Direction to check
+ * @returns true if horizontal
+ */
+export function isHorizontal(dir: Dir): boolean {
+  return dir === 'E' || dir === 'W';
+}
+
+/**
+ * Check if a direction is vertical (N or S).
+ *
+ * @param dir - Direction to check
+ * @returns true if vertical
+ */
+export function isVertical(dir: Dir): boolean {
+  return dir === 'N' || dir === 'S';
+}
 
 // ============================================================================
-// PATH UTILITIES (shared by Z-route and A*)
+// EDGE-BASED BOUNDS HELPERS
+// ============================================================================
+
+/**
+ * Convert AABB {x,y,w,h} to edge-based Bounds.
+ *
+ * @param aabb - Shape bounds in x,y,w,h format
+ * @returns Edge-based bounds
+ */
+export function toBounds(aabb: AABB): Bounds {
+  return {
+    left: aabb.x,
+    top: aabb.y,
+    right: aabb.x + aabb.w,
+    bottom: aabb.y + aabb.h,
+  };
+}
+
+/**
+ * Create point-bounds where all edges converge to a single point.
+ * Used for free (non-anchored) endpoints in routing context.
+ *
+ * @param pos - World position [x, y]
+ * @returns Bounds collapsed to a point
+ */
+export function pointBounds(pos: [number, number]): Bounds {
+  return {
+    left: pos[0],
+    top: pos[1],
+    right: pos[0],
+    bottom: pos[1],
+  };
+}
+
+/**
+ * Check if bounds is a point (all sides equal).
+ * Point-bounds don't get padding applied - they stay at their position.
+ *
+ * @param b - Bounds to check
+ * @returns true if all edges converge to a point
+ */
+export function isPointBounds(b: Bounds): boolean {
+  return b.left === b.right && b.top === b.bottom;
+}
+
+// ============================================================================
+// SEGMENT-AABB INTERSECTION
+// ============================================================================
+
+/**
+ * Check if a line segment intersects the strict interior of an AABB.
+ *
+ * Uses the slab method (parametric intersection). Unlike a midpoint-only
+ * check, this handles:
+ * - Thin shapes that midpoint could miss
+ * - Any segment orientation (though we use H/V only)
+ * - Works correctly with raw shape bounds (no stroke inflation needed)
+ *
+ * @param x1, y1 - Segment start
+ * @param x2, y2 - Segment end
+ * @param aabb - Axis-aligned bounding box (raw shape bounds)
+ * @returns true if segment passes through AABB interior
+ */
+export function segmentIntersectsAABB(
+  x1: number, y1: number,
+  x2: number, y2: number,
+  aabb: AABB
+): boolean {
+  const { x, y, w, h } = aabb;
+  const minX = x;
+  const maxX = x + w;
+  const minY = y;
+  const maxY = y + h;
+
+  // Direction vector
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  // Parametric bounds
+  let tMin = 0;
+  let tMax = 1;
+
+  // Check X slab
+  if (dx === 0) {
+    // Vertical line - check if X is strictly inside
+    if (x1 <= minX || x1 >= maxX) return false;
+  } else {
+    const t1 = (minX - x1) / dx;
+    const t2 = (maxX - x1) / dx;
+    const tEnter = Math.min(t1, t2);
+    const tExit = Math.max(t1, t2);
+    tMin = Math.max(tMin, tEnter);
+    tMax = Math.min(tMax, tExit);
+    if (tMin >= tMax) return false;
+  }
+
+  // Check Y slab
+  if (dy === 0) {
+    // Horizontal line - check if Y is strictly inside
+    if (y1 <= minY || y1 >= maxY) return false;
+  } else {
+    const t1 = (minY - y1) / dy;
+    const t2 = (maxY - y1) / dy;
+    const tEnter = Math.min(t1, t2);
+    const tExit = Math.max(t1, t2);
+    tMin = Math.max(tMin, tEnter);
+    tMax = Math.min(tMax, tExit);
+    if (tMin >= tMax) return false;
+  }
+
+  // Segment intersects the AABB interior
+  return true;
+}
+
+// ============================================================================
+// PATH UTILITIES
 // ============================================================================
 
 /**
@@ -387,38 +576,47 @@ export function computeFreeEndDir(
   return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
 }
 
-// ============================================================================
-// MAIN ROUTING DISPATCH
-// ============================================================================
-
 /**
- * Compute route between two terminals.
+ * Infer drag direction for free endpoint.
+ * Uses hysteresis to prevent jitter when cursor moves near axis boundaries.
  *
- * Dispatches to appropriate routing algorithm:
- * - Z-routing when endpoint is free (not snapped to shape)
- * - A* routing when endpoint is snapped (needs obstacle avoidance)
- *
- * @param from - Start terminal
- * @param to - End terminal
- * @param _prevSignature - Previous route signature (unused in new implementation)
- * @param strokeWidth - Connector stroke width (affects routing offsets)
- * @returns Route result with path and signature
+ * @param from - Start position
+ * @param cursor - Current cursor position
+ * @param prevDir - Previous direction (for hysteresis)
+ * @param hysteresisRatio - Ratio required to switch axis (default 1.04)
+ * @returns Inferred direction
  */
-export function computeRoute(
-  from: Terminal,
-  to: Terminal,
-  _prevSignature: string | null,
-  strokeWidth: number
-): RouteResult {
-  // Two-mode routing dispatch
-  if (!to.isAnchored && !from.isAnchored) {
-    // Free cursor - use simple Z-routing (no obstacle avoidance needed)
-    return computeZRoute(from, to, strokeWidth);
+export function inferDragDirection(
+  from: [number, number],
+  cursor: [number, number],
+  prevDir: Dir | null,
+  hysteresisRatio: number = 1.04
+): Dir {
+  const dx = cursor[0] - from[0];
+  const dy = cursor[1] - from[1];
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+
+  // Determine dominant axis
+  let axis: 'H' | 'V';
+  if (!prevDir) {
+    axis = ax >= ay ? 'H' : 'V';
   } else {
-    // Snapped to shape - use A* Manhattan routing (obstacle avoidance)
-    return computeAStarRoute(from, to, strokeWidth);
+    const prevH = isHorizontal(prevDir);
+    axis = prevH ? 'H' : 'V';
+
+    // Check if we should switch (requires winning by hysteresis margin)
+    if (prevH && ay > ax * hysteresisRatio) {
+      axis = 'V';
+    } else if (!prevH && ax > ay * hysteresisRatio) {
+      axis = 'H';
+    }
+  }
+
+  // Return direction based on axis and sign
+  if (axis === 'H') {
+    return dx >= 0 ? 'E' : 'W';
+  } else {
+    return dy >= 0 ? 'S' : 'N';
   }
 }
-
-// Re-export inferDragDirection for ConnectorTool
-export { inferDragDirection };

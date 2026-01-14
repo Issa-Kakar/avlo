@@ -15,40 +15,11 @@
  */
 
 import { SNAP_CONFIG, pxToWorld } from './constants';
-import { getShapeFrame, getMidpoints, type Dir, type ShapeFrame } from './shape-utils';
+import { getShapeFrame, getMidpoints } from './connector-utils';
 import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-test-primitives';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
-
-/**
- * Snap target returned by the snapping system.
- */
-export interface SnapTarget {
-  /** ID of the shape being snapped to */
-  shapeId: string;
-  /** Which edge (N/E/S/W) */
-  side: Dir;
-  /** Position along edge (0-1, 0.5 = midpoint) */
-  t: number;
-  /** True if snapped to exact midpoint (t=0.5) */
-  isMidpoint: boolean;
-  /** World coordinates of snap point */
-  position: [number, number];
-  /** True if cursor is inside the shape */
-  isInside: boolean;
-}
-
-/**
- * Context for snap computation.
- */
-export interface SnapContext {
-  /** Cursor position in world coordinates */
-  cursorWorld: [number, number];
-  /** Current zoom scale */
-  scale: number;
-  /** Previous snap target (for hysteresis) */
-  prevAttach: SnapTarget | null;
-}
+import type { Dir, ShapeFrame, SnapTarget, SnapContext } from './types';
 
 /**
  * Find the best snap target among all shapes near the cursor.

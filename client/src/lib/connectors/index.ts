@@ -6,6 +6,23 @@
  * @module lib/connectors
  */
 
+// Types (all from types.ts)
+export type {
+  Dir,
+  ShapeFrame,
+  AABB,
+  Bounds,
+  Terminal,
+  RouteResult,
+  RoutingContext,
+  Grid,
+  GridCell,
+  Centerlines,
+  AStarNode,
+  SnapTarget,
+  SnapContext,
+} from './types';
+
 // Constants
 export {
   SNAP_CONFIG,
@@ -13,31 +30,32 @@ export {
   COST_CONFIG,
   pxToWorld,
   computeApproachOffset,
-  computeJettyOffset,
   computeArrowLength,
 } from './constants';
 
-// Shape utilities
+// Connector utilities (renamed from shape-utils)
 export {
-  type Dir,
-  type ShapeFrame,
-  type Bounds,
   getShapeFrame,
   getMidpoints,
   getEdgePosition,
-  getOutwardVector,
   oppositeDir,
   isHorizontal,
   isVertical,
   toBounds,
   pointBounds,
   isPointBounds,
-} from './shape-utils';
+  segmentIntersectsAABB,
+  // Path utilities
+  simplifyOrthogonal,
+  computeSignature,
+  // Direction helpers
+  resolveFreeStartDir,
+  computeFreeEndDir,
+  inferDragDirection,
+} from './connector-utils';
 
-// Snapping system
+// Snapping
 export {
-  type SnapTarget,
-  type SnapContext,
   findBestSnapTarget,
   computeSnapForShape,
   pointInsideShape,
@@ -45,16 +63,6 @@ export {
   findNearestEdgePoint,
 } from './snap';
 
-// Routing algorithm
-export {
-  type RouteResult,
-  type Terminal,
-  computeRoute,
-  inferDragDirection,
-  resolveFreeStartDir,
-  computeFreeEndDir,
-} from './routing';
-
-// Routing context (new architecture)
-export { type RoutingContext, createRoutingContext } from './routing-context';
-export { buildSimpleGrid } from './routing-grid-simple';
+// Routing
+export { computeRoute, computeAStarRoute } from './routing-astar';
+export { createRoutingContext, buildSimpleGrid } from './routing-context';

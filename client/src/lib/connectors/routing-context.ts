@@ -12,57 +12,13 @@
  */
 
 import { computeApproachOffset } from './constants';
-import type { Terminal } from './routing-zroute';
 import {
-  type Dir,
-  type AABB,
-  type Bounds,
   toBounds,
   pointBounds,
   isPointBounds,
   isHorizontal,
-} from './shape-utils';
-
-// ============================================================================
-// INTERFACES
-// ============================================================================
-
-/**
- * Complete routing context with all spatial analysis pre-computed.
- *
- * Grid construction just reads AABB boundaries from this.
- * A* uses stubs as start/goal positions.
- */
-export interface RoutingContext {
-  // Original terminals (unchanged)
-  from: Terminal;
-  to: Terminal;
-
-  // Dynamic routing bounds (centerline/padding baked in)
-  // These are NOT raw shape bounds - they're the routing AABBs
-  startBounds: Bounds;
-  endBounds: Bounds;
-
-  // Stub positions - WHERE A* actually starts/ends (ON bounds boundary)
-  startStub: [number, number];
-  endStub: [number, number];
-
-  // Resolved directions
-  startDir: Dir;
-  endDir: Dir;
-
-  // Raw shape bounds for obstacle checking (NOT the routing bounds)
-  obstacles: AABB[];
-}
-
-/**
- * Centerlines between two shapes (if they exist).
- * Computed from RAW bounds - no padding.
- */
-interface Centerlines {
-  x: number | null; // Vertical centerline (if X gap exists)
-  y: number | null; // Horizontal centerline (if Y gap exists)
-}
+} from './connector-utils';
+import type { Terminal, Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Centerlines } from './types';
 
 // ============================================================================
 // MAIN ENTRY POINT
@@ -306,55 +262,56 @@ function computeStub(bounds: Bounds, anchorPos: [number, number], dir: Dir): [nu
 }
 
 // ============================================================================
-// GRID LINE HELPERS (used by routing-grid-simple.ts)
+// GRID CONSTRUCTION
 // ============================================================================
 
 /**
- * Get grid lines from routing context.
+ * Build a simple grid from routing context.
  *
- * Grid construction is trivial:
- * 1. Add all 4 edges from each routing bounds
- * 2. Add stub perpendicular lines (Y for H heading, X for V heading)
- * 3. Dedupe and sort
+ * Grid construction is trivial because routing context already has:
+ * - Dynamic AABBs with centerline/padding baked in
+ * - Stub positions on AABB boundaries
  *
- * @param ctx - Routing context
- * @returns X and Y line arrays (unsorted, may have duplicates)
+ * No cell blocking needed - A* handles obstacles via segment intersection.
+ *
+ * @param ctx - Routing context with pre-computed AABBs and stubs
+ * @returns Grid for A* routing
  */
-export function getGridLinesFromContext(ctx: RoutingContext): {
-  xLines: Set<number>;
-  yLines: Set<number>;
-} {
-  const xLines = new Set<number>();
-  const yLines = new Set<number>();
+export function buildSimpleGrid(ctx: RoutingContext): Grid {
+  // Collect grid lines from AABB edges (Sets auto-dedupe)
+  const xSet = new Set<number>();
+  const ySet = new Set<number>();
 
-  // Add all routing bounds edges
-  addBoundsLines(ctx.startBounds, xLines, yLines);
-  addBoundsLines(ctx.endBounds, xLines, yLines);
+  // Add all 4 edges from each routing bounds
+  xSet.add(ctx.startBounds.left);
+  xSet.add(ctx.startBounds.right);
+  ySet.add(ctx.startBounds.top);
+  ySet.add(ctx.startBounds.bottom);
 
-  // Add stub perpendicular lines
-  // Horizontal heading (E/W) → need Y line at stub.y
-  // Vertical heading (N/S) → need X line at stub.x
-  if (isHorizontal(ctx.startDir)) {
-    yLines.add(ctx.startStub[1]);
-  } else {
-    xLines.add(ctx.startStub[0]);
+  xSet.add(ctx.endBounds.left);
+  xSet.add(ctx.endBounds.right);
+  ySet.add(ctx.endBounds.top);
+  ySet.add(ctx.endBounds.bottom);
+
+  // Add stub perpendicular lines (Y for H heading, X for V heading)
+  if (isHorizontal(ctx.startDir)) ySet.add(ctx.startStub[1]);
+  else xSet.add(ctx.startStub[0]);
+
+  if (isHorizontal(ctx.endDir)) ySet.add(ctx.endStub[1]);
+  else xSet.add(ctx.endStub[0]);
+
+  // Sort
+  const xLines = [...xSet].sort((a, b) => a - b);
+  const yLines = [...ySet].sort((a, b) => a - b);
+
+  // Build cells (no blocking - A* checks segments)
+  const cells: GridCell[][] = [];
+  for (let yi = 0; yi < yLines.length; yi++) {
+    cells[yi] = [];
+    for (let xi = 0; xi < xLines.length; xi++) {
+      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi, blocked: false };
+    }
   }
 
-  if (isHorizontal(ctx.endDir)) {
-    yLines.add(ctx.endStub[1]);
-  } else {
-    xLines.add(ctx.endStub[0]);
-  }
-
-  return { xLines, yLines };
-}
-
-/**
- * Add all 4 edges of bounds to line sets.
- */
-function addBoundsLines(b: Bounds, xLines: Set<number>, yLines: Set<number>): void {
-  xLines.add(b.left);
-  xLines.add(b.right);
-  yLines.add(b.top);
-  yLines.add(b.bottom);
+  return { cells, xLines, yLines };
 }

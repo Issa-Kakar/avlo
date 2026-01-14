@@ -16,92 +16,79 @@
  */
 
 import { COST_CONFIG } from './constants';
-import { oppositeDir, segmentIntersectsAABB, type Dir, type AABB } from './shape-utils';
-import { simplifyOrthogonal, computeSignature } from './routing';
-import { createRoutingContext } from './routing-context';
-import { buildSimpleGrid, findNearestCell, getNeighbors, type Grid, type GridCell } from './routing-grid-simple';
-import { type Terminal, type RouteResult } from './routing-zroute';
+import {
+  oppositeDir,
+  segmentIntersectsAABB,
+  simplifyOrthogonal,
+  computeSignature,
+} from './connector-utils';
+import { createRoutingContext, buildSimpleGrid } from './routing-context';
+import { MinHeap } from './binary-heap';
+import type { Terminal, RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types';
 
 /**
- * A* node for priority queue.
+
+// ============================================================================
+// GRID HELPERS (moved from routing-grid.ts)
+// ============================================================================
+
+/**
+ * Find the nearest grid cell for a world position.
+ *
+ * @param grid - The grid to search
+ * @param pos - World position
+ * @returns Nearest grid cell
  */
-interface AStarNode {
-  cell: GridCell;
-  /** Cost from start */
-  g: number;
-  /** Heuristic to goal */
-  h: number;
-  /** f = g + h */
-  f: number;
-  /** Parent node for path reconstruction */
-  parent: AStarNode | null;
-  /** Direction we arrived from (for bend penalty) */
-  arrivalDir: Dir | null;
+function findNearestCell(grid: Grid, pos: [number, number]): GridCell {
+  let xi = 0, yi = 0;
+  let bestXDist = Infinity, bestYDist = Infinity;
+
+  for (let i = 0; i < grid.xLines.length; i++) {
+    const dist = Math.abs(grid.xLines[i] - pos[0]);
+    if (dist < bestXDist) { bestXDist = dist; xi = i; }
+  }
+  for (let i = 0; i < grid.yLines.length; i++) {
+    const dist = Math.abs(grid.yLines[i] - pos[1]);
+    if (dist < bestYDist) { bestYDist = dist; yi = i; }
+  }
+
+  return grid.cells[yi][xi];
 }
 
 /**
- * Min-heap priority queue for A*.
+ * Get 4-connected neighbors (N, E, S, W) for a cell.
+ *
+ * @param grid - The grid
+ * @param cell - Current cell
+ * @returns Array of neighbor cells
  */
-class MinHeap<T> {
-  private items: T[] = [];
+function getNeighbors(grid: Grid, cell: GridCell): GridCell[] {
+  const neighbors: GridCell[] = [];
+  const { xi, yi } = cell;
 
-  constructor(private compareFn: (a: T, b: T) => number) {}
-
-  push(item: T): void {
-    this.items.push(item);
-    this.bubbleUp(this.items.length - 1);
+  // North (yi - 1)
+  if (yi > 0) {
+    neighbors.push(grid.cells[yi - 1][xi]);
+  }
+  // East (xi + 1)
+  if (xi < grid.xLines.length - 1) {
+    neighbors.push(grid.cells[yi][xi + 1]);
+  }
+  // South (yi + 1)
+  if (yi < grid.yLines.length - 1) {
+    neighbors.push(grid.cells[yi + 1][xi]);
+  }
+  // West (xi - 1)
+  if (xi > 0) {
+    neighbors.push(grid.cells[yi][xi - 1]);
   }
 
-  pop(): T | undefined {
-    if (this.items.length === 0) return undefined;
-    const result = this.items[0];
-    const last = this.items.pop()!;
-    if (this.items.length > 0) {
-      this.items[0] = last;
-      this.bubbleDown(0);
-    }
-    return result;
-  }
-
-  isEmpty(): boolean {
-    return this.items.length === 0;
-  }
-
-  private bubbleUp(idx: number): void {
-    while (idx > 0) {
-      const parentIdx = Math.floor((idx - 1) / 2);
-      if (this.compareFn(this.items[idx], this.items[parentIdx]) >= 0) break;
-      [this.items[idx], this.items[parentIdx]] = [this.items[parentIdx], this.items[idx]];
-      idx = parentIdx;
-    }
-  }
-
-  private bubbleDown(idx: number): void {
-    while (true) {
-      const leftIdx = 2 * idx + 1;
-      const rightIdx = 2 * idx + 2;
-      let smallest = idx;
-
-      if (
-        leftIdx < this.items.length &&
-        this.compareFn(this.items[leftIdx], this.items[smallest]) < 0
-      ) {
-        smallest = leftIdx;
-      }
-      if (
-        rightIdx < this.items.length &&
-        this.compareFn(this.items[rightIdx], this.items[smallest]) < 0
-      ) {
-        smallest = rightIdx;
-      }
-
-      if (smallest === idx) break;
-      [this.items[idx], this.items[smallest]] = [this.items[smallest], this.items[idx]];
-      idx = smallest;
-    }
-  }
+  return neighbors;
 }
 
+// ============================================================================
+// A* HELPERS
+// ============================================================================
 
 /**
  * Get movement direction from one cell to another.
@@ -143,7 +130,7 @@ function computeMoveCost(
   // Base cost: Manhattan distance of this segment
   let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
 
-  // BACKWARDS PREVENTION 
+  // BACKWARDS PREVENTION
   if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
     return Infinity;
   }
@@ -275,11 +262,14 @@ function astar(
       }
     }
   }
-  
+
   // No path found - return direct line (fallback)
   return [start, goal];
 }
 
+// ============================================================================
+// PUBLIC API
+// ============================================================================
 
 /**
  * Compute A* routed path for connected endpoints.
@@ -332,4 +322,25 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
     points: simplified,
     signature: computeSignature(simplified),
   };
+}
+
+/**
+ * Compute route between two terminals.
+ *
+ * Wrapper for computeAStarRoute that provides the same API as the old
+ * routing.ts computeRoute function for backwards compatibility.
+ *
+ * @param from - Start terminal
+ * @param to - End terminal
+ * @param _prevSignature - Previous route signature (unused)
+ * @param strokeWidth - Connector stroke width (affects routing offsets)
+ * @returns Route result with path and signature
+ */
+export function computeRoute(
+  from: Terminal,
+  to: Terminal,
+  _prevSignature: string | null,
+  strokeWidth: number
+): RouteResult {
+  return computeAStarRoute(from, to, strokeWidth);
 }
