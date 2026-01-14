@@ -44,7 +44,6 @@ export {
   toBounds,
   pointBounds,
   isPointBounds,
-  segmentIntersectsAABB,
   // Path utilities
   simplifyOrthogonal,
   computeSignature,

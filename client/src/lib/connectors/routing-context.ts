@@ -50,17 +50,15 @@ export function createRoutingContext(
   const endRaw = to.shapeBounds ? toBounds(to.shapeBounds) : pointBounds(to.position);
 
   // 2. Determine endpoint configuration
-  const startIsAnchored = from.isAnchored && !!from.shapeBounds;
-  const endIsAnchored = to.isAnchored && !!to.shapeBounds;
-  const isFreeToAnchored = !startIsAnchored && endIsAnchored;
-
+  const isFreeToAnchored = !from.isAnchored && to.isAnchored;
+  const isAnchoredToFree = from.isAnchored && !to.isAnchored;
   // 3. Compute centerlines from RAW bounds (no padding)
   const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset);
 
   // 4. Build dynamic routing bounds with centerline/padding
   // Each call determines its own facing sides based on where the OTHER shape is
-  const startBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset);
-  const endBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset);
+  const startBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset, isAnchoredToFree);
+  const endBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset, isAnchoredToFree);
 
   // 5. Compute stubs from bounds + direction
   const startStub = computeStub(startBounds, from.position, from.outwardDir);
@@ -185,45 +183,43 @@ function computeCenterlines(
  */
 function buildRoutingBounds(
   raw: Bounds,
-  other: Bounds,
+  other: Bounds,  // Need the other shape/point bounds!
   centerlines: Centerlines,
-  offset: number
+  offset: number,
+  isAnchoredToFree: boolean
 ): Bounds {
-  // === Point bounds (free endpoints): shift entire point to centerline if exists ===
-  // Point-AABBs can't use the facesLeft/facesRight logic because a point has
-  // left === right, so spatial comparison is ambiguous. Instead, we simply
-  // shift the point to centerline coordinates when they exist.
-  if (isPointBounds(raw)) {
+  const isPoint = isPointBounds(raw);
+  if (isPoint && isAnchoredToFree) {
+    // If point is anchored to free, return the centerline for both sides, unlike free->anchored where its 1 side
     return {
       left: centerlines.x ?? raw.left,
-      right: centerlines.x ?? raw.left,
+      right: centerlines.x ?? raw.right,
       top: centerlines.y ?? raw.top,
-      bottom: centerlines.y ?? raw.top,
+      bottom: centerlines.y ?? raw.bottom,
     };
   }
-
-  // === Shape bounds: determine facing sides based on spatial relationship ===
-  // facesRight: this shape is to the LEFT of other (my right side faces them)
-  const facesRight = raw.right <= other.left;
-  // facesLeft: this shape is to the RIGHT of other (my left side faces them)
-  const facesLeft = raw.left >= other.right;
-  // facesBottom: this shape is ABOVE other (my bottom side faces them)
-  const facesBottom = raw.bottom <= other.top;
-  // facesTop: this shape is BELOW other (my top side faces them)
-  const facesTop = raw.top >= other.bottom;
-
+  // Determine which sides face the OTHER shape (spatial relationship)
+  const facesRight = raw.right <= other.left;   // This is left of other
+  const facesLeft = raw.left >= other.right;    // This is right of other
+  const facesBottom = raw.bottom <= other.top;  // This is above other
+  const facesTop = raw.top >= other.bottom;     // This is below other
+  
   return {
-    // Left: centerline if facing left, else padded outward
-    left: facesLeft && centerlines.x !== null ? centerlines.x : raw.left - offset,
+    left: (facesLeft && centerlines.x !== null)
+      ? centerlines.x
+      : (isPoint ? raw.left : raw.left - offset),
 
-    // Top: centerline if facing top, else padded outward
-    top: facesTop && centerlines.y !== null ? centerlines.y : raw.top - offset,
+    right: (facesRight && centerlines.x !== null)
+      ? centerlines.x
+      : (isPoint ? raw.right : raw.right + offset),
 
-    // Right: centerline if facing right, else padded outward
-    right: facesRight && centerlines.x !== null ? centerlines.x : raw.right + offset,
+    top: (facesTop && centerlines.y !== null)
+      ? centerlines.y
+      : (isPoint ? raw.top : raw.top - offset),
 
-    // Bottom: centerline if facing bottom, else padded outward
-    bottom: facesBottom && centerlines.y !== null ? centerlines.y : raw.bottom + offset,
+    bottom: (facesBottom && centerlines.y !== null)
+      ? centerlines.y
+      : (isPoint ? raw.bottom : raw.bottom + offset),
   };
 }
 

@@ -2,14 +2,21 @@
 
 ## Overview
 
-The connector tool implements orthogonal (Manhattan) routing with centerline preference, shape snapping, and obstacle avoidance. Routes are aesthetically pleasing: they use centerlines between shapes rather than hugging one shape's edge.
+The connector tool implements orthogonal (Manhattan) routing using a **Dynamic AABB architecture**. Routes are aesthetically pleasing: they use centerlines between shapes rather than hugging shape edges, with automatic obstacle avoidance.
+
+**Core Architecture:**
+1. **RoutingContext** - Single source of truth for all spatial analysis
+2. **Dynamic AABBs** - Routing bounds with centerlines baked into facing sides
+3. **Point-AABBs** - Free endpoints represented as collapsed bounds
+4. **Simple Non-Uniform Grid** - Grid lines come directly from AABB boundaries
+5. **Segment Intersection** - A* checks segments against obstacles (no cell blocking)
 
 **Design Principles:**
 1. **Centerline routing** - Routes prefer the midpoint between facing shape sides
-2. **Always-seed direction** - First move direction is always computed (no cursor-drag inference)
-3. **Stub effect** - Routes approach anchors perpendicular, never parallel along facing sides
-4. **Obstacle by construction** - Grid cells inside obstacles are blocked; A* never visits them
-5. **Full segment intersection** - Prevents routes from passing through shape interiors
+2. **Direction resolution first** - Endpoint directions computed before routing begins
+3. **Spatial intelligence in context** - All smart decisions in RoutingContext, grid/A* are simple consumers
+4. **No cell blocking** - Segment intersection checking prevents crossing shapes
+5. **Unified endpoint handling** - Point-AABBs make free endpoints work like shapes
 
 ---
 
@@ -17,24 +24,27 @@ The connector tool implements orthogonal (Manhattan) routing with centerline pre
 
 ```
 client/src/lib/connectors/
-├── constants.ts       # SNAP_CONFIG (screen px), ROUTING_CONFIG (world), COST_CONFIG (A*)
-├── shape-utils.ts     # Dir type, spatial helpers, segment-AABB intersection
-├── snap.ts            # Shape snapping with edge detection and midpoint hysteresis
-├── routing.ts         # Entry point, direction resolution, path utilities
-├── routing-zroute.ts  # Simple HVH/VHV 3-segment routing for free endpoints
-├── routing-grid.ts    # Non-uniform grid construction with centerlines
-└── routing-astar.ts   # A* pathfinding (receives pre-resolved directions)
+├── types.ts               # All shared types (Dir, Terminal, Bounds, RoutingContext, Grid, etc.)
+├── constants.ts           # SNAP_CONFIG (screen px), ROUTING_CONFIG (world), COST_CONFIG (A*)
+├── connector-utils.ts     # Shape frame helpers, direction resolution, bounds conversion, path utilities
+├── snap.ts                # Shape snapping with edge detection and midpoint hysteresis
+├── routing-context.ts     # Routing context: centerlines, dynamic AABBs, stubs, grid construction
+├── routing-astar.ts       # A* pathfinding with segment intersection checking, computeRoute entry point
+├── binary-heap.ts         # MinHeap priority queue for A*
+└── index.ts               # Re-exports all public API
 
 client/src/lib/tools/
-└── ConnectorTool.ts   # Main tool: resolves directions in updateRoute() before routing
+└── ConnectorTool.ts       # Main tool: gesture handling, direction resolution, commit
 
 client/src/renderer/layers/
-└── connector-preview.ts  # Preview rendering with rounded corners and arrows
+└── connector-preview.ts   # Preview rendering with rounded corners and arrows
 ```
 
 ---
 
 ## Core Data Structures
+
+All types are defined in `types.ts` and re-exported via `index.ts`.
 
 ### Terminal (Endpoint Definition)
 ```typescript
@@ -48,271 +58,403 @@ interface Terminal {
 }
 ```
 
+**Key insight:** `outwardDir` is the direction a jetty/approach segment extends from the endpoint, NOT the direction of travel. For snapped endpoints, it's the side of the shape. For free endpoints, it's computed based on the spatial relationship.
+
+### Bounds (Edge-Based AABB)
+```typescript
+interface Bounds {
+  left: number;    // minX
+  top: number;     // minY
+  right: number;   // maxX
+  bottom: number;  // maxY
+}
+```
+
+**Why edges instead of x/y/w/h:**
+- Grid lines: `xLines.add(b.left)` vs `xLines.add(b.x)`
+- Centerline: `(a.right + b.left) / 2` vs `(a.x + a.w + b.x) / 2`
+- Facing checks: `a.right <= b.left` vs derived calculations
+
+### RoutingContext (Single Source of Truth)
+```typescript
+interface RoutingContext {
+  // Original terminals (unchanged)
+  from: Terminal;
+  to: Terminal;
+
+  // Dynamic routing bounds (centerline/padding baked in)
+  startBounds: Bounds;      // NOT raw shape bounds - these are routing AABBs
+  endBounds: Bounds;
+
+  // Stub positions - WHERE A* actually starts/ends (ON bounds boundary)
+  startStub: [number, number];
+  endStub: [number, number];
+
+  // Resolved directions
+  startDir: Dir;
+  endDir: Dir;
+
+  // Raw shape bounds for obstacle checking (NOT the routing bounds)
+  obstacles: AABB[];
+}
+```
+
+**Critical design:** This is the SINGLE place where all spatial intelligence lives. Grid construction and A* just consume these pre-computed values.
+
 ### Dir (Cardinal Direction)
 ```typescript
 type Dir = 'N' | 'E' | 'S' | 'W';
 ```
 
-### FacingSides (Centerline Computation)
+### Grid and GridCell (A* Navigation)
 ```typescript
-interface FacingSides {
-  startFacingX: number | null;  // Start shape's facing X padding line
-  endFacingX: number | null;    // End shape's facing X padding line
-  centerlineX: number | null;   // Midpoint between ACTUAL edges (not padded)
-  hasXCenterline: boolean;      // True if X centerline exists
-  // Same for Y axis...
+interface GridCell {
+  x: number;       // World X coordinate
+  y: number;       // World Y coordinate
+  xi: number;      // Grid index X
+  yi: number;      // Grid index Y
+  blocked: boolean; // Always false (segment checking handles obstacles)
+}
+
+interface Grid {
+  cells: GridCell[][];  // 2D cell array [yi][xi]
+  xLines: number[];     // Sorted unique X coordinates
+  yLines: number[];     // Sorted unique Y coordinates
+}
+```
+
+### AStarNode (Pathfinding State)
+```typescript
+interface AStarNode {
+  cell: GridCell;
+  g: number;           // Cost from start
+  h: number;           // Heuristic to goal
+  f: number;           // f = g + h
+  parent: AStarNode | null;
+  arrivalDir: Dir | null;  // Direction we arrived from (for bend penalty)
 }
 ```
 
 ---
 
-## Routing Dispatch (`routing.ts`)
+## Routing Architecture
 
-**Direction Resolution (called before routing):**
-- `resolveFreeStartDir(fromPos, toTerminal, strokeWidth)` → FREE→ANCHORED start direction
-- `computeFreeEndDir(fromPos, toPos)` → ANCHORED→FREE end direction
+### High-Level Flow
 
-**Route Dispatch:**
 ```
-computeRoute(from, to, prevSignature, strokeWidth)
-├── Both free → computeZRoute()      (simple 3-segment, no obstacles)
-├── Either anchored → computeAStarRoute()  (obstacle avoidance)
+ConnectorTool.updateRoute()
+    │
+    ├── Resolve directions (for free endpoints)
+    │   ├── FREE→ANCHORED: resolveFreeStartDir()
+    │   └── ANCHORED→FREE: computeFreeEndDir()
+    │
+    └── computeRoute(fromTerminal, toTerminal, strokeWidth)
+            │
+            └── computeAStarRoute()
+                    │
+                    ├── createRoutingContext()
+                    │   ├── Compute centerlines (from RAW bounds)
+                    │   ├── Build dynamic AABBs (centerline/padding)
+                    │   ├── Compute stubs (on AABB boundaries)
+                    │   └── Collect obstacles
+                    │
+                    ├── buildSimpleGrid(ctx)
+                    │   └── Add AABB lines + stub perpendiculars
+                    │
+                    └── astar(grid, start, goal, startDir, obstacles)
+                        └── Segment intersection checking
 ```
 
-**Endpoint Combinations:**
-| From | To | Algorithm | Obstacles |
-|------|-----|-----------|-----------|
-| Free | Free | Z-route | None |
-| Free | Anchored | A* | to.shapeBounds |
-| Anchored | Free | A* | from.shapeBounds |
-| Anchored | Anchored | A* | Both shapes |
+### Unified A* Routing
+
+All endpoint combinations use A* routing. The separate Z-route algorithm was removed because A* with Point-AABBs produces identical results for free→free cases (centerline merging naturally creates optimal 3-segment HVH/VHV routes when both endpoints are free).
+
+| From | To | Obstacles |
+|------|----|-----------|
+| Free | Free | None |
+| Free | Anchored | to.shapeBounds |
+| Anchored | Free | from.shapeBounds |
+| Anchored | Anchored | Both shapes |
 
 ---
 
-## Z-Routing (`routing-zroute.ts`)
+## RoutingContext Creation (`routing-context.ts`)
 
-Simple 3-segment routing when **both** endpoints are free. No obstacle avoidance needed.
-
-**Route Shape:**
-- **HVH** (horizontal exit): `from → midX → to` via horizontal-vertical-horizontal
-- **VHV** (vertical exit): `from → midY → to` via vertical-horizontal-vertical
-
-**Selection:** Based on `from.outwardDir`:
-- E/W → HVH
-- N/S → VHV
-
-**Midpoint:** `(fromApproach + toApproach) / 2` on the appropriate axis.
-
----
-
-## A* Routing (`routing-astar.ts`)
-
-Used when **either** endpoint is anchored to a shape. Provides obstacle avoidance.
-
-### Pipeline
-1. **Compute approach points** - Offset from terminal based on cap and anchor status
-2. **Compute goal position** - For anchored endpoints, at padding boundary intersection
-3. **Collect obstacles** - Both `from.shapeBounds` and `to.shapeBounds`
-4. **Build non-uniform grid** - With centerlines and facing side blocking
-5. **Find start/goal cells** - Nearest cells in grid
-6. **Use pre-resolved direction** - `startDir = from.outwardDir` (resolved before A* call)
-7. **Run A*** - With full segment intersection checking
-8. **Assemble path** - `[from.position, ...gridPath, to.position]`
-9. **Simplify** - Remove collinear points
-
-### Approach Offset Formula
-```
-approachOffset = CORNER_RADIUS_W + MIN_STRAIGHT_SEGMENT_W + arrowLength(strokeWidth)
-```
-For strokeWidth 2: `24 + 0 + 10 = 34` world units
-
-This ensures room for: arc corner, straight segment, and arrow head.
-
-### Segment Intersection Check
-
-A* checks if each segment passes through an obstacle's interior using full segment-AABB intersection (slab method). This prevents routes from crossing through shapes.
+### Step 1: Extract Raw Bounds
 
 ```typescript
-// For each neighbor expansion:
-const segmentBlocked = obstacles.some(obs =>
-  segmentIntersectsAABB(current.x, current.y, neighbor.x, neighbor.y, obs)
-);
-if (segmentBlocked) continue; // Skip this neighbor
+const startRaw = from.shapeBounds ? toBounds(from.shapeBounds) : pointBounds(from.position);
+const endRaw = to.shapeBounds ? toBounds(to.shapeBounds) : pointBounds(to.position);
 ```
 
-**Implementation (`segmentIntersectsAABB` in shape-utils.ts):**
-- Uses parametric slab intersection for robust detection
-- Works with raw shape bounds (no stroke inflation needed)
-- Handles thin shapes correctly (unlike midpoint-only checks)
-- Strict interior check allows segments along AABB boundaries
+- **Shapes** → Convert `{x,y,w,h}` to edge-based `Bounds`
+- **Free points** → Create collapsed bounds where `left === right` and `top === bottom`
 
----
+### Step 2: Compute Centerlines
 
-## Grid Construction (`routing-grid.ts`)
-
-### Grid Line Placement Philosophy
-
-Lines exist only at meaningful routing positions:
-- **Endpoint positions** (anchor or free point coordinates)
-- **Padding boundaries** (shape edge + approachOffset)
-- **Centerlines** (midpoint between facing shape edges)
-- **Goal positions** (for cell finding)
-
-### Facing Sides Computation
-
-When two shapes face each other, we compute which sides "look at" each other:
-
-
-┌─────────┐                    ┌─────────┐
-│  Start  │ ←── facing ───→   │   End   │
-│  Shape  │  (right faces     │  Shape  │
-└─────────┘     left)          └─────────┘
-
-```
-**Key rule:** Centerline uses ACTUAL shape edges, not padded boundaries:
-```typescript
-// For endIsRightOf case:
-const actualStartEdge = startBounds.x + startBounds.w;  // Right edge (no padding)
-const actualEndEdge = endBounds.x;                       // Left edge (no padding)
-result.centerlineX = (actualStartEdge + actualEndEdge) / 2;  // TRUE midpoint
-```
-
-### Three Facing Sides Functions
-
-1. **`computeFacingSides(startBounds, endBounds, offset)`** - Anchored→Anchored
-2. **`computeFacingSidesFromPoint(startPos, endBounds, anchorDir, offset)`** - Free→Anchored
-3. **`computeFacingSidesToPoint(startBounds, endPos, startDir, offset, fromApproach)`** - Anchored→Free
-
-### Centerline Only When Z-Route Valid
-
-For Free→Anchored and Anchored→Free, centerline is only computed when:
-1. Start/end is "beyond" the shape's padded facing side (same-side scenario)
-2. Primary axis matches anchor axis (Z-route valid)
-
-**Example:** Anchor is East, free point is to the right of shape
-- If dominant axis is H (horizontal) → Z-route valid → create X centerline
-- If dominant axis is V (vertical) → L-route needed → no centerline
+Centerlines are computed from **RAW bounds** (actual geometry, no padding):
 
 ```typescript
-const primaryAxis: 'H' | 'V' = ax >= ay ? 'H' : 'V';
-const zRouteValid = (startDirIsHorizontal && primaryAxis === 'H') ||
-                    (!startDirIsHorizontal && primaryAxis === 'V');
+function computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset): Centerlines
 ```
 
-### Grid Line Merging
+A centerline exists when:
+1. **No overlap** on that axis
+2. **For FREE→ANCHORED:** Gap must be ≥ `offset` (minimum clearance)
 
-When a centerline exists, facing side lines are **merged** into the single centerline:
-
+**Formula:**
 ```typescript
-if (facing.hasXCenterline) {
-  xLines.push(facing.centerlineX);       // Single centerline
-  xLines.push(exteriorSideOnly);         // Only exterior (non-facing) side
-} else {
-  xLines.push(leftPadding, rightPadding); // Both padding boundaries
+// X centerline (vertical line between shapes)
+if (endRaw.left > startRaw.right) {
+  centerX = (startRaw.right + endRaw.left) / 2;  // Midpoint between actual edges
+}
+
+// Y centerline (horizontal line between shapes)
+if (endRaw.top > startRaw.bottom) {
+  centerY = (startRaw.bottom + endRaw.top) / 2;
 }
 ```
 
-**Why this works:** By removing facing side lines, A* has no alternative but to use the centerline.
+### Step 3: Build Dynamic AABBs
 
----
+This is the **key innovation**. AABBs encode centerline knowledge in their boundaries:
 
-## Facing Side Cell Blocking (Stub Effect)
-
-Cells along facing side lines are blocked **except** the anchor cell. This prevents routes from traveling parallel along facing sides.
-
-```
-WITHOUT blocking:              WITH blocking:
-[Start]→→→→→↓                  [Start]→→→→→→→→↓
-            ↓                              ↓  (centerline)
-     ↓←←←←←←↓ (hugging)                    ↓
-     ↓                                     ↓
-     ←←←[End]                              ←[End]  (stub)
-```
-
-### Blocking Rules
-
-| Scenario | What's Blocked |
-|----------|----------------|
-| `toHasShape` | Block `endFacingX/Y` except goal cell |
-| `fromHasShape && toHasShape` | Also block `startFacingX/Y` except start cell |
-| `fromHasShape && !toHasShape` (anchored→free) | Block `endFacingX/Y` (free point's line) to force Z-route |
-
-**Anchored→Free Z-Route Forcing:**
-
-Without special handling, A* chooses VH L-routes (1 bend) over VHV Z-routes (2 bends) due to bend penalty. Blocking `endFacingY` (goal's Y coordinate) except the goal cell forces the route through the centerline.
-
----
-
-## Direction Seeding System
-
-**Terminal `outwardDir` is resolved BEFORE routing.** Directions are explicit and trustworthy:
-- Anchored endpoints: `outwardDir` from snap side (set in `move()`)
-- Free endpoints: Computed in `updateRoute()` before building terminals
-
-### Architecture
-
-Direction resolution happens in **ConnectorTool.updateRoute()**, NOT inside A*:
-
+**For Point-AABBs (free endpoints):**
 ```typescript
-// In updateRoute():
-if (!fromAnchored && toAnchored && toShapeBounds) {
-  // FREE→ANCHORED: Spatial relationship determines start direction
-  resolvedFromDir = resolveFreeStartDir(fromPos, toTerminal, strokeWidth);
-} else if (fromAnchored && !toAnchored) {
-  // ANCHORED→FREE: Primary axis + sign determines end direction
-  resolvedToDir = computeFreeEndDir(fromPos, toPos);
+if (isPointBounds(raw)) {
+  return {
+    left: centerlines.x ?? raw.left,    // Shift to centerline if exists
+    right: centerlines.x ?? raw.left,
+    top: centerlines.y ?? raw.top,
+    bottom: centerlines.y ?? raw.top,
+  };
 }
-// Both free: inferDragDirection() already set in move()
-// Both anchored: snap.side already set in move()
 ```
 
-A* simply uses `from.outwardDir` as `startDir` - no direction computation inside.
+Point-AABBs can't use spatial facing logic (a point has `left === right`). Instead, they **shift to centerline coordinates** when centerlines exist.
 
-### `resolveFreeStartDir()` - FREE→ANCHORED (routing.ts)
+**For Shape Bounds (anchored endpoints):**
+```typescript
+// Determine which sides "face" the other shape
+const facesRight = raw.right <= other.left;  // This shape is LEFT of other
+const facesLeft = raw.left >= other.right;   // This shape is RIGHT of other
+const facesBottom = raw.bottom <= other.top; // This shape is ABOVE other
+const facesTop = raw.top >= other.bottom;    // This shape is BELOW other
 
-Entry point that dispatches based on whether start is inside padding corridor:
+return {
+  // Facing side → centerline (if exists), else padded outward
+  left: facesLeft && centerlines.x !== null ? centerlines.x : raw.left - offset,
+  right: facesRight && centerlines.x !== null ? centerlines.x : raw.right + offset,
+  top: facesTop && centerlines.y !== null ? centerlines.y : raw.top - offset,
+  bottom: facesBottom && centerlines.y !== null ? centerlines.y : raw.bottom + offset,
+};
+```
+
+**Key insight:** Both start and end AABBs share the same centerline as their facing boundaries. This is what makes routes naturally use centerlines.
+
+### Step 4: Compute Stubs
+
+Stubs are where A* actually starts/ends. They're at the intersection of:
+- The anchor's fixed axis position (Y for E/W, X for N/S)
+- The AABB boundary in the outward direction
 
 ```typescript
-export function resolveFreeStartDir(fromPos, toTerminal, strokeWidth): Dir {
-  if (isInsidePaddedRegion(fromPos, toTerminal.shapeBounds, strokeWidth)) {
-    return computePreferredFirstDir(fromPos, toTerminal);   // Escape logic
-  } else {
-    return computeFreeStartDirection(fromPos, toTerminal, strokeWidth);  // Spatial
+function computeStub(bounds, anchorPos, dir): [number, number] {
+  switch (dir) {
+    case 'E': return [bounds.right, ay];  // Right boundary, anchor's Y
+    case 'W': return [bounds.left, ay];   // Left boundary, anchor's Y
+    case 'S': return [ax, bounds.bottom]; // Anchor's X, bottom boundary
+    case 'N': return [ax, bounds.top];    // Anchor's X, top boundary
   }
 }
 ```
 
-#### Internal: `computeFreeStartDirection()` - Outside Padding
+**Result:** Stubs naturally land on centerlines when they exist, because the AABB boundary IS the centerline.
 
-Three sub-cases based on spatial relationship:
+### Step 5: Collect Obstacles
 
-**1. SAME SIDE (Z-route possible)**
-- Start is on same side as anchor's OPPOSITE (e.g., start LEFT, anchor WEST)
-- Z-route only valid when primary axis matches anchor axis
-- Otherwise: L-route on perpendicular axis
+Raw shape bounds (not routing bounds) are collected for segment intersection checking:
 
-**2. OPPOSITE SIDE (wrap around)**
-- Start is on same side AS the anchor (e.g., start LEFT, anchor EAST - behind shape)
-- If contained in padded bounds: wrap around via shortest path (N or S)
+```typescript
+const obstacles: AABB[] = [];
+if (from.shapeBounds) obstacles.push(from.shapeBounds);
+if (to.shapeBounds && to.shapeBounds !== from.shapeBounds) {
+  obstacles.push(to.shapeBounds);
+}
+```
 
-**3. ADJACENT SIDE (L-route)**
-- Go directly toward anchor
-- Check for sliver escape first
+---
 
-#### Internal: `computePreferredFirstDir()` - Inside Padding
+## Grid Construction (`routing-context.ts`)
 
-Three sub-cases:
-1. **SAME SIDE**: In N padding → snap to N → escape N (away from shape)
-2. **OPPOSITE SIDE**: In S padding → snap to N → go E/W toward target X
-3. **ADJACENT SIDE**: In S padding → snap to W → go W directly
+Grid construction is now **trivial** because RoutingContext handles all intelligence. The `buildSimpleGrid()` function lives alongside `createRoutingContext()` in the same file:
 
-#### Internal: `computeSliverZoneEscape()` - Sliver Zones
+```typescript
+export function buildSimpleGrid(ctx: RoutingContext): Grid {
+  const xSet = new Set<number>();
+  const ySet = new Set<number>();
 
-A "sliver zone" is when start is within padded range on one axis but outside the shape. Escapes OUTWARD on the axis where we're outside, prioritizing based on anchor direction.
+  // Add all 4 edges from each routing bounds
+  xSet.add(ctx.startBounds.left);
+  xSet.add(ctx.startBounds.right);
+  ySet.add(ctx.startBounds.top);
+  ySet.add(ctx.startBounds.bottom);
 
-### `computeFreeEndDir()` - ANCHORED→FREE (routing.ts)
+  xSet.add(ctx.endBounds.left);
+  xSet.add(ctx.endBounds.right);
+  ySet.add(ctx.endBounds.top);
+  ySet.add(ctx.endBounds.bottom);
 
-Simple primary axis + sign computation (no hysteresis unlike `inferDragDirection`):
+  // Add stub perpendicular lines
+  if (isHorizontal(ctx.startDir)) ySet.add(ctx.startStub[1]);
+  else xSet.add(ctx.startStub[0]);
+
+  if (isHorizontal(ctx.endDir)) ySet.add(ctx.endStub[1]);
+  else xSet.add(ctx.endStub[0]);
+
+  // Sort and build cells (no blocking - A* checks segments)
+  const xLines = [...xSet].sort((a, b) => a - b);
+  const yLines = [...ySet].sort((a, b) => a - b);
+
+  const cells: GridCell[][] = [];
+  for (let yi = 0; yi < yLines.length; yi++) {
+    cells[yi] = [];
+    for (let xi = 0; xi < xLines.length; xi++) {
+      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi, blocked: false };
+    }
+  }
+
+  return { cells, xLines, yLines };
+}
+```
+
+**Why no cell blocking?**
+1. Dynamic AABBs with centerlines are already valid routing corridors
+2. Segment intersection checking prevents actually crossing shapes
+3. Cell blocking during construction is inherently useless: The **PATH** between cells is what must be blocked anyway; segment intersection checking handles this during A*
+
+---
+
+## A* Pathfinding (`routing-astar.ts`)
+
+### Algorithm Flow
+
+```typescript
+export function computeAStarRoute(from, to, strokeWidth): RouteResult {
+  // 1. Build routing context (ALL spatial intelligence here)
+  const ctx = createRoutingContext(from, to, strokeWidth);
+
+  // 2. Build simple grid from context
+  const grid = buildSimpleGrid(ctx);
+
+  // 3. Find start and goal cells (at stub positions)
+  const startCell = findNearestCell(grid, ctx.startStub);
+  const goalCell = findNearestCell(grid, ctx.endStub);
+
+  // 4. Run A* between stubs (seed with startDir)
+  const path = astar(grid, startCell, goalCell, ctx.startDir, ctx.obstacles);
+
+  // 5. Assemble full path: actual_start → A* path → actual_end
+  const fullPath = [from.position, ...path.map(c => [c.x, c.y]), to.position];
+
+  // 6. Simplify collinear points
+  return { points: simplifyOrthogonal(fullPath), signature };
+}
+```
+
+**Key design:** The full path is `[actual_start, ...A*_path, actual_end]`. This handles dynamic offset correctly—when stubs are on centerlines, the actual endpoints gracefully enter/exit shapes.
+
+### Cost Function
+
+```typescript
+function computeMoveCost(from, to, arrivalDir, moveDir): number {
+  let cost = manhattan(from, to);  // Base: Manhattan distance
+
+  // Prevent U-turns (backwards movement)
+  if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
+    return Infinity;
+  }
+
+  // Bend penalty: minimize direction changes
+  if (arrivalDir && moveDir !== arrivalDir) {
+    cost += COST_CONFIG.BEND_PENALTY;  // 1000
+  }
+
+  return cost;
+}
+```
+
+**Bend penalty (1000)** strongly prefers the path with the most minimal turns. This naturally produces the best looking routes when combined with the dynamic AABBs: as forcing centerlines to be the routing boundaries for facing sides forces centerline usage whenever possible; Thus a path with fewest bends+manhattan distance is the only heuristic needed as there's assurance that a theoretical path with fewer bends than a path with a centerline won't exist due to the facing sides always being the centerline for each facing axis. 
+
+### Segment Intersection Checking
+
+```typescript
+for (const neighbor of getNeighbors(grid, current.cell)) {
+  if (neighbor.blocked) continue;
+
+  // Check if segment crosses ANY obstacle interior
+  if (obstacles.length > 0) {
+    const segmentBlocked = obstacles.some(obs =>
+      segmentIntersectsAABB(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obs)
+    );
+    if (segmentBlocked) continue;
+  }
+  // ... continue with A* exploration
+}
+```
+
+Uses **parametric slab method** for precise segment-AABB intersection. This handles:
+- Thin shapes that midpoint checks could miss
+- Any segment orientation
+- Works with raw shape bounds (no stroke inflation needed)
+
+### Priority Queue (`binary-heap.ts`)
+
+A* uses a `MinHeap<AStarNode>` for the open set priority queue:
+
+```typescript
+const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
+```
+
+The heap provides O(log n) push/pop operations, extracted into a standalone file for clarity.
+
+---
+
+## Direction Resolution (`connector-utils.ts`)
+
+Directions are resolved **BEFORE** routing begins, based on endpoint configuration. All direction helpers live in `connector-utils.ts`.
+
+### FREE→ANCHORED: `resolveFreeStartDir()`
+
+Computes start direction from spatial relationship between free point and target shape:
+
+**Three spatial cases:**
+
+1. **SAME SIDE** (Z-route possible)
+   - Start is on same side as anchor's opposite (e.g., start LEFT, anchor WEST)
+   - Z-route only valid when primary axis matches anchor axis
+   - Otherwise: L-route on perpendicular axis
+
+2. **OPPOSITE SIDE** (wrap around)
+   - Start is "behind" the shape (e.g., start LEFT, anchor EAST)
+   - If inside padded bounds: wrap around via shortest path (N or S)
+
+3. **ADJACENT SIDE** (L-route)
+   - Go directly toward anchor
+   - Check for sliver zone escape first
+
+**Inside Padding Special Case:**
+```typescript
+if (isInsidePaddedRegion(fromPos, toTerminal.shapeBounds, strokeWidth)) {
+  return computePreferredFirstDir(fromPos, toTerminal);  // Escape logic
+} else {
+  return computeFreeStartDirection(fromPos, toTerminal, strokeWidth);
+}
+```
+
+### ANCHORED→FREE: `computeFreeEndDir()`
+
+Simple primary axis + sign computation:
 
 ```typescript
 export function computeFreeEndDir(fromPos, toPos): Dir {
@@ -323,27 +465,62 @@ export function computeFreeEndDir(fromPos, toPos): Dir {
 }
 ```
 
-**Why different from FREE→ANCHORED?**
-- FREE→ANCHORED uses complex spatial logic (padding escape, wrap-around, sliver zones)
-- ANCHORED→FREE is simpler: just compute primary axis from the two positions
+**Why simpler than FREE→ANCHORED?** Free-anchored must determine which direction to route around in U route scenarios(going around and behind the shape to the oppisite facing side), and also handle starting inside padding differently than anchored->free. In anchored->free, the startInsidePadding will always be true on initial drag, causing the initial drag to not point outwards from a shape as it must "escape" to padding reigon. This escape behaviour when starting inside padding is only good UX for free->anchored. At its core, anchored->anchored and anchored->free routing is exactly the same path wise. only difference is that the end direction/arrow head is not computed automatically, which is why we compute end direction there: its essential for grid construction as we must only add one line based on axis during AABB generation, to ensure the only way to reach the goal stub is the intersection of an AABB existing line(which could be a shape padded boundary, but, also be a centerline, thus enforcing centerline path as the only way to reach goal)
+
+### Direction Resolution in ConnectorTool
+
+```typescript
+private updateRoute(): void {
+  let resolvedFromDir = this.from.outwardDir;
+  let resolvedToDir = this.to.outwardDir;
+
+  if (!fromAnchored && toAnchored && toShapeBounds) {
+    // FREE→ANCHORED: Spatial relationship
+    resolvedFromDir = resolveFreeStartDir(this.from.position, toTerminal, strokeWidth);
+  } else if (fromAnchored && !toAnchored) {
+    // ANCHORED→FREE: Primary axis + sign
+    resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
+  }
+  // Both free: inferDragDirection already handled in move()
+  // Both anchored: snap.side already set
+
+  // Build terminals with RESOLVED directions
+  const fromTerminal = { ...this.from, outwardDir: resolvedFromDir };
+  const toTerminal = { ...this.to, outwardDir: resolvedToDir };
+
+  const result = computeRoute(fromTerminal, toTerminal, prevSignature, strokeWidth);
+}
+```
+
+---
+
+### Drag Direction Inference: `inferDragDirection()`
+
+For free endpoints, direction is inferred from cursor movement with hysteresis:
+
+```typescript
+export function inferDragDirection(from, cursor, prevDir, hysteresisRatio = 1.04): Dir {
+  const dx = cursor[0] - from[0];
+  const dy = cursor[1] - from[1];
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+
+  let axis = ax >= ay ? 'H' : 'V';
+
+  // Hysteresis: require margin to switch axis
+  if (prevDir && isHorizontal(prevDir) && ay > ax * hysteresisRatio) axis = 'V';
+  if (prevDir && !isHorizontal(prevDir) && ax > ay * hysteresisRatio) axis = 'H';
+
+  return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+}
+```
 
 ---
 
 ## Snapping System (`snap.ts`)
 
-### Snap Target
-```typescript
-interface SnapTarget {
-  shapeId: string;
-  side: Dir;
-  t: number;           // Position along edge (0-1, 0.5 = midpoint)
-  isMidpoint: boolean;
-  position: [number, number];
-  isInside: boolean;
-}
-```
+### Priority Logic (Nested Shapes)
 
-### Snap Priority (Nested Shapes)
 1. Sort candidates by area ascending (smallest = most nested first)
 2. Among equal-area, prefer higher z-order (ULID descending)
 3. Pick first valid snap target
@@ -357,11 +534,13 @@ interface SnapTarget {
 | Outside edge radius | No snap |
 
 ### Midpoint Hysteresis
-- **Snap in threshold:** 14px (enter midpoint lock)
-- **Snap out threshold:** 20px (exit midpoint lock)
+
+- **Snap IN threshold:** 14px (enter midpoint lock)
+- **Snap OUT threshold:** 20px (exit midpoint lock)
 - Prevents jitter when cursor hovers near midpoint
 
 ### Shape-Type Awareness
+
 - **rect/roundedRect:** Edge is the frame boundary
 - **ellipse:** Closest point on ellipse perimeter, side determined by angle
 - **diamond:** Four diagonal edges, mapped to N/E/S/W based on quadrant
@@ -371,6 +550,7 @@ interface SnapTarget {
 ## ConnectorTool (`ConnectorTool.ts`)
 
 ### State Machine
+
 ```typescript
 type Phase = 'idle' | 'creating';
 ```
@@ -403,45 +583,8 @@ end():
   └─ resetState()
 ```
 
-### Direction Resolution + Terminal Construction in updateRoute()
-
-```typescript
-// 1. Resolve directions BEFORE building terminals
-let resolvedFromDir = this.from.outwardDir;
-let resolvedToDir = this.to.outwardDir;
-
-if (!fromAnchored && toAnchored && toShapeBounds) {
-  // FREE→ANCHORED: Spatial relationship
-  resolvedFromDir = resolveFreeStartDir(this.from.position, toTerminal, strokeWidth);
-} else if (fromAnchored && !toAnchored) {
-  // ANCHORED→FREE: Primary axis + sign
-  resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
-}
-// Both free: inferDragDirection already handled in move()
-// Both anchored: snap.side already set
-
-// 2. Build terminals with RESOLVED directions
-const fromTerminal: Terminal = {
-  position: this.from.position,
-  outwardDir: resolvedFromDir,     // ← Resolved, not raw
-  isAnchored: this.from.isAnchored,
-  hasCap: false,
-  shapeBounds: fromShapeBounds,
-};
-
-const toTerminal: Terminal = {
-  position: this.to.position,
-  outwardDir: resolvedToDir,       // ← Resolved, not raw
-  isAnchored: this.to.isAnchored,
-  hasCap: true,
-  shapeBounds: this.to.shapeBounds,
-};
-
-// 3. Route with trustworthy terminal directions
-const result = computeRoute(fromTerminal, toTerminal, prevSig, strokeWidth);
-```
-
 ### Commit Schema
+
 ```typescript
 connectorMap.set('fromX', fromX);
 connectorMap.set('fromY', fromY);
@@ -464,61 +607,10 @@ connectorMap.set('endCap', 'arrow');
 
 ---
 
-## Preview Rendering (`connector-preview.ts`)
-
-### ConnectorPreview Interface
-```typescript
-interface ConnectorPreview {
-  kind: 'connector';
-  points: [number, number][];
-  color, width, opacity: ...;
-  startCap, endCap: 'none' | 'arrow';
-
-  // Snap state (dots appear when snapped)
-  snapShapeId: string | null;
-  snapShapeFrame: [number, number, number, number] | null;
-  snapShapeType: string | null;
-  activeMidpointSide: Dir | null;
-
-  // Endpoint states
-  fromIsAttached, toIsAttached: boolean;
-  fromPosition, toPosition: [number, number] | null;
-  showCursorDot: boolean;
-}
-```
-
-### Rendering Pipeline
-1. **Compute end trim** - Where polyline stops for arrow head
-2. **Draw rounded polyline** - `arcTo` for corners, clamped radius
-3. **Draw arrow heads** - Filled triangles at original positions
-4. **Draw shape anchor dots** - 4 midpoints, blue when active
-5. **Draw endpoint dots** - Blue if attached, white if free
-
-### Polyline Trim for Arrows
-
-The polyline is trimmed before the arrow head to avoid overlap:
-```typescript
-const availableForTrim = segmentLength - actualCornerRadius;
-const actualTrim = Math.min(arrowLength, availableForTrim);
-```
-
-The arrow head fills the gap between trimmed polyline and endpoint.
-
-### Corner Radius Clamping
-```typescript
-const maxR = Math.min(cornerRadius, lenIn / 2, lenOut / 2);
-if (maxR < 2) {
-  ctx.lineTo(curr[0], curr[1]);  // Sharp corner
-} else {
-  ctx.arcTo(curr[0], curr[1], next[0], next[1], maxR);
-}
-```
-
----
-
 ## Constants (`constants.ts`)
 
 ### Screen-Space (CSS pixels)
+
 ```typescript
 SNAP_CONFIG = {
   EDGE_SNAP_RADIUS_PX: 12,   // Snap to edge within this
@@ -531,10 +623,10 @@ SNAP_CONFIG = {
 ```
 
 ### World-Space (world units)
+
 ```typescript
 ROUTING_CONFIG = {
-  CORNER_RADIUS_W: 24,       // Arc radius for rounded corners
-  MIN_STRAIGHT_SEGMENT_W: 0, // Straight segment before arrow
+  CORNER_RADIUS_W: 28,       // Arc radius for rounded corners
   ARROW_LENGTH_FACTOR: 4,    // Arrow scales with stroke
   ARROW_WIDTH_FACTOR: 3,
   ARROW_MIN_LENGTH_W: 10,
@@ -542,54 +634,122 @@ ROUTING_CONFIG = {
 }
 ```
 
-### A* Costs
+### Approach Offset Formula
+
 ```typescript
-COST_CONFIG = {
-  BEND_PENALTY: 1000,        // Penalty per direction change
-  // Other costs (CONTINUATION_BONUS, etc.) currently disabled
+function computeApproachOffset(strokeWidth: number): number {
+  const arrowLength = Math.max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR);
+  return CORNER_RADIUS_W + arrowLength;
 }
+
+// Example: 2px stroke
+//   arrowLength = max(10, 2*4) = 10
+//   offset = 28 + 10 = 38 world units
 ```
 
 ---
 
 ## Key Invariants
 
-1. **Centerline uses actual edges** - Not padded boundaries
-2. **Facing sides merged** - When centerline exists, grid has single centerline instead of two facing lines
-3. **Z-route requires axis match** - Primary axis must match anchor axis
-4. **Stubs via cell blocking** - Facing side cells blocked except anchor
-5. **Full segment intersection** - Uses slab method on raw shape bounds (no stroke inflation)
-6. **Directions resolved before routing** - `from.outwardDir` and `to.outwardDir` are trustworthy; A* just uses them
-7. **approachOffset = corner + straight + arrow** - Sufficient room for geometry
-8. **Start/goal never blocked** - Even if near obstacle boundaries
+1. **Centerlines use actual edges** - Not padded boundaries
+2. **Dynamic AABBs share facing sides** - Both AABBs have the same centerline as their facing boundary
+3. **Point-AABBs shift to centerlines** - Free endpoints adopt centerline coordinates when they exist
+4. **Cell Blocking is during routing, not grid construction** - Segment intersection checking handles obstacle avoidance
+5. **Directions resolved before routing for unanchored endpoints** - `from.outwardDir` and `to.outwardDir` are trustworthy; A* just uses them
+6. **Stubs are ON AABB boundaries** - Not separate offset calculations
+7. **approachOffset = corner + arrow** - Sufficient room for geometry
+8. **Full segment intersection** - Uses slab method on raw shape bounds
 
 ---
 
 ## Testing Scenarios
 
-### Z-Route Validation
+### Route Shape Validation
 1. **Free→Anchored (H-dominant, E anchor):** HVH with X centerline
-2. **Free→Anchored (V-dominant, E anchor):** VH L-route (no centerline)
+2. **Free→Anchored (V-dominant, E anchor):** VH L-route (no centerline use)
 3. **Anchored→Free (N anchor, drag north, V-dominant):** VHV with Y centerline
 4. **Anchored→Free (N anchor, drag east, H-dominant):** VH L-route
+5. **Free→Free:** 3-segment HVH/VHV based on drag direction (no obstacles)
 
 ### Centerline Usage
 1. **Anchored→Anchored (shapes separated):** Route uses centerline
-2. **Shapes overlapping on one axis:** No centerline on that axis
+2. **Shapes overlapping on one axis:** No centerline on that axis, regular shape padded boundary are the AABB edges on that axis
 
-### Stub Effect
-1. Route should NOT travel parallel along facing side
-2. Route should enter anchor perpendicular
+### Dynamic Offset
+1. **Stubs on centerline:** Route starts/ends at centerline, not padded boundary
+2. **Shapes close together:** Centerline adjusts dynamically
 
 ### Obstacle Avoidance
 1. **Anchored→Anchored:** Both shapes blocked, route wraps around
-2. **Start inside padding:** Escapes correctly based on spatial relationship
+2. **Free->Anchored Start inside padding:** Escapes correctly based on spatial relationship
 
 ---
 
-## Known Limitations (Future Work)
+## Architecture Benefits
 
-1. **No sticky connectors** - Shapes move, connectors don't follow (yet)
+### Compared to Previous System
+
+| Old Code | New Code |
+|----------|----------|
+| `computeFacingSides()` | `computeCenterlines()` (unified) |
+| `computeFacingSidesFromPoint()` | (merged into above) |
+| `computeFacingSidesToPoint()` | (merged into above) |
+| `FacingSides` interface | `Centerlines` (just `{x, y}`) |
+| `blockFacingSideCells()` | **DELETED** |
+| Complex grid construction | Simple AABB line addition |
+| ~200+ line `buildNonUniformGrid()` | ~40 line `buildSimpleGrid()` |
+| Multiple `approachOffset` usages | Centralized in context |
+| Separate `routing.ts` entry point | Merged into `routing-astar.ts` |
+| Separate `routing-zroute.ts` | **DELETED** (A* handles free→free) |
+| Types scattered across files | Centralized in `types.ts` |
+| `shape-utils.ts` | Renamed to `connector-utils.ts` |
+
+### Key Design Decisions
+
+1. **Unified A* routing** - All endpoint combinations use A* pathfinding. Point-AABBs and centerline merging produce optimal 3-segment routes for free→free cases automatically.
+
+2. **Spatial analysis in RoutingContext** - All centerline computation, AABB building, and stub computation happens once per route update.
+
+3. **Dynamic AABBs with baked-in intelligence** - Routing bounds already incorporate centerlines and padding. Grid lines come directly from AABB edges.
+
+4. **Point-AABBs for free endpoints** - Unified handling for all endpoint types.
+
+5. **No cell blocking** - Segment intersection checking is more robust and eliminates complex blocking logic.
+
+6. **Direction seeding** - A* starts with a known direction, producing predictable first segments.
+
+7. **Centralized types** - All shared types in `types.ts` reduce duplication and make imports cleaner.
+
+---
+
+## File Dependency Graph
+
+```
+ConnectorTool.ts
+├── findBestSnapTarget()                 [snap.ts]
+├── resolveFreeStartDir()                [connector-utils.ts]
+├── computeFreeEndDir()                  [connector-utils.ts]
+├── inferDragDirection()                 [connector-utils.ts]
+├── computeRoute()                       [routing-astar.ts]
+│   └── computeAStarRoute()              [routing-astar.ts]
+│       ├── createRoutingContext()       [routing-context.ts]
+│       │   ├── computeCenterlines()
+│       │   ├── buildRoutingBounds()
+│       │   └── computeStub()
+│       ├── buildSimpleGrid()            [routing-context.ts]
+│       ├── astar()                       [routing-astar.ts]
+│       │   ├── MinHeap                   [binary-heap.ts]
+│       │   └── segmentIntersectsAABB()
+│       └── simplifyOrthogonal()         [connector-utils.ts]
+├── getShapeFrame()                       [connector-utils.ts]
+└── computeApproachOffset()               [constants.ts]
+```
+
+---
+
+## Future Work
+
+1. **Sticky connectors** - Shapes move, connectors follow (planned)
 2. **Start inside shape** - Behavior undefined (planned)
-3. **"End inside padding" for same-side** - Edge case handling (planned)
-4. **Dynamic AABB redesign** - Centerline/offset logic to be simplified (see PROMPT.MD)
+3. **Multiple obstacles** - Support for third-party shapes in route
+4. **Bezier curves** - Alternative to orthogonal routing
