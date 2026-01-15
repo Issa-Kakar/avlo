@@ -115,7 +115,7 @@ export function computeSnapForShape(
   const edgeSnapW = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
   const midInW = pxToWorld(SNAP_CONFIG.MIDPOINT_SNAP_IN_PX, scale);
   const midOutW = pxToWorld(SNAP_CONFIG.MIDPOINT_SNAP_OUT_PX, scale);
-  const insideDepthW = pxToWorld(SNAP_CONFIG.INSIDE_DEPTH_PX, scale);
+  const forceMidpointDepthW = pxToWorld(SNAP_CONFIG.FORCE_MIDPOINT_DEPTH_PX, scale);
 
   // Check if inside shape (shape-type aware)
   const isInside = pointInsideShape(cx, cy, frame, shapeType);
@@ -127,7 +127,7 @@ export function computeSnapForShape(
     insideDepth = edgeResult?.dist ?? 0;
   }
 
-  const forceMidpointsOnly = isInside && insideDepth > insideDepthW;
+  const forceMidpointsOnly = isInside && insideDepth > forceMidpointDepthW;
 
   // Get midpoints (on actual shape perimeter)
   const midpoints = getShapeMidpoints(frame, shapeType);
@@ -157,28 +157,47 @@ export function computeSnapForShape(
 
   // CASE 2: Outside or near edge - find nearest edge point
   const edgeSnap = findNearestEdgePoint(cx, cy, frame, shapeType);
-  if (!edgeSnap || edgeSnap.dist > edgeSnapW) {
-    // Too far from any edge
+  if (!edgeSnap) {
     return null;
+  }
+  // When outside shape, respect the edge snap radius
+  // When inside shape (but not deep), always allow edge snap for sliding
+  if (!isInside && edgeSnap.dist > edgeSnapW) {
+    return null;
+  }
+
+  // When inside shape, recalculate midpoint distance from edge snap position
+  // This makes midpoint stickiness identical whether cursor is outside or inside
+  let effectiveMidSide = nearestMidSide;
+  let effectiveMidDist = nearestMidDist;
+  if (isInside) {
+    // Recalculate nearest midpoint from the projected edge position
+    effectiveMidDist = Infinity;
+    for (const [side, pos] of Object.entries(midpoints) as [Dir, [number, number]][]) {
+      const dist = Math.hypot(edgeSnap.x - pos[0], edgeSnap.y - pos[1]);
+      if (dist < effectiveMidDist) {
+        effectiveMidDist = dist;
+        effectiveMidSide = side;
+      }
+    }
   }
 
   // Check midpoint stickiness (hysteresis)
   const wasPreviouslyMidpoint =
     prevAttach?.shapeId === shapeId &&
     prevAttach?.isMidpoint &&
-    prevAttach?.side === nearestMidSide;
+    prevAttach?.side === effectiveMidSide;
 
-  const distToNearestMid = nearestMidDist;
-  const shouldStayMidpoint = wasPreviouslyMidpoint && distToNearestMid <= midOutW;
-  const shouldEnterMidpoint = distToNearestMid <= midInW;
+  const shouldStayMidpoint = wasPreviouslyMidpoint && effectiveMidDist <= midOutW;
+  const shouldEnterMidpoint = effectiveMidDist <= midInW;
 
   if (shouldStayMidpoint || shouldEnterMidpoint) {
     return {
       shapeId,
-      side: nearestMidSide,
+      side: effectiveMidSide,
       t: 0.5,
       isMidpoint: true,
-      position: midpoints[nearestMidSide],
+      position: midpoints[effectiveMidSide],
       isInside,
     };
   }

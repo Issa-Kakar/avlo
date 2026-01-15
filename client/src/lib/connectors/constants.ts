@@ -31,16 +31,16 @@ export const SNAP_CONFIG = {
   MIDPOINT_SNAP_IN_PX: 14,
 
   /** Distance to unstick from midpoint (hysteresis prevents jitter) */
-  MIDPOINT_SNAP_OUT_PX: 20,
+  MIDPOINT_SNAP_OUT_PX: 15,
 
-  /** Depth inside shape before forcing midpoint-only mode */
-  INSIDE_DEPTH_PX: 10,
+  /** Depth inside shape before forcing midpoint-only mode (allows edge sliding when shallow inside) */
+  FORCE_MIDPOINT_DEPTH_PX: 35,
 
   /** Anchor dot visual radius */
   DOT_RADIUS_PX: 7,
 
   /** Connector endpoint handle radius */
-  ENDPOINT_RADIUS_PX: 7,
+  ENDPOINT_RADIUS_PX: 8,
 } as const;
 
 /**
@@ -64,7 +64,7 @@ export const SNAP_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 28,
+  CORNER_RADIUS_W: 25,
 
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
@@ -78,9 +78,21 @@ export const ROUTING_CONFIG = {
    * triangles, so we need explicit scaling.
    */
   ARROW_LENGTH_FACTOR: 4,
-  ARROW_WIDTH_FACTOR: 3,
+  ARROW_WIDTH_FACTOR: 4,
   ARROW_MIN_LENGTH_W: 10,
   ARROW_MIN_WIDTH_W: 8,
+
+  /**
+   * Arrow shape - rounded triangle with uniform circular corners.
+   *
+   * Uses arcTo for all 3 corners, creating smooth circular arcs
+   * like lineCap='round'. The radius is calculated dynamically
+   * based on the shortest edge to ensure proper fit.
+   *
+   * Note: ARROW_CORNER_RADIUS is no longer used directly - the radius
+   * is now computed as a fraction of the minimum edge length in drawArrowHead().
+   */
+  // ARROW_CORNER_RADIUS: 0.42,     // Reference value (actual calc uses edge lengths)
 } as const;
 
 /**
@@ -130,6 +142,18 @@ export function pxToWorld(px: number, scale: number): number {
  */
 export function computeArrowLength(strokeWidth: number): number {
   return Math.max(ROUTING_CONFIG.ARROW_MIN_LENGTH_W, strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR);
+}
+
+/**
+ * Compute arrow width based on stroke width.
+ *
+ * Used for rendering to determine the width of the arrow head.
+ *
+ * @param strokeWidth - The connector stroke width
+ * @returns Arrow width in world units
+ */
+export function computeArrowWidth(strokeWidth: number): number {
+  return Math.max(ROUTING_CONFIG.ARROW_MIN_WIDTH_W, strokeWidth * ROUTING_CONFIG.ARROW_WIDTH_FACTOR);
 }
 
 /**

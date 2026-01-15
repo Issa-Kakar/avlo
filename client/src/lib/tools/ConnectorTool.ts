@@ -363,7 +363,7 @@ export class ConnectorTool implements PointerTool {
       // ANCHORED→FREE: Compute end direction from primary axis
       resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
     }
-    // Both free: Z-route uses inferDragDirection (already set in move())
+    // Both free: A-star routing becomes Z-route, uses inferDragDirection (already set in move())
     // Both anchored: Both directions from snap.side (already set)
 
     // Build from terminal with resolved direction

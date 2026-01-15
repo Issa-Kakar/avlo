@@ -15,7 +15,7 @@
  */
 
 import type { ConnectorPreview } from '@/lib/tools/types';
-import { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld, computeArrowLength } from '@/lib/connectors/constants';
+import { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld, computeArrowLength, computeArrowWidth } from '@/lib/connectors/constants';
 
 /**
  * Trim info for ending the polyline before the arrow head.
@@ -190,7 +190,7 @@ function drawRoundedPolyline(
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
   ctx.strokeStyle = color;
-  ctx.lineWidth = width * 0.95;
+  ctx.lineWidth = width;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
@@ -230,8 +230,7 @@ function drawRoundedPolyline(
 }
 
 /**
- * Draw a filled triangle arrow head at the connector endpoint.
- * Arrow size scales with stroke width for visual balance.
+ * Draw a simple triangle arrow head with rounded corners.
  */
 function drawArrowHead(
   ctx: CanvasRenderingContext2D,
@@ -240,14 +239,10 @@ function drawArrowHead(
   strokeWidth: number,
   position: 'start' | 'end'
 ): void {
-  // Arrow dimensions based on stroke width (world space)
-  const arrowLength = Math.max(
-    ROUTING_CONFIG.ARROW_MIN_LENGTH_W,
-    strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR
-  );
-  const arrowWidth =
-    Math.max(ROUTING_CONFIG.ARROW_MIN_WIDTH_W, strokeWidth * ROUTING_CONFIG.ARROW_WIDTH_FACTOR) / 2;
+  const arrowLength = computeArrowLength(strokeWidth);
+  const halfWidth = computeArrowWidth(strokeWidth) / 2;
 
+  // Get tip and direction
   let tip: [number, number];
   let prev: [number, number];
 
@@ -259,7 +254,6 @@ function drawArrowHead(
     prev = points[1];
   }
 
-  // Direction vector (normalized)
   const dx = tip[0] - prev[0];
   const dy = tip[1] - prev[1];
   const len = Math.hypot(dx, dy);
@@ -267,22 +261,57 @@ function drawArrowHead(
 
   const ux = dx / len;
   const uy = dy / len;
-  const px = -uy; // Perpendicular
+  const px = -uy;
   const py = ux;
 
-  // Arrow base point
-  const baseX = tip[0] - ux * arrowLength;
-  const baseY = tip[1] - uy * arrowLength;
+  // 3 vertices of the triangle
+  const tipX = tip[0], tipY = tip[1];
+  const leftX = tip[0] - ux * arrowLength + px * halfWidth;
+  const leftY = tip[1] - uy * arrowLength + py * halfWidth;
+  const rightX = tip[0] - ux * arrowLength - px * halfWidth;
+  const rightY = tip[1] - uy * arrowLength - py * halfWidth;
 
-  // Arrow wing points
-  const left: [number, number] = [baseX + px * arrowWidth, baseY + py * arrowWidth];
-  const right: [number, number] = [baseX - px * arrowWidth, baseY - py * arrowWidth];
+  // Small rounding offset
+  const r = Math.min(arrowLength * 0.18, halfWidth * 0.35);
 
+  // Edge unit vectors
+  const tlLen = Math.hypot(leftX - tipX, leftY - tipY);
+  const tlUx = (leftX - tipX) / tlLen, tlUy = (leftY - tipY) / tlLen;
+
+  const trLen = Math.hypot(rightX - tipX, rightY - tipY);
+  const trUx = (rightX - tipX) / trLen, trUy = (rightY - tipY) / trLen;
+
+  const lrLen = Math.hypot(rightX - leftX, rightY - leftY);
+  const lrUx = (rightX - leftX) / lrLen, lrUy = (rightY - leftY) / lrLen;
+
+  const rtUx = -trUx, rtUy = -trUy; // Right→Tip is opposite of Tip→Right
+
+  // Tangent points (where curves start/end on each edge)
+  // TIP
+  const t1x = tipX + trUx * r, t1y = tipY + trUy * r;  // toward right
+  const t2x = tipX + tlUx * r, t2y = tipY + tlUy * r;  // toward left
+
+  // LEFT
+  const l1x = leftX - tlUx * r, l1y = leftY - tlUy * r;  // from tip
+  const l2x = leftX + lrUx * r, l2y = leftY + lrUy * r;  // toward right
+
+  // RIGHT
+  const r1x = rightX - lrUx * r, r1y = rightY - lrUy * r;  // from left
+  const r2x = rightX + rtUx * r, r2y = rightY + rtUy * r;  // toward tip
+
+  // Draw the rounded triangle
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.moveTo(tip[0], tip[1]);
-  ctx.lineTo(left[0], left[1]);
-  ctx.lineTo(right[0], right[1]);
+
+  ctx.moveTo(t1x, t1y);
+  ctx.quadraticCurveTo(tipX, tipY, t2x, t2y);  // round tip
+
+  ctx.lineTo(l1x, l1y);
+  ctx.quadraticCurveTo(leftX, leftY, l2x, l2y);  // round left
+
+  ctx.lineTo(r1x, r1y);
+  ctx.quadraticCurveTo(rightX, rightY, r2x, r2y);  // round right
+
   ctx.closePath();
   ctx.fill();
 }
