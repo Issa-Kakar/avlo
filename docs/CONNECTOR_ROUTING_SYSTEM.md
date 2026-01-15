@@ -154,7 +154,7 @@ ConnectorTool.updateRoute()
                     │
                     ├── createRoutingContext()
                     │   ├── Compute centerlines (from RAW bounds)
-                    │   ├── Build dynamic AABBs (centerline/padding)
+                    │   ├── Build dynamic AABBs (config-aware: anchored→free vs free→anchored)
                     │   ├── Compute stubs (on AABB boundaries)
                     │   └── Collect obstacles
                     │
@@ -217,23 +217,29 @@ if (endRaw.top > startRaw.bottom) {
 
 ### Step 3: Build Dynamic AABBs
 
-This is the **key innovation**. AABBs encode centerline knowledge in their boundaries:
+This is the **key innovation**. AABBs encode centerline knowledge in their boundaries, with **three distinct cases** based on endpoint configuration:
 
-**For Point-AABBs (free endpoints):**
+**Case 1: Anchored→Free Point (full centerline merging):**
 ```typescript
-if (isPointBounds(raw)) {
+if (isPoint && isAnchoredToFree) {
   return {
     left: centerlines.x ?? raw.left,    // Shift to centerline if exists
-    right: centerlines.x ?? raw.left,
+    right: centerlines.x ?? raw.right,
     top: centerlines.y ?? raw.top,
-    bottom: centerlines.y ?? raw.top,
+    bottom: centerlines.y ?? raw.bottom,
   };
 }
 ```
 
-Point-AABBs can't use spatial facing logic (a point has `left === right`). Instead, they **shift to centerline coordinates** when centerlines exist.
+Full centerline merging preserves **WYSIWYG**: the path looks identical whether the user stops at a free point or continues to snap to a shape.
 
-**For Shape Bounds (anchored endpoints):**
+**Case 2: Free→Anchored Point (facing-side logic):**
+
+Free→anchored points use the **same facing-side logic as shapes**. This is critical because the direction seeding may compute an escape direction (N/S) when the free point is contained within the target shape's padded bounds. If we did full centerline merging, the stub X would be at the centerline, causing the first segment to go horizontal instead of the intended vertical escape.
+
+By using facing-side logic, the point acts like an "imaginary shape" where the outward direction determines which sides are "facing". Non-facing sides stay at the raw position, ensuring the first segment respects the computed direction.
+
+**Case 3: Shape Bounds (anchored endpoints):**
 ```typescript
 // Determine which sides "face" the other shape
 const facesRight = raw.right <= other.left;  // This shape is LEFT of other
@@ -243,14 +249,16 @@ const facesTop = raw.top >= other.bottom;    // This shape is BELOW other
 
 return {
   // Facing side → centerline (if exists), else padded outward
-  left: facesLeft && centerlines.x !== null ? centerlines.x : raw.left - offset,
-  right: facesRight && centerlines.x !== null ? centerlines.x : raw.right + offset,
-  top: facesTop && centerlines.y !== null ? centerlines.y : raw.top - offset,
-  bottom: facesBottom && centerlines.y !== null ? centerlines.y : raw.bottom + offset,
+  // For points: non-facing stays at raw position (no padding)
+  left: (facesLeft && centerlines.x !== null)
+    ? centerlines.x : (isPoint ? raw.left : raw.left - offset),
+  right: (facesRight && centerlines.x !== null)
+    ? centerlines.x : (isPoint ? raw.right : raw.right + offset),
+  // ... same pattern for top/bottom
 };
 ```
 
-**Key insight:** Both start and end AABBs share the same centerline as their facing boundaries. This is what makes routes naturally use centerlines.
+**Key insight:** Anchored→anchored and anchored→free share identical AABB logic (facing-side for shapes, full merge for free end). Free→anchored is the exception: it uses facing-side logic for the free start point to ensure direction seeding takes effect.
 
 ### Step 4: Compute Stubs
 
@@ -426,29 +434,48 @@ Directions are resolved **BEFORE** routing begins, based on endpoint configurati
 
 ### FREE→ANCHORED: `resolveFreeStartDir()`
 
-Computes start direction from spatial relationship between free point and target shape:
+Consolidated single function that computes start direction from spatial relationship between free point and target shape. All values computed ONCE for efficiency.
 
-**Three spatial cases:**
+**Decision tree:**
 
-1. **SAME SIDE** (Z-route possible)
-   - Start is on same side as anchor's opposite (e.g., start LEFT, anchor WEST)
-   - Z-route only valid when primary axis matches anchor axis
-   - Otherwise: L-route on perpendicular axis
+1. **INSIDE FULL PADDING:**
+   - Opposite side: wrap toward target on perpendicular axis
+   - Same side or adjacent: escape outward (anchorDir)
 
-2. **OPPOSITE SIDE** (wrap around)
-   - Start is "behind" the shape (e.g., start LEFT, anchor EAST)
-   - If inside padded bounds: wrap around via shortest path (N or S)
+2. **SAME SIDE** (outside padding):
+   - L-route (axis mismatch) checks sliver escape first
+   - Both Z-route and L-route return same direction: toward shape on primary axis
 
-3. **ADJACENT SIDE** (L-route)
-   - Go directly toward anchor
-   - Check for sliver zone escape first
+3. **OPPOSITE SIDE + CONTAINED** (in padded X and Y):
+   - Wrap around via shape center (N/S or E/W based on anchor axis)
 
-**Inside Padding Special Case:**
+4. **ADJACENT / OPPOSITE-CLEAR:**
+   - Sliver escape if applicable, else anchorDir
+
+**Key insight:** Z-route and L-route return identical directions (toward shape on primary axis). The only difference is L-route checks sliver escape first. This consolidation eliminates the previous 4-function chain.
+
 ```typescript
-if (isInsidePaddedRegion(fromPos, toTerminal.shapeBounds, strokeWidth)) {
-  return computePreferredFirstDir(fromPos, toTerminal);  // Escape logic
-} else {
-  return computeFreeStartDirection(fromPos, toTerminal, strokeWidth);
+export function resolveFreeStartDir(fromPos, toTerminal, strokeWidth): Dir {
+  // All values computed ONCE: offset, padded bounds, position flags,
+  // containment, deltas, spatial relationship, sliver escape
+
+  // Inside full padding: escape or wrap
+  if (inFullPad) {
+    if (oppSide) return wrapDir;  // toward target on perp axis
+    return anchorDir;              // escape outward
+  }
+
+  // Same side: check sliver, then go toward shape
+  if (sameSide) {
+    if (axisMismatch && sliverDir) return sliverDir;
+    return primaryAxisDir;
+  }
+
+  // Opposite + contained: wrap around shape
+  if (oppSide && nearX && nearY) return wrapAroundDir;
+
+  // Adjacent or opposite-clear: sliver or anchor
+  return sliverDir ?? anchorDir;
 }
 ```
 
@@ -465,7 +492,15 @@ export function computeFreeEndDir(fromPos, toPos): Dir {
 }
 ```
 
-**Why simpler than FREE→ANCHORED?** Free-anchored must determine which direction to route around in U route scenarios(going around and behind the shape to the oppisite facing side), and also handle starting inside padding differently than anchored->free. In anchored->free, the startInsidePadding will always be true on initial drag, causing the initial drag to not point outwards from a shape as it must "escape" to padding reigon. This escape behaviour when starting inside padding is only good UX for free->anchored. At its core, anchored->anchored and anchored->free routing is exactly the same path wise. only difference is that the end direction/arrow head is not computed automatically, which is why we compute end direction there: its essential for grid construction as we must only add one line based on axis during AABB generation, to ensure the only way to reach the goal stub is the intersection of an AABB existing line(which could be a shape padded boundary, but, also be a centerline, thus enforcing centerline path as the only way to reach goal)
+**Why simpler than FREE→ANCHORED?**
+
+1. **No U-route decisions:** Free→anchored must determine wrap-around direction when approaching opposite side. Anchored→free has no shape to wrap around at the end.
+
+2. **No escape logic needed:** Free→anchored handles "inside padding" specially (escape direction). Anchored→free doesn't need this—the anchored start already has a fixed outward direction from its shape.
+
+3. **WYSIWYG alignment:** Anchored→anchored and anchored→free produce identical paths. The only difference is the free endpoint uses `computeFreeEndDir()` for its arrow direction. This is essential for grid construction: we must add the correct perpendicular line to ensure A* can reach the goal stub.
+
+4. **Full centerline merging works:** Since there's no escape/wrap logic, anchored→free can use full centerline merging for the free endpoint AABB, preserving path continuity when the user snaps to a shape.
 
 ### Direction Resolution in ConnectorTool
 
@@ -653,12 +688,15 @@ function computeApproachOffset(strokeWidth: number): number {
 
 1. **Centerlines use actual edges** - Not padded boundaries
 2. **Dynamic AABBs share facing sides** - Both AABBs have the same centerline as their facing boundary
-3. **Point-AABBs shift to centerlines** - Free endpoints adopt centerline coordinates when they exist
+3. **Point-AABB behavior depends on configuration:**
+   - **Anchored→free:** Full centerline merging (all edges shift to centerline)
+   - **Free→anchored:** Facing-side logic (only facing sides get centerline)
 4. **Cell Blocking is during routing, not grid construction** - Segment intersection checking handles obstacle avoidance
 5. **Directions resolved before routing for unanchored endpoints** - `from.outwardDir` and `to.outwardDir` are trustworthy; A* just uses them
 6. **Stubs are ON AABB boundaries** - Not separate offset calculations
 7. **approachOffset = corner + arrow** - Sufficient room for geometry
 8. **Full segment intersection** - Uses slab method on raw shape bounds
+9. **WYSIWYG for anchored→free** - Path identical whether user stops at free point or snaps to shape
 
 ---
 
@@ -681,7 +719,8 @@ function computeApproachOffset(strokeWidth: number): number {
 
 ### Obstacle Avoidance
 1. **Anchored→Anchored:** Both shapes blocked, route wraps around
-2. **Free->Anchored Start inside padding:** Escapes correctly based on spatial relationship
+2. **Free→Anchored inside padding, opposite side:** Start LEFT of shape, inside padded Y, anchor EAST → first segment goes N/S to escape, then wraps around
+3. **Free→Anchored inside padding, same side:** Start LEFT of shape, inside padded Y, anchor WEST → first segment goes W (escape outward)
 
 ---
 
@@ -703,6 +742,8 @@ function computeApproachOffset(strokeWidth: number): number {
 | Separate `routing-zroute.ts` | **DELETED** (A* handles free→free) |
 | Types scattered across files | Centralized in `types.ts` |
 | `shape-utils.ts` | Renamed to `connector-utils.ts` |
+| 4-function direction chain | Single `resolveFreeStartDir()` |
+| Point-AABB always full merge | Configuration-aware (anchored→free vs free→anchored) |
 
 ### Key Design Decisions
 
@@ -712,11 +753,13 @@ function computeApproachOffset(strokeWidth: number): number {
 
 3. **Dynamic AABBs with baked-in intelligence** - Routing bounds already incorporate centerlines and padding. Grid lines come directly from AABB edges.
 
-4. **Point-AABBs for free endpoints** - Unified handling for all endpoint types.
+4. **Configuration-aware Point-AABBs** - Free endpoints use different AABB logic based on their role:
+   - **Anchored→free:** Full centerline merging (WYSIWYG with anchored→anchored)
+   - **Free→anchored:** Facing-side logic (respects escape/wrap directions)
 
 5. **No cell blocking** - Segment intersection checking is more robust and eliminates complex blocking logic.
 
-6. **Direction seeding** - A* starts with a known direction, producing predictable first segments.
+6. **Consolidated direction seeding** - Single `resolveFreeStartDir()` function replaces 4-function chain. Z-route and L-route recognized as returning identical directions (both go toward shape on primary axis).
 
 7. **Centralized types** - All shared types in `types.ts` reduce duplication and make imports cleaner.
 

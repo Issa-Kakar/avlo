@@ -163,14 +163,26 @@ function computeCenterlines(
 /**
  * Build a dynamic routing AABB.
  *
- * Two distinct cases:
+ * THREE distinct cases based on endpoint configuration:
  *
- * 1. POINT BOUNDS (free endpoints):
- *    - Shift entire point to centerline coordinates when they exist
- *    - Can't use spatial facing logic (point has left === right)
- *    - Enables anchored→free and free→anchored centerline routing
+ * 1. ANCHORED→FREE POINT (isPoint && isAnchoredToFree):
+ *    - Full centerline merging: shift entire point to centerline coordinates
+ *    - Preserves WYSIWYG: path identical whether user stops at free point or snaps
+ *    - All edges become centerline (if exists), maintaining symmetric behavior
+ *      with anchored→anchored routes
  *
- * 2. SHAPE BOUNDS (anchored endpoints):
+ * 2. FREE→ANCHORED POINT (isPoint && !isAnchoredToFree):
+ *    - Uses FACING-SIDE LOGIC like shapes (falls through to bottom return)
+ *    - Acts like an "imaginary shape" where outward direction defines the anchor
+ *    - Only FACING sides get centerline; non-facing sides stay at raw position
+ *    - Critical for direction seeding: allows first segment to escape (N/S)
+ *      instead of incorrectly going horizontal to centerline
+ *    - Example: start LEFT of shape, inside padded Y, anchor on EAST
+ *      → Direction is N (escape up), so E/W are non-facing
+ *      → Stub X stays at actual point X, not centerline
+ *      → First segment correctly goes vertical
+ *
+ * 3. SHAPE BOUNDS (anchored endpoints):
  *    - Facing side = centerline (if exists) - shared between both AABBs
  *    - Non-facing sides = raw bound + padding
  *    - Facing determined by spatial relationship to OTHER shape
@@ -179,18 +191,21 @@ function computeCenterlines(
  * @param other - The OTHER shape's raw bounds (for spatial comparison)
  * @param centerlines - Pre-computed centerlines
  * @param offset - Approach offset for padding
+ * @param isAnchoredToFree - True if this is the END point in anchored→free
  * @returns Dynamic routing bounds
  */
 function buildRoutingBounds(
   raw: Bounds,
-  other: Bounds,  // Need the other shape/point bounds!
+  other: Bounds,
   centerlines: Centerlines,
   offset: number,
   isAnchoredToFree: boolean
 ): Bounds {
   const isPoint = isPointBounds(raw);
+
+  // Case 1: Anchored→free endpoint - full centerline merging
+  // Ensures WYSIWYG: identical path whether stopping free or snapping to shape
   if (isPoint && isAnchoredToFree) {
-    // If point is anchored to free, return the centerline for both sides, unlike free->anchored where its 1 side
     return {
       left: centerlines.x ?? raw.left,
       right: centerlines.x ?? raw.right,
@@ -198,13 +213,17 @@ function buildRoutingBounds(
       bottom: centerlines.y ?? raw.bottom,
     };
   }
-  // Determine which sides face the OTHER shape (spatial relationship)
+
+  // Cases 2 & 3: Shape bounds OR free→anchored point
+  // Both use facing-side logic - only facing sides get centerline
+  // For free→anchored: treats point like imaginary shape based on outward direction
   const facesRight = raw.right <= other.left;   // This is left of other
   const facesLeft = raw.left >= other.right;    // This is right of other
   const facesBottom = raw.bottom <= other.top;  // This is above other
   const facesTop = raw.top >= other.bottom;     // This is below other
-  
+
   return {
+    // Facing side → centerline; non-facing → raw (point) or raw±offset (shape)
     left: (facesLeft && centerlines.x !== null)
       ? centerlines.x
       : (isPoint ? raw.left : raw.left - offset),
