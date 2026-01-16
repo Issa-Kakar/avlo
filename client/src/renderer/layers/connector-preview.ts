@@ -15,7 +15,13 @@
  */
 
 import type { ConnectorPreview } from '@/lib/tools/types';
-import { SNAP_CONFIG, ROUTING_CONFIG, pxToWorld, computeArrowLength, computeArrowWidth } from '@/lib/connectors/constants';
+import {
+  SNAP_CONFIG,
+  ROUTING_CONFIG,
+  pxToWorld,
+  computeArrowLength,
+  computeArrowWidth,
+} from '@/lib/connectors/constants';
 
 /**
  * Trim info for ending the polyline before the arrow head.
@@ -25,6 +31,62 @@ interface EndTrimInfo {
   trimmedPoint: [number, number];
   /** Unit direction vector of the final segment */
   direction: [number, number];
+}
+
+/**
+ * Scaled arrow dimensions for short segments.
+ */
+interface ScaledArrowDimensions {
+  /** Arrow length (tip to base) */
+  scaledLength: number;
+  /** Arrow half-width (center to vertex) */
+  scaledHalfWidth: number;
+}
+
+/**
+ * Compute scaled arrow dimensions based on segment length.
+ *
+ * CRITICAL: The arrow length must NEVER exceed the final segment length.
+ * When the segment is shorter than the full arrow, the arrow becomes a
+ * "fat blob" - length shrinks to fit, but width stays large.
+ *
+ * The "blob" effect is achieved by scaling width much more gently than
+ * length. Using a power < 1 (like 0.15) means:
+ * - At 50% length: width is ~90% of full
+ * - At 25% length: width is ~80% of full
+ * - At 10% length: width is ~70% of full
+ *
+ * This creates an increasingly fat arrow as the segment shrinks.
+ *
+ * @param segmentLength - Length of the final segment (tip to corner)
+ * @param strokeWidth - Connector stroke width
+ * @returns Scaled arrow dimensions
+ */
+function computeScaledArrowDimensions(
+  segmentLength: number,
+  strokeWidth: number
+): ScaledArrowDimensions {
+  const fullArrowLength = computeArrowLength(strokeWidth);
+  const fullHalfWidth = computeArrowWidth(strokeWidth) / 2;
+
+  // Arrow length can NEVER exceed segment length
+  if (segmentLength >= fullArrowLength) {
+    return { scaledLength: fullArrowLength, scaledHalfWidth: fullHalfWidth };
+  }
+
+  // Scale factor (0 to 1) based on how short the segment is
+  const scale = segmentLength / fullArrowLength;
+
+  // Length matches segment exactly
+  const scaledLength = segmentLength;
+
+  // Width scales VERY gently - stays large to create "fat blob" effect
+  // Power of 0.15 keeps width high even when length is small
+  // Also ensure width is at least 1.5x the stroke width for visibility
+  const widthScale = Math.pow(scale, 1);
+  const scaledHalfWidth = Math.max(fullHalfWidth * widthScale, strokeWidth * .5);
+
+  return { scaledLength, scaledHalfWidth };
 }
 
 /**
@@ -50,7 +112,6 @@ function computeEndTrim(
 ): EndTrimInfo | null {
   if (points.length < 2) return null;
 
-  const arrowLength = computeArrowLength(strokeWidth);
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
   let tip: [number, number];
@@ -91,12 +152,15 @@ function computeEndTrim(
     if (actualCornerRadius < 2) actualCornerRadius = 0; // Sharp corner
   }
 
+  // Get scaled arrow length based on segment length
+  const { scaledLength } = computeScaledArrowDimensions(segLen, strokeWidth);
+
   // The arc consumes `actualCornerRadius` of the final segment
   // Available for trimming is the rest of the segment
   const availableForTrim = Math.max(0, segLen - actualCornerRadius);
 
-  // Clamp the arrow trim to what's available
-  const actualTrim = Math.min(arrowLength, availableForTrim);
+  // Clamp trim to scaled arrow length (not full size)
+  const actualTrim = Math.min(scaledLength, availableForTrim);
 
   const trimmedPoint: [number, number] = [
     tip[0] - ux * actualTrim,
@@ -161,7 +225,7 @@ export function drawConnectorPreview(
     drawShapeAnchorDots(ctx, snapShapeFrame, activeMidpointSide, scale);
   }
 
-  // 5. Draw endpoint dots
+  //5. Draw endpoint dots
   if (preview.fromPosition) {
     drawEndpointDot(ctx, preview.fromPosition, fromIsAttached, scale);
   }
@@ -230,7 +294,15 @@ function drawRoundedPolyline(
 }
 
 /**
- * Draw a simple triangle arrow head with rounded corners.
+ * Draw a triangle arrow head with rounded corners.
+ *
+ * Uses Canvas's built-in lineJoin='round' for consistent rounding.
+ * The rounding radius is lineWidth/2, which stays CONSTANT regardless
+ * of triangle size. This means:
+ * - Full-size arrow: subtle rounded corners
+ * - Tiny blob arrow: very rounded (same radius on smaller shape)
+ *
+ * This is how whiteboard apps achieve the "lineCap=round" look on arrows.
  */
 function drawArrowHead(
   ctx: CanvasRenderingContext2D,
@@ -239,10 +311,7 @@ function drawArrowHead(
   strokeWidth: number,
   position: 'start' | 'end'
 ): void {
-  const arrowLength = computeArrowLength(strokeWidth);
-  const halfWidth = computeArrowWidth(strokeWidth) / 2;
-
-  // Get tip and direction
+  // Get tip and prev point (the corner)
   let tip: [number, number];
   let prev: [number, number];
 
@@ -256,64 +325,50 @@ function drawArrowHead(
 
   const dx = tip[0] - prev[0];
   const dy = tip[1] - prev[1];
-  const len = Math.hypot(dx, dy);
-  if (len < 0.001) return;
+  const segLen = Math.hypot(dx, dy);
+  if (segLen < 0.001) return;
 
-  const ux = dx / len;
-  const uy = dy / len;
+  // Get scaled dimensions based on segment length
+  // Arrow length NEVER exceeds segment length
+  const { scaledLength, scaledHalfWidth } = computeScaledArrowDimensions(segLen, strokeWidth);
+
+  const ux = dx / segLen;
+  const uy = dy / segLen;
   const px = -uy;
   const py = ux;
 
-  // 3 vertices of the triangle
-  const tipX = tip[0], tipY = tip[1];
-  const leftX = tip[0] - ux * arrowLength + px * halfWidth;
-  const leftY = tip[1] - uy * arrowLength + py * halfWidth;
-  const rightX = tip[0] - ux * arrowLength - px * halfWidth;
-  const rightY = tip[1] - uy * arrowLength - py * halfWidth;
+  // Rounding via stroke - radius is lineWidth/2
+  // Use a relatively constant value so rounding looks consistent at all sizes
+  // Minimum of 3 ensures visible rounding even at small strokeWidths
+  const roundingLineWidth = Math.max(3, strokeWidth * 0.8);
 
-  // Small rounding offset
-  const r = Math.min(arrowLength * 0.18, halfWidth * 0.35);
+  // CRITICAL: Stroke extends outward by lineWidth/2, including at the tip.
+  // Pull the path back so the VISIBLE tip (after stroke) lands at the endpoint.
+  const strokeOffset = roundingLineWidth / 2;
 
-  // Edge unit vectors
-  const tlLen = Math.hypot(leftX - tipX, leftY - tipY);
-  const tlUx = (leftX - tipX) / tlLen, tlUy = (leftY - tipY) / tlLen;
+  // 3 vertices of the triangle (pulled back by strokeOffset)
+  const tipX = tip[0] - ux * strokeOffset;
+  const tipY = tip[1] - uy * strokeOffset;
+  const leftX = tipX - ux * scaledLength + px * scaledHalfWidth;
+  const leftY = tipY - uy * scaledLength + py * scaledHalfWidth;
+  const rightX = tipX - ux * scaledLength - px * scaledHalfWidth;
+  const rightY = tipY - uy * scaledLength - py * scaledHalfWidth;
 
-  const trLen = Math.hypot(rightX - tipX, rightY - tipY);
-  const trUx = (rightX - tipX) / trLen, trUy = (rightY - tipY) / trLen;
-
-  const lrLen = Math.hypot(rightX - leftX, rightY - leftY);
-  const lrUx = (rightX - leftX) / lrLen, lrUy = (rightY - leftY) / lrLen;
-
-  const rtUx = -trUx, rtUy = -trUy; // Right→Tip is opposite of Tip→Right
-
-  // Tangent points (where curves start/end on each edge)
-  // TIP
-  const t1x = tipX + trUx * r, t1y = tipY + trUy * r;  // toward right
-  const t2x = tipX + tlUx * r, t2y = tipY + tlUy * r;  // toward left
-
-  // LEFT
-  const l1x = leftX - tlUx * r, l1y = leftY - tlUy * r;  // from tip
-  const l2x = leftX + lrUx * r, l2y = leftY + lrUy * r;  // toward right
-
-  // RIGHT
-  const r1x = rightX - lrUx * r, r1y = rightY - lrUy * r;  // from left
-  const r2x = rightX + rtUx * r, r2y = rightY + rtUy * r;  // toward tip
-
-  // Draw the rounded triangle
+  // Draw filled triangle with rounded stroke overlay
   ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = roundingLineWidth;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
   ctx.beginPath();
-
-  ctx.moveTo(t1x, t1y);
-  ctx.quadraticCurveTo(tipX, tipY, t2x, t2y);  // round tip
-
-  ctx.lineTo(l1x, l1y);
-  ctx.quadraticCurveTo(leftX, leftY, l2x, l2y);  // round left
-
-  ctx.lineTo(r1x, r1y);
-  ctx.quadraticCurveTo(rightX, rightY, r2x, r2y);  // round right
-
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(leftX, leftY);
+  ctx.lineTo(rightX, rightY);
   ctx.closePath();
-  ctx.fill();
+
+  ctx.fill();   // Solid interior
+  ctx.stroke(); // Adds rounded corners (radius = lineWidth/2)
 }
 
 /**
