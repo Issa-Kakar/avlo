@@ -344,7 +344,7 @@ function drawArrowHead(
 
   // CRITICAL: Stroke extends outward by lineWidth/2, including at the tip.
   // Pull the path back so the VISIBLE tip (after stroke) lands at the endpoint.
-  const strokeOffset = roundingLineWidth / 2;
+  const strokeOffset = roundingLineWidth / 1.8;
 
   // 3 vertices of the triangle (pulled back by strokeOffset)
   const tipX = tip[0] - ux * strokeOffset;

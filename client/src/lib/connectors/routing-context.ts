@@ -11,7 +11,7 @@
  * @module lib/connectors/routing-context
  */
 
-import { computeApproachOffset } from './constants';
+import { computeApproachOffset, EDGE_CLEARANCE_W } from './constants';
 import {
   toBounds,
   pointBounds,
@@ -53,7 +53,7 @@ export function createRoutingContext(
   const isFreeToAnchored = !from.isAnchored && to.isAnchored;
   const isAnchoredToFree = from.isAnchored && !to.isAnchored;
   // 3. Compute centerlines from RAW bounds (no padding)
-  const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset);
+  const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, isAnchoredToFree, offset);
 
   // 4. Build dynamic routing bounds with centerline/padding
   // Each call determines its own facing sides based on where the OTHER shape is
@@ -64,7 +64,8 @@ export function createRoutingContext(
   const startStub = computeStub(startBounds, from.position, from.outwardDir);
   const endStub = computeStub(endBounds, to.position, to.outwardDir);
 
-  // 6. Collect obstacles (raw shape bounds only, not routing bounds)
+  // 6. Collect obstacles (raw shape bounds for segment checking)
+  // Segments ON the boundary are blocked by segmentIntersectsAABB (non-strict inequality)
   const obstacles: AABB[] = [];
   if (from.shapeBounds) obstacles.push(from.shapeBounds);
   if (to.shapeBounds && to.shapeBounds !== from.shapeBounds) {
@@ -94,12 +95,14 @@ export function createRoutingContext(
  * A centerline exists when:
  * 1. Bounds don't overlap on that axis (computed from RAW bounds)
  * 2. For free-to-anchored: additional minimum clearance check (offset)
+ * 3. For anchored-to-free: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
  *
  * Uses RAW bounds - no padding. Centerline is midpoint between actual edges.
  *
  * @param startRaw - Start raw bounds (shape or point)
  * @param endRaw - End raw bounds (shape or point)
  * @param isFreeToAnchored - True if free→anchored case (needs min clearance)
+ * @param isAnchoredToFree - True if anchored→free case (needs edge clearance check)
  * @param offset - Approach offset for minimum clearance check
  * @returns Centerlines (null if doesn't exist on that axis)
  */
@@ -107,6 +110,7 @@ function computeCenterlines(
   startRaw: Bounds,
   endRaw: Bounds,
   isFreeToAnchored: boolean,
+  isAnchoredToFree: boolean,
   offset: number
 ): Centerlines {
   let centerX: number | null = null;
@@ -122,6 +126,10 @@ function computeCenterlines(
     if (isFreeToAnchored && gap < offset) {
       centerX = null;
     }
+    // Anchored→Free: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+      centerX = null;
+    }
   }
   // start is to the RIGHT of end
   else if (startRaw.left > endRaw.right) {
@@ -129,6 +137,9 @@ function computeCenterlines(
     centerX = (endRaw.right + startRaw.left) / 2;
 
     if (isFreeToAnchored && gap < offset) {
+      centerX = null;
+    }
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
       centerX = null;
     }
   }
@@ -142,6 +153,9 @@ function computeCenterlines(
     if (isFreeToAnchored && gap < offset) {
       centerY = null;
     }
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+      centerY = null;
+    }
   }
   // start is BELOW end
   else if (startRaw.top > endRaw.bottom) {
@@ -149,6 +163,9 @@ function computeCenterlines(
     centerY = (endRaw.bottom + startRaw.top) / 2;
 
     if (isFreeToAnchored && gap < offset) {
+      centerY = null;
+    }
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
       centerY = null;
     }
   }

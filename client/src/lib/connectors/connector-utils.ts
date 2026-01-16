@@ -98,6 +98,21 @@ export function isVertical(dir: Dir): boolean {
   return dir === 'N' || dir === 'S';
 }
 
+/**
+ * Get unit vector for a cardinal direction.
+ *
+ * @param dir - Cardinal direction
+ * @returns Unit vector [dx, dy] pointing in that direction
+ */
+export function directionVector(dir: Dir): [number, number] {
+  switch (dir) {
+    case 'N': return [0, -1];
+    case 'E': return [1, 0];
+    case 'S': return [0, 1];
+    case 'W': return [-1, 0];
+  }
+}
+
 // ============================================================================
 // EDGE-BASED BOUNDS HELPERS
 // ============================================================================

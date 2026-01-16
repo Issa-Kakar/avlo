@@ -25,13 +25,13 @@
  */
 export const SNAP_CONFIG = {
   /** Distance to snap to edge - dots appear within this radius */
-  EDGE_SNAP_RADIUS_PX: 12,
+  EDGE_SNAP_RADIUS_PX: 14,
 
   /** Distance to snap into midpoint (slightly larger than edge) */
-  MIDPOINT_SNAP_IN_PX: 14,
+  MIDPOINT_SNAP_IN_PX: 16,
 
   /** Distance to unstick from midpoint (hysteresis prevents jitter) */
-  MIDPOINT_SNAP_OUT_PX: 15,
+  MIDPOINT_SNAP_OUT_PX: 20,
 
   /** Depth inside shape before forcing midpoint-only mode (allows edge sliding when shallow inside) */
   FORCE_MIDPOINT_DEPTH_PX: 35,
@@ -64,7 +64,7 @@ export const SNAP_CONFIG = {
  */
 export const ROUTING_CONFIG = {
   /** Corner radius for arcTo rendering in world units */
-  CORNER_RADIUS_W: 25,
+  CORNER_RADIUS_W: 26,
 
   /**
    * Arrow head sizing - scales with stroke width for visual balance.
@@ -77,8 +77,8 @@ export const ROUTING_CONFIG = {
    * automatically affects arrow visual thickness. Preview uses filled
    * triangles, so we need explicit scaling.
    */
-  ARROW_LENGTH_FACTOR: 4,
-  ARROW_WIDTH_FACTOR: 4,
+  ARROW_LENGTH_FACTOR: 3,
+  ARROW_WIDTH_FACTOR: 3.5,
   ARROW_MIN_LENGTH_W: 10,
   ARROW_MIN_WIDTH_W: 8,
 
@@ -89,10 +89,9 @@ export const ROUTING_CONFIG = {
    * like lineCap='round'. The radius is calculated dynamically
    * based on the shortest edge to ensure proper fit.
    *
-   * Note: ARROW_CORNER_RADIUS is no longer used directly - the radius
-   * is now computed as a fraction of the minimum edge length in drawArrowHead().
+   * For short segments, the arrow scales proportionally to fit
+   * within the segment length. Arrow length NEVER exceeds segment length.
    */
-  // ARROW_CORNER_RADIUS: 0.42,     // Reference value (actual calc uses edge lengths)
 } as const;
 
 /**
@@ -176,6 +175,15 @@ export function computeApproachOffset(strokeWidth: number): number {
   const arrowLength = computeArrowLength(strokeWidth);
   return (
     ROUTING_CONFIG.CORNER_RADIUS_W +
-    arrowLength
+    arrowLength + EDGE_CLEARANCE_W / 2
   );
 }
+
+/**
+ * Visual clearance between connector endpoint and shape edge.
+ *
+ * This constant offset prevents round line caps and arrowheads
+ * from visually entering shapes. Large enough to handle thick
+ * strokes (6px → 3 unit cap extension still leaves 1 unit gap).
+ */
+export const EDGE_CLEARANCE_W = 12;

@@ -27,6 +27,7 @@ import {
   type SnapTarget,
   type Terminal,
   findBestSnapTarget,
+  getConnectorEndpoint,
   computeRoute,
   inferDragDirection,
   getShapeFrame,
@@ -99,9 +100,9 @@ export class ConnectorTool implements PointerTool {
     });
 
     if (snap) {
-      // Start attached to shape
+      // Start attached to shape - apply visual clearance offset
       this.from = {
-        position: [snap.position[0], snap.position[1]],
+        position: getConnectorEndpoint(snap),
         outwardDir: snap.side, // Extends away from shape
         isAnchored: true,
         hasCap: false, // startCap = 'none'
@@ -164,13 +165,13 @@ export class ConnectorTool implements PointerTool {
     this.prevSnap = snap;
 
     if (snap) {
-      // Snapped to shape
+      // Snapped to shape - apply visual clearance offset
       const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
       const frame = handle ? getShapeFrame(handle) : null;
       const shapeBounds = frame ? { x: frame.x, y: frame.y, w: frame.w, h: frame.h } : undefined;
 
       this.to = {
-        position: [snap.position[0], snap.position[1]],
+        position: getConnectorEndpoint(snap),
         outwardDir: snap.side, // Extends AWAY from shape
         isAnchored: true,
         hasCap: true, // endCap = 'arrow'
@@ -180,8 +181,6 @@ export class ConnectorTool implements PointerTool {
         t: snap.t,
       };
       this.dragDir = null; // Reset drag direction when snapped
-
-      // Direction hints are now computed in routing layer
     } else {
       // Free endpoint - infer direction from drag
       const fromPos = this.from!.position;

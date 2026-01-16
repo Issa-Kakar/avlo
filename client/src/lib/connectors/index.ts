@@ -28,6 +28,7 @@ export {
   SNAP_CONFIG,
   ROUTING_CONFIG,
   COST_CONFIG,
+  EDGE_CLEARANCE_W,
   pxToWorld,
   computeApproachOffset,
   computeArrowLength,
@@ -41,6 +42,7 @@ export {
   oppositeDir,
   isHorizontal,
   isVertical,
+  directionVector,
   toBounds,
   pointBounds,
   isPointBounds,
@@ -60,6 +62,7 @@ export {
   pointInsideShape,
   getShapeMidpoints,
   findNearestEdgePoint,
+  getConnectorEndpoint,
 } from './snap';
 
 // Routing

@@ -14,8 +14,8 @@
  * @module lib/connectors/snap
  */
 
-import { SNAP_CONFIG, pxToWorld } from './constants';
-import { getShapeFrame, getMidpoints } from './connector-utils';
+import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
+import { getShapeFrame, getMidpoints, directionVector } from './connector-utils';
 import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-test-primitives';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
@@ -384,4 +384,19 @@ function findNearestOnEdges(
   }
 
   return best;
+}
+
+/**
+ * Compute connector endpoint position from snap result.
+ *
+ * Applies constant visual clearance offset in the snap's outward direction.
+ * This prevents round line caps and arrowheads from touching shapes.
+ *
+ * @param snap - Snap target from findBestSnapTarget
+ * @returns Offset position for connector terminal
+ */
+export function getConnectorEndpoint(snap: SnapTarget): [number, number] {
+  const [sx, sy] = snap.position;
+  const [dx, dy] = directionVector(snap.side);
+  return [sx + dx * EDGE_CLEARANCE_W, sy + dy * EDGE_CLEARANCE_W];
 }

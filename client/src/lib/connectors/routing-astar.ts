@@ -203,8 +203,8 @@ function segmentIntersectsAABB(
 
   // Check X slab
   if (dx === 0) {
-    // Vertical line - check if X is strictly inside
-    if (x1 <= minX || x1 >= maxX) return false;
+    // Vertical line - check if X is inside (including boundary)
+    if (x1 < minX || x1 > maxX) return false;
   } else {
     const t1 = (minX - x1) / dx;
     const t2 = (maxX - x1) / dx;
@@ -217,8 +217,8 @@ function segmentIntersectsAABB(
 
   // Check Y slab
   if (dy === 0) {
-    // Horizontal line - check if Y is strictly inside
-    if (y1 <= minY || y1 >= maxY) return false;
+    // Horizontal line - check if Y is inside (including boundary)
+    if (y1 < minY || y1 > maxY) return false;
   } else {
     const t1 = (minY - y1) / dy;
     const t2 = (maxY - y1) / dy;
