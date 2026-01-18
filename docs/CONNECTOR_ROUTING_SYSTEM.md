@@ -231,7 +231,6 @@ function computeCenterlines(
   startRaw,
   endRaw,
   isFreeToAnchored,
-  isAnchoredToFree,
   offset,
 ): Centerlines;
 ```
@@ -239,10 +238,10 @@ function computeCenterlines(
 A centerline exists when:
 
 1. **No overlap** on that axis
-2. **For FREE→ANCHORED:** Gap must be ≥ `offset` (minimum clearance for routing)
-3. **For ANCHORED→FREE:** Gap must be > `EDGE_CLEARANCE_W` (minimum centerline gap)
+2. **For FREE→ANCHORED:** Gap must be ≥ `offset` (stricter minimum clearance for routing)
+3. **For all other cases:** Gap must be > `EDGE_CLEARANCE_W` (minimum centerline gap)
 
-**Why the anchored→free check?** When using full centerline merging for anchored→free endpoints, the stub position lands on the centerline. If the gap is too small (≤ `EDGE_CLEARANCE_W`), the stub X could end up between the edge snap offset position and the raw shape bounds. This would cause the first segment to go "backwards" (e.g., west when anchored to east side). The minimum gap check prevents this edge case.
+**Why the minimum gap check?** When the stub position lands on the centerline and the gap is too small (≤ `EDGE_CLEARANCE_W`), the stub could end up between the edge snap offset position and the raw shape bounds. This would cause the first segment to go "backwards" (e.g., west when anchored to east side). The minimum gap check prevents this edge case for anchored→free, anchored→anchored, and free→free configurations.
 
 **Formula:**
 
@@ -253,7 +252,7 @@ if (endRaw.left > startRaw.right) {
   centerX = (startRaw.right + endRaw.left) / 2;
 
   if (isFreeToAnchored && gap < offset) centerX = null;
-  if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) centerX = null;
+  else if (gap <= EDGE_CLEARANCE_W) centerX = null;
 }
 ```
 

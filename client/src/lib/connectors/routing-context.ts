@@ -53,7 +53,7 @@ export function createRoutingContext(
   const isFreeToAnchored = !from.isAnchored && to.isAnchored;
   const isAnchoredToFree = from.isAnchored && !to.isAnchored;
   // 3. Compute centerlines from RAW bounds (no padding)
-  const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, isAnchoredToFree, offset);
+  const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset);
 
   // 4. Build dynamic routing bounds with centerline/padding
   // Each call determines its own facing sides based on where the OTHER shape is
@@ -94,15 +94,14 @@ export function createRoutingContext(
  *
  * A centerline exists when:
  * 1. Bounds don't overlap on that axis (computed from RAW bounds)
- * 2. For free-to-anchored: additional minimum clearance check (offset)
- * 3. For anchored-to-free: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
+ * 2. For free-to-anchored: stricter minimum clearance check (offset)
+ * 3. For all other cases: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
  *
  * Uses RAW bounds - no padding. Centerline is midpoint between actual edges.
  *
  * @param startRaw - Start raw bounds (shape or point)
  * @param endRaw - End raw bounds (shape or point)
- * @param isFreeToAnchored - True if free→anchored case (needs min clearance)
- * @param isAnchoredToFree - True if anchored→free case (needs edge clearance check)
+ * @param isFreeToAnchored - True if free→anchored case (needs stricter min clearance)
  * @param offset - Approach offset for minimum clearance check
  * @returns Centerlines (null if doesn't exist on that axis)
  */
@@ -110,7 +109,6 @@ function computeCenterlines(
   startRaw: Bounds,
   endRaw: Bounds,
   isFreeToAnchored: boolean,
-  isAnchoredToFree: boolean,
   offset: number
 ): Centerlines {
   let centerX: number | null = null;
@@ -122,12 +120,12 @@ function computeCenterlines(
     const gap = endRaw.left - startRaw.right;
     centerX = (startRaw.right + endRaw.left) / 2;
 
-    // Free→Anchored minimum clearance check
+    // Free→Anchored: stricter minimum clearance check
     if (isFreeToAnchored && gap < offset) {
       centerX = null;
     }
-    // Anchored→Free: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
+    // All other cases (anchored→free, anchored→anchored): smaller minimum gap
+    else if (gap <= EDGE_CLEARANCE_W) {
       centerX = null;
     }
   }
@@ -138,8 +136,7 @@ function computeCenterlines(
 
     if (isFreeToAnchored && gap < offset) {
       centerX = null;
-    }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
+    } else if (gap <= EDGE_CLEARANCE_W) {
       centerX = null;
     }
   }
@@ -152,8 +149,7 @@ function computeCenterlines(
 
     if (isFreeToAnchored && gap < offset) {
       centerY = null;
-    }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
+    } else if (gap <= EDGE_CLEARANCE_W) {
       centerY = null;
     }
   }
@@ -164,8 +160,7 @@ function computeCenterlines(
 
     if (isFreeToAnchored && gap < offset) {
       centerY = null;
-    }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
+    } else if (gap <= EDGE_CLEARANCE_W) {
       centerY = null;
     }
   }
