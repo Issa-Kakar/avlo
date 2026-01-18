@@ -331,7 +331,12 @@ function astar(
     }
   }
 
-  // No path found - return direct line (fallback)
+  // No path found with obstacles - retry without obstacles
+  if (obstacles.length > 0) {
+    return astar(grid, start, goal, startDir, []);
+  }
+
+  // No path found even without obstacles - return direct line (fallback)
   return [start, goal];
 }
 

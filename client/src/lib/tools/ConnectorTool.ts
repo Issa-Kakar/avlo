@@ -110,6 +110,9 @@ export class ConnectorTool implements PointerTool {
         side: snap.side,
         normalizedAnchor: snap.normalizedAnchor,
       };
+      // Will be refined on move(): initialize 'to' at same position as 'from' - prevents routing occurring inside shape
+      this.to = this.from;
+
     } else {
       // Free start point - will be refined on move based on drag direction
       this.from = {
@@ -118,15 +121,14 @@ export class ConnectorTool implements PointerTool {
         isAnchored: false,
         hasCap: false,
       };
+      // Initialize 'to' at cursor position
+      this.to = {
+        position: [worldX, worldY],
+        outwardDir: 'W', // Opposite of default from direction
+        isAnchored: false,
+        hasCap: true, // endCap = 'arrow'
+      };
     }
-
-    // Initialize 'to' at same position
-    this.to = {
-      position: [worldX, worldY],
-      outwardDir: 'W', // Opposite of default from direction
-      isAnchored: false,
-      hasCap: true, // endCap = 'arrow'
-    };
 
     this.dragDir = null;
     this.prevRouteSignature = null;

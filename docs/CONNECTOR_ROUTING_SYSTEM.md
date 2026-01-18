@@ -461,6 +461,26 @@ for (const neighbor of getNeighbors(grid, current.cell)) {
 
 Uses **parametric slab method** for precise segment-AABB intersection. Works with raw shape bounds (no stroke inflation needed)
 
+### Obstacle-Free Retry Fallback
+
+When A\* exhausts its open set without finding a path (common with diamond/ellipse shapes where segment intersection has edge cases), it **retries with no obstacles** before falling back to a straight line:
+
+```typescript
+// End of astar() function
+if (obstacles.length > 0) {
+  return astar(grid, start, goal, startDir, []);
+}
+return [start, goal]; // Direct line fallback (rarely reached)
+```
+
+**Why this works:**
+- Reuses the same grid (no re-computation needed)
+- With no obstacles, A\* always finds an orthogonal path
+- No infinite recursion: recursive call passes `[]`, won't recurse again
+- The direct line fallback only triggers if even obstacle-free routing fails (shouldn't happen)
+
+This ensures routes remain orthogonal even when obstacle intersection checking fails, rather than producing ugly straight lines through shapes.
+
 ### Priority Queue (`binary-heap.ts`)
 
 A\* uses a `MinHeap<AStarNode>` for the open set priority queue:
@@ -643,10 +663,11 @@ idle:
 
 begin(pointerId, worldX, worldY):
   └─ Check snap at cursor
-  ├─ Snap found: from = anchored terminal with shapeBounds, normalizedAnchor
-  └─ No snap: from = free terminal, outwardDir = 'E' (refined in move)
-  └─ Initialize to = free terminal at same position
+  ├─ Snap found: from = anchored terminal, to = from (same reference)
+  └─ No snap: from = free terminal, to = free terminal at cursor
   └─ updateRoute()
+
+**Terminal seeding on begin():** When snapped, `this.to = this.from` prevents routing from the edge to the cursor position inside the shape. This is temporary—`move()` immediately refines `this.to`. Similar to how `outwardDir` is seeded with a default and refined on move, the endpoint position is seeded identically to avoid visual glitches before the user moves.
 
 move(worldX, worldY):
   └─ Check snap at cursor (hoverSnap updated for dot rendering)
@@ -914,9 +935,9 @@ connector-preview.ts
 ### Completed
 
 - **Connector-specific size presets** - Connectors use separate thin sizes (S=2, M=4, L=6, XL=8) independent of pen/shape sizes (S=6, M=10, L=14, XL=18)
+- **Obstacle-free retry fallback** - When A\* finds no path with obstacles, retries without obstacles to ensure orthogonal routing
 
 ### Immediate Next Steps
 
 1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
-2. **Fallback routing** - Straight line fallback should reroute with no obstacles instead
-3. **Anchored shape resize/move** - Recompute endpoint position from stored `normalizedAnchor` + new frame
+2. **Anchored shape resize/move** - Recompute endpoint position from stored `normalizedAnchor` + new frame
