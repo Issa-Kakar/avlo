@@ -16,8 +16,9 @@ export type Tool =
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
 
 // Size types for new system
-export type SizePreset = 10 | 14 | 18 | 22; // For pen/highlighter/shapes
+export type SizePreset = 6 | 10 | 14 | 18; // For pen/highlighter/shapes
 export type TextSizePreset = 20 | 30 | 40 | 50; // For text
+export type ConnectorSizePreset = 2 | 4 | 6 | 8; // For connectors
 
 // Global drawing settings that all tools share
 export interface DrawingSettings {
@@ -37,6 +38,7 @@ interface DeviceUIState {
   // Tool-specific settings that don't carry over
   highlighterOpacity: number; // Highlighter always uses 0.45 opacity
   textSize: TextSizePreset; // Text has different size scale
+  connectorSize: ConnectorSizePreset; // Connectors have thin sizes
   shapeVariant: ShapeVariant; // Which shape is selected
 
   // Placeholder tools
@@ -73,6 +75,7 @@ interface DeviceUIState {
   // Tool-specific setters (these don't affect global settings)
   setHighlighterOpacity: (opacity: number) => void;
   setTextSize: (size: TextSizePreset) => void;
+  setConnectorSize: (size: ConnectorSizePreset) => void;
   setShapeVariant: (variant: ShapeVariant) => void;
 
   toggleEditor: () => void; // Keep for future code editor
@@ -95,7 +98,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       // UNIFIED drawing settings - all tools use these
       drawingSettings: {
-        size: 10,
+        size: 6,
         color: '#262626', // Soft black ink
         opacity: 1.0,
         fill: false, // Fill off by default
@@ -104,6 +107,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Tool-specific settings that don't carry over
       highlighterOpacity: 0.45, // Highlighter always uses this
       textSize: 30, // Text has different size scale
+      connectorSize: 4, // Connector default (M)
       shapeVariant: 'rectangle', // Default shape
 
       image: { enabled: false }, // UI placeholder
@@ -144,9 +148,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         })),
 
       setDrawingSize: (size) => {
-        // Validate size is actually a SizePreset (10, 14, 18, or 22)
-        if (![10, 14, 18, 22].includes(size)) {
-          console.error(`Invalid SizePreset: ${size}. Expected 10, 14, 18, or 22. Ignoring.`);
+        // Validate size is actually a SizePreset (6, 10, 14, or 18)
+        if (![6, 10, 14, 18].includes(size)) {
+          console.error(`Invalid SizePreset: ${size}. Expected 6, 10, 14, or 18. Ignoring.`);
           return;
         }
         set((state) => ({
@@ -181,6 +185,15 @@ export const useDeviceUIStore = create<DeviceUIState>()(
         set({ textSize: size });
       },
 
+      setConnectorSize: (size) => {
+        // Validate connector size is a valid ConnectorSizePreset
+        if (![2, 4, 6, 8].includes(size)) {
+          console.error(`Invalid ConnectorSizePreset: ${size}. Expected 2, 4, 6, or 8. Ignoring.`);
+          return;
+        }
+        set({ connectorSize: size });
+      },
+
       setShapeVariant: (variant) => set({ shapeVariant: variant }),
 
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
@@ -192,7 +205,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Helper method to get current tool settings
       getCurrentToolSettings: () => {
         const state = get();
-        const { activeTool, drawingSettings, highlighterOpacity, textSize } = state;
+        const { activeTool, drawingSettings, highlighterOpacity, textSize, connectorSize } = state;
 
         // Base settings from unified drawing settings
         const settings = {
@@ -209,6 +222,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             break;
           case 'text':
             settings.size = textSize;
+            break;
+          case 'connector':
+            settings.size = connectorSize;
             break;
           // eraser uses fixed 10px radius - no size override needed
           // pen/shape use unified settings
@@ -238,15 +254,32 @@ export const useDeviceUIStore = create<DeviceUIState>()(
     }),
     {
       name: 'avlo.toolbar.v3', // New key for unified settings
-      version: 4,
+      version: 6,
       // Migration function for schema changes
-      migrate: (persistedState: any, version: number) => {
+      migrate: (persistedState: unknown, version: number) => {
         // Helper functions for migration
-        const migrateSize = (oldSize: number): SizePreset => {
+        // v4 migration: legacy sizes to intermediate preset system (10/14/18/22)
+        const migrateSizeV4 = (oldSize: number): number => {
           if (oldSize <= 5) return 10; // S
           if (oldSize <= 10) return 14; // M
           if (oldSize <= 15) return 18; // L
           return 22; // XL
+        };
+
+        // v5 migration: intermediate preset (10/14/18/22) to v5 preset (8/12/16/20)
+        const migrateDrawingSizeV5 = (oldSize: number): number => {
+          if (oldSize <= 10) return 8; // S
+          if (oldSize <= 14) return 12; // M
+          if (oldSize <= 18) return 16; // L
+          return 20; // XL
+        };
+
+        // v6 migration: v5 preset (8/12/16/20) to v6 preset (6/10/14/18)
+        const migrateDrawingSizeV6 = (oldSize: number): SizePreset => {
+          if (oldSize <= 8) return 6; // S
+          if (oldSize <= 12) return 10; // M
+          if (oldSize <= 16) return 14; // L
+          return 18; // XL
         };
 
         const migrateTextSize = (oldSize: number): TextSizePreset => {
@@ -267,41 +300,89 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           return colorMap[oldColor] || oldColor;
         };
 
+        // v6 migration: Migrate drawing sizes from 8/12/16/20 to 6/10/14/18
+        if (version === 5) {
+          const state = persistedState as Record<string, unknown>;
+          const drawingSettings = state.drawingSettings as Record<string, unknown> | undefined;
+          const currentDrawingSize = (drawingSettings?.size as number) ?? 8;
+          return {
+            ...state,
+            drawingSettings: {
+              ...drawingSettings,
+              size: migrateDrawingSizeV6(currentDrawingSize),
+            },
+          };
+        }
+
+        // v5 migration: Add connectorSize and migrate drawing sizes from 10/14/18/22 to 8/12/16/20
+        if (version === 4) {
+          const state = persistedState as Record<string, unknown>;
+          const drawingSettings = state.drawingSettings as Record<string, unknown> | undefined;
+          const currentDrawingSize = (drawingSettings?.size as number) ?? 10;
+          // Chain through v5 then v6
+          const v5Size = migrateDrawingSizeV5(currentDrawingSize);
+          return {
+            ...state,
+            drawingSettings: {
+              ...drawingSettings,
+              size: migrateDrawingSizeV6(v5Size),
+            },
+            connectorSize: 4, // Default M for migrated users
+          };
+        }
+
         if (version < 4) {
-          const oldState = persistedState as any;
+          const oldState = persistedState as Record<string, unknown>;
 
           // Determine unified settings from the active tool's settings
-          let unifiedSize = 10 as SizePreset;
+          let unifiedSize = 10;
           let unifiedColor = '#262626';
           let unifiedOpacity = 1.0;
 
           // Get settings from old active tool or pen as default
-          const activeTool = oldState.activeTool || 'pen';
-          if (oldState.pen && (activeTool === 'pen' || !oldState[activeTool])) {
-            unifiedSize = migrateSize(oldState.pen.size || 10);
-            unifiedColor = migrateColor(oldState.pen.color || '#262626');
-            unifiedOpacity = oldState.pen.opacity || 1.0;
-          } else if (oldState.shape?.settings && activeTool === 'shape') {
-            unifiedSize = migrateSize(oldState.shape.settings.size || 10);
-            unifiedColor = migrateColor(oldState.shape.settings.color || '#262626');
-            unifiedOpacity = oldState.shape.settings.opacity || 1.0;
+          const activeTool = (oldState.activeTool as string) || 'pen';
+          const pen = oldState.pen as Record<string, unknown> | undefined;
+          const shape = oldState.shape as Record<string, unknown> | undefined;
+          const shapeSettings = shape?.settings as Record<string, unknown> | undefined;
+
+          if (pen && (activeTool === 'pen' || !oldState[activeTool])) {
+            unifiedSize = migrateSizeV4((pen.size as number) || 10);
+            unifiedColor = migrateColor((pen.color as string) || '#262626');
+            unifiedOpacity = (pen.opacity as number) || 1.0;
+          } else if (shapeSettings && activeTool === 'shape') {
+            unifiedSize = migrateSizeV4((shapeSettings.size as number) || 10);
+            unifiedColor = migrateColor((shapeSettings.color as string) || '#262626');
+            unifiedOpacity = (shapeSettings.opacity as number) || 1.0;
           }
+
+          const highlighter = oldState.highlighter as Record<string, unknown> | undefined;
+          const text = oldState.text as Record<string, unknown> | undefined;
+          const existingDrawingSettings = oldState.drawingSettings as
+            | Record<string, unknown>
+            | undefined;
+
+          // Chain through v5 then v6
+          const v5Size = migrateDrawingSizeV5(unifiedSize);
 
           return {
             activeTool: oldState.activeTool || 'pen',
 
-            // New unified drawing settings
+            // New unified drawing settings - migrate to v6 sizes
             drawingSettings: {
-              size: unifiedSize,
+              size: migrateDrawingSizeV6(v5Size),
               color: unifiedColor,
               opacity: unifiedOpacity,
-              fill: oldState.fillEnabledUI || oldState.drawingSettings?.fill || false,
+              fill:
+                (oldState.fillEnabledUI as boolean) ||
+                (existingDrawingSettings?.fill as boolean) ||
+                false,
             },
 
             // Tool-specific settings
-            highlighterOpacity: oldState.highlighter?.opacity || 0.45,
-            textSize: migrateTextSize(oldState.text?.size || 30),
-            shapeVariant: oldState.shape?.variant || 'rectangle',
+            highlighterOpacity: (highlighter?.opacity as number) || 0.45,
+            textSize: migrateTextSize((text?.size as number) || 30),
+            connectorSize: 4, // Default M for new migrated users
+            shapeVariant: (shape?.variant as string) || 'rectangle',
 
             image: { enabled: false },
 
@@ -321,7 +402,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
               '#8B5CF6',
               '#6B7280',
             ],
-            recentColors: oldState.recentColors || [],
+            recentColors: (oldState.recentColors as string[]) || [],
             isColorPopoverOpen: false,
           };
         }

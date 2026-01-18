@@ -109,8 +109,8 @@ export const ROUTING_CONFIG = {
    */
   ARROW_LENGTH_FACTOR: 3,
   ARROW_WIDTH_FACTOR: 3.5,
-  ARROW_MIN_LENGTH_W: 10,
-  ARROW_MIN_WIDTH_W: 8,
+  ARROW_MIN_LENGTH_W: 6,
+  ARROW_MIN_WIDTH_W: 7,
 
   /**
    * Arrow shape - rounded triangle with uniform circular corners.
@@ -133,7 +133,6 @@ export const ROUTING_CONFIG = {
 export const COST_CONFIG = {
   /** Penalty for changing direction (creating a bend) */
   BEND_PENALTY: 1000,
-
 } as const;
 
 /**
@@ -170,7 +169,10 @@ export function pxToWorld(px: number, scale: number): number {
  * @returns Arrow length in world units
  */
 export function computeArrowLength(strokeWidth: number): number {
-  return Math.max(ROUTING_CONFIG.ARROW_MIN_LENGTH_W, strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR);
+  return Math.max(
+    ROUTING_CONFIG.ARROW_MIN_LENGTH_W,
+    strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR,
+  );
 }
 
 /**
@@ -182,7 +184,10 @@ export function computeArrowLength(strokeWidth: number): number {
  * @returns Arrow width in world units
  */
 export function computeArrowWidth(strokeWidth: number): number {
-  return Math.max(ROUTING_CONFIG.ARROW_MIN_WIDTH_W, strokeWidth * ROUTING_CONFIG.ARROW_WIDTH_FACTOR);
+  return Math.max(
+    ROUTING_CONFIG.ARROW_MIN_WIDTH_W,
+    strokeWidth * ROUTING_CONFIG.ARROW_WIDTH_FACTOR,
+  );
 }
 
 /**
@@ -203,10 +208,7 @@ export function computeArrowWidth(strokeWidth: number): number {
  */
 export function computeApproachOffset(strokeWidth: number): number {
   const arrowLength = computeArrowLength(strokeWidth);
-  return (
-    ROUTING_CONFIG.CORNER_RADIUS_W +
-    arrowLength + EDGE_CLEARANCE_W 
-  );
+  return ROUTING_CONFIG.CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W;
 }
 
 /**

@@ -3,6 +3,7 @@ import {
   DrawingSettings,
   SizePreset,
   TextSizePreset,
+  ConnectorSizePreset,
   useDeviceUIStore,
 } from '../../stores/device-ui-store';
 
@@ -38,6 +39,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     setFillEnabled,
     setDrawingSize,
     setTextSize,
+    setConnectorSize,
     shapeVariant,
     fixedColors,
     recentColors,
@@ -58,6 +60,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         // Text uses different size scale (20/30/40/50)
         setTextSize(size as TextSizePreset);
         break;
+      case 'connector':
+        // Connectors use thin sizes (2/4/6/8)
+        setConnectorSize(size as ConnectorSizePreset);
+        break;
       // eraser uses fixed 10px radius - no size change needed
       default:
         // Pen, highlighter, shapes use unified drawing size
@@ -66,7 +72,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape'].includes(activeTool);
+  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector'].includes(activeTool);
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle =
@@ -84,6 +90,9 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
       case 'text':
         // Text has its own size scale (20/30/40/50)
         return { ...base, size: store.textSize };
+      case 'connector':
+        // Connector has its own thin sizes (2/4/6/8)
+        return { ...base, size: store.connectorSize };
       // eraser uses fixed 10px radius - no size override
       case 'highlighter':
         // Highlighter uses its own opacity
@@ -99,7 +108,8 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   // Size presets
   const getSizePresets = () => {
     if (activeTool === 'text') return [20, 30, 40, 50];
-    return [10, 14, 18, 22]; // Same for pen, highlighter, eraser, shapes
+    if (activeTool === 'connector') return [2, 4, 6, 8];
+    return [6, 10, 14, 18]; // Same for pen, highlighter, eraser, shapes
   };
 
   const sizePresets = getSizePresets();

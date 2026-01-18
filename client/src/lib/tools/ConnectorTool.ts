@@ -85,10 +85,10 @@ export class ConnectorTool implements PointerTool {
     this.phase = 'creating';
 
     // Freeze settings from store at gesture start
-    const settings = useDeviceUIStore.getState().drawingSettings;
-    this.frozenColor = settings.color;
-    this.frozenWidth = settings.size;
-    this.frozenOpacity = settings.opacity;
+    const state = useDeviceUIStore.getState();
+    this.frozenColor = state.drawingSettings.color;
+    this.frozenWidth = state.connectorSize;
+    this.frozenOpacity = state.drawingSettings.opacity;
 
     const scale = useCameraStore.getState().scale;
 
@@ -356,7 +356,7 @@ export class ConnectorTool implements PointerTool {
       resolvedFromDir = resolveFreeStartDir(
         this.from.position,
         { position: this.to.position, outwardDir: this.to.outwardDir, shapeBounds: toShapeBounds },
-        this.frozenWidth
+        this.frozenWidth,
       );
     } else if (fromAnchored && !toAnchored) {
       // ANCHORED→FREE: Compute end direction from primary axis
@@ -389,7 +389,7 @@ export class ConnectorTool implements PointerTool {
       fromTerminal,
       toTerminal,
       this.prevRouteSignature,
-      this.frozenWidth
+      this.frozenWidth,
     );
 
     this.routedPoints = result.points;
