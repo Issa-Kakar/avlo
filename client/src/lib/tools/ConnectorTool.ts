@@ -27,7 +27,6 @@ import {
   type SnapTarget,
   type Terminal,
   findBestSnapTarget,
-  getConnectorEndpoint,
   computeRoute,
   inferDragDirection,
   getShapeFrame,
@@ -46,6 +45,7 @@ interface ToolTerminal extends Terminal {
   // Shape-specific (only set when isAnchored === true)
   shapeId?: string;
   side?: Dir;
+  // normalizedAnchor is inherited from Terminal
 }
 
 /**
@@ -100,15 +100,15 @@ export class ConnectorTool implements PointerTool {
     });
 
     if (snap) {
-      // Start attached to shape - apply visual clearance offset
+      // Start attached to shape - snap.position already includes offset
       this.from = {
-        position: getConnectorEndpoint(snap),
+        position: snap.position,
         outwardDir: snap.side, // Extends away from shape
         isAnchored: true,
         hasCap: false, // startCap = 'none'
         shapeId: snap.shapeId,
         side: snap.side,
-        t: snap.t,
+        normalizedAnchor: snap.normalizedAnchor,
       };
     } else {
       // Free start point - will be refined on move based on drag direction
@@ -165,20 +165,20 @@ export class ConnectorTool implements PointerTool {
     this.prevSnap = snap;
 
     if (snap) {
-      // Snapped to shape - apply visual clearance offset
+      // Snapped to shape - snap.position already includes offset
       const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
       const frame = handle ? getShapeFrame(handle) : null;
       const shapeBounds = frame ? { x: frame.x, y: frame.y, w: frame.w, h: frame.h } : undefined;
 
       this.to = {
-        position: getConnectorEndpoint(snap),
+        position: snap.position,
         outwardDir: snap.side, // Extends AWAY from shape
         isAnchored: true,
         hasCap: true, // endCap = 'arrow'
         shapeBounds,
         shapeId: snap.shapeId,
         side: snap.side,
-        t: snap.t,
+        normalizedAnchor: snap.normalizedAnchor,
       };
       this.dragDir = null; // Reset drag direction when snapped
     } else {
@@ -275,6 +275,8 @@ export class ConnectorTool implements PointerTool {
       snapShapeFrame,
       snapShapeType,
       activeMidpointSide: this.hoverSnap?.isMidpoint ? this.hoverSnap.side : null,
+      snapSide: this.hoverSnap?.side ?? null,
+      snapPosition: this.hoverSnap?.edgePosition ?? null, // Use edgePosition for dot rendering
 
       // Endpoint states
       fromIsAttached: this.from?.isAnchored ?? false,
@@ -372,7 +374,7 @@ export class ConnectorTool implements PointerTool {
       isAnchored: this.from.isAnchored,
       hasCap: this.from.hasCap,
       shapeBounds: fromShapeBounds,
-      t: this.from.t,
+      normalizedAnchor: this.from.normalizedAnchor,
     };
 
     // Build to terminal with resolved direction
@@ -382,7 +384,7 @@ export class ConnectorTool implements PointerTool {
       isAnchored: this.to.isAnchored,
       hasCap: this.to.hasCap,
       shapeBounds: toShapeBounds,
-      t: this.to.t,
+      normalizedAnchor: this.to.normalizedAnchor,
     };
 
     const result = computeRoute(
@@ -424,13 +426,13 @@ export class ConnectorTool implements PointerTool {
       if (this.from!.isAnchored) {
         connectorMap.set('fromShapeId', this.from!.shapeId);
         connectorMap.set('fromSide', this.from!.side);
-        connectorMap.set('fromT', this.from!.t);
+        connectorMap.set('fromAnchor', this.from!.normalizedAnchor);
       }
 
       if (this.to!.isAnchored) {
         connectorMap.set('toShapeId', this.to!.shapeId);
         connectorMap.set('toSide', this.to!.side);
-        connectorMap.set('toT', this.to!.t);
+        connectorMap.set('toAnchor', this.to!.normalizedAnchor);
       }
 
       // Waypoints (intermediate points, excluding endpoints)

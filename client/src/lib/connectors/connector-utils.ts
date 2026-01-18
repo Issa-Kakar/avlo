@@ -30,8 +30,8 @@ export function getShapeFrame(handle: ObjectHandle): ShapeFrame | null {
 }
 
 /**
- * Get midpoint positions for all 4 edges.
- * For all shape types (rect, ellipse, diamond), midpoints are at frame edge centers.
+ * Get midpoint positions for all 4 edges (frame-based).
+ * Returns frame edge centers - used for rect/ellipse/roundedRect.
  *
  * @param frame - Shape frame
  * @returns Record mapping each direction to its midpoint [x, y]
@@ -42,6 +42,100 @@ export function getMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
     E: [frame.x + frame.w, frame.y + frame.h / 2],
     S: [frame.x + frame.w / 2, frame.y + frame.h],
     W: [frame.x, frame.y + frame.h / 2],
+  };
+}
+
+/**
+ * Get midpoints for shape type (handles rounded diamond geometry).
+ *
+ * For rect/ellipse/roundedRect: frame edge centers
+ * For diamond: visual apex of each rounded corner (accounts for corner radius)
+ *
+ * Diamond rendering uses arcTo with radius = min(20, min(w,h) * 0.1).
+ * For stretched diamonds, the vertex angles become acute/obtuse, causing
+ * the visual tip to be significantly inset from the mathematical vertex.
+ *
+ * @param frame - Shape frame
+ * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
+ * @returns Record mapping each direction to its midpoint [x, y]
+ */
+export function getShapeTypeMidpoints(
+  frame: ShapeFrame,
+  shapeType: string
+): Record<Dir, [number, number]> {
+  if (shapeType === 'diamond') {
+    return getDiamondApexMidpoints(frame);
+  }
+
+  // rect, ellipse, roundedRect: frame edge centers
+  return getMidpoints(frame);
+}
+
+/**
+ * Compute visual apex positions for a rounded diamond.
+ *
+ * For a rounded corner, the visual "tip" is the apex of the inscribed arc,
+ * which is inset from the mathematical vertex by:
+ *   d_apex = radius * (1/sin(halfAngle) - 1)
+ *
+ * where halfAngle is half the angle between the two edges meeting at the vertex.
+ *
+ * @param frame - Shape frame
+ * @returns Midpoint positions at the visual apex of each rounded corner
+ */
+function getDiamondApexMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
+  const { x, y, w, h } = frame;
+
+  // Corner radius matches rendering in object-cache.ts
+  const radius = Math.min(20, Math.min(w, h) * 0.1);
+
+  // For very small radius, just use mathematical vertices
+  if (radius < 0.5) {
+    return getMidpoints(frame);
+  }
+
+  // Mathematical vertices (frame edge centers)
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+
+  // Compute corner angles using dot product of edge vectors
+  // At top/bottom: edges have slopes ±(h/2)/(w/2), giving cos(θ) = (h²-w²)/(h²+w²)
+  // At left/right: edges have slopes ±(w/2)/(h/2), giving cos(θ) = (w²-h²)/(h²+w²)
+  const h2 = h * h;
+  const w2 = w * w;
+  const sumSq = h2 + w2;
+
+  // Top/Bottom vertex angle
+  const cosTheta_TB = (h2 - w2) / sumSq;
+  const theta_TB = Math.acos(Math.max(-1, Math.min(1, cosTheta_TB)));
+  const halfTheta_TB = theta_TB / 2;
+
+  // Left/Right vertex angle
+  const cosTheta_LR = (w2 - h2) / sumSq;
+  const theta_LR = Math.acos(Math.max(-1, Math.min(1, cosTheta_LR)));
+  const halfTheta_LR = theta_LR / 2;
+
+  // Apex offset = radius * (csc(halfAngle) - 1)
+  // Clamp to prevent extreme values for very acute angles
+  const sinHalf_TB = Math.sin(halfTheta_TB);
+  const sinHalf_LR = Math.sin(halfTheta_LR);
+
+  // Ensure sin values aren't too small (would cause huge offsets)
+  const minSin = 0.1; // ~6° half-angle minimum
+  const d_apex_TB = radius * (1 / Math.max(sinHalf_TB, minSin) - 1);
+  const d_apex_LR = radius * (1 / Math.max(sinHalf_LR, minSin) - 1);
+
+  // Clamp apex offset to reasonable bounds (at most radius * 2)
+  const maxOffset = radius * 2;
+  const offset_TB = Math.min(d_apex_TB, maxOffset);
+  const offset_LR = Math.min(d_apex_LR, maxOffset);
+
+  // Apex positions: vertex + offset toward center
+  return {
+    N: [cx, y + offset_TB],           // top apex moves down
+    E: [x + w - offset_LR, cy],       // right apex moves left
+    S: [cx, y + h - offset_TB],       // bottom apex moves up
+    W: [x + offset_LR, cy],           // left apex moves right
   };
 }
 

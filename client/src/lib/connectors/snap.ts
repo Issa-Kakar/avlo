@@ -15,11 +15,38 @@
  */
 
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
-import { getShapeFrame, getMidpoints, directionVector } from './connector-utils';
+import { getShapeFrame, getShapeTypeMidpoints, directionVector } from './connector-utils';
 import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-test-primitives';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
 import type { Dir, ShapeFrame, SnapTarget, SnapContext } from './types';
+
+/**
+ * Compute normalized anchor and offset position from edge point.
+ *
+ * @param edgeX - X coordinate on shape edge
+ * @param edgeY - Y coordinate on shape edge
+ * @param frame - Shape frame
+ * @param side - Which edge (N/E/S/W)
+ * @returns Normalized anchor [0-1, 0-1] and offset position for routing
+ */
+function computeAnchorAndPosition(
+  edgeX: number,
+  edgeY: number,
+  frame: ShapeFrame,
+  side: Dir
+): { normalizedAnchor: [number, number]; position: [number, number] } {
+  const normalizedAnchor: [number, number] = [
+    (edgeX - frame.x) / frame.w,
+    (edgeY - frame.y) / frame.h,
+  ];
+  const [dx, dy] = directionVector(side);
+  const position: [number, number] = [
+    edgeX + dx * EDGE_CLEARANCE_W,
+    edgeY + dy * EDGE_CLEARANCE_W,
+  ];
+  return { normalizedAnchor, position };
+}
 
 /**
  * Find the best snap target among all shapes near the cursor.
@@ -145,12 +172,17 @@ export function computeSnapForShape(
 
   // CASE 1: Deep inside - only snap to midpoints
   if (forceMidpointsOnly) {
+    const midpoint = midpoints[nearestMidSide];
+    const { normalizedAnchor, position } = computeAnchorAndPosition(
+      midpoint[0], midpoint[1], frame, nearestMidSide
+    );
     return {
       shapeId,
       side: nearestMidSide,
-      t: 0.5,
+      normalizedAnchor,
       isMidpoint: true,
-      position: midpoints[nearestMidSide],
+      position,
+      edgePosition: midpoint,
       isInside: true,
     };
   }
@@ -192,23 +224,32 @@ export function computeSnapForShape(
   const shouldEnterMidpoint = effectiveMidDist <= midInW;
 
   if (shouldStayMidpoint || shouldEnterMidpoint) {
+    const midpoint = midpoints[effectiveMidSide];
+    const { normalizedAnchor, position } = computeAnchorAndPosition(
+      midpoint[0], midpoint[1], frame, effectiveMidSide
+    );
     return {
       shapeId,
       side: effectiveMidSide,
-      t: 0.5,
+      normalizedAnchor,
       isMidpoint: true,
-      position: midpoints[effectiveMidSide],
+      position,
+      edgePosition: midpoint,
       isInside,
     };
   }
 
   // Snap to edge point (not midpoint)
+  const { normalizedAnchor, position } = computeAnchorAndPosition(
+    edgeSnap.x, edgeSnap.y, frame, edgeSnap.side
+  );
   return {
     shapeId,
     side: edgeSnap.side,
-    t: edgeSnap.t,
+    normalizedAnchor,
     isMidpoint: false,
-    position: [edgeSnap.x, edgeSnap.y],
+    position,
+    edgePosition: [edgeSnap.x, edgeSnap.y],
     isInside,
   };
 }
@@ -253,18 +294,15 @@ export function pointInsideShape(
 }
 
 /**
- * Get midpoints on actual shape perimeter (not just frame).
- * For all current shape types, midpoints happen to be at frame edge centers.
+ * Get midpoints on actual shape perimeter.
+ * For diamond: diagonal edge centers (not frame edge centers).
+ * For rect/ellipse: frame edge centers.
  */
 export function getShapeMidpoints(
   frame: ShapeFrame,
-  _shapeType: string
+  shapeType: string
 ): Record<Dir, [number, number]> {
-  // For all current shape types, midpoints are at frame edge centers:
-  // - rect: edge midpoints
-  // - ellipse: 0°/90°/180°/270° on ellipse = edge midpoints
-  // - diamond: vertices are at edge midpoints
-  return getMidpoints(frame);
+  return getShapeTypeMidpoints(frame, shapeType);
 }
 
 /**

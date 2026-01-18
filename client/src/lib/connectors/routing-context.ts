@@ -127,7 +127,7 @@ function computeCenterlines(
       centerX = null;
     }
     // Anchored→Free: gap must be > EDGE_CLEARANCE_W to avoid stub behind start
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
       centerX = null;
     }
   }
@@ -139,7 +139,7 @@ function computeCenterlines(
     if (isFreeToAnchored && gap < offset) {
       centerX = null;
     }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
       centerX = null;
     }
   }
@@ -153,7 +153,7 @@ function computeCenterlines(
     if (isFreeToAnchored && gap < offset) {
       centerY = null;
     }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
       centerY = null;
     }
   }
@@ -165,7 +165,7 @@ function computeCenterlines(
     if (isFreeToAnchored && gap < offset) {
       centerY = null;
     }
-    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W - 1) {
+    if (isAnchoredToFree && gap <= EDGE_CLEARANCE_W) {
       centerY = null;
     }
   }

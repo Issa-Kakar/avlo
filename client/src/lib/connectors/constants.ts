@@ -25,22 +25,52 @@
  */
 export const SNAP_CONFIG = {
   /** Distance to snap to edge - dots appear within this radius */
-  EDGE_SNAP_RADIUS_PX: 14,
+  EDGE_SNAP_RADIUS_PX: 15,
 
   /** Distance to snap into midpoint (slightly larger than edge) */
-  MIDPOINT_SNAP_IN_PX: 16,
+  MIDPOINT_SNAP_IN_PX: 20,
 
   /** Distance to unstick from midpoint (hysteresis prevents jitter) */
   MIDPOINT_SNAP_OUT_PX: 20,
 
   /** Depth inside shape before forcing midpoint-only mode (allows edge sliding when shallow inside) */
-  FORCE_MIDPOINT_DEPTH_PX: 35,
+  FORCE_MIDPOINT_DEPTH_PX: 30,
 
   /** Anchor dot visual radius */
   DOT_RADIUS_PX: 7,
 
   /** Connector endpoint handle radius */
   ENDPOINT_RADIUS_PX: 8,
+} as const;
+
+/**
+ * Anchor dot rendering configuration.
+ * Controls the visual appearance of snap indicator dots.
+ */
+export const ANCHOR_DOT_CONFIG = {
+  // Sizing (screen pixels)
+  /** Small dot radius - midpoints when not snapped to midpoint */
+  SMALL_RADIUS_PX: 5,
+  /** Large dot radius - active dot and all midpoints when snapped */
+  LARGE_RADIUS_PX: 7,
+  /** Stroke width for dot outlines */
+  STROKE_WIDTH_PX: 2,
+
+  // Colors
+  /** Active dot fill - deeper blue for visibility */
+  ACTIVE_FILL: '#1d4ed8',
+  /** Active dot stroke - white for contrast */
+  ACTIVE_STROKE: '#ffffff',
+  /** Inactive dot fill - white background */
+  INACTIVE_FILL: '#ffffff',
+  /** Inactive dot stroke - standard blue */
+  INACTIVE_STROKE: '#1d4ed8',
+
+  // Glow effect for active dot
+  /** Shadow blur radius for glow effect */
+  GLOW_BLUR_PX: 6,
+  /** Glow color with alpha */
+  GLOW_COLOR: 'rgba(59, 130, 246, 0.5)',
 } as const;
 
 /**
@@ -175,7 +205,7 @@ export function computeApproachOffset(strokeWidth: number): number {
   const arrowLength = computeArrowLength(strokeWidth);
   return (
     ROUTING_CONFIG.CORNER_RADIUS_W +
-    arrowLength + EDGE_CLEARANCE_W / 2
+    arrowLength + EDGE_CLEARANCE_W 
   );
 }
 
@@ -186,4 +216,4 @@ export function computeApproachOffset(strokeWidth: number): number {
  * from visually entering shapes. Large enough to handle thick
  * strokes (6px → 3 unit cap extension still leaves 1 unit gap).
  */
-export const EDGE_CLEARANCE_W = 12;
+export const EDGE_CLEARANCE_W = 10;

@@ -163,6 +163,10 @@ export interface ConnectorPreview {
   snapShapeType: string | null;
   /** Which midpoint is active (snapped to t=0.5) */
   activeMidpointSide: 'N' | 'E' | 'S' | 'W' | null;
+  /** Which edge we're snapped to (N/E/S/W, null = not snapped) */
+  snapSide: 'N' | 'E' | 'S' | 'W' | null;
+  /** Pre-offset snap position on shape edge - actual dot location (null = not snapped) */
+  snapPosition: [number, number] | null;
 
   // === Endpoint states ===
   /** True if 'from' endpoint is attached to a shape */

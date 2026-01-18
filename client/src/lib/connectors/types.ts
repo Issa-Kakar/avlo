@@ -70,8 +70,11 @@ export interface Terminal {
   hasCap: boolean;
   /** Shape bounds for obstacle blocking (when isAnchored=true) */
   shapeBounds?: AABB;
-  /** Edge position parameter for sliding hysteresis (0-1) */
-  t?: number;
+  /**
+   * Normalized anchor position within shape frame [0-1, 0-1].
+   * Shape-agnostic: newPos = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
+   */
+  normalizedAnchor?: [number, number];
 }
 
 /**
@@ -122,12 +125,17 @@ export interface SnapTarget {
   shapeId: string;
   /** Which edge (N/E/S/W) */
   side: Dir;
-  /** Position along edge (0-1, 0.5 = midpoint) */
-  t: number;
-  /** True if snapped to exact midpoint (t=0.5) */
+  /**
+   * Normalized anchor position within shape frame [0-1, 0-1].
+   * Shape-agnostic: position = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
+   */
+  normalizedAnchor: [number, number];
+  /** True if snapped to exact midpoint */
   isMidpoint: boolean;
-  /** World coordinates of snap point */
+  /** World coordinates of snap point WITH offset applied (for routing) */
   position: [number, number];
+  /** World coordinates of snap point on shape edge (for dot rendering) */
+  edgePosition: [number, number];
   /** True if cursor is inside the shape */
   isInside: boolean;
 }

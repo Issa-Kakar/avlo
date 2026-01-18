@@ -16,12 +16,13 @@
 
 import type { ConnectorPreview } from '@/lib/tools/types';
 import {
-  SNAP_CONFIG,
   ROUTING_CONFIG,
+  ANCHOR_DOT_CONFIG,
   pxToWorld,
   computeArrowLength,
   computeArrowWidth,
 } from '@/lib/connectors/constants';
+import { getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
 
 /**
  * Trim info for ending the polyline before the arrow head.
@@ -84,7 +85,7 @@ function computeScaledArrowDimensions(
   // Power of 0.15 keeps width high even when length is small
   // Also ensure width is at least 1.5x the stroke width for visibility
   const widthScale = Math.pow(scale, 1);
-  const scaledHalfWidth = Math.max(fullHalfWidth * widthScale, strokeWidth * .5);
+  const scaledHalfWidth = Math.max(fullHalfWidth * widthScale, strokeWidth * 0.5);
 
   return { scaledLength, scaledHalfWidth };
 }
@@ -195,10 +196,10 @@ export function drawConnectorPreview(
     endCap,
     startCap,
     snapShapeFrame,
+    snapShapeType,
+    snapSide,
+    snapPosition,
     activeMidpointSide,
-    fromIsAttached,
-    toIsAttached,
-    showCursorDot,
   } = preview;
 
   ctx.save();
@@ -220,18 +221,22 @@ export function drawConnectorPreview(
 
   ctx.restore();
 
-  // 4. Draw shape anchor dots (ONLY when snapped - dots = will connect here)
-  if (snapShapeFrame) {
-    drawShapeAnchorDots(ctx, snapShapeFrame, activeMidpointSide, scale);
+  // 4. Draw snap indicator dots (ONLY when snapped - dots = will connect here)
+  // Shows 4 midpoint dots + sliding active dot at snap position
+  if (snapShapeFrame && snapSide !== null && snapPosition !== null && snapShapeType !== null) {
+    drawSnapDots(
+      ctx,
+      snapShapeFrame,
+      snapShapeType,
+      snapSide,
+      activeMidpointSide !== null, // isMidpoint
+      scale,
+      snapPosition
+    );
   }
 
-  //5. Draw endpoint dots
-  if (preview.fromPosition) {
-    drawEndpointDot(ctx, preview.fromPosition, fromIsAttached, scale);
-  }
-  if (preview.toPosition && showCursorDot) {
-    drawEndpointDot(ctx, preview.toPosition, toIsAttached, scale);
-  }
+  // Note: Endpoint dots (drawEndpointDot) are intentionally NOT drawn here.
+  // They are for the selection tool when editing existing connectors.
 }
 
 /**
@@ -344,7 +349,7 @@ function drawArrowHead(
 
   // CRITICAL: Stroke extends outward by lineWidth/2, including at the tip.
   // Pull the path back so the VISIBLE tip (after stroke) lands at the endpoint.
-  const strokeOffset = roundingLineWidth / 1.8;
+  const strokeOffset = roundingLineWidth / 2;
 
   // 3 vertices of the triangle (pulled back by strokeOffset)
   const tipX = tip[0] - ux * strokeOffset;
@@ -372,75 +377,99 @@ function drawArrowHead(
 }
 
 /**
- * Draw anchor dots at shape midpoints.
- * Dots are blue when active (snapped), white otherwise.
- *
- * For all shape types, midpoints are at frame edge centers:
- * - rect: edge midpoints
- * - ellipse: 0/90/180/270 on ellipse = edge midpoints
- * - diamond: vertices are at edge midpoints
+ * Cardinal direction type for edge positions.
  */
-function drawShapeAnchorDots(
+type Dir = 'N' | 'E' | 'S' | 'W';
+
+/**
+ * Draw snap indicator dots on shape edges.
+ *
+ * Renders 4 midpoint dots plus an active sliding dot at the current snap position.
+ * Visual behavior:
+ * - Edge sliding: Small midpoint dots, larger active dot sliding along edge
+ * - Midpoint snap: All dots grow to large size, active midpoint is blue
+ *
+ * Active dot has a subtle glow effect for polish.
+ *
+ * @param shapeType - Shape type for correct midpoint calculation (rect, ellipse, diamond)
+ * @param snapPosition - Pre-offset snap position from snap system (edgePosition).
+ */
+function drawSnapDots(
   ctx: CanvasRenderingContext2D,
   frame: [number, number, number, number],
-  activeSide: 'N' | 'E' | 'S' | 'W' | null,
-  scale: number
+  shapeType: string,
+  side: Dir,
+  isMidpoint: boolean,
+  scale: number,
+  snapPosition: [number, number]
 ): void {
   const [x, y, w, h] = frame;
-  const dotRadius = pxToWorld(SNAP_CONFIG.DOT_RADIUS_PX, scale);
-  const strokeWidth = pxToWorld(1.5, scale);
 
-  // Midpoints at frame edge centers
-  const midpoints: Record<'N' | 'E' | 'S' | 'W', [number, number]> = {
-    N: [x + w / 2, y],
-    E: [x + w, y + h / 2],
-    S: [x + w / 2, y + h],
-    W: [x, y + h / 2],
+  // Sizing based on snap state
+  const smallRadius = pxToWorld(ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX, scale);
+  const largeRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
+  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+
+  // When at midpoint, all dots are large; otherwise midpoints are small
+  const midpointRadius = isMidpoint ? largeRadius : smallRadius;
+  const activeRadius = largeRadius;
+
+  // Compute all 4 midpoint positions (shape-type aware)
+  const midpoints = getShapeTypeMidpoints({ x, y, w, h }, shapeType);
+
+  // Active position comes from snap system (already correct for shape type)
+  const activePos = snapPosition;
+
+  // Check if active position is at a midpoint (within small epsilon)
+  const isActiveAtMidpoint = (s: Dir): boolean => {
+    if (s !== side) return false;
+    const mp = midpoints[s];
+    const dx = Math.abs(activePos[0] - mp[0]);
+    const dy = Math.abs(activePos[1] - mp[1]);
+    return dx < 0.01 && dy < 0.01;
   };
 
   ctx.lineWidth = strokeWidth;
 
-  for (const [side, pos] of Object.entries(midpoints) as [
-    'N' | 'E' | 'S' | 'W',
-    [number, number],
-  ][]) {
-    const isActive = side === activeSide;
+  // Draw inactive midpoint dots first (so active dot renders on top)
+  for (const [s, pos] of Object.entries(midpoints) as [Dir, [number, number]][]) {
+    // Skip this midpoint if the active dot is here
+    if (isActiveAtMidpoint(s)) continue;
 
     ctx.beginPath();
-    ctx.arc(pos[0], pos[1], dotRadius, 0, Math.PI * 2);
-
-    // Blue fill when active (snapped to this midpoint), white otherwise
-    ctx.fillStyle = isActive ? 'rgba(59, 130, 246, 1)' : 'white';
+    ctx.arc(pos[0], pos[1], midpointRadius, 0, Math.PI * 2);
+    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
     ctx.fill();
-
-    // Always blue stroke
-    ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
     ctx.stroke();
   }
-}
 
-/**
- * Draw endpoint dot (start or end of connector).
- * Blue when attached to shape, white when free.
- */
-function drawEndpointDot(
-  ctx: CanvasRenderingContext2D,
-  position: [number, number],
-  isAttached: boolean,
-  scale: number
-): void {
-  const dotRadius = pxToWorld(SNAP_CONFIG.ENDPOINT_RADIUS_PX, scale);
-  const strokeWidth = pxToWorld(1.5, scale);
+  // Draw active dot with glow effect
+  ctx.save();
+
+  // Glow effect via shadow blur
+  ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
+  ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
 
   ctx.beginPath();
-  ctx.arc(position[0], position[1], dotRadius, 0, Math.PI * 2);
-
-  // Blue fill when attached, white when free
-  ctx.fillStyle = isAttached ? 'rgba(59, 130, 246, 1)' : 'white';
+  ctx.arc(activePos[0], activePos[1], activeRadius, 0, Math.PI * 2);
+  ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
   ctx.fill();
 
-  // Always blue stroke
-  ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
+  // Remove shadow for stroke (prevents double glow)
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+
+  // White stroke for contrast
+  ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
   ctx.lineWidth = strokeWidth;
   ctx.stroke();
+
+  ctx.restore();
 }
+
+// Note: drawEndpointDot was removed. It was used to render dots at connector
+// endpoints (offset from shapes), which is only needed when selecting/editing
+// existing connectors, not during the creation preview.
