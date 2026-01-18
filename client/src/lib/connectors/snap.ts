@@ -36,9 +36,10 @@ function computeAnchorAndPosition(
   frame: ShapeFrame,
   side: Dir
 ): { normalizedAnchor: [number, number]; position: [number, number] } {
+  // Clamp to [0,1] to guard against floating-point errors
   const normalizedAnchor: [number, number] = [
-    (edgeX - frame.x) / frame.w,
-    (edgeY - frame.y) / frame.h,
+    Math.max(0, Math.min(1, (edgeX - frame.x) / frame.w)),
+    Math.max(0, Math.min(1, (edgeY - frame.y) / frame.h)),
   ];
   const [dx, dy] = directionVector(side);
   const position: [number, number] = [
