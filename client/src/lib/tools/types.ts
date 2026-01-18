@@ -178,9 +178,6 @@ export interface ConnectorPreview {
   /** Position of 'to' endpoint in world coords */
   toPosition: [number, number] | null;
 
-  /** During creation: show cursor dot? */
-  showCursorDot: boolean;
-
   /** Always null for overlay previews */
   bbox: null;
 }

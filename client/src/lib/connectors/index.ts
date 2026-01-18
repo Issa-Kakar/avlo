@@ -60,7 +60,6 @@ export {
   findBestSnapTarget,
   computeSnapForShape,
   pointInsideShape,
-  getShapeMidpoints,
   findNearestEdgePoint,
   getConnectorEndpoint,
 } from './snap';

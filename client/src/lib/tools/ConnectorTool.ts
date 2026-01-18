@@ -284,8 +284,6 @@ export class ConnectorTool implements PointerTool {
       toIsAttached: this.to?.isAnchored ?? false,
       toPosition: this.to?.position ?? null,
 
-      showCursorDot: this.phase === 'creating',
-
       bbox: null,
     };
 

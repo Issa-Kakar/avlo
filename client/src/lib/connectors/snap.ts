@@ -158,7 +158,7 @@ export function computeSnapForShape(
   const forceMidpointsOnly = isInside && insideDepth > forceMidpointDepthW;
 
   // Get midpoints (on actual shape perimeter)
-  const midpoints = getShapeMidpoints(frame, shapeType);
+  const midpoints = getShapeTypeMidpoints(frame, shapeType);
 
   // Find nearest midpoint
   let nearestMidSide: Dir = 'N';
@@ -292,18 +292,6 @@ export function pointInsideShape(
     default:
       return pointInRect(cx, cy, x, y, w, h);
   }
-}
-
-/**
- * Get midpoints on actual shape perimeter.
- * For diamond: diagonal edge centers (not frame edge centers).
- * For rect/ellipse: frame edge centers.
- */
-export function getShapeMidpoints(
-  frame: ShapeFrame,
-  shapeType: string
-): Record<Dir, [number, number]> {
-  return getShapeTypeMidpoints(frame, shapeType);
 }
 
 /**

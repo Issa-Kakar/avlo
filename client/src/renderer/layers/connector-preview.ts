@@ -186,8 +186,6 @@ export function drawConnectorPreview(
   preview: ConnectorPreview,
   scale: number
 ): void {
-  if (preview.points.length < 2) return;
-
   const {
     points,
     color,
@@ -200,30 +198,47 @@ export function drawConnectorPreview(
     snapSide,
     snapPosition,
     activeMidpointSide,
+    fromIsAttached,
+    toIsAttached,
   } = preview;
 
-  ctx.save();
-  ctx.globalAlpha = opacity;
+  const hasRoute = points.length >= 2;
 
-  // 1. Compute trim info for arrow caps (polyline stops at arrow base)
-  const endTrim = endCap === 'arrow' ? computeEndTrim(points, width, 'end') : null;
+  // 1. Draw route (polyline + arrows) only if we have at least 2 points
+  if (hasRoute) {
+    ctx.save();
+    ctx.globalAlpha = opacity;
 
-  // 2. Draw main polyline with rounded corners (trimmed for arrow if needed)
-  drawRoundedPolyline(ctx, points, color, width, endTrim ?? undefined);
+    // Compute trim info for arrow caps (polyline stops at arrow base)
+    const endTrim = endCap === 'arrow' ? computeEndTrim(points, width, 'end') : null;
 
-  // 3. Draw arrow heads at endpoints (at original positions - arrow fills the gap)
-  if (endCap === 'arrow' && points.length >= 2) {
-    drawArrowHead(ctx, points, color, width, 'end');
+    // Draw main polyline with rounded corners (trimmed for arrow if needed)
+    drawRoundedPolyline(ctx, points, color, width, endTrim ?? undefined);
+
+    // Draw arrow heads at endpoints (at original positions - arrow fills the gap)
+    if (endCap === 'arrow') {
+      drawArrowHead(ctx, points, color, width, 'end');
+    }
+    if (startCap === 'arrow') {
+      drawArrowHead(ctx, points, color, width, 'start');
+    }
+
+    ctx.restore();
   }
-  if (startCap === 'arrow' && points.length >= 2) {
-    drawArrowHead(ctx, points, color, width, 'start');
-  }
 
-  ctx.restore();
+  // 2. Draw snap indicator dots
+  // Show dots during:
+  // - Idle hover (!fromIsAttached): show dots for hovered shape
+  // - Creating with end snapped (toIsAttached): show dots for end shape
+  // Don't show dots after pointer down until end is snapped (prevents showing dots on start shape)
+  const shouldShowDots =
+    (!fromIsAttached || toIsAttached) &&
+    snapShapeFrame !== null &&
+    snapSide !== null &&
+    snapPosition !== null &&
+    snapShapeType !== null;
 
-  // 4. Draw snap indicator dots (ONLY when snapped - dots = will connect here)
-  // Shows 4 midpoint dots + sliding active dot at snap position
-  if (snapShapeFrame && snapSide !== null && snapPosition !== null && snapShapeType !== null) {
+  if (shouldShowDots) {
     drawSnapDots(
       ctx,
       snapShapeFrame,
@@ -234,9 +249,6 @@ export function drawConnectorPreview(
       snapPosition
     );
   }
-
-  // Note: Endpoint dots (drawEndpointDot) are intentionally NOT drawn here.
-  // They are for the selection tool when editing existing connectors.
 }
 
 /**
@@ -420,14 +432,9 @@ function drawSnapDots(
   // Active position comes from snap system (already correct for shape type)
   const activePos = snapPosition;
 
-  // Check if active position is at a midpoint (within small epsilon)
-  const isActiveAtMidpoint = (s: Dir): boolean => {
-    if (s !== side) return false;
-    const mp = midpoints[s];
-    const dx = Math.abs(activePos[0] - mp[0]);
-    const dy = Math.abs(activePos[1] - mp[1]);
-    return dx < 0.01 && dy < 0.01;
-  };
+  // Check if active dot is at the midpoint for a given side
+  // Trust the isMidpoint boolean from snap system (midpoints are sticky anyway)
+  const isActiveAtMidpoint = (s: Dir): boolean => isMidpoint && s === side;
 
   ctx.lineWidth = strokeWidth;
 
