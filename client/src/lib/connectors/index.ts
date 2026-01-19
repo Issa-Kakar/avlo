@@ -69,7 +69,12 @@ export { computeRoute, computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
 
 // Path building (for cache and preview)
-export type { ConnectorPaths, ConnectorPathParams, EndTrimInfo, ArrowGeometry } from './connector-paths';
+export type {
+  ConnectorPaths,
+  ConnectorPathParams,
+  EndTrimInfo,
+  ArrowGeometry,
+} from './connector-paths';
 export {
   buildConnectorPaths,
   buildRoundedPolylinePath,
@@ -79,3 +84,16 @@ export {
   computeEndTrimInfo,
   ARROW_ROUNDING_LINE_WIDTH,
 } from './connector-paths';
+
+// Lookup utilities (reverse map from shapes to connectors)
+export {
+  initConnectorLookup,
+  hydrateConnectorLookup,
+  clearConnectorLookup,
+  processConnectorAdded,
+  processConnectorUpdated,
+  processConnectorDeleted,
+  processShapeDeleted,
+  getConnectorsForShape,
+  hasConnectorLookup,
+} from './connector-lookup';

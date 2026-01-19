@@ -6,26 +6,27 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
-import {
-  createEmptySnapshot,
-  AWARENESS_CONFIG,
-} from '@avlo/shared';
+import { createEmptySnapshot, AWARENESS_CONFIG } from '@avlo/shared';
 import { UserProfile } from './user-identity';
 import { userProfileManager } from './user-profile-manager';
 import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
-import type {
-  RoomId,
-  Snapshot,
-  PresenceView,
-} from '@avlo/shared';
+import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
 import { ObjectSpatialIndex } from '@avlo/shared';
 import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
 import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
-
+import {
+  initConnectorLookup,
+  hydrateConnectorLookup,
+  clearConnectorLookup,
+  processConnectorAdded,
+  processConnectorUpdated,
+  processConnectorDeleted,
+  processShapeDeleted,
+} from './connectors';
 
 type Unsub = () => void;
 
-// Type aliases for Y structures 
+// Type aliases for Y structures
 // Use Y.Map<unknown> and cast when accessing specific properties
 type YMeta = Y.Map<unknown>;
 type YObjects = Y.Map<Y.Map<unknown>>;
@@ -93,7 +94,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Core properties
   private readonly roomId: RoomId;
   private readonly ydoc: Y.Doc;
-  private readonly userId: string; // stable userId 
+  private readonly userId: string; // stable userId
   private userProfile: UserProfile; // User name and color for awareness
 
   // Providers (will be null initially, added in later phases)
@@ -123,11 +124,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Track if destroyed for cleanup
   private destroyed = false;
 
-  // Document version tracking 
+  // Document version tracking
   private docVersion = 0; // Increments on every Y.Doc update
   private sawAnyDocUpdate = false; // Tracks if we've seen any doc updates
 
-  // Awareness state tracking 
+  // Awareness state tracking
   private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
   private awarenessIsDirty = false;
 
@@ -144,7 +145,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     color: string;
   } | null = null;
 
-  // Cursor interpolation fields 
+  // Cursor interpolation fields
   private peerSmoothers = new Map<number, PeerSmoothing>(); // Keyed by clientId for proper cleanup
   private presenceAnimDeadlineMs = 0;
 
@@ -169,11 +170,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   //  Y.Map-based object storage
   private objectsById = new Map<string, ObjectHandle>();
-  private spatialIndex: ObjectSpatialIndex | null = null;  // Created ONCE in buildSnapshot
+  private spatialIndex: ObjectSpatialIndex | null = null; // Created ONCE in buildSnapshot
   private dirtyRects: WorldBounds[] = [];
   private cacheEvictIds = new Set<string>();
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
-  private needsSpatialRebuild = true;  // Start true, goes false after first hydration
+  private needsSpatialRebuild = true; // Start true, goes false after first hydration
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
@@ -183,7 +184,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.userId = identity.userId;
     this.userProfile = {
       name: identity.name,
-      color: identity.color
+      color: identity.color,
     };
 
     // Initialize Y.Doc with room GUID
@@ -202,7 +203,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // via the WebSocket status handler
     }
 
-    // Initialize presence animation state 
+    // Initialize presence animation state
     this.publishState = {
       presenceDirty: false,
       rafId: -1,
@@ -224,7 +225,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         this.attachUndoManager();
       }
     });
-    // Initialize WebSocket provider 
+    // Initialize WebSocket provider
     this.initializeWebSocketProvider();
 
     // Seed only after IDB is ready *and* we've given WS a brief chance to sync.
@@ -524,7 +525,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Future RTC: seq provides total ordering across WS+RTC channels - prevents duplicates/jitter
     this.awarenessSeq++;
     this.yAwareness.setLocalState({
-      userId: this.userId, 
+      userId: this.userId,
       name: this.userProfile.name,
       color: this.userProfile.color,
       cursor: isMobile ? undefined : this.localCursor, // No cursor on mobile
@@ -800,6 +801,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.spatialIndex = null;
     }
 
+    // Clear connector lookup
+    clearConnectorLookup();
+
     // Clear object maps
     this.objectsById.clear();
 
@@ -968,6 +972,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       // Remove from registry
       this.objectsById.delete(id);
+
+      // Update connector lookup
+      if (handle.kind === 'connector') {
+        processConnectorDeleted(id);
+      } else {
+        processShapeDeleted(id); // Clean up lookup entry for this shape
+      }
     }
 
     // Process additions/updates
@@ -986,7 +997,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         id,
         kind,
         y: yObj,
-        bbox: newBBox
+        bbox: newBBox,
       };
 
       this.objectsById.set(id, handle);
@@ -997,6 +1008,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           this.spatialIndex.update(id, oldBBox, newBBox, kind);
         } else {
           this.spatialIndex.insert(id, newBBox, kind);
+        }
+      }
+
+      // Update connector lookup for connector objects
+      if (kind === 'connector') {
+        if (oldBBox) {
+          processConnectorUpdated(id, yObj);
+        } else {
+          processConnectorAdded(id, yObj);
         }
       }
 
@@ -1056,6 +1076,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.spatialIndex && handles.length > 0) {
       this.spatialIndex.bulkLoad(handles);
     }
+
+    // Hydrate connector lookup from built handles
+    hydrateConnectorLookup(this.objectsById);
     // Publishing happens via handleYDocUpdate → publishSnapshotNow()
   }
 
@@ -1126,15 +1149,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Create YProvider (replaces WebsocketProvider)
       this.websocketProvider = new YProvider(
         host,
-        this.roomId,  // Room name (not appended to URL)
+        this.roomId, // Room name (not appended to URL)
         this.ydoc,
         {
           connect: true,
-          party: 'rooms',  // MUST match env binding name in wrangler.toml
+          party: 'rooms', // MUST match env binding name in wrangler.toml
           awareness: this.yAwareness,
           maxBackoffTime: 10_000,
           resyncInterval: -1,
-        }
+        },
       );
       // Set up G_WS_CONNECTED gate with 5s timeout
       const wsConnectedTimeout = setTimeout(() => {
@@ -1370,6 +1393,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
       this.spatialIndex = new ObjectSpatialIndex();
+      initConnectorLookup(); // Initialize connector lookup alongside spatial index
     }
 
     // Two-epoch model: rebuild on first run or when flagged
@@ -1414,5 +1438,4 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.openGate('firstSnapshot');
     }
   }
-
 }

@@ -1,5 +1,4 @@
 # AVLO Codebase Guide
-- NOTE: Currently **Connector logic is not updated in this CLAUDE.md yet**
 **Purpose:** Offline-first collaborative whiteboard with Yjs CRDT sync.
 **Stack:** React/TS/Canvas + Yjs + Cloudflare Workers/R2
 
@@ -14,7 +13,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 ---
 
 ## File Map
-**Connector logic is not updated**
+
 ### Canvas System (7 files)
 | File | Responsibility |
 |------|----------------|
@@ -34,7 +33,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview |
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
-| `client/src/renderer/object-cache.ts` | Path2D cache by object ID |
+| `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
 
 ### Tools (All zero-arg constructors, singleton pattern)
 | File | Status |
@@ -45,6 +44,21 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/lib/tools/EraserTool.ts` | **Full** - Geometry-aware hit testing |
 | `client/src/lib/tools/TextTool.ts` | **PLACEHOLDER** - Will be completely replaced |
 | `client/src/lib/tools/PanTool.ts` | **Full** - Viewport panning |
+| `client/src/lib/tools/ConnectorTool.ts` | **Full** - Orthogonal connector drawing (see `docs/CONNECTOR_ROUTING_SYSTEM.md`) |
+
+### Connectors (Orthogonal Routing System)
+| File | Responsibility |
+|------|----------------|
+| `client/src/lib/connectors/types.ts` | Dir, Terminal, SnapTarget, RoutingContext, Grid types |
+| `client/src/lib/connectors/constants.ts` | SNAP_CONFIG, ROUTING_CONFIG, arrow sizing formulas |
+| `client/src/lib/connectors/connector-utils.ts` | Shape frame helpers, direction resolution, path simplification |
+| `client/src/lib/connectors/snap.ts` | Shape snapping with edge detection, midpoint hysteresis |
+| `client/src/lib/connectors/routing-context.ts` | Centerlines, dynamic AABBs, stub computation, grid construction |
+| `client/src/lib/connectors/routing-astar.ts` | A* pathfinding with segment intersection checking |
+| `client/src/lib/connectors/connector-paths.ts` | Pure path builders (polyline, arrows) shared by cache and preview |
+| `client/src/lib/connectors/connector-lookup.ts` | Reverse map: shapeId → connectorIds (for rerouting/cleanup) |
+| `client/src/lib/connectors/index.ts` | Re-exports all public API |
+| `client/src/renderer/layers/connector-preview.ts` | Preview rendering: polyline, arrows, anchor dots |
 
 ### Stores
 | File | Responsibility |
@@ -212,23 +226,25 @@ Tools are created once at module load and persist for app lifetime:
 
 ```typescript
 // tool-registry.ts - constructed at import time
-const drawingTool = new DrawingTool();  // handles pen, highlighter, shape
+const drawingTool = new DrawingTool();    // handles pen, highlighter, shape
 const eraserTool = new EraserTool();
 const textTool = new TextTool();
 const panTool = new PanTool();
 const selectTool = new SelectTool();
+const connectorTool = new ConnectorTool();
 ```
 
 ### Tool Map (ToolId → Instance)
 ```typescript
 const toolMap = {
-  'pen' → drawingTool,        // Same instance!
-  'highlighter' → drawingTool, // Same instance!
-  'shape' → drawingTool,       // Same instance!
+  'pen' → drawingTool,         // Same instance!
+  'highlighter' → drawingTool,  // Same instance!
+  'shape' → drawingTool,        // Same instance!
   'eraser' → eraserTool,
   'text' → textTool,
   'pan' → panTool,
   'select' → selectTool,
+  'connector' → connectorTool,
   // 'image' and 'code' intentionally omitted (no impl)
 }
 ```
@@ -294,6 +310,10 @@ getGateStatus(): GateStatus
 // Presence helpers
 updatePresenceCursor(worldX, worldY): void     // Called from CanvasRuntime.handlePointerMove
 clearPresenceCursor(): void                     // Called from CanvasRuntime.handlePointerLeave
+
+// Connector lookup (re-exported from connectors/)
+getConnectorsForShape(shapeId): ReadonlySet<string> | undefined  // For SelectTool, EraserTool
+hasConnectorLookup(): boolean
 ```
 
 **Fail-Fast Design:** `getActiveRoomDoc()` throws if no room set, encouraging crash-early over silent failures.
@@ -410,12 +430,25 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
   fontFamily, fontWeight, fontStyle, textAlignH, opacity, ownerId, createdAt }
 ```
 
-**Connector** (basic polyline only - sticky connectors NOT implemented yet):
+**Connector** (orthogonal routing with optional shape anchoring):
 ```typescript
-{ id, kind: 'connector', points: [number,number][], startCap?, endCap?,
-  color, width, opacity, ownerId, createdAt }
-// PLANNED but NOT implemented: fromId, toId, anchors, routing
+{
+  id, kind: 'connector',
+  points: [number, number][],  // Full routed path (ready to render)
+  start: [number, number],     // Start endpoint position
+  end: [number, number],       // End endpoint position
+  startAnchor?: {              // Only if start is anchored to a shape
+    id: string,                // Target shape ID
+    side: 'N'|'E'|'S'|'W',     // Edge direction
+    anchor: [number, number],  // Normalized position [0-1, 0-1]
+  },
+  endAnchor?: { ... },         // Same structure for end
+  startCap: 'none'|'arrow',
+  endCap: 'none'|'arrow',
+  color, width, opacity, ownerId, createdAt
+}
 ```
+**Note:** Detailed connector system docs in `docs/CONNECTOR_ROUTING_SYSTEM.md`
 
 ### ObjectHandle (Live Reference)
 ```typescript
@@ -433,8 +466,8 @@ interface ObjectHandle {
 ## RoomDocManager
 
 ### Two-Epoch Model
-1. **Rebuild Epoch:** `hydrateObjectsFromY()` → walk Y.Map → build handles → `bulkLoad()` spatial index
-2. **Steady-State Epoch:** Deep observer → incremental `objectsById` + `spatialIndex` updates → compute `dirtyPatch`
+1. **Rebuild Epoch:** `hydrateObjectsFromY()` → walk Y.Map → build handles → `bulkLoad()` spatial index + `hydrateConnectorLookup()`
+2. **Steady-State Epoch:** Deep observer → incremental `objectsById` + `spatialIndex` + connector lookup updates → compute `dirtyPatch`
 
 ### Key Methods
 ```typescript
@@ -444,8 +477,12 @@ subscribeSnapshot(cb)       // Doc-only (no presence)
 subscribePresence(cb)       // Presence-only
 ```
 
+### Maintained Indices
+- **spatialIndex:** R-tree for viewport queries and hit testing
+- **connector-lookup:** Reverse map (shapeId → Set<connectorId>) for efficient anchor rerouting/cleanup
+
 ### Deep Observer & BBox Computation
-Objects Y.Map uses `observeDeep()` for incremental updates:
+Objects Y.Map uses `observeDeep()` for incremental updates. On connector add/update/delete, also updates connector lookup maps.
 
 ## Rendering Pipeline
 
@@ -568,7 +605,7 @@ interface DeviceUIState {
 ## Preview Types
 
 ```typescript
-type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | SelectionPreview;
+type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | SelectionPreview | ConnectorPreview;
 
 interface SelectionPreview {
   kind: 'selection';
@@ -578,13 +615,27 @@ interface SelectionPreview {
   isTransforming: boolean;
   selectedIds: string[];
 }
+
+interface ConnectorPreview {
+  kind: 'connector';
+  points: [number, number][];        // Full routed path
+  color, width, opacity;             // Styling
+  startCap, endCap: 'arrow' | 'none';
+  // Snap state (dots only appear when actually snapped)
+  snapShapeId: string | null;
+  snapShapeFrame, snapShapeType, snapSide, snapPosition;
+  activeMidpointSide: Dir | null;
+  // Endpoint states
+  fromIsAttached, toIsAttached: boolean;
+  fromPosition, toPosition: [number, number] | null;
+}
 ```
 
 ---
 
-## NOT Implemented Yet/ Planned
+## NOT Implemented Yet / Planned
 
-- **Connector Tool:** Sticky arrows to shapes (just basic polyline exists)
+- **Connector SelectTool integration:** Select/edit existing connectors, endpoint dragging, rerouting
 - **Text Tool:** Full replacement planned (current is placeholder DOM overlay)
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes

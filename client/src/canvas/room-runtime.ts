@@ -39,7 +39,9 @@ export function setActiveRoom(context: RoomContext | null): void {
  */
 export function getActiveRoom(): RoomContext {
   if (!activeRoom) {
-    throw new Error('getActiveRoom(): no active room - ensure Canvas mounted and setActiveRoom called');
+    throw new Error(
+      'getActiveRoom(): no active room - ensure Canvas mounted and setActiveRoom called',
+    );
   }
   return activeRoom;
 }
@@ -113,3 +115,10 @@ export function updatePresenceCursor(worldX: number, worldY: number): void {
 export function clearPresenceCursor(): void {
   getActiveRoomDoc().updateCursor(undefined, undefined);
 }
+
+// ============================================
+// CONNECTOR LOOKUP RE-EXPORTS
+// ============================================
+
+// Re-export connector lookup for imperative access (SelectTool, EraserTool)
+export { getConnectorsForShape, hasConnectorLookup } from '../lib/connectors';

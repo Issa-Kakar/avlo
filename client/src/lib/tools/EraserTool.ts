@@ -5,7 +5,7 @@ import {
   pointInDiamond,
 } from '@/lib/geometry/hit-test-primitives';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getAnimationController } from '@/canvas/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
@@ -20,7 +20,7 @@ interface EraserState {
   isErasing: boolean;
   pointerId: number | null;
   lastWorld: [number, number] | null;
-  hitNow: Set<string>;   // Objects currently under cursor
+  hitNow: Set<string>; // Objects currently under cursor
   hitAccum: Set<string>; // Objects accumulated during drag
 }
 
@@ -172,13 +172,13 @@ export class EraserTool implements PointerTool {
         case 'connector': {
           const points = handle.y.get('points') as [number, number][];
           if (!points) break;
-          
+
           if (strokeHitTest(worldX, worldY, points, radiusWorld)) {
             this.state.hitNow.add(handle.id);
           }
           break;
         }
-        
+
         case 'shape': {
           const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
           if (!frame) break;
@@ -210,11 +210,11 @@ export class EraserTool implements PointerTool {
           }
           break;
         }
-        
+
         case 'text': {
           const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
           if (!frame) break;
-          
+
           const [x, y, w, h] = frame;
           if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
             this.state.hitNow.add(handle.id);
@@ -239,10 +239,12 @@ export class EraserTool implements PointerTool {
    * Diamond vertices are at midpoints of frame edges.
    */
   private diamondHitTest(
-    cx: number, cy: number, r: number,
+    cx: number,
+    cy: number,
+    r: number,
     frame: [number, number, number, number],
     strokeWidth: number,
-    isFilled: boolean
+    isFilled: boolean,
   ): boolean {
     const [x, y, w, h] = frame;
     const halfStroke = strokeWidth / 2;
@@ -265,7 +267,7 @@ export class EraserTool implements PointerTool {
       [top, right],
       [right, bottom],
       [bottom, left],
-      [left, top]
+      [left, top],
     ];
 
     for (const [p1, p2] of edges) {
@@ -282,10 +284,12 @@ export class EraserTool implements PointerTool {
    * Test if eraser circle intersects an ellipse shape.
    */
   private ellipseHitTest(
-    cx: number, cy: number, r: number,
+    cx: number,
+    cy: number,
+    r: number,
     frame: [number, number, number, number],
     strokeWidth: number,
-    isFilled: boolean
+    isFilled: boolean,
   ): boolean {
     const [x, y, w, h] = frame;
     const halfStroke = strokeWidth / 2;
@@ -325,10 +329,12 @@ export class EraserTool implements PointerTool {
    * Test if eraser circle intersects a rectangle shape (stroke only for unfilled).
    */
   private rectHitTest(
-    cx: number, cy: number, r: number,
+    cx: number,
+    cy: number,
+    r: number,
     frame: [number, number, number, number],
     strokeWidth: number,
-    isFilled: boolean
+    isFilled: boolean,
   ): boolean {
     const [x, y, w, h] = frame;
     const halfStroke = strokeWidth / 2;
@@ -341,10 +347,22 @@ export class EraserTool implements PointerTool {
 
     // For unfilled: check distance to each edge segment
     const edges: [[number, number], [number, number]][] = [
-      [[x, y], [x + w, y]],         // Top edge
-      [[x + w, y], [x + w, y + h]], // Right edge
-      [[x + w, y + h], [x, y + h]], // Bottom edge
-      [[x, y + h], [x, y]]          // Left edge
+      [
+        [x, y],
+        [x + w, y],
+      ], // Top edge
+      [
+        [x + w, y],
+        [x + w, y + h],
+      ], // Right edge
+      [
+        [x + w, y + h],
+        [x, y + h],
+      ], // Bottom edge
+      [
+        [x, y + h],
+        [x, y],
+      ], // Left edge
     ];
 
     for (const [p1, p2] of edges) {
@@ -368,15 +386,69 @@ export class EraserTool implements PointerTool {
       return;
     }
 
-    // Get runtime dependency at commit time
     const roomDoc = getActiveRoomDoc();
+    const idsToDelete = this.state.hitAccum;
+    const snapshot = getCurrentSnapshot();
 
-    // Delete all accumulated objects in one transaction
+    // Collect connector anchor cleanups needed
+    // Map: connectorId → { clearStart: boolean, clearEnd: boolean }
+    const anchorCleanups = new Map<string, { clearStart: boolean; clearEnd: boolean }>();
+
+    for (const id of idsToDelete) {
+      // Skip connectors - they don't have shapes anchored to them
+      const handle = snapshot.objectsById.get(id);
+      if (!handle || handle.kind === 'connector') continue;
+
+      // Find connectors anchored to this shape
+      const connectorIds = getConnectorsForShape(id);
+      if (!connectorIds) continue;
+
+      for (const connectorId of connectorIds) {
+        // Skip if connector is also being deleted
+        if (idsToDelete.has(connectorId)) continue;
+
+        const connectorHandle = snapshot.objectsById.get(connectorId);
+        if (!connectorHandle) continue;
+
+        // Check which anchor(s) point to this shape
+        const startAnchor = connectorHandle.y.get('startAnchor') as { id: string } | undefined;
+        const endAnchor = connectorHandle.y.get('endAnchor') as { id: string } | undefined;
+
+        const existing = anchorCleanups.get(connectorId) ?? { clearStart: false, clearEnd: false };
+
+        if (startAnchor?.id === id) {
+          existing.clearStart = true;
+        }
+        if (endAnchor?.id === id) {
+          existing.clearEnd = true;
+        }
+
+        if (existing.clearStart || existing.clearEnd) {
+          anchorCleanups.set(connectorId, existing);
+        }
+      }
+    }
+
+    // Single transaction: clear dead anchors + delete objects
     roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<any>>;
 
-      for (const id of this.state.hitAccum) {
+      // Step 1: Clear dead anchors from affected connectors
+      for (const [connectorId, { clearStart, clearEnd }] of anchorCleanups) {
+        const connectorYMap = objects.get(connectorId);
+        if (!connectorYMap) continue;
+
+        if (clearStart) {
+          connectorYMap.delete('startAnchor');
+        }
+        if (clearEnd) {
+          connectorYMap.delete('endAnchor');
+        }
+      }
+
+      // Step 2: Delete the objects
+      for (const id of idsToDelete) {
         objects.delete(id);
       }
     });

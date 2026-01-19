@@ -1,8 +1,12 @@
 # Connector Routing System - Complete Technical Reference
 
-> **⚠️ CRITICAL: Connector code outside this system is PLACEHOLDER**
+> **📍 Connector System Status**
 >
-> The ONLY authoritative connector code lives in: `client/src/lib/connectors/*`, `ConnectorTool.ts`, and `connector-preview.ts`. Everything else—`objects.ts` rendering, bbox calculations, object-cache, hit-testing, SelectTool integration—is **placeholder scaffolding** that will be completely replaced. Do NOT use those implementations as reference or try to integrate with them. They exist only to prevent build errors.
+> **Authoritative code:** `client/src/lib/connectors/*`, `ConnectorTool.ts`, and `connector-preview.ts`
+>
+> **Integrated:** `objects.ts` rendering, `object-cache.ts` (multi-path support), `bbox.ts` (arrow extent), `connector-lookup.ts` (reverse map)
+>
+> **Not yet integrated:** SelectTool (select/edit connectors), hit-testing with arrows, anchor rerouting on shape move
 
 ## Overview
 
@@ -37,14 +41,22 @@ client/src/lib/connectors/
 ├── snap.ts                # Shape snapping with edge detection, midpoint hysteresis, normalized anchors
 ├── routing-context.ts     # Routing context: centerlines, dynamic AABBs, stubs, grid construction
 ├── routing-astar.ts       # A* pathfinding with segment intersection checking, computeRoute entry point
+├── connector-paths.ts     # Pure Path2D builders (polyline, arrows) shared by cache and preview
+├── connector-lookup.ts    # Reverse map: shapeId → connectorIds (maintained by RoomDocManager)
 ├── binary-heap.ts         # MinHeap priority queue for A*
 └── index.ts               # Re-exports all public API
 
 client/src/lib/tools/
 └── ConnectorTool.ts       # Main tool: gesture handling, direction resolution, commit
 
-client/src/renderer/layers/
-└── connector-preview.ts   # Preview rendering: polyline, arrows, anchor dots (drawSnapDots)
+client/src/renderer/
+├── object-cache.ts        # Geometry cache with union type: Path2D | ConnectorPaths
+└── layers/
+    ├── objects.ts         # Base canvas rendering including drawConnector()
+    └── connector-preview.ts  # Preview rendering: polyline, arrows, anchor dots
+
+packages/shared/src/utils/
+└── bbox.ts                # BBox computation including connector arrow extent
 ```
 
 ---
@@ -231,12 +243,7 @@ const endRaw = to.shapeBounds ? toBounds(to.shapeBounds) : pointBounds(to.positi
 Centerlines are computed from **RAW bounds** (actual geometry, no padding):
 
 ```typescript
-function computeCenterlines(
-  startRaw,
-  endRaw,
-  isFreeToAnchored,
-  offset,
-): Centerlines;
+function computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset): Centerlines;
 ```
 
 A centerline exists when:
@@ -477,6 +484,7 @@ return [start, goal]; // Direct line fallback (rarely reached)
 ```
 
 **Why this works:**
+
 - Reuses the same grid (no re-computation needed)
 - With no obstacles, A\* always finds an orthogonal path
 - No infinite recursion: recursive call passes `[]`, won't recurse again
@@ -670,21 +678,23 @@ begin(pointerId, worldX, worldY):
   └─ No snap: from = free terminal, to = free terminal at cursor
   └─ updateRoute()
 ```
+
 **Terminal seeding on begin():** When snapped, `this.to = this.from` prevents routing from the edge to the cursor position inside the shape. This is temporary—`move()` immediately refines `this.to`. Similar to how `outwardDir` is seeded with a default and refined on move, the endpoint position is seeded identically to avoid visual glitches before the user moves.
 
 move(worldX, worldY):
-  └─ Check snap at cursor (hoverSnap updated for dot rendering)
-  ├─ Snap found: to = anchored terminal with shapeBounds, normalizedAnchor
-  │   └─ dragDir reset to null
-  └─ No snap: to = free terminal
-      └─ Update dragDir via inferDragDirection()
-      └─ If from is free: update from.outwardDir = dragDir
-  └─ updateRoute()
+└─ Check snap at cursor (hoverSnap updated for dot rendering)
+├─ Snap found: to = anchored terminal with shapeBounds, normalizedAnchor
+│ └─ dragDir reset to null
+└─ No snap: to = free terminal
+└─ Update dragDir via inferDragDirection()
+└─ If from is free: update from.outwardDir = dragDir
+└─ updateRoute()
 
 end():
-  └─ Commit if valid (dist > 5px, points >= 2)
-  └─ resetState()
-```
+└─ Commit if valid (dist > 5px, points >= 2)
+└─ resetState()
+
+````
 
 ### Commit Schema (Y.Map Structure)
 
@@ -720,9 +730,10 @@ connectorMap.set('opacity', opacity);
 // Metadata
 connectorMap.set('ownerId', userId);
 connectorMap.set('createdAt', timestamp);
-```
+````
 
 **Design rationale:**
+
 - `points` stores the full assembled path (no reconstruction needed at render time)
 - `start`/`end` are separate from `points` for quick endpoint access without array indexing
 - `startAnchor`/`endAnchor` group related data atomically—if present, all fields exist (no partial state)
@@ -730,7 +741,169 @@ connectorMap.set('createdAt', timestamp);
 
 ---
 
-## Preview Rendering (`connector-preview.ts`)
+## Connector Lookup (`connector-lookup.ts`)
+
+Reverse map from shapes to their anchored connectors. Enables O(1) lookup for:
+
+- **SelectTool:** Find connectors to reroute when shape moves/resizes
+- **EraserTool:** Clean up anchors when deleting shapes
+
+### Architecture
+
+```
+connector-lookup.ts (module-level state)     room-doc-manager.ts (lifecycle owner)
+├── shapeToConnectors: Map<shapeId, Set<connectorId>>    ├── initConnectorLookup() in publishSnapshotNow()
+├── connectorAnchors: Map<connectorId, {startId, endId}> ├── hydrateConnectorLookup() in hydrateObjectsFromY()
+│                                                         ├── processConnector*() in applyObjectChanges()
+└── getConnectorsForShape(shapeId): ReadonlySet          └── clearConnectorLookup() in destroy()
+```
+
+**Key Principle:** Logic lives in `connectors/` folder; RoomDocManager owns lifecycle timing only.
+
+### Lifecycle Hooks
+
+| RoomDocManager Method              | Connector Lookup Call                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------ |
+| `publishSnapshotNow()` (first run) | `initConnectorLookup()` alongside spatialIndex                           |
+| `hydrateObjectsFromY()`            | `hydrateConnectorLookup(objectsById)` after bulkLoad                     |
+| `applyObjectChanges()` deletion    | `processConnectorDeleted(id)` or `processShapeDeleted(id)`               |
+| `applyObjectChanges()` add/update  | `processConnectorAdded(id, yObj)` or `processConnectorUpdated(id, yObj)` |
+| `destroy()`                        | `clearConnectorLookup()`                                                 |
+
+### Delta Tracking
+
+The `connectorAnchors` map tracks current anchor state per connector for efficient delta computation:
+
+```typescript
+// On connector update, compare old vs new anchors
+const old = connectorAnchors.get(connectorId);
+if (oldStartId !== newStartId) {
+  if (oldStartId) removeConnectorFromShape(oldStartId, connectorId);
+  if (newStartId) addConnectorToShape(newStartId, connectorId);
+}
+```
+
+### Edge Cases
+
+- **Self-loop:** Connector with both ends on same shape appears once in that shape's set
+- **Free endpoints:** Connectors with no anchors don't appear in any shape's set
+- **Empty set cleanup:** When a shape loses all connectors, its map entry is removed
+
+### Tool Access
+
+```typescript
+import { getConnectorsForShape } from '@/canvas/room-runtime';
+
+// In SelectTool during shape transform:
+const connectorIds = getConnectorsForShape(shapeId);
+if (connectorIds) {
+  for (const cid of connectorIds) {
+    // Reroute connector with new shape position
+  }
+}
+```
+
+---
+
+## Connector Rendering
+
+Connector rendering is split into two layers that share path-building logic via `connector-paths.ts`:
+
+1. **Preview Layer** (`connector-preview.ts`) - Renders during tool interaction (ephemeral)
+2. **Base Canvas** (`objects.ts` + `object-cache.ts`) - Renders committed connectors (persistent)
+
+Both use the same path builders to ensure **WYSIWYG consistency**.
+
+### Shared Path Building (`connector-paths.ts`)
+
+Pure functions that return `Path2D` objects, used by both cache and preview:
+
+```typescript
+interface ConnectorPaths {
+  polyline: Path2D;       // Main line (trimmed for arrows)
+  startArrow: Path2D | null;
+  endArrow: Path2D | null;
+}
+
+// Main entry point
+buildConnectorPaths({ points, strokeWidth, startCap, endCap }): ConnectorPaths
+
+// Individual builders
+buildRoundedPolylinePath(points, startTrim, endTrim): Path2D
+buildArrowPath(points, strokeWidth, position): Path2D
+computeEndTrimInfo(points, strokeWidth, position): EndTrimInfo | null
+```
+
+### Object Cache Integration
+
+The `ObjectRenderCache` uses a union type to handle connectors' multi-path requirement:
+
+```typescript
+type CachedGeometry = Path2D | ConnectorPaths;
+
+// Type-safe accessors
+cache.getPath(id, handle): Path2D              // For strokes, shapes, text
+cache.getConnectorPaths(id, handle): ConnectorPaths  // For connectors
+```
+
+Eviction works the same as other objects—by ID when bbox changes.
+
+### Committed Rendering (`objects.ts`)
+
+Multi-pass rendering for committed connectors:
+
+```typescript
+function drawConnector(ctx, handle): void {
+  const paths = cache.getConnectorPaths(id, handle);
+
+  // Pass 1: Stroke polyline
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke(paths.polyline);
+
+  // Pass 2: Arrows (fill + stroke for rounded corners)
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH; // Fixed 5 for ~2.5 unit radius
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  if (paths.startArrow) {
+    ctx.fill(paths.startArrow);
+    ctx.stroke(paths.startArrow);
+  }
+  if (paths.endArrow) {
+    ctx.fill(paths.endArrow);
+    ctx.stroke(paths.endArrow);
+  }
+}
+```
+
+### BBox Calculation (`bbox.ts`)
+
+Connector bbox accounts for arrow extent, not just stroke width:
+
+```typescript
+case 'connector': {
+  // Polyline stroke: width / 2
+  const strokePadding = width / 2;
+
+  // Arrow extent: arrowHalfWidth + rounding stroke
+  const hasArrow = startCap === 'arrow' || endCap === 'arrow';
+  if (hasArrow) {
+    const arrowLength = Math.max(6, width * 3);
+    const arrowHalfWidth = arrowLength / 2;  // ASPECT_RATIO = 1.0
+    const arrowRounding = 2.5;               // ARROW_ROUNDING_LINE_WIDTH / 2
+    padding = Math.max(strokePadding, arrowHalfWidth + arrowRounding) + 1;
+  }
+}
+```
+
+---
+
+## Preview-Specific Rendering (`connector-preview.ts`)
 
 ### Polyline with Rounded Corners
 
@@ -776,7 +949,7 @@ Arrow heads use a filled triangle with a stroked overlay for rounded corners. Th
 **Stroke offset compensation:** The stroke extends outward by `lineWidth/2`, including at the tip. To ensure the **visible** tip (after stroke) lands exactly at the endpoint, the path is pulled back:
 
 ```typescript
-const roundingLineWidth = 5;  // Fixed: ~2.5 unit corner radius
+const roundingLineWidth = 5; // Fixed: ~2.5 unit corner radius
 const strokeOffset = roundingLineWidth / 2;
 
 // Triangle vertices pulled back so visible tip lands at endpoint
@@ -794,7 +967,7 @@ ctx.lineTo(leftX, leftY);
 ctx.lineTo(rightX, rightY);
 ctx.closePath();
 
-ctx.fill();   // Solid interior
+ctx.fill(); // Solid interior
 ctx.stroke(); // Adds rounded corners (radius = lineWidth/2)
 ```
 
@@ -857,7 +1030,7 @@ SNAP_CONFIG = {
 };
 
 ANCHOR_DOT_CONFIG = {
-// See constants.ts for styling
+  // See constants.ts for styling
 };
 ```
 
@@ -879,14 +1052,14 @@ EDGE_CLEARANCE_W = 11;
 
 ```typescript
 // Length: scales with stroke, has minimum
-arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR)
+arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR);
 
 // Width: derived from length via aspect ratio (always proportional)
-arrowWidth = arrowLength * ARROW_ASPECT_RATIO
+arrowWidth = arrowLength * ARROW_ASPECT_RATIO;
 
 // During rendering: length capped at segmentLength / 2
-scaledLength = min(arrowLength, segmentLength / 2)
-scaledWidth = scaledLength * ARROW_ASPECT_RATIO
+scaledLength = min(arrowLength, segmentLength / 2);
+scaledWidth = scaledLength * ARROW_ASPECT_RATIO;
 ```
 
 ### Approach Offset Formula
@@ -921,16 +1094,21 @@ The approach offset determines how far routing bounds extend from shape edges. I
 
 ## Current Status & Future Work
 
-**⚠️ PREVIEW ONLY:** This connector system is currently preview-only. The routing and rendering work, but full integration into the app is incomplete.
-1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
-2. **Anchored shape resize/move** - Recompute endpoint position from stored `normalizedAnchor` + new frame
+**Connectors now render identically in preview and base canvas.** The routing, snapping, and rendering systems are complete. Integration work remains for editing existing connectors.
 
 ### Completed
 
-- **Y.Map schema** - New structure with `points`, `start`/`end`, grouped `startAnchor`/`endAnchor`
-- **BBox calculation** - `bbox.ts` now accounts for arrow extent (`arrowLength/2 + 2.5 + 1`), not just stroke width
+- **Y.Map schema** - Structure with `points`, `start`/`end`, grouped `startAnchor`/`endAnchor`
+- **BBox calculation** - `bbox.ts` accounts for arrow extent (`arrowLength/2 + 2.5 + 1`)
+- **Shared path builders** - `connector-paths.ts` with `buildConnectorPaths()`, `buildArrowPath()`, etc.
+- **Object cache union type** - Returns `ConnectorPaths { polyline, startArrow, endArrow }` for connectors
+- **Committed rendering** - `objects.ts` handles multi-pass rendering (polyline + arrows)
+- **WYSIWYG consistency** - Preview and base canvas use identical path-building functions
+- **Type-safe cache API** - `getPath()` for single Path2D, `getConnectorPaths()` for connectors
+- **Connector lookup map** - `connector-lookup.ts` maintains shapeId → Set<connectorId> reverse map via RoomDocManager Y.js observers
 
 ### Immediate Next Steps
 
-- **Object cache union type** - Return `ConnectorPaths { polyline, startArrow?, endArrow? }` instead of single `Path2D`
-- **Committed rendering** - Update `objects.ts` to handle multi-path connector rendering (rounded polyline + filled arrows)
+1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
+2. **Anchored shape resize/move** - Recompute routes when shapes move (use `getConnectorsForShape()`)
+3. **Hit testing with arrows** - Update hit testing to use cached Path2D for accurate arrow detection
