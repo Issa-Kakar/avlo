@@ -1,20 +1,9 @@
 /**
  * Connector Tool Constants
  *
- * Two distinct types of constants:
- *
- * 1. SNAP_CONFIG - Screen-space thresholds (in CSS pixels)
- *    These are converted to world units at runtime via pxToWorld().
- *    Snapping should feel consistent regardless of zoom level.
- *
- * 2. ROUTING_CONFIG - World-space constants (in world units)
- *    These are permanent geometry that gets stored in Y.Doc.
- *    Must NOT change based on zoom level, or connectors drawn at
- *    different zoom levels would have different geometry.
- *
- * DESIGN DECISION: Anchor dots ONLY appear when snapping would occur.
- * No separate "hover preview" zone - if you see dots, you'll connect there.
- * This prevents the confusing UX of seeing dots but not actually snapping.
+ * 1. SNAP_CONFIG - Screen-space snap thresholds (CSS pixels, converted via pxToWorld)
+ * 2. ANCHOR_DOT_CONFIG - Overlay styling for snap indicator dots
+ * 3. ROUTING_CONFIG - World-space geometry (permanent, stored in Y.Doc)
  *
  * @module lib/connectors/constants
  */
@@ -74,45 +63,20 @@ export const ANCHOR_DOT_CONFIG = {
 } as const;
 
 /**
- * Orthogonal routing configuration.
- *
- * NOTE: These are WORLD-SPACE constants, not screen pixels.
- * Routing geometry is permanent (stored in Y.Doc) and must not
- * change based on zoom level. A connector drawn at any zoom
- * should have identical geometry.
- *
- * APPROACH OFFSET FORMULA:
- * For perpendicular approach, the final segment needs room for:
- * 1. Arc corner (CORNER_RADIUS_W) - where the curve happens
- * 2. Straight segment (MIN_STRAIGHT_SEGMENT_W) - stroke straightens before arrow
- * 3. Arrow head (arrowLength) - the actual arrow
- *
- * Total: CORNER_RADIUS_W + MIN_STRAIGHT_SEGMENT_W + arrowLength(strokeWidth)
- *
- * This ensures the stroked polyline visually "straightens out" before
- * entering the arrow, rather than curving directly into the arrow's side.
+ * Orthogonal routing configuration (WORLD-SPACE, not screen pixels).
+ * Routing geometry is permanent (stored in Y.Doc) - must not vary with zoom.
  */
 export const ROUTING_CONFIG = {
-  /** Corner radius for arcTo rendering in world units */
+  /** Corner radius for arcTo rendering */
   CORNER_RADIUS_W: 26,
 
   /**
-   * Arrow head sizing - length scales with stroke width, width derives from length.
-   *
-   * For filled triangle arrow heads:
-   *   arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR)
-   *   arrowWidth = arrowLength * ARROW_ASPECT_RATIO
-   *
-   * The aspect ratio determines the apex angle (~23° half-angle at 0.85).
-   * This is similar to Excalidraw's 25° triangle approach.
-   *
-   * CRITICAL: Arrow length is capped at segmentLength / 2 during rendering
-   * to prevent arrows from dominating short segments.
+   * Arrow sizing: length = max(MIN, strokeWidth * FACTOR), width = length * ASPECT_RATIO.
+   * During rendering, length is capped at segmentLength / 2 (Excalidraw approach).
    */
   ARROW_LENGTH_FACTOR: 3,
   ARROW_MIN_LENGTH_W: 6,
-
-  /** Arrow width as proportion of length (1.0 = balanced triangle, width equals length) */
+  /** Width as proportion of length (1.0 = balanced triangle) */
   ARROW_ASPECT_RATIO: 1.0,
 } as const;
 
@@ -128,38 +92,14 @@ export const COST_CONFIG = {
 } as const;
 
 /**
- * Convert a screen-space DISTANCE to world-space units.
- *
- * This is for converting sizes/distances, NOT positions.
- * - Distances are translation-invariant (pan doesn't matter)
- * - Only scale affects how screen pixels map to world units
- *
- * For position conversions, use camera-store's screenToWorld/worldToCanvas.
- *
- * @param px - Distance in screen pixels
- * @param scale - Current zoom scale
- * @returns Distance in world units
- *
- * @example
- * // "Snap when cursor is within 12 screen pixels of edge"
- * const snapRadius = pxToWorld(12, scale);  // Constant screen feel
- *
- * // "Draw dot that appears as 5 screen pixels"
- * const dotRadius = pxToWorld(5, scale);
+ * Convert screen-space distance to world units (for sizes, not positions).
+ * Use camera-store's screenToWorld for position conversions.
  */
 export function pxToWorld(px: number, scale: number): number {
   return px / scale;
 }
 
-/**
- * Compute arrow length based on stroke width.
- *
- * Used for rendering to determine how much to trim the polyline
- * before the arrow head.
- *
- * @param strokeWidth - The connector stroke width
- * @returns Arrow length in world units
- */
+/** Compute arrow length: max(MIN, strokeWidth * FACTOR). */
 export function computeArrowLength(strokeWidth: number): number {
   return Math.max(
     ROUTING_CONFIG.ARROW_MIN_LENGTH_W,
@@ -167,45 +107,19 @@ export function computeArrowLength(strokeWidth: number): number {
   );
 }
 
-/**
- * Compute arrow width based on stroke width.
- *
- * Width is derived from length via fixed aspect ratio, ensuring
- * consistent arrow proportions at all sizes.
- *
- * @param strokeWidth - The connector stroke width
- * @returns Arrow width in world units
- */
+/** Compute arrow width: length * ASPECT_RATIO (proportional at all sizes). */
 export function computeArrowWidth(strokeWidth: number): number {
   return computeArrowLength(strokeWidth) * ROUTING_CONFIG.ARROW_ASPECT_RATIO;
 }
 
 /**
- * Compute approach offset based on stroke width.
- *
- * This is the total distance the final segment needs to accommodate:
- * 1. Arc corner radius (for perpendicular turns)
- * 2. Minimum straight segment (for stroke to straighten)
- * 3. Arrow length (the actual arrow head)
- *
- * Used for:
- * - Jetty computation (where the route turns toward the shape)
- * - Obstacle blocking (routes can't come closer than this)
- * - Grid line placement (valid routing corridors)
- *
- * @param strokeWidth - The connector stroke width
- * @returns Approach offset in world units
+ * Approach offset = CORNER_RADIUS + arrowLength + EDGE_CLEARANCE.
+ * Used for grid line placement and A* stub positioning.
  */
 export function computeApproachOffset(strokeWidth: number): number {
   const arrowLength = computeArrowLength(strokeWidth);
   return ROUTING_CONFIG.CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W;
 }
 
-/**
- * Visual clearance between connector endpoint and shape edge.
- *
- * This constant offset prevents round line caps and arrowheads
- * from visually entering shapes. Large enough to handle thick
- * strokes (6px → 3 unit cap extension still leaves 1 unit gap).
- */
+/** Visual clearance between endpoint and shape edge (prevents caps/arrows entering shapes). */
 export const EDGE_CLEARANCE_W = 11;

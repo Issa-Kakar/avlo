@@ -67,3 +67,15 @@ export {
 // Routing
 export { computeRoute, computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
+
+// Path building (for cache and preview)
+export type { ConnectorPaths, ConnectorPathParams, EndTrimInfo, ArrowGeometry } from './connector-paths';
+export {
+  buildConnectorPaths,
+  buildRoundedPolylinePath,
+  buildArrowPath,
+  computeArrowGeometry,
+  computeScaledArrowDimensions,
+  computeEndTrimInfo,
+  ARROW_ROUNDING_LINE_WIDTH,
+} from './connector-paths';

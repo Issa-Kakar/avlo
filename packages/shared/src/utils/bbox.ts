@@ -71,7 +71,27 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
       }
 
       const width = (yMap.get('width') as number) ?? 2;
-      const padding = width * 0.5 + 1;
+      const startCap = yMap.get('startCap') as string | undefined;
+      const endCap = yMap.get('endCap') as string | undefined;
+
+      // Polyline stroke extends perpendicular by half width
+      const strokePadding = width / 2;
+
+      // Arrow sizing (matches ROUTING_CONFIG in connectors/constants.ts):
+      // - arrowLength = max(ARROW_MIN_LENGTH_W=6, width * ARROW_LENGTH_FACTOR=3)
+      // - arrowHalfWidth = arrowLength * ARROW_ASPECT_RATIO / 2 = arrowLength / 2
+      // - Rounding stroke (roundingLineWidth=5) extends triangle by 2.5
+      const hasArrow = startCap === 'arrow' || endCap === 'arrow';
+
+      let padding: number;
+      if (hasArrow) {
+        const arrowLength = Math.max(6, width * 3);
+        const arrowHalfWidth = arrowLength / 2;
+        const arrowRounding = 2.5;
+        padding = Math.max(strokePadding, arrowHalfWidth + arrowRounding) + 1;
+      } else {
+        padding = strokePadding + 1;
+      }
 
       return [
         minX - padding,

@@ -1,5 +1,6 @@
 import type { Snapshot } from '@avlo/shared';
-import { getObjectCacheInstance } from '../object-cache';
+import { getObjectCacheInstance, isConnectorPaths } from '../object-cache';
+import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 
 /**
  * Draw dimmed objects with a uniform white lighten effect.
@@ -30,16 +31,17 @@ export function drawDimmedStrokes(
     const { kind } = handle;
 
     if (kind === 'stroke' || kind === 'shape' || kind === 'connector') {
-      const path = cache.getOrBuild(id, handle);
-      if (!path) continue;
+      const geometry = cache.getOrBuild(id, handle);
+      if (!geometry) continue;
 
       ctx.save();
 
       if (kind === 'stroke') {
-        // Strokes are filled polygons - dim the fill
-        ctx.fill(path);
+        // Strokes are filled polygons - dim the fill (always Path2D)
+        ctx.fill(geometry as Path2D);
       } else if (kind === 'shape') {
-        // For shapes: dim both fill (if present) and stroke
+        // For shapes: dim both fill (if present) and stroke (always Path2D)
+        const path = geometry as Path2D;
         const width = handle.y.get('width') as number | undefined;
         const fillColor = handle.y.get('fillColor') as string | undefined;
 
@@ -56,12 +58,26 @@ export function drawDimmedStrokes(
           ctx.stroke(path);
         }
       } else if (kind === 'connector') {
-        // Connectors are stroked lines
-        const width = handle.y.get('width') as number | undefined;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-        ctx.lineWidth = width ?? 2;
-        ctx.stroke(path);
+        // Connectors use multi-path (ConnectorPaths)
+        if (isConnectorPaths(geometry)) {
+          const width = handle.y.get('width') as number | undefined;
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+          ctx.lineWidth = width ?? 2;
+          ctx.stroke(geometry.polyline);
+
+          // Dim arrows too
+          if (geometry.startArrow) {
+            ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+            ctx.fill(geometry.startArrow);
+            ctx.stroke(geometry.startArrow);
+          }
+          if (geometry.endArrow) {
+            ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+            ctx.fill(geometry.endArrow);
+            ctx.stroke(geometry.endArrow);
+          }
+        }
       }
 
       ctx.restore();

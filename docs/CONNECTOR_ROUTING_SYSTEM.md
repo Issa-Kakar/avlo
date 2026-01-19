@@ -1,5 +1,9 @@
 # Connector Routing System - Complete Technical Reference
 
+> **⚠️ CRITICAL: Connector code outside this system is PLACEHOLDER**
+>
+> The ONLY authoritative connector code lives in: `client/src/lib/connectors/*`, `ConnectorTool.ts`, and `connector-preview.ts`. Everything else—`objects.ts` rendering, bbox calculations, object-cache, hit-testing, SelectTool integration—is **placeholder scaffolding** that will be completely replaced. Do NOT use those implementations as reference or try to integrate with them. They exist only to prevent build errors.
+
 ## Overview
 
 The connector tool implements orthogonal (Manhattan) routing using a **Dynamic AABB architecture**. Routes are aesthetically pleasing: they use centerlines between shapes rather than hugging shape edges, with automatic obstacle avoidance.
@@ -665,7 +669,7 @@ begin(pointerId, worldX, worldY):
   ├─ Snap found: from = anchored terminal, to = from (same reference)
   └─ No snap: from = free terminal, to = free terminal at cursor
   └─ updateRoute()
-
+```
 **Terminal seeding on begin():** When snapped, `this.to = this.from` prevents routing from the edge to the cursor position inside the shape. This is temporary—`move()` immediately refines `this.to`. Similar to how `outwardDir` is seeded with a default and refined on move, the endpoint position is seeded identically to avoid visual glitches before the user moves.
 
 move(worldX, worldY):
@@ -682,27 +686,47 @@ end():
   └─ resetState()
 ```
 
-### Commit Schema
+### Commit Schema (Y.Map Structure)
 
 ```typescript
-connectorMap.set('fromX', fromX);
-connectorMap.set('fromY', fromY);
-connectorMap.set('toX', toX);
-connectorMap.set('toY', toY);
+// Identity
+connectorMap.set('id', id);
+connectorMap.set('kind', 'connector');
 
-// If anchored:
-connectorMap.set('fromShapeId', shapeId);
-connectorMap.set('fromSide', side);
-connectorMap.set('fromAnchor', normalizedAnchor); // [nx, ny] frame-relative
+// Full routed path (assembled, ready to render)
+connectorMap.set('points', routedPoints);  // [number, number][]
 
-// Waypoints (intermediate points)
-connectorMap.set('waypoints', routedPoints.slice(1, -1));
+// Endpoint positions (always present)
+connectorMap.set('start', [x, y]);  // [number, number]
+connectorMap.set('end', [x, y]);    // [number, number]
+
+// Anchor data (grouped, only if anchored to a shape/text/image)
+connectorMap.set('startAnchor', {   // Optional - only if start is anchored
+  id: shapeId,                      // Target object ID
+  side: 'E',                        // Dir: N/E/S/W
+  anchor: [nx, ny],                 // Normalized [0-1, 0-1] frame-relative
+});
+connectorMap.set('endAnchor', { ... });  // Same structure
+
+// Caps (flat)
+connectorMap.set('startCap', 'none');
+connectorMap.set('endCap', 'arrow');
 
 // Styling
 connectorMap.set('color', color);
 connectorMap.set('width', width);
-connectorMap.set('endCap', 'arrow');
+connectorMap.set('opacity', opacity);
+
+// Metadata
+connectorMap.set('ownerId', userId);
+connectorMap.set('createdAt', timestamp);
 ```
+
+**Design rationale:**
+- `points` stores the full assembled path (no reconstruction needed at render time)
+- `start`/`end` are separate from `points` for quick endpoint access without array indexing
+- `startAnchor`/`endAnchor` group related data atomically—if present, all fields exist (no partial state)
+- Anchor `id` field is future-proof for text/image anchoring (not just shapes)
 
 ---
 
@@ -723,56 +747,72 @@ if (maxR < 2) {
 
 ### Dynamic Arrow Scaling
 
-**Critical rule:** Arrow length NEVER exceeds the final segment length.
+**Critical rule:** Arrow length NEVER exceeds half the final segment length (Excalidraw approach).
 
-When the final segment is short (e.g., endpoint near a corner), the arrow scales down proportionally:
+This prevents arrows from dominating short segments while maintaining proportional aesthetics:
 
 ```typescript
 function computeScaledArrowDimensions(segmentLength, strokeWidth) {
-  const fullArrowLength = computeArrowLength(strokeWidth);
-  const fullHalfWidth = computeArrowWidth(strokeWidth) / 2;
+  const fullLength = computeArrowLength(strokeWidth);
 
-  if (segmentLength >= fullArrowLength) {
-    return { scaledLength: fullArrowLength, scaledHalfWidth: fullHalfWidth };
-  }
+  // Arrow never exceeds half the segment (Excalidraw approach)
+  const scaledLength = Math.min(fullLength, segmentLength / 2);
 
-  // Length matches segment exactly
-  const scaledLength = segmentLength;
-
-  // Width scales proportionally, with minimum for visibility
-  const scale = segmentLength / fullArrowLength;
-  const scaledHalfWidth = Math.max(fullHalfWidth * scale, strokeWidth * 0.5);
+  // Width proportional to SCALED length via fixed aspect ratio
+  const scaledHalfWidth = (scaledLength * ROUTING_CONFIG.ARROW_ASPECT_RATIO) / 2;
 
   return { scaledLength, scaledHalfWidth };
 }
 ```
 
-This prevents jarringly large arrows from extending backwards past the previous corner.
+**Key insight:** Width derives from the **scaled** length (not full length) via `ARROW_ASPECT_RATIO` (1.0 = balanced triangle where width equals length). When length shrinks for short segments, width shrinks proportionally—maintaining consistent arrow shape at all sizes.
 
 ### Rounded Arrow Corners
 
-Arrow heads use `lineJoin='round'` with a stroked overlay on a filled triangle:
+Arrow heads use a filled triangle with a stroked overlay for rounded corners. The stroke's `lineJoin='round'` naturally rounds the vertices.
+
+**Fixed rounding approach:** `roundingLineWidth = 5` gives consistent ~2.5 unit corner radius at all arrow sizes. This decouples corner rounding from connector stroke width.
+
+**Stroke offset compensation:** The stroke extends outward by `lineWidth/2`, including at the tip. To ensure the **visible** tip (after stroke) lands exactly at the endpoint, the path is pulled back:
 
 ```typescript
+const roundingLineWidth = 5;  // Fixed: ~2.5 unit corner radius
+const strokeOffset = roundingLineWidth / 2;
+
+// Triangle vertices pulled back so visible tip lands at endpoint
+const tipX = tip[0] - ux * strokeOffset;
+const tipY = tip[1] - uy * strokeOffset;
+
+ctx.fillStyle = color;
+ctx.strokeStyle = color;
+ctx.lineWidth = roundingLineWidth;
 ctx.lineJoin = 'round';
-ctx.lineCap = 'round';
-ctx.lineWidth = roundingLineWidth; // Controls corner radius
 
 ctx.beginPath();
-// Draw triangle vertices
-ctx.fill(); // Solid interior
+ctx.moveTo(tipX, tipY);
+ctx.lineTo(leftX, leftY);
+ctx.lineTo(rightX, rightY);
+ctx.closePath();
+
+ctx.fill();   // Solid interior
 ctx.stroke(); // Adds rounded corners (radius = lineWidth/2)
 ```
 
 ### End Trim for Arrows
 
-The polyline is trimmed before the arrow head to prevent overlap. Trim accounts for arc geometry:
+The polyline is trimmed before the arrow head to prevent overlap. Trim accounts for both arc geometry and round line cap extension:
 
 ```typescript
-// Available for trimming = segment length - arc corner radius
+// The arc consumes `actualCornerRadius` of the final segment
 const availableForTrim = Math.max(0, segLen - actualCornerRadius);
-const actualTrim = Math.min(scaledArrowLength, availableForTrim);
+
+// Round cap extends strokeWidth/2 beyond the trim point, so we need
+// extra trim to prevent the polyline from poking through small arrows
+const neededTrim = scaledLength + strokeWidth / 2;
+const actualTrim = Math.min(neededTrim, availableForTrim);
 ```
+
+**Round cap compensation:** Without the `strokeWidth / 2` term, the polyline's round cap would visually extend past the trim point and poke through small arrows. This is especially noticeable with thick strokes and short segments.
 
 ### Anchor Dot Rendering
 
@@ -817,15 +857,7 @@ SNAP_CONFIG = {
 };
 
 ANCHOR_DOT_CONFIG = {
-  SMALL_RADIUS_PX: 5, // Midpoints when not snapped to midpoint
-  LARGE_RADIUS_PX: 7, // Active dot / all when snapped to midpoint
-  STROKE_WIDTH_PX: 2, // Dot outline thickness
-  ACTIVE_FILL: '#1d4ed8', // Blue-700 (deep blue)
-  ACTIVE_STROKE: '#ffffff', // White outline
-  INACTIVE_FILL: '#ffffff', // White
-  INACTIVE_STROKE: '#1d4ed8', // Blue-700
-  GLOW_BLUR_PX: 6, // Shadow blur for active dot
-  GLOW_COLOR: 'rgba(59,130,246,0.5)', // Blue glow
+// See constants.ts for styling
 };
 ```
 
@@ -834,14 +866,27 @@ ANCHOR_DOT_CONFIG = {
 ```typescript
 ROUTING_CONFIG = {
   CORNER_RADIUS_W: 26, // Arc radius for rounded corners
-  ARROW_LENGTH_FACTOR: 3, // Arrow length scales with stroke
-  ARROW_WIDTH_FACTOR: 3.5, // Arrow width scales with stroke
-  ARROW_MIN_LENGTH_W: 6, // Minimum arrow length (for thin connector strokes)
-  ARROW_MIN_WIDTH_W: 7, // Minimum arrow width (for thin connector strokes)
+  ARROW_LENGTH_FACTOR: 3, // Arrow length = max(MIN, strokeWidth * FACTOR)
+  ARROW_MIN_LENGTH_W: 6, // Minimum arrow length (for thin strokes)
+  ARROW_ASPECT_RATIO: 1.0, // Width = length * ratio (balanced triangle)
 };
 
 /** Visual clearance between endpoint and shape edge (world units) */
-EDGE_CLEARANCE_W = 10;
+EDGE_CLEARANCE_W = 11;
+```
+
+**Arrow sizing formulas:**
+
+```typescript
+// Length: scales with stroke, has minimum
+arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR)
+
+// Width: derived from length via aspect ratio (always proportional)
+arrowWidth = arrowLength * ARROW_ASPECT_RATIO
+
+// During rendering: length capped at segmentLength / 2
+scaledLength = min(arrowLength, segmentLength / 2)
+scaledWidth = scaledLength * ARROW_ASPECT_RATIO
 ```
 
 ### Approach Offset Formula
@@ -869,74 +914,23 @@ The approach offset determines how far routing bounds extend from shape edges. I
 6. **Stubs are ON AABB boundaries** - Automatically land on centerlines when they exist
 7. **approachOffset = corner + arrow + clearance** - Room for arc, arrowhead, and visual gap
 8. **Edge clearance for snap positions** - Snap returns `position` (with offset) and `edgePosition` (on shape)
-9. **Arrow length ≤ segment length** - Dynamic scaling prevents arrows extending past corners
+9. **Arrow length ≤ segment length / 2** - Excalidraw approach prevents arrows dominating short segments
 10. **Normalized anchor is shape-agnostic** - Stored as `[nx, ny]` in [0,1]×[0,1]; reconstruction is `frame.x + nx*frame.w`
-
----
-
-## Testing Scenarios
-
-### Route Shape Validation
-
-1. **Free→Anchored (H-dominant, E anchor):** HVH with X centerline
-2. **Free→Anchored (V-dominant, E anchor):** VH L-route (no centerline use)
-3. **Anchored→Free (N anchor, drag north, V-dominant):** VHV with Y centerline
-4. **Anchored→Free (N anchor, drag east, H-dominant):** VH L-route
-5. **Free→Free:** 3-segment HVH/VHV based on drag direction (no obstacles)
-
-### Dynamic Offset
-
-1. **Stubs on centerline:** Route starts/ends at centerline, not padded boundary
-2. **Shapes close together:** Centerline adjusts dynamically
-
----
-
-## File Dependency Graph
-
-```
-ConnectorTool.ts
-├── findBestSnapTarget()                 [snap.ts]
-├── getConnectorEndpoint()               [snap.ts] - applies EDGE_CLEARANCE_W
-├── resolveFreeStartDir()                [connector-utils.ts]
-├── computeFreeEndDir()                  [connector-utils.ts]
-├── inferDragDirection()                 [connector-utils.ts]
-├── computeRoute()                       [routing-astar.ts]
-│   └── computeAStarRoute()              [routing-astar.ts]
-│       ├── createRoutingContext()       [routing-context.ts]
-│       │   ├── computeCenterlines()
-│       │   ├── buildRoutingBounds()
-│       │   └── computeStub()
-│       ├── buildSimpleGrid()            [routing-context.ts]
-│       ├── astar()                       [routing-astar.ts]
-│       │   ├── MinHeap                   [binary-heap.ts]
-│       │   └── segmentIntersectsAABB()
-│       └── simplifyOrthogonal()         [connector-utils.ts]
-├── getShapeFrame()                       [connector-utils.ts]
-└── computeApproachOffset()               [constants.ts]
-
-connector-preview.ts
-├── drawConnectorPreview()                - main entry point
-│   ├── computeEndTrim()                  - trim polyline for arrow
-│   ├── computeScaledArrowDimensions()    - dynamic arrow sizing
-│   ├── drawRoundedPolyline()             - arcTo corners
-│   ├── drawArrowHead()                   - rounded triangle
-│   └── drawSnapDots()                    - active dot + midpoint indicators
-│       └── getShapeTypeMidpoints()       [connector-utils.ts]
-└── ROUTING_CONFIG, ANCHOR_DOT_CONFIG     [constants.ts]
-```
 
 ---
 
 ## Current Status & Future Work
 
 **⚠️ PREVIEW ONLY:** This connector system is currently preview-only. The routing and rendering work, but full integration into the app is incomplete.
+1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
+2. **Anchored shape resize/move** - Recompute endpoint position from stored `normalizedAnchor` + new frame
 
 ### Completed
 
-- **Connector-specific size presets** - Connectors use separate thin sizes (S=2, M=4, L=6, XL=8) independent of pen/shape sizes (S=6, M=10, L=14, XL=18)
-- **Obstacle-free retry fallback** - When A\* finds no path with obstacles, retries without obstacles to ensure orthogonal routing
+- **Y.Map schema** - New structure with `points`, `start`/`end`, grouped `startAnchor`/`endAnchor`
+- **BBox calculation** - `bbox.ts` now accounts for arrow extent (`arrowLength/2 + 2.5 + 1`), not just stroke width
 
 ### Immediate Next Steps
 
-1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
-2. **Anchored shape resize/move** - Recompute endpoint position from stored `normalizedAnchor` + new frame
+- **Object cache union type** - Return `ConnectorPaths { polyline, startArrow?, endArrow? }` instead of single `Path2D`
+- **Committed rendering** - Update `objects.ts` to handle multi-path connector rendering (rounded polyline + filled arrows)

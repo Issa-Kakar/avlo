@@ -414,40 +414,38 @@ export class ConnectorTool implements PointerTool {
       connectorMap.set('id', id);
       connectorMap.set('kind', 'connector');
 
-      // Endpoint positions (always stored)
-      const [fromX, fromY] = this.from!.position;
-      const [toX, toY] = this.to!.position;
-      connectorMap.set('fromX', fromX);
-      connectorMap.set('fromY', fromY);
-      connectorMap.set('toX', toX);
-      connectorMap.set('toY', toY);
+      // Full routed path (assembled, ready to render)
+      connectorMap.set('points', this.routedPoints);
 
-      // Anchor metadata (if attached to shape)
+      // Endpoint positions (always present)
+      connectorMap.set('start', this.from!.position);
+      connectorMap.set('end', this.to!.position);
+
+      // Anchor data (grouped, only if anchored)
       if (this.from!.isAnchored) {
-        connectorMap.set('fromShapeId', this.from!.shapeId);
-        connectorMap.set('fromSide', this.from!.side);
-        connectorMap.set('fromAnchor', this.from!.normalizedAnchor);
+        connectorMap.set('startAnchor', {
+          id: this.from!.shapeId,
+          side: this.from!.side,
+          anchor: this.from!.normalizedAnchor,
+        });
       }
 
       if (this.to!.isAnchored) {
-        connectorMap.set('toShapeId', this.to!.shapeId);
-        connectorMap.set('toSide', this.to!.side);
-        connectorMap.set('toAnchor', this.to!.normalizedAnchor);
+        connectorMap.set('endAnchor', {
+          id: this.to!.shapeId,
+          side: this.to!.side,
+          anchor: this.to!.normalizedAnchor,
+        });
       }
 
-      // Waypoints (intermediate points, excluding endpoints)
-      // Full path reconstructed at render time: [from, ...waypoints, to]
-      if (this.routedPoints.length > 2) {
-        const waypoints = this.routedPoints.slice(1, -1);
-        connectorMap.set('waypoints', waypoints);
-      }
+      // Caps (flat)
+      connectorMap.set('startCap', 'none');
+      connectorMap.set('endCap', 'arrow');
 
       // Styling
       connectorMap.set('color', this.frozenColor);
       connectorMap.set('width', this.frozenWidth);
       connectorMap.set('opacity', this.frozenOpacity);
-      connectorMap.set('endCap', 'arrow');
-      connectorMap.set('startCap', 'none');
 
       // Metadata
       connectorMap.set('ownerId', userId);

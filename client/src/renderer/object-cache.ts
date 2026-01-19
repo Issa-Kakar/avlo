@@ -1,6 +1,21 @@
 import type { ObjectHandle } from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
+import { buildConnectorPaths, type ConnectorPaths } from '@/lib/connectors/connector-paths';
+
+/**
+ * Union type for cached geometry.
+ * Most objects use a single Path2D, but connectors need multiple paths
+ * for proper multi-pass rendering (polyline + arrows).
+ */
+export type CachedGeometry = Path2D | ConnectorPaths;
+
+/**
+ * Type guard to check if cached geometry is ConnectorPaths.
+ */
+export function isConnectorPaths(geom: CachedGeometry): geom is ConnectorPaths {
+  return typeof geom === 'object' && 'polyline' in geom;
+}
 
 // Helper function to create rounded rectangle
 function roundedRect(path: Path2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -15,23 +30,24 @@ function roundedRect(path: Path2D, x: number, y: number, w: number, h: number, r
   path.quadraticCurveTo(x, y, x + r, y);
 }
 
-// DEAD SIMPLE: Just Path2D memoization by ID
+// DEAD SIMPLE: Just geometry memoization by ID
+// Connectors use ConnectorPaths (multi-path), everything else uses single Path2D
 export class ObjectRenderCache {
-  private cache = new Map<string, Path2D>();
+  private cache = new Map<string, CachedGeometry>();
   // No size limit - we already evict aggressively on bbox changes
 
-  getOrBuild(id: string, handle: ObjectHandle): Path2D {
+  getOrBuild(id: string, handle: ObjectHandle): CachedGeometry {
     // Check cache
     const cached = this.cache.get(id);
     if (cached) return cached;
 
     // Build and store
-    const path = this.buildPath(handle);
-    this.cache.set(id, path);
-    return path;
+    const geometry = this.buildGeometry(handle);
+    this.cache.set(id, geometry);
+    return geometry;
   }
 
-  private buildPath(handle: ObjectHandle): Path2D {
+  private buildGeometry(handle: ObjectHandle): CachedGeometry {
     const { kind, y } = handle;
 
     switch (kind) {
@@ -68,11 +84,11 @@ export class ObjectRenderCache {
             path.rect(x, y0, w, h);
             break;
           case 'ellipse':
-            path.ellipse(x + w/2, y0 + h/2, w/2, h/2, 0, 0, Math.PI * 2);
+            path.ellipse(x + w / 2, y0 + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
             break;
           case 'diamond': {
             const cx = x + w / 2;
-            const cy = y0 + h / 2;          
+            const cy = y0 + h / 2;
             // Match preview logic exactly for WYSIWYG (20px max, or 10% of size)
             const radius = Math.min(20, Math.min(w, h) * 0.1);
             // Start on the top-right edge (midpoint)
@@ -102,66 +118,13 @@ export class ObjectRenderCache {
       }
 
       case 'connector': {
-        // CONNECTORS ARE ALWAYS POLYLINES (including arrows)
-        const points = y.get('points') as [number, number][];
-        const endCap = y.get('endCap') as string;
-        const startCap = y.get('startCap') as string;
+        // CONNECTORS USE MULTI-PATH: polyline + optional arrows
+        const points = (y.get('points') as [number, number][]) ?? [];
+        const strokeWidth = (y.get('width') as number) ?? 2;
+        const startCap = (y.get('startCap') as 'arrow' | 'none') ?? 'none';
+        const endCap = (y.get('endCap') as 'arrow' | 'none') ?? 'none';
 
-        if (!points || points.length < 2) {
-          return new Path2D();
-        }
-
-        const path = new Path2D();
-
-        // Draw main line
-        path.moveTo(points[0][0], points[0][1]);
-        for (let i = 1; i < points.length; i++) {
-          path.lineTo(points[i][0], points[i][1]);
-        }
-
-        // Add arrow caps if needed (simplified for now)
-        if (endCap === 'arrow' && points.length >= 2) {
-          const lastIdx = points.length - 1;
-          const [x2, y2] = points[lastIdx];
-          const [x1, y1] = points[lastIdx - 1];
-
-          const angle = Math.atan2(y2 - y1, x2 - x1);
-          const arrowLength = 10;
-          const arrowAngle = Math.PI / 6;
-
-          path.moveTo(x2, y2);
-          path.lineTo(
-            x2 - arrowLength * Math.cos(angle - arrowAngle),
-            y2 - arrowLength * Math.sin(angle - arrowAngle)
-          );
-          path.moveTo(x2, y2);
-          path.lineTo(
-            x2 - arrowLength * Math.cos(angle + arrowAngle),
-            y2 - arrowLength * Math.sin(angle + arrowAngle)
-          );
-        }
-
-        if (startCap === 'arrow' && points.length >= 2) {
-          const [x1, y1] = points[0];
-          const [x2, y2] = points[1];
-
-          const angle = Math.atan2(y2 - y1, x2 - x1);
-          const arrowLength = 10;
-          const arrowAngle = Math.PI / 6;
-
-          path.moveTo(x1, y1);
-          path.lineTo(
-            x1 + arrowLength * Math.cos(angle - arrowAngle),
-            y1 + arrowLength * Math.sin(angle - arrowAngle)
-          );
-          path.moveTo(x1, y1);
-          path.lineTo(
-            x1 + arrowLength * Math.cos(angle + arrowAngle),
-            y1 + arrowLength * Math.sin(angle + arrowAngle)
-          );
-        }
-
-        return path;
+        return buildConnectorPaths({ points, strokeWidth, startCap, endCap });
       }
 
       case 'text':
