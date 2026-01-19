@@ -1,6 +1,6 @@
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import { getObjectCacheInstance, isConnectorPaths } from '../object-cache';
+import { getObjectCacheInstance } from '../object-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore, type ScaleTransform } from '@/stores/selection-store';
@@ -127,9 +127,8 @@ function drawStroke(
   const opacity = (y.get('opacity') as number) ?? 1;
   const tool = (y.get('tool') as string) ?? 'pen';
 
-  // Get cached geometry by ID (strokes always return Path2D, not ConnectorPaths)
   const cache = getObjectCacheInstance();
-  const path = cache.getOrBuild(id, handle) as Path2D;
+  const path = cache.getPath(id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -156,9 +155,8 @@ function drawShape(
   const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
   const opacity = (y.get('opacity') as number) ?? 1;
 
-  // Get cached geometry (shapes always return Path2D, not ConnectorPaths)
   const cache = getObjectCacheInstance();
-  const path = cache.getOrBuild(id, handle) as Path2D;
+  const path = cache.getPath(id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -250,44 +248,33 @@ function drawConnector(
   const opacity = (y.get('opacity') as number) ?? 1;
 
   const cache = getObjectCacheInstance();
-  const geometry = cache.getOrBuild(id, handle);
+  const paths = cache.getConnectorPaths(id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
 
-  if (isConnectorPaths(geometry)) {
-    // Multi-pass rendering for connectors with separate polyline and arrows
+  // Pass 1: Stroke polyline with rounded caps/joins
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke(paths.polyline);
 
-    // Pass 1: Stroke polyline with rounded caps/joins
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke(geometry.polyline);
+  // Pass 2: Render arrows (fill + stroke for rounded corners)
+  // Fixed lineWidth for consistent ~2.5 unit corner radius at all sizes
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
-    // Pass 2: Render arrows (fill + stroke for rounded corners)
-    // Fixed lineWidth for consistent ~2.5 unit corner radius at all sizes
-    ctx.fillStyle = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-
-    if (geometry.startArrow) {
-      ctx.fill(geometry.startArrow);
-      ctx.stroke(geometry.startArrow);
-    }
-    if (geometry.endArrow) {
-      ctx.fill(geometry.endArrow);
-      ctx.stroke(geometry.endArrow);
-    }
-  } else {
-    // Fallback for single Path2D (shouldn't happen for connectors)
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke(geometry);
+  if (paths.startArrow) {
+    ctx.fill(paths.startArrow);
+    ctx.stroke(paths.startArrow);
+  }
+  if (paths.endArrow) {
+    ctx.fill(paths.endArrow);
+    ctx.stroke(paths.endArrow);
   }
 
   ctx.restore();

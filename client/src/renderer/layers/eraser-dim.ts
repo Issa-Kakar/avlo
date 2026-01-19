@@ -1,5 +1,5 @@
 import type { Snapshot } from '@avlo/shared';
-import { getObjectCacheInstance, isConnectorPaths } from '../object-cache';
+import { getObjectCacheInstance } from '../object-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 
 /**
@@ -31,26 +31,22 @@ export function drawDimmedStrokes(
     const { kind } = handle;
 
     if (kind === 'stroke' || kind === 'shape' || kind === 'connector') {
-      const geometry = cache.getOrBuild(id, handle);
-      if (!geometry) continue;
-
       ctx.save();
 
       if (kind === 'stroke') {
-        // Strokes are filled polygons - dim the fill (always Path2D)
-        ctx.fill(geometry as Path2D);
+        // Strokes are filled polygons - dim the fill
+        const path = cache.getPath(id, handle);
+        ctx.fill(path);
       } else if (kind === 'shape') {
-        // For shapes: dim both fill (if present) and stroke (always Path2D)
-        const path = geometry as Path2D;
+        // For shapes: dim both fill (if present) and stroke
+        const path = cache.getPath(id, handle);
         const width = handle.y.get('width') as number | undefined;
         const fillColor = handle.y.get('fillColor') as string | undefined;
 
-        // Dim fill if shape is filled
         if (fillColor) {
           ctx.fill(path);
         }
 
-        // Dim the stroke
         if (width && width > 0) {
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
@@ -58,25 +54,25 @@ export function drawDimmedStrokes(
           ctx.stroke(path);
         }
       } else if (kind === 'connector') {
-        // Connectors use multi-path (ConnectorPaths)
-        if (isConnectorPaths(geometry)) {
-          const width = handle.y.get('width') as number | undefined;
-          ctx.lineJoin = 'round';
-          ctx.lineCap = 'round';
-          ctx.lineWidth = width ?? 2;
-          ctx.stroke(geometry.polyline);
+        // Connectors use multi-path
+        const paths = cache.getConnectorPaths(id, handle);
+        const width = handle.y.get('width') as number | undefined;
 
-          // Dim arrows too
-          if (geometry.startArrow) {
-            ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
-            ctx.fill(geometry.startArrow);
-            ctx.stroke(geometry.startArrow);
-          }
-          if (geometry.endArrow) {
-            ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
-            ctx.fill(geometry.endArrow);
-            ctx.stroke(geometry.endArrow);
-          }
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.lineWidth = width ?? 2;
+        ctx.stroke(paths.polyline);
+
+        // Dim arrows too
+        if (paths.startArrow) {
+          ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+          ctx.fill(paths.startArrow);
+          ctx.stroke(paths.startArrow);
+        }
+        if (paths.endArrow) {
+          ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+          ctx.fill(paths.endArrow);
+          ctx.stroke(paths.endArrow);
         }
       }
 

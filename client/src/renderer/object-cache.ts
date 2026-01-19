@@ -36,6 +36,10 @@ export class ObjectRenderCache {
   private cache = new Map<string, CachedGeometry>();
   // No size limit - we already evict aggressively on bbox changes
 
+  /**
+   * Get or build cached geometry. Returns union type.
+   * Prefer getPath() or getConnectorPaths() for type-safe access.
+   */
   getOrBuild(id: string, handle: ObjectHandle): CachedGeometry {
     // Check cache
     const cached = this.cache.get(id);
@@ -45,6 +49,22 @@ export class ObjectRenderCache {
     const geometry = this.buildGeometry(handle);
     this.cache.set(id, geometry);
     return geometry;
+  }
+
+  /**
+   * Get or build Path2D for strokes, shapes, and text.
+   * Use this instead of getOrBuild() for cleaner call sites.
+   */
+  getPath(id: string, handle: ObjectHandle): Path2D {
+    return this.getOrBuild(id, handle) as Path2D;
+  }
+
+  /**
+   * Get or build ConnectorPaths for connectors.
+   * Use this instead of getOrBuild() for cleaner call sites.
+   */
+  getConnectorPaths(id: string, handle: ObjectHandle): ConnectorPaths {
+    return this.getOrBuild(id, handle) as ConnectorPaths;
   }
 
   private buildGeometry(handle: ObjectHandle): CachedGeometry {

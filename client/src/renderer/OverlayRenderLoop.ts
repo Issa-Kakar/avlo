@@ -274,8 +274,7 @@ export class OverlayRenderLoop {
               }
 
               // Shapes: stroke the cached Path2D (follows actual geometry)
-              // Shapes always return Path2D, not ConnectorPaths
-              const path = cache.getOrBuild(id, handle) as Path2D;
+              const path = cache.getPath(id, handle);
               ctx.stroke(path);
             }
           }
