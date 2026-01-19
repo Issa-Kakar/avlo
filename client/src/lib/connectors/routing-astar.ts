@@ -363,6 +363,14 @@ function astar(
  * @returns Route result with path and signature
  */
 export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
+
+  // If from and to are exactly the same
+  if (from.position === to.position) {
+    return {      // Return the single point(no routing needed)
+      points: [to.position],
+      signature: '',
+    };
+  }
   // 1. Build routing context (ALL spatial intelligence happens here)
   // - Computes centerlines from RAW bounds
   // - Builds dynamic AABBs with centerline/padding baked in

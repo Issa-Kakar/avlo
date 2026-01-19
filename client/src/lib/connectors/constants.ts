@@ -97,31 +97,23 @@ export const ROUTING_CONFIG = {
   CORNER_RADIUS_W: 26,
 
   /**
-   * Arrow head sizing - scales with stroke width for visual balance.
+   * Arrow head sizing - length scales with stroke width, width derives from length.
    *
    * For filled triangle arrow heads:
    *   arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR)
-   *   arrowWidth = max(ARROW_MIN_WIDTH_W, strokeWidth * ARROW_WIDTH_FACTOR)
+   *   arrowWidth = arrowLength * ARROW_ASPECT_RATIO
    *
-   * Note: object-cache.ts uses stroked lines (not filled), so lineWidth
-   * automatically affects arrow visual thickness. Preview uses filled
-   * triangles, so we need explicit scaling.
+   * The aspect ratio determines the apex angle (~23° half-angle at 0.85).
+   * This is similar to Excalidraw's 25° triangle approach.
+   *
+   * CRITICAL: Arrow length is capped at segmentLength / 2 during rendering
+   * to prevent arrows from dominating short segments.
    */
   ARROW_LENGTH_FACTOR: 3,
-  ARROW_WIDTH_FACTOR: 3.5,
   ARROW_MIN_LENGTH_W: 6,
-  ARROW_MIN_WIDTH_W: 7,
 
-  /**
-   * Arrow shape - rounded triangle with uniform circular corners.
-   *
-   * Uses arcTo for all 3 corners, creating smooth circular arcs
-   * like lineCap='round'. The radius is calculated dynamically
-   * based on the shortest edge to ensure proper fit.
-   *
-   * For short segments, the arrow scales proportionally to fit
-   * within the segment length. Arrow length NEVER exceeds segment length.
-   */
+  /** Arrow width as proportion of length (1.0 = balanced triangle, width equals length) */
+  ARROW_ASPECT_RATIO: 1.0,
 } as const;
 
 /**
@@ -178,16 +170,14 @@ export function computeArrowLength(strokeWidth: number): number {
 /**
  * Compute arrow width based on stroke width.
  *
- * Used for rendering to determine the width of the arrow head.
+ * Width is derived from length via fixed aspect ratio, ensuring
+ * consistent arrow proportions at all sizes.
  *
  * @param strokeWidth - The connector stroke width
  * @returns Arrow width in world units
  */
 export function computeArrowWidth(strokeWidth: number): number {
-  return Math.max(
-    ROUTING_CONFIG.ARROW_MIN_WIDTH_W,
-    strokeWidth * ROUTING_CONFIG.ARROW_WIDTH_FACTOR,
-  );
+  return computeArrowLength(strokeWidth) * ROUTING_CONFIG.ARROW_ASPECT_RATIO;
 }
 
 /**
@@ -218,4 +208,4 @@ export function computeApproachOffset(strokeWidth: number): number {
  * from visually entering shapes. Large enough to handle thick
  * strokes (6px → 3 unit cap extension still leaves 1 unit gap).
  */
-export const EDGE_CLEARANCE_W = 10;
+export const EDGE_CLEARANCE_W = 11;

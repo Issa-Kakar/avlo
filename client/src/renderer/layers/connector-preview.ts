@@ -20,7 +20,6 @@ import {
   ANCHOR_DOT_CONFIG,
   pxToWorld,
   computeArrowLength,
-  computeArrowWidth,
 } from '@/lib/connectors/constants';
 import { getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
 
@@ -47,17 +46,11 @@ interface ScaledArrowDimensions {
 /**
  * Compute scaled arrow dimensions based on segment length.
  *
- * CRITICAL: The arrow length must NEVER exceed the final segment length.
- * When the segment is shorter than the full arrow, the arrow becomes a
- * "fat blob" - length shrinks to fit, but width stays large.
+ * CRITICAL: Arrow length never exceeds half the segment (Excalidraw approach).
+ * This prevents arrows from dominating short segments.
  *
- * The "blob" effect is achieved by scaling width much more gently than
- * length. Using a power < 1 (like 0.15) means:
- * - At 50% length: width is ~90% of full
- * - At 25% length: width is ~80% of full
- * - At 10% length: width is ~70% of full
- *
- * This creates an increasingly fat arrow as the segment shrinks.
+ * Width is proportional to length via fixed aspect ratio, ensuring
+ * consistent arrow shape at all sizes.
  *
  * @param segmentLength - Length of the final segment (tip to corner)
  * @param strokeWidth - Connector stroke width
@@ -67,25 +60,13 @@ function computeScaledArrowDimensions(
   segmentLength: number,
   strokeWidth: number
 ): ScaledArrowDimensions {
-  const fullArrowLength = computeArrowLength(strokeWidth);
-  const fullHalfWidth = computeArrowWidth(strokeWidth) / 2;
+  const fullLength = computeArrowLength(strokeWidth);
 
-  // Arrow length can NEVER exceed segment length
-  if (segmentLength >= fullArrowLength) {
-    return { scaledLength: fullArrowLength, scaledHalfWidth: fullHalfWidth };
-  }
+  // Arrow never exceeds half the segment (Excalidraw approach)
+  const scaledLength = Math.min(fullLength, segmentLength / 2);
 
-  // Scale factor (0 to 1) based on how short the segment is
-  const scale = segmentLength / fullArrowLength;
-
-  // Length matches segment exactly
-  const scaledLength = segmentLength;
-
-  // Width scales VERY gently - stays large to create "fat blob" effect
-  // Power of 0.15 keeps width high even when length is small
-  // Also ensure width is at least 1.5x the stroke width for visibility
-  const widthScale = Math.pow(scale, 1);
-  const scaledHalfWidth = Math.max(fullHalfWidth * widthScale, strokeWidth * 0.5);
+  // Width proportional to length via fixed aspect ratio
+  const scaledHalfWidth = (scaledLength * ROUTING_CONFIG.ARROW_ASPECT_RATIO) / 2;
 
   return { scaledLength, scaledHalfWidth };
 }
@@ -160,8 +141,10 @@ function computeEndTrim(
   // Available for trimming is the rest of the segment
   const availableForTrim = Math.max(0, segLen - actualCornerRadius);
 
-  // Clamp trim to scaled arrow length (not full size)
-  const actualTrim = Math.min(scaledLength, availableForTrim);
+  // Round cap extends strokeWidth/2 beyond the trim point, so we need
+  // extra trim to prevent the polyline from poking through small arrows
+  const neededTrim = scaledLength + strokeWidth / 2;
+  const actualTrim = Math.min(neededTrim, availableForTrim);
 
   const trimmedPoint: [number, number] = [
     tip[0] - ux * actualTrim,
@@ -314,12 +297,7 @@ function drawRoundedPolyline(
  * Draw a triangle arrow head with rounded corners.
  *
  * Uses Canvas's built-in lineJoin='round' for consistent rounding.
- * The rounding radius is lineWidth/2, which stays CONSTANT regardless
- * of triangle size. This means:
- * - Full-size arrow: subtle rounded corners
- * - Tiny blob arrow: very rounded (same radius on smaller shape)
- *
- * This is how whiteboard apps achieve the "lineCap=round" look on arrows.
+ * Fixed rounding lineWidth of 3 gives ~1.5 unit corner radius at all sizes.
  */
 function drawArrowHead(
   ctx: CanvasRenderingContext2D,
@@ -354,10 +332,8 @@ function drawArrowHead(
   const px = -uy;
   const py = ux;
 
-  // Rounding via stroke - radius is lineWidth/2
-  // Use a relatively constant value so rounding looks consistent at all sizes
-  // Minimum of 3 ensures visible rounding even at small strokeWidths
-  const roundingLineWidth = Math.max(3, strokeWidth * 0.8);
+  // Fixed rounding for consistent ~2.5 unit corner radius at all sizes
+  const roundingLineWidth = 5;
 
   // CRITICAL: Stroke extends outward by lineWidth/2, including at the tip.
   // Pull the path back so the VISIBLE tip (after stroke) lands at the endpoint.
