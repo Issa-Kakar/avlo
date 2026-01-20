@@ -7,14 +7,13 @@
  */
 
 import type { HandleId } from '@/lib/tools/types';
+import type { WorldBounds } from '@avlo/shared';
 
-// WorldRect type (matches selection-store)
-export interface WorldRect {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
+/**
+ * WorldRect is an alias for WorldBounds from the shared package.
+ * @deprecated Prefer using WorldBounds directly from @avlo/shared
+ */
+export type WorldRect = WorldBounds;
 
 // Minimal ObjectHandle interface for stroke translation
 export interface ObjectHandleForScale {
@@ -108,6 +107,7 @@ export function computeStrokeTranslation(
   handleId: HandleId
 ): { dx: number; dy: number } {
   // Get stroke geometry (not bbox with width inflation)
+  // NOTE: Using raw y.get() here because ObjectHandleForScale has a simplified y interface
   const points = handle.y.get('points') as [number, number][] | undefined;
   if (!points || points.length === 0) return { dx: 0, dy: 0 };
 

@@ -1,14 +1,14 @@
 import { create } from 'zustand';
 import type { HandleId } from '@/lib/tools/types';
+import type { WorldBounds } from '@avlo/shared';
 
 // === Types ===
 
-export interface WorldRect {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
+/**
+ * WorldRect is an alias for WorldBounds from the shared package.
+ * @deprecated Prefer using WorldBounds directly from @avlo/shared
+ */
+export type WorldRect = WorldBounds;
 
 // Selection composition types for context-aware transforms
 export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';

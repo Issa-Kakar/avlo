@@ -54,12 +54,8 @@ export interface CSSPixelRect {
   height: number; // CSS pixels (before DPR) - used for API inputs
 }
 
-export interface WorldBounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
+// WorldBounds imported from @avlo/shared
+export type { WorldBounds } from '@avlo/shared';
 
 // Thresholds
 export const DIRTY_RECT_CONFIG = {

@@ -12,6 +12,7 @@
  */
 
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAnchor } from '@avlo/shared';
 import { computeAStarRoute } from './routing-astar';
 import {
   getShapeFrame,
@@ -19,26 +20,7 @@ import {
   resolveFreeStartDir,
   computeFreeEndDir,
 } from './connector-utils';
-import type { Dir, AABB, SnapTarget } from './types';
-
-/**
- * Anchor data stored in Y.map for connected endpoints.
- */
-interface StoredAnchor {
-  id: string;
-  side: Dir;
-  anchor: [number, number];
-}
-
-/**
- * Frame type used for shape overrides.
- */
-interface Frame {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+import type { Dir, AABB, SnapTarget, Frame } from './types';
 
 /**
  * Route a connector with optional overrides.
@@ -75,11 +57,11 @@ export function routeConnector(
   const yMap = handle.y;
 
   // Read connector properties from Y.map
-  const storedStart = yMap.get('start') as [number, number];
-  const storedEnd = yMap.get('end') as [number, number];
-  const startAnchor = yMap.get('startAnchor') as StoredAnchor | undefined;
-  const endAnchor = yMap.get('endAnchor') as StoredAnchor | undefined;
-  const strokeWidth = (yMap.get('width') as number) ?? 2;
+  const storedStart = getStart(yMap) ?? [0, 0];
+  const storedEnd = getEnd(yMap) ?? [0, 0];
+  const startAnchor = getStartAnchor(yMap);
+  const endAnchor = getEndAnchor(yMap);
+  const strokeWidth = getWidth(yMap, 2);
 
   // Resolve start endpoint
   const startResolved = resolveEndpoint(

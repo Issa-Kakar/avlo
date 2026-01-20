@@ -5,6 +5,7 @@ export * from './types/awareness';
 export * from './types/commands';
 export * from './types/snapshot';
 export * from './types/validation';
+export * from './types/geometry';
 export * from './types/objects';
 
 // Export config
@@ -35,3 +36,20 @@ export type { IndexEntry } from './spatial';
 
 // Export bbox utilities
 export { computeBBoxFor, bboxEquals, bboxToBounds } from './utils/bbox';
+
+// Export bounds utilities
+export {
+  unionBounds,
+  expandEnvelope,
+  translateBounds,
+  scaleBoundsAround,
+  pointsToWorldBounds,
+  frameTupleToWorldBounds,
+  boundsCenter,
+  boundsWidth,
+  boundsHeight,
+  expandBounds,
+} from './utils/bounds';
+
+// Export object accessors
+export * from './accessors/object-accessors';

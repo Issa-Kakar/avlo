@@ -19,6 +19,7 @@ import { getShapeFrame, getShapeTypeMidpoints, directionVector } from './connect
 import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-test-primitives';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
+import { getShapeType } from '@avlo/shared';
 import type { Dir, ShapeFrame, SnapTarget, SnapContext } from './types';
 
 /**
@@ -109,7 +110,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
 
   // Find first valid snap (respects nesting order)
   for (const { handle, frame } of candidates) {
-    const shapeType = (handle.y.get('shapeType') as string) || 'rect';
+    const shapeType = getShapeType(handle.y);
     const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
     if (snap) return snap;
   }

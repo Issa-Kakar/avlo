@@ -6,12 +6,28 @@
  * - EraserTool.ts (eraser hit detection)
  */
 
-// WorldRect type for intersection tests
-export interface WorldRect {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
+import type { WorldBounds, FrameTuple } from '@avlo/shared';
+
+// Alias for backwards compatibility
+export type WorldRect = WorldBounds;
+
+/**
+ * Get diamond vertices from frame tuple.
+ * Diamond has vertices at edge midpoints: top, right, bottom, left.
+ */
+export function getDiamondVertices(frame: FrameTuple): {
+  top: [number, number];
+  right: [number, number];
+  bottom: [number, number];
+  left: [number, number];
+} {
+  const [x, y, w, h] = frame;
+  return {
+    top: [x + w / 2, y],
+    right: [x + w, y + h / 2],
+    bottom: [x + w / 2, y + h],
+    left: [x, y + h / 2],
+  };
 }
 
 /**

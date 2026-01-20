@@ -487,8 +487,9 @@ Objects Y.Map uses `observeDeep()` for incremental updates. On connector add/upd
 ## Rendering Pipeline
 
 ### Two-Canvas Architecture
-- **Base Canvas:** World content, dirty-rect optimized, 60 FPS (8 FPS hidden tab)
-- **Overlay Canvas:** Full clear, preview + presence, pointer-events: none
+- **Base Canvas:** World content, dirty-rect optimized, 60 FPS
+- **Overlay Canvas:** Full clear, overlays + preview + presence, pointer-events: none
+- Unlike other tools, Select Tool renders transformed objects on base canvas for proper z order
 ### Object Rendering
 ```typescript
 for (entry of sortedByULID) {
@@ -598,6 +599,64 @@ interface DeviceUIState {
 ### TextTool (PLACEHOLDER)
 
 ### PanTool
+
+### SelectTool
+
+**File:** `client/src/lib/tools/SelectTool.ts` (~1585 lines)
+**Status:** Shapes and strokes fully working. Text/connectors selectable but not specially handled.
+
+#### State Machine
+```typescript
+type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale';
+type DownTarget = 'none' | 'handle' | 'objectInSelection' | 'objectOutsideSelection' | 'selectionGap' | 'background';
+```
+
+| Target | Click | Drag |
+|--------|-------|------|
+| `handle` | No-op | Scale |
+| `objectInSelection` | Drill down | Translate |
+| `objectOutsideSelection` | Select it | Select + Translate |
+| `selectionGap` | Deselect | Translate |
+| `background` | Deselect | Marquee |
+
+#### Handles & Scale Origin
+```typescript
+type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+type HandleKind = 'corner' | 'side';  // Computed from HandleId
+```
+Scale origin is **opposite** edge/corner from dragged handle.
+
+#### Selection Kinds & Transform Behavior
+```typescript
+type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';
+```
+
+| Selection | Handle | Strokes | Shapes |
+|-----------|--------|---------|--------|
+| strokesOnly | Corner | Uniform, position preserved | N/A |
+| strokesOnly | Side | Uniform (single axis) | N/A |
+| shapesOnly | Corner | N/A | Non-uniform (X/Y independent) |
+| shapesOnly | Side | N/A | Non-uniform (single axis) |
+| mixed | Corner | Uniform, position preserved | Uniform, position preserved |
+| mixed | Side | **Translate only** (edge-pin) | Non-uniform |
+
+**Key Behaviors:**
+- **Strokes:** Geometry never inverts on flip; position preserved via `computePreservedPosition()`; width scales WYSIWYG
+- **Shapes-only:** Corner-anchored non-uniform scale; stroke width unchanged
+- **Mixed + side:** Strokes translate (edge-pinning) instead of scaling
+
+#### Two Bounds for Scale
+- **originBounds** (geometry-only): For scale math, no stroke padding
+- **bboxBounds** (padded): For dirty rect invalidation
+This prevents "anchor sliding" when objects have thick strokes.
+
+#### Hit Testing
+- Fill-aware Z-order: Unfilled interiors are "transparent" - scan through to paint underneath
+- Marquee uses geometry intersection (not just bbox): `polylineIntersectsRect`, `ellipseIntersectsRect`, `diamondIntersectsRect`
+- Constants: `HIT_RADIUS_PX=6`, `HANDLE_HIT_PX=10`, `MOVE_THRESHOLD_PX=4`
+
+#### Dirty Rect Invalidation
+Uses envelope pattern: `transformEnvelope` accumulates bounds during gesture (never shrinks).
 
 
 ---

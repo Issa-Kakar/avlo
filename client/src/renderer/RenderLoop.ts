@@ -20,6 +20,7 @@ import {
 } from '@/stores/camera-store';
 import { getBaseContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getOpacity } from '@avlo/shared';
 
 export class RenderLoop {
   private started = false;
@@ -322,7 +323,7 @@ export class RenderLoop {
         hasTranslucentInView = visibleObjects.some(
           (entry) => {
             const handle = snapshot.objectsById.get(entry.id);
-            return handle && handle.y.get('opacity') < 1;
+            return handle && getOpacity(handle.y) < 1;
           }
         );
       }

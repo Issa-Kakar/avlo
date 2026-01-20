@@ -1,4 +1,12 @@
 import type { ObjectHandle } from '@avlo/shared';
+import {
+  getPoints,
+  getFrame,
+  getWidth,
+  getShapeType,
+  getStartCap,
+  getEndCap,
+} from '@avlo/shared';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
 import { buildConnectorPaths, type ConnectorPaths } from '@/lib/connectors/connector-paths';
@@ -73,10 +81,10 @@ export class ObjectRenderCache {
     switch (kind) {
       case 'stroke': {
         // STROKES ARE ALWAYS PERFECT FREEHAND POLYGONS
-        const points = y.get('points') as [number, number][];
-        const width = y.get('width') as number;
+        const points = getPoints(y);
+        const width = getWidth(y);
 
-        if (!points || points.length === 0) {
+        if (points.length === 0) {
           return new Path2D();
         }
 
@@ -92,8 +100,8 @@ export class ObjectRenderCache {
 
       case 'shape': {
         // SHAPES ARE ALWAYS GEOMETRIC POLYLINES (built from frame)
-        const shapeType = y.get('shapeType') as string;
-        const frame = y.get('frame') as [number, number, number, number];
+        const shapeType = getShapeType(y);
+        const frame = getFrame(y);
         if (!frame) return new Path2D();
 
         const [x, y0, w, h] = frame;
@@ -139,10 +147,10 @@ export class ObjectRenderCache {
 
       case 'connector': {
         // CONNECTORS USE MULTI-PATH: polyline + optional arrows
-        const points = (y.get('points') as [number, number][]) ?? [];
-        const strokeWidth = (y.get('width') as number) ?? 2;
-        const startCap = (y.get('startCap') as 'arrow' | 'none') ?? 'none';
-        const endCap = (y.get('endCap') as 'arrow' | 'none') ?? 'none';
+        const points = getPoints(y);
+        const strokeWidth = getWidth(y);
+        const startCap = getStartCap(y);
+        const endCap = getEndCap(y);
 
         return buildConnectorPaths({ points, strokeWidth, startCap, endCap });
       }

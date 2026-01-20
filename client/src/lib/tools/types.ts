@@ -1,15 +1,13 @@
 // Phase 5: Drawing Tool Types
 
+import type { WorldBounds } from '@avlo/shared';
+
 /**
- * WorldRect represents a bounding box in world coordinates
- * Used for selection bounds, dirty rects, and spatial queries
+ * WorldRect is an alias for WorldBounds from the shared package.
+ * Used for selection bounds, dirty rects, and spatial queries.
+ * @deprecated Prefer using WorldBounds directly from @avlo/shared
  */
-export interface WorldRect {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
+export type WorldRect = WorldBounds;
 
 /**
  * HandleId identifies resize handles at selection corners and sides

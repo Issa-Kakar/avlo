@@ -8,28 +8,29 @@
  * @module lib/connectors/types
  */
 
+import type { Frame, Dir as SharedDir } from '@avlo/shared';
+
+// Re-export from shared for convenience
+export type { Frame, StoredAnchor } from '@avlo/shared';
+
 // ============================================================================
 // DIRECTION & GEOMETRY TYPES
 // ============================================================================
 
 /** Cardinal direction type (North, East, South, West) */
-export type Dir = 'N' | 'E' | 'S' | 'W';
+export type Dir = SharedDir;
 
-/** Shape frame / AABB (x, y, width, height) */
-export interface ShapeFrame {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+/**
+ * Shape frame / AABB (x, y, width, height)
+ * @deprecated Use Frame from @avlo/shared instead
+ */
+export type ShapeFrame = Frame;
 
-/** AABB for spatial calculations (compatible with ShapeFrame) */
-export interface AABB {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+/**
+ * AABB for spatial calculations (compatible with Frame)
+ * @deprecated Use Frame from @avlo/shared instead
+ */
+export type AABB = Frame;
 
 /**
  * Edge-based bounds representation for routing AABBs.

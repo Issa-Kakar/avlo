@@ -10,6 +10,7 @@ import { getOverlayContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { getFrame } from '@avlo/shared';
 import {
   getAnimationController,
   destroyAnimationController,
@@ -258,7 +259,7 @@ export class OverlayRenderLoop {
 
               // Text: stroke the frame rect
               if (handle.kind === 'text') {
-                const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+                const frame = getFrame(handle.y);
                 if (frame) {
                   const [x, y, w, h] = frame;
                   ctx.strokeRect(x, y, w, h);

@@ -6,6 +6,7 @@
  */
 
 import type { ObjectHandle } from '@avlo/shared';
+import { getStartAnchor, getEndAnchor } from '@avlo/shared';
 import type * as Y from 'yjs';
 
 // ============================================================
@@ -68,8 +69,8 @@ export function processConnectorAdded(connectorId: string, yObj: Y.Map<unknown>)
 export function processConnectorUpdated(connectorId: string, yObj: Y.Map<unknown>): void {
   if (!shapeToConnectors || !connectorAnchors) return;
 
-  const startAnchor = yObj.get('startAnchor') as { id: string } | undefined;
-  const endAnchor = yObj.get('endAnchor') as { id: string } | undefined;
+  const startAnchor = getStartAnchor(yObj);
+  const endAnchor = getEndAnchor(yObj);
 
   const newStartId = startAnchor?.id ?? null;
   const newEndId = endAnchor?.id ?? null;
@@ -118,8 +119,8 @@ export function processShapeDeleted(shapeId: string): void {
 // ============================================================
 
 function registerConnectorAnchors(connectorId: string, yObj: Y.Map<unknown>): void {
-  const startAnchor = yObj.get('startAnchor') as { id: string } | undefined;
-  const endAnchor = yObj.get('endAnchor') as { id: string } | undefined;
+  const startAnchor = getStartAnchor(yObj);
+  const endAnchor = getEndAnchor(yObj);
 
   const startId = startAnchor?.id ?? null;
   const endId = endAnchor?.id ?? null;

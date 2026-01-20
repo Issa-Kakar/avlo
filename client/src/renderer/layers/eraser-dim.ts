@@ -1,4 +1,5 @@
 import type { Snapshot } from '@avlo/shared';
+import { getWidth, getFillColor, getFrame } from '@avlo/shared';
 import { getObjectCacheInstance } from '../object-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 
@@ -40,14 +41,14 @@ export function drawDimmedStrokes(
       } else if (kind === 'shape') {
         // For shapes: dim both fill (if present) and stroke
         const path = cache.getPath(id, handle);
-        const width = handle.y.get('width') as number | undefined;
-        const fillColor = handle.y.get('fillColor') as string | undefined;
+        const width = getWidth(handle.y, 0);
+        const fillColor = getFillColor(handle.y);
 
         if (fillColor) {
           ctx.fill(path);
         }
 
-        if (width && width > 0) {
+        if (width > 0) {
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
           ctx.lineWidth = width;
@@ -56,11 +57,11 @@ export function drawDimmedStrokes(
       } else if (kind === 'connector') {
         // Connectors use multi-path
         const paths = cache.getConnectorPaths(id, handle);
-        const width = handle.y.get('width') as number | undefined;
+        const width = getWidth(handle.y);
 
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        ctx.lineWidth = width ?? 2;
+        ctx.lineWidth = width;
         ctx.stroke(paths.polyline);
 
         // Dim arrows too
@@ -79,7 +80,7 @@ export function drawDimmedStrokes(
       ctx.restore();
     } else if (kind === 'text') {
       // Text: dim the bounding box
-      const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+      const frame = getFrame(handle.y);
       if (!frame) continue;
       const [x, y, w, h] = frame;
       ctx.fillRect(x, y, w, h);

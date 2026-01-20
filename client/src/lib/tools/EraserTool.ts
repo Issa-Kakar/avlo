@@ -9,6 +9,7 @@ import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/c
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getAnimationController } from '@/canvas/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
+import { getFrame, getPoints, getWidth, getShapeType, getFillColor, getStartAnchor, getEndAnchor } from '@avlo/shared';
 import * as Y from 'yjs';
 import type { PointerTool } from './types';
 
@@ -170,8 +171,8 @@ export class EraserTool implements PointerTool {
       switch (handle.kind) {
         case 'stroke':
         case 'connector': {
-          const points = handle.y.get('points') as [number, number][];
-          if (!points) break;
+          const points = getPoints(handle.y);
+          if (points.length === 0) break;
 
           if (strokeHitTest(worldX, worldY, points, radiusWorld)) {
             this.state.hitNow.add(handle.id);
@@ -180,12 +181,12 @@ export class EraserTool implements PointerTool {
         }
 
         case 'shape': {
-          const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+          const frame = getFrame(handle.y);
           if (!frame) break;
 
-          const shapeType = handle.y.get('shapeType') as string | undefined;
-          const strokeWidth = (handle.y.get('width') as number) ?? 1;
-          const fillColor = handle.y.get('fillColor') as string | undefined;
+          const shapeType = getShapeType(handle.y);
+          const strokeWidth = getWidth(handle.y, 1);
+          const fillColor = getFillColor(handle.y);
           const isFilled = !!fillColor;
 
           let hit = false;
@@ -212,7 +213,7 @@ export class EraserTool implements PointerTool {
         }
 
         case 'text': {
-          const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+          const frame = getFrame(handle.y);
           if (!frame) break;
 
           const [x, y, w, h] = frame;
@@ -411,8 +412,8 @@ export class EraserTool implements PointerTool {
         if (!connectorHandle) continue;
 
         // Check which anchor(s) point to this shape
-        const startAnchor = connectorHandle.y.get('startAnchor') as { id: string } | undefined;
-        const endAnchor = connectorHandle.y.get('endAnchor') as { id: string } | undefined;
+        const startAnchor = getStartAnchor(connectorHandle.y);
+        const endAnchor = getEndAnchor(connectorHandle.y);
 
         const existing = anchorCleanups.get(connectorId) ?? { clearStart: false, clearEnd: false };
 

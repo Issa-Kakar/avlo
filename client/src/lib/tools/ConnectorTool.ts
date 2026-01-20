@@ -22,6 +22,7 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
+import { getShapeType } from '@avlo/shared';
 import {
   type Dir,
   type SnapTarget,
@@ -262,7 +263,7 @@ export class ConnectorTool implements PointerTool {
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
           snapShapeFrame = [frame.x, frame.y, frame.w, frame.h];
-          snapShapeType = (handle.y.get('shapeType') as string) || 'rect';
+          snapShapeType = getShapeType(handle.y);
         }
       }
     }

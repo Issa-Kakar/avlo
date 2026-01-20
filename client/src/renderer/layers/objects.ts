@@ -1,4 +1,20 @@
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
+import {
+  getColor,
+  getOpacity,
+  getWidth,
+  getPoints,
+  getFrame,
+  getShapeType,
+  getFillColor,
+  getText,
+  getFontSize,
+  getFontFamily,
+  getFontWeight,
+  getFontStyle,
+  getTextAlignH,
+  getStrokeTool,
+} from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
@@ -122,10 +138,9 @@ function drawStroke(
   handle: ObjectHandle,
 ): void {
   const { id, y } = handle;
-  // Read style directly from Y.Map
-  const color = (y.get('color') as string) ?? '#000';
-  const opacity = (y.get('opacity') as number) ?? 1;
-  const tool = (y.get('tool') as string) ?? 'pen';
+  const color = getColor(y);
+  const opacity = getOpacity(y);
+  const tool = getStrokeTool(y);
 
   const cache = getObjectCacheInstance();
   const path = cache.getPath(id, handle);
@@ -149,11 +164,10 @@ function drawShape(
 ): void {
   const { id, y } = handle;
 
-  // Try new field names first, fall back to old for backward compatibility
-  const fillColor = y.get('fillColor') as string | undefined;
-  const color = (y.get('color') ?? y.get('strokeColor')) as string | undefined;
-  const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
-  const opacity = (y.get('opacity') as number) ?? 1;
+  const fillColor = getFillColor(y);
+  const color = getColor(y);
+  const width = getWidth(y, 1);
+  const opacity = getOpacity(y);
 
   const cache = getObjectCacheInstance();
   const path = cache.getPath(id, handle);
@@ -184,30 +198,20 @@ function drawTextBox(
   const { y } = handle;
 
   // Get frame and text content
-  const frame = y.get('frame') as [number, number, number, number];
-  const textContent = y.get('text');
+  const frame = getFrame(y);
+  const textContent = getText(y);
   if (!frame || !textContent) return;
 
   const [x, y0, w] = frame;
 
   // Get text styling
-  const color = (y.get('color') as string) ?? '#000';
-  const fontSize = (y.get('fontSize') as number) ?? 16;
-  const fontFamily = (y.get('fontFamily') as string) ?? 'sans-serif';
-  const fontWeight = (y.get('fontWeight') as string) ?? 'normal';
-  const fontStyle = (y.get('fontStyle') as string) ?? 'normal';
-  const textAlign = (y.get('textAlign') as string) ?? 'left';
-  const opacity = (y.get('opacity') as number) ?? 1;
-
-  // Get text content - handle Y.Text
-  let text = '';
-  if (typeof textContent === 'string') {
-    text = textContent;
-  } else if (textContent && typeof textContent.toString === 'function') {
-    text = textContent.toString();
-  }
-
-  if (!text) return;
+  const color = getColor(y);
+  const fontSize = getFontSize(y);
+  const fontFamily = getFontFamily(y);
+  const fontWeight = getFontWeight(y);
+  const fontStyle = getFontStyle(y);
+  const textAlign = getTextAlignH(y);
+  const opacity = getOpacity(y);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -215,7 +219,7 @@ function drawTextBox(
   // Set up text styling
   ctx.fillStyle = color;
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as unknown as 'left' | 'center' | 'right';
+  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
   ctx.textBaseline = 'top';
 
   // Calculate text position based on alignment
@@ -227,7 +231,7 @@ function drawTextBox(
   }
 
   // Simple text wrapping
-  const lines = wrapText(ctx, text, w);
+  const lines = wrapText(ctx, textContent, w);
   const lineHeight = fontSize * 1.2;
 
   for (let i = 0; i < lines.length; i++) {
@@ -243,9 +247,9 @@ function drawConnector(
 ): void {
   const { id, y } = handle;
 
-  const color = (y.get('color') as string) ?? '#000';
-  const width = (y.get('width') as number) ?? 2;
-  const opacity = (y.get('opacity') as number) ?? 1;
+  const color = getColor(y);
+  const width = getWidth(y);
+  const opacity = getOpacity(y);
 
   const cache = getObjectCacheInstance();
   const paths = cache.getConnectorPaths(id, handle);
@@ -410,7 +414,7 @@ function drawShapeWithTransform(
   const { y } = handle;
 
   // Get original frame and compute transformed frame
-  const frame = y.get('frame') as [number, number, number, number];
+  const frame = getFrame(y);
   if (!frame) return;
 
   const transformedFrame = applyTransformToFrame(frame, transform);
@@ -419,12 +423,12 @@ function drawShapeWithTransform(
   const [, , w, h] = transformedFrame;
   if (w < 0.001 || h < 0.001) return;
 
-  // Get styling from Y.Map
-  const shapeType = (y.get('shapeType') as string) || 'rect';
-  const fillColor = y.get('fillColor') as string | undefined;
-  const color = (y.get('color') ?? y.get('strokeColor')) as string | undefined;
-  const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
-  const opacity = (y.get('opacity') as number) ?? 1;
+  // Get styling
+  const shapeType = getShapeType(y);
+  const fillColor = getFillColor(y);
+  const color = getColor(y);
+  const width = getWidth(y, 1);
+  const opacity = getOpacity(y);
 
   // Build path from TRANSFORMED frame (not cached)
   const path = buildShapePathFromFrame(shapeType, transformedFrame);
@@ -459,31 +463,21 @@ function drawTextWithTransform(
   const { y } = handle;
 
   // Get original frame and compute transformed frame
-  const frame = y.get('frame') as [number, number, number, number];
-  const textContent = y.get('text');
+  const frame = getFrame(y);
+  const textContent = getText(y);
   if (!frame || !textContent) return;
 
   const transformedFrame = applyTransformToFrame(frame, transform);
   const [x, y0, w] = transformedFrame;
 
   // Get text styling
-  const color = (y.get('color') as string) ?? '#000';
-  const fontSize = (y.get('fontSize') as number) ?? 16;
-  const fontFamily = (y.get('fontFamily') as string) ?? 'sans-serif';
-  const fontWeight = (y.get('fontWeight') as string) ?? 'normal';
-  const fontStyle = (y.get('fontStyle') as string) ?? 'normal';
-  const textAlign = (y.get('textAlign') as string) ?? 'left';
-  const opacity = (y.get('opacity') as number) ?? 1;
-
-  // Get text content
-  let text = '';
-  if (typeof textContent === 'string') {
-    text = textContent;
-  } else if (textContent && typeof textContent.toString === 'function') {
-    text = textContent.toString();
-  }
-
-  if (!text) return;
+  const color = getColor(y);
+  const fontSize = getFontSize(y);
+  const fontFamily = getFontFamily(y);
+  const fontWeight = getFontWeight(y);
+  const fontStyle = getFontStyle(y);
+  const textAlign = getTextAlignH(y);
+  const opacity = getOpacity(y);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -491,7 +485,7 @@ function drawTextWithTransform(
   // Set up text styling - font size NOT scaled
   ctx.fillStyle = color;
   ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as unknown as 'left' | 'center' | 'right';
+  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
   ctx.textBaseline = 'top';
 
   // Calculate text position based on alignment
@@ -503,7 +497,7 @@ function drawTextWithTransform(
   }
 
   // Simple text wrapping
-  const lines = wrapText(ctx, text, w);
+  const lines = wrapText(ctx, textContent, w);
   const lineHeight = fontSize * 1.2;
 
   for (let i = 0; i < lines.length; i++) {
@@ -531,11 +525,11 @@ function drawScaledStrokePreview(
   transform: ScaleTransform
 ): void {
   const { y } = handle;
-  const points = y.get('points') as [number, number][];
-  const originalWidth = (y.get('width') as number) ?? 2;
-  const color = (y.get('color') as string) ?? '#000';
-  const opacity = (y.get('opacity') as number) ?? 1;
-  const tool = (y.get('tool') as string) ?? 'pen';
+  const points = getPoints(y);
+  const originalWidth = getWidth(y);
+  const color = getColor(y);
+  const opacity = getOpacity(y);
+  const tool = getStrokeTool(y);
 
   if (!points?.length) return;
 
@@ -594,7 +588,7 @@ function drawShapeWithUniformScale(
   transform: ScaleTransform
 ): void {
   const { y } = handle;
-  const frame = y.get('frame') as [number, number, number, number];
+  const frame = getFrame(y);
   if (!frame) return;
 
   const [x, frameY, w, h] = frame;
@@ -624,12 +618,12 @@ function drawShapeWithUniformScale(
   // Skip render if dimensions collapsed to near-zero
   if (newW < 0.001 || newH < 0.001) return;
 
-  // Get styling from Y.Map
-  const shapeType = (y.get('shapeType') as string) || 'rect';
-  const fillColor = y.get('fillColor') as string | undefined;
-  const color = (y.get('color') ?? y.get('strokeColor')) as string | undefined;
-  const width = ((y.get('width') ?? y.get('strokeWidth')) as number) ?? 1;
-  const opacity = (y.get('opacity') as number) ?? 1;
+  // Get styling
+  const shapeType = getShapeType(y);
+  const fillColor = getFillColor(y);
+  const color = getColor(y);
+  const width = getWidth(y, 1);
+  const opacity = getOpacity(y);
 
   // Build path from TRANSFORMED frame (not cached)
   const path = buildShapePathFromFrame(shapeType, transformedFrame);
@@ -663,8 +657,8 @@ function drawTextWithUniformScale(
   transform: ScaleTransform
 ): void {
   const { y } = handle;
-  const frame = y.get('frame') as [number, number, number, number];
-  const textContent = y.get('text');
+  const frame = getFrame(y);
+  const textContent = getText(y);
   if (!frame || !textContent) return;
 
   const [x, frameY, w, h] = frame;
@@ -688,23 +682,13 @@ function drawTextWithUniformScale(
   const transformedY = newCy - newH / 2;
 
   // Get text styling
-  const color = (y.get('color') as string) ?? '#000';
-  const fontSize = (y.get('fontSize') as number) ?? 16;
-  const fontFamily = (y.get('fontFamily') as string) ?? 'sans-serif';
-  const fontWeight = (y.get('fontWeight') as string) ?? 'normal';
-  const fontStyle = (y.get('fontStyle') as string) ?? 'normal';
-  const textAlign = (y.get('textAlign') as string) ?? 'left';
-  const opacity = (y.get('opacity') as number) ?? 1;
-
-  // Get text content
-  let text = '';
-  if (typeof textContent === 'string') {
-    text = textContent;
-  } else if (textContent && typeof textContent.toString === 'function') {
-    text = textContent.toString();
-  }
-
-  if (!text) return;
+  const color = getColor(y);
+  const fontSize = getFontSize(y);
+  const fontFamily = getFontFamily(y);
+  const fontWeight = getFontWeight(y);
+  const fontStyle = getFontStyle(y);
+  const textAlign = getTextAlignH(y);
+  const opacity = getOpacity(y);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -723,7 +707,7 @@ function drawTextWithUniformScale(
     textX = transformedX + newW;
   }
 
-  ctx.fillText(text, textX, transformedY);
+  ctx.fillText(textContent, textX, transformedY);
   ctx.restore();
 }
 

@@ -17,7 +17,27 @@ import {
   ellipseIntersectsRect,
   diamondIntersectsRect,
   computePolylineArea,
+  getDiamondVertices,
 } from '@/lib/geometry/hit-test-primitives';
+import type { ObjectHandle } from '@avlo/shared';
+import {
+  getFrame,
+  getPoints,
+  getWidth,
+  getShapeType,
+  getFillColor,
+  unionBounds,
+  expandEnvelope,
+  translateBounds,
+  scaleBoundsAround,
+  pointsToWorldBounds,
+  frameTupleToWorldBounds,
+  boundsCenter,
+  boundsWidth,
+  boundsHeight,
+  expandBounds,
+  bboxTupleToWorldBounds,
+} from '@avlo/shared';
 import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -49,20 +69,6 @@ interface HitCandidate {
   insideInterior: boolean;
   area: number;
   isFilled: boolean;
-}
-
-// SelectToolOpts REMOVED - now using module-level imports from:
-// - room-runtime.ts (getActiveRoomDoc)
-// - invalidation-helpers.ts (invalidateWorld, invalidateOverlay)
-// - device-ui-store.ts (applyCursor, setCursorOverride)
-
-interface ObjectHandle {
-  id: string;
-  kind: 'stroke' | 'shape' | 'text' | 'connector';
-  y: {
-    get: (key: string) => unknown;
-  };
-  bbox: [number, number, number, number];
 }
 
 // === SelectTool Class ===
@@ -406,13 +412,7 @@ export class SelectTool implements PointerTool {
         const store = useSelectionStore.getState();
         const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
         // Union original + transformed bounds to clear any ghosting
-        const unionBounds: WorldRect = {
-          minX: Math.min(bounds.minX, transformedBounds.minX),
-          minY: Math.min(bounds.minY, transformedBounds.minY),
-          maxX: Math.max(bounds.maxX, transformedBounds.maxX),
-          maxY: Math.max(bounds.maxY, transformedBounds.maxY),
-        };
-        invalidateWorld(unionBounds);
+        invalidateWorld(unionBounds(bounds, transformedBounds));
       }
     }
 
@@ -440,12 +440,7 @@ export class SelectTool implements PointerTool {
     // Compute marquee rect if active
     let marqueeRect: WorldRect | null = null;
     if (marquee.active && marquee.anchor && marquee.current) {
-      marqueeRect = {
-        minX: Math.min(marquee.anchor[0], marquee.current[0]),
-        minY: Math.min(marquee.anchor[1], marquee.current[1]),
-        maxX: Math.max(marquee.anchor[0], marquee.current[0]),
-        maxY: Math.max(marquee.anchor[1], marquee.current[1]),
-      };
+      marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
     }
 
     // Compute selection bounds with transform applied
@@ -542,23 +537,15 @@ export class SelectTool implements PointerTool {
     if (selectedIds.length === 0) return null;
 
     const snapshot = getCurrentSnapshot();
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let result: WorldRect | null = null;
 
     for (const id of selectedIds) {
       const handle = snapshot.objectsById.get(id);
       if (!handle) continue;
-
-      // bbox format is [minX, minY, maxX, maxY], NOT [x, y, width, height]
-      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-      minX = Math.min(minX, bMinX);
-      minY = Math.min(minY, bMinY);
-      maxX = Math.max(maxX, bMaxX);
-      maxY = Math.max(maxY, bMaxY);
+      result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
     }
 
-    if (!isFinite(minX)) return null;
-
-    return { minX, minY, maxX, maxY };
+    return result;
   }
 
   /**
@@ -586,7 +573,7 @@ export class SelectTool implements PointerTool {
 
       if (handle.kind === 'shape' || handle.kind === 'text') {
         // Raw frame bounds (NO stroke width padding)
-        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        const frame = getFrame(y);
         if (!frame) continue;
         const [x, frameY, w, h] = frame;
         minX = Math.min(minX, x);
@@ -595,8 +582,8 @@ export class SelectTool implements PointerTool {
         maxY = Math.max(maxY, frameY + h);
       } else {
         // Stroke/connector: raw points min/max (NO width inflation)
-        const points = y.get('points') as [number, number][] | undefined;
-        if (!points || points.length === 0) continue;
+        const points = getPoints(y);
+        if (points.length === 0) continue;
 
         for (const [px, py] of points) {
           minX = Math.min(minX, px);
@@ -613,27 +600,12 @@ export class SelectTool implements PointerTool {
 
   private applyTransformToBounds(bounds: WorldRect, transform: { kind: string; dx?: number; dy?: number; scaleX?: number; scaleY?: number; origin?: [number, number] }): WorldRect {
     if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
-      return {
-        minX: bounds.minX + transform.dx,
-        minY: bounds.minY + transform.dy,
-        maxX: bounds.maxX + transform.dx,
-        maxY: bounds.maxY + transform.dy,
-      };
+      return translateBounds(bounds, transform.dx, transform.dy);
     }
 
     if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
-      const [ox, oy] = transform.origin;
-      const x1 = ox + (bounds.minX - ox) * transform.scaleX;
-      const y1 = oy + (bounds.minY - oy) * transform.scaleY;
-      const x2 = ox + (bounds.maxX - ox) * transform.scaleX;
-      const y2 = oy + (bounds.maxY - oy) * transform.scaleY;
-      // CRITICAL: Normalize for negative scale (flip) - ensures minX < maxX, minY < maxY
-      return {
-        minX: Math.min(x1, x2),
-        minY: Math.min(y1, y2),
-        maxX: Math.max(x1, x2),
-        maxY: Math.max(y1, y2),
-      };
+      // CRITICAL: scaleBoundsAround normalizes for negative scale (flip) - ensures minX < maxX, minY < maxY
+      return scaleBoundsAround(bounds, transform.origin, transform.scaleX, transform.scaleY);
     }
 
     return bounds;
@@ -649,8 +621,7 @@ export class SelectTool implements PointerTool {
   }
 
   private getScaleOrigin(handle: HandleId, bounds: WorldRect): [number, number] {
-    const midX = (bounds.minX + bounds.maxX) / 2;
-    const midY = (bounds.minY + bounds.maxY) / 2;
+    const [midX, midY] = boundsCenter(bounds);
 
     // Scale origin is opposite edge/corner from the dragged handle
     switch (handle) {
@@ -741,20 +712,10 @@ export class SelectTool implements PointerTool {
 
       // First move: include original bounds
       if (!this.transformEnvelope) {
-        this.transformEnvelope = {
-          minX: Math.min(bounds.minX, transformedBounds.minX),
-          minY: Math.min(bounds.minY, transformedBounds.minY),
-          maxX: Math.max(bounds.maxX, transformedBounds.maxX),
-          maxY: Math.max(bounds.maxY, transformedBounds.maxY),
-        };
+        this.transformEnvelope = unionBounds(bounds, transformedBounds);
       } else {
         // ACCUMULATE: expand envelope (never shrink)
-        this.transformEnvelope = {
-          minX: Math.min(this.transformEnvelope.minX, transformedBounds.minX),
-          minY: Math.min(this.transformEnvelope.minY, transformedBounds.minY),
-          maxX: Math.max(this.transformEnvelope.maxX, transformedBounds.maxX),
-          maxY: Math.max(this.transformEnvelope.maxY, transformedBounds.maxY),
-        };
+        this.transformEnvelope = expandEnvelope(this.transformEnvelope, transformedBounds);
       }
 
       invalidateWorld(this.transformEnvelope);
@@ -765,7 +726,6 @@ export class SelectTool implements PointerTool {
       // Scale: per-object bounds based on transform strategy
       const snapshot = getCurrentSnapshot();
       const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
-      const [ox, oy] = origin;
 
       let combinedBounds: WorldRect | null = null;
 
@@ -773,25 +733,19 @@ export class SelectTool implements PointerTool {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
 
-        const [minX, minY, maxX, maxY] = handle.bbox;
+        const bbox = bboxTupleToWorldBounds(handle.bbox);
         const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
         let objBounds: WorldRect;
 
         // CASE 1: Mixed + side + stroke = TRANSLATE (not scale)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
           const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
-          objBounds = {
-            minX: minX + dx,
-            minY: minY + dy,
-            maxX: maxX + dx,
-            maxY: maxY + dy,
-          };
+          objBounds = translateBounds(bbox, dx, dy);
         } else if (isStroke) {
           // CASE 2: Stroke scaling with position preservation
-          const cx = (minX + maxX) / 2;
-          const cy = (minY + maxY) / 2;
-          const halfW = (maxX - minX) / 2;
-          const halfH = (maxY - minY) / 2;
+          const [cx, cy] = boundsCenter(bbox);
+          const halfW = boundsWidth(bbox) / 2;
+          const halfH = boundsHeight(bbox) / 2;
 
           // Compute uniform scale with SNAP behavior (no threshold)
           const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
@@ -809,23 +763,19 @@ export class SelectTool implements PointerTool {
           };
 
           // Expand for scaled stroke width
-          const origWidth = (handle.y.get('width') as number) ?? 2;
+          const origWidth = getWidth(handle.y);
           const scaledWidth = origWidth * absScale;
           const delta = (scaledWidth - origWidth) * 0.5;
           if (delta > 0) {
-            objBounds.minX -= delta;
-            objBounds.minY -= delta;
-            objBounds.maxX += delta;
-            objBounds.maxY += delta;
+            objBounds = expandBounds(objBounds, delta);
           }
         } else {
           // CASE 3: Shape/text scaling
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             // Mixed + corner: center-based with position preservation
-            const cx = (minX + maxX) / 2;
-            const cy = (minY + maxY) / 2;
-            const w = maxX - minX;
-            const h = maxY - minY;
+            const [cx, cy] = boundsCenter(bbox);
+            const w = boundsWidth(bbox);
+            const h = boundsHeight(bbox);
             const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
             const absScale = Math.abs(uniformScale);
 
@@ -843,53 +793,21 @@ export class SelectTool implements PointerTool {
             };
           } else {
             // Shapes-only or mixed+side: corner-based (non-uniform allowed)
-            const x1 = ox + (minX - ox) * scaleX;
-            const y1 = oy + (minY - oy) * scaleY;
-            const x2 = ox + (maxX - ox) * scaleX;
-            const y2 = oy + (maxY - oy) * scaleY;
-            objBounds = {
-              minX: Math.min(x1, x2),
-              minY: Math.min(y1, y2),
-              maxX: Math.max(x1, x2),
-              maxY: Math.max(y1, y2),
-            };
+            objBounds = scaleBoundsAround(bbox, origin, scaleX, scaleY);
           }
         }
 
         // Union with combined bounds
-        if (!combinedBounds) {
-          combinedBounds = objBounds;
-        } else {
-          combinedBounds = {
-            minX: Math.min(combinedBounds.minX, objBounds.minX),
-            minY: Math.min(combinedBounds.minY, objBounds.minY),
-            maxX: Math.max(combinedBounds.maxX, objBounds.maxX),
-            maxY: Math.max(combinedBounds.maxY, objBounds.maxY),
-          };
-        }
+        combinedBounds = expandEnvelope(combinedBounds, objBounds);
       }
 
       if (!combinedBounds) return;
 
       // Include padded bboxBounds for full visual coverage (stroke width padding)
-      combinedBounds = {
-        minX: Math.min(combinedBounds.minX, bboxBounds.minX),
-        minY: Math.min(combinedBounds.minY, bboxBounds.minY),
-        maxX: Math.max(combinedBounds.maxX, bboxBounds.maxX),
-        maxY: Math.max(combinedBounds.maxY, bboxBounds.maxY),
-      };
+      combinedBounds = unionBounds(combinedBounds, bboxBounds);
 
       // ACCUMULATE envelope (expand, never shrink)
-      if (!this.transformEnvelope) {
-        this.transformEnvelope = combinedBounds;
-      } else {
-        this.transformEnvelope = {
-          minX: Math.min(this.transformEnvelope.minX, combinedBounds.minX),
-          minY: Math.min(this.transformEnvelope.minY, combinedBounds.minY),
-          maxX: Math.max(this.transformEnvelope.maxX, combinedBounds.maxX),
-          maxY: Math.max(this.transformEnvelope.maxY, combinedBounds.maxY),
-        };
-      }
+      this.transformEnvelope = expandEnvelope(this.transformEnvelope, combinedBounds);
 
       invalidateWorld(this.transformEnvelope);
     }
@@ -913,13 +831,13 @@ export class SelectTool implements PointerTool {
 
         if (handle.kind === 'stroke' || handle.kind === 'connector') {
           // Offset all points
-          const points = yMap.get('points') as [number, number][];
-          if (!points) continue;
+          const points = getPoints(yMap);
+          if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
         } else {
           // Offset frame (shapes, text)
-          const frame = yMap.get('frame') as [number, number, number, number];
+          const frame = getFrame(yMap);
           if (!frame) continue;
           const [x, y, w, h] = frame;
           yMap.set('frame', [x + dx, y + dy, w, h]);
@@ -954,11 +872,11 @@ export class SelectTool implements PointerTool {
 
         const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
 
-        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY 
+        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
           const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
-          const points = yMap.get('points') as [number, number][];
-          if (!points) continue;
+          const points = getPoints(yMap);
+          if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
           // Width UNCHANGED for translation
@@ -970,8 +888,8 @@ export class SelectTool implements PointerTool {
         // - Position preserves relative arrangement in selection box
         // - Geometry uses absolute magnitude (NEVER inverted/mirrored)
         if (isStroke) {
-          const points = yMap.get('points') as [number, number][];
-          if (!points) continue;
+          const points = getPoints(yMap);
+          if (points.length === 0) continue;
 
           // Get stroke center from bbox
           const [minX, minY, maxX, maxY] = handle.bbox;
@@ -994,13 +912,13 @@ export class SelectTool implements PointerTool {
           yMap.set('points', newPoints);
 
           // CRITICAL: Scale stroke width for WYSIWYG
-          const oldWidth = (yMap.get('width') as number) ?? 2;
+          const oldWidth = getWidth(yMap);
           yMap.set('width', oldWidth * absScale);
           continue;
         }
 
         // CASE 3: Shape scaling
-        const frame = yMap.get('frame') as [number, number, number, number];
+        const frame = getFrame(yMap);
         if (!frame) continue;
         const [x, y, w, h] = frame;
 
@@ -1079,12 +997,7 @@ export class SelectTool implements PointerTool {
 
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
-    const marqueeRect: WorldRect = {
-      minX: Math.min(marquee.anchor[0], marquee.current[0]),
-      minY: Math.min(marquee.anchor[1], marquee.current[1]),
-      maxX: Math.max(marquee.anchor[0], marquee.current[0]),
-      maxY: Math.max(marquee.anchor[1], marquee.current[1]),
-    };
+    const marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
     const snapshot = getCurrentSnapshot();
@@ -1131,12 +1044,7 @@ export class SelectTool implements PointerTool {
     const handleRadius = HANDLE_HIT_PX / scale;
 
     // Test corners first (they take priority)
-    const corners: { id: HandleId; x: number; y: number }[] = [
-      { id: 'nw', x: bounds.minX, y: bounds.minY },
-      { id: 'ne', x: bounds.maxX, y: bounds.minY },
-      { id: 'se', x: bounds.maxX, y: bounds.maxY },
-      { id: 'sw', x: bounds.minX, y: bounds.maxY },
-    ];
+    const corners = this.computeHandles(bounds);
 
     for (const h of corners) {
       const dx = worldX - h.x;
@@ -1217,11 +1125,11 @@ export class SelectTool implements PointerTool {
     switch (handle.kind) {
       case 'stroke':
       case 'connector': {
-        const points = y.get('points') as [number, number][] | undefined;
-        if (!points || points.length === 0) return null;
+        const points = getPoints(y);
+        if (points.length === 0) return null;
 
         // Add stroke width to tolerance for more forgiving hit detection (like EraserTool)
-        const strokeWidth = (y.get('width') as number) ?? 2;
+        const strokeWidth = getWidth(y);
         const tolerance = radiusWorld + strokeWidth / 2;
 
         if (strokeHitTest(worldX, worldY, points, tolerance)) {
@@ -1238,12 +1146,12 @@ export class SelectTool implements PointerTool {
       }
 
       case 'shape': {
-        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        const frame = getFrame(y);
         if (!frame) return null;
 
-        const shapeType = (y.get('shapeType') as string) || 'rect';
-        const strokeWidth = (y.get('width') as number) ?? 1;
-        const fillColor = y.get('fillColor') as string | undefined;
+        const shapeType = getShapeType(y);
+        const strokeWidth = getWidth(y, 1);
+        const fillColor = getFillColor(y);
         const isFilled = !!fillColor;
 
         // For SELECT: click inside unfilled shapes still selects them
@@ -1265,7 +1173,7 @@ export class SelectTool implements PointerTool {
       }
 
       case 'text': {
-        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        const frame = getFrame(y);
         if (!frame) return null;
 
         const [x, yPos, w, h] = frame;
@@ -1417,11 +1325,7 @@ export class SelectTool implements PointerTool {
 
     switch (shapeType) {
       case 'diamond': {
-        // Diamond vertices at frame edge midpoints
-        const top: [number, number] = [x + w / 2, y];
-        const right: [number, number] = [x + w, y + h / 2];
-        const bottom: [number, number] = [x + w / 2, y + h];
-        const left: [number, number] = [x, y + h / 2];
+        const { top, right, bottom, left } = getDiamondVertices(frame);
         return pointInDiamond(cx, cy, top, right, bottom, left);
       }
 
@@ -1456,10 +1360,7 @@ export class SelectTool implements PointerTool {
 
     switch (shapeType) {
       case 'diamond': {
-        const top: [number, number] = [x + w / 2, y];
-        const right: [number, number] = [x + w, y + h / 2];
-        const bottom: [number, number] = [x + w / 2, y + h];
-        const left: [number, number] = [x, y + h / 2];
+        const { top, right, bottom, left } = getDiamondVertices(frame);
 
         const edges: [[number, number], [number, number]][] = [
           [top, right],
@@ -1522,16 +1423,16 @@ export class SelectTool implements PointerTool {
     switch (handle.kind) {
       case 'stroke':
       case 'connector': {
-        const points = y.get('points') as [number, number][] | undefined;
-        if (!points || points.length === 0) return false;
+        const points = getPoints(y);
+        if (points.length === 0) return false;
         return polylineIntersectsRect(points, rect);
       }
 
       case 'shape': {
-        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        const frame = getFrame(y);
         if (!frame) return false;
 
-        const shapeType = (y.get('shapeType') as string) || 'rect';
+        const shapeType = getShapeType(y);
         const [x, yPos, w, h] = frame;
 
         switch (shapeType) {
@@ -1541,28 +1442,22 @@ export class SelectTool implements PointerTool {
             );
           }
           case 'diamond': {
-            const top: [number, number] = [x + w / 2, yPos];
-            const right: [number, number] = [x + w, yPos + h / 2];
-            const bottom: [number, number] = [x + w / 2, yPos + h];
-            const left: [number, number] = [x, yPos + h / 2];
+            const { top, right, bottom, left } = getDiamondVertices(frame);
             return diamondIntersectsRect(top, right, bottom, left, rect);
           }
           case 'rect':
           case 'roundedRect':
           default: {
             // Rect vs rect intersection
-            const shapeBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
-            return rectsIntersect(shapeBounds, rect);
+            return rectsIntersect(frameTupleToWorldBounds(frame), rect);
           }
         }
       }
 
       case 'text': {
-        const frame = y.get('frame') as [number, number, number, number] | undefined;
+        const frame = getFrame(y);
         if (!frame) return false;
-        const [x, yPos, w, h] = frame;
-        const textBounds: WorldRect = { minX: x, minY: yPos, maxX: x + w, maxY: yPos + h };
-        return rectsIntersect(textBounds, rect);
+        return rectsIntersect(frameTupleToWorldBounds(frame), rect);
       }
 
       default:

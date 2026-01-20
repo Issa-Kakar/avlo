@@ -12,6 +12,7 @@
  */
 
 import type { ObjectHandle } from '@avlo/shared';
+import { getFrame } from '@avlo/shared';
 import type { Dir, ShapeFrame, AABB, Bounds } from './types';
 import { computeApproachOffset } from './constants';
 
@@ -24,7 +25,7 @@ import { computeApproachOffset } from './constants';
  */
 export function getShapeFrame(handle: ObjectHandle): ShapeFrame | null {
   if (handle.kind !== 'shape' && handle.kind !== 'text') return null;
-  const frame = handle.y.get('frame') as [number, number, number, number] | undefined;
+  const frame = getFrame(handle.y);
   if (!frame) return null;
   return { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
 }

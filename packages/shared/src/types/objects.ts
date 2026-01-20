@@ -1,4 +1,16 @@
 import type * as Y from 'yjs';
+import type { BBoxTuple, WorldBounds } from './geometry';
+
+// Re-export geometry types for convenience
+export type { BBoxTuple, FrameTuple, WorldBounds, Frame } from './geometry';
+export {
+  tupleToFrame,
+  frameToTuple,
+  frameToWorldBounds,
+  bboxTupleToWorldBounds,
+  worldBoundsToBBoxTuple,
+  worldBoundsToFrame,
+} from './geometry';
 
 // Object types - STRICT SEMANTIC SEPARATION
 // stroke = pen/highlighter (ALWAYS Perfect Freehand polygon)
@@ -11,8 +23,8 @@ export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 export interface ObjectHandle {
   id: string;
   kind: ObjectKind;
-  y: Y.Map<any>;  // Direct Y.Map reference
-  bbox: [number, number, number, number];  // Computed locally, NOT stored in Y.Map
+  y: Y.Map<unknown>;  // Direct Y.Map reference
+  bbox: BBoxTuple;  // Computed locally, NOT stored in Y.Map
 }
 
 // Spatial index entry (minimal)
@@ -27,13 +39,6 @@ export interface IndexEntry {
 }
 
 // Dirty tracking
-export type WorldBounds = {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-};
-
 export interface DirtyPatch {
   rects: WorldBounds[];
   evictIds: string[];

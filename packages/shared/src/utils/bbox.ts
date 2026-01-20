@@ -1,10 +1,11 @@
 import type * as Y from 'yjs';
 import type { ObjectKind, WorldBounds } from '../types/objects';
+import { getPoints, getFrame, getWidth, getStartCap, getEndCap } from '../accessors/object-accessors';
 
-export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, number, number, number] {
+export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number, number, number, number] {
   switch (kind) {
     case 'stroke': {
-      const points = (yMap.get('points') as [number, number][]) ?? [];
+      const points = getPoints(yMap);
       if (points.length < 1) return [0, 0, 0, 0];
 
       let minX = points[0][0], minY = points[0][1];
@@ -20,7 +21,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
 
       // CRITICAL: Width IS part of bbox!
       // If width changes → bbox changes → geometry eviction
-      const width = (yMap.get('width') as number) ?? 1;
+      const width = getWidth(yMap, 1);
       const padding = width * 0.5 + 1;
 
       return [
@@ -32,9 +33,8 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
     }
 
     case 'shape': {
-      const frame = (yMap.get('frame') as [number, number, number, number]) ?? [0, 0, 0, 0];
-      // Try new field name 'width' first, fall back to 'strokeWidth' for backward compatibility
-      const strokeWidth = ((yMap.get('width') ?? yMap.get('strokeWidth')) as number) ?? 1;
+      const frame = getFrame(yMap) ?? [0, 0, 0, 0];
+      const strokeWidth = getWidth(yMap, 1);
       const padding = strokeWidth * 0.5 + 1;
 
       return [
@@ -46,7 +46,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
     }
 
     case 'text': {
-      const frame = (yMap.get('frame') as [number, number, number, number]) ?? [0, 0, 0, 0];
+      const frame = getFrame(yMap) ?? [0, 0, 0, 0];
       return [
         frame[0],
         frame[1],
@@ -56,7 +56,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
     }
 
     case 'connector': {
-      const points = (yMap.get('points') as [number, number][]) ?? [];
+      const points = getPoints(yMap);
       if (points.length < 2) return [0, 0, 0, 0];
 
       let minX = points[0][0], minY = points[0][1];
@@ -70,9 +70,9 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<any>): [number, num
         maxY = Math.max(maxY, y);
       }
 
-      const width = (yMap.get('width') as number) ?? 2;
-      const startCap = yMap.get('startCap') as string | undefined;
-      const endCap = yMap.get('endCap') as string | undefined;
+      const width = getWidth(yMap);
+      const startCap = getStartCap(yMap);
+      const endCap = getEndCap(yMap);
 
       // Polyline stroke extends perpendicular by half width
       const strokePadding = width / 2;
