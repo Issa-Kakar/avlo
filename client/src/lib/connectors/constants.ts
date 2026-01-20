@@ -17,13 +17,13 @@ export const SNAP_CONFIG = {
   EDGE_SNAP_RADIUS_PX: 15,
 
   /** Distance to snap into midpoint (slightly larger than edge) */
-  MIDPOINT_SNAP_IN_PX: 20,
+  MIDPOINT_SNAP_IN_PX: 16,
 
   /** Distance to unstick from midpoint (hysteresis prevents jitter) */
-  MIDPOINT_SNAP_OUT_PX: 20,
+  MIDPOINT_SNAP_OUT_PX: 16,
 
   /** Depth inside shape before forcing midpoint-only mode (allows edge sliding when shallow inside) */
-  FORCE_MIDPOINT_DEPTH_PX: 30,
+  FORCE_MIDPOINT_DEPTH_PX: 35,
 
   /** Anchor dot visual radius */
   DOT_RADIUS_PX: 7,

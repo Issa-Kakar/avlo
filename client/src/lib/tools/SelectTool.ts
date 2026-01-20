@@ -954,7 +954,7 @@ export class SelectTool implements PointerTool {
 
         const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
 
-        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY (Miro-like behavior)
+        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY 
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
           const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           const points = yMap.get('points') as [number, number][];

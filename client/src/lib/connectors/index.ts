@@ -53,6 +53,8 @@ export {
   resolveFreeStartDir,
   computeFreeEndDir,
   inferDragDirection,
+  // Anchor helpers
+  applyAnchorToFrame,
 } from './connector-utils';
 
 // Snapping
@@ -65,8 +67,9 @@ export {
 } from './snap';
 
 // Routing
-export { computeRoute, computeAStarRoute } from './routing-astar';
+export { computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
+export { routeConnector } from './route-connector';
 
 // Path building (for cache and preview)
 export type {

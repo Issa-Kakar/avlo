@@ -90,11 +90,13 @@ export interface RouteResult {
  *
  * Grid construction just reads AABB boundaries from this.
  * A* uses stubs as start/goal positions.
+ *
+ * Note: Does NOT store Terminal objects - only the 7 primitives needed for routing.
  */
 export interface RoutingContext {
-  // Original terminals (unchanged)
-  from: Terminal;
-  to: Terminal;
+  // Endpoint positions (for final path assembly)
+  startPos: [number, number];
+  endPos: [number, number];
 
   // Dynamic routing bounds (centerline/padding baked in)
   // These are NOT raw shape bounds - they're the routing AABBs

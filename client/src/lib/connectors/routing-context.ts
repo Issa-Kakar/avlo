@@ -18,7 +18,7 @@ import {
   isPointBounds,
   isHorizontal,
 } from './connector-utils';
-import type { Terminal, Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Centerlines } from './types';
+import type { Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Centerlines } from './types';
 
 // ============================================================================
 // MAIN ENTRY POINT
@@ -33,54 +33,71 @@ import type { Terminal, Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Cente
  * - Stubs are computed (on AABB boundary)
  * - Obstacles are collected
  *
- * @param from - Start terminal (direction already resolved)
- * @param to - End terminal (direction already resolved)
+ * Takes 7 primitives instead of Terminal objects:
+ * - startPos, startDir, endPos, endDir: Position and direction for each endpoint
+ * - startBounds, endBounds: Shape AABB if anchored, null if free (isAnchored derived)
+ * - strokeWidth: Connector stroke width (affects offset)
+ *
+ * @param startPos - Start endpoint position
+ * @param startDir - Start outward direction
+ * @param endPos - End endpoint position
+ * @param endDir - End outward direction
+ * @param startShapeBounds - Shape bounds if start is anchored, null if free
+ * @param endShapeBounds - Shape bounds if end is anchored, null if free
  * @param strokeWidth - Connector stroke width (affects offset)
  * @returns Complete routing context
  */
 export function createRoutingContext(
-  from: Terminal,
-  to: Terminal,
+  startPos: [number, number],
+  startDir: Dir,
+  endPos: [number, number],
+  endDir: Dir,
+  startShapeBounds: AABB | null,
+  endShapeBounds: AABB | null,
   strokeWidth: number
 ): RoutingContext {
   const offset = computeApproachOffset(strokeWidth);
 
+  // Derive isAnchored from bounds !== null
+  const startAnchored = startShapeBounds !== null;
+  const endAnchored = endShapeBounds !== null;
+
   // 1. Get raw bounds (shape bounds or point)
-  const startRaw = from.shapeBounds ? toBounds(from.shapeBounds) : pointBounds(from.position);
-  const endRaw = to.shapeBounds ? toBounds(to.shapeBounds) : pointBounds(to.position);
+  const startRaw = startShapeBounds ? toBounds(startShapeBounds) : pointBounds(startPos);
+  const endRaw = endShapeBounds ? toBounds(endShapeBounds) : pointBounds(endPos);
 
   // 2. Determine endpoint configuration
-  const isFreeToAnchored = !from.isAnchored && to.isAnchored;
-  const isAnchoredToFree = from.isAnchored && !to.isAnchored;
+  const isFreeToAnchored = !startAnchored && endAnchored;
+  const isAnchoredToFree = startAnchored && !endAnchored;
   // 3. Compute centerlines from RAW bounds (no padding)
   const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset);
 
   // 4. Build dynamic routing bounds with centerline/padding
   // Each call determines its own facing sides based on where the OTHER shape is
-  const startBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset, isAnchoredToFree);
-  const endBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset, isAnchoredToFree);
+  const routingStartBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset, isAnchoredToFree);
+  const routingEndBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset, isAnchoredToFree);
 
   // 5. Compute stubs from bounds + direction
-  const startStub = computeStub(startBounds, from.position, from.outwardDir);
-  const endStub = computeStub(endBounds, to.position, to.outwardDir);
+  const startStub = computeStub(routingStartBounds, startPos, startDir);
+  const endStub = computeStub(routingEndBounds, endPos, endDir);
 
   // 6. Collect obstacles (raw shape bounds for segment checking)
   // Segments ON the boundary are blocked by segmentIntersectsAABB (non-strict inequality)
   const obstacles: AABB[] = [];
-  if (from.shapeBounds) obstacles.push(from.shapeBounds);
-  if (to.shapeBounds && to.shapeBounds !== from.shapeBounds) {
-    obstacles.push(to.shapeBounds);
+  if (startShapeBounds) obstacles.push(startShapeBounds);
+  if (endShapeBounds && endShapeBounds !== startShapeBounds) {
+    obstacles.push(endShapeBounds);
   }
 
   return {
-    from,
-    to,
-    startBounds,
-    endBounds,
+    startPos,
+    endPos,
+    startBounds: routingStartBounds,
+    endBounds: routingEndBounds,
     startStub,
     endStub,
-    startDir: from.outwardDir,
-    endDir: to.outwardDir,
+    startDir,
+    endDir,
     obstacles,
   };
 }

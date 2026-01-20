@@ -23,7 +23,7 @@ import {
 } from './connector-utils';
 import { createRoutingContext, buildSimpleGrid } from './routing-context';
 import { MinHeap } from './binary-heap';
-import type { Terminal, RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types';
+import type { RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types';
 
 /**
 
@@ -348,35 +348,49 @@ function astar(
  * Compute A* routed path for connected endpoints.
  *
  * NEW ARCHITECTURE: Uses routing context for all spatial analysis.
- *
- * Used when either endpoint is anchored to a shape.
- * Provides obstacle avoidance by routing around shape bounds.
+ * Takes 7 primitives instead of Terminal objects for cleaner SelectTool integration.
  *
  * Supports all endpoint combinations:
- * - Free→Anchored: Uses to.shapeBounds as obstacle
- * - Anchored→Free: Uses from.shapeBounds as obstacle
+ * - Free→Anchored: Uses endShapeBounds as obstacle
+ * - Anchored→Free: Uses startShapeBounds as obstacle
  * - Anchored→Anchored: Uses both shapes as obstacles
  *
- * @param from - Start terminal (direction already resolved)
- * @param to - End terminal (direction already resolved)
+ * @param startPos - Start endpoint position
+ * @param startDir - Start outward direction
+ * @param endPos - End endpoint position
+ * @param endDir - End outward direction
+ * @param startShapeBounds - Shape bounds if start is anchored, null if free
+ * @param endShapeBounds - Shape bounds if end is anchored, null if free
  * @param strokeWidth - Connector stroke width (affects offsets)
  * @returns Route result with path and signature
  */
-export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: number): RouteResult {
+export function computeAStarRoute(
+  startPos: [number, number],
+  startDir: Dir,
+  endPos: [number, number],
+  endDir: Dir,
+  startShapeBounds: AABB | null,
+  endShapeBounds: AABB | null,
+  strokeWidth: number
+): RouteResult {
 
-  // If from and to are exactly the same
-  if (from.position === to.position) {
-    return {      // Return the single point(no routing needed)
-      points: [to.position],
+  // If start and end are exactly the same position
+  if (startPos[0] === endPos[0] && startPos[1] === endPos[1]) {
+    return {
+      points: [endPos],
       signature: '',
     };
   }
+
   // 1. Build routing context (ALL spatial intelligence happens here)
   // - Computes centerlines from RAW bounds
   // - Builds dynamic AABBs with centerline/padding baked in
   // - Computes stub positions on AABB boundaries
   // - Collects obstacles (raw shape bounds)
-  const ctx = createRoutingContext(from, to, strokeWidth);
+  const ctx = createRoutingContext(
+    startPos, startDir, endPos, endDir,
+    startShapeBounds, endShapeBounds, strokeWidth
+  );
 
   // 2. Build simple grid from context (trivial - just AABB boundaries)
   const grid = buildSimpleGrid(ctx);
@@ -390,11 +404,11 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
 
   // 5. Assemble full path: actual_start → A* path → actual_end
   // This is key for dynamic offset - stubs may be on centerline, not padded boundary
-  const fullPath: [number, number][] = [from.position];
+  const fullPath: [number, number][] = [startPos];
   for (const cell of path) {
     fullPath.push([cell.x, cell.y]);
   }
-  fullPath.push(to.position);
+  fullPath.push(endPos);
 
   // 6. Simplify collinear points
   const simplified = simplifyOrthogonal(fullPath);
@@ -403,25 +417,4 @@ export function computeAStarRoute(from: Terminal, to: Terminal, strokeWidth: num
     points: simplified,
     signature: computeSignature(simplified),
   };
-}
-
-/**
- * Compute route between two terminals.
- *
- * Wrapper for computeAStarRoute that provides the same API as the old
- * routing.ts computeRoute function for backwards compatibility.
- *
- * @param from - Start terminal
- * @param to - End terminal
- * @param _prevSignature - Previous route signature (unused)
- * @param strokeWidth - Connector stroke width (affects routing offsets)
- * @returns Route result with path and signature
- */
-export function computeRoute(
-  from: Terminal,
-  to: Terminal,
-  _prevSignature: string | null,
-  strokeWidth: number
-): RouteResult {
-  return computeAStarRoute(from, to, strokeWidth);
 }

@@ -25,9 +25,9 @@ import { userProfileManager } from '@/lib/user-profile-manager';
 import {
   type Dir,
   type SnapTarget,
-  type Terminal,
+  type AABB,
   findBestSnapTarget,
-  computeRoute,
+  computeAStarRoute,
   inferDragDirection,
   getShapeFrame,
   oppositeDir,
@@ -39,13 +39,19 @@ type Phase = 'idle' | 'creating';
 
 /**
  * Internal terminal state during interaction.
- * Extends the routing Terminal with shape-specific commit info.
+ * Contains all info needed for routing AND commit.
  */
-interface ToolTerminal extends Terminal {
-  // Shape-specific (only set when isAnchored === true)
+interface ToolTerminal {
+  position: [number, number];
+  outwardDir: Dir;
+  isAnchored: boolean;
+  hasCap: boolean;
+  // Shape bounds for obstacle avoidance (only set when isAnchored === true)
+  shapeBounds?: AABB;
+  // Shape-specific commit info (only set when isAnchored === true)
   shapeId?: string;
   side?: Dir;
-  // normalizedAnchor is inherited from Terminal
+  normalizedAnchor?: [number, number];
 }
 
 /**
@@ -60,7 +66,6 @@ export class ConnectorTool implements PointerTool {
   private from: ToolTerminal | null = null;
   private to: ToolTerminal | null = null;
   private routedPoints: [number, number][] = [];
-  private prevRouteSignature: string | null = null;
 
   // Hover/snap state (used in both phases)
   private hoverSnap: SnapTarget | null = null;
@@ -131,7 +136,6 @@ export class ConnectorTool implements PointerTool {
     }
 
     this.dragDir = null;
-    this.prevRouteSignature = null;
     this.prevSnap = snap;
     this.hoverSnap = snap;
     this.updateRoute();
@@ -317,7 +321,6 @@ export class ConnectorTool implements PointerTool {
     this.from = null;
     this.to = null;
     this.routedPoints = [];
-    this.prevRouteSignature = null;
     this.dragDir = null;
     // Keep hoverSnap/prevSnap for continued hover behavior
   }
@@ -331,7 +334,7 @@ export class ConnectorTool implements PointerTool {
     const snapshot = getCurrentSnapshot();
 
     // Get source shape bounds if attached (for bidirectional obstacle avoidance)
-    let fromShapeBounds: { x: number; y: number; w: number; h: number } | undefined;
+    let fromShapeBounds: AABB | null = null;
     if (this.from.isAnchored && this.from.shapeId) {
       const handle = snapshot.objectsById.get(this.from.shapeId);
       if (handle) {
@@ -343,7 +346,7 @@ export class ConnectorTool implements PointerTool {
     }
 
     // Get target shape bounds (already set in move() for to terminal)
-    const toShapeBounds = this.to.shapeBounds;
+    const toShapeBounds: AABB | null = this.to.shapeBounds ?? null;
 
     // Determine endpoint configuration
     const fromAnchored = this.from.isAnchored;
@@ -367,35 +370,18 @@ export class ConnectorTool implements PointerTool {
     // Both free: A-star routing becomes Z-route, uses inferDragDirection (already set in move())
     // Both anchored: Both directions from snap.side (already set)
 
-    // Build from terminal with resolved direction
-    const fromTerminal: Terminal = {
-      position: this.from.position,
-      outwardDir: resolvedFromDir,
-      isAnchored: this.from.isAnchored,
-      hasCap: this.from.hasCap,
-      shapeBounds: fromShapeBounds,
-      normalizedAnchor: this.from.normalizedAnchor,
-    };
-
-    // Build to terminal with resolved direction
-    const toTerminal: Terminal = {
-      position: this.to.position,
-      outwardDir: resolvedToDir,
-      isAnchored: this.to.isAnchored,
-      hasCap: this.to.hasCap,
-      shapeBounds: toShapeBounds,
-      normalizedAnchor: this.to.normalizedAnchor,
-    };
-
-    const result = computeRoute(
-      fromTerminal,
-      toTerminal,
-      this.prevRouteSignature,
+    // Call primitives-based A* routing directly
+    const result = computeAStarRoute(
+      this.from.position,
+      resolvedFromDir,
+      this.to.position,
+      resolvedToDir,
+      fromShapeBounds,
+      toShapeBounds,
       this.frozenWidth,
     );
 
     this.routedPoints = result.points;
-    this.prevRouteSignature = result.signature;
   }
 
   private commitConnector(): void {

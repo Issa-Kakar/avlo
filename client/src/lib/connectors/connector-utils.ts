@@ -492,3 +492,35 @@ export function inferDragDirection(
     return dy >= 0 ? 'S' : 'N';
   }
 }
+
+// ============================================================================
+// ANCHOR HELPERS
+// ============================================================================
+
+/**
+ * Apply normalized anchor to frame, returning endpoint position with edge clearance.
+ *
+ * Normalized anchor [nx, ny] is in [0-1, 0-1] space relative to frame.
+ * The edge position is computed, then offset outward by EDGE_CLEARANCE_W.
+ *
+ * @param anchor - Normalized anchor position [0-1, 0-1]
+ * @param frame - Shape frame {x, y, w, h}
+ * @param side - Edge direction (determines offset direction)
+ * @param _strokeWidth - Reserved for future cap-aware offset
+ * @returns World position with edge clearance applied
+ */
+export function applyAnchorToFrame(
+  anchor: [number, number],
+  frame: { x: number; y: number; w: number; h: number },
+  side: Dir,
+  _strokeWidth: number
+): [number, number] {
+  const [nx, ny] = anchor;
+  const edgeX = frame.x + nx * frame.w;
+  const edgeY = frame.y + ny * frame.h;
+
+  // Apply edge clearance offset in outward direction
+  const [dx, dy] = directionVector(side);
+  const offset = computeApproachOffset(_strokeWidth);
+  return [edgeX + dx * offset, edgeY + dy * offset];
+}

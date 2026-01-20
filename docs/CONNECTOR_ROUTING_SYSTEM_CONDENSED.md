@@ -25,7 +25,6 @@ The connector tool implements orthogonal (Manhattan) routing using a **Dynamic A
 1. **Centerline routing** - Routes prefer the midpoint between facing shape sides
 2. **Direction resolution first** - Endpoint directions computed before routing begins
 3. **Spatial intelligence in context** - All smart decisions in RoutingContext, grid/A\* are simple consumers
-4. **No cell blocking** - Segment intersection checking prevents crossing shapes
 5. **Unified endpoint handling** - Point-AABBs make free endpoints work like shapes
 6. **Visual edge clearance** - Snapped endpoints offset outward to prevent caps/arrows entering shapes
 
@@ -78,10 +77,22 @@ interface Terminal {
 }
 ```
 
-**Key insight:** `outwardDir` is the direction a jetty/approach segment extends from the endpoint, NOT the direction of travel. For snapped endpoints, it's the side of the shape. For free endpoints, it's computed based on the spatial relationship.
+**Key insight:** `outwardDir` is the direction a jetty/approach segment extends from the endpoint. For snapped endpoints, it's the side of the shape. For free endpoints, it's computed based on the spatial relationship. Essentially synonymous with startDirection and endDirection
 
-### SnapTarget (Snap Result)
+### Snapping
 
+```typescript
+interface SnapContext {
+  worldX: number;          // Cursor world position
+  worldY: number;
+  scale: number;           // For px→world conversion
+  prevSnap: SnapTarget | null;  // For midpoint hysteresis
+  sourceShapeId?: string;  // Exclude this shape (don't snap to self)
+}
+
+function findBestSnapTarget(ctx: SnapContext): SnapTarget | null
+```
+### SnapTarget (Return Value)
 ```typescript
 interface SnapTarget {
   shapeId: string; // ID of snapped shape
@@ -252,7 +263,7 @@ A centerline exists when:
 2. **For FREE→ANCHORED:** Gap must be ≥ `offset` (stricter minimum clearance for routing)
 3. **For all other cases:** Gap must be > `EDGE_CLEARANCE_W` (minimum centerline gap)
 
-**Why the minimum gap check?** When the stub position lands on the centerline and the gap is too small (≤ `EDGE_CLEARANCE_W`), the stub could end up between the edge snap offset position and the raw shape bounds. This would cause the first segment to go "backwards" (e.g., west when anchored to east side). The minimum gap check prevents this edge case for anchored→free, anchored→anchored, and free→free configurations.
+**Why the minimum gap check?** When the stub position lands on the centerline and the gap is too small (≤ `EDGE_CLEARANCE_W`), the stub could end up between the edge snap offset position and the raw shape bounds. This would cause the first segment to go "backwards" (e.g., west when anchored to east side). 
 
 **Formula:**
 
@@ -354,50 +365,34 @@ if (to.shapeBounds && to.shapeBounds !== from.shapeBounds) {
 
 ## Grid Construction (`routing-context.ts`)
 
-Grid construction is now **trivial** because RoutingContext handles all intelligence. The `buildSimpleGrid()` function lives alongside `createRoutingContext()` in the same file:
+Grid construction is trivial because RoutingContext handles all intelligence:
 
 ```typescript
-export function buildSimpleGrid(ctx: RoutingContext): Grid {
+function buildSimpleGrid(ctx: RoutingContext): Grid {
   const xSet = new Set<number>();
   const ySet = new Set<number>();
 
   // Add all 4 edges from each routing bounds
-  xSet.add(ctx.startBounds.left);
-  xSet.add(ctx.startBounds.right);
-  ySet.add(ctx.startBounds.top);
-  ySet.add(ctx.startBounds.bottom);
+  for (const bounds of [ctx.startBounds, ctx.endBounds]) {
+    xSet.add(bounds.left).add(bounds.right);
+    ySet.add(bounds.top).add(bounds.bottom);
+  }
 
-  xSet.add(ctx.endBounds.left);
-  xSet.add(ctx.endBounds.right);
-  ySet.add(ctx.endBounds.top);
-  ySet.add(ctx.endBounds.bottom);
-
-  // Add stub perpendicular lines
+  // Add stub perpendicular lines (critical for reaching goal!)
   if (isHorizontal(ctx.startDir)) ySet.add(ctx.startStub[1]);
   else xSet.add(ctx.startStub[0]);
 
   if (isHorizontal(ctx.endDir)) ySet.add(ctx.endStub[1]);
   else xSet.add(ctx.endStub[0]);
 
-  // Sort and build cells (no blocking - A* checks segments)
+  // Sort and build cells
   const xLines = [...xSet].sort((a, b) => a - b);
   const yLines = [...ySet].sort((a, b) => a - b);
-
-  const cells: GridCell[][] = [];
-  for (let yi = 0; yi < yLines.length; yi++) {
-    cells[yi] = [];
-    for (let xi = 0; xi < xLines.length; xi++) {
-      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi, blocked: false };
-    }
-  }
-
-  return { cells, xLines, yLines };
+  // ... create cells at intersections (all blocked: false)
 }
 ```
 
-**Why no cell blocking during creation?**
-
-- Segment intersection checking prevents actually crossing shapes. Cell blocking during construction is inherently useless: The **PATH** between cells is what must be blocked anyway; segment intersection checking handles this during A\*
+**No cell blocking.** Segment intersection checking during A* handles obstacles.
 
 ---
 
@@ -450,7 +445,7 @@ function computeMoveCost(from, to, arrivalDir, moveDir): number {
 }
 ```
 
-**Bend penalty (1000)** strongly prefers the path with the most minimal turns. This naturally produces the best looking routes when combined with the dynamic AABBs: as forcing centerlines to be the routing boundaries for facing sides forces centerline usage whenever possible; Thus a path with fewest bends+manhattan distance is the only heuristic needed as there's assurance that a theoretical path with fewer bends than a path with a centerline won't exist due to the facing sides always being the centerline for each facing axis.
+**Bend penalty (1000)** strongly prefers the path with the most minimal turns. This naturally produces the best looking routes when combined with the dynamic AABBs: as forcing centerlines to be the routing boundaries for facing sides forces centerline usage whenever possible.
 
 ### Segment Intersection Checking
 
@@ -486,11 +481,7 @@ return [start, goal]; // Direct line fallback (rarely reached)
 **Why this works:**
 
 - Reuses the same grid (no re-computation needed)
-- With no obstacles, A\* always finds an orthogonal path
-- No infinite recursion: recursive call passes `[]`, won't recurse again
-- The direct line fallback only triggers if even obstacle-free routing fails (shouldn't happen)
-
-This ensures routes remain orthogonal even when obstacle intersection checking fails, rather than producing ugly straight lines through shapes.
+- This ensures routes remain orthogonal even when obstacle intersection checking fails, rather than producing ugly straight lines through shapes.
 
 ### Priority Queue (`binary-heap.ts`)
 
@@ -499,8 +490,6 @@ A\* uses a `MinHeap<AStarNode>` for the open set priority queue:
 ```typescript
 const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
 ```
-
-The heap provides O(log n) push/pop operations, extracted into a standalone file for clarity.
 
 ---
 
@@ -605,42 +594,21 @@ For free-free routing case endpoints, direction is inferred from cursor movement
 
 ---
 
-## Snapping System (`snap.ts`)
+## Snapping System Condensed(`snap.ts`)
 
-### Priority Logic (Nested Shapes)
-
-1. Sort candidates by area ascending (smallest = most nested first)
-2. Among equal-area, prefer higher z-order (ULID descending)
-3. Pick first valid snap target
-
-### Snap Modes
-
-| Location                         | Behavior                            |
-| -------------------------------- | ----------------------------------- |
-| Deep inside shape (> 35px depth) | Midpoints only (nearest of N/E/S/W) |
-| Shallow inside or outside        | Snap to edge, midpoints are sticky  |
-| Outside edge radius              | No snap                             |
-
-**Inside-Edge Sliding:** When the cursor is inside a shape but not deeply (< `FORCE_MIDPOINT_DEPTH_PX`), snapping still works along the edge. The system projects the cursor onto the nearest edge and allows sliding. Midpoint hysteresis is calculated from this projected edge position, so the behavior is identical whether the cursor is just inside or just outside the shape.
-
-### Midpoint Hysteresis
-
-- **Snap IN threshold:** 16px (enter midpoint lock)
-- **Snap OUT threshold:** 20px (exit midpoint lock)
+- **Deep inside (>35px):** Midpoints only
+- **Shallow inside or outside:** Edge sliding with midpoint hysteresis
+- **Midpoint hysteresis:** 16px in, 20px out (sticky)
+- **Shape-type aware:** Diamond (diagonal edges), ellipse (perimeter), rect (AABB)
 
 ### Edge Clearance Offset
 
-When snapping to a shape edge, `getConnectorEndpoint(snap)` applies `EDGE_CLEARANCE_W` offset in the outward direction. This ensures:
-
+**Critical distinction:**
+- `position`: Offset outward by `EDGE_CLEARANCE_W` (use for Terminal.position)
+- `edgePosition`: Exactly on shape edge (use for dot rendering)
+When snapping to a shape edge, `getConnectorEndpoint(snap)` with offset ensures:
 - Round line caps don't visually enter the shape
 - Arrowheads maintain visual separation from shape edges
-- Consistent appearance regardless of stroke width
-
-### Shape-Type Awareness
-
-- **rect/roundedRect:** Edge is the frame boundary; midpoints at frame edge centers
-- **ellipse:** Closest point on ellipse perimeter, side determined by angle; midpoints at frame edge centers
-- **diamond:** Four diagonal edges, mapped to N/E/S/W based on quadrant; midpoints at visual apex of rounded corners (accounts for `arcTo` geometry)
 
 ### Normalized Anchor Computation
 
@@ -677,9 +645,6 @@ begin(pointerId, worldX, worldY):
   ├─ Snap found: from = anchored terminal, to = from (same reference)
   └─ No snap: from = free terminal, to = free terminal at cursor
   └─ updateRoute()
-```
-
-**Terminal seeding on begin():** When snapped, `this.to = this.from` prevents routing from the edge to the cursor position inside the shape. This is temporary—`move()` immediately refines `this.to`. Similar to how `outwardDir` is seeded with a default and refined on move, the endpoint position is seeded identically to avoid visual glitches before the user moves.
 
 move(worldX, worldY):
 └─ Check snap at cursor (hoverSnap updated for dot rendering)
@@ -693,7 +658,7 @@ move(worldX, worldY):
 end():
 └─ Commit if valid (dist > 5px, points >= 2)
 └─ resetState()
-
+```
 
 
 ### Commit Schema (Y.Map Structure)
@@ -730,14 +695,12 @@ connectorMap.set('opacity', opacity);
 // Metadata
 connectorMap.set('ownerId', userId);
 connectorMap.set('createdAt', timestamp);
-````
-
+```
 **Design rationale:**
 
 - `points` stores the full assembled path (no reconstruction needed at render time)
 - `start`/`end` are separate from `points` for quick endpoint access without array indexing
 - `startAnchor`/`endAnchor` group related data atomically—if present, all fields exist (no partial state)
-- Anchor `id` field is future-proof for text/image anchoring (not just shapes)
 
 ---
 
@@ -803,84 +766,6 @@ if (connectorIds) {
 }
 ```
 
----
-
-## Connector Rendering
-
-Connector rendering is split into two layers that share path-building logic via `connector-paths.ts`:
-
-1. **Preview Layer** (`connector-preview.ts`) - Renders during tool interaction (ephemeral)
-2. **Base Canvas** (`objects.ts` + `object-cache.ts`) - Renders committed connectors (persistent)
-
-Both use the same path builders to ensure **WYSIWYG consistency**.
-
-### Shared Path Building (`connector-paths.ts`)
-
-Pure functions that return `Path2D` objects, used by both cache and preview:
-
-```typescript
-interface ConnectorPaths {
-  polyline: Path2D;       // Main line (trimmed for arrows)
-  startArrow: Path2D | null;
-  endArrow: Path2D | null;
-}
-
-// Main entry point
-buildConnectorPaths({ points, strokeWidth, startCap, endCap }): ConnectorPaths
-
-// Individual builders
-buildRoundedPolylinePath(points, startTrim, endTrim): Path2D
-buildArrowPath(points, strokeWidth, position): Path2D
-computeEndTrimInfo(points, strokeWidth, position): EndTrimInfo | null
-```
-
-### Object Cache Integration
-
-The `ObjectRenderCache` uses a union type to handle connectors' multi-path requirement:
-
-```typescript
-type CachedGeometry = Path2D | ConnectorPaths;
-
-// Type-safe accessors
-cache.getPath(id, handle): Path2D              // For strokes, shapes, text
-cache.getConnectorPaths(id, handle): ConnectorPaths  // For connectors
-```
-
-Eviction works the same as other objects—by ID when bbox changes.
-
-### Committed Rendering (`objects.ts`)
-
-Multi-pass rendering for committed connectors:
-
-```typescript
-function drawConnector(ctx, handle): void {
-  const paths = cache.getConnectorPaths(id, handle);
-
-  // Pass 1: Stroke polyline
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke(paths.polyline);
-
-  // Pass 2: Arrows (fill + stroke for rounded corners)
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH; // Fixed 5 for ~2.5 unit radius
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  if (paths.startArrow) {
-    ctx.fill(paths.startArrow);
-    ctx.stroke(paths.startArrow);
-  }
-  if (paths.endArrow) {
-    ctx.fill(paths.endArrow);
-    ctx.stroke(paths.endArrow);
-  }
-}
-```
-
 ### BBox Calculation (`bbox.ts`)
 
 Connector bbox accounts for arrow extent, not just stroke width:
@@ -903,174 +788,96 @@ case 'connector': {
 
 ---
 
-## Preview-Specific Rendering (`connector-preview.ts`)
+## Path Building (`connector-paths.ts`)
 
-### Polyline with Rounded Corners
+Pure functions shared by cache and preview for WYSIWYG consistency.
 
-Uses `ctx.arcTo()` for smooth corner transitions. The corner radius is clamped to fit available segment lengths:
+### ConnectorPaths (Cache/Render Structure)
 
 ```typescript
-const maxR = Math.min(CORNER_RADIUS_W, lenIn / 2, lenOut / 2);
-if (maxR < 2) {
-  ctx.lineTo(curr[0], curr[1]); // Sharp corner
-} else {
-  ctx.arcTo(curr[0], curr[1], next[0], next[1], maxR);
+interface ConnectorPaths {
+  polyline: Path2D;          // Main line (trimmed for arrows)
+  startArrow: Path2D | null; // Triangle at start (or null)
+  endArrow: Path2D | null;   // Triangle at end (or null)
 }
 ```
 
-### Dynamic Arrow Scaling
-
-**Critical rule:** Arrow length NEVER exceeds half the final segment length (Excalidraw approach).
-
-This prevents arrows from dominating short segments while maintaining proportional aesthetics:
+### Main Entry
 
 ```typescript
-function computeScaledArrowDimensions(segmentLength, strokeWidth) {
-  const fullLength = computeArrowLength(strokeWidth);
-
-  // Arrow never exceeds half the segment (Excalidraw approach)
-  const scaledLength = Math.min(fullLength, segmentLength / 2);
-
-  // Width proportional to SCALED length via fixed aspect ratio
-  const scaledHalfWidth = (scaledLength * ROUTING_CONFIG.ARROW_ASPECT_RATIO) / 2;
-
-  return { scaledLength, scaledHalfWidth };
-}
+function buildConnectorPaths(params: {
+  points: [number, number][];
+  strokeWidth: number;
+  startCap: 'arrow' | 'none';
+  endCap: 'arrow' | 'none';
+}): ConnectorPaths
 ```
 
-**Key insight:** Width derives from the **scaled** length (not full length) via `ARROW_ASPECT_RATIO` (1.0 = balanced triangle where width equals length). When length shrinks for short segments, width shrinks proportionally—maintaining consistent arrow shape at all sizes.
-
-### Rounded Arrow Corners
-
-Arrow heads use a filled triangle with a stroked overlay for rounded corners. The stroke's `lineJoin='round'` naturally rounds the vertices.
-
-**Fixed rounding approach:** `roundingLineWidth = 5` gives consistent ~2.5 unit corner radius at all arrow sizes. This decouples corner rounding from connector stroke width.
-
-**Stroke offset compensation:** The stroke extends outward by `lineWidth/2`, including at the tip. To ensure the **visible** tip (after stroke) lands exactly at the endpoint, the path is pulled back:
+### Arrow Sizing
 
 ```typescript
-const roundingLineWidth = 5; // Fixed: ~2.5 unit corner radius
-const strokeOffset = roundingLineWidth / 2;
+// Full length (before segment capping)
+arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR);
+// = max(6, strokeWidth * 3)
 
-// Triangle vertices pulled back so visible tip lands at endpoint
-const tipX = tip[0] - ux * strokeOffset;
-const tipY = tip[1] - uy * strokeOffset;
+// Never exceeds half the final segment (Excalidraw approach)
+scaledLength = min(fullLength, segmentLength / 2);
 
-ctx.fillStyle = color;
-ctx.strokeStyle = color;
-ctx.lineWidth = roundingLineWidth;
-ctx.lineJoin = 'round';
-
-ctx.beginPath();
-ctx.moveTo(tipX, tipY);
-ctx.lineTo(leftX, leftY);
-ctx.lineTo(rightX, rightY);
-ctx.closePath();
-
-ctx.fill(); // Solid interior
-ctx.stroke(); // Adds rounded corners (radius = lineWidth/2)
+// Width proportional to scaled length
+scaledHalfWidth = scaledLength * ARROW_ASPECT_RATIO / 2;
+// ARROW_ASPECT_RATIO = 1.0 (balanced triangle)
 ```
 
-### End Trim for Arrows
+### Trim Calculation
 
-The polyline is trimmed before the arrow head to prevent overlap. Trim accounts for both arc geometry and round line cap extension:
+Polyline trimmed before arrow base. Accounts for arc corner geometry:
 
 ```typescript
-// The arc consumes `actualCornerRadius` of the final segment
-const availableForTrim = Math.max(0, segLen - actualCornerRadius);
-
-// Round cap extends strokeWidth/2 beyond the trim point, so we need
-// extra trim to prevent the polyline from poking through small arrows
-const neededTrim = scaledLength + strokeWidth / 2;
-const actualTrim = Math.min(neededTrim, availableForTrim);
+const availableForTrim = max(0, segLen - actualCornerRadius);
+const neededTrim = scaledArrowLength + strokeWidth / 2; // +cap extension
+const actualTrim = min(neededTrim, availableForTrim);
 ```
 
-**Round cap compensation:** Without the `strokeWidth / 2` term, the polyline's round cap would visually extend past the trim point and poke through small arrows. This is especially noticeable with thick strokes and short segments.
+### Arrow Stroke Offset
 
-### Anchor Dot Rendering
-
-Shape anchor dots use `drawSnapDots()` which renders:
-
-- **4 midpoint dots** at frame edge centers (or diamond apex positions)
-- **1 active dot** that slides along the snapped edge at `edgePosition`
-
-**Size variations:**
-
-- Not at midpoint: small midpoint dots (5px), larger active dot (7px)
-- At midpoint: ALL dots grow to active size (7px)
-
-**Color scheme:**
-
-- Active dot: deep blue fill (`#1d4ed8`), white stroke
-- Inactive dots: white fill, blue stroke (`#1d4ed8`)
-
-**Glow effect:** Active dot has subtle shadow blur for polish.
-
-**Visibility logic:** Dots appear when:
-
-- Idle hover: `!fromIsAttached` (before pointer down, while hovering a shape)
-- Creating: `toIsAttached` (when end is snapped, not start)
-
-This prevents showing dots on the start shape after pointer down, only showing them when the end snaps.
+Arrow tip pulled back by `ARROW_ROUNDING_LINE_WIDTH / 2` (2.5 units) so visible tip (after stroke) lands exactly at endpoint.
 
 ---
 
-## Constants (`constants.ts`)
 
-### Screen-Space (CSS pixels)
+## Constants Reference
 
-```typescript
-SNAP_CONFIG = {
-  EDGE_SNAP_RADIUS_PX: 15, // Snap to edge within this
-  MIDPOINT_SNAP_IN_PX: 20, // Enter midpoint lock
-  MIDPOINT_SNAP_OUT_PX: 20, // Exit midpoint lock
-  FORCE_MIDPOINT_DEPTH_PX: 30, // Force midpoint-only when deeper inside
-  DOT_RADIUS_PX: 7, // Anchor dot size
-  ENDPOINT_RADIUS_PX: 8, // Endpoint dot size (future: selection tool)
-};
-
-ANCHOR_DOT_CONFIG = {
-  // See constants.ts for styling
-};
-```
-
-### World-Space (world units)
+### World-Space (Permanent, Stored)
 
 ```typescript
 ROUTING_CONFIG = {
-  CORNER_RADIUS_W: 26, // Arc radius for rounded corners
-  ARROW_LENGTH_FACTOR: 3, // Arrow length = max(MIN, strokeWidth * FACTOR)
-  ARROW_MIN_LENGTH_W: 6, // Minimum arrow length (for thin strokes)
-  ARROW_ASPECT_RATIO: 1.0, // Width = length * ratio (balanced triangle)
+  CORNER_RADIUS_W: 26,      // arcTo radius for rounded corners
+  ARROW_LENGTH_FACTOR: 3,   // arrow = max(MIN, width × FACTOR)
+  ARROW_MIN_LENGTH_W: 6,    // minimum arrow length
+  ARROW_ASPECT_RATIO: 1.0,  // width = length × ratio
 };
 
-/** Visual clearance between endpoint and shape edge (world units) */
-EDGE_CLEARANCE_W = 11;
-```
+EDGE_CLEARANCE_W = 11;      // Visual gap between endpoint and shape edge
 
-**Arrow sizing formulas:**
-
-```typescript
-// Length: scales with stroke, has minimum
-arrowLength = max(ARROW_MIN_LENGTH_W, strokeWidth * ARROW_LENGTH_FACTOR);
-
-// Width: derived from length via aspect ratio (always proportional)
-arrowWidth = arrowLength * ARROW_ASPECT_RATIO;
-
-// During rendering: length capped at segmentLength / 2
-scaledLength = min(arrowLength, segmentLength / 2);
-scaledWidth = scaledLength * ARROW_ASPECT_RATIO;
-```
-
-### Approach Offset Formula
-
-```typescript
-function computeApproachOffset(strokeWidth: number): number {
-  const arrowLength = computeArrowLength(strokeWidth);
-  return CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W;
+COST_CONFIG = {
+  BEND_PENALTY: 1000,       // A* cost for direction change
+};
+SNAP_CONFIG = { //see constants.ts
 }
 ```
 
+### Helper Formulas
+
+```typescript
+// Arrow length
+computeArrowLength(strokeWidth) = max(6, strokeWidth * 3);
+
+// Approach offset (for dynamic AABB padding)
+computeApproachOffset(strokeWidth) = CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W;
+
+// Screen to world conversion
+pxToWorld(px, scale) = px / scale;
+```
 The approach offset determines how far routing bounds extend from shape edges. It accounts for: arc corner radius, arrow length, and edge clearance.
 
 ---
@@ -1092,23 +899,7 @@ The approach offset determines how far routing bounds extend from shape edges. I
 
 ---
 
-## Current Status & Future Work
-
-**Connectors now render identically in preview and base canvas.** The routing, snapping, and rendering systems are complete. Integration work remains for editing existing connectors.
-
-### Completed
-
-- **Y.Map schema** - Structure with `points`, `start`/`end`, grouped `startAnchor`/`endAnchor`
-- **BBox calculation** - `bbox.ts` accounts for arrow extent (`arrowLength/2 + 2.5 + 1`)
-- **Shared path builders** - `connector-paths.ts` with `buildConnectorPaths()`, `buildArrowPath()`, etc.
-- **Object cache union type** - Returns `ConnectorPaths { polyline, startArrow, endArrow }` for connectors
-- **Committed rendering** - `objects.ts` handles multi-pass rendering (polyline + arrows)
-- **WYSIWYG consistency** - Preview and base canvas use identical path-building functions
-- **Type-safe cache API** - `getPath()` for single Path2D, `getConnectorPaths()` for connectors
-- **Connector lookup map** - `connector-lookup.ts` maintains shapeId → Set<connectorId> reverse map via RoomDocManager Y.js observers
-
 ### Immediate Next Steps
-
-1. **Selection tool integration** - Select/edit existing connectors, endpoint dragging
-2. **Anchored shape resize/move** - Recompute routes when shapes move (use `getConnectorsForShape()`)
-3. **Hit testing with arrows** - Update hit testing to use cached Path2D for accurate arrow detection
+**REFACTORING**
+**Selection tool integration** 
+**Hit testing with arrows**
