@@ -28,22 +28,17 @@ import {
   computeRawGeometryBounds,
 } from '@/lib/geometry/bounds';
 import {
-  pointInRect,
   pointInWorldRect,
-  strokeHitTest,
-  computePolylineArea,
-  pointInsideShape,
-  shapeEdgeHitTest,
   hitTestHandle,
   objectIntersectsRect,
+  testObjectHit,
+  type HitCandidate,
 } from '@/lib/geometry/hit-testing';
 import type { ObjectHandle } from '@avlo/shared';
 import {
   getFrame,
   getPoints,
   getWidth,
-  getShapeType,
-  getFillColor,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import * as Y from 'yjs';
@@ -68,15 +63,6 @@ type DownTarget =
   | 'objectOutsideSelection'   // Clicked object that is NOT selected
   | 'selectionGap'             // Empty space INSIDE selection bounds
   | 'background';              // Empty space OUTSIDE selection bounds
-
-interface HitCandidate {
-  id: string;
-  kind: 'stroke' | 'shape' | 'text' | 'connector';
-  distance: number;
-  insideInterior: boolean;
-  area: number;
-  isFilled: boolean;
-}
 
 // === SelectTool Class ===
 
@@ -881,7 +867,7 @@ export class SelectTool implements PointerTool {
       const handle = snapshot.objectsById.get(entry.id) as ObjectHandle | undefined;
       if (!handle) continue;
 
-      const candidate = this.testObject(worldX, worldY, radiusWorld, handle);
+      const candidate = testObjectHit(worldX, worldY, radiusWorld, handle);
       if (candidate) candidates.push(candidate);
     }
 
@@ -889,85 +875,6 @@ export class SelectTool implements PointerTool {
     if (candidates.length === 1) return candidates[0];
 
     return this.pickBestCandidate(candidates);
-  }
-
-  private testObject(
-    worldX: number,
-    worldY: number,
-    radiusWorld: number,
-    handle: ObjectHandle
-  ): HitCandidate | null {
-    const y = handle.y;
-
-    switch (handle.kind) {
-      case 'stroke':
-      case 'connector': {
-        const points = getPoints(y);
-        if (points.length === 0) return null;
-
-        // Add stroke width to tolerance for more forgiving hit detection (like EraserTool)
-        const strokeWidth = getWidth(y);
-        const tolerance = radiusWorld + strokeWidth / 2;
-
-        if (strokeHitTest(worldX, worldY, points, tolerance)) {
-          return {
-            id: handle.id,
-            kind: handle.kind,
-            distance: 0,
-            insideInterior: false,
-            area: computePolylineArea(points),
-            isFilled: true, // Strokes are visually "solid"
-          };
-        }
-        return null;
-      }
-
-      case 'shape': {
-        const frame = getFrame(y);
-        if (!frame) return null;
-
-        const shapeType = getShapeType(y);
-        const strokeWidth = getWidth(y, 1);
-        const fillColor = getFillColor(y);
-        const isFilled = !!fillColor;
-
-        // For SELECT: click inside unfilled shapes still selects them
-        const hitResult = this.shapeHitTestForSelection(
-          worldX, worldY, radiusWorld, frame, shapeType, strokeWidth, isFilled
-        );
-
-        if (hitResult) {
-          return {
-            id: handle.id,
-            kind: 'shape',
-            distance: hitResult.distance,
-            insideInterior: hitResult.insideInterior,
-            area: frame[2] * frame[3],
-            isFilled,
-          };
-        }
-        return null;
-      }
-
-      case 'text': {
-        const frame = getFrame(y);
-        if (!frame) return null;
-
-        const [x, yPos, w, h] = frame;
-        // Text frames are always selectable by clicking inside
-        if (pointInRect(worldX, worldY, x, yPos, w, h)) {
-          return {
-            id: handle.id,
-            kind: 'text',
-            distance: 0,
-            insideInterior: true,
-            area: w * h,
-            isFilled: true,
-          };
-        }
-        return null;
-      }
-    }
   }
 
   /**
@@ -1064,36 +971,5 @@ export class SelectTool implements PointerTool {
     const idxPaint = sorted.indexOf(firstPaint);
     const idxFrame = sorted.indexOf(bestFrame);
     return idxPaint <= idxFrame ? firstPaint : bestFrame;
-  }
-
-  // === Shape-Specific Hit Testing (Selection Mode) ===
-
-  private shapeHitTestForSelection(
-    cx: number, cy: number, r: number,
-    frame: [number, number, number, number],
-    shapeType: string,
-    strokeWidth: number,
-    _isFilled: boolean // Unused - selection mode always allows interior clicks
-  ): { distance: number; insideInterior: boolean } | null {
-    // For selection, we select if:
-    // 1. Point is inside shape interior (regardless of fill)
-    // 2. Point is near stroke edge
-
-    // First check if inside interior
-    const insideInterior = pointInsideShape(cx, cy, frame, shapeType);
-
-    if (insideInterior) {
-      return { distance: 0, insideInterior: true };
-    }
-
-    // Check if near stroke edge
-    const halfStroke = strokeWidth / 2;
-    const nearEdge = shapeEdgeHitTest(cx, cy, r + halfStroke, frame, shapeType);
-
-    if (nearEdge !== null) {
-      return { distance: nearEdge, insideInterior: false };
-    }
-
-    return null;
   }
 }

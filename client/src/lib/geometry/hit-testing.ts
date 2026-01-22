@@ -7,7 +7,7 @@
  */
 
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
-import { getFrame, getPoints, getShapeType } from '@avlo/shared';
+import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@avlo/shared';
 import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/lib/tools/types';
 import { computeHandles } from '@/stores/selection-store';
@@ -540,5 +540,128 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
 
     default:
       return false;
+  }
+}
+
+// === Object Hit Testing (Shared by SelectTool and EraserTool) ===
+
+/**
+ * Result of testing a single object for hit.
+ * Rich classification for visual ordering and fill-awareness.
+ */
+export interface HitCandidate {
+  id: string;
+  kind: 'stroke' | 'shape' | 'text' | 'connector';
+  distance: number;        // 0 if inside, else distance to geometry
+  insideInterior: boolean; // True if point is inside shape/text interior
+  area: number;            // Bounding area for nesting priority
+  isFilled: boolean;       // For fill-aware hit filtering
+}
+
+/**
+ * Hit test a shape, returning distance and interior status.
+ * Pure geometry - no fill-awareness filtering (caller decides).
+ */
+export function shapeHitTest(
+  cx: number,
+  cy: number,
+  tolerance: number,
+  frame: FrameTuple,
+  shapeType: string,
+  strokeWidth: number
+): { distance: number; insideInterior: boolean } | null {
+  const insideInterior = pointInsideShape(cx, cy, frame, shapeType);
+  if (insideInterior) {
+    return { distance: 0, insideInterior: true };
+  }
+
+  const halfStroke = strokeWidth / 2;
+  const nearEdge = shapeEdgeHitTest(cx, cy, tolerance + halfStroke, frame, shapeType);
+  if (nearEdge !== null) {
+    return { distance: nearEdge, insideInterior: false };
+  }
+
+  return null;
+}
+
+/**
+ * Test if a point hits an object, with full classification.
+ * Used by SelectTool and EraserTool.
+ *
+ * @param worldX - Point X in world coordinates
+ * @param worldY - Point Y in world coordinates
+ * @param radiusWorld - Hit tolerance in world units
+ * @param handle - Object to test
+ */
+export function testObjectHit(
+  worldX: number,
+  worldY: number,
+  radiusWorld: number,
+  handle: ObjectHandle
+): HitCandidate | null {
+  const y = handle.y;
+
+  switch (handle.kind) {
+    case 'stroke':
+    case 'connector': {
+      const points = getPoints(y);
+      if (points.length === 0) return null;
+      const strokeWidth = getWidth(y);
+      const tolerance = radiusWorld + strokeWidth / 2;
+
+      if (strokeHitTest(worldX, worldY, points, tolerance)) {
+        return {
+          id: handle.id,
+          kind: handle.kind,
+          distance: 0,
+          insideInterior: false,
+          area: computePolylineArea(points),
+          isFilled: true,
+        };
+      }
+      return null;
+    }
+
+    case 'shape': {
+      const frame = getFrame(y);
+      if (!frame) return null;
+      const shapeType = getShapeType(y);
+      const strokeWidth = getWidth(y, 1);
+      const fillColor = getFillColor(y);
+      const isFilled = !!fillColor;
+
+      const hitResult = shapeHitTest(worldX, worldY, radiusWorld, frame, shapeType, strokeWidth);
+      if (hitResult) {
+        return {
+          id: handle.id,
+          kind: 'shape',
+          distance: hitResult.distance,
+          insideInterior: hitResult.insideInterior,
+          area: frame[2] * frame[3],
+          isFilled,
+        };
+      }
+      return null;
+    }
+
+    case 'text': {
+      const frame = getFrame(y);
+      if (!frame) return null;
+      const [x, yPos, w, h] = frame;
+
+      // Text: use shapeHitTest with 'rect' type for consistency
+      const hitResult = shapeHitTest(worldX, worldY, radiusWorld, [x, yPos, w, h], 'rect', 0);
+      if (hitResult) {
+        return {
+          id: handle.id,
+          kind: 'text',
+          distance: hitResult.distance,
+          insideInterior: hitResult.insideInterior,
+          area: w * h,
+          isFilled: true,
+        };
+      }
+      return null;
+    }
   }
 }
