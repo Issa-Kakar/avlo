@@ -22,7 +22,7 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
-import { getShapeType } from '@avlo/shared';
+import { getShapeType, getFrame } from '@avlo/shared';
 import {
   type Dir,
   type SnapTarget,
@@ -30,7 +30,6 @@ import {
   findBestSnapTarget,
   computeAStarRoute,
   inferDragDirection,
-  getShapeFrame,
   oppositeDir,
   resolveFreeStartDir,
   computeFreeEndDir,
@@ -174,8 +173,12 @@ export class ConnectorTool implements PointerTool {
     if (snap) {
       // Snapped to shape - snap.position already includes offset
       const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
-      const frame = handle ? getShapeFrame(handle) : null;
-      const shapeBounds = frame ? { x: frame.x, y: frame.y, w: frame.w, h: frame.h } : undefined;
+      const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
+        ? getFrame(handle.y)
+        : null;
+      const shapeBounds = frame
+        ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }
+        : undefined;
 
       this.to = {
         position: snap.position,
@@ -258,11 +261,11 @@ export class ConnectorTool implements PointerTool {
 
     if (this.hoverSnap) {
       const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
-      if (handle) {
-        const frame = getShapeFrame(handle);
+      if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
+        const frame = getFrame(handle.y);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
-          snapShapeFrame = [frame.x, frame.y, frame.w, frame.h];
+          snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];
           snapShapeType = getShapeType(handle.y);
         }
       }
@@ -338,10 +341,10 @@ export class ConnectorTool implements PointerTool {
     let fromShapeBounds: AABB | null = null;
     if (this.from.isAnchored && this.from.shapeId) {
       const handle = snapshot.objectsById.get(this.from.shapeId);
-      if (handle) {
-        const frame = getShapeFrame(handle);
+      if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
+        const frame = getFrame(handle.y);
         if (frame) {
-          fromShapeBounds = { x: frame.x, y: frame.y, w: frame.w, h: frame.h };
+          fromShapeBounds = { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
         }
       }
     }

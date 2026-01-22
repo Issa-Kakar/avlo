@@ -1,21 +1,20 @@
 /**
- * High-Level Connector Routing API for SelectTool
+ * High-Level Connector Rerouting API for SelectTool
  *
- * Provides a simplified interface for routing connectors with optional overrides.
+ * Provides a simplified interface for rerouting connectors with optional overrides.
  * Reads connector data from Y.map and applies frame/endpoint overrides as needed.
  *
  * Two orthogonal override mechanisms:
  * 1. shapeFrames: Map of shapeId → new frame (for shapes being transformed)
  * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
  *
- * @module lib/connectors/route-connector
+ * @module lib/connectors/reroute-connector
  */
 
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAnchor } from '@avlo/shared';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, type StoredAnchor, type FrameTuple } from '@avlo/shared';
 import { computeAStarRoute } from './routing-astar';
 import {
-  getShapeFrame,
   applyAnchorToFrame,
   resolveFreeStartDir,
   computeFreeEndDir,
@@ -23,7 +22,7 @@ import {
 import type { Dir, AABB, SnapTarget, Frame } from './types';
 
 /**
- * Route a connector with optional overrides.
+ * Reroute a connector with optional overrides.
  *
  * Two orthogonal override mechanisms:
  * 1. shapeFrames: Map of shapeId → new frame (for shapes being transformed)
@@ -39,7 +38,7 @@ import type { Dir, AABB, SnapTarget, Frame } from './types';
  * @param endpointOverrides - Direct endpoint overrides (snap or free position)
  * @returns Routed points or null if connector not found
  */
-export function routeConnector(
+export function rerouteConnector(
   connectorId: string,
   shapeFrames?: Map<string, Frame>,
   endpointOverrides?: {
@@ -130,7 +129,7 @@ function resolveEndpoint(
   anchor: StoredAnchor | undefined,
   shapeFrames: Map<string, Frame> | undefined,
   override: SnapTarget | [number, number] | undefined,
-  strokeWidth: number,
+  _strokeWidth: number,
   snapshot: ReturnType<typeof getCurrentSnapshot>
 ): ResolvedEndpoint {
   // 1. Direct override wins
@@ -148,12 +147,14 @@ function resolveEndpoint(
       // SnapTarget override
       const snap = override as SnapTarget;
       const handle = snapshot.objectsById.get(snap.shapeId);
-      const frame = handle ? getShapeFrame(handle) : null;
+      const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
+        ? getFrame(handle.y)
+        : null;
 
       return {
         position: snap.position,
         dir: snap.side,
-        shapeBounds: frame ? { x: frame.x, y: frame.y, w: frame.w, h: frame.h } : null,
+        shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
         isAnchored: true,
       };
     }
@@ -163,12 +164,12 @@ function resolveEndpoint(
   if (anchor) {
     const overrideFrame = shapeFrames?.get(anchor.id);
     if (overrideFrame) {
-      // Shape is being transformed - apply anchor to new frame
+      // Shape is being transformed - apply anchor to new frame (convert Frame to FrameTuple)
+      const frameTuple: FrameTuple = [overrideFrame.x, overrideFrame.y, overrideFrame.w, overrideFrame.h];
       const position = applyAnchorToFrame(
         anchor.anchor,
-        overrideFrame,
-        anchor.side,
-        strokeWidth
+        frameTuple,
+        anchor.side
       );
       return {
         position,
@@ -180,19 +181,20 @@ function resolveEndpoint(
 
     // 3. Use stored anchor data with current shape frame
     const handle = snapshot.objectsById.get(anchor.id);
-    const frame = handle ? getShapeFrame(handle) : null;
+    const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
+      ? getFrame(handle.y)
+      : null;
 
     if (frame) {
       const position = applyAnchorToFrame(
         anchor.anchor,
         frame,
-        anchor.side,
-        strokeWidth
+        anchor.side
       );
       return {
         position,
         dir: anchor.side,
-        shapeBounds: { x: frame.x, y: frame.y, w: frame.w, h: frame.h },
+        shapeBounds: { x: frame[0], y: frame[1], w: frame[2], h: frame[3] },
         isAnchored: true,
       };
     }

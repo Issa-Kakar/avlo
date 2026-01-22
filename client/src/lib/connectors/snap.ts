@@ -15,32 +15,33 @@
  */
 
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
-import { getShapeFrame, getShapeTypeMidpoints, directionVector } from './connector-utils';
-import { pointInsideShape as pointInsideShapeTuple } from '@/lib/geometry/hit-testing';
+import { getShapeTypeMidpoints, directionVector } from './connector-utils';
+import { pointInsideShape } from '@/lib/geometry/hit-testing';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import type { ObjectHandle } from '@avlo/shared';
-import { getShapeType, getFillColor } from '@avlo/shared';
-import type { Dir, ShapeFrame, SnapTarget, SnapContext } from './types';
+import type { ObjectHandle, FrameTuple } from '@avlo/shared';
+import { getShapeType, getFillColor, getFrame } from '@avlo/shared';
+import type { Dir, SnapTarget, SnapContext } from './types';
 
 /**
  * Compute normalized anchor and offset position from edge point.
  *
  * @param edgeX - X coordinate on shape edge
  * @param edgeY - Y coordinate on shape edge
- * @param frame - Shape frame
+ * @param frame - Frame tuple [x, y, w, h]
  * @param side - Which edge (N/E/S/W)
  * @returns Normalized anchor [0-1, 0-1] and offset position for routing
  */
 function computeAnchorAndPosition(
   edgeX: number,
   edgeY: number,
-  frame: ShapeFrame,
+  frame: FrameTuple,
   side: Dir
 ): { normalizedAnchor: [number, number]; position: [number, number] } {
+  const [x, y, w, h] = frame;
   // Clamp to [0,1] to guard against floating-point errors
   const normalizedAnchor: [number, number] = [
-    Math.max(0, Math.min(1, (edgeX - frame.x) / frame.w)),
-    Math.max(0, Math.min(1, (edgeY - frame.y) / frame.h)),
+    Math.max(0, Math.min(1, (edgeX - x) / w)),
+    Math.max(0, Math.min(1, (edgeY - y) / h)),
   ];
   const [dx, dy] = directionVector(side);
   const position: [number, number] = [
@@ -91,7 +92,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   // Build candidates with area for sorting
   interface Candidate {
     handle: ObjectHandle;
-    frame: ShapeFrame;
+    frame: FrameTuple;
     area: number;
     shapeType: string;
     isFilled: boolean;
@@ -99,11 +100,11 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const candidates: Candidate[] = [];
 
   for (const handle of handles) {
-    const frame = getShapeFrame(handle);
+    const frame = getFrame(handle.y);
     if (!frame) continue;
     const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
     const isFilled = handle.kind === 'text' || !!getFillColor(handle.y);
-    candidates.push({ handle, frame, area: frame.w * frame.h, shapeType, isFilled });
+    candidates.push({ handle, frame, area: frame[2] * frame[3], shapeType, isFilled });
   }
 
   // Sort by Z-order: ULID descending (topmost first)
@@ -117,7 +118,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   for (const candidate of candidates) {
     const { handle, frame, shapeType, isFilled, area } = candidate;
 
-    // Check if cursor inside this shape's interior
+    // Check if cursor inside this shape's interior (frame is FrameTuple, matches pointInsideShape signature)
     const isInsideInterior = pointInsideShape(cx, cy, frame, shapeType);
 
     if (isInsideInterior && isFilled) {
@@ -153,14 +154,14 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
  * - Outside/near edge: snap to edge, midpoints are sticky
  *
  * @param shapeId - ID of the shape
- * @param frame - Shape frame
+ * @param frame - Frame tuple [x, y, w, h]
  * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
  * @param ctx - Snap context
  * @returns Snap target or null if no valid snap
  */
 export function computeSnapForShape(
   shapeId: string,
-  frame: ShapeFrame,
+  frame: FrameTuple,
   shapeType: string,
   ctx: SnapContext
 ): SnapTarget | null {
@@ -284,29 +285,21 @@ export function computeSnapForShape(
 }
 
 /**
- * Check if point is inside shape (shape-type aware).
- * Delegates to shared hit-testing module for consistency.
- */
-export function pointInsideShape(
-  cx: number,
-  cy: number,
-  frame: ShapeFrame,
-  shapeType: string
-): boolean {
-  // Convert ShapeFrame object to FrameTuple array
-  return pointInsideShapeTuple(cx, cy, [frame.x, frame.y, frame.w, frame.h], shapeType);
-}
-
-/**
  * Find nearest point on shape edge (shape-type aware).
+ *
+ * @param cx - Cursor X coordinate
+ * @param cy - Cursor Y coordinate
+ * @param frame - Frame tuple [x, y, w, h]
+ * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
+ * @returns Edge point info or null
  */
 export function findNearestEdgePoint(
   cx: number,
   cy: number,
-  frame: ShapeFrame,
+  frame: FrameTuple,
   shapeType: string
 ): { side: Dir; t: number; x: number; y: number; dist: number } | null {
-  const { x, y, w, h } = frame;
+  const [x, y, w, h] = frame;
 
   switch (shapeType) {
     case 'diamond': {
@@ -414,19 +407,4 @@ function findNearestOnEdges(
   }
 
   return best;
-}
-
-/**
- * Compute connector endpoint position from snap result.
- *
- * Applies constant visual clearance offset in the snap's outward direction.
- * This prevents round line caps and arrowheads from touching shapes.
- *
- * @param snap - Snap target from findBestSnapTarget
- * @returns Offset position for connector terminal
- */
-export function getConnectorEndpoint(snap: SnapTarget): [number, number] {
-  const [sx, sy] = snap.position;
-  const [dx, dy] = directionVector(snap.side);
-  return [sx + dx * EDGE_CLEARANCE_W, sy + dy * EDGE_CLEARANCE_W];
 }

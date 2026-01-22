@@ -173,7 +173,7 @@ function drawSnapDots(
   const activeRadius = largeRadius;
 
   // Compute all 4 midpoint positions (shape-type aware)
-  const midpoints = getShapeTypeMidpoints({ x, y, w, h }, shapeType);
+  const midpoints = getShapeTypeMidpoints([x, y, w, h], shapeType);
 
   // Active position comes from snap system (already correct for shape type)
   const activePos = snapPosition;

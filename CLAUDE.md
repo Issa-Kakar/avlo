@@ -31,9 +31,11 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/lib/room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
 | `client/src/renderer/RenderLoop.ts` | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
 | `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
-| `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview |
+| `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
+| `client/src/renderer/layers/text.ts` | Text rendering utilities (PLACEHOLDER - will be replaced) |
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
+| `client/src/lib/utils/shape-path.ts` | Build Path2D from frame tuple (rect, ellipse, diamond, roundedRect) |
 
 ### Tools (All zero-arg constructors, singleton pattern)
 | File | Status |
@@ -49,10 +51,11 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 ### Connectors (Orthogonal Routing System)
 | File | Responsibility |
 |------|----------------|
-| `client/src/lib/connectors/types.ts` | Dir, Terminal, SnapTarget, RoutingContext, Grid types |
+| `client/src/lib/connectors/types.ts` | Dir, Terminal, SnapTarget, RoutingContext, Grid types, Bounds |
 | `client/src/lib/connectors/constants.ts` | SNAP_CONFIG, ROUTING_CONFIG, arrow sizing formulas |
 | `client/src/lib/connectors/connector-utils.ts` | Shape frame helpers, direction resolution, path simplification |
 | `client/src/lib/connectors/snap.ts` | Shape snapping with edge detection, midpoint hysteresis |
+| `client/src/lib/connectors/route-connector.ts` | High-level routing API for SelectTool with frame/endpoint overrides |
 | `client/src/lib/connectors/routing-context.ts` | Centerlines, dynamic AABBs, stub computation, grid construction |
 | `client/src/lib/connectors/routing-astar.ts` | A* pathfinding with segment intersection checking |
 | `client/src/lib/connectors/connector-paths.ts` | Pure path builders (polyline, arrows) shared by cache and preview |
@@ -70,17 +73,21 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 ### Geometry Modules
 | File | Responsibility |
 |------|----------------|
-| `client/src/lib/geometry/scale-transform.ts` | Scale math for SelectTool transforms |
-| `client/src/lib/geometry/hit-test-primitives.ts` | Shared hit testing (SelectTool + EraserTool) |
+| `client/src/lib/geometry/index.ts` | Barrel exports for all geometry utilities |
+| `client/src/lib/geometry/bounds.ts` | WorldBounds manipulation: union, translate, scale, envelope |
+| `client/src/lib/geometry/transform.ts` | Scale math, frame transforms, uniform scale with position preservation |
+| `client/src/lib/geometry/hit-testing.ts` | Shared hit testing (SelectTool + EraserTool), marquee intersection |
 | `client/src/lib/geometry/recognize-open-stroke.ts` | Shape recognition pipeline |
 | `client/src/lib/geometry/geometry-helpers.ts` | Corner/edge detection, PCA analysis |
 
 ### Shared Package
 | File | Responsibility |
 |------|----------------|
+| `packages/shared/src/types/geometry.ts` | Standardized types: BBoxTuple, FrameTuple, WorldBounds, Frame + converters |
+| `packages/shared/src/types/objects.ts` | ObjectKind, ObjectHandle, IndexEntry, DirtyPatch (re-exports geometry types) |
+| `packages/shared/src/accessors/object-accessors.ts` | Typed Y.Map accessors: getColor, getFrame, getPoints, etc. |
 | `packages/shared/src/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
 | `packages/shared/src/utils/bbox.ts` | BBox computation with stroke width inflation |
-| `packages/shared/src/types/objects.ts` | ObjectKind, ObjectHandle, IndexEntry, DirtyPatch |
 | `packages/shared/src/types/snapshot.ts` | Snapshot, ViewTransform interfaces |
 
 ### UI
@@ -455,11 +462,69 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 interface ObjectHandle {
   id: string;                              // ULID
   kind: ObjectKind;
-  y: Y.Map<any>;                           // LIVE Y.Map reference!
-  bbox: [minX, minY, maxX, maxY];          // Computed locally
+  y: Y.Map<unknown>;                       // LIVE Y.Map reference!
+  bbox: BBoxTuple;                         // [minX, minY, maxX, maxY] - computed locally
 }
 ```
-**CRITICAL:** `handle.y` is live - rendering reads directly via `handle.y.get('color')`.
+**CRITICAL:** `handle.y` is live. Prefer typed accessors from `@avlo/shared` instead of raw `.get()` for easier usage:
+```typescript
+import { getColor, getFrame, getPoints, getWidth } from '@avlo/shared';
+const color = getColor(handle.y);      // Returns string with fallback
+const frame = getFrame(handle.y);      // Returns FrameTuple | null
+const points = getPoints(handle.y);    // Returns [number, number][]
+```
+
+---
+
+## Shared Package Types & Accessors
+
+### Standardized Geometry Types (`types/geometry.ts`)
+```typescript
+// TUPLE TYPES 
+type BBoxTuple = [minX: number, minY: number, maxX: number, maxY: number];
+type FrameTuple = [x: number, y: number, w: number, h: number]; // Storage in Y.map for Shape/Text
+
+// OBJECT REPRESENTATIONS (for logic)
+interface WorldBounds { minX, minY, maxX, maxY }
+interface Frame { x, y, w, h }
+```
+
+**Converters:** `tupleToFrame()`, `frameToTuple()`, `frameToWorldBounds()`, `bboxTupleToWorldBounds()`, `worldBoundsToBBoxTuple()`, `worldBoundsToFrame()`
+
+### Typed Y.Map Accessors (`accessors/object-accessors.ts`)
+Eliminates repetitive casting - getters return typed values with fallbacks:
+```typescript
+// Common
+getColor(y, fallback?)       → string
+getOpacity(y, fallback?)     → number
+getWidth(y, fallback?)       → number
+
+// Geometry
+getFrame(y)                  → FrameTuple | null
+getFrameObject(y)            → Frame | null
+getPoints(y)                 → [number, number][]
+
+// Shape-specific
+getShapeType(y)              → string ('rect' default)
+getFillColor(y)              → string | undefined
+
+// Connector-specific
+getStart(y), getEnd(y)       → [number, number] | undefined
+getStartAnchor(y), getEndAnchor(y) → StoredAnchor | undefined
+getStartCap(y), getEndCap(y) → 'arrow' | 'none'
+
+// Text-specific
+getText(y), getFontSize(y), getFontFamily(y), etc.
+```
+
+### StoredAnchor (Connector Anchoring)
+```typescript
+interface StoredAnchor {
+  id: string;                    // Target shape ID
+  side: Dir;                     // 'N' | 'E' | 'S' | 'W'
+  anchor: [number, number];      // Normalized position [0-1, 0-1]
+}
+```
 
 ---
 
@@ -495,11 +560,13 @@ Objects Y.Map uses `observeDeep()` for incremental updates. On connector add/upd
 for (entry of sortedByULID) {
   const handle = objectsById.get(entry.id);
   const path = cache.getOrBuild(id, handle);
-  // Read styles LIVE from Y.Map
-  ctx.fillStyle = handle.y.get('color');
+  // Read styles via typed accessors
+  ctx.fillStyle = getColor(handle.y);
   ctx.fill(path);
 }
 ```
+- Text rendering via `layers/text.ts`: `drawTextBox()`, `drawTextWithTransform()`
+- Shape paths via `lib/utils/shape-path.ts`: `buildShapePathFromFrame(shapeType, frame)`
 ### Coordinate Spaces
 - **World:** Logical document coords
 - **CSS pixels:** Browser coords
@@ -640,24 +707,24 @@ type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';
 | mixed | Corner | Uniform, position preserved | Uniform, position preserved |
 | mixed | Side | **Translate only** (edge-pin) | Non-uniform |
 
-**Key Behaviors:**
+**Key Behaviors:** (transform logic in `geometry/transform.ts`)
 - **Strokes:** Geometry never inverts on flip; position preserved via `computePreservedPosition()`; width scales WYSIWYG
 - **Shapes-only:** Corner-anchored non-uniform scale; stroke width unchanged
-- **Mixed + side:** Strokes translate (edge-pinning) instead of scaling
+- **Mixed + side:** Strokes translate (edge-pinning) via `computeStrokeTranslation()`
 
-#### Two Bounds for Scale
-- **originBounds** (geometry-only): For scale math, no stroke padding
+#### Two Bounds for Scale (computed via `geometry/bounds.ts`)
+- **originBounds** (geometry-only): For scale math, via `computeRawGeometryBounds()`, no stroke padding
 - **bboxBounds** (padded): For dirty rect invalidation
 This prevents "anchor sliding" when objects have thick strokes.
 
-#### Hit Testing
+#### Hit Testing (via `geometry/hit-testing.ts`)
 - Fill-aware Z-order: Unfilled interiors are "transparent" - scan through to paint underneath
 - Marquee uses geometry intersection (not just bbox): `polylineIntersectsRect`, `ellipseIntersectsRect`, `diamondIntersectsRect`
-- Constants: `HIT_RADIUS_PX=6`, `HANDLE_HIT_PX=10`, `MOVE_THRESHOLD_PX=4`
+- Shared utilities: `testObjectHit()`, `objectIntersectsRect()`, `hitTestHandle()`
+- Constants: `HANDLE_HIT_PX=10`, `MOVE_THRESHOLD_PX=4` (SelectTool), `HIT_RADIUS_PX=6` (SelectTool)
 
 #### Dirty Rect Invalidation
 Uses envelope pattern: `transformEnvelope` accumulates bounds during gesture (never shrinks).
-
 
 ---
 
@@ -666,7 +733,7 @@ Uses envelope pattern: `transformEnvelope` accumulates bounds during gesture (ne
 ```typescript
 type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | SelectionPreview | ConnectorPreview;
 
-interface SelectionPreview {
+interface SelectionPreview {  // Selection Box/Handles/Highlights are drawn on Overlay Canvas/loop
   kind: 'selection';
   selectionBounds: WorldRect | null;
   marqueeRect: WorldRect | null;

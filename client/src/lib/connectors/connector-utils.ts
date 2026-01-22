@@ -11,40 +11,9 @@
  * @module lib/connectors/connector-utils
  */
 
-import type { ObjectHandle } from '@avlo/shared';
-import { getFrame } from '@avlo/shared';
-import type { Dir, ShapeFrame, AABB, Bounds } from './types';
-import { computeApproachOffset } from './constants';
-
-/**
- * Extract frame from shape handle.
- * Works with 'shape' and 'text' object kinds.
- *
- * @param handle - Object handle from snapshot
- * @returns ShapeFrame or null if not a shape/text or no frame
- */
-export function getShapeFrame(handle: ObjectHandle): ShapeFrame | null {
-  if (handle.kind !== 'shape' && handle.kind !== 'text') return null;
-  const frame = getFrame(handle.y);
-  if (!frame) return null;
-  return { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
-}
-
-/**
- * Get midpoint positions for all 4 edges (frame-based).
- * Returns frame edge centers - used for rect/ellipse/roundedRect.
- *
- * @param frame - Shape frame
- * @returns Record mapping each direction to its midpoint [x, y]
- */
-export function getMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
-  return {
-    N: [frame.x + frame.w / 2, frame.y],
-    E: [frame.x + frame.w, frame.y + frame.h / 2],
-    S: [frame.x + frame.w / 2, frame.y + frame.h],
-    W: [frame.x, frame.y + frame.h / 2],
-  };
-}
+import type { FrameTuple } from '@avlo/shared';
+import type { Dir, AABB, Bounds } from './types';
+import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
 
 /**
  * Get midpoints for shape type (handles rounded diamond geometry).
@@ -56,20 +25,26 @@ export function getMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
  * For stretched diamonds, the vertex angles become acute/obtuse, causing
  * the visual tip to be significantly inset from the mathematical vertex.
  *
- * @param frame - Shape frame
+ * @param frame - Frame tuple [x, y, w, h]
  * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
  * @returns Record mapping each direction to its midpoint [x, y]
  */
 export function getShapeTypeMidpoints(
-  frame: ShapeFrame,
+  frame: FrameTuple,
   shapeType: string
 ): Record<Dir, [number, number]> {
   if (shapeType === 'diamond') {
     return getDiamondApexMidpoints(frame);
   }
 
-  // rect, ellipse, roundedRect: frame edge centers
-  return getMidpoints(frame);
+  // rect, ellipse, roundedRect: frame edge centers (inlined getMidpoints)
+  const [x, y, w, h] = frame;
+  return {
+    N: [x + w / 2, y],
+    E: [x + w, y + h / 2],
+    S: [x + w / 2, y + h],
+    W: [x, y + h / 2],
+  };
 }
 
 /**
@@ -81,18 +56,23 @@ export function getShapeTypeMidpoints(
  *
  * where halfAngle is half the angle between the two edges meeting at the vertex.
  *
- * @param frame - Shape frame
+ * @param frame - Frame tuple [x, y, w, h]
  * @returns Midpoint positions at the visual apex of each rounded corner
  */
-function getDiamondApexMidpoints(frame: ShapeFrame): Record<Dir, [number, number]> {
-  const { x, y, w, h } = frame;
+function getDiamondApexMidpoints(frame: FrameTuple): Record<Dir, [number, number]> {
+  const [x, y, w, h] = frame;
 
   // Corner radius matches rendering in object-cache.ts
   const radius = Math.min(20, Math.min(w, h) * 0.1);
 
-  // For very small radius, just use mathematical vertices
+  // For very small radius, just use mathematical vertices (inlined getMidpoints)
   if (radius < 0.5) {
-    return getMidpoints(frame);
+    return {
+      N: [x + w / 2, y],
+      E: [x + w, y + h / 2],
+      S: [x + w / 2, y + h],
+      W: [x, y + h / 2],
+    };
   }
 
   // Mathematical vertices (frame edge centers)
@@ -138,28 +118,6 @@ function getDiamondApexMidpoints(frame: ShapeFrame): Record<Dir, [number, number
     S: [cx, y + h - offset_TB],       // bottom apex moves up
     W: [x + offset_LR, cy],           // left apex moves right
   };
-}
-
-/**
- * Get position along edge for given t (0-1).
- *
- * @param frame - Shape frame
- * @param side - Which edge (N/E/S/W)
- * @param t - Position along edge (0 = start, 0.5 = midpoint, 1 = end)
- * @returns World coordinates [x, y]
- */
-export function getEdgePosition(frame: ShapeFrame, side: Dir, t: number): [number, number] {
-  const clampedT = Math.max(0, Math.min(1, t));
-  switch (side) {
-    case 'N':
-      return [frame.x + frame.w * clampedT, frame.y];
-    case 'S':
-      return [frame.x + frame.w * clampedT, frame.y + frame.h];
-    case 'W':
-      return [frame.x, frame.y + frame.h * clampedT];
-    case 'E':
-      return [frame.x + frame.w, frame.y + frame.h * clampedT];
-  }
 }
 
 /**
@@ -504,24 +462,26 @@ export function inferDragDirection(
  * Normalized anchor [nx, ny] is in [0-1, 0-1] space relative to frame.
  * The edge position is computed, then offset outward by EDGE_CLEARANCE_W.
  *
+ * Note: Uses EDGE_CLEARANCE_W only (not computeApproachOffset) because:
+ * - The approach offset (CORNER_RADIUS + arrowLength + EDGE_CLEARANCE) is for A* grid
+ * - Here we just need visual clearance from the shape edge
+ *
  * @param anchor - Normalized anchor position [0-1, 0-1]
- * @param frame - Shape frame {x, y, w, h}
+ * @param frame - Frame tuple [x, y, w, h]
  * @param side - Edge direction (determines offset direction)
- * @param _strokeWidth - Reserved for future cap-aware offset
  * @returns World position with edge clearance applied
  */
 export function applyAnchorToFrame(
   anchor: [number, number],
-  frame: { x: number; y: number; w: number; h: number },
-  side: Dir,
-  _strokeWidth: number
+  frame: FrameTuple,
+  side: Dir
 ): [number, number] {
   const [nx, ny] = anchor;
-  const edgeX = frame.x + nx * frame.w;
-  const edgeY = frame.y + ny * frame.h;
+  const [x, y, w, h] = frame;
+  const edgeX = x + nx * w;
+  const edgeY = y + ny * h;
 
   // Apply edge clearance offset in outward direction
   const [dx, dy] = directionVector(side);
-  const offset = computeApproachOffset(_strokeWidth);
-  return [edgeX + dx * offset, edgeY + dy * offset];
+  return [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
 }

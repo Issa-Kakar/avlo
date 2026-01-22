@@ -11,7 +11,7 @@
 import type { Frame, Dir as SharedDir } from '@avlo/shared';
 
 // Re-export from shared for convenience
-export type { Frame, StoredAnchor } from '@avlo/shared';
+export type { Frame, FrameTuple, StoredAnchor } from '@avlo/shared';
 
 // ============================================================================
 // DIRECTION & GEOMETRY TYPES
@@ -21,14 +21,9 @@ export type { Frame, StoredAnchor } from '@avlo/shared';
 export type Dir = SharedDir;
 
 /**
- * Shape frame / AABB (x, y, width, height)
- * @deprecated Use Frame from @avlo/shared instead
- */
-export type ShapeFrame = Frame;
-
-/**
- * AABB for spatial calculations (compatible with Frame)
- * @deprecated Use Frame from @avlo/shared instead
+ * AABB for spatial calculations (compatible with Frame).
+ * Note: This type is kept for routing code where {x,y,w,h} format is more readable
+ * than FrameTuple for bounds calculations. Identical to Frame.
  */
 export type AABB = Frame;
 

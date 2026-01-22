@@ -9,7 +9,8 @@
 // Types (all from types.ts)
 export type {
   Dir,
-  ShapeFrame,
+  Frame,
+  FrameTuple,
   AABB,
   Bounds,
   Terminal,
@@ -34,22 +35,23 @@ export {
   computeArrowLength,
 } from './constants';
 
-// Connector utilities (renamed from shape-utils)
+// Connector utilities
 export {
-  getShapeFrame,
-  getMidpoints,
-  getEdgePosition,
+  // Midpoint calculation
+  getShapeTypeMidpoints,
+  // Direction helpers
   oppositeDir,
   isHorizontal,
   isVertical,
   directionVector,
+  // Bounds conversion
   toBounds,
   pointBounds,
   isPointBounds,
   // Path utilities
   simplifyOrthogonal,
   computeSignature,
-  // Direction helpers
+  // Direction resolution for free endpoints
   resolveFreeStartDir,
   computeFreeEndDir,
   inferDragDirection,
@@ -61,15 +63,13 @@ export {
 export {
   findBestSnapTarget,
   computeSnapForShape,
-  pointInsideShape,
   findNearestEdgePoint,
-  getConnectorEndpoint,
 } from './snap';
 
 // Routing
 export { computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
-export { routeConnector } from './route-connector';
+export { rerouteConnector } from './reroute-connector';
 
 // Path building (for cache and preview)
 export type {
