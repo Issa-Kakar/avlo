@@ -3,7 +3,7 @@ import {
   strokeHitTest,
   circleRectIntersect,
   pointInDiamond,
-} from '@/lib/geometry/hit-test-primitives';
+} from '@/lib/geometry/hit-testing';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';

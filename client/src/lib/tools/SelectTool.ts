@@ -16,7 +16,7 @@ import {
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
   applyTransformToFrame,
-} from '@/lib/geometry/scale-transform';
+} from '@/lib/geometry/transform';
 import {
   unionBounds,
   expandEnvelope,
@@ -36,7 +36,7 @@ import {
   shapeEdgeHitTest,
   hitTestHandle,
   objectIntersectsRect,
-} from '@/lib/geometry/hit-test-primitives';
+} from '@/lib/geometry/hit-testing';
 import type { ObjectHandle } from '@avlo/shared';
 import {
   getFrame,

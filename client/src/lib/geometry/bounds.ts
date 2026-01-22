@@ -15,7 +15,7 @@ import { getFrame, getPoints } from '@avlo/shared';
 import {
   computeUniformScaleNoThreshold,
   computePreservedPosition,
-} from './scale-transform';
+} from './transform';
 
 // ============================================================================
 // UNION HELPERS

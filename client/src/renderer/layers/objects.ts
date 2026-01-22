@@ -25,7 +25,7 @@ import {
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
-} from '@/lib/geometry/scale-transform';
+} from '@/lib/geometry/transform';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 

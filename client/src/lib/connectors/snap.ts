@@ -16,7 +16,7 @@
 
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
 import { getShapeFrame, getShapeTypeMidpoints, directionVector } from './connector-utils';
-import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-test-primitives';
+import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-testing';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
 import { getShapeType } from '@avlo/shared';
