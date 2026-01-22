@@ -4,13 +4,12 @@ import { drawPresenceOverlays } from './layers';
 import { drawDimmedStrokes } from './layers/eraser-dim';
 import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { drawConnectorPreview } from './layers/connector-preview';
-import { getObjectCacheInstance } from './object-cache';
+import { drawSelectionOverlay } from './layers/selection-overlay';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
 import { getOverlayContext } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getFrame } from '@avlo/shared';
 import {
   getAnimationController,
   destroyAnimationController,
@@ -233,99 +232,14 @@ export class OverlayRenderLoop {
 
         } else if (previewToDraw?.kind === 'selection') {
           // Selection preview (world space for bounds, screen space for handle sizing)
-          // Save for lineDash state management (restore happens at end of selection block)
-          ctx.save();
-          // Explicit world transform: DPR × scale × translate combined
           ctx.setTransform(
             vp.dpr * view.scale, 0,
             0, vp.dpr * view.scale,
             -view.pan.x * vp.dpr * view.scale,
             -view.pan.y * vp.dpr * view.scale
           );
-
-          // === SELECTION HIGHLIGHTING (only when not transforming) ===
-          if (!previewToDraw.isTransforming && previewToDraw.selectedIds?.length > 0) {
-            const snapshot = getCurrentSnapshot();
-            const cache = getObjectCacheInstance();
-
-            ctx.strokeStyle = 'rgba(59, 130, 246, 1)';  // Blue
-            ctx.lineWidth = 2 / view.scale;  // 2px visual regardless of zoom
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-
-            for (const id of previewToDraw.selectedIds) {
-              const handle = snapshot.objectsById.get(id);
-              if (!handle) continue;
-
-              // Text: stroke the frame rect
-              if (handle.kind === 'text') {
-                const frame = getFrame(handle.y);
-                if (frame) {
-                  const [x, y, w, h] = frame;
-                  ctx.strokeRect(x, y, w, h);
-                }
-                continue;
-              }
-
-              // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
-              if (handle.kind === 'stroke' || handle.kind === 'connector') {
-                const [minX, minY, maxX, maxY] = handle.bbox;
-                ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-                continue;
-              }
-
-              // Shapes: stroke the cached Path2D (follows actual geometry)
-              const path = cache.getPath(id, handle);
-              ctx.stroke(path);
-            }
-          }
-
-          // Draw marquee rect if active (dashed, light blue fill)
-          if (previewToDraw.marqueeRect) {
-            const { minX, minY, maxX, maxY } = previewToDraw.marqueeRect;
-            ctx.fillStyle = 'rgba(59, 130, 246, 0.08)';
-            ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
-            ctx.strokeStyle = 'rgba(59, 130, 246, 0.6)';
-            ctx.lineWidth = 1 / view.scale;
-            ctx.setLineDash([4 / view.scale, 4 / view.scale]);
-            ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-            ctx.setLineDash([]);
-          }
-
-          // Draw selection bounds and handles (skip during active transform)
-          if (previewToDraw.selectionBounds && !previewToDraw.isTransforming) {
-            const { minX, minY, maxX, maxY } = previewToDraw.selectionBounds;
-
-            // Selection box stroke
-            ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
-            ctx.lineWidth = 1.5 / view.scale;
-            ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-
-            // Corner handles (8px screen size, scaled to world)
-            if (previewToDraw.handles) {
-              const handleSize = 8 / view.scale;
-              ctx.fillStyle = 'white';
-              ctx.strokeStyle = 'rgba(59, 130, 246, 1)';
-              ctx.lineWidth = 1.5 / view.scale;
-
-              for (const h of previewToDraw.handles) {
-                ctx.fillRect(
-                  h.x - handleSize / 2,
-                  h.y - handleSize / 2,
-                  handleSize,
-                  handleSize
-                );
-                ctx.strokeRect(
-                  h.x - handleSize / 2,
-                  h.y - handleSize / 2,
-                  handleSize,
-                  handleSize
-                );
-              }
-            }
-          }
-
-          ctx.restore();
+          const snapshot = getCurrentSnapshot();
+          drawSelectionOverlay(ctx, previewToDraw, view.scale, snapshot);
         } else if (previewToDraw?.kind === 'connector') {
           // Connector preview (world space)
           // Explicit world transform: DPR × scale × translate combined

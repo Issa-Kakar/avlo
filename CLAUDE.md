@@ -33,6 +33,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
 | `client/src/renderer/layers/text.ts` | Text rendering utilities (PLACEHOLDER - will be replaced) |
+| `client/src/renderer/layers/selection-overlay.ts` | Selection preview rendering: highlights, marquee, box, circular handles |
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
 | `client/src/lib/utils/shape-path.ts` | Build Path2D from frame tuple (rect, ellipse, diamond, roundedRect) |

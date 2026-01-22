@@ -730,7 +730,7 @@ connectorMap.set('opacity', opacity);
 // Metadata
 connectorMap.set('ownerId', userId);
 connectorMap.set('createdAt', timestamp);
-````
+```
 
 **Design rationale:**
 
