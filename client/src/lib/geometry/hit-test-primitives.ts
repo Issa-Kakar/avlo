@@ -7,7 +7,8 @@
  */
 
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
-import { getFrame, getPoints, getShapeType, frameTupleToWorldBounds } from '@avlo/shared';
+import { getFrame, getPoints, getShapeType } from '@avlo/shared';
+import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/lib/tools/types';
 import { computeHandles } from '@/stores/selection-store';
 

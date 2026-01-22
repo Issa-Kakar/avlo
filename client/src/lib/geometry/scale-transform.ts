@@ -8,7 +8,7 @@
 
 import type { HandleId } from '@/lib/tools/types';
 import type { WorldBounds } from '@avlo/shared';
-import { translateBounds, scaleBoundsAround } from '@avlo/shared';
+import { translateBounds, scaleBoundsAround } from './bounds';
 import { isCornerHandle } from '@/stores/selection-store';
 
 /**
@@ -413,38 +413,3 @@ export function applyUniformScaleToFrame(
   return [newCx - newW / 2, newCy - newH / 2, newW, newH];
 }
 
-/**
- * Compute bounds after uniform scale with position preservation.
- * Used for dirty rect invalidation during scale transforms.
- *
- * @param bbox - Object bbox as WorldRect
- * @param originBounds - Selection bounds before transform
- * @param origin - Scale origin point
- * @param scaleX - Raw X scale factor
- * @param scaleY - Raw Y scale factor
- * @returns Transformed bounds
- */
-export function computeUniformScaleBounds(
-  bbox: WorldRect,
-  originBounds: WorldRect,
-  origin: [number, number],
-  scaleX: number,
-  scaleY: number
-): WorldRect {
-  const cx = (bbox.minX + bbox.maxX) / 2;
-  const cy = (bbox.minY + bbox.maxY) / 2;
-  const halfW = (bbox.maxX - bbox.minX) / 2;
-  const halfH = (bbox.maxY - bbox.minY) / 2;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  return {
-    minX: newCx - halfW * absScale,
-    minY: newCy - halfH * absScale,
-    maxX: newCx + halfW * absScale,
-    maxY: newCy + halfH * absScale,
-  };
-}

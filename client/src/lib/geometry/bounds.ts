@@ -6,9 +6,16 @@
  * - Transform (translate, scale)
  * - Construction (from points, frames)
  * - Accessors (center, width, height)
+ * - Uniform scale bounds computation
+ * - Raw geometry bounds extraction
  */
 
-import type { WorldBounds, FrameTuple } from '../types/geometry';
+import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
+import { getFrame, getPoints } from '@avlo/shared';
+import {
+  computeUniformScaleNoThreshold,
+  computePreservedPosition,
+} from './scale-transform';
 
 // ============================================================================
 // UNION HELPERS
@@ -146,4 +153,85 @@ export function expandBounds(bounds: WorldBounds, padding: number): WorldBounds 
     maxX: bounds.maxX + padding,
     maxY: bounds.maxY + padding,
   };
+}
+
+// ============================================================================
+// UNIFORM SCALE BOUNDS (moved from scale-transform.ts)
+// ============================================================================
+
+/**
+ * Compute bounds after uniform scale with position preservation.
+ * Used for dirty rect invalidation during scale transforms.
+ *
+ * @param bbox - Object bbox as WorldBounds
+ * @param originBounds - Selection bounds before transform
+ * @param origin - Scale origin point
+ * @param scaleX - Raw X scale factor
+ * @param scaleY - Raw Y scale factor
+ * @returns Transformed bounds
+ */
+export function computeUniformScaleBounds(
+  bbox: WorldBounds,
+  originBounds: WorldBounds,
+  origin: [number, number],
+  scaleX: number,
+  scaleY: number
+): WorldBounds {
+  const cx = (bbox.minX + bbox.maxX) / 2;
+  const cy = (bbox.minY + bbox.maxY) / 2;
+  const halfW = (bbox.maxX - bbox.minX) / 2;
+  const halfH = (bbox.maxY - bbox.minY) / 2;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  return {
+    minX: newCx - halfW * absScale,
+    minY: newCy - halfH * absScale,
+    maxX: newCx + halfW * absScale,
+    maxY: newCy + halfH * absScale,
+  };
+}
+
+// ============================================================================
+// RAW GEOMETRY BOUNDS
+// ============================================================================
+
+/**
+ * Compute geometry-based bounds for a set of objects.
+ * Unlike bbox (which includes stroke padding), this extracts raw geometry:
+ * - Shapes/text: raw frame [x, y, w, h]
+ * - Strokes/connectors: raw points min/max (no width inflation)
+ *
+ * Used for scale origin computation to prevent anchor sliding.
+ */
+export function computeRawGeometryBounds(
+  handles: Iterable<ObjectHandle>
+): WorldBounds | null {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  for (const handle of handles) {
+    if (handle.kind === 'shape' || handle.kind === 'text') {
+      const frame = getFrame(handle.y);
+      if (!frame) continue;
+      const [x, y, w, h] = frame;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x + w);
+      maxY = Math.max(maxY, y + h);
+    } else {
+      const points = getPoints(handle.y);
+      for (const [px, py] of points) {
+        minX = Math.min(minX, px);
+        minY = Math.min(minY, py);
+        maxX = Math.max(maxX, px);
+        maxY = Math.max(maxY, py);
+      }
+    }
+  }
+
+  if (!isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY };
 }

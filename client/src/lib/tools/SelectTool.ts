@@ -15,8 +15,18 @@ import {
   computeScaleFactors,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
-  computeUniformScaleBounds,
+  applyTransformToFrame,
 } from '@/lib/geometry/scale-transform';
+import {
+  unionBounds,
+  expandEnvelope,
+  translateBounds,
+  scaleBoundsAround,
+  pointsToWorldBounds,
+  expandBounds,
+  computeUniformScaleBounds,
+  computeRawGeometryBounds,
+} from '@/lib/geometry/bounds';
 import {
   pointInRect,
   pointInWorldRect,
@@ -34,12 +44,6 @@ import {
   getWidth,
   getShapeType,
   getFillColor,
-  unionBounds,
-  expandEnvelope,
-  translateBounds,
-  scaleBoundsAround,
-  pointsToWorldBounds,
-  expandBounds,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import * as Y from 'yjs';
@@ -577,39 +581,15 @@ export class SelectTool implements PointerTool {
     if (selectedIds.length === 0) return null;
 
     const snapshot = getCurrentSnapshot();
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
+    // Collect handles for selected objects
+    const handles: ObjectHandle[] = [];
     for (const id of selectedIds) {
       const handle = snapshot.objectsById.get(id);
-      if (!handle) continue;
-
-      const y = handle.y;
-
-      if (handle.kind === 'shape' || handle.kind === 'text') {
-        // Raw frame bounds (NO stroke width padding)
-        const frame = getFrame(y);
-        if (!frame) continue;
-        const [x, frameY, w, h] = frame;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, frameY);
-        maxX = Math.max(maxX, x + w);
-        maxY = Math.max(maxY, frameY + h);
-      } else {
-        // Stroke/connector: raw points min/max (NO width inflation)
-        const points = getPoints(y);
-        if (points.length === 0) continue;
-
-        for (const [px, py] of points) {
-          minX = Math.min(minX, px);
-          minY = Math.min(minY, py);
-          maxX = Math.max(maxX, px);
-          maxY = Math.max(maxY, py);
-        }
-      }
+      if (handle) handles.push(handle);
     }
 
-    if (!isFinite(minX)) return null;
-    return { minX, minY, maxX, maxY };
+    return computeRawGeometryBounds(handles);
   }
 
   private invalidateTransformPreview(): void {
@@ -738,7 +718,6 @@ export class SelectTool implements PointerTool {
     originBounds: StoreWorldRect
   ): void {
     const snapshot = getCurrentSnapshot();
-    const [ox, oy] = origin;
 
     getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
@@ -786,7 +765,6 @@ export class SelectTool implements PointerTool {
         // CASE 3: Shape scaling
         const frame = getFrame(yMap);
         if (!frame) continue;
-        const [x, y, w, h] = frame;
 
         if (selectionKind === 'mixed' && handleKind === 'corner') {
           // Mixed + corner: shapes use center-based scaling with position preservation
@@ -795,19 +773,13 @@ export class SelectTool implements PointerTool {
           yMap.set('frame', newFrame);
         } else {
           // Shapes-only or mixed+side: use raw scaleX/scaleY (non-uniform allowed)
-          // Scale corners around origin
-          const newX1 = ox + (x - ox) * scaleX;
-          const newY1 = oy + (y - oy) * scaleY;
-          const newX2 = ox + ((x + w) - ox) * scaleX;
-          const newY2 = oy + ((y + h) - oy) * scaleY;
-
-          // Handle negative scale (flip) - ensure positive dimensions
-          yMap.set('frame', [
-            Math.min(newX1, newX2),
-            Math.min(newY1, newY2),
-            Math.abs(newX2 - newX1),
-            Math.abs(newY2 - newY1),
-          ]);
+          const newFrame = applyTransformToFrame(frame, {
+            kind: 'scale',
+            origin,
+            scaleX,
+            scaleY,
+          });
+          yMap.set('frame', newFrame);
         }
         // Shape stroke width: UNCHANGED (preserved)
       }

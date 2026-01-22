@@ -37,19 +37,5 @@ export type { IndexEntry } from './spatial';
 // Export bbox utilities
 export { computeBBoxFor, bboxEquals, bboxToBounds } from './utils/bbox';
 
-// Export bounds utilities
-export {
-  unionBounds,
-  expandEnvelope,
-  translateBounds,
-  scaleBoundsAround,
-  pointsToWorldBounds,
-  frameTupleToWorldBounds,
-  boundsCenter,
-  boundsWidth,
-  boundsHeight,
-  expandBounds,
-} from './utils/bounds';
-
 // Export object accessors
 export * from './accessors/object-accessors';
