@@ -603,13 +603,10 @@ interface Frame { x, y, w, h }  // Yet another copy
 
 ### 3. Naming Improvements
 
-**`route-connector.ts`:**
-- Consider rename to `reroute-connector.ts` (more accurate - it's for rerouting existing connectors)
-- Function `routeConnector()` → `rerouteConnector()`?
-- Not compatible with ConnectorTool anyway (different data flow)
-
-**Parameter names:**
-- `shapeFrames` → `frameOverrides` (clearer intent)
+**`reroute-connector.ts`:** ✅ DONE (2026-01-21)
+- ~~Consider rename to `reroute-connector.ts`~~ Done
+- ~~Function `routeConnector()` → `rerouteConnector()`~~ Done
+- ~~`shapeFrames` → `frameOverrides`~~ Done
 
 **Internal variables:**
 - `startResolved` / `endResolved` → clearer names?
@@ -619,7 +616,7 @@ interface Frame { x, y, w, h }  // Yet another copy
 
 - Clean up SelectTool overlay rendering
 - Add connector selection support
-- Integrate `routeConnector()` / `rerouteConnector()` calls
+- Integrate `rerouteConnector()` calls
 - Handle preview vs commit flow
 
 ### 5. Consider Edge Cases
@@ -732,3 +729,7 @@ All internal functions now accept `FrameTuple` instead of `ShapeFrame` objects:
 - Removed `ShapeFrame` alias (use `Frame` or `FrameTuple` from `@avlo/shared`)
 - Added `FrameTuple` to barrel exports
 - Kept `AABB` for routing code semantic clarity
+
+### Parameter Rename
+- `rerouteConnector(connectorId, shapeFrames?, ...)` → `rerouteConnector(connectorId, frameOverrides?, ...)`
+- Clarifies that the parameter is for temporary overrides during shape transforms, not just "shape frames"

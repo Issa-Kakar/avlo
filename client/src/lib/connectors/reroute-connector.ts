@@ -5,7 +5,7 @@
  * Reads connector data from Y.map and applies frame/endpoint overrides as needed.
  *
  * Two orthogonal override mechanisms:
- * 1. shapeFrames: Map of shapeId → new frame (for shapes being transformed)
+ * 1. frameOverrides: Map of shapeId → new frame (for shapes being transformed)
  * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
  *
  * @module lib/connectors/reroute-connector
@@ -25,22 +25,22 @@ import type { Dir, AABB, SnapTarget, Frame } from './types';
  * Reroute a connector with optional overrides.
  *
  * Two orthogonal override mechanisms:
- * 1. shapeFrames: Map of shapeId → new frame (for shapes being transformed)
+ * 1. frameOverrides: Map of shapeId → new frame (for shapes being transformed)
  * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
  *
  * Resolution per endpoint:
  *   1. endpointOverrides.start/end (if provided) - direct override wins
- *   2. shapeFrames.get(anchor.id) (if anchored) - shape is transforming
+ *   2. frameOverrides.get(anchor.id) (if anchored) - shape is transforming
  *   3. Y.map data - default
  *
  * @param connectorId - Connector ID in Y.Doc
- * @param shapeFrames - New frames for shapes being transformed
+ * @param frameOverrides - Temporary frame overrides for shapes being transformed
  * @param endpointOverrides - Direct endpoint overrides (snap or free position)
  * @returns Routed points or null if connector not found
  */
 export function rerouteConnector(
   connectorId: string,
-  shapeFrames?: Map<string, Frame>,
+  frameOverrides?: Map<string, Frame>,
   endpointOverrides?: {
     start?: SnapTarget | [number, number];
     end?: SnapTarget | [number, number];
@@ -67,7 +67,7 @@ export function rerouteConnector(
     'start',
     storedStart,
     startAnchor,
-    shapeFrames,
+    frameOverrides,
     endpointOverrides?.start,
     strokeWidth,
     snapshot
@@ -78,7 +78,7 @@ export function rerouteConnector(
     'end',
     storedEnd,
     endAnchor,
-    shapeFrames,
+    frameOverrides,
     endpointOverrides?.end,
     strokeWidth,
     snapshot
@@ -127,7 +127,7 @@ function resolveEndpoint(
   _which: 'start' | 'end',
   storedPosition: [number, number],
   anchor: StoredAnchor | undefined,
-  shapeFrames: Map<string, Frame> | undefined,
+  frameOverrides: Map<string, Frame> | undefined,
   override: SnapTarget | [number, number] | undefined,
   _strokeWidth: number,
   snapshot: ReturnType<typeof getCurrentSnapshot>
@@ -162,7 +162,7 @@ function resolveEndpoint(
 
   // 2. Check if anchored and shape has frame override
   if (anchor) {
-    const overrideFrame = shapeFrames?.get(anchor.id);
+    const overrideFrame = frameOverrides?.get(anchor.id);
     if (overrideFrame) {
       // Shape is being transformed - apply anchor to new frame (convert Frame to FrameTuple)
       const frameTuple: FrameTuple = [overrideFrame.x, overrideFrame.y, overrideFrame.w, overrideFrame.h];
