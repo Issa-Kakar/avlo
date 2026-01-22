@@ -21,9 +21,10 @@ import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore, type ScaleTransform } from '@/stores/selection-store';
 import {
-  computeUniformScaleNoThreshold,
-  computePreservedPosition,
   computeStrokeTranslation,
+  applyTransformToFrame,
+  applyUniformScaleToPoints,
+  applyUniformScaleToFrame,
 } from '@/lib/geometry/scale-transform';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
@@ -323,40 +324,6 @@ function shouldSkipLOD(
 // context-aware rendering dispatch via renderSelectedObjectWithScaleTransform
 
 /**
- * Apply transform to frame mathematically (no canvas transform)
- */
-function applyTransformToFrame(
-  frame: [number, number, number, number],
-  transform: { kind: string; dx?: number; dy?: number; origin?: [number, number]; scaleX?: number; scaleY?: number }
-): [number, number, number, number] {
-  const [x, y, w, h] = frame;
-
-  if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
-    return [x + transform.dx, y + transform.dy, w, h];
-  }
-
-  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
-    const [ox, oy] = transform.origin;
-    const { scaleX, scaleY } = transform;
-
-    // Scale corners around origin
-    const newX1 = ox + (x - ox) * scaleX;
-    const newY1 = oy + (y - oy) * scaleY;
-    const newX2 = ox + ((x + w) - ox) * scaleX;
-    const newY2 = oy + ((y + h) - oy) * scaleY;
-
-    return [
-      Math.min(newX1, newX2),
-      Math.min(newY1, newY2),
-      Math.abs(newX2 - newX1),
-      Math.abs(newY2 - newY1),
-    ];
-  }
-
-  return frame;
-}
-
-/**
  * Build shape path from explicit frame (not from cache)
  */
 function buildShapePathFromFrame(shapeType: string, frame: [number, number, number, number]): Path2D {
@@ -535,24 +502,10 @@ function drawScaledStrokePreview(
 
   const { origin, scaleX, scaleY, originBounds } = transform;
 
-  // Get stroke center from bbox
-  const [minX, minY, maxX, maxY] = handle.bbox;
-  const cx = (minX + maxX) / 2;
-  const cy = (minY + maxY) / 2;
-
-  // Compute uniform scale with SNAP behavior (no threshold)
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-
-  // Position preserves relative arrangement (no position swap on flip)
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  // Transform points: scale around original center, position at new center
-  // Geometry uses absolute scale (NO inversion - copy-paste behavior)
-  const scaledPoints: [number, number][] = points.map(([x, yCoord]) => [
-    newCx + (x - cx) * absScale,
-    newCy + (yCoord - cy) * absScale,
-  ]);
+  // Apply uniform scale with position preservation (copy-paste flip behavior)
+  const { points: scaledPoints, absScale } = applyUniformScaleToPoints(
+    points, handle.bbox, originBounds, origin, scaleX, scaleY
+  );
 
   // Scale width for WYSIWYG
   const scaledWidth = originalWidth * absScale;
@@ -565,8 +518,6 @@ function drawScaledStrokePreview(
   });
 
   const path = new Path2D(getSvgPathFromStroke(outline, false));
-
-  console.debug(`drawScaledStrokePreview: ${handle.id}`);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -591,31 +542,13 @@ function drawShapeWithUniformScale(
   const frame = getFrame(y);
   if (!frame) return;
 
-  const [x, frameY, w, h] = frame;
   const { scaleX, scaleY, origin, originBounds } = transform;
 
-  // Compute center and uniform scale
-  const cx = x + w / 2;
-  const cy = frameY + h / 2;
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-
-  // Position preserves relative arrangement (no position swap on flip)
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  // Dimensions use absolute scale (no geometry inversion)
-  const newW = w * absScale;
-  const newH = h * absScale;
-
-  // Compute transformed frame from center
-  const transformedFrame: [number, number, number, number] = [
-    newCx - newW / 2,
-    newCy - newH / 2,
-    newW,
-    newH,
-  ];
+  // Apply uniform scale with position preservation (matches stroke behavior)
+  const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
 
   // Skip render if dimensions collapsed to near-zero
+  const [, , newW, newH] = transformedFrame;
   if (newW < 0.001 || newH < 0.001) return;
 
   // Get styling
@@ -661,25 +594,11 @@ function drawTextWithUniformScale(
   const textContent = getText(y);
   if (!frame || !textContent) return;
 
-  const [x, frameY, w, h] = frame;
   const { scaleX, scaleY, origin, originBounds } = transform;
 
-  // Compute center and uniform scale
-  const cx = x + w / 2;
-  const cy = frameY + h / 2;
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-
-  // Position preserves relative arrangement (no position swap on flip)
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  // Dimensions use absolute scale (no geometry inversion)
-  const newW = w * absScale;
-  const newH = h * absScale;
-
-  // Compute transformed frame from center
-  const transformedX = newCx - newW / 2;
-  const transformedY = newCy - newH / 2;
+  // Apply uniform scale with position preservation (matches shape behavior)
+  const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+  const [transformedX, transformedY, newW] = transformedFrame;
 
   // Get text styling
   const color = getColor(y);

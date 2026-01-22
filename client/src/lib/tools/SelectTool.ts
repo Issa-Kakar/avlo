@@ -10,11 +10,12 @@ import {
 } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
-  computeUniformScaleNoThreshold,
-  computePreservedPosition,
   computeStrokeTranslation,
   applyTransformToBounds,
   computeScaleFactors,
+  applyUniformScaleToPoints,
+  applyUniformScaleToFrame,
+  computeUniformScaleBounds,
 } from '@/lib/geometry/scale-transform';
 import {
   pointInRect,
@@ -38,9 +39,6 @@ import {
   translateBounds,
   scaleBoundsAround,
   pointsToWorldBounds,
-  boundsCenter,
-  boundsWidth,
-  boundsHeight,
   expandBounds,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
@@ -658,28 +656,13 @@ export class SelectTool implements PointerTool {
           objBounds = translateBounds(bbox, dx, dy);
         } else if (isStroke) {
           // CASE 2: Stroke scaling with position preservation
-          const [cx, cy] = boundsCenter(bbox);
-          const halfW = boundsWidth(bbox) / 2;
-          const halfH = boundsHeight(bbox) / 2;
+          objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
 
-          // Compute uniform scale with SNAP behavior (no threshold)
-          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-          const absScale = Math.abs(uniformScale);
-
-          // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-          // Compute new bounds centered at newCx/newCy, scaled by absScale
-          objBounds = {
-            minX: newCx - halfW * absScale,
-            minY: newCy - halfH * absScale,
-            maxX: newCx + halfW * absScale,
-            maxY: newCy + halfH * absScale,
-          };
-
-          // Expand for scaled stroke width
+          // Expand for scaled stroke width (use imported computeUniformScaleNoThreshold indirectly via result)
           const origWidth = getWidth(handle.y);
-          const scaledWidth = origWidth * absScale;
+          // Re-compute absScale for width calculation (same logic as in computeUniformScaleBounds)
+          const uniformScaleAbs = Math.abs(Math.max(Math.abs(scaleX), Math.abs(scaleY)));
+          const scaledWidth = origWidth * uniformScaleAbs;
           const delta = (scaledWidth - origWidth) * 0.5;
           if (delta > 0) {
             objBounds = expandBounds(objBounds, delta);
@@ -688,24 +671,7 @@ export class SelectTool implements PointerTool {
           // CASE 3: Shape/text scaling
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             // Mixed + corner: center-based with position preservation
-            const [cx, cy] = boundsCenter(bbox);
-            const w = boundsWidth(bbox);
-            const h = boundsHeight(bbox);
-            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-            const absScale = Math.abs(uniformScale);
-
-            // Position preserves relative arrangement (no position swap on flip)
-            const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-            // Dimensions use absolute scale (no geometry inversion)
-            const halfW = (w * absScale) / 2;
-            const halfH = (h * absScale) / 2;
-            objBounds = {
-              minX: newCx - halfW,
-              minY: newCy - halfH,
-              maxX: newCx + halfW,
-              maxY: newCy + halfH,
-            };
+            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           } else {
             // Shapes-only or mixed+side: corner-based (non-uniform allowed)
             objBounds = scaleBoundsAround(bbox, origin, scaleX, scaleY);
@@ -806,29 +772,14 @@ export class SelectTool implements PointerTool {
           const points = getPoints(yMap);
           if (points.length === 0) continue;
 
-          // Get stroke center from bbox
-          const [minX, minY, maxX, maxY] = handle.bbox;
-          const cx = (minX + maxX) / 2;
-          const cy = (minY + maxY) / 2;
-
-          // Compute uniform scale with SNAP behavior (no threshold)
-          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-          const absScale = Math.abs(uniformScale);
-
-          // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-          // Transform points: scale around original center, position at new center
-          // Geometry uses absolute scale (NO inversion - copy-paste behavior)
-          const newPoints: [number, number][] = points.map(([x, y]) => [
-            newCx + (x - cx) * absScale,
-            newCy + (y - cy) * absScale,
-          ]);
+          // Apply uniform scale with position preservation
+          const { points: newPoints, absScale } = applyUniformScaleToPoints(
+            points, handle.bbox, originBounds, origin, scaleX, scaleY
+          );
           yMap.set('points', newPoints);
 
           // CRITICAL: Scale stroke width for WYSIWYG
-          const oldWidth = getWidth(yMap);
-          yMap.set('width', oldWidth * absScale);
+          yMap.set('width', getWidth(yMap) * absScale);
           continue;
         }
 
@@ -840,20 +791,8 @@ export class SelectTool implements PointerTool {
         if (selectionKind === 'mixed' && handleKind === 'corner') {
           // Mixed + corner: shapes use center-based scaling with position preservation
           // Matches stroke behavior: no geometry inversion, no position swap
-          const cx = x + w / 2;
-          const cy = y + h / 2;
-          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-          const absScale = Math.abs(uniformScale);
-
-          // Position preserves relative arrangement (no position swap on flip)
-          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-          // Dimensions use absolute scale (no geometry inversion)
-          const newW = w * absScale;
-          const newH = h * absScale;
-
-          // Reconstruct frame from center
-          yMap.set('frame', [newCx - newW / 2, newCy - newH / 2, newW, newH]);
+          const newFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+          yMap.set('frame', newFrame);
         } else {
           // Shapes-only or mixed+side: use raw scaleX/scaleY (non-uniform allowed)
           // Scale corners around origin

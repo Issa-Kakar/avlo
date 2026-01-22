@@ -9,6 +9,7 @@
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
 import { getFrame, getPoints, getShapeType, frameTupleToWorldBounds } from '@avlo/shared';
 import type { HandleId } from '@/lib/tools/types';
+import { computeHandles } from '@/stores/selection-store';
 
 // Alias for backwards compatibility
 export type WorldRect = WorldBounds;
@@ -432,18 +433,6 @@ export function shapeEdgeHitTest(
 export const HANDLE_HIT_PX = 10;
 
 /**
- * Compute handle positions for selection bounds (corners only).
- */
-function computeHandlePositions(bounds: WorldRect): { id: HandleId; x: number; y: number }[] {
-  return [
-    { id: 'nw', x: bounds.minX, y: bounds.minY },
-    { id: 'ne', x: bounds.maxX, y: bounds.minY },
-    { id: 'se', x: bounds.maxX, y: bounds.maxY },
-    { id: 'sw', x: bounds.minX, y: bounds.maxY },
-  ];
-}
-
-/**
  * Hit test resize handles given world coordinates and selection bounds.
  * Returns the HandleId if a handle is hit, null otherwise.
  *
@@ -461,7 +450,7 @@ export function hitTestHandle(
   const handleRadius = HANDLE_HIT_PX / scale;
 
   // Test corners first (they take priority)
-  const corners = computeHandlePositions(bounds);
+  const corners = computeHandles(bounds);
 
   for (const h of corners) {
     const dx = worldX - h.x;

@@ -302,3 +302,149 @@ export function computeScaleFactors(
   // Strokes: computeUniformScaleNoThreshold() handles flip logic
   return { scaleX, scaleY };
 }
+
+// === Frame & Uniform Scale Helpers ===
+
+/**
+ * Apply a transform (translate or scale) to a frame tuple.
+ * Returns new frame with transform applied.
+ * For scale: corners scale around origin, result is normalized (positive w/h).
+ */
+export function applyTransformToFrame(
+  frame: [number, number, number, number],
+  transform: TransformForBounds
+): [number, number, number, number] {
+  const [x, y, w, h] = frame;
+
+  if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
+    return [x + transform.dx, y + transform.dy, w, h];
+  }
+
+  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
+    const [ox, oy] = transform.origin;
+    const { scaleX, scaleY } = transform;
+
+    const newX1 = ox + (x - ox) * scaleX;
+    const newY1 = oy + (y - oy) * scaleY;
+    const newX2 = ox + ((x + w) - ox) * scaleX;
+    const newY2 = oy + ((y + h) - oy) * scaleY;
+
+    return [
+      Math.min(newX1, newX2),
+      Math.min(newY1, newY2),
+      Math.abs(newX2 - newX1),
+      Math.abs(newY2 - newY1),
+    ];
+  }
+
+  return frame;
+}
+
+/**
+ * Apply uniform scale to stroke/polyline points with position preservation.
+ *
+ * Center-based scaling with "copy-paste" flip behavior:
+ * - Position preserves relative arrangement in selection box
+ * - Geometry uses absolute magnitude (never inverted/mirrored)
+ *
+ * @param points - Original polyline points
+ * @param bbox - Object bbox tuple [minX, minY, maxX, maxY]
+ * @param originBounds - Selection bounds before transform
+ * @param origin - Scale origin point
+ * @param scaleX - Raw X scale factor
+ * @param scaleY - Raw Y scale factor
+ * @returns Transformed points and the absScale used (for width scaling)
+ */
+export function applyUniformScaleToPoints(
+  points: [number, number][],
+  bbox: [number, number, number, number],
+  originBounds: WorldRect,
+  origin: [number, number],
+  scaleX: number,
+  scaleY: number
+): { points: [number, number][]; absScale: number } {
+  const [minX, minY, maxX, maxY] = bbox;
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  const scaledPoints: [number, number][] = points.map(([x, y]) => [
+    newCx + (x - cx) * absScale,
+    newCy + (y - cy) * absScale,
+  ]);
+
+  return { points: scaledPoints, absScale };
+}
+
+/**
+ * Apply uniform scale to a frame with center-based position preservation.
+ * Used for shapes in mixed+corner selection (matches stroke behavior).
+ *
+ * @param frame - Original frame [x, y, w, h]
+ * @param originBounds - Selection bounds before transform
+ * @param origin - Scale origin point
+ * @param scaleX - Raw X scale factor
+ * @param scaleY - Raw Y scale factor
+ * @returns Transformed frame [x, y, w, h]
+ */
+export function applyUniformScaleToFrame(
+  frame: [number, number, number, number],
+  originBounds: WorldRect,
+  origin: [number, number],
+  scaleX: number,
+  scaleY: number
+): [number, number, number, number] {
+  const [x, y, w, h] = frame;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  const newW = w * absScale;
+  const newH = h * absScale;
+
+  return [newCx - newW / 2, newCy - newH / 2, newW, newH];
+}
+
+/**
+ * Compute bounds after uniform scale with position preservation.
+ * Used for dirty rect invalidation during scale transforms.
+ *
+ * @param bbox - Object bbox as WorldRect
+ * @param originBounds - Selection bounds before transform
+ * @param origin - Scale origin point
+ * @param scaleX - Raw X scale factor
+ * @param scaleY - Raw Y scale factor
+ * @returns Transformed bounds
+ */
+export function computeUniformScaleBounds(
+  bbox: WorldRect,
+  originBounds: WorldRect,
+  origin: [number, number],
+  scaleX: number,
+  scaleY: number
+): WorldRect {
+  const cx = (bbox.minX + bbox.maxX) / 2;
+  const cy = (bbox.minY + bbox.maxY) / 2;
+  const halfW = (bbox.maxX - bbox.minX) / 2;
+  const halfH = (bbox.maxY - bbox.minY) / 2;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  return {
+    minX: newCx - halfW * absScale,
+    minY: newCy - halfH * absScale,
+    maxX: newCx + halfW * absScale,
+    maxY: newCy + halfH * absScale,
+  };
+}
