@@ -16,10 +16,10 @@
 
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
 import { getShapeFrame, getShapeTypeMidpoints, directionVector } from './connector-utils';
-import { pointInRect, pointInDiamond } from '@/lib/geometry/hit-testing';
+import { pointInsideShape as pointInsideShapeTuple } from '@/lib/geometry/hit-testing';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@avlo/shared';
-import { getShapeType } from '@avlo/shared';
+import { getShapeType, getFillColor } from '@avlo/shared';
 import type { Dir, ShapeFrame, SnapTarget, SnapContext } from './types';
 
 /**
@@ -93,29 +93,56 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
     handle: ObjectHandle;
     frame: ShapeFrame;
     area: number;
+    shapeType: string;
+    isFilled: boolean;
   }
   const candidates: Candidate[] = [];
 
   for (const handle of handles) {
     const frame = getShapeFrame(handle);
     if (!frame) continue;
-    candidates.push({ handle, frame, area: frame.w * frame.h });
+    const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
+    const isFilled = handle.kind === 'text' || !!getFillColor(handle.y);
+    candidates.push({ handle, frame, area: frame.w * frame.h, shapeType, isFilled });
   }
 
-  // Sort by area ascending (smallest first), then ULID descending (topmost first)
-  candidates.sort((a, b) => {
-    if (a.area !== b.area) return a.area - b.area; // Smallest first
-    return a.handle.id > b.handle.id ? -1 : 1; // Topmost first (higher ULID = newer)
-  });
+  // Sort by Z-order: ULID descending (topmost first)
+  candidates.sort((a, b) =>
+    a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0
+  );
 
-  // Find first valid snap (respects nesting order)
-  for (const { handle, frame } of candidates) {
-    const shapeType = getShapeType(handle.y);
+  // Fill-aware visual ordering: scan from top, stop at filled occlusion
+  let bestUnfilled: { candidate: Candidate; snap: SnapTarget } | null = null;
+
+  for (const candidate of candidates) {
+    const { handle, frame, shapeType, isFilled, area } = candidate;
+
+    // Check if cursor inside this shape's interior
+    const isInsideInterior = pointInsideShape(cx, cy, frame, shapeType);
+
+    if (isInsideInterior && isFilled) {
+      // Filled interior occludes everything below - try snap then stop
+      const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
+      if (snap) return snap;
+      break; // Stop scanning even if no snap
+    }
+
+    if (isInsideInterior && !isFilled) {
+      // Unfilled interior is transparent - track smallest, keep scanning
+      const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
+      if (snap && (!bestUnfilled || area < bestUnfilled.candidate.area)) {
+        bestUnfilled = { candidate, snap };
+      }
+      continue;
+    }
+
+    // Not inside interior - edge snap always visible
     const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
     if (snap) return snap;
   }
 
-  return null;
+  // Return smallest unfilled frame if no paint found
+  return bestUnfilled?.snap ?? null;
 }
 
 /**
@@ -258,7 +285,7 @@ export function computeSnapForShape(
 
 /**
  * Check if point is inside shape (shape-type aware).
- * Reuses patterns from SelectTool's hit testing.
+ * Delegates to shared hit-testing module for consistency.
  */
 export function pointInsideShape(
   cx: number,
@@ -266,33 +293,8 @@ export function pointInsideShape(
   frame: ShapeFrame,
   shapeType: string
 ): boolean {
-  const { x, y, w, h } = frame;
-
-  switch (shapeType) {
-    case 'diamond': {
-      const top: [number, number] = [x + w / 2, y];
-      const right: [number, number] = [x + w, y + h / 2];
-      const bottom: [number, number] = [x + w / 2, y + h];
-      const left: [number, number] = [x, y + h / 2];
-      return pointInDiamond(cx, cy, top, right, bottom, left);
-    }
-
-    case 'ellipse': {
-      const ecx = x + w / 2;
-      const ecy = y + h / 2;
-      const rx = w / 2;
-      const ry = h / 2;
-      if (rx < 0.001 || ry < 0.001) return false;
-      const dx = (cx - ecx) / rx;
-      const dy = (cy - ecy) / ry;
-      return dx * dx + dy * dy <= 1;
-    }
-
-    case 'rect':
-    case 'roundedRect':
-    default:
-      return pointInRect(cx, cy, x, y, w, h);
-  }
+  // Convert ShapeFrame object to FrameTuple array
+  return pointInsideShapeTuple(cx, cy, [frame.x, frame.y, frame.w, frame.h], shapeType);
 }
 
 /**
