@@ -702,3 +702,33 @@ This refactor establishes a clean primitives-based routing API that:
 5. **Is fully typed** - All changes pass typecheck
 
 The foundation is now set for SelectTool connector manipulation (Phase 7 of the connector system implementation).
+
+---
+
+## Update: 2026-01-21 - Cleanup & Tuple Modernization
+
+### Critical Bug Fix
+**`applyAnchorToFrame()`** was using `computeApproachOffset()` (CORNER_RADIUS + arrowLength + EDGE_CLEARANCE ≈ 43+ units) instead of just `EDGE_CLEARANCE_W` (11 units). This caused connector endpoints to drift excessively during shape transforms.
+
+### Removed Deprecated Functions
+- `getShapeFrame()` → use `getFrame()` from `@avlo/shared`
+- `getMidpoints()` → inlined into `getShapeTypeMidpoints()`
+- `getEdgePosition()` → dead code
+- `getConnectorEndpoint()` → double-applied EDGE_CLEARANCE
+- `pointInsideShape()` wrapper → import from `@/lib/geometry/hit-testing`
+
+### Tuple-Oriented API
+All internal functions now accept `FrameTuple` instead of `ShapeFrame` objects:
+- `getShapeTypeMidpoints(frame: FrameTuple, ...)`
+- `computeSnapForShape(shapeId, frame: FrameTuple, ...)`
+- `findNearestEdgePoint(cx, cy, frame: FrameTuple, ...)`
+- `applyAnchorToFrame(anchor, frame: FrameTuple, side)`
+
+### File Rename
+- `route-connector.ts` → `reroute-connector.ts`
+- `routeConnector()` → `rerouteConnector()`
+
+### Type Cleanup
+- Removed `ShapeFrame` alias (use `Frame` or `FrameTuple` from `@avlo/shared`)
+- Added `FrameTuple` to barrel exports
+- Kept `AABB` for routing code semantic clarity
