@@ -6,7 +6,9 @@
  * - EraserTool.ts (eraser hit detection)
  */
 
-import type { WorldBounds, FrameTuple } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
+import { getFrame, getPoints, getShapeType, frameTupleToWorldBounds } from '@avlo/shared';
+import type { HandleId } from '@/lib/tools/types';
 
 // Alias for backwards compatibility
 export type WorldRect = WorldBounds;
@@ -310,4 +312,243 @@ export function computePolylineArea(points: [number, number][]): number {
   }
 
   return (maxX - minX) * (maxY - minY);
+}
+
+// === Shape Hit Testing ===
+
+/**
+ * Check if a point is inside a shape's interior.
+ * Works for diamond, ellipse, rect, and roundedRect shapes.
+ */
+export function pointInsideShape(
+  cx: number,
+  cy: number,
+  frame: FrameTuple,
+  shapeType: string
+): boolean {
+  const [x, y, w, h] = frame;
+
+  switch (shapeType) {
+    case 'diamond': {
+      const { top, right, bottom, left } = getDiamondVertices(frame);
+      return pointInDiamond(cx, cy, top, right, bottom, left);
+    }
+
+    case 'ellipse': {
+      // Ellipse center and radii
+      const ecx = x + w / 2;
+      const ecy = y + h / 2;
+      const rx = w / 2;
+      const ry = h / 2;
+
+      if (rx < 0.001 || ry < 0.001) return false;
+
+      // Normalized distance from center
+      const dx = (cx - ecx) / rx;
+      const dy = (cy - ecy) / ry;
+      return (dx * dx + dy * dy) <= 1;
+    }
+
+    case 'rect':
+    case 'roundedRect':
+    default:
+      return pointInRect(cx, cy, x, y, w, h);
+  }
+}
+
+/**
+ * Hit test a shape's edge/stroke.
+ * Returns distance if within tolerance, null otherwise.
+ */
+export function shapeEdgeHitTest(
+  cx: number,
+  cy: number,
+  tolerance: number,
+  frame: FrameTuple,
+  shapeType: string
+): number | null {
+  const [x, y, w, h] = frame;
+
+  switch (shapeType) {
+    case 'diamond': {
+      const { top, right, bottom, left } = getDiamondVertices(frame);
+
+      const edges: [[number, number], [number, number]][] = [
+        [top, right],
+        [right, bottom],
+        [bottom, left],
+        [left, top]
+      ];
+
+      let minDist = Infinity;
+      for (const [p1, p2] of edges) {
+        const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+        minDist = Math.min(minDist, dist);
+      }
+      return minDist <= tolerance ? minDist : null;
+    }
+
+    case 'ellipse': {
+      const ecx = x + w / 2;
+      const ecy = y + h / 2;
+      const rx = w / 2;
+      const ry = h / 2;
+
+      if (rx < 0.001 || ry < 0.001) return null;
+
+      const dx = (cx - ecx) / rx;
+      const dy = (cy - ecy) / ry;
+      const normalizedDist = Math.sqrt(dx * dx + dy * dy);
+      const avgRadius = (rx + ry) / 2;
+      const normalizedTolerance = tolerance / avgRadius;
+
+      const distFromEdge = Math.abs(normalizedDist - 1);
+      return distFromEdge <= normalizedTolerance ? distFromEdge * avgRadius : null;
+    }
+
+    case 'rect':
+    case 'roundedRect':
+    default: {
+      const edges: [[number, number], [number, number]][] = [
+        [[x, y], [x + w, y]],         // Top
+        [[x + w, y], [x + w, y + h]], // Right
+        [[x + w, y + h], [x, y + h]], // Bottom
+        [[x, y + h], [x, y]]          // Left
+      ];
+
+      let minDist = Infinity;
+      for (const [p1, p2] of edges) {
+        const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
+        minDist = Math.min(minDist, dist);
+      }
+      return minDist <= tolerance ? minDist : null;
+    }
+  }
+}
+
+// === Handle Hit Testing ===
+
+/** Screen-space hit radius for resize handles */
+export const HANDLE_HIT_PX = 10;
+
+/**
+ * Compute handle positions for selection bounds (corners only).
+ */
+function computeHandlePositions(bounds: WorldRect): { id: HandleId; x: number; y: number }[] {
+  return [
+    { id: 'nw', x: bounds.minX, y: bounds.minY },
+    { id: 'ne', x: bounds.maxX, y: bounds.minY },
+    { id: 'se', x: bounds.maxX, y: bounds.maxY },
+    { id: 'sw', x: bounds.minX, y: bounds.maxY },
+  ];
+}
+
+/**
+ * Hit test resize handles given world coordinates and selection bounds.
+ * Returns the HandleId if a handle is hit, null otherwise.
+ *
+ * @param worldX - Pointer X in world coordinates
+ * @param worldY - Pointer Y in world coordinates
+ * @param bounds - Selection bounds in world coordinates
+ * @param scale - Camera scale for converting screen-space tolerance to world
+ */
+export function hitTestHandle(
+  worldX: number,
+  worldY: number,
+  bounds: WorldRect,
+  scale: number
+): HandleId | null {
+  const handleRadius = HANDLE_HIT_PX / scale;
+
+  // Test corners first (they take priority)
+  const corners = computeHandlePositions(bounds);
+
+  for (const h of corners) {
+    const dx = worldX - h.x;
+    const dy = worldY - h.y;
+    if (dx * dx + dy * dy <= handleRadius * handleRadius) {
+      return h.id;
+    }
+  }
+
+  // Test side edges (not rendered, but for cursor/scaling)
+  // Check if point is near edge and within bounds extents
+  const edgeTolerance = handleRadius;
+
+  // North edge (top)
+  if (Math.abs(worldY - bounds.minY) <= edgeTolerance &&
+      worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+    return 'n';
+  }
+  // South edge (bottom)
+  if (Math.abs(worldY - bounds.maxY) <= edgeTolerance &&
+      worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+    return 's';
+  }
+  // West edge (left)
+  if (Math.abs(worldX - bounds.minX) <= edgeTolerance &&
+      worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+    return 'w';
+  }
+  // East edge (right)
+  if (Math.abs(worldX - bounds.maxX) <= edgeTolerance &&
+      worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+    return 'e';
+  }
+
+  return null;
+}
+
+// === Marquee Geometry Intersection ===
+
+/**
+ * Check if an object's geometry intersects a rectangle.
+ * Used for marquee selection with precise geometry testing.
+ */
+export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boolean {
+  const y = handle.y;
+
+  switch (handle.kind) {
+    case 'stroke':
+    case 'connector': {
+      const points = getPoints(y);
+      if (points.length === 0) return false;
+      return polylineIntersectsRect(points, rect);
+    }
+
+    case 'shape': {
+      const frame = getFrame(y);
+      if (!frame) return false;
+
+      const shapeType = getShapeType(y);
+      const [x, yPos, w, h] = frame;
+
+      switch (shapeType) {
+        case 'ellipse': {
+          return ellipseIntersectsRect(
+            x + w / 2, yPos + h / 2, w / 2, h / 2, rect
+          );
+        }
+        case 'diamond': {
+          const { top, right, bottom, left } = getDiamondVertices(frame);
+          return diamondIntersectsRect(top, right, bottom, left, rect);
+        }
+        case 'rect':
+        case 'roundedRect':
+        default: {
+          // Rect vs rect intersection
+          return rectsIntersect(frameTupleToWorldBounds(frame), rect);
+        }
+      }
+    }
+
+    case 'text': {
+      const frame = getFrame(y);
+      if (!frame) return false;
+      return rectsIntersect(frameTupleToWorldBounds(frame), rect);
+    }
+
+    default:
+      return false;
+  }
 }

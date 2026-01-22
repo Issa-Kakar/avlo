@@ -1,23 +1,30 @@
 import type { WorldRect, HandleId, PointerTool, PreviewData } from './types';
-import { useSelectionStore, type SelectionKind, type HandleKind, type WorldRect as StoreWorldRect } from '@/stores/selection-store';
+import {
+  useSelectionStore,
+  type SelectionKind,
+  type HandleKind,
+  type WorldRect as StoreWorldRect,
+  computeHandles,
+  getScaleOrigin,
+  getHandleCursor,
+} from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
   computeUniformScaleNoThreshold,
   computePreservedPosition,
   computeStrokeTranslation,
+  applyTransformToBounds,
+  computeScaleFactors,
 } from '@/lib/geometry/scale-transform';
 import {
-  pointToSegmentDistance,
   pointInRect,
   pointInWorldRect,
-  pointInDiamond,
   strokeHitTest,
-  rectsIntersect,
-  polylineIntersectsRect,
-  ellipseIntersectsRect,
-  diamondIntersectsRect,
   computePolylineArea,
-  getDiamondVertices,
+  pointInsideShape,
+  shapeEdgeHitTest,
+  hitTestHandle,
+  objectIntersectsRect,
 } from '@/lib/geometry/hit-test-primitives';
 import type { ObjectHandle } from '@avlo/shared';
 import {
@@ -31,7 +38,6 @@ import {
   translateBounds,
   scaleBoundsAround,
   pointsToWorldBounds,
-  frameTupleToWorldBounds,
   boundsCenter,
   boundsWidth,
   boundsHeight,
@@ -46,7 +52,6 @@ import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 // === Constants ===
 const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
 const HIT_SLACK_PX = 2.0;      // Forgiving feel for touch/click precision (like EraserTool)
-const HANDLE_HIT_PX = 10;      // Screen-space hit radius for handles
 const MOVE_THRESHOLD_PX = 4;   // Pixels before drag detected (screen space)
 const CLICK_WINDOW_MS = 180;   // Time threshold for gap click disambiguation
 
@@ -124,7 +129,9 @@ export class SelectTool implements PointerTool {
 
     // 1. Check handles first (requires existing selection)
     if (store.selectedIds.length > 0) {
-      const handleHit = this.hitTestHandle(worldX, worldY);
+      const selectionBounds = this.computeSelectionBounds();
+      const { scale } = useCameraStore.getState();
+      const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds, scale) : null;
       if (handleHit) {
         this.activeHandle = handleHit;
         this.downTarget = 'handle';
@@ -197,7 +204,7 @@ export class SelectTool implements PointerTool {
 
             if (transformBounds && bboxBounds) {
               // CRITICAL: Use geometry bounds for origin
-              const origin = this.getScaleOrigin(this.activeHandle!, transformBounds);
+              const origin = getScaleOrigin(this.activeHandle!, transformBounds);
               // Compute initial delta: distance from origin to click position
               // This ensures scale=1.0 exactly when cursor is at starting position
               const initialDelta: [number, number] = [
@@ -206,7 +213,7 @@ export class SelectTool implements PointerTool {
               ];
               store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta);
             }
-            const cursor = this.getHandleCursor(this.activeHandle!);
+            const cursor = getHandleCursor(this.activeHandle!);
             setCursorOverride(cursor);
             applyCursor();
             break;
@@ -284,7 +291,9 @@ export class SelectTool implements PointerTool {
 
       case 'scale': {
         if (this.downWorld && this.activeHandle) {
-          const { scaleX, scaleY } = this.computeScaleFactors(worldX, worldY);
+          const transform = useSelectionStore.getState().transform;
+          if (transform.kind !== 'scale') break;
+          const { scaleX, scaleY } = computeScaleFactors(worldX, worldY, transform);
           useSelectionStore.getState().updateScale(scaleX, scaleY);
 
           // Invalidate dirty rect
@@ -410,7 +419,7 @@ export class SelectTool implements PointerTool {
       const bounds = this.computeSelectionBounds();
       if (bounds) {
         const store = useSelectionStore.getState();
-        const transformedBounds = this.applyTransformToBounds(bounds, store.transform);
+        const transformedBounds = applyTransformToBounds(bounds, store.transform);
         // Union original + transformed bounds to clear any ghosting
         invalidateWorld(unionBounds(bounds, transformedBounds));
       }
@@ -458,8 +467,8 @@ export class SelectTool implements PointerTool {
       }
 
       if (baseBounds) {
-        selectionBounds = this.applyTransformToBounds(baseBounds, transform);
-        handles = this.computeHandles(selectionBounds);
+        selectionBounds = applyTransformToBounds(baseBounds, transform);
+        handles = computeHandles(selectionBounds);
       }
     }
 
@@ -505,9 +514,16 @@ export class SelectTool implements PointerTool {
       return;
     }
 
-    const handle = this.hitTestHandle(worldX, worldY);
+    const bounds = this.computeSelectionBounds();
+    if (!bounds) {
+      setCursorOverride(null);
+      applyCursor();
+      return;
+    }
+    const { scale } = useCameraStore.getState();
+    const handle = hitTestHandle(worldX, worldY, bounds, scale);
     if (handle) {
-      const cursor = this.getHandleCursor(handle);
+      const cursor = getHandleCursor(handle);
       setCursorOverride(cursor);
     } else {
       setCursorOverride(null);
@@ -598,107 +614,6 @@ export class SelectTool implements PointerTool {
     return { minX, minY, maxX, maxY };
   }
 
-  private applyTransformToBounds(bounds: WorldRect, transform: { kind: string; dx?: number; dy?: number; scaleX?: number; scaleY?: number; origin?: [number, number] }): WorldRect {
-    if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
-      return translateBounds(bounds, transform.dx, transform.dy);
-    }
-
-    if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
-      // CRITICAL: scaleBoundsAround normalizes for negative scale (flip) - ensures minX < maxX, minY < maxY
-      return scaleBoundsAround(bounds, transform.origin, transform.scaleX, transform.scaleY);
-    }
-
-    return bounds;
-  }
-
-  private computeHandles(bounds: WorldRect): { id: HandleId; x: number; y: number }[] {
-    return [
-      { id: 'nw', x: bounds.minX, y: bounds.minY },
-      { id: 'ne', x: bounds.maxX, y: bounds.minY },
-      { id: 'se', x: bounds.maxX, y: bounds.maxY },
-      { id: 'sw', x: bounds.minX, y: bounds.maxY },
-    ];
-  }
-
-  private getScaleOrigin(handle: HandleId, bounds: WorldRect): [number, number] {
-    const [midX, midY] = boundsCenter(bounds);
-
-    // Scale origin is opposite edge/corner from the dragged handle
-    switch (handle) {
-      // Corners - opposite corner
-      case 'nw': return [bounds.maxX, bounds.maxY];
-      case 'ne': return [bounds.minX, bounds.maxY];
-      case 'se': return [bounds.minX, bounds.minY];
-      case 'sw': return [bounds.maxX, bounds.minY];
-      // Sides - opposite edge midpoint
-      case 'n': return [midX, bounds.maxY];
-      case 's': return [midX, bounds.minY];
-      case 'e': return [bounds.minX, midY];
-      case 'w': return [bounds.maxX, midY];
-    }
-  }
-
-  private computeScaleFactors(worldX: number, worldY: number): { scaleX: number; scaleY: number } {
-    const store = useSelectionStore.getState();
-    const transform = store.transform;
-
-    if (transform.kind !== 'scale') {
-      return { scaleX: 1, scaleY: 1 };
-    }
-
-    const { origin, initialDelta, handleId } = transform;
-    const [ox, oy] = origin;
-    const [initDx, initDy] = initialDelta;
-
-    // Vector from origin to cursor
-    const dx = worldX - ox;
-    const dy = worldY - oy;
-
-    let scaleX = 1;
-    let scaleY = 1;
-
-    const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
-    const isSideH = handleId === 'e' || handleId === 'w';
-    const isSideV = handleId === 'n' || handleId === 's';
-
-    // Use initialDelta as denominator (NOT selection bounds width)
-    // This ensures scaleX=1.0 exactly when cursor == downWorld (start position)
-    // Sign handling is implicit: if initDx is negative (left handle), scale sign is preserved
-    const MIN_DELTA = 0.001;
-    const safeDx = Math.abs(initDx) > MIN_DELTA ? initDx : (initDx >= 0 ? MIN_DELTA : -MIN_DELTA);
-    const safeDy = Math.abs(initDy) > MIN_DELTA ? initDy : (initDy >= 0 ? MIN_DELTA : -MIN_DELTA);
-
-    if (isCorner) {
-      // Corner handles: free scale in both axes
-      scaleX = dx / safeDx;
-      scaleY = dy / safeDy;
-    } else if (isSideH) {
-      // East/West handle: X scales, Y = 1
-      scaleX = dx / safeDx;
-      scaleY = 1;
-    } else if (isSideV) {
-      // North/South handle: Y scales, X = 1
-      scaleY = dy / safeDy;
-      scaleX = 1;
-    }
-
-    // Raw scales pass through - no dead zone
-    // Shapes: Use raw negative scales for immediate flip
-    // Strokes: computeUniformScaleNoThreshold() handles flip logic
-    return { scaleX, scaleY };
-  }
-
-  /** Returns appropriate cursor for handle */
-  private getHandleCursor(handle: HandleId): string {
-    switch (handle) {
-      case 'nw': case 'se': return 'nwse-resize';
-      case 'ne': case 'sw': return 'nesw-resize';
-      case 'n': case 's': return 'ns-resize';
-      case 'e': case 'w': return 'ew-resize';
-      default: return 'default';
-    }
-  }
-
   private invalidateTransformPreview(): void {
     const bounds = this.computeSelectionBounds();
     if (!bounds) return;
@@ -708,7 +623,7 @@ export class SelectTool implements PointerTool {
 
     if (transform.kind === 'translate') {
       // Translation: simple offset bounds
-      const transformedBounds = this.applyTransformToBounds(bounds, transform);
+      const transformedBounds = applyTransformToBounds(bounds, transform);
 
       // First move: include original bounds
       if (!this.transformEnvelope) {
@@ -1014,7 +929,7 @@ export class SelectTool implements PointerTool {
       if (!handle) continue;
 
       // Use precise geometry intersection test
-      if (this.objectIntersectsRect(handle, marqueeRect)) {
+      if (objectIntersectsRect(handle, marqueeRect)) {
         selectedIds.push(entry.id);
       }
     }
@@ -1032,55 +947,6 @@ export class SelectTool implements PointerTool {
   }
 
   // === Hit Testing ===
-
-  private hitTestHandle(worldX: number, worldY: number): HandleId | null {
-    const store = useSelectionStore.getState();
-    if (store.selectedIds.length === 0) return null;
-
-    const bounds = this.computeSelectionBounds();
-    if (!bounds) return null;
-
-    const { scale } = useCameraStore.getState();
-    const handleRadius = HANDLE_HIT_PX / scale;
-
-    // Test corners first (they take priority)
-    const corners = this.computeHandles(bounds);
-
-    for (const h of corners) {
-      const dx = worldX - h.x;
-      const dy = worldY - h.y;
-      if (dx * dx + dy * dy <= handleRadius * handleRadius) {
-        return h.id;
-      }
-    }
-
-    // Test side edges (not rendered, but for cursor/scaling)
-    // Check if point is near edge and within bounds extents
-    const edgeTolerance = handleRadius;
-
-    // North edge (top)
-    if (Math.abs(worldY - bounds.minY) <= edgeTolerance &&
-        worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
-      return 'n';
-    }
-    // South edge (bottom)
-    if (Math.abs(worldY - bounds.maxY) <= edgeTolerance &&
-        worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
-      return 's';
-    }
-    // West edge (left)
-    if (Math.abs(worldX - bounds.minX) <= edgeTolerance &&
-        worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
-      return 'w';
-    }
-    // East edge (right)
-    if (Math.abs(worldX - bounds.maxX) <= edgeTolerance &&
-        worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
-      return 'e';
-    }
-
-    return null;
-  }
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
     const snapshot = getCurrentSnapshot();
@@ -1303,7 +1169,7 @@ export class SelectTool implements PointerTool {
     // 2. Point is near stroke edge
 
     // First check if inside interior
-    const insideInterior = this.pointInsideShape(cx, cy, frame, shapeType);
+    const insideInterior = pointInsideShape(cx, cy, frame, shapeType);
 
     if (insideInterior) {
       return { distance: 0, insideInterior: true };
@@ -1311,157 +1177,12 @@ export class SelectTool implements PointerTool {
 
     // Check if near stroke edge
     const halfStroke = strokeWidth / 2;
-    const nearEdge = this.shapeEdgeHitTest(cx, cy, r + halfStroke, frame, shapeType);
+    const nearEdge = shapeEdgeHitTest(cx, cy, r + halfStroke, frame, shapeType);
 
-    if (nearEdge) {
+    if (nearEdge !== null) {
       return { distance: nearEdge, insideInterior: false };
     }
 
     return null;
-  }
-
-  private pointInsideShape(cx: number, cy: number, frame: [number, number, number, number], shapeType: string): boolean {
-    const [x, y, w, h] = frame;
-
-    switch (shapeType) {
-      case 'diamond': {
-        const { top, right, bottom, left } = getDiamondVertices(frame);
-        return pointInDiamond(cx, cy, top, right, bottom, left);
-      }
-
-      case 'ellipse': {
-        // Ellipse center and radii
-        const ecx = x + w / 2;
-        const ecy = y + h / 2;
-        const rx = w / 2;
-        const ry = h / 2;
-
-        if (rx < 0.001 || ry < 0.001) return false;
-
-        // Normalized distance from center
-        const dx = (cx - ecx) / rx;
-        const dy = (cy - ecy) / ry;
-        return (dx * dx + dy * dy) <= 1;
-      }
-
-      case 'rect':
-      case 'roundedRect':
-      default:
-        return pointInRect(cx, cy, x, y, w, h);
-    }
-  }
-
-  private shapeEdgeHitTest(
-    cx: number, cy: number, tolerance: number,
-    frame: [number, number, number, number],
-    shapeType: string
-  ): number | null {
-    const [x, y, w, h] = frame;
-
-    switch (shapeType) {
-      case 'diamond': {
-        const { top, right, bottom, left } = getDiamondVertices(frame);
-
-        const edges: [[number, number], [number, number]][] = [
-          [top, right],
-          [right, bottom],
-          [bottom, left],
-          [left, top]
-        ];
-
-        let minDist = Infinity;
-        for (const [p1, p2] of edges) {
-          const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
-          minDist = Math.min(minDist, dist);
-        }
-        return minDist <= tolerance ? minDist : null;
-      }
-
-      case 'ellipse': {
-        const ecx = x + w / 2;
-        const ecy = y + h / 2;
-        const rx = w / 2;
-        const ry = h / 2;
-
-        if (rx < 0.001 || ry < 0.001) return null;
-
-        const dx = (cx - ecx) / rx;
-        const dy = (cy - ecy) / ry;
-        const normalizedDist = Math.sqrt(dx * dx + dy * dy);
-        const avgRadius = (rx + ry) / 2;
-        const normalizedTolerance = tolerance / avgRadius;
-
-        const distFromEdge = Math.abs(normalizedDist - 1);
-        return distFromEdge <= normalizedTolerance ? distFromEdge * avgRadius : null;
-      }
-
-      case 'rect':
-      case 'roundedRect':
-      default: {
-        const edges: [[number, number], [number, number]][] = [
-          [[x, y], [x + w, y]],         // Top
-          [[x + w, y], [x + w, y + h]], // Right
-          [[x + w, y + h], [x, y + h]], // Bottom
-          [[x, y + h], [x, y]]          // Left
-        ];
-
-        let minDist = Infinity;
-        for (const [p1, p2] of edges) {
-          const dist = pointToSegmentDistance(cx, cy, p1[0], p1[1], p2[0], p2[1]);
-          minDist = Math.min(minDist, dist);
-        }
-        return minDist <= tolerance ? minDist : null;
-      }
-    }
-  }
-
-  // === Marquee Selection Geometry Dispatch ===
-
-  private objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boolean {
-    const y = handle.y;
-
-    switch (handle.kind) {
-      case 'stroke':
-      case 'connector': {
-        const points = getPoints(y);
-        if (points.length === 0) return false;
-        return polylineIntersectsRect(points, rect);
-      }
-
-      case 'shape': {
-        const frame = getFrame(y);
-        if (!frame) return false;
-
-        const shapeType = getShapeType(y);
-        const [x, yPos, w, h] = frame;
-
-        switch (shapeType) {
-          case 'ellipse': {
-            return ellipseIntersectsRect(
-              x + w / 2, yPos + h / 2, w / 2, h / 2, rect
-            );
-          }
-          case 'diamond': {
-            const { top, right, bottom, left } = getDiamondVertices(frame);
-            return diamondIntersectsRect(top, right, bottom, left, rect);
-          }
-          case 'rect':
-          case 'roundedRect':
-          default: {
-            // Rect vs rect intersection
-            return rectsIntersect(frameTupleToWorldBounds(frame), rect);
-          }
-        }
-      }
-
-      case 'text': {
-        const frame = getFrame(y);
-        if (!frame) return false;
-        return rectsIntersect(frameTupleToWorldBounds(frame), rect);
-      }
-
-      default:
-        return false;
-    }
   }
 }
