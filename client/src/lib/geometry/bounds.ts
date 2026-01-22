@@ -1,13 +1,13 @@
 /**
- * Bounds Helper Functions
+ * Bounds Utilities
  *
- * Pure functions for WorldBounds manipulation including:
+ * WorldBounds manipulation and computation:
  * - Union (combining bounds)
  * - Transform (translate, scale)
  * - Construction (from points, frames)
  * - Accessors (center, width, height)
  * - Uniform scale bounds computation
- * - Raw geometry bounds extraction
+ * - Raw geometry bounds extraction from ObjectHandle
  */
 
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';

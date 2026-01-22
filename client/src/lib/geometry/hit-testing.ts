@@ -1,9 +1,12 @@
 /**
- * Hit Test Primitives
+ * Hit Testing
  *
- * Pure geometry functions for hit testing, shared by:
- * - SelectTool.ts (selection and marquee)
- * - EraserTool.ts (eraser hit detection)
+ * Geometry and object-level hit testing utilities, shared by:
+ * - SelectTool (point selection and marquee intersection)
+ * - EraserTool (eraser hit detection)
+ *
+ * Includes low-level geometry helpers (point-in-shape, segment intersection)
+ * and object-aware dispatch that reads from ObjectHandle.
  */
 
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
@@ -546,16 +549,18 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
 // === Object Hit Testing (Shared by SelectTool and EraserTool) ===
 
 /**
- * Result of testing a single object for hit.
- * Rich classification for visual ordering and fill-awareness.
+ * Hit test result with classification for Z-order-aware selection.
+ *
+ * Key behavior: An unfilled shape interior (kind='shape', isFilled=false, insideInterior=true)
+ * is treated as transparent - SelectTool scans through to find paint underneath.
  */
 export interface HitCandidate {
-  id: string;
+  id: string;                 // Object ID (ULID provides Z-order: higher = topmost)
   kind: 'stroke' | 'shape' | 'text' | 'connector';
-  distance: number;        // 0 if inside, else distance to geometry
-  insideInterior: boolean; // True if point is inside shape/text interior
-  area: number;            // Bounding area for nesting priority
-  isFilled: boolean;       // For fill-aware hit filtering
+  distance: number;           // Distance to geometry edge (0 if inside/on stroke)
+  insideInterior: boolean;    // Hit inside shape/text bounds (not edge). Always false for strokes/connectors.
+  area: number;               // Bounding area - smaller = more nested = higher selection priority
+  isFilled: boolean;          // Whether object paints at cursor. Shapes: has fillColor. Others: always true.
 }
 
 /**

@@ -7,12 +7,6 @@ import {
   getFrame,
   getShapeType,
   getFillColor,
-  getText,
-  getFontSize,
-  getFontFamily,
-  getFontWeight,
-  getFontStyle,
-  getTextAlignH,
   getStrokeTool,
 } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
@@ -28,6 +22,8 @@ import {
 } from '@/lib/geometry/transform';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
+import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
+import { drawTextBox, drawTextWithTransform, drawTextWithUniformScale } from './text';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -192,55 +188,6 @@ function drawShape(
   ctx.restore();
 }
 
-function drawTextBox(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
-  const { y } = handle;
-
-  // Get frame and text content
-  const frame = getFrame(y);
-  const textContent = getText(y);
-  if (!frame || !textContent) return;
-
-  const [x, y0, w] = frame;
-
-  // Get text styling
-  const color = getColor(y);
-  const fontSize = getFontSize(y);
-  const fontFamily = getFontFamily(y);
-  const fontWeight = getFontWeight(y);
-  const fontStyle = getFontStyle(y);
-  const textAlign = getTextAlignH(y);
-  const opacity = getOpacity(y);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  // Set up text styling
-  ctx.fillStyle = color;
-  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
-  ctx.textBaseline = 'top';
-
-  // Calculate text position based on alignment
-  let textX = x;
-  if (textAlign === 'center') {
-    textX = x + w / 2;
-  } else if (textAlign === 'right') {
-    textX = x + w;
-  }
-
-  // Simple text wrapping
-  const lines = wrapText(ctx, textContent, w);
-  const lineHeight = fontSize * 1.2;
-
-  for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], textX, y0 + i * lineHeight);
-  }
-
-  ctx.restore();
-}
 
 function drawConnector(
   ctx: CanvasRenderingContext2D,
@@ -285,30 +232,6 @@ function drawConnector(
   ctx.restore();
 }
 
-// Helper function for text wrapping
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let currentLine = '';
-
-  for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    const metrics = ctx.measureText(testLine);
-
-    if (metrics.width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = testLine;
-    }
-  }
-
-  if (currentLine) {
-    lines.push(currentLine);
-  }
-
-  return lines;
-}
 
 function shouldSkipLOD(
   bbox: [number, number, number, number],
@@ -322,53 +245,6 @@ function shouldSkipLOD(
 
 // Note: applySelectionTransform and computeUniformScale removed - replaced by
 // context-aware rendering dispatch via renderSelectedObjectWithScaleTransform
-
-/**
- * Build shape path from explicit frame (not from cache)
- */
-function buildShapePathFromFrame(shapeType: string, frame: [number, number, number, number]): Path2D {
-  const [x, y0, w, h] = frame;
-  const path = new Path2D();
-
-  switch (shapeType) {
-    case 'rect':
-      path.rect(x, y0, w, h);
-      break;
-    case 'ellipse':
-      path.ellipse(x + w / 2, y0 + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
-      break;
-    case 'diamond': {
-      const cx = x + w / 2;
-      const cy = y0 + h / 2;
-      const radius = Math.min(20, Math.min(w, h) * 0.1);
-      path.moveTo(cx + w / 4, y0 + h / 4);
-      path.arcTo(x + w, cy, cx, y0 + h, radius);
-      path.arcTo(cx, y0 + h, x, cy, radius);
-      path.arcTo(x, cy, cx, y0, radius);
-      path.arcTo(cx, y0, x + w, cy, radius);
-      path.closePath();
-      break;
-    }
-    case 'roundedRect': {
-      const radius = Math.min(20, w * 0.1, h * 0.1);
-      // Inline roundedRect helper
-      path.moveTo(x + radius, y0);
-      path.lineTo(x + w - radius, y0);
-      path.quadraticCurveTo(x + w, y0, x + w, y0 + radius);
-      path.lineTo(x + w, y0 + h - radius);
-      path.quadraticCurveTo(x + w, y0 + h, x + w - radius, y0 + h);
-      path.lineTo(x + radius, y0 + h);
-      path.quadraticCurveTo(x, y0 + h, x, y0 + h - radius);
-      path.lineTo(x, y0 + radius);
-      path.quadraticCurveTo(x, y0, x + radius, y0);
-      break;
-    }
-    default:
-      path.rect(x, y0, w, h);
-  }
-
-  return path;
-}
 
 /**
  * Draw shape with transform applied to frame (WYSIWYG - stroke width NOT scaled)
@@ -414,61 +290,6 @@ function drawShapeWithTransform(
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke(path);
-  }
-
-  ctx.restore();
-}
-
-/**
- * Draw text with transform applied to frame (WYSIWYG)
- */
-function drawTextWithTransform(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: { kind: string; dx?: number; dy?: number; origin?: [number, number]; scaleX?: number; scaleY?: number }
-): void {
-  const { y } = handle;
-
-  // Get original frame and compute transformed frame
-  const frame = getFrame(y);
-  const textContent = getText(y);
-  if (!frame || !textContent) return;
-
-  const transformedFrame = applyTransformToFrame(frame, transform);
-  const [x, y0, w] = transformedFrame;
-
-  // Get text styling
-  const color = getColor(y);
-  const fontSize = getFontSize(y);
-  const fontFamily = getFontFamily(y);
-  const fontWeight = getFontWeight(y);
-  const fontStyle = getFontStyle(y);
-  const textAlign = getTextAlignH(y);
-  const opacity = getOpacity(y);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  // Set up text styling - font size NOT scaled
-  ctx.fillStyle = color;
-  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
-  ctx.textBaseline = 'top';
-
-  // Calculate text position based on alignment
-  let textX = x;
-  if (textAlign === 'center') {
-    textX = x + w / 2;
-  } else if (textAlign === 'right') {
-    textX = x + w;
-  }
-
-  // Simple text wrapping
-  const lines = wrapText(ctx, textContent, w);
-  const lineHeight = fontSize * 1.2;
-
-  for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], textX, y0 + i * lineHeight);
   }
 
   ctx.restore();
@@ -577,56 +398,6 @@ function drawShapeWithUniformScale(
     ctx.stroke(path);
   }
 
-  ctx.restore();
-}
-
-/**
- * Draw text with uniform scale and position preservation (for mixed + corner selection).
- * Uses center-based scaling with absScale (no geometry inversion) and preserved positions.
- */
-function drawTextWithUniformScale(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform
-): void {
-  const { y } = handle;
-  const frame = getFrame(y);
-  const textContent = getText(y);
-  if (!frame || !textContent) return;
-
-  const { scaleX, scaleY, origin, originBounds } = transform;
-
-  // Apply uniform scale with position preservation (matches shape behavior)
-  const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
-  const [transformedX, transformedY, newW] = transformedFrame;
-
-  // Get text styling
-  const color = getColor(y);
-  const fontSize = getFontSize(y);
-  const fontFamily = getFontFamily(y);
-  const fontWeight = getFontWeight(y);
-  const fontStyle = getFontStyle(y);
-  const textAlign = getTextAlignH(y);
-  const opacity = getOpacity(y);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  // Set up text styling - font size NOT scaled
-  ctx.fillStyle = color;
-  ctx.font = `${fontStyle} ${fontWeight} ${fontSize}px ${fontFamily}`;
-  ctx.textAlign = textAlign as 'left' | 'center' | 'right';
-  ctx.textBaseline = 'top';
-
-  // Compute X position based on text alignment
-  let textX = transformedX;
-  if (textAlign === 'center') {
-    textX = transformedX + newW / 2;
-  } else if (textAlign === 'right') {
-    textX = transformedX + newW;
-  }
-
-  ctx.fillText(textContent, textX, transformedY);
   ctx.restore();
 }
 
