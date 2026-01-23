@@ -3,6 +3,8 @@ import {
   useSelectionStore,
   type SelectionKind,
   type HandleKind,
+  type TranslateTransform,
+  type ScaleTransform,
   type WorldRect as StoreWorldRect,
   computeHandles,
   getScaleOrigin,
@@ -16,6 +18,8 @@ import {
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
   applyTransformToFrame,
+  computeUniformScaleNoThreshold,
+  computePreservedPosition,
 } from '@/lib/geometry/transform';
 import {
   unionBounds,
@@ -41,6 +45,8 @@ import {
   getFrame,
   getPoints,
   getWidth,
+  getStart,
+  getEnd,
   getStartAnchor,
   getEndAnchor,
   bboxTupleToWorldBounds,
@@ -273,7 +279,26 @@ export class SelectTool implements PointerTool {
 
           case 'objectOutsideSelection': {
             if (!passMove) break;
-            // Select this object, then translate
+
+            // Connectors: check anchor state to decide drag behavior
+            if (this.hitAtDown?.kind === 'connector') {
+              const snapshot = getCurrentSnapshot();
+              const connHandle = snapshot.objectsById.get(this.hitAtDown.id);
+              if (connHandle) {
+                const sa = getStartAnchor(connHandle.y);
+                const ea = getEndAnchor(connHandle.y);
+                if (sa || ea) {
+                  // Anchored → marquee (can't translate anchored connector)
+                  this.phase = 'marquee';
+                  useSelectionStore.getState().beginMarquee(this.downWorld!);
+                  useSelectionStore.getState().updateMarquee([worldX, worldY]);
+                  this.updateMarqueeSelection();
+                  break;
+                }
+              }
+            }
+
+            // Non-connector or free connector: select + translate
             const store = useSelectionStore.getState();
             store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
             this.phase = 'translate';
@@ -287,7 +312,27 @@ export class SelectTool implements PointerTool {
 
           case 'objectInSelection': {
             if (!passMove) break;
-            // Keep selection as-is, translate group
+
+            // Connector mode (1 connector): check anchor state
+            const inSelStore = useSelectionStore.getState();
+            if (inSelStore.mode === 'connector') {
+              const snapshot = getCurrentSnapshot();
+              const connHandle = snapshot.objectsById.get(inSelStore.selectedIds[0]);
+              if (connHandle?.kind === 'connector') {
+                const sa = getStartAnchor(connHandle.y);
+                const ea = getEndAnchor(connHandle.y);
+                if (sa || ea) {
+                  // Anchored → marquee (gives visual feedback)
+                  this.phase = 'marquee';
+                  useSelectionStore.getState().beginMarquee(this.downWorld!);
+                  useSelectionStore.getState().updateMarquee([worldX, worldY]);
+                  this.updateMarqueeSelection();
+                  break;
+                }
+              }
+            }
+
+            // Standard mode or free connector: translate group
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
@@ -777,7 +822,10 @@ export class SelectTool implements PointerTool {
         if (!handle) continue;
 
         // Connectors are invalidated by rerouteAffectedConnectors(), skip here
-        if (handle.kind === 'connector') continue;
+        // UPDATE: WITH CONNECTORS ONLY NOW BEING ABLE TO SCALE, ENVELOPE PATTERN MUST BE USED FOR HANDLING AXIS FLIPS
+        // NEEDS FURTHER INVESTIGATION: IT SEEMS TO BE CLEARING PIXELS FINE IN CONNECTORS ONLY(NO STALE PIXELS)
+        // BUT THE CONNECTOR DISAPPEARS IN CONNECTORS ONLY SELECTION KIND SCALE TRANSFORMS ON AXIS FLIPS. 
+        if (handle.kind === 'connector' && selectionKind !== 'connectorsOnly') continue;
 
         const bbox = bboxTupleToWorldBounds(handle.bbox);
         const isStroke = handle.kind === 'stroke';
@@ -850,8 +898,9 @@ export class SelectTool implements PointerTool {
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
         } else if (handle.kind === 'connector') {
-          // Free connectors (no anchors): offset points, start, end
-          // Anchored connectors: handled by connectorContext below
+          // All selected connectors are now in connectorContext — skip here
+          if (connectorContext?.entries.has(id)) continue;
+          // Fallback: free connector not in context (safety)
           const startAnchor = getStartAnchor(yMap);
           const endAnchor = getEndAnchor(yMap);
           if (!startAnchor && !endAnchor) {
@@ -864,7 +913,6 @@ export class SelectTool implements PointerTool {
             yMap.set('start', start);
             yMap.set('end', end);
           }
-          // Anchored connectors skip here — rerouted via context
         } else {
           // Offset frame (shapes, text)
           const frame = getFrame(yMap);
@@ -1014,8 +1062,14 @@ export class SelectTool implements PointerTool {
 
   /**
    * Build ConnectorTransformContext for translate/scale transforms.
-   * Collects all connectors anchored to selected shapes (and selected connectors
-   * themselves if anchored) for live rerouting during the transform.
+   *
+   * Per-endpoint truth table:
+   *   Free + connector selected       → moves via endpointOverride (transform applied)
+   *   Anchored + anchor shape selected → moves via frameOverride
+   *   Anchored + anchor shape NOT sel  → stays canonical
+   *   Free + connector NOT selected    → stays canonical
+   *
+   * A connector enters the context if at least one endpoint will move.
    */
   private buildConnectorContext(): ConnectorTransformContext | null {
     const snapshot = getCurrentSnapshot();
@@ -1024,7 +1078,34 @@ export class SelectTool implements PointerTool {
     const selectedSet = new Set(selectedIds);
     const entries = new Map<string, ConnectorUpdateEntry>();
 
-    // 1. For each selected shape/text, find anchored connectors
+    // Pass 1: Selected connectors — include if any endpoint will move
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle || handle.kind !== 'connector') continue;
+
+      const startAnchor = getStartAnchor(handle.y);
+      const endAnchor = getEndAnchor(handle.y);
+
+      // Endpoint moves if: free (selected connector moves it) or anchored to selected shape
+      const startMoves = !startAnchor || selectedSet.has(startAnchor.id);
+      const endMoves = !endAnchor || selectedSet.has(endAnchor.id);
+
+      if (!startMoves && !endMoves) continue; // Both anchored to non-selected shapes
+
+      entries.set(id, {
+        connectorId: id,
+        isSelected: true,
+        prevBbox: bboxTupleToWorldBounds(handle.bbox),
+        currentPoints: null,
+        currentBbox: null,
+        startIsAnchored: !!startAnchor,
+        endIsAnchored: !!endAnchor,
+        originalStart: (getStart(handle.y) ?? [0, 0]) as [number, number],
+        originalEnd: (getEnd(handle.y) ?? [0, 0]) as [number, number],
+      });
+    }
+
+    // Pass 2: Non-selected connectors anchored to selected shapes (external)
     for (const id of selectedIds) {
       const handle = snapshot.objectsById.get(id);
       if (!handle) continue;
@@ -1038,36 +1119,18 @@ export class SelectTool implements PointerTool {
         const connHandle = snapshot.objectsById.get(connId);
         if (!connHandle) continue;
 
+        const sa = getStartAnchor(connHandle.y);
+        const ea = getEndAnchor(connHandle.y);
         entries.set(connId, {
           connectorId: connId,
-          isSelected: selectedSet.has(connId),
+          isSelected: false,
           prevBbox: bboxTupleToWorldBounds(connHandle.bbox),
           currentPoints: null,
           currentBbox: null,
-        });
-      }
-    }
-
-    // 2. Also check selected connectors with anchors to transforming shapes
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle || handle.kind !== 'connector') continue;
-      if (entries.has(id)) continue;
-
-      // Check if any anchor points to a selected shape
-      const startAnchor = getStartAnchor(handle.y);
-      const endAnchor = getEndAnchor(handle.y);
-      const hasAnchorToSelected =
-        (startAnchor && selectedSet.has(startAnchor.id)) ||
-        (endAnchor && selectedSet.has(endAnchor.id));
-
-      if (hasAnchorToSelected) {
-        entries.set(id, {
-          connectorId: id,
-          isSelected: true,
-          prevBbox: bboxTupleToWorldBounds(handle.bbox),
-          currentPoints: null,
-          currentBbox: null,
+          startIsAnchored: !!sa,
+          endIsAnchored: !!ea,
+          originalStart: (getStart(connHandle.y) ?? [0, 0]) as [number, number],
+          originalEnd: (getEnd(connHandle.y) ?? [0, 0]) as [number, number],
         });
       }
     }
@@ -1076,9 +1139,65 @@ export class SelectTool implements PointerTool {
   }
 
   /**
+   * Transform a free endpoint position using the current translate/scale transform.
+   * Matches the transform logic used for shapes/strokes in each context.
+   */
+  private transformFreeEndpoint(
+    position: [number, number],
+    transform: TranslateTransform | ScaleTransform
+  ): [number, number] {
+    if (transform.kind === 'translate') {
+      return [position[0] + transform.dx, position[1] + transform.dy];
+    }
+
+    const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
+
+    if (selectionKind === 'mixed' && handleKind === 'corner') {
+      // Uniform scale with position preservation (matches stroke/shape behavior)
+      const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+      return computePreservedPosition(position[0], position[1], originBounds, origin, uniformScale);
+    }
+
+    // Non-uniform: same as shape corner scaling
+    const [ox, oy] = origin;
+    return [
+      ox + (position[0] - ox) * scaleX,
+      oy + (position[1] - oy) * scaleY,
+    ];
+  }
+
+  /**
+   * Compute endpoint overrides for free (non-anchored) endpoints of a connector.
+   * Returns null if no overrides are needed (both endpoints are anchored or connector is not selected).
+   */
+  private computeFreeEndpointOverrides(
+    entry: ConnectorUpdateEntry,
+    transform: TranslateTransform | ScaleTransform
+  ): { start?: [number, number]; end?: [number, number] } | null {
+    const { startIsAnchored, endIsAnchored, originalStart, originalEnd, isSelected } = entry;
+
+    let startOverride: [number, number] | undefined;
+    let endOverride: [number, number] | undefined;
+
+    // Free endpoints of selected connectors get transformed
+    if (!startIsAnchored && isSelected) {
+      startOverride = this.transformFreeEndpoint(originalStart, transform);
+    }
+    if (!endIsAnchored && isSelected) {
+      endOverride = this.transformFreeEndpoint(originalEnd, transform);
+    }
+
+    if (!startOverride && !endOverride) return null;
+    const result: { start?: [number, number]; end?: [number, number] } = {};
+    if (startOverride) result.start = startOverride;
+    if (endOverride) result.end = endOverride;
+    return result;
+  }
+
+  /**
    * Reroute all connectors affected by the current translate/scale transform.
-   * Builds frame overrides from the current transform state and calls rerouteConnector
-   * for each entry in the connector context.
+   * Builds frame overrides from the current transform state and endpoint overrides
+   * for free endpoints, then calls rerouteConnector for each entry.
    */
   private rerouteAffectedConnectors(): void {
     const transform = useSelectionStore.getState().transform;
@@ -1118,15 +1237,13 @@ export class SelectTool implements PointerTool {
       }
     }
 
-    // Reroute each affected connector
+    // Reroute each affected connector with endpoint overrides for free endpoints
     for (const [connId, entry] of connectorContext.entries) {
-      const result = rerouteConnector(connId, frameOverrides);
+      const endpointOverrides = this.computeFreeEndpointOverrides(entry, transform) ?? undefined;
+      const result = rerouteConnector(connId, frameOverrides, endpointOverrides);
       if (result) {
-        // Invalidate previous and new bounds
         invalidateWorld(entry.prevBbox);
         invalidateWorld(result.bbox);
-
-        // Update entry state
         entry.currentPoints = result.points;
         entry.currentBbox = result.bbox;
         entry.prevBbox = result.bbox;

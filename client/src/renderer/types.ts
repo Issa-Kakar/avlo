@@ -59,7 +59,7 @@ export type { WorldBounds } from '@avlo/shared';
 
 // Thresholds
 export const DIRTY_RECT_CONFIG = {
-  MAX_RECT_COUNT: 20,
+  MAX_RECT_COUNT: 10,
   MAX_AREA_RATIO: 0.33,
   AA_MARGIN: 1, // Antialiasing margin in device pixels
   MAX_WORLD_LINE_WIDTH: 50, // Maximum expected stroke size in world units (from config)

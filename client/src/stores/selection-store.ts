@@ -34,6 +34,14 @@ export interface ConnectorUpdateEntry {
   currentPoints: [number, number][] | null;
   /** Current bbox computed from currentPoints */
   currentBbox: WorldBounds | null;
+  /** Whether the start endpoint is anchored to a shape */
+  startIsAnchored: boolean;
+  /** Whether the end endpoint is anchored to a shape */
+  endIsAnchored: boolean;
+  /** Original start position at build time (for free endpoint transform) */
+  originalStart: [number, number];
+  /** Original end position at build time (for free endpoint transform) */
+  originalEnd: [number, number];
 }
 
 /**
@@ -159,9 +167,10 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
   // === Selection Actions ===
 
   setSelection: (ids, selectionKind) => {
-    const mode: SelectionMode = selectionKind === 'connectorsOnly'
-      ? 'connector'
-      : (ids.length > 0 ? 'standard' : 'none');
+    const mode: SelectionMode =
+      ids.length === 1 && selectionKind === 'connectorsOnly'
+        ? 'connector'
+        : ids.length > 0 ? 'standard' : 'none';
 
     set({
       selectedIds: ids,
