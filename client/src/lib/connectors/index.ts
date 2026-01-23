@@ -57,6 +57,7 @@ export {
   inferDragDirection,
   // Anchor helpers
   applyAnchorToFrame,
+  getEndpointEdgePosition,
 } from './connector-utils';
 
 // Snapping
@@ -69,6 +70,7 @@ export {
 // Routing
 export { computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
+export type { RerouteResult } from './reroute-connector';
 export { rerouteConnector } from './reroute-connector';
 
 // Path building (for cache and preview)

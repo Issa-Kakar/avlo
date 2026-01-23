@@ -30,9 +30,11 @@ import {
 import {
   pointInWorldRect,
   hitTestHandle,
+  hitTestEndpointDots,
   objectIntersectsRect,
   testObjectHit,
   type HitCandidate,
+  type EndpointHit,
 } from '@/lib/geometry/hit-testing';
 import type { ObjectHandle } from '@avlo/shared';
 import {
@@ -54,14 +56,15 @@ const CLICK_WINDOW_MS = 180;   // Time threshold for gap click disambiguation
 
 // === Types ===
 
-type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale';
+type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
 
 type DownTarget =
   | 'none'
-  | 'handle'                   // Clicked resize handle
+  | 'handle'                   // Clicked resize handle (standard mode only)
+  | 'connectorEndpoint'        // Clicked endpoint dot (connector mode only)
   | 'objectInSelection'        // Clicked object that IS selected
   | 'objectOutsideSelection'   // Clicked object that is NOT selected
-  | 'selectionGap'             // Empty space INSIDE selection bounds
+  | 'selectionGap'             // Empty space INSIDE selection bounds (standard mode only)
   | 'background';              // Empty space OUTSIDE selection bounds
 
 // === SelectTool Class ===
@@ -85,6 +88,7 @@ export class SelectTool implements PointerTool {
   // Hit testing results at pointer down
   private hitAtDown: HitCandidate | null = null;
   private activeHandle: HandleId | null = null;
+  private endpointHitAtDown: EndpointHit | null = null;
 
   // Target classification for pointer down
   private downTarget: DownTarget = 'none';
@@ -114,9 +118,11 @@ export class SelectTool implements PointerTool {
     this.downScreen = [screenX, screenY];
 
     const store = useSelectionStore.getState();
+    const { mode, selectedIds } = store;
 
-    // 1. Check handles first (requires existing selection)
-    if (store.selectedIds.length > 0) {
+    // 1. Mode-specific first-priority hit targets
+    if (mode === 'standard' && selectedIds.length > 0) {
+      // Standard mode: check resize handles first
       const selectionBounds = this.computeSelectionBounds();
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds, scale) : null;
@@ -127,28 +133,48 @@ export class SelectTool implements PointerTool {
         invalidateOverlay();
         return;
       }
+    } else if (mode === 'connector') {
+      // Connector mode: check endpoint dots first
+      const snapshot = getCurrentSnapshot();
+      const { scale } = useCameraStore.getState();
+      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, snapshot, scale);
+      if (endpointHit) {
+        this.endpointHitAtDown = endpointHit;
+        this.downTarget = 'connectorEndpoint';
+        this.phase = 'pendingClick';
+        setCursorOverride('grabbing');
+        applyCursor();
+        invalidateOverlay();
+        return;
+      }
     }
 
-    // 2. Check object hit
+    // 2. Common: object hit test
     const hit = this.hitTestObjects(worldX, worldY);
     this.hitAtDown = hit;
 
     if (hit) {
-      const isSelected = store.selectedIds.includes(hit.id);
+      const isSelected = selectedIds.includes(hit.id);
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
       invalidateOverlay();
       return;
     }
 
-    // 3. No object hit - check if inside selection bounds
-    const selectionBounds = this.computeSelectionBounds();
-    if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
-      this.downTarget = 'selectionGap';
-    } else {
-      this.downTarget = 'background';
+    // 3. No object hit - selectionGap or background
+    if (mode === 'standard') {
+      // Standard mode has selection bounds - can have gap clicks
+      const selectionBounds = this.computeSelectionBounds();
+      if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
+        this.downTarget = 'selectionGap';
+        this.phase = 'pendingClick';
+        invalidateOverlay();
+        return;
+      }
     }
+    // Connector mode has no selection bounds → no gap, straight to background
 
+    this.downTarget = 'background';
     this.phase = 'pendingClick';
     invalidateOverlay();
   }
@@ -207,11 +233,42 @@ export class SelectTool implements PointerTool {
             break;
           }
 
+          case 'connectorEndpoint': {
+            // Connector mode only: dragging an endpoint dot
+            if (!passMove) break;
+
+            // Drill down to single connector if multiple selected
+            const epStore = useSelectionStore.getState();
+            if (epStore.selectedIds.length > 1) {
+              epStore.setSelection(
+                [this.endpointHitAtDown!.connectorId],
+                'connectorsOnly'
+              );
+            }
+
+            this.phase = 'endpointDrag';
+
+            // Begin endpoint drag transform
+            const snapshot = getCurrentSnapshot();
+            const connHandle = snapshot.objectsById.get(this.endpointHitAtDown!.connectorId);
+            if (connHandle) {
+              const originBbox = bboxTupleToWorldBounds(connHandle.bbox);
+              useSelectionStore.getState().beginEndpointDrag(
+                this.endpointHitAtDown!.connectorId,
+                this.endpointHitAtDown!.endpoint,
+                originBbox
+              );
+            }
+            setCursorOverride('grabbing');
+            applyCursor();
+            break;
+          }
+
           case 'objectOutsideSelection': {
             if (!passMove) break;
             // Select this object, then translate
             const store = useSelectionStore.getState();
-            store.setSelection([this.hitAtDown!.id]);
+            store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
@@ -315,15 +372,25 @@ export class SelectTool implements PointerTool {
             // Clicked handle but didn't drag → no-op
             break;
 
+          case 'connectorEndpoint':
+            // Clicked endpoint dot but didn't drag → drill down to single connector
+            if (store.selectedIds.length > 1) {
+              store.setSelection(
+                [this.endpointHitAtDown!.connectorId],
+                'connectorsOnly'
+              );
+            }
+            break;
+
           case 'objectOutsideSelection':
             // Click → select that object
-            store.setSelection([this.hitAtDown!.id]);
+            store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
             break;
 
           case 'objectInSelection':
             // Click on already-selected object → "drill down" if multi-select
             if (store.selectedIds.length > 1) {
-              store.setSelection([this.hitAtDown!.id]);
+              store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
             }
             break;
 
@@ -391,6 +458,13 @@ export class SelectTool implements PointerTool {
         }
         break;
       }
+
+      case 'endpointDrag': {
+        // Phase 3 will implement full commit logic (points + anchor data)
+        const store = useSelectionStore.getState();
+        store.endTransform();
+        break;
+      }
     }
 
     // Clear any cursor override on gesture end
@@ -410,6 +484,12 @@ export class SelectTool implements PointerTool {
         const transformedBounds = applyTransformToBounds(bounds, store.transform);
         // Union original + transformed bounds to clear any ghosting
         invalidateWorld(unionBounds(bounds, transformedBounds));
+      }
+    } else if (this.phase === 'endpointDrag') {
+      const store = useSelectionStore.getState();
+      if (store.transform.kind === 'endpointDrag') {
+        // Invalidate connector's original bbox to clear any preview
+        invalidateWorld(store.transform.prevBbox);
       }
     }
 
@@ -432,7 +512,7 @@ export class SelectTool implements PointerTool {
 
   getPreview(): PreviewData | null {
     const store = useSelectionStore.getState();
-    const { selectedIds, transform, marquee } = store;
+    const { selectedIds, mode, transform, marquee } = store;
 
     // Compute marquee rect if active
     let marqueeRect: WorldRect | null = null;
@@ -440,11 +520,12 @@ export class SelectTool implements PointerTool {
       marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
     }
 
-    // Compute selection bounds with transform applied
+    // Connector mode: no selection bounds, no handles
+    // Standard mode: compute bounds and handles as usual
     let selectionBounds: WorldRect | null = null;
     let handles: { id: HandleId; x: number; y: number }[] | null = null;
 
-    if (selectedIds.length > 0) {
+    if (mode === 'standard' && selectedIds.length > 0) {
       // During scale, use originBounds (geometry-based) so selection rect aligns with transform
       // During idle/translate, use bbox-based bounds for visual stroke coverage
       let baseBounds: WorldRect | null = null;
@@ -493,29 +574,43 @@ export class SelectTool implements PointerTool {
   /**
    * Handle hover cursor detection when idle.
    * Called by move() when phase is 'idle'.
+   *
+   * Standard mode: resize cursors on handles.
+   * Connector mode: grab cursor on endpoint dots.
    */
   private handleHoverCursor(worldX: number, worldY: number): void {
     const store = useSelectionStore.getState();
-    if (store.selectedIds.length === 0) {
+    const { mode, selectedIds } = store;
+
+    if (mode === 'none') {
       setCursorOverride(null);
       applyCursor();
       return;
     }
 
-    const bounds = this.computeSelectionBounds();
-    if (!bounds) {
-      setCursorOverride(null);
-      applyCursor();
-      return;
-    }
     const { scale } = useCameraStore.getState();
-    const handle = hitTestHandle(worldX, worldY, bounds, scale);
-    if (handle) {
-      const cursor = getHandleCursor(handle);
-      setCursorOverride(cursor);
-    } else {
-      setCursorOverride(null);
+
+    if (mode === 'standard') {
+      const bounds = this.computeSelectionBounds();
+      if (bounds) {
+        const handle = hitTestHandle(worldX, worldY, bounds, scale);
+        if (handle) {
+          setCursorOverride(getHandleCursor(handle));
+          applyCursor();
+          return;
+        }
+      }
+    } else if (mode === 'connector') {
+      const snapshot = getCurrentSnapshot();
+      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, snapshot, scale);
+      if (endpointHit) {
+        setCursorOverride('grab');
+        applyCursor();
+        return;
+      }
     }
+
+    setCursorOverride(null);
     applyCursor();
   }
 
@@ -528,6 +623,7 @@ export class SelectTool implements PointerTool {
     this.downScreen = null;
     this.hitAtDown = null;
     this.activeHandle = null;
+    this.endpointHitAtDown = null;
     this.downTarget = 'none';
     this.downTimeMs = 0;
     this.transformEnvelope = null;
@@ -782,23 +878,28 @@ export class SelectTool implements PointerTool {
     const snapshot = getCurrentSnapshot();
     let hasStrokes = false;
     let hasShapes = false;
+    let hasConnectors = false;
 
     for (const id of selectedIds) {
       const handle = snapshot.objectsById.get(id);
       if (!handle) continue;
 
-      if (handle.kind === 'stroke' || handle.kind === 'connector') {
+      if (handle.kind === 'stroke') {
         hasStrokes = true;
+      } else if (handle.kind === 'connector') {
+        hasConnectors = true;
       } else {
         hasShapes = true;
       }
-
-      // Early exit if mixed
-      if (hasStrokes && hasShapes) return 'mixed';
     }
 
-    if (hasStrokes && !hasShapes) return 'strokesOnly';
-    if (hasShapes && !hasStrokes) return 'shapesOnly';
+    // Pure cases
+    if (hasConnectors && !hasStrokes && !hasShapes) return 'connectorsOnly';
+    if (hasStrokes && !hasConnectors && !hasShapes) return 'strokesOnly';
+    if (hasShapes && !hasStrokes && !hasConnectors) return 'shapesOnly';
+
+    // Any combination is mixed
+    if (hasStrokes || hasShapes || hasConnectors) return 'mixed';
     return 'none';
   }
 
@@ -834,7 +935,7 @@ export class SelectTool implements PointerTool {
     // Update selection (preserving marquee state)
     if (JSON.stringify(selectedIds.sort()) !== JSON.stringify(store.selectedIds.sort())) {
       // Only update if changed to avoid thrashing
-      store.setSelection(selectedIds);
+      store.setSelection(selectedIds, this.computeSelectionKind(selectedIds));
       // Re-enable marquee since setSelection clears it
       store.beginMarquee(marquee.anchor);
       if (marquee.current) {

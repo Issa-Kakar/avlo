@@ -5,27 +5,37 @@
  * Reads connector data from Y.map and applies frame/endpoint overrides as needed.
  *
  * Two orthogonal override mechanisms:
- * 1. frameOverrides: Map of shapeId → new frame (for shapes being transformed)
+ * 1. frameOverrides: Map of shapeId → FrameTuple (for shapes being transformed)
  * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
  *
  * @module lib/connectors/reroute-connector
  */
 
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, type StoredAnchor, type FrameTuple } from '@avlo/shared';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, computeConnectorBBoxFromPoints, bboxToBounds, type StoredAnchor, type FrameTuple, type WorldBounds } from '@avlo/shared';
 import { computeAStarRoute } from './routing-astar';
 import {
   applyAnchorToFrame,
   resolveFreeStartDir,
   computeFreeEndDir,
 } from './connector-utils';
-import type { Dir, AABB, SnapTarget, Frame } from './types';
+import type { Dir, AABB, SnapTarget } from './types';
+
+/**
+ * Result of a connector reroute operation.
+ */
+export interface RerouteResult {
+  /** Routed path points */
+  points: [number, number][];
+  /** Bounding box of the routed path (with arrow/stroke padding) */
+  bbox: WorldBounds;
+}
 
 /**
  * Reroute a connector with optional overrides.
  *
  * Two orthogonal override mechanisms:
- * 1. frameOverrides: Map of shapeId → new frame (for shapes being transformed)
+ * 1. frameOverrides: Map of shapeId → FrameTuple (for shapes being transformed)
  * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
  *
  * Resolution per endpoint:
@@ -36,16 +46,16 @@ import type { Dir, AABB, SnapTarget, Frame } from './types';
  * @param connectorId - Connector ID in Y.Doc
  * @param frameOverrides - Temporary frame overrides for shapes being transformed
  * @param endpointOverrides - Direct endpoint overrides (snap or free position)
- * @returns Routed points or null if connector not found
+ * @returns RerouteResult with points and bbox, or null if connector not found
  */
 export function rerouteConnector(
   connectorId: string,
-  frameOverrides?: Map<string, Frame>,
+  frameOverrides?: Map<string, FrameTuple>,
   endpointOverrides?: {
     start?: SnapTarget | [number, number];
     end?: SnapTarget | [number, number];
   }
-): [number, number][] | null {
+): RerouteResult | null {
   const snapshot = getCurrentSnapshot();
   const handle = snapshot.objectsById.get(connectorId);
 
@@ -102,7 +112,11 @@ export function rerouteConnector(
     strokeWidth
   );
 
-  return result.points;
+  // Compute bbox from routed points (reads width/cap from Y.map)
+  const bboxTuple = computeConnectorBBoxFromPoints(result.points, yMap);
+  const bbox = bboxToBounds(bboxTuple);
+
+  return { points: result.points, bbox };
 }
 
 /**
@@ -127,7 +141,7 @@ function resolveEndpoint(
   _which: 'start' | 'end',
   storedPosition: [number, number],
   anchor: StoredAnchor | undefined,
-  frameOverrides: Map<string, Frame> | undefined,
+  frameOverrides: Map<string, FrameTuple> | undefined,
   override: SnapTarget | [number, number] | undefined,
   _strokeWidth: number,
   snapshot: ReturnType<typeof getCurrentSnapshot>
@@ -164,17 +178,16 @@ function resolveEndpoint(
   if (anchor) {
     const overrideFrame = frameOverrides?.get(anchor.id);
     if (overrideFrame) {
-      // Shape is being transformed - apply anchor to new frame (convert Frame to FrameTuple)
-      const frameTuple: FrameTuple = [overrideFrame.x, overrideFrame.y, overrideFrame.w, overrideFrame.h];
+      // Shape is being transformed - apply anchor to override frame
       const position = applyAnchorToFrame(
         anchor.anchor,
-        frameTuple,
+        overrideFrame,
         anchor.side
       );
       return {
         position,
         dir: anchor.side,
-        shapeBounds: { x: overrideFrame.x, y: overrideFrame.y, w: overrideFrame.w, h: overrideFrame.h },
+        shapeBounds: { x: overrideFrame[0], y: overrideFrame[1], w: overrideFrame[2], h: overrideFrame[3] },
         isAnchored: true,
       };
     }

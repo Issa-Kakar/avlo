@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { HandleId } from '@/lib/tools/types';
 import type { WorldBounds } from '@avlo/shared';
+import type { SnapTarget } from '@/lib/connectors/types';
 
 // === Types ===
 
@@ -11,14 +12,48 @@ import type { WorldBounds } from '@avlo/shared';
 export type WorldRect = WorldBounds;
 
 // Selection composition types for context-aware transforms
-export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';
+export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'connectorsOnly' | 'mixed';
 export type HandleKind = 'corner' | 'side';
+
+// Interaction mode: determines what UI affordances are shown
+export type SelectionMode = 'none' | 'standard' | 'connector';
+
+// === Connector Transform Context ===
+
+/**
+ * Per-connector tracking during shape transforms (translate/scale).
+ * Tracks routing results and dirty rects for each affected connector.
+ */
+export interface ConnectorUpdateEntry {
+  connectorId: string;
+  /** Whether this connector is in selectedIds */
+  isSelected: boolean;
+  /** Previous frame's bbox (for dirty rect - seeded from original bbox at begin) */
+  prevBbox: WorldBounds;
+  /** Current rerouted points (null if reroute not yet called or failed) */
+  currentPoints: [number, number][] | null;
+  /** Current bbox computed from currentPoints */
+  currentBbox: WorldBounds | null;
+}
+
+/**
+ * Context for all connectors affected by a shape transform.
+ * Built at transform begin, updated on each move.
+ */
+export interface ConnectorTransformContext {
+  /** All connectors that need rerouting: connectorId -> entry */
+  entries: Map<string, ConnectorUpdateEntry>;
+}
+
+// === Transform Types ===
 
 export interface TranslateTransform {
   kind: 'translate';
   dx: number;
   dy: number;
   originBounds: WorldRect;  // Bounds before transform started
+  /** Connector rerouting context (null if no connectors affected) */
+  connectorContext: ConnectorTransformContext | null;
 }
 
 export interface ScaleTransform {
@@ -32,12 +67,38 @@ export interface ScaleTransform {
   selectionKind: SelectionKind;  // Selection composition for context-aware behavior
   handleKind: HandleKind;        // Corner vs side handle
   initialDelta: [number, number];  // Distance from origin to initial click (for scale=1.0 at start)
+  /** Connector rerouting context (null if no connectors affected) */
+  connectorContext: ConnectorTransformContext | null;
+}
+
+/**
+ * Endpoint drag transform: dragging a single connector endpoint.
+ * Fundamentally different from translate/scale - operates on ONE connector, ONE endpoint.
+ */
+export interface EndpointDragTransform {
+  kind: 'endpointDrag';
+  connectorId: string;
+  endpoint: 'start' | 'end';
+
+  /** Current world position (snapped or free cursor) */
+  currentPosition: [number, number];
+  /** Current snap target (for commit and overlay rendering) */
+  currentSnap: SnapTarget | null;
+
+  /** Rerouted path (updated on each move via rerouteConnector) */
+  routedPoints: [number, number][] | null;
+  /** Bbox of routedPoints (for dirty rect) */
+  routedBbox: WorldBounds | null;
+
+  /** Previous frame's bbox for dirty rect invalidation (seeded from original bbox) */
+  prevBbox: WorldBounds;
 }
 
 export type TransformState =
   | { kind: 'none' }
   | TranslateTransform
-  | ScaleTransform;
+  | ScaleTransform
+  | EndpointDragTransform;
 
 export interface MarqueeState {
   active: boolean;
@@ -49,7 +110,10 @@ export interface MarqueeState {
 
 export interface SelectionState {
   selectedIds: string[];
-  mode: 'none' | 'single' | 'multi';
+  /** Interaction paradigm: determines UI affordances (handles vs endpoint dots) */
+  mode: SelectionMode;
+  /** Cached selection composition (recomputed on setSelection) */
+  selectionKind: SelectionKind;
   transform: TransformState;
   marquee: MarqueeState;
 }
@@ -58,16 +122,20 @@ export interface SelectionState {
 
 export interface SelectionActions {
   // Selection management
-  setSelection: (ids: string[]) => void;
+  setSelection: (ids: string[], selectionKind: SelectionKind) => void;
   clearSelection: () => void;
 
   // Transform lifecycle
-  beginTranslate: (originBounds: WorldRect) => void;
+  beginTranslate: (originBounds: WorldRect, connectorContext?: ConnectorTransformContext | null) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number]) => void;
+  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number], connectorContext?: ConnectorTransformContext | null) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
+
+  // Endpoint drag lifecycle
+  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: WorldBounds) => void;
+  updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null, routedPoints: [number, number][] | null, routedBbox: WorldBounds | null) => void;
 
   // Marquee lifecycle
   beginMarquee: (anchor: [number, number]) => void;
@@ -84,29 +152,38 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
   // Initial state
   selectedIds: [],
   mode: 'none',
+  selectionKind: 'none',
   transform: { kind: 'none' },
   marquee: { active: false, anchor: null, current: null },
 
   // === Selection Actions ===
 
-  setSelection: (ids) => set({
-    selectedIds: ids,
-    mode: ids.length === 0 ? 'none' : ids.length === 1 ? 'single' : 'multi',
-    transform: { kind: 'none' },
-    marquee: { active: false, anchor: null, current: null },
-  }),
+  setSelection: (ids, selectionKind) => {
+    const mode: SelectionMode = selectionKind === 'connectorsOnly'
+      ? 'connector'
+      : (ids.length > 0 ? 'standard' : 'none');
+
+    set({
+      selectedIds: ids,
+      mode,
+      selectionKind,
+      transform: { kind: 'none' },
+      marquee: { active: false, anchor: null, current: null },
+    });
+  },
 
   clearSelection: () => set({
     selectedIds: [],
     mode: 'none',
+    selectionKind: 'none',
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
   }),
 
   // === Transform Actions ===
 
-  beginTranslate: (originBounds) => set({
-    transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
+  beginTranslate: (originBounds, connectorContext = null) => set({
+    transform: { kind: 'translate', dx: 0, dy: 0, originBounds, connectorContext },
   }),
 
   updateTranslate: (dx, dy) => set((state) => {
@@ -114,7 +191,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, dx, dy } };
   }),
 
-  beginScale: (bboxBounds, transformBounds, origin, handleId, selectionKind, initialDelta) => {
+  beginScale: (bboxBounds, transformBounds, origin, handleId, selectionKind, initialDelta, connectorContext = null) => {
     // Compute handleKind from handleId (deterministic)
     const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
     const handleKind: HandleKind = isCorner ? 'corner' : 'side';
@@ -131,6 +208,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
         selectionKind,
         handleKind,
         initialDelta,
+        connectorContext,
       },
     });
   },
@@ -143,6 +221,36 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
   endTransform: () => set({ transform: { kind: 'none' } }),
 
   cancelTransform: () => set({ transform: { kind: 'none' } }),
+
+  // === Endpoint Drag Actions ===
+
+  beginEndpointDrag: (connectorId, endpoint, originBbox) => set({
+    transform: {
+      kind: 'endpointDrag',
+      connectorId,
+      endpoint,
+      currentPosition: [0, 0], // Will be set on first move
+      currentSnap: null,
+      routedPoints: null,
+      routedBbox: null,
+      prevBbox: originBbox,
+    },
+  }),
+
+  updateEndpointDrag: (currentPosition, currentSnap, routedPoints, routedBbox) => set((state) => {
+    if (state.transform.kind !== 'endpointDrag') return state;
+    return {
+      transform: {
+        ...state.transform,
+        currentPosition,
+        currentSnap,
+        routedPoints,
+        routedBbox,
+        // prevBbox updated to current for next frame's dirty rect
+        prevBbox: routedBbox ?? state.transform.prevBbox,
+      },
+    };
+  }),
 
   // === Marquee Actions ===
 

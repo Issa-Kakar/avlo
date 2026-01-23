@@ -106,6 +106,53 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number,
   }
 }
 
+/**
+ * Compute connector bbox from externally-provided points.
+ * Reads width and cap info from the Y.Map (which is never stale for style props).
+ * Use this when you have rerouted points that haven't been committed yet.
+ */
+export function computeConnectorBBoxFromPoints(
+  points: [number, number][],
+  yMap: Y.Map<unknown>
+): [number, number, number, number] {
+  if (points.length < 2) return [0, 0, 0, 0];
+
+  let minX = points[0][0], minY = points[0][1];
+  let maxX = minX, maxY = minY;
+
+  for (let i = 1; i < points.length; i++) {
+    const [x, y] = points[i];
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+
+  const width = getWidth(yMap);
+  const startCap = getStartCap(yMap);
+  const endCap = getEndCap(yMap);
+
+  const strokePadding = width / 2;
+  const hasArrow = startCap === 'arrow' || endCap === 'arrow';
+
+  let padding: number;
+  if (hasArrow) {
+    const arrowLength = Math.max(6, width * 3);
+    const arrowHalfWidth = arrowLength / 2;
+    const arrowRounding = 2.5;
+    padding = Math.max(strokePadding, arrowHalfWidth + arrowRounding) + 1;
+  } else {
+    padding = strokePadding + 1;
+  }
+
+  return [
+    minX - padding,
+    minY - padding,
+    maxX + padding,
+    maxY + padding
+  ];
+}
+
 export function bboxEquals(
   a: [number, number, number, number],
   b: [number, number, number, number]

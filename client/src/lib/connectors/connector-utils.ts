@@ -11,7 +11,8 @@
  * @module lib/connectors/connector-utils
  */
 
-import type { FrameTuple } from '@avlo/shared';
+import type { FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getFrame } from '@avlo/shared';
 import type { Dir, AABB, Bounds } from './types';
 import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
 
@@ -484,4 +485,46 @@ export function applyAnchorToFrame(
   // Apply edge clearance offset in outward direction
   const [dx, dy] = directionVector(side);
   return [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
+}
+
+/**
+ * Get the ON-EDGE position for a connector endpoint (no clearance offset).
+ *
+ * For anchored endpoints: interpolates normalized anchor within the current shape frame.
+ * For free endpoints: returns the stored position directly.
+ *
+ * This is used for:
+ * - Endpoint dot rendering (dots appear ON the shape edge)
+ * - Endpoint dot hit testing
+ *
+ * Unlike `applyAnchorToFrame`, this does NOT apply EDGE_CLEARANCE_W offset.
+ *
+ * @param handle - The connector's ObjectHandle
+ * @param endpoint - Which endpoint ('start' or 'end')
+ * @param snapshot - Current snapshot for shape frame lookup
+ */
+export function getEndpointEdgePosition(
+  handle: ObjectHandle,
+  endpoint: 'start' | 'end',
+  snapshot: Snapshot
+): [number, number] {
+  const yMap = handle.y;
+  const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
+  const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
+
+  if (!anchor) {
+    // Free endpoint: stored position IS the edge position
+    return storedPos ?? [0, 0];
+  }
+
+  // Anchored: look up shape frame and interpolate normalized anchor
+  const shapeHandle = snapshot.objectsById.get(anchor.id);
+  if (!shapeHandle) return storedPos ?? [0, 0];
+
+  const frame = getFrame(shapeHandle.y);
+  if (!frame) return storedPos ?? [0, 0];
+
+  const [nx, ny] = anchor.anchor;
+  const [x, y, w, h] = frame;
+  return [x + nx * w, y + ny * h];
 }

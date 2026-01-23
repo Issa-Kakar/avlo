@@ -56,7 +56,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/lib/connectors/constants.ts` | SNAP_CONFIG, ROUTING_CONFIG, arrow sizing formulas |
 | `client/src/lib/connectors/connector-utils.ts` | Shape frame helpers, direction resolution, path simplification |
 | `client/src/lib/connectors/snap.ts` | Shape snapping with edge detection, midpoint hysteresis |
-| `client/src/lib/connectors/route-connector.ts` | High-level routing API for SelectTool with frame/endpoint overrides |
+| `client/src/lib/connectors/reroute-connector.ts` | High-level routing API for SelectTool with frame/endpoint overrides |
 | `client/src/lib/connectors/routing-context.ts` | Centerlines, dynamic AABBs, stub computation, grid construction |
 | `client/src/lib/connectors/routing-astar.ts` | A* pathfinding with segment intersection checking |
 | `client/src/lib/connectors/connector-paths.ts` | Pure path builders (polyline, arrows) shared by cache and preview |

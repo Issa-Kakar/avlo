@@ -35,7 +35,7 @@ export { ObjectSpatialIndex } from './spatial';
 export type { IndexEntry } from './spatial';
 
 // Export bbox utilities
-export { computeBBoxFor, bboxEquals, bboxToBounds } from './utils/bbox';
+export { computeBBoxFor, computeConnectorBBoxFromPoints, bboxEquals, bboxToBounds } from './utils/bbox';
 
 // Export object accessors
 export * from './accessors/object-accessors';

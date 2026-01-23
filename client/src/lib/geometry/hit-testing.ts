@@ -9,8 +9,9 @@
  * and object-aware dispatch that reads from ObjectHandle.
  */
 
-import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@avlo/shared';
+import { getEndpointEdgePosition } from '@/lib/connectors/connector-utils';
 import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/lib/tools/types';
 import { computeHandles } from '@/stores/selection-store';
@@ -669,4 +670,64 @@ export function testObjectHit(
       return null;
     }
   }
+}
+
+// === Endpoint Dot Hit Testing ===
+
+/** Screen-space hit radius for connector endpoint dots */
+export const ENDPOINT_DOT_HIT_PX = 10;
+
+/**
+ * Result of endpoint dot hit testing.
+ */
+export interface EndpointHit {
+  connectorId: string;
+  endpoint: 'start' | 'end';
+}
+
+/**
+ * Hit test connector endpoint dots.
+ * Iterates through selected connector IDs and tests both endpoints.
+ *
+ * Endpoint positions are derived via getEndpointEdgePosition (ON edge, no clearance offset).
+ *
+ * @param worldX - Pointer X in world coordinates
+ * @param worldY - Pointer Y in world coordinates
+ * @param selectedIds - IDs of currently selected objects
+ * @param snapshot - Current snapshot for object lookup
+ * @param scale - Camera scale for screen-space radius conversion
+ */
+export function hitTestEndpointDots(
+  worldX: number,
+  worldY: number,
+  selectedIds: string[],
+  snapshot: Snapshot,
+  scale: number
+): EndpointHit | null {
+  const radiusWorld = ENDPOINT_DOT_HIT_PX / scale;
+  const radiusSq = radiusWorld * radiusWorld;
+
+  for (const id of selectedIds) {
+    const handle = snapshot.objectsById.get(id);
+    if (!handle || handle.kind !== 'connector') continue;
+
+    const startEdge = getEndpointEdgePosition(handle, 'start', snapshot);
+    const endEdge = getEndpointEdgePosition(handle, 'end', snapshot);
+
+    // Hit test start endpoint
+    const dxStart = worldX - startEdge[0];
+    const dyStart = worldY - startEdge[1];
+    if (dxStart * dxStart + dyStart * dyStart <= radiusSq) {
+      return { connectorId: id, endpoint: 'start' };
+    }
+
+    // Hit test end endpoint
+    const dxEnd = worldX - endEdge[0];
+    const dyEnd = worldY - endEdge[1];
+    if (dxEnd * dxEnd + dyEnd * dyEnd <= radiusSq) {
+      return { connectorId: id, endpoint: 'end' };
+    }
+  }
+
+  return null;
 }
