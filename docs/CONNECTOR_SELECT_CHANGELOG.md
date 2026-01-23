@@ -1,6 +1,6 @@
 # Connector SelectTool Integration — Changelog
 
-> **Scope:** Types, store, separation of connectors from strokes, endpoint hit testing, mode-aware branching, cursor management.
+> **Scope:** Types, store, mode-aware branching, connector transform behavior (rerouting vs stroke scaling), endpoint drag cycle (snap + route + commit), base canvas rendering from rerouted points.
 
 ---
 
@@ -135,14 +135,174 @@
 
 ---
 
+## Phase 3: Connector Transform Behavior & Endpoint Drag Cycle
+
+---
+
+### 9. `client/src/lib/tools/SelectTool.ts`
+
+#### New Imports
+- `FrameTuple` from `@avlo/shared`
+- `getStartAnchor`, `getEndAnchor` from `@avlo/shared`
+- `getConnectorsForShape` from `@/canvas/room-runtime`
+- `rerouteConnector` from `@/lib/connectors/reroute-connector`
+- `findBestSnapTarget` from `@/lib/connectors/snap`
+- `SnapTarget` from `@/lib/connectors/types`
+- `ConnectorTransformContext`, `ConnectorUpdateEntry` from `@/stores/selection-store`
+
+#### `commitTranslate()` — Connectors Separated from Strokes
+- **Signature changed:** now accepts `connectorContext: ConnectorTransformContext | null` as fourth parameter
+- **Stroke branch:** `handle.kind === 'stroke'` only (was `'stroke' || 'connector'`)
+- **New connector branch:**
+  - Reads `getStartAnchor(yMap)` / `getEndAnchor(yMap)` to classify
+  - **Free connectors** (no anchors): offsets `points`, sets `start` = first point, `end` = last point
+  - **Anchored connectors**: skipped in per-object loop (anchors are relative to shape, no data change needed)
+- **Post-loop connector context commit:**
+  - Iterates `connectorContext.entries`
+  - Writes `entry.currentPoints` → `yMap.set('points', ...)`, `yMap.set('start', ...)`, `yMap.set('end', ...)`
+  - Anchors unchanged (they're normalized [0-1, 0-1] relative to shape frame — shape moved, anchor still valid)
+
+#### `commitScale()` — Connectors Fully Handled by Context
+- **Signature changed:** now accepts `connectorContext: ConnectorTransformContext | null` as ninth parameter
+- **Connector skip:** `if (handle.kind === 'connector') continue;` — connectors never get stroke-scaled
+- **isStroke:** `handle.kind === 'stroke'` only (removed `|| 'connector'`)
+- **Post-loop connector context commit:** same pattern as translate (write currentPoints → points/start/end)
+
+#### `buildConnectorContext()` — New Private Method
+- Called at translate/scale `begin` (all three translate sites + the scale site)
+- **Step 1:** Collects all selected shape/text IDs
+- **Step 2:** For each shape, calls `getConnectorsForShape(shapeId)` → accumulates unique connector IDs
+- **Step 3:** Creates `ConnectorUpdateEntry` per connector:
+  - `connectorId`: the connector ID
+  - `isSelected`: whether connector is in `selectedIds`
+  - `prevBbox`: from `bboxTupleToWorldBounds(handle.bbox)` (seeded from original)
+  - `currentPoints`: null (populated on first move)
+  - `currentBbox`: null
+- **Step 4:** Also checks selected connectors whose startAnchor/endAnchor points to a selected shape
+  - These are connectors that move WITH the selection (both ends could be anchored to transforming shapes)
+- Returns `{ entries }` or null if no affected connectors
+
+#### `rerouteAffectedConnectors()` — New Private Method
+- Called AFTER `updateTranslate()`/`updateScale()` in both move phases
+- **Reads** current transform (translate or scale) from store
+- **Builds `frameOverrides: Map<string, FrameTuple>`:**
+  - For translate: `[frame[0] + dx, frame[1] + dy, frame[2], frame[3]]` per selected shape
+  - For scale: dispatches to `applyUniformScaleToFrame` (mixed+corner) or `applyTransformToFrame` (shapes-only/mixed+side) — matches commitScale logic exactly
+- **Reroutes each connector:**
+  - Calls `rerouteConnector(connId, frameOverrides)` (endpoint overrides not used here)
+  - On success: `invalidateWorld(entry.prevBbox)` + `invalidateWorld(result.bbox)` (separate rects for minimal repaint)
+  - Updates entry: `currentPoints = result.points`, `currentBbox = result.bbox`, `prevBbox = result.bbox`
+
+#### `beginTranslate` / `beginScale` Call Sites Updated
+- All three `beginTranslate` call sites (objectOutsideSelection, objectInSelection, selectionGap):
+  - `const connCtx = this.buildConnectorContext()` before `beginTranslate(bounds, connCtx)`
+- `beginScale` call site:
+  - `const connCtx = this.buildConnectorContext()` before `store.beginScale(..., connCtx)`
+
+#### `move()` — Translate/Scale Phases Updated
+- **Translate move:** after `updateTranslate(dx, dy)`, calls `this.rerouteAffectedConnectors()`
+- **Scale move:** after `updateScale(scaleX, scaleY)`, calls `this.rerouteAffectedConnectors()`
+
+#### `move()` — `endpointDrag` Case Implemented
+- New case in move() switch after scale case
+- **Snap detection:** `findBestSnapTarget({ cursorWorld: [worldX, worldY], scale, prevAttach: epTransform.currentSnap })`
+- **Override construction:** builds `{ [endpoint]: snap ?? [worldX, worldY] }` with proper `SnapTarget | [number, number]` typing
+- **Rerouting:** `rerouteConnector(connectorId, undefined, endpointOverride)` — frameOverrides unused (only endpoint moves)
+- **Dirty rect:** invalidates `prevBbox` + `result.bbox` (two separate world-space rects)
+- **Store update:** `updateEndpointDrag(currentPosition, snap, result.points, result.bbox)`
+  - `currentPosition`: snap.position if snapped, else raw cursor
+  - Snap persisted for hysteresis on next frame (`prevAttach` in SnapContext)
+
+#### `end()` — Translate/Scale Updated
+- Extracts `connectorContext` from transform state BEFORE calling `endTransform()`
+- Passes to `commitTranslate(selectedIds, dx, dy, connectorContext)` / `commitScale(..., connectorContext)`
+- This ensures rerouted points survive the transform clear
+
+#### `end()` — `endpointDrag` Fully Implemented
+- Extracts `connectorId, endpoint, routedPoints, currentSnap, prevBbox, routedBbox`
+- Invalidates both `prevBbox` and `routedBbox` (covers full dirty area)
+- Calls `endTransform()` to clear store
+- If `routedPoints.length >= 2`: calls `this.commitEndpointDrag(...)`
+
+#### `commitEndpointDrag()` — New Private Method
+- **Signature:** `(connectorId, endpoint, routedPoints, currentSnap: SnapTarget | null)`
+- **Y.Doc mutation:**
+  - `yMap.set('points', routedPoints)` — full rerouted path
+  - `yMap.set('start', routedPoints[0])` — first point
+  - `yMap.set('end', routedPoints[routedPoints.length - 1])` — last point
+  - **Anchor update:**
+    - If `currentSnap`: `yMap.set(anchorKey, { id: snap.shapeId, side: snap.side, anchor: snap.normalizedAnchor })`
+    - If no snap: `yMap.delete(anchorKey)` — clears the anchor (endpoint is now free)
+  - Other endpoint's anchor/position: UNCHANGED
+
+#### `invalidateTransformPreview()` — Scale Branch Fixed
+- Connectors skipped: `if (handle.kind === 'connector') continue;` (handled by `rerouteAffectedConnectors`)
+- `const isStroke = handle.kind === 'stroke'` (removed `|| 'connector'`)
+
+---
+
+### 10. `client/src/renderer/layers/objects.ts`
+
+#### New Imports
+- `getStartCap`, `getEndCap`, `getStartAnchor`, `getEndAnchor` from `@avlo/shared`
+- `buildConnectorPaths` from `@/lib/connectors/connector-paths`
+- `ConnectorTransformContext` type from `@/stores/selection-store`
+
+#### `drawObjects()` — Connector Context Read
+- Reads `connectorContext` from transform state (only on translate/scale, null otherwise)
+- Stored as local variable for the draw loop
+
+#### `drawObjects()` — Translate Block Rewritten for Connectors
+- **Connector case** (`handle.kind === 'connector'`):
+  - Checks `connectorContext.entries.get(handle.id)?.currentPoints`
+  - If rerouted: `drawConnectorFromPoints(ctx, handle, currentPoints)`
+  - Else if free (no startAnchor, no endAnchor): `ctx.translate(dx, dy)` + cached path (simple offset)
+  - Else: `drawObject(ctx, handle)` fallback (anchored but no reroute yet — first frame edge case)
+- **Non-connector case:** unchanged `ctx.translate(dx, dy)` + cached path
+
+#### `drawObjects()` — EndpointDrag Block Added
+- When `transform.kind === 'endpointDrag'`:
+  - If `handle.id === transform.connectorId` and `transform.routedPoints`: `drawConnectorFromPoints()`
+  - Else: `drawObject()` fallback
+
+#### `drawObjects()` — Non-Selected Connector Override
+- After the `needsTransform` block, in the else branch:
+  - Checks `connectorContext?.entries.get(entry.id)?.currentPoints` for non-selected connectors
+  - These are **external connectors** (anchored to a selected shape but not themselves selected)
+  - If rerouted: `drawConnectorFromPoints()` instead of cached path
+  - This ensures connectors attached to moving shapes reroute visually even when not in selection
+
+#### `renderSelectedObjectWithScaleTransform()` — Signature & Logic Updated
+- **New parameter:** `connectorContext: ConnectorTransformContext | null`
+- **Connector case** (before stroke check):
+  - Reads `connectorContext.entries.get(handle.id)?.currentPoints`
+  - If rerouted: `drawConnectorFromPoints()`
+  - Else: `drawObject()` fallback (cached, no transform applied)
+  - Returns early — connectors NEVER go through stroke scaling
+- **isStroke:** `handle.kind === 'stroke'` only (removed `|| 'connector'`)
+
+#### `drawConnectorFromPoints()` — New Helper Function
+- **Purpose:** Render a connector from explicit points (for rerouted connectors during transforms)
+- **Reads from `handle.y`:** color, width, opacity, startCap, endCap (via typed accessors)
+- **Builds fresh paths:** `buildConnectorPaths({ points, strokeWidth: width, startCap, endCap })`
+- **Renders two-pass** (same pattern as `drawConnector()`):
+  - Pass 1: `ctx.stroke(paths.polyline)` with round caps/joins
+  - Pass 2: arrows with `ARROW_ROUNDING_LINE_WIDTH` fixed lineWidth, fill + stroke for rounded corners
+
+---
+
+## Known Technical Debt
+
+- **Duplicate `'endpointDrag'` identifier:** exists as both a `Phase` value in SelectTool's local state machine (`type Phase = 'idle' | ... | 'endpointDrag'`) AND as a `TransformState.kind` in the selection store (`EndpointDragTransform`). These are conceptually distinct (tool gesture phase vs. store transform state) but the name collision creates confusion when reading the code. Will be cleaned up alongside other naming/structure improvements in a future pass.
+- **General cleanup pass needed:** the Phase 3 implementation prioritized correctness and working behavior. Some areas have verbose typing, redundant checks, or could benefit from extraction into shared helpers. Will tighten up once the feature stabilizes.
+
+---
+
 ## Not Yet Implemented
 
-- `move()` — `'endpointDrag'` phase routing (call `rerouteConnector` with endpoint overrides)
-- `end()` — endpoint drag commit (update points + anchor data in Y.Doc)
-- Overlay rendering (endpoint dots drawn on overlay canvas, snap feedback)
-- `ConnectorTransformContext` building at translate/scale begin
-- Frame override computation on each move (for shape transforms)
-- Connector rerouting during shape transforms
-- Connector rendering from `routedPoints` in objects.ts (base canvas)
-- Per-connector dirty rect invalidation (prevBbox + currentBbox separate rects)
-- Connector-in-mixed-selection transform behavior (reroute vs translate)
+- **Marquee from connector click:** clicking a connector NOT in current selection should start a marquee (not select-then-translate), matching standard mode background click UX
+- **Endpoint dot overlay rendering:** draw anchor dots on overlay canvas for selected connectors in connector mode using `ANCHOR_DOT_CONFIG` from `constants.ts` for radius, colors, stroke styling (consistent with ConnectorTool's snap dots)
+- **Shape midpoint dots during endpoint drag:** when actively dragging an endpoint and snapped to a shape, draw that shape's midpoint positions as visual guides on overlay
+- **Remove bbox rendering in connector mode:** selection highlight (bbox rectangle) should NOT render for connectors when in connector mode — only render when selection becomes mixed (standard mode with connectors + other types)
+- **Commit diffing in `commitEndpointDrag`:** skip unnecessary Y.Doc writes if anchor ID is unchanged (only update if snap target changed from previous stored anchor — avoid dirty patches on no-op drags)
+- **Endpoint dot hit testing refinement:** when endpoint dots are visually drawn, hit test radius should match rendered dot size

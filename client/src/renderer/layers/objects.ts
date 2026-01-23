@@ -8,12 +8,16 @@ import {
   getShapeType,
   getFillColor,
   getStrokeTool,
+  getStartCap,
+  getEndCap,
+  getStartAnchor,
+  getEndAnchor,
 } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
-import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
+import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
-import { useSelectionStore, type ScaleTransform } from '@/stores/selection-store';
+import { useSelectionStore, type ScaleTransform, type ConnectorTransformContext } from '@/stores/selection-store';
 import {
   computeStrokeTranslation,
   applyTransformToFrame,
@@ -38,6 +42,12 @@ export function drawObjects(
   const selectedSet = new Set(selectionState.selectedIds);
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
+
+  // Read connector context from translate/scale transforms
+  const connectorContext: ConnectorTransformContext | null =
+    (transform.kind === 'translate' || transform.kind === 'scale')
+      ? transform.connectorContext
+      : null;
 
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
@@ -93,19 +103,53 @@ export function drawObjects(
 
     if (needsTransform) {
       if (transform.kind === 'translate') {
-        // Translation: use ctx.translate with cached Path2D for all objects
-        ctx.save();
-        ctx.translate(transform.dx, transform.dy);
-        drawObject(ctx, handle);
-        ctx.restore();
+        if (handle.kind === 'connector') {
+          // Connector during translate: check for rerouted points
+          const ctxEntry = connectorContext?.entries.get(handle.id);
+          if (ctxEntry?.currentPoints) {
+            drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+          } else {
+            // Free connector (no anchors) — simple offset
+            const startAnc = getStartAnchor(handle.y);
+            const endAnc = getEndAnchor(handle.y);
+            if (!startAnc && !endAnc) {
+              ctx.save();
+              ctx.translate(transform.dx, transform.dy);
+              drawObject(ctx, handle);
+              ctx.restore();
+            } else {
+              // Anchored but no reroute yet — draw from cache (fallback)
+              drawObject(ctx, handle);
+            }
+          }
+        } else {
+          // Non-connector: use ctx.translate with cached Path2D
+          ctx.save();
+          ctx.translate(transform.dx, transform.dy);
+          drawObject(ctx, handle);
+          ctx.restore();
+        }
       } else if (transform.kind === 'scale') {
         // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(ctx, handle, transform);
+        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connectorContext);
+      } else if (transform.kind === 'endpointDrag') {
+        // Endpoint drag: draw from rerouted points if available
+        if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
+          drawConnectorFromPoints(ctx, handle, transform.routedPoints);
+        } else {
+          drawObject(ctx, handle);
+        }
       } else {
         drawObject(ctx, handle);
       }
     } else {
-      drawObject(ctx, handle);
+      // Non-selected object: check if it's a connector affected by transform (external connector)
+      const ctxEntry = connectorContext?.entries.get(entry.id);
+      if (ctxEntry?.currentPoints && handle.kind === 'connector') {
+        drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+      } else {
+        drawObject(ctx, handle);
+      }
     }
   }
 }
@@ -232,6 +276,55 @@ function drawConnector(
   ctx.restore();
 }
 
+
+/**
+ * Draw a connector from explicit points (for rerouted connectors during transforms).
+ * Reads styles from handle.y, builds fresh paths from the given points.
+ */
+function drawConnectorFromPoints(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  points: [number, number][]
+): void {
+  if (points.length < 2) return;
+
+  const { y } = handle;
+  const color = getColor(y);
+  const width = getWidth(y);
+  const opacity = getOpacity(y);
+  const startCap = getStartCap(y);
+  const endCap = getEndCap(y);
+
+  const paths = buildConnectorPaths({ points, strokeWidth: width, startCap, endCap });
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+
+  // Pass 1: Stroke polyline
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke(paths.polyline);
+
+  // Pass 2: Arrows
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+
+  if (paths.startArrow) {
+    ctx.fill(paths.startArrow);
+    ctx.stroke(paths.startArrow);
+  }
+  if (paths.endArrow) {
+    ctx.fill(paths.endArrow);
+    ctx.stroke(paths.endArrow);
+  }
+
+  ctx.restore();
+}
 
 function shouldSkipLOD(
   bbox: [number, number, number, number],
@@ -408,10 +501,23 @@ function drawShapeWithUniformScale(
 function renderSelectedObjectWithScaleTransform(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  transform: ScaleTransform
+  transform: ScaleTransform,
+  connectorContext: ConnectorTransformContext | null
 ): void {
   const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
-  const isStroke = handle.kind === 'stroke' || handle.kind === 'connector';
+
+  // Connectors: draw from rerouted points (never stroke-scale)
+  if (handle.kind === 'connector') {
+    const ctxEntry = connectorContext?.entries.get(handle.id);
+    if (ctxEntry?.currentPoints) {
+      drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+    } else {
+      drawObject(ctx, handle); // Fallback to cached
+    }
+    return;
+  }
+
+  const isStroke = handle.kind === 'stroke';
 
   // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
   if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
