@@ -58,10 +58,10 @@ import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
 
 // === Constants ===
-const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
-const HIT_SLACK_PX = 2.0;      // Forgiving feel for touch/click precision (like EraserTool)
-const MOVE_THRESHOLD_PX = 4;   // Pixels before drag detected (screen space)
-const CLICK_WINDOW_MS = 180;   // Time threshold for gap click disambiguation
+const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
+const HIT_SLACK_PX = 2.0; // Forgiving feel for touch/click precision (like EraserTool)
+const MOVE_THRESHOLD_PX = 4; // Pixels before drag detected (screen space)
+const CLICK_WINDOW_MS = 180; // Time threshold for gap click disambiguation
 
 // === Types ===
 
@@ -69,12 +69,12 @@ type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endp
 
 type DownTarget =
   | 'none'
-  | 'handle'                   // Clicked resize handle (standard mode only)
-  | 'connectorEndpoint'        // Clicked endpoint dot (connector mode only)
-  | 'objectInSelection'        // Clicked object that IS selected
-  | 'objectOutsideSelection'   // Clicked object that is NOT selected
-  | 'selectionGap'             // Empty space INSIDE selection bounds (standard mode only)
-  | 'background';              // Empty space OUTSIDE selection bounds
+  | 'handle' // Clicked resize handle (standard mode only)
+  | 'connectorEndpoint' // Clicked endpoint dot (connector mode only)
+  | 'objectInSelection' // Clicked object that IS selected
+  | 'objectOutsideSelection' // Clicked object that is NOT selected
+  | 'selectionGap' // Empty space INSIDE selection bounds (standard mode only)
+  | 'background'; // Empty space OUTSIDE selection bounds
 
 // === SelectTool Class ===
 
@@ -134,7 +134,9 @@ export class SelectTool implements PointerTool {
       // Standard mode: check resize handles first
       const selectionBounds = this.computeSelectionBounds();
       const { scale } = useCameraStore.getState();
-      const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds, scale) : null;
+      const handleHit = selectionBounds
+        ? hitTestHandle(worldX, worldY, selectionBounds, scale)
+        : null;
       if (handleHit) {
         this.activeHandle = handleHit;
         this.downTarget = 'handle';
@@ -234,7 +236,14 @@ export class SelectTool implements PointerTool {
                 this.downWorld![0] - origin[0],
                 this.downWorld![1] - origin[1],
               ];
-              store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta);
+              store.beginScale(
+                bboxBounds,
+                transformBounds,
+                origin,
+                this.activeHandle!,
+                selectionKind,
+                initialDelta,
+              );
             }
             const cursor = getHandleCursor(this.activeHandle!);
             setCursorOverride(cursor);
@@ -249,10 +258,7 @@ export class SelectTool implements PointerTool {
             // Drill down to single connector if multiple selected
             const epStore = useSelectionStore.getState();
             if (epStore.selectedIds.length > 1) {
-              epStore.setSelection(
-                [this.endpointHitAtDown!.connectorId],
-                'connectorsOnly'
-              );
+              epStore.setSelection([this.endpointHitAtDown!.connectorId], 'connectorsOnly');
             }
 
             this.phase = 'endpointDrag';
@@ -262,11 +268,13 @@ export class SelectTool implements PointerTool {
             const connHandle = snapshot.objectsById.get(this.endpointHitAtDown!.connectorId);
             if (connHandle) {
               const originBbox = bboxTupleToWorldBounds(connHandle.bbox);
-              useSelectionStore.getState().beginEndpointDrag(
-                this.endpointHitAtDown!.connectorId,
-                this.endpointHitAtDown!.endpoint,
-                originBbox
-              );
+              useSelectionStore
+                .getState()
+                .beginEndpointDrag(
+                  this.endpointHitAtDown!.connectorId,
+                  this.endpointHitAtDown!.endpoint,
+                  originBbox,
+                );
             }
             setCursorOverride('grabbing');
             applyCursor();
@@ -296,7 +304,10 @@ export class SelectTool implements PointerTool {
 
             // Non-connector or free connector: select + translate
             const store = useSelectionStore.getState();
-            store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
+            store.setSelection(
+              [this.hitAtDown!.id],
+              this.computeSelectionKind([this.hitAtDown!.id]),
+            );
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
@@ -419,12 +430,14 @@ export class SelectTool implements PointerTool {
 
         // 5. Update store
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
-        useSelectionStore.getState().updateEndpointDrag(
-          currentPosition,
-          snap ?? null,
-          result?.points ?? null,
-          result?.bbox ?? null
-        );
+        useSelectionStore
+          .getState()
+          .updateEndpointDrag(
+            currentPosition,
+            snap ?? null,
+            result?.points ?? null,
+            result?.bbox ?? null,
+          );
         break;
       }
     }
@@ -456,22 +469,25 @@ export class SelectTool implements PointerTool {
           case 'connectorEndpoint':
             // Clicked endpoint dot but didn't drag → drill down to single connector
             if (store.selectedIds.length > 1) {
-              store.setSelection(
-                [this.endpointHitAtDown!.connectorId],
-                'connectorsOnly'
-              );
+              store.setSelection([this.endpointHitAtDown!.connectorId], 'connectorsOnly');
             }
             break;
 
           case 'objectOutsideSelection':
             // Click → select that object
-            store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
+            store.setSelection(
+              [this.hitAtDown!.id],
+              this.computeSelectionKind([this.hitAtDown!.id]),
+            );
             break;
 
           case 'objectInSelection':
             // Click on already-selected object → "drill down" if multi-select
             if (store.selectedIds.length > 1) {
-              store.setSelection([this.hitAtDown!.id], this.computeSelectionKind([this.hitAtDown!.id]));
+              store.setSelection(
+                [this.hitAtDown!.id],
+                this.computeSelectionKind([this.hitAtDown!.id]),
+              );
             }
             break;
 
@@ -527,7 +543,8 @@ export class SelectTool implements PointerTool {
           break;
         }
 
-        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } = store.transform;
+        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } =
+          store.transform;
         const { selectedIds, connectorTopology } = store;
 
         // Clear transform BEFORE mutate
@@ -535,7 +552,17 @@ export class SelectTool implements PointerTool {
 
         // Only commit if there was actual scaling
         if (scaleX !== 1 || scaleY !== 1) {
-          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds, connectorTopology);
+          this.commitScale(
+            selectedIds,
+            origin,
+            scaleX,
+            scaleY,
+            handleId,
+            selectionKind,
+            handleKind,
+            originBounds,
+            connectorTopology,
+          );
         }
         break;
       }
@@ -547,7 +574,8 @@ export class SelectTool implements PointerTool {
           break;
         }
 
-        const { connectorId, endpoint, routedPoints, currentSnap, prevBbox, routedBbox } = epStore.transform;
+        const { connectorId, endpoint, routedPoints, currentSnap, prevBbox, routedBbox } =
+          epStore.transform;
 
         // Invalidate the connector region
         invalidateWorld(prevBbox);
@@ -637,7 +665,7 @@ export class SelectTool implements PointerTool {
       }
     }
 
-    const isTransforming = transform.kind !== 'none';
+    const isTransforming = transform.kind !== 'none' && transform.kind !== 'endpointDrag';
 
     return {
       kind: 'selection',
@@ -797,16 +825,34 @@ export class SelectTool implements PointerTool {
 
         if (typeof entry.startSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.startSpec);
-          if (origFrame) overrides.start = { frame: transformFrameForTopology(origFrame, transform as TranslateTransform | ScaleTransform) };
+          if (origFrame)
+            overrides.start = {
+              frame: transformFrameForTopology(
+                origFrame,
+                transform as TranslateTransform | ScaleTransform,
+              ),
+            };
         } else if (entry.startSpec === true) {
-          overrides.start = transformPositionForTopology(entry.originalPoints[0], transform as TranslateTransform | ScaleTransform);
+          overrides.start = transformPositionForTopology(
+            entry.originalPoints[0],
+            transform as TranslateTransform | ScaleTransform,
+          );
         }
 
         if (typeof entry.endSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.endSpec);
-          if (origFrame) overrides.end = { frame: transformFrameForTopology(origFrame, transform as TranslateTransform | ScaleTransform) };
+          if (origFrame)
+            overrides.end = {
+              frame: transformFrameForTopology(
+                origFrame,
+                transform as TranslateTransform | ScaleTransform,
+              ),
+            };
         } else if (entry.endSpec === true) {
-          overrides.end = transformPositionForTopology(entry.originalPoints[entry.originalPoints.length - 1], transform as TranslateTransform | ScaleTransform);
+          overrides.end = transformPositionForTopology(
+            entry.originalPoints[entry.originalPoints.length - 1],
+            transform as TranslateTransform | ScaleTransform,
+          );
         }
 
         const hasOverrides = overrides.start !== undefined || overrides.end !== undefined;
@@ -844,7 +890,16 @@ export class SelectTool implements PointerTool {
       }
     } else if (transform.kind === 'scale') {
       const snapshot = getCurrentSnapshot();
-      const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
+      const {
+        selectionKind,
+        handleKind,
+        handleId,
+        origin,
+        scaleX,
+        scaleY,
+        originBounds,
+        bboxBounds,
+      } = transform;
 
       let combinedBounds: WorldRect | null = null;
 
@@ -860,7 +915,14 @@ export class SelectTool implements PointerTool {
         let objBounds: WorldRect;
 
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
+          const { dx, dy } = computeStrokeTranslation(
+            handle,
+            originBounds,
+            scaleX,
+            scaleY,
+            origin,
+            handleId,
+          );
           objBounds = translateBounds(bbox, dx, dy);
         } else if (isStroke) {
           objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
@@ -900,7 +962,7 @@ export class SelectTool implements PointerTool {
     selectedIds: string[],
     dx: number,
     dy: number,
-    topology: ConnectorTopology | null
+    topology: ConnectorTopology | null,
   ): void {
     const snapshot = getCurrentSnapshot();
 
@@ -938,7 +1000,10 @@ export class SelectTool implements PointerTool {
           if (!yMap) continue;
 
           if (entry.strategy === 'translate') {
-            const newPoints: [number, number][] = entry.originalPoints.map(([x, y]) => [x + dx, y + dy]);
+            const newPoints: [number, number][] = entry.originalPoints.map(([x, y]) => [
+              x + dx,
+              y + dy,
+            ]);
             yMap.set('points', newPoints);
             yMap.set('start', newPoints[0]);
             yMap.set('end', newPoints[newPoints.length - 1]);
@@ -963,7 +1028,7 @@ export class SelectTool implements PointerTool {
     selectionKind: SelectionKind,
     handleKind: HandleKind,
     originBounds: WorldBounds,
-    topology: ConnectorTopology | null
+    topology: ConnectorTopology | null,
   ): void {
     const snapshot = getCurrentSnapshot();
 
@@ -985,7 +1050,14 @@ export class SelectTool implements PointerTool {
 
         // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
+          const { dx, dy } = computeStrokeTranslation(
+            handle,
+            originBounds,
+            scaleX,
+            scaleY,
+            origin,
+            handleId,
+          );
           const points = getPoints(yMap);
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
@@ -1001,7 +1073,10 @@ export class SelectTool implements PointerTool {
           const { points: newPoints, absScale } = applyUniformScaleToPoints(
             points as [number, number][],
             handle.bbox,
-            originBounds, origin, scaleX, scaleY
+            originBounds,
+            origin,
+            scaleX,
+            scaleY,
           );
           yMap.set('points', newPoints);
           yMap.set('width', getWidth(yMap) * absScale);
@@ -1082,7 +1157,7 @@ export class SelectTool implements PointerTool {
     connectorId: string,
     endpoint: 'start' | 'end',
     routedPoints: [number, number][],
-    currentSnap: SnapTarget | null
+    currentSnap: SnapTarget | null,
   ): void {
     getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
       const root = ydoc.getMap('root');
@@ -1195,9 +1270,7 @@ export class SelectTool implements PointerTool {
     if (candidates.length === 1) return candidates[0];
 
     // Sort by Z: ULID descending = newest/topmost first
-    const sorted = [...candidates].sort((a, b) =>
-      a.id < b.id ? 1 : a.id > b.id ? -1 : 0
-    );
+    const sorted = [...candidates].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
 
     type PaintClass = 'ink' | 'fill';
 
@@ -1213,19 +1286,19 @@ export class SelectTool implements PointerTool {
 
       if (c.kind === 'shape') {
         if (c.isFilled) {
-          return 'fill';  // Filled shape interior or border
+          return 'fill'; // Filled shape interior or border
         }
         if (!c.isFilled && !c.insideInterior) {
-          return 'ink';   // Unfilled shape BORDER (outline stroke)
+          return 'ink'; // Unfilled shape BORDER (outline stroke)
         }
-        return null;      // Unfilled shape interior = transparent
+        return null; // Unfilled shape interior = transparent
       }
 
-      return 'ink';  // Fallback: treat as paint
+      return 'ink'; // Fallback: treat as paint
     };
 
-    let bestFrame: HitCandidate | null = null;   // Smallest unfilled interior
-    let firstPaint: HitCandidate | null = null;  // First visible paint in Z
+    let bestFrame: HitCandidate | null = null; // Smallest unfilled interior
+    let firstPaint: HitCandidate | null = null; // First visible paint in Z
     let firstPaintClass: PaintClass | null = null;
 
     // Scan from topmost to bottommost, respecting occlusion
@@ -1235,7 +1308,7 @@ export class SelectTool implements PointerTool {
         if (!bestFrame || c.area < bestFrame.area) {
           bestFrame = c;
         }
-        continue;  // Don't stop - look for paint underneath
+        continue; // Don't stop - look for paint underneath
       }
 
       const paintClass = classifyPaint(c);
@@ -1243,18 +1316,18 @@ export class SelectTool implements PointerTool {
         // Found first painted thing - this occludes everything below
         firstPaint = c;
         firstPaintClass = paintClass;
-        break;  // Stop scanning
+        break; // Stop scanning
       }
     }
 
     // Case 1: Only frame interiors, no paint at this pixel
     if (!firstPaint && bestFrame) {
-      return bestFrame;  // Return smallest frame (most nested)
+      return bestFrame; // Return smallest frame (most nested)
     }
 
     // Case 2: No paint and no frames (shouldn't happen)
     if (!firstPaint) {
-      return sorted[0];  // Fallback to topmost
+      return sorted[0]; // Fallback to topmost
     }
 
     // Case 3: First painted thing is ink (stroke/text/connector/border)
@@ -1265,7 +1338,7 @@ export class SelectTool implements PointerTool {
 
     // Case 4: First painted thing is a filled shape interior
     if (!bestFrame) {
-      return firstPaint;  // No frames to compare with
+      return firstPaint; // No frames to compare with
     }
 
     // Case 5: Both filled shape and frame(s) contain the cursor

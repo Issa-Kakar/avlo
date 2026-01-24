@@ -5,6 +5,7 @@
  * 1. Object highlights (blue outlines around selected objects)
  * 2. Marquee rectangle (dashed selection box during drag)
  * 3. Selection box with resize handles
+ * 4. Connector endpoint dots (in connector mode)
  *
  * CRITICAL: This is called INSIDE world transform scope.
  * The context has the world transform already applied when this is called.
@@ -15,8 +16,12 @@
 
 import type { SelectionPreview, HandleId } from '@/lib/tools/types';
 import type { Snapshot } from '@avlo/shared';
-import { getFrame } from '@avlo/shared';
+import { getFrame, getShapeType } from '@avlo/shared';
 import { getObjectCacheInstance } from '../object-cache';
+import { useSelectionStore, type TransformState } from '@/stores/selection-store';
+import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
+import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
+import type { SnapTarget } from '@/lib/connectors/types';
 
 // =============================================================================
 // STYLING CONSTANTS
@@ -65,10 +70,11 @@ const SELECTION_STYLE = {
 /**
  * Draw selection overlay on overlay canvas.
  *
- * Renders three phases:
+ * Renders four phases:
  * 1. Object highlights - blue outlines around selected objects (when not transforming)
  * 2. Marquee rectangle - dashed selection box during drag select
  * 3. Selection box + handles - bounding box with resize handles (when not transforming)
+ * 4. Connector endpoint dots - in connector mode for single connector selection
  *
  * @param ctx - Canvas 2D context with world transform applied
  * @param preview - SelectionPreview data from SelectTool
@@ -79,11 +85,15 @@ export function drawSelectionOverlay(
   ctx: CanvasRenderingContext2D,
   preview: SelectionPreview,
   scale: number,
-  snapshot: Snapshot
+  snapshot: Snapshot,
 ): void {
-  // Phase 1: Object highlights (only when not transforming)
+  // Read store for connector mode state
+  const { mode, transform } = useSelectionStore.getState();
+  const isConnectorMode = mode === 'connector';
+
+  // Phase 1: Object highlights (skip connector bbox in connector mode)
   if (!preview.isTransforming && preview.selectedIds.length > 0) {
-    drawObjectHighlights(ctx, preview.selectedIds, snapshot, scale);
+    drawObjectHighlights(ctx, preview.selectedIds, snapshot, scale, isConnectorMode);
   }
 
   // Phase 2: Marquee rectangle
@@ -91,9 +101,14 @@ export function drawSelectionOverlay(
     drawMarqueeRect(ctx, preview.marqueeRect, scale);
   }
 
-  // Phase 3: Selection box + handles (only when not transforming)
-  if (preview.selectionBounds && !preview.isTransforming) {
+  // Phase 3: Selection box + handles (only when not transforming, never in connector mode)
+  if (preview.selectionBounds && !preview.isTransforming && !isConnectorMode) {
     drawSelectionBoxAndHandles(ctx, preview.selectionBounds, preview.handles, scale);
+  }
+
+  // Phase 4: Connector endpoint dots (connector mode only, single connector)
+  if (isConnectorMode && preview.selectedIds.length === 1) {
+    drawConnectorEndpointDots(ctx, preview.selectedIds[0], transform, snapshot, scale);
   }
 }
 
@@ -108,12 +123,15 @@ export function drawSelectionOverlay(
  * - text: stroke the frame rect
  * - stroke/connector: stroke bbox rect (avoids PerfectFreehand artifact)
  * - shape: stroke the cached Path2D (follows actual geometry)
+ *
+ * @param suppressConnectors - When true, skip connector bbox highlights (connector mode)
  */
 function drawObjectHighlights(
   ctx: CanvasRenderingContext2D,
   selectedIds: string[],
   snapshot: Snapshot,
-  scale: number
+  scale: number,
+  suppressConnectors: boolean,
 ): void {
   const cache = getObjectCacheInstance();
 
@@ -125,6 +143,9 @@ function drawObjectHighlights(
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
     if (!handle) continue;
+
+    // Skip connector bbox highlight in connector mode
+    if (suppressConnectors && handle.kind === 'connector') continue;
 
     // Text: stroke the frame rect
     if (handle.kind === 'text') {
@@ -157,7 +178,7 @@ function drawObjectHighlights(
 function drawMarqueeRect(
   ctx: CanvasRenderingContext2D,
   marqueeRect: { minX: number; minY: number; maxX: number; maxY: number },
-  scale: number
+  scale: number,
 ): void {
   const { minX, minY, maxX, maxY } = marqueeRect;
 
@@ -181,7 +202,7 @@ function drawSelectionBoxAndHandles(
   ctx: CanvasRenderingContext2D,
   selectionBounds: { minX: number; minY: number; maxX: number; maxY: number },
   handles: { id: HandleId; x: number; y: number }[] | null,
-  scale: number
+  scale: number,
 ): void {
   const { minX, minY, maxX, maxY } = selectionBounds;
 
@@ -224,4 +245,170 @@ function drawSelectionBoxAndHandles(
       ctx.stroke();
     }
   }
+}
+
+// =============================================================================
+// CONNECTOR ENDPOINT DOTS
+// =============================================================================
+
+/**
+ * Draw connector endpoint dots when in connector mode.
+ *
+ * Shows start/end endpoint positions as circles. During endpoint drag,
+ * the dragged endpoint shows snap state (active=blue with glow, inactive=white+blue).
+ * Also renders midpoint dots on the snap target shape during drag.
+ */
+function drawConnectorEndpointDots(
+  ctx: CanvasRenderingContext2D,
+  connectorId: string,
+  transform: TransformState,
+  snapshot: Snapshot,
+  scale: number,
+): void {
+  const handle = snapshot.objectsById.get(connectorId);
+  if (!handle || handle.kind !== 'connector') return;
+
+  const radius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
+  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+
+  let startPos: [number, number];
+  let endPos: [number, number];
+  let startActive = false;
+  let endActive = false;
+
+  if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {
+    const { endpoint, currentPosition, currentSnap } = transform;
+
+    // Dragged endpoint: snap edge position (active) or cursor (inactive)
+    const draggedPos = currentSnap ? currentSnap.edgePosition : currentPosition;
+    const draggedActive = currentSnap !== null;
+
+    // Non-dragged endpoint: canonical position, always inactive
+    const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
+    const otherPos = getEndpointEdgePosition(handle, otherEndpoint, snapshot);
+
+    if (endpoint === 'start') {
+      startPos = draggedPos;
+      startActive = draggedActive;
+      endPos = otherPos;
+    } else {
+      endPos = draggedPos;
+      endActive = draggedActive;
+      startPos = otherPos;
+    }
+
+    // Draw snap midpoint dots on target shape
+    if (currentSnap) {
+      drawSnapMidpointDots(ctx, currentSnap, snapshot, scale);
+    }
+  } else {
+    // Idle: both at canonical positions, both inactive
+    startPos = getEndpointEdgePosition(handle, 'start', snapshot);
+    endPos = getEndpointEdgePosition(handle, 'end', snapshot);
+  }
+
+  // Draw dots (inactive first so active renders on top)
+  ctx.lineWidth = strokeWidth;
+
+  // Inactive dots
+  for (const [pos, active] of [
+    [startPos, startActive],
+    [endPos, endActive],
+  ] as const) {
+    if (active) continue;
+    ctx.beginPath();
+    ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
+    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
+    ctx.fill();
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+    ctx.stroke();
+  }
+
+  // Active dots (with glow)
+  for (const [pos, active] of [
+    [startPos, startActive],
+    [endPos, endActive],
+  ] as const) {
+    if (!active) continue;
+    ctx.save();
+    ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
+    ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    ctx.beginPath();
+    ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
+    ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
+    ctx.lineWidth = strokeWidth;
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/**
+ * Draw midpoint indicator dots on the snap target shape.
+ *
+ * Shows 4 midpoints (N/E/S/W) on the target shape. When snapped to a midpoint,
+ * all dots grow to large radius. The active side dot renders with blue fill and glow.
+ */
+function drawSnapMidpointDots(
+  ctx: CanvasRenderingContext2D,
+  snap: SnapTarget,
+  snapshot: Snapshot,
+  scale: number,
+): void {
+  const shapeHandle = snapshot.objectsById.get(snap.shapeId);
+  if (!shapeHandle) return;
+
+  const shapeFrame = getFrame(shapeHandle.y);
+  if (!shapeFrame) return;
+
+  const shapeType = getShapeType(shapeHandle.y);
+
+  const smallRadius = pxToWorld(ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX, scale);
+  const largeRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
+  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+
+  // When at midpoint, all dots grow large; otherwise stay small
+  const midpointRadius = snap.isMidpoint ? largeRadius : smallRadius;
+
+  const midpoints = getShapeTypeMidpoints(shapeFrame, shapeType);
+
+  ctx.lineWidth = strokeWidth;
+
+  // Inactive midpoint dots (skip the active side if at midpoint)
+  for (const [s, pos] of Object.entries(midpoints) as ['N' | 'E' | 'S' | 'W', [number, number]][]) {
+    if (snap.isMidpoint && s === snap.side) continue;
+
+    ctx.beginPath();
+    ctx.arc(pos[0], pos[1], midpointRadius, 0, Math.PI * 2);
+    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
+    ctx.fill();
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+    ctx.stroke();
+  }
+
+  // Active dot at edge position with glow
+  ctx.save();
+  ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
+  ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+
+  ctx.beginPath();
+  ctx.arc(snap.edgePosition[0], snap.edgePosition[1], largeRadius, 0, Math.PI * 2);
+  ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
+  ctx.fill();
+
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
+  ctx.lineWidth = strokeWidth;
+  ctx.stroke();
+  ctx.restore();
 }
