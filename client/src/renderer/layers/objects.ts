@@ -10,14 +10,12 @@ import {
   getStrokeTool,
   getStartCap,
   getEndCap,
-  getStartAnchor,
-  getEndAnchor,
 } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
-import { useSelectionStore, type ScaleTransform, type ConnectorTransformContext } from '@/stores/selection-store';
+import { useSelectionStore, type ScaleTransform, type ConnectorTopology } from '@/stores/selection-store';
 import {
   computeStrokeTranslation,
   applyTransformToFrame,
@@ -43,11 +41,8 @@ export function drawObjects(
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
-  // Read connector context from translate/scale transforms
-  const connectorContext: ConnectorTransformContext | null =
-    (transform.kind === 'translate' || transform.kind === 'scale')
-      ? transform.connectorContext
-      : null;
+  // Read connector topology state
+  const connTopology = selectionState.connectorTopology;
 
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
@@ -104,21 +99,17 @@ export function drawObjects(
     if (needsTransform) {
       if (transform.kind === 'translate') {
         if (handle.kind === 'connector') {
-          // Connector during translate: check for rerouted points
-          const ctxEntry = connectorContext?.entries.get(handle.id);
-          if (ctxEntry?.currentPoints) {
-            drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+          // Connector during translate: translateOnly or rerouted
+          if (connTopology?.translateIdSet.has(handle.id)) {
+            ctx.save();
+            ctx.translate(transform.dx, transform.dy);
+            drawObject(ctx, handle);
+            ctx.restore();
           } else {
-            // Free connector (no anchors) — simple offset
-            const startAnc = getStartAnchor(handle.y);
-            const endAnc = getEndAnchor(handle.y);
-            if (!startAnc && !endAnc) {
-              ctx.save();
-              ctx.translate(transform.dx, transform.dy);
-              drawObject(ctx, handle);
-              ctx.restore();
+            const points = connTopology?.reroutes.get(handle.id);
+            if (points) {
+              drawConnectorFromPoints(ctx, handle, points);
             } else {
-              // Anchored but no reroute yet — draw from cache (fallback)
               drawObject(ctx, handle);
             }
           }
@@ -131,7 +122,7 @@ export function drawObjects(
         }
       } else if (transform.kind === 'scale') {
         // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connectorContext);
+        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology);
       } else if (transform.kind === 'endpointDrag') {
         // Endpoint drag: draw from rerouted points if available
         if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
@@ -143,10 +134,21 @@ export function drawObjects(
         drawObject(ctx, handle);
       }
     } else {
-      // Non-selected object: check if it's a connector affected by transform (external connector)
-      const ctxEntry = connectorContext?.entries.get(entry.id);
-      if (ctxEntry?.currentPoints && handle.kind === 'connector') {
-        drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+      // Non-selected: check topology for connector overrides
+      if (handle.kind === 'connector' && connTopology) {
+        if (transform.kind === 'translate' && connTopology.translateIdSet.has(entry.id)) {
+          ctx.save();
+          ctx.translate(transform.dx, transform.dy);
+          drawObject(ctx, handle);
+          ctx.restore();
+        } else {
+          const points = connTopology.reroutes.get(entry.id);
+          if (points) {
+            drawConnectorFromPoints(ctx, handle, points);
+          } else {
+            drawObject(ctx, handle);
+          }
+        }
       } else {
         drawObject(ctx, handle);
       }
@@ -502,17 +504,17 @@ function renderSelectedObjectWithScaleTransform(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
   transform: ScaleTransform,
-  connectorContext: ConnectorTransformContext | null
+  connTopology: ConnectorTopology | null
 ): void {
   const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
 
   // Connectors: draw from rerouted points (never stroke-scale)
   if (handle.kind === 'connector') {
-    const ctxEntry = connectorContext?.entries.get(handle.id);
-    if (ctxEntry?.currentPoints) {
-      drawConnectorFromPoints(ctx, handle, ctxEntry.currentPoints);
+    const points = connTopology?.reroutes.get(handle.id);
+    if (points) {
+      drawConnectorFromPoints(ctx, handle, points);
     } else {
-      drawObject(ctx, handle); // Fallback to cached
+      drawObject(ctx, handle); // Not in topology = static
     }
     return;
   }

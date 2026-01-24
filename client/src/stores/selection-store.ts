@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@avlo/shared';
 import type { SnapTarget } from '@/lib/connectors/types';
 
 // === Types ===
@@ -18,39 +18,42 @@ export type HandleKind = 'corner' | 'side';
 // Interaction mode: determines what UI affordances are shown
 export type SelectionMode = 'none' | 'standard' | 'connector';
 
-// === Connector Transform Context ===
+// === Connector Topology ===
 
 /**
- * Per-connector tracking during shape transforms (translate/scale).
- * Tracks routing results and dirty rects for each affected connector.
+ * Per-endpoint override spec:
+ *   null   = canonical (no override — endpoint stays at Y.Map stored value)
+ *   string = frame override (value is the shapeId whose frame to transform)
+ *   true   = free position override (apply transform to original position)
  */
-export interface ConnectorUpdateEntry {
+export type EndpointSpec = string | true | null;
+
+export interface ConnectorTopologyEntry {
   connectorId: string;
-  /** Whether this connector is in selectedIds */
-  isSelected: boolean;
-  /** Previous frame's bbox (for dirty rect - seeded from original bbox at begin) */
-  prevBbox: WorldBounds;
-  /** Current rerouted points (null if reroute not yet called or failed) */
-  currentPoints: [number, number][] | null;
-  /** Current bbox computed from currentPoints */
-  currentBbox: WorldBounds | null;
-  /** Whether the start endpoint is anchored to a shape */
-  startIsAnchored: boolean;
-  /** Whether the end endpoint is anchored to a shape */
-  endIsAnchored: boolean;
-  /** Original start position at build time (for free endpoint transform) */
-  originalStart: [number, number];
-  /** Original end position at build time (for free endpoint transform) */
-  originalEnd: [number, number];
+  strategy: 'translate' | 'reroute';
+  originalPoints: [number, number][];
+  originalBbox: WorldBounds;
+  startSpec: EndpointSpec;  // only meaningful for 'reroute'
+  endSpec: EndpointSpec;    // only meaningful for 'reroute'
 }
 
 /**
- * Context for all connectors affected by a shape transform.
- * Built at transform begin, updated on each move.
+ * Connector topology computed once at transform begin.
+ * Store-owned: entries/sets/maps are immutable after construction.
+ * Mutable caches (reroutes, prevBboxes) are .set() per frame with no new allocations.
  */
-export interface ConnectorTransformContext {
-  /** All connectors that need rerouting: connectorId -> entry */
-  entries: Map<string, ConnectorUpdateEntry>;
+export interface ConnectorTopology {
+  /** All topology entries (translate + reroute) */
+  entries: ConnectorTopologyEntry[];
+  /** O(1) lookup: is this connector translateOnly? */
+  translateIdSet: Set<string>;
+  /** Original frames of selected shapes (for frame overrides) */
+  originalFrames: Map<string, FrameTuple>;
+
+  /** connectorId → rerouted points (mutable per-frame cache) */
+  reroutes: Map<string, [number, number][] | null>;
+  /** connectorId → previous frame bbox (mutable per-frame cache) */
+  prevBboxes: Map<string, WorldBounds>;
 }
 
 // === Transform Types ===
@@ -60,8 +63,6 @@ export interface TranslateTransform {
   dx: number;
   dy: number;
   originBounds: WorldRect;  // Bounds before transform started
-  /** Connector rerouting context (null if no connectors affected) */
-  connectorContext: ConnectorTransformContext | null;
 }
 
 export interface ScaleTransform {
@@ -75,8 +76,6 @@ export interface ScaleTransform {
   selectionKind: SelectionKind;  // Selection composition for context-aware behavior
   handleKind: HandleKind;        // Corner vs side handle
   initialDelta: [number, number];  // Distance from origin to initial click (for scale=1.0 at start)
-  /** Connector rerouting context (null if no connectors affected) */
-  connectorContext: ConnectorTransformContext | null;
 }
 
 /**
@@ -124,6 +123,8 @@ export interface SelectionState {
   selectionKind: SelectionKind;
   transform: TransformState;
   marquee: MarqueeState;
+  /** Connector topology during translate/scale transforms */
+  connectorTopology: ConnectorTopology | null;
 }
 
 // === Actions Interface ===
@@ -134,10 +135,11 @@ export interface SelectionActions {
   clearSelection: () => void;
 
   // Transform lifecycle
-  beginTranslate: (originBounds: WorldRect, connectorContext?: ConnectorTransformContext | null) => void;
+  beginTranslate: (originBounds: WorldRect) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number], connectorContext?: ConnectorTransformContext | null) => void;
+  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number]) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
+  setConnectorTopology: (topology: ConnectorTopology | null) => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
@@ -163,6 +165,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
   selectionKind: 'none',
   transform: { kind: 'none' },
   marquee: { active: false, anchor: null, current: null },
+  connectorTopology: null,
 
   // === Selection Actions ===
 
@@ -178,6 +181,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
       selectionKind,
       transform: { kind: 'none' },
       marquee: { active: false, anchor: null, current: null },
+      connectorTopology: null,
     });
   },
 
@@ -187,12 +191,13 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     selectionKind: 'none',
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
+    connectorTopology: null,
   }),
 
   // === Transform Actions ===
 
-  beginTranslate: (originBounds, connectorContext = null) => set({
-    transform: { kind: 'translate', dx: 0, dy: 0, originBounds, connectorContext },
+  beginTranslate: (originBounds) => set({
+    transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
   }),
 
   updateTranslate: (dx, dy) => set((state) => {
@@ -200,7 +205,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, dx, dy } };
   }),
 
-  beginScale: (bboxBounds, transformBounds, origin, handleId, selectionKind, initialDelta, connectorContext = null) => {
+  beginScale: (bboxBounds, transformBounds, origin, handleId, selectionKind, initialDelta) => {
     // Compute handleKind from handleId (deterministic)
     const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
     const handleKind: HandleKind = isCorner ? 'corner' : 'side';
@@ -217,7 +222,6 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
         selectionKind,
         handleKind,
         initialDelta,
-        connectorContext,
       },
     });
   },
@@ -227,9 +231,11 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     return { transform: { ...state.transform, scaleX, scaleY } };
   }),
 
-  endTransform: () => set({ transform: { kind: 'none' } }),
+  setConnectorTopology: (connectorTopology) => set({ connectorTopology }),
 
-  cancelTransform: () => set({ transform: { kind: 'none' } }),
+  endTransform: () => set({ transform: { kind: 'none' }, connectorTopology: null }),
+
+  cancelTransform: () => set({ transform: { kind: 'none' }, connectorTopology: null }),
 
   // === Endpoint Drag Actions ===
 

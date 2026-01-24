@@ -5,7 +5,9 @@ import {
   type HandleKind,
   type TranslateTransform,
   type ScaleTransform,
-  type WorldRect as StoreWorldRect,
+  type ConnectorTopology,
+  type ConnectorTopologyEntry,
+  type EndpointSpec,
   computeHandles,
   getScaleOrigin,
   getHandleCursor,
@@ -15,7 +17,6 @@ import {
   computeStrokeTranslation,
   applyTransformToBounds,
   computeScaleFactors,
-  applyUniformScaleToPoints,
   applyUniformScaleToFrame,
   applyTransformToFrame,
   computeUniformScaleNoThreshold,
@@ -40,7 +41,7 @@ import {
   type HitCandidate,
   type EndpointHit,
 } from '@/lib/geometry/hit-testing';
-import type { ObjectHandle, FrameTuple } from '@avlo/shared';
+import type { ObjectHandle, FrameTuple, WorldBounds } from '@avlo/shared';
 import {
   getFrame,
   getPoints,
@@ -55,10 +56,9 @@ import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
-import { rerouteConnector } from '@/lib/connectors/reroute-connector';
+import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
-import type { ConnectorTransformContext, ConnectorUpdateEntry } from '@/stores/selection-store';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6;       // Screen-space hit test radius for selection
@@ -237,8 +237,8 @@ export class SelectTool implements PointerTool {
                 this.downWorld![0] - origin[0],
                 this.downWorld![1] - origin[1],
               ];
-              const connCtx = this.buildConnectorContext();
-              store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta, connCtx);
+              store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, selectionKind, initialDelta);
+              this.buildConnectorTopology('scale');
             }
             const cursor = getHandleCursor(this.activeHandle!);
             setCursorOverride(cursor);
@@ -304,8 +304,8 @@ export class SelectTool implements PointerTool {
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
-              const connCtx = this.buildConnectorContext();
-              useSelectionStore.getState().beginTranslate(bounds, connCtx);
+              useSelectionStore.getState().beginTranslate(bounds);
+              this.buildConnectorTopology('translate');
             }
             break;
           }
@@ -336,8 +336,8 @@ export class SelectTool implements PointerTool {
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
-              const connCtx = this.buildConnectorContext();
-              useSelectionStore.getState().beginTranslate(bounds, connCtx);
+              useSelectionStore.getState().beginTranslate(bounds);
+              this.buildConnectorTopology('translate');
             }
             break;
           }
@@ -349,8 +349,8 @@ export class SelectTool implements PointerTool {
             this.phase = 'translate';
             const bounds = this.computeSelectionBounds();
             if (bounds) {
-              const connCtx = this.buildConnectorContext();
-              useSelectionStore.getState().beginTranslate(bounds, connCtx);
+              useSelectionStore.getState().beginTranslate(bounds);
+              this.buildConnectorTopology('translate');
             }
             break;
           }
@@ -382,11 +382,6 @@ export class SelectTool implements PointerTool {
           const dx = worldX - this.downWorld[0];
           const dy = worldY - this.downWorld[1];
           useSelectionStore.getState().updateTranslate(dx, dy);
-
-          // Reroute affected connectors
-          this.rerouteAffectedConnectors();
-
-          // Invalidate dirty rect (union of original and transformed bounds)
           this.invalidateTransformPreview();
         }
         break;
@@ -398,11 +393,6 @@ export class SelectTool implements PointerTool {
           if (transform.kind !== 'scale') break;
           const { scaleX, scaleY } = computeScaleFactors(worldX, worldY, transform);
           useSelectionStore.getState().updateScale(scaleX, scaleY);
-
-          // Reroute affected connectors
-          this.rerouteAffectedConnectors();
-
-          // Invalidate dirty rect
           this.invalidateTransformPreview();
         }
         break;
@@ -423,12 +413,12 @@ export class SelectTool implements PointerTool {
         });
 
         // 2. Build endpoint override
-        const overrideValue: [number, number] | SnapTarget = snap ?? [worldX, worldY];
-        const endpointOverride: { start?: [number, number] | SnapTarget; end?: [number, number] | SnapTarget } = {};
+        const overrideValue: EndpointOverrideValue = snap ?? [worldX, worldY];
+        const endpointOverride: { start?: EndpointOverrideValue; end?: EndpointOverrideValue } = {};
         endpointOverride[endpoint] = overrideValue;
 
         // 3. Reroute
-        const result = rerouteConnector(connectorId, undefined, endpointOverride);
+        const result = rerouteConnector(connectorId, endpointOverride);
 
         // 4. Invalidate prev + current dirty rects
         invalidateWorld(epTransform.prevBbox);
@@ -524,15 +514,15 @@ export class SelectTool implements PointerTool {
           break;
         }
 
-        const { dx, dy, connectorContext } = store.transform;
-        const { selectedIds } = store;
+        const { dx, dy } = store.transform;
+        const { selectedIds, connectorTopology } = store;
 
         // Clear transform BEFORE mutate to prevent double-transform visual glitch
         store.endTransform();
 
         // Only commit if there was actual movement
         if (dx !== 0 || dy !== 0) {
-          this.commitTranslate(selectedIds, dx, dy, connectorContext);
+          this.commitTranslate(selectedIds, dx, dy, connectorTopology);
         }
         break;
       }
@@ -544,15 +534,15 @@ export class SelectTool implements PointerTool {
           break;
         }
 
-        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds, connectorContext } = store.transform;
-        const { selectedIds } = store;
+        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } = store.transform;
+        const { selectedIds, connectorTopology } = store;
 
         // Clear transform BEFORE mutate
         store.endTransform();
 
         // Only commit if there was actual scaling
         if (scaleX !== 1 || scaleY !== 1) {
-          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds, connectorContext);
+          this.commitScale(selectedIds, origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds, connectorTopology);
         }
         break;
       }
@@ -793,25 +783,64 @@ export class SelectTool implements PointerTool {
 
     const store = useSelectionStore.getState();
     const transform = store.transform;
+    const topology = store.connectorTopology;
 
+    // --- 1. CONNECTOR TOPOLOGY ---
+    if (topology) {
+      // Reroute entries: compute new routes + expand envelope
+      for (const entry of topology.entries) {
+        if (entry.strategy !== 'reroute') continue;
+
+        const overrides: { start?: EndpointOverrideValue; end?: EndpointOverrideValue } = {};
+
+        if (typeof entry.startSpec === 'string') {
+          const origFrame = topology.originalFrames.get(entry.startSpec);
+          if (origFrame) overrides.start = { frame: this.transformFrame(origFrame, transform) };
+        } else if (entry.startSpec === true) {
+          overrides.start = this.transformPosition(entry.originalPoints[0], transform as TranslateTransform | ScaleTransform);
+        }
+
+        if (typeof entry.endSpec === 'string') {
+          const origFrame = topology.originalFrames.get(entry.endSpec);
+          if (origFrame) overrides.end = { frame: this.transformFrame(origFrame, transform) };
+        } else if (entry.endSpec === true) {
+          overrides.end = this.transformPosition(entry.originalPoints[entry.originalPoints.length - 1], transform as TranslateTransform | ScaleTransform);
+        }
+
+        const hasOverrides = overrides.start !== undefined || overrides.end !== undefined;
+        const result = rerouteConnector(entry.connectorId, hasOverrides ? overrides : undefined);
+        topology.reroutes.set(entry.connectorId, result?.points ?? null);
+
+        // Track bbox for envelope
+        const prev = topology.prevBboxes.get(entry.connectorId);
+        if (prev) this.transformEnvelope = expandEnvelope(this.transformEnvelope, prev);
+        if (result) {
+          this.transformEnvelope = expandEnvelope(this.transformEnvelope, result.bbox);
+          topology.prevBboxes.set(entry.connectorId, result.bbox);
+        }
+      }
+
+      // TranslateOnly envelope (translate only)
+      if (transform.kind === 'translate') {
+        for (const entry of topology.entries) {
+          if (entry.strategy !== 'translate') continue;
+          const translated = translateBounds(entry.originalBbox, transform.dx, transform.dy);
+          this.transformEnvelope = expandEnvelope(this.transformEnvelope, entry.originalBbox);
+          this.transformEnvelope = expandEnvelope(this.transformEnvelope, translated);
+        }
+      }
+    }
+
+    // --- 2. COMPUTE ENVELOPE (shapes + strokes) ---
     if (transform.kind === 'translate') {
-      // Translation: simple offset bounds
       const transformedBounds = applyTransformToBounds(bounds, transform);
 
-      // First move: include original bounds
       if (!this.transformEnvelope) {
         this.transformEnvelope = unionBounds(bounds, transformedBounds);
       } else {
-        // ACCUMULATE: expand envelope (never shrink)
         this.transformEnvelope = expandEnvelope(this.transformEnvelope, transformedBounds);
       }
-
-      invalidateWorld(this.transformEnvelope);
-      return;
-    }
-
-    if (transform.kind === 'scale') {
-      // Scale: per-object bounds based on transform strategy
+    } else if (transform.kind === 'scale') {
       const snapshot = getCurrentSnapshot();
       const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
 
@@ -821,27 +850,19 @@ export class SelectTool implements PointerTool {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
 
-        // Connectors are invalidated by rerouteAffectedConnectors(), skip here
-        // UPDATE: WITH CONNECTORS ONLY NOW BEING ABLE TO SCALE, ENVELOPE PATTERN MUST BE USED FOR HANDLING AXIS FLIPS
-        // NEEDS FURTHER INVESTIGATION: IT SEEMS TO BE CLEARING PIXELS FINE IN CONNECTORS ONLY(NO STALE PIXELS)
-        // BUT THE CONNECTOR DISAPPEARS IN CONNECTORS ONLY SELECTION KIND SCALE TRANSFORMS ON AXIS FLIPS. 
-        if (handle.kind === 'connector' && selectionKind !== 'connectorsOnly') continue;
+        // Connectors handled via topology above
+        if (handle.kind === 'connector') continue;
 
         const bbox = bboxTupleToWorldBounds(handle.bbox);
         const isStroke = handle.kind === 'stroke';
         let objBounds: WorldRect;
 
-        // CASE 1: Mixed + side + stroke = TRANSLATE (not scale)
         if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
           const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
           objBounds = translateBounds(bbox, dx, dy);
         } else if (isStroke) {
-          // CASE 2: Stroke scaling with position preservation
           objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-
-          // Expand for scaled stroke width (use imported computeUniformScaleNoThreshold indirectly via result)
           const origWidth = getWidth(handle.y);
-          // Re-compute absScale for width calculation (same logic as in computeUniformScaleBounds)
           const uniformScaleAbs = Math.abs(Math.max(Math.abs(scaleX), Math.abs(scaleY)));
           const scaledWidth = origWidth * uniformScaleAbs;
           const delta = (scaledWidth - origWidth) * 0.5;
@@ -849,35 +870,36 @@ export class SelectTool implements PointerTool {
             objBounds = expandBounds(objBounds, delta);
           }
         } else {
-          // CASE 3: Shape/text scaling
           if (selectionKind === 'mixed' && handleKind === 'corner') {
-            // Mixed + corner: center-based with position preservation
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           } else {
-            // Shapes-only or mixed+side: corner-based (non-uniform allowed)
             objBounds = scaleBoundsAround(bbox, origin, scaleX, scaleY);
           }
         }
 
-        // Union with combined bounds
         combinedBounds = expandEnvelope(combinedBounds, objBounds);
       }
 
-      if (!combinedBounds) return;
+      if (combinedBounds) {
+        combinedBounds = unionBounds(combinedBounds, bboxBounds);
+        this.transformEnvelope = expandEnvelope(this.transformEnvelope, combinedBounds);
+      }
+    }
 
-      // Include padded bboxBounds for full visual coverage (stroke width padding)
-      combinedBounds = unionBounds(combinedBounds, bboxBounds);
-
-      // ACCUMULATE envelope (expand, never shrink)
-      this.transformEnvelope = expandEnvelope(this.transformEnvelope, combinedBounds);
-
+    // --- 3. SINGLE INVALIDATION ---
+    if (this.transformEnvelope) {
       invalidateWorld(this.transformEnvelope);
     }
   }
 
   // === Commit Methods ===
 
-  private commitTranslate(selectedIds: string[], dx: number, dy: number, connectorContext: ConnectorTransformContext | null): void {
+  private commitTranslate(
+    selectedIds: string[],
+    dx: number,
+    dy: number,
+    topology: ConnectorTopology | null
+  ): void {
     const snapshot = getCurrentSnapshot();
 
     getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
@@ -888,33 +910,18 @@ export class SelectTool implements PointerTool {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
 
+        // Connectors: handled entirely by topology below
+        if (handle.kind === 'connector') continue;
+
         const yMap = objects.get(id);
         if (!yMap) continue;
 
         if (handle.kind === 'stroke') {
-          // Offset all stroke points
           const points = getPoints(yMap);
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
-        } else if (handle.kind === 'connector') {
-          // All selected connectors are now in connectorContext — skip here
-          if (connectorContext?.entries.has(id)) continue;
-          // Fallback: free connector not in context (safety)
-          const startAnchor = getStartAnchor(yMap);
-          const endAnchor = getEndAnchor(yMap);
-          if (!startAnchor && !endAnchor) {
-            const points = getPoints(yMap);
-            if (points.length === 0) continue;
-            const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
-            yMap.set('points', newPoints);
-            const start = newPoints[0];
-            const end = newPoints[newPoints.length - 1];
-            yMap.set('start', start);
-            yMap.set('end', end);
-          }
         } else {
-          // Offset frame (shapes, text)
           const frame = getFrame(yMap);
           if (!frame) continue;
           const [x, y, w, h] = frame;
@@ -922,16 +929,24 @@ export class SelectTool implements PointerTool {
         }
       }
 
-      // Commit rerouted connectors from context
-      if (connectorContext) {
-        for (const [connId, entry] of connectorContext.entries) {
-          if (!entry.currentPoints || entry.currentPoints.length < 2) continue;
-          const yMap = objects.get(connId);
+      // Topology-managed connectors
+      if (topology) {
+        for (const entry of topology.entries) {
+          const yMap = objects.get(entry.connectorId);
           if (!yMap) continue;
-          yMap.set('points', entry.currentPoints);
-          yMap.set('start', entry.currentPoints[0]);
-          yMap.set('end', entry.currentPoints[entry.currentPoints.length - 1]);
-          // Anchors unchanged — they're relative to shape, shape moved
+
+          if (entry.strategy === 'translate') {
+            const newPoints: [number, number][] = entry.originalPoints.map(([x, y]) => [x + dx, y + dy]);
+            yMap.set('points', newPoints);
+            yMap.set('start', newPoints[0]);
+            yMap.set('end', newPoints[newPoints.length - 1]);
+          } else {
+            const points = topology.reroutes.get(entry.connectorId);
+            if (!points || points.length < 2) continue;
+            yMap.set('points', points);
+            yMap.set('start', points[0]);
+            yMap.set('end', points[points.length - 1]);
+          }
         }
       }
     });
@@ -945,8 +960,8 @@ export class SelectTool implements PointerTool {
     handleId: HandleId,
     selectionKind: SelectionKind,
     handleKind: HandleKind,
-    originBounds: StoreWorldRect,
-    connectorContext: ConnectorTransformContext | null
+    originBounds: WorldBounds,
+    topology: ConnectorTopology | null
   ): void {
     const snapshot = getCurrentSnapshot();
 
@@ -958,11 +973,11 @@ export class SelectTool implements PointerTool {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
 
+        // Connectors: handled entirely by topology below
+        if (handle.kind === 'connector') continue;
+
         const yMap = objects.get(id);
         if (!yMap) continue;
-
-        // Connectors are handled entirely via connectorContext — skip here
-        if (handle.kind === 'connector') continue;
 
         const isStroke = handle.kind === 'stroke';
 
@@ -973,7 +988,6 @@ export class SelectTool implements PointerTool {
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
-          // Width UNCHANGED for translation
           continue;
         }
 
@@ -982,18 +996,29 @@ export class SelectTool implements PointerTool {
           const points = getPoints(yMap);
           if (points.length === 0) continue;
 
-          // Apply uniform scale with position preservation
-          const { points: newPoints, absScale } = applyUniformScaleToPoints(
-            points, handle.bbox, originBounds, origin, scaleX, scaleY
-          );
-          yMap.set('points', newPoints);
+          // Compute uniform scale factor
+          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+          const absScale = Math.abs(uniformScale);
 
-          // CRITICAL: Scale stroke width for WYSIWYG
+          // Apply position preservation
+          const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
+          const cy = points.reduce((s, p) => s + p[1], 0) / points.length;
+          const newCenter = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+          const dx = newCenter[0] - cx;
+          const dy = newCenter[1] - cy;
+
+          const newPoints: [number, number][] = points.map(([x, y]) => {
+            // Scale around center, then translate to preserved position
+            const sx = cx + (x - cx) * absScale + dx;
+            const sy = cy + (y - cy) * absScale + dy;
+            return [sx, sy];
+          });
+          yMap.set('points', newPoints);
           yMap.set('width', getWidth(yMap) * absScale);
           continue;
         }
 
-        // CASE 3: Shape scaling
+        // CASE 3: Shape/text scaling
         const frame = getFrame(yMap);
         if (!frame) continue;
 
@@ -1001,25 +1026,22 @@ export class SelectTool implements PointerTool {
           const newFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
           yMap.set('frame', newFrame);
         } else {
-          const newFrame = applyTransformToFrame(frame, {
-            kind: 'scale',
-            origin,
-            scaleX,
-            scaleY,
-          });
+          const newFrame = applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
           yMap.set('frame', newFrame);
         }
       }
 
-      // Commit rerouted connectors from context
-      if (connectorContext) {
-        for (const [connId, entry] of connectorContext.entries) {
-          if (!entry.currentPoints || entry.currentPoints.length < 2) continue;
-          const yMap = objects.get(connId);
+      // Topology-managed connectors (reroutes only — no translateEntries in scale)
+      if (topology) {
+        for (const entry of topology.entries) {
+          if (entry.strategy !== 'reroute') continue;
+          const points = topology.reroutes.get(entry.connectorId);
+          if (!points || points.length < 2) continue;
+          const yMap = objects.get(entry.connectorId);
           if (!yMap) continue;
-          yMap.set('points', entry.currentPoints);
-          yMap.set('start', entry.currentPoints[0]);
-          yMap.set('end', entry.currentPoints[entry.currentPoints.length - 1]);
+          yMap.set('points', points);
+          yMap.set('start', points[0]);
+          yMap.set('end', points[points.length - 1]);
         }
       }
     });
@@ -1061,88 +1083,156 @@ export class SelectTool implements PointerTool {
   }
 
   /**
-   * Build ConnectorTransformContext for translate/scale transforms.
+   * Build connector topology at transform begin.
+   * Determines which connectors need rerouting vs translateOnly,
+   * computes per-endpoint specs, and writes ConnectorTopology to store.
    *
-   * Per-endpoint truth table:
-   *   Free + connector selected       → moves via endpointOverride (transform applied)
-   *   Anchored + anchor shape selected → moves via frameOverride
-   *   Anchored + anchor shape NOT sel  → stays canonical
-   *   Free + connector NOT selected    → stays canonical
+   * Strategy:
+   *   Translate: both endpoints move → translateOnly; else → reroute
+   *   Scale: always → reroute
    *
-   * A connector enters the context if at least one endpoint will move.
+   * EndpointSpec per endpoint:
+   *   Anchored + shape selected → shapeId (string)
+   *   Free + connector selected → true
+   *   Otherwise → null (canonical)
    */
-  private buildConnectorContext(): ConnectorTransformContext | null {
+  private buildConnectorTopology(transformKind: 'translate' | 'scale'): void {
     const snapshot = getCurrentSnapshot();
     const { selectedIds } = useSelectionStore.getState();
-
     const selectedSet = new Set(selectedIds);
-    const entries = new Map<string, ConnectorUpdateEntry>();
 
-    // Pass 1: Selected connectors — include if any endpoint will move
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle || handle.kind !== 'connector') continue;
+    const entries: ConnectorTopologyEntry[] = [];
+    const translateIdSet = new Set<string>();
+    const originalFrames = new Map<string, FrameTuple>();
 
-      const startAnchor = getStartAnchor(handle.y);
-      const endAnchor = getEndAnchor(handle.y);
+    // Collect all connectors that have at least one moving endpoint
+    const visited = new Set<string>();
 
-      // Endpoint moves if: free (selected connector moves it) or anchored to selected shape
-      const startMoves = !startAnchor || selectedSet.has(startAnchor.id);
-      const endMoves = !endAnchor || selectedSet.has(endAnchor.id);
+    const processConnector = (connId: string, isSelected: boolean) => {
+      if (visited.has(connId)) return;
+      visited.add(connId);
 
-      if (!startMoves && !endMoves) continue; // Both anchored to non-selected shapes
+      const connHandle = snapshot.objectsById.get(connId);
+      if (!connHandle || connHandle.kind !== 'connector') return;
 
-      entries.set(id, {
-        connectorId: id,
-        isSelected: true,
-        prevBbox: bboxTupleToWorldBounds(handle.bbox),
-        currentPoints: null,
-        currentBbox: null,
-        startIsAnchored: !!startAnchor,
-        endIsAnchored: !!endAnchor,
-        originalStart: (getStart(handle.y) ?? [0, 0]) as [number, number],
-        originalEnd: (getEnd(handle.y) ?? [0, 0]) as [number, number],
-      });
-    }
+      const startAnchor = getStartAnchor(connHandle.y);
+      const endAnchor = getEndAnchor(connHandle.y);
 
-    // Pass 2: Non-selected connectors anchored to selected shapes (external)
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind !== 'shape' && handle.kind !== 'text') continue;
+      // Determine if each endpoint moves
+      const startMoves = isSelected
+        ? (!startAnchor || selectedSet.has(startAnchor.id))
+        : (!!startAnchor && selectedSet.has(startAnchor.id));
+      const endMoves = isSelected
+        ? (!endAnchor || selectedSet.has(endAnchor.id))
+        : (!!endAnchor && selectedSet.has(endAnchor.id));
 
-      const connectors = getConnectorsForShape(id);
-      if (!connectors) continue;
+      if (!startMoves && !endMoves) return;
 
-      for (const connId of connectors) {
-        if (entries.has(connId)) continue;
-        const connHandle = snapshot.objectsById.get(connId);
-        if (!connHandle) continue;
+      const points = getPoints(connHandle.y);
+      const originalPoints: [number, number][] = points.length > 0
+        ? points as [number, number][]
+        : [((getStart(connHandle.y) ?? [0, 0]) as [number, number]), ((getEnd(connHandle.y) ?? [0, 0]) as [number, number])];
+      const originalBbox = bboxTupleToWorldBounds(connHandle.bbox);
 
-        const sa = getStartAnchor(connHandle.y);
-        const ea = getEndAnchor(connHandle.y);
-        entries.set(connId, {
-          connectorId: connId,
-          isSelected: false,
-          prevBbox: bboxTupleToWorldBounds(connHandle.bbox),
-          currentPoints: null,
-          currentBbox: null,
-          startIsAnchored: !!sa,
-          endIsAnchored: !!ea,
-          originalStart: (getStart(connHandle.y) ?? [0, 0]) as [number, number],
-          originalEnd: (getEnd(connHandle.y) ?? [0, 0]) as [number, number],
+      // Determine strategy
+      if (transformKind === 'translate' && startMoves && endMoves) {
+        // Both endpoints move together → translateOnly
+        entries.push({
+          connectorId: connId, strategy: 'translate',
+          originalPoints, originalBbox, startSpec: null, endSpec: null,
         });
+        translateIdSet.add(connId);
+      } else {
+        // At least one endpoint needs rerouting — compute specs inline
+        const startSpec: EndpointSpec =
+          (startAnchor && selectedSet.has(startAnchor.id)) ? startAnchor.id :
+          (!startAnchor && isSelected) ? true : null;
+        const endSpec: EndpointSpec =
+          (endAnchor && selectedSet.has(endAnchor.id)) ? endAnchor.id :
+          (!endAnchor && isSelected) ? true : null;
+
+        entries.push({
+          connectorId: connId, strategy: 'reroute',
+          originalPoints, originalBbox, startSpec, endSpec,
+        });
+      }
+    };
+
+    // Pass 1: Selected connectors
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (handle?.kind === 'connector') {
+        processConnector(id, true);
       }
     }
 
-    return entries.size > 0 ? { entries } : null;
+    // Pass 2: Non-selected connectors anchored to selected shapes
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+      const connectors = getConnectorsForShape(id);
+      if (!connectors) continue;
+      for (const connId of connectors) {
+        processConnector(connId, selectedSet.has(connId));
+      }
+    }
+
+    if (entries.length === 0) return;
+
+    // Collect original frames for all selected shapes (for frame overrides)
+    for (const id of selectedIds) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+      const frame = getFrame(handle.y);
+      if (frame) originalFrames.set(id, frame);
+    }
+
+    // Pre-allocate mutable caches
+    const reroutes = new Map<string, [number, number][] | null>();
+    const prevBboxes = new Map<string, WorldBounds>();
+    for (const entry of entries) {
+      if (entry.strategy === 'reroute') {
+        reroutes.set(entry.connectorId, null);
+        prevBboxes.set(entry.connectorId, entry.originalBbox);
+      }
+    }
+
+    const topology: ConnectorTopology = {
+      entries,
+      translateIdSet,
+      originalFrames,
+      reroutes,
+      prevBboxes,
+    };
+    useSelectionStore.getState().setConnectorTopology(topology);
+  }
+
+  /**
+   * Compute a transformed frame for a shape, matching the transform logic.
+   */
+  private transformFrame(
+    frame: FrameTuple,
+    transform: { kind: string; dx?: number; dy?: number; origin?: [number, number]; scaleX?: number; scaleY?: number; selectionKind?: SelectionKind; handleKind?: HandleKind; originBounds?: WorldBounds }
+  ): FrameTuple {
+    if (transform.kind === 'translate') {
+      const { dx = 0, dy = 0 } = transform;
+      return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    }
+
+    const { origin, scaleX = 1, scaleY = 1, selectionKind, handleKind, originBounds } = transform;
+    if (selectionKind === 'mixed' && handleKind === 'corner' && originBounds && origin) {
+      return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+    }
+    if (origin) {
+      return applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
+    }
+    return frame;
   }
 
   /**
    * Transform a free endpoint position using the current translate/scale transform.
-   * Matches the transform logic used for shapes/strokes in each context.
    */
-  private transformFreeEndpoint(
+  private transformPosition(
     position: [number, number],
     transform: TranslateTransform | ScaleTransform
   ): [number, number] {
@@ -1153,7 +1243,6 @@ export class SelectTool implements PointerTool {
     const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
 
     if (selectionKind === 'mixed' && handleKind === 'corner') {
-      // Uniform scale with position preservation (matches stroke/shape behavior)
       const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
       return computePreservedPosition(position[0], position[1], originBounds, origin, uniformScale);
     }
@@ -1164,91 +1253,6 @@ export class SelectTool implements PointerTool {
       ox + (position[0] - ox) * scaleX,
       oy + (position[1] - oy) * scaleY,
     ];
-  }
-
-  /**
-   * Compute endpoint overrides for free (non-anchored) endpoints of a connector.
-   * Returns null if no overrides are needed (both endpoints are anchored or connector is not selected).
-   */
-  private computeFreeEndpointOverrides(
-    entry: ConnectorUpdateEntry,
-    transform: TranslateTransform | ScaleTransform
-  ): { start?: [number, number]; end?: [number, number] } | null {
-    const { startIsAnchored, endIsAnchored, originalStart, originalEnd, isSelected } = entry;
-
-    let startOverride: [number, number] | undefined;
-    let endOverride: [number, number] | undefined;
-
-    // Free endpoints of selected connectors get transformed
-    if (!startIsAnchored && isSelected) {
-      startOverride = this.transformFreeEndpoint(originalStart, transform);
-    }
-    if (!endIsAnchored && isSelected) {
-      endOverride = this.transformFreeEndpoint(originalEnd, transform);
-    }
-
-    if (!startOverride && !endOverride) return null;
-    const result: { start?: [number, number]; end?: [number, number] } = {};
-    if (startOverride) result.start = startOverride;
-    if (endOverride) result.end = endOverride;
-    return result;
-  }
-
-  /**
-   * Reroute all connectors affected by the current translate/scale transform.
-   * Builds frame overrides from the current transform state and endpoint overrides
-   * for free endpoints, then calls rerouteConnector for each entry.
-   */
-  private rerouteAffectedConnectors(): void {
-    const transform = useSelectionStore.getState().transform;
-    if (transform.kind !== 'translate' && transform.kind !== 'scale') return;
-
-    const connectorContext = transform.connectorContext;
-    if (!connectorContext) return;
-
-    const snapshot = getCurrentSnapshot();
-    const { selectedIds } = useSelectionStore.getState();
-
-    // Build frameOverrides for all selected shapes
-    const frameOverrides = new Map<string, FrameTuple>();
-
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind !== 'shape' && handle.kind !== 'text') continue;
-
-      const frame = getFrame(handle.y);
-      if (!frame) continue;
-
-      if (transform.kind === 'translate') {
-        const { dx, dy } = transform;
-        frameOverrides.set(id, [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
-      } else {
-        // Scale: compute transformed frame matching commitScale logic
-        const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
-
-        if (selectionKind === 'mixed' && handleKind === 'corner') {
-          const newFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
-          frameOverrides.set(id, newFrame);
-        } else {
-          const newFrame = applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
-          frameOverrides.set(id, newFrame);
-        }
-      }
-    }
-
-    // Reroute each affected connector with endpoint overrides for free endpoints
-    for (const [connId, entry] of connectorContext.entries) {
-      const endpointOverrides = this.computeFreeEndpointOverrides(entry, transform) ?? undefined;
-      const result = rerouteConnector(connId, frameOverrides, endpointOverrides);
-      if (result) {
-        invalidateWorld(entry.prevBbox);
-        invalidateWorld(result.bbox);
-        entry.currentPoints = result.points;
-        entry.currentBbox = result.bbox;
-        entry.prevBbox = result.bbox;
-      }
-    }
   }
 
   /**

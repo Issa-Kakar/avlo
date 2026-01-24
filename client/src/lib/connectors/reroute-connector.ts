@@ -2,11 +2,12 @@
  * High-Level Connector Rerouting API for SelectTool
  *
  * Provides a simplified interface for rerouting connectors with optional overrides.
- * Reads connector data from Y.map and applies frame/endpoint overrides as needed.
+ * Reads connector data from Y.map and applies per-endpoint overrides as needed.
  *
- * Two orthogonal override mechanisms:
- * 1. frameOverrides: Map of shapeId → FrameTuple (for shapes being transformed)
- * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
+ * Override types per endpoint:
+ * - SnapTarget: snap to shape edge (has shapeId property)
+ * - [x, y]: free position override
+ * - { frame: FrameTuple }: apply anchor to a transformed frame
  *
  * @module lib/connectors/reroute-connector
  */
@@ -22,6 +23,14 @@ import {
 import type { Dir, AABB, SnapTarget } from './types';
 
 /**
+ * Endpoint override value for rerouteConnector.
+ * - SnapTarget: snap to shape edge (has shapeId property)
+ * - [x, y]: free position override
+ * - { frame: FrameTuple }: apply anchor to a transformed frame
+ */
+export type EndpointOverrideValue = SnapTarget | [number, number] | { frame: FrameTuple };
+
+/**
  * Result of a connector reroute operation.
  */
 export interface RerouteResult {
@@ -32,28 +41,21 @@ export interface RerouteResult {
 }
 
 /**
- * Reroute a connector with optional overrides.
- *
- * Two orthogonal override mechanisms:
- * 1. frameOverrides: Map of shapeId → FrameTuple (for shapes being transformed)
- * 2. endpointOverrides: Direct endpoint override (SnapTarget or [x,y] position)
+ * Reroute a connector with optional per-endpoint overrides.
  *
  * Resolution per endpoint:
- *   1. endpointOverrides.start/end (if provided) - direct override wins
- *   2. frameOverrides.get(anchor.id) (if anchored) - shape is transforming
- *   3. Y.map data - default
+ *   1. endpointOverrides.start/end (if provided) - override wins
+ *   2. Y.map stored anchor data - default
  *
  * @param connectorId - Connector ID in Y.Doc
- * @param frameOverrides - Temporary frame overrides for shapes being transformed
- * @param endpointOverrides - Direct endpoint overrides (snap or free position)
+ * @param endpointOverrides - Per-endpoint overrides (snap, free position, or frame)
  * @returns RerouteResult with points and bbox, or null if connector not found
  */
 export function rerouteConnector(
   connectorId: string,
-  frameOverrides?: Map<string, FrameTuple>,
   endpointOverrides?: {
-    start?: SnapTarget | [number, number];
-    end?: SnapTarget | [number, number];
+    start?: EndpointOverrideValue;
+    end?: EndpointOverrideValue;
   }
 ): RerouteResult | null {
   const snapshot = getCurrentSnapshot();
@@ -77,7 +79,6 @@ export function rerouteConnector(
     'start',
     storedStart,
     startAnchor,
-    frameOverrides,
     endpointOverrides?.start,
     strokeWidth,
     snapshot
@@ -88,7 +89,6 @@ export function rerouteConnector(
     'end',
     storedEnd,
     endAnchor,
-    frameOverrides,
     endpointOverrides?.end,
     strokeWidth,
     snapshot
@@ -133,77 +133,74 @@ interface ResolvedEndpoint {
  * Resolve a single endpoint with overrides applied.
  *
  * Resolution priority:
- * 1. Direct override (SnapTarget or position array)
- * 2. Shape frame override (anchored endpoint with transforming shape)
- * 3. Stored Y.map data
+ * 1. Override (SnapTarget, [x,y] position, or { frame })
+ * 2. Stored Y.map anchor/position data
  */
 function resolveEndpoint(
   _which: 'start' | 'end',
   storedPosition: [number, number],
   anchor: StoredAnchor | undefined,
-  frameOverrides: Map<string, FrameTuple> | undefined,
-  override: SnapTarget | [number, number] | undefined,
+  override: EndpointOverrideValue | undefined,
   _strokeWidth: number,
   snapshot: ReturnType<typeof getCurrentSnapshot>
 ): ResolvedEndpoint {
-  // 1. Direct override wins
+  // 1. Override wins
   if (override !== undefined) {
-    // Discriminate: array = free position, object = SnapTarget
+    // Discriminate override type:
     if (Array.isArray(override)) {
-      // Free position override
+      // [x, y] — free position override
       return {
         position: override,
-        dir: null, // Will be computed from spatial relationship
+        dir: null,
         shapeBounds: null,
         isAnchored: false,
       };
-    } else {
-      // SnapTarget override
-      const snap = override as SnapTarget;
-      const handle = snapshot.objectsById.get(snap.shapeId);
-      const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
-        ? getFrame(handle.y)
-        : null;
+    }
 
+    if ('frame' in override) {
+      // { frame: FrameTuple } — apply anchor to given transformed frame
+      if (!anchor) {
+        // No anchor data → treat as canonical stored position
+        return {
+          position: storedPosition,
+          dir: null,
+          shapeBounds: null,
+          isAnchored: false,
+        };
+      }
+      const pos = applyAnchorToFrame(anchor.anchor, override.frame, anchor.side);
       return {
-        position: snap.position,
-        dir: snap.side,
-        shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
+        position: pos,
+        dir: anchor.side,
+        shapeBounds: { x: override.frame[0], y: override.frame[1], w: override.frame[2], h: override.frame[3] },
         isAnchored: true,
       };
     }
+
+    // SnapTarget (has shapeId property)
+    const snap = override as SnapTarget;
+    const handle = snapshot.objectsById.get(snap.shapeId);
+    const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
+      ? getFrame(handle.y)
+      : null;
+
+    return {
+      position: snap.position,
+      dir: snap.side,
+      shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
+      isAnchored: true,
+    };
   }
 
-  // 2. Check if anchored and shape has frame override
+  // 2. No override — use stored anchor/position data
   if (anchor) {
-    const overrideFrame = frameOverrides?.get(anchor.id);
-    if (overrideFrame) {
-      // Shape is being transformed - apply anchor to override frame
-      const position = applyAnchorToFrame(
-        anchor.anchor,
-        overrideFrame,
-        anchor.side
-      );
-      return {
-        position,
-        dir: anchor.side,
-        shapeBounds: { x: overrideFrame[0], y: overrideFrame[1], w: overrideFrame[2], h: overrideFrame[3] },
-        isAnchored: true,
-      };
-    }
-
-    // 3. Use stored anchor data with current shape frame
     const handle = snapshot.objectsById.get(anchor.id);
     const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
       ? getFrame(handle.y)
       : null;
 
     if (frame) {
-      const position = applyAnchorToFrame(
-        anchor.anchor,
-        frame,
-        anchor.side
-      );
+      const position = applyAnchorToFrame(anchor.anchor, frame, anchor.side);
       return {
         position,
         dir: anchor.side,
@@ -221,7 +218,7 @@ function resolveEndpoint(
     };
   }
 
-  // 4. Free endpoint - use stored position
+  // 3. Free endpoint - use stored position
   return {
     position: storedPosition,
     dir: null,

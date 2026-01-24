@@ -79,16 +79,22 @@ export function processConnectorUpdated(connectorId: string, yObj: Y.Map<unknown
   const oldStartId = old?.startId ?? null;
   const oldEndId = old?.endId ?? null;
 
-  // Update start anchor if changed
-  if (oldStartId !== newStartId) {
-    if (oldStartId) removeConnectorFromShape(oldStartId, connectorId);
-    if (newStartId) addConnectorToShape(newStartId, connectorId);
+  // Compute unique shape sets (handles self-loop: both anchors → same shape)
+  const oldShapes = uniqueShapeIds(oldStartId, oldEndId);
+  const newShapes = uniqueShapeIds(newStartId, newEndId);
+
+  // Remove from shapes no longer referenced
+  for (const shapeId of oldShapes) {
+    if (!newShapes.has(shapeId)) {
+      removeConnectorFromShape(shapeId, connectorId);
+    }
   }
 
-  // Update end anchor if changed
-  if (oldEndId !== newEndId) {
-    if (oldEndId) removeConnectorFromShape(oldEndId, connectorId);
-    if (newEndId) addConnectorToShape(newEndId, connectorId);
+  // Add to newly referenced shapes
+  for (const shapeId of newShapes) {
+    if (!oldShapes.has(shapeId)) {
+      addConnectorToShape(shapeId, connectorId);
+    }
   }
 
   // Update tracking state
@@ -129,6 +135,14 @@ function registerConnectorAnchors(connectorId: string, yObj: Y.Map<unknown>): vo
 
   if (startId) addConnectorToShape(startId, connectorId);
   if (endId) addConnectorToShape(endId, connectorId);
+}
+
+/** Deduplicate anchor IDs into a unique set (handles self-loop correctly). */
+function uniqueShapeIds(startId: string | null, endId: string | null): Set<string> {
+  const set = new Set<string>();
+  if (startId) set.add(startId);
+  if (endId) set.add(endId);
+  return set;
 }
 
 function addConnectorToShape(shapeId: string, connectorId: string): void {

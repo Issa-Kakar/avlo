@@ -441,33 +441,631 @@ When dragging the selected connector in connector mode (`mode === 'connector'`):
 
 ---
 
+## Phase 5: Connector Transform Refactoring — Per-Endpoint Overrides, TranslateOnly, Unified Invalidation
+
+---
+
+### Overview
+
+Consolidates fragmented invalidation logic, splits immutable topology from mutable render cache, adds translate optimization for fully-moving connectors, eliminates the per-frame `frameOverrides` Map via per-endpoint override encoding, and unifies dirty-rect computation into a single `invalidateTransformPreview()` call.
+
+**Architectural principle:** Encode the *why* (which endpoint moves, and how) at begin time via typed override fields. At each frame, `resolveOverride()` applies the current transform scalars to these precomputed overrides — no Map rebuilding, no re-iteration of selectedIds.
+
+---
+
+### 14. `client/src/lib/connectors/reroute-connector.ts`
+
+#### API Signature Change
+
+```typescript
+// BEFORE (3 params, 2 orthogonal override mechanisms):
+rerouteConnector(
+  connectorId: string,
+  frameOverrides?: Map<string, FrameTuple>,
+  endpointOverrides?: { start?: SnapTarget | [number, number]; end?: SnapTarget | [number, number] }
+)
+
+// AFTER (2 params, unified per-endpoint overrides):
+rerouteConnector(
+  connectorId: string,
+  endpointOverrides?: { start?: EndpointOverrideValue; end?: EndpointOverrideValue }
+)
+```
+
+#### New Type Exported
+
+```typescript
+export type EndpointOverrideValue = SnapTarget | [number, number] | { frame: FrameTuple };
+```
+
+Three discriminated cases:
+- `Array.isArray(override)` → free position `[x, y]` (no anchor, dir computed from spatial relationship)
+- `'frame' in override` → `{ frame: FrameTuple }` (apply stored anchor to a transformed frame — replaces the old frameOverrides Map lookup)
+- Otherwise → `SnapTarget` (has `shapeId` property — existing logic unchanged)
+
+#### `resolveEndpoint()` Rewritten
+
+**Before:** 3-priority resolution:
+1. Direct override (SnapTarget or `[x,y]`)
+2. `frameOverrides.get(anchor.id)` (Map lookup)
+3. Y.Map stored data
+
+**After:** 2-priority resolution:
+1. Override (discriminated: `[x,y]` / `{ frame }` / SnapTarget)
+2. Y.Map stored data
+
+The `{ frame }` discrimination replaces the old `frameOverrides?.get(anchor.id)` lookup. The override value now carries its own frame rather than requiring a shared Map across all connectors.
+
+#### Module Doc Comment Updated
+
+Reflects the new per-endpoint override design. Removed references to "two orthogonal override mechanisms."
+
+---
+
+### 15. `client/src/stores/selection-store.ts`
+
+#### Types Removed
+
+- `ConnectorUpdateEntry` interface (15 fields — replaced by typed entries in SelectTool)
+- `ConnectorTransformContext` interface (single `entries` Map — eliminated)
+
+#### Fields Removed from Transform Types
+
+- `TranslateTransform.connectorContext` → removed
+- `ScaleTransform.connectorContext` → removed
+
+These fields coupled per-frame mutable routing state (currentPoints, prevBbox) into an immutable store object, causing confusion about what was reactive vs mutated-in-place.
+
+#### New Type Added
+
+```typescript
+export interface ConnectorRerouteState {
+  translateIdSet: Set<string>;                       // O(1): is this connector translateOnly?
+  reroutes: Map<string, [number, number][] | null>;  // connectorId → rerouted points (mutable cache)
+}
+```
+
+**Design:** `translateIdSet` is immutable after begin (set once). `reroutes` is mutated in-place each frame by `invalidateTransformPreview()` — the store reference doesn't change, avoiding Zustand re-renders on pointer moves.
+
+#### New State Field
+
+```typescript
+interface SelectionState {
+  // ...existing...
+  connectorReroutes: ConnectorRerouteState | null;  // Active during translate/scale only
+}
+```
+
+#### New Action
+
+```typescript
+setConnectorReroutes: (state: ConnectorRerouteState | null) => void;
+```
+
+Called by `buildConnectorTopology()` at transform begin.
+
+#### Lifecycle
+
+- `beginTranslate` / `beginScale`: signature simplified (no `connectorContext` param). `connectorReroutes` set separately by `buildConnectorTopology()`.
+- `endTransform` / `cancelTransform` / `setSelection` / `clearSelection`: all clear `connectorReroutes: null`.
+
+---
+
+### 16. `client/src/lib/tools/SelectTool.ts`
+
+#### New Types (Module-Level)
+
+```typescript
+// Per-endpoint override encoding:
+//   null   = canonical (endpoint stays at Y.Map stored value)
+//   string = frame override (value is shapeId whose frame to transform)
+//   true   = free position override (apply transform to originalPoints position)
+type EndpointOverride = string | true | null;
+
+interface ConnectorRerouteEntry {
+  connectorId: string;
+  originalPoints: [number, number][];  // [0] = startPos, .at(-1) = endPos
+  originalBbox: WorldBounds;
+  startOverride: EndpointOverride;
+  endOverride: EndpointOverride;
+}
+
+interface ConnectorTranslateEntry {
+  connectorId: string;
+  originalPoints: [number, number][];  // For commit (offset all points)
+  originalBbox: WorldBounds;           // For envelope inclusion
+}
+```
+
+#### New Instance Fields
+
+```typescript
+private connectorRerouteEntries: ConnectorRerouteEntry[] | null = null;
+private connectorTranslateEntries: ConnectorTranslateEntry[] | null = null;
+private connectorOriginalFrames: Map<string, FrameTuple> | null = null;
+private connectorPrevBboxes: Map<string, WorldBounds> | null = null;
+```
+
+All set at begin, cleared at end/cancel via `resetState()`.
+
+#### `buildConnectorContext()` → `buildConnectorTopology(transformKind)`
+
+**Signature:** `private buildConnectorTopology(transformKind: 'translate' | 'scale'): void`
+
+**Called after** `beginTranslate()` / `beginScale()` (not passed as param — sets up store separately).
+
+**Strategy determination per connector:**
+
+| Transform | Both endpoints move? | Classification |
+|-----------|---------------------|----------------|
+| Translate | Yes | TranslateOnly (ctx.translate on cached Path2D) |
+| Translate | No (one or neither) | Reroute (A* each frame) |
+| Scale | Always | Reroute |
+
+**Endpoint "moves" if:**
+- Selected connector: `!anchor || selectedSet.has(anchor.id)` (free moves, anchored-to-selected moves)
+- Non-selected connector: `!!anchor && selectedSet.has(anchor.id)` (only anchored-to-selected moves)
+
+**Per-endpoint override computation via `computeEndpointOverride()`:**
+
+| Endpoint State | Override Value |
+|---|---|
+| Anchored + shape selected | `anchor.id` (string → frame override) |
+| Free + connector selected | `true` (free position override) |
+| Anchored + shape NOT selected | `null` (canonical) |
+| Free + connector NOT selected | `null` (canonical) |
+
+**Also caches:** `connectorOriginalFrames` = Map of selected shape/text IDs → their current Y.Map frame. Read once at begin, never re-read from Y.Map during gesture.
+
+#### `resolveOverride()` — New Private Method
+
+```typescript
+private resolveOverride(
+  override: EndpointOverride,
+  originalPos: [number, number],
+  transform: TranslateTransform | ScaleTransform
+): EndpointOverrideValue | undefined
+```
+
+Converts the precomputed `EndpointOverride` to the runtime `EndpointOverrideValue` consumed by `rerouteConnector`:
+- `null` → `undefined` (no override, use canonical Y.Map data)
+- `true` → `this.transformFreeEndpoint(originalPos, transform)` → `[x, y]`
+- `string` (shapeId) → `{ frame: this.computeTransformedFrame(origFrame, transform) }`
+
+**Key insight:** The per-frame cost is just a frame transform (4-element arithmetic) per anchored endpoint, and a position transform (2-element arithmetic) per free endpoint. No Map construction, no selectedIds iteration.
+
+#### `computeTransformedFrame()` — New Private Method
+
+Applies the current transform to a cached original frame, matching commit-time logic:
+- Translate: `[x + dx, y + dy, w, h]`
+- Scale (mixed + corner): `applyUniformScaleToFrame()`
+- Scale (other): `applyTransformToFrame({ kind: 'scale', ... })`
+
+#### `invalidateTransformPreview()` — Unified
+
+**Replaces** both the old `rerouteAffectedConnectors()` AND the old `invalidateTransformPreview()`.
+
+Three steps in one method:
+
+1. **Reroute connectors:** for each `connectorRerouteEntries`, compute overrides via `resolveOverride()`, call `rerouteConnector()`, update `connectorReroutes.reroutes` Map in-place, expand envelope with prev + current bbox.
+
+2. **Compute shape/stroke envelope:** unchanged per-object bounds logic. For translate: also expands with translateOnly connector bboxes. For scale: also includes original bboxes of reroute entries.
+
+3. **Single invalidation:** `invalidateWorld(this.transformEnvelope)` — one call, one dirty rect.
+
+#### Move Handlers Simplified
+
+```typescript
+case 'translate':
+  updateTranslate(dx, dy);
+  this.invalidateTransformPreview();  // Does rerouting + dirty rect in one call
+  break;
+
+case 'scale':
+  updateScale(scaleX, scaleY);
+  this.invalidateTransformPreview();  // Same unified path
+  break;
+```
+
+No more separate `rerouteAffectedConnectors()` call.
+
+#### `commitTranslate()` — Rewritten
+
+**Signature:** `(selectedIds, dx, dy, rerouteEntries, translateEntries, connectorReroutes)`
+
+- Skips connectors handled by topology entries (checked via `handledConnectorIds` Set)
+- **TranslateOnly entries:** offsets `originalPoints` by `(dx, dy)` → writes points/start/end
+- **Reroute entries:** reads final `connectorReroutes.reroutes.get(id)` → writes points/start/end
+- Safety fallback for untracked free connectors (shouldn't happen)
+
+#### `commitScale()` — Rewritten
+
+**Signature:** `(selectedIds, origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds, rerouteEntries, connectorReroutes)`
+
+- Strokes: inline uniform scale computation (no `applyUniformScaleToPoints` dependency — computes center, scale factor, position preservation inline)
+- All reroute entries: writes from `connectorReroutes.reroutes` Map
+
+#### `endpointDrag` Move Handler Updated
+
+- `rerouteConnector(connectorId, endpointOverride)` — now 2-arg call
+- Override typed as `EndpointOverrideValue` (was `SnapTarget | [number, number]`)
+
+#### Methods Removed
+
+- `buildConnectorContext()` — replaced by `buildConnectorTopology()`
+- `rerouteAffectedConnectors()` — logic moved into `invalidateTransformPreview()`
+- `computeFreeEndpointOverrides()` — replaced by `EndpointOverride` encoding at begin time
+
+#### Import Changes
+
+- Removed: `applyUniformScaleToPoints` (inlined in commitScale)
+- Removed: `ConnectorTransformContext`, `ConnectorUpdateEntry` (types deleted)
+- Added: `ConnectorRerouteState` from selection-store
+- Added: `EndpointOverrideValue` from reroute-connector
+- Added: `WorldBounds` type from `@avlo/shared`
+
+---
+
+### 17. `client/src/renderer/layers/objects.ts`
+
+#### `drawObjects()` — Reads `connectorReroutes` from Store
+
+```typescript
+const connReroutes = selectionState.connectorReroutes;
+```
+
+Replaces old `connectorContext` read from `transform.connectorContext`.
+
+#### Translate Block — TranslateOnly + Reroute Paths
+
+**Selected connector during translate:**
+```typescript
+if (connReroutes?.translateIdSet.has(handle.id)) {
+  // TranslateOnly: cached Path2D + ctx.translate (same as shapes)
+  ctx.translate(transform.dx, transform.dy);
+  drawObject(ctx, handle);
+} else {
+  // Rerouted: draw from fresh points
+  const points = connReroutes?.reroutes.get(handle.id);
+  if (points) drawConnectorFromPoints(ctx, handle, points);
+  else drawObject(ctx, handle); // Fallback
+}
+```
+
+#### Scale Block — Reroute Only
+
+`renderSelectedObjectWithScaleTransform()` signature updated:
+- **Old param:** `connectorContext: ConnectorTransformContext | null`
+- **New param:** `connReroutes: ConnectorRerouteState | null`
+
+Connector branch reads `connReroutes?.reroutes.get(handle.id)` instead of `connectorContext?.entries.get(handle.id)?.currentPoints`.
+
+#### Non-Selected Connector Override
+
+```typescript
+if (handle.kind === 'connector' && connReroutes) {
+  const points = connReroutes.reroutes.get(entry.id);
+  if (points) drawConnectorFromPoints(ctx, handle, points);
+  else drawObject(ctx, handle);
+}
+```
+
+External connectors (anchored to selected shapes) render from rerouted points without needing to check `isSelected`.
+
+#### Imports Cleaned
+
+- Removed: `getStartAnchor`, `getEndAnchor` (no longer needed in render logic)
+- Removed: `ConnectorTransformContext` type
+- Added: `ConnectorRerouteState` type
+
+---
+
+### Debt Resolved by This Phase
+
+| Debt Item (from Phase 4) | Resolution |
+|---|---|
+| `rerouteAffectedConnectors` rebuilds frameOverrides every frame | `connectorOriginalFrames` cached at begin; `resolveOverride` applies transform to cached frames |
+| No translate optimization for fully-selected connectors | `ConnectorTranslateEntry` + `translateIdSet` — ctx.translate on cached Path2D, skip A* entirely |
+| Individual `invalidateWorld()` per connector in reroute loop | Unified envelope in `invalidateTransformPreview()` — single `invalidateWorld()` call |
+| Rerouting and invalidation split across phases | Both happen in `invalidateTransformPreview()` — reroute first, envelope second, invalidate once |
+| GC pressure from per-frame object allocation | No more per-frame frameOverrides Map, no computeFreeEndpointOverrides allocation. `resolveOverride` still allocates `{ frame }` objects — addressable with pooling later |
+| `rerouteConnector` vs `rerouteAffectedConnectors` duplication | `rerouteAffectedConnectors` removed. SelectTool calls `rerouteConnector` directly with precomputed `EndpointOverrideValue` |
+
+---
+
 ## Known Technical Debt
 
-- **Duplicate `'endpointDrag'` identifier:** exists as both a `Phase` value in SelectTool's local state machine (`type Phase = 'idle' | ... | 'endpointDrag'`) AND as a `TransformState.kind` in the selection store (`EndpointDragTransform`). These are conceptually distinct (tool gesture phase vs. store transform state) but the name collision creates confusion when reading the code.
-- **`rerouteAffectedConnectors` rebuilds frameOverrides every frame:** the map of `shapeId → transformedFrame` is reconstructed on each move. Should cache the selectedIds→frame mapping at begin and only apply the current transform delta to those frames. The shape IDs don't change during a gesture — only the transform values change.
-- **No translate optimization for fully-selected connectors:** when both endpoints of a connector are selected and the transform is a translate, the connector path is identical (just offset). Currently we still run full A* routing. Should detect this case and either: (a) exclude from context entirely and use `ctx.translate()` like shapes, or (b) short-circuit the reroute to simple point offset.
-- **Individual `invalidateWorld()` per connector in reroute loop:** each connector calls `invalidateWorld(prevBbox)` + `invalidateWorld(resultBbox)` separately. Should accumulate all connector dirty bounds first, then issue a single `invalidateWorld(unionOfAll)`. Current approach creates many small dirty rects that get promoted to full clear via `MAX_RECT_COUNT`.
-- **Rerouting and invalidation split across phases:** `rerouteAffectedConnectors()` is called from the state machine's translate/scale move handlers. The render invalidation for connectors happens inside that method, while invalidation for shapes/strokes happens in `invalidateTransformPreview()`. These two invalidation paths should be unified — `invalidateTransformPreview()` should handle ALL dirty rect computation (shapes + connectors) in one pass.
-- **GC pressure from per-frame object allocation:** `computeFreeEndpointOverrides` allocates `{ start, end }` objects, `transformFreeEndpoint` allocates `[x, y]` tuples, and `rerouteAffectedConnectors` allocates `frameOverrides` Map every frame. For 60fps transforms, this creates significant GC churn. Should reuse pre-allocated buffers.
-- **Connector disappearance on axis flip in connectorsOnly scale:** the `invalidateTransformPreview` now includes connectors for `connectorsOnly` kind, but axis flips still cause the connector to visually disappear until a full redraw (zoom out). No stale pixels left behind — suggests the NEW bbox position isn't being properly invalidated/cleared. Needs deeper investigation into the envelope accumulation pattern for connectors during scale flips.
-- **`rerouteConnector` vs `rerouteAffectedConnectors` duplication:** both functions build similar routing contexts. `rerouteAffectedConnectors` calls `rerouteConnector` per-connector but constructs frameOverrides externally. Could be merged: `rerouteConnector` could accept a pre-built override context instead of rebuilding endpoint resolution per call. Or: move the frame+endpoint override computation into the reroute module itself so the SelectTool just passes the transform state.
+### Critical — Incorrect Behavior
+
+- **Self-anchored connectors (both endpoints to same shape):** When a connector has both start AND end anchored to the same shape, and that shape is selected+translated, `buildConnectorTopology` correctly classifies this as translateOnly (both endpoints move). However, the commit path writes offset `originalPoints` which is semantically wrong — the connector should be re-routed around the new shape position since both endpoints are ON the shape edge. The translateOnly optimization assumes the path topology is unchanged, but a self-anchored connector's path is shaped BY the shape it wraps around. Should be classified as reroute with both overrides = shape's frame.
+
+- **Selected anchored connector with non-selected shape — visual disconnect:** If a connector is selected but its anchor shape(s) are NOT selected, `buildConnectorTopology` skips it (neither endpoint "moves" from the topology's perspective). During translate, the render code falls through to `drawObject(ctx, handle)` — drawing at the cached original position. The connector visually stays behind while the selection box moves. Old code used `ctx.translate` which was also wrong (showed connector disconnected from shape). Correct behavior: anchored connectors whose anchor shapes are not in the selection should NOT participate in the translate at all. The selection should be adjusted to exclude them, or the translate should skip them and leave them at their canonical position (current behavior is accidental but correct — the visual desync of the selection box is the real problem).
+
+- **Connector disappearance on axis flip in connectorsOnly scale:** `invalidateTransformPreview` includes connector bboxes in the envelope for reroute entries, but axis flips during connectorsOnly scale still cause the connector to visually disappear until a full redraw. The envelope accumulates the original bbox but may not correctly expand to cover the post-flip routed path. Needs investigation into whether reroute actually produces valid points during flipped scale.
+
+### Architecture — Topology/Cache Split
+
+- **Immutable topology lives in SelectTool instance fields, not in store:** `connectorRerouteEntries`, `connectorTranslateEntries`, `connectorOriginalFrames` are all immutable after begin. They should be in the selection store so that `objects.ts` and future consumers can read topology metadata (e.g., which endpoint is overridden, what the original frame was) without coupling to the tool instance. The store should expose the full computed topology; the tool should only own the per-frame mutation of `reroutes` Map entries.
+
+- **`connectorReroutes.reroutes` mutated in-place without store notification:** The reroutes Map is mutated by `invalidateTransformPreview()` without calling `set()`. This is intentional (avoids re-renders) but means Zustand subscriptions never fire for reroute changes. The render loop reads via `getState()` (imperative, not reactive) which works, but if any React component ever needs reroute state, it won't get updates. Consider separating the store field (immutable topology) from a module-level cache (mutable points) accessible via getter.
+
+- **`connectorPrevBboxes` tracked as instance field:** This is mutable per-frame state (updated as reroutes produce new bboxes). It's only used inside `invalidateTransformPreview()` for envelope expansion. Could be a simple local Map within the method if the envelope pattern is correct, or should be part of the reroute cache if it needs to persist across frames (current design).
+
+### Performance
+
+- **`resolveOverride` allocates `{ frame: [...] }` objects per endpoint per frame:** For N connectors with anchored endpoints, allocates N objects per pointer move. Should pool or reuse a pre-allocated override object.
+
+- **`commitScale` inline stroke scaling re-computes center from points array:** Iterates all points to find centroid. Could cache centroid at begin time (original bbox center is a close approximation for most strokes).
+
+- **Duplicate `'endpointDrag'` identifier:** Still exists as both a `Phase` value in SelectTool's local state machine AND as a `TransformState.kind` in the selection store. Conceptually distinct but creates naming confusion.
 
 ---
 
 ## Not Yet Implemented / Next Steps
 
-### Correctness
-- **Axis flip investigation (connectorsOnly scale):** connector disappears on flip. Envelope pattern may need adjustment — connector bbox after flip may not be accumulating into the dirty rect. Need to trace whether the ACCUMULATE envelope includes the post-flip connector bbox.
-- **Endpoint dot overlay rendering:** draw anchor dots on overlay canvas for selected connectors in connector mode using `ANCHOR_DOT_CONFIG` from `constants.ts` for radius, colors, stroke styling (consistent with ConnectorTool's snap dots)
-- **Shape midpoint dots during endpoint drag:** when actively dragging an endpoint and snapped to a shape, draw that shape's midpoint positions as visual guides on overlay
-- **Remove bbox rendering in connector mode:** selection highlight (bbox rectangle) should NOT render for connectors when in connector mode — only render when selection becomes mixed (standard mode with connectors + other types)
-- **Commit diffing in `commitEndpointDrag`:** skip unnecessary Y.Doc writes if anchor ID is unchanged (only update if snap target changed from previous stored anchor — avoid dirty patches on no-op drags)
-- **Endpoint dot hit testing refinement:** when endpoint dots are visually drawn, hit test radius should match rendered dot size
+### Correctness — Connector Transform Edge Cases
 
-### Performance & Architecture
-- **Translate short-circuit for fully-moving connectors:** if both endpoints of a selected connector are free (or both anchored to selected shapes), the path shape doesn't change during translate — just offset all points. Skip A* and use `ctx.translate()` rendering (exclude from context, or add a `translateOnly` flag to the entry).
-- **Cache frameOverrides across frames:** build the `selectedShapeId → originalFrame` map once at `beginTranslate`/`beginScale`. On each move, apply the current `transform` to the cached original frames. Avoids re-iterating selectedIds and re-reading Y.Map frames every frame.
-- **Unified invalidation in `invalidateTransformPreview`:** move all connector dirty rect accumulation into `invalidateTransformPreview()`. The reroute function should only compute new points/bbox and update entries — NOT call `invalidateWorld()` itself. `invalidateTransformPreview` then reads the entry bboxes and unions them into the envelope.
-- **Batch rerouting before invalidation:** route all connectors first, collect all bbox changes, THEN issue `invalidateWorld(envelope)` once. Current per-connector invalidation creates many small rects.
-- **Reduce GC:** pre-allocate endpoint override objects, reuse `[x, y]` tuples across frames, consider mutable buffers for frame overrides map (clear + refill instead of new Map).
-- **Transform-driven rerouting:** the transform store actions (`updateTranslate`, `updateScale`) should trigger rerouting as a side effect, not the state machine's move handler. This decouples the reroute timing from the pointer event flow and makes the data flow clearer: store update → connector reroute → render invalidation.
+- **Self-anchored connector reclassification:** Both endpoints anchored to the same shape should be reroute (not translateOnly). The path wraps around the shape — translating the shape changes the routing context. `buildConnectorTopology` should detect `startAnchor.id === endAnchor.id` and force reroute classification even when both endpoints "move."
+
+- **Selection filtering for untranslatable connectors:**
+- **Endpoint dot overlay rendering:** draw anchor dots on overlay canvas for selected connectors in connector mode.
+- **Shape midpoint dots during endpoint drag:** visual guides when snapped to a shape.
+- **Remove bbox rendering in connector mode:** selection highlight should NOT render for connectors in connector mode.
+- **Commit diffing in `commitEndpointDrag`:** skip Y.Doc writes if anchor unchanged.
+- **Endpoint dot hit testing refinement:** radius should match rendered dot size.
+
+### Architecture — Store/Cache Redesign
+
+- **Move immutable topology into store:** The following should be computed at begin time and stored in `SelectionState` (not as SelectTool instance fields):
+  - `rerouteEntries: ConnectorRerouteEntry[]` (which connectors reroute, their overrides)
+  - `translateEntries: ConnectorTranslateEntry[]` (which connectors just translate)
+  - `originalFrames: Map<string, FrameTuple>` (cached shape frames for override computation)
+
+  This lets `objects.ts` and overlay rendering read topology without tool coupling.
+
+- **Separate mutable reroute cache from store:** The `reroutes: Map<string, [number, number][] | null>` should be a module-level cache (like `object-cache.ts` pattern) with a getter `getConnectorReroutePoints(id): [number, number][] | null`. The store field should only hold the immutable topology + `translateIdSet`. Render code checks `store.connectorReroutes` to know IF it should look up the cache, then reads the cache for the actual points.
+
+- **Store-computed topology derivation:** `buildConnectorTopology` logic (which connectors are affected, what their overrides are) is pure computation from selectedIds + snapshot. It should be computed inside the store action (or as a derived value) rather than in the tool. The tool's role is deciding WHEN to build (at begin), not HOW to build.
+
+### Performance
+
+- **Reduce GC in `resolveOverride`:** The returned `[x, y]` tuples and `{ frame }` objects are short-lived. Consider a frame-local buffer that's reused across the reroute loop iteration.
+
+---
+
+## Phase 6: Store-Owned Topology, Bug Fixes, Connector Lookup Fix
+
+---
+
+### Overview
+
+Migrates the connector topology from SelectTool instance fields to the selection store. Fixes two correctness bugs (non-selected translateOnly rendering, selected-but-static connector commit fallback) and a subtle self-loop bug in the connector lookup reverse map.
+
+**Principle:** The topology IS the source of truth. If a connector isn't in it, it doesn't move. Period.
+
+---
+
+### 18. `client/src/stores/selection-store.ts`
+
+#### Types Removed
+
+- `ConnectorRerouteState` interface (replaced by `ConnectorTopology`)
+
+#### Types Added
+
+```typescript
+type EndpointSpec = string | true | null;
+
+interface ConnectorTopologyEntry {
+  connectorId: string;
+  strategy: 'translate' | 'reroute';
+  originalPoints: [number, number][];
+  originalBbox: WorldBounds;
+  startSpec: EndpointSpec;   // only meaningful for 'reroute'
+  endSpec: EndpointSpec;     // only meaningful for 'reroute'
+}
+
+interface ConnectorTopology {
+  entries: ConnectorTopologyEntry[];
+  translateIdSet: Set<string>;
+  originalFrames: Map<string, FrameTuple>;
+  reroutes: Map<string, [number, number][] | null>;   // mutable per-frame cache
+  prevBboxes: Map<string, WorldBounds>;                // mutable per-frame cache
+}
+```
+
+**Design:** Unified entry array (translate + reroute) with strategy discriminant. Immutable structure allocated once at begin. `reroutes` and `prevBboxes` are pre-allocated Maps, `.set()` per frame with no new allocations.
+
+#### State Changes
+
+- `connectorReroutes: ConnectorRerouteState | null` → `connectorTopology: ConnectorTopology | null`
+
+#### Action Changes
+
+- `setConnectorReroutes(state)` → `setConnectorTopology(topology)`
+
+#### Import Added
+
+- `FrameTuple` from `@avlo/shared`
+
+---
+
+### 19. `client/src/renderer/layers/objects.ts`
+
+#### Bug 1 Fix — Non-Selected TranslateOnly Connectors
+
+**Problem:** Non-selected connectors classified as translateOnly (both anchors to selected shapes) were not in the `reroutes` Map — the non-selected branch only checked `reroutes`, so they fell through to `drawObject` at original position. On commit, topology wrote the offset → visual pop.
+
+**Fix:** Non-selected branch now checks `translateIdSet` for translate transforms:
+
+```typescript
+} else {
+  if (handle.kind === 'connector' && connTopology) {
+    if (transform.kind === 'translate' && connTopology.translateIdSet.has(entry.id)) {
+      ctx.save();
+      ctx.translate(transform.dx, transform.dy);
+      drawObject(ctx, handle);
+      ctx.restore();
+    } else {
+      const points = connTopology.reroutes.get(entry.id);
+      if (points) drawConnectorFromPoints(ctx, handle, points);
+      else drawObject(ctx, handle);
+    }
+  } else {
+    drawObject(ctx, handle);
+  }
+}
+```
+
+#### Import Changes
+
+- `ConnectorRerouteState` → `ConnectorTopology`
+
+#### Variable Renames
+
+- `connReroutes` → `connTopology` (reads from `selectionState.connectorTopology`)
+
+#### `renderSelectedObjectWithScaleTransform` — Param Updated
+
+- `connReroutes: ConnectorRerouteState | null` → `connTopology: ConnectorTopology | null`
+- Connector branch reads `connTopology?.reroutes.get(handle.id)`
+
+---
+
+### 20. `client/src/lib/tools/SelectTool.ts`
+
+#### Bug 2 Fix — Selected Anchored Connector Commit Fallback
+
+**Problem:** Connector selected, both anchors to non-selected shapes → `buildConnectorTopology` correctly skips (neither endpoint moves) → not in topology → `commitTranslate` per-object loop hits "safety fallback" → blindly offsets points → connector separates from shape.
+
+**Fix:** No fallback. Per-object loop skips ALL connectors (`if (handle.kind === 'connector') continue`). Connectors are written exclusively from topology entries.
+
+#### Types Removed (Module-Level)
+
+- `EndpointOverride` type
+- `ConnectorRerouteEntry` interface
+- `ConnectorTranslateEntry` interface
+
+#### Instance Fields Removed
+
+- `connectorRerouteEntries`
+- `connectorTranslateEntries`
+- `connectorOriginalFrames`
+- `connectorPrevBboxes`
+
+All topology data now lives in the store-owned `ConnectorTopology` object.
+
+#### Methods Removed
+
+- `computeEndpointOverride()` — inlined into `processConnector` closure
+- `resolveOverride()` — inlined into `invalidateTransformPreview`
+
+#### Methods Renamed
+
+- `computeTransformedFrame()` → `transformFrame()`
+- `transformFreeEndpoint()` → `transformPosition()`
+
+#### `buildConnectorTopology()` — Rewritten
+
+Now constructs a `ConnectorTopology` object and writes it to the store via `setConnectorTopology()`:
+
+- Builds unified `entries: ConnectorTopologyEntry[]` array (strategy + specs)
+- Pre-allocates `reroutes` and `prevBboxes` Maps for reroute entries
+- Collects `originalFrames` for selected shapes
+- Inline endpoint spec computation (was `computeEndpointOverride`)
+- No instance field writes — store is sole owner
+
+#### `invalidateTransformPreview()` — Reads Topology from Store
+
+Section 1 (connector topology) reads `store.connectorTopology`:
+- Iterates `topology.entries` where `strategy === 'reroute'`
+- Inlines override resolution: `typeof startSpec === 'string'` → frame override via `this.transformFrame()`, `startSpec === true` → position override via `this.transformPosition()`
+- TranslateOnly envelope expansion also iterates `topology.entries` where `strategy === 'translate'`
+
+Section 2 (shapes/strokes) simplified — removed the trailing `this.connectorRerouteEntries` original-bbox loop (now handled by prevBboxes in section 1).
+
+#### `commitTranslate()` — Simplified
+
+**Signature:** `(selectedIds, dx, dy, topology: ConnectorTopology | null)`
+
+- Per-object loop: ALL connectors skipped (`continue`)
+- Topology loop: iterates `topology.entries`, dispatches on `entry.strategy`
+  - `'translate'`: offsets `entry.originalPoints` by `(dx, dy)`
+  - `'reroute'`: writes `topology.reroutes.get(entry.connectorId)`
+
+No `handledConnectorIds` set. No fallback.
+
+#### `commitScale()` — Simplified
+
+**Signature:** last param changed from `(rerouteEntries, connectorReroutes)` → `topology: ConnectorTopology | null`
+
+- Per-object loop: ALL connectors skipped
+- Topology loop: iterates entries where `strategy === 'reroute'`, writes from `topology.reroutes`
+
+#### End Handlers — Capture Before Clear
+
+Both translate and scale end handlers:
+```typescript
+const { selectedIds, connectorTopology } = store;
+store.endTransform();  // clears topology
+this.commitTranslate(selectedIds, dx, dy, connectorTopology);  // uses captured ref
+```
+
+#### Import Changes
+
+- Removed: `ConnectorRerouteState`
+- Added: `ConnectorTopology`, `ConnectorTopologyEntry`, `EndpointSpec`
+
+---
+
+### 21. `client/src/lib/connectors/connector-lookup.ts`
+
+#### Self-Loop Bug Fix in `processConnectorUpdated`
+
+**Problem:** When a connector has both anchors pointing to the same shape (self-loop), detaching one endpoint calls `removeConnectorFromShape(shapeId, connId)` — removing the connector from the lookup set entirely, even though the other anchor still references it. Result: `getConnectorsForShape` returns nothing, topology builder never processes this connector, it becomes "free floating."
+
+**Root cause:** Per-field incremental add/remove doesn't account for the other anchor referencing the same shape.
+
+**Fix:** Replaced per-field logic with set-difference on unique shape IDs:
+
+```typescript
+const oldShapes = uniqueShapeIds(oldStartId, oldEndId);
+const newShapes = uniqueShapeIds(newStartId, newEndId);
+
+for (const shapeId of oldShapes) {
+  if (!newShapes.has(shapeId)) removeConnectorFromShape(shapeId, connectorId);
+}
+for (const shapeId of newShapes) {
+  if (!oldShapes.has(shapeId)) addConnectorToShape(shapeId, connectorId);
+}
+```
+
+#### New Helper
+
+```typescript
+function uniqueShapeIds(startId: string | null, endId: string | null): Set<string>
+```
+
+Deduplicates anchor IDs — for self-loops, `{"shapeA"}` instead of checking `"shapeA"` twice.
+
+---
+
+### Debt Resolved by This Phase
+
+| Debt Item | Resolution |
+|---|---|
+| Immutable topology in SelectTool instance fields, not in store | `ConnectorTopology` owned by store; `objects.ts` reads it directly |
+| `connectorPrevBboxes` tracked as instance field | Now in `ConnectorTopology.prevBboxes` (store-owned, pre-allocated) |
+| Safety fallback in `commitTranslate` blindly offsets connectors | Removed. Connectors = topology-only. Not in topology = static = no write |
+| Non-selected translateOnly connectors frozen during gesture | `objects.ts` checks `translateIdSet`, applies `ctx.translate` |
+| Store-computed topology derivation (debt note from Phase 5) | `buildConnectorTopology` writes directly to store via `setConnectorTopology` |
+| Self-loop connector lookup corruption | `uniqueShapeIds` set-difference prevents double-remove |
+
+---
+
+## Next Steps
+
+- **SelectTool size reduction:** Extract duplicate transform logic into shared helpers, move `transformFrame`/`transformPosition` to `geometry/transform.ts`, consider deriving topology inside a store action (moves ~100 lines out of SelectTool)
+- **Deprecation cleanup:** Replace `WorldRect` alias with direct `WorldBounds` usage, enable clean barrel imports from `@/stores/selection-store`
+- **Overlay rendering:** Endpoint dot rendering on overlay canvas for connector mode, shape midpoint snap dots during endpoint drag
+- **Code quality:** Add inline comments to topology flow, remove unused imports accumulated across phases
