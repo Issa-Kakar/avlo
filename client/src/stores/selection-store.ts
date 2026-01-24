@@ -2,6 +2,11 @@ import { create } from 'zustand';
 import type { HandleId } from '@/lib/tools/types';
 import type { WorldBounds, FrameTuple } from '@avlo/shared';
 import type { SnapTarget } from '@/lib/connectors/types';
+import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
+import {
+  getFrame, getPoints, getStart, getEnd,
+  getStartAnchor, getEndAnchor, bboxTupleToWorldBounds,
+} from '@avlo/shared';
 
 // === Types ===
 
@@ -139,7 +144,6 @@ export interface SelectionActions {
   updateTranslate: (dx: number, dy: number) => void;
   beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, selectionKind: SelectionKind, initialDelta: [number, number]) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
-  setConnectorTopology: (topology: ConnectorTopology | null) => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
@@ -156,9 +160,134 @@ export interface SelectionActions {
 
 export type SelectionStore = SelectionState & SelectionActions;
 
+// === Connector Topology Builder ===
+
+/**
+ * Compute connector topology at transform begin.
+ * Pure function: determines which connectors need rerouting vs translate,
+ * computes per-endpoint specs, and returns ConnectorTopology.
+ *
+ * Strategy:
+ *   Translate: both endpoints move → translate; else → reroute
+ *   Scale: always → reroute
+ *
+ * EndpointSpec per endpoint:
+ *   Anchored + shape selected → shapeId (string)
+ *   Free + connector selected → true
+ *   Otherwise → null (canonical)
+ */
+function computeConnectorTopology(
+  transformKind: 'translate' | 'scale',
+  selectedIds: string[]
+): ConnectorTopology | null {
+  const snapshot = getCurrentSnapshot();
+  const selectedSet = new Set(selectedIds);
+
+  const entries: ConnectorTopologyEntry[] = [];
+  const translateIdSet = new Set<string>();
+  const originalFrames = new Map<string, FrameTuple>();
+
+  const visited = new Set<string>();
+
+  const processConnector = (connId: string, isSelected: boolean) => {
+    if (visited.has(connId)) return;
+    visited.add(connId);
+
+    const connHandle = snapshot.objectsById.get(connId);
+    if (!connHandle || connHandle.kind !== 'connector') return;
+
+    const startAnchor = getStartAnchor(connHandle.y);
+    const endAnchor = getEndAnchor(connHandle.y);
+
+    // Determine if each endpoint moves
+    const startMoves = isSelected
+      ? (!startAnchor || selectedSet.has(startAnchor.id))
+      : (!!startAnchor && selectedSet.has(startAnchor.id));
+    const endMoves = isSelected
+      ? (!endAnchor || selectedSet.has(endAnchor.id))
+      : (!!endAnchor && selectedSet.has(endAnchor.id));
+
+    if (!startMoves && !endMoves) return;
+
+    const points = getPoints(connHandle.y);
+    const originalPoints: [number, number][] = points.length > 0
+      ? points as [number, number][]
+      : [((getStart(connHandle.y) ?? [0, 0]) as [number, number]), ((getEnd(connHandle.y) ?? [0, 0]) as [number, number])];
+    const originalBbox = bboxTupleToWorldBounds(connHandle.bbox);
+
+    // Determine strategy
+    if (transformKind === 'translate' && startMoves && endMoves) {
+      entries.push({
+        connectorId: connId, strategy: 'translate',
+        originalPoints, originalBbox, startSpec: null, endSpec: null,
+      });
+      translateIdSet.add(connId);
+    } else {
+      const startSpec: EndpointSpec =
+        (startAnchor && selectedSet.has(startAnchor.id)) ? startAnchor.id :
+        (!startAnchor && isSelected) ? true : null;
+      const endSpec: EndpointSpec =
+        (endAnchor && selectedSet.has(endAnchor.id)) ? endAnchor.id :
+        (!endAnchor && isSelected) ? true : null;
+
+      entries.push({
+        connectorId: connId, strategy: 'reroute',
+        originalPoints, originalBbox, startSpec, endSpec,
+      });
+    }
+  };
+
+  // Pass 1: Selected connectors
+  for (const id of selectedIds) {
+    const handle = snapshot.objectsById.get(id);
+    if (handle?.kind === 'connector') {
+      processConnector(id, true);
+    }
+  }
+
+  // Pass 2: Non-selected connectors anchored to selected shapes
+  for (const id of selectedIds) {
+    const handle = snapshot.objectsById.get(id);
+    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+    const connectors = getConnectorsForShape(id);
+    if (!connectors) continue;
+    for (const connId of connectors) {
+      processConnector(connId, selectedSet.has(connId));
+    }
+  }
+
+  if (entries.length === 0) return null;
+
+  // Collect original frames for all selected shapes (for frame overrides)
+  for (const id of selectedIds) {
+    const handle = snapshot.objectsById.get(id);
+    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+    const frame = getFrame(handle.y);
+    if (frame) originalFrames.set(id, frame);
+  }
+
+  // Pre-allocate mutable caches
+  const reroutes = new Map<string, [number, number][] | null>();
+  const prevBboxes = new Map<string, WorldBounds>();
+  for (const entry of entries) {
+    if (entry.strategy === 'reroute') {
+      reroutes.set(entry.connectorId, null);
+      prevBboxes.set(entry.connectorId, entry.originalBbox);
+    }
+  }
+
+  return {
+    entries,
+    translateIdSet,
+    originalFrames,
+    reroutes,
+    prevBboxes,
+  };
+}
+
 // === Store Implementation ===
 
-export const useSelectionStore = create<SelectionStore>((set) => ({
+export const useSelectionStore = create<SelectionStore>((set, get) => ({
   // Initial state
   selectedIds: [],
   mode: 'none',
@@ -196,9 +325,14 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
 
   // === Transform Actions ===
 
-  beginTranslate: (originBounds) => set({
-    transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
-  }),
+  beginTranslate: (originBounds) => {
+    const { selectedIds } = get();
+    const topology = computeConnectorTopology('translate', selectedIds);
+    set({
+      transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
+      connectorTopology: topology,
+    });
+  },
 
   updateTranslate: (dx, dy) => set((state) => {
     if (state.transform.kind !== 'translate') return state;
@@ -209,6 +343,9 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     // Compute handleKind from handleId (deterministic)
     const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
     const handleKind: HandleKind = isCorner ? 'corner' : 'side';
+
+    const { selectedIds } = get();
+    const topology = computeConnectorTopology('scale', selectedIds);
 
     set({
       transform: {
@@ -223,6 +360,7 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
         handleKind,
         initialDelta,
       },
+      connectorTopology: topology,
     });
   },
 
@@ -230,8 +368,6 @@ export const useSelectionStore = create<SelectionStore>((set) => ({
     if (state.transform.kind !== 'scale') return state;
     return { transform: { ...state.transform, scaleX, scaleY } };
   }),
-
-  setConnectorTopology: (connectorTopology) => set({ connectorTopology }),
 
   endTransform: () => set({ transform: { kind: 'none' }, connectorTopology: null }),
 

@@ -1063,9 +1063,179 @@ Deduplicates anchor IDs — for self-loops, `{"shapeA"}` instead of checking `"s
 
 ---
 
+## Phase 7: SelectTool Refactoring — Technical Debt Cleanup
+
+---
+
+### Overview
+
+Reduces SelectTool.ts from ~1460 LOC to ~1280 LOC by moving transform helpers and topology building to their proper homes. Fixes a render/commit inconsistency in stroke scaling. Adds section clarity.
+
+---
+
+### 22. `client/src/lib/geometry/transform.ts`
+
+#### New Functions
+
+```typescript
+export function transformFrameForTopology(
+  frame: FrameTuple,
+  transform: TranslateTransform | ScaleTransform
+): FrameTuple
+```
+
+Dispatches to `applyUniformScaleToFrame` (mixed+corner) or `applyTransformToFrame` (other scale). Translate simply offsets x/y.
+
+```typescript
+export function transformPositionForTopology(
+  position: [number, number],
+  transform: TranslateTransform | ScaleTransform
+): [number, number]
+```
+
+Uses `computePreservedPosition` for mixed+corner, raw scale otherwise. Translate simply offsets.
+
+#### New Imports
+
+- `FrameTuple` from `@avlo/shared`
+- `TranslateTransform`, `ScaleTransform` types from `@/stores/selection-store`
+
+---
+
+### 23. `client/src/lib/geometry/index.ts`
+
+#### Barrel Export Updated
+
+- Added `transformFrameForTopology`, `transformPositionForTopology`
+
+---
+
+### 24. `client/src/stores/selection-store.ts`
+
+#### `computeConnectorTopology()` — New Module-Level Function
+
+Moved from SelectTool's `buildConnectorTopology()` private method. Same 2-pass logic (selected connectors, then external connectors anchored to selected shapes), same endpoint truth table, same strategy classification.
+
+**Signature:** `function computeConnectorTopology(transformKind: 'translate' | 'scale', selectedIds: string[]): ConnectorTopology | null`
+
+Calls `getCurrentSnapshot()` internally — not a pure function, but self-contained.
+
+#### Store Creator — `get` Added
+
+`create<SelectionStore>((set) => ...)` → `create<SelectionStore>((set, get) => ...)`
+
+#### `beginTranslate` — Topology Computed Atomically
+
+```typescript
+beginTranslate: (originBounds) => {
+  const { selectedIds } = get();
+  const topology = computeConnectorTopology('translate', selectedIds);
+  set({ transform: ..., connectorTopology: topology });
+},
+```
+
+#### `beginScale` — Topology Computed Atomically
+
+Same pattern — computes topology inside the action, sets atomically with transform state.
+
+#### Action Removed
+
+- `setConnectorTopology` — no longer needed (topology set atomically by begin actions)
+
+#### New Imports
+
+- `getCurrentSnapshot`, `getConnectorsForShape` from `@/canvas/room-runtime`
+- `getFrame`, `getPoints`, `getStart`, `getEnd`, `getStartAnchor`, `getEndAnchor`, `bboxTupleToWorldBounds` from `@avlo/shared`
+
+---
+
+### 25. `client/src/lib/tools/SelectTool.ts`
+
+#### Methods Removed
+
+- `buildConnectorTopology()` (~110 lines) — moved to `selection-store.ts`
+- `transformFrame()` — moved to `geometry/transform.ts` as `transformFrameForTopology()`
+- `transformPosition()` — moved to `geometry/transform.ts` as `transformPositionForTopology()`
+
+#### Call Sites Removed
+
+- `this.buildConnectorTopology('translate')` ×3 (objectOutsideSelection, objectInSelection, selectionGap)
+- `this.buildConnectorTopology('scale')` ×1 (handle drag)
+
+Topology is now computed atomically inside `beginTranslate`/`beginScale` store actions.
+
+#### `invalidateTransformPreview()` — Rewired
+
+- `this.transformFrame(...)` → `transformFrameForTopology(..., transform as TranslateTransform | ScaleTransform)`
+- `this.transformPosition(...)` → `transformPositionForTopology(..., transform as TranslateTransform | ScaleTransform)`
+
+#### `commitScale()` CASE 2 — Stroke Scaling Fix
+
+**Problem:** Used points centroid as center for uniform scale. The render preview (`drawScaledStrokePreview` in objects.ts) uses bbox center via `applyUniformScaleToPoints`. Asymmetric strokes produced a visual pop at commit.
+
+**Fix:** Replaced inline centroid logic with:
+```typescript
+const { points: newPoints, absScale } = applyUniformScaleToPoints(
+  points as [number, number][],
+  handle.bbox,
+  originBounds, origin, scaleX, scaleY
+);
+```
+
+Now commit and preview use identical math (bbox-center based).
+
+#### Imports Removed
+
+- `ConnectorTopologyEntry`, `EndpointSpec` types (no longer referenced in SelectTool)
+- `FrameTuple` type (only used by deleted topology builder)
+- `getStart`, `getEnd` (only used in topology building)
+- `getConnectorsForShape` (only used in topology building)
+- `computeUniformScaleNoThreshold`, `computePreservedPosition` (replaced by `applyUniformScaleToPoints`)
+
+#### Imports Added
+
+- `applyUniformScaleToPoints` from `@/lib/geometry/transform`
+- `transformFrameForTopology`, `transformPositionForTopology` from `@/lib/geometry/transform`
+
+#### Section Comments Refined
+
+- `// === PointerTool Interface ===` → `// --- PointerTool Interface ---`
+- Added `// --- Hover ---` before `handleHoverCursor`
+- Removed `// === Private Helpers ===` (resetState is a trivial utility)
+- `// === Bounds Helpers ===` → `// --- Bounds ---`
+- Added `// --- Transform Preview ---` with doc comment explaining 3-section structure
+- `// === Commit Methods ===` → `// --- Commit ---`
+- Added `// --- Selection Helpers ---` before `computeSelectionKind`
+- `// === Hit Testing ===` → `// --- Hit Testing ---`
+
+---
+
+### Debt Resolved by This Phase
+
+| Debt Item (from Next Steps) | Resolution |
+|---|---|
+| Move `transformFrame`/`transformPosition` to `geometry/transform.ts` | Done — `transformFrameForTopology`, `transformPositionForTopology` |
+| Derive topology inside a store action | Done — `computeConnectorTopology` called atomically inside `beginTranslate`/`beginScale` |
+| `setConnectorTopology` external action | Eliminated — topology computed and set atomically |
+| Stroke scale commit/preview mismatch | Fixed — both use `applyUniformScaleToPoints` (bbox-center based) |
+| Remove unused imports accumulated across phases | Cleaned — 7 unused imports removed from SelectTool |
+
+---
+
+### Net Line Count
+
+| File | Delta |
+|------|-------|
+| SelectTool.ts | -182 lines (1463 → 1281) |
+| geometry/transform.ts | +40 lines (416 → 456) |
+| selection-store.ts | +135 lines (344 → 479) |
+| geometry/index.ts | +1 line |
+
+---
+
 ## Next Steps
 
-- **SelectTool size reduction:** Extract duplicate transform logic into shared helpers, move `transformFrame`/`transformPosition` to `geometry/transform.ts`, consider deriving topology inside a store action (moves ~100 lines out of SelectTool)
-- **Deprecation cleanup:** Replace `WorldRect` alias with direct `WorldBounds` usage, enable clean barrel imports from `@/stores/selection-store`
+- **Deprecation cleanup:** Replace `WorldRect` alias with direct `WorldBounds` usage
 - **Overlay rendering:** Endpoint dot rendering on overlay canvas for connector mode, shape midpoint snap dots during endpoint drag
-- **Code quality:** Add inline comments to topology flow, remove unused imports accumulated across phases
+- **Self-anchored connector reclassification:** Both endpoints to same shape should force reroute
+- **GC reduction in `resolveOverride`:** Pool `{ frame }` objects per endpoint per frame

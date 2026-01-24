@@ -24,6 +24,8 @@ export {
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
+  transformFrameForTopology,
+  transformPositionForTopology,
 } from './transform';
 
 // Hit testing

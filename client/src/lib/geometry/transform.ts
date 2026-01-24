@@ -7,9 +7,10 @@
  */
 
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@avlo/shared';
 import { translateBounds, scaleBoundsAround } from './bounds';
 import { isCornerHandle } from '@/stores/selection-store';
+import type { TranslateTransform, ScaleTransform } from '@/stores/selection-store';
 
 /**
  * WorldRect is an alias for WorldBounds from the shared package.
@@ -411,5 +412,45 @@ export function applyUniformScaleToFrame(
   const newH = h * absScale;
 
   return [newCx - newW / 2, newCy - newH / 2, newW, newH];
+}
+
+// === Topology Transform Helpers ===
+
+/**
+ * Transform a shape frame for connector topology rerouting.
+ * Dispatches to uniform or non-uniform scale based on selection context.
+ */
+export function transformFrameForTopology(
+  frame: FrameTuple,
+  transform: TranslateTransform | ScaleTransform
+): FrameTuple {
+  if (transform.kind === 'translate') {
+    return [frame[0] + transform.dx, frame[1] + transform.dy, frame[2], frame[3]];
+  }
+  const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
+  if (selectionKind === 'mixed' && handleKind === 'corner') {
+    return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+  }
+  return applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
+}
+
+/**
+ * Transform a free endpoint position for connector topology rerouting.
+ * Uses position preservation for mixed+corner, raw scale otherwise.
+ */
+export function transformPositionForTopology(
+  position: [number, number],
+  transform: TranslateTransform | ScaleTransform
+): [number, number] {
+  if (transform.kind === 'translate') {
+    return [position[0] + transform.dx, position[1] + transform.dy];
+  }
+  const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
+  if (selectionKind === 'mixed' && handleKind === 'corner') {
+    const u = computeUniformScaleNoThreshold(scaleX, scaleY);
+    return computePreservedPosition(position[0], position[1], originBounds, origin, u);
+  }
+  const [ox, oy] = origin;
+  return [ox + (position[0] - ox) * scaleX, oy + (position[1] - oy) * scaleY];
 }
 
