@@ -130,6 +130,12 @@ export interface SelectionState {
   marquee: MarqueeState;
   /** Connector topology during translate/scale transforms */
   connectorTopology: ConnectorTopology | null;
+
+  // Text editing - primitives only
+  /** Object ID being edited, null if not editing */
+  textEditingId: string | null;
+  /** True if this text object was just created (for empty deletion on blur) */
+  textEditingIsNew: boolean;
 }
 
 // === Actions Interface ===
@@ -156,6 +162,12 @@ export interface SelectionActions {
   updateMarquee: (current: [number, number]) => void;
   endMarquee: () => void;
   cancelMarquee: () => void;
+
+  // Text editing actions
+  /** Begin text editing (objectId, isNew flag for empty deletion) */
+  beginTextEditing: (objectId: string, isNew: boolean) => void;
+  /** End text editing */
+  endTextEditing: () => void;
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
@@ -295,6 +307,8 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
   transform: { kind: 'none' },
   marquee: { active: false, anchor: null, current: null },
   connectorTopology: null,
+  textEditingId: null,
+  textEditingIsNew: false,
 
   // === Selection Actions ===
 
@@ -421,6 +435,18 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
   cancelMarquee: () => set({
     marquee: { active: false, anchor: null, current: null },
   }),
+
+  // === Text Editing Actions ===
+
+  beginTextEditing: (objectId, isNew) => set({
+    textEditingId: objectId,
+    textEditingIsNew: isNew,
+  }),
+
+  endTextEditing: () => set({
+    textEditingId: null,
+    textEditingIsNew: false,
+  }),
 }));
 
 // === Handle Helpers ===
@@ -477,3 +503,9 @@ export function getHandleCursor(handleId: HandleId): string {
     case 'e': case 'w': return 'ew-resize';
   }
 }
+
+// === Text Editing Selectors ===
+
+export const selectTextEditingId = (state: SelectionStore) => state.textEditingId;
+export const selectIsTextEditing = (state: SelectionStore) => state.textEditingId !== null;
+export const selectTextEditingIsNew = (state: SelectionStore) => state.textEditingIsNew;

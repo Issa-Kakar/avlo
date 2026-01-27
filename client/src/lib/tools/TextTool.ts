@@ -1,363 +1,461 @@
-import { ulid } from 'ulid';
-import * as Y from 'yjs';
-import type { PointerTool, PreviewData } from './types';
-import { useDeviceUIStore } from '../../stores/device-ui-store';
-import { useCameraStore, worldToClient as cameraWorldToClient } from '@/stores/camera-store';
-import { getActiveRoomDoc } from '@/canvas/room-runtime';
-import { invalidateOverlay } from '@/canvas/invalidation-helpers';
-import { getEditorHost } from '@/canvas/SurfaceManager';
-import { userProfileManager } from '@/lib/user-profile-manager';
-
-interface TextToolConfig {
-  size: number;
-  color: string;
-}
-
-interface TextState {
-  isEditing: boolean;
-  editBox: HTMLDivElement | null;
-  worldPosition: { x: number; y: number } | null;
-  content: string;
-}
-
 /**
- * TextTool - DOM-based text editing overlay.
+ * TextTool - Rich text creation and editing
  *
- * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
- * All dependencies are read at runtime from module-level singletons:
- * - getActiveRoomDoc() for Y.Doc mutations and activity updates
- * - userProfileManager.getIdentity().userId for ownerId
- * - useDeviceUIStore.getState() for text size and color
- * - getEditorHost() for DOM mounting
- * - invalidateOverlay() for render loop updates
- *
- * NOTE: This tool is marked as PLACEHOLDER in CLAUDE.md and will be
- * completely replaced. The text tool will be removed almost completely
- * as the select tool will be switched to automatically after placing
- * the initial text block.
+ * ARCHITECTURE:
+ * - Click to create new text object at click position
+ * - Mount Tiptap editor as DOM overlay
+ * - Y.XmlFragment syncs editor ↔ Y.Doc via Collaboration extension
+ * - Canvas skips rendering object during active editing
+ * - On commit: unmount editor, canvas renders from Y.XmlFragment
  */
+
+import { Editor } from '@tiptap/core';
+import Document from '@tiptap/extension-document';
+import Paragraph from '@tiptap/extension-paragraph';
+import Text from '@tiptap/extension-text';
+import Bold from '@tiptap/extension-bold';
+import Italic from '@tiptap/extension-italic';
+import Collaboration from '@tiptap/extension-collaboration';
+import * as Y from 'yjs';
+
+import type { PointerTool, PreviewData } from './types';
+import { useSelectionStore } from '@/stores/selection-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { getEditorHost } from '@/canvas/SurfaceManager';
+import { FONT_CONFIG, getBaselineToTopRatio } from '@/lib/text/text-system';
+import { userProfileManager } from '@/lib/user-profile-manager';
+import { ulid } from 'ulid';
+
+interface TextToolState {
+  isActive: boolean;
+  pointerId: number | null;
+  downWorld: [number, number] | null;
+}
+
+interface EditorState {
+  container: HTMLDivElement | null;
+  editor: Editor | null;
+  objectId: string | null;
+  originWorld: [number, number] | null;
+  fontSize: number;
+  color: string;
+  isNew: boolean;
+}
+
 export class TextTool implements PointerTool {
-  private state: TextState = {
-    isEditing: false,
-    editBox: null,
-    worldPosition: null,
-    content: '',
+  private state: TextToolState = {
+    isActive: false,
+    pointerId: null,
+    downWorld: null,
   };
-  private committing = false;
 
-  // Settings frozen at begin() time
-  private config: TextToolConfig = { size: 20, color: '#000000' };
+  private editorState: EditorState = {
+    container: null,
+    editor: null,
+    objectId: null,
+    originWorld: null,
+    fontSize: 20,
+    color: '#000000',
+    isNew: false,
+  };
 
-  /**
-   * Zero-arg constructor. All dependencies are read at runtime.
-   * Can be constructed once and reused across gestures and tool switches.
-   */
-  constructor() {}
+  // Bound event handlers for cleanup
+  private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
+  private boundHandleClickOutside: ((e: MouseEvent) => void) | null = null;
+
+  // =========================================================================
+  // PointerTool Interface
+  // =========================================================================
 
   canBegin(): boolean {
-    return !this.state.isEditing;
+    // Can begin if not already active AND no text editing in progress
+    const isEditing = useSelectionStore.getState().textEditingId !== null;
+    return !this.state.isActive && !isEditing;
   }
 
-  begin(_pointerId: number, worldX: number, worldY: number): void {
-    if (this.state.isEditing) return;
+  begin(pointerId: number, worldX: number, worldY: number): void {
+    if (this.state.isActive) return;
 
-    // PHASE 1.5: Freeze settings from store at gesture start
-    const uiState = useDeviceUIStore.getState();
-    this.config = {
-      size: uiState.textSize,
-      color: uiState.drawingSettings.color, // Text uses drawing color
+    this.state = {
+      isActive: true,
+      pointerId,
+      downWorld: [worldX, worldY],
     };
-
-    // Store world position
-    this.state.worldPosition = { x: worldX, y: worldY };
-
-    // Convert to screen coordinates
-    const [clientX, clientY] = cameraWorldToClient(worldX, worldY);
-
-    // Create DOM editor overlay
-    this.createEditor(clientX, clientY);
-
-    // Update awareness
-    const roomDoc = getActiveRoomDoc();
-    roomDoc.updateActivity('typing');
   }
 
   move(_worldX: number, _worldY: number): void {
-    // Text tool doesn't track movement during editing
+    // Text tool doesn't track movement during gesture
   }
 
-  end(): void {
-    // Commit happens on blur/Enter, not pointer up
+  end(_worldX?: number, _worldY?: number): void {
+    if (!this.state.isActive || !this.state.downWorld) {
+      this.resetState();
+      return;
+    }
+
+    const [x, y] = this.state.downWorld;
+
+    // Get current settings
+    const uiState = useDeviceUIStore.getState();
+    const textSize = uiState.textSize;
+    const color = uiState.drawingSettings.color;
+
+    // Create text object in Y.Doc
+    const objectId = this.createTextObject(x, y, textSize, color);
+
+    // Begin text editing in selection store
+    useSelectionStore.getState().beginTextEditing(objectId, true);
+
+    // Mount Tiptap editor
+    this.mountEditor(objectId, x, y, textSize, color, true);
+
+    this.resetState();
+    invalidateOverlay();
+    invalidateWorld(getVisibleWorldBounds());
   }
 
   cancel(): void {
-    this.cancelEdit();
+    this.resetState();
+    invalidateOverlay();
   }
 
   isActive(): boolean {
-    return this.state.isEditing;
+    return this.state.isActive;
   }
 
   getPointerId(): number | null {
-    return null; // Text tool doesn't track pointer
+    return this.state.pointerId;
   }
 
   getPreview(): PreviewData | null {
-    // Don't show preview box - the actual DOM editor IS the preview
-    // This makes the experience cohesive: what you type is exactly where it will be
+    // Text tool uses DOM overlay, no canvas preview needed
     return null;
   }
 
   onPointerLeave(): void {
-    // TextTool has no hover state to clear
-    // DOM editor handles its own focus/blur
+    // No hover state to clear
+  }
+
+  onViewChange(): void {
+    // Reposition editor on pan/zoom
+    this.repositionEditor();
   }
 
   destroy(): void {
-    this.teardownEditor();
+    this.commitAndClose();
+    this.resetState();
+  }
+
+  // =========================================================================
+  // Public Methods (for external triggers like clicking existing text)
+  // =========================================================================
+
+  /**
+   * Edit an existing text object.
+   * Called by SelectTool when clicking on a text object.
+   */
+  editExistingText(objectId: string): void {
+    const roomDoc = getActiveRoomDoc();
+    const snapshot = roomDoc.currentSnapshot;
+    const handle = snapshot.objectsById.get(objectId);
+
+    if (!handle || handle.kind !== 'text') return;
+
+    const origin = handle.y.get('origin') as [number, number] | undefined;
+    const fontSize = (handle.y.get('fontSize') as number) ?? 20;
+    const color = (handle.y.get('color') as string) ?? '#000000';
+
+    if (!origin) return;
+
+    // Begin text editing
+    useSelectionStore.getState().beginTextEditing(objectId, false);
+
+    // Mount editor for existing text
+    this.mountEditor(objectId, origin[0], origin[1], fontSize, color, false);
   }
 
   /**
-   * Refresh config from store (useful when toolbar settings change).
-   * NOTE: In current codebase, clicking toolbar blurs/commits anyway,
-   * so this is mostly a no-op. Will be removed when TextTool is replaced.
+   * Check if editor is currently mounted.
    */
-  updateConfig(): void {
-    const uiState = useDeviceUIStore.getState();
-    this.config = {
-      size: uiState.textSize,
-      color: uiState.drawingSettings.color,
-    };
-
-    // Update live editor if it exists
-    if (this.state.editBox) {
-      const { scale } = useCameraStore.getState();
-      const scaledFontSize = this.config.size * scale;
-      this.state.editBox.style.fontSize = `${scaledFontSize}px`;
-      this.state.editBox.style.color = this.config.color;
-    }
+  isEditorMounted(): boolean {
+    return this.editorState.editor !== null;
   }
 
-  // Called when view transforms change (pan/zoom)
-  onViewChange(): void {
-    if (!this.state.isEditing || !this.state.worldPosition || !this.state.editBox) return;
+  // =========================================================================
+  // Private: Object Creation
+  // =========================================================================
 
-    // Get current scale from camera store
-    const { scale } = useCameraStore.getState();
-
-    // Recompute screen position from world position using camera store
-    const [clientX, clientY] = cameraWorldToClient(
-      this.state.worldPosition.x,
-      this.state.worldPosition.y,
-    );
-
-    // CRITICAL FIX: Convert screen coordinates to host-relative coordinates
-    const host = getEditorHost() || document.body;
-    const hostRect = host.getBoundingClientRect();
-    const hostRelativeX = clientX - hostRect.left;
-    const hostRelativeY = clientY - hostRect.top;
-
-    // CRITICAL: Scale all dimensions with zoom to maintain world-space size
-    // This ensures the text appears at the correct size relative to the canvas
-    const scaledFontSize = this.config.size * scale;
-    const scaledPadding = 4 * scale;
-    const scaledMinWidth = 200 * scale;
-    const scaledMinHeight = 30 * scale;
-    const scaledBorderWidth = Math.max(1, 2 * scale);
-    const scaledBorderRadius = 4 * scale;
-
-    // Apply the same offset as in createEditor
-    // This maintains the alignment between editor text and committed text position
-    const totalOffset = scaledBorderWidth + scaledPadding;
-    const adjustedX = hostRelativeX - totalOffset;
-    const adjustedY = hostRelativeY - totalOffset;
-
-    // Update DOM editor position with offset
-    this.state.editBox.style.left = `${adjustedX}px`;
-    this.state.editBox.style.top = `${adjustedY}px`;
-
-    // Update all scaled properties
-    this.state.editBox.style.fontSize = `${scaledFontSize}px`;
-    this.state.editBox.style.padding = `${scaledPadding}px`;
-    this.state.editBox.style.minWidth = `${scaledMinWidth}px`;
-    this.state.editBox.style.minHeight = `${scaledMinHeight}px`;
-    this.state.editBox.style.borderWidth = `${scaledBorderWidth}px`;
-    this.state.editBox.style.borderRadius = `${scaledBorderRadius}px`;
-  }
-
-  private createEditor(clientX: number, clientY: number): void {
-    // Get DOM overlay host from registry
-    const host = getEditorHost() || document.body;
-
-    // CRITICAL FIX: Convert screen coordinates to host-relative coordinates
-    // clientX/clientY are screen coordinates, but we need coordinates relative to the host container
-    const hostRect = host.getBoundingClientRect();
-    const hostRelativeX = clientX - hostRect.left;
-    const hostRelativeY = clientY - hostRect.top;
-
-    // Get current scale from camera store
-    const { scale } = useCameraStore.getState();
-
-    // CRITICAL: Scale font-size and dimensions by scale
-    // This ensures the text editor appears at the correct size relative to world space
-    const scaledFontSize = this.config.size * scale;
-    const scaledPadding = 4 * scale;
-    const scaledMinWidth = 200 * scale;
-    const scaledMinHeight = 30 * scale;
-    const scaledBorderWidth = Math.max(1, 2 * scale); // Ensure at least 1px border
-    const scaledBorderRadius = 4 * scale;
-
-    // Offset the editor position by border + padding so text content aligns with committed position
-    const totalOffset = scaledBorderWidth + scaledPadding;
-    const adjustedX = hostRelativeX - totalOffset;
-    const adjustedY = hostRelativeY - totalOffset;
-
-    // Calculate max width to prevent infinite horizontal growth
-    const maxWidth = Math.max(24, hostRect.width - adjustedX - 8); // 8px safety margin
-
-    // Create contenteditable div
-    const editor = document.createElement('div');
-    editor.contentEditable = 'true';
-    editor.className = 'text-editor-overlay';
-    editor.style.cssText = `
-      position: absolute;
-      left: ${adjustedX}px;
-      top: ${adjustedY}px;
-      min-width: ${scaledMinWidth}px;
-      max-width: ${maxWidth}px;
-      min-height: ${scaledMinHeight}px;
-      padding: ${scaledPadding}px;
-      font-size: ${scaledFontSize}px;
-      font-family: Inter, system-ui, -apple-system, sans-serif;
-      line-height: 1.4;
-      color: ${this.config.color};
-      background: white;
-      border: ${scaledBorderWidth}px solid #3b82f6;
-      border-radius: ${scaledBorderRadius}px;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-      outline: none;
-      cursor: text;
-      pointer-events: auto;
-      transform-origin: top left;
-      white-space: pre-wrap;
-      overflow-wrap: break-word;
-    `;
-
-    // Handle Enter key - just blur to trigger commit
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        // Let blur be the single commit path
-        (e.currentTarget as HTMLDivElement).blur();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        this.cancelEdit();
-      }
-    };
-
-    // Handle blur - single commit path
-    const onBlur = () => this.commitTextOnce();
-
-    // Handle input - store content for preview
-    const onInput = () => {
-      // Store content temporarily for preview purposes
-      this.state.content = editor.textContent || '';
-      invalidateOverlay();
-    };
-
-    editor.addEventListener('keydown', onKeyDown);
-    editor.addEventListener('blur', onBlur, { once: true }); // Fire only once
-    editor.addEventListener('input', onInput);
-
-    host.appendChild(editor);
-    editor.focus();
-
-    this.state.editBox = editor;
-    this.state.isEditing = true;
-
-    // Notify store that text editing has started (hides ColorSizeDock)
-    useDeviceUIStore.getState().setIsTextEditing(true);
-  }
-
-  private teardownEditor(): void {
-    const el = this.state.editBox;
-    if (el) {
-      // Defensive: remove listeners/pointer events before removing
-      el.style.pointerEvents = 'none';
-      // Safe remove even if parent changed
-      try {
-        el.remove();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.state.editBox = null;
-    this.state.isEditing = false;
-    this.state.content = '';
-    this.state.worldPosition = null;
-
-    // Update awareness and invalidate
+  private createTextObject(worldX: number, worldY: number, fontSize: number, color: string): string {
     const roomDoc = getActiveRoomDoc();
-    roomDoc.updateActivity('idle');
-    invalidateOverlay();
-    useDeviceUIStore.getState().setIsTextEditing(false);
-  }
-
-  private cancelEdit(): void {
-    // Cancel without commit
-    this.teardownEditor();
-  }
-
-  private commitTextOnce(): void {
-    if (this.committing) return;
-    this.committing = true;
-    try {
-      this.commitTextCore();
-    } finally {
-      this.teardownEditor();
-      this.committing = false;
-    }
-  }
-
-  private commitTextCore(): void {
-    if (!this.state.worldPosition || !this.state.editBox) return;
-
-    // Use textContent to get raw text (innerText doesn't actually capture soft wraps)
-    const raw = this.state.editBox.textContent ?? '';
-    const content = raw.replace(/\r\n?/g, '\n'); // don't .trim() to keep trailing blank lines
-    if (!content.replace(/\s+/g, '')) return; // empty/whitespace-only → cancel
-
-    // Measure DOM box for width/height in world units
-    const rect = this.state.editBox.getBoundingClientRect();
-    const { scale } = useCameraStore.getState();
-    const w = rect.width / scale;
-    const h = rect.height / scale;
-
-    // Get runtime dependencies at commit time
-    const roomDoc = getActiveRoomDoc();
+    const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
 
-    const id = ulid();
-    roomDoc.mutate((ydoc: Y.Doc) => {
+    roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
 
-      const textMap = new Y.Map();
-      textMap.set('id', id);
-      textMap.set('kind', 'text');
-      textMap.set('frame', [this.state.worldPosition!.x, this.state.worldPosition!.y, w, h]); // [x, y, w, h]
-      textMap.set('text', content); // For now, using string. TODO: Use Y.Text in future for collaborative editing
-      textMap.set('color', this.config.color);
-      textMap.set('fontSize', this.config.size);  // Renamed from 'size' to 'fontSize' per migration spec
-      textMap.set('fontFamily', 'sans-serif');
-      textMap.set('fontWeight', 'normal');
-      textMap.set('fontStyle', 'normal');
-      textMap.set('textAlign', 'left');
-      textMap.set('opacity', 1);
-      textMap.set('ownerId', userId);
-      textMap.set('createdAt', Date.now());
+      const yObj = new Y.Map<unknown>();
+      yObj.set('id', objectId);
+      yObj.set('kind', 'text');
+      yObj.set('origin', [worldX, worldY]);
+      yObj.set('fontSize', fontSize);
+      yObj.set('color', color);
+      yObj.set('widthMode', 'auto');
+      // Create empty Y.XmlFragment - Tiptap Collaboration will initialize it
+      yObj.set('content', new Y.XmlFragment());
+      yObj.set('ownerId', userId);
+      yObj.set('createdAt', Date.now());
 
-      objects.set(id, textMap);
+      objects.set(objectId, yObj);
     });
+
+    return objectId;
+  }
+
+  // =========================================================================
+  // Private: Editor Mounting
+  // =========================================================================
+
+  private mountEditor(
+    objectId: string,
+    worldX: number,
+    worldY: number,
+    fontSize: number,
+    color: string,
+    isNew: boolean
+  ): void {
+    // Get editor host
+    const host = getEditorHost();
+    if (!host) {
+      console.error('[TextTool] No editor host available');
+      return;
+    }
+
+    // Get Y.XmlFragment from object
+    const roomDoc = getActiveRoomDoc();
+    const snapshot = roomDoc.currentSnapshot;
+    const handle = snapshot.objectsById.get(objectId);
+    if (!handle) {
+      console.error('[TextTool] Object not found:', objectId);
+      return;
+    }
+
+    const fragment = handle.y.get('content') as Y.XmlFragment;
+    if (!fragment) {
+      console.error('[TextTool] No content fragment:', objectId);
+      return;
+    }
+
+    // Create container div
+    const container = document.createElement('div');
+    container.className = 'text-editor-container';
+
+    // Calculate screen position
+    const [screenX, screenY] = worldToClient(worldX, worldY);
+    const scale = useCameraStore.getState().scale;
+    const scaledFontSize = fontSize * scale;
+
+    // Position container: baseline aligns with origin
+    // Uses precomputed ratio that accounts for CSS line-height leading
+    const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
+    const containerLeft = screenX;
+
+    // Apply styles
+    Object.assign(container.style, {
+      position: 'absolute',
+      left: `${containerLeft}px`,
+      top: `${containerTop}px`,
+      fontFamily: FONT_CONFIG.fallback,
+      fontWeight: String(FONT_CONFIG.weightNormal),
+      fontSize: `${scaledFontSize}px`,
+      lineHeight: `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`,
+      color: color,
+      background: 'transparent',
+      border: 'none',
+      padding: '0',
+      margin: '0',
+      whiteSpace: 'pre-wrap',
+      minWidth: '3px',
+      pointerEvents: 'auto',
+      outline: 'none',
+      zIndex: '1000',
+    });
+
+    // Append to host
+    host.appendChild(container);
+
+    // Create Tiptap Editor
+    const editor = new Editor({
+      element: container,
+      extensions: [
+        Document,
+        Paragraph.configure({
+          HTMLAttributes: { style: 'margin: 0; padding: 0;' },
+        }),
+        Text,
+        Bold.configure({
+          HTMLAttributes: { style: `font-weight: ${FONT_CONFIG.weightBold};` },
+        }),
+        Italic,
+        Collaboration.configure({
+          fragment,
+        }),
+      ],
+      autofocus: 'end',
+      editorProps: {
+        attributes: {
+          style: 'outline: none;',
+        },
+      },
+    });
+
+    // Store state
+    this.editorState = {
+      container,
+      editor,
+      objectId,
+      originWorld: [worldX, worldY],
+      fontSize,
+      color,
+      isNew,
+    };
+
+    // Setup event handlers
+    this.setupEditorHandlers();
+
+    // Mark text editing active in UI store
+    useDeviceUIStore.getState().setIsTextEditing(true);
+  }
+
+  private setupEditorHandlers(): void {
+    // Escape key to commit
+    this.boundHandleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.commitAndClose();
+      }
+    };
+
+    // Click outside to commit
+    this.boundHandleClickOutside = (e: MouseEvent) => {
+      if (this.editorState.container && !this.editorState.container.contains(e.target as Node)) {
+        // Small delay to allow focus events to settle
+        // EDIT: no need for delay, just commit and close(Delay causes flicker for canvas paint)
+        this.commitAndClose();
+      }
+    };
+
+    document.addEventListener('keydown', this.boundHandleKeyDown, true);
+
+    // Delay click handler to avoid catching the initial click
+    setTimeout(() => {
+      if (this.boundHandleClickOutside) {
+        document.addEventListener('mousedown', this.boundHandleClickOutside, true);
+      }
+    }, 100);
+  }
+
+  private removeEditorHandlers(): void {
+    if (this.boundHandleKeyDown) {
+      document.removeEventListener('keydown', this.boundHandleKeyDown, true);
+      this.boundHandleKeyDown = null;
+    }
+    if (this.boundHandleClickOutside) {
+      document.removeEventListener('mousedown', this.boundHandleClickOutside, true);
+      this.boundHandleClickOutside = null;
+    }
+  }
+
+  // =========================================================================
+  // Private: Editor Repositioning
+  // =========================================================================
+
+  private repositionEditor(): void {
+    if (!this.editorState.container || !this.editorState.originWorld) return;
+
+    const [worldX, worldY] = this.editorState.originWorld;
+    const [screenX, screenY] = worldToClient(worldX, worldY);
+    const scale = useCameraStore.getState().scale;
+    const scaledFontSize = this.editorState.fontSize * scale;
+
+    // Update position (uses precomputed ratio for CSS line-height leading)
+    this.editorState.container.style.left = `${screenX}px`;
+    this.editorState.container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
+
+    // Update font size for crisp rendering
+    this.editorState.container.style.fontSize = `${scaledFontSize}px`;
+    this.editorState.container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+  }
+
+  // =========================================================================
+  // Private: Commit and Close
+  // =========================================================================
+
+  private commitAndClose(): void {
+    const { editor, container, objectId, isNew } = this.editorState;
+
+    if (!editor || !objectId) return;
+
+    // Check if text is empty and this is a new object
+    const isEmpty = editor.isEmpty;
+
+    if (isEmpty && isNew) {
+      // Delete the empty text object
+      const roomDoc = getActiveRoomDoc();
+      roomDoc.mutate((ydoc) => {
+        const root = ydoc.getMap('root');
+        const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
+        objects.delete(objectId);
+      });
+    }
+    //useSelectionStore.getState().endTextEditing();
+    //invalidateWorld(getVisibleWorldBounds());
+    // Remove event handlers
+    this.removeEditorHandlers();
+
+    // Destroy editor
+    editor.destroy();
+    //useSelectionStore.getState().endTextEditing();
+    // Remove container from DOM
+    if (container && container.parentNode) {
+      container.parentNode.removeChild(container);
+    }
+
+    // Clear editor state
+    this.editorState = {
+      container: null,
+      editor: null,
+      objectId: null,
+      originWorld: null,
+      fontSize: 20,
+      color: '#000000',
+      isNew: false,
+    };
+
+    // End text editing in selection store
+    useSelectionStore.getState().endTextEditing();
+
+    // Mark text editing inactive in UI store
+    useDeviceUIStore.getState().setIsTextEditing(false);
+    invalidateWorld(getVisibleWorldBounds());
+    // Invalidate overlay to update UI state
+    // Note: World invalidation must be done by us because Unmounting the editor does not cause a Yjs mutation.
+    invalidateOverlay();
+  }
+
+  // =========================================================================
+  // Private Helpers
+  // =========================================================================
+
+  private resetState(): void {
+    this.state = {
+      isActive: false,
+      pointerId: null,
+      downWorld: null,
+    };
   }
 }

@@ -1,3 +1,4 @@
+import * as Y from 'yjs';
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import {
   getColor,
@@ -25,7 +26,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
-import { drawTextBox, drawTextWithTransform, drawTextWithUniformScale } from './text';
+import { textLayoutCache, renderTextLayout } from '@/lib/text/text-system';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -168,7 +169,7 @@ function drawObject(
       drawShape(ctx, handle);
       break;
     case 'text':
-      drawTextBox(ctx, handle);
+      drawText(ctx, handle);
       break;
     case 'connector':
       drawConnector(ctx, handle);
@@ -232,6 +233,37 @@ function drawShape(
   }
 
   ctx.restore();
+}
+
+/**
+ * Draw text object using Y.XmlFragment-based rich text.
+ * Skips rendering if the text is currently being edited (DOM overlay handles it).
+ */
+function drawText(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+): void {
+  const { id, y } = handle;
+
+  // Skip rendering if this text is being edited
+  const textEditingId = useSelectionStore.getState().textEditingId;
+  if (textEditingId === id) {
+    return;
+  }
+
+  // Get text data from Y.Map
+  const content = y.get('content') as Y.XmlFragment | undefined;
+  const origin = y.get('origin') as [number, number] | undefined;
+  const fontSize = (y.get('fontSize') as number) ?? 20;
+  const color = (y.get('color') as string) ?? '#000000';
+
+  if (!content || !origin) return;
+
+  // Get or compute layout using cache
+  const layout = textLayoutCache.getLayout(id, content, fontSize);
+
+  // Render text (no opacity for text - always fully opaque)
+  renderTextLayout(ctx, layout, origin[0], origin[1], color);
 }
 
 
@@ -549,13 +581,10 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Text
+  // CASE 4: Text - Phase 1: Draw at original position during transforms
+  // Text transforms (scale/translate) deferred to later phases
   if (handle.kind === 'text') {
-    if (selectionKind === 'mixed' && handleKind === 'corner') {
-      drawTextWithUniformScale(ctx, handle, transform);
-    } else {
-      drawTextWithTransform(ctx, handle, transform);
-    }
+    drawText(ctx, handle);
     return;
   }
 

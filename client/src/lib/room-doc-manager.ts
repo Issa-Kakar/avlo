@@ -23,6 +23,7 @@ import {
   processConnectorDeleted,
   processShapeDeleted,
 } from './connectors';
+import { textLayoutCache, computeTextBBox } from './text/text-system';
 
 type Unsub = () => void;
 
@@ -904,7 +905,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       const touchedIds = new Set<string>();
       const deletedIds = new Set<string>();
-      const textOnlyIds = new Set<string>();
+      const textContentChangedIds = new Set<string>();
 
       for (const ev of events) {
         // Top-level object adds/deletes
@@ -927,18 +928,25 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         touchedIds.add(id);
 
-        // Track text-only changes for optimization
-        if (ev instanceof Y.YTextEvent) {
+        // Classify text-related events for cache invalidation
+        if (path.length >= 2) {
           const field = String(path[1] ?? '');
-          if (field === 'text' || field === 'label') {
-            textOnlyIds.add(id);
+
+          if (field === 'content') {
+            // Y.XmlFragment change: invalidate text cache (full)
+            textLayoutCache.invalidate(id);
+            textContentChangedIds.add(id);
+          } else if (field === 'fontSize') {
+            // fontSize changed: invalidate layout only
+            textLayoutCache.invalidateLayout(id);
           }
+          // 'origin' and 'color' changes don't need cache invalidation
         }
       }
 
       if (touchedIds.size === 0 && deletedIds.size === 0) return;
 
-      this.applyObjectChanges({ touchedIds, deletedIds, textOnlyIds });
+      this.applyObjectChanges({ touchedIds, deletedIds, textContentChangedIds });
       // No flag needed - handleYDocUpdate → publishSnapshotNow() handles publishing
     };
 
@@ -949,9 +957,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private applyObjectChanges(args: {
     touchedIds: Set<string>;
     deletedIds: Set<string>;
-    textOnlyIds: Set<string>;
+    textContentChangedIds: Set<string>;
   }): void {
-    const { touchedIds, deletedIds, textOnlyIds } = args;
+    const { touchedIds, deletedIds, textContentChangedIds } = args;
     const objects = this.getObjects();
 
     // Process deletions
@@ -979,6 +987,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       } else {
         processShapeDeleted(id); // Clean up lookup entry for this shape
       }
+
+      // Invalidate text cache on deletion
+      if (handle.kind === 'text') {
+        textLayoutCache.invalidate(id);
+      }
     }
 
     // Process additions/updates
@@ -990,8 +1003,23 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const prev = this.objectsById.get(id);
       const oldBBox = prev?.bbox ?? null;
 
-      // Compute new bbox
-      const newBBox = computeBBoxFor(kind, yObj);
+      // Compute new bbox - use specialized computation for text
+      let newBBox: [number, number, number, number];
+      if (kind === 'text') {
+        const origin = yObj.get('origin') as [number, number] | undefined;
+        const content = yObj.get('content') as Y.XmlFragment | undefined;
+        const fontSize = (yObj.get('fontSize') as number) ?? 20;
+
+        if (origin && content) {
+          newBBox = computeTextBBox(id, content, fontSize, origin);
+        } else {
+          // Fallback for text without proper data
+          const [x, y] = origin ?? [0, 0];
+          newBBox = [x, y - fontSize, x + 1, y + 1];
+        }
+      } else {
+        newBBox = computeBBoxFor(kind, yObj);
+      }
 
       const handle: ObjectHandle = {
         id,
@@ -1021,7 +1049,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       }
 
       // Handle cache and dirty rects
-      const textOnly = textOnlyIds.has(id);
+      const isTextContentChange = textContentChangedIds.has(id);
 
       if (!oldBBox) {
         // New object
@@ -1035,8 +1063,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           this.dirtyRects.push(bboxToBounds(oldBBox));
           this.dirtyRects.push(bboxToBounds(newBBox));
         } else {
-          // Style-only change (color, opacity) - bbox unchanged
-          if (!textOnly) {
+          // BBox unchanged but may still need repaint
+          // Text content changes always need repaint (text changed within same bounds)
+          if (isTextContentChange || kind !== 'text') {
             this.dirtyRects.push(bboxToBounds(newBBox));
           }
         }
@@ -1059,13 +1088,32 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear dirty tracking - this is a full rebuild
     this.dirtyRects.length = 0;
     this.cacheEvictIds.clear();
+    // Clear text layout cache on full rebuild
+    textLayoutCache.clear();
 
     // Build handles from Y.Doc
     const handles: ObjectHandle[] = [];
     objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
-      const bbox = computeBBoxFor(kind, yObj);
+
+      // Compute bbox - use specialized computation for text
+      let bbox: [number, number, number, number];
+      if (kind === 'text') {
+        const origin = yObj.get('origin') as [number, number] | undefined;
+        const content = yObj.get('content') as Y.XmlFragment | undefined;
+        const fontSize = (yObj.get('fontSize') as number) ?? 20;
+
+        if (origin && content) {
+          bbox = computeTextBBox(id, content, fontSize, origin);
+        } else {
+          // Fallback for text without proper data
+          const [x, y] = origin ?? [0, 0];
+          bbox = [x, y - fontSize, x + 1, y + 1];
+        }
+      } else {
+        bbox = computeBBoxFor(kind, yObj);
+      }
 
       const handle: ObjectHandle = { id, kind, y: yObj, bbox };
       this.objectsById.set(id, handle);

@@ -42,21 +42,23 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | File | Status |
 |------|--------|
 | `client/src/lib/tools/types.ts` | PointerTool interface + all preview types |
-| `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale transforms |
+| `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale, connector endpoint editing |
 | `client/src/lib/tools/DrawingTool.ts` | **Full** - Pen, highlighter, AND shape drawing |
 | `client/src/lib/tools/EraserTool.ts` | **Full** - Geometry-aware hit testing |
 | `client/src/lib/tools/TextTool.ts` | **PLACEHOLDER** - Will be completely replaced |
 | `client/src/lib/tools/PanTool.ts` | **Full** - Viewport panning |
-| `client/src/lib/tools/ConnectorTool.ts` | **Full** - Orthogonal connector drawing (see `docs/CONNECTOR_ROUTING_SYSTEM.md`) |
+| `client/src/lib/tools/ConnectorTool.ts` | **Full** - Orthogonal connector drawing + snapping |
 
 ### Connectors (Orthogonal Routing System)
+**Docs:** `docs/CONNECTOR_ROUTING_SYSTEM_V2.md`, `docs/CONNECTOR_SELECT_CHANGELOG.md`
+
 | File | Responsibility |
 |------|----------------|
 | `client/src/lib/connectors/types.ts` | Dir, Terminal, SnapTarget, RoutingContext, Grid types, Bounds |
 | `client/src/lib/connectors/constants.ts` | SNAP_CONFIG, ROUTING_CONFIG, arrow sizing formulas |
 | `client/src/lib/connectors/connector-utils.ts` | Shape frame helpers, direction resolution, path simplification |
 | `client/src/lib/connectors/snap.ts` | Shape snapping with edge detection, midpoint hysteresis |
-| `client/src/lib/connectors/reroute-connector.ts` | High-level routing API for SelectTool with frame/endpoint overrides |
+| `client/src/lib/connectors/reroute-connector.ts` | High-level routing API for SelectTool with endpoint overrides |
 | `client/src/lib/connectors/routing-context.ts` | Centerlines, dynamic AABBs, stub computation, grid construction |
 | `client/src/lib/connectors/routing-astar.ts` | A* pathfinding with segment intersection checking |
 | `client/src/lib/connectors/connector-paths.ts` | Pure path builders (polyline, arrows) shared by cache and preview |
@@ -69,7 +71,28 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 |------|----------------|
 | `client/src/stores/camera-store.ts` | Camera state, coordinate transforms, canvas element registry, pointer capture |
 | `client/src/stores/device-ui-store.ts` | Toolbar state, drawing settings, cursor management (persisted) |
-| `client/src/stores/selection-store.ts` | Selection IDs, transform state, marquee (ephemeral) |
+| `client/src/stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
+
+#### Selection Store Details
+```typescript
+interface SelectionState {
+  selectedIds: string[];
+  mode: SelectionMode;              // Derived in setSelection: 1 connector → 'connector', else 'standard'
+  selectionKind: SelectionKind;     // 'strokesOnly' | 'shapesOnly' | 'connectorsOnly' | 'mixed'
+  transform: TransformState;        // 'none' | TranslateTransform | ScaleTransform | EndpointDragTransform
+  marquee: MarqueeState;
+  connectorTopology: ConnectorTopology | null;
+}
+
+interface ConnectorTopology {
+  entries: ConnectorTopologyEntry[];     // Unified: strategy='translate'|'reroute', per-endpoint specs
+  translateIdSet: Set<string>;           // O(1): skip A* for these
+  originalFrames: Map<string, FrameTuple>;  // Cached at begin for frame overrides
+  reroutes: Map<string, [number, number][] | null>;  // Mutable per-frame cache
+  prevBboxes: Map<string, WorldBounds>;  // Mutable: dirty rect tracking
+}
+```
+**Topology lifecycle:** Computed atomically inside `beginTranslate`/`beginScale` via `computeConnectorTopology()`. SelectTool reads it for rerouting in `invalidateTransformPreview()`, commits from it in `commitTranslate`/`commitScale`.
 
 ### Geometry Modules
 | File | Responsibility |
@@ -456,7 +479,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
   color, width, opacity, ownerId, createdAt
 }
 ```
-**Note:** Detailed connector system docs in `docs/CONNECTOR_ROUTING_SYSTEM.md`
+**Note:** Detailed connector docs in `docs/CONNECTOR_ROUTING_SYSTEM_V2.md`
 
 ### ObjectHandle (Live Reference)
 ```typescript
@@ -482,7 +505,7 @@ const points = getPoints(handle.y);    // Returns [number, number][]
 ### Standardized Geometry Types (`types/geometry.ts`)
 ```typescript
 // TUPLE TYPES 
-type BBoxTuple = [minX: number, minY: number, maxX: number, maxY: number];
+type BBoxTuple = [minX: number, minY: number, maxX: number, maxY: number];  // Storage in ObjectHandle
 type FrameTuple = [x: number, y: number, w: number, h: number]; // Storage in Y.map for Shape/Text
 
 // OBJECT REPRESENTATIONS (for logic)
@@ -670,62 +693,45 @@ interface DeviceUIState {
 
 ### SelectTool
 
-**File:** `client/src/lib/tools/SelectTool.ts` (~1585 lines)
-**Status:** Shapes and strokes fully working. Text/connectors selectable but not specially handled.
+**File:** `client/src/lib/tools/SelectTool.ts` (~1355 lines)
+**Status:** Full — shapes, strokes, text, and connectors with endpoint editing.
+**Docs:** `docs/SELECT_TOOL_SYSTEM.md`, `docs/CONNECTOR_SELECT_CHANGELOG.md`
+
+#### Selection Modes & Kinds
+```typescript
+type SelectionMode = 'none' | 'standard' | 'connector';  // UX paradigm
+type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'connectorsOnly' | 'mixed';
+```
+
+| Selection | Mode | UX |
+|-----------|------|-----|
+| 1 connector | `connector` | Endpoint dots, drag to reconnect, no selection box |
+| 2+ connectors | `standard` | Selection box + handles, scale transforms |
+| Shapes/strokes/mixed | `standard` | Selection box + handles |
 
 #### State Machine
 ```typescript
-type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale';
-type DownTarget = 'none' | 'handle' | 'objectInSelection' | 'objectOutsideSelection' | 'selectionGap' | 'background';
+type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
 ```
+- **Standard mode:** hit tests handles → scale, objects → translate, background → marquee
+- **Connector mode:** hit tests endpoint dots → `endpointDrag` phase with live A* rerouting + snapping
+- **Anchored connectors:** Drag body starts marquee (can't translate anchored connector body)
 
-| Target | Click | Drag |
-|--------|-------|------|
-| `handle` | No-op | Scale |
-| `objectInSelection` | Drill down | Translate |
-| `objectOutsideSelection` | Select it | Select + Translate |
-| `selectionGap` | Deselect | Translate |
-| `background` | Deselect | Marquee |
+#### Connector Topology Integration
+When shapes transform, attached connectors reroute via `ConnectorTopology` (computed in store at `beginTranslate`/`beginScale`):
+- **Strategy:** `'translate'` (both endpoints move → ctx.translate on cached Path2D) or `'reroute'` (A* each frame)
+- **EndpointSpec:** `string` = frame override (shapeId), `true` = free position override, `null` = canonical
+- **Render:** `objects.ts` reads `topology.reroutes` for preview; commit writes final points
 
-#### Handles & Scale Origin
-```typescript
-type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
-type HandleKind = 'corner' | 'side';  // Computed from HandleId
-```
-Scale origin is **opposite** edge/corner from dragged handle.
+#### Transform Behavior (Strokes/Shapes)
+- **Strokes:** Uniform scale, position preserved, width scales WYSIWYG
+- **Shapes:** Non-uniform scale, stroke width unchanged
+- **Mixed + side handle:** Strokes translate (edge-pin), shapes scale
 
-#### Selection Kinds & Transform Behavior
-```typescript
-type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'mixed';
-```
-
-| Selection | Handle | Strokes | Shapes |
-|-----------|--------|---------|--------|
-| strokesOnly | Corner | Uniform, position preserved | N/A |
-| strokesOnly | Side | Uniform (single axis) | N/A |
-| shapesOnly | Corner | N/A | Non-uniform (X/Y independent) |
-| shapesOnly | Side | N/A | Non-uniform (single axis) |
-| mixed | Corner | Uniform, position preserved | Uniform, position preserved |
-| mixed | Side | **Translate only** (edge-pin) | Non-uniform |
-
-**Key Behaviors:** (transform logic in `geometry/transform.ts`)
-- **Strokes:** Geometry never inverts on flip; position preserved via `computePreservedPosition()`; width scales WYSIWYG
-- **Shapes-only:** Corner-anchored non-uniform scale; stroke width unchanged
-- **Mixed + side:** Strokes translate (edge-pinning) via `computeStrokeTranslation()`
-
-#### Two Bounds for Scale (computed via `geometry/bounds.ts`)
-- **originBounds** (geometry-only): For scale math, via `computeRawGeometryBounds()`, no stroke padding
-- **bboxBounds** (padded): For dirty rect invalidation
-This prevents "anchor sliding" when objects have thick strokes.
-
-#### Hit Testing (via `geometry/hit-testing.ts`)
-- Fill-aware Z-order: Unfilled interiors are "transparent" - scan through to paint underneath
-- Marquee uses geometry intersection (not just bbox): `polylineIntersectsRect`, `ellipseIntersectsRect`, `diamondIntersectsRect`
-- Shared utilities: `testObjectHit()`, `objectIntersectsRect()`, `hitTestHandle()`
-- Constants: `HANDLE_HIT_PX=10`, `MOVE_THRESHOLD_PX=4` (SelectTool), `HIT_RADIUS_PX=6` (SelectTool)
-
-#### Dirty Rect Invalidation
-Uses envelope pattern: `transformEnvelope` accumulates bounds during gesture (never shrinks).
+#### Hit Testing (`geometry/hit-testing.ts`)
+- Fill-aware Z-order: unfilled interiors transparent
+- Endpoint dots: `hitTestEndpointDots()` for connector mode
+- Marquee: geometry intersection (not just bbox)
 
 ---
 
@@ -736,11 +742,12 @@ type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | Selecti
 
 interface SelectionPreview {  // Selection Box/Handles/Highlights are drawn on Overlay Canvas/loop
   kind: 'selection';
-  selectionBounds: WorldRect | null;
+  selectionBounds: WorldRect | null;  // null in connector mode
   marqueeRect: WorldRect | null;
-  handles: { id: HandleId; x, y }[];
+  handles: { id: HandleId; x, y }[];  // null in connector mode or while transforming
   isTransforming: boolean;
   selectedIds: string[];
+  // Connector mode: overlay renders endpoint dots instead of selection box
 }
 
 interface ConnectorPreview {
@@ -762,7 +769,6 @@ interface ConnectorPreview {
 
 ## NOT Implemented Yet / Planned
 
-- **Connector SelectTool integration:** Select/edit existing connectors, endpoint dragging, rerouting
 - **Text Tool:** Full replacement planned (current is placeholder DOM overlay)
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes
