@@ -263,43 +263,36 @@ export class TextTool implements PointerTool {
     const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
     const containerLeft = screenX;
 
-    // Apply styles
-    Object.assign(container.style, {
-      position: 'absolute',
-      left: `${containerLeft}px`,
-      top: `${containerTop}px`,
-      fontFamily: FONT_CONFIG.fallback,
-      fontWeight: String(FONT_CONFIG.weightNormal),
-      fontSize: `${scaledFontSize}px`,
-      lineHeight: `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`,
-      color: color,
-      background: 'transparent',
-      border: 'none',
-      padding: '0',
-      margin: '0',
-      whiteSpace: 'pre-wrap',
-      minWidth: '3px',
-      pointerEvents: 'auto',
-      outline: 'none',
-      zIndex: '1000',
-    });
+    // POSITIONING
+    container.style.position = 'absolute';
+    container.style.left = `${containerLeft}px`;
+    container.style.top = `${containerTop}px`;
+
+    // FONT SIZE/LINE HEIGHT - inline for performance (changes every frame on zoom)
+    container.style.fontSize = `${scaledFontSize}px`;
+    container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+
+    // COLOR - CSS custom property (set once, doesn't change during editing)
+    container.style.setProperty('--text-color', color);
 
     // Append to host
     host.appendChild(container);
 
-    // Create Tiptap Editor
+    // Create Tiptap Editor with CSS class-based styling
     const editor = new Editor({
       element: container,
       extensions: [
         Document,
         Paragraph.configure({
-          HTMLAttributes: { style: 'margin: 0; padding: 0;' },
+          HTMLAttributes: { class: 'tiptap-paragraph' },
         }),
         Text,
         Bold.configure({
-          HTMLAttributes: { style: `font-weight: ${FONT_CONFIG.weightBold};` },
+          HTMLAttributes: { class: 'tiptap-bold' },
         }),
-        Italic,
+        Italic.configure({
+          HTMLAttributes: { class: 'tiptap-italic' },
+        }),
         Collaboration.configure({
           fragment,
         }),
@@ -307,7 +300,7 @@ export class TextTool implements PointerTool {
       autofocus: 'end',
       editorProps: {
         attributes: {
-          style: 'outline: none;',
+          class: 'tiptap',
         },
       },
     });
@@ -382,11 +375,11 @@ export class TextTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
     const scaledFontSize = this.editorState.fontSize * scale;
 
-    // Update position (uses precomputed ratio for CSS line-height leading)
+    // Update position
     this.editorState.container.style.left = `${screenX}px`;
     this.editorState.container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
 
-    // Update font size for crisp rendering
+    // Update font size/line height - inline for performance
     this.editorState.container.style.fontSize = `${scaledFontSize}px`;
     this.editorState.container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
   }

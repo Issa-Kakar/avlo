@@ -2,25 +2,58 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Text editor overlay styles */
-.text-editor-overlay {
-  font-family:
-    Inter,
-    system-ui,
-    -apple-system,
-    sans-serif;
-  line-height: 1.4;
-  word-wrap: break-word;
-  max-width: 400px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  transition: box-shadow 0.2s ease;
+/* =============================================================================
+   TEXT EDITOR SYSTEM
+   ============================================================================= */
+
+.text-editor-container {
+  /* Static appearance */
+  font-family: "Grandstander", cursive, sans-serif;
+  font-weight: 550;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  min-width: 3px;
+  pointer-events: auto;
+  outline: none;
+  z-index: 1000;
+
+  /* Color via CSS custom property (set once, doesn't change during editing) */
+  color: var(--text-color, #000000);
 }
 
-.text-editor-overlay:focus {
-  border-color: #3b82f6;
-  box-shadow:
-    0 0 0 3px rgba(59, 130, 246, 0.1),
-    0 2px 8px rgba(0, 0, 0, 0.15);
+/* Tiptap editor element */
+.text-editor-container .tiptap {
+  outline: none;
+}
+
+/* Paragraph - target both class and native tag */
+.text-editor-container p,
+.text-editor-container .tiptap-paragraph {
+  margin: 0;
+  padding: 0;
+}
+
+/* Bold - target both class and native tag */
+.text-editor-container strong,
+.text-editor-container .tiptap-bold {
+  font-weight: 800;
+}
+
+/* Italic - target both class and native tag */
+.text-editor-container em,
+.text-editor-container .tiptap-italic {
+  font-style: italic;
+}
+
+/* Mixed bold+italic - all combinations */
+.text-editor-container strong em,
+.text-editor-container em strong,
+.text-editor-container .tiptap-bold.tiptap-italic {
+  font-weight: 800;
+  font-style: italic;
 }
 
 /* DOM overlay root - ensure it doesn't block events except for children */
