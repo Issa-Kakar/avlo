@@ -23,7 +23,7 @@ import {
   processConnectorDeleted,
   processShapeDeleted,
 } from './connectors';
-import { textLayoutCache, computeTextBBox } from './text/text-system';
+import { textLayoutCache, computeTextBBox, type TextAlign } from './text/text-system';
 
 type Unsub = () => void;
 
@@ -1009,9 +1009,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         const origin = yObj.get('origin') as [number, number] | undefined;
         const content = yObj.get('content') as Y.XmlFragment | undefined;
         const fontSize = (yObj.get('fontSize') as number) ?? 20;
+        const align = (yObj.get('align') as TextAlign) ?? 'left';
 
         if (origin && content) {
-          newBBox = computeTextBBox(id, content, fontSize, origin);
+          newBBox = computeTextBBox(id, content, fontSize, origin, align);
         } else {
           // Fallback for text without proper data
           const [x, y] = origin ?? [0, 0];
@@ -1103,9 +1104,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         const origin = yObj.get('origin') as [number, number] | undefined;
         const content = yObj.get('content') as Y.XmlFragment | undefined;
         const fontSize = (yObj.get('fontSize') as number) ?? 20;
+        const align = (yObj.get('align') as TextAlign) ?? 'left';
 
         if (origin && content) {
-          bbox = computeTextBBox(id, content, fontSize, origin);
+          bbox = computeTextBBox(id, content, fontSize, origin, align);
         } else {
           // Fallback for text without proper data
           const [x, y] = origin ?? [0, 0];

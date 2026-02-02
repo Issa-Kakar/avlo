@@ -26,7 +26,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
-import { textLayoutCache, renderTextLayout } from '@/lib/text/text-system';
+import { textLayoutCache, renderTextLayout, type TextAlign } from '@/lib/text/text-system';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -256,6 +256,7 @@ function drawText(
   const origin = y.get('origin') as [number, number] | undefined;
   const fontSize = (y.get('fontSize') as number) ?? 20;
   const color = (y.get('color') as string) ?? '#000000';
+  const align = (y.get('align') as TextAlign) ?? 'left';
 
   if (!content || !origin) return;
 
@@ -263,7 +264,7 @@ function drawText(
   const layout = textLayoutCache.getLayout(id, content, fontSize);
 
   // Render text (no opacity for text - always fully opaque)
-  renderTextLayout(ctx, layout, origin[0], origin[1], color);
+  renderTextLayout(ctx, layout, origin[0], origin[1], color, align);
 }
 
 

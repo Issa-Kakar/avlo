@@ -26,6 +26,38 @@ export const FONT_CONFIG = {
 } as const;
 
 // =============================================================================
+// TEXT ALIGNMENT HELPERS
+// =============================================================================
+
+export type TextAlign = 'left' | 'center' | 'right';
+
+/**
+ * Returns the anchor factor for alignment:
+ * - left: 0 (origin at left edge)
+ * - center: 0.5 (origin at center)
+ * - right: 1 (origin at right edge)
+ */
+export function anchorFactor(align: TextAlign): number {
+  return align === 'left' ? 0 : align === 'center' ? 0.5 : 1;
+}
+
+/**
+ * Compute the X position where a line starts drawing, given:
+ * - originX: the anchor point X coordinate
+ * - lineWidth: the advance width of the line
+ * - align: text alignment
+ *
+ * For left-aligned text, line starts at originX.
+ * For center-aligned text, line starts at originX - lineWidth/2.
+ * For right-aligned text, line starts at originX - lineWidth.
+ */
+export function lineStartX(originX: number, lineWidth: number, align: TextAlign): number {
+  if (align === 'left') return originX;
+  if (align === 'center') return originX - lineWidth / 2;
+  return originX - lineWidth;
+}
+
+// =============================================================================
 // FONT METRICS (measured, not approximated)
 // =============================================================================
 
@@ -148,6 +180,7 @@ function getMeasureContext(): CanvasRenderingContext2D {
     canvas.height = 1;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to create measurement context');
+    ctx.textRendering = 'optimizeSpeed';
     measureCtx = ctx;
   }
   return measureCtx;
@@ -493,26 +526,34 @@ export const textLayoutCache = new TextLayoutCache();
  * Render a text layout to canvas.
  * Origin is the baseline position of the first line.
  * Text ink extends above origin (ascent) and below (descent).
+ *
+ * @param align - Text alignment. The originX parameter is the alignment anchor:
+ *   - 'left': originX is the left edge of the text
+ *   - 'center': originX is the center of the text
+ *   - 'right': originX is the right edge of the text
  */
 export function renderTextLayout(
   ctx: CanvasRenderingContext2D,
   layout: TextLayout,
   originX: number,
   originY: number,
-  color: string
+  color: string,
+  align: TextAlign = 'left'
 ): void {
   ctx.save();
   ctx.fillStyle = color;
   ctx.textBaseline = 'alphabetic';
-
+  ctx.textRendering = 'optimizeSpeed';
   for (const line of layout.lines) {
     if (line.isEmpty) continue;
 
     const lineY = originY + line.baselineY;
+    // Compute line start X based on alignment
+    const startX = lineStartX(originX, line.advanceWidth, align);
 
     for (const run of line.runs) {
       ctx.font = run.font;
-      ctx.fillText(run.text, originX + run.advanceX, lineY);
+      ctx.fillText(run.text, startX + run.advanceX, lineY);
     }
   }
 
@@ -526,23 +567,49 @@ export function renderTextLayout(
 /**
  * Compute bounding box for a text object.
  * Used by room-doc-manager for spatial index.
+ *
+ * @param align - Text alignment affects how origin maps to actual ink bounds:
+ *   - 'left': origin is the left edge
+ *   - 'center': origin is the center
+ *   - 'right': origin is the right edge
  */
 export function computeTextBBox(
   objectId: string,
   fragment: Y.XmlFragment,
   fontSize: number,
-  origin: [number, number]
+  origin: [number, number],
+  align: TextAlign = 'left'
 ): BBoxTuple {
   const layout = textLayoutCache.getLayout(objectId, fragment, fontSize);
   const [ox, oy] = origin;
 
-  // Use ink bbox for accurate dirty rect tracking
-  // Add small padding for safety
+  // Compute the actual ink bounds considering alignment
+  // For each line, we need to account for alignment-based positioning
   const padding = 2;
+  let minX = Infinity;
+  let maxX = -Infinity;
+
+  for (const line of layout.lines) {
+    // Where this line starts drawing given alignment
+    const startX = lineStartX(ox, line.advanceWidth, align);
+    // Line ink bounds are relative to line start
+    const lineMinX = startX + line.inkBounds.left;
+    const lineMaxX = startX + line.inkBounds.right;
+    minX = Math.min(minX, lineMinX);
+    maxX = Math.max(maxX, lineMaxX);
+  }
+
+  // Handle edge case: no lines or all empty
+  if (minX === Infinity) {
+    minX = ox;
+    maxX = ox;
+  }
+
+  // Y bounds use ink bbox directly (alignment doesn't affect vertical)
   return [
-    ox + layout.inkBBox.x - padding,
+    minX - padding,
     oy + layout.inkBBox.y - padding,
-    ox + layout.inkBBox.x + layout.inkBBox.width + padding,
+    maxX + padding,
     oy + layout.inkBBox.y + layout.inkBBox.height + padding,
   ];
 }

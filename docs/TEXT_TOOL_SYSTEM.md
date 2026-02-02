@@ -1,7 +1,7 @@
 # Text Tool System Documentation
 
 **Status:** Work in progress - WYSIWYG phase complete
-**Last Updated:** January 2025
+**Last Updated:** February 2025
 
 ## Overview
 
@@ -88,9 +88,10 @@ Text objects use **origin-based positioning** with **Y.XmlFragment content**:
 {
   id: string,                    // ULID
   kind: 'text',
-  origin: [number, number],      // World position of first line BASELINE
+  origin: [number, number],      // World position: [alignmentAnchorX, firstLineBaseline]
   fontSize: number,              // Font size in world units
   color: string,                 // Hex color
+  align: 'left' | 'center' | 'right',  // Text alignment (default: 'left')
   widthMode: 'auto',             // Reserved for future wrapping
   content: Y.XmlFragment,        // Rich text content (Tiptap structure)
   ownerId: string,
@@ -98,13 +99,30 @@ Text objects use **origin-based positioning** with **Y.XmlFragment content**:
 }
 ```
 
-### Why `origin` Instead of `frame`?
+### Origin Semantics (CRITICAL)
 
-Text uses **baseline positioning** unlike shapes which use **bounding box positioning**:
-- `origin[0]` = X position of left edge of first character
-- `origin[1]` = Y position of first line's **baseline** (not top!)
+**`origin[1]` (Y coordinate):** Always the **baseline** of the first line (unchanged).
 
-This allows precise cursor-to-baseline alignment when clicking to create text.
+**`origin[0]` (X coordinate):** The **alignment anchor point**, whose meaning depends on `align`:
+
+| `align` | `origin[0]` meaning |
+|---------|---------------------|
+| `'left'` | Left edge of text (traditional behavior) |
+| `'center'` | Horizontal center of text block |
+| `'right'` | Right edge of text |
+
+**Why this design?**
+- Changing alignment preserves the text's visual position (left edge stays put)
+- The `updateTextAlign()` method adjusts `origin[0]` atomically with `align` to maintain invariant
+- Canvas rendering computes per-line X via: `lineStartX = originX - anchorFactor(align) * lineWidth`
+- DOM overlay uses CSS `transform: translateX(0%/-50%/-100%)` for equivalent anchoring
+
+**Alignment change formula:**
+```
+W = current text width (measured from DOM)
+leftX = originX - anchorFactor(oldAlign) * W    // Compute current left edge
+newOriginX = leftX + anchorFactor(newAlign) * W // New anchor preserving left edge
+```
 
 ---
 
@@ -270,22 +288,23 @@ interface CacheEntry {
 ### 6. Renderer: `renderTextLayout()`
 
 ```typescript
-renderTextLayout(ctx, layout, originX, originY, color)
+renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left')
 ```
 
 - Sets `textBaseline = 'alphabetic'` for proper baseline alignment
-- Origin is **baseline position** of first line
+- Origin is **baseline position** of first line (Y) and **alignment anchor** (X)
 - Text extends **above** origin (ascent) and **below** (descent)
+- **Per-line X computation:** `lineStartX = originX - anchorFactor(align) * line.advanceWidth`
 - Iterates lines → runs → `ctx.fillText()` at computed positions
 
 ### 7. BBox Computation: `computeTextBBox()`
 
 ```typescript
-computeTextBBox(objectId, fragment, fontSize, origin): BBoxTuple
+computeTextBBox(objectId, fragment, fontSize, origin, align: TextAlign = 'left'): BBoxTuple
 ```
 
 - Gets layout from cache
-- Offsets ink bounds by origin
+- **Computes per-line ink bounds** accounting for alignment-based positioning
 - Adds 2px padding for safety
 - Used by room-doc-manager for spatial index
 
@@ -306,9 +325,10 @@ interface EditorState {
   container: HTMLDivElement | null;    // Mounted DOM element
   editor: Editor | null;               // Tiptap Editor instance
   objectId: string | null;             // Y.Map object ID
-  originWorld: [number, number] | null; // World position
+  originWorld: [number, number] | null; // World position (alignment anchor)
   fontSize: number;
   color: string;
+  align: TextAlign;                    // Current alignment
   isNew: boolean;                      // For empty deletion on blur
 }
 ```
@@ -551,6 +571,7 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle) {
   const origin = y.get('origin') as [number, number];
   const fontSize = y.get('fontSize') ?? 20;
   const color = y.get('color') ?? '#000000';
+  const align = y.get('align') ?? 'left';  // Alignment for origin semantics
 
   if (!content || !origin) return;
 
@@ -558,7 +579,7 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle) {
   const layout = textLayoutCache.getLayout(id, content, fontSize);
 
   // Render (no opacity - always fully opaque)
-  renderTextLayout(ctx, layout, origin[0], origin[1], color);
+  renderTextLayout(ctx, layout, origin[0], origin[1], color, align);
 }
 ```
 
@@ -603,11 +624,15 @@ selectTextEditingIsNew(state) => state.textEditingIsNew
 ```typescript
 interface DeviceUIState {
   textSize: TextSizePreset;        // 20 | 30 | 40 | 50
+  textAlign: TextAlign;            // 'left' | 'center' | 'right' (default for new text)
+  textColor: string;               // Text-specific color
   isTextEditing: boolean;          // DOM editor active
 }
 
 // Actions
 setTextSize(size: TextSizePreset)
+setTextAlign(align: TextAlign)
+setTextColor(color: string)
 setIsTextEditing(editing: boolean)
 ```
 
@@ -645,9 +670,10 @@ if (kind === 'text') {
   const origin = yObj.get('origin');
   const content = yObj.get('content') as Y.XmlFragment;
   const fontSize = yObj.get('fontSize') ?? 20;
+  const align = yObj.get('align') ?? 'left';  // Alignment affects bbox!
 
   if (origin && content) {
-    newBBox = computeTextBBox(id, content, fontSize, origin);
+    newBBox = computeTextBBox(id, content, fontSize, origin, align);
   }
 }
 ```
@@ -721,6 +747,11 @@ The text editor uses CSS-based styling with separation of concerns:
   /* Static appearance (font-family, font-weight 550, etc.) */
   font-family: "Grandstander", cursive, sans-serif;
   color: var(--text-color, #000000);  /* Dynamic via JS */
+
+  /* Alignment support via CSS transform for anchor positioning */
+  width: max-content;
+  transform: translateX(var(--text-anchor-tx, 0%));
+  text-align: var(--text-align, left);
 }
 
 /* Tiptap extensions add classes to HTML tags */
@@ -731,10 +762,18 @@ The text editor uses CSS-based styling with separation of concerns:
 .text-editor-container .tiptap-italic { font-style: italic; }
 ```
 
+**Alignment CSS custom properties:**
+| `align` | `--text-anchor-tx` | `--text-align` | Effect |
+|---------|-------------------|----------------|--------|
+| `left` | `0%` | `left` | Left edge at position |
+| `center` | `-50%` | `center` | Center at position |
+| `right` | `-100%` | `right` | Right edge at position |
+
 **JS handles only:**
 - Positioning (`position`, `left`, `top`)
 - Zoom-dependent values (`fontSize`, `lineHeight`) - inline for performance
 - Per-object color (`--text-color` CSS custom property)
+- Per-object alignment (`--text-anchor-tx`, `--text-align` CSS custom properties)
 
 ---
 
@@ -753,11 +792,9 @@ The text editor uses CSS-based styling with separation of concerns:
 hashInput += `${text}[${bold?'B':''}${italic?'I':''}]`;
 ```
 
-### 2. No Contextual Toolbar
+### 2. ~~No Contextual Toolbar~~ ✅ RESOLVED
 
-**Current:** Text settings in main toolbar
-
-**Future:** Floating toolbar appears when editing text (like Google Docs)
+**Status:** Implemented via `TextContextMenu.ts` - floating toolbar with bold/italic/alignment/color/size controls.
 
 ### 3. Device UI Store Settings Not Used During Edit
 
@@ -772,19 +809,17 @@ hashInput += `${text}[${bold?'B':''}${italic?'I':''}]`;
 ### Near-term
 
 1. **Fix structural hash** to include style attributes
-2. **Add contextual toolbar** for text formatting
 
 ### Medium-term
 
-3. **Text align settings** (left/center/right)
-4. **Font family selector**
-5. **Selection transforms** (scale/translate text objects)
+2. **Font family selector**
+3. **Selection transforms** (scale/translate text objects)
 
 ### Long-term
 
-6. **Text wrapping** (widthMode: 'fixed')
-7. **Shape labels** (text inside shapes)
-8. **Tables/lists** (Tiptap extensions)
+4. **Text wrapping** (widthMode: 'fixed')
+5. **Shape labels** (text inside shapes)
+6. **Tables/lists** (Tiptap extensions)
 
 ---
 

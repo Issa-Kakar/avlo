@@ -341,7 +341,7 @@ class TextContextMenu {
     const visibleCenterX = (visibleLeft + visibleRight) / 2;
     const menuWidth = this.container.offsetWidth;
     const menuHeight = this.container.offsetHeight;
-    const gap = 8;
+    const gap = 40;
 
     // Determine above vs below
     const spaceAbove = visibleTop - canvasRect.top;
@@ -455,8 +455,10 @@ class TextContextMenu {
   }
 
   private updateAlignButtons(): void {
-    const uiState = useDeviceUIStore.getState();
-    const align = uiState.textAlign;
+    // Prefer reading align from the active TextTool's editor state (actual object state)
+    // Fall back to UI store for default
+    const textTool = getTextToolInstance();
+    const align = textTool?.getEditorState()?.align ?? useDeviceUIStore.getState().textAlign;
 
     this.alignLeftBtn?.classList.toggle('active', align === 'left');
     this.alignCenterBtn?.classList.toggle('active', align === 'center');
@@ -500,9 +502,14 @@ class TextContextMenu {
   }
 
   private handleAlignClick(align: 'left' | 'center' | 'right'): void {
+    // Use TextTool's updateTextAlign method to mutate Y.Map, adjust origin, and update DOM
+    const textTool = getTextToolInstance();
+    if (textTool) {
+      textTool.updateTextAlign(align);
+    }
+    // Also update UI store for default on new text
     useDeviceUIStore.getState().setTextAlign(align);
     this.updateAlignButtons();
-    // TODO: Apply to editor when TextAlign extension is enabled
     this.editor?.chain().focus().run();
   }
 

@@ -26,7 +26,7 @@ import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/c
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { FONT_CONFIG, getBaselineToTopRatio } from '@/lib/text/text-system';
+import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor, type TextAlign } from '@/lib/text/text-system';
 import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -44,6 +44,7 @@ interface EditorState {
   originWorld: [number, number] | null;
   fontSize: number;
   color: string;
+  align: TextAlign;
   isNew: boolean;
 }
 
@@ -61,6 +62,7 @@ export class TextTool implements PointerTool {
     originWorld: null,
     fontSize: 20,
     color: '#000000',
+    align: 'left',
     isNew: false,
   };
 
@@ -194,6 +196,7 @@ export class TextTool implements PointerTool {
     const roomDoc = getActiveRoomDoc();
     const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
+    const align = useDeviceUIStore.getState().textAlign;
 
     roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
@@ -205,6 +208,7 @@ export class TextTool implements PointerTool {
       yObj.set('origin', [worldX, worldY]);
       yObj.set('fontSize', fontSize);
       yObj.set('color', color);
+      yObj.set('align', align);
       yObj.set('widthMode', 'auto');
       // Create empty Y.XmlFragment - Tiptap Collaboration will initialize it
       yObj.set('content', new Y.XmlFragment());
@@ -250,7 +254,12 @@ export class TextTool implements PointerTool {
       console.error('[TextTool] No content fragment:', objectId);
       return;
     }
-    
+
+    // Read alignment: from Y.Map for existing text, or from UI store for new text
+    const align: TextAlign = isNew
+      ? useDeviceUIStore.getState().textAlign
+      : ((handle.y.get('align') as TextAlign) ?? 'left');
+
     // Create container div
     const container = document.createElement('div');
     container.className = 'text-editor-container';
@@ -276,6 +285,13 @@ export class TextTool implements PointerTool {
 
     // COLOR - CSS custom property (set once, doesn't change during editing)
     container.style.setProperty('--text-color', color);
+
+    // ALIGNMENT - CSS custom properties for transform-based anchor positioning
+    container.style.setProperty('--text-align', align);
+    container.style.setProperty(
+      '--text-anchor-tx',
+      align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
+    );
     
     // Append to host
     host.appendChild(container);
@@ -319,6 +335,7 @@ export class TextTool implements PointerTool {
       originWorld: [worldX, worldY],
       fontSize,
       color,
+      align,
       isNew,
     };
 
@@ -447,6 +464,7 @@ export class TextTool implements PointerTool {
       originWorld: null,
       fontSize: 20,
       color: '#000000',
+      align: 'left',
       isNew: false,
     };
 
@@ -522,6 +540,66 @@ export class TextTool implements PointerTool {
     this.repositionEditor();
 
     // 5. Invalidate world to update any non-editing canvas rendering
+    invalidateWorld(getVisibleWorldBounds());
+  }
+
+  /**
+   * Apply alignment CSS to the editor container.
+   * Sets CSS custom properties for transform-based anchor positioning.
+   */
+  private applyAlignCSS(align: TextAlign): void {
+    const container = this.editorState.container;
+    if (!container) return;
+    container.style.setProperty('--text-align', align);
+    container.style.setProperty(
+      '--text-anchor-tx',
+      align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
+    );
+  }
+
+  /**
+   * Update the alignment of the current text object.
+   * Called by context menu when user picks a new alignment.
+   * Adjusts origin.x to preserve the text's left edge position.
+   */
+  updateTextAlign(newAlign: TextAlign): void {
+    const { objectId, container, originWorld } = this.editorState;
+    if (!objectId || !container || !originWorld) return;
+
+    const roomDoc = getActiveRoomDoc();
+    const snapshot = roomDoc.currentSnapshot;
+    const handle = snapshot.objectsById.get(objectId);
+    if (!handle) return;
+
+    const oldAlign = (handle.y.get('align') as TextAlign) ?? 'left';
+    if (oldAlign === newAlign) return;
+
+    // Measure current width from DOM
+    const scale = useCameraStore.getState().scale;
+    const W = container.getBoundingClientRect().width / scale;
+
+    // Compute new origin.x to preserve left edge position
+    const oldF = anchorFactor(oldAlign);
+    const newF = anchorFactor(newAlign);
+    const leftX = originWorld[0] - oldF * W;
+    const newOriginX = leftX + newF * W;
+
+    // Update Yjs atomically
+    roomDoc.mutate(() => {
+      handle.y.set('origin', [newOriginX, originWorld[1]]);
+      handle.y.set('align', newAlign);
+    });
+
+    // Update local state
+    this.editorState.originWorld = [newOriginX, originWorld[1]];
+    this.editorState.align = newAlign;
+
+    // Update CSS
+    this.applyAlignCSS(newAlign);
+
+    // Reposition (origin changed)
+    this.repositionEditor();
+
     invalidateWorld(getVisibleWorldBounds());
   }
 
