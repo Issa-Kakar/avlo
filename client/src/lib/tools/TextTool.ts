@@ -15,6 +15,7 @@ import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
+//import TextAlign from '@tiptap/extension-text-align';
 import Collaboration from '@tiptap/extension-collaboration';
 import * as Y from 'yjs';
 
@@ -26,6 +27,7 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { FONT_CONFIG, getBaselineToTopRatio } from '@/lib/text/text-system';
+import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
 
@@ -101,7 +103,7 @@ export class TextTool implements PointerTool {
     // Get current settings
     const uiState = useDeviceUIStore.getState();
     const textSize = uiState.textSize;
-    const color = uiState.drawingSettings.color;
+    const color = uiState.textColor;
 
     // Create text object in Y.Doc
     const objectId = this.createTextObject(x, y, textSize, color);
@@ -248,7 +250,7 @@ export class TextTool implements PointerTool {
       console.error('[TextTool] No content fragment:', objectId);
       return;
     }
-
+    
     // Create container div
     const container = document.createElement('div');
     container.className = 'text-editor-container';
@@ -274,7 +276,7 @@ export class TextTool implements PointerTool {
 
     // COLOR - CSS custom property (set once, doesn't change during editing)
     container.style.setProperty('--text-color', color);
-
+    
     // Append to host
     host.appendChild(container);
 
@@ -293,6 +295,10 @@ export class TextTool implements PointerTool {
         Italic.configure({
           HTMLAttributes: { class: 'tiptap-italic' },
         }),
+        // AtomicTextAlign.configure({
+        //   types: ['paragraph'],
+        //   alignments: ['left', 'center', 'right'],
+        // }),
         Collaboration.configure({
           fragment,
         }),
@@ -319,6 +325,9 @@ export class TextTool implements PointerTool {
     // Setup event handlers
     this.setupEditorHandlers();
 
+    // Mount context menu
+    textContextMenu.mount(host, container, editor, objectId);
+
     // Mark text editing active in UI store
     useDeviceUIStore.getState().setIsTextEditing(true);
   }
@@ -335,11 +344,18 @@ export class TextTool implements PointerTool {
 
     // Click outside to commit
     this.boundHandleClickOutside = (e: MouseEvent) => {
-      if (this.editorState.container && !this.editorState.container.contains(e.target as Node)) {
-        // Small delay to allow focus events to settle
-        // EDIT: no need for delay, just commit and close(Delay causes flicker for canvas paint)
-        this.commitAndClose();
-      }
+      const target = e.target as Node;
+      const container = this.editorState.container;
+
+      // Check if click is inside editor container
+      if (container && container.contains(target)) return;
+
+      // Check if click is inside context menu
+      const menuElement = document.querySelector('.text-context-menu');
+      if (menuElement && menuElement.contains(target)) return;
+
+      // Click is outside both - commit and close
+      this.commitAndClose();
     };
 
     document.addEventListener('keydown', this.boundHandleKeyDown, true);
@@ -382,6 +398,9 @@ export class TextTool implements PointerTool {
     // Update font size/line height - inline for performance
     this.editorState.container.style.fontSize = `${scaledFontSize}px`;
     this.editorState.container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+
+    // Context menu handles its own positioning via camera subscription
+    textContextMenu.onViewChange();
   }
 
   // =========================================================================
@@ -405,8 +424,10 @@ export class TextTool implements PointerTool {
         objects.delete(objectId);
       });
     }
-    //useSelectionStore.getState().endTextEditing();
-    //invalidateWorld(getVisibleWorldBounds());
+
+    // Destroy context menu first (before editor)
+    textContextMenu.destroy();
+
     // Remove event handlers
     this.removeEditorHandlers();
 
@@ -441,6 +462,77 @@ export class TextTool implements PointerTool {
   }
 
   // =========================================================================
+  // Public Methods: Live Editing Updates
+  // =========================================================================
+
+  /**
+   * Update the color of the current text object.
+   * Called by context menu when user picks a new color.
+   */
+  updateColor(newColor: string): void {
+    const { objectId, container } = this.editorState;
+    if (!objectId || !container) return;
+
+    // 1. Update Y.Map (triggers observer → cache is fine, color not cached)
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.mutate(() => {
+      const snapshot = roomDoc.currentSnapshot;
+      const handle = snapshot.objectsById.get(objectId);
+      if (handle) {
+        handle.y.set('color', newColor);
+      }
+    });
+
+    // 2. Update CSS variable immediately for DOM overlay
+    container.style.setProperty('--text-color', newColor);
+    this.editorState.color = newColor;
+
+    // 3. Update UI store for consistency
+    useDeviceUIStore.getState().setTextColor(newColor);
+  }
+
+  /**
+   * Update the fontSize of the current text object.
+   * Called by context menu when user picks a new size.
+   */
+  updateFontSize(newSize: number): void {
+    const { objectId, container, originWorld } = this.editorState;
+    if (!objectId || !container || !originWorld) return;
+
+    // 1. Update Y.Map (triggers observer → invalidateLayout)
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.mutate(() => {
+      const snapshot = roomDoc.currentSnapshot;
+      const handle = snapshot.objectsById.get(objectId);
+      if (handle) {
+        handle.y.set('fontSize', newSize);
+      }
+    });
+
+    // 2. Update editor state
+    this.editorState.fontSize = newSize;
+
+    // 3. Update CSS for DOM overlay (scale-adjusted)
+    const scale = useCameraStore.getState().scale;
+    const scaledFontSize = newSize * scale;
+    container.style.fontSize = `${scaledFontSize}px`;
+    container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+
+    // 4. Reposition editor (baseline position changes with font size)
+    this.repositionEditor();
+
+    // 5. Invalidate world to update any non-editing canvas rendering
+    invalidateWorld(getVisibleWorldBounds());
+  }
+
+  /**
+   * Get the current editor state for external access (e.g., context menu).
+   */
+  getEditorState(): EditorState {
+    return this.editorState;
+  }
+
+  // =========================================================================
   // Private Helpers
   // =========================================================================
 
@@ -451,4 +543,55 @@ export class TextTool implements PointerTool {
       downWorld: null,
     };
   }
+
+  // =========================================================================
+  // Public Getters (for external access, e.g., context menu)
+  // =========================================================================
+
+  /**
+   * Get the active editor container element.
+   */
+  getEditorContainer(): HTMLDivElement | null {
+    return this.editorState.container;
+  }
+
+  /**
+   * Get the active Tiptap editor instance.
+   */
+  getTiptapEditor(): Editor | null {
+    return this.editorState.editor;
+  }
+}
+
+// Create singleton instance for external access
+let textToolInstance: TextTool | null = null;
+
+/**
+ * Set the TextTool instance for external access.
+ * Called by tool-registry when creating the tool.
+ */
+export function setTextToolInstance(tool: TextTool): void {
+  textToolInstance = tool;
+}
+
+/**
+ * Get the TextTool instance.
+ * Used by context menu to call updateColor/updateFontSize methods.
+ */
+export function getTextToolInstance(): TextTool | null {
+  return textToolInstance;
+}
+
+/**
+ * Get the active editor container element.
+ */
+export function getActiveEditorContainer(): HTMLDivElement | null {
+  return textToolInstance?.getEditorContainer() ?? null;
+}
+
+/**
+ * Get the active Tiptap editor instance.
+ */
+export function getActiveTiptapEditor(): Editor | null {
+  return textToolInstance?.getTiptapEditor() ?? null;
 }

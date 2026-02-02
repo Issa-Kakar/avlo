@@ -20,6 +20,13 @@ export type SizePreset = 6 | 10 | 14 | 18; // For pen/highlighter/shapes
 export type TextSizePreset = 20 | 30 | 40 | 50; // For text
 export type ConnectorSizePreset = 2 | 4 | 6 | 8; // For connectors
 
+// Figma-like font size presets for text context menu
+export type TextFontSizePreset = 12 | 14 | 16 | 18 | 20 | 24 | 28 | 32 | 36 | 48 | 64 | 72 | 96;
+export const TEXT_FONT_SIZE_PRESETS: readonly TextFontSizePreset[] = [12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 64, 72, 96];
+
+// Text alignment type
+export type TextAlign = 'left' | 'center' | 'right';
+
 // Global drawing settings that all tools share
 export interface DrawingSettings {
   size: SizePreset;
@@ -40,6 +47,13 @@ interface DeviceUIState {
   textSize: TextSizePreset; // Text has different size scale
   connectorSize: ConnectorSizePreset; // Connectors have thin sizes
   shapeVariant: ShapeVariant; // Which shape is selected
+
+  // Text-specific settings (used by text context menu)
+  textColor: string; // Text-specific color (separate from drawing color)
+  textAlign: TextAlign; // Text alignment
+  textFontFamily: string; // Only 'Grandstander' for now
+  textIsBold: boolean; // Current cursor position has bold
+  textIsItalic: boolean; // Current cursor position has italic
 
   // Placeholder tools
   image: {
@@ -78,6 +92,13 @@ interface DeviceUIState {
   setConnectorSize: (size: ConnectorSizePreset) => void;
   setShapeVariant: (variant: ShapeVariant) => void;
 
+  // Text-specific setters
+  setTextColor: (color: string) => void;
+  setTextAlign: (align: TextAlign) => void;
+  setTextFontFamily: (family: string) => void;
+  setTextIsBold: (bold: boolean) => void;
+  setTextIsItalic: (italic: boolean) => void;
+
   toggleEditor: () => void; // Keep for future code editor
   setCollaborationMode: (mode: 'server' | 'peer') => void;
   setIsTextEditing: (editing: boolean) => void;
@@ -109,6 +130,13 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       textSize: 30, // Text has different size scale
       connectorSize: 4, // Connector default (M)
       shapeVariant: 'rectangle', // Default shape
+
+      // Text-specific settings
+      textColor: '#262626', // Soft black (same as default drawing color)
+      textAlign: 'left', // Default left alignment
+      textFontFamily: 'Grandstander', // Only option for now
+      textIsBold: false,
+      textIsItalic: false,
 
       image: { enabled: false }, // UI placeholder
 
@@ -196,6 +224,13 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       setShapeVariant: (variant) => set({ shapeVariant: variant }),
 
+      // Text-specific setters
+      setTextColor: (color) => set({ textColor: color }),
+      setTextAlign: (align) => set({ textAlign: align }),
+      setTextFontFamily: (family) => set({ textFontFamily: family }),
+      setTextIsBold: (bold) => set({ textIsBold: bold }),
+      setTextIsItalic: (italic) => set({ textIsItalic: italic }),
+
       toggleEditor: () => set((state) => ({ editorCollapsed: !state.editorCollapsed })),
 
       setCollaborationMode: (mode) => set({ collaborationMode: mode }),
@@ -254,7 +289,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
     }),
     {
       name: 'avlo.toolbar.v3', // New key for unified settings
-      version: 6,
+      version: 7,
       // Migration function for schema changes
       migrate: (persistedState: unknown, version: number) => {
         // Helper functions for migration
@@ -300,6 +335,17 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           return colorMap[oldColor] || oldColor;
         };
 
+        // v7 migration: Add text-specific settings
+        if (version === 6) {
+          const state = persistedState as Record<string, unknown>;
+          return {
+            ...state,
+            textColor: (state.textColor as string) ?? '#262626',
+            textAlign: (state.textAlign as string) ?? 'left',
+            textFontFamily: (state.textFontFamily as string) ?? 'Grandstander',
+          };
+        }
+
         // v6 migration: Migrate drawing sizes from 8/12/16/20 to 6/10/14/18
         if (version === 5) {
           const state = persistedState as Record<string, unknown>;
@@ -311,6 +357,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
               ...drawingSettings,
               size: migrateDrawingSizeV6(currentDrawingSize),
             },
+            // Add text settings for older versions
+            textColor: '#262626',
+            textAlign: 'left',
+            textFontFamily: 'Grandstander',
           };
         }
 
@@ -328,6 +378,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
               size: migrateDrawingSizeV6(v5Size),
             },
             connectorSize: 4, // Default M for migrated users
+            // Add text settings for older versions
+            textColor: '#262626',
+            textAlign: 'left',
+            textFontFamily: 'Grandstander',
           };
         }
 
@@ -383,6 +437,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             textSize: migrateTextSize((text?.size as number) || 30),
             connectorSize: 4, // Default M for new migrated users
             shapeVariant: (shape?.variant as string) || 'rectangle',
+
+            // Text-specific settings (new in v7)
+            textColor: '#262626',
+            textAlign: 'left',
+            textFontFamily: 'Grandstander',
 
             image: { enabled: false },
 
@@ -465,3 +524,12 @@ useDeviceUIStore.subscribe((state, prevState) => {
     applyCursor();
   }
 });
+
+// ============================================
+// SELECTORS
+// ============================================
+export const selectTextColor = (s: DeviceUIState) => s.textColor;
+export const selectTextAlign = (s: DeviceUIState) => s.textAlign;
+export const selectTextSize = (s: DeviceUIState) => s.textSize;
+export const selectTextIsBold = (s: DeviceUIState) => s.textIsBold;
+export const selectTextIsItalic = (s: DeviceUIState) => s.textIsItalic;
