@@ -12,18 +12,11 @@
 
 import * as Y from 'yjs';
 import type { BBoxTuple } from '@avlo/shared';
+import { areFontsLoaded } from './font-loader';
+import { FONT_CONFIG } from './font-config';
 
-// =============================================================================
-// FONT CONFIGURATION
-// =============================================================================
-
-export const FONT_CONFIG = {
-  family: 'Grandstander',
-  fallback: '"Grandstander", cursive, sans-serif',
-  weightNormal: 550,
-  weightBold: 800,
-  lineHeightMultiplier: 1.3,
-} as const;
+// Re-export for consumers
+export { FONT_CONFIG } from './font-config';
 
 // =============================================================================
 // TEXT ALIGNMENT HELPERS
@@ -63,21 +56,55 @@ export function lineStartX(originX: number, lineWidth: number, align: TextAlign)
 
 let _measuredAscentRatio: number | null = null;
 
+/** Known fallback value for Grandstander (used if fonts not loaded yet) */
+const FALLBACK_ASCENT_RATIO = 0.73;
+
 /**
  * Get the actual font ascent ratio by measuring with canvas.
  * Uses fontBoundingBoxAscent which is the same metric CSS uses.
  * Cached after first measurement.
  */
 export function getMeasuredAscentRatio(): number {
-  if (_measuredAscentRatio === null) {
-    const ctx = getMeasureContext();
-    // Use a large font size for accuracy, then compute ratio
-    const testSize = 100;
-    ctx.font = buildFontString(false, false, testSize);
-    const metrics = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
-    _measuredAscentRatio = metrics.fontBoundingBoxAscent / testSize;
+  if (_measuredAscentRatio !== null) {
+    return _measuredAscentRatio;
   }
+
+  // CRITICAL: If fonts not loaded, we'd measure "cursive" fallback (wrong!)
+  if (!areFontsLoaded()) {
+    console.warn('[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.');
+    return FALLBACK_ASCENT_RATIO;
+  }
+
+  const ctx = getMeasureContext();
+  const testSize = 100;
+  ctx.font = buildFontString(false, false, testSize);
+  const metrics = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
+
+  const ascent = metrics.fontBoundingBoxAscent;
+  const descent = metrics.fontBoundingBoxDescent;
+  const totalHeight = ascent + descent;
+
+  // Handle fonts that include line-gap in metrics:
+  // If totalHeight > fontSize, derive em-box ratio proportionally
+  const tolerance = testSize * 0.01;
+  if (Math.abs(totalHeight - testSize) < tolerance) {
+    // Pure em-box metrics
+    _measuredAscentRatio = ascent / testSize;
+  } else {
+    // Font includes line-gap: use proportion
+    _measuredAscentRatio = ascent / totalHeight;
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[text-system] Measured ascent ratio: ${_measuredAscentRatio.toFixed(4)}`);
   return _measuredAscentRatio;
+}
+
+/**
+ * Reset cached font metrics. Call after fonts finish loading.
+ */
+export function resetFontMetrics(): void {
+  _measuredAscentRatio = null;
 }
 
 /**

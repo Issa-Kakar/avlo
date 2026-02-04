@@ -273,7 +273,10 @@ export class TextTool implements PointerTool {
     // Uses precomputed ratio that accounts for CSS line-height leading
     const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
     const containerLeft = screenX;
-
+    console.log('containerTop', containerTop);
+    console.log('containerLeft', containerLeft);
+    console.log('scaledFontSize', scaledFontSize);
+    console.log('getBaselineToTopRatio', getBaselineToTopRatio());
     // POSITIONING
     container.style.position = 'absolute';
     container.style.left = `${containerLeft}px`;
@@ -283,7 +286,6 @@ export class TextTool implements PointerTool {
     container.style.fontSize = `${scaledFontSize}px`;
     container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
 
-    // COLOR - CSS custom property (set once, doesn't change during editing)
     container.style.setProperty('--text-color', color);
 
     // ALIGNMENT - CSS custom properties for transform-based anchor positioning
@@ -311,10 +313,6 @@ export class TextTool implements PointerTool {
         Italic.configure({
           HTMLAttributes: { class: 'tiptap-italic' },
         }),
-        // AtomicTextAlign.configure({
-        //   types: ['paragraph'],
-        //   alignments: ['left', 'center', 'right'],
-        // }),
         Collaboration.configure({
           fragment,
         }),

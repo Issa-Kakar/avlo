@@ -66,6 +66,7 @@
     "wrangler": "^4.46.0"
   },
   "dependencies": {
+    "@tiptap/extension-text-align": "^3.18.0",
     "chalk": "^5.6.0",
     "partyserver": "^0.0.75",
     "react-router-dom": "^7.8.2",

@@ -3,13 +3,62 @@
 @tailwind utilities;
 
 /* =============================================================================
+   FONT DEFINITIONS - Grandstander (Optimized Static Fonts)
+
+   These fonts have ss01 (stylistic alternates) baked in as default glyphs.
+   No font-feature-settings needed - the alternate 'a', 'g', 'l', 't', etc.
+   are now the standard glyphs.
+
+   Weights: 550 (Regular), 800 (Bold)
+   Character set: Latin only (~20KB each vs ~86KB variable)
+   ============================================================================= */
+
+/* Regular (weight 550) */
+@font-face {
+  font-family: 'Grandstander';
+  src: url('/fonts/Grandstander-Regular.woff2') format('woff2');
+  font-weight: 550;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Regular Italic (weight 550) */
+@font-face {
+  font-family: 'Grandstander';
+  src: url('/fonts/Grandstander-Regular-Italic.woff2') format('woff2');
+  font-weight: 550;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Bold (weight 800) */
+@font-face {
+  font-family: 'Grandstander';
+  src: url('/fonts/Grandstander-Bold.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Bold Italic (weight 800) */
+@font-face {
+  font-family: 'Grandstander';
+  src: url('/fonts/Grandstander-Bold-Italic.woff2') format('woff2');
+  font-weight: 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* =============================================================================
    TEXT EDITOR SYSTEM
    ============================================================================= */
 
 .text-editor-container {
-  /* Static appearance */
+  /* Font styling */
   font-family: "Grandstander", cursive, sans-serif;
   font-weight: 550;
+
+  /* Layout */
   background: transparent;
   border: none;
   padding: 0;
@@ -17,49 +66,49 @@
   white-space: pre-wrap;
   min-width: 3px;
   pointer-events: auto;
-  outline: 3px;
-  outline-style: solid;
-  outline-color: rgba(29, 78, 216, 1);
+  outline: none;
   z-index: 1000;
 
-  /* Color via CSS custom property (Possibly changes during editing) */
+  /* Dynamic properties */
   color: var(--text-color, #000000);
 
-  /* Alignment support via CSS transform for anchor positioning:
-   * - left: translateX(0%) - left edge at position
-   * - center: translateX(-50%) - center at position
-   * - right: translateX(-100%) - right edge at position
-   */
+  /* Alignment anchor transform */
   width: max-content;
   transform: translateX(var(--text-anchor-tx, 0%));
   text-align: var(--text-align, left);
 }
 
-/* Tiptap editor element */
+/* Tiptap editor */
 .text-editor-container .tiptap {
   outline: none;
 }
 
-/* Paragraph - target both class and native tag */
+/*
+ * Disable ligatures for correct cursor positioning in the editor.
+ * (ss01 is no longer needed - alternates are baked into the font)
+ */
+
+
+/* Paragraph styling */
 .text-editor-container p,
 .text-editor-container .tiptap-paragraph {
   margin: 0;
   padding: 0;
 }
 
-/* Bold - target both class and native tag */
+/* Bold */
 .text-editor-container strong,
 .text-editor-container .tiptap-bold {
   font-weight: 800;
 }
 
-/* Italic - target both class and native tag */
+/* Italic */
 .text-editor-container em,
 .text-editor-container .tiptap-italic {
   font-style: italic;
 }
 
-/* Mixed bold+italic - all combinations */
+/* Bold + Italic */
 .text-editor-container strong em,
 .text-editor-container em strong,
 .text-editor-container .tiptap-bold.tiptap-italic {

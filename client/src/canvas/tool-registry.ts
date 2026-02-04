@@ -16,7 +16,7 @@
 
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
-import { TextTool } from '@/lib/tools/TextTool';
+import { TextTool, setTextToolInstance } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { SelectTool } from '@/lib/tools/SelectTool';
 import { ConnectorTool } from '@/lib/tools/ConnectorTool';
@@ -33,6 +33,9 @@ const textTool = new TextTool();
 const panTool = new PanTool();
 const selectTool = new SelectTool();
 const connectorTool = new ConnectorTool();
+
+// Register TextTool instance for external access
+setTextToolInstance(textTool);
 
 // ===========================================
 // TOOL LOOKUP
