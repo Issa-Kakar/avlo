@@ -1010,9 +1010,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         const content = yObj.get('content') as Y.XmlFragment | undefined;
         const fontSize = (yObj.get('fontSize') as number) ?? 20;
         const align = (yObj.get('align') as TextAlign) ?? 'left';
+        const widthMode = (yObj.get('widthMode') as string) ?? 'auto';
+        const fixedWidth = widthMode === 'fixed' ? ((yObj.get('width') as number) ?? null) : null;
 
         if (origin && content) {
-          newBBox = computeTextBBox(id, content, fontSize, origin, align);
+          newBBox = computeTextBBox(id, content, fontSize, origin, align, fixedWidth);
         } else {
           // Fallback for text without proper data
           const [x, y] = origin ?? [0, 0];
@@ -1105,9 +1107,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         const content = yObj.get('content') as Y.XmlFragment | undefined;
         const fontSize = (yObj.get('fontSize') as number) ?? 20;
         const align = (yObj.get('align') as TextAlign) ?? 'left';
+        const widthMode = (yObj.get('widthMode') as string) ?? 'auto';
+        const fixedWidth = widthMode === 'fixed' ? ((yObj.get('width') as number) ?? null) : null;
 
         if (origin && content) {
-          bbox = computeTextBBox(id, content, fontSize, origin, align);
+          bbox = computeTextBBox(id, content, fontSize, origin, align, fixedWidth);
         } else {
           // Fallback for text without proper data
           const [x, y] = origin ?? [0, 0];

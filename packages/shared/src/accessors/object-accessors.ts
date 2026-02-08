@@ -173,46 +173,38 @@ export function getEndCap(y: Y.Map<unknown>): 'arrow' | 'none' {
 // ============================================================================
 
 /**
- * Get text content from Y.Map.
- * Returns empty string if not found.
- */
-export function getText(y: Y.Map<unknown>): string {
-  return (y.get('text') as string | undefined) ?? '';
-}
-
-/**
  * Get font size from Y.Map with fallback.
  */
-export function getFontSize(y: Y.Map<unknown>, fallback = 16): number {
+export function getFontSize(y: Y.Map<unknown>, fallback = 20): number {
   return (y.get('fontSize') as number | undefined) ?? fallback;
 }
 
 /**
- * Get font family from Y.Map with fallback.
+ * Get origin (anchor point + baseline) from Y.Map.
  */
-export function getFontFamily(y: Y.Map<unknown>, fallback = 'sans-serif'): string {
-  return (y.get('fontFamily') as string | undefined) ?? fallback;
+export function getOrigin(y: Y.Map<unknown>): [number, number] | null {
+  return (y.get('origin') as [number, number] | undefined) ?? null;
 }
 
 /**
- * Get font weight from Y.Map with fallback.
+ * Get text alignment from Y.Map with fallback.
  */
-export function getFontWeight(y: Y.Map<unknown>, fallback = 'normal'): string {
-  return (y.get('fontWeight') as string | undefined) ?? fallback;
+export function getAlign(y: Y.Map<unknown>, fallback = 'left'): string {
+  return (y.get('align') as string | undefined) ?? fallback;
 }
 
 /**
- * Get font style from Y.Map with fallback.
+ * Get width mode from Y.Map with fallback.
  */
-export function getFontStyle(y: Y.Map<unknown>, fallback = 'normal'): string {
-  return (y.get('fontStyle') as string | undefined) ?? fallback;
+export function getWidthMode(y: Y.Map<unknown>, fallback = 'auto'): string {
+  return (y.get('widthMode') as string | undefined) ?? fallback;
 }
 
 /**
- * Get text horizontal alignment from Y.Map with fallback.
+ * Get Y.XmlFragment content from Y.Map.
  */
-export function getTextAlignH(y: Y.Map<unknown>, fallback = 'left'): string {
-  return (y.get('textAlignH') as string | undefined) ?? fallback;
+export function getContent(y: Y.Map<unknown>): Y.XmlFragment | null {
+  return (y.get('content') as Y.XmlFragment | undefined) ?? null;
 }
 
 // ============================================================================

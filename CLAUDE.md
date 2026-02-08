@@ -32,7 +32,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/renderer/RenderLoop.ts` | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
 | `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
-| `client/src/renderer/layers/text.ts` | Text rendering utilities (PLACEHOLDER - will be replaced) |
+| `client/src/lib/text/text-system.ts` | Text layout engine, cache, renderer, BBox + derived frame computation |
 | `client/src/renderer/layers/selection-overlay.ts` | Selection preview rendering: highlights, marquee, box, circular handles |
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
@@ -45,7 +45,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale, connector endpoint editing |
 | `client/src/lib/tools/DrawingTool.ts` | **Full** - Pen, highlighter, AND shape drawing |
 | `client/src/lib/tools/EraserTool.ts` | **Full** - Geometry-aware hit testing |
-| `client/src/lib/tools/TextTool.ts` | **PLACEHOLDER** - Will be completely replaced |
+| `client/src/lib/tools/TextTool.ts` | **Full** - WYSIWYG rich text with Tiptap DOM overlay + canvas rendering |
 | `client/src/lib/tools/PanTool.ts` | **Full** - Viewport panning |
 | `client/src/lib/tools/ConnectorTool.ts` | **Full** - Orthogonal connector drawing + snapping |
 
@@ -455,10 +455,13 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
   frame: [x, y, w, h], ownerId, createdAt }
 ```
 
-**Text** (placeholder - will be replaced):
+**Text** (origin-based positioning, rich text via Y.XmlFragment):
 ```typescript
-{ id, kind: 'text', frame: [x,y,w,h], text: string, color, fontSize,
-  fontFamily, fontWeight, fontStyle, textAlignH, opacity, ownerId, createdAt }
+{ id, kind: 'text', origin: [anchorX, baseline], fontSize, color,
+  align: 'left'|'center'|'right', widthMode: 'auto',
+  content: Y.XmlFragment, ownerId, createdAt }
+// NOTE: No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
+// Use getTextFrame(objectId) from text-system.ts to read the cached derived frame.
 ```
 
 **Connector** (orthogonal routing with optional shape anchoring):
@@ -538,7 +541,7 @@ getStartAnchor(y), getEndAnchor(y) → StoredAnchor | undefined
 getStartCap(y), getEndCap(y) → 'arrow' | 'none'
 
 // Text-specific
-getText(y), getFontSize(y), getFontFamily(y), etc.
+getFontSize(y), getOrigin(y), getAlign(y), getWidthMode(y), getContent(y)
 ```
 
 ### StoredAnchor (Connector Anchoring)
@@ -769,7 +772,7 @@ interface ConnectorPreview {
 
 ## NOT Implemented Yet / Planned
 
-- **Text Tool:** Full replacement planned (current is placeholder DOM overlay)
+- **Text Tool:** WYSIWYG editing implemented; selection transforms (scale/translate) not yet wired
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes
 - **Images**

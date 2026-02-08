@@ -11,7 +11,7 @@
  */
 
 import * as Y from 'yjs';
-import type { BBoxTuple } from '@avlo/shared';
+import type { BBoxTuple, FrameTuple } from '@avlo/shared';
 import { areFontsLoaded } from './font-loader';
 import { FONT_CONFIG } from './font-config';
 
@@ -470,6 +470,7 @@ interface CacheEntry {
   parsed: ParsedContent;
   layout: TextLayout;
   layoutFontSize: number;
+  frame: FrameTuple | null;  // Derived world-coords frame, set by computeTextBBox
 }
 
 class TextLayoutCache {
@@ -503,6 +504,7 @@ class TextLayoutCache {
       parsed,
       layout,
       layoutFontSize: fontSize,
+      frame: null,
     });
 
     return layout;
@@ -524,6 +526,7 @@ class TextLayoutCache {
     if (entry) {
       // Mark layout as stale by setting fontSize to -1
       entry.layoutFontSize = -1;
+      entry.frame = null;
     }
   }
 
@@ -539,6 +542,21 @@ class TextLayoutCache {
    */
   has(objectId: string): boolean {
     return this.cache.has(objectId);
+  }
+
+  /**
+   * Set the derived frame for a text object.
+   */
+  setFrame(objectId: string, frame: FrameTuple): void {
+    const entry = this.cache.get(objectId);
+    if (entry) entry.frame = frame;
+  }
+
+  /**
+   * Get the derived frame for a text object.
+   */
+  getFrame(objectId: string): FrameTuple | null {
+    return this.cache.get(objectId)?.frame ?? null;
   }
 }
 
@@ -605,7 +623,8 @@ export function computeTextBBox(
   fragment: Y.XmlFragment,
   fontSize: number,
   origin: [number, number],
-  align: TextAlign = 'left'
+  align: TextAlign = 'left',
+  fixedWidth: number | null = null
 ): BBoxTuple {
   const layout = textLayoutCache.getLayout(objectId, fragment, fontSize);
   const [ox, oy] = origin;
@@ -632,6 +651,13 @@ export function computeTextBBox(
     maxX = ox;
   }
 
+  // Compute and cache the derived frame (world coordinates)
+  const fw = fixedWidth ?? layout.logicalBBox.width;
+  const fh = layout.logicalBBox.height;
+  const fx = ox - anchorFactor(align) * fw;
+  const fy = oy - fontSize * getBaselineToTopRatio();
+  textLayoutCache.setFrame(objectId, [fx, fy, fw, fh]);
+
   // Y bounds use ink bbox directly (alignment doesn't affect vertical)
   return [
     minX - padding,
@@ -639,4 +665,12 @@ export function computeTextBBox(
     maxX + padding,
     oy + layout.inkBBox.y + layout.inkBBox.height + padding,
   ];
+}
+
+/**
+ * Get the derived frame for a text object from the layout cache.
+ * Returns null if the object hasn't been through computeTextBBox yet.
+ */
+export function getTextFrame(objectId: string): FrameTuple | null {
+  return textLayoutCache.getFrame(objectId);
 }
