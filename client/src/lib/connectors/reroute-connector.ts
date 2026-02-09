@@ -14,6 +14,7 @@
 
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, computeConnectorBBoxFromPoints, bboxToBounds, type StoredAnchor, type FrameTuple, type WorldBounds } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import { computeAStarRoute } from './routing-astar';
 import {
   applyAnchorToFrame,
@@ -181,7 +182,7 @@ function resolveEndpoint(
     const snap = override as SnapTarget;
     const handle = snapshot.objectsById.get(snap.shapeId);
     const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
-      ? getFrame(handle.y)
+      ? (handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y))
       : null;
 
     return {
@@ -196,7 +197,7 @@ function resolveEndpoint(
   if (anchor) {
     const handle = snapshot.objectsById.get(anchor.id);
     const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
-      ? getFrame(handle.y)
+      ? (handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y))
       : null;
 
     if (frame) {

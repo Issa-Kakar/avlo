@@ -20,6 +20,7 @@ import { pointInsideShape } from '@/lib/geometry/hit-testing';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle, FrameTuple } from '@avlo/shared';
 import { getShapeType, getFillColor, getFrame } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import type { Dir, SnapTarget, SnapContext } from './types';
 
 /**
@@ -100,7 +101,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const candidates: Candidate[] = [];
 
   for (const handle of handles) {
-    const frame = getFrame(handle.y);
+    const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
     if (!frame) continue;
     const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
     const isFilled = handle.kind === 'text' || !!getFillColor(handle.y);

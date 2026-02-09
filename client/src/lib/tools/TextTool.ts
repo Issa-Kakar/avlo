@@ -273,10 +273,7 @@ export class TextTool implements PointerTool {
     // Uses precomputed ratio that accounts for CSS line-height leading
     const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
     const containerLeft = screenX;
-    console.log('containerTop', containerTop);
-    console.log('containerLeft', containerLeft);
-    console.log('scaledFontSize', scaledFontSize);
-    console.log('getBaselineToTopRatio', getBaselineToTopRatio());
+    
     // POSITIONING
     container.style.position = 'absolute';
     container.style.left = `${containerLeft}px`;

@@ -7,6 +7,7 @@ import {
   getFrame, getPoints, getStart, getEnd,
   getStartAnchor, getEndAnchor, bboxTupleToWorldBounds,
 } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 
 // === Types ===
 
@@ -274,7 +275,7 @@ function computeConnectorTopology(
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
     if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
-    const frame = getFrame(handle.y);
+    const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
     if (frame) originalFrames.set(id, frame);
   }
 

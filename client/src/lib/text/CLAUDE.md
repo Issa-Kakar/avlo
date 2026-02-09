@@ -1,7 +1,7 @@
 # Text Tool System Documentation
 
 **Status:** Work in progress - WYSIWYG phase complete
-**Last Updated:** SLIGHTLY STALE: MISSING SOME DOCUMENTATION
+**Last Updated:** Current
 
 ## Overview
 
@@ -638,17 +638,11 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle) {
 
 ### Transform Handling
 
-During selection transforms (scale/translate), text renders at original position:
+**Translate:** SelectTool translates text by offsetting `origin` in Y.Map (not `frame` — text has no stored frame). The derived frame recomputes automatically via the Y.Doc observer → `computeTextBBox()` cycle.
 
-```typescript
-// In renderSelectedObjectWithScaleTransform():
-if (handle.kind === 'text') {
-  drawText(ctx, handle);  // Original position
-  return;
-}
-```
+**Scale:** No-op. Text stays at original position during scale transforms. `commitScale()` skips text objects, and `invalidateTransformPreview()` skips text in the scale dirty rect loop.
 
-This is Phase 1 behavior - text transforms deferred to future phases.
+**Rendering during transforms:** `objects.ts` draws text at original position via `ctx.translate` for translate transforms; scale renders at original position (no visual scaling).
 
 ---
 
@@ -837,30 +831,34 @@ The text editor uses CSS-based styling with separation of concerns:
 
 ---
 
-## Next Steps: Integrate Derived Frame into Hit Testing & Selection
+## Derived Frame Integration (getTextFrame)
 
-The derived text frame (`getTextFrame(objectId)`) is now cached and always fresh, but **consumers still call `getFrame(handle.y)` which returns `null` for text** (text has no stored `frame` key in Y.Map). The following files need to be updated to use `getTextFrame()` for text objects:
+Text has no stored `frame` in Y.Map — frame is **derived** from origin/fontSize/align/content, cached in `TextLayoutCache`, accessible via `getTextFrame(objectId)`.
 
-- **`geometry/hit-testing.ts`** — `hitTestPoint()` / `hitTestMarquee()` use `getFrame()` for shape bounds; text objects fall through. Wire in `getTextFrame()` so text becomes selectable/erasable.
-- **`connectors/snap.ts`** — connector snapping reads `getFrame()` to find shape edges; text objects are invisible to snapping. Wire in `getTextFrame()`.
-- **`tools/SelectTool.ts`** — translate/scale reads frame for shapes; text currently skips transforms. Wire in `getTextFrame()` for translate support.
-- **`renderer/layers/objects.ts`** — transform rendering reads frame; text renders at original position during transforms. Wire in `getTextFrame()` for visual feedback.
+**Pattern:** All call sites that need a text frame use:
+```typescript
+const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+```
 
-Once these consumers use `getTextFrame()`, text objects will participate fully in selection, erasing, connector snapping, and transforms.
+**Frame vs BBox:** Unlike shapes (where bbox ⊇ frame due to stroke padding), text's bbox is **ink-pixel** coverage + 2px padding, which can be *smaller* than the logical frame. The frame matches the DOM overlay rect exactly — so selection bounds, highlights, and connector snapping all use frame for WYSIWYG accuracy.
+
+**Consumers using `getTextFrame()`:**
+- `geometry/hit-testing.ts` — marquee intersection + point hit tests
+- `tools/EraserTool.ts`, `renderer/layers/eraser-dim.ts` — eraser hit test + dimming
+- `connectors/snap.ts`, `reroute-connector.ts`, `connector-utils.ts`, `ConnectorTool.ts` — snapping, routing, obstacle avoidance
+- `renderer/layers/selection-overlay.ts` — highlights + snap midpoint dots
+- `stores/selection-store.ts` — connector topology `originalFrames`
+- `lib/geometry/bounds.ts` — `computeRawGeometryBounds` for scale origin
+- `tools/SelectTool.ts` — selection bounds, translate commit, scale skip
 
 ---
 
 ## Future Work
 
-### Medium-term
-
 2. **Font family selector**
-3. **Selection transforms** (scale/translate text objects)
-
-### Long-term
-
-4. **Text wrapping** (widthMode: 'fixed')
-5. **Shape labels** (text inside shapes)
+3. **Text wrapping** (widthMode: 'fixed')
+4. **Shape labels** (text inside shapes)
+5. **Text scale transforms** (font size scaling)
 
 ---
 

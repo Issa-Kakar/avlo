@@ -17,6 +17,7 @@
 import type { SelectionPreview, HandleId } from '@/lib/tools/types';
 import type { Snapshot } from '@avlo/shared';
 import { getFrame, getShapeType } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import { getObjectCacheInstance } from '../object-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
@@ -149,7 +150,7 @@ function drawObjectHighlights(
 
     // Text: stroke the frame rect
     if (handle.kind === 'text') {
-      const frame = getFrame(handle.y);
+      const frame = getTextFrame(id);
       if (frame) {
         const [x, y, w, h] = frame;
         ctx.strokeRect(x, y, w, h);
@@ -365,7 +366,7 @@ function drawSnapMidpointDots(
   const shapeHandle = snapshot.objectsById.get(snap.shapeId);
   if (!shapeHandle) return;
 
-  const shapeFrame = getFrame(shapeHandle.y);
+  const shapeFrame = shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
   if (!shapeFrame) return;
 
   const shapeType = getShapeType(shapeHandle.y);

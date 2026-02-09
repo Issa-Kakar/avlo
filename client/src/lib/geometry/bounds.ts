@@ -12,6 +12,7 @@
 
 import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
 import { getFrame, getPoints } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import {
   computeUniformScaleNoThreshold,
   computePreservedPosition,
@@ -214,7 +215,7 @@ export function computeRawGeometryBounds(
 
   for (const handle of handles) {
     if (handle.kind === 'shape' || handle.kind === 'text') {
-      const frame = getFrame(handle.y);
+      const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
       if (!frame) continue;
       const [x, y, w, h] = frame;
       minX = Math.min(minX, x);

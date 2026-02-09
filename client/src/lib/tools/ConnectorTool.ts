@@ -23,6 +23,7 @@ import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { getShapeType, getFrame } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import {
   type Dir,
   type SnapTarget,
@@ -174,7 +175,7 @@ export class ConnectorTool implements PointerTool {
       // Snapped to shape - snap.position already includes offset
       const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
       const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
-        ? getFrame(handle.y)
+        ? (handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y))
         : null;
       const shapeBounds = frame
         ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }
@@ -262,11 +263,11 @@ export class ConnectorTool implements PointerTool {
     if (this.hoverSnap) {
       const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
       if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
-        const frame = getFrame(handle.y);
+        const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
           snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];
-          snapShapeType = getShapeType(handle.y);
+          snapShapeType = handle.kind === 'text' ? 'rect' : getShapeType(handle.y);
         }
       }
     }
@@ -342,7 +343,7 @@ export class ConnectorTool implements PointerTool {
     if (this.from.isAnchored && this.from.shapeId) {
       const handle = snapshot.objectsById.get(this.from.shapeId);
       if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
-        const frame = getFrame(handle.y);
+        const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
         if (frame) {
           fromShapeBounds = { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
         }

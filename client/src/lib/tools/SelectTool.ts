@@ -27,6 +27,7 @@ import {
   translateBounds,
   scaleBoundsAround,
   pointsToWorldBounds,
+  frameTupleToWorldBounds,
   expandBounds,
   computeUniformScaleBounds,
   computeRawGeometryBounds,
@@ -47,8 +48,10 @@ import {
   getWidth,
   getStartAnchor,
   getEndAnchor,
+  getOrigin,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -766,6 +769,15 @@ export class SelectTool implements PointerTool {
     for (const id of selectedIds) {
       const handle = snapshot.objectsById.get(id);
       if (!handle) continue;
+      if (handle.kind === 'text') {
+        // Text uses derived frame (logical bounds) not bbox (ink bounds) for selection.
+        // Unlike shapes where bbox ⊇ frame (stroke padding expands it), text bbox is
+        // ink-pixel coverage which can be *smaller* than frame. Frame matches the DOM
+        // overlay rect exactly, giving WYSIWYG-accurate selection bounds.
+        const frame = getTextFrame(id);
+        if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
+        continue;
+      }
       result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
     }
 
@@ -909,6 +921,8 @@ export class SelectTool implements PointerTool {
 
         // Connectors handled via topology above
         if (handle.kind === 'connector') continue;
+        // Text doesn't scale — original position covered by bboxBounds union
+        if (handle.kind === 'text') continue;
 
         const bbox = bboxTupleToWorldBounds(handle.bbox);
         const isStroke = handle.kind === 'stroke';
@@ -985,6 +999,12 @@ export class SelectTool implements PointerTool {
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
+        } else if (handle.kind === 'text') {
+          // Text stores position as origin [anchorX, baseline], not frame.
+          // Translate the origin directly; derived frame recomputes on observer.
+          const origin = getOrigin(yMap);
+          if (!origin) continue;
+          yMap.set('origin', [origin[0] + dx, origin[1] + dy]);
         } else {
           const frame = getFrame(yMap);
           if (!frame) continue;
@@ -1083,7 +1103,10 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // CASE 3: Shape/text scaling
+        // Text: no-op for scale (text doesn't scale)
+        if (handle.kind === 'text') continue;
+
+        // CASE 3: Shape scaling
         const frame = getFrame(yMap);
         if (!frame) continue;
 

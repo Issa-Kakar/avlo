@@ -11,6 +11,7 @@
 
 import type { WorldBounds, FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@avlo/shared';
+import { getTextFrame } from '@/lib/text/text-system';
 import { getEndpointEdgePosition } from '@/lib/connectors/connector-utils';
 import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/lib/tools/types';
@@ -537,7 +538,7 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
     }
 
     case 'text': {
-      const frame = getFrame(y);
+      const frame = getTextFrame(handle.id);
       if (!frame) return false;
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
@@ -651,7 +652,7 @@ export function testObjectHit(
     }
 
     case 'text': {
-      const frame = getFrame(y);
+      const frame = getTextFrame(handle.id);
       if (!frame) return null;
       const [x, yPos, w, h] = frame;
 
