@@ -673,6 +673,59 @@ export function testObjectHit(
   }
 }
 
+// === Text Hit Testing (for TextTool click-to-edit) ===
+
+/**
+ * Hit test for visible text at a point, respecting Z-order occlusion.
+ * Returns the ID of the topmost visible text object, or null.
+ *
+ * Occlusion model matches SelectTool.pickBestCandidate:
+ * - Unfilled shape interiors are transparent (scan through)
+ * - Everything else (stroke/connector/filled shape/shape border) occludes
+ */
+export function hitTestVisibleText(
+  worldX: number,
+  worldY: number,
+  snapshot: Snapshot,
+  scale: number
+): string | null {
+  const radiusWorld = 8 / scale;
+
+  const index = snapshot.spatialIndex;
+  if (!index) return null;
+
+  const results = index.query({
+    minX: worldX - radiusWorld,
+    minY: worldY - radiusWorld,
+    maxX: worldX + radiusWorld,
+    maxY: worldY + radiusWorld,
+  });
+
+  const candidates: HitCandidate[] = [];
+  for (const entry of results) {
+    const handle = snapshot.objectsById.get(entry.id);
+    if (!handle) continue;
+    const candidate = testObjectHit(worldX, worldY, radiusWorld, handle);
+    if (candidate) candidates.push(candidate);
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Sort by ULID descending (topmost first)
+  candidates.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+
+  // Scan with occlusion
+  for (const c of candidates) {
+    if (c.kind === 'text') return c.id;
+    // Unfilled shape interior = transparent, keep scanning
+    if (c.kind === 'shape' && !c.isFilled && c.insideInterior) continue;
+    // Anything else occludes
+    break;
+  }
+
+  return null;
+}
+
 // === Endpoint Dot Hit Testing ===
 
 /** Screen-space hit radius for connector endpoint dots */

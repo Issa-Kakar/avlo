@@ -337,6 +337,7 @@ interface TextToolState {
   isActive: boolean;           // Gesture in progress
   pointerId: number | null;
   downWorld: [number, number] | null;  // Click position
+  hitTextId: string | null;    // Existing text hit at click (null = create new)
 }
 
 interface EditorState {
@@ -357,19 +358,21 @@ interface EditorState {
 canBegin() → true if not active and not currently editing text
      │
 begin(pointerId, worldX, worldY)
-     │ Store click position
+     │ Hit test via hitTestVisibleText() → store hitTextId
      │
 move() → no-op for text tool
      │
 end()
      │
-     ├─ createTextObject(x, y, fontSize, color)
-     │      └─ Y.Map with empty Y.XmlFragment
+     ├─ hitTextId set? → EDIT EXISTING
+     │      ├─ beginTextEditing(hitTextId, isNew=false)
+     │      └─ mountEditor(hitTextId, false)
+     │            └─ Cursor placed at click position via posAtCoords
      │
-     ├─ beginTextEditing(objectId, isNew=true)
-     │      └─ selection-store
-     │
-     └─ mountEditor(objectId, x, y, fontSize, color, isNew)
+     └─ hitTextId null? → CREATE NEW
+            ├─ createTextObject(x, y, fontSize, color)
+            ├─ beginTextEditing(objectId, isNew=true)
+            └─ mountEditor(objectId, true)
 ```
 
 ### Object Creation
@@ -397,64 +400,14 @@ createTextObject(worldX, worldY, fontSize, color): string {
 
 ### Editor Mounting (DOM Overlay)
 
-```typescript
-mountEditor(objectId, worldX, worldY, fontSize, color, isNew) {
-  // 1. Get editor host from SurfaceManager
-  const host = getEditorHost();
+**Signature:** `mountEditor(objectId: string, isNew: boolean)`
 
-  // 2. Get Y.XmlFragment from object
-  const fragment = handle.y.get('content') as Y.XmlFragment;
+Reads all properties (origin, fontSize, color, align) from Y.Map — no parameter passing needed.
 
-  // 3. Create container div
-  const container = document.createElement('div');
-  container.className = 'text-editor-container';
-
-  // 4. Calculate screen position (CRITICAL for alignment)
-  const [screenX, screenY] = worldToClient(worldX, worldY);
-  const scale = useCameraStore.getState().scale;
-  const scaledFontSize = fontSize * scale;
-
-  // Position: baseline aligns with origin
-  const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
-  const containerLeft = screenX;
-
-  // 5. Apply positioning (inline) + dynamic values (CSS custom properties)
-  container.style.position = 'absolute';
-  container.style.left = `${containerLeft}px`;
-  container.style.top = `${containerTop}px`;
-  container.style.fontSize = `${scaledFontSize}px`;
-  container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-  container.style.setProperty('--text-color', color);
-  // Static styles handled by .text-editor-container CSS class
-
-  // 6. Set alignment CSS custom properties
-  container.style.setProperty('--text-align', align);
-  container.style.setProperty('--text-anchor-tx', ...); // 0% / -50% / -100%
-
-  // 7. Append to host
-  host.appendChild(container);
-
-  // 8. Create Tiptap Editor with CSS class-based styling
-  const editor = new Editor({
-    element: container,
-    extensions: [
-      Document,
-      Paragraph.configure({ HTMLAttributes: { class: 'tiptap-paragraph' } }),
-      Text,
-      Bold.configure({ HTMLAttributes: { class: 'tiptap-bold' } }),
-      Italic.configure({ HTMLAttributes: { class: 'tiptap-italic' } }),
-      Collaboration.configure({ fragment }),  // CRDT sync!
-    ],
-    autofocus: 'end',
-    editorProps: { attributes: { class: 'tiptap' } },
-  });
-
-  // 9. Setup handlers, mount context menu, update stores
-  this.setupEditorHandlers();
-  textContextMenu.mount(host, container, editor, objectId);
-  useDeviceUIStore.getState().setIsTextEditing(true);
-}
-```
+**Cursor positioning for existing text:**
+- `autofocus: isNew ? 'end' : false`
+- For `!isNew`: captures `worldToClient(downWorld)` synchronously, then `requestAnimationFrame` → `editor.view.posAtCoords({left, top})` → `focus(pos.pos)` with `focus('end')` fallback
+- `downWorld` is still set when `mountEditor` runs (before `resetState()` in `end()`)
 
 ### DOM Positioning Math
 
@@ -568,19 +521,15 @@ commitAndClose() {
 }
 ```
 
-### Edit Existing Text
+### Start Editing (External Entry Point)
 
-Called by SelectTool when clicking on text:
+Called by SelectTool (e.g., double-click on text) with click position for cursor placement:
 
 ```typescript
-editExistingText(objectId: string) {
-  const handle = snapshot.objectsById.get(objectId);
-  const origin = handle.y.get('origin');
-  const fontSize = handle.y.get('fontSize') ?? 20;
-  const color = handle.y.get('color') ?? '#000000';
-
-  useSelectionStore.getState().beginTextEditing(objectId, false);  // isNew=false
-  this.mountEditor(objectId, origin[0], origin[1], fontSize, color, false);
+startEditing(objectId: string, entryPoint: [number, number]): void {
+  this.state.downWorld = entryPoint;  // For posAtCoords in mountEditor
+  useSelectionStore.getState().beginTextEditing(objectId, false);
+  this.mountEditor(objectId, false);
 }
 ```
 
@@ -843,7 +792,7 @@ const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle
 **Frame vs BBox:** Unlike shapes (where bbox ⊇ frame due to stroke padding), text's bbox is **ink-pixel** coverage + 2px padding, which can be *smaller* than the logical frame. The frame matches the DOM overlay rect exactly — so selection bounds, highlights, and connector snapping all use frame for WYSIWYG accuracy.
 
 **Consumers using `getTextFrame()`:**
-- `geometry/hit-testing.ts` — marquee intersection + point hit tests
+- `geometry/hit-testing.ts` — marquee intersection, point hit tests, `hitTestVisibleText()` for TextTool click-to-edit
 - `tools/EraserTool.ts`, `renderer/layers/eraser-dim.ts` — eraser hit test + dimming
 - `connectors/snap.ts`, `reroute-connector.ts`, `connector-utils.ts`, `ConnectorTool.ts` — snapping, routing, obstacle avoidance
 - `renderer/layers/selection-overlay.ts` — highlights + snap midpoint dots
