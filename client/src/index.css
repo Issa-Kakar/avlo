@@ -88,12 +88,20 @@
  * (ss01 is no longer needed - alternates are baked into the font)
  */
 
+ .tiptap p.is-editor-empty:first-child::before {
+  color: #adb5bd;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
 
 /* Paragraph styling */
 .text-editor-container p,
 .text-editor-container .tiptap-paragraph {
   margin: 0;
   padding: 0;
+  white-space: pre-wrap;
 }
 
 /* Bold */

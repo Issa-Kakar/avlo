@@ -10,6 +10,12 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 - `@avlo/shared` → `packages/shared/src/*`
 - `@/*` → `client/src/*`
 
+## Best Practices:
+- Always prefer a **"getter"** (get(insert info)), **primitive leaning**, efficient architecture and implementation
+- Goal is to minimize excessive parameters/props, always ensure the leanest yet robust approach, reducing unnecessary bloat and excessive object creation(especially when it already exists, or can be derived/accessed)
+- Data should be easily accessible throughout the codebase for areas that need it, over-encapsulation without a purpose should be avoided, as this distributed system has to manage state and data and rendering: Communication and data access must have as little friction as possible.
+- Approaches should be as little lines of code possible to achieve the goal while maintaining full robustness
+
 ---
 
 ## File Map

@@ -223,8 +223,8 @@ interface TextLayout {
   lines: MeasuredLine[];
   fontSize: number;
   lineHeight: number;
-  inkBBox: { x, y, width, height };     // Actual drawn bounds
-  logicalBBox: { x, y, width, height }; // Advance-based bounds
+  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
+  logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
   structuralHash: number;
 }
 
@@ -232,7 +232,7 @@ interface MeasuredLine {
   runs: MeasuredRun[];
   index: number;
   advanceWidth: number;
-  inkBounds: { left, right, top, bottom };
+  inkBounds: BBoxTuple;   // [left, top, right, bottom] relative to baseline
   baselineY: number;                     // Relative to origin (0 for first line)
   lineHeight: number;
   isEmpty: boolean;
@@ -245,7 +245,6 @@ interface MeasuredRun {
   font: string;                          // Pre-computed ctx.font string
   advanceWidth: number;                  // Total advance width
   advanceX: number;                      // X offset from line start
-  inkBounds: { left, right, top, bottom };
 }
 ```
 

@@ -12,6 +12,7 @@
 
 import * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple } from '@avlo/shared';
+import { expandBBox } from '@/lib/geometry/bounds';
 import { areFontsLoaded } from './font-loader';
 import { FONT_CONFIG } from './font-config';
 
@@ -162,24 +163,13 @@ export interface MeasuredRun {
   font: string;           // Pre-computed ctx.font string
   advanceWidth: number;   // Total advance width of run
   advanceX: number;       // X offset from line start
-  inkBounds: {
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
-  };
 }
 
 export interface MeasuredLine {
   runs: MeasuredRun[];
   index: number;
   advanceWidth: number;
-  inkBounds: {
-    left: number;
-    right: number;
-    top: number;
-    bottom: number;
-  };
+  inkBounds: BBoxTuple;   // [left, top, right, bottom] relative to baseline
   baselineY: number;      // Relative to text origin
   lineHeight: number;
   isEmpty: boolean;
@@ -189,8 +179,8 @@ export interface TextLayout {
   lines: MeasuredLine[];
   fontSize: number;
   lineHeight: number;
-  inkBBox: { x: number; y: number; width: number; height: number };     // Actual drawn bounds
-  logicalBBox: { x: number; y: number; width: number; height: number }; // Advance-based bounds
+  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
+  logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
   structuralHash: number;
 }
 
@@ -316,148 +306,70 @@ export function layoutContent(content: ParsedContent, fontSize: number): TextLay
   const ctx = getMeasureContext();
   const lineHeight = fontSize * FONT_CONFIG.lineHeightMultiplier;
   const lines: MeasuredLine[] = [];
+  const ascentY = fontSize * getMeasuredAscentRatio();
+  const descentY = fontSize - ascentY;
 
-  // Track overall ink bounds
-  let minInkX = Infinity;
-  let maxInkX = -Infinity;
-  let minInkY = Infinity;
-  let maxInkY = -Infinity;
-
-  // Track logical bounds (advance-based)
+  // Overall ink bounds accumulator
+  const ink: BBoxTuple = [Infinity, Infinity, -Infinity, -Infinity];
   let maxAdvanceWidth = 0;
 
   for (let lineIdx = 0; lineIdx < content.paragraphs.length; lineIdx++) {
     const paragraph = content.paragraphs[lineIdx];
-    const baselineY = lineIdx * lineHeight; // First line baseline at origin (0)
-
-    const measuredRuns: MeasuredRun[] = [];
-    let lineAdvanceX = 0;
-
-    // Line-level ink bounds (relative to baseline)
-    let lineInkLeft = Infinity;
-    let lineInkRight = -Infinity;
-    let lineInkTop = Infinity;
-    let lineInkBottom = -Infinity;
+    const baselineY = lineIdx * lineHeight;
 
     if (paragraph.isEmpty) {
-      // Empty line - use approximate bounds based on font size
       lines.push({
         runs: [],
         index: lineIdx,
         advanceWidth: 0,
-        inkBounds: { left: 0, right: 0, top: -fontSize * getMeasuredAscentRatio(), bottom: fontSize * (1 - getMeasuredAscentRatio()) },
+        inkBounds: [0, -ascentY, 0, descentY],
         baselineY,
         lineHeight,
         isEmpty: true,
       });
-
-      // Update overall ink bounds for empty line
-      const emptyInkTop = baselineY - fontSize * getMeasuredAscentRatio();
-      const emptyInkBottom = baselineY + fontSize * (1 - getMeasuredAscentRatio());
-      minInkY = Math.min(minInkY, emptyInkTop);
-      maxInkY = Math.max(maxInkY, emptyInkBottom);
-      minInkX = Math.min(minInkX, 0);
-      maxInkX = Math.max(maxInkX, 0);
-
+      expandBBox(ink, 0, baselineY - ascentY, 0, baselineY + descentY);
       continue;
     }
+
+    const measuredRuns: MeasuredRun[] = [];
+    let lineAdvanceX = 0;
+    const li: BBoxTuple = [Infinity, Infinity, -Infinity, -Infinity];
 
     for (const run of paragraph.runs) {
       const font = buildFontString(run.bold, run.italic, fontSize);
       ctx.font = font;
+      const m = ctx.measureText(run.text);
 
-      const metrics = ctx.measureText(run.text);
-      const advanceWidth = metrics.width;
-
-      // Ink bounds from actualBoundingBox (relative to text draw position)
-      // actualBoundingBoxLeft is positive leftward from origin
-      // actualBoundingBoxRight is positive rightward from origin
-      const inkLeft = -metrics.actualBoundingBoxLeft;
-      const inkRight = metrics.actualBoundingBoxRight;
-      const inkTop = -metrics.actualBoundingBoxAscent;
-      const inkBottom = metrics.actualBoundingBoxDescent;
-
-      measuredRuns.push({
-        text: run.text,
-        bold: run.bold,
-        italic: run.italic,
-        font,
-        advanceWidth,
-        advanceX: lineAdvanceX,
-        inkBounds: {
-          left: inkLeft,
-          right: inkRight,
-          top: inkTop,
-          bottom: inkBottom,
-        },
-      });
-
-      // Update line ink bounds (in world space relative to origin)
-      lineInkLeft = Math.min(lineInkLeft, lineAdvanceX + inkLeft);
-      lineInkRight = Math.max(lineInkRight, lineAdvanceX + inkRight);
-      lineInkTop = Math.min(lineInkTop, inkTop);
-      lineInkBottom = Math.max(lineInkBottom, inkBottom);
-
-      lineAdvanceX += advanceWidth;
+      measuredRuns.push({ ...run, font, advanceWidth: m.width, advanceX: lineAdvanceX });
+      expandBBox(li, lineAdvanceX - m.actualBoundingBoxLeft, -m.actualBoundingBoxAscent,
+                     lineAdvanceX + m.actualBoundingBoxRight, m.actualBoundingBoxDescent);
+      lineAdvanceX += m.width;
     }
 
-    // Fix infinite bounds for non-empty lines with no actual ink
-    if (lineInkLeft === Infinity) lineInkLeft = 0;
-    if (lineInkRight === -Infinity) lineInkRight = lineAdvanceX;
-    if (lineInkTop === Infinity) lineInkTop = -fontSize * getMeasuredAscentRatio();
-    if (lineInkBottom === -Infinity) lineInkBottom = fontSize * (1 - getMeasuredAscentRatio());
+    if (!isFinite(li[0])) { li[0] = 0; li[1] = -ascentY; li[2] = lineAdvanceX; li[3] = descentY; }
 
     lines.push({
       runs: measuredRuns,
       index: lineIdx,
       advanceWidth: lineAdvanceX,
-      inkBounds: {
-        left: lineInkLeft,
-        right: lineInkRight,
-        top: lineInkTop,
-        bottom: lineInkBottom,
-      },
+      inkBounds: li,
       baselineY,
       lineHeight,
       isEmpty: false,
     });
 
-    // Update overall bounds
     maxAdvanceWidth = Math.max(maxAdvanceWidth, lineAdvanceX);
-    minInkX = Math.min(minInkX, lineInkLeft);
-    maxInkX = Math.max(maxInkX, lineInkRight);
-    minInkY = Math.min(minInkY, baselineY + lineInkTop);
-    maxInkY = Math.max(maxInkY, baselineY + lineInkBottom);
+    expandBBox(ink, li[0], baselineY + li[1], li[2], baselineY + li[3]);
   }
 
-  // Handle edge case: all empty lines
-  if (minInkX === Infinity) minInkX = 0;
-  if (maxInkX === -Infinity) maxInkX = 0;
-  if (minInkY === Infinity) minInkY = 0;
-  if (maxInkY === -Infinity) maxInkY = fontSize;
-
-  // Compute bboxes relative to origin (0, 0)
-  const inkBBox = {
-    x: minInkX,
-    y: minInkY,
-    width: maxInkX - minInkX,
-    height: maxInkY - minInkY,
-  };
-
-  const totalHeight = lines.length * lineHeight;
-  const logicalBBox = {
-    x: 0,
-    y: 0,
-    width: maxAdvanceWidth,
-    height: totalHeight,
-  };
+  if (!isFinite(ink[0])) { ink[0] = 0; ink[1] = 0; ink[2] = 0; ink[3] = fontSize; }
 
   return {
     lines,
     fontSize,
     lineHeight,
-    inkBBox,
-    logicalBBox,
+    inkBBox: [ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]],
+    logicalBBox: [0, 0, maxAdvanceWidth, lines.length * lineHeight],
     structuralHash: content.structuralHash,
   };
 }
@@ -628,42 +540,30 @@ export function computeTextBBox(
 ): BBoxTuple {
   const layout = textLayoutCache.getLayout(objectId, fragment, fontSize);
   const [ox, oy] = origin;
-
-  // Compute the actual ink bounds considering alignment
-  // For each line, we need to account for alignment-based positioning
+  const [, inkY, , inkH] = layout.inkBBox;
   const padding = 2;
   let minX = Infinity;
   let maxX = -Infinity;
 
   for (const line of layout.lines) {
-    // Where this line starts drawing given alignment
     const startX = lineStartX(ox, line.advanceWidth, align);
-    // Line ink bounds are relative to line start
-    const lineMinX = startX + line.inkBounds.left;
-    const lineMaxX = startX + line.inkBounds.right;
-    minX = Math.min(minX, lineMinX);
-    maxX = Math.max(maxX, lineMaxX);
+    minX = Math.min(minX, startX + line.inkBounds[0]);
+    maxX = Math.max(maxX, startX + line.inkBounds[2]);
   }
 
-  // Handle edge case: no lines or all empty
-  if (minX === Infinity) {
-    minX = ox;
-    maxX = ox;
-  }
+  if (!isFinite(minX)) { minX = ox; maxX = ox; }
 
   // Compute and cache the derived frame (world coordinates)
-  const fw = fixedWidth ?? layout.logicalBBox.width;
-  const fh = layout.logicalBBox.height;
+  const fw = fixedWidth ?? layout.logicalBBox[2];
   const fx = ox - anchorFactor(align) * fw;
   const fy = oy - fontSize * getBaselineToTopRatio();
-  textLayoutCache.setFrame(objectId, [fx, fy, fw, fh]);
+  textLayoutCache.setFrame(objectId, [fx, fy, fw, layout.logicalBBox[3]]);
 
-  // Y bounds use ink bbox directly (alignment doesn't affect vertical)
   return [
     minX - padding,
-    oy + layout.inkBBox.y - padding,
+    oy + inkY - padding,
     maxX + padding,
-    oy + layout.inkBBox.y + layout.inkBBox.height + padding,
+    oy + inkY + inkH + padding,
   ];
 }
 

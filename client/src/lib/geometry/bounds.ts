@@ -10,13 +10,25 @@
  * - Raw geometry bounds extraction from ObjectHandle
  */
 
-import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, BBoxTuple, ObjectHandle } from '@avlo/shared';
 import { getFrame, getPoints } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import {
   computeUniformScaleNoThreshold,
   computePreservedPosition,
 } from './transform';
+
+// ============================================================================
+// BBOX TUPLE HELPERS
+// ============================================================================
+
+/** Expand bbox in-place to include the given extents. */
+export function expandBBox(b: BBoxTuple, minX: number, minY: number, maxX: number, maxY: number): void {
+  b[0] = Math.min(b[0], minX);
+  b[1] = Math.min(b[1], minY);
+  b[2] = Math.max(b[2], maxX);
+  b[3] = Math.max(b[3], maxY);
+}
 
 // ============================================================================
 // UNION HELPERS

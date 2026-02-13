@@ -14,8 +14,7 @@ export function useKeyboardShortcuts({
   onRedo,
   onToast,
 }: KeyboardShortcutsOptions) {
-  const { setActiveTool } = useDeviceUIStore();
-
+  const { setActiveTool, setShapeVariant } = useDeviceUIStore();
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       // Skip if user is typing in an input/textarea
@@ -68,6 +67,24 @@ export function useKeyboardShortcuts({
           setActiveTool('pan');
           onToast?.('Pan selected');
           break;
+        case 'c':
+          event.preventDefault();
+          setActiveTool('connector');
+          onToast?.('Connectors selected');
+          break;
+        case 'r':
+          event.preventDefault();
+          setActiveTool('shape');
+          setShapeVariant('rectangle');
+          onToast?.('Rectangle selected');
+          break;
+        case 'd':
+          event.preventDefault();
+          setActiveTool('shape');
+          setShapeVariant('diamond');
+          onToast?.('Diamond selected');
+          break;
+
       }
 
       // Command/Ctrl shortcuts
