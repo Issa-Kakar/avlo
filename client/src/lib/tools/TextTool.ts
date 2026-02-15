@@ -16,7 +16,8 @@ import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
-import Collaboration from '@tiptap/extension-collaboration';
+import { yUndoPluginKey } from '@tiptap/y-tiptap';
+import { TextCollaboration } from '@/lib/text/extensions';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData } from './types';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -303,7 +304,7 @@ export class TextTool implements PointerTool {
         Italic.configure({
           HTMLAttributes: { class: 'tiptap-italic' },
         }),
-        Collaboration.configure({
+        TextCollaboration.configure({
           fragment,
         }),
       ],
@@ -445,9 +446,17 @@ export class TextTool implements PointerTool {
     // Remove event handlers
     this.removeEditorHandlers();
 
+    // Capture UndoManager ref before destroy (view.state inaccessible after)
+    const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
+
     // Destroy editor
     editor.destroy();
-    //useSelectionStore.getState().endTextEditing();
+
+    // Clear undo/redo stacks to release CRDT-level GC protection + ProsemirrorBinding refs
+    if (undoManager) {
+      undoManager.clear();
+    }
+
     // Remove container from DOM
     if (container && container.parentNode) {
       container.parentNode.removeChild(container);
