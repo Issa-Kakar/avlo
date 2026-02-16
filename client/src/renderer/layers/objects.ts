@@ -255,7 +255,7 @@ function drawText(
   if (!props) return;
 
   const color = getColor(y);
-  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize);
+  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
 }
 
