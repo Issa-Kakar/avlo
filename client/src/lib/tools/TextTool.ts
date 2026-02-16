@@ -449,8 +449,8 @@ export class TextTool implements PointerTool {
     // Capture UndoManager ref before destroy (view.state inaccessible after)
     const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
 
-    // Destroy editor
     editor.destroy();
+    (editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + all plugin states
 
     // Clear undo/redo stacks to release CRDT-level GC protection + ProsemirrorBinding refs
     if (undoManager) {
