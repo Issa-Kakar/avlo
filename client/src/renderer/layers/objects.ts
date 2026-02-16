@@ -1,4 +1,3 @@
-import * as Y from 'yjs';
 import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
 import {
   getColor,
@@ -26,7 +25,8 @@ import {
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
-import { textLayoutCache, renderTextLayout, type TextAlign } from '@/lib/text/text-system';
+import { textLayoutCache, renderTextLayout } from '@/lib/text/text-system';
+import { getTextProps } from '@avlo/shared';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -251,20 +251,12 @@ function drawText(
     return;
   }
 
-  // Get text data from Y.Map
-  const content = y.get('content') as Y.XmlFragment | undefined;
-  const origin = y.get('origin') as [number, number] | undefined;
-  const fontSize = (y.get('fontSize') as number) ?? 20;
-  const color = (y.get('color') as string) ?? '#000000';
-  const align = (y.get('align') as TextAlign) ?? 'left';
+  const props = getTextProps(y);
+  if (!props) return;
 
-  if (!content || !origin) return;
-
-  // Get or compute layout using cache
-  const layout = textLayoutCache.getLayout(id, content, fontSize);
-
-  // Render text (no opacity for text - always fully opaque)
-  renderTextLayout(ctx, layout, origin[0], origin[1], color, align);
+  const color = getColor(y);
+  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize);
+  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
 }
 
 

@@ -11,19 +11,18 @@
  */
 
 import * as Y from 'yjs';
-import type { BBoxTuple, FrameTuple } from '@avlo/shared';
+import type { BBoxTuple, FrameTuple, TextProps, TextAlign } from '@avlo/shared';
 import { expandBBox } from '@/lib/geometry/bounds';
 import { areFontsLoaded } from './font-loader';
 import { FONT_CONFIG } from './font-config';
 
 // Re-export for consumers
 export { FONT_CONFIG } from './font-config';
+export type { TextAlign, TextWidth, TextProps } from '@avlo/shared';
 
 // =============================================================================
 // TEXT ALIGNMENT HELPERS
 // =============================================================================
-
-export type TextAlign = 'left' | 'center' | 'right';
 
 /**
  * Returns the anchor factor for alignment:
@@ -135,21 +134,18 @@ export function buildFontString(bold: boolean, italic: boolean, fontSize: number
 // PARSED TYPES (from Y.XmlFragment)
 // =============================================================================
 
-export interface ParsedRun {
+export interface StyledText {
   text: string;
   bold: boolean;
   italic: boolean;
 }
 
 export interface ParsedParagraph {
-  runs: ParsedRun[];
-  isEmpty: boolean;
+  runs: StyledText[];
 }
 
 export interface ParsedContent {
   paragraphs: ParsedParagraph[];
-  structuralHash: number;
-  charCount: number;
 }
 
 // =============================================================================
@@ -163,25 +159,29 @@ export interface MeasuredRun {
   font: string;           // Pre-computed ctx.font string
   advanceWidth: number;   // Total advance width of run
   advanceX: number;       // X offset from line start
+  // ink: BBoxTuple;      // wrapping pipeline: per-run ink bounds
+  // isWhitespace: boolean; // wrapping pipeline: whitespace tracking
 }
 
 export interface MeasuredLine {
   runs: MeasuredRun[];
   index: number;
   advanceWidth: number;
-  inkBounds: BBoxTuple;   // [left, top, right, bottom] relative to baseline
-  baselineY: number;      // Relative to text origin
+  // visualWidth: number;  // wrapping pipeline: width up to last non-ws run
+  ink: BBoxTuple;          // [left, top, right, bottom] relative to baseline
+  baselineY: number;       // Relative to text origin
   lineHeight: number;
-  isEmpty: boolean;
+  hasInk: boolean;
 }
 
 export interface TextLayout {
   lines: MeasuredLine[];
   fontSize: number;
   lineHeight: number;
+  // widthMode: 'auto' | 'fixed';  // wrapping pipeline
+  // boxWidth: number;              // wrapping pipeline
   inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
   logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
-  structuralHash: number;
 }
 
 // =============================================================================
@@ -204,21 +204,36 @@ function getMeasureContext(): CanvasRenderingContext2D {
 }
 
 // =============================================================================
-// PARSER: Y.XmlFragment → ParsedContent
+// LRU CACHE (standalone utility for future use)
 // =============================================================================
 
-/**
- * Simple hash function for structural change detection.
- */
-function simpleHash(str: string): number {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash | 0; // Convert to 32-bit integer
+export class LRU<K, V> {
+  private map = new Map<K, V>();
+  constructor(private capacity: number) {}
+  get(key: K): V | undefined {
+    const val = this.map.get(key);
+    if (val === undefined) return undefined;
+    // Move to end (most recently used)
+    this.map.delete(key);
+    this.map.set(key, val);
+    return val;
   }
-  return hash;
+  set(key: K, val: V): void {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, val);
+    if (this.map.size > this.capacity) {
+      // Delete oldest (first entry)
+      this.map.delete(this.map.keys().next().value!);
+    }
+  }
+  clear(): void { this.map.clear(); }
 }
+
+export const ZERO_INK: BBoxTuple = [0, 0, 0, 0];
+
+// =============================================================================
+// PARSER: Y.XmlFragment → ParsedContent
+// =============================================================================
 
 /**
  * Parse Y.XmlFragment into structured content.
@@ -228,20 +243,17 @@ function simpleHash(str: string): number {
  */
 export function parseYXmlFragment(fragment: Y.XmlFragment): ParsedContent {
   const paragraphs: ParsedParagraph[] = [];
-  let charCount = 0;
-  let hashInput = '';
 
   // Walk children (each should be a paragraph)
   const children = fragment.toArray();
 
   if (children.length === 0) {
     // Empty fragment → one empty paragraph
-    paragraphs.push({ runs: [], isEmpty: true });
+    paragraphs.push({ runs: [] });
   } else {
     for (const child of children) {
       if (child instanceof Y.XmlElement && child.nodeName === 'paragraph') {
-        const runs: ParsedRun[] = [];
-        let paragraphText = '';
+        const runs: StyledText[] = [];
 
         // Get text content from paragraph
         const paragraphChildren = child.toArray();
@@ -252,7 +264,7 @@ export function parseYXmlFragment(fragment: Y.XmlFragment): ParsedContent {
             const delta = textNode.toDelta();
 
             for (const op of delta) {
-              if (typeof op.insert === 'string') {
+              if (typeof op.insert === 'string' && op.insert !== '') {
                 const text = op.insert;
                 const attrs = op.attributes || {};
                 const bold = !!attrs.bold;
@@ -265,33 +277,22 @@ export function parseYXmlFragment(fragment: Y.XmlFragment): ParsedContent {
                 } else {
                   runs.push({ text, bold, italic });
                 }
-
-                paragraphText += text;
-                charCount += text.length;
               }
             }
           }
         }
 
-        hashInput += paragraphText + '\n';
-        paragraphs.push({
-          runs,
-          isEmpty: runs.length === 0 || paragraphText.length === 0,
-        });
+        paragraphs.push({ runs });
       }
     }
   }
 
   // Ensure at least one paragraph
   if (paragraphs.length === 0) {
-    paragraphs.push({ runs: [], isEmpty: true });
+    paragraphs.push({ runs: [] });
   }
 
-  return {
-    paragraphs,
-    structuralHash: simpleHash(hashInput),
-    charCount,
-  };
+  return { paragraphs };
 }
 
 // =============================================================================
@@ -317,15 +318,15 @@ export function layoutContent(content: ParsedContent, fontSize: number): TextLay
     const paragraph = content.paragraphs[lineIdx];
     const baselineY = lineIdx * lineHeight;
 
-    if (paragraph.isEmpty) {
+    if (paragraph.runs.length === 0) {
       lines.push({
         runs: [],
         index: lineIdx,
         advanceWidth: 0,
-        inkBounds: [0, -ascentY, 0, descentY],
+        ink: [0, -ascentY, 0, descentY],
         baselineY,
         lineHeight,
-        isEmpty: true,
+        hasInk: false,
       });
       expandBBox(ink, 0, baselineY - ascentY, 0, baselineY + descentY);
       continue;
@@ -352,10 +353,10 @@ export function layoutContent(content: ParsedContent, fontSize: number): TextLay
       runs: measuredRuns,
       index: lineIdx,
       advanceWidth: lineAdvanceX,
-      inkBounds: li,
+      ink: li,
       baselineY,
       lineHeight,
-      isEmpty: false,
+      hasInk: true,
     });
 
     maxAdvanceWidth = Math.max(maxAdvanceWidth, lineAdvanceX);
@@ -370,7 +371,6 @@ export function layoutContent(content: ParsedContent, fontSize: number): TextLay
     lineHeight,
     inkBBox: [ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]],
     logicalBBox: [0, 0, maxAdvanceWidth, lines.length * lineHeight],
-    structuralHash: content.structuralHash,
   };
 }
 
@@ -379,10 +379,10 @@ export function layoutContent(content: ParsedContent, fontSize: number): TextLay
 // =============================================================================
 
 interface CacheEntry {
-  parsed: ParsedContent;
+  parsed: ParsedContent | null;   // null = content stale
   layout: TextLayout;
-  layoutFontSize: number;
-  frame: FrameTuple | null;  // Derived world-coords frame, set by computeTextBBox
+  layoutFontSize: number | null;  // null = fontSize stale
+  frame: FrameTuple | null;       // Derived world-coords frame, set by computeTextBBox
 }
 
 class TextLayoutCache {
@@ -395,12 +395,12 @@ class TextLayoutCache {
   getLayout(objectId: string, fragment: Y.XmlFragment, fontSize: number): TextLayout {
     const entry = this.cache.get(objectId);
 
-    if (entry && entry.layoutFontSize === fontSize) {
-      // Cache hit - same font size
+    if (entry && entry.parsed !== null && entry.layoutFontSize === fontSize) {
+      // Cache hit - same content and font size
       return entry.layout;
     }
 
-    if (entry && entry.layoutFontSize !== fontSize) {
+    if (entry && entry.parsed !== null && entry.layoutFontSize !== fontSize) {
       // Font size changed - re-layout with existing parsed content
       const layout = layoutContent(entry.parsed, fontSize);
       entry.layout = layout;
@@ -408,7 +408,7 @@ class TextLayoutCache {
       return layout;
     }
 
-    // Cache miss - parse and layout
+    // Cache miss or content stale - parse and layout
     const parsed = parseYXmlFragment(fragment);
     const layout = layoutContent(parsed, fontSize);
 
@@ -423,10 +423,14 @@ class TextLayoutCache {
   }
 
   /**
-   * Full invalidation - content changed.
+   * Content invalidation - content changed, must re-parse.
    */
-  invalidate(objectId: string): void {
-    this.cache.delete(objectId);
+  invalidateContent(objectId: string): void {
+    const e = this.cache.get(objectId);
+    if (e) {
+      e.parsed = null;
+      e.frame = null;
+    }
   }
 
   /**
@@ -434,12 +438,28 @@ class TextLayoutCache {
    * Clears layout but keeps parsed content for next getLayout call.
    */
   invalidateLayout(objectId: string): void {
-    const entry = this.cache.get(objectId);
-    if (entry) {
-      // Mark layout as stale by setting fontSize to -1
-      entry.layoutFontSize = -1;
-      entry.frame = null;
+    const e = this.cache.get(objectId);
+    if (e) {
+      e.layoutFontSize = null;
+      e.frame = null;
     }
+  }
+
+  /**
+   * Flow invalidation - width changed (placeholder for wrapping pipeline).
+   */
+  invalidateFlow(objectId: string): void {
+    const e = this.cache.get(objectId);
+    if (e) {
+      e.frame = null;
+    }
+  }
+
+  /**
+   * Remove entry entirely (object deletion).
+   */
+  remove(objectId: string): void {
+    this.cache.delete(objectId);
   }
 
   /**
@@ -502,7 +522,7 @@ export function renderTextLayout(
   ctx.textBaseline = 'alphabetic';
   ctx.textRendering = 'optimizeSpeed';
   for (const line of layout.lines) {
-    if (line.isEmpty) continue;
+    if (!line.hasInk) continue;
 
     const lineY = originY + line.baselineY;
     // Compute line start X based on alignment
@@ -524,21 +544,10 @@ export function renderTextLayout(
 /**
  * Compute bounding box for a text object.
  * Used by room-doc-manager for spatial index.
- *
- * @param align - Text alignment affects how origin maps to actual ink bounds:
- *   - 'left': origin is the left edge
- *   - 'center': origin is the center
- *   - 'right': origin is the right edge
  */
-export function computeTextBBox(
-  objectId: string,
-  fragment: Y.XmlFragment,
-  fontSize: number,
-  origin: [number, number],
-  align: TextAlign = 'left',
-  fixedWidth: number | null = null
-): BBoxTuple {
-  const layout = textLayoutCache.getLayout(objectId, fragment, fontSize);
+export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
+  const { content, origin, fontSize, align, width } = props;
+  const layout = textLayoutCache.getLayout(objectId, content, fontSize);
   const [ox, oy] = origin;
   const [, inkY, , inkH] = layout.inkBBox;
   const padding = 2;
@@ -547,13 +556,14 @@ export function computeTextBBox(
 
   for (const line of layout.lines) {
     const startX = lineStartX(ox, line.advanceWidth, align);
-    minX = Math.min(minX, startX + line.inkBounds[0]);
-    maxX = Math.max(maxX, startX + line.inkBounds[2]);
+    minX = Math.min(minX, startX + line.ink[0]);
+    maxX = Math.max(maxX, startX + line.ink[2]);
   }
 
   if (!isFinite(minX)) { minX = ox; maxX = ox; }
 
   // Compute and cache the derived frame (world coordinates)
+  const fixedWidth = typeof width === 'number' ? width : null;
   const fw = fixedWidth ?? layout.logicalBBox[2];
   const fx = ox - anchorFactor(align) * fw;
   const fy = oy - fontSize * getBaselineToTopRatio();

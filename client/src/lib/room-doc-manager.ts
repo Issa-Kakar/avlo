@@ -23,7 +23,8 @@ import {
   processConnectorDeleted,
   processShapeDeleted,
 } from './connectors';
-import { textLayoutCache, computeTextBBox, type TextAlign } from './text/text-system';
+import { getTextProps } from '@avlo/shared';
+import { textLayoutCache, computeTextBBox } from './text/text-system';
 
 type Unsub = () => void;
 
@@ -805,6 +806,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear connector lookup
     clearConnectorLookup();
 
+    // Clear text layout cache
+    textLayoutCache.clear();
+
     // Clear object maps
     this.objectsById.clear();
 
@@ -934,7 +938,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
           if (field === 'content') {
             // Y.XmlFragment change: invalidate text cache (full)
-            textLayoutCache.invalidate(id);
+            textLayoutCache.invalidateContent(id);
             textContentChangedIds.add(id);
           } else if (field === 'fontSize') {
             // fontSize changed: invalidate layout only
@@ -988,9 +992,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         processShapeDeleted(id); // Clean up lookup entry for this shape
       }
 
-      // Invalidate text cache on deletion
+      // Remove text cache entry on deletion
       if (handle.kind === 'text') {
-        textLayoutCache.invalidate(id);
+        textLayoutCache.remove(id);
       }
     }
 
@@ -1006,19 +1010,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Compute new bbox - use specialized computation for text
       let newBBox: [number, number, number, number];
       if (kind === 'text') {
-        const origin = yObj.get('origin') as [number, number] | undefined;
-        const content = yObj.get('content') as Y.XmlFragment | undefined;
-        const fontSize = (yObj.get('fontSize') as number) ?? 20;
-        const align = (yObj.get('align') as TextAlign) ?? 'left';
-        const widthMode = (yObj.get('widthMode') as string) ?? 'auto';
-        const fixedWidth = widthMode === 'fixed' ? ((yObj.get('width') as number) ?? null) : null;
-
-        if (origin && content) {
-          newBBox = computeTextBBox(id, content, fontSize, origin, align, fixedWidth);
+        const props = getTextProps(yObj);
+        if (props) {
+          newBBox = computeTextBBox(id, props);
         } else {
-          // Fallback for text without proper data
-          const [x, y] = origin ?? [0, 0];
-          newBBox = [x, y - fontSize, x + 1, y + 1];
+          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+          const fontSize = (yObj.get('fontSize') as number) ?? 20;
+          newBBox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
         }
       } else {
         newBBox = computeBBoxFor(kind, yObj);
@@ -1103,19 +1101,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Compute bbox - use specialized computation for text
       let bbox: [number, number, number, number];
       if (kind === 'text') {
-        const origin = yObj.get('origin') as [number, number] | undefined;
-        const content = yObj.get('content') as Y.XmlFragment | undefined;
-        const fontSize = (yObj.get('fontSize') as number) ?? 20;
-        const align = (yObj.get('align') as TextAlign) ?? 'left';
-        const widthMode = (yObj.get('widthMode') as string) ?? 'auto';
-        const fixedWidth = widthMode === 'fixed' ? ((yObj.get('width') as number) ?? null) : null;
-
-        if (origin && content) {
-          bbox = computeTextBBox(id, content, fontSize, origin, align, fixedWidth);
+        const props = getTextProps(yObj);
+        if (props) {
+          bbox = computeTextBBox(id, props);
         } else {
-          // Fallback for text without proper data
-          const [x, y] = origin ?? [0, 0];
-          bbox = [x, y - fontSize, x + 1, y + 1];
+          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+          const fontSize = (yObj.get('fontSize') as number) ?? 20;
+          bbox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
         }
       } else {
         bbox = computeBBoxFor(kind, yObj);

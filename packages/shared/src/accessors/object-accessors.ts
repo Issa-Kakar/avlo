@@ -186,18 +186,48 @@ export function getOrigin(y: Y.Map<unknown>): [number, number] | null {
   return (y.get('origin') as [number, number] | undefined) ?? null;
 }
 
-/**
- * Get text alignment from Y.Map with fallback.
- */
-export function getAlign(y: Y.Map<unknown>, fallback = 'left'): string {
-  return (y.get('align') as string | undefined) ?? fallback;
+export type TextAlign = 'left' | 'center' | 'right';
+export type TextWidth = 'auto' | number;
+
+export interface TextProps {
+  content: Y.XmlFragment;
+  origin: [number, number];
+  fontSize: number;
+  align: TextAlign;
+  width: TextWidth;
 }
 
 /**
- * Get width mode from Y.Map with fallback.
+ * Get all text properties from Y.Map.
+ * Returns null if required fields (origin, content) are missing.
  */
-export function getWidthMode(y: Y.Map<unknown>, fallback = 'auto'): string {
-  return (y.get('widthMode') as string | undefined) ?? fallback;
+export function getTextProps(y: Y.Map<unknown>): TextProps | null {
+  const origin = y.get('origin') as [number, number] | undefined;
+  const content = y.get('content') as Y.XmlFragment | undefined;
+  if (!origin || !content) return null;
+  const w = y.get('width');
+  return {
+    content,
+    origin,
+    fontSize: (y.get('fontSize') as number) ?? 20,
+    align: (y.get('align') as TextAlign) ?? 'left',
+    width: typeof w === 'number' ? w : 'auto',
+  };
+}
+
+/**
+ * Get text width from Y.Map.
+ */
+export function getTextWidth(y: Y.Map<unknown>): TextWidth {
+  const w = y.get('width');
+  return typeof w === 'number' ? w : 'auto';
+}
+
+/**
+ * Get text alignment from Y.Map with fallback.
+ */
+export function getAlign(y: Y.Map<unknown>, fallback: TextAlign = 'left'): TextAlign {
+  return (y.get('align') as TextAlign | undefined) ?? fallback;
 }
 
 /**

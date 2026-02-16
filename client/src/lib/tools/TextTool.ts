@@ -26,7 +26,8 @@ import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/c
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor, type TextAlign } from '@/lib/text/text-system';
+import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
+import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor } from '@/lib/text/text-system';
 import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -200,7 +201,7 @@ export class TextTool implements PointerTool {
       yObj.set('fontSize', fontSize);
       yObj.set('color', color);
       yObj.set('align', align);
-      yObj.set('widthMode', 'auto');
+      yObj.set('width', 'auto');
       // Create empty Y.XmlFragment - Tiptap Collaboration will initialize it
       yObj.set('content', new Y.XmlFragment());
       yObj.set('ownerId', userId);
@@ -233,17 +234,14 @@ export class TextTool implements PointerTool {
       return;
     }
 
-    const fragment = handle.y.get('content') as Y.XmlFragment;
-    if (!fragment) {
-      console.error('[TextTool] No content fragment:', objectId);
+    const props = getTextProps(handle.y);
+    if (!props) {
+      console.error('[TextTool] Object missing required properties:', objectId);
       return;
     }
 
-    // Read all properties from Y.Map
-    const origin = handle.y.get('origin') as [number, number];
-    const fontSize = (handle.y.get('fontSize') as number) ?? 20;
-    const color = (handle.y.get('color') as string) ?? '#000000';
-    const align: TextAlign = (handle.y.get('align') as TextAlign) ?? 'left';
+    const color = getColor(handle.y);
+    const { content: fragment, origin, fontSize, align } = props;
 
     // Create container div
     const container = document.createElement('div');
@@ -449,9 +447,9 @@ export class TextTool implements PointerTool {
     // Capture UndoManager ref before destroy (view.state inaccessible after)
     const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
 
-    editor.destroy();
-    (editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + all plugin states
-
+    editor.destroy();//eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (editor as any).editorState = null; 		// Tiptap doesn't null this — release EditorState + all plugin states
+		// Tiptap doesn't null this — release EditorState + all plugin states
     // Clear undo/redo stacks to release CRDT-level GC protection + ProsemirrorBinding refs
     if (undoManager) {
       undoManager.clear();
