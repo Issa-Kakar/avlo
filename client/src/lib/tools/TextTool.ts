@@ -26,12 +26,15 @@ import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/c
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
+import { getTextProps, getColor, type TextAlign, type TextWidth } from '@avlo/shared';
 import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor } from '@/lib/text/text-system';
 import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
+
+/** Temporary: force fixed-width on new text objects for WYSIWYG testing. */
+const DEV_FORCE_FIXED_WIDTH = true;
 
 interface TextToolState {
   isActive: boolean;
@@ -48,6 +51,7 @@ interface EditorState {
   fontSize: number;
   color: string;
   align: TextAlign;
+  width: TextWidth;
   isNew: boolean;
 }
 
@@ -67,6 +71,7 @@ export class TextTool implements PointerTool {
     fontSize: 20,
     color: '#000000',
     align: 'left',
+    width: 'auto' as TextWidth,
     isNew: false,
   };
 
@@ -201,7 +206,7 @@ export class TextTool implements PointerTool {
       yObj.set('fontSize', fontSize);
       yObj.set('color', color);
       yObj.set('align', align);
-      yObj.set('width', 'auto');
+      yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');
       // Create empty Y.XmlFragment - Tiptap Collaboration will initialize it
       yObj.set('content', new Y.XmlFragment());
       yObj.set('ownerId', userId);
@@ -241,7 +246,7 @@ export class TextTool implements PointerTool {
     }
 
     const color = getColor(handle.y);
-    const { content: fragment, origin, fontSize, align } = props;
+    const { content: fragment, origin, fontSize, align, width } = props;
 
     // Create container div
     const container = document.createElement('div');
@@ -274,6 +279,14 @@ export class TextTool implements PointerTool {
       '--text-anchor-tx',
       align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
     );
+
+    // WIDTH MODE — fixed: explicit pixel width + outline; auto: max-content (CSS default)
+    if (typeof width === 'number') {
+      container.style.width = `${width * scale}px`;
+      container.dataset.widthMode = 'fixed';
+    } else {
+      container.dataset.widthMode = 'auto';
+    }
 
     // Append to host
     host.appendChild(container);
@@ -332,6 +345,7 @@ export class TextTool implements PointerTool {
       fontSize,
       color,
       align,
+      width,
       isNew,
     };
 
@@ -412,6 +426,11 @@ export class TextTool implements PointerTool {
     this.editorState.container.style.fontSize = `${scaledFontSize}px`;
     this.editorState.container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
 
+    // Update fixed width for current zoom level
+    if (typeof this.editorState.width === 'number') {
+      this.editorState.container.style.width = `${this.editorState.width * scale}px`;
+    }
+
     // Context menu handles its own positioning via camera subscription
     textContextMenu.onViewChange();
   }
@@ -469,6 +488,7 @@ export class TextTool implements PointerTool {
       fontSize: 20,
       color: '#000000',
       align: 'left',
+      width: 'auto' as TextWidth,
       isNew: false,
     };
 

@@ -534,3 +534,112 @@ But this is optional — the comparison-based approach already works correctly.
 ### Sub-pixel Differences (Expected)
 
 In auto mode, the old code measured entire paragraph text as one `measureText()` call. The new code measures per-word/space token separately, then sums widths. This may produce sub-pixel width differences due to kerning, but matches CSS behavior more accurately. Visually imperceptible.
+
+---
+
+## Pass 3: DOM Editor Fixed-Width Integration + WYSIWYG Verification
+
+**Date:** 2026-02-15
+**Status:** WYSIWYG confirmed — canvas rendering matches DOM overlay for fixed-width text objects.
+
+### What Changed
+
+#### TextTool.ts
+
+**EditorState** gains `width: TextWidth` field:
+```typescript
+interface EditorState {
+  // ... existing fields ...
+  width: TextWidth;  // 'auto' | number — stored from Y.Map on mount
+}
+```
+
+**`createTextObject()`** — dev boolean forces fixed width for testing:
+```typescript
+const DEV_FORCE_FIXED_WIDTH = true;  // Temporary — remove when resize handles land
+yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');
+```
+
+**`mountEditor()`** — reads `width` from `getTextProps()`, sets container width inline:
+```typescript
+const { content: fragment, origin, fontSize, align, width } = props;
+
+// After alignment CSS setup:
+if (typeof width === 'number') {
+  container.style.width = `${width * scale}px`;  // World units → screen pixels
+  container.dataset.widthMode = 'fixed';
+} else {
+  container.dataset.widthMode = 'auto';
+}
+```
+- Fixed mode: inline `width` overrides CSS `max-content`; `data-width-mode="fixed"` triggers CSS outline + overflow rules
+- Auto mode: no inline width → CSS `max-content` applies; `data-width-mode="auto"` is inert
+
+**`repositionEditor()`** — syncs container width on zoom:
+```typescript
+if (typeof this.editorState.width === 'number') {
+  this.editorState.container.style.width = `${this.editorState.width * scale}px`;
+}
+```
+
+**`commitAndClose()`** — resets `width: 'auto'` in editorState.
+
+**Import:** Added `TextWidth` to the `@avlo/shared` import.
+
+#### index.css
+
+**Added to `.text-editor-container`:**
+```css
+overflow-wrap: break-word;
+```
+Safe as a global default — in auto mode (`width: max-content`) there's nothing to overflow, so it's a no-op. In fixed mode it activates break-word wrapping matching the canvas flow engine's `sliceTextToFit()`.
+
+**New fixed-width rules:**
+```css
+.text-editor-container[data-width-mode="fixed"] {
+  outline: 1px solid #1d4ed8;   /* Selection overlay primary color */
+  overflow: hidden;              /* Clip hanging whitespace — matches canvas + prevents pointer event leaks */
+}
+
+.text-editor-container[data-width-mode="fixed"] .tiptap p.is-editor-empty:first-child::before {
+  display: none;                 /* Suppress placeholder in fixed-width — wrapping "Type something..." looks broken */
+}
+```
+
+**`overflow: hidden` rationale:**
+- CSS `pre-wrap` allows trailing whitespace to "hang" beyond the container edge — the DOM element extends into that area, capturing pointer events (e.g., blocking click-outside-to-commit)
+- `overflow: hidden` clips the overflow region, preventing event leakage
+- Matches canvas behavior: the flow engine's `clearPending()` drops trailing whitespace at paragraph end — it's never rendered on canvas
+- Text selection (Ctrl+A) still works — it's content-based, not visual
+
+**Placeholder suppression rationale:**
+- When the container width is narrower than "Type something...", the placeholder wraps and looks broken
+- Fixed-width containers already show a blue outline signaling the editable area
+- Simplest correct UX — no measurement complexity needed
+
+### WYSIWYG Verification Results
+
+Tested with `DEV_FORCE_FIXED_WIDTH = true` (width: 270 world units):
+
+| Test Case | DOM | Canvas | Match |
+|-----------|-----|--------|-------|
+| Short text (fits on one line) | Single line, left-aligned | Single line, left-aligned | Yes |
+| Text wrapping at word boundary | Wraps at same word | Wraps at same word | Yes |
+| Long word break (`overflow-wrap: break-word`) | Breaks at grapheme boundary | Breaks at grapheme boundary | Yes |
+| Multiple paragraphs | Correct line heights | Correct line heights | Yes |
+| Mixed bold/italic | Correct wrapping with style changes | Correct wrapping with style changes | Yes |
+| Center alignment within container | Centered within 270-unit box | Centered within 270-unit box | Yes |
+| Right alignment within container | Right-aligned within box | Right-aligned within box | Yes |
+| Trailing spaces | Clipped by `overflow: hidden` | Not rendered (clearPending) | Yes |
+| Zoom in/out | Container scales correctly | Renders at world coords | Yes |
+| Empty text (no placeholder) | Blue outline, no placeholder | Empty | Yes |
+
+Sub-pixel differences (~0.5px) observed on long lines due to per-token measurement vs native text shaping. Visually imperceptible.
+
+### What's NOT Done Yet
+
+1. **`DEV_FORCE_FIXED_WIDTH` removal** — temporary boolean; remove when resize handles land
+2. **Select tool E/W resize handles** — the mechanism to set `width` from `'auto'` to a number interactively
+3. **Live width changes during editing** — when resize handles adjust width while editor is mounted, the container width and canvas layout need to re-sync
+4. **Width in observer** — optional explicit `invalidateFlow(id)` on `field === 'width'` in room-doc-manager (comparison-based detection already works)
+5. **Auto ↔ fixed mode switching** — double-click side handle to toggle, or auto-detect from content

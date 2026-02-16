@@ -64,9 +64,9 @@
   padding: 0;
   margin: 0;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
   min-width: 3px;
   pointer-events: auto;
-  outline: none;
   z-index: 1000;
 
   /* Dynamic properties */
@@ -76,6 +76,16 @@
   width: max-content;
   transform: translateX(var(--text-anchor-tx, 0%));
   text-align: var(--text-align, left);
+}
+
+/* Fixed-width container: outline, clip hanging whitespace, suppress placeholder */
+.text-editor-container[data-width-mode="fixed"] {
+  outline: 1px solid #1d4ed8;
+  overflow: hidden;
+}
+
+.text-editor-container[data-width-mode="fixed"] .tiptap p.is-editor-empty:first-child::before {
+  display: none;
 }
 
 /* Tiptap editor */
