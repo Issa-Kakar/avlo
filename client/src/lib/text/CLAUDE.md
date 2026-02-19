@@ -1,812 +1,438 @@
-# Text Tool System Documentation
+# Text System Documentation
 
-**Status:** Work in progress - WYSIWYG phase complete
-**Last Updated:** Current
+**Status:** WYSIWYG complete — auto + fixed-width modes verified
+**Last Updated:** 2026-02-15
 
 ## Overview
 
-The text tool implements a **WYSIWYG rich text system** with:
-- **DOM overlay during editing:** Tiptap editor mounted as an absolute-positioned div
-- **Canvas rendering on exit:** Y.XmlFragment content rendered via canvas
-- **Precise positioning:** Measured font metrics ensure DOM ↔ canvas baseline alignment
-- **CRDT synchronization:** Y.XmlFragment enables real-time collaboration via Tiptap's Collaboration extension
+WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, supporting both auto-width and fixed-width (text wrapping) modes.
 
-## Architecture Diagram
+- **Editing:** Tiptap editor in absolute-positioned div, synced to Y.XmlFragment via custom TextCollaboration extension
+- **Rendering:** Canvas-based layout engine with tokenizer + flow engine matching CSS `pre-wrap` + `break-word`
+- **Positioning:** Measured font metrics ensure DOM ↔ canvas baseline alignment
+- **Collaboration:** Y.XmlFragment CRDT enables real-time sync
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           USER INTERACTION                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              TextTool.ts                                     │
-│  PointerTool implementation: begin/end creates object, mounts editor        │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-          ┌─────────────────────────┼─────────────────────────┐
-          ▼                         ▼                         ▼
-┌──────────────────┐    ┌──────────────────────┐    ┌──────────────────┐
-│    Y.Doc         │    │   Tiptap Editor      │    │  Selection Store │
-│  Y.XmlFragment   │◄───┤   (DOM overlay)      │    │  textEditingId   │
-│  (content CRDT)  │    │   Collaboration ext  │    │  textEditingIsNew│
-└────────┬─────────┘    └──────────────────────┘    └──────────────────┘
-         │                         │
-         │                         │ On blur/ESC
-         │                         ▼
-         │              ┌──────────────────────┐
-         │              │   commitAndClose()   │
-         │              │   - Destroy editor   │
-         │              │   - Remove DOM       │
-         │              │   - Update stores    │
-         │              └──────────────────────┘
-         │
-         ▼ Observer fires on Y.XmlFragment changes
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          room-doc-manager.ts                                 │
-│  - textLayoutCache.invalidate() on content changes                          │
-│  - textLayoutCache.invalidateLayout() on fontSize changes                   │
-│  - computeTextBBox() for spatial index                                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            text-system.ts                                    │
-│  parseYXmlFragment() → layoutContent() → renderTextLayout()                 │
-│  TextLayoutCache: caches parsed content + measured layout                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       renderer/layers/objects.ts                             │
-│  drawText(): skips if textEditingId matches, else renders from cache        │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## File Responsibilities
+## Files
 
 | File | Purpose |
 |------|---------|
-| `lib/tools/TextTool.ts` | PointerTool implementation, editor mounting, Y.Map creation, live editing methods |
-| `lib/text/text-system.ts` | Parsing, layout engine, cache (with derived frame), renderer, BBox computation |
+| `lib/text/text-system.ts` | Layout engine: tokenizer, measurement, flow engine, cache, renderer, BBox |
+| `lib/text/extensions.ts` | Custom TextCollaboration extension (replaces @tiptap/extension-collaboration) |
 | `lib/text/font-config.ts` | `FONT_CONFIG` constants (extracted to avoid circular deps) |
-| `lib/text/font-loader.ts` | Grandstander font loading, `areFontsLoaded()` guard |
-| `lib/text/TextContextMenu.ts` | Floating toolbar: bold/italic/alignment/color/size controls |
+| `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` |
+| `lib/text/TextContextMenu.ts` | Floating toolbar: bold/italic/alignment/color/size (imperative DOM) |
 | `lib/text/text-menu-icons.ts` | SVG icon builders for context menu |
-| `renderer/layers/objects.ts` | `drawText()` function, editing skip logic |
-| `stores/selection-store.ts` | `textEditingId`, `textEditingIsNew` state |
-| `stores/device-ui-store.ts` | `textSize`, `textAlign`, `textColor`, `isTextEditing` state |
-| `lib/room-doc-manager.ts` | Cache invalidation, BBox computation, derived frame lifecycle |
-| `canvas/SurfaceManager.ts` | `getEditorHost()` - DOM container access |
-| `canvas/Canvas.tsx` | `editorHostRef` div mounting |
+| `lib/tools/TextTool.ts` | PointerTool: editor mounting, Y.Map creation, live editing, width handling |
 
 ---
 
 ## Y.Doc Object Schema
 
-Text objects use **origin-based positioning** with **Y.XmlFragment content**:
-
 ```typescript
 {
-  id: string,                    // ULID
+  id: string,                          // ULID
   kind: 'text',
-  origin: [number, number],      // World position: [alignmentAnchorX, firstLineBaseline]
-  fontSize: number,              // Font size in world units
-  color: string,                 // Hex color
-  align: 'left' | 'center' | 'right',  // Text alignment (default: 'left')
-  widthMode: 'auto',             // Reserved for future wrapping
-  content: Y.XmlFragment,        // Rich text content (Tiptap structure)
+  origin: [number, number],            // [alignmentAnchorX, firstLineBaseline]
+  fontSize: number,                    // World units
+  color: string,                       // Hex color
+  align: 'left' | 'center' | 'right', // TextAlign
+  width: 'auto' | number,             // TextWidth — 'auto' or fixed width in world units
+  content: Y.XmlFragment,             // Rich text (Tiptap structure)
   ownerId: string,
   createdAt: number
 }
+// No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
 ```
 
-### Origin Semantics (CRITICAL)
+### Origin Semantics
 
-**`origin[1]` (Y coordinate):** Always the **baseline** of the first line (unchanged).
-
-**`origin[0]` (X coordinate):** The **alignment anchor point**, whose meaning depends on `align`:
+`origin[1]` = baseline of first line. `origin[0]` = alignment anchor:
 
 | `align` | `origin[0]` meaning |
 |---------|---------------------|
-| `'left'` | Left edge of text (traditional behavior) |
+| `'left'` | Left edge of text block |
 | `'center'` | Horizontal center of text block |
-| `'right'` | Right edge of text |
+| `'right'` | Right edge of text block |
 
-**Why this design?**
-- Changing alignment preserves the text's visual position (left edge stays put)
-- The `updateTextAlign()` method adjusts `origin[0]` atomically with `align` to maintain invariant
-- Canvas rendering computes per-line X via: `lineStartX = originX - anchorFactor(align) * lineWidth`
-- DOM overlay uses CSS `transform: translateX(0%/-50%/-100%)` for equivalent anchoring
-
-**Alignment change formula:**
+Alignment changes adjust `origin[0]` atomically to preserve the left edge position:
 ```
-W = current text width (measured from DOM)
-leftX = originX - anchorFactor(oldAlign) * W    // Compute current left edge
-newOriginX = leftX + anchorFactor(newAlign) * W // New anchor preserving left edge
+leftX = originX - anchorFactor(oldAlign) * W
+newOriginX = leftX + anchorFactor(newAlign) * W
 ```
 
----
-
-## Y.XmlFragment Structure
-
-Tiptap/ProseMirror stores documents as:
+### Y.XmlFragment Structure
 
 ```
 Y.XmlFragment
 ├── Y.XmlElement('paragraph')
-│   └── Y.XmlText (with delta for bold/italic attributes)
-├── Y.XmlElement('paragraph')
-│   └── Y.XmlText
+│   └── Y.XmlText (delta: [{ insert: 'Hello ', attributes: { bold: true } }, ...])
 └── ...
-```
-
-Each `Y.XmlText` node has a `toDelta()` method returning rich text operations:
-
-```typescript
-[
-  { insert: 'Hello ', attributes: { bold: true } },
-  { insert: 'world', attributes: {} }
-]
 ```
 
 ---
 
 ## Text System Pipeline (`text-system.ts`)
 
-### 1. Font Configuration
+### Internal Pipeline
+
+```
+parseAndTokenize(fragment) → TokenizedContent
+    ↓
+measureTokenizedContent(tokenized, fontSize) → MeasuredContent
+    ↓
+layoutMeasuredContent(measured, width) → TextLayout
+```
+
+All three are **internal**. Public API: `textLayoutCache.getLayout()`.
+
+### Font Configuration
 
 ```typescript
 FONT_CONFIG = {
   family: 'Grandstander',
   fallback: '"Grandstander", cursive, sans-serif',
-  weightNormal: 550,
-  weightBold: 800,
-  lineHeightMultiplier: 1.3,  // CSS line-height = fontSize * 1.3
+  weightNormal: 550, weightBold: 800,
+  lineHeightMultiplier: 1.3,
 }
 ```
 
-### 2. Font Metrics (Measured)
-
-The system **measures** actual font metrics rather than approximating:
+### Font Metrics
 
 ```typescript
-getMeasuredAscentRatio(): number
-// Uses canvas fontBoundingBoxAscent to get exact ascent ratio
-// Cached after first measurement
-
-getBaselineToTopRatio(): number
-// = halfLeading + measuredAscentRatio
-// = (1.3 - 1) / 2 + ascentRatio
-// = 0.15 + ~0.88 ≈ 1.03
+getMeasuredAscentRatio()    // Canvas fontBoundingBoxAscent measurement, cached
+getBaselineToTopRatio()     // = halfLeading(0.15) + ascentRatio(~0.88) ≈ 1.03
+resetFontMetrics()          // Clear cached metrics after font load
+buildFontString(bold, italic, fontSize)  // → "italic 800 20px ..."
 ```
 
-**Why this matters:** CSS line-height adds "leading" space above and below text. To align DOM text baseline with canvas text baseline, we need the exact offset from container top to baseline.
+### Tokenizer: `parseAndTokenize()`
 
-### 3. Parser: `parseYXmlFragment()`
-
-Converts Y.XmlFragment to structured content:
-
-```typescript
-interface ParsedContent {
-  paragraphs: ParsedParagraph[];
-  structuralHash: number;      // For change detection
-  charCount: number;
-}
-
-interface ParsedParagraph {
-  runs: ParsedRun[];           // Coalesced runs with same formatting
-  isEmpty: boolean;
-}
-
-interface ParsedRun {
-  text: string;
-  bold: boolean;
-  italic: boolean;
-}
+Converts Y.XmlFragment → word/space tokens with styled segments:
+```
+"hello world"     → [word:"hello", space:" ", word:"world"]
+"he<b>llo</b> w"  → [word:{seg:"he", seg:"llo"(bold)}, space:" ", word:{seg:"w"}]
 ```
 
-**Key details:**
-- Walks `Y.XmlElement('paragraph')` children
-- Extracts delta via `Y.XmlText.toDelta()`
-- **Coalesces** consecutive runs with same bold/italic (reduces layout work)
-- Computes structural hash from concatenated text (for cache invalidation)
+### Flow Engine: `layoutMeasuredContent()`
 
-### 4. Layout Engine: `layoutContent()`
+Implements CSS `white-space: pre-wrap` + `overflow-wrap: break-word`:
 
-Measures text and computes positions:
+| CSS Property | Canvas Implementation |
+|-------------|----------------------|
+| `pre-wrap` | Pending whitespace pattern: leading ws committed, inter-word ws buffered, trailing ws dropped |
+| `break-word` | `sliceTextToFit()` — binary search at grapheme boundaries via `Intl.Segmenter` |
+| `text-align` | `getLineStartX(originX, boxWidth, lineVisualWidth, align)` |
+
+**Auto mode:** `maxWidth = Infinity` — no wrapping, each paragraph = one line.
+**Fixed mode:** `maxWidth = width` — words wrap at container boundary, oversized words break at grapheme boundaries.
+
+### Measurement Caches
+
+| Cache | Size | Key |
+|-------|------|-----|
+| `MEASURE_LRU` | 75k entries | `font + '\0' + text` |
+| `SPACE_WIDTH_CACHE` | Unbounded Map | font string |
+| `GRAPHEME_LRU` | 10k entries | text string |
+
+### Exported Types
 
 ```typescript
-interface TextLayout {
-  lines: MeasuredLine[];
-  fontSize: number;
-  lineHeight: number;
-  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
-  logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
-  structuralHash: number;
+interface MeasuredRun {
+  text: string; bold: boolean; italic: boolean; font: string;
+  advanceWidth: number; advanceX: number;  // X offset from line start
+  ink: BBoxTuple; isWhitespace: boolean;
 }
 
 interface MeasuredLine {
-  runs: MeasuredRun[];
-  index: number;
-  advanceWidth: number;
-  inkBounds: BBoxTuple;   // [left, top, right, bottom] relative to baseline
-  baselineY: number;                     // Relative to origin (0 for first line)
-  lineHeight: number;
-  isEmpty: boolean;
+  runs: MeasuredRun[]; index: number;
+  advanceWidth: number;    // Total advance including trailing whitespace
+  visualWidth: number;     // Width up to last non-whitespace run
+  ink: BBoxTuple; baselineY: number; lineHeight: number; hasInk: boolean;
 }
 
-interface MeasuredRun {
-  text: string;
-  bold: boolean;
-  italic: boolean;
-  font: string;                          // Pre-computed ctx.font string
-  advanceWidth: number;                  // Total advance width
-  advanceX: number;                      // X offset from line start
+interface TextLayout {
+  lines: MeasuredLine[]; fontSize: number; lineHeight: number;
+  widthMode: 'auto' | 'fixed';
+  boxWidth: number;        // auto → maxAdvanceWidth; fixed → explicit width
+  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
+  logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
 }
 ```
 
-**Measurement uses canvas API:**
-```typescript
-ctx.measureText(run.text)
-// Returns: width, actualBoundingBoxLeft/Right/Ascent/Descent
-```
+### TextLayoutCache (singleton)
 
-**Ink vs Logical Bounds:**
-- **Ink bounds:** Actual pixels drawn (for accurate dirty rects)
-- **Logical bounds:** Advance-based (for selection/cursor hit testing)
-
-### 5. Cache: `TextLayoutCache`
-
-Singleton cache for parsed content and layouts:
+Three-tier cache: content → measurement → flow.
 
 ```typescript
 class TextLayoutCache {
-  getLayout(objectId, fragment, fontSize): TextLayout
-  invalidate(objectId)        // Full invalidation (content changed)
-  invalidateLayout(objectId)  // Layout only (fontSize changed)
-  clear()                     // Full cache clear
-  has(objectId): boolean
-  setFrame(objectId, frame)   // Set derived frame (called by computeTextBBox)
-  getFrame(objectId): FrameTuple | null  // Read derived frame
+  getLayout(objectId, fragment, fontSize, width: TextWidth = 'auto'): TextLayout
+  invalidateContent(objectId)  // Content changed → re-tokenize + re-measure + re-flow
+  invalidateLayout(objectId)   // FontSize changed → re-measure + re-flow
+  invalidateFlow(objectId)     // Width changed → re-flow only
+  remove(objectId)             // Object deleted
+  clear()                      // Full clear (+ measurement caches)
+  setFrame(objectId, frame)    // Derived frame storage
+  getFrame(objectId): FrameTuple | null
 }
-
-// Singleton export
-export const textLayoutCache = new TextLayoutCache();
-
-// Module-level getter (convenience)
-export function getTextFrame(objectId: string): FrameTuple | null
+export const textLayoutCache: TextLayoutCache;
 ```
 
-**Cache entry structure:**
+**Cache entry:**
 ```typescript
 interface CacheEntry {
-  parsed: ParsedContent;     // Reused if only fontSize changes
+  tokenized: TokenizedContent | null;  // null = content stale
+  measured: MeasuredContent;
+  measuredFontSize: number | null;     // null = fontSize stale
   layout: TextLayout;
-  layoutFontSize: number;    // For staleness detection
-  frame: FrameTuple | null;  // Derived world-coords frame, set by computeTextBBox
+  layoutWidth: TextWidth | null;       // null = width stale
+  frame: FrameTuple | null;
 }
 ```
 
-**Smart invalidation:**
-- Content change → delete entire entry (frame gone)
-- FontSize change → mark `layoutFontSize = -1`, null `frame` → next `computeTextBBox` recomputes both
-- Origin/align change → no cache invalidation needed (layout is position-agnostic; `computeTextBBox` reads fresh values from Y.Map and recomputes frame)
+**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. If different, re-flows without re-measuring — no explicit `invalidateFlow()` needed (but it exists for the observer path).
 
-### 6. Renderer: `renderTextLayout()`
+### Renderer: `renderTextLayout()`
 
 ```typescript
 renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left')
 ```
+- `textBaseline = 'alphabetic'`, origin = first line baseline
+- Per-line X: `getLineStartX(originX, boxWidth, lineW, align)` where `lineW` = `advanceWidth` (auto) or `visualWidth` (fixed)
 
-- Sets `textBaseline = 'alphabetic'` for proper baseline alignment
-- Origin is **baseline position** of first line (Y) and **alignment anchor** (X)
-- Text extends **above** origin (ascent) and **below** (descent)
-- **Per-line X computation:** `lineStartX = originX - anchorFactor(align) * line.advanceWidth`
-- Iterates lines → runs → `ctx.fillText()` at computed positions
-
-### 7. BBox Computation + Derived Frame: `computeTextBBox()`
+### BBox + Derived Frame: `computeTextBBox()`
 
 ```typescript
-computeTextBBox(objectId, fragment, fontSize, origin, align, fixedWidth?): BBoxTuple
+computeTextBBox(objectId: string, props: TextProps): BBoxTuple
+```
+- Gets layout via cache, computes ink-tight bounds + 2px padding
+- **Derives and caches frame:** `[getBoxLeftX(ox, boxWidth, align), oy - fontSize * btRatio, boxWidth, logicalBBox[3]]`
+- Called from `room-doc-manager` for spatial index (both steady-state and hydration)
+
+### Frame Getter
+
+```typescript
+getTextFrame(objectId): FrameTuple | null  // Reads from cache
 ```
 
-- Gets layout from cache
-- **Computes per-line ink bounds** accounting for alignment-based positioning
-- Adds 2px padding for safety
-- **Derives and caches the text frame** on every call: `[fx, fy, fw, fh]` where:
-  - `fx = originX - anchorFactor(align) * width` (left edge)
-  - `fy = originY - fontSize * getBaselineToTopRatio()` (top edge)
-  - `fw = fixedWidth ?? layout.logicalBBox.width`
-  - `fh = layout.logicalBBox.height`
-- Frame is stored via `textLayoutCache.setFrame()`, readable via `getTextFrame(objectId)`
-- Called from `room-doc-manager.applyObjectChanges()` (steady-state) and `hydrateObjectsFromY()` (rebuild), both synchronous before any render/hit-test — guarantees freshness
-- Used by room-doc-manager for spatial index
+**All call sites** use the pattern:
+```typescript
+const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+```
 
 ---
 
-## TextTool Implementation (`TextTool.ts`)
+## TextTool (`TextTool.ts`)
 
-### State Structures
+### State
 
 ```typescript
-interface TextToolState {
-  isActive: boolean;           // Gesture in progress
-  pointerId: number | null;
-  downWorld: [number, number] | null;  // Click position
-  hitTextId: string | null;    // Existing text hit at click (null = create new)
-}
-
 interface EditorState {
-  container: HTMLDivElement | null;    // Mounted DOM element
-  editor: Editor | null;               // Tiptap Editor instance
-  objectId: string | null;             // Y.Map object ID
-  originWorld: [number, number] | null; // World position (alignment anchor)
+  container: HTMLDivElement | null;
+  editor: Editor | null;
+  objectId: string | null;
+  originWorld: [number, number] | null;
   fontSize: number;
   color: string;
-  align: TextAlign;                    // Current alignment
-  isNew: boolean;                      // For empty deletion on blur
+  align: TextAlign;
+  width: TextWidth;      // 'auto' | number — stored from Y.Map on mount
+  isNew: boolean;
 }
 ```
 
 ### PointerTool Lifecycle
 
 ```
-canBegin() → true if not active and not currently editing text
-     │
-begin(pointerId, worldX, worldY)
-     │ Hit test via hitTestVisibleText() → store hitTextId
-     │
-move() → no-op for text tool
-     │
-end()
-     │
-     ├─ hitTextId set? → EDIT EXISTING
-     │      ├─ beginTextEditing(hitTextId, isNew=false)
-     │      └─ mountEditor(hitTextId, false)
-     │            └─ Cursor placed at click position via posAtCoords
-     │
-     └─ hitTextId null? → CREATE NEW
-            ├─ createTextObject(x, y, fontSize, color)
-            ├─ beginTextEditing(objectId, isNew=true)
-            └─ mountEditor(objectId, true)
+begin() → hit test via hitTestVisibleText() → store hitTextId
+end()   → hitTextId ? mountEditor(hitTextId, false) : createTextObject → mountEditor(id, true)
 ```
 
-### Object Creation
+### createTextObject
 
 ```typescript
-createTextObject(worldX, worldY, fontSize, color): string {
-  const align = useDeviceUIStore.getState().textAlign;
-  roomDoc.mutate((ydoc) => {
-    const yObj = new Y.Map();
-    yObj.set('id', objectId);
-    yObj.set('kind', 'text');
-    yObj.set('origin', [worldX, worldY]);
-    yObj.set('fontSize', fontSize);
-    yObj.set('color', color);
-    yObj.set('align', align);
-    yObj.set('widthMode', 'auto');
-    yObj.set('content', new Y.XmlFragment());  // Empty - Tiptap populates
-    yObj.set('ownerId', userId);
-    yObj.set('createdAt', Date.now());
-    objects.set(objectId, yObj);
-  });
-  return objectId;
+yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');  // Temporary dev boolean
+```
+
+### mountEditor — Width Handling
+
+Reads `width` from `getTextProps()`, sets container width:
+
+```typescript
+if (typeof width === 'number') {
+  container.style.width = `${width * scale}px`;  // World units → screen pixels
+  container.dataset.widthMode = 'fixed';
+} else {
+  container.dataset.widthMode = 'auto';           // CSS max-content applies
 }
 ```
 
-### Editor Mounting (DOM Overlay)
+### repositionEditor — Zoom Sync
 
-**Signature:** `mountEditor(objectId: string, isNew: boolean)`
-
-Reads all properties (origin, fontSize, color, align) from Y.Map — no parameter passing needed.
-
-**Cursor positioning for existing text:**
-- `autofocus: isNew ? 'end' : false`
-- For `!isNew`: captures `worldToClient(downWorld)` synchronously, then `requestAnimationFrame` → `editor.view.posAtCoords({left, top})` → `focus(pos.pos)` with `focus('end')` fallback
-- `downWorld` is still set when `mountEditor` runs (before `resetState()` in `end()`)
+```typescript
+if (typeof this.editorState.width === 'number') {
+  container.style.width = `${this.editorState.width * scale}px`;
+}
+```
 
 ### DOM Positioning Math
 
-The key insight is aligning the **text baseline** in DOM with the **click position** in world coordinates:
-
 ```
-World Y (click) = baseline position
-Screen Y = worldToClient(worldX, worldY)[1]
-
-CSS container top = Screen Y - (scaledFontSize * baselineToTopRatio)
-
-Where baselineToTopRatio accounts for:
-  - Half leading: (lineHeightMultiplier - 1) / 2 = 0.15
-  - Font ascent ratio: ~0.88 (measured)
-  - Total: ~1.03 (container top is ABOVE baseline by ~103% of fontSize)
+Container top = screenY - (scaledFontSize * getBaselineToTopRatio())
 ```
+Where `getBaselineToTopRatio() ≈ 1.03` = halfLeading(0.15) + measuredAscent(~0.88).
 
-**Visual:**
-```
-Container top  ───────────────────────
-               │  half leading (0.15 * fontSize)
-               ├─────────────────────
-               │  ascent (~0.88 * fontSize)
-Baseline       ═══════════════════════  ← Click position (worldY)
-               │  descent
-               ├─────────────────────
-               │  half leading
-Container bottom ─────────────────────
-```
-
-### Event Handlers
+### Alignment CSS
 
 ```typescript
-// Escape key → commit and close
-boundHandleKeyDown = (e) => {
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    e.stopPropagation();
-    this.commitAndClose();
-  }
-};
-
-// Click outside → commit and close
-// Delayed 100ms to avoid catching initial click
-boundHandleClickOutside = (e) => {
-  if (container.contains(e.target)) return;
-  // Also check context menu element
-  const menu = document.querySelector('.text-context-menu');
-  if (menu && menu.contains(e.target)) return;
-  this.commitAndClose();
-};
+container.style.setProperty('--text-align', align);
+container.style.setProperty('--text-anchor-tx',
+  align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
 ```
 
-### View Change Handling
-
-When camera pans/zooms, reposition the editor:
+### commitAndClose — Memory Leak Prevention
 
 ```typescript
-onViewChange() {
-  this.repositionEditor();
-}
-
-repositionEditor() {
-  const [worldX, worldY] = this.editorState.originWorld;
-  const [screenX, screenY] = worldToClient(worldX, worldY);
-  const scale = useCameraStore.getState().scale;
-  const scaledFontSize = this.editorState.fontSize * scale;
-
-  // Update position
-  container.style.left = `${screenX}px`;
-  container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
-
-  // Update font size for crisp rendering at new zoom
-  container.style.fontSize = `${scaledFontSize}px`;
-  container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-
-  // Context menu handles its own positioning via camera subscription
-  textContextMenu.onViewChange();
-}
+// Capture UndoManager ref before destroy (view.state inaccessible after)
+const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
+editor.destroy();
+(editor as any).editorState = null;   // Tiptap doesn't null this
+if (undoManager) undoManager.clear();  // Release CRDT GC protection
 ```
 
-### Commit and Close
+### Module Exports
 
 ```typescript
-commitAndClose() {
-  const { editor, container, objectId, isNew } = this.editorState;
-
-  // Delete empty new text objects
-  if (editor.isEmpty && isNew) {
-    roomDoc.mutate((ydoc) => {
-      objects.delete(objectId);
-    });
-  }
-
-  // Cleanup (order matters: context menu → handlers → editor → DOM → stores)
-  textContextMenu.destroy();
-  this.removeEditorHandlers();
-  editor.destroy();
-  container.parentNode.removeChild(container);
-
-  // Clear editor state BEFORE updating stores
-  this.editorState = { /* reset to defaults */ };
-
-  // Update stores
-  useSelectionStore.getState().endTextEditing();
-  useDeviceUIStore.getState().setIsTextEditing(false);
-
-  // Force re-render (editor unmount doesn't trigger Y.Doc mutation)
-  invalidateWorld(getVisibleWorldBounds());
-  invalidateOverlay();
-}
-```
-
-### Start Editing (External Entry Point)
-
-Called by SelectTool (e.g., double-click on text) with click position for cursor placement:
-
-```typescript
-startEditing(objectId: string, entryPoint: [number, number]): void {
-  this.state.downWorld = entryPoint;  // For posAtCoords in mountEditor
-  useSelectionStore.getState().beginTextEditing(objectId, false);
-  this.mountEditor(objectId, false);
-}
-```
-
-### Live Editing Methods (called by TextContextMenu)
-
-```typescript
-updateColor(newColor)      // Y.Map + CSS --text-color + UI store
-updateFontSize(newSize)    // Y.Map (triggers invalidateLayout) + CSS + reposition
-updateTextAlign(newAlign)  // Adjusts origin.x to preserve left edge, Y.Map atomic update
-```
-
-**Alignment change formula:** `newOriginX = leftX + anchorFactor(newAlign) * W` where `leftX = originX - anchorFactor(oldAlign) * W` and `W` is measured from DOM via `getBoundingClientRect().width / scale`.
-
-### Module-Level Exports
-
-```typescript
-setTextToolInstance(tool)        // Called by tool-registry
-getTextToolInstance(): TextTool  // Used by context menu for updateColor/updateFontSize
-getActiveEditorContainer()       // DOM element access
-getActiveTiptapEditor()          // Tiptap Editor access
+setTextToolInstance(tool)          // Called by tool-registry
+getTextToolInstance(): TextTool    // Used by context menu
+getActiveEditorContainer()         // DOM element access
+getActiveTiptapEditor()            // Tiptap Editor access
 ```
 
 ---
 
-## Canvas Rendering Integration
+## TextCollaboration Extension (`extensions.ts`)
 
-### objects.ts: `drawText()`
+Custom Tiptap extension replacing `@tiptap/extension-collaboration` to fix memory leaks.
+
+**Problem:** Official extension captures `_observers` (closures over EditorView) into a restore closure on destroy, preventing GC of detached DOM trees — linear leak in short-lived editors.
+
+**Solution:** Registers `ySyncPlugin + yUndoPlugin` directly without suspend/restore wrapper.
+
+**Cursor Fix:** yUndoPlugin's RelativePosition restoration is buggy. A `selectionFixPlugin` stores raw ProseMirror positions on undo stack items, corrects selection after undo/redo via `applyPendingSelection()`.
 
 ```typescript
-function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle) {
-  const { id, y } = handle;
-
-  // CRITICAL: Skip if being edited (DOM overlay is visible)
-  const textEditingId = useSelectionStore.getState().textEditingId;
-  if (textEditingId === id) {
-    return;  // DOM editor handles display
-  }
-
-  // Get data
-  const content = y.get('content') as Y.XmlFragment;
-  const origin = y.get('origin') as [number, number];
-  const fontSize = y.get('fontSize') ?? 20;
-  const color = y.get('color') ?? '#000000';
-  const align = y.get('align') ?? 'left';  // Alignment for origin semantics
-
-  if (!content || !origin) return;
-
-  // Get cached layout
-  const layout = textLayoutCache.getLayout(id, content, fontSize);
-
-  // Render (no opacity - always fully opaque)
-  renderTextLayout(ctx, layout, origin[0], origin[1], color, align);
-}
+export const TextCollaboration = Extension.create<{ fragment: XmlFragment | null }>({
+  addProseMirrorPlugins() {
+    return [ySyncPlugin(fragment), yUndoPlugin(), selectionFixPlugin];
+  },
+  addCommands() { return { undo, redo }; },
+  addKeyboardShortcuts() { return { 'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo }; },
+});
 ```
-
-### Transform Handling
-
-**Translate:** SelectTool translates text by offsetting `origin` in Y.Map (not `frame` — text has no stored frame). The derived frame recomputes automatically via the Y.Doc observer → `computeTextBBox()` cycle.
-
-**Scale:** No-op. Text stays at original position during scale transforms. `commitScale()` skips text objects, and `invalidateTransformPreview()` skips text in the scale dirty rect loop.
-
-**Rendering during transforms:** `objects.ts` draws text at original position via `ctx.translate` for translate transforms; scale renders at original position (no visual scaling).
 
 ---
 
-## Store Integration
+## CSS Architecture (`index.css`)
 
-### Selection Store (`selection-store.ts`)
-
-```typescript
-interface SelectionState {
-  textEditingId: string | null;     // Object being edited
-  textEditingIsNew: boolean;       
+```css
+.text-editor-container {
+  font-family: "Grandstander", cursive, sans-serif;
+  font-weight: 550;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;       /* Safe default — no-op in auto (max-content) */
+  width: max-content;              /* Auto mode: grows with content */
+  transform: translateX(var(--text-anchor-tx, 0%));
+  text-align: var(--text-align, left);
+  color: var(--text-color, #000000);
 }
 
-// Actions
-beginTextEditing(objectId: string, isNew: boolean)
-endTextEditing()
-
-// Selectors
-selectTextEditingId(state) => state.textEditingId
-selectIsTextEditing(state) => state.textEditingId !== null
-selectTextEditingIsNew(state) => state.textEditingIsNew
-```
-
-### Device UI Store (`device-ui-store.ts`)
-
-```typescript
-interface DeviceUIState {
-  textSize: TextSizePreset;        // 20 | 30 | 40 | 50
-  textAlign: TextAlign;            // 'left' | 'center' | 'right' (default for new text)
-  textColor: string;               // Text-specific color
-  isTextEditing: boolean;          // DOM editor active
+/* Fixed-width: outline, clip hanging whitespace, suppress placeholder */
+.text-editor-container[data-width-mode="fixed"] {
+  outline: 1px solid #1d4ed8;     /* Matches SELECTION_STYLE.PRIMARY */
+  overflow: hidden;                /* Clip trailing whitespace → prevent event leaks */
 }
 
-// Actions
-setTextSize(size: TextSizePreset)
-setTextAlign(align: TextAlign)
-setTextColor(color: string)
-setIsTextEditing(editing: boolean)
+.text-editor-container[data-width-mode="fixed"] .tiptap p.is-editor-empty:first-child::before {
+  display: none;                   /* Placeholder wraps/looks broken in narrow containers */
+}
 ```
+
+**JS inline styles** (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width` (fixed mode).
+
+---
+
+## Canvas Rendering (`objects.ts`)
+
+```typescript
+function drawText(ctx, handle) {
+  if (useSelectionStore.getState().textEditingId === handle.id) return;  // Skip if editing
+  const props = getTextProps(handle.y);
+  if (!props) return;
+  const color = getColor(handle.y);
+  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
+  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
+}
+```
+
+**Transform behavior:** Translate offsets `origin` in Y.Map. Scale is a currently no-op (text transforms are deferred to later phases).
 
 ---
 
 ## Room Doc Manager Integration
 
-### Cache Invalidation
+### Deep Observer
 
 ```typescript
-// In deep observer callback:
 if (field === 'content') {
-  // Y.XmlFragment change: full invalidation
-  textLayoutCache.invalidate(id);
+  textLayoutCache.invalidateContent(id);
   textContentChangedIds.add(id);
 } else if (field === 'fontSize') {
-  // fontSize change: layout-only invalidation
   textLayoutCache.invalidateLayout(id);
 }
-
-// On object deletion:
-if (handle.kind === 'text') {
-  textLayoutCache.invalidate(id);
-}
-
-// On full rebuild:
-textLayoutCache.clear();
+// 'width' changes handled by comparison in getLayout()
+// 'origin'/'color' don't need cache invalidation
 ```
 
 ### BBox Computation
 
 ```typescript
-// In steady-state updates:
 if (kind === 'text') {
-  const origin = yObj.get('origin');
-  const content = yObj.get('content') as Y.XmlFragment;
-  const fontSize = yObj.get('fontSize') ?? 20;
-  const align = yObj.get('align') ?? 'left';  // Alignment affects bbox!
-
-  if (origin && content) {
-    newBBox = computeTextBBox(id, content, fontSize, origin, align);
-  }
+  const props = getTextProps(yObj);
+  if (props) newBBox = computeTextBBox(id, props);
 }
 ```
 
----
-
-## DOM Host Architecture
-
-### Canvas.tsx
-
-```tsx
-const editorHostRef = useRef<HTMLDivElement>(null);
-
-// In JSX:
-<div
-  ref={editorHostRef}
-  className="dom-overlay-root"
-  style={{
-    position: 'absolute',
-    inset: 0,
-    pointerEvents: 'none',  // Pass-through by default
-    overflow: 'hidden',
-  }}
-/>
-```
-
-### SurfaceManager.ts
+### Deletion / Rebuild
 
 ```typescript
-// Module-level registry
-let editorHost: HTMLDivElement | null = null;
-
-export function getEditorHost(): HTMLDivElement | null {
-  return editorHost;
-}
-
-// In start():
-editorHost = this.editorHostEl;
-
-// In stop():
-editorHost = null;
-```
-
-### CanvasRuntime.ts
-
-```typescript
-interface RuntimeConfig {
-  container: HTMLDivElement;
-  baseCanvas: HTMLCanvasElement;
-  overlayCanvas: HTMLCanvasElement;
-  editorHost: HTMLDivElement;        // Text editor DOM host
-}
-
-start(config) {
-  const { container, baseCanvas, overlayCanvas, editorHost } = config;
-  this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
-  // ...
-}
+if (handle.kind === 'text') textLayoutCache.remove(id);  // Deletion
+textLayoutCache.clear();                                   // Full rebuild
 ```
 
 ---
 
-## CSS Architecture
+## Derived Frame
 
-**Location:** `client/src/index.css`
+Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/content/width, cached in `TextLayoutCache`, read via `getTextFrame(objectId)`.
 
-The text editor uses CSS-based styling with separation of concerns:
+**Frame vs BBox:** Text's bbox is ink-tight + 2px padding (can be smaller than logical frame). Frame matches DOM overlay rect exactly — used by selection, connectors, hit testing.
 
-```css
-.text-editor-container {
-  /* Static appearance (font-family, font-weight 550, etc.) */
-  font-family: "Grandstander", cursive, sans-serif;
-  color: var(--text-color, #000000);  /* Dynamic via JS */
-
-  /* Alignment support via CSS transform for anchor positioning */
-  width: max-content;
-  transform: translateX(var(--text-anchor-tx, 0%));
-  text-align: var(--text-align, left);
-}
-
-/* Tiptap extensions add classes to HTML tags */
-.text-editor-container strong,
-.text-editor-container .tiptap-bold { font-weight: 800; }
-
-.text-editor-container em,
-.text-editor-container .tiptap-italic { font-style: italic; }
-```
-
-**Alignment CSS custom properties:**
-| `align` | `--text-anchor-tx` | `--text-align` | Effect |
-|---------|-------------------|----------------|--------|
-| `left` | `0%` | `left` | Left edge at position |
-| `center` | `-50%` | `center` | Center at position |
-| `right` | `-100%` | `right` | Right edge at position |
-
-**JS handles only:**
-- Positioning (`position`, `left`, `top`)
-- Zoom-dependent values (`fontSize`, `lineHeight`) - inline for performance
-- Per-object color (`--text-color` CSS custom property)
-- Per-object alignment (`--text-anchor-tx`, `--text-align` CSS custom properties)
+**Consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
 
 ---
 
+## WYSIWYG Parity Contract
 
-### 2. ~~No Contextual Toolbar~~ ✅ RESOLVED
-
-**Status:** Implemented via `TextContextMenu.ts` - floating toolbar with bold/italic/alignment/color/size controls.
-
----
-
-## Derived Frame Integration (getTextFrame)
-
-Text has no stored `frame` in Y.Map — frame is **derived** from origin/fontSize/align/content, cached in `TextLayoutCache`, accessible via `getTextFrame(objectId)`.
-
-**Pattern:** All call sites that need a text frame use:
-```typescript
-const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
-```
-
-**Frame vs BBox:** Unlike shapes (where bbox ⊇ frame due to stroke padding), text's bbox is **ink-pixel** coverage + 2px padding, which can be *smaller* than the logical frame. The frame matches the DOM overlay rect exactly — so selection bounds, highlights, and connector snapping all use frame for WYSIWYG accuracy.
-
-**Consumers using `getTextFrame()`:**
-- `geometry/hit-testing.ts` — marquee intersection, point hit tests, `hitTestVisibleText()` for TextTool click-to-edit
-- `tools/EraserTool.ts`, `renderer/layers/eraser-dim.ts` — eraser hit test + dimming
-- `connectors/snap.ts`, `reroute-connector.ts`, `connector-utils.ts`, `ConnectorTool.ts` — snapping, routing, obstacle avoidance
-- `renderer/layers/selection-overlay.ts` — highlights + snap midpoint dots
-- `stores/selection-store.ts` — connector topology `originalFrames`
-- `lib/geometry/bounds.ts` — `computeRawGeometryBounds` for scale origin
-- `tools/SelectTool.ts` — selection bounds, translate commit, scale skip
+DOM and canvas match because:
+- Same font (Grandstander 550/800), same `pre-wrap` + `break-word`, same container width
+- Same line-height (`fontSize * 1.3`)
+- Canvas flow engine implements identical whitespace semantics (pending whitespace pattern)
+- Sub-pixel differences (~0.5px) expected from per-token vs native text shaping
 
 ---
 
-## Future Work
+## Remaining Work
 
-2. **Font family selector**
-3. **Text wrapping** (widthMode: 'fixed')
-4. **Shape labels** (text inside shapes)
-5. **Text scale transforms** (font size scaling)
-
----
-
+- **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove when resize handles land
+- **Select tool E/W resize handles** — interactive width setting
+- **Live width changes during editing** — resize while editor mounted
+- **Text scale transforms** — font size scaling during select transforms

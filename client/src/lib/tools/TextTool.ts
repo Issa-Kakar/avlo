@@ -16,7 +16,6 @@ import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
-import { yUndoPluginKey } from '@tiptap/y-tiptap';
 import { TextCollaboration } from '@/lib/text/extensions';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData } from './types';
@@ -317,6 +316,10 @@ export class TextTool implements PointerTool {
         }),
         TextCollaboration.configure({
           fragment,
+          yObj: handle.y,
+          userId: userProfileManager.getIdentity().userId,
+          mainUndoManager: roomDoc.getUndoManager(),
+          onPropsSync: (keys) => this.syncProps(keys),
         }),
       ],
       autofocus: isNew ? 'end' : false,
@@ -463,16 +466,8 @@ export class TextTool implements PointerTool {
     // Remove event handlers
     this.removeEditorHandlers();
 
-    // Capture UndoManager ref before destroy (view.state inaccessible after)
-    const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
-
     editor.destroy();//eslint-disable-next-line @typescript-eslint/no-explicit-any
     (editor as any).editorState = null; 		// Tiptap doesn't null this — release EditorState + all plugin states
-		// Tiptap doesn't null this — release EditorState + all plugin states
-    // Clear undo/redo stacks to release CRDT-level GC protection + ProsemirrorBinding refs
-    if (undoManager) {
-      undoManager.clear();
-    }
 
     // Remove container from DOM
     if (container && container.parentNode) {
@@ -632,6 +627,50 @@ export class TextTool implements PointerTool {
    */
   getEditorState(): EditorState {
     return this.editorState;
+  }
+
+  // =========================================================================
+  // Private: Y.Map → DOM sync (called by extension observer on undo/redo)
+  // =========================================================================
+
+  private syncProps(keys: Set<string>): void {
+    const { container, objectId } = this.editorState;
+    if (!container || !objectId) return;
+
+    const handle = getCurrentSnapshot().objectsById.get(objectId);
+    if (!handle) return;
+    const y = handle.y;
+
+    if (keys.has('color')) {
+      const c = (y.get('color') as string) ?? '#000000';
+      this.editorState.color = c;
+      container.style.setProperty('--text-color', c);
+    }
+    if (keys.has('align')) {
+      const a = (y.get('align') as TextAlign) ?? 'left';
+      this.editorState.align = a;
+      this.applyAlignCSS(a);
+    }
+    if (keys.has('origin')) {
+      this.editorState.originWorld = (y.get('origin') as [number, number]) ?? this.editorState.originWorld;
+    }
+    if (keys.has('fontSize')) {
+      const fs = (y.get('fontSize') as number) ?? this.editorState.fontSize;
+      this.editorState.fontSize = fs;
+      const scale = useCameraStore.getState().scale;
+      const scaledFontSize = fs * scale;
+      container.style.fontSize = `${scaledFontSize}px`;
+      container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+    }
+    if (keys.has('width')) {
+      this.editorState.width = (y.get('width') as TextWidth) ?? this.editorState.width;
+      if (typeof this.editorState.width === 'number') {
+        const scale = useCameraStore.getState().scale;
+        container.style.width = `${this.editorState.width * scale}px`;
+      }
+    }
+
+    this.repositionEditor();
   }
 
   // =========================================================================

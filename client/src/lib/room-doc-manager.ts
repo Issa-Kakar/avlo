@@ -24,6 +24,7 @@ import {
   processShapeDeleted,
 } from './connectors';
 import { getTextProps } from '@avlo/shared';
+import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox } from './text/text-system';
 
 type Unsub = () => void;
@@ -50,6 +51,7 @@ export interface IRoomDocManager {
   destroy(): void;
   undo(): void;
   redo(): void;
+  getUndoManager(): Y.UndoManager | null;
 
   // Gate status methods
   getGateStatus(): Readonly<{
@@ -298,8 +300,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     const objects = this.getObjects();
 
     // Track changes to objects map
+    // ySyncPluginKey origin captures text fragment edits from ProseMirror sync plugin
+    // (only fires when a local editor is mounted — zero impact on normal undo)
     this.undoManager = new Y.UndoManager([objects], {
-      trackedOrigins: new Set([this.userId]),
+      trackedOrigins: new Set([this.userId, ySyncPluginKey]),
       captureTimeout: 500, // Merge rapid changes within 500ms
     });
   }
@@ -691,6 +695,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     this.undoManager.redo();
+  }
+
+  getUndoManager(): Y.UndoManager | null {
+    return this.undoManager;
   }
 
   // Lifecycle

@@ -300,7 +300,7 @@ export interface TextLayout {
   fontSize: number;
   lineHeight: number;
   widthMode: WidthMode;
-  boxWidth: number;       // auto: max visualWidth; fixed: explicit width
+  boxWidth: number;       // auto: max advanceWidth; fixed: explicit width
   inkBBox: FrameTuple;    // [x, y, w, h] overall ink bounds relative to origin
   logicalBBox: FrameTuple; // [x, y, w, h] based on boxWidth × total line height
   structuralHash: number;
@@ -554,7 +554,8 @@ function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number
       prev.isWhitespace = false;
       expandBBox(prev.ink, ink[0] + offset, ink[1], ink[2] + offset, ink[3]);
       b.hasInk = true;
-      b.visualWidth = b.advanceX + w;
+      // End of merged run: run start + merged width (clearer than b.advanceX + w, same result)
+      b.visualWidth = prev.advanceX + prev.advanceWidth;
       expandBBox(b.ink, prev.advanceX + prev.ink[0], prev.ink[1], prev.advanceX + prev.ink[2], prev.ink[3]);
     }
     b.advanceX += w;
@@ -597,6 +598,7 @@ function layoutMeasuredContent(content: MeasuredContent, wrap: WrapConfig): Text
   const lines: MeasuredLine[] = [];
   let lineIdx = 0;
   let maxVisualWidth = 0;
+  let maxAdvanceWidth = 0;
 
   // Pre-computed font metrics for this size
   const ascentY = fontSize * getMeasuredAscentRatio();
@@ -626,6 +628,7 @@ function layoutMeasuredContent(content: MeasuredContent, wrap: WrapConfig): Text
     });
 
     maxVisualWidth = Math.max(maxVisualWidth, b.visualWidth);
+    maxAdvanceWidth = Math.max(maxAdvanceWidth, b.advanceX);
 
     // Accumulate global ink (vertical shifted by baselineY)
     expandBBox(ink,
@@ -770,8 +773,14 @@ function layoutMeasuredContent(content: MeasuredContent, wrap: WrapConfig): Text
           for (const seg of tok.segments) {
             appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
           }
+        } else if (maxWidth === Infinity) {
+          // AUTO MODE: no wrapping possible, spaces are real content.
+          // Commit immediately — no pending needed since nothing can hang.
+          for (const seg of tok.segments) {
+            appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+          }
         } else {
-          // INTER-WORD whitespace: buffer as pending.
+          // FIXED WIDTH, INTER-WORD whitespace: buffer as pending.
           // Will be committed when next word fits, or hung if it doesn't.
           stashPending(tok);
         }
@@ -851,9 +860,12 @@ function layoutMeasuredContent(content: MeasuredContent, wrap: WrapConfig): Text
 
   // --- Compute layout-level values ---
 
+  // boxWidth:
+  // - fixed: explicit container width
+  // - auto: max advanceWidth (includes all spaces — no wrapping means nothing hangs)
   const boxWidth = wrap.mode === 'fixed'
     ? Math.max(0, wrap.width ?? 0)
-    : maxVisualWidth;
+    : maxAdvanceWidth;
 
   // Clamp ink bounds for all-empty documents
   if (!isFinite(ink[0])) { ink[0] = 0; ink[1] = 0; ink[2] = 0; ink[3] = fontSize; }
@@ -1036,37 +1048,17 @@ export function renderTextLayout(
   const { boxWidth } = layout;
 
   for (const line of layout.lines) {
-    if (line.runs.length === 0) continue; // truly empty, skip
+    if (line.runs.length === 0) continue;
 
     const lineY = originY + line.baselineY;
-    const startX = getLineStartX(originX, boxWidth, line.visualWidth, align);
+    // Auto: spaces are real content → align on advanceWidth (matches per-line anchoring)
+    // Fixed: trailing spaces hang → align on visualWidth (content within container)
+    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.visualWidth;
+    const startX = getLineStartX(originX, boxWidth, lineW, align);
 
-    // Batch consecutive same-font runs into a single fillText
-    let batchFont = '';
-    let batchText = '';
-    let batchX = 0;
-
-    for (let i = 0; i < line.runs.length; i++) {
-      const run = line.runs[i];
-
-      if (run.font === batchFont) {
-        // Same font: extend the batch
-        batchText += run.text;
-      } else {
-        // Different font: flush previous batch
-        if (batchText) {
-          ctx.fillText(batchText, startX + batchX, lineY);
-        }
-        ctx.font = run.font;
-        batchFont = run.font;
-        batchText = run.text;
-        batchX = run.advanceX;
-      }
-    }
-
-    // Flush final batch
-    if (batchText) {
-      ctx.fillText(batchText, startX + batchX, lineY);
+    for (const run of line.runs) {
+      ctx.font = run.font;
+      ctx.fillText(run.text, startX + run.advanceX, lineY);
     }
   }
 
@@ -1101,7 +1093,8 @@ export function computeTextBBox(
 
   for (const line of layout.lines) {
     if (line.isEmpty) continue;
-    const lx = getLineStartX(ox, layout.boxWidth, line.visualWidth, align);
+    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.visualWidth;
+    const lx = getLineStartX(ox, layout.boxWidth, lineW, align);
     minX = Math.min(minX, lx + line.ink[0]); // ink left
     maxX = Math.max(maxX, lx + line.ink[2]); // ink right
   }
@@ -1258,7 +1251,7 @@ Rendering: each segment becomes a run (or coalesced if same font).
 | **InkBounds type** | `{ left, right, top, bottom }` object | `BBoxTuple` everywhere (same as existing codebase) |
 | **Layout bbox types** | `{ x, y, width, height }` objects | `FrameTuple = [x, y, w, h]` tuple |
 | **Ink expand** | Inline min/max | `expandBBox()` (existing helper, in-place mutation) |
-| **Run coalescing** | None (whitespace skipped in renderer, each word = separate fillText) | `appendRun` coalesces same-font adjacent runs; renderer batches consecutive same-font runs |
+| **Run coalescing** | None (each run = separate fillText) | `appendRun` coalesces same-font adjacent runs at build time; renderer is a simple run loop |
 | **wrapKey** | `toFixed(2)` rounding | Exact `number` comparison (no rounding — width is precise) |
 | **Cache width tracking** | `layoutKey: string` | `layoutWidth: number` + `layoutWidthMode: WidthMode` (numeric comparison, `NaN` trick for invalidation) |
 | **Infinite loop safety** | `sliceTextToFit` forces 1 grapheme; maxWidth clamped | Same + pending space model never splits spaces (no space-splitting loop) |

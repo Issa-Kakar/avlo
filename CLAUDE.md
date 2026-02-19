@@ -38,7 +38,8 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/renderer/RenderLoop.ts` | Base canvas 60 FPS Event-driven loop, dirty rect optimization, self-subscribing |
 | `client/src/renderer/OverlayRenderLoop.ts` | Preview + presence rendering, self-subscribing |
 | `client/src/renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
-| `client/src/lib/text/text-system.ts` | Text layout engine, cache, renderer, BBox + derived frame computation |
+| `client/src/lib/text/text-system.ts` | Text layout engine (tokenizer + flow engine), cache, renderer, BBox computation |
+| `client/src/lib/text/extensions.ts` | Custom TextCollaboration extension (replaces @tiptap/extension-collaboration) |
 | `client/src/renderer/layers/selection-overlay.ts` | Selection preview rendering: highlights, marquee, box, circular handles |
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
@@ -464,7 +465,8 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 **Text** (origin-based positioning, rich text via Y.XmlFragment):
 ```typescript
 { id, kind: 'text', origin: [anchorX, baseline], fontSize, color,
-  align: 'left'|'center'|'right', widthMode: 'auto',
+  align: 'left'|'center'|'right',
+  width: 'auto' | number,       // TextWidth — 'auto' or fixed width in world units
   content: Y.XmlFragment, ownerId, createdAt }
 // NOTE: No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
 // Use getTextFrame(objectId) from text-system.ts to read the cached derived frame.
@@ -547,7 +549,13 @@ getStartAnchor(y), getEndAnchor(y) → StoredAnchor | undefined
 getStartCap(y), getEndCap(y) → 'arrow' | 'none'
 
 // Text-specific
-getFontSize(y), getOrigin(y), getAlign(y), getWidthMode(y), getContent(y)
+getFontSize(y), getOrigin(y), getAlign(y), getTextWidth(y), getContent(y)
+getTextProps(y)              → TextProps | null  // All text properties in one call
+
+// Text types (exported from accessors)
+type TextAlign = 'left' | 'center' | 'right'
+type TextWidth = 'auto' | number
+interface TextProps { content: Y.XmlFragment, origin, fontSize, align: TextAlign, width: TextWidth }
 ```
 
 ### StoredAnchor (Connector Anchoring)
@@ -580,7 +588,7 @@ subscribePresence(cb)       // Presence-only
 - **connector-lookup:** Reverse map (shapeId → Set<connectorId>) for efficient anchor rerouting/cleanup
 
 ### Deep Observer & BBox Computation
-Objects Y.Map uses `observeDeep()` for incremental updates. On connector add/update/delete, also updates connector lookup maps.
+Objects Y.Map uses `observeDeep()` for incremental updates. On connector add/update/delete, also updates connector lookup maps. For text objects: `field === 'content'` → `textLayoutCache.invalidateContent(id)`, `field === 'fontSize'` → `textLayoutCache.invalidateLayout(id)`. Width changes handled by comparison-based detection in `getLayout()`. BBox uses `getTextProps(yObj)` → `computeTextBBox(id, props)`.
 
 ## Rendering Pipeline
 
@@ -598,7 +606,7 @@ for (entry of sortedByULID) {
   ctx.fill(path);
 }
 ```
-- Text rendering via `layers/text.ts`: `drawTextBox()`, `drawTextWithTransform()`
+- Text rendering via `drawText()` in `objects.ts`: uses `getTextProps()` → `textLayoutCache.getLayout()` → `renderTextLayout()`
 - Shape paths via `lib/utils/shape-path.ts`: `buildShapePathFromFrame(shapeType, frame)`
 ### Coordinate Spaces
 - **World:** Logical document coords
@@ -696,7 +704,15 @@ interface DeviceUIState {
 
 ### EraserTool
 
-### TextTool (PLACEHOLDER)
+### TextTool
+**Docs:** `client/src/lib/text/CLAUDE.md`
+- WYSIWYG: Tiptap DOM overlay during editing, canvas rendering on commit
+- Custom TextCollaboration extension (fixes @tiptap/extension-collaboration memory leak)
+- Origin-based positioning: `origin[0]` = alignment anchor, `origin[1]` = first line baseline
+- Auto-width (max-content) and fixed-width (text wrapping) modes via `TextWidth = 'auto' | number`
+- Canvas layout engine: tokenizer + flow engine matching CSS `pre-wrap` + `break-word`
+- Three-tier cache: content → measurement → flow (width change only re-flows)
+- Derived frame in `TextLayoutCache` (no stored frame in Y.Map), read via `getTextFrame(id)`
 
 ### PanTool
 
@@ -704,7 +720,6 @@ interface DeviceUIState {
 
 **File:** `client/src/lib/tools/SelectTool.ts` (~1355 lines)
 **Status:** Full — shapes, strokes, text, and connectors with endpoint editing.
-**Docs:** `docs/SELECT_TOOL_SYSTEM.md`, `docs/CONNECTOR_SELECT_CHANGELOG.md`
 
 #### Selection Modes & Kinds
 ```typescript
@@ -778,7 +793,8 @@ interface ConnectorPreview {
 
 ## NOT Implemented Yet / Planned
 
-- **Text Tool:** WYSIWYG editing implemented; selection transforms (scale/translate) not yet wired
+- **Text resize handles:** Select tool E/W side handles to interactively set fixed width
+- **Text scale transforms:** Font size scaling during select transforms
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes
 - **Images**

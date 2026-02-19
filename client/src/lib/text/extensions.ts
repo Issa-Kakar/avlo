@@ -29,8 +29,9 @@
  * which is after _typeChanged already dispatched the PM transaction with the wrong selection.)
  */
 import { Extension } from '@tiptap/core';
-import { ySyncPlugin, yUndoPlugin, yUndoPluginKey, undo, redo } from '@tiptap/y-tiptap';
+import { ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey, undo, redo } from '@tiptap/y-tiptap';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import * as Y from 'yjs';
 import type { XmlFragment } from 'yjs';
 
 declare module '@tiptap/core' {
@@ -44,6 +45,10 @@ declare module '@tiptap/core' {
 
 export interface TextCollaborationOptions {
   fragment: XmlFragment | null;
+  yObj: Y.Map<unknown> | null;
+  userId: string | null;
+  mainUndoManager: Y.UndoManager | null;
+  onPropsSync: ((keys: Set<string>) => void) | null;
 }
 
 const selectionFixKey = new PluginKey('textSelectionFix');
@@ -77,7 +82,11 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
   priority: 1000,
 
   addOptions() {
-    return { fragment: null };
+    return { fragment: null, yObj: null, userId: null, mainUndoManager: null, onPropsSync: null };
+  },
+
+  addStorage() {
+    return { yObjUnobserve: null as (() => void) | null };
   },
 
   addCommands() {
@@ -116,6 +125,23 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
   },
 
   addProseMirrorPlugins() {
+    const { fragment, yObj, userId } = this.options;
+    if (!fragment) return [];
+
+    // Build scope: always includes fragment, optionally includes yObj for property undo
+    const scope: (XmlFragment | Y.Map<unknown>)[] = [fragment];
+    if (yObj) scope.push(yObj);
+
+    // Build tracked origins: always ySyncPluginKey, optionally userId for mutate() changes
+    const origins = new Set<unknown>([ySyncPluginKey]);
+    if (userId) origins.add(userId);
+
+    const undoManager = new Y.UndoManager(scope, {
+      trackedOrigins: origins,
+      captureTimeout: 500,
+      captureTransaction: (tr) => tr.meta.get('addToHistory') !== false,
+    });
+
     const selectionFixPlugin = new Plugin({
       key: selectionFixKey,
 
@@ -131,8 +157,8 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
 
       // Register UndoManager listeners to save/restore PM positions on stack items
       view: (editorView) => {
-        const undoManager = yUndoPluginKey.getState(editorView.state)?.undoManager;
-        if (!undoManager) return {};
+        const um = yUndoPluginKey.getState(editorView.state)?.undoManager;
+        if (!um) return {};
 
         const onAdded = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }) => {
           const saved = selectionFixKey.getState(editorView.state);
@@ -143,18 +169,58 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
           pendingSelection = (stackItem.meta.get(selectionFixKey) as typeof pendingSelection) ?? null;
         };
 
-        undoManager.on('stack-item-added', onAdded);
-        undoManager.on('stack-item-popped', onPopped);
+        um.on('stack-item-added', onAdded);
+        um.on('stack-item-popped', onPopped);
 
         return {
           destroy: () => {
-            undoManager.off('stack-item-added', onAdded);
-            undoManager.off('stack-item-popped', onPopped);
+            um.off('stack-item-added', onAdded);
+            um.off('stack-item-popped', onPopped);
           },
         };
       },
     });
 
-    return [ySyncPlugin(this.options.fragment!), yUndoPlugin(), selectionFixPlugin];
+    return [ySyncPlugin(fragment), yUndoPlugin({ undoManager }), selectionFixPlugin];
+  },
+
+  onCreate() {
+    const { yObj, mainUndoManager, onPropsSync } = this.options;
+
+    // Begin atomic session on main UndoManager — merge entire editing session into one item
+    if (mainUndoManager) {
+      mainUndoManager.stopCapturing();
+      mainUndoManager.captureTimeout = 600_000; // 10 min
+    }
+
+    // Y.Map observer: sync DOM overlay on undo/redo property changes
+    if (yObj && onPropsSync) {
+      const observer = (evt: Y.YMapEvent<unknown>) => {
+        const keys = evt.keysChanged;
+        if (keys.has('origin') || keys.has('fontSize') || keys.has('color') || keys.has('align') || keys.has('width')) {
+          onPropsSync(keys);
+        }
+      };
+      yObj.observe(observer);
+      this.storage.yObjUnobserve = () => yObj.unobserve(observer);
+    }
+  },
+
+  onDestroy() {
+    // 1. Clean up Y.Map observer
+    this.storage.yObjUnobserve?.();
+    this.storage.yObjUnobserve = null;
+
+    // 2. Seal main UndoManager session
+    const { mainUndoManager } = this.options;
+    if (mainUndoManager) {
+      mainUndoManager.stopCapturing();
+      mainUndoManager.captureTimeout = 500;
+    }
+
+    // 3. Clear per-session UndoManager (releases CRDT GC protection)
+    // onDestroy fires before view.destroy(), so plugin state is still accessible
+    const um = yUndoPluginKey.getState(this.editor.view.state)?.undoManager;
+    if (um) um.clear();
   },
 });
