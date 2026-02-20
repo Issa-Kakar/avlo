@@ -448,11 +448,12 @@ class TextContextMenu {
     const syncFormatState = () => {
       const isBold = this.editor!.isActive('bold');
       const isItalic = this.editor!.isActive('italic');
-      const isHighlightActive = this.editor!.isActive('highlight');
 
       this.boldBtn?.classList.toggle('active', isBold);
       this.italicBtn?.classList.toggle('active', isItalic);
-      this.highlightBtn?.classList.toggle('active', isHighlightActive);
+
+      // Sync highlight icon color from editor state
+      this.updateHighlightIcon();
 
       const uiStore = useDeviceUIStore.getState();
       uiStore.setTextIsBold(isBold);
@@ -500,9 +501,15 @@ class TextContextMenu {
     }
   }
 
+  private getEditorHighlightColor(): string | null {
+    if (!this.editor) return useDeviceUIStore.getState().highlightColor;
+    const attrs = this.editor.getAttributes('highlight');
+    return (attrs?.color as string) ?? (this.editor.isActive('highlight') ? '#ffd43b' : null);
+  }
+
   private updateHighlightIcon(): void {
     if (!this.highlightBtn) return;
-    const color = useDeviceUIStore.getState().highlightColor;
+    const color = this.getEditorHighlightColor() ?? useDeviceUIStore.getState().highlightColor;
     const iconContainer = this.highlightBtn.querySelector('.tcm-highlight-icon');
     if (iconContainer) {
       iconContainer.innerHTML = '';
@@ -598,14 +605,13 @@ class TextContextMenu {
   }
 
   private handleHighlightColorSelect(color: string | null): void {
-    useDeviceUIStore.getState().setHighlightColor(color);
-    this.updateHighlightIcon();
     this.hideSubmenus();
     if (!this.editor) return;
     if (color === null) {
       this.editor.chain().focus().unsetHighlight().run();
     } else {
       this.editor.chain().focus().setHighlight({ color }).run();
+      useDeviceUIStore.getState().setHighlightColor(color);
     }
   }
 
@@ -676,9 +682,8 @@ class TextContextMenu {
       this.highlightSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
       this.highlightSubmenu.classList.remove('tcm-hidden');
 
-      // Update active state from editor
-      const editorHL = this.editor?.getAttributes('highlight')?.color as string | undefined;
-      const currentHL = editorHL ?? useDeviceUIStore.getState().highlightColor;
+      // Active state from editor — match on specific color, null = no highlight
+      const currentHL = this.getEditorHighlightColor();
       const swatches = this.highlightSubmenu.querySelectorAll('.tcm-highlight-swatch');
       let idx = 0;
       swatches.forEach((swatch) => {

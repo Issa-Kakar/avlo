@@ -322,7 +322,7 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
           const highlight: string | null = hlAttr != null
             ? (typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
                 ? String((hlAttr as Record<string, unknown>).color)
-                : '#faf594')
+                : '#ffd43b')
             : null;
           // Inline tokenization — regex splits into whitespace/non-whitespace chunks
           const re = /(\s+|\S+)/g;

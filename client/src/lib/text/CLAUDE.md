@@ -1,7 +1,7 @@
 # Text System Documentation
 
 **Status:** WYSIWYG complete — auto + fixed-width modes verified
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-02-19
 
 ## Overview
 
@@ -9,15 +9,16 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
 
 - **Editing:** Tiptap editor in absolute-positioned div, synced to Y.XmlFragment via custom TextCollaboration extension
 - **Rendering:** Canvas-based layout engine with tokenizer + flow engine matching CSS `pre-wrap` + `break-word`
-- **Positioning:** Measured font metrics ensure DOM ↔ canvas baseline alignment
+- **Positioning:** Measured font metrics ensure DOM <> canvas baseline alignment
 - **Collaboration:** Y.XmlFragment CRDT enables real-time sync
+- **Undo/Redo:** Two-tier UndoManager — per-session (in-editor content + property changes) + main (room-level atomic session merging)
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `lib/text/text-system.ts` | Layout engine: tokenizer, measurement, flow engine, cache, renderer, BBox |
-| `lib/text/extensions.ts` | Custom TextCollaboration extension (replaces @tiptap/extension-collaboration) |
+| `lib/text/extensions.ts` | TextCollaboration extension: per-session UndoManager, Y.Map observer, session merging |
 | `lib/text/font-config.ts` | `FONT_CONFIG` constants (extracted to avoid circular deps) |
 | `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` |
 | `lib/text/TextContextMenu.ts` | Floating toolbar: bold/italic/alignment/color/size (imperative DOM) |
@@ -73,17 +74,19 @@ Y.XmlFragment
 
 ## Text System Pipeline (`text-system.ts`)
 
-### Internal Pipeline
+### Pipeline Overview
 
 ```
-parseAndTokenize(fragment) → TokenizedContent
-    ↓
-measureTokenizedContent(tokenized, fontSize) → MeasuredContent
-    ↓
-layoutMeasuredContent(measured, width) → TextLayout
+Y.XmlFragment
+    ↓ parseAndTokenize()
+TokenizedContent { paragraphs: [{ tokens: Token[] }] }
+    ↓ measureTokenizedContent(tokenized, fontSize)
+MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], fontSize, lineHeight }
+    ↓ layoutMeasuredContent(measured, width)
+TextLayout { lines: MeasuredLine[], boxWidth, inkBBox, logicalBBox }
 ```
 
-All three are **internal**. Public API: `textLayoutCache.getLayout()`.
+All three stages are **internal**. Public API: `textLayoutCache.getLayout()`.
 
 ### Font Configuration
 
@@ -99,46 +102,118 @@ FONT_CONFIG = {
 ### Font Metrics
 
 ```typescript
-getMeasuredAscentRatio()    // Canvas fontBoundingBoxAscent measurement, cached
-getBaselineToTopRatio()     // = halfLeading(0.15) + ascentRatio(~0.88) ≈ 1.03
-resetFontMetrics()          // Clear cached metrics after font load
+getMeasuredAscentRatio()    // Canvas fontBoundingBoxAscent at 100px, cached
+                            // Handles fonts with line-gap: ascent / totalHeight
+                            // Fallback 0.73 if fonts not loaded (would measure wrong font)
+getBaselineToTopRatio()     // = halfLeading + ascentRatio = (1.3-1)/2 + measuredAscent
+                            // Exact distance from baseline to DOM container top (as fontSize ratio)
+resetFontMetrics()          // Clear cached metrics (call after font load)
 buildFontString(bold, italic, fontSize)  // → "italic 800 20px ..."
 ```
 
-### Tokenizer: `parseAndTokenize()`
+### Stage 1: Tokenizer — `parseAndTokenize()`
 
-Converts Y.XmlFragment → word/space tokens with styled segments:
+Walks `Y.XmlFragment` → paragraph elements → `Y.XmlText` delta ops. Each delta op's insert string is split by regex `/(\s+|\S+)/g` into alternating word/space tokens. Adjacent segments with same bold/italic/highlight coalesce via string concat (no extra object). Highlight color extracted from `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default toggle stores `true`/`null` → mapped to `'#faf594'`.
+
 ```
 "hello world"     → [word:"hello", space:" ", word:"world"]
 "he<b>llo</b> w"  → [word:{seg:"he", seg:"llo"(bold)}, space:" ", word:{seg:"w"}]
 ```
 
-### Flow Engine: `layoutMeasuredContent()`
+```typescript
+interface Token { kind: 'word' | 'space'; segments: StyledText[]; }
+interface StyledText { text: string; bold: boolean; italic: boolean; highlight: string | null; }
+interface TokenizedContent { paragraphs: TokenizedParagraph[]; }
+```
 
-Implements CSS `white-space: pre-wrap` + `overflow-wrap: break-word`:
+### Stage 2: Measurement — `measureTokenizedContent()`
 
-| CSS Property | Canvas Implementation |
-|-------------|----------------------|
-| `pre-wrap` | Pending whitespace pattern: leading ws committed, inter-word ws buffered, trailing ws dropped |
-| `break-word` | `sliceTextToFit()` — binary search at grapheme boundaries via `Intl.Segmenter` |
-| `text-align` | `getLineStartX(originX, boxWidth, lineVisualWidth, align)` |
+Converts each `StyledText` segment → `MeasuredSegment` by calling `ctx.measureText()` on a singleton offscreen 1x1 canvas (`textRendering: optimizeSpeed`). Produces advance widths and ink bounding boxes per segment.
 
-**Auto mode:** `maxWidth = Infinity` — no wrapping, each paragraph = one line.
-**Fixed mode:** `maxWidth = width` — words wrap at container boundary, oversized words break at grapheme boundaries.
+**Caches:**
 
-### Measurement Caches
+| Cache | Size | Key | Purpose |
+|-------|------|-----|---------|
+| `MEASURE_LRU` | 75k entries | `font + '\0' + text` | Full text metrics (width + ink BBox) |
+| `SPACE_WIDTH_CACHE` | Unbounded Map | font string | Single space advance width per font |
+| `GRAPHEME_LRU` | 10k entries | text string | `Intl.Segmenter` grapheme split results |
 
-| Cache | Size | Key |
-|-------|------|-----|
-| `MEASURE_LRU` | 75k entries | `font + '\0' + text` |
-| `SPACE_WIDTH_CACHE` | Unbounded Map | font string |
-| `GRAPHEME_LRU` | 10k entries | text string |
+```typescript
+interface MeasuredSegment extends StyledText {
+  font: string; advanceWidth: number;
+  ink: BBoxTuple;  // [left, top, right, bottom] relative to glyph origin
+  isWhitespace: boolean;
+}
+interface MeasuredToken { kind: TokenKind; segments: MeasuredSegment[]; advanceWidth: number; }
+```
+
+### Stage 3: Flow Engine — `layoutMeasuredContent()`
+
+Converts `MeasuredContent` → `TextLayout` by placing tokens onto lines. Implements CSS `white-space: pre-wrap` + `overflow-wrap: break-word`.
+
+**Two modes:**
+- **Auto:** `maxWidth = Infinity` — no wrapping, each paragraph = one line
+- **Fixed:** `maxWidth = width` — words wrap at container boundary
+
+#### LineBuilder
+
+Accumulates runs for the current line:
+- `advanceX` — total width including all committed runs
+- `visualWidth` — width up to end of last non-whitespace run (for fixed-mode alignment)
+- `hasInk` — at least one non-whitespace run exists
+- `ink` — running BBox union of all non-whitespace ink bounds
+
+`appendRun()` coalesces adjacent runs with identical font+style via string concat — reduces run count for the renderer.
+
+#### Pending Whitespace State Machine (CSS `pre-wrap` Semantics)
+
+CSS `pre-wrap`: trailing whitespace doesn't cause wrapping, but leading whitespace does. Implemented via a pending buffer:
+
+```
+LEADING ws (no ink on line yet) → commit immediately (can overflow — matches pre-wrap)
+INTER-WORD ws (auto mode)      → commit immediately (no wrapping)
+INTER-WORD ws (fixed mode)     → buffer as pending (pendingSegs[] + pendingW)
+```
+
+When next word token arrives in fixed mode:
+```
+if (currentAdvance + pendingW + wordW ≤ maxWidth)
+  → commit pending whitespace, place word on current line
+else
+  → discard pending (trailing ws dropped at break), push line, place word on new line
+```
+
+#### Word Placement: `placeWord()`
+
+Three paths:
+1. **Fits on current line** → append all segments as runs
+2. **Doesn't fit current line, fits empty line** → push line, start new, append word
+3. **Oversized (wider than maxWidth)** → `break-word`: `sliceTextToFit()` does binary search at grapheme boundaries via `Intl.Segmenter`, forces >= 1 grapheme per line for forward progress
+
+#### Main Flow Loop
+
+```
+for each paragraph:
+  for each token:
+    space → leading: commit; auto: commit; fixed inter-word: buffer as pending
+    word  → commit/discard pending per fit test, then placeWord()
+  end paragraph → discard pending, push line, new LineBuilder
+```
+
+Empty paragraphs produce a blank line. If no lines produced at all, pushes one empty line.
+
+#### Layout-Level Computation
+
+After all lines placed:
+- `boxWidth` = auto: max `advanceWidth` across all lines; fixed: the explicit width
+- `inkBBox` = union of all per-line ink bounds offset by `baselineY` — actual drawn area
+- `logicalBBox` = `[0, 0, boxWidth, numLines * lineHeight]` — advance-based area
 
 ### Exported Types
 
 ```typescript
 interface MeasuredRun {
-  text: string; bold: boolean; italic: boolean; font: string;
+  text: string; bold: boolean; italic: boolean; highlight: string | null; font: string;
   advanceWidth: number; advanceX: number;  // X offset from line start
   ink: BBoxTuple; isWhitespace: boolean;
 }
@@ -153,71 +228,140 @@ interface MeasuredLine {
 interface TextLayout {
   lines: MeasuredLine[]; fontSize: number; lineHeight: number;
   widthMode: 'auto' | 'fixed';
-  boxWidth: number;        // auto → maxAdvanceWidth; fixed → explicit width
-  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds
-  logicalBBox: FrameTuple; // [x, y, w, h] advance-based bounds
+  boxWidth: number;        // auto → max advanceWidth; fixed → explicit width
+  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds (relative to origin)
+  logicalBBox: FrameTuple; // [x, y, w, h] = [0, 0, boxWidth, numLines * lineHeight]
 }
 ```
 
 ### TextLayoutCache (singleton)
 
-Three-tier cache: content → measurement → flow.
+Three-tier cache: content → measurement → flow. Entry stores intermediate results so width-only changes skip tokenize and measure.
 
 ```typescript
 class TextLayoutCache {
   getLayout(objectId, fragment, fontSize, width: TextWidth = 'auto'): TextLayout
-  invalidateContent(objectId)  // Content changed → re-tokenize + re-measure + re-flow
-  invalidateLayout(objectId)   // FontSize changed → re-measure + re-flow
-  invalidateFlow(objectId)     // Width changed → re-flow only
+  // Cache hit logic (checked in order):
+  //   same content + fontSize + width → return cached layout
+  //   same content + fontSize, different width → re-flow only (layoutMeasuredContent)
+  //   same content, different fontSize → re-measure + re-flow
+  //   stale content (or no entry) → full pipeline
+
+  invalidateContent(objectId)  // Content changed → nulls tokenized → forces full pipeline
+  invalidateLayout(objectId)   // FontSize changed → nulls measuredFontSize → forces re-measure
+  invalidateFlow(objectId)     // Width changed → nulls layoutWidth → forces re-flow
   remove(objectId)             // Object deleted
-  clear()                      // Full clear (+ measurement caches)
-  setFrame(objectId, frame)    // Derived frame storage
+  clear()                      // Full clear (+ all measurement LRUs)
+  setFrame(objectId, frame)    // Derived frame storage (set by computeTextBBox)
   getFrame(objectId): FrameTuple | null
 }
 export const textLayoutCache: TextLayoutCache;
 ```
 
-**Cache entry:**
-```typescript
-interface CacheEntry {
-  tokenized: TokenizedContent | null;  // null = content stale
-  measured: MeasuredContent;
-  measuredFontSize: number | null;     // null = fontSize stale
-  layout: TextLayout;
-  layoutWidth: TextWidth | null;       // null = width stale
-  frame: FrameTuple | null;
-}
-```
-
-**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. If different, re-flows without re-measuring — no explicit `invalidateFlow()` needed (but it exists for the observer path).
+**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. Re-flows automatically — no explicit `invalidateFlow()` needed for the render path (but it exists for the observer path).
 
 ### Renderer: `renderTextLayout()`
 
 ```typescript
 renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left')
 ```
-- `textBaseline = 'alphabetic'`, origin = first line baseline
-- Per-line X: `getLineStartX(originX, boxWidth, lineW, align)` where `lineW` = `advanceWidth` (auto) or `visualWidth` (fixed)
+
+1. `textBaseline = 'alphabetic'` — origin is first line baseline
+2. Per line: `startX = getLineStartX(originX, boxWidth, lineW, align)` where:
+   - `lineW = advanceWidth` in auto mode (includes trailing ws for proper alignment calc)
+   - `lineW = visualWidth` in fixed mode (excludes trailing ws — aligns visual content only)
+3. Two-pass per line:
+   - Pass 1: `fillRect` for runs with `run.highlight` — rect from `(startX + advanceX, lineY - baselineToTop)` with `(advanceWidth, lineHeight)`
+   - Pass 2: `fillText` for all runs
+4. Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior)
+
+### Alignment Math
+
+```typescript
+anchorFactor(align)  // left=0, center=0.5, right=1
+getBoxLeftX(originX, boxWidth, align)       // originX - anchorFactor * boxWidth
+getLineStartX(originX, boxWidth, lineW, align)
+  // left:   boxLeftX
+  // center: boxLeftX + (boxWidth - lineW) / 2
+  // right:  boxLeftX + (boxWidth - lineW)
+```
 
 ### BBox + Derived Frame: `computeTextBBox()`
 
 ```typescript
 computeTextBBox(objectId: string, props: TextProps): BBoxTuple
 ```
-- Gets layout via cache, computes ink-tight bounds + 2px padding
-- **Derives and caches frame:** `[getBoxLeftX(ox, boxWidth, align), oy - fontSize * btRatio, boxWidth, logicalBBox[3]]`
-- Called from `room-doc-manager` for spatial index (both steady-state and hydration)
+
+Called from `room-doc-manager` for spatial index (both steady-state and hydration).
+
+1. Gets layout via cache
+2. **Derives and caches frame:**
+   - `x = getBoxLeftX(originX, boxWidth, align)`
+   - `y = originY - fontSize * getBaselineToTopRatio()` (matches DOM container top)
+   - `w = boxWidth`, `h = logicalBBox[3]` (= numLines * lineHeight)
+3. **Computes ink-tight BBox:** walks lines with ink, computes per-line startX from alignment, unions ink bounds + 2px padding
 
 ### Frame Getter
 
 ```typescript
-getTextFrame(objectId): FrameTuple | null  // Reads from cache
+getTextFrame(objectId): FrameTuple | null  // Reads derived frame from cache
 ```
 
-**All call sites** use the pattern:
-```typescript
-const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+All call sites: `handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y)`
+
+---
+
+## Undo/Redo Architecture
+
+Two-tier UndoManager system for text editing.
+
+### Per-Session UndoManager (TextCollaboration extension)
+
+Created fresh on each editor mount. Provides in-editor Cmd+Z/Cmd+Y.
+
+**Scope:** `[Y.XmlFragment, Y.Map]` — tracks both content edits AND property changes (fontSize, color, align, origin, width). This means Cmd+Z while editing can undo a font size change made via the context menu.
+
+**Tracked origins:**
+- `ySyncPluginKey` — ProseMirror → Y.XmlFragment sync transactions (typing, formatting)
+- `userId` — `roomDoc.mutate()` changes to Y.Map properties (context menu actions)
+
+**Cursor fix:** yUndoPlugin stores cursors as Y.js RelativePositions (buggy). `selectionFixPlugin` stores raw ProseMirror positions on stack items, corrects selection after undo/redo via `applyPendingSelection()`.
+
+**Cleanup:** Extension `onDestroy()` calls `undoManager.clear()` to release CRDT GC protection held by stack items.
+
+### Main UndoManager (room-level, RoomDocManager)
+
+Tracks all objects map changes. Tracked origins: `[userId, ySyncPluginKey]` — the `ySyncPluginKey` origin is critical: without it, text content edits (which use `ySyncPluginKey` as transaction origin) would be invisible to the main undo stack.
+
+The TextCollaboration extension manipulates it for **atomic session merging**:
+
 ```
+onCreate():                                    // Editor mounted
+  mainUndoManager.stopCapturing()              // Force new capture group boundary
+  mainUndoManager.captureTimeout = 600_000     // 10 min — merge all edits into one item
+
+onDestroy():                                   // Editor unmounting
+  mainUndoManager.stopCapturing()              // Seal the capture group
+  mainUndoManager.captureTimeout = 500         // Restore normal batching
+```
+
+**Effect:** All text edits during one editing session (content + properties) merge into a single undo item on the main stack. After closing the editor, Cmd+Z at room level undoes the entire text session atomically.
+
+### Y.Map Observer (DOM Sync on Undo/Redo)
+
+The extension registers a Y.Map observer that fires when tracked properties change. When the per-session UndoManager undoes/redoes a property change, the observer calls `TextTool.syncProps()` to update the DOM overlay:
+
+```
+Per-session undo of fontSize change
+  → Y.Map 'fontSize' mutated
+  → observer fires (keysChanged has 'fontSize')
+  → onPropsSync(keys) → TextTool.syncProps()
+    → reads new value from Y.Map → updates editorState + container CSS → repositions editor
+```
+
+Without this observer, undoing a property change would update the CRDT but the DOM overlay would show stale values.
+
+**Tracked keys:** `origin`, `fontSize`, `color`, `align`, `width`.
 
 ---
 
@@ -234,7 +378,7 @@ interface EditorState {
   fontSize: number;
   color: string;
   align: TextAlign;
-  width: TextWidth;      // 'auto' | number — stored from Y.Map on mount
+  width: TextWidth;
   isNew: boolean;
 }
 ```
@@ -252,10 +396,21 @@ end()   → hitTextId ? mountEditor(hitTextId, false) : createTextObject → mou
 yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');  // Temporary dev boolean
 ```
 
-### mountEditor — Width Handling
+### mountEditor
 
-Reads `width` from `getTextProps()`, sets container width:
+Reads props from Y.Map, creates container div, positions it, then creates Tiptap Editor with:
 
+```typescript
+TextCollaboration.configure({
+  fragment,                                        // Y.XmlFragment for content sync
+  yObj: handle.y,                                  // Y.Map — added to per-session UM scope
+  userId: userProfileManager.getIdentity().userId, // For tracked origins
+  mainUndoManager: roomDoc.getUndoManager(),       // For session merging
+  onPropsSync: (keys) => this.syncProps(keys),     // DOM sync on undo/redo
+})
+```
+
+**Width handling:**
 ```typescript
 if (typeof width === 'number') {
   container.style.width = `${width * scale}px`;  // World units → screen pixels
@@ -265,20 +420,27 @@ if (typeof width === 'number') {
 }
 ```
 
-### repositionEditor — Zoom Sync
-
-```typescript
-if (typeof this.editorState.width === 'number') {
-  container.style.width = `${this.editorState.width * scale}px`;
-}
-```
-
 ### DOM Positioning Math
 
 ```
 Container top = screenY - (scaledFontSize * getBaselineToTopRatio())
 ```
-Where `getBaselineToTopRatio() ≈ 1.03` = halfLeading(0.15) + measuredAscent(~0.88).
+
+### syncProps — Y.Map → DOM Overlay
+
+Called by extension's Y.Map observer on undo/redo of property changes:
+- Reads new values from `handle.y`
+- Updates `editorState` fields + container CSS (color, align, fontSize, width)
+- Calls `repositionEditor()` for origin/fontSize changes
+
+### commitAndClose
+
+```typescript
+editor.destroy();                          // Triggers extension onDestroy → seals session, clears per-session UM
+(editor as any).editorState = null;        // Tiptap doesn't null this — release EditorState + plugin states
+```
+
+Empty new text objects are deleted before destroy.
 
 ### Alignment CSS
 
@@ -286,16 +448,6 @@ Where `getBaselineToTopRatio() ≈ 1.03` = halfLeading(0.15) + measuredAscent(~0
 container.style.setProperty('--text-align', align);
 container.style.setProperty('--text-anchor-tx',
   align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
-```
-
-### commitAndClose — Memory Leak Prevention
-
-```typescript
-// Capture UndoManager ref before destroy (view.state inaccessible after)
-const undoManager = yUndoPluginKey.getState(editor.view.state)?.undoManager;
-editor.destroy();
-(editor as any).editorState = null;   // Tiptap doesn't null this
-if (undoManager) undoManager.clear();  // Release CRDT GC protection
 ```
 
 ### Module Exports
@@ -311,23 +463,39 @@ getActiveTiptapEditor()            // Tiptap Editor access
 
 ## TextCollaboration Extension (`extensions.ts`)
 
-Custom Tiptap extension replacing `@tiptap/extension-collaboration` to fix memory leaks.
+Custom Tiptap extension replacing `@tiptap/extension-collaboration`.
 
-**Problem:** Official extension captures `_observers` (closures over EditorView) into a restore closure on destroy, preventing GC of detached DOM trees — linear leak in short-lived editors.
-
-**Solution:** Registers `ySyncPlugin + yUndoPlugin` directly without suspend/restore wrapper.
-
-**Cursor Fix:** yUndoPlugin's RelativePosition restoration is buggy. A `selectionFixPlugin` stores raw ProseMirror positions on undo stack items, corrects selection after undo/redo via `applyPendingSelection()`.
+### Options
 
 ```typescript
-export const TextCollaboration = Extension.create<{ fragment: XmlFragment | null }>({
-  addProseMirrorPlugins() {
-    return [ySyncPlugin(fragment), yUndoPlugin(), selectionFixPlugin];
-  },
-  addCommands() { return { undo, redo }; },
-  addKeyboardShortcuts() { return { 'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo }; },
-});
+interface TextCollaborationOptions {
+  fragment: XmlFragment | null;           // Y.XmlFragment for content sync
+  yObj: Y.Map<unknown> | null;            // Y.Map — added to per-session UM scope
+  userId: string | null;                  // mutate() origin for tracked origins
+  mainUndoManager: Y.UndoManager | null;  // Room-level UM for session merging
+  onPropsSync: ((keys: Set<string>) => void) | null;  // DOM sync callback
+}
 ```
+
+### Plugin Setup (`addProseMirrorPlugins`)
+
+```typescript
+scope = [fragment, yObj]                           // Content + property undo
+origins = new Set([ySyncPluginKey, userId])         // Sync plugin + mutate()
+undoManager = new Y.UndoManager(scope, { trackedOrigins: origins, captureTimeout: 500 })
+plugins = [ySyncPlugin(fragment), yUndoPlugin({ undoManager }), selectionFixPlugin]
+```
+
+### Lifecycle
+
+```
+onCreate():   stopCapturing + set captureTimeout=10min on main UM; observe yObj for property changes
+onDestroy():  unobserve yObj; stopCapturing + restore captureTimeout=500 on main UM; clear per-session UM
+```
+
+### Memory Leak Fix
+
+Official `@tiptap/extension-collaboration` captures `_observers` into a restore closure on destroy, preventing GC of detached EditorView DOM trees (linear leak in short-lived editors). This extension registers plugins directly without suspend/restore.
 
 ---
 
@@ -345,9 +513,8 @@ export const TextCollaboration = Extension.create<{ fragment: XmlFragment | null
   color: var(--text-color, #000000);
 }
 
-/* Fixed-width: outline, clip hanging whitespace, suppress placeholder */
 .text-editor-container[data-width-mode="fixed"] {
-  outline: 1px solid #1d4ed8;     /* Matches SELECTION_STYLE.PRIMARY */
+  outline: 1px solid #1d4ed8;
   overflow: hidden;                /* Clip trailing whitespace → prevent event leaks */
 }
 
@@ -366,18 +533,25 @@ export const TextCollaboration = Extension.create<{ fragment: XmlFragment | null
 function drawText(ctx, handle) {
   if (useSelectionStore.getState().textEditingId === handle.id) return;  // Skip if editing
   const props = getTextProps(handle.y);
-  if (!props) return;
-  const color = getColor(handle.y);
   const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
 }
 ```
 
-**Transform behavior:** Translate offsets `origin` in Y.Map. Scale is a currently no-op (text transforms are deferred to later phases).
-
 ---
 
 ## Room Doc Manager Integration
+
+### Main UndoManager
+
+```typescript
+this.undoManager = new Y.UndoManager([objects], {
+  trackedOrigins: new Set([this.userId, ySyncPluginKey]),
+  captureTimeout: 500,
+});
+```
+
+`ySyncPluginKey` is critical: ProseMirror's Y.js sync plugin writes to Y.XmlFragment with this origin. Without tracking it, the main UndoManager would ignore text content changes.
 
 ### Deep Observer
 
@@ -390,15 +564,6 @@ if (field === 'content') {
 }
 // 'width' changes handled by comparison in getLayout()
 // 'origin'/'color' don't need cache invalidation
-```
-
-### BBox Computation
-
-```typescript
-if (kind === 'text') {
-  const props = getTextProps(yObj);
-  if (props) newBBox = computeTextBBox(id, props);
-}
 ```
 
 ### Deletion / Rebuild
@@ -414,7 +579,7 @@ textLayoutCache.clear();                                   // Full rebuild
 
 Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/content/width, cached in `TextLayoutCache`, read via `getTextFrame(objectId)`.
 
-**Frame vs BBox:** Text's bbox is ink-tight + 2px padding (can be smaller than logical frame). Frame matches DOM overlay rect exactly — used by selection, connectors, hit testing.
+**Frame vs BBox:** BBox is ink-tight + 2px padding (can be smaller than frame). Frame matches DOM overlay rect exactly — used by selection, connectors, hit testing.
 
 **Consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
 
@@ -427,6 +592,17 @@ DOM and canvas match because:
 - Same line-height (`fontSize * 1.3`)
 - Canvas flow engine implements identical whitespace semantics (pending whitespace pattern)
 - Sub-pixel differences (~0.5px) expected from per-token vs native text shaping
+
+---
+
+## Highlight Support
+
+Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pipeline.
+
+- **DOM:** `Highlight.configure({ multicolor: true })` in TextTool editor extensions. Renders `<mark style="background-color: ...">` elements. Default CSS: `.text-editor-container mark { background-color: #faf594 }`.
+- **Canvas:** `highlight: string | null` field on `StyledText` → threaded through tokenizer, measurement, flow engine, renderer. `renderTextLayout()` draws `fillRect` per highlighted run before text pass.
+- **Delta format:** `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default keyboard toggle (Ctrl+Shift+H) stores presence → mapped to default `'#faf594'`.
+- **Context menu:** `handleHighlightColorSelect()` calls `editor.chain().setHighlight({ color })` or `unsetHighlight()`. Active state synced from `editor.isActive('highlight')`.
 
 ---
 
