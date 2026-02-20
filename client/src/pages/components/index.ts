@@ -3,6 +3,5 @@ export { Header } from './Header';
 export { ToolPanel } from './ToolPanel';
 
 export { ZoomControls } from './ZoomControls';
-export { EditorPanel } from './EditorPanel';
 export { Toast, ToastProvider, useToast } from './Toast';
 export { UsersModal } from './UsersModal';

@@ -357,7 +357,6 @@
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   padding: 8px;
-  width: 144px;
 }
 
 .tcm-color-swatch {
@@ -440,6 +439,45 @@
   background: rgba(59, 130, 246, 0.1);
   color: #3b82f6;
   font-weight: 500;
+}
+
+/* Highlight submenu - 4-column swatch grid */
+.tcm-submenu-highlight {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px;
+}
+
+.tcm-highlight-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 100ms ease, border-color 100ms ease;
+  padding: 0;
+}
+
+.tcm-highlight-swatch:hover {
+  transform: scale(1.1);
+}
+
+.tcm-highlight-swatch.active {
+  border-color: #3b82f6;
+}
+
+/* Highlight icon container */
+.tcm-highlight-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tcm-btn-highlight {
+  position: relative;
+  min-width: 32px;
+  padding: 0;
 }
 
 /* Animations */

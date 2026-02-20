@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   DrawingSettings,
   SizePreset,
-  TextSizePreset,
   ConnectorSizePreset,
+  TEXT_COLOR_PALETTE,
   useDeviceUIStore,
 } from '../../stores/device-ui-store';
 
@@ -38,10 +38,8 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     drawingSettings,
     setFillEnabled,
     setDrawingSize,
-    setTextSize,
     setConnectorSize,
     shapeVariant,
-    fixedColors,
     recentColors,
     isColorPopoverOpen,
     setActiveTool,
@@ -56,17 +54,10 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
   // Handle size changes based on active tool - route to correct setter
   const handleSizeChange = (size: number) => {
     switch (activeTool) {
-      case 'text':
-        // Text uses different size scale (20/30/40/50)
-        setTextSize(size as TextSizePreset);
-        break;
       case 'connector':
-        // Connectors use thin sizes (2/4/6/8)
         setConnectorSize(size as ConnectorSizePreset);
         break;
-      // eraser uses fixed 10px radius - no size change needed
       default:
-        // Pen, highlighter, shapes use unified drawing size
         setDrawingSize(size as SizePreset);
     }
   };
@@ -87,18 +78,11 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
     const base = drawingSettings;
 
     switch (activeTool) {
-      case 'text':
-        // Text has its own size scale (20/30/40/50)
-        return { ...base, size: store.textSize };
       case 'connector':
-        // Connector has its own thin sizes (2/4/6/8)
         return { ...base, size: store.connectorSize };
-      // eraser uses fixed 10px radius - no size override
       case 'highlighter':
-        // Highlighter uses its own opacity
         return { ...base, opacity: store.highlighterOpacity };
       default:
-        // Pen, shape, etc use base unified settings
         return base;
     }
   };
@@ -107,9 +91,9 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
 
   // Size presets
   const getSizePresets = () => {
-    if (activeTool === 'text') return [20, 30, 40, 50];
+    if (activeTool === 'text') return []; // Sizes managed in context menu
     if (activeTool === 'connector') return [2, 4, 6, 8];
-    return [6, 10, 14, 18]; // Same for pen, highlighter, eraser, shapes
+    return [6, 10, 14, 18];
   };
 
   const sizePresets = getSizePresets();
@@ -270,7 +254,6 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
             showColors={showColors}
             showSizes={showSizes}
             showFillToggle={showFillToggle}
-            fixedColors={fixedColors}
             recentColors={recentColors}
             sizePresets={sizePresets}
             sizeLabels={sizeLabels}
@@ -328,7 +311,6 @@ interface InspectorProps {
   showSizes: boolean;
   showFillToggle: boolean;
   fillEnabled: DrawingSettings['fill'];
-  fixedColors: string[];
   recentColors: string[];
   sizePresets: number[];
   sizeLabels: string[];
@@ -349,7 +331,6 @@ function Inspector({
   showSizes,
   showFillToggle,
   fillEnabled,
-  fixedColors,
   recentColors,
   sizePresets,
   sizeLabels,
@@ -365,8 +346,10 @@ function Inspector({
 }: InspectorProps) {
   const [hexInput, setHexInput] = useState('#');
 
+  const fixedColors = TEXT_COLOR_PALETTE.slice(0, 8);
+
   const isCustomColor = (color: string) => {
-    return !fixedColors.map((c) => c.toLowerCase()).includes(color?.toLowerCase());
+    return !fixedColors.some((c) => c.toLowerCase() === color?.toLowerCase());
   };
 
   const handleColorSelect = (color: string, isCustom: boolean) => {

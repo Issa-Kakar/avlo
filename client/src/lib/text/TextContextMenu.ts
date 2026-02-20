@@ -13,7 +13,12 @@
 
 import type { Editor } from '@tiptap/core';
 import { getCanvasRect, useCameraStore } from '@/stores/camera-store';
-import { useDeviceUIStore, TEXT_FONT_SIZE_PRESETS, type TextFontSizePreset } from '@/stores/device-ui-store';
+import {
+  useDeviceUIStore,
+  TEXT_FONT_SIZE_PRESETS,
+  TEXT_COLOR_PALETTE,
+  HIGHLIGHT_COLORS,
+} from '@/stores/device-ui-store';
 import { getTextToolInstance } from '@/lib/tools/TextTool';
 import {
   createBoldIcon,
@@ -22,6 +27,7 @@ import {
   createAlignCenterIcon,
   createAlignRightIcon,
   createTextColorIcon,
+  createHighlightIcon,
   createMinusIcon,
   createPlusIcon,
   createChevronDownIcon,
@@ -43,6 +49,7 @@ class TextContextMenu {
   private alignCenterBtn: HTMLButtonElement | null = null;
   private alignRightBtn: HTMLButtonElement | null = null;
   private colorBtn: HTMLButtonElement | null = null;
+  private highlightBtn: HTMLButtonElement | null = null;
   private sizeValueBtn: HTMLButtonElement | null = null;
   private sizeMinusBtn: HTMLButtonElement | null = null;
   private sizePlusBtn: HTMLButtonElement | null = null;
@@ -50,6 +57,7 @@ class TextContextMenu {
   // Submenus
   private colorSubmenu: HTMLDivElement | null = null;
   private sizeSubmenu: HTMLDivElement | null = null;
+  private highlightSubmenu: HTMLDivElement | null = null;
 
   // Subscriptions
   private cameraUnsub: (() => void) | null = null;
@@ -63,50 +71,36 @@ class TextContextMenu {
   // Lifecycle
   // =========================================================================
 
-  /**
-   * Mount the context menu for a text editing session.
-   */
   mount(host: HTMLDivElement, editorContainer: HTMLDivElement, editor: Editor, _objectId: string): void {
-    // Cleanup any existing menu
     this.destroy();
 
     this.editorContainer = editorContainer;
     this.editor = editor;
 
-    // Build and append DOM
     this.container = this.buildDOM();
     host.appendChild(this.container);
 
-    // Initial position
     this.updatePosition();
 
-    // Setup subscriptions
     this.setupCameraSubscription();
     this.setupEditorSubscription();
   }
 
-  /**
-   * Cleanup the context menu.
-   */
   destroy(): void {
-    // Clear timeout
     if (this.settleTimeout !== null) {
       clearTimeout(this.settleTimeout);
       this.settleTimeout = null;
     }
 
-    // Unsubscribe from camera
     if (this.cameraUnsub) {
       this.cameraUnsub();
       this.cameraUnsub = null;
     }
 
-    // Remove DOM
     if (this.container && this.container.parentNode) {
       this.container.parentNode.removeChild(this.container);
     }
 
-    // Clear references
     this.container = null;
     this.editorContainer = null;
     this.editor = null;
@@ -116,18 +110,17 @@ class TextContextMenu {
     this.alignCenterBtn = null;
     this.alignRightBtn = null;
     this.colorBtn = null;
+    this.highlightBtn = null;
     this.sizeValueBtn = null;
     this.sizeMinusBtn = null;
     this.sizePlusBtn = null;
     this.colorSubmenu = null;
     this.sizeSubmenu = null;
+    this.highlightSubmenu = null;
   }
 
-  /**
-   * Called by TextTool.onViewChange() when camera changes.
-   */
   onViewChange(): void {
-    // The camera subscription handles this - this method exists for explicit calls
+    // The camera subscription handles this
   }
 
   // =========================================================================
@@ -137,8 +130,6 @@ class TextContextMenu {
   private buildDOM(): HTMLDivElement {
     const container = document.createElement('div');
     container.className = 'text-context-menu';
-
-    const uiState = useDeviceUIStore.getState();
 
     // === Font dropdown ===
     const fontBtn = this.createButton('tcm-btn tcm-btn-font', () => {
@@ -165,9 +156,8 @@ class TextContextMenu {
     sizeGroup.appendChild(this.sizeMinusBtn);
 
     this.sizeValueBtn = this.createButton('tcm-size-value', () => this.toggleSizeSubmenu());
-    // Get actual fontSize from TextTool's editorState
     const textTool = getTextToolInstance();
-    const actualSize = textTool?.getEditorState()?.fontSize ?? uiState.textSize;
+    const actualSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
     this.sizeValueBtn.textContent = String(actualSize);
     sizeGroup.appendChild(this.sizeValueBtn);
 
@@ -214,11 +204,18 @@ class TextContextMenu {
     this.colorBtn = this.createButton('tcm-btn tcm-btn-color', () => this.toggleColorSubmenu());
     const colorIcon = document.createElement('span');
     colorIcon.className = 'tcm-color-icon';
-    // Get actual color from TextTool's editorState
-    const actualColor = textTool?.getEditorState()?.color ?? uiState.textColor;
+    const actualColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
     colorIcon.appendChild(createTextColorIcon(actualColor));
     this.colorBtn.appendChild(colorIcon);
     container.appendChild(this.colorBtn);
+
+    // === Highlight ===
+    this.highlightBtn = this.createButton('tcm-btn tcm-btn-highlight', () => this.toggleHighlightSubmenu());
+    const hlIcon = document.createElement('span');
+    hlIcon.className = 'tcm-highlight-icon';
+    hlIcon.appendChild(createHighlightIcon(useDeviceUIStore.getState().highlightColor));
+    this.highlightBtn.appendChild(hlIcon);
+    container.appendChild(this.highlightBtn);
 
     container.appendChild(this.createSeparator());
 
@@ -236,6 +233,9 @@ class TextContextMenu {
     this.sizeSubmenu = this.buildSizeSubmenu();
     container.appendChild(this.sizeSubmenu);
 
+    this.highlightSubmenu = this.buildHighlightSubmenu();
+    container.appendChild(this.highlightSubmenu);
+
     // Update button states
     this.updateFormatButtons();
     this.updateAlignButtons();
@@ -252,7 +252,6 @@ class TextContextMenu {
       e.stopPropagation();
       onClick();
     });
-    // Prevent focus stealing from editor
     btn.addEventListener('mousedown', (e) => {
       e.preventDefault();
     });
@@ -269,11 +268,10 @@ class TextContextMenu {
     const submenu = document.createElement('div');
     submenu.className = 'tcm-submenu tcm-submenu-color tcm-hidden';
 
-    const uiState = useDeviceUIStore.getState();
-    const colors = uiState.fixedColors;
-    const currentColor = uiState.textColor;
+    const textTool = getTextToolInstance();
+    const currentColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
 
-    for (const color of colors) {
+    for (const color of TEXT_COLOR_PALETTE) {
       const swatch = document.createElement('button');
       swatch.className = 'tcm-color-swatch';
       if (color.toLowerCase() === currentColor.toLowerCase()) {
@@ -297,8 +295,8 @@ class TextContextMenu {
     const submenu = document.createElement('div');
     submenu.className = 'tcm-submenu tcm-submenu-size tcm-hidden';
 
-    const uiState = useDeviceUIStore.getState();
-    const currentSize = uiState.textSize;
+    const textTool = getTextToolInstance();
+    const currentSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
 
     for (const size of TEXT_FONT_SIZE_PRESETS) {
       const option = document.createElement('button');
@@ -320,6 +318,44 @@ class TextContextMenu {
     return submenu;
   }
 
+  private buildHighlightSubmenu(): HTMLDivElement {
+    const submenu = document.createElement('div');
+    submenu.className = 'tcm-submenu tcm-submenu-highlight tcm-hidden';
+
+    const currentHL = useDeviceUIStore.getState().highlightColor;
+
+    for (const color of HIGHLIGHT_COLORS) {
+      const swatch = document.createElement('button');
+      swatch.className = 'tcm-highlight-swatch';
+      if (color === currentHL) {
+        swatch.classList.add('active');
+      }
+
+      if (color === null) {
+        // "None" swatch — grey with slash indicator
+        swatch.style.backgroundColor = '#e5e7eb';
+        swatch.style.position = 'relative';
+        swatch.style.overflow = 'hidden';
+        const slash = document.createElement('span');
+        slash.style.cssText = 'position:absolute;top:50%;left:50%;width:70%;height:2px;background:#9ca3af;transform:translate(-50%,-50%) rotate(-45deg);border-radius:1px;';
+        swatch.appendChild(slash);
+      } else {
+        swatch.style.backgroundColor = color;
+      }
+
+      swatch.type = 'button';
+      swatch.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.handleHighlightColorSelect(color);
+      });
+      swatch.addEventListener('mousedown', (e) => e.preventDefault());
+      submenu.appendChild(swatch);
+    }
+
+    return submenu;
+  }
+
   // =========================================================================
   // Positioning
   // =========================================================================
@@ -328,11 +364,10 @@ class TextContextMenu {
     if (!this.container || !this.editorContainer) return;
 
     const canvasRect = getCanvasRect();
-    if (canvasRect.width === 0) return; // Canvas not mounted
+    if (canvasRect.width === 0) return;
 
     const editorRect = this.editorContainer.getBoundingClientRect();
 
-    // Calculate visible portion (clipped to canvas)
     const visibleLeft = Math.max(editorRect.left, canvasRect.left);
     const visibleRight = Math.min(editorRect.right, canvasRect.right);
     const visibleTop = Math.max(editorRect.top, canvasRect.top);
@@ -343,18 +378,16 @@ class TextContextMenu {
     const menuHeight = this.container.offsetHeight;
     const gap = 40;
 
-    // Determine above vs below
     const spaceAbove = visibleTop - canvasRect.top;
     const spaceBelow = canvasRect.bottom - visibleBottom;
 
     let top: number;
     if (spaceAbove >= menuHeight + gap || spaceAbove > spaceBelow) {
-      top = visibleTop - menuHeight - gap; // Above
+      top = visibleTop - menuHeight - gap;
     } else {
-      top = visibleBottom + gap; // Below
+      top = visibleBottom + gap;
     }
 
-    // Horizontal: center on visible portion, clamp to canvas
     let left = visibleCenterX - menuWidth / 2;
     left = Math.max(canvasRect.left + 8, Math.min(left, canvasRect.right - menuWidth - 8));
 
@@ -364,19 +397,15 @@ class TextContextMenu {
 
   private hideMenu(): void {
     if (!this.container) return;
-    // Cancel any pending show timer
     if (this.settleTimeout !== null) {
       clearTimeout(this.settleTimeout);
       this.settleTimeout = null;
     }
-    // Just hide - no position recalc
     this.container.classList.add('tcm-hidden');
-    // Also hide any open submenus
     this.hideSubmenus();
   }
 
   private scheduleShow(): void {
-    // This is the ONLY place updatePosition() is called during pan/zoom
     this.settleTimeout = window.setTimeout(() => {
       this.settleTimeout = null;
       this.updatePosition();
@@ -387,6 +416,7 @@ class TextContextMenu {
   private hideSubmenus(): void {
     this.colorSubmenu?.classList.add('tcm-hidden');
     this.sizeSubmenu?.classList.add('tcm-hidden');
+    this.highlightSubmenu?.classList.add('tcm-hidden');
   }
 
   // =========================================================================
@@ -403,9 +433,7 @@ class TextContextMenu {
       ({ scale, pan }) => {
         const changed = scale !== this.lastScale || pan.x !== this.lastPan.x || pan.y !== this.lastPan.y;
         if (changed) {
-          // Immediately hide (no position recalc)
           this.hideMenu();
-          // Reset timer - position recalc happens ONLY after settle
           this.scheduleShow();
           this.lastPan = { ...pan };
           this.lastScale = scale;
@@ -421,21 +449,17 @@ class TextContextMenu {
       const isBold = this.editor!.isActive('bold');
       const isItalic = this.editor!.isActive('italic');
 
-      // Update local buttons
       this.boldBtn?.classList.toggle('active', isBold);
       this.italicBtn?.classList.toggle('active', isItalic);
 
-      // Sync to UI store (for potential external consumers like ToolPanel)
       const uiStore = useDeviceUIStore.getState();
       uiStore.setTextIsBold(isBold);
       uiStore.setTextIsItalic(isItalic);
     };
 
-    // Listen for selection/format changes
     this.editor.on('selectionUpdate', syncFormatState);
     this.editor.on('transaction', () => {
       syncFormatState();
-      // Re-center menu on content change (auto-grow width)
       this.updatePosition();
     });
   }
@@ -455,8 +479,6 @@ class TextContextMenu {
   }
 
   private updateAlignButtons(): void {
-    // Prefer reading align from the active TextTool's editor state (actual object state)
-    // Fall back to UI store for default
     const textTool = getTextToolInstance();
     const align = textTool?.getEditorState()?.align ?? useDeviceUIStore.getState().textAlign;
 
@@ -467,7 +489,6 @@ class TextContextMenu {
 
   private updateColorIcon(): void {
     if (!this.colorBtn) return;
-    // Get actual color from TextTool's editorState
     const textTool = getTextToolInstance();
     const actualColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
     const iconContainer = this.colorBtn.querySelector('.tcm-color-icon');
@@ -477,9 +498,18 @@ class TextContextMenu {
     }
   }
 
+  private updateHighlightIcon(): void {
+    if (!this.highlightBtn) return;
+    const color = useDeviceUIStore.getState().highlightColor;
+    const iconContainer = this.highlightBtn.querySelector('.tcm-highlight-icon');
+    if (iconContainer) {
+      iconContainer.innerHTML = '';
+      iconContainer.appendChild(createHighlightIcon(color));
+    }
+  }
+
   private updateSizeValue(): void {
     if (!this.sizeValueBtn) return;
-    // Get actual fontSize from TextTool's editorState
     const textTool = getTextToolInstance();
     const actualSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
     this.sizeValueBtn.textContent = String(actualSize);
@@ -502,19 +532,16 @@ class TextContextMenu {
   }
 
   private handleAlignClick(align: 'left' | 'center' | 'right'): void {
-    // Use TextTool's updateTextAlign method to mutate Y.Map, adjust origin, and update DOM
     const textTool = getTextToolInstance();
     if (textTool) {
       textTool.updateTextAlign(align);
     }
-    // Also update UI store for default on new text
     useDeviceUIStore.getState().setTextAlign(align);
     this.updateAlignButtons();
     this.editor?.chain().focus().run();
   }
 
   private handleColorSelect(color: string): void {
-    // Use TextTool's updateColor method to mutate Y.Map and update DOM
     const textTool = getTextToolInstance();
     if (textTool) {
       textTool.updateColor(color);
@@ -522,45 +549,57 @@ class TextContextMenu {
 
     this.updateColorIcon();
     this.hideSubmenus();
-    // Refocus editor
     this.editor?.chain().focus().run();
   }
 
-  private handleSizeSelect(size: TextFontSizePreset): void {
-    // Use TextTool's updateFontSize method to mutate Y.Map and update DOM
+  private handleSizeSelect(size: number): void {
     const textTool = getTextToolInstance();
     if (textTool) {
       textTool.updateFontSize(size);
     }
 
+    useDeviceUIStore.getState().setTextSize(size);
     this.updateSizeValue();
     this.hideSubmenus();
 
-    // Reposition menu after font size change
     requestAnimationFrame(() => this.updatePosition());
 
     this.editor?.chain().focus().run();
   }
 
   private handleSizeDecrement(): void {
-    const uiState = useDeviceUIStore.getState();
-    const currentSize = uiState.textSize;
-    const presets = TEXT_FONT_SIZE_PRESETS;
-    const currentIndex = presets.indexOf(currentSize as TextFontSizePreset);
-    if (currentIndex > 0) {
-      this.handleSizeSelect(presets[currentIndex - 1]);
+    const textTool = getTextToolInstance();
+    const currentSize = textTool?.getEditorState()?.fontSize
+      ?? useDeviceUIStore.getState().textSize;
+
+    for (let i = TEXT_FONT_SIZE_PRESETS.length - 1; i >= 0; i--) {
+      if (TEXT_FONT_SIZE_PRESETS[i] < currentSize) {
+        this.handleSizeSelect(TEXT_FONT_SIZE_PRESETS[i]);
+        break;
+      }
     }
     this.editor?.chain().focus().run();
   }
 
   private handleSizeIncrement(): void {
-    const uiState = useDeviceUIStore.getState();
-    const currentSize = uiState.textSize;
-    const presets = TEXT_FONT_SIZE_PRESETS;
-    const currentIndex = presets.indexOf(currentSize as TextFontSizePreset);
-    if (currentIndex < presets.length - 1 && currentIndex !== -1) {
-      this.handleSizeSelect(presets[currentIndex + 1]);
+    const textTool = getTextToolInstance();
+    const currentSize = textTool?.getEditorState()?.fontSize
+      ?? useDeviceUIStore.getState().textSize;
+
+    for (let i = 0; i < TEXT_FONT_SIZE_PRESETS.length; i++) {
+      if (TEXT_FONT_SIZE_PRESETS[i] > currentSize) {
+        this.handleSizeSelect(TEXT_FONT_SIZE_PRESETS[i]);
+        break;
+      }
     }
+    this.editor?.chain().focus().run();
+  }
+
+  private handleHighlightColorSelect(color: string | null): void {
+    useDeviceUIStore.getState().setHighlightColor(color);
+    this.updateHighlightIcon();
+    this.hideSubmenus();
+    // Actual editor.chain().toggleHighlight() wiring deferred to extension integration
     this.editor?.chain().focus().run();
   }
 
@@ -571,7 +610,6 @@ class TextContextMenu {
     this.hideSubmenus();
 
     if (isHidden) {
-      // Position submenu below the color button
       const btnRect = this.colorBtn.getBoundingClientRect();
       const containerRect = this.container.getBoundingClientRect();
 
@@ -579,13 +617,14 @@ class TextContextMenu {
       this.colorSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
       this.colorSubmenu.classList.remove('tcm-hidden');
 
-      // Update active state
-      const uiState = useDeviceUIStore.getState();
+      // Update active state from editor
+      const textTool = getTextToolInstance();
+      const currentColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
       const swatches = this.colorSubmenu.querySelectorAll('.tcm-color-swatch');
       swatches.forEach((swatch) => {
         const btn = swatch as HTMLButtonElement;
-        const isActive = btn.style.backgroundColor.toLowerCase() === uiState.textColor.toLowerCase() ||
-          this.rgbToHex(btn.style.backgroundColor).toLowerCase() === uiState.textColor.toLowerCase();
+        const isActive = btn.style.backgroundColor.toLowerCase() === currentColor.toLowerCase() ||
+          this.rgbToHex(btn.style.backgroundColor).toLowerCase() === currentColor.toLowerCase();
         btn.classList.toggle('active', isActive);
       });
     }
@@ -598,7 +637,6 @@ class TextContextMenu {
     this.hideSubmenus();
 
     if (isHidden) {
-      // Position submenu below the size value
       const btnRect = this.sizeValueBtn.getBoundingClientRect();
       const containerRect = this.container.getBoundingClientRect();
 
@@ -606,19 +644,44 @@ class TextContextMenu {
       this.sizeSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
       this.sizeSubmenu.classList.remove('tcm-hidden');
 
-      // Update active state
-      const uiState = useDeviceUIStore.getState();
+      // Update active state from editor
+      const textTool = getTextToolInstance();
+      const currentSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
       const options = this.sizeSubmenu.querySelectorAll('.tcm-size-option');
       options.forEach((option) => {
         const btn = option as HTMLButtonElement;
         const size = parseInt(btn.textContent || '0', 10);
-        btn.classList.toggle('active', size === uiState.textSize);
+        btn.classList.toggle('active', size === currentSize);
+      });
+    }
+  }
+
+  private toggleHighlightSubmenu(): void {
+    if (!this.highlightSubmenu || !this.highlightBtn || !this.container) return;
+
+    const isHidden = this.highlightSubmenu.classList.contains('tcm-hidden');
+    this.hideSubmenus();
+
+    if (isHidden) {
+      const btnRect = this.highlightBtn.getBoundingClientRect();
+      const containerRect = this.container.getBoundingClientRect();
+
+      this.highlightSubmenu.style.left = `${btnRect.left - containerRect.left}px`;
+      this.highlightSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
+      this.highlightSubmenu.classList.remove('tcm-hidden');
+
+      // Update active state
+      const currentHL = useDeviceUIStore.getState().highlightColor;
+      const swatches = this.highlightSubmenu.querySelectorAll('.tcm-highlight-swatch');
+      let idx = 0;
+      swatches.forEach((swatch) => {
+        const color = HIGHLIGHT_COLORS[idx++] ?? null;
+        (swatch as HTMLElement).classList.toggle('active', color === currentHL);
       });
     }
   }
 
   private rgbToHex(rgb: string): string {
-    // Convert "rgb(r, g, b)" to "#rrggbb"
     const match = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
     if (!match) return rgb;
     const r = parseInt(match[1], 10).toString(16).padStart(2, '0');

@@ -122,17 +122,17 @@ export function createAlignRightIcon(): SVGSVGElement {
 }
 
 /**
- * Text color icon - letter "A" with colored underline bar
+ * Text color icon - letter "A" with colored underline bar (20x20)
  */
 export function createTextColorIcon(color: string): SVGSVGElement {
-  const svg = createSVG();
+  const svg = createSVG(20, 20);
   // Letter A
   const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-  text.setAttribute('x', '8');
-  text.setAttribute('y', '11');
+  text.setAttribute('x', '10');
+  text.setAttribute('y', '13.5');
   text.setAttribute('text-anchor', 'middle');
   text.setAttribute('font-family', 'Inter, system-ui, sans-serif');
-  text.setAttribute('font-size', '11');
+  text.setAttribute('font-size', '14');
   text.setAttribute('font-weight', '600');
   text.setAttribute('fill', 'currentColor');
   text.textContent = 'A';
@@ -141,10 +141,10 @@ export function createTextColorIcon(color: string): SVGSVGElement {
   // Colored underline bar
   const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
   bar.setAttribute('x', '3');
-  bar.setAttribute('y', '13');
-  bar.setAttribute('width', '10');
-  bar.setAttribute('height', '2');
-  bar.setAttribute('rx', '1');
+  bar.setAttribute('y', '16.5');
+  bar.setAttribute('width', '14');
+  bar.setAttribute('height', '2.5');
+  bar.setAttribute('rx', '1.25');
   bar.setAttribute('fill', color);
   svg.appendChild(bar);
 
@@ -191,6 +191,77 @@ export function createPlusIcon(): SVGSVGElement {
   path.setAttribute('stroke-width', '1.5');
   path.setAttribute('stroke-linecap', 'round');
   svg.appendChild(path);
+  return svg;
+}
+
+/**
+ * Highlight icon - blocky chisel-tip marker with filled cap and colored bar (20x20)
+ *
+ * Anatomy (cap at upper-right, chisel nib at lower-left):
+ *   Filled cap → barrel outline → flat chisel nib → color bar
+ * The filled cap is the key cue that reads "marker" not "eraser".
+ */
+export function createHighlightIcon(color: string | null): SVGSVGElement {
+  const svg = createSVG(20, 20);
+
+  // Filled cap section (top ~35% of barrel — adds visual weight)
+  const capFill = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  capFill.setAttribute('d', 'M11.5 1.5L17 4.5L15 7.5L9.5 4.5Z');
+  capFill.setAttribute('fill', 'currentColor');
+  svg.appendChild(capFill);
+
+  // Full marker outline: barrel + chisel nib as one continuous path
+  // Barrel: parallel-sided rectangle at ~30deg tilt
+  // Nib: flat chisel tip extending from barrel bottom-left
+  const outline = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  outline.setAttribute('d', 'M11.5 1.5L17 4.5L12 13L5 14L6.5 10Z');
+  outline.setAttribute('stroke', 'currentColor');
+  outline.setAttribute('stroke-width', '1.3');
+  outline.setAttribute('stroke-linejoin', 'round');
+  outline.setAttribute('fill', 'none');
+  svg.appendChild(outline);
+
+  // Cap divider line (reinforces cap-barrel joint)
+  const capLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  capLine.setAttribute('x1', '9.5');
+  capLine.setAttribute('y1', '4.5');
+  capLine.setAttribute('x2', '15');
+  capLine.setAttribute('y2', '7.5');
+  capLine.setAttribute('stroke', 'currentColor');
+  capLine.setAttribute('stroke-width', '1');
+  svg.appendChild(capLine);
+
+  // Color bar at bottom (matches text color icon position)
+  if (color === null) {
+    const base = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    base.setAttribute('x', '3');
+    base.setAttribute('y', '16.5');
+    base.setAttribute('width', '14');
+    base.setAttribute('height', '2.5');
+    base.setAttribute('rx', '1.25');
+    base.setAttribute('fill', '#d1d5db');
+    svg.appendChild(base);
+
+    for (let i = 0; i < 4; i++) {
+      const block = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      block.setAttribute('x', String(4.5 + i * 3));
+      block.setAttribute('y', '16.5');
+      block.setAttribute('width', '1.5');
+      block.setAttribute('height', '2.5');
+      block.setAttribute('fill', '#e5e7eb');
+      svg.appendChild(block);
+    }
+  } else {
+    const bar = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    bar.setAttribute('x', '3');
+    bar.setAttribute('y', '16.5');
+    bar.setAttribute('width', '14');
+    bar.setAttribute('height', '2.5');
+    bar.setAttribute('rx', '1.25');
+    bar.setAttribute('fill', color);
+    svg.appendChild(bar);
+  }
+
   return svg;
 }
 

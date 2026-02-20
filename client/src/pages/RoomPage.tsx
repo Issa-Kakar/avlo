@@ -12,9 +12,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary';
 // Components
 import { Canvas } from '../canvas/Canvas';
 import { ToolPanel } from './components/ToolPanel';
-// ColorSizeDock removed - integrated into ToolPanel with Inspector
 import { ZoomControls } from './components/ZoomControls';
-// import { EditorPanel } from './components/EditorPanel'; // Keep dormant for future code editor
 import { UsersModal } from './components/UsersModal';
 import { UserAvatarCluster } from './components/UserAvatarCluster';
 import { ToastProvider, useToast } from './components/Toast';
@@ -137,11 +135,9 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
 
           {/* Floating UI elements */}
           <ToolPanel onToast={showToast} onUndo={handleUndo} onRedo={handleRedo} />
-          {/* ColorSizeDock removed - now integrated into ToolPanel */}
           <ZoomControls />
         </div>
 
-        {/* EditorPanel removed from UI - keep dormant in store for future code editor */}
       </div>
 
       {/* Users Modal */}
