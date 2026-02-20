@@ -140,6 +140,7 @@ interface StyledText {
   text: string;
   bold: boolean;
   italic: boolean;
+  highlight: string | null;
 }
 
 type TokenKind = 'word' | 'space';
@@ -284,20 +285,20 @@ function getSpaceWidth(font: string): number {
 
 function pushSegment(
   tokens: Token[], kind: TokenKind,
-  text: string, bold: boolean, italic: boolean,
+  text: string, bold: boolean, italic: boolean, highlight: string | null,
 ): void {
   if (!text) return;
   const last = tokens[tokens.length - 1];
   if (last && last.kind === kind) {
     const lastSeg = last.segments[last.segments.length - 1];
-    if (lastSeg && lastSeg.bold === bold && lastSeg.italic === italic) {
+    if (lastSeg && lastSeg.bold === bold && lastSeg.italic === italic && lastSeg.highlight === highlight) {
       lastSeg.text += text; // string concat, no object allocated
       return;
     }
-    last.segments.push({ text, bold, italic });
+    last.segments.push({ text, bold, italic, highlight });
     return;
   }
-  tokens.push({ kind, segments: [{ text, bold, italic }] });
+  tokens.push({ kind, segments: [{ text, bold, italic, highlight }] });
 }
 
 function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
@@ -317,11 +318,17 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
           const attrs = op.attributes || {};
           const bold = !!attrs.bold;
           const italic = !!attrs.italic;
+          const hlAttr = attrs.highlight;
+          const highlight: string | null = hlAttr != null
+            ? (typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
+                ? String((hlAttr as Record<string, unknown>).color)
+                : '#faf594')
+            : null;
           // Inline tokenization — regex splits into whitespace/non-whitespace chunks
           const re = /(\s+|\S+)/g;
           let m: RegExpExecArray | null;
           while ((m = re.exec(op.insert)) !== null) {
-            pushSegment(tokens, /^\s+$/.test(m[0]) ? 'space' : 'word', m[0], bold, italic);
+            pushSegment(tokens, /^\s+$/.test(m[0]) ? 'space' : 'word', m[0], bold, italic, highlight);
           }
         }
       }
@@ -359,7 +366,7 @@ function measureTokenizedContent(content: TokenizedContent, fontSize: number): M
         const font = buildFontString(s.bold, s.italic, fontSize);
         const { w, ink } = measureSeg(font, s.text, isWs);
         totalW += w;
-        return { text: s.text, bold: s.bold, italic: s.italic, font, advanceWidth: w, ink, isWhitespace: isWs };
+        return { text: s.text, bold: s.bold, italic: s.italic, highlight: s.highlight, font, advanceWidth: w, ink, isWhitespace: isWs };
       });
       return { kind: t.kind, segments, advanceWidth: totalW };
     });
@@ -431,7 +438,7 @@ function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number
   if (!text) return;
   // Coalesce with previous run if same font+style
   const prev = b.runs[b.runs.length - 1];
-  if (prev && prev.font === seg.font && prev.bold === seg.bold && prev.italic === seg.italic) {
+  if (prev && prev.font === seg.font && prev.bold === seg.bold && prev.italic === seg.italic && prev.highlight === seg.highlight) {
     const offset = prev.advanceWidth;
     prev.text += text;
     prev.advanceWidth += w;
@@ -448,7 +455,7 @@ function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number
   }
   // New run — copy ink to isolate from source
   const run: MeasuredRun = {
-    text, bold: seg.bold, italic: seg.italic, font: seg.font,
+    text, bold: seg.bold, italic: seg.italic, highlight: seg.highlight, font: seg.font,
     advanceWidth: w, advanceX: b.advanceX,
     ink: [ink[0], ink[1], ink[2], ink[3]],
     isWhitespace: seg.isWhitespace,
@@ -753,15 +760,23 @@ export function renderTextLayout(
   align: TextAlign = 'left'
 ): void {
   ctx.save();
-  ctx.fillStyle = color;
   ctx.textBaseline = 'alphabetic';
   ctx.textRendering = 'optimizeSpeed';
-  const { boxWidth } = layout;
+  const { boxWidth, fontSize, lineHeight } = layout;
+  const baselineToTop = getBaselineToTopRatio() * fontSize;
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;
     const lineY = originY + line.baselineY;
     const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.visualWidth;
     const startX = getLineStartX(originX, boxWidth, lineW, align);
+    // Pass 1: highlight rects
+    for (const run of line.runs) {
+      if (!run.highlight) continue;
+      ctx.fillStyle = run.highlight;
+      ctx.fillRect(startX + run.advanceX, lineY - baselineToTop, run.advanceWidth, lineHeight);
+    }
+    // Pass 2: text
+    ctx.fillStyle = color;
     for (const run of line.runs) {
       ctx.font = run.font;
       ctx.fillText(run.text, startX + run.advanceX, lineY);

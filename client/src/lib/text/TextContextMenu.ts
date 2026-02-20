@@ -448,9 +448,11 @@ class TextContextMenu {
     const syncFormatState = () => {
       const isBold = this.editor!.isActive('bold');
       const isItalic = this.editor!.isActive('italic');
+      const isHighlightActive = this.editor!.isActive('highlight');
 
       this.boldBtn?.classList.toggle('active', isBold);
       this.italicBtn?.classList.toggle('active', isItalic);
+      this.highlightBtn?.classList.toggle('active', isHighlightActive);
 
       const uiStore = useDeviceUIStore.getState();
       uiStore.setTextIsBold(isBold);
@@ -599,8 +601,12 @@ class TextContextMenu {
     useDeviceUIStore.getState().setHighlightColor(color);
     this.updateHighlightIcon();
     this.hideSubmenus();
-    // Actual editor.chain().toggleHighlight() wiring deferred to extension integration
-    this.editor?.chain().focus().run();
+    if (!this.editor) return;
+    if (color === null) {
+      this.editor.chain().focus().unsetHighlight().run();
+    } else {
+      this.editor.chain().focus().setHighlight({ color }).run();
+    }
   }
 
   private toggleColorSubmenu(): void {
@@ -670,8 +676,9 @@ class TextContextMenu {
       this.highlightSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
       this.highlightSubmenu.classList.remove('tcm-hidden');
 
-      // Update active state
-      const currentHL = useDeviceUIStore.getState().highlightColor;
+      // Update active state from editor
+      const editorHL = this.editor?.getAttributes('highlight')?.color as string | undefined;
+      const currentHL = editorHL ?? useDeviceUIStore.getState().highlightColor;
       const swatches = this.highlightSubmenu.querySelectorAll('.tcm-highlight-swatch');
       let idx = 0;
       swatches.forEach((swatch) => {

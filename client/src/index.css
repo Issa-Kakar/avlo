@@ -135,6 +135,11 @@
   font-style: italic;
 }
 
+/* Highlight */
+.text-editor-container mark {
+  background-color: #faf594;
+}
+
 /* DOM overlay root - ensure it doesn't block events except for children */
 .dom-overlay-root {
   pointer-events: none;
