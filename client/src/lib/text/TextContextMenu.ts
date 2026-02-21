@@ -448,11 +448,11 @@ class TextContextMenu {
     const syncFormatState = () => {
       const isBold = this.editor!.isActive('bold');
       const isItalic = this.editor!.isActive('italic');
+      const isHighlight = this.editor!.isActive('highlight');
 
       this.boldBtn?.classList.toggle('active', isBold);
       this.italicBtn?.classList.toggle('active', isItalic);
-
-      // Sync highlight icon color from editor state
+      this.highlightBtn?.classList.toggle('active', isHighlight);
       this.updateHighlightIcon();
 
       const uiStore = useDeviceUIStore.getState();
@@ -502,14 +502,13 @@ class TextContextMenu {
   }
 
   private getEditorHighlightColor(): string | null {
-    if (!this.editor) return useDeviceUIStore.getState().highlightColor;
-    const attrs = this.editor.getAttributes('highlight');
-    return (attrs?.color as string) ?? (this.editor.isActive('highlight') ? '#ffd43b' : null);
+    if (!this.editor || !this.editor.isActive('highlight')) return null;
+    return (this.editor.getAttributes('highlight')?.color as string) ?? '#ffd43b';
   }
 
   private updateHighlightIcon(): void {
     if (!this.highlightBtn) return;
-    const color = this.getEditorHighlightColor() ?? useDeviceUIStore.getState().highlightColor;
+    const color = this.getEditorHighlightColor();
     const iconContainer = this.highlightBtn.querySelector('.tcm-highlight-icon');
     if (iconContainer) {
       iconContainer.innerHTML = '';
@@ -682,13 +681,15 @@ class TextContextMenu {
       this.highlightSubmenu.style.top = `${btnRect.bottom - containerRect.top + 4}px`;
       this.highlightSubmenu.classList.remove('tcm-hidden');
 
-      // Active state from editor — match on specific color, null = no highlight
-      const currentHL = this.getEditorHighlightColor();
+      // Per-swatch active from editor.isActive('highlight', { color })
       const swatches = this.highlightSubmenu.querySelectorAll('.tcm-highlight-swatch');
       let idx = 0;
       swatches.forEach((swatch) => {
         const color = HIGHLIGHT_COLORS[idx++] ?? null;
-        (swatch as HTMLElement).classList.toggle('active', color === currentHL);
+        const isActive = color === null
+          ? !this.editor?.isActive('highlight')
+          : !!this.editor?.isActive('highlight', { color });
+        (swatch as HTMLElement).classList.toggle('active', isActive);
       });
     }
   }

@@ -186,10 +186,12 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       setIsTextEditing: (editing) => set({ isTextEditing: editing }),
 
+      // Helper method to get current tool settings
       getCurrentToolSettings: () => {
         const state = get();
         const { activeTool, drawingSettings, highlighterOpacity, textSize, connectorSize } = state;
 
+        // Base settings from unified drawing settings
         const settings = {
           size: drawingSettings.size as number,
           color: drawingSettings.color,
@@ -197,6 +199,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           fill: drawingSettings.fill,
         };
 
+        // Override with tool-specific settings
         switch (activeTool) {
           case 'highlighter':
             settings.opacity = highlighterOpacity;
@@ -207,6 +210,8 @@ export const useDeviceUIStore = create<DeviceUIState>()(
           case 'connector':
             settings.size = connectorSize;
             break;
+          // eraser uses fixed 10px radius - no size override needed
+          // pen/shape use unified settings
         }
 
         return settings;
@@ -235,6 +240,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 // CURSOR MANAGEMENT
 // ============================================
 
+/**
+ * Compute the appropriate cursor based on active tool.
+ */
 function computeBaseCursor(): string {
   const { activeTool } = useDeviceUIStore.getState();
   switch (activeTool) {
@@ -251,6 +259,10 @@ function computeBaseCursor(): string {
   }
 }
 
+/**
+ * Apply the current cursor to the canvas element.
+ * Priority: override > tool-based cursor
+ */
 export function applyCursor(): void {
   const canvas = getCanvasElement();
   if (!canvas) return;
@@ -258,10 +270,20 @@ export function applyCursor(): void {
   canvas.style.cursor = override ?? computeBaseCursor();
 }
 
+/**
+ * Set a cursor override that takes priority over tool-based cursor.
+ * Pass null to clear override.
+ */
 export function setCursorOverride(cursor: string | null): void {
   useDeviceUIStore.getState().setCursorOverride(cursor);
 }
 
+/**
+ * Self-subscription for tool changes.
+ * When activeTool changes and canvas is available, apply the new cursor.
+ * This subscription is set up once at module initialization and lives
+ * for the lifetime of the app.
+ */
 useDeviceUIStore.subscribe((state, prevState) => {
   if (state.activeTool !== prevState.activeTool) {
     applyCursor();

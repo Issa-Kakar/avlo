@@ -181,12 +181,14 @@ export interface MeasuredRun extends MeasuredSegment {
 export interface MeasuredLine {
   runs: MeasuredRun[];
   index: number;
-  advanceWidth: number;
-  visualWidth: number;
+  advanceWidth: number;    // Total advance including trailing whitespace runs
+  alignmentWidth: number;  // Width used for text-align offset calculation (two behaviors):
+  //   Wrap-caused line break → b.visualWidth (trailing ws hangs, excluded from alignment)
+  //   Paragraph end          → min(advanceWidth, maxWidth) (trailing ws is content, shifts text)
   ink: BBoxTuple;
   baselineY: number;
   lineHeight: number;
-  hasInk: boolean;
+  hasInk: boolean;         // Flow engine: distinguishes leading ws (commit) from inter-word (pending)
 }
 
 export interface TextLayout {
@@ -195,8 +197,10 @@ export interface TextLayout {
   lineHeight: number;
   widthMode: 'auto' | 'fixed';
   boxWidth: number;
-  inkBBox: FrameTuple;
-  logicalBBox: FrameTuple;
+  inkBBox: FrameTuple;     // TODO: remove — ink-tight bounds miss highlight rects that extend
+  //   beyond glyph ink (full lineHeight), causing stale pixels on partial dirty-rect redraws.
+  //   BBox should match frame (logicalBBox + origin offset). See computeTextBBox().
+  logicalBBox: FrameTuple; // [0, 0, boxWidth, numLines * lineHeight]
 }
 
 // =============================================================================
@@ -482,13 +486,15 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
   const ink: BBoxTuple = [Infinity, Infinity, -Infinity, -Infinity];
 
   // --- pushLine: finalize and push a line ---
+  // Default alignmentWidth = b.visualWidth (hanging — correct for wrap-caused breaks).
+  // Paragraph-end call sites follow with fixupParagraphEnd() to override.
   const pushLine = (b: LineBuilder) => {
     const baselineY = lineIdx * lineHeight;
     const lineInk: BBoxTuple = b.hasInk && isFinite(b.ink[0])
       ? b.ink : [0, -ascentY, 0, descentY];
     lines.push({
       runs: b.runs, index: lineIdx, advanceWidth: b.advanceX,
-      visualWidth: b.visualWidth, ink: lineInk, baselineY, lineHeight,
+      alignmentWidth: b.visualWidth, ink: lineInk, baselineY, lineHeight,
       hasInk: b.hasInk,
     });
     maxAdvanceWidth = Math.max(maxAdvanceWidth, b.advanceX);
@@ -496,6 +502,15 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
       b.hasInk ? lineInk[0] : 0, baselineY + lineInk[1],
       b.hasInk ? lineInk[2] : 0, baselineY + lineInk[3]);
     lineIdx++;
+  };
+
+  // --- Paragraph-end fixup: trailing ws is content, not hanging ---
+  // CSS two-behavior model: wrap-caused trailing ws hangs (doesn't shift alignment),
+  // but paragraph-end trailing ws IS content (shifts centered/right text).
+  // Clamped to maxWidth so overflow ws doesn't produce negative alignment offsets.
+  const fixupParagraphEnd = () => {
+    const last = lines[lines.length - 1];
+    if (last) last.alignmentWidth = Math.min(last.advanceWidth, maxWidth);
   };
 
   // --- Pending whitespace state ---
@@ -546,7 +561,7 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
   let b = newLineBuilder();
   for (const p of content.paragraphs) {
     if (p.tokens.length === 0) {
-      clearPending(); pushLine(b); b = newLineBuilder(); continue;
+      clearPending(); pushLine(b); fixupParagraphEnd(); b = newLineBuilder(); continue;
     }
     for (const tok of p.tokens) {
       if (tok.kind === 'space') {
@@ -575,7 +590,7 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
             if (pendingW > 0) commitPending(b);
             b = placeWord(b, tok);
           } else {
-            clearPending(); pushLine(b); b = newLineBuilder();
+            commitPending(b); pushLine(b); b = newLineBuilder();
             b = placeWord(b, tok);
           }
         } else {
@@ -583,7 +598,7 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
           if (b.advanceX + pendingW < maxWidth) {
             if (pendingW > 0) commitPending(b);
           } else {
-            clearPending(); pushLine(b); b = newLineBuilder();
+            commitPending(b); pushLine(b); b = newLineBuilder();
           }
           b = placeWord(b, tok);
         }
@@ -596,7 +611,7 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
         b = placeWord(b, tok);
       }
     }
-    clearPending(); pushLine(b); b = newLineBuilder();
+    commitPending(b); pushLine(b); fixupParagraphEnd(); b = newLineBuilder();
   }
   if (lines.length === 0) pushLine(newLineBuilder());
 
@@ -764,16 +779,30 @@ export function renderTextLayout(
   ctx.textRendering = 'optimizeSpeed';
   const { boxWidth, fontSize, lineHeight } = layout;
   const baselineToTop = getBaselineToTopRatio() * fontSize;
+  const isFixed = layout.widthMode === 'fixed';
+  // Container bounds for fixed-mode overflow clipping (matches CSS overflow:hidden)
+  const containerLeft = isFixed ? getBoxLeftX(originX, boxWidth, align) : 0;
+  const containerRight = isFixed ? containerLeft + boxWidth : 0;
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;
     const lineY = originY + line.baselineY;
-    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.visualWidth;
+    // alignmentWidth handles both cases: wrap lines use visualWidth (hanging ws excluded),
+    // paragraph-end lines use min(advanceWidth, maxWidth) (trailing ws shifts alignment).
+    const lineW = isFixed ? line.alignmentWidth : line.advanceWidth;
     const startX = getLineStartX(originX, boxWidth, lineW, align);
-    // Pass 1: highlight rects
+    // Pass 1: highlight rects (fixed mode: clamped to container, no ctx.clip needed)
     for (const run of line.runs) {
       if (!run.highlight) continue;
       ctx.fillStyle = run.highlight;
-      ctx.fillRect(startX + run.advanceX, lineY - baselineToTop, run.advanceWidth, lineHeight);
+      if (isFixed) {
+        const hlRight = Math.min(startX + run.advanceX + run.advanceWidth, containerRight);
+        const hlLeft = Math.max(startX + run.advanceX, containerLeft);
+        if (hlRight > hlLeft) {
+          ctx.fillRect(hlLeft, lineY - baselineToTop, hlRight - hlLeft, lineHeight);
+        }
+      } else {
+        ctx.fillRect(startX + run.advanceX, lineY - baselineToTop, run.advanceWidth, lineHeight);
+      }
     }
     // Pass 2: text
     ctx.fillStyle = color;
@@ -792,6 +821,13 @@ export function renderTextLayout(
 /**
  * Compute bounding box for a text object.
  * Used by room-doc-manager for spatial index.
+ *
+ * TODO: Replace ink-tight BBox with frame-based BBox. The ink-tight bounds are smaller
+ * than the frame because they exclude the half-leading above/below glyphs and any
+ * horizontal space from alignment. This causes dirty-rect issues: highlight rects extend
+ * the full lineHeight (baseline ± half-leading) but the ink BBox doesn't cover that area,
+ * so partial redraws leave stale highlight pixels. The SelectTool already uses getTextFrame()
+ * for transform bounds as a workaround. Fix: return frame + padding directly.
  */
 export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   const { content, origin, fontSize, align, width } = props;
@@ -799,17 +835,17 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   const [ox, oy] = origin;
   const padding = 2;
 
-  // Derive and cache frame
+  // Derive and cache frame (matches DOM overlay rect exactly)
   const fx = getBoxLeftX(ox, layout.boxWidth, align);
   const fy = oy - fontSize * getBaselineToTopRatio();
   textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, layout.logicalBBox[3]]);
 
-  // Ink-tight horizontal bounds
+  // Ink-tight horizontal bounds (TODO: replace with frame bounds)
   let minX = Infinity;
   let maxX = -Infinity;
   for (const line of layout.lines) {
     if (!line.hasInk) continue;
-    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.visualWidth;
+    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.alignmentWidth;
     const lx = getLineStartX(ox, layout.boxWidth, lineW, align);
     minX = Math.min(minX, lx + line.ink[0]);
     maxX = Math.max(maxX, lx + line.ink[2]);

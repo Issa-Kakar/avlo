@@ -83,7 +83,7 @@ TokenizedContent { paragraphs: [{ tokens: Token[] }] }
     ↓ measureTokenizedContent(tokenized, fontSize)
 MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], fontSize, lineHeight }
     ↓ layoutMeasuredContent(measured, width)
-TextLayout { lines: MeasuredLine[], boxWidth, inkBBox, logicalBBox }
+TextLayout { lines: MeasuredLine[], boxWidth, logicalBBox, ... }
 ```
 
 All three stages are **internal**. Public API: `textLayoutCache.getLayout()`.
@@ -113,7 +113,7 @@ buildFontString(bold, italic, fontSize)  // → "italic 800 20px ..."
 
 ### Stage 1: Tokenizer — `parseAndTokenize()`
 
-Walks `Y.XmlFragment` → paragraph elements → `Y.XmlText` delta ops. Each delta op's insert string is split by regex `/(\s+|\S+)/g` into alternating word/space tokens. Adjacent segments with same bold/italic/highlight coalesce via string concat (no extra object). Highlight color extracted from `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default toggle stores `true`/`null` → mapped to `'#faf594'`.
+Walks `Y.XmlFragment` → paragraph elements → `Y.XmlText` delta ops. Each delta op's insert string is split by regex `/(\s+|\S+)/g` into alternating word/space tokens. Adjacent segments with same bold/italic/highlight coalesce via string concat (no extra object). Highlight color extracted from `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default toggle (no color) → mapped to `'#ffd43b'`.
 
 ```
 "hello world"     → [word:"hello", space:" ", word:"world"]
@@ -159,8 +159,8 @@ Converts `MeasuredContent` → `TextLayout` by placing tokens onto lines. Implem
 
 Accumulates runs for the current line:
 - `advanceX` — total width including all committed runs
-- `visualWidth` — width up to end of last non-whitespace run (for fixed-mode alignment)
-- `hasInk` — at least one non-whitespace run exists
+- `visualWidth` — width up to end of last non-whitespace run (internal; becomes `alignmentWidth` on `MeasuredLine` via `pushLine`)
+- `hasInk` — at least one non-whitespace run exists (flow engine: leading vs inter-word ws distinction)
 - `ink` — running BBox union of all non-whitespace ink bounds
 
 `appendRun()` coalesces adjacent runs with identical font+style via string concat — reduces run count for the renderer.
@@ -180,8 +180,9 @@ When next word token arrives in fixed mode:
 if (currentAdvance + pendingW + wordW ≤ maxWidth)
   → commit pending whitespace, place word on current line
 else
-  → discard pending (trailing ws dropped at break), push line, place word on new line
+  → commit pending (ws runs kept for highlight rendering), push line, place word on new line
 ```
+Committed pending ws on the wrapped line gets the hanging `alignmentWidth` (= `visualWidth`), so it doesn't affect alignment — but the runs exist for highlight rect rendering.
 
 #### Word Placement: `placeWord()`
 
@@ -197,8 +198,10 @@ for each paragraph:
   for each token:
     space → leading: commit; auto: commit; fixed inter-word: buffer as pending
     word  → commit/discard pending per fit test, then placeWord()
-  end paragraph → discard pending, push line, new LineBuilder
+  end paragraph → commitPending, pushLine, fixupParagraphEnd, new LineBuilder
 ```
+
+`commitPending` at paragraph end ensures trailing whitespace runs exist in `line.runs` (needed for highlight rendering). `fixupParagraphEnd` then overrides `alignmentWidth` from the hanging default (`visualWidth`) to `min(advanceWidth, maxWidth)` — trailing ws at paragraph end is content, not hanging.
 
 Empty paragraphs produce a blank line. If no lines produced at all, pushes one empty line.
 
@@ -206,7 +209,7 @@ Empty paragraphs produce a blank line. If no lines produced at all, pushes one e
 
 After all lines placed:
 - `boxWidth` = auto: max `advanceWidth` across all lines; fixed: the explicit width
-- `inkBBox` = union of all per-line ink bounds offset by `baselineY` — actual drawn area
+- `inkBBox` = union of all per-line ink bounds offset by `baselineY` (TODO: remove — see Derived Frame)
 - `logicalBBox` = `[0, 0, boxWidth, numLines * lineHeight]` — advance-based area
 
 ### Exported Types
@@ -220,8 +223,10 @@ interface MeasuredRun {
 
 interface MeasuredLine {
   runs: MeasuredRun[]; index: number;
-  advanceWidth: number;    // Total advance including trailing whitespace
-  visualWidth: number;     // Width up to last non-whitespace run
+  advanceWidth: number;     // Total advance including trailing whitespace runs
+  alignmentWidth: number;   // Width for text-align calculation — two behaviors:
+  //   Wrap-caused break  → b.visualWidth (trailing ws hangs, excluded)
+  //   Paragraph end      → min(advanceWidth, maxWidth) (trailing ws is content)
   ink: BBoxTuple; baselineY: number; lineHeight: number; hasInk: boolean;
 }
 
@@ -229,7 +234,7 @@ interface TextLayout {
   lines: MeasuredLine[]; fontSize: number; lineHeight: number;
   widthMode: 'auto' | 'fixed';
   boxWidth: number;        // auto → max advanceWidth; fixed → explicit width
-  inkBBox: FrameTuple;     // [x, y, w, h] actual drawn bounds (relative to origin)
+  inkBBox: FrameTuple;     // TODO: remove — ink-tight, misses highlight rect area → stale pixels
   logicalBBox: FrameTuple; // [x, y, w, h] = [0, 0, boxWidth, numLines * lineHeight]
 }
 ```
@@ -268,12 +273,13 @@ renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left'
 
 1. `textBaseline = 'alphabetic'` — origin is first line baseline
 2. Per line: `startX = getLineStartX(originX, boxWidth, lineW, align)` where:
-   - `lineW = advanceWidth` in auto mode (includes trailing ws for proper alignment calc)
-   - `lineW = visualWidth` in fixed mode (excludes trailing ws — aligns visual content only)
+   - `lineW = advanceWidth` in auto mode
+   - `lineW = alignmentWidth` in fixed mode (handles both wrap-hanging and paragraph-end cases)
 3. Two-pass per line:
-   - Pass 1: `fillRect` for runs with `run.highlight` — rect from `(startX + advanceX, lineY - baselineToTop)` with `(advanceWidth, lineHeight)`
+   - Pass 1: `fillRect` for runs with `run.highlight` — fixed mode clamps to container bounds (no `ctx.clip`)
    - Pass 2: `fillText` for all runs
 4. Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior)
+5. Fixed-mode overflow: trailing ws `fillText` past container edge is invisible (no ink); highlight rects are clamped arithmetically via `containerLeft`/`containerRight`
 
 ### Alignment Math
 
@@ -299,7 +305,7 @@ Called from `room-doc-manager` for spatial index (both steady-state and hydratio
    - `x = getBoxLeftX(originX, boxWidth, align)`
    - `y = originY - fontSize * getBaselineToTopRatio()` (matches DOM container top)
    - `w = boxWidth`, `h = logicalBBox[3]` (= numLines * lineHeight)
-3. **Computes ink-tight BBox:** walks lines with ink, computes per-line startX from alignment, unions ink bounds + 2px padding
+3. **Computes ink-tight BBox:** walks lines with ink, computes per-line startX from alignment, unions ink bounds + 2px padding (TODO: replace with frame + padding — ink-tight misses highlight rect area, causes stale dirty-rect pixels)
 
 ### Frame Getter
 
@@ -501,8 +507,10 @@ Official `@tiptap/extension-collaboration` captures `_observers` into a restore 
 
 ## CSS Architecture (`index.css`)
 
+Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount: container}` API — no wrapper div). Container gets `.tiptap` + `.ProseMirror` classes on the same element.
+
 ```css
-.text-editor-container {
+.tiptap {
   font-family: "Grandstander", cursive, sans-serif;
   font-weight: 550;
   white-space: pre-wrap;
@@ -513,14 +521,19 @@ Official `@tiptap/extension-collaboration` captures `_observers` into a restore 
   color: var(--text-color, #000000);
 }
 
-.text-editor-container[data-width-mode="fixed"] {
+.tiptap[data-width-mode="fixed"] {
   outline: 1px solid #1d4ed8;
-  overflow: hidden;                /* Clip trailing whitespace → prevent event leaks */
+  overflow: hidden;                /* Clip trailing whitespace + highlight overflow */
 }
 
-.text-editor-container[data-width-mode="fixed"] .tiptap p.is-editor-empty:first-child::before {
-  display: none;                   /* Placeholder wraps/looks broken in narrow containers */
+.tiptap mark {
+  background-color: #ffd43b;           /* Default = first HIGHLIGHT_COLORS palette entry */
+  padding-block: 0.15em;               /* Extend to full line-height (half-leading each side) */
+  margin-block: -0.15em;               /* Cancel layout shift from padding */
+  box-decoration-break: clone;         /* Each line fragment gets own background rect */
+  -webkit-box-decoration-break: clone;
 }
+/* Multicolor: Tiptap renders <mark style="background-color: #hex"> which overrides the default */
 ```
 
 **JS inline styles** (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width` (fixed mode).
@@ -579,9 +592,9 @@ textLayoutCache.clear();                                   // Full rebuild
 
 Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/content/width, cached in `TextLayoutCache`, read via `getTextFrame(objectId)`.
 
-**Frame vs BBox:** BBox is ink-tight + 2px padding (can be smaller than frame). Frame matches DOM overlay rect exactly — used by selection, connectors, hit testing.
+**Frame vs BBox (TODO: unify):** BBox is ink-tight + 2px padding — smaller than frame because it excludes half-leading above/below glyphs. This is wrong: highlight rects extend the full `lineHeight` (baseline ± half-leading), so the spatial index BBox doesn't cover them. Dirty-rect redraws intersecting the highlight area but outside the ink BBox leave stale pixels. SelectTool already uses `getTextFrame()` for transform bounds as a workaround. Fix: make `computeTextBBox()` return frame + padding instead of ink-tight bounds.
 
-**Consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
+**Frame consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
 
 ---
 
@@ -599,10 +612,26 @@ DOM and canvas match because:
 
 Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pipeline.
 
-- **DOM:** `Highlight.configure({ multicolor: true })` in TextTool editor extensions. Renders `<mark style="background-color: ...">` elements. Default CSS: `.text-editor-container mark { background-color: #faf594 }`.
-- **Canvas:** `highlight: string | null` field on `StyledText` → threaded through tokenizer, measurement, flow engine, renderer. `renderTextLayout()` draws `fillRect` per highlighted run before text pass.
-- **Delta format:** `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default keyboard toggle (Ctrl+Shift+H) stores presence → mapped to default `'#faf594'`.
-- **Context menu:** `handleHighlightColorSelect()` calls `editor.chain().setHighlight({ color })` or `unsetHighlight()`. Active state synced from `editor.isActive('highlight')`.
+### DOM (Tiptap)
+- `Highlight.configure({ multicolor: true })` in TextTool editor extensions
+- Renders `<mark style="background-color: #hex">` for explicit colors, plain `<mark>` for default toggle
+- CSS on `.tiptap mark` extends background to full line-height via `padding-block: 0.15em` + `margin-block: -0.15em`
+- Default color: `#ffd43b` (first entry in `HIGHLIGHT_COLORS` palette)
+
+### Canvas Pipeline
+- `highlight: string | null` field on `StyledText` → threaded through tokenizer, measurement, flow engine coalesce checks, renderer
+- `parseAndTokenize()`: extracts from `attrs.highlight` — `{ color: '#hex' }` → that color, presence without color → `'#ffd43b'`
+- `renderTextLayout()`: two-pass per line — pass 1 draws `fillRect` for highlighted runs (`lineY - baselineToTop`, `lineHeight` tall), pass 2 draws `fillText`
+- Fixed-mode highlight rects clamped to `[containerLeft, containerRight]` via arithmetic (no `ctx.clip` — avoids GPU state change per-line)
+- Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior) — trailing ws runs are committed (not discarded) at wrap points so highlights render
+- No measurement impact — highlight is rendering-only, rides existing pipeline
+
+### Context Menu
+- `editor.isActive('highlight')` drives button active state
+- `editor.isActive('highlight', { color })` drives per-swatch active state in submenu
+- Click swatch → `editor.chain().focus().setHighlight({ color }).run()`
+- Click none → `editor.chain().focus().unsetHighlight().run()`
+- Icon color synced from `editor.getAttributes('highlight').color` on every selection/transaction
 
 ---
 

@@ -470,6 +470,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
   content: Y.XmlFragment, ownerId, createdAt }
 // NOTE: No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
 // Use getTextFrame(objectId) from text-system.ts to read the cached derived frame.
+// Delta attributes: bold, italic, highlight (multicolor: { color: '#hex' } or presence → '#ffd43b')
 ```
 
 **Connector** (orthogonal routing with optional shape anchoring):

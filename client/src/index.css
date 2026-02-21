@@ -52,23 +52,20 @@
 /* =============================================================================
    TEXT EDITOR SYSTEM
    ============================================================================= */
-
-.text-editor-container {
+   
+.tiptap {
   /* Font styling */
   font-family: "Grandstander", cursive, sans-serif;
   font-weight: 550;
-
-  /* Layout */
-  background: transparent;
-  border: none;
-  padding: 0;
   margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  padding: 0;
+  /* Layout */
   min-width: 3px;
   pointer-events: auto;
   z-index: 1000;
-
+  outline: none;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
   /* Dynamic properties */
   color: var(--text-color, #000000);
 
@@ -79,27 +76,22 @@
 }
 
 /* Fixed-width container: outline, clip hanging whitespace, suppress placeholder */
-.text-editor-container[data-width-mode="fixed"] {
+.tiptap[data-width-mode="fixed"] {
   outline: 1px solid #1d4ed8;
   overflow: hidden;
 }
 
-.text-editor-container[data-width-mode="fixed"] .tiptap p.is-editor-empty:first-child::before {
+.tiptap[data-width-mode="fixed"] .is-editor-empty:first-child::before {
   display: none;
 }
-
-/* Tiptap editor */
-.text-editor-container .tiptap {
-  outline: none;
-  
+/* Paragraph styling */
+.tiptap p {
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
 }
 
-/*
- * Disable ligatures for correct cursor positioning in the editor.
- * (ss01 is no longer needed - alternates are baked into the font)
- */
-
- .tiptap p.is-editor-empty:first-child::before {
+.tiptap p.is-editor-empty:first-child::before {
   color: #adb5bd;
   content: attr(data-placeholder);
   float: left;
@@ -107,41 +99,22 @@
   pointer-events: none;
 }
 
-/* Paragraph styling */
-.text-editor-container p,
-.text-editor-container .tiptap-paragraph {
-  margin: 0;
-  padding: 0;
-  white-space: pre-wrap;
-}
-
-/* Bold */
-.text-editor-container strong,
-.text-editor-container .tiptap-bold {
+.tiptap strong {
   font-weight: 800;
 }
 
-/* Italic */
-.text-editor-container em,
-.text-editor-container .tiptap-italic {
-  font-style: italic;
-}
-
-/* Bold + Italic */
-.text-editor-container strong em,
-.text-editor-container em strong,
-.text-editor-container .tiptap-bold.tiptap-italic {
-  font-weight: 800;
+.tiptap em {
   font-style: italic;
 }
 
 /* Highlight — extend background to full line-height (half-leading = 0.15em each side) */
-.text-editor-container mark {
+.tiptap mark {
   background-color: #ffd43b;
   padding-block: 0.15em;
   margin-block: -0.15em;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+  //border-radius: 0.2em;
 }
 
 /* DOM overlay root - ensure it doesn't block events except for children */

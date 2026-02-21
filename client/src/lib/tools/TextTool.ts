@@ -194,7 +194,7 @@ export class TextTool implements PointerTool {
     const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
     const align = useDeviceUIStore.getState().textAlign;
-
+    
     roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
@@ -250,7 +250,7 @@ export class TextTool implements PointerTool {
 
     // Create container div
     const container = document.createElement('div');
-    container.className = 'text-editor-container';
+    container.className = 'tiptap';
 
     // Calculate screen position
     const [screenX, screenY] = worldToClient(origin[0], origin[1]);
@@ -266,7 +266,13 @@ export class TextTool implements PointerTool {
     container.style.position = 'absolute';
     container.style.left = `${containerLeft}px`;
     container.style.top = `${containerTop}px`;
-
+    // WIDTH MODE — fixed: explicit pixel width + outline; auto: max-content (CSS default)
+    if (typeof width === 'number') {
+      container.style.width = `${width * scale}px`;
+      container.dataset.widthMode = 'fixed';
+    } else {
+      container.dataset.widthMode = 'auto';
+    }
     // FONT SIZE/LINE HEIGHT - inline for performance (changes every frame on zoom)
     container.style.fontSize = `${scaledFontSize}px`;
     container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
@@ -279,15 +285,6 @@ export class TextTool implements PointerTool {
       '--text-anchor-tx',
       align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
     );
-
-    // WIDTH MODE — fixed: explicit pixel width + outline; auto: max-content (CSS default)
-    if (typeof width === 'number') {
-      container.style.width = `${width * scale}px`;
-      container.dataset.widthMode = 'fixed';
-    } else {
-      container.dataset.widthMode = 'auto';
-    }
-
     // Append to host
     host.appendChild(container);
 
@@ -299,22 +296,16 @@ export class TextTool implements PointerTool {
 
     // Create Tiptap Editor with CSS class-based styling
     const editor = new Editor({
-      element: container,
+      element: {mount: container},
       extensions: [
         Document,
         Placeholder.configure({
           placeholder: 'Type something...',
         }),
-        Paragraph.configure({
-          HTMLAttributes: { class: 'tiptap-paragraph' },
-        }),
+        Paragraph,
         Text,
-        Bold.configure({
-          HTMLAttributes: { class: 'tiptap-bold' },
-        }),
-        Italic.configure({
-          HTMLAttributes: { class: 'tiptap-italic' },
-        }),
+        Bold,
+        Italic,
         Highlight.configure({ multicolor: true }),
         TextCollaboration.configure({
           fragment,
@@ -325,11 +316,6 @@ export class TextTool implements PointerTool {
         }),
       ],
       autofocus: isNew ? 'end' : false,
-      editorProps: {
-        attributes: {
-          class: 'tiptap',
-        },
-      },
     });
 
     // For existing text, place cursor at click position
@@ -468,8 +454,9 @@ export class TextTool implements PointerTool {
     // Remove event handlers
     this.removeEditorHandlers();
 
-    editor.destroy();//eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (editor as any).editorState = null; 		// Tiptap doesn't null this — release EditorState + all plugin states
+    editor.destroy();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + all plugin states
 
     // Remove container from DOM
     if (container && container.parentNode) {
