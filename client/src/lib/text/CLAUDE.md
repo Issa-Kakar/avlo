@@ -609,14 +609,14 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 ### DOM (Tiptap)
 - `Highlight.configure({ multicolor: true })` in TextTool editor extensions
 - Renders `<mark style="background-color: #hex">` for explicit colors, plain `<mark>` for default toggle
-- CSS on `.tiptap mark` extends background to full line-height via `padding-block: 0.15em` + `margin-block: -0.15em`
+- CSS on `.tiptap mark`: `border-radius: 0.25em`, extends background to full line-height via `padding-block: 0.15em` + `margin-block: -0.15em`
 - Default color: `#ffd43b` (first entry in `HIGHLIGHT_COLORS` palette)
 
 ### Canvas Pipeline
 - `highlight: string | null` field on `StyledText` → threaded through tokenizer, measurement, flow engine coalesce checks, renderer
 - `parseAndTokenize()`: extracts from `attrs.highlight` — `{ color: '#hex' }` → that color, presence without color → `'#ffd43b'`
-- `renderTextLayout()`: two-pass per line — pass 1 draws `fillRect` for highlighted runs (`lineY - baselineToTop`, `lineHeight` tall), pass 2 draws `fillText`
-- Fixed-mode highlight rects clamped to `[containerLeft, containerRight]` via arithmetic (no `ctx.clip` — avoids GPU state change per-line)
+- `renderTextLayout()`: two-pass per line — pass 1 draws `roundRect` (radius `fontSize * 0.25`, matches CSS `border-radius: 0.25em`) for highlighted runs, pass 2 draws `fillText`
+- Fixed-mode highlight rects clamped to `[containerLeft, containerRight]` via arithmetic (no `ctx.clip`); clamped sides get flat edge (radius 0) to match CSS `overflow:hidden`
 - Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior) — trailing ws runs are committed (not discarded) at wrap points so highlights render
 - No measurement impact — highlight is rendering-only, rides existing pipeline
 

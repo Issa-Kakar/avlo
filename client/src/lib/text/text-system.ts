@@ -842,6 +842,7 @@ export function renderTextLayout(
   // Container bounds for fixed-mode overflow clipping (matches CSS overflow:hidden)
   const containerLeft = isFixed ? getBoxLeftX(originX, boxWidth, align) : 0;
   const containerRight = isFixed ? containerLeft + boxWidth : 0;
+  const hlR = fontSize * 0.25;
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;
     const lineY = originY + line.baselineY;
@@ -849,18 +850,27 @@ export function renderTextLayout(
     // paragraph-end lines use min(advanceWidth, maxWidth) (trailing ws shifts alignment).
     const lineW = isFixed ? line.alignmentWidth : line.advanceWidth;
     const startX = getLineStartX(originX, boxWidth, lineW, align);
-    // Pass 1: highlight rects (fixed mode: clamped to container, no ctx.clip needed)
+    // Pass 1: highlight rects (rounded corners — matches CSS border-radius: 0.25em)
     for (const run of line.runs) {
       if (!run.highlight) continue;
       ctx.fillStyle = run.highlight;
+      const hlX = startX + run.advanceX;
+      const hlY = lineY - baselineToTop;
       if (isFixed) {
-        const hlRight = Math.min(startX + run.advanceX + run.advanceWidth, containerRight);
-        const hlLeft = Math.max(startX + run.advanceX, containerLeft);
-        if (hlRight > hlLeft) {
-          ctx.fillRect(hlLeft, lineY - baselineToTop, hlRight - hlLeft, lineHeight);
+        const hlEnd = hlX + run.advanceWidth;
+        const clL = Math.max(hlX, containerLeft);
+        const clR = Math.min(hlEnd, containerRight);
+        if (clR > clL) {
+          // Clamped sides get flat edge (radius 0) — matches CSS overflow:hidden
+          const rL = clL > hlX ? 0 : hlR, rR = clR < hlEnd ? 0 : hlR;
+          ctx.beginPath();
+          ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
+          ctx.fill();
         }
       } else {
-        ctx.fillRect(startX + run.advanceX, lineY - baselineToTop, run.advanceWidth, lineHeight);
+        ctx.beginPath();
+        ctx.roundRect(hlX, hlY, run.advanceWidth, lineHeight, hlR);
+        ctx.fill();
       }
     }
     // Pass 2: text
