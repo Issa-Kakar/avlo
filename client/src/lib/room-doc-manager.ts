@@ -1360,10 +1360,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
           this.openGate('wsSynced');
         } else {
-          this.closeGate('wsSynced');
+          this.closeGate('wsSynced'); 
         }
       });
-
+      
       // Note: Document updates are already handled by the existing Y.Doc update observer
       // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
       // No need for additional provider-specific update listeners

@@ -1,64 +1,33 @@
 import { createContext, useContext, useRef, ReactNode } from 'react';
 import { RoomDocManagerRegistry, createRoomDocManagerRegistry } from './room-doc-registry';
 
-// Context type
-interface RoomDocRegistryContextValue {
-  registry: RoomDocManagerRegistry;
-}
+const RoomDocRegistryContext = createContext<RoomDocManagerRegistry | null>(null);
 
-// Create the context
-const RoomDocRegistryContext = createContext<RoomDocRegistryContextValue | null>(null);
-
-// Provider props
 interface RoomDocRegistryProviderProps {
   children: ReactNode;
-  registry?: RoomDocManagerRegistry; // Optional: allow injection for testing
+  registry?: RoomDocManagerRegistry;
 }
 
-/**
- * Provider component for RoomDocManagerRegistry
- * Creates and maintains a single registry instance for the app
- * Tests can inject their own registry instance
- */
 export function RoomDocRegistryProvider({ children, registry }: RoomDocRegistryProviderProps) {
-  // Create registry once and maintain it for the lifetime of the provider
   const registryRef = useRef<RoomDocManagerRegistry>(undefined);
-
   if (!registryRef.current) {
     registryRef.current = registry ?? createRoomDocManagerRegistry();
   }
-
   return (
-    <RoomDocRegistryContext.Provider value={{ registry: registryRef.current }}>
+    <RoomDocRegistryContext value={registryRef.current}>
       {children}
-    </RoomDocRegistryContext.Provider>
+    </RoomDocRegistryContext>
   );
 }
 
-/**
- * Hook to access the RoomDocManagerRegistry
- * Must be used within a RoomDocRegistryProvider
- */
 export function useRoomDocRegistry(): RoomDocManagerRegistry {
-  const context = useContext(RoomDocRegistryContext);
-  if (!context) {
-    throw new Error(
-      'useRoomDocRegistry must be used within a RoomDocRegistryProvider. ' +
-        'Wrap your app with <RoomDocRegistryProvider> or provide a registry for testing.',
-    );
+  const ctx = useContext(RoomDocRegistryContext);
+  if (!ctx) {
+    throw new Error('useRoomDocRegistry must be used within a RoomDocRegistryProvider');
   }
-
-  return context.registry;
+  return ctx;
 }
 
-/**
- * Hook to check if we're within a registry provider
- * Useful for components that optionally use the registry
- *
- * NOTE: This is a React Hook and must follow the Rules of Hooks
- * (cannot be called conditionally, must be called from React components/hooks)
- */
 export function useHasRoomDocRegistry(): boolean {
-  const context = useContext(RoomDocRegistryContext);
-  return context !== null;
+  return useContext(RoomDocRegistryContext) !== null;
 }

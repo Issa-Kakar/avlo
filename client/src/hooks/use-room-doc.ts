@@ -4,11 +4,7 @@ import type { IRoomDocManager } from '../lib/room-doc-manager';
 import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
 
 /**
- * Internal hook to get or create a RoomDocManager instance
- * NOTE: This is an internal hook. UI components should use
- * useSnapshot or usePresence instead to maintain a narrow,
- * hook-based surface as per the architecture.
- * @internal
+ * Hook to get or create a RoomDocManager instance
  */
 export function useRoomDoc(roomId: RoomId): IRoomDocManager {
   const registry = useRoomDocRegistry();

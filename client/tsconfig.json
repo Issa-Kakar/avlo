@@ -9,7 +9,7 @@
       "@avlo/shared": ["../packages/shared/src/index.ts"],
       "@avlo/shared/*": ["../packages/shared/src/*"]
     },
-    "types": ["vite/client", "node"],
+    "types": ["vite/client", "node", "react", "react-dom"],
     "noEmit": true,
     "module": "ESNext",
     "target": "ES2022",
