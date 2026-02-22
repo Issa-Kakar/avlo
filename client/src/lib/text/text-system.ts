@@ -1,60 +1,169 @@
 /**
- * TEXT MANAGEMENT SYSTEM
+ * TEXT LAYOUT SYSTEM
  *
- * Consolidated file for rich text layout:
- * - Font configuration
- * - Font string builder
- * - Tokenizer (Y.XmlFragment → TokenizedContent)
- * - Measurement pipeline (TokenizedContent → MeasuredContent)
- * - Flow engine with text wrapping (MeasuredContent → TextLayout)
- * - Cache (TextLayoutCache)
- * - Renderer (renderTextLayout)
+ * Three-stage pipeline: Tokenize → Measure → Layout
+ *
+ *   Y.XmlFragment
+ *       ↓ parseAndTokenize()
+ *   TokenizedContent                        §3
+ *       ↓ measureTokenizedContent()
+ *   MeasuredContent                         §4
+ *       ↓ layoutMeasuredContent()
+ *   TextLayout                              §5
+ *       ↓
+ *   renderTextLayout()   canvas output  ┐
+ *   computeTextBBox()    spatial index  ┘   §7
+ *
+ * TextLayoutCache (§6) orchestrates all three stages with three-tier invalidation:
+ *   content change  → re-tokenize + re-measure + re-layout
+ *   fontSize change → re-measure + re-layout
+ *   width change    → re-layout only
  */
 
 import * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple, TextProps, TextAlign, TextWidth } from '@avlo/shared';
-import { expandBBox } from '@/lib/geometry/bounds';
+
 import { areFontsLoaded } from './font-loader';
 import { FONT_CONFIG } from './font-config';
 
-// Re-export for consumers
 export { FONT_CONFIG } from './font-config';
 export type { TextAlign, TextWidth, TextProps } from '@avlo/shared';
 
 // =============================================================================
-// TEXT ALIGNMENT HELPERS
+// §1  TYPES — Pipeline data model
 // =============================================================================
 
-/**
- * Returns the anchor factor for alignment:
- * - left: 0 (origin at left edge)
- * - center: 0.5 (origin at center)
- * - right: 1 (origin at right edge)
- */
-export function anchorFactor(align: TextAlign): number {
-  return align === 'left' ? 0 : align === 'center' ? 0.5 : 1;
+// --- Stage 1 output: Tokenized ---
+
+interface StyledText {
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  highlight: string | null;
 }
 
-/** Container left edge in world coords */
-function getBoxLeftX(originX: number, boxWidth: number, align: TextAlign): number {
-  return originX - anchorFactor(align) * boxWidth;
+type TokenKind = 'word' | 'space';
+
+interface TokenBase<S extends StyledText> {
+  kind: TokenKind;
+  segments: S[];
 }
 
-/** Line start X within container */
-function getLineStartX(
-  originX: number, boxWidth: number, lineVisualWidth: number, align: TextAlign,
-): number {
-  const left = getBoxLeftX(originX, boxWidth, align);
-  if (align === 'left') return left;
-  if (align === 'center') return left + (boxWidth - lineVisualWidth) / 2;
-  return left + (boxWidth - lineVisualWidth);
+type Token = TokenBase<StyledText>;
+interface TokenizedParagraph {
+  tokens: Token[];
+}
+interface TokenizedContent {
+  paragraphs: TokenizedParagraph[];
+}
+
+// --- Stage 2 output: Measured ---
+
+interface MeasuredSegment extends StyledText {
+  font: string;
+  advanceWidth: number;
+  isWhitespace: boolean;
+}
+
+interface MeasuredToken extends TokenBase<MeasuredSegment> {
+  advanceWidth: number;
+}
+
+interface MeasuredParagraph {
+  tokens: MeasuredToken[];
+}
+interface MeasuredContent {
+  paragraphs: MeasuredParagraph[];
+  lineHeight: number;
+}
+
+// --- Stage 3 output: Layout (exported — consumed by renderer, objects.ts) ---
+
+export interface MeasuredRun {
+  text: string;
+  font: string;
+  highlight: string | null;
+  advanceWidth: number;
+  advanceX: number;
+}
+
+export interface MeasuredLine {
+  runs: MeasuredRun[];
+  index: number;
+  advanceWidth: number; // Total advance including trailing whitespace runs
+  alignmentWidth: number; // Width used for text-align offset calculation (two behaviors):
+  //   Wrap-caused line break → b.visualWidth (trailing ws hangs, excluded from alignment)
+  //   Paragraph end          → min(advanceWidth, maxWidth) (trailing ws is content, shifts text)
+  baselineY: number;
+}
+
+export interface TextLayout {
+  lines: MeasuredLine[];
+  fontSize: number;
+  lineHeight: number;
+  widthMode: 'auto' | 'fixed';
+  boxWidth: number;
 }
 
 // =============================================================================
-// FONT METRICS (measured, not approximated)
+// §2  INFRASTRUCTURE — Shared utilities
 // =============================================================================
+
+// --- LRU cache ---
+
+class LRU<K, V> {
+  private map = new Map<K, V>();
+  constructor(private capacity: number) {}
+  get(key: K): V | undefined {
+    const val = this.map.get(key);
+    if (val === undefined) return undefined;
+    // Move to end (most recently used)
+    this.map.delete(key);
+    this.map.set(key, val);
+    return val;
+  }
+  set(key: K, val: V): void {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, val);
+    if (this.map.size > this.capacity) {
+      // Delete oldest (first entry)
+      this.map.delete(this.map.keys().next().value!);
+    }
+  }
+  clear(): void {
+    this.map.clear();
+  }
+}
+
+// --- Measurement context (singleton offscreen canvas) ---
+
+let measureCtx: CanvasRenderingContext2D | null = null;
+
+function getMeasureContext(): CanvasRenderingContext2D {
+  if (!measureCtx) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Failed to create measurement context');
+    ctx.textRendering = 'optimizeSpeed';
+    measureCtx = ctx;
+  }
+  return measureCtx;
+}
+
+// --- Font string builder ---
+
+export function buildFontString(bold: boolean, italic: boolean, fontSize: number): string {
+  const weight = bold ? FONT_CONFIG.weightBold : FONT_CONFIG.weightNormal;
+  const style = italic ? 'italic' : 'normal';
+  return `${style} ${weight} ${fontSize}px ${FONT_CONFIG.fallback}`;
+}
+
+// --- Font metrics (measured, not approximated) ---
 
 let _measuredAscentRatio: number | null = null;
+let _baselineToTopRatio: number | null = null;
 
 /** Known fallback value for Grandstander (used if fonts not loaded yet) */
 const FALLBACK_ASCENT_RATIO = 0.73;
@@ -71,7 +180,9 @@ export function getMeasuredAscentRatio(): number {
 
   // CRITICAL: If fonts not loaded, we'd measure "cursive" fallback (wrong!)
   if (!areFontsLoaded()) {
-    console.warn('[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.');
+    console.warn(
+      '[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.',
+    );
     return FALLBACK_ASCENT_RATIO;
   }
 
@@ -101,13 +212,6 @@ export function getMeasuredAscentRatio(): number {
 }
 
 /**
- * Reset cached font metrics. Call after fonts finish loading.
- */
-export function resetFontMetrics(): void {
-  _measuredAscentRatio = null;
-}
-
-/**
  * Get the offset from baseline to DOM container top (as ratio of fontSize).
  * This is the exact distance needed to position a DOM element
  * so its text baseline lands at a specific Y coordinate.
@@ -116,186 +220,85 @@ export function resetFontMetrics(): void {
  *        = (lineHeightMultiplier - 1) / 2 + measuredAscentRatio
  */
 export function getBaselineToTopRatio(): number {
+  if (_baselineToTopRatio !== null) return _baselineToTopRatio;
   const halfLeadingRatio = (FONT_CONFIG.lineHeightMultiplier - 1) / 2;
-  return halfLeadingRatio + getMeasuredAscentRatio();
+  _baselineToTopRatio = halfLeadingRatio + getMeasuredAscentRatio();
+  return _baselineToTopRatio;
 }
 
-// =============================================================================
-// FONT STRING BUILDER
-// =============================================================================
-
-export function buildFontString(bold: boolean, italic: boolean, fontSize: number): string {
-  const weight = bold ? FONT_CONFIG.weightBold : FONT_CONFIG.weightNormal;
-  const style = italic ? 'italic' : 'normal';
-  return `${style} ${weight} ${fontSize}px ${FONT_CONFIG.fallback}`;
+/**
+ * Reset cached font metrics. Call after fonts finish loading.
+ */
+export function resetFontMetrics(): void {
+  _measuredAscentRatio = null;
+  _baselineToTopRatio = null;
 }
 
-// =============================================================================
-// TYPE SYSTEM
-// =============================================================================
+// --- Measurement caches ---
 
-// --- Internal types ---
-
-interface StyledText {
-  text: string;
-  bold: boolean;
-  italic: boolean;
-  highlight: string | null;
-}
-
-type TokenKind = 'word' | 'space';
-
-interface TokenBase<S extends StyledText> {
-  kind: TokenKind;
-  segments: S[];
-}
-
-interface MeasuredSegment extends StyledText {
-  font: string;
-  advanceWidth: number;
-  ink: BBoxTuple;
-  isWhitespace: boolean;
-}
-
-type Token = TokenBase<StyledText>;
-
-interface MeasuredToken extends TokenBase<MeasuredSegment> {
-  advanceWidth: number;
-}
-
-interface TokenizedParagraph { tokens: Token[]; }
-interface MeasuredParagraph { tokens: MeasuredToken[]; }
-interface TokenizedContent { paragraphs: TokenizedParagraph[]; }
-interface MeasuredContent {
-  paragraphs: MeasuredParagraph[];
-  fontSize: number;
-  lineHeight: number;
-}
-
-// --- Exported types ---
-
-export interface MeasuredRun extends MeasuredSegment {
-  advanceX: number;
-}
-
-export interface MeasuredLine {
-  runs: MeasuredRun[];
-  index: number;
-  advanceWidth: number;    // Total advance including trailing whitespace runs
-  alignmentWidth: number;  // Width used for text-align offset calculation (two behaviors):
-  //   Wrap-caused line break → b.visualWidth (trailing ws hangs, excluded from alignment)
-  //   Paragraph end          → min(advanceWidth, maxWidth) (trailing ws is content, shifts text)
-  ink: BBoxTuple;
-  baselineY: number;
-  lineHeight: number;
-  hasInk: boolean;         // Flow engine: distinguishes leading ws (commit) from inter-word (pending)
-}
-
-export interface TextLayout {
-  lines: MeasuredLine[];
-  fontSize: number;
-  lineHeight: number;
-  widthMode: 'auto' | 'fixed';
-  boxWidth: number;
-  inkBBox: FrameTuple;     // TODO: remove — ink-tight bounds miss highlight rects that extend
-  //   beyond glyph ink (full lineHeight), causing stale pixels on partial dirty-rect redraws.
-  //   BBox should match frame (logicalBBox + origin offset). See computeTextBBox().
-  logicalBBox: FrameTuple; // [0, 0, boxWidth, numLines * lineHeight]
-}
-
-// =============================================================================
-// MEASUREMENT CONTEXT (singleton canvas for text measurement)
-// =============================================================================
-
-let measureCtx: CanvasRenderingContext2D | null = null;
-
-function getMeasureContext(): CanvasRenderingContext2D {
-  if (!measureCtx) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Failed to create measurement context');
-    ctx.textRendering = 'optimizeSpeed';
-    measureCtx = ctx;
-  }
-  return measureCtx;
-}
-
-// =============================================================================
-// LRU CACHE + GLOBAL MEASUREMENT CACHES
-// =============================================================================
-
-class LRU<K, V> {
-  private map = new Map<K, V>();
-  constructor(private capacity: number) {}
-  get(key: K): V | undefined {
-    const val = this.map.get(key);
-    if (val === undefined) return undefined;
-    // Move to end (most recently used)
-    this.map.delete(key);
-    this.map.set(key, val);
-    return val;
-  }
-  set(key: K, val: V): void {
-    if (this.map.has(key)) this.map.delete(key);
-    this.map.set(key, val);
-    if (this.map.size > this.capacity) {
-      // Delete oldest (first entry)
-      this.map.delete(this.map.keys().next().value!);
-    }
-  }
-  clear(): void { this.map.clear(); }
-}
-
-const ZERO_INK: BBoxTuple = [0, 0, 0, 0];
-
-interface CachedMeasure {
-  width: number;
-  ink: BBoxTuple; // [left, top, right, bottom] relative to glyph origin
-}
-
-const MEASURE_LRU = new LRU<string, CachedMeasure>(75_000);
-const GRAPHEME_LRU = new LRU<string, string[]>(10_000);
+const MEASURE_LRU = new LRU<string, number>(75_000);
 const SPACE_WIDTH_CACHE = new Map<string, number>();
 
-function measureTextCached(font: string, text: string): CachedMeasure {
+function measureTextCached(font: string, text: string): number {
   const key = font + '\0' + text;
   const hit = MEASURE_LRU.get(key);
-  if (hit) return hit;
+  if (hit !== undefined) return hit;
   const ctx = getMeasureContext();
   ctx.font = font;
-  const m = ctx.measureText(text);
-  const out: CachedMeasure = {
-    width: m.width,
-    ink: [-m.actualBoundingBoxLeft, -m.actualBoundingBoxAscent,
-           m.actualBoundingBoxRight, m.actualBoundingBoxDescent],
-  };
-  MEASURE_LRU.set(key, out);
-  return out;
+  const w = ctx.measureText(text).width;
+  MEASURE_LRU.set(key, w);
+  return w;
 }
 
 function getSpaceWidth(font: string): number {
   let w = SPACE_WIDTH_CACHE.get(font);
   if (w !== undefined) return w;
-  w = measureTextCached(font, ' ').width;
+  w = measureTextCached(font, ' ');
   SPACE_WIDTH_CACHE.set(font, w);
   return w;
 }
 
+// --- Grapheme segmentation ---
+
+const GRAPHEME_LRU = new LRU<string, string[]>(10_000);
+
+function getGraphemes(text: string): string[] {
+  const hit = GRAPHEME_LRU.get(text);
+  if (hit) return hit;
+  let out: string[];
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
+    out = Array.from(seg.segment(text), (x: { segment: string }) => x.segment);
+  } else {
+    out = Array.from(text);
+  }
+  GRAPHEME_LRU.set(text, out);
+  return out;
+}
+
 // =============================================================================
-// FUSED PARSE + TOKENIZE
+// §3  STAGE 1: TOKENIZE — Y.XmlFragment → TokenizedContent
 // =============================================================================
 
 function pushSegment(
-  tokens: Token[], kind: TokenKind,
-  text: string, bold: boolean, italic: boolean, highlight: string | null,
+  tokens: Token[],
+  kind: TokenKind,
+  text: string,
+  bold: boolean,
+  italic: boolean,
+  highlight: string | null,
 ): void {
   if (!text) return;
   const last = tokens[tokens.length - 1];
   if (last && last.kind === kind) {
     const lastSeg = last.segments[last.segments.length - 1];
-    if (lastSeg && lastSeg.bold === bold && lastSeg.italic === italic && lastSeg.highlight === highlight) {
+    if (
+      lastSeg &&
+      lastSeg.bold === bold &&
+      lastSeg.italic === italic &&
+      lastSeg.highlight === highlight
+    ) {
       lastSeg.text += text; // string concat, no object allocated
       return;
     }
@@ -323,16 +326,24 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
           const bold = !!attrs.bold;
           const italic = !!attrs.italic;
           const hlAttr = attrs.highlight;
-          const highlight: string | null = hlAttr != null
-            ? (typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
+          const highlight: string | null =
+            hlAttr != null
+              ? typeof hlAttr === 'object' && (hlAttr as Record<string, unknown>).color
                 ? String((hlAttr as Record<string, unknown>).color)
-                : '#ffd43b')
-            : null;
+                : '#ffd43b'
+              : null;
           // Inline tokenization — regex splits into whitespace/non-whitespace chunks
           const re = /(\s+|\S+)/g;
           let m: RegExpExecArray | null;
           while ((m = re.exec(op.insert)) !== null) {
-            pushSegment(tokens, /^\s+$/.test(m[0]) ? 'space' : 'word', m[0], bold, italic, highlight);
+            pushSegment(
+              tokens,
+              /^\s+$/.test(m[0]) ? 'space' : 'word',
+              m[0],
+              bold,
+              italic,
+              highlight,
+            );
           }
         }
       }
@@ -347,16 +358,12 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
 }
 
 // =============================================================================
-// MEASUREMENT PIPELINE
+// §4  STAGE 2: MEASURE — TokenizedContent → MeasuredContent
 // =============================================================================
 
-function measureSeg(font: string, text: string, isWs: boolean): { w: number; ink: BBoxTuple } {
-  if (isWs) {
-    if (/^ +$/.test(text)) return { w: getSpaceWidth(font) * text.length, ink: ZERO_INK };
-    return { w: measureTextCached(font, text).width, ink: ZERO_INK };
-  }
-  const m = measureTextCached(font, text);
-  return { w: m.width, ink: m.ink };
+function measureSeg(font: string, text: string, isWs: boolean): number {
+  if (isWs && /^ +$/.test(text)) return getSpaceWidth(font) * text.length;
+  return measureTextCached(font, text);
 }
 
 function measureTokenizedContent(content: TokenizedContent, fontSize: number): MeasuredContent {
@@ -368,139 +375,118 @@ function measureTokenizedContent(content: TokenizedContent, fontSize: number): M
       let totalW = 0;
       const segments: MeasuredSegment[] = t.segments.map((s) => {
         const font = buildFontString(s.bold, s.italic, fontSize);
-        const { w, ink } = measureSeg(font, s.text, isWs);
+        const w = measureSeg(font, s.text, isWs);
         totalW += w;
-        return { text: s.text, bold: s.bold, italic: s.italic, highlight: s.highlight, font, advanceWidth: w, ink, isWhitespace: isWs };
+        return {
+          text: s.text,
+          bold: s.bold,
+          italic: s.italic,
+          highlight: s.highlight,
+          font,
+          advanceWidth: w,
+          isWhitespace: isWs,
+        };
       });
       return { kind: t.kind, segments, advanceWidth: totalW };
     });
     return { tokens };
   });
-  return { paragraphs, fontSize, lineHeight };
+  return { paragraphs, lineHeight };
 }
 
 // =============================================================================
-// GRAPHEME SEGMENTATION + TEXT SLICING
+// §5  STAGE 3: LAYOUT — MeasuredContent → TextLayout
 // =============================================================================
-
-function getGraphemes(text: string): string[] {
-  const hit = GRAPHEME_LRU.get(text);
-  if (hit) return hit;
-  let out: string[];
-  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
-    out = Array.from(seg.segment(text), (x: { segment: string }) => x.segment);
-  } else {
-    out = Array.from(text);
-  }
-  GRAPHEME_LRU.set(text, out);
-  return out;
-}
 
 /** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme. */
 function sliceTextToFit(
-  font: string, text: string, maxW: number,
-): { head: string; tail: string; headW: number; headInk: BBoxTuple } {
-  if (!text) return { head: '', tail: '', headW: 0, headInk: ZERO_INK };
-  const full = measureTextCached(font, text);
-  if (full.width <= maxW) return { head: text, tail: '', headW: full.width, headInk: full.ink };
+  font: string,
+  text: string,
+  maxW: number,
+): { head: string; tail: string; headW: number } {
+  if (!text) return { head: '', tail: '', headW: 0 };
+  const fullW = measureTextCached(font, text);
+  if (fullW <= maxW) return { head: text, tail: '', headW: fullW };
 
   const g = getGraphemes(text);
-  let lo = 0, hi = g.length;
+  let lo = 0,
+    hi = g.length;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (measureTextCached(font, g.slice(0, mid).join('')).width <= maxW) lo = mid;
+    if (measureTextCached(font, g.slice(0, mid).join('')) <= maxW) lo = mid;
     else hi = mid - 1;
   }
   if (lo === 0) lo = 1; // guarantee forward progress
 
   const head = g.slice(0, lo).join('');
   const tail = g.slice(lo).join('');
-  const m = measureTextCached(font, head);
-  return { head, tail, headW: m.width, headInk: m.ink };
+  return { head, tail, headW: measureTextCached(font, head) };
 }
-
-// =============================================================================
-// FLOW ENGINE
-// =============================================================================
 
 interface LineBuilder {
   runs: MeasuredRun[];
-  advanceX: number;     // total advance including all committed runs
-  visualWidth: number;  // advance up to end of last non-whitespace run
-  hasInk: boolean;      // at least one non-whitespace run
-  ink: BBoxTuple;       // [minX, minY, maxX, maxY] running union
+  advanceX: number; // total advance including all committed runs
+  visualWidth: number; // advance up to end of last non-whitespace run
+  hasInk: boolean; // at least one non-whitespace run
 }
 
 function newLineBuilder(): LineBuilder {
-  return { runs: [], advanceX: 0, visualWidth: 0, hasInk: false,
-           ink: [Infinity, Infinity, -Infinity, -Infinity] };
+  return { runs: [], advanceX: 0, visualWidth: 0, hasInk: false };
 }
 
-function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number, ink: BBoxTuple): void {
+function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number): void {
   if (!text) return;
-  // Coalesce with previous run if same font+style
   const prev = b.runs[b.runs.length - 1];
-  if (prev && prev.font === seg.font && prev.bold === seg.bold && prev.italic === seg.italic && prev.highlight === seg.highlight) {
-    const offset = prev.advanceWidth;
+  if (prev && prev.font === seg.font && prev.highlight === seg.highlight) {
     prev.text += text;
     prev.advanceWidth += w;
     if (!seg.isWhitespace) {
-      prev.isWhitespace = false;
-      expandBBox(prev.ink, ink[0] + offset, ink[1], ink[2] + offset, ink[3]);
       b.hasInk = true;
       b.visualWidth = prev.advanceX + prev.advanceWidth;
-      expandBBox(b.ink, prev.advanceX + prev.ink[0], prev.ink[1],
-                        prev.advanceX + prev.ink[2], prev.ink[3]);
     }
     b.advanceX += w;
     return;
   }
-  // New run — copy ink to isolate from source
-  const run: MeasuredRun = {
-    text, bold: seg.bold, italic: seg.italic, highlight: seg.highlight, font: seg.font,
-    advanceWidth: w, advanceX: b.advanceX,
-    ink: [ink[0], ink[1], ink[2], ink[3]],
-    isWhitespace: seg.isWhitespace,
-  };
-  b.runs.push(run);
+  b.runs.push({
+    text,
+    font: seg.font,
+    highlight: seg.highlight,
+    advanceWidth: w,
+    advanceX: b.advanceX,
+  });
   if (!seg.isWhitespace) {
     b.hasInk = true;
     b.visualWidth = b.advanceX + w;
-    expandBBox(b.ink, b.advanceX + ink[0], ink[1], b.advanceX + ink[2], ink[3]);
   }
   b.advanceX += w;
 }
 
-function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): TextLayout {
-  const { fontSize, lineHeight } = content;
+function layoutMeasuredContent(
+  content: MeasuredContent,
+  width: TextWidth,
+  fontSize: number,
+): TextLayout {
+  const { lineHeight } = content;
   const isFixed = typeof width === 'number';
   const maxWidth = isFixed ? Math.max(0.01, width) : Infinity;
 
   const lines: MeasuredLine[] = [];
   let lineIdx = 0;
   let maxAdvanceWidth = 0;
-  const ascentY = fontSize * getMeasuredAscentRatio();
-  const descentY = fontSize - ascentY;
-  const ink: BBoxTuple = [Infinity, Infinity, -Infinity, -Infinity];
 
   // --- pushLine: finalize and push a line ---
   // Default alignmentWidth = b.visualWidth (hanging — correct for wrap-caused breaks).
   // Paragraph-end call sites follow with fixupParagraphEnd() to override.
   const pushLine = (b: LineBuilder) => {
     const baselineY = lineIdx * lineHeight;
-    const lineInk: BBoxTuple = b.hasInk && isFinite(b.ink[0])
-      ? b.ink : [0, -ascentY, 0, descentY];
     lines.push({
-      runs: b.runs, index: lineIdx, advanceWidth: b.advanceX,
-      alignmentWidth: b.visualWidth, ink: lineInk, baselineY, lineHeight,
-      hasInk: b.hasInk,
+      runs: b.runs,
+      index: lineIdx,
+      advanceWidth: b.advanceX,
+      alignmentWidth: b.visualWidth,
+      baselineY,
     });
     maxAdvanceWidth = Math.max(maxAdvanceWidth, b.advanceX);
-    expandBBox(ink,
-      b.hasInk ? lineInk[0] : 0, baselineY + lineInk[1],
-      b.hasInk ? lineInk[2] : 0, baselineY + lineInk[3]);
     lineIdx++;
   };
 
@@ -516,42 +502,61 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
   // --- Pending whitespace state ---
   let pendingSegs: MeasuredSegment[] = [];
   let pendingW = 0;
-  const clearPending = () => { pendingSegs.length = 0; pendingW = 0; };
+  const clearPending = () => {
+    pendingSegs.length = 0;
+    pendingW = 0;
+  };
   const stashPending = (tok: MeasuredToken) => {
-    for (const seg of tok.segments) { pendingSegs.push(seg); pendingW += seg.advanceWidth; }
+    for (const seg of tok.segments) {
+      pendingSegs.push(seg);
+      pendingW += seg.advanceWidth;
+    }
   };
   const commitPending = (b: LineBuilder) => {
-    for (const seg of pendingSegs) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+    for (const seg of pendingSegs) appendRun(b, seg, seg.text, seg.advanceWidth);
     clearPending();
   };
 
   // --- placeWord: place word on line, break-word if oversized ---
   const placeWord = (b: LineBuilder, tok: MeasuredToken): LineBuilder => {
     if (maxWidth === Infinity) {
-      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
       return b;
     }
     const remaining = maxWidth - b.advanceX;
     if (tok.advanceWidth <= remaining) {
-      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
       return b;
     }
     if (tok.advanceWidth <= maxWidth) {
-      if (b.runs.length > 0) { pushLine(b); b = newLineBuilder(); }
-      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+      if (b.runs.length > 0) {
+        pushLine(b);
+        b = newLineBuilder();
+      }
+      for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
       return b;
     }
     // break-word path
-    if (remaining <= 0 && b.runs.length > 0) { pushLine(b); b = newLineBuilder(); }
+    if (remaining <= 0 && b.runs.length > 0) {
+      pushLine(b);
+      b = newLineBuilder();
+    }
     for (const seg of tok.segments) {
       let text = seg.text;
       while (text.length > 0) {
         let lineRemaining = maxWidth - b.advanceX;
-        if (lineRemaining <= 0) { pushLine(b); b = newLineBuilder(); lineRemaining = maxWidth; }
-        const { head, tail, headW, headInk } = sliceTextToFit(seg.font, text, lineRemaining);
-        appendRun(b, seg, head, headW, headInk);
+        if (lineRemaining <= 0) {
+          pushLine(b);
+          b = newLineBuilder();
+          lineRemaining = maxWidth;
+        }
+        const { head, tail, headW } = sliceTextToFit(seg.font, text, lineRemaining);
+        appendRun(b, seg, head, headW);
         text = tail;
-        if (text.length > 0) { pushLine(b); b = newLineBuilder(); }
+        if (text.length > 0) {
+          pushLine(b);
+          b = newLineBuilder();
+        }
       }
     }
     return b;
@@ -561,16 +566,20 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
   let b = newLineBuilder();
   for (const p of content.paragraphs) {
     if (p.tokens.length === 0) {
-      clearPending(); pushLine(b); fixupParagraphEnd(); b = newLineBuilder(); continue;
+      clearPending();
+      pushLine(b);
+      fixupParagraphEnd();
+      b = newLineBuilder();
+      continue;
     }
     for (const tok of p.tokens) {
       if (tok.kind === 'space') {
         if (!b.hasInk) {
           // LEADING ws: commit immediately (can overflow — matches pre-wrap)
-          for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+          for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
         } else if (maxWidth === Infinity) {
           // AUTO: no wrapping, commit immediately
-          for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth, seg.ink);
+          for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
         } else {
           // FIXED, inter-word: buffer as pending
           stashPending(tok);
@@ -590,7 +599,9 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
             if (pendingW > 0) commitPending(b);
             b = placeWord(b, tok);
           } else {
-            commitPending(b); pushLine(b); b = newLineBuilder();
+            commitPending(b);
+            pushLine(b);
+            b = newLineBuilder();
             b = placeWord(b, tok);
           }
         } else {
@@ -598,43 +609,45 @@ function layoutMeasuredContent(content: MeasuredContent, width: TextWidth): Text
           if (b.advanceX + pendingW < maxWidth) {
             if (pendingW > 0) commitPending(b);
           } else {
-            commitPending(b); pushLine(b); b = newLineBuilder();
+            commitPending(b);
+            pushLine(b);
+            b = newLineBuilder();
           }
           b = placeWord(b, tok);
         }
       } else {
         // No word on line yet (may have leading ws)
         if (b.advanceX > 0 && b.advanceX + tok.advanceWidth > maxWidth) {
-          pushLine(b); b = newLineBuilder();
+          pushLine(b);
+          b = newLineBuilder();
         }
         clearPending();
         b = placeWord(b, tok);
       }
     }
-    commitPending(b); pushLine(b); fixupParagraphEnd(); b = newLineBuilder();
+    commitPending(b);
+    pushLine(b);
+    fixupParagraphEnd();
+    b = newLineBuilder();
   }
   if (lines.length === 0) pushLine(newLineBuilder());
 
   // --- Compute layout-level values ---
   const boxWidth = isFixed ? Math.max(0.01, width) : maxAdvanceWidth;
-  if (!isFinite(ink[0])) { ink[0] = 0; ink[1] = 0; ink[2] = 0; ink[3] = fontSize; }
-  const inkBBox: FrameTuple = [ink[0], ink[1], ink[2] - ink[0], ink[3] - ink[1]];
-  const logicalBBox: FrameTuple = [0, 0, boxWidth, lines.length * lineHeight];
 
-  return { lines, fontSize, lineHeight, widthMode: isFixed ? 'fixed' : 'auto',
-           boxWidth, inkBBox, logicalBBox };
+  return { lines, fontSize, lineHeight, widthMode: isFixed ? 'fixed' : 'auto', boxWidth };
 }
 
 // =============================================================================
-// CACHE: TextLayoutCache
+// §6  CACHE — Three-tier orchestration (tokenize → measure → layout)
 // =============================================================================
 
 interface CacheEntry {
-  tokenized: TokenizedContent | null;  // null = content stale
+  tokenized: TokenizedContent | null; // null = content stale
   measured: MeasuredContent;
-  measuredFontSize: number | null;     // null = fontSize stale
+  measuredFontSize: number | null; // null = fontSize stale
   layout: TextLayout;
-  layoutWidth: TextWidth | null;       // null = width stale
+  layoutWidth: TextWidth | null; // null = width stale
   frame: FrameTuple | null;
 }
 
@@ -645,17 +658,27 @@ class TextLayoutCache {
    * Get or compute layout for a text object.
    * Three-tier cache: content → measurement → flow.
    */
-  getLayout(objectId: string, fragment: Y.XmlFragment, fontSize: number, width: TextWidth = 'auto'): TextLayout {
+  getLayout(
+    objectId: string,
+    fragment: Y.XmlFragment,
+    fontSize: number,
+    width: TextWidth = 'auto',
+  ): TextLayout {
     const entry = this.cache.get(objectId);
 
     // Cache hit — same content, fontSize, and width
-    if (entry && entry.tokenized !== null && entry.measuredFontSize === fontSize && entry.layoutWidth === width) {
+    if (
+      entry &&
+      entry.tokenized !== null &&
+      entry.measuredFontSize === fontSize &&
+      entry.layoutWidth === width
+    ) {
       return entry.layout;
     }
 
     // Width changed only — re-flow
     if (entry && entry.tokenized !== null && entry.measuredFontSize === fontSize) {
-      const layout = layoutMeasuredContent(entry.measured, width);
+      const layout = layoutMeasuredContent(entry.measured, width, fontSize);
       entry.layout = layout;
       entry.layoutWidth = width;
       entry.frame = null;
@@ -665,7 +688,7 @@ class TextLayoutCache {
     // Font size changed — re-measure + re-flow
     if (entry && entry.tokenized !== null) {
       const measured = measureTokenizedContent(entry.tokenized, fontSize);
-      const layout = layoutMeasuredContent(measured, width);
+      const layout = layoutMeasuredContent(measured, width, fontSize);
       entry.measured = measured;
       entry.measuredFontSize = fontSize;
       entry.layout = layout;
@@ -677,7 +700,7 @@ class TextLayoutCache {
     // Full pipeline (no entry or content stale)
     const tokenized = parseAndTokenize(fragment);
     const measured = measureTokenizedContent(tokenized, fontSize);
-    const layout = layoutMeasuredContent(measured, width);
+    const layout = layoutMeasuredContent(measured, width, fontSize);
 
     if (entry) {
       // Reuse entry object (avoids Map delete+set on every keystroke)
@@ -689,8 +712,12 @@ class TextLayoutCache {
       entry.frame = null;
     } else {
       this.cache.set(objectId, {
-        tokenized, measured, measuredFontSize: fontSize,
-        layout, layoutWidth: width, frame: null,
+        tokenized,
+        measured,
+        measuredFontSize: fontSize,
+        layout,
+        layoutWidth: width,
+        frame: null,
       });
     }
 
@@ -758,8 +785,40 @@ class TextLayoutCache {
 export const textLayoutCache = new TextLayoutCache();
 
 // =============================================================================
-// RENDERER: renderTextLayout
+// §7  OUTPUT — Alignment, rendering, spatial index
 // =============================================================================
+
+// --- Alignment helpers ---
+
+/**
+ * Returns the anchor factor for alignment:
+ * - left: 0 (origin at left edge)
+ * - center: 0.5 (origin at center)
+ * - right: 1 (origin at right edge)
+ */
+export function anchorFactor(align: TextAlign): number {
+  return align === 'left' ? 0 : align === 'center' ? 0.5 : 1;
+}
+
+/** Container left edge in world coords */
+function getBoxLeftX(originX: number, boxWidth: number, align: TextAlign): number {
+  return originX - anchorFactor(align) * boxWidth;
+}
+
+/** Line start X within container */
+function getLineStartX(
+  originX: number,
+  boxWidth: number,
+  lineVisualWidth: number,
+  align: TextAlign,
+): number {
+  const left = getBoxLeftX(originX, boxWidth, align);
+  if (align === 'left') return left;
+  if (align === 'center') return left + (boxWidth - lineVisualWidth) / 2;
+  return left + (boxWidth - lineVisualWidth);
+}
+
+// --- Renderer ---
 
 /**
  * Render a text layout to canvas.
@@ -772,7 +831,7 @@ export function renderTextLayout(
   originX: number,
   originY: number,
   color: string,
-  align: TextAlign = 'left'
+  align: TextAlign = 'left',
 ): void {
   ctx.save();
   ctx.textBaseline = 'alphabetic';
@@ -814,50 +873,23 @@ export function renderTextLayout(
   ctx.restore();
 }
 
-// =============================================================================
-// BBOX COMPUTATION: computeTextBBox
-// =============================================================================
+// --- Spatial index + derived frame ---
 
 /**
  * Compute bounding box for a text object.
  * Used by room-doc-manager for spatial index.
- *
- * TODO: Replace ink-tight BBox with frame-based BBox. The ink-tight bounds are smaller
- * than the frame because they exclude the half-leading above/below glyphs and any
- * horizontal space from alignment. This causes dirty-rect issues: highlight rects extend
- * the full lineHeight (baseline ± half-leading) but the ink BBox doesn't cover that area,
- * so partial redraws leave stale highlight pixels. The SelectTool already uses getTextFrame()
- * for transform bounds as a workaround. Fix: return frame + padding directly.
+ * Returns frame (logical bounds matching DOM overlay) + padding.
  */
 export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   const { content, origin, fontSize, align, width } = props;
   const layout = textLayoutCache.getLayout(objectId, content, fontSize, width);
   const [ox, oy] = origin;
   const padding = 2;
-
-  // Derive and cache frame (matches DOM overlay rect exactly)
   const fx = getBoxLeftX(ox, layout.boxWidth, align);
   const fy = oy - fontSize * getBaselineToTopRatio();
-  textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, layout.logicalBBox[3]]);
-
-  // Ink-tight horizontal bounds (TODO: replace with frame bounds)
-  let minX = Infinity;
-  let maxX = -Infinity;
-  for (const line of layout.lines) {
-    if (!line.hasInk) continue;
-    const lineW = layout.widthMode === 'auto' ? line.advanceWidth : line.alignmentWidth;
-    const lx = getLineStartX(ox, layout.boxWidth, lineW, align);
-    minX = Math.min(minX, lx + line.ink[0]);
-    maxX = Math.max(maxX, lx + line.ink[2]);
-  }
-  if (!isFinite(minX)) { minX = fx; maxX = fx; }
-
-  return [
-    minX - padding,
-    oy + layout.inkBBox[1] - padding,
-    maxX + padding,
-    oy + layout.inkBBox[1] + layout.inkBBox[3] + padding,
-  ];
+  const fh = layout.lines.length * layout.lineHeight;
+  textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, fh]);
+  return [fx - padding, fy - padding, fx + layout.boxWidth + padding, fy + fh + padding];
 }
 
 /**

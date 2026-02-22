@@ -1,7 +1,8 @@
 # Text System Documentation
 
 **Status:** WYSIWYG complete — auto + fixed-width modes verified
-**Last Updated:** 2026-02-19
+
+> **Maintenance note:** This is a system-level architectural overview, not a changelog. When updating after code changes, match the detail level of surrounding content — don't inflate coverage of your specific change at the expense of the big-picture pipeline flow and cache interactions that make this document useful.
 
 ## Overview
 
@@ -81,9 +82,9 @@ Y.XmlFragment
     ↓ parseAndTokenize()
 TokenizedContent { paragraphs: [{ tokens: Token[] }] }
     ↓ measureTokenizedContent(tokenized, fontSize)
-MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], fontSize, lineHeight }
-    ↓ layoutMeasuredContent(measured, width)
-TextLayout { lines: MeasuredLine[], boxWidth, logicalBBox, ... }
+MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight }
+    ↓ layoutMeasuredContent(measured, width, fontSize)
+TextLayout { lines: MeasuredLine[], boxWidth, ... }
 ```
 
 All three stages are **internal**. Public API: `textLayoutCache.getLayout()`.
@@ -128,20 +129,19 @@ interface TokenizedContent { paragraphs: TokenizedParagraph[]; }
 
 ### Stage 2: Measurement — `measureTokenizedContent()`
 
-Converts each `StyledText` segment → `MeasuredSegment` by calling `ctx.measureText()` on a singleton offscreen 1x1 canvas (`textRendering: optimizeSpeed`). Produces advance widths and ink bounding boxes per segment.
+Converts each `StyledText` segment → `MeasuredSegment` by calling `ctx.measureText()` on a singleton offscreen 1x1 canvas (`textRendering: optimizeSpeed`). Produces advance widths per segment.
 
 **Caches:**
 
 | Cache | Size | Key | Purpose |
 |-------|------|-----|---------|
-| `MEASURE_LRU` | 75k entries | `font + '\0' + text` | Full text metrics (width + ink BBox) |
+| `MEASURE_LRU` | 75k entries | `font + '\0' + text` | Advance width (`number`) |
 | `SPACE_WIDTH_CACHE` | Unbounded Map | font string | Single space advance width per font |
 | `GRAPHEME_LRU` | 10k entries | text string | `Intl.Segmenter` grapheme split results |
 
 ```typescript
 interface MeasuredSegment extends StyledText {
   font: string; advanceWidth: number;
-  ink: BBoxTuple;  // [left, top, right, bottom] relative to glyph origin
   isWhitespace: boolean;
 }
 interface MeasuredToken { kind: TokenKind; segments: MeasuredSegment[]; advanceWidth: number; }
@@ -161,9 +161,8 @@ Accumulates runs for the current line:
 - `advanceX` — total width including all committed runs
 - `visualWidth` — width up to end of last non-whitespace run (internal; becomes `alignmentWidth` on `MeasuredLine` via `pushLine`)
 - `hasInk` — at least one non-whitespace run exists (flow engine: leading vs inter-word ws distinction)
-- `ink` — running BBox union of all non-whitespace ink bounds
 
-`appendRun()` coalesces adjacent runs with identical font+style via string concat — reduces run count for the renderer.
+`appendRun()` coalesces adjacent runs with identical font+highlight via string concat — reduces run count for the renderer.
 
 #### Pending Whitespace State Machine (CSS `pre-wrap` Semantics)
 
@@ -209,16 +208,13 @@ Empty paragraphs produce a blank line. If no lines produced at all, pushes one e
 
 After all lines placed:
 - `boxWidth` = auto: max `advanceWidth` across all lines; fixed: the explicit width
-- `inkBBox` = union of all per-line ink bounds offset by `baselineY` (TODO: remove — see Derived Frame)
-- `logicalBBox` = `[0, 0, boxWidth, numLines * lineHeight]` — advance-based area
 
 ### Exported Types
 
 ```typescript
 interface MeasuredRun {
-  text: string; bold: boolean; italic: boolean; highlight: string | null; font: string;
+  text: string; font: string; highlight: string | null;
   advanceWidth: number; advanceX: number;  // X offset from line start
-  ink: BBoxTuple; isWhitespace: boolean;
 }
 
 interface MeasuredLine {
@@ -227,15 +223,13 @@ interface MeasuredLine {
   alignmentWidth: number;   // Width for text-align calculation — two behaviors:
   //   Wrap-caused break  → b.visualWidth (trailing ws hangs, excluded)
   //   Paragraph end      → min(advanceWidth, maxWidth) (trailing ws is content)
-  ink: BBoxTuple; baselineY: number; lineHeight: number; hasInk: boolean;
+  baselineY: number;
 }
 
 interface TextLayout {
   lines: MeasuredLine[]; fontSize: number; lineHeight: number;
   widthMode: 'auto' | 'fixed';
   boxWidth: number;        // auto → max advanceWidth; fixed → explicit width
-  inkBBox: FrameTuple;     // TODO: remove — ink-tight, misses highlight rect area → stale pixels
-  logicalBBox: FrameTuple; // [x, y, w, h] = [0, 0, boxWidth, numLines * lineHeight]
 }
 ```
 
@@ -304,8 +298,8 @@ Called from `room-doc-manager` for spatial index (both steady-state and hydratio
 2. **Derives and caches frame:**
    - `x = getBoxLeftX(originX, boxWidth, align)`
    - `y = originY - fontSize * getBaselineToTopRatio()` (matches DOM container top)
-   - `w = boxWidth`, `h = logicalBBox[3]` (= numLines * lineHeight)
-3. **Computes ink-tight BBox:** walks lines with ink, computes per-line startX from alignment, unions ink bounds + 2px padding (TODO: replace with frame + padding — ink-tight misses highlight rect area, causes stale dirty-rect pixels)
+   - `w = boxWidth`, `h = numLines * lineHeight`
+3. **Returns frame + 2px padding** as BBoxTuple — matches DOM overlay bounds exactly, covers highlight rects
 
 ### Frame Getter
 
@@ -592,7 +586,7 @@ textLayoutCache.clear();                                   // Full rebuild
 
 Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/content/width, cached in `TextLayoutCache`, read via `getTextFrame(objectId)`.
 
-**Frame vs BBox (TODO: unify):** BBox is ink-tight + 2px padding — smaller than frame because it excludes half-leading above/below glyphs. This is wrong: highlight rects extend the full `lineHeight` (baseline ± half-leading), so the spatial index BBox doesn't cover them. Dirty-rect redraws intersecting the highlight area but outside the ink BBox leave stale pixels. SelectTool already uses `getTextFrame()` for transform bounds as a workaround. Fix: make `computeTextBBox()` return frame + padding instead of ink-tight bounds.
+**Frame = BBox:** `computeTextBBox()` returns frame + 2px padding — matches DOM overlay bounds exactly. Both `getTextFrame()` and the spatial index BBox derive from the same logical frame.
 
 **Frame consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
 
