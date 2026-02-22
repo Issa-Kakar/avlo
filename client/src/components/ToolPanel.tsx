@@ -325,7 +325,7 @@ interface InspectorProps {
   onColorPopoverToggle: () => void;
   onFillToggle: () => void;
   addRecentColor: (color: string) => void;
-  popoverRef: React.RefObject<HTMLDivElement>;
+  popoverRef: React.RefObject<HTMLDivElement | null>;
 }
 
 function Inspector({

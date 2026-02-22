@@ -22,7 +22,7 @@ interface RoomDocRegistryProviderProps {
  */
 export function RoomDocRegistryProvider({ children, registry }: RoomDocRegistryProviderProps) {
   // Create registry once and maintain it for the lifetime of the provider
-  const registryRef = useRef<RoomDocManagerRegistry>();
+  const registryRef = useRef<RoomDocManagerRegistry>(undefined);
 
   if (!registryRef.current) {
     registryRef.current = registry ?? createRoomDocManagerRegistry();

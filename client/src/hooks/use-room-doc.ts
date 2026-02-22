@@ -12,8 +12,8 @@ import { useRoomDocRegistry } from '../lib/room-doc-registry-context';
  */
 export function useRoomDoc(roomId: RoomId): IRoomDocManager {
   const registry = useRoomDocRegistry();
-  const managerRef = useRef<IRoomDocManager>();
-  const roomIdRef = useRef<RoomId>();
+  const managerRef = useRef<IRoomDocManager>(undefined);
+  const roomIdRef = useRef<RoomId>(undefined);
   const hasAcquiredRef = useRef(false);
 
   // Check if roomId has changed or if we don't have a manager yet
