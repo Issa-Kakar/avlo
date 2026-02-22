@@ -5,7 +5,9 @@ import {
   ConnectorSizePreset,
   TEXT_COLOR_PALETTE,
   useDeviceUIStore,
-} from '../../stores/device-ui-store';
+} from '../stores/device-ui-store';
+
+import './ToolPanel.css';
 
 // Import icon components from Phase 5
 import {
@@ -24,7 +26,7 @@ import {
   IconFill,
   IconUndo,
   IconRedo,
-} from '../icons';
+} from './icons';
 
 interface ToolPanelProps {
   onToast?: (message: string) => void;

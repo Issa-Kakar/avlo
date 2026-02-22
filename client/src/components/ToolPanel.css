@@ -1,0 +1,446 @@
+/* ===== Tool Buttons Base ===== */
+.tool-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  background: transparent;
+  transition: all var(--transition-fast);
+  position: relative;
+  border: none;
+  cursor: pointer;
+}
+
+.tool-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.tool-btn.active {
+  background: var(--brand-primary);
+  color: white;
+}
+
+.tool-divider {
+  height: 1px;
+  background: var(--border-light);
+  margin: var(--space-xs) var(--space-sm);
+}
+
+/* Tooltip */
+.tool-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%) scale(0.9);
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: all var(--transition-fast);
+}
+
+.tool-btn:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) scale(1);
+}
+
+/* ===== 48px Fixed Top Toolbar ===== */
+
+/* Fixed top toolbar container */
+.tool-dock-wrap {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 380;
+  /* Simple positioning container - no flex layout */
+}
+
+/* The main toolbar dock bar */
+.tool-dock {
+  position: relative; /* Create positioning context for inspector */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: var(--dock-h);
+  padding: 0 10px;
+  border-radius: var(--dock-radius);
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  box-shadow: var(--dock-shadow);
+  backdrop-filter: blur(6px);
+}
+
+/* Tool buttons */
+.tool-dock .tool-btn {
+  width: var(--btn);
+  height: var(--btn);
+  display: grid;
+  place-items: center;
+  border-radius: var(--btn-radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--icon-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  cursor: pointer;
+}
+
+.tool-dock .tool-btn .icon {
+  width: var(--icon);
+  height: var(--icon);
+  color: inherit;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-dock .tool-btn:hover {
+  background: var(--dock-hover);
+}
+
+.tool-dock .tool-btn.active {
+  background: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--icon-selected);
+}
+
+.tool-dock .tool-btn.active:hover {
+  background: var(--accent-hover);
+}
+
+.tool-dock .tool-btn:active {
+  transform: translateY(0.5px);
+}
+
+.tool-dock .tool-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.tool-dock .tool-divider {
+  width: 1px;
+  height: var(--divider-h);
+  background: var(--divider);
+  margin: 0 2px;
+}
+
+/* ===== Inspector ===== */
+.inspector {
+  position: absolute;
+  right: calc(100% + 6px); /* Position 6px to the left of toolbar */
+  top: 50%; /* Center vertically */
+  transform: translateY(-50%); /* Center vertically */
+  display: inline-flex;
+  align-items: center;
+  gap: 8px; /* Restored original horizontal spacing */
+  height: auto; /* Allow natural height based on content */
+  padding: 4px 8px; /* Tight vertical (4px), original horizontal (8px) */
+  border-radius: var(--dock-radius);
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  box-shadow: var(--dock-shadow);
+}
+
+.inspector .row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px; /* Original horizontal spacing restored */
+}
+
+/* Color swatches */
+.swatch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs); /* Original spacing restored (6px) */
+}
+
+.swatch {
+  width: var(--swatch);
+  height: var(--swatch);
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  outline: none;
+  cursor: pointer;
+  transition:
+    transform 90ms ease,
+    box-shadow 120ms ease;
+}
+
+.swatch:hover {
+  transform: scale(0.98) translateY(-0.5px);
+}
+
+.swatch.is-active-fixed {
+  box-shadow: 0 0 0 var(--swatch-ring) rgba(29, 78, 216, 0.35);
+  border-color: var(--accent-border);
+}
+
+/* "More colors" button - rainbow circle */
+.swatch-plus {
+  display: grid;
+  place-items: center;
+  position: relative;
+  background: conic-gradient(
+    from 0deg,
+    #ff0000 0deg,
+    #ff8000 45deg,
+    #ffff00 90deg,
+    #00ff00 135deg,
+    #00ffff 180deg,
+    #0080ff 225deg,
+    #8000ff 270deg,
+    #ff00ff 315deg,
+    #ff0000 360deg
+  );
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* Custom color dot overlay (80% size, centered on rainbow circle) */
+.swatch-plus .custom-color-dot {
+  position: absolute;
+  width: 90%; /* Slightly smaller from 85% for better visual balance */
+  height: 93%;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+}
+
+.swatch:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+/* Size pills */
+.size-pill {
+  height: var(--pill-h);
+  padding: 0 8px;
+  border-radius: var(--pill-radius);
+  background: transparent;
+  border: 1px solid var(--dock-border);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  cursor: pointer;
+}
+
+.size-pill:hover {
+  background: var(--dock-hover);
+}
+
+.size-pill.active {
+  background: var(--accent);
+  border-color: var(--accent-border);
+  color: var(--icon-selected);
+}
+
+.size-pill:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+/* Color Popover */
+.color-popover {
+  position: absolute;
+  z-index: 500;
+  top: calc(var(--dock-h) + 8px);
+  left: 0;
+  width: 232px;
+  padding: 10px;
+  background: #1f1f1f;
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  transform: translateY(8px) scale(0.98);
+  opacity: 0;
+  animation: pop-enter 160ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@keyframes pop-enter {
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+.color-popover.closing {
+  animation: pop-exit 130ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@keyframes pop-exit {
+  to {
+    transform: translateY(8px) scale(0.98);
+    opacity: 0;
+  }
+}
+
+.popover-section {
+  margin-bottom: 8px;
+}
+
+.popover-section:last-child {
+  margin-bottom: 0;
+}
+
+.popover-section h6 {
+  margin: 0 0 6px 0;
+  font:
+    600 11px/1 Inter,
+    ui-sans-serif,
+    system-ui;
+  letter-spacing: 0.02em;
+  color: #bfbfbf;
+  text-transform: uppercase;
+}
+
+.swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(6, var(--swatch));
+  gap: 6px;
+}
+
+.hex-row {
+  display: flex;
+  gap: 6px;
+}
+
+.hex-row input {
+  flex: 1;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #111;
+  color: #e5e7eb;
+  padding: 0 8px;
+  font:
+    12px Inter,
+    ui-sans-serif,
+    system-ui;
+}
+
+.hex-row .hex-apply {
+  width: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #171717;
+  color: #e5e7eb;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 140ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.hex-row .hex-apply:hover {
+  background: #1f2937;
+}
+
+/* Fill button in inspector */
+.inspector .icon-btn {
+  width: 24px; /* Compact size for inspector */
+  height: 24px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: #e5e7eb;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.inspector .icon-btn .icon {
+  width: 14px;
+  height: 14px;
+}
+
+.inspector .icon-btn.on {
+  background: rgba(46, 204, 113, 0.14);
+  border-color: #22a85d;
+}
+
+.inspector .icon-btn:hover {
+  background: var(--dock-hover);
+}
+
+/* ===== Undo/Redo ===== */
+.undo-redo-compact {
+  position: absolute;
+  left: calc(100% + 4px); /* 4px to RIGHT of toolbar - tight spacing */
+  top: 50%; /* Center vertically */
+  transform: translateY(-50%); /* Center vertically */
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--dock-bg);
+  border: 1px solid var(--dock-border);
+  box-shadow: var(--dock-shadow);
+  backdrop-filter: blur(6px);
+}
+
+.undo-btn,
+.redo-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--icon-muted);
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  cursor: pointer;
+}
+
+.undo-btn:hover,
+.redo-btn:hover {
+  background: var(--dock-hover);
+}
+
+.undo-btn:active,
+.redo-btn:active {
+  transform: translateY(0.5px);
+}
+
+.undo-btn:focus-visible,
+.redo-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: var(--ring-offset);
+}
+
+.undo-icon,
+.redo-icon {
+  width: 16px;
+  height: 16px;
+  color: inherit;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

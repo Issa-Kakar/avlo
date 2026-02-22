@@ -7,15 +7,15 @@
 
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { ErrorBoundary } from '../components/ErrorBoundary';
+import { ErrorBoundary } from './ErrorBoundary';
 
 // Components
 import { Canvas } from '../canvas/Canvas';
-import { ToolPanel } from './components/ToolPanel';
-import { ZoomControls } from './components/ZoomControls';
-import { UsersModal } from './components/UsersModal';
-import { UserAvatarCluster } from './components/UserAvatarCluster';
-import { ToastProvider, useToast } from './components/Toast';
+import { ToolPanel } from './ToolPanel';
+import { ZoomControls } from './ZoomControls';
+import { UsersModal } from './UsersModal';
+import { UserAvatarCluster } from './UserAvatarCluster';
+import { ToastProvider, useToast } from './Toast';
 
 // Hooks
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';

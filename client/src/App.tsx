@@ -14,8 +14,8 @@ import { Canvas } from './canvas/Canvas';
 import { useRoomDoc } from './hooks/use-room-doc';
 import { useSnapshot } from './hooks/use-snapshot';
 import { useCameraStore } from '@/stores/camera-store';
-import RoomPage from './pages/RoomPage';
-import { SelectionContextMenuDemo } from './pages/components/SelectionContextMenu';
+import RoomPage from './components/RoomPage';
+import { SelectionContextMenuDemo } from './components/SelectionContextMenu';
 
 function CanvasWithControls({ roomId }: { roomId: string }) {
   const room = useRoomDoc(roomId);

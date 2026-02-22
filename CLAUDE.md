@@ -121,10 +121,17 @@ interface ConnectorTopology {
 | `packages/shared/src/utils/bbox.ts` | BBox computation with stroke width inflation |
 | `packages/shared/src/types/snapshot.ts` | Snapshot, ViewTransform interfaces |
 
-### UI
+### UI (`client/src/components/`)
 | File | Responsibility |
 |------|----------------|
-| `client/src/pages/components/ToolPanel.tsx` | Toolbar + inspector UI |
+| `RoomPage.tsx` + `RoomPage.css` | Main room view, micro clusters, layout, design tokens |
+| `ToolPanel.tsx` + `ToolPanel.css` | Toolbar + inspector UI |
+| `ZoomControls.tsx` + `ZoomControls.css` | Floating zoom controls |
+| `Toast.tsx` | Toast notification system |
+| `UsersModal.tsx` | Users list modal |
+| `UserAvatarCluster.tsx` | Avatar cluster in top-right |
+| `SelectionContextMenu.tsx` + `.css` | Selection context menu (demo) |
+| `icons/index.tsx` | SVG icon components |
 
 ---
 
