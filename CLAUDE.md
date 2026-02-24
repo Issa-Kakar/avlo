@@ -131,6 +131,7 @@ interface ConnectorTopology {
 | `UsersModal.tsx` | Users list modal |
 | `UserAvatarCluster.tsx` | Avatar cluster in top-right |
 | `SelectionContextMenu.tsx` + `.css` | Selection context menu (demo) |
+| `context-menu/` | Context menu React primitives (MenuButton, Divider, ButtonGroup, ColorCircle, SizeStepper, TypefaceButton) + icons |
 | `icons/index.tsx` | SVG icon components |
 
 ---
