@@ -148,8 +148,8 @@ export interface SelectionState {
   selectedIdSet: ReadonlySet<string>;
   /** Per-kind counts for mixed filter dropdown */
   kindCounts: KindCounts;
-  /** Single boolean: true when context menu should be visible */
-  menuActive: boolean;
+  /** True when context menu is logically open (React mounts content, controller positions) */
+  menuOpen: boolean;
   /** Live style snapshot of selected objects */
   selectedStyles: SelectedStyles;
   /** Bumped on bbox changes to selected objects (for repositioning) */
@@ -338,7 +338,7 @@ export const useSelectionStore = create<SelectionStore>()(
   selectionKind: 'none',
   selectedIdSet: EMPTY_ID_SET,
   kindCounts: EMPTY_KIND_COUNTS,
-  menuActive: false,
+  menuOpen: false,
   selectedStyles: EMPTY_STYLES,
   boundsVersion: 0,
   transform: { kind: 'none' },
@@ -364,6 +364,7 @@ export const useSelectionStore = create<SelectionStore>()(
       transform: { kind: 'none' },
       marquee: { active: false, anchor: null, current: null },
       connectorTopology: null,
+      menuOpen: true,
       boundsVersion: get().boundsVersion + 1,
     });
     get().refreshStyles();
@@ -375,7 +376,7 @@ export const useSelectionStore = create<SelectionStore>()(
     selectionKind: 'none',
     selectedIdSet: EMPTY_ID_SET,
     kindCounts: EMPTY_KIND_COUNTS,
-    menuActive: false,
+    menuOpen: false,
     selectedStyles: EMPTY_STYLES,
     boundsVersion: 0,
     transform: { kind: 'none' },
@@ -490,7 +491,7 @@ export const useSelectionStore = create<SelectionStore>()(
   beginTextEditing: (objectId, isNew) => set({
     textEditingId: objectId,
     textEditingIsNew: isNew,
-    menuActive: true,
+    menuOpen: true,
   }),
 
   endTextEditing: () => {
@@ -498,7 +499,7 @@ export const useSelectionStore = create<SelectionStore>()(
     set({
       textEditingId: null,
       textEditingIsNew: false,
-      menuActive: selectedIds.length > 0,
+      menuOpen: selectedIds.length > 0,
     });
   },
 

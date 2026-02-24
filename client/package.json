@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@floating-ui/dom": "^1.7.5",
     "@tiptap/core": "^3.20.0",
     "@tiptap/extension-bold": "^3.20.0",
     "@tiptap/extension-document": "^3.20.0",

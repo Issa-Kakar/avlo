@@ -4,10 +4,8 @@ import type { RoomId } from '@avlo/shared';
 import { useRoomDoc } from '../hooks/use-room-doc';
 import { CanvasRuntime } from './CanvasRuntime';
 import { setActiveRoom } from './room-runtime';
-import { ContextMenuController } from './ContextMenuController';
+import { contextMenuController } from './ContextMenuController';
 import { ContextMenu } from '@/components/context-menu/ContextMenu';
-
-const contextMenuController = new ContextMenuController();
 
 export interface CanvasProps {
   roomId: RoomId;

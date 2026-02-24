@@ -55,6 +55,7 @@ import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
+import { contextMenuController } from '@/canvas/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
@@ -118,7 +119,7 @@ export class SelectTool implements PointerTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     if (this.phase !== 'idle') return;
-    useSelectionStore.setState({ menuActive: false });
+    contextMenuController.hide();
 
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
@@ -591,7 +592,7 @@ export class SelectTool implements PointerTool {
 
     const { selectedIds, textEditingId } = useSelectionStore.getState();
     if (selectedIds.length > 0 || textEditingId !== null) {
-      useSelectionStore.setState({ menuActive: true });
+      contextMenuController.show();
     }
 
     invalidateOverlay();
@@ -624,7 +625,7 @@ export class SelectTool implements PointerTool {
 
     const { selectedIds, textEditingId } = useSelectionStore.getState();
     if (selectedIds.length > 0 || textEditingId !== null) {
-      useSelectionStore.setState({ menuActive: true });
+      contextMenuController.show();
     }
 
     invalidateOverlay();
