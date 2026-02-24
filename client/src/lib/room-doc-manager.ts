@@ -26,6 +26,7 @@ import {
 import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox } from './text/text-system';
+import { useSelectionStore } from '@/stores/selection-store';
 
 type Unsub = () => void;
 
@@ -948,9 +949,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             // Y.XmlFragment change: invalidate text cache (full)
             textLayoutCache.invalidateContent(id);
             textContentChangedIds.add(id);
-          } else if (field === 'fontSize') {
-            // fontSize changed: invalidate layout only
-            textLayoutCache.invalidateLayout(id);
+            console.log('textContentChangedIds', id);
+          } 
+          else if (field === 'fontSize') {
+            console.log('fontSizeChangedIds', id);
           }
           // 'origin' and 'color' changes don't need cache invalidation
         }
@@ -1007,6 +1009,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     // Process additions/updates
+    const bboxChangedIds = new Set<string>();
     for (const id of touchedIds) {
       const yObj = objects.get(id);
       if (!yObj) continue;
@@ -1068,6 +1071,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         if (bboxChanged) {
           // Geometry changed (INCLUDING width changes since bbox includes width!)
+          bboxChangedIds.add(id);
           this.cacheEvictIds.add(id);
           this.dirtyRects.push(bboxToBounds(oldBBox));
           this.dirtyRects.push(bboxToBounds(newBBox));
@@ -1079,6 +1083,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
         }
       }
+    }
+
+    // Bridge: notify selection store of mutations to selected objects
+    const sel = useSelectionStore.getState();
+    if (sel.selectedIdSet.size > 0) {
+      sel.onObjectMutation(touchedIds, deletedIds, bboxChangedIds);
     }
   }
 

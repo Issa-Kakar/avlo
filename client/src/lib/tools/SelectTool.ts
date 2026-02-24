@@ -7,6 +7,7 @@ import {
   type ScaleTransform,
   type ConnectorTopology,
   computeHandles,
+  computeSelectionBounds,
   getScaleOrigin,
   getHandleCursor,
 } from '@/stores/selection-store';
@@ -27,7 +28,6 @@ import {
   translateBounds,
   scaleBoundsAround,
   pointsToWorldBounds,
-  frameTupleToWorldBounds,
   expandBounds,
   computeUniformScaleBounds,
   computeRawGeometryBounds,
@@ -51,7 +51,6 @@ import {
   getOrigin,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
-import { getTextFrame } from '@/lib/text/text-system';
 import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -135,7 +134,7 @@ export class SelectTool implements PointerTool {
     // 1. Mode-specific first-priority hit targets
     if (mode === 'standard' && selectedIds.length > 0) {
       // Standard mode: check resize handles first
-      const selectionBounds = this.computeSelectionBounds();
+      const selectionBounds = computeSelectionBounds(store.selectedIds);
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds
         ? hitTestHandle(worldX, worldY, selectionBounds, scale)
@@ -178,7 +177,7 @@ export class SelectTool implements PointerTool {
     // 3. No object hit - selectionGap or background
     if (mode === 'standard') {
       // Standard mode has selection bounds - can have gap clicks
-      const selectionBounds = this.computeSelectionBounds();
+      const selectionBounds = computeSelectionBounds(store.selectedIds);
       if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
         this.downTarget = 'selectionGap';
         this.phase = 'pendingClick';
@@ -223,12 +222,11 @@ export class SelectTool implements PointerTool {
             this.phase = 'scale';
 
             const store = useSelectionStore.getState();
-            const selectionKind = this.computeSelectionKind(store.selectedIds);
 
             // Geometry-based bounds for transform origin (fixes anchor sliding)
             const transformBounds = this.computeTransformBoundsForScale();
             // Padded bounds for dirty rects (visual coverage)
-            const bboxBounds = this.computeSelectionBounds();
+            const bboxBounds = computeSelectionBounds(store.selectedIds);
 
             if (transformBounds && bboxBounds) {
               // CRITICAL: Use geometry bounds for origin
@@ -244,7 +242,6 @@ export class SelectTool implements PointerTool {
                 transformBounds,
                 origin,
                 this.activeHandle!,
-                selectionKind,
                 initialDelta,
               );
             }
@@ -261,7 +258,7 @@ export class SelectTool implements PointerTool {
             // Drill down to single connector if multiple selected
             const epStore = useSelectionStore.getState();
             if (epStore.selectedIds.length > 1) {
-              epStore.setSelection([this.endpointHitAtDown!.connectorId], 'connectorsOnly');
+              epStore.setSelection([this.endpointHitAtDown!.connectorId]);
             }
 
             this.phase = 'endpointDrag';
@@ -307,12 +304,9 @@ export class SelectTool implements PointerTool {
 
             // Non-connector or free connector: select + translate
             const store = useSelectionStore.getState();
-            store.setSelection(
-              [this.hitAtDown!.id],
-              this.computeSelectionKind([this.hitAtDown!.id]),
-            );
+            store.setSelection([this.hitAtDown!.id]);
             this.phase = 'translate';
-            const bounds = this.computeSelectionBounds();
+            const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -343,7 +337,7 @@ export class SelectTool implements PointerTool {
 
             // Standard mode or free connector: translate group
             this.phase = 'translate';
-            const bounds = this.computeSelectionBounds();
+            const bounds = computeSelectionBounds(inSelStore.selectedIds);
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -355,7 +349,7 @@ export class SelectTool implements PointerTool {
             if (!passMove && !passTime) break;
             // Drag intent → translate selection
             this.phase = 'translate';
-            const bounds = this.computeSelectionBounds();
+            const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -472,25 +466,19 @@ export class SelectTool implements PointerTool {
           case 'connectorEndpoint':
             // Clicked endpoint dot but didn't drag → drill down to single connector
             if (store.selectedIds.length > 1) {
-              store.setSelection([this.endpointHitAtDown!.connectorId], 'connectorsOnly');
+              store.setSelection([this.endpointHitAtDown!.connectorId]);
             }
             break;
 
           case 'objectOutsideSelection':
             // Click → select that object
-            store.setSelection(
-              [this.hitAtDown!.id],
-              this.computeSelectionKind([this.hitAtDown!.id]),
-            );
+            store.setSelection([this.hitAtDown!.id]);
             break;
 
           case 'objectInSelection':
             // Click on already-selected object → "drill down" if multi-select
             if (store.selectedIds.length > 1) {
-              store.setSelection(
-                [this.hitAtDown!.id],
-                this.computeSelectionKind([this.hitAtDown!.id]),
-              );
+              store.setSelection([this.hitAtDown!.id]);
             }
             break;
 
@@ -605,7 +593,7 @@ export class SelectTool implements PointerTool {
   cancel(): void {
     // Invalidate dirty rect before clearing transform state
     if (this.phase === 'translate' || this.phase === 'scale') {
-      const bounds = this.computeSelectionBounds();
+      const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
       if (bounds) {
         const store = useSelectionStore.getState();
         const transformedBounds = applyTransformToBounds(bounds, store.transform);
@@ -659,7 +647,7 @@ export class SelectTool implements PointerTool {
       if (transform.kind === 'scale') {
         baseBounds = transform.originBounds;
       } else {
-        baseBounds = this.computeSelectionBounds();
+        baseBounds = computeSelectionBounds(store.selectedIds);
       }
 
       if (baseBounds) {
@@ -720,7 +708,7 @@ export class SelectTool implements PointerTool {
     const { scale } = useCameraStore.getState();
 
     if (mode === 'standard') {
-      const bounds = this.computeSelectionBounds();
+      const bounds = computeSelectionBounds(store.selectedIds);
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);
         if (handle) {
@@ -754,34 +742,6 @@ export class SelectTool implements PointerTool {
     this.downTarget = 'none';
     this.downTimeMs = 0;
     this.transformEnvelope = null;
-  }
-
-  // --- Bounds ---
-
-  private computeSelectionBounds(): WorldRect | null {
-    const store = useSelectionStore.getState();
-    const { selectedIds } = store;
-    if (selectedIds.length === 0) return null;
-
-    const snapshot = getCurrentSnapshot();
-    let result: WorldRect | null = null;
-
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle) continue;
-      if (handle.kind === 'text') {
-        // Text uses derived frame (logical bounds) not bbox (ink bounds) for selection.
-        // Unlike shapes where bbox ⊇ frame (stroke padding expands it), text bbox is
-        // ink-pixel coverage which can be *smaller* than frame. Frame matches the DOM
-        // overlay rect exactly, giving WYSIWYG-accurate selection bounds.
-        const frame = getTextFrame(id);
-        if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
-        continue;
-      }
-      result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
-    }
-
-    return result;
   }
 
   /**
@@ -820,10 +780,10 @@ export class SelectTool implements PointerTool {
    *   3. SINGLE INVALIDATION — one invalidateWorld() call with the full envelope
    */
   private invalidateTransformPreview(): void {
-    const bounds = this.computeSelectionBounds();
+    const store = useSelectionStore.getState();
+    const bounds = computeSelectionBounds(store.selectedIds);
     if (!bounds) return;
 
-    const store = useSelectionStore.getState();
     const transform = store.transform;
     const topology = store.connectorTopology;
 
@@ -1103,7 +1063,7 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // Text: no-op for scale (text doesn't scale)
+        // Text: no-op for scale (text doesn't scale yet, but we will be adding it in the future)
         if (handle.kind === 'text') continue;
 
         // CASE 3: Shape scaling
@@ -1133,43 +1093,6 @@ export class SelectTool implements PointerTool {
         }
       }
     });
-  }
-
-  // --- Selection Helpers ---
-
-  /**
-   * Compute selection kind based on object types in selection.
-   * Returns 'strokesOnly', 'shapesOnly', 'mixed', or 'none'.
-   */
-  private computeSelectionKind(selectedIds: string[]): SelectionKind {
-    if (selectedIds.length === 0) return 'none';
-
-    const snapshot = getCurrentSnapshot();
-    let hasStrokes = false;
-    let hasShapes = false;
-    let hasConnectors = false;
-
-    for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
-      if (!handle) continue;
-
-      if (handle.kind === 'stroke') {
-        hasStrokes = true;
-      } else if (handle.kind === 'connector') {
-        hasConnectors = true;
-      } else {
-        hasShapes = true;
-      }
-    }
-
-    // Pure cases
-    if (hasConnectors && !hasStrokes && !hasShapes) return 'connectorsOnly';
-    if (hasStrokes && !hasConnectors && !hasShapes) return 'strokesOnly';
-    if (hasShapes && !hasStrokes && !hasConnectors) return 'shapesOnly';
-
-    // Any combination is mixed
-    if (hasStrokes || hasShapes || hasConnectors) return 'mixed';
-    return 'none';
   }
 
   /**
@@ -1238,7 +1161,7 @@ export class SelectTool implements PointerTool {
     // Update selection (preserving marquee state)
     if (JSON.stringify(selectedIds.sort()) !== JSON.stringify(store.selectedIds.sort())) {
       // Only update if changed to avoid thrashing
-      store.setSelection(selectedIds, this.computeSelectionKind(selectedIds));
+      store.setSelection(selectedIds);
       // Re-enable marquee since setSelection clears it
       store.beginMarquee(marquee.anchor);
       if (marquee.current) {
