@@ -118,6 +118,7 @@ export class SelectTool implements PointerTool {
 
   begin(pointerId: number, worldX: number, worldY: number): void {
     if (this.phase !== 'idle') return;
+    useSelectionStore.setState({ menuActive: false });
 
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
@@ -587,6 +588,12 @@ export class SelectTool implements PointerTool {
     applyCursor();
 
     this.resetState();
+
+    const { selectedIds, textEditingId } = useSelectionStore.getState();
+    if (selectedIds.length > 0 || textEditingId !== null) {
+      useSelectionStore.setState({ menuActive: true });
+    }
+
     invalidateOverlay();
   }
 
@@ -614,6 +621,12 @@ export class SelectTool implements PointerTool {
     setCursorOverride(null);
     applyCursor();
     this.resetState();
+
+    const { selectedIds, textEditingId } = useSelectionStore.getState();
+    if (selectedIds.length > 0 || textEditingId !== null) {
+      useSelectionStore.setState({ menuActive: true });
+    }
+
     invalidateOverlay();
   }
 

@@ -949,12 +949,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             // Y.XmlFragment change: invalidate text cache (full)
             textLayoutCache.invalidateContent(id);
             textContentChangedIds.add(id);
-            console.log('textContentChangedIds', id);
-          } 
-          else if (field === 'fontSize') {
-            console.log('fontSizeChangedIds', id);
           }
-          // 'origin' and 'color' changes don't need cache invalidation
+          // 'origin', 'color', 'fontSize' changes don't need cache invalidation
+          // (fontSize triggers bbox recompute via comparison in getLayout)
         }
       }
 
@@ -1088,7 +1085,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Bridge: notify selection store of mutations to selected objects
     const sel = useSelectionStore.getState();
     if (sel.selectedIdSet.size > 0) {
-      sel.onObjectMutation(touchedIds, deletedIds, bboxChangedIds);
+      for (const id of deletedIds) {
+        if (sel.selectedIdSet.has(id)) { sel.clearSelection(); break; }
+      }
+      if (useSelectionStore.getState().selectedIdSet.size > 0) {
+        let refresh = false, reposition = false;
+        for (const id of touchedIds) { if (sel.selectedIdSet.has(id)) { refresh = true; break; } }
+        for (const id of bboxChangedIds) { if (sel.selectedIdSet.has(id)) { reposition = true; break; } }
+        if (refresh) useSelectionStore.getState().refreshStyles();
+        if (reposition) useSelectionStore.setState(s => ({ boundsVersion: s.boundsVersion + 1 }));
+      }
     }
   }
 

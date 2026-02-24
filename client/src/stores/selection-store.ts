@@ -1,16 +1,29 @@
 import { create } from 'zustand';
+import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds, FrameTuple, ObjectHandle } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@avlo/shared';
 import type { SnapTarget } from '@/lib/connectors/types';
 import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import {
   getFrame, getPoints, getStart, getEnd,
   getStartAnchor, getEndAnchor, bboxTupleToWorldBounds,
-  getColor, getWidth, getFillColor, getFontSize, getAlign,
-  type TextAlign,
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
-import { expandEnvelope, frameTupleToWorldBounds } from '@/lib/geometry/bounds';
+import {
+  computeSelectionComposition,
+  computeSelectionBounds as _computeSelectionBounds,
+  computeStyles,
+  stylesEqual,
+  EMPTY_STYLES,
+  EMPTY_KIND_COUNTS,
+  EMPTY_ID_SET,
+  type KindCounts,
+  type SelectedStyles,
+} from '@/lib/utils/selection-utils';
+
+// Re-export for backward compat (SelectTool, ContextMenuController, etc.)
+export { computeSelectionBounds } from '@/lib/utils/selection-utils';
+export type { KindCounts, SelectedStyles } from '@/lib/utils/selection-utils';
 
 // === Types ===
 
@@ -22,31 +35,6 @@ export type WorldRect = WorldBounds;
 
 // Selection composition types for context-aware transforms
 export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'connectorsOnly' | 'mixed';
-
-export interface KindCounts {
-  strokes: number; shapes: number; text: number; connectors: number; total: number;
-}
-export interface IdsByKind {
-  strokes: string[]; shapes: string[]; text: string[]; connectors: string[];
-}
-export interface SelectedStyles {
-  color: string;
-  colorMixed: boolean;
-  colorSecond: string | null;
-  width: number | null;
-  fillColor: string | null;
-  fontSize: number | null;
-  textAlign: TextAlign | null;
-}
-
-// Empty constants (shared references to avoid allocation)
-const EMPTY_STYLES: SelectedStyles = {
-  color: '#262626', colorMixed: false, colorSecond: null,
-  width: null, fillColor: null, fontSize: null, textAlign: null,
-};
-const EMPTY_KIND_COUNTS: KindCounts = { strokes: 0, shapes: 0, text: 0, connectors: 0, total: 0 };
-const EMPTY_IDS_BY_KIND: IdsByKind = { strokes: [], shapes: [], text: [], connectors: [] };
-const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 export type HandleKind = 'corner' | 'side';
 
@@ -160,8 +148,6 @@ export interface SelectionState {
   selectedIdSet: ReadonlySet<string>;
   /** Per-kind counts for mixed filter dropdown */
   kindCounts: KindCounts;
-  /** Per-kind ID lists for filterByKind action */
-  idsByKind: IdsByKind;
   /** Single boolean: true when context menu should be visible */
   menuActive: boolean;
   /** Live style snapshot of selected objects */
@@ -213,181 +199,9 @@ export interface SelectionActions {
 
   // Context menu support
   refreshStyles: () => void;
-  onObjectMutation: (touchedIds: Set<string>, deletedIds: Set<string>, bboxChangedIds: Set<string>) => void;
-  filterByKind: (kind: keyof IdsByKind) => void;
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
-
-// === Selection Composition ===
-
-/**
- * Single-pass composition from selected IDs.
- * Buckets IDs by kind, builds selectedIdSet, derives selectionKind and mode.
- */
-function computeSelectionComposition(ids: string[]) {
-  const snapshot = getCurrentSnapshot();
-  const strokes: string[] = [];
-  const shapes: string[] = [];
-  const text: string[] = [];
-  const connectors: string[] = [];
-  const selectedIdSet = new Set<string>();
-
-  for (const id of ids) {
-    const handle = snapshot.objectsById.get(id);
-    if (!handle) continue;
-    selectedIdSet.add(id);
-    switch (handle.kind) {
-      case 'stroke': strokes.push(id); break;
-      case 'shape': shapes.push(id); break;
-      case 'text': text.push(id); break;
-      case 'connector': connectors.push(id); break;
-    }
-  }
-
-  const kindCounts: KindCounts = {
-    strokes: strokes.length, shapes: shapes.length,
-    text: text.length, connectors: connectors.length,
-    total: selectedIdSet.size,
-  };
-  const idsByKind: IdsByKind = { strokes, shapes, text, connectors };
-
-  const nonZero = (kindCounts.strokes > 0 ? 1 : 0)
-    + (kindCounts.shapes > 0 ? 1 : 0)
-    + (kindCounts.text > 0 ? 1 : 0)
-    + (kindCounts.connectors > 0 ? 1 : 0);
-
-  let selectionKind: SelectionKind;
-  if (nonZero === 0) selectionKind = 'none';
-  else if (nonZero > 1) selectionKind = 'mixed';
-  else if (kindCounts.strokes > 0) selectionKind = 'strokesOnly';
-  else if (kindCounts.shapes > 0) selectionKind = 'shapesOnly';
-  else if (kindCounts.text > 0) selectionKind = 'textOnly';
-  else selectionKind = 'connectorsOnly';
-
-  const mode: SelectionMode =
-    selectedIdSet.size === 1 && selectionKind === 'connectorsOnly'
-      ? 'connector'
-      : selectedIdSet.size > 0 ? 'standard' : 'none';
-
-  return { selectionKind, kindCounts, idsByKind, selectedIdSet, mode };
-}
-
-// === Style Computation ===
-
-/**
- * Compute unified style snapshot for a homogeneous selection.
- * Mixed selections → EMPTY_STYLES immediately (zero parsing).
- * Single-pass with early break once all fields are resolved.
- */
-function computeStyles(
-  ids: string[],
-  kind: SelectionKind,
-  objectsById: ReadonlyMap<string, ObjectHandle>,
-): SelectedStyles {
-  if (kind === 'none' || kind === 'mixed' || ids.length === 0) return EMPTY_STYLES;
-
-  const trackWidth = kind !== 'textOnly';
-  const trackFill = kind === 'shapesOnly';
-  const trackText = kind === 'textOnly';
-
-  let firstColor: string | null = null;
-  let colorMixed = false;
-  let colorSecond: string | null = null;
-  let firstWidth: number | null = null;
-  let widthMixed = false;
-  let firstFill: string | null = null;
-  let fillMixed = false;
-  let firstFontSize: number | null = null;
-  let fontSizeMixed = false;
-  let firstAlign: TextAlign | null = null;
-  let alignMixed = false;
-  let first = true;
-
-  for (const id of ids) {
-    const handle = objectsById.get(id);
-    if (!handle) continue;
-
-    if (first) {
-      firstColor = getColor(handle.y);
-      if (trackWidth) firstWidth = getWidth(handle.y);
-      if (trackFill) firstFill = getFillColor(handle.y) ?? null;
-      if (trackText) { firstFontSize = Math.round(getFontSize(handle.y)); firstAlign = getAlign(handle.y); }
-      first = false;
-      continue;
-    }
-
-    if (!colorMixed && getColor(handle.y) !== firstColor) {
-      colorMixed = true;
-      colorSecond = getColor(handle.y);
-    }
-    if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
-    if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) fillMixed = true;
-    if (trackText && !fontSizeMixed && Math.round(getFontSize(handle.y)) !== firstFontSize) fontSizeMixed = true;
-    if (trackText && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
-
-    if (colorMixed
-      && (!trackWidth || widthMixed)
-      && (!trackFill || fillMixed)
-      && (!trackText || (fontSizeMixed && alignMixed))) break;
-  }
-
-  return {
-    color: firstColor ?? '#262626',
-    colorMixed,
-    colorSecond: colorMixed ? colorSecond : null,
-    width: trackWidth ? (widthMixed ? null : firstWidth) : null,
-    fillColor: trackFill ? (fillMixed ? null : firstFill) : null,
-    fontSize: trackText ? (fontSizeMixed ? null : firstFontSize) : null,
-    textAlign: trackText ? (alignMixed ? null : firstAlign) : null,
-  };
-}
-
-function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
-  return a.color === b.color && a.colorMixed === b.colorMixed
-    && a.colorSecond === b.colorSecond && a.width === b.width
-    && a.fillColor === b.fillColor && a.fontSize === b.fontSize
-    && a.textAlign === b.textAlign;
-}
-
-// === Selection Bounds ===
-
-/**
- * Compute padded selection bounds from selected IDs.
- * Text uses derived frame (WYSIWYG-accurate), others use bbox.
- */
-export function computeSelectionBounds(selectedIds: string[]): WorldBounds | null {
-  if (selectedIds.length === 0) return null;
-
-  const snapshot = getCurrentSnapshot();
-  let result: WorldBounds | null = null;
-
-  for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
-    if (!handle) continue;
-    if (handle.kind === 'text') {
-      const frame = getTextFrame(id);
-      if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
-      continue;
-    }
-    result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
-  }
-
-  return result;
-}
-
-// === Menu Active Helper ===
-
-function deriveMenuActive(
-  selectedCount: number,
-  textEditingId: string | null,
-  transformKind: string,
-  marqueeActive: boolean,
-): boolean {
-  return (selectedCount > 0 || textEditingId !== null)
-    && transformKind === 'none'
-    && !marqueeActive;
-}
 
 // === Connector Topology Builder ===
 
@@ -516,14 +330,14 @@ function computeConnectorTopology(
 
 // === Store Implementation ===
 
-export const useSelectionStore = create<SelectionStore>((set, get) => ({
+export const useSelectionStore = create<SelectionStore>()(
+  subscribeWithSelector((set, get) => ({
   // Initial state
   selectedIds: [],
   mode: 'none',
   selectionKind: 'none',
   selectedIdSet: EMPTY_ID_SET,
   kindCounts: EMPTY_KIND_COUNTS,
-  idsByKind: EMPTY_IDS_BY_KIND,
   menuActive: false,
   selectedStyles: EMPTY_STYLES,
   boundsVersion: 0,
@@ -547,11 +361,9 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       selectionKind: comp.selectionKind,
       selectedIdSet: comp.selectedIdSet,
       kindCounts: comp.kindCounts,
-      idsByKind: comp.idsByKind,
       transform: { kind: 'none' },
       marquee: { active: false, anchor: null, current: null },
       connectorTopology: null,
-      menuActive: true,
       boundsVersion: get().boundsVersion + 1,
     });
     get().refreshStyles();
@@ -563,7 +375,6 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     selectionKind: 'none',
     selectedIdSet: EMPTY_ID_SET,
     kindCounts: EMPTY_KIND_COUNTS,
-    idsByKind: EMPTY_IDS_BY_KIND,
     menuActive: false,
     selectedStyles: EMPTY_STYLES,
     boundsVersion: 0,
@@ -580,7 +391,6 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     set({
       transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
       connectorTopology: topology,
-      menuActive: false,
     });
   },
 
@@ -609,7 +419,6 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
         initialDelta,
       },
       connectorTopology: topology,
-      menuActive: false,
     });
   },
 
@@ -618,23 +427,15 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     return { transform: { ...state.transform, scaleX, scaleY } };
   }),
 
-  endTransform: () => {
-    const { selectedIds, textEditingId, marquee } = get();
-    set({
-      transform: { kind: 'none' },
-      connectorTopology: null,
-      menuActive: deriveMenuActive(selectedIds.length, textEditingId, 'none', marquee.active),
-    });
-  },
+  endTransform: () => set({
+    transform: { kind: 'none' },
+    connectorTopology: null,
+  }),
 
-  cancelTransform: () => {
-    const { selectedIds, textEditingId, marquee } = get();
-    set({
-      transform: { kind: 'none' },
-      connectorTopology: null,
-      menuActive: deriveMenuActive(selectedIds.length, textEditingId, 'none', marquee.active),
-    });
-  },
+  cancelTransform: () => set({
+    transform: { kind: 'none' },
+    connectorTopology: null,
+  }),
 
   // === Endpoint Drag Actions ===
 
@@ -649,7 +450,6 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
       routedBbox: null,
       prevBbox: originBbox,
     },
-    menuActive: false,
   }),
 
   updateEndpointDrag: (currentPosition, currentSnap, routedPoints, routedBbox) => set((state) => {
@@ -670,7 +470,6 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
 
   beginMarquee: (anchor) => set({
     marquee: { active: true, anchor, current: anchor },
-    menuActive: false,
   }),
 
   updateMarquee: (current) => set((state) => {
@@ -678,39 +477,28 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
     return { marquee: { ...state.marquee, current } };
   }),
 
-  endMarquee: () => {
-    const { selectedIds, textEditingId, transform } = get();
-    set((state) => ({
-      marquee: { ...state.marquee, active: false },
-      menuActive: deriveMenuActive(selectedIds.length, textEditingId, transform.kind, false),
-    }));
-  },
+  endMarquee: () => set((state) => ({
+    marquee: { ...state.marquee, active: false },
+  })),
 
-  cancelMarquee: () => {
-    const { selectedIds, textEditingId, transform } = get();
-    set({
-      marquee: { active: false, anchor: null, current: null },
-      menuActive: deriveMenuActive(selectedIds.length, textEditingId, transform.kind, false),
-    });
-  },
+  cancelMarquee: () => set({
+    marquee: { active: false, anchor: null, current: null },
+  }),
 
   // === Text Editing Actions ===
 
-  beginTextEditing: (objectId, isNew) => {
-    const { selectedIds, transform, marquee } = get();
-    set({
-      textEditingId: objectId,
-      textEditingIsNew: isNew,
-      menuActive: deriveMenuActive(selectedIds.length, objectId, transform.kind, marquee.active),
-    });
-  },
+  beginTextEditing: (objectId, isNew) => set({
+    textEditingId: objectId,
+    textEditingIsNew: isNew,
+    menuActive: true,
+  }),
 
   endTextEditing: () => {
-    const { selectedIds, transform, marquee } = get();
+    const { selectedIds } = get();
     set({
       textEditingId: null,
       textEditingIsNew: false,
-      menuActive: deriveMenuActive(selectedIds.length, null, transform.kind, marquee.active),
+      menuActive: selectedIds.length > 0,
     });
   },
 
@@ -719,46 +507,26 @@ export const useSelectionStore = create<SelectionStore>((set, get) => ({
   refreshStyles: () => {
     const { selectedIds, selectionKind, textEditingId, selectedStyles: current } = get();
     const snapshot = getCurrentSnapshot();
-    let newStyles: SelectedStyles;
-    if (textEditingId !== null && selectedIds.length === 0) {
-      newStyles = computeStyles([textEditingId], 'textOnly', snapshot.objectsById);
-    } else {
-      newStyles = computeStyles(selectedIds, selectionKind, snapshot.objectsById);
-    }
-    if (!stylesEqual(current, newStyles)) {
-      set({ selectedStyles: newStyles });
-    }
+    const ids = textEditingId !== null && selectedIds.length === 0 ? [textEditingId] : selectedIds;
+    const kind = textEditingId !== null && selectedIds.length === 0 ? 'textOnly' as SelectionKind : selectionKind;
+    const next = computeStyles(ids, kind, snapshot.objectsById);
+    if (!stylesEqual(current, next)) set({ selectedStyles: next });
   },
+})));
 
-  onObjectMutation: (touchedIds, deletedIds, bboxChangedIds) => {
-    const state = get();
-    if (state.selectedIdSet.size === 0) return;
+// === Free Functions ===
 
-    for (const id of deletedIds) {
-      if (state.selectedIdSet.has(id)) {
-        state.clearSelection();
-        return;
-      }
-    }
-
-    let refresh = false;
-    let bumpBounds = false;
-    for (const id of touchedIds) {
-      if (state.selectedIdSet.has(id)) { refresh = true; break; }
-    }
-    for (const id of bboxChangedIds) {
-      if (state.selectedIdSet.has(id)) { bumpBounds = true; break; }
-    }
-
-    if (refresh) state.refreshStyles();
-    if (bumpBounds) set((s) => ({ boundsVersion: s.boundsVersion + 1 }));
-  },
-
-  filterByKind: (kind) => {
-    const ids = get().idsByKind[kind];
-    if (ids.length > 0) get().setSelection(ids);
-  },
-}));
+/**
+ * Filter current selection to only objects of the given kind.
+ * No-op if no objects of that kind are selected.
+ */
+export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'connectors'): void {
+  const { selectedIds } = useSelectionStore.getState();
+  const snapshot = getCurrentSnapshot();
+  const targetKind = kind === 'strokes' ? 'stroke' : kind === 'shapes' ? 'shape' : kind === 'connectors' ? 'connector' : 'text';
+  const filtered = selectedIds.filter(id => snapshot.objectsById.get(id)?.kind === targetKind);
+  if (filtered.length > 0) useSelectionStore.getState().setSelection(filtered);
+}
 
 // === Handle Helpers ===
 
