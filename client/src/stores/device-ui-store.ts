@@ -65,6 +65,9 @@ interface DeviceUIState {
   textIsItalic: boolean;
   highlightColor: string | null;
 
+  // Fill color (separate from fill toggle)
+  fillColor: string;
+
   // Placeholder tools
   image: { enabled: boolean };
 
@@ -99,6 +102,7 @@ interface DeviceUIState {
   setTextIsBold: (bold: boolean) => void;
   setTextIsItalic: (italic: boolean) => void;
   setHighlightColor: (color: string | null) => void;
+  setFillColor: (color: string) => void;
   setIsTextEditing: (editing: boolean) => void;
 
   getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
@@ -123,6 +127,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       textSize: 24,
       connectorSize: 4,
       shapeVariant: 'rectangle',
+      fillColor: '#BFDBFE',
 
       textColor: '#262626',
       textAlign: 'left',
@@ -183,6 +188,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setTextIsBold: (bold) => set({ textIsBold: bold }),
       setTextIsItalic: (italic) => set({ textIsItalic: italic }),
       setHighlightColor: (color) => set({ highlightColor: color }),
+      setFillColor: (color) => set({ fillColor: color }),
 
       setIsTextEditing: (editing) => set({ isTextEditing: editing }),
 
@@ -231,7 +237,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
     }),
     {
       name: 'avlo.toolbar.v4',
-      version: 1,
+      version: 2,
     },
   ),
 );

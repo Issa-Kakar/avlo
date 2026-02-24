@@ -185,3 +185,121 @@
   text-overflow: ellipsis;
   max-width: 100px;
 }
+
+/* ===== Floating Container ===== */
+
+.context-menu-floating {
+  position: fixed;
+  width: max-content;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  display: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.context-menu-floating[data-visible] {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 150ms ease;
+}
+
+/* ===== Submenu Dropdown ===== */
+
+.ctx-submenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 160px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 4px rgba(0, 0, 0, 0.06);
+  padding: 4px;
+  animation: ctx-submenu-enter 120ms ease;
+  z-index: 10;
+}
+
+@keyframes ctx-submenu-enter {
+  from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.ctx-submenu-item {
+  height: 32px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #374151;
+  font-family: var(--font-stack);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  outline: none;
+}
+
+.ctx-submenu-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* ===== Filter Button ===== */
+
+.ctx-btn-filter {
+  padding: 0 8px;
+  gap: 6px;
+}
+
+.ctx-filter-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.ctx-filter-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.ctx-filter-count {
+  font-size: 10px;
+  color: #9CA3AF;
+}
+
+.ctx-filter-num {
+  margin-left: auto;
+  color: #9CA3AF;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== Color None (checkered pattern) ===== */
+
+.ctx-color-none {
+  background: repeating-conic-gradient(#d1d5db 0% 25%, #fff 0% 50%) 50% / 6px 6px;
+}
+
+/* ===== Danger Button ===== */
+
+.ctx-btn-danger {
+  color: #EF4444;
+}
+
+.ctx-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* ===== Size Label ===== */
+
+.ctx-size-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6B7280;
+  letter-spacing: 0.02em;
+}

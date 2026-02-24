@@ -1,8 +1,13 @@
 import React, { useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { RoomId } from '@avlo/shared';
 import { useRoomDoc } from '../hooks/use-room-doc';
 import { CanvasRuntime } from './CanvasRuntime';
 import { setActiveRoom } from './room-runtime';
+import { ContextMenuController } from './ContextMenuController';
+import { ContextMenu } from '@/components/context-menu/ContextMenu';
+
+const contextMenuController = new ContextMenuController();
 
 export interface CanvasProps {
   roomId: RoomId;
@@ -57,7 +62,16 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     };
   }, []);
 
-  return (
+  // 3. Context menu controller — binds floating div for positioning
+  useLayoutEffect(() => {
+    const el = document.getElementById('context-menu-floating');
+    if (el) contextMenuController.init(el);
+    return () => contextMenuController.destroy();
+  }, []);
+
+  const portalTarget = document.getElementById('context-menu-portal');
+
+  return (<>
     <div ref={containerRef} className="relative w-full h-full" style={{ backgroundColor: '#FFFFFF' }}>
       <canvas
         ref={baseCanvasRef}
@@ -95,5 +109,12 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
         }}
       />
     </div>
+    {portalTarget && createPortal(
+      <div id="context-menu-floating" className="context-menu-floating">
+        <ContextMenu />
+      </div>,
+      portalTarget,
+    )}
+  </>
   );
 };
