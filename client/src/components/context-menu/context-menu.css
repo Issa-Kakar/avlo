@@ -1,0 +1,187 @@
+/* ===== Context Menu — Shared Foundation ===== */
+
+.ctx-menu {
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-md);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+  gap: 2px;
+  user-select: none;
+  font-family: var(--font-stack);
+}
+
+/* ===== Base Button ===== */
+
+.ctx-btn {
+  height: 36px;
+  min-width: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #374151;
+  cursor: pointer;
+  font-family: var(--font-stack);
+  font-size: var(--text-sm);
+  transition: background var(--transition-fast);
+  outline: none;
+}
+
+.ctx-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ctx-btn:active {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ctx-btn.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.ctx-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.ctx-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+}
+
+/* ===== Button Variants ===== */
+
+.ctx-btn-sq {
+  width: 36px;
+  padding: 0;
+}
+
+.ctx-btn-sq svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ctx-btn-color {
+  width: 36px;
+  padding: 0;
+}
+
+.ctx-btn-color svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ctx-btn-more {
+  min-width: 30px;
+}
+
+.ctx-btn-font {
+  padding: 0 8px;
+  gap: 4px;
+}
+
+/* ===== Divider ===== */
+
+.ctx-divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.08);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+/* ===== Button Group ===== */
+
+.ctx-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ===== Size Stepper ===== */
+
+.ctx-size-group {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(0, 0, 0, 0.03);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.ctx-size-btn {
+  width: 28px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #374151;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  outline: none;
+  padding: 0;
+}
+
+.ctx-size-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ctx-size-btn:active {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ctx-size-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+}
+
+.ctx-size-value {
+  min-width: 36px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #374151;
+  font-family: var(--font-stack);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  outline: none;
+  padding: 0;
+}
+
+.ctx-size-value:hover {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+
+.ctx-size-value:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+  border-radius: 4px;
+}
+
+/* ===== Font Name ===== */
+
+.ctx-font-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
