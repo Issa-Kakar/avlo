@@ -5,8 +5,6 @@ import { computeSelectionBounds } from '@/lib/utils/selection-utils';
 import { useCameraStore, worldToClient } from '@/stores/camera-store';
 import type { WorldBounds } from '@avlo/shared';
 
-type ControllerState = 'dormant' | 'hidden' | 'positioned';
-
 const SETTLE_MS = 150;
 
 // Exclusion zone padding — keeps menu clear of toolbar (top) and zoom controls (bottom-left)
@@ -17,17 +15,17 @@ const ZOOM_CONTROLS_RIGHT_EDGE = 176; // 24px left + 140px width + 12px gap
 /**
  * ContextMenuController — floating-ui powered positioning for the context menu.
  *
- * State machine:
- *   dormant    → menuOpen is false, DOM hidden, no subscriptions
- *   hidden     → menuOpen is true, DOM display:'' but no data-visible (during camera settle / gesture)
- *   positioned → menuOpen is true, DOM visible with computed position
+ * Two boolean flags:
+ *   active  — menu is logically open (controls display block/none)
+ *   visible — menu should be showing right now (controls data-visible for CSS transition)
  *
  * The controller subscribes to selection-store (menuOpen, boundsVersion) globally,
- * and to camera-store lazily (only while open).
+ * and to camera-store lazily (only while active).
  */
 class ContextMenuController {
   private el: HTMLElement | null = null;
-  private state: ControllerState = 'dormant';
+  private active = false;
+  private visible = false;
   private storeUnsubs: (() => void)[] = [];
   private cameraUnsub: (() => void) | null = null;
   private rafId = 0;
@@ -39,11 +37,11 @@ class ContextMenuController {
     this.storeUnsubs.push(
       useSelectionStore.subscribe(
         s => s.menuOpen,
-        open => open ? this.open() : this.close(),
+        open => open ? this.activate() : this.deactivate(),
       ),
       useSelectionStore.subscribe(
         s => s.boundsVersion,
-        () => { if (this.state !== 'dormant') this.scheduleReposition(); },
+        () => { if (this.active && this.visible) this.schedulePosition(); },
       ),
     );
   }
@@ -52,16 +50,18 @@ class ContextMenuController {
 
   /** Hide menu during gesture — stays logically open, just not visible. */
   hide(): void {
-    if (this.state === 'dormant') return;
-    this.state = 'hidden';
-    if (this.el) delete this.el.dataset.visible;
+    if (!this.active) return;
+    this.visible = false;
+    cancelAnimationFrame(this.rafId);
     clearTimeout(this.settleTimer);
+    if (this.el) delete this.el.dataset.visible;
   }
 
   /** Show menu after gesture ends — schedule reposition + reveal. */
   show(): void {
-    if (this.state === 'dormant') return;
-    this.scheduleReposition();
+    if (!this.active) return;
+    this.visible = true;
+    this.schedulePosition();
   }
 
   /** Tear down all subscriptions and release DOM ref. */
@@ -71,28 +71,31 @@ class ContextMenuController {
     this.unsubCamera();
     cancelAnimationFrame(this.rafId);
     clearTimeout(this.settleTimer);
+    this.active = false;
+    this.visible = false;
     this.el = null;
-    this.state = 'dormant';
   }
 
   // === Internal lifecycle ===
 
-  private open(): void {
+  private activate(): void {
     if (!this.el) return;
-    this.state = 'hidden';
+    this.active = true;
+    this.visible = true;
     this.el.style.display = 'block';
     this.subCamera();
-    this.scheduleReposition();
+    this.schedulePosition();
   }
 
-  private close(): void {
+  private deactivate(): void {
     if (!this.el) return;
+    this.active = false;
+    this.visible = false;
     delete this.el.dataset.visible;
-    this.el.style.display = '';  // Removes inline → CSS display:none applies
-    this.state = 'dormant';
+    this.el.style.display = '';
     this.unsubCamera();
-    clearTimeout(this.settleTimer);
     cancelAnimationFrame(this.rafId);
+    clearTimeout(this.settleTimer);
   }
 
   // === Camera subscription (lazy) ===
@@ -112,24 +115,28 @@ class ContextMenuController {
   }
 
   private onCameraChange(): void {
-    if (this.state === 'dormant') return;
-    this.state = 'hidden';
+    if (!this.active || !this.visible) return;
+    // Instant hide during camera move
     if (this.el) delete this.el.dataset.visible;
+    cancelAnimationFrame(this.rafId);
     clearTimeout(this.settleTimer);
     this.settleTimer = window.setTimeout(() => {
-      if (this.state !== 'dormant') this.scheduleReposition();
+      if (this.active && this.visible) this.schedulePosition();
     }, SETTLE_MS);
   }
 
   // === Positioning ===
 
-  private scheduleReposition(): void {
+  private schedulePosition(): void {
     cancelAnimationFrame(this.rafId);
-    this.rafId = requestAnimationFrame(() => this.positionMenu());
+    // Double-RAF: ensures React has committed content before measuring
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = requestAnimationFrame(() => this.positionAndReveal());
+    });
   }
 
-  private positionMenu(): void {
-    if (!this.el || this.state === 'dormant') return;
+  private positionAndReveal(): void {
+    if (!this.el || !this.active || !this.visible) return;
 
     const { selectedIds, textEditingId } = useSelectionStore.getState();
     const ids = textEditingId && selectedIds.length === 0 ? [textEditingId] : selectedIds;
@@ -142,7 +149,7 @@ class ContextMenuController {
       strategy: 'fixed',
       placement: 'top',
       middleware: [
-        offset(12),
+        offset(40),
         flip({
           padding: FLIP_PADDING,
           fallbackPlacements: ['bottom'],
@@ -152,12 +159,11 @@ class ContextMenuController {
         hide({ strategy: 'referenceHidden' }),
       ],
     }).then(({ x, y, placement, middlewareData }) => {
-      if (!this.el || this.state === 'dormant') return;
+      if (!this.el || !this.active || !this.visible) return;
 
       // Reference fully offscreen → stay hidden
       if (middlewareData.hide?.referenceHidden) {
         delete this.el.dataset.visible;
-        this.state = 'hidden';
         return;
       }
 
@@ -177,32 +183,20 @@ class ContextMenuController {
         transform: '',
       });
       this.el.dataset.visible = '';
-      this.state = 'positioned';
     });
   }
 }
 
-/** Build a floating-ui VirtualElement that clips selection bounds to the viewport. */
+/** Build a floating-ui VirtualElement from selection world bounds. */
 function createVirtualElement(worldBounds: WorldBounds): VirtualElement {
   return {
     getBoundingClientRect() {
       const [left, top] = worldToClient(worldBounds.minX, worldBounds.minY);
       const [right, bottom] = worldToClient(worldBounds.maxX, worldBounds.maxY);
-      const { cssWidth, cssHeight } = useCameraStore.getState();
-
-      // Clip to viewport so floating-ui centers on the VISIBLE portion
-      const cl = Math.max(0, left), ct = Math.max(0, top);
-      const cr = Math.min(cssWidth, right), cb = Math.min(cssHeight, bottom);
-
-      // Selection entirely offscreen → zero rect
-      if (cl >= cr || ct >= cb) {
-        return { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 };
-      }
-
       return {
-        x: cl, y: ct,
-        top: ct, left: cl, right: cr, bottom: cb,
-        width: cr - cl, height: cb - ct,
+        x: left, y: top,
+        top, left, right, bottom,
+        width: right - left, height: bottom - top,
       };
     },
   };

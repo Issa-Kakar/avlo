@@ -60,9 +60,9 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     };
   }, []);
 
-  // 3. Context menu controller — binds floating div for positioning
+  // 3. Context menu controller — binds portal div for positioning
   useLayoutEffect(() => {
-    const el = document.getElementById('context-menu-floating');
+    const el = document.getElementById('context-menu-portal');
     if (el) contextMenuController.init(el);
     return () => contextMenuController.destroy();
   }, []);
@@ -107,12 +107,7 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
         }}
       />
     </div>
-    {portalTarget && createPortal(
-      <div id="context-menu-floating" className="context-menu-floating">
-        <ContextMenu />
-      </div>,
-      portalTarget,
-    )}
+    {portalTarget && createPortal(<ContextMenu />, portalTarget)}
   </>
   );
 };

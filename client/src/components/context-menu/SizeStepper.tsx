@@ -11,7 +11,7 @@ interface SizeStepperProps {
 export const SizeStepper = ({ value, onDecrement, onIncrement, onValueClick }: SizeStepperProps) => (
   <div className="ctx-size-group">
     <MenuButton className="ctx-size-btn" onClick={onDecrement}>
-      <IconMinus />
+      <IconMinus width={12} height={12} />
     </MenuButton>
     <button
       className="ctx-size-value"
@@ -21,7 +21,7 @@ export const SizeStepper = ({ value, onDecrement, onIncrement, onValueClick }: S
       {value}
     </button>
     <MenuButton className="ctx-size-btn" onClick={onIncrement}>
-      <IconPlus />
+      <IconPlus width={12} height={12} />
     </MenuButton>
   </div>
 );

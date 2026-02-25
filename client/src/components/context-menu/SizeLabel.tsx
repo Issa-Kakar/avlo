@@ -7,6 +7,11 @@ interface SizeLabelProps {
 }
 
 export function SizeLabel({ value, kind }: SizeLabelProps) {
-  const label = (kind === 'connector' ? CONNECTOR_LABELS : STROKE_LABELS)[value] ?? `${value}`;
-  return <span className="ctx-size-label">{label}</span>;
+  const label = (kind === 'connector' ? CONNECTOR_LABELS : STROKE_LABELS)[value];
+  if (!label) return null;
+  return (
+    <span className="ctx-size-label">
+      <span className="ctx-size-label-prefix">Size </span>{label}
+    </span>
+  );
 }

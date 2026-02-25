@@ -50,7 +50,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
                   setOpen(false);
                 }}
               >
-                <Icon width={16} height={16} />
+                <Icon width={20} height={20} />
                 <span>{label}</span>
                 <span className="ctx-filter-num">{count}</span>
               </button>

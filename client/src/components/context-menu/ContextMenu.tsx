@@ -1,4 +1,4 @@
-import { Fragment, memo, type ReactNode } from 'react';
+import { memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -7,13 +7,15 @@ import { filterSelectionByKind } from '@/stores/selection-store';
 import { Divider } from './Divider';
 import { MenuButton } from './MenuButton';
 import { ButtonGroup } from './ButtonGroup';
-import { ColorCircle } from './ColorCircle';
 import { SizeStepper } from './SizeStepper';
 import { SizeLabel } from './SizeLabel';
+import { TypefaceButton } from './TypefaceButton';
 import { FilterObjectsDropdown } from './FilterObjectsDropdown';
+import { ColorPickerPopover } from './ColorPickerPopover';
 import {
   IconAlignTextLeft, IconAlignTextCenter, IconAlignTextRight,
   TextColorIcon, HighlightIcon,
+  IconBold, IconItalic,
   IconMoreDots, IconTrash,
 } from './icons';
 
@@ -43,13 +45,6 @@ const selectConnectorStyles = (s: SelectionStore) => ({
   width: s.selectedStyles.width,
 });
 
-// === Visibility predicates ===
-
-const showStroke = (k: SelectionKind) => k === 'strokesOnly' || k === 'shapesOnly' || k === 'mixed';
-const showFill = (k: SelectionKind) => k === 'shapesOnly' || k === 'mixed';
-const showText = (k: SelectionKind) => k === 'textOnly' || k === 'mixed';
-const showConnector = (k: SelectionKind) => k === 'connectorsOnly' || k === 'mixed';
-
 // === Group Components ===
 
 const MixedFilterGroup = memo(function MixedFilterGroup() {
@@ -61,13 +56,11 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
-      <MenuButton className="ctx-btn-color">
-        <ColorCircle
-          color={color}
-          variant={colorMixed ? 'hollow' : 'filled'}
-          secondColor={colorMixed ? colorSecond : undefined}
-        />
-      </MenuButton>
+      <ColorPickerPopover
+        color={color}
+        variant={colorMixed ? 'hollow' : 'filled'}
+        secondColor={colorMixed ? colorSecond : undefined}
+      />
       {width !== null && <SizeLabel value={width} kind="stroke" />}
     </ButtonGroup>
   );
@@ -77,12 +70,10 @@ const FillGroup = memo(function FillGroup() {
   const fillColor = useSelectionStore(selectFillColor);
   return (
     <ButtonGroup>
-      <MenuButton className="ctx-btn-color">
-        <ColorCircle
-          color={fillColor ?? '#fff'}
-          variant={fillColor === null ? 'none' : 'filled'}
-        />
-      </MenuButton>
+      <ColorPickerPopover
+        color={fillColor ?? '#fff'}
+        variant={fillColor === null ? 'none' : 'filled'}
+      />
     </ButtonGroup>
   );
 });
@@ -91,13 +82,14 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   const { fontSize, textAlign, color, colorMixed } = useSelectionStore(useShallow(selectTextStyles));
   return (
     <ButtonGroup>
-      <MenuButton className="ctx-btn-color">
-        <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
-      </MenuButton>
-      <MenuButton className="ctx-btn-color">
-        <HighlightIcon barColor={null} width={20} height={20} />
-      </MenuButton>
+      <TypefaceButton />
       {fontSize !== null && <SizeStepper value={fontSize} />}
+      <MenuButton className="ctx-btn-sq">
+        <IconBold />
+      </MenuButton>
+      <MenuButton className="ctx-btn-sq">
+        <IconItalic />
+      </MenuButton>
       <MenuButton className="ctx-btn-sq" active={textAlign === 'left'}>
         <IconAlignTextLeft />
       </MenuButton>
@@ -107,6 +99,12 @@ const TextStyleGroup = memo(function TextStyleGroup() {
       <MenuButton className="ctx-btn-sq" active={textAlign === 'right'}>
         <IconAlignTextRight />
       </MenuButton>
+      <MenuButton className="ctx-btn-color">
+        <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
+      </MenuButton>
+      <MenuButton className="ctx-btn-color">
+        <HighlightIcon barColor={null} width={20} height={20} />
+      </MenuButton>
     </ButtonGroup>
   );
 });
@@ -115,13 +113,11 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
   return (
     <ButtonGroup>
-      <MenuButton className="ctx-btn-color">
-        <ColorCircle
-          color={color}
-          variant={colorMixed ? 'hollow' : 'filled'}
-          secondColor={colorMixed ? colorSecond : undefined}
-        />
-      </MenuButton>
+      <ColorPickerPopover
+        color={color}
+        variant={colorMixed ? 'hollow' : 'filled'}
+        secondColor={colorMixed ? colorSecond : undefined}
+      />
       {width !== null && <SizeLabel value={width} kind="connector" />}
     </ButtonGroup>
   );
@@ -152,18 +148,18 @@ function ContextMenuBar() {
   const editing = useSelectionStore(selectEditing);
   const effectiveKind: SelectionKind = editing !== null ? 'textOnly' : kind;
 
-  const groups: ReactNode[] = [];
-  if (effectiveKind === 'mixed') groups.push(<MixedFilterGroup key="filter" />);
-  if (showStroke(effectiveKind)) groups.push(<StrokeStyleGroup key="stroke" />);
-  if (showFill(effectiveKind)) groups.push(<FillGroup key="fill" />);
-  if (showText(effectiveKind)) groups.push(<TextStyleGroup key="text" />);
-  if (showConnector(effectiveKind)) groups.push(<ConnectorGroup key="conn" />);
-
   return (
     <div className="ctx-menu">
-      {groups.map((g, i) => (
-        <Fragment key={i}>{g}<Divider /></Fragment>
-      ))}
+      {effectiveKind === 'mixed' ? (
+        <><MixedFilterGroup /><Divider /></>
+      ) : (
+        <>
+          {(effectiveKind === 'strokesOnly' || effectiveKind === 'shapesOnly') && <><StrokeStyleGroup /><Divider /></>}
+          {effectiveKind === 'shapesOnly' && <><FillGroup /><Divider /></>}
+          {effectiveKind === 'textOnly' && <><TextStyleGroup /><Divider /></>}
+          {effectiveKind === 'connectorsOnly' && <><ConnectorGroup /><Divider /></>}
+        </>
+      )}
       <CommonActionsGroup />
       <Divider />
       <OverflowButton />
