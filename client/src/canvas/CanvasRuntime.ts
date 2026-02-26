@@ -34,6 +34,7 @@ import {
   getVisibleWorldBounds,
 } from '@/stores/camera-store';
 import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
+import { contextMenuController } from './ContextMenuController';
 
 export interface RuntimeConfig {
   container: HTMLElement;
@@ -86,10 +87,13 @@ export class CanvasRuntime {
     this.inputManager = new InputManager(this);
     this.inputManager.attach();
 
-    // 6. Camera subscription for tool view changes
+    // 6. Camera subscription for tool view changes + context menu repositioning
     this.cameraUnsub = useCameraStore.subscribe(
       (s) => ({ scale: s.scale, px: s.pan.x, py: s.pan.y }),
-      () => getCurrentTool()?.onViewChange(),
+      () => {
+        getCurrentTool()?.onViewChange();
+        contextMenuController.onCameraMove();
+      },
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py }
     );
 

@@ -12,7 +12,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/room/dev" replace />} />
       </Routes>
       <div id="overlay-root">
-        <div id="context-menu-portal" className="context-menu-floating" />
+        <div id="context-menu-portal" className="context-menu-floating ctx-hidden" />
       </div>
     </RoomDocRegistryProvider>
   ); 

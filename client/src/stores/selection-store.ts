@@ -364,7 +364,6 @@ export const useSelectionStore = create<SelectionStore>()(
       transform: { kind: 'none' },
       marquee: { active: false, anchor: null, current: null },
       connectorTopology: null,
-      menuOpen: true,
       boundsVersion: get().boundsVersion + 1,
     });
     get().refreshStyles();

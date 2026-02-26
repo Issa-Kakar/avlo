@@ -88,6 +88,12 @@
   gap: 4px;
 }
 
+.ctx-btn-font svg {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+}
+
 /* ===== Divider ===== */
 
 .ctx-divider {
@@ -199,15 +205,23 @@
   top: 0;
   left: 0;
   z-index: 1000;
-  display: none;
-  opacity: 0;
   pointer-events: none;
 }
 
-.context-menu-floating[data-visible] {
-  opacity: 1;
+.ctx-menu {
   pointer-events: auto;
-  transition: opacity 150ms ease;
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+              transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ctx-hidden .ctx-menu {
+  visibility: hidden;
+  opacity: 0;
+  transform: scale(0.96);
+  pointer-events: none;
+  transition: none;
 }
 
 /* ===== Submenu Dropdown ===== */

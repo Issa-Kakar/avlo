@@ -2,7 +2,7 @@ import { computePosition, offset, flip, shift, hide } from '@floating-ui/dom';
 import type { VirtualElement } from '@floating-ui/dom';
 import { useSelectionStore } from '@/stores/selection-store';
 import { computeSelectionBounds } from '@/lib/utils/selection-utils';
-import { useCameraStore, worldToClient } from '@/stores/camera-store';
+import { worldToClient } from '@/stores/camera-store';
 import type { WorldBounds } from '@avlo/shared';
 
 const SETTLE_MS = 150;
@@ -10,28 +10,29 @@ const SETTLE_MS = 150;
 // Exclusion zone padding — keeps menu clear of toolbar (top) and zoom controls (bottom-left)
 const FLIP_PADDING = { top: 72, bottom: 76, left: 12, right: 12 };
 const SHIFT_PADDING = { top: 72, bottom: 12, left: 12, right: 12 };
-const ZOOM_CONTROLS_RIGHT_EDGE = 176; // 24px left + 140px width + 12px gap
 
 /**
  * ContextMenuController — floating-ui powered positioning for the context menu.
  *
  * Two boolean flags:
- *   active  — menu is logically open (controls display block/none)
- *   visible — menu should be showing right now (controls data-visible for CSS transition)
+ *   active  — menu is logically open (React mounts content via menuOpen)
+ *   visible — not gesture-hidden (camera debounce can show; SelectTool.begin sets false)
  *
- * The controller subscribes to selection-store (menuOpen, boundsVersion) globally,
- * and to camera-store lazily (only while active).
+ * Activation paths:
+ *   show()      — SelectTool end/cancel. Auto-sets menuOpen if needed.
+ *   menuOpen    — store subscription (beginTextEditing, etc). No-op if show() already activated.
+ * Deactivation: always via menuOpen → false (clearSelection, endTextEditing).
+ * Camera: onCameraMove() called by CanvasRuntime — no lazy subscription needed.
  */
 class ContextMenuController {
-  private el: HTMLElement | null = null;
+  private el!: HTMLElement;
   private active = false;
   private visible = false;
   private storeUnsubs: (() => void)[] = [];
-  private cameraUnsub: (() => void) | null = null;
   private rafId = 0;
   private settleTimer = 0;
 
-  /** Bind the floating DOM element and wire store subscriptions. Call once after mount. */
+  /** Bind portal element and wire store subscriptions. Call once after mount. */
   init(el: HTMLElement): void {
     this.el = el;
     this.storeUnsubs.push(
@@ -46,97 +47,78 @@ class ContextMenuController {
     );
   }
 
-  // === Public API (called by SelectTool) ===
+  // === Public API ===
 
-  /** Hide menu during gesture — stays logically open, just not visible. */
+  /** Show menu after gesture ends. Auto-activates + sets menuOpen if needed. */
+  show(): void {
+    const { selectedIds, textEditingId } = useSelectionStore.getState();
+    if (selectedIds.length === 0 && textEditingId === null) return;
+    if (!this.active) {
+      this.active = true;
+      useSelectionStore.setState({ menuOpen: true });
+    }
+    this.visible = true;
+    clearTimeout(this.settleTimer);
+    this.schedulePosition();
+  }
+
+  /** Hide during gesture — stays active, React stays mounted. */
   hide(): void {
     if (!this.active) return;
     this.visible = false;
-    cancelAnimationFrame(this.rafId);
-    clearTimeout(this.settleTimer);
-    if (this.el) delete this.el.dataset.visible;
-  }
-
-  /** Show menu after gesture ends — schedule reposition + reveal. */
-  show(): void {
-    if (!this.active) return;
-    this.visible = true;
-    this.schedulePosition();
-  }
-
-  /** Tear down all subscriptions and release DOM ref. */
-  destroy(): void {
-    for (const fn of this.storeUnsubs) fn();
-    this.storeUnsubs.length = 0;
-    this.unsubCamera();
-    cancelAnimationFrame(this.rafId);
-    clearTimeout(this.settleTimer);
-    this.active = false;
-    this.visible = false;
-    this.el = null;
-  }
-
-  // === Internal lifecycle ===
-
-  private activate(): void {
-    if (!this.el) return;
-    this.active = true;
-    this.visible = true;
-    this.el.style.display = 'block';
-    this.subCamera();
-    this.schedulePosition();
-  }
-
-  private deactivate(): void {
-    if (!this.el) return;
-    this.active = false;
-    this.visible = false;
-    delete this.el.dataset.visible;
-    this.el.style.display = '';
-    this.unsubCamera();
+    this.el.classList.add('ctx-hidden');
     cancelAnimationFrame(this.rafId);
     clearTimeout(this.settleTimer);
   }
 
-  // === Camera subscription (lazy) ===
-
-  private subCamera(): void {
-    if (this.cameraUnsub) return;
-    this.cameraUnsub = useCameraStore.subscribe(
-      s => ({ s: s.scale, x: s.pan.x, y: s.pan.y }),
-      () => this.onCameraChange(),
-      { equalityFn: (a, b) => a.s === b.s && a.x === b.x && a.y === b.y },
-    );
-  }
-
-  private unsubCamera(): void {
-    this.cameraUnsub?.();
-    this.cameraUnsub = null;
-  }
-
-  private onCameraChange(): void {
+  /** Camera changed. Debounced hide + reposition. No-op if gesture-hidden or inactive. */
+  onCameraMove(): void {
     if (!this.active || !this.visible) return;
-    // Instant hide during camera move
-    if (this.el) delete this.el.dataset.visible;
-    cancelAnimationFrame(this.rafId);
+    this.el.classList.add('ctx-hidden');
     clearTimeout(this.settleTimer);
     this.settleTimer = window.setTimeout(() => {
       if (this.active && this.visible) this.schedulePosition();
     }, SETTLE_MS);
   }
 
-  // === Positioning ===
+  /** Tear down subscriptions and timers. */
+  destroy(): void {
+    for (const fn of this.storeUnsubs) fn();
+    this.storeUnsubs.length = 0;
+    cancelAnimationFrame(this.rafId);
+    clearTimeout(this.settleTimer);
+    this.active = false;
+    this.visible = false;
+  }
+
+  // === Internal ===
+
+  /** Subscription-driven activation (text editing). No-op if show() already activated. */
+  private activate(): void {
+    if (this.active) return;
+    this.active = true;
+    this.visible = true;
+    this.el.classList.add('ctx-hidden');
+    this.schedulePosition();
+  }
+
+  private deactivate(): void {
+    this.active = false;
+    this.visible = false;
+    this.el.classList.add('ctx-hidden');
+    this.el.style.left = '0px';
+    this.el.style.top = '0px';
+    cancelAnimationFrame(this.rafId);
+    clearTimeout(this.settleTimer);
+  }
 
   private schedulePosition(): void {
     cancelAnimationFrame(this.rafId);
-    // Double-RAF: ensures React has committed content before measuring
-    this.rafId = requestAnimationFrame(() => {
-      this.rafId = requestAnimationFrame(() => this.positionAndReveal());
-    });
+    this.rafId = requestAnimationFrame(() => this.positionAndReveal());
   }
 
   private positionAndReveal(): void {
-    if (!this.el || !this.active || !this.visible) return;
+    if (!this.active || !this.visible) return;
 
     const { selectedIds, textEditingId } = useSelectionStore.getState();
     const ids = textEditingId && selectedIds.length === 0 ? [textEditingId] : selectedIds;
@@ -155,34 +137,20 @@ class ContextMenuController {
           fallbackPlacements: ['bottom'],
           fallbackStrategy: 'initialPlacement',
         }),
-        shift({ padding: SHIFT_PADDING }),
+        shift({ padding: SHIFT_PADDING, crossAxis: true }),
         hide({ strategy: 'referenceHidden' }),
       ],
-    }).then(({ x, y, placement, middlewareData }) => {
-      if (!this.el || !this.active || !this.visible) return;
+    }).then(({ x, y, middlewareData }) => {
+      if (!this.active || !this.visible) return;
 
-      // Reference fully offscreen → stay hidden
       if (middlewareData.hide?.referenceHidden) {
-        delete this.el.dataset.visible;
+        this.el.classList.add('ctx-hidden');
         return;
       }
 
-      // Fallback clamp: if top placement pushes above toolbar, clamp to toolbar bottom
-      let finalY = y;
-      if (finalY < FLIP_PADDING.top) finalY = FLIP_PADDING.top;
-
-      // Zoom controls avoidance: when placed below and overlapping bottom-left zone
-      let finalX = x;
-      if (placement === 'bottom' && finalX < ZOOM_CONTROLS_RIGHT_EDGE) {
-        finalX = ZOOM_CONTROLS_RIGHT_EDGE;
-      }
-
-      Object.assign(this.el.style, {
-        left: `${finalX}px`,
-        top: `${finalY}px`,
-        transform: '',
-      });
-      this.el.dataset.visible = '';
+      this.el.style.left = `${x}px`;
+      this.el.style.top = `${y}px`;
+      this.el.classList.remove('ctx-hidden');
     });
   }
 }
