@@ -126,18 +126,11 @@
 .ctx-divider {
   width: 1px;
   height: 24px;
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.18);
   margin: 0 4px;
   flex-shrink: 0;
 }
 
-.ctx-divider-light {
-  width: 1px;
-  height: 16px;
-  background: rgba(0, 0, 0, 0.09);
-  margin: 0 3px;
-  flex-shrink: 0;
-}
 
 /* ===== Button Group ===== */
 

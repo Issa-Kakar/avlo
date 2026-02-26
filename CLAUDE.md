@@ -141,29 +141,30 @@ interface ConnectorTopology {
 | `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
 | `context-menu.css` | All context menu styling, floating container, submenu dropdowns |
 | `MenuButton.tsx` | Base button primitive (mouseDown preventDefault) |
-| `Divider.tsx` | `variant='default'` (24px) or `'light'` (16px, for sub-groups) |
+| `Divider.tsx` | Single consistent divider (24px) |
 | `ButtonGroup.tsx` | Flex row wrapper |
 | `ColorCircle.tsx` | `variant='filled'\|'hollow'\|'none'`, optional `secondColor` split |
 | `ColorPickerPopover.tsx` | `mode='stroke'\|'fill'`, 9x2 grid, `selectedColor` ring, fill mode has no-fill slot |
-| `SizeLabel.tsx` | SVG text "Size S/M/L/XL" button + chevron. **Always renders** (never null) — non-preset values show blank value slot |
-| `SizeStepper.tsx` | ±buttons + numeric value (text font size) |
+| `SizeLabel.tsx` | SVG text "Size S/M/L/XL" button + chevron. **Always renders** — non-preset/mixed values show blank |
+| `FontSizeStepper.tsx` | ± buttons + numeric value (text font size only) |
 | `TypefaceButton.tsx` | SVG text font name + chevron |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter |
 | `color-palette.ts` | 18 colors (9x2: solids row, pastels row), `NO_FILL` sentinel |
 | `icons/` | Custom 16x16 SVGs — **fill-based paths** (not stroke) for pixel-crisp rendering at small sizes |
 
-**Bar branching by `selectionKind`:**
-- `strokesOnly` → StrokeStyleGroup (color + size label)
-- `shapesOnly` → ShapeStyleGroup (border hollow + fill filled + size label)
-- `textOnly` → TextStyleGroup (typeface | stepper | B/I | align | color/highlight)
-- `connectorsOnly` → ConnectorGroup (color + size label)
-- `mixed` → MixedFilterGroup only
+**Bar layout per selectionKind** (all end with `| Trash | … |`):
+- `strokesOnly` → `[Size M] | [Color ▾]`
+- `shapesOnly` → `[Size M] | [Border ▾ (hollow)] [Fill ▾ (filled)]`
+- `connectorsOnly` → `[Size M] | [Color ▾]`
+- `textOnly` → `[Typeface ▾] | [±FontSize] | [B] [I] | [L C R] | [TextColor] [Highlight]`
+- `mixed` → `[Filter dropdown]` (no style controls — filters to single kind)
+- Text editing overrides kind to `textOnly` regardless of selection
 
 **Key conventions:**
 - Icons use 16x16 viewBox with integer coordinates and fill paths — stroke-based icons blur at small render sizes
 - SizeLabel/TypefaceButton use SVG `<text>` with `textRendering="geometricPrecision"` and fixed widths to prevent layout shift
 - SizeLabel always renders even for non-preset widths (mixed sizes show "Size" + blank + chevron)
-- Light dividers separate sub-sections within a group; regular dividers separate groups
+- One divider style everywhere — consistent 24px height
 
 ---
 

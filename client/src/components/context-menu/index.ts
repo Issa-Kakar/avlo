@@ -2,7 +2,7 @@ export { MenuButton } from './MenuButton';
 export { Divider } from './Divider';
 export { ButtonGroup } from './ButtonGroup';
 export { ColorCircle } from './ColorCircle';
-export { SizeStepper } from './SizeStepper';
+export { FontSizeStepper } from './FontSizeStepper';
 export { TypefaceButton } from './TypefaceButton';
 export { ContextMenu } from './ContextMenu';
 export { FilterObjectsDropdown } from './FilterObjectsDropdown';

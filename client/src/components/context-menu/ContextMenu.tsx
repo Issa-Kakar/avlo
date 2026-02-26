@@ -7,7 +7,7 @@ import { filterSelectionByKind } from '@/stores/selection-store';
 import { Divider } from './Divider';
 import { MenuButton } from './MenuButton';
 import { ButtonGroup } from './ButtonGroup';
-import { SizeStepper } from './SizeStepper';
+import { FontSizeStepper } from './FontSizeStepper';
 import { SizeLabel } from './SizeLabel';
 import { TypefaceButton } from './TypefaceButton';
 import { FilterObjectsDropdown } from './FilterObjectsDropdown';
@@ -62,6 +62,8 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
+      <SizeLabel value={width ?? 0} kind="stroke" />
+      <Divider />
       <ColorPickerPopover
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
@@ -69,8 +71,6 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
         mode="stroke"
         selectedColor={color}
       />
-      <Divider variant="light" />
-      <SizeLabel value={width ?? 0} kind="stroke" />
     </ButtonGroup>
   );
 });
@@ -79,6 +79,8 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
   const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(useShallow(selectShapeStyles));
   return (
     <ButtonGroup>
+      <SizeLabel value={width ?? 0} kind="stroke" />
+      <Divider />
       <ColorPickerPopover
         color={color}
         variant="hollow"
@@ -92,8 +94,6 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
         mode="fill"
         selectedColor={fillColor}
       />
-      <Divider variant="light" />
-      <SizeLabel value={width ?? 0} kind="stroke" />
     </ButtonGroup>
   );
 });
@@ -103,16 +103,16 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   return (
     <ButtonGroup>
       <TypefaceButton />
-      <Divider variant="light" />
-      {fontSize !== null && <SizeStepper value={fontSize} />}
-      <Divider variant="light" />
+      <Divider />
+      {fontSize !== null && <FontSizeStepper value={fontSize} />}
+      <Divider />
       <MenuButton className="ctx-btn-sq">
         <IconBold />
       </MenuButton>
       <MenuButton className="ctx-btn-sq">
         <IconItalic />
       </MenuButton>
-      <Divider variant="light" />
+      <Divider />
       <div className="ctx-group-tight">
         <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'}>
           <IconAlignTextLeft />
@@ -124,7 +124,7 @@ const TextStyleGroup = memo(function TextStyleGroup() {
           <IconAlignTextRight />
         </MenuButton>
       </div>
-      <Divider variant="light" />
+      <Divider />
       <MenuButton className="ctx-btn-color">
         <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
       </MenuButton>
@@ -139,6 +139,8 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
   return (
     <ButtonGroup>
+      <SizeLabel value={width ?? 0} kind="connector" />
+      <Divider />
       <ColorPickerPopover
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
@@ -146,8 +148,6 @@ const ConnectorGroup = memo(function ConnectorGroup() {
         mode="stroke"
         selectedColor={color}
       />
-      <Divider variant="light" />
-      <SizeLabel value={width ?? 0} kind="connector" />
     </ButtonGroup>
   );
 });
