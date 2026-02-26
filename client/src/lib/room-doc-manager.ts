@@ -1074,6 +1074,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           this.dirtyRects.push(bboxToBounds(newBBox));
         } else {
           // BBox unchanged but may still need repaint
+          // Shapes: shapeType affects cached Path2D but not bbox — always evict
+          if (kind === 'shape') {
+            this.cacheEvictIds.add(id);
+          }
           // Text content changes always need repaint (text changed within same bounds)
           if (isTextContentChange || kind !== 'text') {
             this.dirtyRects.push(bboxToBounds(newBBox));
@@ -1086,14 +1090,28 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     const sel = useSelectionStore.getState();
     if (sel.selectedIdSet.size > 0) {
       for (const id of deletedIds) {
-        if (sel.selectedIdSet.has(id)) { sel.clearSelection(); break; }
+        if (sel.selectedIdSet.has(id)) {
+          sel.clearSelection();
+          break;
+        }
       }
       if (useSelectionStore.getState().selectedIdSet.size > 0) {
-        let refresh = false, reposition = false;
-        for (const id of touchedIds) { if (sel.selectedIdSet.has(id)) { refresh = true; break; } }
-        for (const id of bboxChangedIds) { if (sel.selectedIdSet.has(id)) { reposition = true; break; } }
+        let refresh = false,
+          reposition = false;
+        for (const id of touchedIds) {
+          if (sel.selectedIdSet.has(id)) {
+            refresh = true;
+            break;
+          }
+        }
+        for (const id of bboxChangedIds) {
+          if (sel.selectedIdSet.has(id)) {
+            reposition = true;
+            break;
+          }
+        }
         if (refresh) useSelectionStore.getState().refreshStyles();
-        if (reposition) useSelectionStore.setState(s => ({ boundsVersion: s.boundsVersion + 1 }));
+        if (reposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       }
     }
   }
@@ -1376,10 +1394,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           }
           this.openGate('wsSynced');
         } else {
-          this.closeGate('wsSynced'); 
+          this.closeGate('wsSynced');
         }
       });
-      
+
       // Note: Document updates are already handled by the existing Y.Doc update observer
       // The y-websocket provider triggers Y.Doc updates which are handled by setupObservers()
       // No need for additional provider-specific update listeners

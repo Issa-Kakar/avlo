@@ -4,7 +4,12 @@ import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
 import { filterSelectionByKind } from '@/stores/selection-store';
-import { setSelectedWidth, setSelectedColor, setSelectedFillColor, deleteSelected } from '@/lib/utils/selection-actions';
+import {
+  setSelectedWidth,
+  setSelectedColor,
+  setSelectedFillColor,
+  deleteSelected,
+} from '@/lib/utils/selection-actions';
 import { NO_FILL } from './color-palette';
 
 import { MenuButton } from './MenuButton';
@@ -14,11 +19,17 @@ import { SizeLabel } from './SizeLabel';
 import { TypefaceButton } from './TypefaceButton';
 import { FilterObjectsDropdown } from './FilterObjectsDropdown';
 import { ColorPickerPopover } from './ColorPickerPopover';
+import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import {
-  IconAlignTextLeft, IconAlignTextCenter, IconAlignTextRight,
-  TextColorIcon, HighlightIcon,
-  IconBold, IconItalic,
-  IconMoreDots, IconTrash,
+  IconAlignTextLeft,
+  IconAlignTextCenter,
+  IconAlignTextRight,
+  TextColorIcon,
+  HighlightIcon,
+  IconBold,
+  IconItalic,
+  IconMoreDots,
+  IconTrash,
 } from './icons';
 
 // === Selectors (stable module-level references) ===
@@ -61,7 +72,9 @@ const MixedFilterGroup = memo(function MixedFilterGroup() {
 });
 
 const StrokeStyleGroup = memo(function StrokeStyleGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
+  const { color, colorMixed, colorSecond, width } = useSelectionStore(
+    useShallow(selectStrokeStyles),
+  );
   return (
     <ButtonGroup>
       <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
@@ -79,7 +92,9 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
 });
 
 const ShapeStyleGroup = memo(function ShapeStyleGroup() {
-  const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(useShallow(selectShapeStyles));
+  const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(
+    useShallow(selectShapeStyles),
+  );
   return (
     <ButtonGroup>
       <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
@@ -104,7 +119,9 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
 });
 
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, textAlign, color, colorMixed } = useSelectionStore(useShallow(selectTextStyles));
+  const { fontSize, textAlign, color, colorMixed } = useSelectionStore(
+    useShallow(selectTextStyles),
+  );
   return (
     <ButtonGroup>
       <TypefaceButton />
@@ -141,7 +158,9 @@ const TextStyleGroup = memo(function TextStyleGroup() {
 });
 
 const ConnectorGroup = memo(function ConnectorGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
+  const { color, colorMixed, colorSecond, width } = useSelectionStore(
+    useShallow(selectConnectorStyles),
+  );
   return (
     <ButtonGroup>
       <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
@@ -186,13 +205,40 @@ function ContextMenuBar() {
   return (
     <div className="ctx-menu">
       {effectiveKind === 'mixed' ? (
-        <><MixedFilterGroup /><div className="ctx-divider" /></>
+        <>
+          <MixedFilterGroup />
+          <div className="ctx-divider" />
+        </>
       ) : (
         <>
-          {effectiveKind === 'strokesOnly' && <><StrokeStyleGroup /><div className="ctx-divider" /></>}
-          {effectiveKind === 'shapesOnly' && <><ShapeStyleGroup /><div className="ctx-divider" /></>}
-          {effectiveKind === 'textOnly' && <><TextStyleGroup /><div className="ctx-divider" /></>}
-          {effectiveKind === 'connectorsOnly' && <><ConnectorGroup /><div className="ctx-divider" /></>}
+          {effectiveKind === 'strokesOnly' && (
+            <>
+              <StrokeStyleGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
+          {effectiveKind === 'shapesOnly' && (
+            <>
+              <ShapeTypeDropdown mode="shapes" />
+              <div className="ctx-divider" />
+              <ShapeStyleGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
+          {effectiveKind === 'textOnly' && (
+            <>
+              <ShapeTypeDropdown mode="text" />
+              <div className="ctx-divider" />
+              <TextStyleGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
+          {effectiveKind === 'connectorsOnly' && (
+            <>
+              <ConnectorGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
         </>
       )}
       <CommonActionsGroup />

@@ -61,9 +61,9 @@ Exclusion zones: top 72px (ToolPanel + padding), bottom 76px for flip (ZoomContr
 | Kind | Groups |
 |------|--------|
 | `strokesOnly` | `[SizeLabel] \| [ColorPicker]` |
-| `shapesOnly` | `[SizeLabel] \| [BorderColor(hollow)] [FillColor(filled)]` |
+| `shapesOnly` | `[ShapeType ▾] \| [SizeLabel] \| [BorderColor(hollow)] [FillColor(filled)]` |
 | `connectorsOnly` | `[SizeLabel] \| [ColorPicker]` |
-| `textOnly` | `[Typeface] \| [FontSizeStepper] \| [B] [I] \| [L C R] \| [TextColor] [Highlight]` |
+| `textOnly` | `[ShapeType ▾] \| [Typeface] \| [FontSizeStepper] \| [B] [I] \| [L C R] \| [TextColor] [Highlight]` |
 | `mixed` | `[FilterDropdown]` (no style controls — filters to single kind) |
 
 All kinds end with: `| Trash | ... |`
@@ -85,6 +85,8 @@ Text editing overrides kind to `textOnly` regardless of selection.
 | Shape fill color picker | `setSelectedFillColor(color \| null)` | Shapes only; `NO_FILL` sentinel → `null` |
 | Connector color picker | `setSelectedColor(color)` | All selected objects |
 | SizeLabel dropdown (S/M/L/XL) | `setSelectedWidth(size)` | All selected objects |
+| ShapeType dropdown (shapes mode) | `setSelectedShapeType(key)` | Shapes only; mutates Y.Map `shapeType`, calls `refreshStyles()` |
+| ShapeType dropdown (text mode) | no-op | All items no-op (future: shape↔text conversion) |
 | Trash button | `deleteSelected()` | Anchor cleanup + delete + clearSelection |
 
 ## Key Conventions
@@ -93,7 +95,7 @@ Text editing overrides kind to `textOnly` regardless of selection.
 - SizeLabel/TypefaceButton/FontSizeStepper: SVG `<text>` with `textRendering="geometricPrecision"` — prevents subpixel shift during `scale(0.96)` hide/show animation
 - SizeLabel is a dropdown trigger (click opens S/M/L/XL preset menu with checkmark on active item)
 - Divider is inlined as `<div className="ctx-divider" />` — no component wrapper
-- Dropdowns (ColorPickerPopover, SizeLabel, FilterObjectsDropdown) use same pattern: local `useState` for open, `useRef` + `useEffect` for outside-click dismiss, `onMouseDown preventDefault`
+- Dropdowns (ColorPickerPopover, SizeLabel, ShapeTypeDropdown, FilterObjectsDropdown) use same pattern: local `useState` for open, `useRef` + `useEffect` for outside-click dismiss, `onMouseDown preventDefault`
 - `MenuButton` uses `mouseDown preventDefault` to keep canvas focus
 
 ---
@@ -243,4 +245,15 @@ Gesture flow:
 - **`SizeLabel.tsx`** — Refactored from simple button to dropdown component. `useState` + outside-click dismiss (same pattern as `ColorPickerPopover`). Shows S/M/L/XL preset items with checkmark on active, numeric `px` value right-aligned. Props: `onClick` removed, `onSelect?: (size: number) => void` added. Stroke presets: 6/10/14/18. Connector presets: 2/4/6/8.
 - **`icons/MenuIcons.tsx`** — Added `IconCheck` (16×16 fill-based checkmark path). Exported from `icons/index.ts` and `context-menu/index.ts`.
 - **`ContextMenu.tsx`** — Wired all mutation actions: `onSelect={setSelectedWidth}` on all 3 SizeLabel instances, `onSelect={setSelectedColor}` on stroke/border/connector ColorPickerPopovers, `onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}` on fill ColorPickerPopover, `onClick={deleteSelected}` on trash button. Imports: `setSelectedWidth`, `setSelectedColor`, `setSelectedFillColor`, `deleteSelected` from `selection-actions.ts`, `NO_FILL` from `color-palette.ts`.
+- **Typecheck**: all workspaces pass clean.
+
+**Session 10 — ShapeType dropdown, cache eviction fix, filter improvements**
+- **`icons/ShapeTypeIcons.tsx`** — **New file.** Four fill-based 16×16 shape type icons using `evenodd` cutout paths (hollow shapes, not stroke — matches context-menu icon convention): `IconRectType` (sharp rect), `IconCircleType` (circle), `IconDiamondType` (rotated square), `IconRoundedRectType` (rounded rect rx=4).
+- **`ShapeTypeDropdown.tsx`** — **New file.** Dropdown for switching shape types (or showing current type for text). Props: `mode: 'shapes' | 'text'`. Follows SizeLabel pattern: `useState` + `useRef` + `useEffect` outside-click dismiss, `onMouseDown preventDefault`. Subscribes to `selectedStyles.shapeType` from selection store. **Trigger:** shapes mode shows current type icon (mixed/null → composite `IconShapes`, specific → matching icon), text mode always shows `IconTextType`. **Dropdown:** 5 items (Rectangle, Circle, Diamond, Rounded, Text) with 22px icons, left-aligned submenu (`ctx-submenu-type`). Active item highlighted with blue text (`ctx-submenu-item-active`) + right-aligned checkmark (`ctx-type-check`, `margin-left: auto`). **Actions:** shapes mode calls `setSelectedShapeType(key)` for shape items, text item is no-op (future shape→text conversion). Text mode: all items no-op.
+- **`selection-utils.ts`** — `computeStyles` now returns `shapeType: 'text'` for `textOnly` selections (was `null`). Enables the ShapeTypeDropdown to highlight the "Text" item in text mode without branching on mode — active check is uniformly `shapeType === key`.
+- **`ContextMenu.tsx`** — Inserted `<ShapeTypeDropdown>` as leftmost item in both `shapesOnly` and `textOnly` bars, each followed by a divider before the existing style groups.
+- **`context-menu.css`** — Added: `.ctx-btn-type` (34px height trigger button), `.ctx-submenu-type` (left-aligned, `left: 0; transform: none`), `.ctx-type-item` (36px height, 13px font, 10px gap), `.ctx-type-check` (`margin-left: auto`), `.ctx-submenu-filter` + `.ctx-filter-item` (matching left-aligned style for filter dropdown). `.ctx-submenu-item-active` now sets `color: #3b82f6` (blue text + icons via `currentColor` inheritance) — applies to both SizeLabel and ShapeType active items.
+- **`FilterObjectsDropdown.tsx`** — Replaced `onMouseLeave` dismiss with `useRef` + `useEffect` outside-click dismiss (matches all other dropdowns). Added `ctx-submenu-filter` class for left-aligned submenu. Bumped item icons to 22px, trigger text to 13px. Added `ctx-filter-item` class for bigger items.
+- **`room-doc-manager.ts`** — **Cache eviction fix:** In `applyObjectChanges`, the non-bbox-change else branch now evicts cache for shape objects (`kind === 'shape'`). Root cause: `shapeType` mutations change the cached Path2D geometry but not the BBox (computed from frame + width only), so cache was never evicted and stale paths kept rendering. Fix is cheap — shape Path2D rebuilds are fast and the eviction only fires on actual Y.Map mutations, not per frame.
+- **Barrel exports** — `icons/index.ts`: added `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`. `context-menu/index.ts`: added `ShapeTypeDropdown` + 4 icon exports.
 - **Typecheck**: all workspaces pass clean.

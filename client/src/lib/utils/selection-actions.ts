@@ -1,7 +1,11 @@
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { getStartAnchor, getEndAnchor } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, type SizePreset, type ConnectorSizePreset, type ShapeVariant } from '@/stores/device-ui-store';
+import {
+  useDeviceUIStore,
+  type SizePreset,
+  type ConnectorSizePreset,
+} from '@/stores/device-ui-store';
 import * as Y from 'yjs';
 
 // === Helpers ===
@@ -82,10 +86,6 @@ export function setSelectedWidth(width: number): void {
 
 // === Shape Type ===
 
-const SHAPE_TO_VARIANT: Record<string, ShapeVariant> = {
-  rect: 'rectangle', roundedRect: 'rectangle', ellipse: 'ellipse', diamond: 'diamond',
-};
-
 export function setSelectedShapeType(shapeType: string): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
@@ -99,8 +99,6 @@ export function setSelectedShapeType(shapeType: string): void {
     }
   });
 
-  const variant = SHAPE_TO_VARIANT[shapeType];
-  if (variant) useDeviceUIStore.getState().setShapeVariant(variant);
   useSelectionStore.getState().refreshStyles();
 }
 
