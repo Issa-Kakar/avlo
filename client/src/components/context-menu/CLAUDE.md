@@ -76,12 +76,24 @@ Text editing overrides kind to `textOnly` regardless of selection.
 - **`selection-utils.ts`** — `computeStyles()` (single-pass, early break), `computeSelectionComposition()`, `computeSelectionBounds()`, `SelectedStyles` type, `stylesEqual()`
 - **`selection-actions.ts`** — Free mutation functions: `setSelectedColor`, `setSelectedFillColor`, `setSelectedWidth`, `setSelectedShapeType`, `deleteSelected`. Pattern: read selectedIds from store → `getActiveRoomDoc().mutate()` → persist to device-ui-store → `refreshStyles()`
 
+## Wired Actions
+
+| Button | Action | Scope |
+|--------|--------|-------|
+| Stroke color picker | `setSelectedColor(color)` | All selected objects |
+| Shape border color picker | `setSelectedColor(color)` | All selected objects |
+| Shape fill color picker | `setSelectedFillColor(color \| null)` | Shapes only; `NO_FILL` sentinel → `null` |
+| Connector color picker | `setSelectedColor(color)` | All selected objects |
+| SizeLabel dropdown (S/M/L/XL) | `setSelectedWidth(size)` | All selected objects |
+| Trash button | `deleteSelected()` | Anchor cleanup + delete + clearSelection |
+
 ## Key Conventions
 
 - Icons: 16x16 viewBox, integer coords, fill-based paths (not stroke) for crisp rendering at small sizes
-- SizeLabel/TypefaceButton: SVG `<text>` with `textRendering="geometricPrecision"` and fixed widths
-- SizeLabel always renders — non-preset/mixed values show "Size" + blank + chevron
-- One Divider style everywhere (24px height)
+- SizeLabel/TypefaceButton/FontSizeStepper: SVG `<text>` with `textRendering="geometricPrecision"` — prevents subpixel shift during `scale(0.96)` hide/show animation
+- SizeLabel is a dropdown trigger (click opens S/M/L/XL preset menu with checkmark on active item)
+- Divider is inlined as `<div className="ctx-divider" />` — no component wrapper
+- Dropdowns (ColorPickerPopover, SizeLabel, FilterObjectsDropdown) use same pattern: local `useState` for open, `useRef` + `useEffect` for outside-click dismiss, `onMouseDown preventDefault`
 - `MenuButton` uses `mouseDown preventDefault` to keep canvas focus
 
 ---
@@ -207,22 +219,28 @@ Gesture flow:
   end()    → controller.show()  → active+visible=true, menuOpen set, RAF → position → class removed
 ```
 
-## CURRENT ISSUES (post-session 7)
+## CURRENT ISSUES (post-session 9)
 
 ### 1. Zoom controls exclusion zone is full-width bottom edge (carried from session 6)
 - `FLIP_PADDING.bottom = 76` prevents bottom placement across the entire viewport bottom. Zoom controls are bottom-left only (~176px wide). Over-restricts for center/right selections. Needs per-corner exclusion logic or `shift` with asymmetric padding.
 
-### 2. No actions wired on any buttons
-- Carried forward from session 5/6. All onClick handlers are omitted or noop. Structure renders but nothing is interactive.
+### 2. Text actions not yet wired
+- Bold/Italic active state, text size stepping (±), alignment buttons, text color, highlight — all need implementation.
 
-### 3. UI ordering and component content still needs work
-- TextStyleGroup group ordering, color button wiring, Bold/Italic active state, text size stepping actions — all need implementation.
-
-### 4. `computeStyles` returns `EMPTY_STYLES` for mixed selections
+### 3. `computeStyles` returns `EMPTY_STYLES` for mixed selections
 - In `selection-utils.ts`, `computeStyles` immediately returns `EMPTY_STYLES` when `kind === 'mixed'`. Style-dependent groups render with empty/default values.
 
 **Session 8 — Selection mutation actions + store prep**
 - **`client/src/lib/utils/selection-utils.ts`** — Added `shapeType: string | null` to `SelectedStyles` interface, `EMPTY_STYLES`, `computeStyles` (tracked only for `shapesOnly` kind, with mixed detection via `getShapeType` accessor), and `stylesEqual`. Import added: `getShapeType` from `@avlo/shared`.
 - **`client/src/lib/utils/selection-actions.ts`** — **New file.** Five free mutation functions for context menu wiring: `setSelectedColor(color)` (all objects, persists drawingColor), `setSelectedFillColor(fillColor)` (shapes only, null removes fill, persists fill toggle + color), `setSelectedWidth(width)` (all objects, persists to connector or drawing size based on selectionKind), `setSelectedShapeType(shapeType)` (shapes only, maps to ShapeVariant for persistence), `deleteSelected()` (mirrors EraserTool anchor cleanup — builds anchorCleanups map for surviving connectors, single Y.js transaction: clear dead anchors then delete objects, clears selection after). All follow pattern: read selectedIds from store → `getActiveRoomDoc().mutate()` → persist to device-ui-store → `refreshStyles()`.
 - **`client/src/stores/device-ui-store.ts`** — Expanded tool-switch subscription: when switching away from select tool (`prevState.activeTool === 'select'`), calls `useSelectionStore.getState().clearSelection()`. Import added: `useSelectionStore` (no circular dep — selection-store does not import device-ui-store).
+- **Typecheck**: all workspaces pass clean.
+
+**Session 9 — Cleanup, font size fix, size dropdown, action wiring**
+- **`Divider.tsx`** — **Deleted.** Inlined all 8 usages in `ContextMenu.tsx` to `<div className="ctx-divider" />`. Removed from `index.ts` barrel.
+- **`context-menu.css`** — Removed dead selectors: `.ctx-font-name`, `.ctx-size-label-prefix`, `.ctx-size-label-value`. Color swatches bumped from 24px→28px, grid gap 5px→6px, padding 10/12px→12/14px. Added `.ctx-submenu-item-active` (blue bg), `.ctx-size-item-label` (600 weight, 14px), `.ctx-size-item-value` (right-aligned, grey, tabular-nums).
+- **`FontSizeStepper.tsx`** — Converted plain text `{value}` to SVG `<text>` with `textRendering="geometricPrecision"` (26×16 SVG, centered via `textAnchor="middle"`). Fixes subpixel shift during `scale(0.96)` hide/show animation — matches SizeLabel pattern.
+- **`SizeLabel.tsx`** — Refactored from simple button to dropdown component. `useState` + outside-click dismiss (same pattern as `ColorPickerPopover`). Shows S/M/L/XL preset items with checkmark on active, numeric `px` value right-aligned. Props: `onClick` removed, `onSelect?: (size: number) => void` added. Stroke presets: 6/10/14/18. Connector presets: 2/4/6/8.
+- **`icons/MenuIcons.tsx`** — Added `IconCheck` (16×16 fill-based checkmark path). Exported from `icons/index.ts` and `context-menu/index.ts`.
+- **`ContextMenu.tsx`** — Wired all mutation actions: `onSelect={setSelectedWidth}` on all 3 SizeLabel instances, `onSelect={setSelectedColor}` on stroke/border/connector ColorPickerPopovers, `onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}` on fill ColorPickerPopover, `onClick={deleteSelected}` on trash button. Imports: `setSelectedWidth`, `setSelectedColor`, `setSelectedFillColor`, `deleteSelected` from `selection-actions.ts`, `NO_FILL` from `color-palette.ts`.
 - **Typecheck**: all workspaces pass clean.

@@ -110,17 +110,6 @@
   flex-shrink: 0;
 }
 
-/* ===== Font Name ===== */
-
-.ctx-font-name {
-  font-size: var(--text-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100px;
-}
-
 /* ===== Divider ===== */
 
 .ctx-divider {
@@ -296,6 +285,23 @@
   background: rgba(0, 0, 0, 0.05);
 }
 
+.ctx-submenu-item-active {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.ctx-size-item-label {
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 24px;
+}
+
+.ctx-size-item-value {
+  margin-left: auto;
+  color: #9CA3AF;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ===== Filter Button ===== */
 
 .ctx-btn-filter {
@@ -373,30 +379,18 @@
   outline-offset: -1px;
 }
 
-.ctx-size-label-prefix {
-  font-size: 14px;
-  font-weight: 700;
-  color: #111827;
-}
-
-.ctx-size-label-value {
-  font-size: 14px;
-  font-weight: 700;
-  color: #111827;
-}
-
 /* ===== Color Picker Popover ===== */
 
 .ctx-color-grid {
   display: grid;
   grid-template-columns: repeat(9, 1fr);
-  gap: 5px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 12px 14px;
 }
 
 .ctx-color-swatch {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: 1.5px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
@@ -425,8 +419,8 @@
 /* ===== No-Fill Swatch ===== */
 
 .ctx-color-swatch-nofill {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: 1.5px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;

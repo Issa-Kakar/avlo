@@ -4,7 +4,9 @@ import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
 import { filterSelectionByKind } from '@/stores/selection-store';
-import { Divider } from './Divider';
+import { setSelectedWidth, setSelectedColor, setSelectedFillColor, deleteSelected } from '@/lib/utils/selection-actions';
+import { NO_FILL } from './color-palette';
+
 import { MenuButton } from './MenuButton';
 import { ButtonGroup } from './ButtonGroup';
 import { FontSizeStepper } from './FontSizeStepper';
@@ -62,14 +64,15 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" />
-      <Divider />
+      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
         secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}
+        onSelect={setSelectedColor}
       />
     </ButtonGroup>
   );
@@ -79,20 +82,22 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
   const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(useShallow(selectShapeStyles));
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" />
-      <Divider />
+      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant="hollow"
         secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}
+        onSelect={setSelectedColor}
       />
       <ColorPickerPopover
         color={fillColor ?? '#fff'}
         variant={fillColor === null ? 'none' : 'filled'}
         mode="fill"
         selectedColor={fillColor}
+        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
       />
     </ButtonGroup>
   );
@@ -103,16 +108,16 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   return (
     <ButtonGroup>
       <TypefaceButton />
-      <Divider />
+      <div className="ctx-divider" />
       {fontSize !== null && <FontSizeStepper value={fontSize} />}
-      <Divider />
+      <div className="ctx-divider" />
       <MenuButton className="ctx-btn-sq">
         <IconBold />
       </MenuButton>
       <MenuButton className="ctx-btn-sq">
         <IconItalic />
       </MenuButton>
-      <Divider />
+      <div className="ctx-divider" />
       <div className="ctx-group-tight">
         <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'}>
           <IconAlignTextLeft />
@@ -124,7 +129,7 @@ const TextStyleGroup = memo(function TextStyleGroup() {
           <IconAlignTextRight />
         </MenuButton>
       </div>
-      <Divider />
+      <div className="ctx-divider" />
       <MenuButton className="ctx-btn-color">
         <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
       </MenuButton>
@@ -139,14 +144,15 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="connector" />
-      <Divider />
+      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
+      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
         secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}
+        onSelect={setSelectedColor}
       />
     </ButtonGroup>
   );
@@ -155,7 +161,7 @@ const ConnectorGroup = memo(function ConnectorGroup() {
 const CommonActionsGroup = memo(function CommonActionsGroup() {
   return (
     <ButtonGroup>
-      <MenuButton className="ctx-btn-sq ctx-btn-danger">
+      <MenuButton className="ctx-btn-sq ctx-btn-danger" onClick={deleteSelected}>
         <IconTrash />
       </MenuButton>
     </ButtonGroup>
@@ -180,17 +186,17 @@ function ContextMenuBar() {
   return (
     <div className="ctx-menu">
       {effectiveKind === 'mixed' ? (
-        <><MixedFilterGroup /><Divider /></>
+        <><MixedFilterGroup /><div className="ctx-divider" /></>
       ) : (
         <>
-          {effectiveKind === 'strokesOnly' && <><StrokeStyleGroup /><Divider /></>}
-          {effectiveKind === 'shapesOnly' && <><ShapeStyleGroup /><Divider /></>}
-          {effectiveKind === 'textOnly' && <><TextStyleGroup /><Divider /></>}
-          {effectiveKind === 'connectorsOnly' && <><ConnectorGroup /><Divider /></>}
+          {effectiveKind === 'strokesOnly' && <><StrokeStyleGroup /><div className="ctx-divider" /></>}
+          {effectiveKind === 'shapesOnly' && <><ShapeStyleGroup /><div className="ctx-divider" /></>}
+          {effectiveKind === 'textOnly' && <><TextStyleGroup /><div className="ctx-divider" /></>}
+          {effectiveKind === 'connectorsOnly' && <><ConnectorGroup /><div className="ctx-divider" /></>}
         </>
       )}
       <CommonActionsGroup />
-      <Divider />
+      <div className="ctx-divider" />
       <OverflowButton />
     </div>
   );

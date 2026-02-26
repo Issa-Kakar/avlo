@@ -1,5 +1,4 @@
 export { MenuButton } from './MenuButton';
-export { Divider } from './Divider';
 export { ButtonGroup } from './ButtonGroup';
 export { ColorCircle } from './ColorCircle';
 export { FontSizeStepper } from './FontSizeStepper';
@@ -25,4 +24,5 @@ export {
   IconConnectorLine,
   IconTextType,
   IconTrash,
+  IconCheck,
 } from './icons';
