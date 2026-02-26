@@ -25,7 +25,7 @@ export const ColorCircle = ({ color, size = 18, variant = 'filled', secondColor,
               border: '1px solid rgba(0,0,0,0.08)',
             }
           : variant === 'hollow'
-            ? { background: 'transparent', border: `2.5px solid ${color}` }
+            ? { background: 'transparent', border: `3px solid ${color}` }
             : variant === 'none'
               ? { border: '1px solid rgba(0,0,0,0.08)' }
               : { background: color, border: '1px solid rgba(0,0,0,0.08)' }),

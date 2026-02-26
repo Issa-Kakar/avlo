@@ -3,7 +3,7 @@
 .ctx-menu {
   display: inline-flex;
   align-items: center;
-  height: 44px;
+  height: 42px;
   padding: 4px 6px;
   background: rgba(255, 255, 255, 0.97);
   border: 1px solid rgba(0, 0, 0, 0.06);
@@ -17,8 +17,8 @@
 /* ===== Base Button ===== */
 
 .ctx-btn {
-  height: 36px;
-  min-width: 36px;
+  height: 34px;
+  min-width: 34px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -60,7 +60,7 @@
 /* ===== Button Variants ===== */
 
 .ctx-btn-sq {
-  width: 36px;
+  width: 34px;
   padding: 0;
 }
 
@@ -70,7 +70,7 @@
 }
 
 .ctx-btn-color {
-  width: 36px;
+  width: 34px;
   padding: 0;
 }
 
@@ -79,19 +79,46 @@
   height: 20px;
 }
 
+/* Color button with dropdown chevron */
+.ctx-btn-color-dd {
+  width: 46px;
+  padding: 0 5px 0 9px;
+  gap: 5px;
+}
+
+/* Dropdown chevron arrow (shared by color-dd, size label, font button) */
+.ctx-dd-arrow {
+  width: 9px;
+  height: 9px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
 .ctx-btn-more {
-  min-width: 30px;
+  min-width: 32px;
 }
 
 .ctx-btn-font {
-  padding: 0 8px;
-  gap: 4px;
+  padding: 0 10px;
+  gap: 6px;
+  min-width: 72px;
 }
 
-.ctx-btn-font svg {
+.ctx-btn-font svg:last-child {
   width: 10px;
   height: 10px;
   flex-shrink: 0;
+}
+
+/* ===== Font Name ===== */
+
+.ctx-font-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
 }
 
 /* ===== Divider ===== */
@@ -99,8 +126,16 @@
 .ctx-divider {
   width: 1px;
   height: 24px;
-  background: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.1);
   margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.ctx-divider-light {
+  width: 1px;
+  height: 16px;
+  background: rgba(0, 0, 0, 0.09);
+  margin: 0 3px;
   flex-shrink: 0;
 }
 
@@ -118,14 +153,11 @@
   display: flex;
   align-items: center;
   gap: 0;
-  background: rgba(0, 0, 0, 0.03);
-  padding: 2px;
-  border-radius: var(--radius-sm);
 }
 
 .ctx-size-btn {
-  width: 28px;
-  height: 32px;
+  width: 22px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -158,8 +190,8 @@
 }
 
 .ctx-size-value {
-  min-width: 36px;
-  height: 32px;
+  min-width: 26px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -186,15 +218,25 @@
   border-radius: 4px;
 }
 
-/* ===== Font Name ===== */
+/* ===== Alignment Buttons — Tight Group ===== */
 
-.ctx-font-name {
-  font-size: var(--text-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100px;
+.ctx-group-tight {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.ctx-btn-align {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 4px;
+}
+
+/* 16x16 viewBox → render at 16px for 1:1 pixel grid (no blur) */
+.ctx-btn-align svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* ===== Floating Container ===== */
@@ -228,7 +270,7 @@
 
 .ctx-submenu {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 8px);
   left: 50%;
   transform: translateX(-50%);
   min-width: 160px;
@@ -237,13 +279,7 @@
   border-radius: var(--radius-md);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1), 0 1px 4px rgba(0, 0, 0, 0.06);
   padding: 4px;
-  animation: ctx-submenu-enter 120ms ease;
   z-index: 10;
-}
-
-@keyframes ctx-submenu-enter {
-  from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
 .ctx-submenu-item {
@@ -282,14 +318,17 @@
 }
 
 .ctx-filter-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #1F2937;
+  font-size: 10px;
+  font-weight: 500;
+  color: #6B7280;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .ctx-filter-count {
-  font-size: 11px;
-  color: #6B7280;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1F2937;
 }
 
 .ctx-filter-num {
@@ -315,34 +354,58 @@
   background: rgba(239, 68, 68, 0.08);
 }
 
-/* ===== Size Label ===== */
+/* ===== Size Label Button ===== */
 
-.ctx-size-label {
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: #374151;
-  letter-spacing: 0.02em;
+.ctx-size-label-btn {
+  height: 34px;
+  padding: 0 10px;
+  gap: 8px;
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+  font-family: var(--font-stack);
+  transition: background var(--transition-fast);
+}
+
+.ctx-size-label-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ctx-size-label-btn:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
 }
 
 .ctx-size-label-prefix {
-  font-weight: 500;
-  color: #6B7280;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.ctx-size-label-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
 }
 
 /* ===== Color Picker Popover ===== */
 
 .ctx-color-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
-  padding: 8px;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 5px;
+  padding: 10px 12px;
 }
 
 .ctx-color-swatch {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1.5px solid rgba(0, 0, 0, 0.08);
   cursor: pointer;
   padding: 0;
   transition: transform var(--transition-fast);
@@ -355,4 +418,38 @@
 .ctx-color-swatch:focus-visible {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
+}
+
+.ctx-color-swatch.pastel {
+  border-color: rgba(0, 0, 0, 0.13);
+}
+
+.ctx-color-swatch.selected {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1.5px #3b82f6;
+}
+
+/* ===== No-Fill Swatch ===== */
+
+.ctx-color-swatch-nofill {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  transition: transform var(--transition-fast);
+}
+
+.ctx-color-swatch-nofill:hover {
+  transform: scale(1.15);
+}
+
+.ctx-color-swatch-nofill.selected {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1.5px #3b82f6;
 }

@@ -33,3 +33,10 @@ export const IconMoreDots = (props: SvgProps) => (
     <circle cx="8" cy="12" r="1.5" />
   </svg>
 );
+
+export const IconNoFill = (props: SvgProps) => (
+  <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" {...props}>
+    <circle cx="9" cy="9" r="7" stroke="#9CA3AF" strokeWidth="1.8" />
+    <line x1="4" y1="14" x2="14" y2="4" stroke="#9CA3AF" strokeWidth="1.8" strokeLinecap="round" />
+  </svg>
+);

@@ -7,7 +7,7 @@ export { TypefaceButton } from './TypefaceButton';
 export { ContextMenu } from './ContextMenu';
 export { FilterObjectsDropdown } from './FilterObjectsDropdown';
 export { SizeLabel } from './SizeLabel';
-export { CONTEXT_MENU_COLORS } from './color-palette';
+export { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
 
 export {
   IconAlignTextLeft,
@@ -19,6 +19,7 @@ export {
   IconMinus,
   IconPlus,
   IconMoreDots,
+  IconNoFill,
   IconShapes,
   IconPenStroke,
   IconConnectorLine,

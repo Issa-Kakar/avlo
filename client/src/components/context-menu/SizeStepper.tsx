@@ -1,5 +1,5 @@
 import { MenuButton } from './MenuButton';
-import { IconMinus, IconPlus } from './icons';
+import { IconMinus, IconPlus } from './icons/MenuIcons';
 
 interface SizeStepperProps {
   value: number;

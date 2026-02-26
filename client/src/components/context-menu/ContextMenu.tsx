@@ -31,7 +31,13 @@ const selectStrokeStyles = (s: SelectionStore) => ({
   colorSecond: s.selectedStyles.colorSecond,
   width: s.selectedStyles.width,
 });
-const selectFillColor = (s: SelectionStore) => s.selectedStyles.fillColor;
+const selectShapeStyles = (s: SelectionStore) => ({
+  color: s.selectedStyles.color,
+  colorMixed: s.selectedStyles.colorMixed,
+  colorSecond: s.selectedStyles.colorSecond,
+  width: s.selectedStyles.width,
+  fillColor: s.selectedStyles.fillColor,
+});
 const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
   textAlign: s.selectedStyles.textAlign,
@@ -60,20 +66,34 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
         secondColor={colorMixed ? colorSecond : undefined}
+        mode="stroke"
+        selectedColor={color}
       />
-      {width !== null && <SizeLabel value={width} kind="stroke" />}
+      <Divider variant="light" />
+      <SizeLabel value={width ?? 0} kind="stroke" />
     </ButtonGroup>
   );
 });
 
-const FillGroup = memo(function FillGroup() {
-  const fillColor = useSelectionStore(selectFillColor);
+const ShapeStyleGroup = memo(function ShapeStyleGroup() {
+  const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(useShallow(selectShapeStyles));
   return (
     <ButtonGroup>
       <ColorPickerPopover
+        color={color}
+        variant="hollow"
+        secondColor={colorMixed ? colorSecond : undefined}
+        mode="stroke"
+        selectedColor={color}
+      />
+      <ColorPickerPopover
         color={fillColor ?? '#fff'}
         variant={fillColor === null ? 'none' : 'filled'}
+        mode="fill"
+        selectedColor={fillColor}
       />
+      <Divider variant="light" />
+      <SizeLabel value={width ?? 0} kind="stroke" />
     </ButtonGroup>
   );
 });
@@ -83,22 +103,28 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   return (
     <ButtonGroup>
       <TypefaceButton />
+      <Divider variant="light" />
       {fontSize !== null && <SizeStepper value={fontSize} />}
+      <Divider variant="light" />
       <MenuButton className="ctx-btn-sq">
         <IconBold />
       </MenuButton>
       <MenuButton className="ctx-btn-sq">
         <IconItalic />
       </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={textAlign === 'left'}>
-        <IconAlignTextLeft />
-      </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={textAlign === 'center'}>
-        <IconAlignTextCenter />
-      </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={textAlign === 'right'}>
-        <IconAlignTextRight />
-      </MenuButton>
+      <Divider variant="light" />
+      <div className="ctx-group-tight">
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'}>
+          <IconAlignTextLeft />
+        </MenuButton>
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'center'}>
+          <IconAlignTextCenter />
+        </MenuButton>
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'right'}>
+          <IconAlignTextRight />
+        </MenuButton>
+      </div>
+      <Divider variant="light" />
       <MenuButton className="ctx-btn-color">
         <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
       </MenuButton>
@@ -117,8 +143,11 @@ const ConnectorGroup = memo(function ConnectorGroup() {
         color={color}
         variant={colorMixed ? 'hollow' : 'filled'}
         secondColor={colorMixed ? colorSecond : undefined}
+        mode="stroke"
+        selectedColor={color}
       />
-      {width !== null && <SizeLabel value={width} kind="connector" />}
+      <Divider variant="light" />
+      <SizeLabel value={width ?? 0} kind="connector" />
     </ButtonGroup>
   );
 });
@@ -154,8 +183,8 @@ function ContextMenuBar() {
         <><MixedFilterGroup /><Divider /></>
       ) : (
         <>
-          {(effectiveKind === 'strokesOnly' || effectiveKind === 'shapesOnly') && <><StrokeStyleGroup /><Divider /></>}
-          {effectiveKind === 'shapesOnly' && <><FillGroup /><Divider /></>}
+          {effectiveKind === 'strokesOnly' && <><StrokeStyleGroup /><Divider /></>}
+          {effectiveKind === 'shapesOnly' && <><ShapeStyleGroup /><Divider /></>}
           {effectiveKind === 'textOnly' && <><TextStyleGroup /><Divider /></>}
           {effectiveKind === 'connectorsOnly' && <><ConnectorGroup /><Divider /></>}
         </>
