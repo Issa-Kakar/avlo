@@ -1,6 +1,6 @@
 import type { ObjectHandle, WorldBounds } from '@avlo/shared';
 import {
-  getColor, getWidth, getFillColor, getFontSize, getAlign,
+  getColor, getWidth, getFillColor, getShapeType, getFontSize, getAlign,
   bboxTupleToWorldBounds, type TextAlign,
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
@@ -20,6 +20,7 @@ export interface SelectedStyles {
   colorSecond: string | null;
   width: number | null;
   fillColor: string | null;
+  shapeType: string | null;
   fontSize: number | null;
   textAlign: TextAlign | null;
 }
@@ -28,7 +29,7 @@ export interface SelectedStyles {
 
 export const EMPTY_STYLES: SelectedStyles = {
   color: '#262626', colorMixed: false, colorSecond: null,
-  width: null, fillColor: null, fontSize: null, textAlign: null,
+  width: null, fillColor: null, shapeType: null, fontSize: null, textAlign: null,
 };
 export const EMPTY_KIND_COUNTS: KindCounts = { strokes: 0, shapes: 0, text: 0, connectors: 0, total: 0 };
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
@@ -120,6 +121,7 @@ export function computeStyles(
 
   const trackWidth = kind !== 'textOnly';
   const trackFill = kind === 'shapesOnly';
+  const trackShapeType = kind === 'shapesOnly';
   const trackText = kind === 'textOnly';
 
   let firstColor: string | null = null;
@@ -129,6 +131,8 @@ export function computeStyles(
   let widthMixed = false;
   let firstFill: string | null = null;
   let fillMixed = false;
+  let firstShapeType: string | null = null;
+  let shapeTypeMixed = false;
   let firstFontSize: number | null = null;
   let fontSizeMixed = false;
   let firstAlign: TextAlign | null = null;
@@ -143,6 +147,7 @@ export function computeStyles(
       firstColor = getColor(handle.y);
       if (trackWidth) firstWidth = getWidth(handle.y);
       if (trackFill) firstFill = getFillColor(handle.y) ?? null;
+      if (trackShapeType) firstShapeType = getShapeType(handle.y);
       if (trackText) { firstFontSize = Math.round(getFontSize(handle.y)); firstAlign = getAlign(handle.y); }
       first = false;
       continue;
@@ -154,12 +159,14 @@ export function computeStyles(
     }
     if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
     if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) fillMixed = true;
+    if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType) shapeTypeMixed = true;
     if (trackText && !fontSizeMixed && Math.round(getFontSize(handle.y)) !== firstFontSize) fontSizeMixed = true;
     if (trackText && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
 
     if (colorMixed
       && (!trackWidth || widthMixed)
       && (!trackFill || fillMixed)
+      && (!trackShapeType || shapeTypeMixed)
       && (!trackText || (fontSizeMixed && alignMixed))) break;
   }
 
@@ -169,6 +176,7 @@ export function computeStyles(
     colorSecond: colorMixed ? colorSecond : null,
     width: trackWidth ? (widthMixed ? null : firstWidth) : null,
     fillColor: trackFill ? (fillMixed ? null : firstFill) : null,
+    shapeType: trackShapeType ? (shapeTypeMixed ? null : firstShapeType) : null,
     fontSize: trackText ? (fontSizeMixed ? null : firstFontSize) : null,
     textAlign: trackText ? (alignMixed ? null : firstAlign) : null,
   };
@@ -177,6 +185,6 @@ export function computeStyles(
 export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
   return a.color === b.color && a.colorMixed === b.colorMixed
     && a.colorSecond === b.colorSecond && a.width === b.width
-    && a.fillColor === b.fillColor && a.fontSize === b.fontSize
-    && a.textAlign === b.textAlign;
+    && a.fillColor === b.fillColor && a.shapeType === b.shapeType
+    && a.fontSize === b.fontSize && a.textAlign === b.textAlign;
 }

@@ -44,6 +44,8 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/renderer/DirtyRectTracker.ts` | Dirty rect accumulation, promotion to full clear |
 | `client/src/renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
 | `client/src/lib/utils/shape-path.ts` | Build Path2D from frame tuple (rect, ellipse, diamond, roundedRect) |
+| `client/src/lib/utils/selection-utils.ts` | Selection composition, bounds, style computation (SelectedStyles, computeStyles) |
+| `client/src/lib/utils/selection-actions.ts` | Selection mutation functions (setSelectedColor/FillColor/Width/ShapeType, deleteSelected) |
 
 ### Tools (All zero-arg constructors, singleton pattern)
 | File | Status |

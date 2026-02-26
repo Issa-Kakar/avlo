@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
+import { useSelectionStore } from './selection-store';
 
 export type Tool =
   | 'pen'
@@ -293,6 +294,9 @@ export function setCursorOverride(cursor: string | null): void {
 useDeviceUIStore.subscribe((state, prevState) => {
   if (state.activeTool !== prevState.activeTool) {
     applyCursor();
+    if (prevState.activeTool === 'select') {
+      useSelectionStore.getState().clearSelection();
+    }
   }
 });
 
