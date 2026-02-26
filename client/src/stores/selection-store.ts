@@ -4,6 +4,7 @@ import type { HandleId } from '@/lib/tools/types';
 import type { WorldBounds, FrameTuple } from '@avlo/shared';
 import type { SnapTarget } from '@/lib/connectors/types';
 import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
+import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import {
   getFrame, getPoints, getStart, getEnd,
   getStartAnchor, getEndAnchor, bboxTupleToWorldBounds,
@@ -525,7 +526,10 @@ export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'con
   const snapshot = getCurrentSnapshot();
   const targetKind = kind === 'strokes' ? 'stroke' : kind === 'shapes' ? 'shape' : kind === 'connectors' ? 'connector' : 'text';
   const filtered = selectedIds.filter(id => snapshot.objectsById.get(id)?.kind === targetKind);
-  if (filtered.length > 0) useSelectionStore.getState().setSelection(filtered);
+  if (filtered.length > 0) {
+    useSelectionStore.getState().setSelection(filtered);
+    invalidateOverlay();
+  }
 }
 
 // === Handle Helpers ===

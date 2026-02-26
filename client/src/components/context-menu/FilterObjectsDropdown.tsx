@@ -29,10 +29,29 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
         onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
         aria-expanded={open}
       >
-        <span className="ctx-filter-label">
-          <span className="ctx-filter-title">Filter</span>
-          <span className="ctx-filter-count">{kindCounts.total} objects</span>
-        </span>
+        <svg width={70} height={26} viewBox="0 0 70 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+          <text
+            x="0" y="9"
+            fill="#6B7280"
+            fontSize="10"
+            fontWeight="500"
+            letterSpacing="0.03em"
+            fontFamily="var(--font-stack)"
+            textRendering="geometricPrecision"
+          >
+            FILTER
+          </text>
+          <text
+            x="0" y="23"
+            fill="#1F2937"
+            fontSize="12"
+            fontWeight="600"
+            fontFamily="var(--font-stack)"
+            textRendering="geometricPrecision"
+          >
+            {kindCounts.total} objects
+          </text>
+        </svg>
         <IconChevronDown width={10} height={10} />
       </MenuButton>
 

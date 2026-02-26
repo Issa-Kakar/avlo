@@ -170,6 +170,7 @@ export class SelectTool implements PointerTool {
 
     if (hit) {
       const isSelected = selectedIds.includes(hit.id);
+      if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
       invalidateOverlay();
@@ -189,6 +190,7 @@ export class SelectTool implements PointerTool {
     }
     // Connector mode has no selection bounds → no gap, straight to background
 
+    if (selectedIds.length > 0) store.clearSelection();
     this.downTarget = 'background';
     this.phase = 'pendingClick';
     invalidateOverlay();
