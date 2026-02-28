@@ -4,7 +4,7 @@ import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { setSelectedShapeType } from '@/lib/utils/selection-actions';
 import { MenuButton } from './MenuButton';
-import { IconChevronDown, IconCheck } from './icons/MenuIcons';
+import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { IconShapes, IconTextType } from './icons/FilterIcons';
 import {
   IconRectType,
@@ -68,7 +68,7 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
         }}
         aria-expanded={open}
       >
-        <TriggerIcon width={16} height={16} />
+        <TriggerIcon width={20} height={20} />
         <IconChevronDown className="ctx-dd-arrow" />
       </MenuButton>
 

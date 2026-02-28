@@ -257,3 +257,13 @@ Gesture flow:
 - **`room-doc-manager.ts`** — **Cache eviction fix:** In `applyObjectChanges`, the non-bbox-change else branch now evicts cache for shape objects (`kind === 'shape'`). Root cause: `shapeType` mutations change the cached Path2D geometry but not the BBox (computed from frame + width only), so cache was never evicted and stale paths kept rendering. Fix is cheap — shape Path2D rebuilds are fast and the eviction only fires on actual Y.Map mutations, not per frame.
 - **Barrel exports** — `icons/index.ts`: added `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`. `context-menu/index.ts`: added `ShapeTypeDropdown` + 4 icon exports.
 - **Typecheck**: all workspaces pass clean.
+
+**Session 11 — Icon & styling fixes, file renames**
+- **`context-menu.css`** — Glass effect on `.ctx-menu`: `background` changed from `rgba(255,255,255,0.97)` to `rgba(255,255,255,0.94)`, added `backdrop-filter: blur(12px)` + `-webkit-backdrop-filter: blur(12px)`.
+- **`icons/MenuIcons.tsx` → `icons/UtilityIcons.tsx`** — Renamed (git mv). Contains generic UI primitives (chevron, ±, dots, check, no-fill). `IconMoreDots` circle radius increased from `r="1.5"` to `r="1.8"`.
+- **`icons/ActionIcons.tsx` → `icons/TrashIcon.tsx`** — Renamed (git mv). `IconTrash` rewritten from stroke-based to fill-based (`fillRule="evenodd"` cutouts) per project convention.
+- **Import updates** — 5 files updated for renames: `icons/index.ts`, `ShapeTypeDropdown.tsx`, `SizeLabel.tsx`, `FontSizeStepper.tsx`, `TypefaceButton.tsx` — all `'./icons/MenuIcons'` → `'./icons/UtilityIcons'`, `'./ActionIcons'` → `'./TrashIcon'`.
+- **`ShapeTypeDropdown.tsx`** — Trigger icon bumped from 16×16 to 20×20 for more visual mass in the 34px button.
+- **`icons/FilterIcons.tsx`** — `IconShapes` rewritten: circle top-left + square bottom-right with clean overlap (square visually "on top"). Circle rendered as clipped 270° arc ring (fill-based), square as evenodd ring. No visible intersection underneath.
+- **`icons/HighlightIcon.tsx`** — Redesigned: scaled 1:1 from reference SVG (30×30 → 20×20). Barrel with cubic bezier cap corners, curved tip taper, connecting lines, and small filled nib. Color bar unchanged.
+- **`icons/FormatIcons.tsx`** — `IconBold`: `fill="#1F2937"` → `fill="currentColor"` for active-state theming. `IconItalic`: unchanged (kept original `fill="#1F2937"` on both svg and path).

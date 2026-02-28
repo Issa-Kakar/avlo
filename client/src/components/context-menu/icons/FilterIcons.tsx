@@ -2,11 +2,13 @@ import type React from 'react';
 
 type SvgProps = React.SVGProps<SVGSVGElement>;
 
-/** Overlapping circle + rect (kind: shapes) */
+/** Circle top-left + square bottom-right, square on top (kind: shapes) */
 export const IconShapes = (props: SvgProps) => (
-  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
-    <rect x="1.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
-    <circle cx="10.5" cy="5.5" r="4" stroke="currentColor" strokeWidth="1.5" />
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+    {/* Circle ring — visible 270° arc outside the square area */}
+    <path d="M11 6A5 5 0 1 0 6 11L6 9.5A3.5 3.5 0 1 1 9.5 6Z" />
+    {/* Square ring */}
+    <path fillRule="evenodd" d="M6 6H15V15H6ZM7.5 7.5V13.5H13.5V7.5Z" />
   </svg>
 );
 

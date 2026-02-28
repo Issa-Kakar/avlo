@@ -1,5 +1,5 @@
 import { MenuButton } from './MenuButton';
-import { IconChevronDown } from './icons/MenuIcons';
+import { IconChevronDown } from './icons/UtilityIcons';
 
 interface TypefaceButtonProps {
   name?: string;

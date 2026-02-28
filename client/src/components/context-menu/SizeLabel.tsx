@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { IconChevronDown, IconCheck } from './icons/MenuIcons';
+import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 
 const STROKE_PRESETS: [string, number][] = [['S', 6], ['M', 10], ['L', 14], ['XL', 18]];
 const CONNECTOR_PRESETS: [string, number][] = [['S', 2], ['M', 4], ['L', 6], ['XL', 8]];

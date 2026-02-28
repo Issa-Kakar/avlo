@@ -9,9 +9,9 @@ export {
   IconMoreDots,
   IconNoFill,
   IconCheck,
-} from './MenuIcons';
+} from './UtilityIcons';
 export { IconShapes, IconPenStroke, IconConnectorLine, IconTextType } from './FilterIcons';
-export { IconTrash } from './ActionIcons';
+export { IconTrash } from './TrashIcon';
 export {
   IconRectType,
   IconCircleType,
