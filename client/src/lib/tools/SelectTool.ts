@@ -136,7 +136,7 @@ export class SelectTool implements PointerTool {
     // 1. Mode-specific first-priority hit targets
     if (mode === 'standard' && selectedIds.length > 0) {
       // Standard mode: check resize handles first
-      const selectionBounds = computeSelectionBounds(store.selectedIds);
+      const selectionBounds = computeSelectionBounds();
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds
         ? hitTestHandle(worldX, worldY, selectionBounds, scale)
@@ -180,7 +180,7 @@ export class SelectTool implements PointerTool {
     // 3. No object hit - selectionGap or background
     if (mode === 'standard') {
       // Standard mode has selection bounds - can have gap clicks
-      const selectionBounds = computeSelectionBounds(store.selectedIds);
+      const selectionBounds = computeSelectionBounds();
       if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
         this.downTarget = 'selectionGap';
         this.phase = 'pendingClick';
@@ -230,7 +230,7 @@ export class SelectTool implements PointerTool {
             // Geometry-based bounds for transform origin (fixes anchor sliding)
             const transformBounds = this.computeTransformBoundsForScale();
             // Padded bounds for dirty rects (visual coverage)
-            const bboxBounds = computeSelectionBounds(store.selectedIds);
+            const bboxBounds = computeSelectionBounds();
 
             if (transformBounds && bboxBounds) {
               // CRITICAL: Use geometry bounds for origin
@@ -310,7 +310,7 @@ export class SelectTool implements PointerTool {
             const store = useSelectionStore.getState();
             store.setSelection([this.hitAtDown!.id]);
             this.phase = 'translate';
-            const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
+            const bounds = computeSelectionBounds();
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -341,7 +341,7 @@ export class SelectTool implements PointerTool {
 
             // Standard mode or free connector: translate group
             this.phase = 'translate';
-            const bounds = computeSelectionBounds(inSelStore.selectedIds);
+            const bounds = computeSelectionBounds();
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -353,7 +353,7 @@ export class SelectTool implements PointerTool {
             if (!passMove && !passTime) break;
             // Drag intent → translate selection
             this.phase = 'translate';
-            const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
+            const bounds = computeSelectionBounds();
             if (bounds) {
               useSelectionStore.getState().beginTranslate(bounds);
             }
@@ -603,7 +603,7 @@ export class SelectTool implements PointerTool {
   cancel(): void {
     // Invalidate dirty rect before clearing transform state
     if (this.phase === 'translate' || this.phase === 'scale') {
-      const bounds = computeSelectionBounds(useSelectionStore.getState().selectedIds);
+      const bounds = computeSelectionBounds();
       if (bounds) {
         const store = useSelectionStore.getState();
         const transformedBounds = applyTransformToBounds(bounds, store.transform);
@@ -663,7 +663,7 @@ export class SelectTool implements PointerTool {
       if (transform.kind === 'scale') {
         baseBounds = transform.originBounds;
       } else {
-        baseBounds = computeSelectionBounds(store.selectedIds);
+        baseBounds = computeSelectionBounds();
       }
 
       if (baseBounds) {
@@ -724,7 +724,7 @@ export class SelectTool implements PointerTool {
     const { scale } = useCameraStore.getState();
 
     if (mode === 'standard') {
-      const bounds = computeSelectionBounds(store.selectedIds);
+      const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);
         if (handle) {
@@ -797,7 +797,7 @@ export class SelectTool implements PointerTool {
    */
   private invalidateTransformPreview(): void {
     const store = useSelectionStore.getState();
-    const bounds = computeSelectionBounds(store.selectedIds);
+    const bounds = computeSelectionBounds();
     if (!bounds) return;
 
     const transform = store.transform;

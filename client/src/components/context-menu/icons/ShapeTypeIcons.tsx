@@ -7,7 +7,7 @@ export const IconRectType = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
     <path
       fillRule="evenodd"
-      d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Zm1.5.5v9h9v-9h-9Z"
+      d="M1 2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2Zm1.5.5v11h11v-11h-11Z"
     />
   </svg>
 );
@@ -17,7 +17,7 @@ export const IconCircleType = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
     <path
       fillRule="evenodd"
-      d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2ZM3.5 8a4.5 4.5 0 1 1 9 0 4.5 4.5 0 0 1-9 0Z"
+      d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1ZM2.5 8a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0Z"
     />
   </svg>
 );
@@ -27,17 +27,17 @@ export const IconDiamondType = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
     <path
       fillRule="evenodd"
-      d="M8 1.586 14.414 8 8 14.414 1.586 8 8 1.586ZM3.414 8 8 12.586 12.586 8 8 3.414 3.414 8Z"
+      d="M8 1 15 8 8 15 1 8ZM3 8l5 5 5-5-5-5Z"
     />
   </svg>
 );
 
-/** Rounded rectangle (hollow via evenodd cutout, rx=3) */
+/** Rounded rectangle (hollow via evenodd cutout) */
 export const IconRoundedRectType = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
     <path
       fillRule="evenodd"
-      d="M2 6a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V6Zm4-2.5a2.5 2.5 0 0 0-2.5 2.5v4A2.5 2.5 0 0 0 6 12.5h4a2.5 2.5 0 0 0 2.5-2.5V6A2.5 2.5 0 0 0 10 3.5H6Z"
+      d="M1 5a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4H5a4 4 0 0 1-4-4V5Zm4-2.5A2.5 2.5 0 0 0 2.5 5v6A2.5 2.5 0 0 0 5 13.5h6a2.5 2.5 0 0 0 2.5-2.5V5A2.5 2.5 0 0 0 11 2.5H5Z"
     />
   </svg>
 );

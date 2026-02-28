@@ -1088,6 +1088,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Bridge: notify selection store of mutations to selected objects
     const sel = useSelectionStore.getState();
+    const editingId = sel.textEditingId;
+
     if (sel.selectedIdSet.size > 0) {
       for (const id of deletedIds) {
         if (sel.selectedIdSet.has(id)) {
@@ -1112,6 +1114,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
         if (refresh) useSelectionStore.getState().refreshStyles();
         if (reposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+      }
+    }
+
+    // Text editing without selection — content/bbox changes need boundsVersion bump
+    if (editingId !== null && sel.selectedIdSet.size === 0) {
+      if (deletedIds.has(editingId)) {
+        useSelectionStore.getState().endTextEditing();
+      } else if (bboxChangedIds.has(editingId)) {
+        useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       }
     }
   }

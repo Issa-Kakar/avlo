@@ -11,9 +11,6 @@ export default function App() {
         <Route path="/demo/context-menu" element={<SelectionContextMenuDemo />} />
         <Route path="*" element={<Navigate to="/room/dev" replace />} />
       </Routes>
-      <div id="overlay-root">
-        <div id="context-menu-portal" className="context-menu-floating ctx-hidden" />
-      </div>
     </RoomDocRegistryProvider>
   ); 
 }

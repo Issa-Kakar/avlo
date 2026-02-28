@@ -11,7 +11,7 @@ export const TextColorIcon = ({ barColor, ...rest }: TextColorIconProps) => (
       y="13.5"
       textAnchor="middle"
       fontFamily="Inter, system-ui, sans-serif"
-      fontSize="14"
+      fontSize="16"
       fontWeight="600"
       fill="currentColor"
     >

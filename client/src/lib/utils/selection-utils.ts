@@ -9,10 +9,12 @@ import {
   bboxTupleToWorldBounds,
   type TextAlign,
 } from '@avlo/shared';
-import { getTextFrame } from '@/lib/text/text-system';
+import { getTextFrame, getInlineStyles } from '@/lib/text/text-system';
 import { expandEnvelope, frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { SelectionKind } from '@/stores/selection-store';
+// Runtime-only import — circular dep is safe (only accessed inside function bodies, not at module eval)
+import { useSelectionStore } from '@/stores/selection-store';
 
 // === Types ===
 
@@ -55,6 +57,18 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   total: 0,
 };
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+
+export interface InlineStyles {
+  bold: boolean;
+  italic: boolean;
+  highlightColor: string | null;
+}
+
+export const EMPTY_INLINE_STYLES: InlineStyles = {
+  bold: false,
+  italic: false,
+  highlightColor: null,
+};
 
 // === Selection Composition ===
 
@@ -123,15 +137,18 @@ export function computeSelectionComposition(ids: string[]) {
 
 /**
  * Compute padded selection bounds from selected IDs.
+ * Zero-arg: reads selectedIds (+ textEditingId fallback) from selection store.
  * Text uses derived frame (WYSIWYG-accurate), others use bbox.
  */
-export function computeSelectionBounds(selectedIds: string[]): WorldBounds | null {
-  if (selectedIds.length === 0) return null;
+export function computeSelectionBounds(): WorldBounds | null {
+  const { selectedIds, textEditingId } = useSelectionStore.getState();
+  const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : [];
+  if (ids.length === 0) return null;
 
   const snapshot = getCurrentSnapshot();
   let result: WorldBounds | null = null;
 
-  for (const id of selectedIds) {
+  for (const id of ids) {
     const handle = snapshot.objectsById.get(id);
     if (!handle) continue;
     if (handle.kind === 'text') {
@@ -247,4 +264,45 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign
   );
+}
+
+export function inlineStylesEqual(a: InlineStyles, b: InlineStyles): boolean {
+  return a.bold === b.bold && a.italic === b.italic && a.highlightColor === b.highlightColor;
+}
+
+/**
+ * Aggregate inline styles from text-system cache across all text IDs.
+ * All must be bold for bold:true, same for italic.
+ * Highlight must be identical non-null across all for highlightColor to be non-null.
+ */
+export function computeUniformInlineStyles(
+  ids: string[],
+  objectsById: ReadonlyMap<string, ObjectHandle>,
+): InlineStyles {
+  let bold = true, italic = true;
+  let firstHighlight: string | null = null;
+  let highlightMixed = false;
+  let hasAny = false;
+
+  for (const id of ids) {
+    const handle = objectsById.get(id);
+    if (!handle || handle.kind !== 'text') continue;
+    const u = getInlineStyles(id);
+    if (!u) continue;
+    if (!hasAny) {
+      firstHighlight = u.uniformHighlight;
+      hasAny = true;
+    } else {
+      if (!highlightMixed && u.uniformHighlight !== firstHighlight) highlightMixed = true;
+    }
+    if (!u.allBold) bold = false;
+    if (!u.allItalic) italic = false;
+    if (!bold && !italic && highlightMixed) break;
+  }
+
+  return {
+    bold: hasAny && bold,
+    italic: hasAny && italic,
+    highlightColor: hasAny && !highlightMixed ? firstHighlight : null,
+  };
 }

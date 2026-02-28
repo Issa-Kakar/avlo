@@ -643,3 +643,37 @@ tsxfunction ColorButton() {
 
 ### 9. No actions wired on any buttons
 - All button `onClick` handlers are omitted or noop. The structure renders but nothing is interactive. This is expected (structure-first approach) but worth noting for the next session.
+
+**Session 6 — Controller bug fixes, DOM consolidation, component hierarchy rework**
+- **`client/src/canvas/ContextMenuController.ts`** — Replaced 3-state string machine (`dormant`/`hidden`/`positioned`) with two boolean flags (`active`/`visible`). `hide()` now calls `cancelAnimationFrame(this.rafId)` — fixes stale menu during drag (pending RAF was firing after hide and re-revealing). `schedulePosition()` uses double-RAF for measurement timing. `offset(12)` → `offset(40)` for dropdown clearance. Removed viewport clipping from `createVirtualElement` — was artificially shrinking the reference rect and pulling the menu left when selections extended partially offscreen (floating-ui's `shift` middleware already handles viewport clamping, `hide` middleware handles fully-offscreen detection). `boundsVersion` subscription guarded on `this.active && this.visible`.
+- **`client/src/App.tsx`** — Added `className="context-menu-floating"` to `#context-menu-portal`. This div is now the one floating-ui positions directly.
+- **`client/src/canvas/Canvas.tsx`** — Removed wrapper `<div id="context-menu-floating">` from portal. Portal now renders `<ContextMenu />` directly into `#context-menu-portal`. `useLayoutEffect` grabs `#context-menu-portal` instead of `#context-menu-floating`. Two divs merged into one.
+- **`client/src/components/context-menu/ContextMenu.tsx`** — Mixed selection now renders ONLY `MixedFilterGroup` + `CommonActionsGroup` + `OverflowButton` (no style groups). Removed `showStroke`/`showFill`/`showText`/`showConnector` predicates. `TextStyleGroup` reordered to match TextContextMenu: TypefaceButton → SizeStepper → Bold/Italic → Align L/C/R → TextColor/Highlight. `StrokeStyleGroup`, `FillGroup`, `ConnectorGroup` now use `ColorPickerPopover` instead of plain `MenuButton` + `ColorCircle`.
+- **`client/src/components/context-menu/MenuButton.tsx`** — Removed `React.forwardRef`, uses React 19 ref-as-prop pattern.
+- **`client/src/components/context-menu/SizeStepper.tsx`** — Added explicit `width={12} height={12}` to IconMinus/IconPlus.
+- **`client/src/components/context-menu/SizeLabel.tsx`** — Redesigned: shows "Size S/M/L/XL", returns null for non-preset values.
+- **`client/src/components/context-menu/FilterObjectsDropdown.tsx`** — Icons bumped to 20px.
+- **`client/src/components/context-menu/ColorPickerPopover.tsx`** — **New file.** 24-color grid (6x4) from `color-palette.ts`. Absolute-positioned dropdown below trigger. Outside-click dismiss. `onSelect` callback (action dispatch deferred).
+- **`client/src/components/context-menu/icons/FormatIcons.tsx`** — **New file.** `IconBold` (filled path) and `IconItalic` (stroke-based).
+- **`client/src/components/context-menu/context-menu.css`** — Added `opacity: 0; pointer-events: none` to `.context-menu-floating` base rule (required for hide state — without these, removing `data-visible` while `display: block` leaves the menu visible). Added `.ctx-size-btn svg { width: 12px; height: 12px; }`. Updated `.ctx-filter-title` (12px, #1F2937), `.ctx-filter-count` (11px, #6B7280), `.ctx-filter-num` (font-weight 600, #374151). Added `.ctx-size-label-prefix`, `.ctx-color-grid`, `.ctx-color-swatch` styles.
+- **Typecheck**: all workspaces pass clean.
+
+## CURRENT ISSUES (post-session 6)
+
+### 1. Menu appears during marquee drag
+- Root cause confirmed: `updateMarqueeSelection()` in SelectTool (line ~1178) calls `store.setSelection(selectedIds)` on every `move()` during marquee drag. `setSelection` sets `menuOpen: true`. When `menuOpen` transitions false→true, the controller's subscription fires `activate()` which sets `visible = true`, overriding the `hide()` that `begin()` called. The controller has no concept of "tool suppression" — `activate()` unconditionally sets `visible = true`.
+
+### 2. Zoom controls manual clamp is too aggressive
+- `positionAndReveal()` has a manual clamp: `if (placement === 'bottom' && finalX < ZOOM_CONTROLS_RIGHT_EDGE) finalX = ZOOM_CONTROLS_RIGHT_EDGE`. This shifts the menu right whenever placement is 'bottom' and x < 176px, regardless of whether the menu actually overlaps the zoom controls vertically. A selection partially offscreen on the left gets its menu pushed 176px from the left edge for no reason.
+
+### 3. FLIP_PADDING.bottom = 76 creates a full-width exclusion zone
+- The 76px bottom padding in flip means the menu won't be placed in the bottom 76px of the viewport, across the ENTIRE bottom edge. The zoom controls only occupy the bottom-left corner (~176px wide). This over-restricts bottom placement for selections centered or right-of-center. The flip/shift padding values need rethinking — the zoom controls are a corner obstacle, not a full-edge boundary.
+
+### 4. CSS display:none lifecycle
+- The controller toggles `display: block`/`display: ''` in `activate()`/`deactivate()`. This works but creates a timing dependency: the element must have `display: block` before `computePosition` can measure it, and React must have committed content inside it. The double-RAF covers this but it's fragile. Consider `visibility: hidden` instead — element stays measurable at all times, no display toggles needed in the controller.
+
+### 5. UI ordering and component content still needs work
+- TextStyleGroup group ordering, color button wiring, Bold/Italic active state, text size stepping actions — all need implementation. The color picker popover dispatches no actions yet. Several groups show placeholder content.
+
+### 6. No actions wired on any buttons
+- Carried forward from session 5. All onClick handlers are omitted or noop.

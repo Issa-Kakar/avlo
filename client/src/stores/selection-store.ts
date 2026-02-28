@@ -12,19 +12,22 @@ import {
 import { getTextFrame } from '@/lib/text/text-system';
 import {
   computeSelectionComposition,
-  computeSelectionBounds as _computeSelectionBounds,
   computeStyles,
+  computeUniformInlineStyles,
   stylesEqual,
+  inlineStylesEqual,
   EMPTY_STYLES,
   EMPTY_KIND_COUNTS,
   EMPTY_ID_SET,
+  EMPTY_INLINE_STYLES,
   type KindCounts,
   type SelectedStyles,
+  type InlineStyles,
 } from '@/lib/utils/selection-utils';
 
 // Re-export for backward compat (SelectTool, ContextMenuController, etc.)
 export { computeSelectionBounds } from '@/lib/utils/selection-utils';
-export type { KindCounts, SelectedStyles } from '@/lib/utils/selection-utils';
+export type { KindCounts, SelectedStyles, InlineStyles } from '@/lib/utils/selection-utils';
 
 // === Types ===
 
@@ -153,6 +156,8 @@ export interface SelectionState {
   menuOpen: boolean;
   /** Live style snapshot of selected objects */
   selectedStyles: SelectedStyles;
+  /** Uniform inline styles (bold/italic/highlight) for text selections */
+  inlineStyles: InlineStyles;
   /** Bumped on bbox changes to selected objects (for repositioning) */
   boundsVersion: number;
   transform: TransformState;
@@ -197,6 +202,9 @@ export interface SelectionActions {
   beginTextEditing: (objectId: string, isNew: boolean) => void;
   /** End text editing */
   endTextEditing: () => void;
+
+  // Inline text styles
+  setInlineStyles: (next: InlineStyles) => void;
 
   // Context menu support
   refreshStyles: () => void;
@@ -341,6 +349,7 @@ export const useSelectionStore = create<SelectionStore>()(
   kindCounts: EMPTY_KIND_COUNTS,
   menuOpen: false,
   selectedStyles: EMPTY_STYLES,
+  inlineStyles: EMPTY_INLINE_STYLES,
   boundsVersion: 0,
   transform: { kind: 'none' },
   marquee: { active: false, anchor: null, current: null },
@@ -378,6 +387,7 @@ export const useSelectionStore = create<SelectionStore>()(
     kindCounts: EMPTY_KIND_COUNTS,
     menuOpen: false,
     selectedStyles: EMPTY_STYLES,
+    inlineStyles: EMPTY_INLINE_STYLES,
     boundsVersion: 0,
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
@@ -501,6 +511,12 @@ export const useSelectionStore = create<SelectionStore>()(
       textEditingIsNew: false,
       menuOpen: selectedIds.length > 0,
     });
+    get().refreshStyles();
+  },
+
+  setInlineStyles: (next) => {
+    if (inlineStylesEqual(get().inlineStyles, next)) return;
+    set({ inlineStyles: next });
   },
 
   // === Context Menu Actions ===
@@ -510,8 +526,19 @@ export const useSelectionStore = create<SelectionStore>()(
     const snapshot = getCurrentSnapshot();
     const ids = textEditingId !== null && selectedIds.length === 0 ? [textEditingId] : selectedIds;
     const kind = textEditingId !== null && selectedIds.length === 0 ? 'textOnly' as SelectionKind : selectionKind;
+
+    const patch: Partial<SelectionState> = {};
+
     const next = computeStyles(ids, kind, snapshot.objectsById);
-    if (!stylesEqual(current, next)) set({ selectedStyles: next });
+    if (!stylesEqual(current, next)) patch.selectedStyles = next;
+
+    // Inline text styles — only when editor is NOT mounted
+    if (textEditingId === null && kind === 'textOnly' && ids.length > 0) {
+      const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
+      if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
+    }
+
+    if (Object.keys(patch).length > 0) set(patch);
   },
 })));
 
@@ -592,3 +619,9 @@ export function getHandleCursor(handleId: HandleId): string {
 export const selectTextEditingId = (state: SelectionStore) => state.textEditingId;
 export const selectIsTextEditing = (state: SelectionStore) => state.textEditingId !== null;
 export const selectTextEditingIsNew = (state: SelectionStore) => state.textEditingIsNew;
+
+// === Inline Style Selectors ===
+
+export const selectInlineBold = (state: SelectionStore) => state.inlineStyles.bold;
+export const selectInlineItalic = (state: SelectionStore) => state.inlineStyles.italic;
+export const selectInlineHighlightColor = (state: SelectionStore) => state.inlineStyles.highlightColor;

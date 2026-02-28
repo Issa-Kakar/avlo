@@ -67,8 +67,6 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     return () => contextMenuController.destroy();
   }, []);
 
-  const portalTarget = document.getElementById('context-menu-portal');
-
   return (<>
     <div ref={containerRef} className="relative w-full h-full" style={{ backgroundColor: '#FFFFFF' }}>
       <canvas
@@ -107,7 +105,7 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
         }}
       />
     </div>
-    {portalTarget && createPortal(<ContextMenu />, portalTarget)}
+    {createPortal(<ContextMenu />, document.getElementById('context-menu-portal')!)}
   </>
   );
 };

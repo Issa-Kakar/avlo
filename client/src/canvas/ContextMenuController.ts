@@ -120,9 +120,7 @@ class ContextMenuController {
   private positionAndReveal(): void {
     if (!this.active || !this.visible) return;
 
-    const { selectedIds, textEditingId } = useSelectionStore.getState();
-    const ids = textEditingId && selectedIds.length === 0 ? [textEditingId] : selectedIds;
-    const bounds = computeSelectionBounds(ids);
+    const bounds = computeSelectionBounds();
     if (!bounds) return;
 
     const virtualEl = createVirtualElement(bounds);
