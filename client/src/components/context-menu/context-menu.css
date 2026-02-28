@@ -488,3 +488,29 @@
   font-size: 13px;
   font-weight: 500;
 }
+
+/* ===== Highlight Picker Popover ===== */
+
+.ctx-submenu-highlight { min-width: auto; padding: 10px 12px; }
+.ctx-highlight-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.ctx-highlight-swatch {
+  width: 28px; height: 28px; border-radius: 6px;
+  border: 1.5px solid rgba(0,0,0,0.08); cursor: pointer; padding: 0;
+  position: relative; overflow: hidden;
+  transition: transform var(--transition-fast);
+}
+.ctx-highlight-swatch:hover { transform: scale(1.15); }
+.ctx-highlight-swatch.selected { border-color: #3b82f6; box-shadow: 0 0 0 1.5px #3b82f6; }
+.ctx-highlight-swatch-none { background: #e5e7eb; }
+.ctx-highlight-slash {
+  position: absolute; top: 50%; left: 50%;
+  width: 70%; height: 2px;
+  background: #9ca3af;
+  transform: translate(-50%, -50%) rotate(-45deg);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* ===== Font Size Dropdown ===== */
+
+.ctx-submenu-fontsize { min-width: 90px; }

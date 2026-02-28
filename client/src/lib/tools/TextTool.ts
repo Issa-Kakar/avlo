@@ -36,6 +36,17 @@ import { ulid } from 'ulid';
 /** Temporary: force fixed-width on new text objects for WYSIWYG testing. */
 const DEV_FORCE_FIXED_WIDTH = true;
 
+/** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
+function syncInlineStylesToStore(editor: Editor): void {
+  useSelectionStore.getState().setInlineStyles({
+    bold: editor.isActive('bold'),
+    italic: editor.isActive('italic'),
+    highlightColor: editor.isActive('highlight')
+      ? (editor.getAttributes('highlight').color as string | undefined) ?? '#ffd43b'
+      : null,
+  });
+}
+
 export class TextTool implements PointerTool {
   // Gesture state
   private gestureActive = false;
@@ -143,6 +154,14 @@ export class TextTool implements PointerTool {
 
   isEditorMounted(): boolean {
     return this.editor !== null;
+  }
+
+  getEditor(): Editor | null {
+    return this.editor;
+  }
+
+  getContainer(): HTMLDivElement | null {
+    return this.container;
   }
 
   // =========================================================================
@@ -258,6 +277,13 @@ export class TextTool implements PointerTool {
         }),
       ],
       autofocus: isNew ? 'end' : false,
+      onCreate: ({ editor: ed }) => {
+        syncInlineStylesToStore(ed);
+        useSelectionStore.setState(s => ({ boundsVersion: s.boundsVersion + 1 }));
+      },
+      onTransaction: ({ editor: ed }) => {
+        syncInlineStylesToStore(ed);
+      },
     });
 
     // For existing text, place cursor at click position.
@@ -297,7 +323,7 @@ export class TextTool implements PointerTool {
     this.boundHandleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
       if (this.container && this.container.contains(target)) return;
-      const menuElement = document.querySelector('.text-context-menu');
+      const menuElement = document.querySelector('.ctx-menu');
       if (menuElement && menuElement.contains(target)) return;
       this.commitAndClose();
     };
@@ -354,7 +380,8 @@ export class TextTool implements PointerTool {
     if (!this.editor || !this.objectId) return;
 
     // Delete empty new text objects (user clicked but typed nothing)
-    if (this.editor.isEmpty && this.isNew) {
+    // UPDATE: DELETE ANY TEXT OBJECTS THAT ARE EMPTY ON CLOSE
+    if (this.editor.isEmpty ) {
       const roomDoc = getActiveRoomDoc();
       roomDoc.mutate((ydoc) => {
         const root = ydoc.getMap('root');

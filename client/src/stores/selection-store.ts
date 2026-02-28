@@ -498,11 +498,14 @@ export const useSelectionStore = create<SelectionStore>()(
 
   // === Text Editing Actions ===
 
-  beginTextEditing: (objectId, isNew) => set({
-    textEditingId: objectId,
-    textEditingIsNew: isNew,
-    menuOpen: true,
-  }),
+  beginTextEditing: (objectId, isNew) => {
+    set({
+      textEditingId: objectId,
+      textEditingIsNew: isNew,
+      menuOpen: true,
+    });
+    get().refreshStyles();
+  },
 
   endTextEditing: () => {
     const { selectedIds } = get();

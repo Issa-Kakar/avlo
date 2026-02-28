@@ -170,7 +170,7 @@ export class SelectTool implements PointerTool {
 
     if (hit) {
       const isSelected = selectedIds.includes(hit.id);
-      if (!isSelected && selectedIds.length > 0) store.clearSelection();
+      //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
       invalidateOverlay();

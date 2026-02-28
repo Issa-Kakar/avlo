@@ -3,11 +3,19 @@ import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
-import { filterSelectionByKind } from '@/stores/selection-store';
+import { filterSelectionByKind, selectInlineBold, selectInlineItalic } from '@/stores/selection-store';
 import {
   setSelectedWidth,
   setSelectedColor,
   setSelectedFillColor,
+  setSelectedTextColor,
+  setSelectedFontSize,
+  setSelectedTextAlign,
+  setSelectedHighlight,
+  toggleSelectedBold,
+  toggleSelectedItalic,
+  incrementFontSize,
+  decrementFontSize,
   deleteSelected,
 } from '@/lib/utils/selection-actions';
 import { NO_FILL } from './color-palette';
@@ -19,13 +27,13 @@ import { SizeLabel } from './SizeLabel';
 import { TypefaceButton } from './TypefaceButton';
 import { FilterObjectsDropdown } from './FilterObjectsDropdown';
 import { ColorPickerPopover } from './ColorPickerPopover';
+import { TextColorPopover } from './TextColorPopover';
+import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import {
   IconAlignTextLeft,
   IconAlignTextCenter,
   IconAlignTextRight,
-  TextColorIcon,
-  HighlightIcon,
   IconBold,
   IconItalic,
   IconMoreDots,
@@ -55,7 +63,6 @@ const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
   textAlign: s.selectedStyles.textAlign,
   color: s.selectedStyles.color,
-  colorMixed: s.selectedStyles.colorMixed,
 });
 const selectConnectorStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
@@ -118,41 +125,58 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
   );
 });
 
+const BoldButton = memo(function BoldButton() {
+  const bold = useSelectionStore(selectInlineBold);
+  return (
+    <MenuButton className="ctx-btn-sq" active={bold} onClick={toggleSelectedBold}>
+      <IconBold />
+    </MenuButton>
+  );
+});
+
+const ItalicButton = memo(function ItalicButton() {
+  const italic = useSelectionStore(selectInlineItalic);
+  return (
+    <MenuButton className="ctx-btn-sq" active={italic} onClick={toggleSelectedItalic}>
+      <IconItalic />
+    </MenuButton>
+  );
+});
+
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, textAlign, color, colorMixed } = useSelectionStore(
+  const { fontSize, textAlign, color } = useSelectionStore(
     useShallow(selectTextStyles),
   );
   return (
     <ButtonGroup>
       <TypefaceButton />
       <div className="ctx-divider" />
-      {fontSize !== null && <FontSizeStepper value={fontSize} />}
+      {fontSize !== null && (
+        <FontSizeStepper
+          value={fontSize}
+          onDecrement={decrementFontSize}
+          onIncrement={incrementFontSize}
+          onSelectSize={setSelectedFontSize}
+        />
+      )}
       <div className="ctx-divider" />
-      <MenuButton className="ctx-btn-sq">
-        <IconBold />
-      </MenuButton>
-      <MenuButton className="ctx-btn-sq">
-        <IconItalic />
-      </MenuButton>
+      <BoldButton />
+      <ItalicButton />
       <div className="ctx-divider" />
       <div className="ctx-group-tight">
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'}>
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'} onClick={() => setSelectedTextAlign('left')}>
           <IconAlignTextLeft />
         </MenuButton>
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'center'}>
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'center'} onClick={() => setSelectedTextAlign('center')}>
           <IconAlignTextCenter />
         </MenuButton>
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'right'}>
+        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'right'} onClick={() => setSelectedTextAlign('right')}>
           <IconAlignTextRight />
         </MenuButton>
       </div>
       <div className="ctx-divider" />
-      <MenuButton className="ctx-btn-color">
-        <TextColorIcon barColor={colorMixed ? '#9CA3AF' : color} width={20} height={20} />
-      </MenuButton>
-      <MenuButton className="ctx-btn-color">
-        <HighlightIcon barColor={null} width={20} height={20} />
-      </MenuButton>
+      <TextColorPopover color={color} onSelect={setSelectedTextColor} />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
     </ButtonGroup>
   );
 });

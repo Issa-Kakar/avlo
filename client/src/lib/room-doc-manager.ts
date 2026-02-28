@@ -1079,7 +1079,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             this.cacheEvictIds.add(id);
           }
           // Text content changes always need repaint (text changed within same bounds)
-          if (isTextContentChange || kind !== 'text') {
+          if (isTextContentChange || kind === 'text') {
             this.dirtyRects.push(bboxToBounds(newBBox));
           }
         }
@@ -1117,12 +1117,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       }
     }
 
-    // Text editing without selection — content/bbox changes need boundsVersion bump
+    // Text editing without selection — property/bbox changes need style refresh + boundsVersion bump
     if (editingId !== null && sel.selectedIdSet.size === 0) {
       if (deletedIds.has(editingId)) {
         useSelectionStore.getState().endTextEditing();
-      } else if (bboxChangedIds.has(editingId)) {
-        useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+      } else {
+        if (touchedIds.has(editingId)) useSelectionStore.getState().refreshStyles();
+        if (bboxChangedIds.has(editingId)) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       }
     }
   }

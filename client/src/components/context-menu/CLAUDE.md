@@ -7,7 +7,7 @@ Selection-aware contextual toolbar positioned above/below the selection via `@fl
 Two-layer split: **imperative controller** owns DOM positioning + visibility, **React** owns content rendering.
 
 ```
-App.tsx (persistent portal divs)
+index.html (static portal divs)
 ├── #overlay-root                          ← unstyled grouping node
 │   └── #context-menu-portal               ← .context-menu-floating, position:fixed
 │       └── <ContextMenu />                ← React portal from Canvas.tsx
@@ -72,9 +72,9 @@ Text editing overrides kind to `textOnly` regardless of selection.
 
 ## Data Layer
 
-- **`selection-store.ts`** — `menuOpen`, `selectedStyles` (live style snapshot), `selectionKind`, `kindCounts`, `boundsVersion`, `refreshStyles()`
-- **`selection-utils.ts`** — `computeStyles()` (single-pass, early break), `computeSelectionComposition()`, `computeSelectionBounds()`, `SelectedStyles` type, `stylesEqual()`
-- **`selection-actions.ts`** — Free mutation functions: `setSelectedColor`, `setSelectedFillColor`, `setSelectedWidth`, `setSelectedShapeType`, `deleteSelected`. Pattern: read selectedIds from store → `getActiveRoomDoc().mutate()` → persist to device-ui-store → `refreshStyles()`
+- **`selection-store.ts`** — `menuOpen`, `selectedStyles` (live style snapshot), `inlineStyles` (bold/italic/highlightColor for text), `selectionKind`, `kindCounts`, `boundsVersion`, `refreshStyles()`, `setInlineStyles()`. Selectors: `selectInlineBold`, `selectInlineItalic`, `selectInlineHighlightColor`.
+- **`selection-utils.ts`** — `computeStyles()` (single-pass, early break), `computeSelectionComposition()`, `computeSelectionBounds()` (zero-arg, reads store internally), `computeUniformInlineStyles()`, `SelectedStyles`/`InlineStyles` types, `stylesEqual()`/`inlineStylesEqual()`
+- **`selection-actions.ts`** — Free mutation functions: `setSelectedColor`, `setSelectedFillColor`, `setSelectedWidth`, `setSelectedShapeType`, `deleteSelected`, `setSelectedTextColor`, `setSelectedFontSize`, `incrementFontSize`, `decrementFontSize`, `setSelectedTextAlign`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. Pattern: read selectedIds (or textEditingId) from store → `getActiveRoomDoc().mutate()` → persist to device-ui-store → `refreshStyles()`. Inline formatting actions (`toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`) gate on `textTool.getEditor()` — no-op when not editing (future: Yjs delta mutation for canvas-selected text).
 
 ## Wired Actions
 
@@ -88,6 +88,13 @@ Text editing overrides kind to `textOnly` regardless of selection.
 | ShapeType dropdown (shapes mode) | `setSelectedShapeType(key)` | Shapes only; mutates Y.Map `shapeType`, calls `refreshStyles()` |
 | ShapeType dropdown (text mode) | no-op | All items no-op (future: shape↔text conversion) |
 | Trash button | `deleteSelected()` | Anchor cleanup + delete + clearSelection |
+| FontSizeStepper ± | `incrementFontSize()` / `decrementFontSize()` | Text only; steps through `TEXT_FONT_SIZE_PRESETS` |
+| FontSizeStepper value dropdown | `setSelectedFontSize(size)` | Text only; 10 presets with checkmark on active |
+| Text color (TextColorPopover) | `setSelectedTextColor(color)` | Text only; persists to device-ui `textColor` |
+| Highlight (HighlightPickerPopover) | `setSelectedHighlight(color \| null)` | Editor only; `chain().focus().setHighlight/unsetHighlight` |
+| Bold button | `toggleSelectedBold()` | Editor only; self-subscribes to `selectInlineBold` |
+| Italic button | `toggleSelectedItalic()` | Editor only; self-subscribes to `selectInlineItalic` |
+| Alignment L/C/R | `setSelectedTextAlign(align)` | Text only; adjusts origin to preserve left edge |
 
 ## Key Conventions
 
@@ -95,7 +102,8 @@ Text editing overrides kind to `textOnly` regardless of selection.
 - SizeLabel/TypefaceButton/FontSizeStepper: SVG `<text>` with `textRendering="geometricPrecision"` — prevents subpixel shift during `scale(0.96)` hide/show animation
 - SizeLabel is a dropdown trigger (click opens S/M/L/XL preset menu with checkmark on active item)
 - Divider is inlined as `<div className="ctx-divider" />` — no component wrapper
-- Dropdowns (ColorPickerPopover, SizeLabel, ShapeTypeDropdown, FilterObjectsDropdown) use same pattern: local `useState` for open, `useRef` + `useEffect` for outside-click dismiss, `onMouseDown preventDefault`
+- Dropdowns (ColorPickerPopover, TextColorPopover, HighlightPickerPopover, SizeLabel, FontSizeStepper, ShapeTypeDropdown, FilterObjectsDropdown) use same pattern: local `useState` for open, `useRef` + `useEffect` for outside-click dismiss, `onMouseDown preventDefault`
+- Self-subscribing buttons (BoldButton, ItalicButton, HighlightPickerPopover): own `memo` components with individual store selectors — parent doesn't re-render on their state changes
 - `MenuButton` uses `mouseDown preventDefault` to keep canvas focus
 
 ---
@@ -221,16 +229,16 @@ Gesture flow:
   end()    → controller.show()  → active+visible=true, menuOpen set, RAF → position → class removed
 ```
 
-## CURRENT ISSUES (post-session 9)
+## CURRENT ISSUES (post-session 13)
 
 ### 1. Zoom controls exclusion zone is full-width bottom edge (carried from session 6)
 - `FLIP_PADDING.bottom = 76` prevents bottom placement across the entire viewport bottom. Zoom controls are bottom-left only (~176px wide). Over-restricts for center/right selections. Needs per-corner exclusion logic or `shift` with asymmetric padding.
 
-### 2. Text actions not yet wired
-- Bold/Italic active state, text size stepping (±), alignment buttons, text color, highlight — all need implementation.
-
-### 3. `computeStyles` returns `EMPTY_STYLES` for mixed selections
+### 2. `computeStyles` returns `EMPTY_STYLES` for mixed selections
 - In `selection-utils.ts`, `computeStyles` immediately returns `EMPTY_STYLES` when `kind === 'mixed'`. Style-dependent groups render with empty/default values.
+
+### 3. Bold/Italic/Highlight no-op when not editing
+- Inline formatting actions (`toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`) gate on `textTool.getEditor()`. When text objects are selected but not being edited, these buttons do nothing. Future: apply formatting via direct Yjs delta mutations on `Y.XmlFragment`.
 
 **Session 8 — Selection mutation actions + store prep**
 - **`client/src/lib/utils/selection-utils.ts`** — Added `shapeType: string | null` to `SelectedStyles` interface, `EMPTY_STYLES`, `computeStyles` (tracked only for `shapesOnly` kind, with mixed detection via `getShapeType` accessor), and `stylesEqual`. Import added: `getShapeType` from `@avlo/shared`.
@@ -267,3 +275,28 @@ Gesture flow:
 - **`icons/FilterIcons.tsx`** — `IconShapes` rewritten: circle top-left + square bottom-right with clean overlap (square visually "on top"). Circle rendered as clipped 270° arc ring (fill-based), square as evenodd ring. No visible intersection underneath.
 - **`icons/HighlightIcon.tsx`** — Redesigned: scaled 1:1 from reference SVG (30×30 → 20×20). Barrel with cubic bezier cap corners, curved tip taper, connecting lines, and small filled nib. Color bar unchanged.
 - **`icons/FormatIcons.tsx`** — `IconBold`: `fill="#1F2937"` → `fill="currentColor"` for active-state theming. `IconItalic`: unchanged (kept original `fill="#1F2937"` on both svg and path).
+
+**Session 12 — Inline styles store infrastructure + portal fix**
+- **`client/src/lib/utils/selection-utils.ts`** — Added `InlineStyles` type (`bold`, `italic`, `highlightColor`), `EMPTY_INLINE_STYLES` constant, `inlineStylesEqual()` equality helper, `computeUniformInlineStyles(ids, objectsById)` pure function (aggregates `getInlineStyles()` from text-system cache — all-bold/all-italic/uniform-highlight semantics). Refactored `computeSelectionBounds()` to zero-arg: reads `selectedIds` + `textEditingId` from selection store internally (circular import safe — runtime-only access inside function body). Import added: `useSelectionStore` from selection-store, `getInlineStyles` from text-system.
+- **`client/src/stores/selection-store.ts`** — Added `inlineStyles: InlineStyles` to `SelectionState` (default: `EMPTY_INLINE_STYLES`). Added `setInlineStyles(next)` action with `inlineStylesEqual` equality gate. Updated `refreshStyles()`: when `textEditingId === null` and kind is `textOnly`, computes inline styles from cache via `computeUniformInlineStyles` and patches into store (single `set()` call batching both `selectedStyles` and `inlineStyles`). Updated `endTextEditing()`: now calls `refreshStyles()` so inline styles snap from editor-last-state to cache-derived values. Updated `clearSelection()`: resets `inlineStyles` to `EMPTY_INLINE_STYLES`. Added selectors: `selectInlineBold`, `selectInlineItalic`, `selectInlineHighlightColor`. Cleaned up unused `_computeSelectionBounds` import alias. New imports: `computeUniformInlineStyles`, `inlineStylesEqual`, `EMPTY_INLINE_STYLES`, `InlineStyles` from selection-utils.
+- **`client/src/lib/room-doc-manager.ts`** — Extended observer bridge: when `textEditingId !== null` and `selectedIdSet.size === 0` (text editing without selection), handles deletion (calls `endTextEditing()`) and bbox changes (bumps `boundsVersion` for context menu repositioning). Skips `refreshStyles` during editing — editor owns inline styles.
+- **`client/src/canvas/ContextMenuController.ts`** — `positionAndReveal()` replaced manual ID construction with zero-arg `computeSelectionBounds()`.
+- **`client/src/lib/tools/SelectTool.ts`** — All 10 `computeSelectionBounds(store.selectedIds)` call sites updated to zero-arg `computeSelectionBounds()`.
+- **`client/index.html`** — Added static portal divs: `<div id="overlay-root"><div id="context-menu-portal" class="context-menu-floating ctx-hidden"></div></div>`. Permanent mount point — React never manages lifecycle.
+- **`client/src/App.tsx`** — Removed `<div id="overlay-root">` block (moved to static HTML).
+- **`client/src/canvas/Canvas.tsx`** — Removed render-body `document.getElementById('context-menu-portal')` call. Portal now uses `document.getElementById('context-menu-portal')!` directly (safe — element is in static HTML, always present).
+- **Typecheck**: all workspaces clean (only pre-existing `TextContextMenu.ts` error from unrelated WIP).
+
+**Session 13 — Text action wiring, TipTap event bridge, observer bridge fix**
+- **`client/src/lib/room-doc-manager.ts`** — **Observer bridge bug fix:** Text editing branch now calls `refreshStyles()` when the editing object is in `touchedIds`. Previously only handled deletion + bbox changes — undo of `fontSize`/`align`/`color` left `selectedStyles` stale because the bridge skipped `refreshStyles()` during editing. Root cause of font size and text align not reflecting in the toolbar after undo.
+- **`client/src/stores/selection-store.ts`** — `beginTextEditing()` now calls `refreshStyles()` after `set()`, so initial styles populate correctly when text editing starts (was stale/null before).
+- **`client/src/lib/utils/selection-utils.ts`** — `computeStyles` always returns `firstFontSize` for textOnly selections (removed `fontSizeMixed ? null :` branch). Mixed sizes show first object's value — stepper steps from there, setting applies uniformly to all. Matches Miro UX.
+- **`client/src/lib/tools/TextTool.ts`** — Added `getEditor()` and `getContainer()` public getters. Added module-level `syncInlineStylesToStore(editor)` — reads `editor.isActive('bold'|'italic'|'highlight')` → calls `setInlineStyles()` on selection store. Wired `onCreate` (syncs initial inline styles + bumps `boundsVersion` for context menu reposition after first layout) and `onTransaction` (fires on every cursor move, typing, formatting — equality gate in `setInlineStyles` makes redundant calls free) on Editor constructor.
+- **`client/src/lib/utils/selection-actions.ts`** — 8 new text action functions: `setSelectedTextColor(color)` (mutates Y.Map color, persists textColor), `setSelectedFontSize(size)` (clamped 1-999, text objects only), `incrementFontSize()` / `decrementFontSize()` (step through `TEXT_FONT_SIZE_PRESETS`, edge cases: <10→10, >144→144), `setSelectedTextAlign(align)` (preserves left edge via `anchorFactor` math, each object gets own `W` from cached frame, calls `invalidateWorld(computeSelectionBounds())` for canvas redraw), `toggleSelectedBold()` / `toggleSelectedItalic()` (editor `chain().focus().toggleBold/Italic().run()`, no-op when no editor), `setSelectedHighlight(color|null)` (editor `setHighlight`/`unsetHighlight`). All text actions read `textEditingId` fallback: `ids = textEditingId ? [textEditingId] : selectedIds`.
+- **`client/src/components/context-menu/TextColorPopover.tsx`** — **New file.** `TextColorIcon` trigger + standard 18-color `CONTEXT_MENU_COLORS` grid dropdown. Same popover pattern (useState + useRef + outside-click dismiss). No `colorMixed` handling — just renders `barColor={color}`.
+- **`client/src/components/context-menu/HighlightPickerPopover.tsx`** — **New file.** Self-subscribes to `selectInlineHighlightColor`. `HighlightIcon` trigger with store-derived `barColor`. 4×2 grid of 28px rounded-square (6px radius) swatches from `HIGHLIGHT_COLORS`. "None" swatch: grey `#e5e7eb` background with diagonal slash (`ctx-highlight-slash` span, 45° rotated 2px bar). Blue ring on selected. Same popover pattern.
+- **`client/src/components/context-menu/FontSizeStepper.tsx`** — Converted to stepper+dropdown hybrid. Props: `onValueClick` → `onSelectSize`. Center value button opens dropdown of all 10 `TEXT_FONT_SIZE_PRESETS` with checkmark on active. Display value clamped 1-999. Same popover pattern.
+- **`client/src/components/context-menu/ContextMenu.tsx`** — All text buttons fully wired. `BoldButton` and `ItalicButton` are self-subscribing `memo` components with `selectInlineBold`/`selectInlineItalic` selectors — parent `TextStyleGroup` doesn't re-render on bold/italic changes. Alignment buttons wired to `setSelectedTextAlign`. Text color uses `TextColorPopover`. Highlight uses `HighlightPickerPopover`. FontSizeStepper wired: `onDecrement={decrementFontSize}`, `onIncrement={incrementFontSize}`, `onSelectSize={setSelectedFontSize}`.
+- **`client/src/components/context-menu/icons/FormatIcons.tsx`** — Both `IconBold` and `IconItalic` now use `fill="currentColor"` (removed hardcoded `#1F2937` from svg and path). Enables CSS `.active { color: #3b82f6 }` inheritance for active-state theming.
+- **`client/src/components/context-menu/context-menu.css`** — Added highlight picker styles: `.ctx-submenu-highlight` (auto-width, 10px/12px padding), `.ctx-highlight-grid` (4-col grid, 8px gap), `.ctx-highlight-swatch` (28px rounded-square, 6px radius, relative+overflow for slash), `.ctx-highlight-swatch-none` (grey `#e5e7eb`), `.ctx-highlight-slash` (absolute 45° diagonal bar). Added `.ctx-submenu-fontsize` (90px min-width).
+- **Typecheck**: all workspaces clean (only pre-existing `TextContextMenu.ts` + `isNew` errors).

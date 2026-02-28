@@ -248,7 +248,7 @@ export function computeStyles(
       : kind === 'textOnly'
         ? 'text'
         : null,
-    fontSize: trackText ? (fontSizeMixed ? null : firstFontSize) : null,
+    fontSize: trackText ? firstFontSize : null,
     textAlign: trackText ? (alignMixed ? null : firstAlign) : null,
   };
 }

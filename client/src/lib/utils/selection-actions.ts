@@ -1,11 +1,16 @@
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
-import { getStartAnchor, getEndAnchor } from '@avlo/shared';
+import { getStartAnchor, getEndAnchor, getOrigin, getAlign, type TextAlign } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
+import { computeSelectionBounds } from '@/lib/utils/selection-utils';
+import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import {
   useDeviceUIStore,
+  TEXT_FONT_SIZE_PRESETS,
   type SizePreset,
   type ConnectorSizePreset,
 } from '@/stores/device-ui-store';
+import { textTool } from '@/canvas/tool-registry';
+import { getTextFrame, anchorFactor } from '@/lib/text/text-system';
 import * as Y from 'yjs';
 
 // === Helpers ===
@@ -158,4 +163,127 @@ export function deleteSelected(): void {
   });
 
   useSelectionStore.getState().clearSelection();
+}
+
+// === Text Color ===
+
+export function setSelectedTextColor(color: string): void {
+  const { textEditingId, selectedIds } = useSelectionStore.getState();
+  const ids = textEditingId ? [textEditingId] : selectedIds;
+  if (ids.length === 0) return;
+
+  getActiveRoomDoc().mutate((ydoc) => {
+    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+    for (const id of ids) objects.get(id)?.set('color', color);
+  });
+
+  useDeviceUIStore.getState().setTextColor(color);
+  useSelectionStore.getState().refreshStyles();
+}
+
+// === Font Size ===
+
+export function setSelectedFontSize(size: number): void {
+  const clamped = Math.max(1, Math.min(999, Math.round(size)));
+  const { textEditingId, selectedIds } = useSelectionStore.getState();
+  const ids = textEditingId ? [textEditingId] : selectedIds;
+  if (ids.length === 0) return;
+
+  getActiveRoomDoc().mutate((ydoc) => {
+    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+    for (const id of ids) {
+      const handle = getCurrentSnapshot().objectsById.get(id);
+      if (handle?.kind === 'text') objects.get(id)?.set('fontSize', clamped);
+    }
+  });
+
+  useDeviceUIStore.getState().setTextSize(clamped);
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function incrementFontSize(): void {
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
+  if (fontSize === null) return;
+  const current = Math.round(fontSize);
+  if (current < 10) { setSelectedFontSize(10); return; }
+  const next = TEXT_FONT_SIZE_PRESETS.find(p => p > current);
+  if (next !== undefined) setSelectedFontSize(next);
+}
+
+export function decrementFontSize(): void {
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
+  if (fontSize === null) return;
+  const current = Math.round(fontSize);
+  if (current > 144) { setSelectedFontSize(144); return; }
+  let prev: number | undefined;
+  for (const p of TEXT_FONT_SIZE_PRESETS) {
+    if (p >= current) break;
+    prev = p;
+  }
+  if (prev !== undefined) setSelectedFontSize(prev);
+}
+
+// === Text Alignment ===
+
+export function setSelectedTextAlign(align: TextAlign): void {
+  const { textEditingId, selectedIds } = useSelectionStore.getState();
+  const ids = textEditingId ? [textEditingId] : selectedIds;
+  if (ids.length === 0) return;
+
+  getActiveRoomDoc().mutate((ydoc) => {
+    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+    for (const id of ids) {
+      const handle = getCurrentSnapshot().objectsById.get(id);
+      if (!handle || handle.kind !== 'text') continue;
+      const yObj = objects.get(id);
+      if (!yObj) continue;
+
+      const oldAlign = getAlign(handle.y);
+      if (oldAlign === align) continue;
+
+      const origin = getOrigin(handle.y);
+      const frame = getTextFrame(id);
+      if (!origin || !frame) continue;
+
+      const W = frame[2];
+      const leftX = origin[0] - anchorFactor(oldAlign) * W;
+      const newOriginX = leftX + anchorFactor(align) * W;
+
+      yObj.set('origin', [newOriginX, origin[1]]);
+      yObj.set('align', align);
+    }
+  });
+
+  useDeviceUIStore.getState().setTextAlign(align);
+  useSelectionStore.getState().refreshStyles();
+  const bounds = computeSelectionBounds();
+  if (bounds) invalidateWorld(bounds);
+}
+
+// === Inline Formatting (Bold / Italic / Highlight) ===
+
+export function toggleSelectedBold(): void {
+  const editor = textTool.getEditor();
+  // Future: Yjs delta mutation for canvas-selected text (no editor)
+  if (!editor) return;
+  editor.chain().focus().toggleBold().run();
+}
+
+export function toggleSelectedItalic(): void {
+  const editor = textTool.getEditor();
+  // Future: Yjs delta mutation for canvas-selected text (no editor)
+  if (!editor) return;
+  editor.chain().focus().toggleItalic().run();
+}
+
+export function setSelectedHighlight(color: string | null): void {
+  const editor = textTool.getEditor();
+  // Future: Yjs delta mutation for canvas-selected text (no editor)
+  if (!editor) return;
+
+  if (color === null) {
+    editor.chain().focus().unsetHighlight().run();
+  } else {
+    editor.chain().focus().setHighlight({ color }).run();
+  }
 }
