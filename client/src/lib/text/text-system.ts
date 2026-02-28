@@ -53,8 +53,15 @@ type Token = TokenBase<StyledText>;
 interface TokenizedParagraph {
   tokens: Token[];
 }
+export interface UniformStyles {
+  allBold: boolean;
+  allItalic: boolean;
+  uniformHighlight: string | null; // color if uniform, null if none/mixed
+}
+
 interface TokenizedContent {
   paragraphs: TokenizedParagraph[];
+  uniformStyles: UniformStyles;
 }
 
 // --- Stage 2 output: Measured ---
@@ -312,6 +319,11 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
   const paragraphs: TokenizedParagraph[] = [];
   const children = fragment.toArray();
 
+  // Uniform style tracking — piggybacks on delta loop
+  let trackBold = true, trackItalic = true;
+  let hlColor: string | null | false = null; // null=unseen, false=mixed
+  let hasAnyText = false;
+
   if (children.length === 0) {
     paragraphs.push({ tokens: [] });
   } else {
@@ -332,6 +344,18 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
                 ? String((hlAttr as Record<string, unknown>).color)
                 : '#ffd43b'
               : null;
+
+          // Accumulate uniform style info (before tokenization, zero extra iteration)
+          if (op.insert.length > 0) {
+            hasAnyText = true;
+            if (trackBold && !bold) trackBold = false;
+            if (trackItalic && !italic) trackItalic = false;
+            if (hlColor !== false) {
+              if (hlColor === null) hlColor = highlight;
+              else if (hlColor !== highlight) hlColor = false;
+            }
+          }
+
           // Inline tokenization — regex splits into whitespace/non-whitespace chunks
           const re = /(\s+|\S+)/g;
           let m: RegExpExecArray | null;
@@ -354,7 +378,14 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
   if (paragraphs.length === 0) {
     paragraphs.push({ tokens: [] });
   }
-  return { paragraphs };
+  return {
+    paragraphs,
+    uniformStyles: {
+      allBold: hasAnyText && trackBold,
+      allItalic: hasAnyText && trackItalic,
+      uniformHighlight: hasAnyText && typeof hlColor === 'string' ? hlColor : null,
+    },
+  };
 }
 
 // =============================================================================
@@ -779,6 +810,11 @@ class TextLayoutCache {
   getFrame(objectId: string): FrameTuple | null {
     return this.cache.get(objectId)?.frame ?? null;
   }
+
+  /** Get uniform inline styles from cached tokenized content. */
+  getInlineStyles(objectId: string): UniformStyles | null {
+    return this.cache.get(objectId)?.tokenized?.uniformStyles ?? null;
+  }
 }
 
 // Singleton instance
@@ -908,4 +944,12 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
  */
 export function getTextFrame(objectId: string): FrameTuple | null {
   return textLayoutCache.getFrame(objectId);
+}
+
+/**
+ * Get uniform inline styles for a text object from the layout cache.
+ * Returns null if the object hasn't been cached yet.
+ */
+export function getInlineStyles(objectId: string): UniformStyles | null {
+  return textLayoutCache.getInlineStyles(objectId);
 }

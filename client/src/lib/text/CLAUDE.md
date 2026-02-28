@@ -22,7 +22,7 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
 | `lib/text/extensions.ts` | TextCollaboration extension: per-session UndoManager, Y.Map observer, session merging |
 | `lib/text/font-config.ts` | `FONT_CONFIG` constants (extracted to avoid circular deps) |
 | `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` |
-| `lib/text/TextContextMenu.ts` | Floating toolbar: bold/italic/alignment/color/size (imperative DOM) |
+| `lib/text/TextContextMenu.ts` | Legacy floating toolbar (inactive — will be replaced by new context menu system) |
 | `lib/text/text-menu-icons.ts` | SVG icon builders for context menu |
 | `lib/tools/TextTool.ts` | PointerTool: editor mounting, Y.Map creation, live editing, width handling |
 
@@ -80,7 +80,7 @@ Y.XmlFragment
 ```
 Y.XmlFragment
     ↓ parseAndTokenize()
-TokenizedContent { paragraphs: [{ tokens: Token[] }] }
+TokenizedContent { paragraphs, uniformStyles: UniformStyles }
     ↓ measureTokenizedContent(tokenized, fontSize)
 MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight }
     ↓ layoutMeasuredContent(measured, width, fontSize)
@@ -124,8 +124,11 @@ Walks `Y.XmlFragment` → paragraph elements → `Y.XmlText` delta ops. Each del
 ```typescript
 interface Token { kind: 'word' | 'space'; segments: StyledText[]; }
 interface StyledText { text: string; bold: boolean; italic: boolean; highlight: string | null; }
-interface TokenizedContent { paragraphs: TokenizedParagraph[]; }
+interface UniformStyles { allBold: boolean; allItalic: boolean; uniformHighlight: string | null; }
+interface TokenizedContent { paragraphs: TokenizedParagraph[]; uniformStyles: UniformStyles; }
 ```
+
+`uniformStyles` is computed in the same delta op loop as tokenization (zero extra iteration). Tracks whether all text shares the same bold/italic/highlight — used by the context menu to show active state when the editor is not mounted.
 
 ### Stage 2: Measurement — `measureTokenizedContent()`
 
@@ -253,6 +256,7 @@ class TextLayoutCache {
   clear()                      // Full clear (+ all measurement LRUs)
   setFrame(objectId, frame)    // Derived frame storage (set by computeTextBBox)
   getFrame(objectId): FrameTuple | null
+  getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
 }
 export const textLayoutCache: TextLayoutCache;
 ```
@@ -309,6 +313,14 @@ getTextFrame(objectId): FrameTuple | null  // Reads derived frame from cache
 
 All call sites: `handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y)`
 
+### Inline Styles Getter
+
+```typescript
+getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
+```
+
+Returns `null` if the object hasn't been cached yet. Used by context menu for bold/italic/highlight active state when the editor is not mounted.
+
 ---
 
 ## Undo/Redo Architecture
@@ -356,7 +368,7 @@ Per-session undo of fontSize change
   → Y.Map 'fontSize' mutated
   → observer fires (keysChanged has 'fontSize')
   → onPropsSync(keys) → TextTool.syncProps()
-    → reads new value from Y.Map → updates editorState + container CSS → repositions editor
+    → reads fresh from Y.Map → updates container CSS / repositions editor
 ```
 
 Without this observer, undoing a property change would update the CRDT but the DOM overlay would show stale values.
@@ -369,18 +381,20 @@ Without this observer, undoing a property change would update the CRDT but the D
 
 ### State
 
+Flat class fields — no wrapper objects. Editor state reads Y.Map fresh (no duplicated fields for origin/fontSize/color/align/width):
+
 ```typescript
-interface EditorState {
-  container: HTMLDivElement | null;
-  editor: Editor | null;
-  objectId: string | null;
-  originWorld: [number, number] | null;
-  fontSize: number;
-  color: string;
-  align: TextAlign;
-  width: TextWidth;
-  isNew: boolean;
-}
+// Gesture state
+private gestureActive = false;
+private pointerId: number | null = null;
+private downWorld: [number, number] | null = null;
+private hitTextId: string | null = null;
+
+// Editor state
+private container: HTMLDivElement | null = null;
+private editor: Editor | null = null;
+objectId: string | null = null;  // public — mirrors textEditingId
+private isNew = false;
 ```
 
 ### PointerTool Lifecycle
@@ -429,9 +443,9 @@ Container top = screenY - (scaledFontSize * getBaselineToTopRatio())
 ### syncProps — Y.Map → DOM Overlay
 
 Called by extension's Y.Map observer on undo/redo of property changes:
-- Reads new values from `handle.y`
-- Updates `editorState` fields + container CSS (color, align, fontSize, width)
-- Calls `repositionEditor()` for origin/fontSize changes
+- Reads values fresh from `handle.y` — no local state to update
+- `color` → sets CSS variable; `align` → `applyAlignCSS()`
+- `origin`/`fontSize`/`width` → delegates to `positionEditor()` which reads all from Y.Map
 
 ### commitAndClose
 
@@ -450,14 +464,9 @@ container.style.setProperty('--text-anchor-tx',
   align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
 ```
 
-### Module Exports
+### Access
 
-```typescript
-setTextToolInstance(tool)          // Called by tool-registry
-getTextToolInstance(): TextTool    // Used by context menu
-getActiveEditorContainer()         // DOM element access
-getActiveTiptapEditor()            // Tiptap Editor access
-```
+No singleton indirection — `textTool` exported directly from `tool-registry.ts`. Public fields: `objectId`, `isEditorMounted()`, `updateColor()`, `updateFontSize()`, `updateTextAlign()`.
 
 ---
 
@@ -635,3 +644,4 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 - **Select tool E/W resize handles** — interactive width setting
 - **Live width changes during editing** — resize while editor mounted
 - **Text scale transforms** — font size scaling during select transforms
+- **New context menu integration** — `TextContextMenu.ts` is legacy (commented out in TextTool); bold/italic/highlight/alignment/color/fontSize will be wired through the new `context-menu/` system using `getInlineStyles()` for non-editing active state

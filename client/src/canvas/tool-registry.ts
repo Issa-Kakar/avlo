@@ -16,7 +16,7 @@
 
 import { DrawingTool } from '@/lib/tools/DrawingTool';
 import { EraserTool } from '@/lib/tools/EraserTool';
-import { TextTool, setTextToolInstance } from '@/lib/tools/TextTool';
+import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { SelectTool } from '@/lib/tools/SelectTool';
 import { ConnectorTool } from '@/lib/tools/ConnectorTool';
@@ -33,9 +33,6 @@ const textTool = new TextTool();
 const panTool = new PanTool();
 const selectTool = new SelectTool();
 const connectorTool = new ConnectorTool();
-
-// Register TextTool instance for external access
-setTextToolInstance(textTool);
 
 // ===========================================
 // TOOL LOOKUP
@@ -105,8 +102,8 @@ export function canStartMMBPan(): boolean {
 // DIRECT EXPORTS
 // ===========================================
 
-/** Export panTool for direct MMB access */
-export { panTool };
+/** Export panTool for direct MMB access, textTool for direct access */
+export { panTool, textTool };
 
 /** Export all tools for testing/debugging */
 export const allTools = { drawingTool, eraserTool, textTool, panTool, selectTool, connectorTool };

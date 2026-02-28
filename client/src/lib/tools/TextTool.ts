@@ -26,9 +26,9 @@ import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/c
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { getTextProps, getColor, type TextAlign, type TextWidth } from '@avlo/shared';
+import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
 import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor } from '@/lib/text/text-system';
-import { textContextMenu } from '@/lib/text/TextContextMenu';
+// import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -36,46 +36,20 @@ import { ulid } from 'ulid';
 /** Temporary: force fixed-width on new text objects for WYSIWYG testing. */
 const DEV_FORCE_FIXED_WIDTH = true;
 
-interface TextToolState {
-  isActive: boolean;
-  pointerId: number | null;
-  downWorld: [number, number] | null;
-  hitTextId: string | null;
-}
-
-interface EditorState {
-  container: HTMLDivElement | null;
-  editor: Editor | null;
-  objectId: string | null;
-  originWorld: [number, number] | null;
-  fontSize: number;
-  color: string;
-  align: TextAlign;
-  width: TextWidth;
-  isNew: boolean;
-}
-
 export class TextTool implements PointerTool {
-  private state: TextToolState = {
-    isActive: false,
-    pointerId: null,
-    downWorld: null,
-    hitTextId: null,
-  };
+  // Gesture state
+  private gestureActive = false;
+  private pointerId: number | null = null;
+  private downWorld: [number, number] | null = null;
+  private hitTextId: string | null = null;
 
-  private editorState: EditorState = {
-    container: null,
-    editor: null,
-    objectId: null,
-    originWorld: null,
-    fontSize: 20,
-    color: '#000000',
-    align: 'left',
-    width: 'auto' as TextWidth,
-    isNew: false,
-  };
+  // Editor state
+  private container: HTMLDivElement | null = null;
+  private editor: Editor | null = null;
+  objectId: string | null = null; // public — mirrors textEditingId
+  private isNew = false;
 
-  // Bound event handlers for cleanup
+  // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: MouseEvent) => void) | null = null;
 
@@ -84,24 +58,20 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   canBegin(): boolean {
-    // Can begin if not already active AND no text editing in progress
     const isEditing = useSelectionStore.getState().textEditingId !== null;
-    return !this.state.isActive && !isEditing;
+    return !this.gestureActive && !isEditing;
   }
 
   begin(pointerId: number, worldX: number, worldY: number): void {
-    if (this.state.isActive) return;
+    if (this.gestureActive) return;
 
     const snapshot = getCurrentSnapshot();
     const { scale } = useCameraStore.getState();
-    const hitTextId = hitTestVisibleText(worldX, worldY, snapshot, scale);
 
-    this.state = {
-      isActive: true,
-      pointerId,
-      downWorld: [worldX, worldY],
-      hitTextId,
-    };
+    this.gestureActive = true;
+    this.pointerId = pointerId;
+    this.downWorld = [worldX, worldY];
+    this.hitTextId = hitTestVisibleText(worldX, worldY, snapshot, scale);
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -109,63 +79,56 @@ export class TextTool implements PointerTool {
   }
 
   end(_worldX?: number, _worldY?: number): void {
-    if (!this.state.isActive || !this.state.downWorld) {
-      this.resetState();
+    if (!this.gestureActive || !this.downWorld) {
+      this.resetGesture();
       return;
     }
 
-    if (this.state.hitTextId) {
-      // Existing text → edit
-      useSelectionStore.getState().beginTextEditing(this.state.hitTextId, false);
-      this.mountEditor(this.state.hitTextId, false);
+    if (this.hitTextId) {
+      useSelectionStore.getState().beginTextEditing(this.hitTextId, false);
+      this.mountEditor(this.hitTextId, false);
     } else {
-      // No visible text → create new
-      const [x, y] = this.state.downWorld;
-      const { textSize, textColor } = useDeviceUIStore.getState();
-      const objectId = this.createTextObject(x, y, textSize, textColor);
+      const [x, y] = this.downWorld;
+      const objectId = this.createTextObject(x, y);
       useSelectionStore.getState().beginTextEditing(objectId, true);
       this.mountEditor(objectId, true);
     }
 
-    this.resetState();
+    this.resetGesture();
     invalidateOverlay();
     invalidateWorld(getVisibleWorldBounds());
   }
 
   cancel(): void {
-    this.resetState();
+    this.resetGesture();
     invalidateOverlay();
   }
 
   isActive(): boolean {
-    return this.state.isActive;
+    return this.gestureActive;
   }
 
   getPointerId(): number | null {
-    return this.state.pointerId;
+    return this.pointerId;
   }
 
   getPreview(): PreviewData | null {
-    // Text tool uses DOM overlay, no canvas preview needed
     return null;
   }
 
-  onPointerLeave(): void {
-    // No hover state to clear
-  }
+  onPointerLeave(): void {}
 
   onViewChange(): void {
-    // Reposition editor on pan/zoom
-    this.repositionEditor();
+    this.positionEditor();
   }
 
   destroy(): void {
     this.commitAndClose();
-    this.resetState();
+    this.resetGesture();
   }
 
   // =========================================================================
-  // Public Methods (for external triggers like clicking existing text)
+  // Public Methods
   // =========================================================================
 
   /**
@@ -173,28 +136,25 @@ export class TextTool implements PointerTool {
    * Called by SelectTool (double-click on text) with the click position for cursor placement.
    */
   startEditing(objectId: string, entryPoint: [number, number]): void {
-    this.state.downWorld = entryPoint;
+    this.downWorld = entryPoint;
     useSelectionStore.getState().beginTextEditing(objectId, false);
     this.mountEditor(objectId, false);
   }
 
-  /**
-   * Check if editor is currently mounted.
-   */
   isEditorMounted(): boolean {
-    return this.editorState.editor !== null;
+    return this.editor !== null;
   }
 
   // =========================================================================
   // Private: Object Creation
   // =========================================================================
 
-  private createTextObject(worldX: number, worldY: number, fontSize: number, color: string): string {
+  private createTextObject(worldX: number, worldY: number): string {
     const roomDoc = getActiveRoomDoc();
     const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
-    const align = useDeviceUIStore.getState().textAlign;
-    
+    const { textSize: fontSize, textColor: color, textAlign: align } = useDeviceUIStore.getState();
+
     roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
       const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
@@ -207,7 +167,6 @@ export class TextTool implements PointerTool {
       yObj.set('color', color);
       yObj.set('align', align);
       yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');
-      // Create empty Y.XmlFragment - Tiptap Collaboration will initialize it
       yObj.set('content', new Y.XmlFragment());
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
@@ -223,14 +182,12 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   private mountEditor(objectId: string, isNew: boolean): void {
-    // Get editor host
     const host = getEditorHost();
     if (!host) {
       console.error('[TextTool] No editor host available');
       return;
     }
 
-    // Get Y.XmlFragment + properties from object
     const roomDoc = getActiveRoomDoc();
     const snapshot = roomDoc.currentSnapshot;
     const handle = snapshot.objectsById.get(objectId);
@@ -257,51 +214,36 @@ export class TextTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
     const scaledFontSize = fontSize * scale;
 
-    // Position container: baseline aligns with origin
-    // Uses precomputed ratio that accounts for CSS line-height leading
-    const containerTop = screenY - scaledFontSize * getBaselineToTopRatio();
-    const containerLeft = screenX;
-
-    // POSITIONING
+    // Position container: baseline aligns with origin via precomputed ratio
+    // that accounts for CSS line-height leading
     container.style.position = 'absolute';
-    container.style.left = `${containerLeft}px`;
-    container.style.top = `${containerTop}px`;
-    // WIDTH MODE — fixed: explicit pixel width + outline; auto: max-content (CSS default)
+    container.style.left = `${screenX}px`;
+    container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
     if (typeof width === 'number') {
       container.style.width = `${width * scale}px`;
       container.dataset.widthMode = 'fixed';
     } else {
       container.dataset.widthMode = 'auto';
     }
-    // FONT SIZE/LINE HEIGHT - inline for performance (changes every frame on zoom)
     container.style.fontSize = `${scaledFontSize}px`;
     container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-
     container.style.setProperty('--text-color', color);
+    applyAlignCSS(container, align);
 
-    // ALIGNMENT - CSS custom properties for transform-based anchor positioning
-    container.style.setProperty('--text-align', align);
-    container.style.setProperty(
-      '--text-anchor-tx',
-      align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
-    );
-    // Append to host
     host.appendChild(container);
 
-    // Capture click coords for cursor positioning (before resetState clears downWorld)
-    const clickWorld = this.state.downWorld;
+    // Capture click coords for cursor positioning (before resetGesture clears downWorld)
+    const clickWorld = this.downWorld;
     const clientCoords = !isNew && clickWorld
       ? worldToClient(clickWorld[0], clickWorld[1])
       : null;
 
-    // Create Tiptap Editor with CSS class-based styling
+    // Create Tiptap Editor
     const editor = new Editor({
       element: {mount: container},
       extensions: [
         Document,
-        Placeholder.configure({
-          placeholder: 'Type something...',
-        }),
+        Placeholder.configure({ placeholder: 'Type something...' }),
         Paragraph,
         Text,
         Bold,
@@ -318,40 +260,31 @@ export class TextTool implements PointerTool {
       autofocus: isNew ? 'end' : false,
     });
 
-    // For existing text, place cursor at click position
+    // For existing text, place cursor at click position.
+    // Deferred to next frame — ProseMirror needs a layout pass before posAtCoords works.
     if (!isNew && clientCoords) {
       requestAnimationFrame(() => {
-        if (!this.editorState.editor) return;
-        const pos = this.editorState.editor.view.posAtCoords({ left: clientCoords[0], top: clientCoords[1] });
-        this.editorState.editor.commands.focus(pos ? pos.pos : 'end');
+        if (!this.editor) return;
+        const pos = this.editor.view.posAtCoords({ left: clientCoords[0], top: clientCoords[1] });
+        this.editor.commands.focus(pos ? pos.pos : 'end');
       });
     }
 
-    // Store state
-    this.editorState = {
-      container,
-      editor,
-      objectId,
-      originWorld: origin,
-      fontSize,
-      color,
-      align,
-      width,
-      isNew,
-    };
+    // Store flat fields
+    this.container = container;
+    this.editor = editor;
+    this.objectId = objectId;
+    this.isNew = isNew;
 
-    // Setup event handlers
     this.setupEditorHandlers();
 
-    // Mount context menu
-    textContextMenu.mount(host, container, editor, objectId);
+    // textContextMenu.mount(host, container, editor, objectId);
 
-    // Mark text editing active in UI store
-    useDeviceUIStore.getState().setIsTextEditing(true);
+    // useDeviceUIStore.getState().setIsTextEditing(true); // selection store handles text editing state
   }
 
   private setupEditorHandlers(): void {
-    // Escape key to commit
+    // Escape to commit (capture phase to beat ProseMirror)
     this.boundHandleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -360,25 +293,18 @@ export class TextTool implements PointerTool {
       }
     };
 
-    // Click outside to commit
+    // Click outside editor or context menu → commit
     this.boundHandleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      const container = this.editorState.container;
-
-      // Check if click is inside editor container
-      if (container && container.contains(target)) return;
-
-      // Check if click is inside context menu
+      if (this.container && this.container.contains(target)) return;
       const menuElement = document.querySelector('.text-context-menu');
       if (menuElement && menuElement.contains(target)) return;
-
-      // Click is outside both - commit and close
       this.commitAndClose();
     };
 
     document.addEventListener('keydown', this.boundHandleKeyDown, true);
 
-    // Delay click handler to avoid catching the initial click
+    // Delay mousedown listener to avoid catching the initial click that opened the editor
     setTimeout(() => {
       if (this.boundHandleClickOutside) {
         document.addEventListener('mousedown', this.boundHandleClickOutside, true);
@@ -398,32 +324,26 @@ export class TextTool implements PointerTool {
   }
 
   // =========================================================================
-  // Private: Editor Repositioning
+  // Private: Editor Positioning — reads fresh from Y.Map every call
   // =========================================================================
 
-  private repositionEditor(): void {
-    if (!this.editorState.container || !this.editorState.originWorld) return;
+  private positionEditor(): void {
+    if (!this.container || !this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    if (!handle) return;
+    const props = getTextProps(handle.y);
+    if (!props) return;
 
-    const [worldX, worldY] = this.editorState.originWorld;
-    const [screenX, screenY] = worldToClient(worldX, worldY);
+    const { origin, fontSize, width } = props;
     const scale = useCameraStore.getState().scale;
-    const scaledFontSize = this.editorState.fontSize * scale;
+    const sf = fontSize * scale;
+    const [sx, sy] = worldToClient(origin[0], origin[1]);
 
-    // Update position
-    this.editorState.container.style.left = `${screenX}px`;
-    this.editorState.container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
-
-    // Update font size/line height - inline for performance
-    this.editorState.container.style.fontSize = `${scaledFontSize}px`;
-    this.editorState.container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-
-    // Update fixed width for current zoom level
-    if (typeof this.editorState.width === 'number') {
-      this.editorState.container.style.width = `${this.editorState.width * scale}px`;
-    }
-
-    // Context menu handles its own positioning via camera subscription
-    textContextMenu.onViewChange();
+    this.container.style.left = `${sx}px`;
+    this.container.style.top = `${sy - sf * getBaselineToTopRatio()}px`;
+    this.container.style.fontSize = `${sf}px`;
+    this.container.style.lineHeight = `${sf * FONT_CONFIG.lineHeightMultiplier}px`;
+    if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
   }
 
   // =========================================================================
@@ -431,59 +351,40 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   private commitAndClose(): void {
-    const { editor, container, objectId, isNew } = this.editorState;
+    if (!this.editor || !this.objectId) return;
 
-    if (!editor || !objectId) return;
-
-    // Check if text is empty and this is a new object
-    const isEmpty = editor.isEmpty;
-
-    if (isEmpty && isNew) {
-      // Delete the empty text object
+    // Delete empty new text objects (user clicked but typed nothing)
+    if (this.editor.isEmpty && this.isNew) {
       const roomDoc = getActiveRoomDoc();
       roomDoc.mutate((ydoc) => {
         const root = ydoc.getMap('root');
         const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-        objects.delete(objectId);
+        objects.delete(this.objectId!);
       });
     }
 
-    // Destroy context menu first (before editor)
-    textContextMenu.destroy();
+    // textContextMenu.destroy();
 
-    // Remove event handlers
     this.removeEditorHandlers();
 
-    editor.destroy();
+    // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
+    this.editor.destroy();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + all plugin states
+    (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
 
-    // Remove container from DOM
-    if (container && container.parentNode) {
-      container.parentNode.removeChild(container);
+    if (this.container && this.container.parentNode) {
+      this.container.parentNode.removeChild(this.container);
     }
 
-    // Clear editor state
-    this.editorState = {
-      container: null,
-      editor: null,
-      objectId: null,
-      originWorld: null,
-      fontSize: 20,
-      color: '#000000',
-      align: 'left',
-      width: 'auto' as TextWidth,
-      isNew: false,
-    };
+    this.container = null;
+    this.editor = null;
+    this.objectId = null;
+    this.isNew = false;
 
-    // End text editing in selection store
     useSelectionStore.getState().endTextEditing();
-
-    // Mark text editing inactive in UI store
-    useDeviceUIStore.getState().setIsTextEditing(false);
+    // useDeviceUIStore.getState().setIsTextEditing(false); // selection store handles text editing state
+    // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
     invalidateWorld(getVisibleWorldBounds());
-    // Invalidate overlay to update UI state
-    // Note: World invalidation must be done by us because Unmounting the editor does not cause a Yjs mutation.
     invalidateOverlay();
   }
 
@@ -493,129 +394,63 @@ export class TextTool implements PointerTool {
 
   /**
    * Update the color of the current text object.
-   * Called by context menu when user picks a new color.
+   * Y.Map observer in extensions.ts fires syncProps → handles DOM update.
    */
   updateColor(newColor: string): void {
-    const { objectId, container } = this.editorState;
-    if (!objectId || !container) return;
-
-    // 1. Update Y.Map (triggers observer → cache is fine, color not cached)
+    if (!this.objectId) return;
     const roomDoc = getActiveRoomDoc();
     roomDoc.mutate(() => {
-      const snapshot = roomDoc.currentSnapshot;
-      const handle = snapshot.objectsById.get(objectId);
-      if (handle) {
-        handle.y.set('color', newColor);
-      }
+      const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId!);
+      if (handle) handle.y.set('color', newColor);
     });
-
-    // 2. Update CSS variable immediately for DOM overlay
-    container.style.setProperty('--text-color', newColor);
-    this.editorState.color = newColor;
-
-    // 3. Update UI store for consistency
     useDeviceUIStore.getState().setTextColor(newColor);
   }
 
   /**
    * Update the fontSize of the current text object.
-   * Called by context menu when user picks a new size.
+   * Y.Map observer fires syncProps → handles DOM + positioning update.
    */
   updateFontSize(newSize: number): void {
-    const { objectId, container, originWorld } = this.editorState;
-    if (!objectId || !container || !originWorld) return;
-
-    // 1. Update Y.Map (triggers observer → invalidateLayout)
+    if (!this.objectId) return;
     const roomDoc = getActiveRoomDoc();
     roomDoc.mutate(() => {
-      const snapshot = roomDoc.currentSnapshot;
-      const handle = snapshot.objectsById.get(objectId);
-      if (handle) {
-        handle.y.set('fontSize', newSize);
-      }
+      const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId!);
+      if (handle) handle.y.set('fontSize', newSize);
     });
-
-    // 2. Update editor state
-    this.editorState.fontSize = newSize;
-
-    // 3. Update CSS for DOM overlay (scale-adjusted)
-    const scale = useCameraStore.getState().scale;
-    const scaledFontSize = newSize * scale;
-    container.style.fontSize = `${scaledFontSize}px`;
-    container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-
-    // 4. Reposition editor (baseline position changes with font size)
-    this.repositionEditor();
-
-    // 5. Invalidate world to update any non-editing canvas rendering
-    invalidateWorld(getVisibleWorldBounds());
-  }
-
-  /**
-   * Apply alignment CSS to the editor container.
-   * Sets CSS custom properties for transform-based anchor positioning.
-   */
-  private applyAlignCSS(align: TextAlign): void {
-    const container = this.editorState.container;
-    if (!container) return;
-    container.style.setProperty('--text-align', align);
-    container.style.setProperty(
-      '--text-anchor-tx',
-      align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
-    );
   }
 
   /**
    * Update the alignment of the current text object.
-   * Called by context menu when user picks a new alignment.
    * Adjusts origin.x to preserve the text's left edge position.
+   * Y.Map observer fires syncProps → handles DOM update.
    */
   updateTextAlign(newAlign: TextAlign): void {
-    const { objectId, container, originWorld } = this.editorState;
-    if (!objectId || !container || !originWorld) return;
+    if (!this.objectId || !this.container) return;
 
     const roomDoc = getActiveRoomDoc();
-    const snapshot = roomDoc.currentSnapshot;
-    const handle = snapshot.objectsById.get(objectId);
+    const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId);
     if (!handle) return;
 
     const oldAlign = (handle.y.get('align') as TextAlign) ?? 'left';
     if (oldAlign === newAlign) return;
 
+    const origin = handle.y.get('origin') as [number, number] | undefined;
+    if (!origin) return;
+
     // Measure current width from DOM
     const scale = useCameraStore.getState().scale;
-    const W = container.getBoundingClientRect().width / scale;
+    const W = this.container.getBoundingClientRect().width / scale;
 
     // Compute new origin.x to preserve left edge position
     const oldF = anchorFactor(oldAlign);
     const newF = anchorFactor(newAlign);
-    const leftX = originWorld[0] - oldF * W;
+    const leftX = origin[0] - oldF * W;
     const newOriginX = leftX + newF * W;
 
-    // Update Yjs atomically
     roomDoc.mutate(() => {
-      handle.y.set('origin', [newOriginX, originWorld[1]]);
+      handle.y.set('origin', [newOriginX, origin[1]]);
       handle.y.set('align', newAlign);
     });
-
-    // Update local state
-    this.editorState.originWorld = [newOriginX, originWorld[1]];
-    this.editorState.align = newAlign;
-
-    // Update CSS
-    this.applyAlignCSS(newAlign);
-
-    // Reposition (origin changed)
-    this.repositionEditor();
-
-    invalidateWorld(getVisibleWorldBounds());
-  }
-
-  /**
-   * Get the current editor state for external access (e.g., context menu).
-   */
-  getEditorState(): EditorState {
-    return this.editorState;
   }
 
   // =========================================================================
@@ -623,106 +458,40 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   private syncProps(keys: Set<string>): void {
-    const { container, objectId } = this.editorState;
-    if (!container || !objectId) return;
+    if (!this.container || !this.objectId) return;
 
-    const handle = getCurrentSnapshot().objectsById.get(objectId);
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
-    const y = handle.y;
 
-    if (keys.has('color')) {
-      const c = (y.get('color') as string) ?? '#000000';
-      this.editorState.color = c;
-      container.style.setProperty('--text-color', c);
-    }
-    if (keys.has('align')) {
-      const a = (y.get('align') as TextAlign) ?? 'left';
-      this.editorState.align = a;
-      this.applyAlignCSS(a);
-    }
-    if (keys.has('origin')) {
-      this.editorState.originWorld = (y.get('origin') as [number, number]) ?? this.editorState.originWorld;
-    }
-    if (keys.has('fontSize')) {
-      const fs = (y.get('fontSize') as number) ?? this.editorState.fontSize;
-      this.editorState.fontSize = fs;
-      const scale = useCameraStore.getState().scale;
-      const scaledFontSize = fs * scale;
-      container.style.fontSize = `${scaledFontSize}px`;
-      container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
-    }
-    if (keys.has('width')) {
-      this.editorState.width = (y.get('width') as TextWidth) ?? this.editorState.width;
-      if (typeof this.editorState.width === 'number') {
-        const scale = useCameraStore.getState().scale;
-        container.style.width = `${this.editorState.width * scale}px`;
-      }
-    }
-
-    this.repositionEditor();
+    if (keys.has('color'))
+      this.container.style.setProperty('--text-color', getColor(handle.y));
+    if (keys.has('align'))
+      applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
+    if (keys.has('origin') || keys.has('fontSize') || keys.has('width'))
+      this.positionEditor();
   }
 
   // =========================================================================
   // Private Helpers
   // =========================================================================
 
-  private resetState(): void {
-    this.state = {
-      isActive: false,
-      pointerId: null,
-      downWorld: null,
-      hitTextId: null,
-    };
-  }
-
-  // =========================================================================
-  // Public Getters (for external access, e.g., context menu)
-  // =========================================================================
-
-  /**
-   * Get the active editor container element.
-   */
-  getEditorContainer(): HTMLDivElement | null {
-    return this.editorState.container;
-  }
-
-  /**
-   * Get the active Tiptap editor instance.
-   */
-  getTiptapEditor(): Editor | null {
-    return this.editorState.editor;
+  private resetGesture(): void {
+    this.gestureActive = false;
+    this.pointerId = null;
+    this.downWorld = null;
+    this.hitTextId = null;
   }
 }
 
-// Create singleton instance for external access
-let textToolInstance: TextTool | null = null;
+// =========================================================================
+// Helpers
+// =========================================================================
 
-/**
- * Set the TextTool instance for external access.
- * Called by tool-registry when creating the tool.
- */
-export function setTextToolInstance(tool: TextTool): void {
-  textToolInstance = tool;
-}
-
-/**
- * Get the TextTool instance.
- * Used by context menu to call updateColor/updateFontSize methods.
- */
-export function getTextToolInstance(): TextTool | null {
-  return textToolInstance;
-}
-
-/**
- * Get the active editor container element.
- */
-export function getActiveEditorContainer(): HTMLDivElement | null {
-  return textToolInstance?.getEditorContainer() ?? null;
-}
-
-/**
- * Get the active Tiptap editor instance.
- */
-export function getActiveTiptapEditor(): Editor | null {
-  return textToolInstance?.getTiptapEditor() ?? null;
+/** Set CSS custom properties for transform-based anchor positioning. */
+function applyAlignCSS(container: HTMLDivElement, align: TextAlign): void {
+  container.style.setProperty('--text-align', align);
+  container.style.setProperty(
+    '--text-anchor-tx',
+    align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
+  );
 }
