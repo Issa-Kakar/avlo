@@ -554,6 +554,10 @@ function drawText(ctx, handle) {
 }
 ```
 
+### Scale Transform Preview (`drawScaledTextPreview`)
+
+During corner-handle scale, text renders via `ctx.scale()` on the cached layout — no re-layout per frame. The function computes a new virtual origin in the scaled frame, then translates + scales the context before calling `renderTextLayout(ctx, layout, 0, 0, ...)`. Rendering at origin (0,0) works because `renderTextLayout` internally computes `boxLeftX = originX - anchorFactor * boxWidth`, which after the context transform maps to the correct world position for all alignment modes.
+
 ---
 
 ## Room Doc Manager Integration
@@ -601,6 +605,50 @@ Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/conte
 
 ---
 
+## Scale Transforms (SelectTool)
+
+Uniform scaling of text via corner handle drag. Matches stroke uniform-scale pattern — center-based position preservation with `computePreservedPosition()`.
+
+### Handle Behavior
+
+| Selection | Handle | Text behavior |
+|-----------|--------|---------------|
+| textOnly / mixed | corner | Uniform scale (fontSize + origin + width) |
+| textOnly / mixed | side | No-op (planned: E/W reflow width, N/S uniform scale) |
+
+### Math — Font Size Rounding
+
+Font size is rounded to 3 decimal places (`Math.round(fontSize * absScale * 1000) / 1000`). The effective scale is then derived back from the rounded font size (`roundedFontSize / originalFontSize`). This ensures preview and commit produce identical geometry. At fontSize 20, this gives 20,000 distinct steps between scale 1.0→2.0 — visually imperceptible.
+
+### Math — Origin Derivation
+
+Text frame is derived (not stored). After computing the new scaled frame `[nfx, nfy, nfw, nfh]`:
+
+```
+newOriginX = nfx + anchorFactor(align) * nfw    // left=0, center=0.5, right=1
+newOriginY = nfy + roundedFontSize * getBaselineToTopRatio()
+```
+
+Position preservation uses raw `uniformScale` (continuous cursor tracking). Font size and dimensions use `effectiveAbsScale` (rounded/quantized).
+
+### Preview (`objects.ts` → `drawScaledTextPreview`)
+
+No re-layout per frame — reuses the cached `TextLayout` at the original font size. Visual scaling via `ctx.translate(newOriginX, newOriginY)` + `ctx.scale(effectiveAbsScale, effectiveAbsScale)` + `renderTextLayout(ctx, layout, 0, 0, ...)`.
+
+### Commit (`SelectTool.ts` → `commitScale`)
+
+Writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `width` (scaled, only if fixed-width). The deep observer fires → `computeTextBBox()` re-derives the frame from the new properties → spatial index updates.
+
+### Topology Integration (`transform.ts`)
+
+`transformFrameForTopology` and `transformPositionForTopology` use uniform scale for `textOnly` (not just `mixed`), ensuring connectors attached to text objects reroute correctly during scale drag and on commit.
+
+### Dirty Rect Tracking (`invalidateTransformPreview`)
+
+Text bounds for corner handles computed via `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. Side handles skip (`continue`) — no bounds needed since text doesn't move.
+
+---
+
 ## WYSIWYG Parity Contract
 
 DOM and canvas match because:
@@ -641,7 +689,6 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 ## Remaining Work
 
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove when resize handles land
-- **Select tool E/W resize handles** — interactive width setting
+- **Select tool E/W side handles** — set fixed width (reflow text), N/S handles uniform scale
 - **Live width changes during editing** — resize while editor mounted
-- **Text scale transforms** — font size scaling during select transforms
 - **Bold/Italic/Highlight for canvas-selected text** — inline formatting actions currently require active editor; future: direct Yjs delta mutations on `Y.XmlFragment` for formatting without mounting editor

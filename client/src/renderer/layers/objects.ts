@@ -25,8 +25,9 @@ import {
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
-import { textLayoutCache, renderTextLayout } from '@/lib/text/text-system';
+import { textLayoutCache, renderTextLayout, anchorFactor, getBaselineToTopRatio, getTextFrame } from '@/lib/text/text-system';
 import { getTextProps } from '@avlo/shared';
+import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -522,6 +523,58 @@ function drawShapeWithUniformScale(
 }
 
 /**
+ * Draw text with uniform scale preview using ctx.scale on cached layout.
+ * Font size is rounded to 3dp for WYSIWYG match with commit.
+ */
+function drawScaledTextPreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform,
+): void {
+  const textFrame = getTextFrame(handle.id);
+  if (!textFrame) { drawText(ctx, handle); return; }
+
+  const props = getTextProps(handle.y);
+  if (!props) return;
+
+  const { scaleX, scaleY, originBounds, origin } = transform;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const rawAbsScale = Math.abs(uniformScale);
+  if (rawAbsScale < 0.001) return;
+
+  // Round fontSize → derive effective scale (mirrors commit exactly)
+  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+  const effectiveAbsScale = roundedFontSize / props.fontSize;
+
+  // New center via position preservation (raw scale for continuous cursor tracking)
+  const [fx, fy, fw, fh] = textFrame;
+  const cx = fx + fw / 2;
+  const cy = fy + fh / 2;
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  // New frame with effective (rounded) dimensions
+  const nfw = fw * effectiveAbsScale;
+  const nfh = fh * effectiveAbsScale;
+  const nfx = newCx - nfw / 2;
+  const nfy = newCy - nfh / 2;
+
+  // Derive virtual origin in new frame
+  const newOriginX = nfx + anchorFactor(props.align) * nfw;
+  const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
+
+  // Reuse cached layout — ctx.scale does the visual scaling
+  const color = getColor(handle.y);
+  const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.width);
+
+  ctx.save();
+  ctx.translate(newOriginX, newOriginY);
+  ctx.scale(effectiveAbsScale, effectiveAbsScale);
+  renderTextLayout(ctx, layout, 0, 0, color, props.align);
+  ctx.restore();
+}
+
+/**
  * Context-aware scale transform rendering for selected objects.
  * Dispatches to correct rendering strategy based on selectionKind + handleKind.
  */
@@ -574,10 +627,13 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Text - Phase 1: Draw at original position during transforms
-  // Text transforms (scale/translate) deferred to later phases
+  // CASE 4: Text — uniform scale for corner handles only
   if (handle.kind === 'text') {
-    drawText(ctx, handle);
+    if (handleKind === 'corner') {
+      drawScaledTextPreview(ctx, handle, transform);
+    } else {
+      drawText(ctx, handle); // side handles: draw at original position
+    }
     return;
   }
 

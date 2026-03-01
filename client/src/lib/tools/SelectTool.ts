@@ -21,6 +21,8 @@ import {
   applyTransformToFrame,
   transformFrameForTopology,
   transformPositionForTopology,
+  computeUniformScaleNoThreshold,
+  computePreservedPosition,
 } from '@/lib/geometry/transform';
 import {
   unionBounds,
@@ -49,6 +51,7 @@ import {
   getStartAnchor,
   getEndAnchor,
   getOrigin,
+  getTextProps,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import * as Y from 'yjs';
@@ -59,6 +62,8 @@ import { contextMenuController } from '@/canvas/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
+import { anchorFactor, getBaselineToTopRatio, getTextFrame } from '@/lib/text/text-system';
+import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -897,8 +902,6 @@ export class SelectTool implements PointerTool {
 
         // Connectors handled via topology above
         if (handle.kind === 'connector') continue;
-        // Text doesn't scale — original position covered by bboxBounds union
-        if (handle.kind === 'text') continue;
 
         const bbox = bboxTupleToWorldBounds(handle.bbox);
         const isStroke = handle.kind === 'stroke';
@@ -923,6 +926,13 @@ export class SelectTool implements PointerTool {
           if (delta > 0) {
             objBounds = expandBounds(objBounds, delta);
           }
+        } else if (handle.kind === 'text') {
+          // Text: uniform scale bounds for corner handles only
+          if (handleKind !== 'corner') continue;
+          const textFrame = getTextFrame(handle.id);
+          if (!textFrame) continue;
+          const textBounds = frameTupleToWorldBounds(textFrame);
+          objBounds = computeUniformScaleBounds(textBounds, originBounds, origin, scaleX, scaleY);
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
@@ -1079,8 +1089,47 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // Text: no-op for scale (text doesn't scale yet, but we will be adding it in the future)
-        if (handle.kind === 'text') continue;
+        // Text: uniform scale fontSize + origin for corner handles
+        if (handle.kind === 'text') {
+          if (handleKind !== 'corner') continue;
+
+          const textFrame = getTextFrame(handle.id);
+          if (!textFrame) continue;
+
+          const props = getTextProps(yMap);
+          if (!props) continue;
+
+          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+          const rawAbsScale = Math.abs(uniformScale);
+
+          // Round fontSize — mirrors preview exactly
+          const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+          const effectiveAbsScale = roundedFontSize / props.fontSize;
+
+          // New center via position preservation
+          const [fx, fy, fw, fh] = textFrame;
+          const cx = fx + fw / 2;
+          const cy = fy + fh / 2;
+          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+          // New frame with effective dimensions
+          const nfw = fw * effectiveAbsScale;
+          const nfx = newCx - nfw / 2;
+          const nfy = newCy - (fh * effectiveAbsScale) / 2;
+
+          // Derive origin from new frame
+          const newOriginX = nfx + anchorFactor(props.align) * nfw;
+          const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
+
+          yMap.set('origin', [newOriginX, newOriginY]);
+          yMap.set('fontSize', roundedFontSize);
+
+          if (typeof props.width === 'number') {
+            yMap.set('width', props.width * effectiveAbsScale);
+          }
+
+          continue;
+        }
 
         // CASE 3: Shape scaling
         const frame = getFrame(yMap);

@@ -428,7 +428,7 @@ export function transformFrameForTopology(
     return [frame[0] + transform.dx, frame[1] + transform.dy, frame[2], frame[3]];
   }
   const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
-  if (selectionKind === 'mixed' && handleKind === 'corner') {
+  if ((selectionKind === 'mixed' || selectionKind === 'textOnly') && handleKind === 'corner') {
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
   return applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
@@ -446,7 +446,7 @@ export function transformPositionForTopology(
     return [position[0] + transform.dx, position[1] + transform.dy];
   }
   const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
-  if (selectionKind === 'mixed' && handleKind === 'corner') {
+  if ((selectionKind === 'mixed' || selectionKind === 'textOnly') && handleKind === 'corner') {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);
     return computePreservedPosition(position[0], position[1], originBounds, origin, u);
   }
