@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
 import { TEXT_FONT_SIZE_PRESETS } from '@/stores/device-ui-store';
 import { MenuButton } from './MenuButton';
 import { IconMinus, IconPlus, IconCheck } from './icons/UtilityIcons';
+import { useDropdown } from './useDropdown';
 
 interface FontSizeStepperProps {
   value: number;
@@ -11,18 +11,8 @@ interface FontSizeStepperProps {
 }
 
 export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize }: FontSizeStepperProps) => {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { open, containerRef, toggle, close } = useDropdown();
   const display = Math.min(999, Math.max(1, Math.round(value)));
-
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }} className="ctx-size-group">
@@ -31,7 +21,7 @@ export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize 
       </MenuButton>
       <button
         className="ctx-size-value"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={toggle}
       >
         <svg width={26} height={16} viewBox="0 0 26 16" fill="none" aria-hidden style={{ flexShrink: 0 }}>
           <text
@@ -60,7 +50,7 @@ export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize 
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onSelectSize?.(preset);
-                  setOpen(false);
+                  close();
                 }}
               >
                 {isActive && <IconCheck width={14} height={14} />}

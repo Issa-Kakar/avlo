@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
 import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
+import { useDropdown } from './useDropdown';
 
 const STROKE_PRESETS: [string, number][] = [['S', 6], ['M', 10], ['L', 14], ['XL', 18]];
 const CONNECTOR_PRESETS: [string, number][] = [['S', 2], ['M', 4], ['L', 6], ['XL', 8]];
@@ -18,29 +18,18 @@ interface SizeLabelProps {
 }
 
 export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { open, containerRef, toggle, close } = useDropdown();
 
   const labels = kind === 'connector' ? CONNECTOR_LABELS : STROKE_LABELS;
   const presets = kind === 'connector' ? CONNECTOR_PRESETS : STROKE_PRESETS;
   const label = labels[value] ?? '';
   const svgW = label ? (LABEL_SVG_W[label] ?? 48) : EMPTY_SVG_W;
 
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
-
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button
         className="ctx-size-label-btn"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={toggle}
       >
         <svg
           width={svgW}
@@ -88,7 +77,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onSelect?.(size);
-                  setOpen(false);
+                  close();
                 }}
               >
                 {active

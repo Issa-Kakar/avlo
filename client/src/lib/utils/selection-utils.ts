@@ -27,13 +27,25 @@ export interface KindCounts {
 }
 
 export interface SelectedStyles {
+  /** First object's stroke/border color. Used by all kinds. */
   color: string;
+  /** Multiple different stroke colors detected. Used by strokes, shapes, connectors. */
   colorMixed: boolean;
+  /** Second stroke color for split indicator. Only set when colorMixed. */
   colorSecond: string | null;
+  /** Uniform stroke width, null if mixed. Used by strokes, shapes, connectors. */
   width: number | null;
+  /** First shape's fill color, null = no fill. Used by shapesOnly. Kept even when mixed. */
   fillColor: string | null;
+  /** Multiple different fill colors detected. Used by shapesOnly. */
+  fillColorMixed: boolean;
+  /** Second fill color for split indicator. Only set when fillColorMixed. */
+  fillColorSecond: string | null;
+  /** Uniform shape type, 'text' for textOnly, null if mixed. Used by shapesOnly, textOnly. */
   shapeType: string | null;
+  /** First text object's fontSize (rounded). Used by textOnly. */
   fontSize: number | null;
+  /** Uniform text alignment, null if mixed. Used by textOnly. */
   textAlign: TextAlign | null;
 }
 
@@ -45,6 +57,8 @@ export const EMPTY_STYLES: SelectedStyles = {
   colorSecond: null,
   width: null,
   fillColor: null,
+  fillColorMixed: false,
+  fillColorSecond: null,
   shapeType: null,
   fontSize: null,
   textAlign: null,
@@ -188,6 +202,7 @@ export function computeStyles(
   let widthMixed = false;
   let firstFill: string | null = null;
   let fillMixed = false;
+  let fillSecond: string | null = null;
   let firstShapeType: string | null = null;
   let shapeTypeMixed = false;
   let firstFontSize: number | null = null;
@@ -218,7 +233,10 @@ export function computeStyles(
       colorSecond = getColor(handle.y);
     }
     if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
-    if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) fillMixed = true;
+    if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) {
+      fillMixed = true;
+      fillSecond = getFillColor(handle.y) ?? null;
+    }
     if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType)
       shapeTypeMixed = true;
     if (trackText && !fontSizeMixed && Math.round(getFontSize(handle.y)) !== firstFontSize)
@@ -240,7 +258,9 @@ export function computeStyles(
     colorMixed,
     colorSecond: colorMixed ? colorSecond : null,
     width: trackWidth ? (widthMixed ? null : firstWidth) : null,
-    fillColor: trackFill ? (fillMixed ? null : firstFill) : null,
+    fillColor: trackFill ? (firstFill ?? null) : null,
+    fillColorMixed: trackFill && fillMixed,
+    fillColorSecond: trackFill && fillMixed ? fillSecond : null,
     shapeType: trackShapeType
       ? shapeTypeMixed
         ? null
@@ -260,6 +280,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.colorSecond === b.colorSecond &&
     a.width === b.width &&
     a.fillColor === b.fillColor &&
+    a.fillColorMixed === b.fillColorMixed &&
+    a.fillColorSecond === b.fillColorSecond &&
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign

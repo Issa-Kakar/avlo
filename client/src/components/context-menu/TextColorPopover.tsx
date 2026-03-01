@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
 import { CONTEXT_MENU_COLORS } from './color-palette';
 import { MenuButton } from './MenuButton';
 import { TextColorIcon } from './icons';
+import { useDropdown } from './useDropdown';
 
 interface TextColorPopoverProps {
   color: string;
@@ -9,23 +9,13 @@ interface TextColorPopoverProps {
 }
 
 export function TextColorPopover({ color, onSelect }: TextColorPopoverProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
+  const { open, containerRef, toggle, close } = useDropdown();
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton
         className="ctx-btn-color"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={toggle}
       >
         <TextColorIcon barColor={color} width={20} height={20} />
       </MenuButton>
@@ -43,7 +33,7 @@ export function TextColorPopover({ color, onSelect }: TextColorPopoverProps) {
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelect?.(c);
-                    setOpen(false);
+                    close();
                   }}
                 />
               );

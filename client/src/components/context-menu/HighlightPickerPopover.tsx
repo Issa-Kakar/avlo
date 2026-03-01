@@ -1,32 +1,22 @@
-import { useState, useRef, useEffect } from 'react';
 import { HIGHLIGHT_COLORS } from '@/stores/device-ui-store';
 import { useSelectionStore, selectInlineHighlightColor } from '@/stores/selection-store';
 import { MenuButton } from './MenuButton';
 import { HighlightIcon } from './icons';
+import { useDropdown } from './useDropdown';
 
 interface HighlightPickerPopoverProps {
   onSelect?: (color: string | null) => void;
 }
 
 export function HighlightPickerPopover({ onSelect }: HighlightPickerPopoverProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { open, containerRef, toggle, close } = useDropdown();
   const highlightColor = useSelectionStore(selectInlineHighlightColor);
-
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton
         className="ctx-btn-color"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={toggle}
       >
         <HighlightIcon barColor={highlightColor} width={20} height={20} />
       </MenuButton>
@@ -43,7 +33,7 @@ export function HighlightPickerPopover({ onSelect }: HighlightPickerPopoverProps
                     onMouseDown={(e) => {
                       e.preventDefault();
                       onSelect?.(null);
-                      setOpen(false);
+                      close();
                     }}
                   >
                     <span className="ctx-highlight-slash" />
@@ -58,7 +48,7 @@ export function HighlightPickerPopover({ onSelect }: HighlightPickerPopoverProps
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelect?.(c);
-                    setOpen(false);
+                    close();
                   }}
                 />
               );

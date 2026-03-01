@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
 import { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
 import { MenuButton } from './MenuButton';
 import { ColorCircle } from './ColorCircle';
 import { IconChevronDown, IconNoFill } from './icons';
+import { useDropdown } from './useDropdown';
 
 interface ColorPickerPopoverProps {
   color: string;
@@ -21,24 +21,13 @@ export function ColorPickerPopover({
   selectedColor,
   onSelect,
 }: ColorPickerPopoverProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
+  const { open, containerRef, toggle, close } = useDropdown();
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton
         className="ctx-btn-color-dd"
-        onMouseDown={(e) => { e.preventDefault(); setOpen(!open); }}
+        onMouseDown={toggle}
       >
         <ColorCircle
           color={color}
@@ -65,7 +54,7 @@ export function ColorPickerPopover({
                     onMouseDown={(e) => {
                       e.preventDefault();
                       onSelect?.(NO_FILL);
-                      setOpen(false);
+                      close();
                     }}
                   >
                     <IconNoFill width={16} height={16} />
@@ -81,7 +70,7 @@ export function ColorPickerPopover({
                   onMouseDown={(e) => {
                     e.preventDefault();
                     onSelect?.(c);
-                    setOpen(false);
+                    close();
                   }}
                 />
               );

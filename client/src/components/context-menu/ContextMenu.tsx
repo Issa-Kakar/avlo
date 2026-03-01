@@ -54,10 +54,10 @@ const selectStrokeStyles = (s: SelectionStore) => ({
 });
 const selectShapeStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
-  colorMixed: s.selectedStyles.colorMixed,
-  colorSecond: s.selectedStyles.colorSecond,
   width: s.selectedStyles.width,
   fillColor: s.selectedStyles.fillColor,
+  fillColorMixed: s.selectedStyles.fillColorMixed,
+  fillColorSecond: s.selectedStyles.fillColorSecond,
 });
 const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
@@ -88,7 +88,7 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
       <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
-        variant={colorMixed ? 'hollow' : 'filled'}
+        variant="filled"
         secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}
@@ -99,7 +99,7 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
 });
 
 const ShapeStyleGroup = memo(function ShapeStyleGroup() {
-  const { color, colorMixed, colorSecond, width, fillColor } = useSelectionStore(
+  const { color, width, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
     useShallow(selectShapeStyles),
   );
   return (
@@ -109,14 +109,14 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
       <ColorPickerPopover
         color={color}
         variant="hollow"
-        secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}
         onSelect={setSelectedColor}
       />
       <ColorPickerPopover
         color={fillColor ?? '#fff'}
-        variant={fillColor === null ? 'none' : 'filled'}
+        variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
+        secondColor={fillColorMixed ? fillColorSecond : undefined}
         mode="fill"
         selectedColor={fillColor}
         onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
@@ -191,7 +191,7 @@ const ConnectorGroup = memo(function ConnectorGroup() {
       <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
-        variant={colorMixed ? 'hollow' : 'filled'}
+        variant="filled"
         secondColor={colorMixed ? colorSecond : undefined}
         mode="stroke"
         selectedColor={color}

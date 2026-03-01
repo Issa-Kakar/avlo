@@ -212,7 +212,7 @@ function drawShape(
   const color = getColor(y);
   const width = getWidth(y, 1);
   const opacity = getOpacity(y);
-
+  
   const cache = getObjectCacheInstance();
   const path = cache.getPath(id, handle);
 

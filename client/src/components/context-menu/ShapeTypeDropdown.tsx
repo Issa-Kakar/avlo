@@ -1,5 +1,4 @@
 import type React from 'react';
-import { useState, useRef, useEffect } from 'react';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { setSelectedShapeType } from '@/lib/utils/selection-actions';
@@ -12,6 +11,7 @@ import {
   IconDiamondType,
   IconRoundedRectType,
 } from './icons/ShapeTypeIcons';
+import { useDropdown } from './useDropdown';
 
 const selectShapeType = (s: SelectionStore) => s.selectedStyles.shapeType;
 
@@ -36,19 +36,8 @@ interface ShapeTypeDropdownProps {
 }
 
 export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { open, containerRef, toggle, close } = useDropdown();
   const shapeType = useSelectionStore(selectShapeType);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
 
   // Trigger icon: text mode always shows T, shapes mode shows current type or composite
   const TriggerIcon =
@@ -62,10 +51,7 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton
         className="ctx-btn-type"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          setOpen(!open);
-        }}
+        onMouseDown={toggle}
         aria-expanded={open}
       >
         <TriggerIcon width={20} height={20} />
@@ -86,7 +72,7 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
                     setSelectedShapeType(key);
                   }
                   // text→shape and shape→text conversions: future
-                  setOpen(false);
+                  close();
                 }}
               >
                 <Icon width={22} height={22} />

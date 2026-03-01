@@ -20,6 +20,12 @@ function getSelectedHandles() {
   return { selectedIds, objectsById };
 }
 
+/** Resolve text IDs: prefer textEditingId, fall back to selectedIds. */
+function getTextIds(): string[] {
+  const { textEditingId, selectedIds } = useSelectionStore.getState();
+  return textEditingId ? [textEditingId] : selectedIds;
+}
+
 // === Color ===
 
 export function setSelectedColor(color: string): void {
@@ -162,8 +168,7 @@ export function deleteSelected(): void {
 // === Text Color ===
 
 export function setSelectedTextColor(color: string): void {
-  const { textEditingId, selectedIds } = useSelectionStore.getState();
-  const ids = textEditingId ? [textEditingId] : selectedIds;
+  const ids = getTextIds();
   if (ids.length === 0) return;
 
   const { objectsById } = getCurrentSnapshot();
@@ -179,8 +184,7 @@ export function setSelectedTextColor(color: string): void {
 
 export function setSelectedFontSize(size: number): void {
   const clamped = Math.max(1, Math.min(999, Math.round(size)));
-  const { textEditingId, selectedIds } = useSelectionStore.getState();
-  const ids = textEditingId ? [textEditingId] : selectedIds;
+  const ids = getTextIds();
   if (ids.length === 0) return;
 
   const { objectsById } = getCurrentSnapshot();
@@ -226,8 +230,7 @@ export function decrementFontSize(): void {
 // === Text Alignment ===
 
 export function setSelectedTextAlign(align: TextAlign): void {
-  const { textEditingId, selectedIds } = useSelectionStore.getState();
-  const ids = textEditingId ? [textEditingId] : selectedIds;
+  const ids = getTextIds();
   if (ids.length === 0) return;
 
   const { objectsById } = getCurrentSnapshot();

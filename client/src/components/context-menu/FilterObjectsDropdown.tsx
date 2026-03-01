@@ -1,9 +1,9 @@
 import type React from 'react';
-import { useState, useRef, useEffect } from 'react';
 import type { KindCounts } from '@/stores/selection-store';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown } from './icons';
 import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType } from './icons';
+import { useDropdown } from './useDropdown';
 
 type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors';
 
@@ -24,27 +24,13 @@ interface FilterObjectsDropdownProps {
 }
 
 export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObjectsDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handle = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handle);
-    return () => document.removeEventListener('mousedown', handle);
-  }, [open]);
+  const { open, containerRef, toggle, close } = useDropdown();
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton
         className="ctx-btn-filter"
-        onMouseDown={(e) => {
-          e.preventDefault();
-          setOpen(!open);
-        }}
+        onMouseDown={toggle}
         aria-expanded={open}
       >
         <svg
@@ -94,7 +80,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onFilterByKind(key);
-                  setOpen(false);
+                  close();
                 }}
               >
                 <Icon width={22} height={22} />

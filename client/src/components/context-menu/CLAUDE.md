@@ -127,7 +127,7 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 ```
 
 - **Size** — stroke width. Presets: 6=S, 10=M, 14=L, 18=XL. Strokes scale uniformly during transforms, so width may not match a preset — non-preset values show "Size" with blank label.
-- **Color** — filled circle. Mixed colors show half/half split of first two. Dropdown: 9×2 color grid (18 colors).
+- **Color** — filled circle. Mixed colors show SVG diagonal split of first two. Dropdown: 9×2 color grid (18 colors).
 
 ### `shapesOnly`
 
@@ -137,8 +137,8 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 
 - **ShapeType** — leftmost. Shows current type icon, or composite `IconShapes` when mixed/null. Dropdown: Rectangle, Circle, Diamond, Rounded, Text (text is no-op placeholder for future shape↔text conversion). Calls `setSelectedShapeType(key)`.
 - **Size** — stroke width for shapes. Same presets as strokes (6/10/14/18).
-- **Border** — hollow circle variant. Shows first color only when mixed (half/half on a hollow ring is visually broken — known issue). Dropdown: 9×2 grid. Calls `setSelectedColor`.
-- **Fill** — filled circle variant. Mixed fills show half/half of first two. When no fill, shows checkered "none" pattern. Dropdown: 9×2 grid with no-fill slot (replaces white pastel at index 10). `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
+- **Border** — hollow circle variant. Always shows first color only (no split). Dropdown: 9×2 grid. Calls `setSelectedColor`.
+- **Fill** — filled circle variant. Mixed fills show SVG diagonal split of first two colors. When no fill (and not mixed), shows checkered "none" pattern. Dropdown: 9×2 grid with no-fill slot (replaces white pastel at index 10). `NO_FILL` sentinel maps to `setSelectedFillColor(null)`.
 
 ### `connectorsOnly`
 
@@ -192,7 +192,7 @@ ContextMenu                         ← gate on menuOpen, renders null when clos
 |-----------|-------------|---------|
 | `MenuButton` | `active?, ref?, ...HTMLButton` | Base primitive. `mouseDown preventDefault` keeps canvas focus. |
 | `ButtonGroup` | `children, className?` | Flex row wrapper (`ctx-group`). |
-| `ColorCircle` | `color, size?, variant?, secondColor?` | Visual indicator. Variants: `filled` (solid), `hollow` (border ring), `none` (checkered). |
+| `ColorCircle` | `color, size?, variant?, secondColor?` | Visual indicator. Variants: `filled` (solid), `hollow` (border ring), `none` (checkered). `secondColor` renders SVG diagonal split (clip-path circle). |
 | `ColorPickerPopover` | `color, variant?, secondColor?, mode?, selectedColor?, onSelect?` | Dropdown: 9×2 grid. Fill mode adds no-fill slot. |
 | `TextColorPopover` | `color, onSelect?` | Dropdown: 9×2 grid. "A" icon trigger with color bar. |
 | `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4×2 rounded-square grid + none. |
@@ -204,15 +204,15 @@ ContextMenu                         ← gate on menuOpen, renders null when clos
 | `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. |
 | `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. |
 
-### Dropdown Pattern (shared by 7 components)
+### Dropdown Pattern (`useDropdown` hook, shared by 7 components)
 
-All dropdowns follow the same pattern:
-1. `const [open, setOpen] = useState(false)` — local open state
-2. `const containerRef = useRef<HTMLDivElement>(null)` — for outside-click detection
-3. `useEffect` on `open` — registers `mousedown` listener on `document`, closes if click is outside `containerRef`
-4. Trigger: `onMouseDown` with `e.preventDefault()` + toggle open
-5. Items: `onMouseDown` with `e.preventDefault()` + action callback + close
-6. Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-aligned)
+All dropdowns use the `useDropdown()` hook which encapsulates:
+- `open` state + `containerRef` for outside-click detection
+- `toggle(e)` — preventDefault + toggle open (for trigger `onMouseDown`)
+- `close()` — close dropdown (for item callbacks)
+
+Items use `onMouseDown` with `e.preventDefault()` + action callback + `close()`.
+Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-aligned).
 
 ### Self-Subscribing Components
 
@@ -236,14 +236,16 @@ All dropdowns follow the same pattern:
 
 ```typescript
 interface SelectedStyles {
-  color: string;            // First object's color (default '#262626')
-  colorMixed: boolean;      // Multiple different colors
-  colorSecond: string | null; // Second color for split circle when mixed
-  width: number | null;     // Uniform width or null if mixed
-  fillColor: string | null; // Uniform fill or null if mixed/absent
-  shapeType: string | null; // Uniform shape type, 'text' for textOnly, null if mixed
-  fontSize: number | null;  // First text object's fontSize (rounded)
-  textAlign: TextAlign | null; // Uniform alignment or null if mixed
+  color: string;                  // First object's stroke/border color (default '#262626')
+  colorMixed: boolean;            // Multiple different stroke colors
+  colorSecond: string | null;     // Second stroke color for split indicator
+  width: number | null;           // Uniform width or null if mixed
+  fillColor: string | null;       // First shape's fill color, null = no fill. Kept even when mixed.
+  fillColorMixed: boolean;        // Multiple different fill colors
+  fillColorSecond: string | null; // Second fill color for split indicator
+  shapeType: string | null;       // Uniform shape type, 'text' for textOnly, null if mixed
+  fontSize: number | null;        // First text object's fontSize (rounded)
+  textAlign: TextAlign | null;    // Uniform alignment or null if mixed
 }
 ```
 
@@ -252,7 +254,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | Kind | Tracks |
 |------|--------|
 | `strokesOnly` | color, width |
-| `shapesOnly` | color, width, fillColor, shapeType |
+| `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType |
 | `connectorsOnly` | color, width |
 | `textOnly` | color, fontSize, textAlign, shapeType='text' |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
@@ -371,6 +373,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 5-item type switcher. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
+| `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
 | `icons/` | Custom 16×16 SVGs: fill-based paths for pixel-crisp rendering at small sizes |
 
 ### Icons
@@ -392,8 +395,6 @@ All property mutations (including style-only changes like color, fill, opacity) 
 
 ## Known Issues / Next Steps
 
-- **Border color mixed display** — hollow circle with half/half split is visually wrong. Should show first color only when mixed.
 - **`computeStyles` returns `EMPTY_STYLES` for mixed** — style groups get no data for mixed selections. Acceptable since mixed shows only the filter dropdown, but limits future mixed-kind style editing.
 - **Bold/Italic/Highlight no-op without editor** — inline formatting actions gate on `textTool.getEditor()`. Future: apply formatting via direct Yjs delta mutations on `Y.XmlFragment` for canvas-selected text.
 - **Bottom exclusion zone is full-width** — `FLIP_PADDING.bottom = 76` blocks bottom placement across entire viewport. Zoom controls are only bottom-left.
-- **Dead file** — `icons/ActionIcons.tsx` exports an orphaned stroke-based `IconTrash`. Can be deleted.
