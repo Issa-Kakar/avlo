@@ -793,7 +793,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Remove Y.Doc observers
     // NOTE: This correctly removes the listener because handleYDocUpdate
     // is an arrow function property with stable identity (see setupObservers)
-    this.ydoc.off('update', this.handleYDocUpdate);
+    this.ydoc.off('updateV2', this.handleYDocUpdate);
 
     // Remove objects observer
     if (this.objectsObserver) {
@@ -918,7 +918,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       const touchedIds = new Set<string>();
       const deletedIds = new Set<string>();
-      const textContentChangedIds = new Set<string>();
 
       for (const ev of events) {
         // Top-level object adds/deletes
@@ -941,23 +940,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         touchedIds.add(id);
 
-        // Classify text-related events for cache invalidation
-        if (path.length >= 2) {
-          const field = String(path[1] ?? '');
-
-          if (field === 'content') {
-            // Y.XmlFragment change: invalidate text cache (full)
-            textLayoutCache.invalidateContent(id);
-            textContentChangedIds.add(id);
-          }
-          // 'origin', 'color', 'fontSize' changes don't need cache invalidation
-          // (fontSize triggers bbox recompute via comparison in getLayout)
+        // Y.XmlFragment change: invalidate text cache (full)
+        if (path.length >= 2 && String(path[1] ?? '') === 'content') {
+          textLayoutCache.invalidateContent(id);
         }
       }
 
       if (touchedIds.size === 0 && deletedIds.size === 0) return;
 
-      this.applyObjectChanges({ touchedIds, deletedIds, textContentChangedIds });
+      this.applyObjectChanges(touchedIds, deletedIds);
       // No flag needed - handleYDocUpdate → publishSnapshotNow() handles publishing
     };
 
@@ -965,12 +956,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // needsSpatialRebuild is already true from initialization
   }
 
-  private applyObjectChanges(args: {
-    touchedIds: Set<string>;
-    deletedIds: Set<string>;
-    textContentChangedIds: Set<string>;
-  }): void {
-    const { touchedIds, deletedIds, textContentChangedIds } = args;
+  private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
     const objects = this.getObjects();
 
     // Process deletions
@@ -1006,7 +992,22 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     // Process additions/updates
-    const bboxChangedIds = new Set<string>();
+    // Read selection context once before loop
+    const sel = useSelectionStore.getState();
+    const editingId = sel.textEditingId;
+    const selectedSet = sel.selectedIdSet;
+    let needsRefresh = false;
+    let needsReposition = false;
+
+    // Deletion bridge
+    if (selectedSet.size > 0) {
+      for (const id of deletedIds) {
+        if (selectedSet.has(id)) { sel.clearSelection(); break; }
+      }
+    } else if (editingId && deletedIds.has(editingId)) {
+      useSelectionStore.getState().endTextEditing();
+    }
+
     for (const id of touchedIds) {
       const yObj = objects.get(id);
       if (!yObj) continue;
@@ -1058,8 +1059,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       }
 
       // Handle cache and dirty rects
-      const isTextContentChange = textContentChangedIds.has(id);
-
       if (!oldBBox) {
         // New object
         this.dirtyRects.push(bboxToBounds(newBBox));
@@ -1068,65 +1067,26 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         if (bboxChanged) {
           // Geometry changed (INCLUDING width changes since bbox includes width!)
-          bboxChangedIds.add(id);
           this.cacheEvictIds.add(id);
           this.dirtyRects.push(bboxToBounds(oldBBox));
           this.dirtyRects.push(bboxToBounds(newBBox));
         } else {
-          // BBox unchanged but may still need repaint
-          // Shapes: shapeType affects cached Path2D but not bbox — always evict
-          if (kind === 'shape') {
-            this.cacheEvictIds.add(id);
-          }
-          // Text content changes always need repaint (text changed within same bounds)
-          if (isTextContentChange || kind === 'text') {
-            this.dirtyRects.push(bboxToBounds(newBBox));
-          }
+          // BBox unchanged — still push dirty rect for style-only mutations (color, fill, opacity)
+          if (kind === 'shape') this.cacheEvictIds.add(id);
+          this.dirtyRects.push(bboxToBounds(newBBox));
         }
+      }
+
+      // Bridge: track selection/editing relevance inline
+      if (selectedSet.has(id) || id === editingId) {
+        needsRefresh = true;
+        if (!oldBBox || !bboxEquals(oldBBox, newBBox)) needsReposition = true;
       }
     }
 
-    // Bridge: notify selection store of mutations to selected objects
-    const sel = useSelectionStore.getState();
-    const editingId = sel.textEditingId;
-
-    if (sel.selectedIdSet.size > 0) {
-      for (const id of deletedIds) {
-        if (sel.selectedIdSet.has(id)) {
-          sel.clearSelection();
-          break;
-        }
-      }
-      if (useSelectionStore.getState().selectedIdSet.size > 0) {
-        let refresh = false,
-          reposition = false;
-        for (const id of touchedIds) {
-          if (sel.selectedIdSet.has(id)) {
-            refresh = true;
-            break;
-          }
-        }
-        for (const id of bboxChangedIds) {
-          if (sel.selectedIdSet.has(id)) {
-            reposition = true;
-            break;
-          }
-        }
-        if (refresh) useSelectionStore.getState().refreshStyles();
-        if (reposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
-      }
-    }
-
-    // Text editing without selection — property/bbox changes need style refresh + boundsVersion bump
-    if (editingId !== null && sel.selectedIdSet.size === 0) {
-      if (deletedIds.has(editingId)) {
-        useSelectionStore.getState().endTextEditing();
-      } else {
-        if (touchedIds.has(editingId)) useSelectionStore.getState().refreshStyles();
-        if (bboxChangedIds.has(editingId))
-          useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
-      }
-    }
+    // Bridge: apply accumulated flags
+    if (needsRefresh) useSelectionStore.getState().refreshStyles();
+    if (needsReposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
   }
 
   // ============================================================

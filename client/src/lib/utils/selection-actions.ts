@@ -1,8 +1,6 @@
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { getStartAnchor, getEndAnchor, getOrigin, getAlign, type TextAlign } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
-import { computeSelectionBounds } from '@/lib/utils/selection-utils';
-import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import {
   useDeviceUIStore,
   TEXT_FONT_SIZE_PRESETS,
@@ -254,8 +252,6 @@ export function setSelectedTextAlign(align: TextAlign): void {
 
   useDeviceUIStore.getState().setTextAlign(align);
   useSelectionStore.getState().refreshStyles();
-  const bounds = computeSelectionBounds();
-  if (bounds) invalidateWorld(bounds);
 }
 
 // === Inline Formatting (Bold / Italic / Highlight) ===
