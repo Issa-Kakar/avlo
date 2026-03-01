@@ -5,7 +5,6 @@
  * - Imports tool registry (tools self-construct)
  * - Owns InputManager instance
  * - Creates RenderLoop and OverlayRenderLoop (with canvas refs only)
- * - Creates ZoomAnimator
  * - Handles all pointer event logic (coordinate conversion, tool dispatch)
  * - Handles MMB pan (directly use panTool singleton)
  * - Handles wheel zoom
@@ -18,7 +17,7 @@
 
 import { RenderLoop } from '@/renderer/RenderLoop';
 import { OverlayRenderLoop } from '@/renderer/OverlayRenderLoop';
-import { ZoomAnimator } from './animation/ZoomAnimator';
+import { cancelZoom } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
@@ -43,16 +42,24 @@ export interface RuntimeConfig {
   editorHost: HTMLDivElement;
 }
 
+// --- Zoom constants ---
+const WHEEL_BASE = 1.15;          // 15% per notch at boost 1x (mouse wheel)
+const VELOCITY_WINDOW_MS = 200;   // Sliding window for event rate
+const MIN_RATE = 3;               // Events/sec below this = no boost
+const RAMP_DIVISOR = 16;          // Gradual ramp — max boost at ~19 eps
+const MAX_BOOST = 2.0;            // Ceiling multiplier (32% per fast notch)
+const PINCH_SENSITIVITY = 0.01;   // Trackpad pinch scaling
+
 export class CanvasRuntime {
   private inputManager: InputManager | null = null;
   private surfaceManager: SurfaceManager | null = null;
   private renderLoop: RenderLoop | null = null;
   private overlayLoop: OverlayRenderLoop | null = null;
-  private zoomAnimator: ZoomAnimator | null = null;
   private cameraUnsub: (() => void) | null = null;
   private snapshotUnsub: (() => void) | null = null;
   private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
+  private wheelTimestamps: number[] = [];
 
   /**
    * Start the canvas runtime.
@@ -80,10 +87,7 @@ export class CanvasRuntime {
     setOverlayInvalidator(() => this.overlayLoop?.invalidateAll());
     setHoldPreviewFn(() => this.overlayLoop?.holdPreviewForOneFrame());
 
-    // 4. Zoom animator
-    this.zoomAnimator = new ZoomAnimator();
-
-    // 5. Input manager
+    // 4. Input manager
     this.inputManager = new InputManager(this);
     this.inputManager.attach();
 
@@ -149,7 +153,7 @@ export class CanvasRuntime {
     this.cameraUnsub?.();
 
     this.inputManager?.detach();
-    this.zoomAnimator?.destroy();
+    cancelZoom();
 
     setWorldInvalidator(null);
     this.renderLoop?.stop();
@@ -173,7 +177,6 @@ export class CanvasRuntime {
     this.surfaceManager = null;
     this.renderLoop = null;
     this.overlayLoop = null;
-    this.zoomAnimator = null;
     this.cameraUnsub = null;
     this.snapshotUnsub = null;
     this.presenceUnsub = null;
@@ -183,6 +186,9 @@ export class CanvasRuntime {
   // === Event Handlers (called by InputManager) ===
 
   handlePointerDown(e: PointerEvent): void {
+    panTool.cancelCoast();
+    cancelZoom();
+
     // MMB = button 1: always pan (if allowed)
     if (e.button === 1) {
       if (!canStartMMBPan()) return;
@@ -275,18 +281,57 @@ export class CanvasRuntime {
   handleWheel(e: WheelEvent): void {
     e.preventDefault();
     if (panTool.isActive()) return;
+    cancelZoom();
 
     const canvas = screenToCanvas(e.clientX, e.clientY);
     if (!canvas) return;
 
-    let deltaY = e.deltaY;
-    if (e.deltaMode === 1) deltaY *= 40;
-    else if (e.deltaMode === 2) deltaY *= 800;
+    // Normalize delta across browsers/modes
+    let delta = e.deltaY;
+    if (e.deltaMode === 1) delta *= 40;       // DOM_DELTA_LINE
+    else if (e.deltaMode === 2) delta *= 800;  // DOM_DELTA_PAGE
 
-    const factor = Math.exp((-deltaY / 120) * Math.log(1.16));
+    const pivot = { x: canvas[0], y: canvas[1] };
+
+    if (e.ctrlKey || e.metaKey) {
+      this.handlePinchZoom(delta, pivot);
+    } else {
+      this.handleWheelZoom(delta, pivot);
+    }
+  }
+
+  private handleWheelZoom(delta: number, pivot: { x: number; y: number }): void {
+    const now = performance.now();
+    const boost = this.getWheelBoost(now);
+    const normalizedDelta = delta / 120;
+    const factor = Math.pow(WHEEL_BASE, -normalizedDelta * boost);
+
     const { scale, pan } = useCameraStore.getState();
-    const target = calculateZoomTransform(scale, pan, factor, { x: canvas[0], y: canvas[1] });
+    const target = calculateZoomTransform(scale, pan, factor, pivot);
+    useCameraStore.getState().setScaleAndPan(target.scale, target.pan);
+  }
 
-    this.zoomAnimator?.to(target.scale, target.pan);
+  private handlePinchZoom(delta: number, pivot: { x: number; y: number }): void {
+    const factor = Math.pow(2, -delta * PINCH_SENSITIVITY);
+
+    const { scale, pan } = useCameraStore.getState();
+    const target = calculateZoomTransform(scale, pan, factor, pivot);
+    useCameraStore.getState().setScaleAndPan(target.scale, target.pan);
+  }
+
+  private getWheelBoost(now: number): number {
+    // Prune events outside window
+    while (this.wheelTimestamps.length && this.wheelTimestamps[0] < now - VELOCITY_WINDOW_MS) {
+      this.wheelTimestamps.shift();
+    }
+    this.wheelTimestamps.push(now);
+
+    if (this.wheelTimestamps.length < 2) return 1;
+
+    const span = (now - this.wheelTimestamps[0]) / 1000;
+    const rate = span > 0 ? (this.wheelTimestamps.length - 1) / span : 0;
+
+    // Ramp: <3 eps → 1.0, 15 eps → 2.5 (clamped)
+    return 1 + Math.min(Math.max(rate - MIN_RATE, 0) / RAMP_DIVISOR, MAX_BOOST - 1);
   }
 }

@@ -1,78 +1,122 @@
-import { clampScale } from '../internal/transforms';
+import { clampScale, calculateZoomTransform } from '../internal/transforms';
 import { useCameraStore } from '@/stores/camera-store';
 
 /**
- * ZoomAnimator - Smooth animated zoom/pan transitions
- *
- * Reads and writes directly to the camera store (no callback parameters).
- * Uses setScaleAndPan() for atomic updates during animation.
+ * Module-level animated zoom with fixed zoom steps for buttons.
+ * Reads and writes directly to the camera store.
  */
-export class ZoomAnimator {
-  private active = false;
-  private rafId: number | null = null;
-  private targetScale = 1;
-  private targetPan = { x: 0, y: 0 };
-  private lastTime = 0;
 
-  /**
-   * No constructor parameters needed - reads/writes directly to camera store.
-   */
-  constructor() {}
+const DURATION = 180; // ms
 
-  /**
-   * Animate to target scale and pan position.
-   * Uses exponential approach with ~120ms half-life for smooth feel.
-   */
-  to(targetScale: number, targetPan: { x: number; y: number }) {
-    this.targetScale = clampScale(targetScale);
-    this.targetPan = targetPan;
+// Predefined button zoom steps — clean percentages, roughly log-spaced
+const ZOOM_STEPS = [0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4, 5];
+const STEP_EPS = 0.005; // Tolerance for "at this step" comparisons
 
-    if (!this.active) {
-      this.active = true;
-      this.lastTime = performance.now();
-      this.rafId = requestAnimationFrame(this.tick);
-    }
-  }
+function easeOutCubic(t: number): number {
+  return 1 - (1 - t) ** 3;
+}
 
-  private tick = (now: number) => {
-    const dt = Math.min(0.05, (now - this.lastTime) / 1000);
-    this.lastTime = now;
+// --- Animation state ---
+let rafId: number | null = null;
+let startTime = 0;
+let startScale = 1;
+let startPan = { x: 0, y: 0 };
+let tgtScale = 1;
+let tgtPan = { x: 0, y: 0 };
+let pendingStep: number | null = null; // Accumulates rapid clicks
 
-    // Read current state from camera store
-    const { scale: currentScale, pan: currentPan } = useCameraStore.getState();
+function tick(): void {
+  const t = Math.min((performance.now() - startTime) / DURATION, 1);
+  const e = easeOutCubic(t);
 
-    // Exponential approach (~120ms half-life)
-    const ZOOM_DAMPING = 18;
-    const alpha = 1 - Math.exp(-ZOOM_DAMPING * dt);
-
-    const newScale = currentScale + (this.targetScale - currentScale) * alpha;
-    const newPan = {
-      x: currentPan.x + (this.targetPan.x - currentPan.x) * alpha,
-      y: currentPan.y + (this.targetPan.y - currentPan.y) * alpha,
-    };
-
-    // Atomic update to camera store
-    useCameraStore.getState().setScaleAndPan(newScale, newPan);
-
-    // Check convergence
-    const scaleClose = Math.abs(newScale - this.targetScale) / this.targetScale < 0.001;
-    const panClose = Math.hypot(newPan.x - this.targetPan.x, newPan.y - this.targetPan.y) < 0.01;
-
-    if (!scaleClose || !panClose) {
-      this.rafId = requestAnimationFrame(this.tick);
-    } else {
-      // Snap to exact target values on convergence
-      useCameraStore.getState().setScaleAndPan(this.targetScale, this.targetPan);
-      this.active = false;
-      this.rafId = null;
-    }
+  const scale = startScale + (tgtScale - startScale) * e;
+  const pan = {
+    x: startPan.x + (tgtPan.x - startPan.x) * e,
+    y: startPan.y + (tgtPan.y - startPan.y) * e,
   };
 
-  destroy() {
-    if (this.rafId) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-    }
-    this.active = false;
+  useCameraStore.getState().setScaleAndPan(scale, pan);
+
+  if (t < 1) {
+    rafId = requestAnimationFrame(tick);
+  } else {
+    rafId = null;
+    pendingStep = null;
   }
+}
+
+// --- Step finding ---
+
+function nextZoomStep(scale: number): number {
+  for (const step of ZOOM_STEPS) {
+    if (step > scale + STEP_EPS) return step;
+  }
+  return ZOOM_STEPS[ZOOM_STEPS.length - 1];
+}
+
+function prevZoomStep(scale: number): number {
+  for (let i = ZOOM_STEPS.length - 1; i >= 0; i--) {
+    if (ZOOM_STEPS[i] < scale - STEP_EPS) return ZOOM_STEPS[i];
+  }
+  return ZOOM_STEPS[0];
+}
+
+/** Compute center-preserving zoom target for a given target scale. */
+function centerZoomTarget(targetScale: number): { scale: number; pan: { x: number; y: number } } {
+  const { scale, pan, cssWidth, cssHeight } = useCameraStore.getState();
+  const center = { x: cssWidth / 2, y: cssHeight / 2 };
+  return calculateZoomTransform(scale, pan, targetScale / scale, center);
+}
+
+// --- Public API ---
+
+/** Animate to target scale + pan. Retargets seamlessly if called mid-animation. */
+export function animateZoom(toScale: number, toPan: { x: number; y: number }): void {
+  const { scale, pan } = useCameraStore.getState();
+  startScale = scale;
+  startPan = { x: pan.x, y: pan.y };
+  tgtScale = clampScale(toScale);
+  tgtPan = toPan;
+  startTime = performance.now();
+
+  if (rafId !== null) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(tick);
+}
+
+/** Zoom in one step toward viewport center. Rapid clicks accumulate. */
+export function zoomIn(): void {
+  const { scale } = useCameraStore.getState();
+  // If a pending step is ahead of current, use it as base (rapid click accumulation)
+  const base = (pendingStep !== null && pendingStep > scale + STEP_EPS) ? pendingStep : scale;
+  const targetScale = nextZoomStep(base);
+  if (targetScale <= scale + STEP_EPS) return;
+  pendingStep = targetScale;
+  const target = centerZoomTarget(targetScale);
+  animateZoom(target.scale, target.pan);
+}
+
+/** Zoom out one step toward viewport center. Rapid clicks accumulate. */
+export function zoomOut(): void {
+  const { scale } = useCameraStore.getState();
+  const base = (pendingStep !== null && pendingStep < scale - STEP_EPS) ? pendingStep : scale;
+  const targetScale = prevZoomStep(base);
+  if (targetScale >= scale - STEP_EPS) return;
+  pendingStep = targetScale;
+  const target = centerZoomTarget(targetScale);
+  animateZoom(target.scale, target.pan);
+}
+
+/** Animated reset to scale=1, pan={0,0}. */
+export function animateZoomReset(): void {
+  pendingStep = 1;
+  animateZoom(1, { x: 0, y: 0 });
+}
+
+/** Cancel any in-progress zoom animation. */
+export function cancelZoom(): void {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  pendingStep = null;
 }

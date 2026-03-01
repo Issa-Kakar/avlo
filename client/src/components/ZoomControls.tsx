@@ -1,5 +1,6 @@
 import { useCameraStore, selectScale } from '@/stores/camera-store';
 import { PERFORMANCE_CONFIG } from '@avlo/shared';
+import { zoomIn, zoomOut, animateZoomReset } from '@/canvas/animation/ZoomAnimator';
 
 import './ZoomControls.css';
 
@@ -8,25 +9,7 @@ interface ZoomControlsProps {
 }
 
 export function ZoomControls({ className = '' }: ZoomControlsProps) {
-  // Use camera store instead of ViewTransformContext
   const scale = useCameraStore(selectScale);
-  const setScale = useCameraStore((s) => s.setScale);
-  const resetView = useCameraStore((s) => s.resetView);
-
-  const handleZoomIn = () => {
-    const newScale = Math.min(scale * 1.2, PERFORMANCE_CONFIG.MAX_ZOOM);
-    setScale(newScale);
-  };
-
-  const handleZoomOut = () => {
-    const newScale = Math.max(scale / 1.2, PERFORMANCE_CONFIG.MIN_ZOOM);
-    setScale(newScale);
-  };
-
-  const handleZoomReset = () => {
-    resetView();
-  };
-
   const zoomPercentage = Math.round(scale * 100);
 
   return (
@@ -34,7 +17,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
       <div className="zoom-controls">
         <button
           className="zoom-btn"
-          onClick={handleZoomOut}
+          onClick={zoomOut}
           disabled={scale <= PERFORMANCE_CONFIG.MIN_ZOOM}
           aria-label="Zoom out"
           title="Zoom Out"
@@ -46,7 +29,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
 
         <button
           className="zoom-label"
-          onClick={handleZoomReset}
+          onClick={animateZoomReset}
           title="Reset zoom to 100%"
           style={{ cursor: 'pointer' }}
           aria-label={`Current zoom: ${zoomPercentage}%. Click to reset.`}
@@ -56,7 +39,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
 
         <button
           className="zoom-btn"
-          onClick={handleZoomIn}
+          onClick={zoomIn}
           disabled={scale >= PERFORMANCE_CONFIG.MAX_ZOOM}
           aria-label="Zoom in"
           title="Zoom In"
