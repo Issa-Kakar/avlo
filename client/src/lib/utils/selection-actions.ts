@@ -11,7 +11,7 @@ import {
 } from '@/stores/device-ui-store';
 import { textTool } from '@/canvas/tool-registry';
 import { getTextFrame, anchorFactor } from '@/lib/text/text-system';
-import * as Y from 'yjs';
+import type * as Y from 'yjs';
 
 // === Helpers ===
 
@@ -28,10 +28,9 @@ export function setSelectedColor(color: string): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  getActiveRoomDoc().mutate(() => {
     for (const id of ctx.selectedIds) {
-      objects.get(id)?.set('color', color);
+      ctx.objectsById.get(id)?.y.set('color', color);
     }
   });
 
@@ -45,15 +44,12 @@ export function setSelectedFillColor(fillColor: string | null): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  getActiveRoomDoc().mutate(() => {
     for (const id of ctx.selectedIds) {
       const handle = ctx.objectsById.get(id);
       if (handle?.kind !== 'shape') continue;
-      const yObj = objects.get(id);
-      if (!yObj) continue;
-      if (fillColor === null) yObj.delete('fillColor');
-      else yObj.set('fillColor', fillColor);
+      if (fillColor === null) handle.y.delete('fillColor');
+      else handle.y.set('fillColor', fillColor);
     }
   });
 
@@ -73,10 +69,9 @@ export function setSelectedWidth(width: number): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  getActiveRoomDoc().mutate(() => {
     for (const id of ctx.selectedIds) {
-      objects.get(id)?.set('width', width);
+      ctx.objectsById.get(id)?.y.set('width', width);
     }
   });
 
@@ -95,12 +90,11 @@ export function setSelectedShapeType(shapeType: string): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  getActiveRoomDoc().mutate(() => {
     for (const id of ctx.selectedIds) {
       const handle = ctx.objectsById.get(id);
       if (handle?.kind !== 'shape') continue;
-      objects.get(id)?.set('shapeType', shapeType);
+      handle.y.set('shapeType', shapeType);
     }
   });
 
@@ -113,14 +107,17 @@ export function deleteSelected(): void {
   const { selectedIds } = useSelectionStore.getState();
   if (selectedIds.length === 0) return;
 
-  const snapshot = getCurrentSnapshot();
+  const { objectsById } = getCurrentSnapshot();
   const idsToDelete = new Set(selectedIds);
 
-  // Collect connector anchor cleanups: connectorId → { clearStart, clearEnd }
-  const anchorCleanups = new Map<string, { clearStart: boolean; clearEnd: boolean }>();
+  // Collect connector anchor cleanups for surviving connectors
+  const anchorCleanups = new Map<
+    string,
+    { y: Y.Map<unknown>; clearStart: boolean; clearEnd: boolean }
+  >();
 
   for (const id of idsToDelete) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = objectsById.get(id);
     if (!handle || handle.kind === 'connector') continue;
 
     const connectorIds = getConnectorsForShape(id);
@@ -129,12 +126,16 @@ export function deleteSelected(): void {
     for (const connectorId of connectorIds) {
       if (idsToDelete.has(connectorId)) continue;
 
-      const connectorHandle = snapshot.objectsById.get(connectorId);
+      const connectorHandle = objectsById.get(connectorId);
       if (!connectorHandle) continue;
 
       const startAnchor = getStartAnchor(connectorHandle.y);
       const endAnchor = getEndAnchor(connectorHandle.y);
-      const existing = anchorCleanups.get(connectorId) ?? { clearStart: false, clearEnd: false };
+      const existing = anchorCleanups.get(connectorId) ?? {
+        y: connectorHandle.y,
+        clearStart: false,
+        clearEnd: false,
+      };
 
       if (startAnchor?.id === id) existing.clearStart = true;
       if (endAnchor?.id === id) existing.clearEnd = true;
@@ -146,20 +147,15 @@ export function deleteSelected(): void {
   }
 
   getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
-
-    // Clear dead anchors first
-    for (const [connectorId, { clearStart, clearEnd }] of anchorCleanups) {
-      const yObj = objects.get(connectorId);
-      if (!yObj) continue;
-      if (clearStart) yObj.delete('startAnchor');
-      if (clearEnd) yObj.delete('endAnchor');
+    // Clear dead anchors via live handle references
+    for (const { y, clearStart, clearEnd } of anchorCleanups.values()) {
+      if (clearStart) y.delete('startAnchor');
+      if (clearEnd) y.delete('endAnchor');
     }
 
-    // Delete objects
-    for (const id of idsToDelete) {
-      objects.delete(id);
-    }
+    // Delete objects — need parent map for removal
+    const objects = ydoc.getMap('root').get('objects') as Y.Map<unknown>;
+    for (const id of idsToDelete) objects.delete(id);
   });
 
   useSelectionStore.getState().clearSelection();
@@ -172,9 +168,9 @@ export function setSelectedTextColor(color: string): void {
   const ids = textEditingId ? [textEditingId] : selectedIds;
   if (ids.length === 0) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
-    for (const id of ids) objects.get(id)?.set('color', color);
+  const { objectsById } = getCurrentSnapshot();
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) objectsById.get(id)?.y.set('color', color);
   });
 
   useDeviceUIStore.getState().setTextColor(color);
@@ -189,11 +185,11 @@ export function setSelectedFontSize(size: number): void {
   const ids = textEditingId ? [textEditingId] : selectedIds;
   if (ids.length === 0) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  const { objectsById } = getCurrentSnapshot();
+  getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
-      const handle = getCurrentSnapshot().objectsById.get(id);
-      if (handle?.kind === 'text') objects.get(id)?.set('fontSize', clamped);
+      const handle = objectsById.get(id);
+      if (handle?.kind === 'text') handle.y.set('fontSize', clamped);
     }
   });
 
@@ -205,8 +201,11 @@ export function incrementFontSize(): void {
   const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
   if (fontSize === null) return;
   const current = Math.round(fontSize);
-  if (current < 10) { setSelectedFontSize(10); return; }
-  const next = TEXT_FONT_SIZE_PRESETS.find(p => p > current);
+  if (current < 10) {
+    setSelectedFontSize(10);
+    return;
+  }
+  const next = TEXT_FONT_SIZE_PRESETS.find((p) => p > current);
   if (next !== undefined) setSelectedFontSize(next);
 }
 
@@ -214,7 +213,10 @@ export function decrementFontSize(): void {
   const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
   if (fontSize === null) return;
   const current = Math.round(fontSize);
-  if (current > 144) { setSelectedFontSize(144); return; }
+  if (current > 144) {
+    setSelectedFontSize(144);
+    return;
+  }
   let prev: number | undefined;
   for (const p of TEXT_FONT_SIZE_PRESETS) {
     if (p >= current) break;
@@ -230,13 +232,11 @@ export function setSelectedTextAlign(align: TextAlign): void {
   const ids = textEditingId ? [textEditingId] : selectedIds;
   if (ids.length === 0) return;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = (ydoc.getMap('root') as Y.Map<any>).get('objects') as Y.Map<Y.Map<any>>;
+  const { objectsById } = getCurrentSnapshot();
+  getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
-      const handle = getCurrentSnapshot().objectsById.get(id);
+      const handle = objectsById.get(id);
       if (!handle || handle.kind !== 'text') continue;
-      const yObj = objects.get(id);
-      if (!yObj) continue;
 
       const oldAlign = getAlign(handle.y);
       if (oldAlign === align) continue;
@@ -247,10 +247,8 @@ export function setSelectedTextAlign(align: TextAlign): void {
 
       const W = frame[2];
       const leftX = origin[0] - anchorFactor(oldAlign) * W;
-      const newOriginX = leftX + anchorFactor(align) * W;
-
-      yObj.set('origin', [newOriginX, origin[1]]);
-      yObj.set('align', align);
+      handle.y.set('origin', [leftX + anchorFactor(align) * W, origin[1]]);
+      handle.y.set('align', align);
     }
   });
 

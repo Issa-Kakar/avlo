@@ -898,7 +898,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // CRITICAL: Use 'update' event for batching, not deep observe for objects
     // NOTE: handleYDocUpdate is an arrow function property (not a method), which creates
     // a stable function reference bound to this instance.
-    this.ydoc.on('update', this.handleYDocUpdate);
+    this.ydoc.on('updateV2', this.handleYDocUpdate);
 
     // Optional: Track specific events for debugging
     //   this.ydoc.on('afterTransaction', (_transaction: Y.Transaction) => {
@@ -1123,7 +1123,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         useSelectionStore.getState().endTextEditing();
       } else {
         if (touchedIds.has(editingId)) useSelectionStore.getState().refreshStyles();
-        if (bboxChangedIds.has(editingId)) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+        if (bboxChangedIds.has(editingId))
+          useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       }
     }
   }

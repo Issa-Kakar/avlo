@@ -320,7 +320,8 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
   const children = fragment.toArray();
 
   // Uniform style tracking — piggybacks on delta loop
-  let trackBold = true, trackItalic = true;
+  let trackBold = true,
+    trackItalic = true;
   let hlColor: string | null | false = null; // null=unseen, false=mixed
   let hasAnyText = false;
 
@@ -582,6 +583,13 @@ function layoutMeasuredContent(
           lineRemaining = maxWidth;
         }
         const { head, tail, headW } = sliceTextToFit(seg.font, text, lineRemaining);
+        // Forward-progress guarantee can force a grapheme that doesn't fit.
+        // On a non-empty line, wrap first and retry with full line width.
+        if (headW > lineRemaining && b.runs.length > 0) {
+          pushLine(b);
+          b = newLineBuilder();
+          continue;
+        }
         appendRun(b, seg, head, headW);
         text = tail;
         if (text.length > 0) {
@@ -898,7 +906,8 @@ export function renderTextLayout(
         const clR = Math.min(hlEnd, containerRight);
         if (clR > clL) {
           // Clamped sides get flat edge (radius 0) — matches CSS overflow:hidden
-          const rL = clL > hlX ? 0 : hlR, rR = clR < hlEnd ? 0 : hlR;
+          const rL = clL > hlX ? 0 : hlR,
+            rR = clR < hlEnd ? 0 : hlR;
           ctx.beginPath();
           ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
           ctx.fill();

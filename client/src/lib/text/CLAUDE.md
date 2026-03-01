@@ -22,7 +22,7 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
 | `lib/text/extensions.ts` | TextCollaboration extension: per-session UndoManager, Y.Map observer, session merging |
 | `lib/text/font-config.ts` | `FONT_CONFIG` constants (extracted to avoid circular deps) |
 | `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` |
-| `lib/text/TextContextMenu.ts` | Legacy floating toolbar (inactive — will be replaced by new context menu system) |
+| `lib/text/TextContextMenu.md` | Legacy floating toolbar reference (inactive — superseded by `context-menu/` system) |
 | `lib/text/text-menu-icons.ts` | SVG icon builders for context menu |
 | `lib/tools/TextTool.ts` | PointerTool: editor mounting, Y.Map creation, live editing, width handling |
 
@@ -191,7 +191,7 @@ Committed pending ws on the wrapped line gets the hanging `alignmentWidth` (= `v
 Three paths:
 1. **Fits on current line** → append all segments as runs
 2. **Doesn't fit current line, fits empty line** → push line, start new, append word
-3. **Oversized (wider than maxWidth)** → `break-word`: `sliceTextToFit()` does binary search at grapheme boundaries via `Intl.Segmenter`, forces >= 1 grapheme per line for forward progress
+3. **Oversized (wider than maxWidth)** → `break-word`: iterates segments, each calling `sliceTextToFit()` (binary search at grapheme boundaries via `Intl.Segmenter`). Forward-progress guarantee forces >= 1 grapheme per slice. **Cross-segment guard:** if the forced grapheme overflows remaining space on a non-empty line (`headW > lineRemaining && b.runs.length > 0`), the line is pushed first and the segment retries on a fresh line — prevents multi-segment words from overflowing at style boundaries
 
 #### Main Flow Loop
 
@@ -644,4 +644,4 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 - **Select tool E/W resize handles** — interactive width setting
 - **Live width changes during editing** — resize while editor mounted
 - **Text scale transforms** — font size scaling during select transforms
-- **New context menu integration** — `TextContextMenu.ts` is legacy (commented out in TextTool); bold/italic/highlight/alignment/color/fontSize will be wired through the new `context-menu/` system using `getInlineStyles()` for non-editing active state
+- **Bold/Italic/Highlight for canvas-selected text** — inline formatting actions currently require active editor; future: direct Yjs delta mutations on `Y.XmlFragment` for formatting without mounting editor

@@ -28,7 +28,6 @@ import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
 import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor } from '@/lib/text/text-system';
-// import { textContextMenu } from '@/lib/text/TextContextMenu';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -42,7 +41,7 @@ function syncInlineStylesToStore(editor: Editor): void {
     bold: editor.isActive('bold'),
     italic: editor.isActive('italic'),
     highlightColor: editor.isActive('highlight')
-      ? (editor.getAttributes('highlight').color as string | undefined) ?? '#ffd43b'
+      ? ((editor.getAttributes('highlight').color as string | undefined) ?? '#ffd43b')
       : null,
   });
 }
@@ -58,7 +57,6 @@ export class TextTool implements PointerTool {
   private container: HTMLDivElement | null = null;
   private editor: Editor | null = null;
   objectId: string | null = null; // public — mirrors textEditingId
-  private isNew = false;
 
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
@@ -253,13 +251,11 @@ export class TextTool implements PointerTool {
 
     // Capture click coords for cursor positioning (before resetGesture clears downWorld)
     const clickWorld = this.downWorld;
-    const clientCoords = !isNew && clickWorld
-      ? worldToClient(clickWorld[0], clickWorld[1])
-      : null;
+    const clientCoords = !isNew && clickWorld ? worldToClient(clickWorld[0], clickWorld[1]) : null;
 
     // Create Tiptap Editor
     const editor = new Editor({
-      element: {mount: container},
+      element: { mount: container },
       extensions: [
         Document,
         Placeholder.configure({ placeholder: 'Type something...' }),
@@ -279,7 +275,7 @@ export class TextTool implements PointerTool {
       autofocus: isNew ? 'end' : false,
       onCreate: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
-        useSelectionStore.setState(s => ({ boundsVersion: s.boundsVersion + 1 }));
+        useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       },
       onTransaction: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
@@ -300,13 +296,8 @@ export class TextTool implements PointerTool {
     this.container = container;
     this.editor = editor;
     this.objectId = objectId;
-    this.isNew = isNew;
 
     this.setupEditorHandlers();
-
-    // textContextMenu.mount(host, container, editor, objectId);
-
-    // useDeviceUIStore.getState().setIsTextEditing(true); // selection store handles text editing state
   }
 
   private setupEditorHandlers(): void {
@@ -379,9 +370,8 @@ export class TextTool implements PointerTool {
   private commitAndClose(): void {
     if (!this.editor || !this.objectId) return;
 
-    // Delete empty new text objects (user clicked but typed nothing)
-    // UPDATE: DELETE ANY TEXT OBJECTS THAT ARE EMPTY ON CLOSE
-    if (this.editor.isEmpty ) {
+    // Delete empty text objects on close (avoids invisible fixed-width rects)
+    if (this.editor.isEmpty) {
       const roomDoc = getActiveRoomDoc();
       roomDoc.mutate((ydoc) => {
         const root = ydoc.getMap('root');
@@ -389,8 +379,6 @@ export class TextTool implements PointerTool {
         objects.delete(this.objectId!);
       });
     }
-
-    // textContextMenu.destroy();
 
     this.removeEditorHandlers();
 
@@ -406,10 +394,8 @@ export class TextTool implements PointerTool {
     this.container = null;
     this.editor = null;
     this.objectId = null;
-    this.isNew = false;
 
     useSelectionStore.getState().endTextEditing();
-    // useDeviceUIStore.getState().setIsTextEditing(false); // selection store handles text editing state
     // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
     invalidateWorld(getVisibleWorldBounds());
     invalidateOverlay();
@@ -490,12 +476,10 @@ export class TextTool implements PointerTool {
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
 
-    if (keys.has('color'))
-      this.container.style.setProperty('--text-color', getColor(handle.y));
+    if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
     if (keys.has('align'))
       applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
-    if (keys.has('origin') || keys.has('fontSize') || keys.has('width'))
-      this.positionEditor();
+    if (keys.has('origin') || keys.has('fontSize') || keys.has('width')) this.positionEditor();
   }
 
   // =========================================================================
@@ -519,6 +503,6 @@ function applyAlignCSS(container: HTMLDivElement, align: TextAlign): void {
   container.style.setProperty('--text-align', align);
   container.style.setProperty(
     '--text-anchor-tx',
-    align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%'
+    align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
   );
 }

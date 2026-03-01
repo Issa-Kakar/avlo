@@ -1,78 +1,79 @@
-/**
- * TEXT CONTEXT MENU
- *
- * Plain DOM overlay that appears during text editing.
- * Positioned above/below the text container with 150ms settle behavior on pan/zoom.
- *
- * ARCHITECTURE:
- * - Imperative DOM management (no React)
- * - Camera store subscription for hide/reposition on pan/zoom
- * - Tiptap editor integration for Bold/Italic state
- * - 150ms settle delay after camera changes
- */
+/\*\*
+
+- TEXT CONTEXT MENU
+-
+- Plain DOM overlay that appears during text editing.
+- Positioned above/below the text container with 150ms settle behavior on pan/zoom.
+-
+- ARCHITECTURE:
+- - Imperative DOM management (no React)
+- - Camera store subscription for hide/reposition on pan/zoom
+- - Tiptap editor integration for Bold/Italic state
+- - 150ms settle delay after camera changes
+    \*/
 
 import type { Editor } from '@tiptap/core';
 import { getCanvasRect, useCameraStore } from '@/stores/camera-store';
 import {
-  useDeviceUIStore,
-  TEXT_FONT_SIZE_PRESETS,
-  TEXT_COLOR_PALETTE,
-  HIGHLIGHT_COLORS,
+useDeviceUIStore,
+TEXT_FONT_SIZE_PRESETS,
+TEXT_COLOR_PALETTE,
+HIGHLIGHT_COLORS,
 } from '@/stores/device-ui-store';
 import { getTextToolInstance } from '@/lib/tools/TextTool';
 import {
-  createBoldIcon,
-  createItalicIcon,
-  createAlignLeftIcon,
-  createAlignCenterIcon,
-  createAlignRightIcon,
-  createTextColorIcon,
-  createHighlightIcon,
-  createMinusIcon,
-  createPlusIcon,
-  createChevronDownIcon,
-  createMoreIcon,
+createBoldIcon,
+createItalicIcon,
+createAlignLeftIcon,
+createAlignCenterIcon,
+createAlignRightIcon,
+createTextColorIcon,
+createHighlightIcon,
+createMinusIcon,
+createPlusIcon,
+createChevronDownIcon,
+createMoreIcon,
 } from './text-menu-icons';
 
 // Settle delay after camera changes before showing menu
 const CAMERA_SETTLE_MS = 150;
 
 class TextContextMenu {
-  private container: HTMLDivElement | null = null;
-  private editorContainer: HTMLDivElement | null = null;
-  private editor: Editor | null = null;
+private container: HTMLDivElement | null = null;
+private editorContainer: HTMLDivElement | null = null;
+private editor: Editor | null = null;
 
-  // DOM element references for updates
-  private boldBtn: HTMLButtonElement | null = null;
-  private italicBtn: HTMLButtonElement | null = null;
-  private alignLeftBtn: HTMLButtonElement | null = null;
-  private alignCenterBtn: HTMLButtonElement | null = null;
-  private alignRightBtn: HTMLButtonElement | null = null;
-  private colorBtn: HTMLButtonElement | null = null;
-  private highlightBtn: HTMLButtonElement | null = null;
-  private sizeValueBtn: HTMLButtonElement | null = null;
-  private sizeMinusBtn: HTMLButtonElement | null = null;
-  private sizePlusBtn: HTMLButtonElement | null = null;
+// DOM element references for updates
+private boldBtn: HTMLButtonElement | null = null;
+private italicBtn: HTMLButtonElement | null = null;
+private alignLeftBtn: HTMLButtonElement | null = null;
+private alignCenterBtn: HTMLButtonElement | null = null;
+private alignRightBtn: HTMLButtonElement | null = null;
+private colorBtn: HTMLButtonElement | null = null;
+private highlightBtn: HTMLButtonElement | null = null;
+private sizeValueBtn: HTMLButtonElement | null = null;
+private sizeMinusBtn: HTMLButtonElement | null = null;
+private sizePlusBtn: HTMLButtonElement | null = null;
 
-  // Submenus
-  private colorSubmenu: HTMLDivElement | null = null;
-  private sizeSubmenu: HTMLDivElement | null = null;
-  private highlightSubmenu: HTMLDivElement | null = null;
+// Submenus
+private colorSubmenu: HTMLDivElement | null = null;
+private sizeSubmenu: HTMLDivElement | null = null;
+private highlightSubmenu: HTMLDivElement | null = null;
 
-  // Subscriptions
-  private cameraUnsub: (() => void) | null = null;
-  private settleTimeout: number | null = null;
+// Subscriptions
+private cameraUnsub: (() => void) | null = null;
+private settleTimeout: number | null = null;
 
-  // Track camera state for change detection
-  private lastPan = { x: 0, y: 0 };
-  private lastScale = 1;
+// Track camera state for change detection
+private lastPan = { x: 0, y: 0 };
+private lastScale = 1;
 
-  // =========================================================================
-  // Lifecycle
-  // =========================================================================
+// =========================================================================
+// Lifecycle
+// =========================================================================
 
-  mount(host: HTMLDivElement, editorContainer: HTMLDivElement, editor: Editor, _objectId: string): void {
-    this.destroy();
+mount(host: HTMLDivElement, editorContainer: HTMLDivElement, editor: Editor, \_objectId: string): void {
+this.destroy();
 
     this.editorContainer = editorContainer;
     this.editor = editor;
@@ -84,13 +85,14 @@ class TextContextMenu {
 
     this.setupCameraSubscription();
     this.setupEditorSubscription();
-  }
 
-  destroy(): void {
-    if (this.settleTimeout !== null) {
-      clearTimeout(this.settleTimeout);
-      this.settleTimeout = null;
-    }
+}
+
+destroy(): void {
+if (this.settleTimeout !== null) {
+clearTimeout(this.settleTimeout);
+this.settleTimeout = null;
+}
 
     if (this.cameraUnsub) {
       this.cameraUnsub();
@@ -117,19 +119,20 @@ class TextContextMenu {
     this.colorSubmenu = null;
     this.sizeSubmenu = null;
     this.highlightSubmenu = null;
-  }
 
-  onViewChange(): void {
-    // The camera subscription handles this
-  }
+}
 
-  // =========================================================================
-  // DOM Building
-  // =========================================================================
+onViewChange(): void {
+// The camera subscription handles this
+}
 
-  private buildDOM(): HTMLDivElement {
-    const container = document.createElement('div');
-    container.className = 'text-context-menu';
+// =========================================================================
+// DOM Building
+// =========================================================================
+
+private buildDOM(): HTMLDivElement {
+const container = document.createElement('div');
+container.className = 'text-context-menu';
 
     // === Font dropdown ===
     const fontBtn = this.createButton('tcm-btn tcm-btn-font', () => {
@@ -241,32 +244,33 @@ class TextContextMenu {
     this.updateAlignButtons();
 
     return container;
-  }
 
-  private createButton(className: string, onClick: () => void): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.className = className;
-    btn.type = 'button';
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      onClick();
-    });
-    btn.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-    });
-    return btn;
-  }
+}
 
-  private createSeparator(): HTMLDivElement {
-    const sep = document.createElement('div');
-    sep.className = 'tcm-separator';
-    return sep;
-  }
+private createButton(className: string, onClick: () => void): HTMLButtonElement {
+const btn = document.createElement('button');
+btn.className = className;
+btn.type = 'button';
+btn.addEventListener('click', (e) => {
+e.preventDefault();
+e.stopPropagation();
+onClick();
+});
+btn.addEventListener('mousedown', (e) => {
+e.preventDefault();
+});
+return btn;
+}
 
-  private buildColorSubmenu(): HTMLDivElement {
-    const submenu = document.createElement('div');
-    submenu.className = 'tcm-submenu tcm-submenu-color tcm-hidden';
+private createSeparator(): HTMLDivElement {
+const sep = document.createElement('div');
+sep.className = 'tcm-separator';
+return sep;
+}
+
+private buildColorSubmenu(): HTMLDivElement {
+const submenu = document.createElement('div');
+submenu.className = 'tcm-submenu tcm-submenu-color tcm-hidden';
 
     const textTool = getTextToolInstance();
     const currentColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
@@ -289,11 +293,12 @@ class TextContextMenu {
     }
 
     return submenu;
-  }
 
-  private buildSizeSubmenu(): HTMLDivElement {
-    const submenu = document.createElement('div');
-    submenu.className = 'tcm-submenu tcm-submenu-size tcm-hidden';
+}
+
+private buildSizeSubmenu(): HTMLDivElement {
+const submenu = document.createElement('div');
+submenu.className = 'tcm-submenu tcm-submenu-size tcm-hidden';
 
     const textTool = getTextToolInstance();
     const currentSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
@@ -316,11 +321,12 @@ class TextContextMenu {
     }
 
     return submenu;
-  }
 
-  private buildHighlightSubmenu(): HTMLDivElement {
-    const submenu = document.createElement('div');
-    submenu.className = 'tcm-submenu tcm-submenu-highlight tcm-hidden';
+}
+
+private buildHighlightSubmenu(): HTMLDivElement {
+const submenu = document.createElement('div');
+submenu.className = 'tcm-submenu tcm-submenu-highlight tcm-hidden';
 
     const currentHL = useDeviceUIStore.getState().highlightColor;
 
@@ -354,14 +360,15 @@ class TextContextMenu {
     }
 
     return submenu;
-  }
 
-  // =========================================================================
-  // Positioning
-  // =========================================================================
+}
 
-  updatePosition(): void {
-    if (!this.container || !this.editorContainer) return;
+// =========================================================================
+// Positioning
+// =========================================================================
+
+updatePosition(): void {
+if (!this.container || !this.editorContainer) return;
 
     const canvasRect = getCanvasRect();
     if (canvasRect.width === 0) return;
@@ -393,40 +400,41 @@ class TextContextMenu {
 
     this.container.style.left = `${left}px`;
     this.container.style.top = `${top}px`;
-  }
 
-  private hideMenu(): void {
-    if (!this.container) return;
-    if (this.settleTimeout !== null) {
-      clearTimeout(this.settleTimeout);
-      this.settleTimeout = null;
-    }
-    this.container.classList.add('tcm-hidden');
-    this.hideSubmenus();
-  }
+}
 
-  private scheduleShow(): void {
-    this.settleTimeout = window.setTimeout(() => {
-      this.settleTimeout = null;
-      this.updatePosition();
-      this.container?.classList.remove('tcm-hidden');
-    }, CAMERA_SETTLE_MS);
-  }
+private hideMenu(): void {
+if (!this.container) return;
+if (this.settleTimeout !== null) {
+clearTimeout(this.settleTimeout);
+this.settleTimeout = null;
+}
+this.container.classList.add('tcm-hidden');
+this.hideSubmenus();
+}
 
-  private hideSubmenus(): void {
-    this.colorSubmenu?.classList.add('tcm-hidden');
-    this.sizeSubmenu?.classList.add('tcm-hidden');
-    this.highlightSubmenu?.classList.add('tcm-hidden');
-  }
+private scheduleShow(): void {
+this.settleTimeout = window.setTimeout(() => {
+this.settleTimeout = null;
+this.updatePosition();
+this.container?.classList.remove('tcm-hidden');
+}, CAMERA_SETTLE_MS);
+}
 
-  // =========================================================================
-  // Subscriptions
-  // =========================================================================
+private hideSubmenus(): void {
+this.colorSubmenu?.classList.add('tcm-hidden');
+this.sizeSubmenu?.classList.add('tcm-hidden');
+this.highlightSubmenu?.classList.add('tcm-hidden');
+}
 
-  private setupCameraSubscription(): void {
-    const { scale, pan } = useCameraStore.getState();
-    this.lastPan = { ...pan };
-    this.lastScale = scale;
+// =========================================================================
+// Subscriptions
+// =========================================================================
+
+private setupCameraSubscription(): void {
+const { scale, pan } = useCameraStore.getState();
+this.lastPan = { ...pan };
+this.lastScale = scale;
 
     this.cameraUnsub = useCameraStore.subscribe(
       (s) => ({ scale: s.scale, pan: s.pan }),
@@ -440,10 +448,11 @@ class TextContextMenu {
         }
       }
     );
-  }
 
-  private setupEditorSubscription(): void {
-    if (!this.editor) return;
+}
+
+private setupEditorSubscription(): void {
+if (!this.editor) return;
 
     const syncFormatState = () => {
       const isBold = this.editor!.isActive('bold');
@@ -465,106 +474,110 @@ class TextContextMenu {
       syncFormatState();
       this.updatePosition();
     });
-  }
 
-  // =========================================================================
-  // Button State Updates
-  // =========================================================================
+}
 
-  private updateFormatButtons(): void {
-    if (!this.editor) return;
+// =========================================================================
+// Button State Updates
+// =========================================================================
+
+private updateFormatButtons(): void {
+if (!this.editor) return;
 
     const isBold = this.editor.isActive('bold');
     const isItalic = this.editor.isActive('italic');
 
     this.boldBtn?.classList.toggle('active', isBold);
     this.italicBtn?.classList.toggle('active', isItalic);
-  }
 
-  private updateAlignButtons(): void {
-    const textTool = getTextToolInstance();
-    const align = textTool?.getEditorState()?.align ?? useDeviceUIStore.getState().textAlign;
+}
+
+private updateAlignButtons(): void {
+const textTool = getTextToolInstance();
+const align = textTool?.getEditorState()?.align ?? useDeviceUIStore.getState().textAlign;
 
     this.alignLeftBtn?.classList.toggle('active', align === 'left');
     this.alignCenterBtn?.classList.toggle('active', align === 'center');
     this.alignRightBtn?.classList.toggle('active', align === 'right');
-  }
 
-  private updateColorIcon(): void {
-    if (!this.colorBtn) return;
-    const textTool = getTextToolInstance();
-    const actualColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
-    const iconContainer = this.colorBtn.querySelector('.tcm-color-icon');
-    if (iconContainer) {
-      iconContainer.innerHTML = '';
-      iconContainer.appendChild(createTextColorIcon(actualColor));
-    }
-  }
+}
 
-  private getEditorHighlightColor(): string | null {
-    if (!this.editor || !this.editor.isActive('highlight')) return null;
-    return (this.editor.getAttributes('highlight')?.color as string) ?? '#ffd43b';
-  }
+private updateColorIcon(): void {
+if (!this.colorBtn) return;
+const textTool = getTextToolInstance();
+const actualColor = textTool?.getEditorState()?.color ?? useDeviceUIStore.getState().textColor;
+const iconContainer = this.colorBtn.querySelector('.tcm-color-icon');
+if (iconContainer) {
+iconContainer.innerHTML = '';
+iconContainer.appendChild(createTextColorIcon(actualColor));
+}
+}
 
-  private updateHighlightIcon(): void {
-    if (!this.highlightBtn) return;
-    const color = this.getEditorHighlightColor();
-    const iconContainer = this.highlightBtn.querySelector('.tcm-highlight-icon');
-    if (iconContainer) {
-      iconContainer.innerHTML = '';
-      iconContainer.appendChild(createHighlightIcon(color));
-    }
-  }
+private getEditorHighlightColor(): string | null {
+if (!this.editor || !this.editor.isActive('highlight')) return null;
+return (this.editor.getAttributes('highlight')?.color as string) ?? '#ffd43b';
+}
 
-  private updateSizeValue(): void {
-    if (!this.sizeValueBtn) return;
-    const textTool = getTextToolInstance();
-    const actualSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
-    this.sizeValueBtn.textContent = String(actualSize);
-  }
+private updateHighlightIcon(): void {
+if (!this.highlightBtn) return;
+const color = this.getEditorHighlightColor();
+const iconContainer = this.highlightBtn.querySelector('.tcm-highlight-icon');
+if (iconContainer) {
+iconContainer.innerHTML = '';
+iconContainer.appendChild(createHighlightIcon(color));
+}
+}
 
-  // =========================================================================
-  // Event Handlers
-  // =========================================================================
+private updateSizeValue(): void {
+if (!this.sizeValueBtn) return;
+const textTool = getTextToolInstance();
+const actualSize = textTool?.getEditorState()?.fontSize ?? useDeviceUIStore.getState().textSize;
+this.sizeValueBtn.textContent = String(actualSize);
+}
 
-  private handleBoldClick(): void {
-    if (!this.editor) return;
-    this.editor.chain().focus().toggleBold().run();
-    this.updateFormatButtons();
-  }
+// =========================================================================
+// Event Handlers
+// =========================================================================
 
-  private handleItalicClick(): void {
-    if (!this.editor) return;
-    this.editor.chain().focus().toggleItalic().run();
-    this.updateFormatButtons();
-  }
+private handleBoldClick(): void {
+if (!this.editor) return;
+this.editor.chain().focus().toggleBold().run();
+this.updateFormatButtons();
+}
 
-  private handleAlignClick(align: 'left' | 'center' | 'right'): void {
-    const textTool = getTextToolInstance();
-    if (textTool) {
-      textTool.updateTextAlign(align);
-    }
-    useDeviceUIStore.getState().setTextAlign(align);
-    this.updateAlignButtons();
-    this.editor?.chain().focus().run();
-  }
+private handleItalicClick(): void {
+if (!this.editor) return;
+this.editor.chain().focus().toggleItalic().run();
+this.updateFormatButtons();
+}
 
-  private handleColorSelect(color: string): void {
-    const textTool = getTextToolInstance();
-    if (textTool) {
-      textTool.updateColor(color);
-    }
+private handleAlignClick(align: 'left' | 'center' | 'right'): void {
+const textTool = getTextToolInstance();
+if (textTool) {
+textTool.updateTextAlign(align);
+}
+useDeviceUIStore.getState().setTextAlign(align);
+this.updateAlignButtons();
+this.editor?.chain().focus().run();
+}
+
+private handleColorSelect(color: string): void {
+const textTool = getTextToolInstance();
+if (textTool) {
+textTool.updateColor(color);
+}
 
     this.updateColorIcon();
     this.hideSubmenus();
     this.editor?.chain().focus().run();
-  }
 
-  private handleSizeSelect(size: number): void {
-    const textTool = getTextToolInstance();
-    if (textTool) {
-      textTool.updateFontSize(size);
-    }
+}
+
+private handleSizeSelect(size: number): void {
+const textTool = getTextToolInstance();
+if (textTool) {
+textTool.updateFontSize(size);
+}
 
     useDeviceUIStore.getState().setTextSize(size);
     this.updateSizeValue();
@@ -573,12 +586,13 @@ class TextContextMenu {
     requestAnimationFrame(() => this.updatePosition());
 
     this.editor?.chain().focus().run();
-  }
 
-  private handleSizeDecrement(): void {
-    const textTool = getTextToolInstance();
-    const currentSize = textTool?.getEditorState()?.fontSize
-      ?? useDeviceUIStore.getState().textSize;
+}
+
+private handleSizeDecrement(): void {
+const textTool = getTextToolInstance();
+const currentSize = textTool?.getEditorState()?.fontSize
+?? useDeviceUIStore.getState().textSize;
 
     for (let i = TEXT_FONT_SIZE_PRESETS.length - 1; i >= 0; i--) {
       if (TEXT_FONT_SIZE_PRESETS[i] < currentSize) {
@@ -587,12 +601,13 @@ class TextContextMenu {
       }
     }
     this.editor?.chain().focus().run();
-  }
 
-  private handleSizeIncrement(): void {
-    const textTool = getTextToolInstance();
-    const currentSize = textTool?.getEditorState()?.fontSize
-      ?? useDeviceUIStore.getState().textSize;
+}
+
+private handleSizeIncrement(): void {
+const textTool = getTextToolInstance();
+const currentSize = textTool?.getEditorState()?.fontSize
+?? useDeviceUIStore.getState().textSize;
 
     for (let i = 0; i < TEXT_FONT_SIZE_PRESETS.length; i++) {
       if (TEXT_FONT_SIZE_PRESETS[i] > currentSize) {
@@ -601,21 +616,22 @@ class TextContextMenu {
       }
     }
     this.editor?.chain().focus().run();
-  }
 
-  private handleHighlightColorSelect(color: string | null): void {
-    this.hideSubmenus();
-    if (!this.editor) return;
-    if (color === null) {
-      this.editor.chain().focus().unsetHighlight().run();
-    } else {
-      this.editor.chain().focus().setHighlight({ color }).run();
-      useDeviceUIStore.getState().setHighlightColor(color);
-    }
-  }
+}
 
-  private toggleColorSubmenu(): void {
-    if (!this.colorSubmenu || !this.colorBtn || !this.container) return;
+private handleHighlightColorSelect(color: string | null): void {
+this.hideSubmenus();
+if (!this.editor) return;
+if (color === null) {
+this.editor.chain().focus().unsetHighlight().run();
+} else {
+this.editor.chain().focus().setHighlight({ color }).run();
+useDeviceUIStore.getState().setHighlightColor(color);
+}
+}
+
+private toggleColorSubmenu(): void {
+if (!this.colorSubmenu || !this.colorBtn || !this.container) return;
 
     const isHidden = this.colorSubmenu.classList.contains('tcm-hidden');
     this.hideSubmenus();
@@ -639,10 +655,11 @@ class TextContextMenu {
         btn.classList.toggle('active', isActive);
       });
     }
-  }
 
-  private toggleSizeSubmenu(): void {
-    if (!this.sizeSubmenu || !this.sizeValueBtn || !this.container) return;
+}
+
+private toggleSizeSubmenu(): void {
+if (!this.sizeSubmenu || !this.sizeValueBtn || !this.container) return;
 
     const isHidden = this.sizeSubmenu.classList.contains('tcm-hidden');
     this.hideSubmenus();
@@ -665,10 +682,11 @@ class TextContextMenu {
         btn.classList.toggle('active', size === currentSize);
       });
     }
-  }
 
-  private toggleHighlightSubmenu(): void {
-    if (!this.highlightSubmenu || !this.highlightBtn || !this.container) return;
+}
+
+private toggleHighlightSubmenu(): void {
+if (!this.highlightSubmenu || !this.highlightBtn || !this.container) return;
 
     const isHidden = this.highlightSubmenu.classList.contains('tcm-hidden');
     this.hideSubmenus();
@@ -692,16 +710,17 @@ class TextContextMenu {
         (swatch as HTMLElement).classList.toggle('active', isActive);
       });
     }
-  }
 
-  private rgbToHex(rgb: string): string {
-    const match = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-    if (!match) return rgb;
-    const r = parseInt(match[1], 10).toString(16).padStart(2, '0');
-    const g = parseInt(match[2], 10).toString(16).padStart(2, '0');
-    const b = parseInt(match[3], 10).toString(16).padStart(2, '0');
-    return `#${r}${g}${b}`;
-  }
+}
+
+private rgbToHex(rgb: string): string {
+const match = rgb.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+if (!match) return rgb;
+const r = parseInt(match[1], 10).toString(16).padStart(2, '0');
+const g = parseInt(match[2], 10).toString(16).padStart(2, '0');
+const b = parseInt(match[3], 10).toString(16).padStart(2, '0');
+return `#${r}${g}${b}`;
+}
 }
 
 // Module-level singleton
