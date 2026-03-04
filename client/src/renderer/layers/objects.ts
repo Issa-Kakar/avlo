@@ -22,6 +22,7 @@ import {
   type TextReflowState,
 } from '@/stores/selection-store';
 import {
+  computeEdgePinTranslation,
   computeStrokeTranslation,
   applyTransformToFrame,
   applyUniformScaleToPoints,
@@ -669,14 +670,40 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Text — corner = uniform scale, E/W = reflow
+  // CASE 4: Text — corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'text') {
-    if (handleKind === 'corner') {
+    if (
+      handleKind === 'corner' ||
+      ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')
+    ) {
       drawScaledTextPreview(ctx, handle, transform);
     } else if ((handleId === 'e' || handleId === 'w') && textReflow?.layouts.has(handle.id)) {
       drawReflowedTextPreview(ctx, handle, textReflow);
+    } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+      // Mixed + N/S: edge-pin translate
+      const textFrame = getTextFrame(handle.id);
+      if (textFrame) {
+        const [fx, , fw, fh] = textFrame;
+        const { dx, dy } = computeEdgePinTranslation(
+          fx,
+          fx + fw,
+          textFrame[1],
+          textFrame[1] + fh,
+          originBounds,
+          scaleX,
+          scaleY,
+          origin,
+          handleId,
+        );
+        ctx.save();
+        ctx.translate(dx, dy);
+        drawText(ctx, handle);
+        ctx.restore();
+      } else {
+        drawText(ctx, handle);
+      }
     } else {
-      drawText(ctx, handle); // N/S or no reflow data
+      drawText(ctx, handle);
     }
     return;
   }

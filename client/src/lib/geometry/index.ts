@@ -16,6 +16,7 @@ export {
   type ObjectHandleForScale,
   computeUniformScaleNoThreshold,
   computePreservedPosition,
+  computeEdgePinTranslation,
   computeStrokeTranslation,
   type TransformForBounds,
   applyTransformToBounds,

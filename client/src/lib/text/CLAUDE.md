@@ -612,7 +612,7 @@ Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/conte
 
 ## Scale Transforms (SelectTool)
 
-Uniform scaling of text via corner handle drag. Matches stroke uniform-scale pattern — center-based position preservation with `computePreservedPosition()`.
+Uniform scaling of text via corner and N/S handle drag. Matches stroke uniform-scale pattern — center-based position preservation with `computePreservedPosition()`.
 
 ### Handle Behavior
 
@@ -620,7 +620,8 @@ Uniform scaling of text via corner handle drag. Matches stroke uniform-scale pat
 |-----------|--------|---------------|
 | textOnly / mixed | corner | Uniform scale (fontSize + origin + width) |
 | textOnly / mixed | E/W side | Reflow: changes width, re-layouts text, converts auto→fixed on commit |
-| textOnly / mixed | N/S side | No-op (planned: uniform scale) |
+| textOnly | N/S side | Uniform scale (mirrors corner — fontSize + origin + width) |
+| mixed | N/S side | Edge-pin translate via `computeEdgePinTranslation()` (mirrors stroke mixed+side) |
 
 ### Math — Font Size Rounding
 
@@ -639,11 +640,11 @@ Position preservation uses raw `uniformScale` (continuous cursor tracking). Font
 
 ### Preview (`objects.ts` → `drawScaledTextPreview`)
 
-No re-layout per frame — reuses the cached `TextLayout` at the original font size. Visual scaling via `ctx.translate(newOriginX, newOriginY)` + `ctx.scale(effectiveAbsScale, effectiveAbsScale)` + `renderTextLayout(ctx, layout, 0, 0, ...)`.
+Corner + textOnly N/S: no re-layout per frame — reuses the cached `TextLayout` at the original font size. Visual scaling via `ctx.translate(newOriginX, newOriginY)` + `ctx.scale(effectiveAbsScale, effectiveAbsScale)` + `renderTextLayout(ctx, layout, 0, 0, ...)`. Mixed N/S: `ctx.translate(dx, dy)` + `drawText()` (edge-pin, no scaling).
 
 ### Commit (`SelectTool.ts` → `commitScale`)
 
-Writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `width` (scaled, only if fixed-width). The deep observer fires → `computeTextBBox()` re-derives the frame from the new properties → spatial index updates.
+Corner + textOnly N/S: writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `width` (scaled, only if fixed-width). Mixed N/S: translates `origin[1]` by `dy` from `computeEdgePinTranslation()`. The deep observer fires → `computeTextBBox()` re-derives the frame from the new properties → spatial index updates.
 
 ### Topology Integration (`transform.ts`)
 
@@ -668,7 +669,7 @@ Writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `w
 
 ### Dirty Rect Tracking (`invalidateTransformPreview`)
 
-Corner handles: `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. E/W handles: derives bounds from reflow layout (`[newLeft, fy, targetWidth, newHeight]`). N/S handles skip (`continue`).
+Corner + textOnly N/S: `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. E/W handles: derives bounds from reflow layout (`[newLeft, fy, targetWidth, newHeight]`). Mixed N/S: `computeEdgePinTranslation()` → `translateBounds()`.
 
 ---
 
@@ -712,6 +713,6 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 ## Remaining Work
 
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed
-- **Select tool N/S side handles** — uniform scale (E/W reflow ✅ done)
+- **Select tool N/S side handles** — ✅ Done. textOnly: uniform scale, mixed: edge-pin translate
 - **Live width changes during editing** — resize while editor mounted
 - **Bold/Italic/Highlight for canvas-selected text** — ✅ Done. `toggleSelectedBold`/`toggleSelectedItalic`/`setSelectedHighlight` branch: editor mounted → TipTap path, no editor → `Y.XmlText.format()` via `formatFragment()` helper. Deep observer auto-refreshes cache + styles.

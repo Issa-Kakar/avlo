@@ -14,6 +14,7 @@ import {
 } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
+  computeEdgePinTranslation,
   computeStrokeTranslation,
   applyTransformToBounds,
   computeScaleFactors,
@@ -937,14 +938,17 @@ export class SelectTool implements PointerTool {
             objBounds = expandBounds(objBounds, delta);
           }
         } else if (handle.kind === 'text') {
-          if (handleKind === 'corner') {
-            const textFrame = getTextFrame(handle.id);
-            if (!textFrame) continue;
+          const textFrame = getTextFrame(handle.id);
+          if (!textFrame) continue;
+
+          if (
+            handleKind === 'corner' ||
+            ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')
+          ) {
+            // Uniform scale: corner always, textOnly N/S
             const textBounds = frameTupleToWorldBounds(textFrame);
             objBounds = computeUniformScaleBounds(textBounds, originBounds, origin, scaleX, scaleY);
           } else if ((handleId === 'e' || handleId === 'w') && textReflow) {
-            const textFrame = getTextFrame(handle.id);
-            if (!textFrame) continue;
             const props = getTextProps(handle.y);
             if (!props) continue;
             const measured = textLayoutCache.getMeasuredContent(handle.id);
@@ -982,8 +986,23 @@ export class SelectTool implements PointerTool {
             // Dirty rect
             const newHeight = layout.lines.length * layout.lineHeight;
             objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
+          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+            // Mixed + N/S: edge-pin translate
+            const [fx, , fw, fh] = textFrame;
+            const { dx, dy } = computeEdgePinTranslation(
+              fx,
+              fx + fw,
+              textFrame[1],
+              textFrame[1] + fh,
+              originBounds,
+              scaleX,
+              scaleY,
+              origin,
+              handleId,
+            );
+            objBounds = translateBounds(frameTupleToWorldBounds(textFrame), dx, dy);
           } else {
-            continue; // N/S: skip
+            continue;
           }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
@@ -1142,9 +1161,13 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // Text: corner = uniform scale, E/W = reflow width
+        // Text: corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
         if (handle.kind === 'text') {
-          if (handleKind === 'corner') {
+          if (
+            handleKind === 'corner' ||
+            ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')
+          ) {
+            // Uniform scale for corner always + textOnly N/S
             const textFrame = getTextFrame(handle.id);
             if (!textFrame) continue;
 
@@ -1187,6 +1210,26 @@ export class SelectTool implements PointerTool {
             if (layout && reflowOrigin) {
               yMap.set('width', layout.boxWidth);
               yMap.set('origin', reflowOrigin);
+            }
+          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+            // Mixed + N/S: edge-pin translate origin
+            const textFrame = getTextFrame(handle.id);
+            if (!textFrame) continue;
+            const [fx, , fw, fh] = textFrame;
+            const { dy } = computeEdgePinTranslation(
+              fx,
+              fx + fw,
+              textFrame[1],
+              textFrame[1] + fh,
+              originBounds,
+              scaleX,
+              scaleY,
+              origin,
+              handleId,
+            );
+            const curOrigin = getOrigin(yMap);
+            if (curOrigin) {
+              yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
             }
           }
           continue;

@@ -67,7 +67,7 @@ export function computePreservedPosition(
   cy: number,
   originBounds: WorldRect,
   origin: [number, number],
-  uniformScale: number
+  uniformScale: number,
 ): [number, number] {
   const [ox, oy] = origin;
   const { minX, minY, maxX, maxY } = originBounds;
@@ -95,35 +95,20 @@ export function computePreservedPosition(
 }
 
 /**
- * Compute translation for a stroke in mixed + side handle scenario.
- * Uses edge-pinning logic:
- * - Anchor strokes (those that define the anchor edge) stay pinned
- * - On scale flip (negative), anchor strokes shift to define the opposite edge
- * - Interior strokes translate proportionally based on origin
+ * Compute edge-pinning translation from geometry bounds.
+ * Core logic shared by strokes (via points) and text (via frame).
  */
-export function computeStrokeTranslation(
-  handle: ObjectHandleForScale,
+export function computeEdgePinTranslation(
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
   originBounds: WorldRect,
   scaleX: number,
   scaleY: number,
   origin: [number, number],
-  handleId: HandleId
+  handleId: HandleId,
 ): { dx: number; dy: number } {
-  // Get stroke geometry (not bbox with width inflation)
-  // NOTE: Using raw y.get() here because ObjectHandleForScale has a simplified y interface
-  const points = handle.y.get('points') as [number, number][] | undefined;
-  if (!points || points.length === 0) return { dx: 0, dy: 0 };
-
-  // Compute geometry bounds
-  let minX = points[0][0], maxX = points[0][0];
-  let minY = points[0][1], maxY = points[0][1];
-  for (const [px, py] of points) {
-    if (px < minX) minX = px;
-    if (px > maxX) maxX = px;
-    if (py < minY) minY = py;
-    if (py > maxY) maxY = py;
-  }
-
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const [ox, oy] = origin;
@@ -136,7 +121,6 @@ export function computeStrokeTranslation(
   let dy = 0;
 
   if (isHorizontal) {
-    // E handle: anchor at minX (west edge), W handle: anchor at maxX (east edge)
     const anchorX = handleId === 'e' ? originBounds.minX : originBounds.maxX;
 
     const touchesLeft = Math.abs(minX - anchorX) < EPS;
@@ -145,30 +129,21 @@ export function computeStrokeTranslation(
 
     if (isAnchor) {
       if (scaleX >= 0) {
-        // Pre-flip: pin original touching edge
         const edgeX = touchesLeft ? minX : maxX;
-        dx = anchorX - edgeX; // ≈ 0 since edge ≈ anchor
+        dx = anchorX - edgeX;
       } else {
-        // Post-flip: pin opposite edge (shift by stroke width)
         const edgeX = touchesLeft ? maxX : minX;
         dx = anchorX - edgeX;
       }
-      dy = 0;
     } else {
-      // Non-anchor stroke: origin-based translation + shift at flip
       const newCx = ox + (cx - ox) * scaleX;
       dx = newCx - cx;
-      // At flip (scaleX < 0), shift by half stroke width (OPPOSITE direction of anchor strokes)
       if (scaleX < 0) {
         const halfWidth = (maxX - minX) / 2;
-        // W handle: anchor shifts RIGHT, so non-anchor shifts LEFT (-)
-        // E handle: anchor shifts LEFT, so non-anchor shifts RIGHT (+)
         dx += handleId === 'w' ? -halfWidth : halfWidth;
       }
-      dy = 0;
     }
   } else if (isVertical) {
-    // S handle: anchor at minY (top edge), N handle: anchor at maxY (bottom edge)
     const anchorY = handleId === 's' ? originBounds.minY : originBounds.maxY;
 
     const touchesTop = Math.abs(minY - anchorY) < EPS;
@@ -183,21 +158,15 @@ export function computeStrokeTranslation(
         const edgeY = touchesTop ? maxY : minY;
         dy = anchorY - edgeY;
       }
-      dx = 0;
     } else {
-      // Non-anchor stroke: origin-based translation + shift at flip
       const newCy = oy + (cy - oy) * scaleY;
       dy = newCy - cy;
-      // At flip (scaleY < 0), shift by half stroke height (OPPOSITE direction of anchor strokes)
       if (scaleY < 0) {
         const halfHeight = (maxY - minY) / 2;
-        // S handle: shift DOWN (+), N handle: shift UP (-)
         dy += handleId === 's' ? halfHeight : -halfHeight;
       }
-      dx = 0;
     }
   } else {
-    // Corner handle (shouldn't reach here for mixed+side, but fallback)
     const newCx = ox + (cx - ox) * scaleX;
     const newCy = oy + (cy - oy) * scaleY;
     dx = newCx - cx;
@@ -205,6 +174,45 @@ export function computeStrokeTranslation(
   }
 
   return { dx, dy };
+}
+
+/**
+ * Compute translation for a stroke in mixed + side handle scenario.
+ * Reads points from handle, computes geometry bounds, delegates to computeEdgePinTranslation.
+ */
+export function computeStrokeTranslation(
+  handle: ObjectHandleForScale,
+  originBounds: WorldRect,
+  scaleX: number,
+  scaleY: number,
+  origin: [number, number],
+  handleId: HandleId,
+): { dx: number; dy: number } {
+  const points = handle.y.get('points') as [number, number][] | undefined;
+  if (!points || points.length === 0) return { dx: 0, dy: 0 };
+
+  let minX = points[0][0],
+    maxX = points[0][0];
+  let minY = points[0][1],
+    maxY = points[0][1];
+  for (const [px, py] of points) {
+    if (px < minX) minX = px;
+    if (px > maxX) maxX = px;
+    if (py < minY) minY = py;
+    if (py > maxY) maxY = py;
+  }
+
+  return computeEdgePinTranslation(
+    minX,
+    maxX,
+    minY,
+    maxY,
+    originBounds,
+    scaleX,
+    scaleY,
+    origin,
+    handleId,
+  );
 }
 
 // === Transform Application Helpers ===
@@ -227,13 +235,18 @@ export interface TransformForBounds {
  */
 export function applyTransformToBounds(
   bounds: WorldRect,
-  transform: TransformForBounds
+  transform: TransformForBounds,
 ): WorldRect {
   if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
     return translateBounds(bounds, transform.dx, transform.dy);
   }
 
-  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
+  if (
+    transform.kind === 'scale' &&
+    transform.origin &&
+    transform.scaleX !== undefined &&
+    transform.scaleY !== undefined
+  ) {
     // CRITICAL: scaleBoundsAround normalizes for negative scale (flip) - ensures minX < maxX, minY < maxY
     return scaleBoundsAround(bounds, transform.origin, transform.scaleX, transform.scaleY);
   }
@@ -260,7 +273,7 @@ export interface ScaleTransformState {
 export function computeScaleFactors(
   worldX: number,
   worldY: number,
-  transform: ScaleTransformState
+  transform: ScaleTransformState,
 ): { scaleX: number; scaleY: number } {
   const { origin, initialDelta, handleId } = transform;
   const [ox, oy] = origin;
@@ -281,8 +294,8 @@ export function computeScaleFactors(
   // This ensures scaleX=1.0 exactly when cursor == downWorld (start position)
   // Sign handling is implicit: if initDx is negative (left handle), scale sign is preserved
   const MIN_DELTA = 0.001;
-  const safeDx = Math.abs(initDx) > MIN_DELTA ? initDx : (initDx >= 0 ? MIN_DELTA : -MIN_DELTA);
-  const safeDy = Math.abs(initDy) > MIN_DELTA ? initDy : (initDy >= 0 ? MIN_DELTA : -MIN_DELTA);
+  const safeDx = Math.abs(initDx) > MIN_DELTA ? initDx : initDx >= 0 ? MIN_DELTA : -MIN_DELTA;
+  const safeDy = Math.abs(initDy) > MIN_DELTA ? initDy : initDy >= 0 ? MIN_DELTA : -MIN_DELTA;
 
   if (isCorner) {
     // Corner handles: free scale in both axes
@@ -313,7 +326,7 @@ export function computeScaleFactors(
  */
 export function applyTransformToFrame(
   frame: [number, number, number, number],
-  transform: TransformForBounds
+  transform: TransformForBounds,
 ): [number, number, number, number] {
   const [x, y, w, h] = frame;
 
@@ -321,14 +334,19 @@ export function applyTransformToFrame(
     return [x + transform.dx, y + transform.dy, w, h];
   }
 
-  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
+  if (
+    transform.kind === 'scale' &&
+    transform.origin &&
+    transform.scaleX !== undefined &&
+    transform.scaleY !== undefined
+  ) {
     const [ox, oy] = transform.origin;
     const { scaleX, scaleY } = transform;
 
     const newX1 = ox + (x - ox) * scaleX;
     const newY1 = oy + (y - oy) * scaleY;
-    const newX2 = ox + ((x + w) - ox) * scaleX;
-    const newY2 = oy + ((y + h) - oy) * scaleY;
+    const newX2 = ox + (x + w - ox) * scaleX;
+    const newY2 = oy + (y + h - oy) * scaleY;
 
     return [
       Math.min(newX1, newX2),
@@ -362,7 +380,7 @@ export function applyUniformScaleToPoints(
   originBounds: WorldRect,
   origin: [number, number],
   scaleX: number,
-  scaleY: number
+  scaleY: number,
 ): { points: [number, number][]; absScale: number } {
   const [minX, minY, maxX, maxY] = bbox;
   const cx = (minX + maxX) / 2;
@@ -397,7 +415,7 @@ export function applyUniformScaleToFrame(
   originBounds: WorldRect,
   origin: [number, number],
   scaleX: number,
-  scaleY: number
+  scaleY: number,
 ): [number, number, number, number] {
   const [x, y, w, h] = frame;
   const cx = x + w / 2;
@@ -422,7 +440,7 @@ export function applyUniformScaleToFrame(
  */
 export function transformFrameForTopology(
   frame: FrameTuple,
-  transform: TranslateTransform | ScaleTransform
+  transform: TranslateTransform | ScaleTransform,
 ): FrameTuple {
   if (transform.kind === 'translate') {
     return [frame[0] + transform.dx, frame[1] + transform.dy, frame[2], frame[3]];
@@ -440,7 +458,7 @@ export function transformFrameForTopology(
  */
 export function transformPositionForTopology(
   position: [number, number],
-  transform: TranslateTransform | ScaleTransform
+  transform: TranslateTransform | ScaleTransform,
 ): [number, number] {
   if (transform.kind === 'translate') {
     return [position[0] + transform.dx, position[1] + transform.dy];
@@ -453,4 +471,3 @@ export function transformPositionForTopology(
   const [ox, oy] = origin;
   return [ox + (position[0] - ox) * scaleX, oy + (position[1] - oy) * scaleY];
 }
-
