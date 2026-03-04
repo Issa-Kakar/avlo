@@ -15,7 +15,12 @@ import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
-import { useSelectionStore, type ScaleTransform, type ConnectorTopology } from '@/stores/selection-store';
+import {
+  useSelectionStore,
+  type ScaleTransform,
+  type ConnectorTopology,
+  type TextReflowState,
+} from '@/stores/selection-store';
 import {
   computeStrokeTranslation,
   applyTransformToFrame,
@@ -25,8 +30,14 @@ import {
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
-import { textLayoutCache, renderTextLayout, anchorFactor, getBaselineToTopRatio, getTextFrame } from '@/lib/text/text-system';
-import { getTextProps } from '@avlo/shared';
+import {
+  textLayoutCache,
+  renderTextLayout,
+  anchorFactor,
+  getBaselineToTopRatio,
+  getTextFrame,
+} from '@/lib/text/text-system';
+import { getTextProps, getAlign } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 
 export function drawObjects(
@@ -43,8 +54,9 @@ export function drawObjects(
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
-  // Read connector topology state
+  // Read connector topology and text reflow state
   const connTopology = selectionState.connectorTopology;
+  const textReflow = selectionState.textReflow;
 
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
@@ -77,7 +89,7 @@ export function drawObjects(
   }
 
   // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========
-  // WHY: RBush query order is non-deterministic 
+  // WHY: RBush query order is non-deterministic
   // SOLUTION: ULID (object.id) provides globally consistent ordering
 
   const sortedCandidates = [...candidateEntries].sort((a, b) => {
@@ -124,10 +136,14 @@ export function drawObjects(
         }
       } else if (transform.kind === 'scale') {
         // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology);
+        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology, textReflow);
       } else if (transform.kind === 'endpointDrag') {
         // Endpoint drag: draw from rerouted points if available
-        if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
+        if (
+          handle.kind === 'connector' &&
+          handle.id === transform.connectorId &&
+          transform.routedPoints
+        ) {
           drawConnectorFromPoints(ctx, handle, transform.routedPoints);
         } else {
           drawObject(ctx, handle);
@@ -158,10 +174,7 @@ export function drawObjects(
   }
 }
 
-function drawObject(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   switch (handle.kind) {
     case 'stroke':
       drawStroke(ctx, handle);
@@ -178,10 +191,7 @@ function drawObject(
   }
 }
 
-function drawStroke(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawStroke(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
   const color = getColor(y);
   const opacity = getOpacity(y);
@@ -203,17 +213,14 @@ function drawStroke(
   ctx.restore();
 }
 
-function drawShape(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
   const fillColor = getFillColor(y);
   const color = getColor(y);
   const width = getWidth(y, 1);
   const opacity = getOpacity(y);
-  
+
   const cache = getObjectCacheInstance();
   const path = cache.getPath(id, handle);
 
@@ -240,10 +247,7 @@ function drawShape(
  * Draw text object using Y.XmlFragment-based rich text.
  * Skips rendering if the text is currently being edited (DOM overlay handles it).
  */
-function drawText(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
   // Skip rendering if this text is being edited
@@ -260,11 +264,7 @@ function drawText(
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
 }
 
-
-function drawConnector(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
   const color = getColor(y);
@@ -304,7 +304,6 @@ function drawConnector(
   ctx.restore();
 }
 
-
 /**
  * Draw a connector from explicit points (for rerouted connectors during transforms).
  * Reads styles from handle.y, builds fresh paths from the given points.
@@ -312,7 +311,7 @@ function drawConnector(
 function drawConnectorFromPoints(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  points: [number, number][]
+  points: [number, number][],
 ): void {
   if (points.length < 2) return;
 
@@ -354,10 +353,7 @@ function drawConnectorFromPoints(
   ctx.restore();
 }
 
-function shouldSkipLOD(
-  bbox: [number, number, number, number],
-  view: ViewTransform
-): boolean {
+function shouldSkipLOD(bbox: [number, number, number, number], view: ViewTransform): boolean {
   const [minX, minY, maxX, maxY] = bbox;
   const diagonal = Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2);
   const screenDiagonal = diagonal * view.scale;
@@ -373,7 +369,14 @@ function shouldSkipLOD(
 function drawShapeWithTransform(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  transform: { kind: string; dx?: number; dy?: number; origin?: [number, number]; scaleX?: number; scaleY?: number }
+  transform: {
+    kind: string;
+    dx?: number;
+    dy?: number;
+    origin?: [number, number];
+    scaleX?: number;
+    scaleY?: number;
+  },
 ): void {
   const { y } = handle;
 
@@ -407,7 +410,7 @@ function drawShapeWithTransform(
 
   if (color && width > 0) {
     ctx.strokeStyle = color;
-    ctx.lineWidth = width;  // ORIGINAL width - NOT scaled!
+    ctx.lineWidth = width; // ORIGINAL width - NOT scaled!
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke(path);
@@ -417,7 +420,6 @@ function drawShapeWithTransform(
 }
 
 // === Scale Transform Rendering Functions ===
-
 
 /**
  * Draw stroke with scaled geometry and width using fresh PF outline.
@@ -431,7 +433,7 @@ function drawShapeWithTransform(
 function drawScaledStrokePreview(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  transform: ScaleTransform
+  transform: ScaleTransform,
 ): void {
   const { y } = handle;
   const points = getPoints(y);
@@ -446,7 +448,12 @@ function drawScaledStrokePreview(
 
   // Apply uniform scale with position preservation (copy-paste flip behavior)
   const { points: scaledPoints, absScale } = applyUniformScaleToPoints(
-    points, handle.bbox, originBounds, origin, scaleX, scaleY
+    points,
+    handle.bbox,
+    originBounds,
+    origin,
+    scaleX,
+    scaleY,
   );
 
   // Scale width for WYSIWYG
@@ -478,7 +485,7 @@ function drawScaledStrokePreview(
 function drawShapeWithUniformScale(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  transform: ScaleTransform
+  transform: ScaleTransform,
 ): void {
   const { y } = handle;
   const frame = getFrame(y);
@@ -513,7 +520,7 @@ function drawShapeWithUniformScale(
 
   if (color && width > 0) {
     ctx.strokeStyle = color;
-    ctx.lineWidth = width;  // ORIGINAL width - NOT scaled!
+    ctx.lineWidth = width; // ORIGINAL width - NOT scaled!
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke(path);
@@ -532,7 +539,10 @@ function drawScaledTextPreview(
   transform: ScaleTransform,
 ): void {
   const textFrame = getTextFrame(handle.id);
-  if (!textFrame) { drawText(ctx, handle); return; }
+  if (!textFrame) {
+    drawText(ctx, handle);
+    return;
+  }
 
   const props = getTextProps(handle.y);
   if (!props) return;
@@ -575,6 +585,30 @@ function drawScaledTextPreview(
 }
 
 /**
+ * Draw text with reflow preview from pre-computed layout/origin.
+ */
+function drawReflowedTextPreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  textReflow: TextReflowState,
+): void {
+  const layout = textReflow.layouts.get(handle.id);
+  const reflowOrigin = textReflow.origins.get(handle.id);
+  if (!layout || !reflowOrigin) {
+    drawText(ctx, handle);
+    return;
+  }
+  renderTextLayout(
+    ctx,
+    layout,
+    reflowOrigin[0],
+    reflowOrigin[1],
+    getColor(handle.y),
+    getAlign(handle.y),
+  );
+}
+
+/**
  * Context-aware scale transform rendering for selected objects.
  * Dispatches to correct rendering strategy based on selectionKind + handleKind.
  */
@@ -582,7 +616,8 @@ function renderSelectedObjectWithScaleTransform(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
   transform: ScaleTransform,
-  connTopology: ConnectorTopology | null
+  connTopology: ConnectorTopology | null,
+  textReflow: TextReflowState | null,
 ): void {
   const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
 
@@ -601,7 +636,14 @@ function renderSelectedObjectWithScaleTransform(
 
   // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
   if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-    const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
+    const { dx, dy } = computeStrokeTranslation(
+      handle,
+      originBounds,
+      scaleX,
+      scaleY,
+      origin,
+      handleId,
+    );
     ctx.save();
     ctx.translate(dx, dy);
     drawObject(ctx, handle); // Use cached Path2D
@@ -627,12 +669,14 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Text — uniform scale for corner handles only
+  // CASE 4: Text — corner = uniform scale, E/W = reflow
   if (handle.kind === 'text') {
     if (handleKind === 'corner') {
       drawScaledTextPreview(ctx, handle, transform);
+    } else if ((handleId === 'e' || handleId === 'w') && textReflow?.layouts.has(handle.id)) {
+      drawReflowedTextPreview(ctx, handle, textReflow);
     } else {
-      drawText(ctx, handle); // side handles: draw at original position
+      drawText(ctx, handle); // N/S or no reflow data
     }
     return;
   }

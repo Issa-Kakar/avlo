@@ -6,10 +6,15 @@ import type { SnapTarget } from '@/lib/connectors/types';
 import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import {
-  getFrame, getPoints, getStart, getEnd,
-  getStartAnchor, getEndAnchor, bboxTupleToWorldBounds,
+  getFrame,
+  getPoints,
+  getStart,
+  getEnd,
+  getStartAnchor,
+  getEndAnchor,
+  bboxTupleToWorldBounds,
 } from '@avlo/shared';
-import { getTextFrame } from '@/lib/text/text-system';
+import { getTextFrame, type TextLayout } from '@/lib/text/text-system';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -38,7 +43,13 @@ export type { KindCounts, SelectedStyles, InlineStyles } from '@/lib/utils/selec
 export type WorldRect = WorldBounds;
 
 // Selection composition types for context-aware transforms
-export type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'connectorsOnly' | 'mixed';
+export type SelectionKind =
+  | 'none'
+  | 'strokesOnly'
+  | 'shapesOnly'
+  | 'textOnly'
+  | 'connectorsOnly'
+  | 'mixed';
 
 export type HandleKind = 'corner' | 'side';
 
@@ -60,8 +71,8 @@ export interface ConnectorTopologyEntry {
   strategy: 'translate' | 'reroute';
   originalPoints: [number, number][];
   originalBbox: WorldBounds;
-  startSpec: EndpointSpec;  // only meaningful for 'reroute'
-  endSpec: EndpointSpec;    // only meaningful for 'reroute'
+  startSpec: EndpointSpec; // only meaningful for 'reroute'
+  endSpec: EndpointSpec; // only meaningful for 'reroute'
 }
 
 /**
@@ -83,26 +94,33 @@ export interface ConnectorTopology {
   prevBboxes: Map<string, WorldBounds>;
 }
 
+// === Text Reflow State ===
+
+export interface TextReflowState {
+  layouts: Map<string, TextLayout>;
+  origins: Map<string, [number, number]>;
+}
+
 // === Transform Types ===
 
 export interface TranslateTransform {
   kind: 'translate';
   dx: number;
   dy: number;
-  originBounds: WorldRect;  // Bounds before transform started
+  originBounds: WorldRect; // Bounds before transform started
 }
 
 export interface ScaleTransform {
   kind: 'scale';
-  origin: [number, number];  // Fixed point during scale
+  origin: [number, number]; // Fixed point during scale
   scaleX: number;
   scaleY: number;
-  originBounds: WorldRect;   // Geometry-based bounds (for position math - no stroke padding)
-  bboxBounds: WorldRect;     // Padded bounds (for dirty rect invalidation)
-  handleId: HandleId;  // Track which handle for uniform vs directional scaling
-  selectionKind: SelectionKind;  // Selection composition for context-aware behavior
-  handleKind: HandleKind;        // Corner vs side handle
-  initialDelta: [number, number];  // Distance from origin to initial click (for scale=1.0 at start)
+  originBounds: WorldRect; // Geometry-based bounds (for position math - no stroke padding)
+  bboxBounds: WorldRect; // Padded bounds (for dirty rect invalidation)
+  handleId: HandleId; // Track which handle for uniform vs directional scaling
+  selectionKind: SelectionKind; // Selection composition for context-aware behavior
+  handleKind: HandleKind; // Corner vs side handle
+  initialDelta: [number, number]; // Distance from origin to initial click (for scale=1.0 at start)
 }
 
 /**
@@ -136,7 +154,7 @@ export type TransformState =
 
 export interface MarqueeState {
   active: boolean;
-  anchor: [number, number] | null;  // World coords
+  anchor: [number, number] | null; // World coords
   current: [number, number] | null; // World coords
 }
 
@@ -164,6 +182,8 @@ export interface SelectionState {
   marquee: MarqueeState;
   /** Connector topology during translate/scale transforms */
   connectorTopology: ConnectorTopology | null;
+  /** Text reflow state during E/W side handle scale transforms */
+  textReflow: TextReflowState | null;
 
   // Text editing - primitives only
   /** Object ID being edited, null if not editing */
@@ -182,14 +202,29 @@ export interface SelectionActions {
   // Transform lifecycle
   beginTranslate: (originBounds: WorldRect) => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (bboxBounds: WorldRect, transformBounds: WorldRect, origin: [number, number], handleId: HandleId, initialDelta: [number, number]) => void;
+  beginScale: (
+    bboxBounds: WorldRect,
+    transformBounds: WorldRect,
+    origin: [number, number],
+    handleId: HandleId,
+    initialDelta: [number, number],
+  ) => void;
   updateScale: (scaleX: number, scaleY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
   // Endpoint drag lifecycle
-  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: WorldBounds) => void;
-  updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null, routedPoints: [number, number][] | null, routedBbox: WorldBounds | null) => void;
+  beginEndpointDrag: (
+    connectorId: string,
+    endpoint: 'start' | 'end',
+    originBbox: WorldBounds,
+  ) => void;
+  updateEndpointDrag: (
+    currentPosition: [number, number],
+    currentSnap: SnapTarget | null,
+    routedPoints: [number, number][] | null,
+    routedBbox: WorldBounds | null,
+  ) => void;
 
   // Marquee lifecycle
   beginMarquee: (anchor: [number, number]) => void;
@@ -230,7 +265,7 @@ export type SelectionStore = SelectionState & SelectionActions;
  */
 function computeConnectorTopology(
   transformKind: 'translate' | 'scale',
-  selectedIds: string[]
+  selectedIds: string[],
 ): ConnectorTopology | null {
   const snapshot = getCurrentSnapshot();
   const selectedSet = new Set(selectedIds);
@@ -253,38 +288,56 @@ function computeConnectorTopology(
 
     // Determine if each endpoint moves
     const startMoves = isSelected
-      ? (!startAnchor || selectedSet.has(startAnchor.id))
-      : (!!startAnchor && selectedSet.has(startAnchor.id));
+      ? !startAnchor || selectedSet.has(startAnchor.id)
+      : !!startAnchor && selectedSet.has(startAnchor.id);
     const endMoves = isSelected
-      ? (!endAnchor || selectedSet.has(endAnchor.id))
-      : (!!endAnchor && selectedSet.has(endAnchor.id));
+      ? !endAnchor || selectedSet.has(endAnchor.id)
+      : !!endAnchor && selectedSet.has(endAnchor.id);
 
     if (!startMoves && !endMoves) return;
 
     const points = getPoints(connHandle.y);
-    const originalPoints: [number, number][] = points.length > 0
-      ? points as [number, number][]
-      : [((getStart(connHandle.y) ?? [0, 0]) as [number, number]), ((getEnd(connHandle.y) ?? [0, 0]) as [number, number])];
+    const originalPoints: [number, number][] =
+      points.length > 0
+        ? (points as [number, number][])
+        : [
+            (getStart(connHandle.y) ?? [0, 0]) as [number, number],
+            (getEnd(connHandle.y) ?? [0, 0]) as [number, number],
+          ];
     const originalBbox = bboxTupleToWorldBounds(connHandle.bbox);
 
     // Determine strategy
     if (transformKind === 'translate' && startMoves && endMoves) {
       entries.push({
-        connectorId: connId, strategy: 'translate',
-        originalPoints, originalBbox, startSpec: null, endSpec: null,
+        connectorId: connId,
+        strategy: 'translate',
+        originalPoints,
+        originalBbox,
+        startSpec: null,
+        endSpec: null,
       });
       translateIdSet.add(connId);
     } else {
       const startSpec: EndpointSpec =
-        (startAnchor && selectedSet.has(startAnchor.id)) ? startAnchor.id :
-        (!startAnchor && isSelected) ? true : null;
+        startAnchor && selectedSet.has(startAnchor.id)
+          ? startAnchor.id
+          : !startAnchor && isSelected
+            ? true
+            : null;
       const endSpec: EndpointSpec =
-        (endAnchor && selectedSet.has(endAnchor.id)) ? endAnchor.id :
-        (!endAnchor && isSelected) ? true : null;
+        endAnchor && selectedSet.has(endAnchor.id)
+          ? endAnchor.id
+          : !endAnchor && isSelected
+            ? true
+            : null;
 
       entries.push({
-        connectorId: connId, strategy: 'reroute',
-        originalPoints, originalBbox, startSpec, endSpec,
+        connectorId: connId,
+        strategy: 'reroute',
+        originalPoints,
+        originalBbox,
+        startSpec,
+        endSpec,
       });
     }
   };
@@ -341,45 +394,7 @@ function computeConnectorTopology(
 
 export const useSelectionStore = create<SelectionStore>()(
   subscribeWithSelector((set, get) => ({
-  // Initial state
-  selectedIds: [],
-  mode: 'none',
-  selectionKind: 'none',
-  selectedIdSet: EMPTY_ID_SET,
-  kindCounts: EMPTY_KIND_COUNTS,
-  menuOpen: false,
-  selectedStyles: EMPTY_STYLES,
-  inlineStyles: EMPTY_INLINE_STYLES,
-  boundsVersion: 0,
-  transform: { kind: 'none' },
-  marquee: { active: false, anchor: null, current: null },
-  connectorTopology: null,
-  textEditingId: null,
-  textEditingIsNew: false,
-
-  // === Selection Actions ===
-
-  setSelection: (ids) => {
-    if (ids.length === 0) {
-      get().clearSelection();
-      return;
-    }
-    const comp = computeSelectionComposition(ids);
-    set({
-      selectedIds: ids,
-      mode: comp.mode,
-      selectionKind: comp.selectionKind,
-      selectedIdSet: comp.selectedIdSet,
-      kindCounts: comp.kindCounts,
-      transform: { kind: 'none' },
-      marquee: { active: false, anchor: null, current: null },
-      connectorTopology: null,
-      boundsVersion: get().boundsVersion + 1,
-    });
-    get().refreshStyles();
-  },
-
-  clearSelection: () => set({
+    // Initial state
     selectedIds: [],
     mode: 'none',
     selectionKind: 'none',
@@ -392,158 +407,222 @@ export const useSelectionStore = create<SelectionStore>()(
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
     connectorTopology: null,
-  }),
+    textReflow: null,
+    textEditingId: null,
+    textEditingIsNew: false,
 
-  // === Transform Actions ===
+    // === Selection Actions ===
 
-  beginTranslate: (originBounds) => {
-    const { selectedIds } = get();
-    const topology = computeConnectorTopology('translate', selectedIds);
-    set({
-      transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
-      connectorTopology: topology,
-    });
-  },
-
-  updateTranslate: (dx, dy) => set((state) => {
-    if (state.transform.kind !== 'translate') return state;
-    return { transform: { ...state.transform, dx, dy } };
-  }),
-
-  beginScale: (bboxBounds, transformBounds, origin, handleId, initialDelta) => {
-    const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
-    const handleKind: HandleKind = isCorner ? 'corner' : 'side';
-    const { selectedIds, selectionKind } = get();
-    const topology = computeConnectorTopology('scale', selectedIds);
-
-    set({
-      transform: {
-        kind: 'scale',
-        origin,
-        scaleX: 1,
-        scaleY: 1,
-        originBounds: transformBounds,
-        bboxBounds,
-        handleId,
-        selectionKind,
-        handleKind,
-        initialDelta,
-      },
-      connectorTopology: topology,
-    });
-  },
-
-  updateScale: (scaleX, scaleY) => set((state) => {
-    if (state.transform.kind !== 'scale') return state;
-    return { transform: { ...state.transform, scaleX, scaleY } };
-  }),
-
-  endTransform: () => set({
-    transform: { kind: 'none' },
-    connectorTopology: null,
-  }),
-
-  cancelTransform: () => set({
-    transform: { kind: 'none' },
-    connectorTopology: null,
-  }),
-
-  // === Endpoint Drag Actions ===
-
-  beginEndpointDrag: (connectorId, endpoint, originBbox) => set({
-    transform: {
-      kind: 'endpointDrag',
-      connectorId,
-      endpoint,
-      currentPosition: [0, 0],
-      currentSnap: null,
-      routedPoints: null,
-      routedBbox: null,
-      prevBbox: originBbox,
+    setSelection: (ids) => {
+      if (ids.length === 0) {
+        get().clearSelection();
+        return;
+      }
+      const comp = computeSelectionComposition(ids);
+      set({
+        selectedIds: ids,
+        mode: comp.mode,
+        selectionKind: comp.selectionKind,
+        selectedIdSet: comp.selectedIdSet,
+        kindCounts: comp.kindCounts,
+        transform: { kind: 'none' },
+        marquee: { active: false, anchor: null, current: null },
+        connectorTopology: null,
+        textReflow: null,
+        boundsVersion: get().boundsVersion + 1,
+      });
+      get().refreshStyles();
     },
-  }),
 
-  updateEndpointDrag: (currentPosition, currentSnap, routedPoints, routedBbox) => set((state) => {
-    if (state.transform.kind !== 'endpointDrag') return state;
-    return {
-      transform: {
-        ...state.transform,
-        currentPosition,
-        currentSnap,
-        routedPoints,
-        routedBbox,
-        prevBbox: routedBbox ?? state.transform.prevBbox,
-      },
-    };
-  }),
+    clearSelection: () =>
+      set({
+        selectedIds: [],
+        mode: 'none',
+        selectionKind: 'none',
+        selectedIdSet: EMPTY_ID_SET,
+        kindCounts: EMPTY_KIND_COUNTS,
+        menuOpen: false,
+        selectedStyles: EMPTY_STYLES,
+        inlineStyles: EMPTY_INLINE_STYLES,
+        boundsVersion: 0,
+        transform: { kind: 'none' },
+        marquee: { active: false, anchor: null, current: null },
+        connectorTopology: null,
+        textReflow: null,
+      }),
 
-  // === Marquee Actions ===
+    // === Transform Actions ===
 
-  beginMarquee: (anchor) => set({
-    marquee: { active: true, anchor, current: anchor },
-  }),
+    beginTranslate: (originBounds) => {
+      const { selectedIds } = get();
+      const topology = computeConnectorTopology('translate', selectedIds);
+      set({
+        transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
+        connectorTopology: topology,
+      });
+    },
 
-  updateMarquee: (current) => set((state) => {
-    if (!state.marquee.active || !state.marquee.anchor) return state;
-    return { marquee: { ...state.marquee, current } };
-  }),
+    updateTranslate: (dx, dy) =>
+      set((state) => {
+        if (state.transform.kind !== 'translate') return state;
+        return { transform: { ...state.transform, dx, dy } };
+      }),
 
-  endMarquee: () => set((state) => ({
-    marquee: { ...state.marquee, active: false },
+    beginScale: (bboxBounds, transformBounds, origin, handleId, initialDelta) => {
+      const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
+      const handleKind: HandleKind = isCorner ? 'corner' : 'side';
+      const { selectedIds, selectionKind, kindCounts } = get();
+      const topology = computeConnectorTopology('scale', selectedIds);
+
+      const isEW = handleId === 'e' || handleId === 'w';
+      const textReflow: TextReflowState | null =
+        isEW && kindCounts.text > 0 ? { layouts: new Map(), origins: new Map() } : null;
+
+      set({
+        transform: {
+          kind: 'scale',
+          origin,
+          scaleX: 1,
+          scaleY: 1,
+          originBounds: transformBounds,
+          bboxBounds,
+          handleId,
+          selectionKind,
+          handleKind,
+          initialDelta,
+        },
+        connectorTopology: topology,
+        textReflow,
+      });
+    },
+
+    updateScale: (scaleX, scaleY) =>
+      set((state) => {
+        if (state.transform.kind !== 'scale') return state;
+        return { transform: { ...state.transform, scaleX, scaleY } };
+      }),
+
+    endTransform: () =>
+      set({
+        transform: { kind: 'none' },
+        connectorTopology: null,
+        textReflow: null,
+      }),
+
+    cancelTransform: () =>
+      set({
+        transform: { kind: 'none' },
+        connectorTopology: null,
+        textReflow: null,
+      }),
+
+    // === Endpoint Drag Actions ===
+
+    beginEndpointDrag: (connectorId, endpoint, originBbox) =>
+      set({
+        transform: {
+          kind: 'endpointDrag',
+          connectorId,
+          endpoint,
+          currentPosition: [0, 0],
+          currentSnap: null,
+          routedPoints: null,
+          routedBbox: null,
+          prevBbox: originBbox,
+        },
+      }),
+
+    updateEndpointDrag: (currentPosition, currentSnap, routedPoints, routedBbox) =>
+      set((state) => {
+        if (state.transform.kind !== 'endpointDrag') return state;
+        return {
+          transform: {
+            ...state.transform,
+            currentPosition,
+            currentSnap,
+            routedPoints,
+            routedBbox,
+            prevBbox: routedBbox ?? state.transform.prevBbox,
+          },
+        };
+      }),
+
+    // === Marquee Actions ===
+
+    beginMarquee: (anchor) =>
+      set({
+        marquee: { active: true, anchor, current: anchor },
+      }),
+
+    updateMarquee: (current) =>
+      set((state) => {
+        if (!state.marquee.active || !state.marquee.anchor) return state;
+        return { marquee: { ...state.marquee, current } };
+      }),
+
+    endMarquee: () =>
+      set((state) => ({
+        marquee: { ...state.marquee, active: false },
+      })),
+
+    cancelMarquee: () =>
+      set({
+        marquee: { active: false, anchor: null, current: null },
+      }),
+
+    // === Text Editing Actions ===
+
+    beginTextEditing: (objectId, isNew) => {
+      set({
+        textEditingId: objectId,
+        textEditingIsNew: isNew,
+        menuOpen: true,
+      });
+      get().refreshStyles();
+    },
+
+    endTextEditing: () => {
+      const { selectedIds } = get();
+      set({
+        textEditingId: null,
+        textEditingIsNew: false,
+        menuOpen: selectedIds.length > 0,
+      });
+      get().refreshStyles();
+    },
+
+    setInlineStyles: (next) => {
+      if (inlineStylesEqual(get().inlineStyles, next)) return;
+      set({ inlineStyles: next });
+    },
+
+    // === Context Menu Actions ===
+
+    refreshStyles: () => {
+      const { selectedIds, selectionKind, textEditingId, selectedStyles: current } = get();
+      const snapshot = getCurrentSnapshot();
+      const ids =
+        textEditingId !== null && selectedIds.length === 0 ? [textEditingId] : selectedIds;
+      const kind =
+        textEditingId !== null && selectedIds.length === 0
+          ? ('textOnly' as SelectionKind)
+          : selectionKind;
+
+      const patch: Partial<SelectionState> = {};
+
+      const next = computeStyles(ids, kind, snapshot.objectsById);
+      if (!stylesEqual(current, next)) patch.selectedStyles = next;
+
+      // Inline text styles — only when editor is NOT mounted
+      if (textEditingId === null && kind === 'textOnly' && ids.length > 0) {
+        const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
+        if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
+      }
+
+      if (Object.keys(patch).length > 0) set(patch);
+    },
   })),
-
-  cancelMarquee: () => set({
-    marquee: { active: false, anchor: null, current: null },
-  }),
-
-  // === Text Editing Actions ===
-
-  beginTextEditing: (objectId, isNew) => {
-    set({
-      textEditingId: objectId,
-      textEditingIsNew: isNew,
-      menuOpen: true,
-    });
-    get().refreshStyles();
-  },
-
-  endTextEditing: () => {
-    const { selectedIds } = get();
-    set({
-      textEditingId: null,
-      textEditingIsNew: false,
-      menuOpen: selectedIds.length > 0,
-    });
-    get().refreshStyles();
-  },
-
-  setInlineStyles: (next) => {
-    if (inlineStylesEqual(get().inlineStyles, next)) return;
-    set({ inlineStyles: next });
-  },
-
-  // === Context Menu Actions ===
-
-  refreshStyles: () => {
-    const { selectedIds, selectionKind, textEditingId, selectedStyles: current } = get();
-    const snapshot = getCurrentSnapshot();
-    const ids = textEditingId !== null && selectedIds.length === 0 ? [textEditingId] : selectedIds;
-    const kind = textEditingId !== null && selectedIds.length === 0 ? 'textOnly' as SelectionKind : selectionKind;
-
-    const patch: Partial<SelectionState> = {};
-
-    const next = computeStyles(ids, kind, snapshot.objectsById);
-    if (!stylesEqual(current, next)) patch.selectedStyles = next;
-
-    // Inline text styles — only when editor is NOT mounted
-    if (textEditingId === null && kind === 'textOnly' && ids.length > 0) {
-      const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
-      if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
-    }
-
-    if (Object.keys(patch).length > 0) set(patch);
-  },
-})));
+);
 
 // === Free Functions ===
 
@@ -554,8 +633,15 @@ export const useSelectionStore = create<SelectionStore>()(
 export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'connectors'): void {
   const { selectedIds } = useSelectionStore.getState();
   const snapshot = getCurrentSnapshot();
-  const targetKind = kind === 'strokes' ? 'stroke' : kind === 'shapes' ? 'shape' : kind === 'connectors' ? 'connector' : 'text';
-  const filtered = selectedIds.filter(id => snapshot.objectsById.get(id)?.kind === targetKind);
+  const targetKind =
+    kind === 'strokes'
+      ? 'stroke'
+      : kind === 'shapes'
+        ? 'shape'
+        : kind === 'connectors'
+          ? 'connector'
+          : 'text';
+  const filtered = selectedIds.filter((id) => snapshot.objectsById.get(id)?.kind === targetKind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);
     invalidateOverlay();
@@ -593,15 +679,23 @@ export function getScaleOrigin(handleId: HandleId, bounds: WorldBounds): [number
 
   switch (handleId) {
     // Corners - opposite corner
-    case 'nw': return [bounds.maxX, bounds.maxY];
-    case 'ne': return [bounds.minX, bounds.maxY];
-    case 'se': return [bounds.minX, bounds.minY];
-    case 'sw': return [bounds.maxX, bounds.minY];
+    case 'nw':
+      return [bounds.maxX, bounds.maxY];
+    case 'ne':
+      return [bounds.minX, bounds.maxY];
+    case 'se':
+      return [bounds.minX, bounds.minY];
+    case 'sw':
+      return [bounds.maxX, bounds.minY];
     // Sides - opposite edge midpoint
-    case 'n': return [midX, bounds.maxY];
-    case 's': return [midX, bounds.minY];
-    case 'e': return [bounds.minX, midY];
-    case 'w': return [bounds.maxX, midY];
+    case 'n':
+      return [midX, bounds.maxY];
+    case 's':
+      return [midX, bounds.minY];
+    case 'e':
+      return [bounds.minX, midY];
+    case 'w':
+      return [bounds.maxX, midY];
   }
 }
 
@@ -610,10 +704,18 @@ export function getScaleOrigin(handleId: HandleId, bounds: WorldBounds): [number
  */
 export function getHandleCursor(handleId: HandleId): string {
   switch (handleId) {
-    case 'nw': case 'se': return 'nwse-resize';
-    case 'ne': case 'sw': return 'nesw-resize';
-    case 'n': case 's': return 'ns-resize';
-    case 'e': case 'w': return 'ew-resize';
+    case 'nw':
+    case 'se':
+      return 'nwse-resize';
+    case 'ne':
+    case 'sw':
+      return 'nesw-resize';
+    case 'n':
+    case 's':
+      return 'ns-resize';
+    case 'e':
+    case 'w':
+      return 'ew-resize';
   }
 }
 
@@ -627,4 +729,5 @@ export const selectTextEditingIsNew = (state: SelectionStore) => state.textEditi
 
 export const selectInlineBold = (state: SelectionStore) => state.inlineStyles.bold;
 export const selectInlineItalic = (state: SelectionStore) => state.inlineStyles.italic;
-export const selectInlineHighlightColor = (state: SelectionStore) => state.inlineStyles.highlightColor;
+export const selectInlineHighlightColor = (state: SelectionStore) =>
+  state.inlineStyles.highlightColor;

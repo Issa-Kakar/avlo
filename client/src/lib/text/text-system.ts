@@ -233,12 +233,30 @@ export function getBaselineToTopRatio(): number {
   return _baselineToTopRatio;
 }
 
+// --- Minimum character width (for text reflow clamping) ---
+
+let _minCharWidthRatio: number | null = null;
+
+export function getMinCharWidthRatio(): number {
+  if (_minCharWidthRatio !== null) return _minCharWidthRatio;
+  if (!areFontsLoaded()) return 0.7;
+  const ctx = getMeasureContext();
+  ctx.font = buildFontString(true, false, 100);
+  _minCharWidthRatio = ctx.measureText('W').width / 100;
+  return _minCharWidthRatio;
+}
+
+export function getMinCharWidth(fontSize: number): number {
+  return getMinCharWidthRatio() * fontSize;
+}
+
 /**
  * Reset cached font metrics. Call after fonts finish loading.
  */
 export function resetFontMetrics(): void {
   _measuredAscentRatio = null;
   _baselineToTopRatio = null;
+  _minCharWidthRatio = null;
 }
 
 // --- Measurement caches ---
@@ -493,7 +511,7 @@ function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number
   b.advanceX += w;
 }
 
-function layoutMeasuredContent(
+export function layoutMeasuredContent(
   content: MeasuredContent,
   width: TextWidth,
   fontSize: number,
@@ -817,6 +835,11 @@ class TextLayoutCache {
   /** Get the derived frame for a text object. */
   getFrame(objectId: string): FrameTuple | null {
     return this.cache.get(objectId)?.frame ?? null;
+  }
+
+  /** Get cached measured content for reflow during transforms. */
+  getMeasuredContent(objectId: string): MeasuredContent | null {
+    return this.cache.get(objectId)?.measured ?? null;
   }
 
   /** Get uniform inline styles from cached tokenized content. */

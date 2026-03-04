@@ -87,7 +87,7 @@ MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight }
 TextLayout { lines: MeasuredLine[], boxWidth, ... }
 ```
 
-All three stages are **internal**. Public API: `textLayoutCache.getLayout()`.
+Tokenize and measure are internal. `layoutMeasuredContent()` is exported for reflow during E/W transforms (SelectTool calls it with cached `MeasuredContent` + new target width). Primary public API: `textLayoutCache.getLayout()`.
 
 ### Font Configuration
 
@@ -108,6 +108,8 @@ getMeasuredAscentRatio()    // Canvas fontBoundingBoxAscent at 100px, cached
                             // Fallback 0.73 if fonts not loaded (would measure wrong font)
 getBaselineToTopRatio()     // = halfLeading + ascentRatio = (1.3-1)/2 + measuredAscent
                             // Exact distance from baseline to DOM container top (as fontSize ratio)
+getMinCharWidth(fontSize)   // = getMinCharWidthRatio() * fontSize — minimum reflow width clamp
+getMinCharWidthRatio()      // Bold 'W' width / fontSize, cached (fallback 0.7)
 resetFontMetrics()          // Clear cached metrics (call after font load)
 buildFontString(bold, italic, fontSize)  // → "italic 800 20px ..."
 ```
@@ -256,6 +258,7 @@ class TextLayoutCache {
   clear()                      // Full clear (+ all measurement LRUs)
   setFrame(objectId, frame)    // Derived frame storage (set by computeTextBBox)
   getFrame(objectId): FrameTuple | null
+  getMeasuredContent(objectId): MeasuredContent | null  // For reflow (SelectTool E/W transforms)
   getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
 }
 export const textLayoutCache: TextLayoutCache;
@@ -554,9 +557,11 @@ function drawText(ctx, handle) {
 }
 ```
 
-### Scale Transform Preview (`drawScaledTextPreview`)
+### Scale Transform Preview (`drawScaledTextPreview` / `drawReflowedTextPreview`)
 
-During corner-handle scale, text renders via `ctx.scale()` on the cached layout — no re-layout per frame. The function computes a new virtual origin in the scaled frame, then translates + scales the context before calling `renderTextLayout(ctx, layout, 0, 0, ...)`. Rendering at origin (0,0) works because `renderTextLayout` internally computes `boxLeftX = originX - anchorFactor * boxWidth`, which after the context transform maps to the correct world position for all alignment modes.
+**Corner handles:** `drawScaledTextPreview` — renders via `ctx.scale()` on the cached layout, no re-layout per frame. Computes new virtual origin in scaled frame, then `ctx.translate + ctx.scale + renderTextLayout(ctx, layout, 0, 0, ...)`.
+
+**E/W side handles:** `drawReflowedTextPreview` — reads pre-computed `TextLayout` and origin from `TextReflowState` on the selection store (computed per-frame in `invalidateTransformPreview`). Calls `renderTextLayout` with the reflow layout directly — no ctx transform needed.
 
 ---
 
@@ -614,7 +619,8 @@ Uniform scaling of text via corner handle drag. Matches stroke uniform-scale pat
 | Selection | Handle | Text behavior |
 |-----------|--------|---------------|
 | textOnly / mixed | corner | Uniform scale (fontSize + origin + width) |
-| textOnly / mixed | side | No-op (planned: E/W reflow width, N/S uniform scale) |
+| textOnly / mixed | E/W side | Reflow: changes width, re-layouts text, converts auto→fixed on commit |
+| textOnly / mixed | N/S side | No-op (planned: uniform scale) |
 
 ### Math — Font Size Rounding
 
@@ -643,9 +649,26 @@ Writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `w
 
 `transformFrameForTopology` and `transformPositionForTopology` use uniform scale for `textOnly` (not just `mixed`), ensuring connectors attached to text objects reroute correctly during scale drag and on commit.
 
+### E/W Reflow (Side Handle Width Change)
+
+`TextReflowState` on the selection store holds mutable per-frame maps (`layouts`, `origins`). Initialized in `beginScale` when E/W handle + text objects present.
+
+**Per-frame in `invalidateTransformPreview`:**
+1. Scale both frame edges from origin: `scaledLeft = ox + (fx - ox) * scaleX`, same for right
+2. `min/max` normalization handles handle crossing (scaleX < 0)
+3. Width clamped to `getMinCharWidth(fontSize)` — natural dead zone at minimum
+4. Anchor clamping: when clamped, pins edge closest to scale origin
+5. `layoutMeasuredContent(measured, targetWidth, fontSize)` — reuses cached `MeasuredContent` (skips tokenize + measure)
+6. New origin: `newOriginX = newLeft + anchorFactor(align) * targetWidth`, Y unchanged
+7. Results stored in `textReflow.layouts` / `textReflow.origins`
+
+**Commit:** Writes `width` (= `layout.boxWidth`) + `origin` to Y.Map. Converts auto-width text to fixed-width. Deep observer fires → `computeTextBBox()` re-derives frame.
+
+**Rendering:** `drawReflowedTextPreview` in `objects.ts` reads pre-computed layout/origin from store.
+
 ### Dirty Rect Tracking (`invalidateTransformPreview`)
 
-Text bounds for corner handles computed via `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. Side handles skip (`continue`) — no bounds needed since text doesn't move.
+Corner handles: `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. E/W handles: derives bounds from reflow layout (`[newLeft, fy, targetWidth, newHeight]`). N/S handles skip (`continue`).
 
 ---
 
@@ -688,7 +711,7 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 
 ## Remaining Work
 
-- **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove when resize handles land
-- **Select tool E/W side handles** — set fixed width (reflow text), N/S handles uniform scale
+- **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed
+- **Select tool N/S side handles** — uniform scale (E/W reflow ✅ done)
 - **Live width changes during editing** — resize while editor mounted
 - **Bold/Italic/Highlight for canvas-selected text** — ✅ Done. `toggleSelectedBold`/`toggleSelectedItalic`/`setSelectedHighlight` branch: editor mounted → TipTap path, no editor → `Y.XmlText.format()` via `formatFragment()` helper. Deep observer auto-refreshes cache + styles.

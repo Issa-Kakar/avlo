@@ -6,6 +6,7 @@ import {
   type TranslateTransform,
   type ScaleTransform,
   type ConnectorTopology,
+  type TextReflowState,
   computeHandles,
   computeSelectionBounds,
   getScaleOrigin,
@@ -62,7 +63,14 @@ import { contextMenuController } from '@/canvas/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
-import { anchorFactor, getBaselineToTopRatio, getTextFrame } from '@/lib/text/text-system';
+import {
+  anchorFactor,
+  getBaselineToTopRatio,
+  getTextFrame,
+  textLayoutCache,
+  layoutMeasuredContent,
+  getMinCharWidth,
+} from '@/lib/text/text-system';
 import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 
 // === Constants ===
@@ -545,7 +553,7 @@ export class SelectTool implements PointerTool {
 
         const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } =
           store.transform;
-        const { selectedIds, connectorTopology } = store;
+        const { selectedIds, connectorTopology, textReflow } = store;
 
         // Clear transform BEFORE mutate
         store.endTransform();
@@ -562,6 +570,7 @@ export class SelectTool implements PointerTool {
             handleKind,
             originBounds,
             connectorTopology,
+            textReflow,
           );
         }
         break;
@@ -807,6 +816,7 @@ export class SelectTool implements PointerTool {
 
     const transform = store.transform;
     const topology = store.connectorTopology;
+    const textReflow = store.textReflow;
 
     // --- 1. CONNECTOR TOPOLOGY ---
     if (topology) {
@@ -927,12 +937,54 @@ export class SelectTool implements PointerTool {
             objBounds = expandBounds(objBounds, delta);
           }
         } else if (handle.kind === 'text') {
-          // Text: uniform scale bounds for corner handles only
-          if (handleKind !== 'corner') continue;
-          const textFrame = getTextFrame(handle.id);
-          if (!textFrame) continue;
-          const textBounds = frameTupleToWorldBounds(textFrame);
-          objBounds = computeUniformScaleBounds(textBounds, originBounds, origin, scaleX, scaleY);
+          if (handleKind === 'corner') {
+            const textFrame = getTextFrame(handle.id);
+            if (!textFrame) continue;
+            const textBounds = frameTupleToWorldBounds(textFrame);
+            objBounds = computeUniformScaleBounds(textBounds, originBounds, origin, scaleX, scaleY);
+          } else if ((handleId === 'e' || handleId === 'w') && textReflow) {
+            const textFrame = getTextFrame(handle.id);
+            if (!textFrame) continue;
+            const props = getTextProps(handle.y);
+            if (!props) continue;
+            const measured = textLayoutCache.getMeasuredContent(handle.id);
+            if (!measured) continue;
+
+            const [fx, fy, fw] = textFrame;
+            const ox = origin[0];
+
+            // Scale both edges, normalize
+            const scaledLeft = ox + (fx - ox) * scaleX;
+            const scaledRight = ox + (fx + fw - ox) * scaleX;
+            const left = Math.min(scaledLeft, scaledRight);
+            const right = Math.max(scaledLeft, scaledRight);
+            const rawWidth = right - left;
+            const minW = getMinCharWidth(props.fontSize);
+            const targetWidth = Math.max(minW, rawWidth);
+
+            // Anchor clamping: pin edge closest to scale origin
+            let newLeft: number;
+            if (targetWidth > rawWidth) {
+              newLeft = Math.abs(left - ox) <= Math.abs(right - ox) ? left : right - targetWidth;
+            } else {
+              newLeft = left;
+            }
+
+            // Layout
+            const layout = layoutMeasuredContent(measured, targetWidth, props.fontSize);
+            const newOriginX = newLeft + anchorFactor(props.align) * targetWidth;
+            const newOriginY = props.origin[1];
+
+            // Store
+            textReflow.layouts.set(handle.id, layout);
+            textReflow.origins.set(handle.id, [newOriginX, newOriginY]);
+
+            // Dirty rect
+            const newHeight = layout.lines.length * layout.lineHeight;
+            objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
+          } else {
+            continue; // N/S: skip
+          }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
@@ -1035,6 +1087,7 @@ export class SelectTool implements PointerTool {
     handleKind: HandleKind,
     originBounds: WorldBounds,
     topology: ConnectorTopology | null,
+    textReflow: TextReflowState | null,
   ): void {
     const snapshot = getCurrentSnapshot();
 
@@ -1089,45 +1142,53 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // Text: uniform scale fontSize + origin for corner handles
+        // Text: corner = uniform scale, E/W = reflow width
         if (handle.kind === 'text') {
-          if (handleKind !== 'corner') continue;
+          if (handleKind === 'corner') {
+            const textFrame = getTextFrame(handle.id);
+            if (!textFrame) continue;
 
-          const textFrame = getTextFrame(handle.id);
-          if (!textFrame) continue;
+            const props = getTextProps(yMap);
+            if (!props) continue;
 
-          const props = getTextProps(yMap);
-          if (!props) continue;
+            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+            const rawAbsScale = Math.abs(uniformScale);
 
-          const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-          const rawAbsScale = Math.abs(uniformScale);
+            const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+            const effectiveAbsScale = roundedFontSize / props.fontSize;
 
-          // Round fontSize — mirrors preview exactly
-          const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-          const effectiveAbsScale = roundedFontSize / props.fontSize;
+            const [fx, fy, fw, fh] = textFrame;
+            const cx = fx + fw / 2;
+            const cy = fy + fh / 2;
+            const [newCx, newCy] = computePreservedPosition(
+              cx,
+              cy,
+              originBounds,
+              origin,
+              uniformScale,
+            );
 
-          // New center via position preservation
-          const [fx, fy, fw, fh] = textFrame;
-          const cx = fx + fw / 2;
-          const cy = fy + fh / 2;
-          const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+            const nfw = fw * effectiveAbsScale;
+            const nfx = newCx - nfw / 2;
+            const nfy = newCy - (fh * effectiveAbsScale) / 2;
 
-          // New frame with effective dimensions
-          const nfw = fw * effectiveAbsScale;
-          const nfx = newCx - nfw / 2;
-          const nfy = newCy - (fh * effectiveAbsScale) / 2;
+            const newOriginX = nfx + anchorFactor(props.align) * nfw;
+            const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
 
-          // Derive origin from new frame
-          const newOriginX = nfx + anchorFactor(props.align) * nfw;
-          const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
+            yMap.set('origin', [newOriginX, newOriginY]);
+            yMap.set('fontSize', roundedFontSize);
 
-          yMap.set('origin', [newOriginX, newOriginY]);
-          yMap.set('fontSize', roundedFontSize);
-
-          if (typeof props.width === 'number') {
-            yMap.set('width', props.width * effectiveAbsScale);
+            if (typeof props.width === 'number') {
+              yMap.set('width', props.width * effectiveAbsScale);
+            }
+          } else if ((handleId === 'e' || handleId === 'w') && textReflow) {
+            const layout = textReflow.layouts.get(handle.id);
+            const reflowOrigin = textReflow.origins.get(handle.id);
+            if (layout && reflowOrigin) {
+              yMap.set('width', layout.boxWidth);
+              yMap.set('origin', reflowOrigin);
+            }
           }
-
           continue;
         }
 
