@@ -691,4 +691,4 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove when resize handles land
 - **Select tool E/W side handles** — set fixed width (reflow text), N/S handles uniform scale
 - **Live width changes during editing** — resize while editor mounted
-- **Bold/Italic/Highlight for canvas-selected text** — inline formatting actions currently require active editor; future: direct Yjs delta mutations on `Y.XmlFragment` for formatting without mounting editor
+- **Bold/Italic/Highlight for canvas-selected text** — ✅ Done. `toggleSelectedBold`/`toggleSelectedItalic`/`setSelectedHighlight` branch: editor mounted → TipTap path, no editor → `Y.XmlText.format()` via `formatFragment()` helper. Deep observer auto-refreshes cache + styles.

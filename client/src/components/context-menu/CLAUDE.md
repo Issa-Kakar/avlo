@@ -158,10 +158,10 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text↔shape conversion).
 - **Typeface** — shows "Draw" (Grandstander font). No dropdown yet — placeholder button.
 - **FontSize** — stepper with dropdown. Display range: 1–999 (never 4+ digits). `−`/`+` buttons step through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. In-between values (from future uniform scaling) step to the next preset up. Dropdown lists all presets with checkmark on active. Mixed font size across selected text objects: shows the first object's value. Calls `decrementFontSize`, `incrementFontSize`, `setSelectedFontSize`.
-- **Bold** / **Italic** — self-subscribing `memo` components with `selectInlineBold`/`selectInlineItalic`. Active state (blue) only when the **entire** selection has the inline style applied uniformly. When TipTap is mounted: driven by editor `onTransaction`. When not mounted: driven by `computeUniformInlineStyles` from text-system cache. Actions: `toggleSelectedBold`/`toggleSelectedItalic` — gate on `textTool.getEditor()`, no-op when not editing. (Future: direct Yjs delta mutation for canvas-selected text.)
+- **Bold** / **Italic** — self-subscribing `memo` components with `selectInlineBold`/`selectInlineItalic`. Active state (blue) only when the **entire** selection has the inline style applied uniformly. When TipTap is mounted: driven by editor `onTransaction`. When not mounted: driven by `computeUniformInlineStyles` from text-system cache. Actions: `toggleSelectedBold`/`toggleSelectedItalic` — editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`. Deep observer auto-refreshes cache + styles.
 - **Alignment** — 3 buttons: Left, Center, Right. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
 - **TextColor** — `TextColorPopover`. Icon is "A" with colored bar. Dropdown: 9×2 grid. Calls `setSelectedTextColor`. Persists to `device-ui-store.textColor`.
-- **Highlight** — `HighlightPickerPopover`. Self-subscribes to `selectInlineHighlightColor`. Icon is marker pen with colored bar (or striped grey when null). Dropdown: 4×2 grid of rounded-square swatches from `HIGHLIGHT_COLORS` + "none" swatch with diagonal slash. Calls `setSelectedHighlight(color | null)`. Gates on editor — no-op when not editing.
+- **Highlight** — `HighlightPickerPopover`. Self-subscribes to `selectInlineHighlightColor`. Icon is marker pen with colored bar (or striped grey when null). Dropdown: 4×2 grid of rounded-square swatches from `HIGHLIGHT_COLORS` + "none" swatch with diagonal slash. Calls `setSelectedHighlight(color | null)`. Editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`.
 
 ### `mixed`
 
@@ -318,9 +318,9 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `incrementFontSize()` | Text only | `textSize` | Steps through presets, caps 10–144 |
 | `decrementFontSize()` | Text only | `textSize` | Steps through presets, caps 10–144 |
 | `setSelectedTextAlign(align)` | Text only | `textAlign` | Preserves left edge via anchorFactor math |
-| `toggleSelectedBold()` | Editor only | — | `editor.chain().focus().toggleBold().run()` |
-| `toggleSelectedItalic()` | Editor only | — | `editor.chain().focus().toggleItalic().run()` |
-| `setSelectedHighlight(color\|null)` | Editor only | — | `setHighlight`/`unsetHighlight` on editor |
+| `toggleSelectedBold()` | Text only | — | Editor → TipTap chain; no editor → `Y.XmlText.format()` |
+| `toggleSelectedItalic()` | Text only | — | Editor → TipTap chain; no editor → `Y.XmlText.format()` |
+| `setSelectedHighlight(color\|null)` | Text only | — | Editor → TipTap chain; no editor → `Y.XmlText.format()` |
 
 ---
 
@@ -396,5 +396,5 @@ All property mutations (including style-only changes like color, fill, opacity) 
 ## Known Issues / Next Steps
 
 - **`computeStyles` returns `EMPTY_STYLES` for mixed** — style groups get no data for mixed selections. Acceptable since mixed shows only the filter dropdown, but limits future mixed-kind style editing.
-- **Bold/Italic/Highlight no-op without editor** — inline formatting actions gate on `textTool.getEditor()`. Future: apply formatting via direct Yjs delta mutations on `Y.XmlFragment` for canvas-selected text.
+- **Bold/Italic/Highlight without editor** — ✅ Done. `formatFragment()` walks `Y.XmlFragment` and applies `Y.XmlText.format()` directly. Deep observer auto-refreshes cache + styles.
 - **Bottom exclusion zone is full-width** — `FLIP_PADDING.bottom = 76` blocks bottom placement across entire viewport. Zoom controls are only bottom-left.

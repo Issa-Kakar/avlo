@@ -1,5 +1,12 @@
 import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
-import { getStartAnchor, getEndAnchor, getOrigin, getAlign, type TextAlign } from '@avlo/shared';
+import {
+  getStartAnchor,
+  getEndAnchor,
+  getOrigin,
+  getAlign,
+  getContent,
+  type TextAlign,
+} from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
   useDeviceUIStore,
@@ -9,7 +16,7 @@ import {
 } from '@/stores/device-ui-store';
 import { textTool } from '@/canvas/tool-registry';
 import { getTextFrame, anchorFactor } from '@/lib/text/text-system';
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 
 // === Helpers ===
 
@@ -259,28 +266,79 @@ export function setSelectedTextAlign(align: TextAlign): void {
 
 // === Inline Formatting (Bold / Italic / Highlight) ===
 
+function formatFragment(fragment: Y.XmlFragment, attrs: Record<string, unknown>): void {
+  fragment.forEach((para) => {
+    if (!(para instanceof Y.XmlElement)) return;
+    para.forEach((child) => {
+      if (child instanceof Y.XmlText && child.length > 0) {
+        child.format(0, child.length, attrs);
+      }
+    });
+  });
+}
+
 export function toggleSelectedBold(): void {
   const editor = textTool.getEditor();
-  // Future: Yjs delta mutation for canvas-selected text (no editor)
-  if (!editor) return;
-  editor.chain().focus().toggleBold().run();
+  if (editor) {
+    editor.chain().focus().toggleBold().run();
+    return;
+  }
+
+  const ids = getTextIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+  const allBold = useSelectionStore.getState().inlineStyles.bold;
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'text') continue;
+      const content = getContent(handle.y);
+      if (content) formatFragment(content, { bold: allBold ? null : true });
+    }
+  });
 }
 
 export function toggleSelectedItalic(): void {
   const editor = textTool.getEditor();
-  // Future: Yjs delta mutation for canvas-selected text (no editor)
-  if (!editor) return;
-  editor.chain().focus().toggleItalic().run();
+  if (editor) {
+    editor.chain().focus().toggleItalic().run();
+    return;
+  }
+
+  const ids = getTextIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+  const allItalic = useSelectionStore.getState().inlineStyles.italic;
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'text') continue;
+      const content = getContent(handle.y);
+      if (content) formatFragment(content, { italic: allItalic ? null : true });
+    }
+  });
 }
 
 export function setSelectedHighlight(color: string | null): void {
   const editor = textTool.getEditor();
-  // Future: Yjs delta mutation for canvas-selected text (no editor)
-  if (!editor) return;
-
-  if (color === null) {
-    editor.chain().focus().unsetHighlight().run();
-  } else {
-    editor.chain().focus().setHighlight({ color }).run();
+  if (editor) {
+    if (color === null) editor.chain().focus().unsetHighlight().run();
+    else editor.chain().focus().setHighlight({ color }).run();
+    return;
   }
+
+  const ids = getTextIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'text') continue;
+      const content = getContent(handle.y);
+      if (content) formatFragment(content, { highlight: color ? { color } : null });
+    }
+  });
 }
