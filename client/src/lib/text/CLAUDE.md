@@ -407,6 +407,25 @@ begin() → hit test via hitTestVisibleText() → store hitTextId
 end()   → hitTextId ? mountEditor(hitTextId, false) : createTextObject → mountEditor(id, true)
 ```
 
+### SelectTool Integration
+
+SelectTool mounts the editor for existing text via `textTool.startEditing(objectId, entryPoint)`:
+
+```
+Click 1 (unselected text): objectOutsideSelection → setSelection([id]) — text is now sole selection
+Click 2 (single selected text): objectInSelection → textTool.startEditing() → editor mounts
+```
+
+Double-click works naturally via this two-click state machine (no timer needed). Multi-selection drill-down follows the same pattern: click 1 drills to single, click 2 mounts.
+
+**Guards during text editing** (SelectTool reads `store.textEditingId`):
+- Handle hit testing skipped in `begin()` — no scale gestures while editing
+- Handle hover cursors skipped in `handleHoverCursor()` — no resize cursors
+- Handles nulled in `getPreview()` — no visual handles on overlay
+- `onViewChange()` forwards to `textTool.onViewChange()` — repositions DOM overlay on zoom/pan
+
+**Click-outside:** TextTool listens for `pointerdown` on document (capture phase). Uses `pointerdown` not `mousedown` because `CanvasRuntime.handlePointerDown` calls `e.preventDefault()` which suppresses compatibility `mousedown` events per spec.
+
 ### createTextObject
 
 ```typescript

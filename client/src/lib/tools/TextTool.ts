@@ -33,7 +33,7 @@ import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
 
 /** Temporary: force fixed-width on new text objects for WYSIWYG testing. */
-const DEV_FORCE_FIXED_WIDTH = true;
+const DEV_FORCE_FIXED_WIDTH = false;
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
 function syncInlineStylesToStore(editor: Editor): void {
@@ -60,7 +60,7 @@ export class TextTool implements PointerTool {
 
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
-  private boundHandleClickOutside: ((e: MouseEvent) => void) | null = null;
+  private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
 
   // =========================================================================
   // PointerTool Interface
@@ -311,7 +311,7 @@ export class TextTool implements PointerTool {
     };
 
     // Click outside editor or context menu → commit
-    this.boundHandleClickOutside = (e: MouseEvent) => {
+    this.boundHandleClickOutside = (e: PointerEvent) => {
       const target = e.target as Node;
       if (this.container && this.container.contains(target)) return;
       const menuElement = document.querySelector('.ctx-menu');
@@ -321,10 +321,10 @@ export class TextTool implements PointerTool {
 
     document.addEventListener('keydown', this.boundHandleKeyDown, true);
 
-    // Delay mousedown listener to avoid catching the initial click that opened the editor
+    // Delay pointerdown listener to avoid catching the initial click that opened the editor
     setTimeout(() => {
       if (this.boundHandleClickOutside) {
-        document.addEventListener('mousedown', this.boundHandleClickOutside, true);
+        document.addEventListener('pointerdown', this.boundHandleClickOutside, true);
       }
     }, 100);
   }
@@ -335,7 +335,7 @@ export class TextTool implements PointerTool {
       this.boundHandleKeyDown = null;
     }
     if (this.boundHandleClickOutside) {
-      document.removeEventListener('mousedown', this.boundHandleClickOutside, true);
+      document.removeEventListener('pointerdown', this.boundHandleClickOutside, true);
       this.boundHandleClickOutside = null;
     }
   }

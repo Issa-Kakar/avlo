@@ -71,6 +71,13 @@ class ContextMenuController {
     clearTimeout(this.settleTimer);
   }
 
+  /** Undo hide() synchronously in the same frame — no paint between add/remove of ctx-hidden. */
+  cancelHide(): void {
+    if (!this.active) return;
+    this.visible = true;
+    this.el.classList.remove('ctx-hidden');
+  }
+
   /** Camera changed. Debounced hide + reposition. No-op if gesture-hidden or inactive. */
   onCameraMove(): void {
     if (!this.active || !this.visible) return;

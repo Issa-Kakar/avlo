@@ -61,6 +61,8 @@ move()   → setSelection(ids)  → no menuOpen change (marquee stays hidden)
 end()    → controller.show()  → active+visible=true, menuOpen set, RAF → position → class removed
 ```
 
+**Single-text re-click exception:** When clicking a single-selected text object (to mount editor), `begin()` calls `hide()` as usual, then immediately `cancelHide()` — synchronous class add/remove in the same frame means no paint, no flash. If the user drags instead, `move()` calls `hide()` when the drag threshold passes. Without this, the menu would flash: instant hide in `begin()` → 200ms spring re-show in `end()` after editor mounts.
+
 ### Camera
 
 `onCameraMove()` called by CanvasRuntime. No-op when `!active || !visible`. Adds `ctx-hidden` instantly, debounces 150ms, repositions on settle.
@@ -73,7 +75,8 @@ Canvas.tsx mount
     ├─ subscribes to menuOpen  → activate() / deactivate()
     └─ subscribes to boundsVersion → schedulePosition() if active+visible
 
-SelectTool.begin()  → controller.hide()
+SelectTool.begin()  → controller.hide()  (+ cancelHide() for single-text re-click)
+SelectTool.move()   → controller.hide()  (objectInSelection drag start — deferred from begin)
 SelectTool.end()    → controller.show()  (guarded: selectedIds > 0 || textEditingId)
 SelectTool.cancel() → controller.show()  (same guard)
 

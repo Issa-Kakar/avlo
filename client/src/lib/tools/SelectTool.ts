@@ -1,4 +1,5 @@
 import type { WorldRect, HandleId, PointerTool, PreviewData } from './types';
+import { textTool } from '@/canvas/tool-registry';
 import {
   useSelectionStore,
   type SelectionKind,
@@ -145,10 +146,10 @@ export class SelectTool implements PointerTool {
     this.downScreen = [screenX, screenY];
 
     const store = useSelectionStore.getState();
-    const { mode, selectedIds } = store;
+    const { mode, selectedIds, textEditingId } = store;
 
     // 1. Mode-specific first-priority hit targets
-    if (mode === 'standard' && selectedIds.length > 0) {
+    if (mode === 'standard' && selectedIds.length > 0 && !textEditingId) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
       const { scale } = useCameraStore.getState();
@@ -187,6 +188,10 @@ export class SelectTool implements PointerTool {
       //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
+      // Single text re-click: undo hide so editor mounts without menu flash (hide deferred to move)
+      if (isSelected && selectedIds.length === 1 && hit.kind === 'text') {
+        contextMenuController.cancelHide();
+      }
       invalidateOverlay();
       return;
     }
@@ -333,6 +338,7 @@ export class SelectTool implements PointerTool {
 
           case 'objectInSelection': {
             if (!passMove) break;
+            contextMenuController.hide();
 
             // Connector mode (1 connector): check anchor state
             const inSelStore = useSelectionStore.getState();
@@ -497,6 +503,8 @@ export class SelectTool implements PointerTool {
             // Click on already-selected object → "drill down" if multi-select
             if (store.selectedIds.length > 1) {
               store.setSelection([this.hitAtDown!.id]);
+            } else if (this.hitAtDown!.kind === 'text' && !textTool.isEditorMounted()) {
+              textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
             }
             break;
 
@@ -693,7 +701,7 @@ export class SelectTool implements PointerTool {
       kind: 'selection',
       selectionBounds,
       marqueeRect,
-      handles: isTransforming ? null : handles, // Hide handles during transform
+      handles: (isTransforming || store.textEditingId) ? null : handles,
       isTransforming,
       selectedIds,
       bbox: null,
@@ -705,7 +713,7 @@ export class SelectTool implements PointerTool {
   }
 
   onViewChange(): void {
-    // Re-invalidate overlay when view changes
+    if (textTool.isEditorMounted()) textTool.onViewChange();
     invalidateOverlay();
   }
 
@@ -738,7 +746,7 @@ export class SelectTool implements PointerTool {
 
     const { scale } = useCameraStore.getState();
 
-    if (mode === 'standard') {
+    if (mode === 'standard' && !store.textEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);
