@@ -130,11 +130,11 @@
   font-style: italic;
 }
 
-/* Highlight — extend background to full line-height (half-leading = 0.15em each side) */
+/* Highlight — extend background to full line-height (half-leading varies per font) */
 .tiptap mark {
   background-color: #ffd43b;
-  padding-block: 0.15em;
-  margin-block: -0.15em;
+  padding-block: var(--hl-pad, 0.15em);
+  margin-block: calc(-1 * var(--hl-pad, 0.15em));
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
   border-radius: 0.25em;

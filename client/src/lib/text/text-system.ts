@@ -213,33 +213,43 @@ export function getMeasuredAscentRatio(fontFamily: FontFamily = 'Grandstander'):
   const metrics = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
 
   const ascent = metrics.fontBoundingBoxAscent;
-  const descent = metrics.fontBoundingBoxDescent;
-  const totalHeight = ascent + descent;
 
-  let ratio: number;
-  const tolerance = testSize * 0.01;
-  if (Math.abs(totalHeight - testSize) < tolerance) {
-    ratio = ascent / testSize;
-  } else {
-    ratio = ascent / totalHeight;
-  }
+  const ratio = ascent / testSize;
 
   _measuredAscentRatio.set(fontFamily, ratio);
-  // eslint-disable-next-line no-console
-  console.log(`[text-system] Measured ascent ratio for ${fontFamily}: ${ratio.toFixed(4)}`);
   return ratio;
 }
 
 /**
  * Get the offset from baseline to DOM container top (as ratio of fontSize).
- * Formula: halfLeading + fontAscent
- *        = (lineHeightMultiplier - 1) / 2 + measuredAscentRatio
+ * CSS half-leading formula: halfLeading = (lineHeight - contentArea) / 2
+ * where contentArea = fontBoundingBoxAscent + fontBoundingBoxDescent (can differ from fontSize).
+ * Result = (halfLeading + fontBoundingBoxAscent) / fontSize
  */
 export function getBaselineToTopRatio(fontFamily: FontFamily = 'Grandstander'): number {
   const cached = _baselineToTopRatio.get(fontFamily);
   if (cached !== undefined) return cached;
-  const halfLeadingRatio = (FONT_FAMILIES[fontFamily].lineHeightMultiplier - 1) / 2;
-  const ratio = halfLeadingRatio + getMeasuredAscentRatio(fontFamily);
+
+  const { lineHeightMultiplier } = FONT_FAMILIES[fontFamily];
+  if (!areFontsLoaded()) {
+    return (lineHeightMultiplier - 1) / 2 + FALLBACK_ASCENT_RATIO;
+  }
+
+  const ctx = getMeasureContext();
+  const testSize = 100;
+  ctx.font = buildFontString(false, false, testSize, fontFamily);
+  const m = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
+
+  const ascent = m.fontBoundingBoxAscent;
+  const contentArea = ascent + m.fontBoundingBoxDescent;
+  const lineHeight = testSize * lineHeightMultiplier;
+  const ratio = ((lineHeight - contentArea) / 2 + ascent) / testSize;
+
+  // Side-populate ascent ratio cache (avoids duplicate measurement)
+  if (!_measuredAscentRatio.has(fontFamily)) {
+    _measuredAscentRatio.set(fontFamily, ascent / testSize);
+  }
+
   _baselineToTopRatio.set(fontFamily, ratio);
   return ratio;
 }

@@ -22,12 +22,21 @@ import * as Y from 'yjs';
 import type { PointerTool, PreviewData } from './types';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import {
+  getCanvasElement,
+  getVisibleWorldBounds,
+  useCameraStore,
+  worldToClient,
+} from '@/stores/camera-store';
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
-import { FONT_FAMILIES, getBaselineToTopRatio } from '@/lib/text/text-system';
+import {
+  FONT_FAMILIES,
+  getBaselineToTopRatio,
+  getMeasuredAscentRatio,
+} from '@/lib/text/text-system';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -147,6 +156,7 @@ export class TextTool implements PointerTool {
   startEditing(objectId: string, entryPoint: [number, number]): void {
     this.downWorld = entryPoint;
     useSelectionStore.getState().beginTextEditing(objectId, false);
+    invalidateWorld(getVisibleWorldBounds());
     this.mountEditor(objectId, false);
   }
 
@@ -253,6 +263,10 @@ export class TextTool implements PointerTool {
     container.style.lineHeight = `${scaledFontSize * familyConfig.lineHeightMultiplier}px`;
     container.style.fontFamily = familyConfig.fallback;
     container.style.setProperty('--text-color', color);
+    container.style.setProperty(
+      '--hl-pad',
+      `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
+    );
     applyAlignCSS(container, align);
 
     host.appendChild(container);
@@ -318,13 +332,24 @@ export class TextTool implements PointerTool {
       }
     };
 
-    // Click outside editor or context menu → commit
+    // Primary-button click outside editor or context menu → commit
+    // MMB/RMB are skipped so pan and right-click work while editing
     this.boundHandleClickOutside = (e: PointerEvent) => {
+      if (e.button !== 0) return;
       const target = e.target as Node;
       if (this.container && this.container.contains(target)) return;
       const menuElement = document.querySelector('.ctx-menu');
       if (menuElement && menuElement.contains(target)) return;
       this.commitAndClose();
+      // Only consume canvas clicks when text tool is active — prevents creating
+      // a new text object on click-off. Other tools (select, draw, etc.) should
+      // receive the event so the click-off also starts their gesture.
+      if (useDeviceUIStore.getState().activeTool === 'text') {
+        const canvas = getCanvasElement();
+        if (canvas && canvas.contains(target)) {
+          e.stopPropagation();
+        }
+      }
     };
 
     document.addEventListener('keydown', this.boundHandleKeyDown, true);
@@ -369,6 +394,10 @@ export class TextTool implements PointerTool {
     this.container.style.fontSize = `${sf}px`;
     this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
     this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
+    this.container.style.setProperty(
+      '--hl-pad',
+      `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
+    );
     if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
   }
 

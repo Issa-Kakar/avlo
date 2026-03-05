@@ -109,9 +109,11 @@ FONT_FAMILIES: Record<FontFamily, FontFamilyConfig> = {
 All metrics cached per `FontFamily` in Maps. Functions accept optional `fontFamily` parameter (defaults to `'Grandstander'`).
 
 ```typescript
-getMeasuredAscentRatio(fontFamily?)    // Canvas fontBoundingBoxAscent at 100px, cached per family
-                                       // Fallback 0.8 if fonts not loaded
-getBaselineToTopRatio(fontFamily?)     // = halfLeading + ascentRatio (uses per-family lineHeightMultiplier)
+getMeasuredAscentRatio(fontFamily?)    // fontBoundingBoxAscent / fontSize, cached per family
+                                       // Always normalized by fontSize (not contentArea). Fallback 0.8
+getBaselineToTopRatio(fontFamily?)     // = ((lineHeight - contentArea) / 2 + ascent) / fontSize
+                                       // Uses CSS half-leading: contentArea = ascent + descent (can differ from fontSize)
+                                       // Side-populates _measuredAscentRatio cache on first call
 getMinCharWidth(fontSize, fontFamily?) // = getMinCharWidthRatio(fontFamily) * fontSize — reflow clamp
 getMinCharWidthRatio(fontFamily?)      // Bold 'W' width / fontSize, cached per family (fallback 0.7)
 resetFontMetrics()                     // .clear() all 3 maps (call after font load)
@@ -401,7 +403,6 @@ private hitTextId: string | null = null;
 private container: HTMLDivElement | null = null;
 private editor: Editor | null = null;
 objectId: string | null = null;  // public — mirrors textEditingId
-private isNew = false;
 ```
 
 ### PointerTool Lifecycle
@@ -428,7 +429,10 @@ Double-click works naturally via this two-click state machine (no timer needed).
 - Handles nulled in `getPreview()` — no visual handles on overlay
 - `onViewChange()` forwards to `textTool.onViewChange()` — repositions DOM overlay on zoom/pan
 
-**Click-outside:** TextTool listens for `pointerdown` on document (capture phase). Uses `pointerdown` not `mousedown` because `CanvasRuntime.handlePointerDown` calls `e.preventDefault()` which suppresses compatibility `mousedown` events per spec.
+**Click-outside:** `pointerdown` on document (capture phase, 100ms delayed registration). Uses `pointerdown` not `mousedown` because CanvasRuntime calls `e.preventDefault()` which suppresses compatibility `mousedown` per spec. Guards:
+- `e.button !== 0` → skip (MMB pan / right-click work while editing)
+- Target inside container or `.ctx-menu` → skip (editing / menu clicks pass through)
+- After `commitAndClose()`: `e.stopPropagation()` only when `activeTool === 'text'` AND target is canvas — prevents creating a new text object on click-off. When SelectTool is active, the event passes through so the clicked object gets selected in one click.
 
 ### createTextObject
 
@@ -466,8 +470,10 @@ if (typeof width === 'number') {
 ### DOM Positioning Math
 
 ```
-Container top = screenY - (scaledFontSize * getBaselineToTopRatio())
+Container top = screenY - (scaledFontSize * getBaselineToTopRatio(fontFamily))
 ```
+
+Also sets `--hl-pad` CSS variable for dynamic highlight padding (see CSS Architecture).
 
 ### syncProps — Y.Map → DOM Overlay
 
@@ -544,7 +550,7 @@ Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount:
 ```css
 .tiptap {
   font-family: "Grandstander", cursive, sans-serif;
-  font-weight: 550;
+  font-weight: 450;
   white-space: pre-wrap;
   overflow-wrap: break-word;       /* Safe default — no-op in auto (max-content) */
   width: max-content;              /* Auto mode: grows with content */
@@ -559,16 +565,17 @@ Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount:
 }
 
 .tiptap mark {
-  background-color: #ffd43b;           /* Default = first HIGHLIGHT_COLORS palette entry */
-  padding-block: 0.15em;               /* Extend to full line-height (half-leading each side) */
-  margin-block: -0.15em;               /* Cancel layout shift from padding */
-  box-decoration-break: clone;         /* Each line fragment gets own background rect */
+  background-color: #ffd43b;
+  padding-block: var(--hl-pad, 0.15em);          /* Extends to full line-height */
+  margin-block: calc(-1 * var(--hl-pad, 0.15em)); /* Cancel layout shift */
+  box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
-/* Multicolor: Tiptap renders <mark style="background-color: #hex"> which overrides the default */
 ```
 
-**JS inline styles** (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width` (fixed mode).
+**`--hl-pad` CSS variable:** Set by TextTool in `mountEditor()` and `positionEditor()` as `getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)` — this is the actual CSS half-leading for the current font. For Grandstander (content area ≈ em-square) it's ~0.15em. For fonts with larger content areas (Inter, Lora, JetBrains Mono) it's smaller, preventing highlight backgrounds from overflowing line box boundaries. The 0.15em fallback covers the case where the variable isn't set.
+
+**JS inline styles** (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width` (fixed mode), `--hl-pad`.
 
 ---
 
@@ -700,8 +707,9 @@ Corner + textOnly N/S: `getTextFrame()` → `frameTupleToWorldBounds()` → `com
 ## WYSIWYG Parity Contract
 
 DOM and canvas match because:
-- Same font (Grandstander 550/800), same `pre-wrap` + `break-word`, same container width
-- Same line-height (`fontSize * 1.3`)
+- Same font (per-family, 450/700 weight), same `pre-wrap` + `break-word`, same container width
+- Same line-height (`fontSize * lineHeightMultiplier`)
+- Same vertical positioning via `getBaselineToTopRatio(fontFamily)` — uses CSS half-leading formula with measured `fontBoundingBoxAscent`/`Descent`, correct for all fonts regardless of content area size
 - Canvas flow engine implements identical whitespace semantics (pending whitespace pattern)
 - Sub-pixel differences (~0.5px) expected from per-token vs native text shaping
 
@@ -714,7 +722,7 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 ### DOM (Tiptap)
 - `Highlight.configure({ multicolor: true })` in TextTool editor extensions
 - Renders `<mark style="background-color: #hex">` for explicit colors, plain `<mark>` for default toggle
-- CSS on `.tiptap mark`: `border-radius: 0.25em`, extends background to full line-height via `padding-block: 0.15em` + `margin-block: -0.15em`
+- CSS on `.tiptap mark`: `border-radius: 0.25em`, extends background to full line-height via `padding-block: var(--hl-pad)` + `margin-block: calc(-1 * var(--hl-pad))` — `--hl-pad` is the per-font half-leading set by TextTool
 - Default color: `#ffd43b` (first entry in `HIGHLIGHT_COLORS` palette)
 
 ### Canvas Pipeline
@@ -764,8 +772,5 @@ Lora's max weight is 700, so all fonts are now clamped to `wght 450–700`.
 
 ## Remaining Work
 
-- **Context menu typeface picker** — wire TypefaceButton to Y.Map `fontFamily` mutation
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed
-- **Select tool N/S side handles** — ✅ Done. textOnly: uniform scale, mixed: edge-pin translate
 - **Live width changes during editing** — resize while editor mounted
-- **Bold/Italic/Highlight for canvas-selected text** — ✅ Done. `toggleSelectedBold`/`toggleSelectedItalic`/`setSelectedHighlight` branch: editor mounted → TipTap path, no editor → `Y.XmlText.format()` via `formatFragment()` helper. Deep observer auto-refreshes cache + styles.
