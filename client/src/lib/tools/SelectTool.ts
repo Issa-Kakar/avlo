@@ -701,7 +701,7 @@ export class SelectTool implements PointerTool {
       kind: 'selection',
       selectionBounds,
       marqueeRect,
-      handles: (isTransforming || store.textEditingId) ? null : handles,
+      handles: isTransforming || store.textEditingId ? null : handles,
       isTransforming,
       selectedIds,
       bbox: null,
@@ -971,7 +971,7 @@ export class SelectTool implements PointerTool {
             const left = Math.min(scaledLeft, scaledRight);
             const right = Math.max(scaledLeft, scaledRight);
             const rawWidth = right - left;
-            const minW = getMinCharWidth(props.fontSize);
+            const minW = getMinCharWidth(props.fontSize, props.fontFamily);
             const targetWidth = Math.max(minW, rawWidth);
 
             // Anchor clamping: pin edge closest to scale origin
@@ -1204,7 +1204,7 @@ export class SelectTool implements PointerTool {
             const nfy = newCy - (fh * effectiveAbsScale) / 2;
 
             const newOriginX = nfx + anchorFactor(props.align) * nfw;
-            const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
+            const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio(props.fontFamily);
 
             yMap.set('origin', [newOriginX, newOriginY]);
             yMap.set('fontSize', roundedFontSize);

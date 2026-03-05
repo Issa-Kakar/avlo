@@ -20,8 +20,8 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
 |------|---------|
 | `lib/text/text-system.ts` | Layout engine: tokenizer, measurement, flow engine, cache, renderer, BBox |
 | `lib/text/extensions.ts` | TextCollaboration extension: per-session UndoManager, Y.Map observer, session merging |
-| `lib/text/font-config.ts` | `FONT_CONFIG` constants (extracted to avoid circular deps) |
-| `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` |
+| `lib/text/font-config.ts` | `FONT_WEIGHTS`, `FONT_FAMILIES` per-family config (extracted to avoid circular deps) |
+| `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` — loads all 4 families |
 | `lib/text/TextContextMenu.md` | Legacy floating toolbar reference (inactive — superseded by `context-menu/` system) |
 | `lib/text/text-menu-icons.ts` | SVG icon builders for context menu |
 | `lib/tools/TextTool.ts` | PointerTool: editor mounting, Y.Map creation, live editing, width handling |
@@ -36,6 +36,7 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
   kind: 'text',
   origin: [number, number],            // [alignmentAnchorX, firstLineBaseline]
   fontSize: number,                    // World units
+  fontFamily: FontFamily,              // 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
   color: string,                       // Hex color
   align: 'left' | 'center' | 'right', // TextAlign
   width: 'auto' | number,             // TextWidth — 'auto' or fixed width in world units
@@ -81,10 +82,10 @@ Y.XmlFragment
 Y.XmlFragment
     ↓ parseAndTokenize()
 TokenizedContent { paragraphs, uniformStyles: UniformStyles }
-    ↓ measureTokenizedContent(tokenized, fontSize)
-MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight }
+    ↓ measureTokenizedContent(tokenized, fontSize, fontFamily)
+MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight, fontFamily }
     ↓ layoutMeasuredContent(measured, width, fontSize)
-TextLayout { lines: MeasuredLine[], boxWidth, ... }
+TextLayout { lines: MeasuredLine[], fontSize, fontFamily, boxWidth, ... }
 ```
 
 Tokenize and measure are internal. `layoutMeasuredContent()` is exported for reflow during E/W transforms (SelectTool calls it with cached `MeasuredContent` + new target width). Primary public API: `textLayoutCache.getLayout()`.
@@ -92,26 +93,29 @@ Tokenize and measure are internal. `layoutMeasuredContent()` is exported for ref
 ### Font Configuration
 
 ```typescript
-FONT_CONFIG = {
-  family: 'Grandstander',
-  fallback: '"Grandstander", cursive, sans-serif',
-  weightNormal: 550, weightBold: 800,
-  lineHeightMultiplier: 1.3,
+FONT_WEIGHTS = { normal: 450, bold: 700 }
+
+FONT_FAMILIES: Record<FontFamily, FontFamilyConfig> = {
+  'Grandstander':   { fallback: '"Grandstander", cursive, sans-serif', lineHeightMultiplier: 1.3 },
+  'Inter':          { fallback: '"Inter", sans-serif',                  lineHeightMultiplier: 1.3 },
+  'Lora':           { fallback: '"Lora", serif',                        lineHeightMultiplier: 1.3 },
+  'JetBrains Mono': { fallback: '"JetBrains Mono", monospace',          lineHeightMultiplier: 1.3 },
 }
+// Record key IS the CSS font-family name — zero indirection.
 ```
 
-### Font Metrics
+### Font Metrics (per-family)
+
+All metrics cached per `FontFamily` in Maps. Functions accept optional `fontFamily` parameter (defaults to `'Grandstander'`).
 
 ```typescript
-getMeasuredAscentRatio()    // Canvas fontBoundingBoxAscent at 100px, cached
-                            // Handles fonts with line-gap: ascent / totalHeight
-                            // Fallback 0.73 if fonts not loaded (would measure wrong font)
-getBaselineToTopRatio()     // = halfLeading + ascentRatio = (1.3-1)/2 + measuredAscent
-                            // Exact distance from baseline to DOM container top (as fontSize ratio)
-getMinCharWidth(fontSize)   // = getMinCharWidthRatio() * fontSize — minimum reflow width clamp
-getMinCharWidthRatio()      // Bold 'W' width / fontSize, cached (fallback 0.7)
-resetFontMetrics()          // Clear cached metrics (call after font load)
-buildFontString(bold, italic, fontSize)  // → "italic 800 20px ..."
+getMeasuredAscentRatio(fontFamily?)    // Canvas fontBoundingBoxAscent at 100px, cached per family
+                                       // Fallback 0.8 if fonts not loaded
+getBaselineToTopRatio(fontFamily?)     // = halfLeading + ascentRatio (uses per-family lineHeightMultiplier)
+getMinCharWidth(fontSize, fontFamily?) // = getMinCharWidthRatio(fontFamily) * fontSize — reflow clamp
+getMinCharWidthRatio(fontFamily?)      // Bold 'W' width / fontSize, cached per family (fallback 0.7)
+resetFontMetrics()                     // .clear() all 3 maps (call after font load)
+buildFontString(bold, italic, fontSize, fontFamily?)  // → "italic 700 20px \"Inter\", sans-serif"
 ```
 
 ### Stage 1: Tokenizer — `parseAndTokenize()`
@@ -244,11 +248,11 @@ Three-tier cache: content → measurement → flow. Entry stores intermediate re
 
 ```typescript
 class TextLayoutCache {
-  getLayout(objectId, fragment, fontSize, width: TextWidth = 'auto'): TextLayout
+  getLayout(objectId, fragment, fontSize, fontFamily: FontFamily = 'Grandstander', width: TextWidth = 'auto'): TextLayout
   // Cache hit logic (checked in order):
-  //   same content + fontSize + width → return cached layout
-  //   same content + fontSize, different width → re-flow only (layoutMeasuredContent)
-  //   same content, different fontSize → re-measure + re-flow
+  //   same content + fontSize + fontFamily + width → return cached layout
+  //   same content + fontSize + fontFamily, different width → re-flow only
+  //   same content, different fontSize or fontFamily → re-measure + re-flow
   //   stale content (or no entry) → full pipeline
 
   invalidateContent(objectId)  // Content changed → nulls tokenized → forces full pipeline
@@ -264,7 +268,7 @@ class TextLayoutCache {
 export const textLayoutCache: TextLayoutCache;
 ```
 
-**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. Re-flows automatically — no explicit `invalidateFlow()` needed for the render path (but it exists for the observer path).
+**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. Re-flows automatically — no explicit `invalidateFlow()` needed for the render path (but it exists for the observer path). FontFamily change detection works the same way: `entry.measuredFontFamily !== fontFamily` triggers re-measure + re-flow.
 
 ### Renderer: `renderTextLayout()`
 
@@ -376,7 +380,7 @@ Per-session undo of fontSize change
 
 Without this observer, undoing a property change would update the CRDT but the DOM overlay would show stale values.
 
-**Tracked keys:** `origin`, `fontSize`, `color`, `align`, `width`.
+**Tracked keys:** `origin`, `fontSize`, `fontFamily`, `color`, `align`, `width`.
 
 ---
 
@@ -429,6 +433,7 @@ Double-click works naturally via this two-click state machine (no timer needed).
 ### createTextObject
 
 ```typescript
+yObj.set('fontFamily', fontFamily);  // From useDeviceUIStore.textFontFamily
 yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');  // Temporary dev boolean
 ```
 
@@ -445,6 +450,8 @@ TextCollaboration.configure({
   onPropsSync: (keys) => this.syncProps(keys),     // DOM sync on undo/redo
 })
 ```
+
+**Font family:** `container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback` — inline style overrides CSS default.
 
 **Width handling:**
 ```typescript
@@ -467,7 +474,7 @@ Container top = screenY - (scaledFontSize * getBaselineToTopRatio())
 Called by extension's Y.Map observer on undo/redo of property changes:
 - Reads values fresh from `handle.y` — no local state to update
 - `color` → sets CSS variable; `align` → `applyAlignCSS()`
-- `origin`/`fontSize`/`width` → delegates to `positionEditor()` which reads all from Y.Map
+- `origin`/`fontSize`/`fontFamily`/`width` → delegates to `positionEditor()` which reads all from Y.Map
 
 ### commitAndClose
 
@@ -727,8 +734,37 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 
 ---
 
+## Changelog — Multi-Font Setup
+
+### Font Files (`client/public/fonts/`)
+
+Replaced 4 static single-weight Grandstander files with 8 variable fonts (4 families × upright + italic):
+
+| File | Size | Notes |
+|------|------|-------|
+| `Grandstander.woff2` / `-Italic.woff2` | 34 / 35 KB | ss01 baked as default glyphs, ss02/dlig/liga stripped |
+| `Inter.woff2` / `-Italic.woff2` | 26 / 28 KB | `opsz` axis pinned to 14 (eliminates WYSIWYG variability) |
+| `Lora.woff2` / `-Italic.woff2` | 34 / 37 KB | — |
+| `JetBrainsMono.woff2` / `-Italic.woff2` | 15 / 16 KB | No kern (monospace), `calt` stripped (coding ligatures) |
+
+**All fonts:** variable `wght 450–700`, Latin subset only, `liga`/`calt`/`dlig` stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix). Features kept: `kern`, `mark`, `mkmk`, `ccmp`, `locl`. Hints removed. Total: 223 KB (down from 1250 KB source).
+
+**Subsetting pipeline:** `fontTools.varLib.instancer` (axis restriction) → `normalize_font()` (BytesIO round-trip to fix stale HVAR refs) → ss01 baking (Grandstander only: 59 cmap remaps) → `fontTools.subset` (Latin range, feature allowlist, dehint) → woff2 compress. Python venv at `.venv/` (gitignored).
+
+### Weight Change (550/800 → 450/700)
+
+Lora's max weight is 700, so all fonts are now clamped to `wght 450–700`.
+
+- `font-config.ts`: `weightNormal: 450`, `weightBold: 700` — propagates to `buildFontString()` (canvas) and `font-loader.ts`
+- `index.css`: `.tiptap { font-weight: 450 }`, `.tiptap strong { font-weight: 700 }`
+- `index.css`: 8 `@font-face` declarations with `font-weight: 450 700` range syntax
+- Tiptap Bold extension unchanged — renders `<strong>`, CSS controls weight
+
+---
+
 ## Remaining Work
 
+- **Context menu typeface picker** — wire TypefaceButton to Y.Map `fontFamily` mutation
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed
 - **Select tool N/S side handles** — ✅ Done. textOnly: uniform scale, mixed: edge-pin translate
 - **Live width changes during editing** — resize while editor mounted

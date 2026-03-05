@@ -29,7 +29,14 @@
  * which is after _typeChanged already dispatched the PM transaction with the wrong selection.)
  */
 import { Extension } from '@tiptap/core';
-import { ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey, undo, redo } from '@tiptap/y-tiptap';
+import {
+  ySyncPlugin,
+  ySyncPluginKey,
+  yUndoPlugin,
+  yUndoPluginKey,
+  undo,
+  redo,
+} from '@tiptap/y-tiptap';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import * as Y from 'yjs';
 import type { XmlFragment } from 'yjs';
@@ -166,7 +173,8 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
         };
 
         const onPopped = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }) => {
-          pendingSelection = (stackItem.meta.get(selectionFixKey) as typeof pendingSelection) ?? null;
+          pendingSelection =
+            (stackItem.meta.get(selectionFixKey) as typeof pendingSelection) ?? null;
         };
 
         um.on('stack-item-added', onAdded);
@@ -197,7 +205,14 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
     if (yObj && onPropsSync) {
       const observer = (evt: Y.YMapEvent<unknown>) => {
         const keys = evt.keysChanged;
-        if (keys.has('origin') || keys.has('fontSize') || keys.has('color') || keys.has('align') || keys.has('width')) {
+        if (
+          keys.has('origin') ||
+          keys.has('fontSize') ||
+          keys.has('fontFamily') ||
+          keys.has('color') ||
+          keys.has('align') ||
+          keys.has('width')
+        ) {
           onPropsSync(keys);
         }
       };

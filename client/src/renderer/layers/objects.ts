@@ -261,7 +261,13 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (!props) return;
 
   const color = getColor(y);
-  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
+  const layout = textLayoutCache.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.fontFamily,
+    props.width,
+  );
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
 }
 
@@ -572,11 +578,17 @@ function drawScaledTextPreview(
 
   // Derive virtual origin in new frame
   const newOriginX = nfx + anchorFactor(props.align) * nfw;
-  const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio();
+  const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio(props.fontFamily);
 
   // Reuse cached layout — ctx.scale does the visual scaling
   const color = getColor(handle.y);
-  const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.width);
+  const layout = textLayoutCache.getLayout(
+    handle.id,
+    props.content,
+    props.fontSize,
+    props.fontFamily,
+    props.width,
+  );
 
   ctx.save();
   ctx.translate(newOriginX, newOriginY);

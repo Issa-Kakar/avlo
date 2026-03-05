@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
+import type { FontFamily } from '@avlo/shared';
 
 export type Tool =
   | 'pen'
@@ -27,18 +28,39 @@ export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36
 export type TextAlign = 'left' | 'center' | 'right';
 
 // Font family options
-export type TextFontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono';
-export const TEXT_FONT_FAMILIES: readonly TextFontFamily[] = ['Grandstander', 'Inter', 'Lora', 'JetBrains Mono'];
+export type { FontFamily } from '@avlo/shared';
+export const TEXT_FONT_FAMILIES: readonly FontFamily[] = [
+  'Grandstander',
+  'Inter',
+  'Lora',
+  'JetBrains Mono',
+];
 
 // Color palettes (module-level constants, not persisted)
 export const TEXT_COLOR_PALETTE: readonly string[] = [
-  '#262626', '#EF4444', '#F97316', '#EAB308',
-  '#22C55E', '#3B82F6', '#8B5CF6', '#6B7280',
-  '#FFFFFF', '#EC4899', '#06B6D4', '#84CC16',
+  '#262626',
+  '#EF4444',
+  '#F97316',
+  '#EAB308',
+  '#22C55E',
+  '#3B82F6',
+  '#8B5CF6',
+  '#6B7280',
+  '#FFFFFF',
+  '#EC4899',
+  '#06B6D4',
+  '#84CC16',
 ];
 
 export const HIGHLIGHT_COLORS: readonly (string | null)[] = [
-  null, '#ffd43b', '#ffc078', '#ffa8a8', '#8ce99a', '#99e9f2', '#74c0fc', '#b197fc',
+  null,
+  '#ffd43b',
+  '#ffc078',
+  '#ffa8a8',
+  '#8ce99a',
+  '#99e9f2',
+  '#74c0fc',
+  '#b197fc',
 ];
 
 // Global drawing settings that all tools share
@@ -65,7 +87,7 @@ interface DeviceUIState {
   // Text-specific settings
   textColor: string;
   textAlign: TextAlign;
-  textFontFamily: TextFontFamily;
+  textFontFamily: FontFamily;
   highlightColor: string | null;
 
   // Fill color (separate from fill toggle)
@@ -98,7 +120,7 @@ interface DeviceUIState {
 
   setTextColor: (color: string) => void;
   setTextAlign: (align: TextAlign) => void;
-  setTextFontFamily: (family: TextFontFamily) => void;
+  setFontFamily: (family: FontFamily) => void;
   setHighlightColor: (color: string | null) => void;
   setFillColor: (color: string) => void;
 
@@ -128,7 +150,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       textColor: '#262626',
       textAlign: 'left' as TextAlign,
-      textFontFamily: 'Grandstander' as TextFontFamily,
+      textFontFamily: 'Grandstander' as FontFamily,
       highlightColor: null,
 
       image: { enabled: false },
@@ -177,7 +199,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 
       setTextColor: (color) => set({ textColor: color }),
       setTextAlign: (align) => set({ textAlign: align }),
-      setTextFontFamily: (family) => set({ textFontFamily: family }),
+      setFontFamily: (family) => set({ textFontFamily: family }),
       setHighlightColor: (color) => set({ highlightColor: color }),
       setFillColor: (color) => set({ fillColor: color }),
 

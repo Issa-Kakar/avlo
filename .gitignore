@@ -1,3 +1,6 @@
+# Python venv
+.venv/
+
 # Dependencies
 node_modules/
 *.pnp
@@ -115,7 +118,7 @@ THIS_PROMPT.md
 PHASE2_*.md
 WEBSOCKET_*.md
 prompt.md 
-PROMPT.MD 
+PROMPT.MD
 completed_tasks/
 e2e_test_results/
 # Temporary test files

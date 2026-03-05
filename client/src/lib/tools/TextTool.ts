@@ -27,7 +27,7 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
-import { FONT_CONFIG, getBaselineToTopRatio } from '@/lib/text/text-system';
+import { FONT_FAMILIES, getBaselineToTopRatio } from '@/lib/text/text-system';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -170,7 +170,12 @@ export class TextTool implements PointerTool {
     const roomDoc = getActiveRoomDoc();
     const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
-    const { textSize: fontSize, textColor: color, textAlign: align } = useDeviceUIStore.getState();
+    const {
+      textSize: fontSize,
+      textColor: color,
+      textAlign: align,
+      textFontFamily: fontFamily,
+    } = useDeviceUIStore.getState();
 
     roomDoc.mutate((ydoc) => {
       const root = ydoc.getMap('root');
@@ -181,6 +186,7 @@ export class TextTool implements PointerTool {
       yObj.set('kind', 'text');
       yObj.set('origin', [worldX, worldY]);
       yObj.set('fontSize', fontSize);
+      yObj.set('fontFamily', fontFamily);
       yObj.set('color', color);
       yObj.set('align', align);
       yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');
@@ -220,7 +226,8 @@ export class TextTool implements PointerTool {
     }
 
     const color = getColor(handle.y);
-    const { content: fragment, origin, fontSize, align, width } = props;
+    const { content: fragment, origin, fontSize, fontFamily, align, width } = props;
+    const familyConfig = FONT_FAMILIES[fontFamily];
 
     // Create container div
     const container = document.createElement('div');
@@ -235,7 +242,7 @@ export class TextTool implements PointerTool {
     // that accounts for CSS line-height leading
     container.style.position = 'absolute';
     container.style.left = `${screenX}px`;
-    container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio()}px`;
+    container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio(fontFamily)}px`;
     if (typeof width === 'number') {
       container.style.width = `${width * scale}px`;
       container.dataset.widthMode = 'fixed';
@@ -243,7 +250,8 @@ export class TextTool implements PointerTool {
       container.dataset.widthMode = 'auto';
     }
     container.style.fontSize = `${scaledFontSize}px`;
-    container.style.lineHeight = `${scaledFontSize * FONT_CONFIG.lineHeightMultiplier}px`;
+    container.style.lineHeight = `${scaledFontSize * familyConfig.lineHeightMultiplier}px`;
+    container.style.fontFamily = familyConfig.fallback;
     container.style.setProperty('--text-color', color);
     applyAlignCSS(container, align);
 
@@ -351,15 +359,16 @@ export class TextTool implements PointerTool {
     const props = getTextProps(handle.y);
     if (!props) return;
 
-    const { origin, fontSize, width } = props;
+    const { origin, fontSize, fontFamily, width } = props;
     const scale = useCameraStore.getState().scale;
     const sf = fontSize * scale;
     const [sx, sy] = worldToClient(origin[0], origin[1]);
 
     this.container.style.left = `${sx}px`;
-    this.container.style.top = `${sy - sf * getBaselineToTopRatio()}px`;
+    this.container.style.top = `${sy - sf * getBaselineToTopRatio(fontFamily)}px`;
     this.container.style.fontSize = `${sf}px`;
-    this.container.style.lineHeight = `${sf * FONT_CONFIG.lineHeightMultiplier}px`;
+    this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
+    this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
     if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
   }
 
@@ -414,7 +423,8 @@ export class TextTool implements PointerTool {
     if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
     if (keys.has('align'))
       applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
-    if (keys.has('origin') || keys.has('fontSize') || keys.has('width')) this.positionEditor();
+    if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width'))
+      this.positionEditor();
   }
 
   // =========================================================================

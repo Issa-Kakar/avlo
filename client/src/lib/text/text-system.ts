@@ -21,13 +21,21 @@
  */
 
 import * as Y from 'yjs';
-import type { BBoxTuple, FrameTuple, TextProps, TextAlign, TextWidth } from '@avlo/shared';
+import type {
+  BBoxTuple,
+  FrameTuple,
+  TextProps,
+  TextAlign,
+  TextWidth,
+  FontFamily,
+} from '@avlo/shared';
 
 import { areFontsLoaded } from './font-loader';
-import { FONT_CONFIG } from './font-config';
+import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
-export { FONT_CONFIG } from './font-config';
-export type { TextAlign, TextWidth, TextProps } from '@avlo/shared';
+export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
+export type { FontFamilyConfig } from './font-config';
+export type { TextAlign, TextWidth, TextProps, FontFamily } from '@avlo/shared';
 
 // =============================================================================
 // §1  TYPES — Pipeline data model
@@ -82,6 +90,7 @@ interface MeasuredParagraph {
 interface MeasuredContent {
   paragraphs: MeasuredParagraph[];
   lineHeight: number;
+  fontFamily: FontFamily;
 }
 
 // --- Stage 3 output: Layout (exported — consumed by renderer, objects.ts) ---
@@ -107,6 +116,7 @@ export interface MeasuredLine {
 export interface TextLayout {
   lines: MeasuredLine[];
   fontSize: number;
+  fontFamily: FontFamily;
   lineHeight: number;
   widthMode: 'auto' | 'fixed';
   boxWidth: number;
@@ -161,31 +171,35 @@ function getMeasureContext(): CanvasRenderingContext2D {
 
 // --- Font string builder ---
 
-export function buildFontString(bold: boolean, italic: boolean, fontSize: number): string {
-  const weight = bold ? FONT_CONFIG.weightBold : FONT_CONFIG.weightNormal;
+export function buildFontString(
+  bold: boolean,
+  italic: boolean,
+  fontSize: number,
+  fontFamily: FontFamily = 'Grandstander',
+): string {
+  const weight = bold ? FONT_WEIGHTS.bold : FONT_WEIGHTS.normal;
   const style = italic ? 'italic' : 'normal';
-  return `${style} ${weight} ${fontSize}px ${FONT_CONFIG.fallback}`;
+  return `${style} ${weight} ${fontSize}px ${FONT_FAMILIES[fontFamily].fallback}`;
 }
 
 // --- Font metrics (measured, not approximated) ---
 
-let _measuredAscentRatio: number | null = null;
-let _baselineToTopRatio: number | null = null;
+const _measuredAscentRatio = new Map<FontFamily, number>();
+const _baselineToTopRatio = new Map<FontFamily, number>();
+const _minCharWidthRatio = new Map<FontFamily, number>();
 
-/** Known fallback value for Grandstander (used if fonts not loaded yet) */
-const FALLBACK_ASCENT_RATIO = 0.73;
+/** Generic fallback (used if fonts not loaded yet) */
+const FALLBACK_ASCENT_RATIO = 0.8;
 
 /**
  * Get the actual font ascent ratio by measuring with canvas.
  * Uses fontBoundingBoxAscent which is the same metric CSS uses.
- * Cached after first measurement.
+ * Cached per font family.
  */
-export function getMeasuredAscentRatio(): number {
-  if (_measuredAscentRatio !== null) {
-    return _measuredAscentRatio;
-  }
+export function getMeasuredAscentRatio(fontFamily: FontFamily = 'Grandstander'): number {
+  const cached = _measuredAscentRatio.get(fontFamily);
+  if (cached !== undefined) return cached;
 
-  // CRITICAL: If fonts not loaded, we'd measure "cursive" fallback (wrong!)
   if (!areFontsLoaded()) {
     console.warn(
       '[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.',
@@ -195,68 +209,65 @@ export function getMeasuredAscentRatio(): number {
 
   const ctx = getMeasureContext();
   const testSize = 100;
-  ctx.font = buildFontString(false, false, testSize);
+  ctx.font = buildFontString(false, false, testSize, fontFamily);
   const metrics = ctx.measureText('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz');
 
   const ascent = metrics.fontBoundingBoxAscent;
   const descent = metrics.fontBoundingBoxDescent;
   const totalHeight = ascent + descent;
 
-  // Handle fonts that include line-gap in metrics:
-  // If totalHeight > fontSize, derive em-box ratio proportionally
+  let ratio: number;
   const tolerance = testSize * 0.01;
   if (Math.abs(totalHeight - testSize) < tolerance) {
-    // Pure em-box metrics
-    _measuredAscentRatio = ascent / testSize;
+    ratio = ascent / testSize;
   } else {
-    // Font includes line-gap: use proportion
-    _measuredAscentRatio = ascent / totalHeight;
+    ratio = ascent / totalHeight;
   }
 
+  _measuredAscentRatio.set(fontFamily, ratio);
   // eslint-disable-next-line no-console
-  console.log(`[text-system] Measured ascent ratio: ${_measuredAscentRatio.toFixed(4)}`);
-  return _measuredAscentRatio;
+  console.log(`[text-system] Measured ascent ratio for ${fontFamily}: ${ratio.toFixed(4)}`);
+  return ratio;
 }
 
 /**
  * Get the offset from baseline to DOM container top (as ratio of fontSize).
- * This is the exact distance needed to position a DOM element
- * so its text baseline lands at a specific Y coordinate.
- *
  * Formula: halfLeading + fontAscent
  *        = (lineHeightMultiplier - 1) / 2 + measuredAscentRatio
  */
-export function getBaselineToTopRatio(): number {
-  if (_baselineToTopRatio !== null) return _baselineToTopRatio;
-  const halfLeadingRatio = (FONT_CONFIG.lineHeightMultiplier - 1) / 2;
-  _baselineToTopRatio = halfLeadingRatio + getMeasuredAscentRatio();
-  return _baselineToTopRatio;
+export function getBaselineToTopRatio(fontFamily: FontFamily = 'Grandstander'): number {
+  const cached = _baselineToTopRatio.get(fontFamily);
+  if (cached !== undefined) return cached;
+  const halfLeadingRatio = (FONT_FAMILIES[fontFamily].lineHeightMultiplier - 1) / 2;
+  const ratio = halfLeadingRatio + getMeasuredAscentRatio(fontFamily);
+  _baselineToTopRatio.set(fontFamily, ratio);
+  return ratio;
 }
 
 // --- Minimum character width (for text reflow clamping) ---
 
-let _minCharWidthRatio: number | null = null;
-
-export function getMinCharWidthRatio(): number {
-  if (_minCharWidthRatio !== null) return _minCharWidthRatio;
+export function getMinCharWidthRatio(fontFamily: FontFamily = 'Grandstander'): number {
+  const cached = _minCharWidthRatio.get(fontFamily);
+  if (cached !== undefined) return cached;
   if (!areFontsLoaded()) return 0.7;
   const ctx = getMeasureContext();
-  ctx.font = buildFontString(true, false, 100);
-  _minCharWidthRatio = ctx.measureText('W').width / 100;
-  return _minCharWidthRatio;
+  ctx.font = buildFontString(true, false, 100, fontFamily);
+  const ratio = ctx.measureText('W').width / 100;
+  _minCharWidthRatio.set(fontFamily, ratio);
+  return ratio;
 }
 
-export function getMinCharWidth(fontSize: number): number {
-  return getMinCharWidthRatio() * fontSize;
+export function getMinCharWidth(fontSize: number, fontFamily: FontFamily = 'Grandstander'): number {
+  return getMinCharWidthRatio(fontFamily) * fontSize;
 }
 
 /**
  * Reset cached font metrics. Call after fonts finish loading.
  */
 export function resetFontMetrics(): void {
-  _measuredAscentRatio = null;
-  _baselineToTopRatio = null;
-  _minCharWidthRatio = null;
+  _measuredAscentRatio.clear();
+  _baselineToTopRatio.clear();
+  _minCharWidthRatio.clear();
 }
 
 // --- Measurement caches ---
@@ -416,15 +427,19 @@ function measureSeg(font: string, text: string, isWs: boolean): number {
   return measureTextCached(font, text);
 }
 
-function measureTokenizedContent(content: TokenizedContent, fontSize: number): MeasuredContent {
-  const lineHeight = fontSize * FONT_CONFIG.lineHeightMultiplier;
+function measureTokenizedContent(
+  content: TokenizedContent,
+  fontSize: number,
+  fontFamily: FontFamily = 'Grandstander',
+): MeasuredContent {
+  const lineHeight = fontSize * FONT_FAMILIES[fontFamily].lineHeightMultiplier;
   const paragraphs: MeasuredParagraph[] = content.paragraphs.map((p) => {
     if (p.tokens.length === 0) return { tokens: [] };
     const tokens: MeasuredToken[] = p.tokens.map((t) => {
       const isWs = t.kind === 'space';
       let totalW = 0;
       const segments: MeasuredSegment[] = t.segments.map((s) => {
-        const font = buildFontString(s.bold, s.italic, fontSize);
+        const font = buildFontString(s.bold, s.italic, fontSize, fontFamily);
         const w = measureSeg(font, s.text, isWs);
         totalW += w;
         return {
@@ -441,7 +456,7 @@ function measureTokenizedContent(content: TokenizedContent, fontSize: number): M
     });
     return { tokens };
   });
-  return { paragraphs, lineHeight };
+  return { paragraphs, lineHeight, fontFamily };
 }
 
 // =============================================================================
@@ -692,7 +707,14 @@ export function layoutMeasuredContent(
   // --- Compute layout-level values ---
   const boxWidth = isFixed ? Math.max(0.01, width) : maxAdvanceWidth;
 
-  return { lines, fontSize, lineHeight, widthMode: isFixed ? 'fixed' : 'auto', boxWidth };
+  return {
+    lines,
+    fontSize,
+    fontFamily: content.fontFamily,
+    lineHeight,
+    widthMode: isFixed ? 'fixed' : 'auto',
+    boxWidth,
+  };
 }
 
 // =============================================================================
@@ -703,6 +725,7 @@ interface CacheEntry {
   tokenized: TokenizedContent | null; // null = content stale
   measured: MeasuredContent;
   measuredFontSize: number | null; // null = fontSize stale
+  measuredFontFamily: FontFamily | null; // null = fontFamily stale
   layout: TextLayout;
   layoutWidth: TextWidth | null; // null = width stale
   frame: FrameTuple | null;
@@ -719,22 +742,29 @@ class TextLayoutCache {
     objectId: string,
     fragment: Y.XmlFragment,
     fontSize: number,
+    fontFamily: FontFamily = 'Grandstander',
     width: TextWidth = 'auto',
   ): TextLayout {
     const entry = this.cache.get(objectId);
 
-    // Cache hit — same content, fontSize, and width
+    // Cache hit — same content, fontSize, fontFamily, and width
     if (
       entry &&
       entry.tokenized !== null &&
       entry.measuredFontSize === fontSize &&
+      entry.measuredFontFamily === fontFamily &&
       entry.layoutWidth === width
     ) {
       return entry.layout;
     }
 
     // Width changed only — re-flow
-    if (entry && entry.tokenized !== null && entry.measuredFontSize === fontSize) {
+    if (
+      entry &&
+      entry.tokenized !== null &&
+      entry.measuredFontSize === fontSize &&
+      entry.measuredFontFamily === fontFamily
+    ) {
       const layout = layoutMeasuredContent(entry.measured, width, fontSize);
       entry.layout = layout;
       entry.layoutWidth = width;
@@ -742,12 +772,13 @@ class TextLayoutCache {
       return layout;
     }
 
-    // Font size changed — re-measure + re-flow
+    // Font size or family changed — re-measure + re-flow
     if (entry && entry.tokenized !== null) {
-      const measured = measureTokenizedContent(entry.tokenized, fontSize);
+      const measured = measureTokenizedContent(entry.tokenized, fontSize, fontFamily);
       const layout = layoutMeasuredContent(measured, width, fontSize);
       entry.measured = measured;
       entry.measuredFontSize = fontSize;
+      entry.measuredFontFamily = fontFamily;
       entry.layout = layout;
       entry.layoutWidth = width;
       entry.frame = null;
@@ -756,14 +787,14 @@ class TextLayoutCache {
 
     // Full pipeline (no entry or content stale)
     const tokenized = parseAndTokenize(fragment);
-    const measured = measureTokenizedContent(tokenized, fontSize);
+    const measured = measureTokenizedContent(tokenized, fontSize, fontFamily);
     const layout = layoutMeasuredContent(measured, width, fontSize);
 
     if (entry) {
-      // Reuse entry object (avoids Map delete+set on every keystroke)
       entry.tokenized = tokenized;
       entry.measured = measured;
       entry.measuredFontSize = fontSize;
+      entry.measuredFontFamily = fontFamily;
       entry.layout = layout;
       entry.layoutWidth = width;
       entry.frame = null;
@@ -772,6 +803,7 @@ class TextLayoutCache {
         tokenized,
         measured,
         measuredFontSize: fontSize,
+        measuredFontFamily: fontFamily,
         layout,
         layoutWidth: width,
         frame: null,
@@ -903,8 +935,8 @@ export function renderTextLayout(
   ctx.save();
   ctx.textBaseline = 'alphabetic';
   ctx.textRendering = 'optimizeSpeed';
-  const { boxWidth, fontSize, lineHeight } = layout;
-  const baselineToTop = getBaselineToTopRatio() * fontSize;
+  const { boxWidth, fontSize, fontFamily, lineHeight } = layout;
+  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
   const isFixed = layout.widthMode === 'fixed';
   // Container bounds for fixed-mode overflow clipping (matches CSS overflow:hidden)
   const containerLeft = isFixed ? getBoxLeftX(originX, boxWidth, align) : 0;
@@ -959,12 +991,12 @@ export function renderTextLayout(
  * Returns frame (logical bounds matching DOM overlay) + padding.
  */
 export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
-  const { content, origin, fontSize, align, width } = props;
-  const layout = textLayoutCache.getLayout(objectId, content, fontSize, width);
+  const { content, origin, fontSize, fontFamily, align, width } = props;
+  const layout = textLayoutCache.getLayout(objectId, content, fontSize, fontFamily, width);
   const [ox, oy] = origin;
   const padding = 2;
   const fx = getBoxLeftX(ox, layout.boxWidth, align);
-  const fy = oy - fontSize * getBaselineToTopRatio();
+  const fy = oy - fontSize * getBaselineToTopRatio(fontFamily);
   const fh = layout.lines.length * layout.lineHeight;
   textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, fh]);
   return [fx - padding, fy - padding, fx + layout.boxWidth + padding, fy + fh + padding];

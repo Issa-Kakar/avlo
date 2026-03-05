@@ -1,17 +1,17 @@
 /**
  * Font Loader
  *
- * Ensures fonts are fully loaded before any measurement or rendering.
+ * Ensures all text fonts are fully loaded before any measurement or rendering.
  * Uses CSS Font Loading API (document.fonts).
  */
 
-import { FONT_CONFIG } from './font-config';
+import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
 let fontsLoaded = false;
 let loadPromise: Promise<void> | null = null;
 
 /**
- * Ensures Grandstander font is loaded before resolving.
+ * Ensures all font families are loaded before resolving.
  * Safe to call multiple times - returns cached promise.
  */
 export async function ensureFontsLoaded(): Promise<void> {
@@ -19,22 +19,25 @@ export async function ensureFontsLoaded(): Promise<void> {
   if (loadPromise) return loadPromise;
 
   loadPromise = (async () => {
-    // Wait for all CSS fonts to be ready
     await document.fonts.ready;
 
-    // Verify our specific font weights are loaded
-    const normalLoaded = document.fonts.check(`${FONT_CONFIG.weightNormal} 16px "${FONT_CONFIG.family}"`);
-    const boldLoaded = document.fonts.check(`${FONT_CONFIG.weightBold} 16px "${FONT_CONFIG.family}"`);
-
-    if (!normalLoaded || !boldLoaded) {
-      // Force load specific weights
-      await Promise.all([
-        document.fonts.load(`${FONT_CONFIG.weightNormal} 16px "${FONT_CONFIG.family}"`),
-        document.fonts.load(`${FONT_CONFIG.weightBold} 16px "${FONT_CONFIG.family}"`),
-        document.fonts.load(`italic ${FONT_CONFIG.weightNormal} 16px "${FONT_CONFIG.family}"`),
-        document.fonts.load(`italic ${FONT_CONFIG.weightBold} 16px "${FONT_CONFIG.family}"`),
-      ]);
+    const loads: Promise<FontFace[]>[] = [];
+    for (const family of Object.keys(FONT_FAMILIES)) {
+      const q = `"${family}"`;
+      if (
+        !document.fonts.check(`${FONT_WEIGHTS.normal} 16px ${q}`) ||
+        !document.fonts.check(`${FONT_WEIGHTS.bold} 16px ${q}`)
+      ) {
+        loads.push(
+          document.fonts.load(`${FONT_WEIGHTS.normal} 16px ${q}`),
+          document.fonts.load(`${FONT_WEIGHTS.bold} 16px ${q}`),
+          document.fonts.load(`italic ${FONT_WEIGHTS.normal} 16px ${q}`),
+          document.fonts.load(`italic ${FONT_WEIGHTS.bold} 16px ${q}`),
+        );
+      }
     }
+
+    if (loads.length > 0) await Promise.all(loads);
 
     fontsLoaded = true;
     // eslint-disable-next-line no-console

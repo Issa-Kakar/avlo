@@ -58,7 +58,7 @@ export const STROKE_CONFIG = {
   MAX_TOTAL_STROKES: getEnvNumber('MAX_TOTAL_STROKES', 5_000),
 
   // Simplification tolerances (in pixels)
-  PEN_SIMPLIFICATION_TOLERANCE: getEnvNumber('PEN_SIMPLIFICATION_TOLERANCE', 0.80),
+  PEN_SIMPLIFICATION_TOLERANCE: getEnvNumber('PEN_SIMPLIFICATION_TOLERANCE', 0.8),
   HIGHLIGHTER_SIMPLIFICATION_TOLERANCE: getEnvNumber('HIGHLIGHTER_SIMPLIFICATION_TOLERANCE', 0.5),
   SIMPLIFICATION_TOLERANCE_MULTIPLIER: getEnvNumber('SIMPLIFICATION_TOLERANCE_MULTIPLIER', 1.5),
   HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER: getEnvNumber('HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER', 1.5),
@@ -94,7 +94,7 @@ export const CANVAS_STYLE_CONFIG = {
   // Opacity curve (subtle, with 0.24 at 1x zoom)
   GRID_OPACITY_AT_025X: 0.12,
   GRID_OPACITY_AT_05X: 0.18,
-  GRID_OPACITY_AT_1X: 0.90, // Much more subtle than original 0.6
+  GRID_OPACITY_AT_1X: 0.9, // Much more subtle than original 0.6
   GRID_OPACITY_AT_2X: 0.9,
 
   // Spacing tiers (at 100% zoom)
@@ -262,7 +262,7 @@ export const PERFORMANCE_CONFIG = {
   EXPORT_TIMEOUT_MS: getEnvNumber('EXPORT_TIMEOUT_MS', 2000),
 
   // Zoom limits
-  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.05),
+  MIN_ZOOM: getEnvNumber('MIN_ZOOM', 0.01),
   MAX_ZOOM: getEnvNumber('MAX_ZOOM', 5),
   MAX_PAN_DISTANCE: getEnvNumber('MAX_PAN_DISTANCE', 1_000_000), // Maximum pan distance from origin in world units
 

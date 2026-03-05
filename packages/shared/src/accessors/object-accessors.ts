@@ -188,11 +188,13 @@ export function getOrigin(y: Y.Map<unknown>): [number, number] | null {
 
 export type TextAlign = 'left' | 'center' | 'right';
 export type TextWidth = 'auto' | number;
+export type FontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono';
 
 export interface TextProps {
   content: Y.XmlFragment;
   origin: [number, number];
   fontSize: number;
+  fontFamily: FontFamily;
   align: TextAlign;
   width: TextWidth;
 }
@@ -201,6 +203,13 @@ export interface TextProps {
  * Get all text properties from Y.Map.
  * Returns null if required fields (origin, content) are missing.
  */
+export function getFontFamily(
+  y: Y.Map<unknown>,
+  fallback: FontFamily = 'Grandstander',
+): FontFamily {
+  return (y.get('fontFamily') as FontFamily | undefined) ?? fallback;
+}
+
 export function getTextProps(y: Y.Map<unknown>): TextProps | null {
   const origin = y.get('origin') as [number, number] | undefined;
   const content = y.get('content') as Y.XmlFragment | undefined;
@@ -210,6 +219,7 @@ export function getTextProps(y: Y.Map<unknown>): TextProps | null {
     content,
     origin,
     fontSize: (y.get('fontSize') as number) ?? 20,
+    fontFamily: (y.get('fontFamily') as FontFamily) ?? 'Grandstander',
     align: (y.get('align') as TextAlign) ?? 'left',
     width: typeof w === 'number' ? w : 'auto',
   };
