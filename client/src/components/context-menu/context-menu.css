@@ -459,6 +459,12 @@
   min-width: 170px;
 }
 
+.ctx-submenu-font {
+  left: 0;
+  transform: none;
+  min-width: 150px;
+}
+
 .ctx-type-item {
   height: 36px;
   gap: 10px;

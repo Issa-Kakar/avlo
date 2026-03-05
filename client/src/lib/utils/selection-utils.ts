@@ -5,9 +5,11 @@ import {
   getFillColor,
   getShapeType,
   getFontSize,
+  getFontFamily,
   getAlign,
   bboxTupleToWorldBounds,
   type TextAlign,
+  type FontFamily,
 } from '@avlo/shared';
 import { getTextFrame, getInlineStyles } from '@/lib/text/text-system';
 import { expandEnvelope, frameTupleToWorldBounds } from '@/lib/geometry/bounds';
@@ -47,6 +49,8 @@ export interface SelectedStyles {
   fontSize: number | null;
   /** Uniform text alignment, null if mixed. Used by textOnly. */
   textAlign: TextAlign | null;
+  /** First text object's font family. Used by textOnly. */
+  fontFamily: FontFamily | null;
 }
 
 // === Constants ===
@@ -62,6 +66,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   shapeType: null,
   fontSize: null,
   textAlign: null,
+  fontFamily: null,
 };
 export const EMPTY_KIND_COUNTS: KindCounts = {
   strokes: 0,
@@ -209,6 +214,7 @@ export function computeStyles(
   let fontSizeMixed = false;
   let firstAlign: TextAlign | null = null;
   let alignMixed = false;
+  let firstFontFamily: FontFamily | null = null;
   let first = true;
 
   for (const id of ids) {
@@ -223,6 +229,7 @@ export function computeStyles(
       if (trackText) {
         firstFontSize = Math.round(getFontSize(handle.y));
         firstAlign = getAlign(handle.y);
+        firstFontFamily = getFontFamily(handle.y);
       }
       first = false;
       continue;
@@ -270,6 +277,7 @@ export function computeStyles(
         : null,
     fontSize: trackText ? firstFontSize : null,
     textAlign: trackText ? (alignMixed ? null : firstAlign) : null,
+    fontFamily: trackText ? firstFontFamily : null,
   };
 }
 
@@ -284,7 +292,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.fillColorSecond === b.fillColorSecond &&
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
-    a.textAlign === b.textAlign
+    a.textAlign === b.textAlign &&
+    a.fontFamily === b.fontFamily
   );
 }
 

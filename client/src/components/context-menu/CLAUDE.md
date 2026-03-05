@@ -159,7 +159,7 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 ```
 
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text↔shape conversion).
-- **Typeface** — shows "Draw" (Grandstander font). No dropdown yet — placeholder button.
+- **Typeface** — self-subscribing dropdown (ShapeTypeDropdown pattern). Subscribes to `selectedStyles.fontFamily`. Trigger shows current font's display name rendered in its own typeface (SVG text). Dropdown: 4 items (Draw/Inter/Lora/Mono), each rendered in their own font, checkmark on active. Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
 - **FontSize** — stepper with dropdown. Display range: 1–999 (never 4+ digits). `−`/`+` buttons step through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. In-between values (from future uniform scaling) step to the next preset up. Dropdown lists all presets with checkmark on active. Mixed font size across selected text objects: shows the first object's value. Calls `decrementFontSize`, `incrementFontSize`, `setSelectedFontSize`.
 - **Bold** / **Italic** — self-subscribing `memo` components with `selectInlineBold`/`selectInlineItalic`. Active state (blue) only when the **entire** selection has the inline style applied uniformly. When TipTap is mounted: driven by editor `onTransaction`. When not mounted: driven by `computeUniformInlineStyles` from text-system cache. Actions: `toggleSelectedBold`/`toggleSelectedItalic` — editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`. Deep observer auto-refreshes cache + styles.
 - **Alignment** — 3 buttons: Left, Center, Right. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
@@ -201,7 +201,7 @@ ContextMenu                         ← gate on menuOpen, renders null when clos
 | `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4×2 rounded-square grid + none. |
 | `SizeLabel` | `value, kind, onSelect?` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | ±buttons + SVG text center value + dropdown of presets. |
-| `TypefaceButton` | `name?, fontFamily?, onClick?` | SVG text font name. Placeholder — no dropdown, no handler wired. |
+| `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. 4-item font family dropdown. |
 | `ShapeTypeDropdown` | `mode: 'shapes'\|'text'` | Subscribes to `selectedStyles.shapeType`. 5-item dropdown. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts. |
 | `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. |
@@ -249,6 +249,7 @@ interface SelectedStyles {
   shapeType: string | null;       // Uniform shape type, 'text' for textOnly, null if mixed
   fontSize: number | null;        // First text object's fontSize (rounded)
   textAlign: TextAlign | null;    // Uniform alignment or null if mixed
+  fontFamily: FontFamily | null;  // First text object's font family
 }
 ```
 
@@ -259,7 +260,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | `strokesOnly` | color, width |
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType |
 | `connectorsOnly` | color, width |
-| `textOnly` | color, fontSize, textAlign, shapeType='text' |
+| `textOnly` | color, fontSize, textAlign, fontFamily, shapeType='text' |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
 
 ### InlineStyles
@@ -316,6 +317,7 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `setSelectedWidth(width)` | All objects | `connectorSize` or `drawingSize` by kind | |
 | `setSelectedShapeType(shapeType)` | Shapes only | — | |
 | `deleteSelected()` | All objects | — | Anchor cleanup for connectors, then `clearSelection()` |
+| `setSelectedFontFamily(family)` | Text only | `textFontFamily` | Text-editing fallback |
 | `setSelectedTextColor(color)` | Text only | `textColor` | Text-editing fallback |
 | `setSelectedFontSize(size)` | Text only | `textSize` | Clamped 1–999, rounded |
 | `incrementFontSize()` | Text only | `textSize` | Steps through presets, caps 10–144 |
@@ -353,7 +355,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
 | `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts` |
 | `selection-utils.ts` | Pure functions: `computeStyles`, `computeSelectionBounds`, `computeUniformInlineStyles` |
-| `selection-actions.ts` | 13 mutation functions called by menu buttons |
+| `selection-actions.ts` | 14 mutation functions called by menu buttons |
 
 ---
 
@@ -372,7 +374,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `HighlightPickerPopover.tsx` | Self-subscribing. 4×2 rounded-square grid + none swatch. |
 | `SizeLabel.tsx` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper.tsx` | ± buttons + SVG center value + preset dropdown |
-| `TypefaceButton.tsx` | SVG text font name (placeholder — no dropdown) |
+| `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families, ShapeTypeDropdown pattern) |
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 5-item type switcher. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |

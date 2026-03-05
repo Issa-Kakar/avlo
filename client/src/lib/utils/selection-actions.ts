@@ -6,6 +6,7 @@ import {
   getAlign,
   getContent,
   type TextAlign,
+  type FontFamily,
 } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
@@ -232,6 +233,22 @@ export function decrementFontSize(): void {
     prev = p;
   }
   if (prev !== undefined) setSelectedFontSize(prev);
+}
+
+// === Font Family ===
+
+export function setSelectedFontFamily(family: FontFamily): void {
+  const ids = getTextIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind === 'text') handle.y.set('fontFamily', family);
+    }
+  });
+  useDeviceUIStore.getState().setFontFamily(family);
+  useSelectionStore.getState().refreshStyles();
 }
 
 // === Text Alignment ===
