@@ -26,6 +26,10 @@ export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36
 // Text alignment type
 export type TextAlign = 'left' | 'center' | 'right';
 
+// Font family options
+export type TextFontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono';
+export const TEXT_FONT_FAMILIES: readonly TextFontFamily[] = ['Grandstander', 'Inter', 'Lora', 'JetBrains Mono'];
+
 // Color palettes (module-level constants, not persisted)
 export const TEXT_COLOR_PALETTE: readonly string[] = [
   '#262626', '#EF4444', '#F97316', '#EAB308',
@@ -61,9 +65,7 @@ interface DeviceUIState {
   // Text-specific settings
   textColor: string;
   textAlign: TextAlign;
-  textFontFamily: string;
-  textIsBold: boolean;
-  textIsItalic: boolean;
+  textFontFamily: TextFontFamily;
   highlightColor: string | null;
 
   // Fill color (separate from fill toggle)
@@ -71,9 +73,6 @@ interface DeviceUIState {
 
   // Placeholder tools
   image: { enabled: boolean };
-
-  // UI state
-  isTextEditing: boolean;
 
   // Color system
   recentColors: string[];
@@ -99,12 +98,9 @@ interface DeviceUIState {
 
   setTextColor: (color: string) => void;
   setTextAlign: (align: TextAlign) => void;
-  setTextFontFamily: (family: string) => void;
-  setTextIsBold: (bold: boolean) => void;
-  setTextIsItalic: (italic: boolean) => void;
+  setTextFontFamily: (family: TextFontFamily) => void;
   setHighlightColor: (color: string | null) => void;
   setFillColor: (color: string) => void;
-  setIsTextEditing: (editing: boolean) => void;
 
   getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
 
@@ -131,15 +127,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       fillColor: '#BFDBFE',
 
       textColor: '#262626',
-      textAlign: 'left',
-      textFontFamily: 'Grandstander',
-      textIsBold: false,
-      textIsItalic: false,
+      textAlign: 'left' as TextAlign,
+      textFontFamily: 'Grandstander' as TextFontFamily,
       highlightColor: null,
 
       image: { enabled: false },
-
-      isTextEditing: false,
 
       recentColors: [],
       isColorPopoverOpen: false,
@@ -186,12 +178,8 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setTextColor: (color) => set({ textColor: color }),
       setTextAlign: (align) => set({ textAlign: align }),
       setTextFontFamily: (family) => set({ textFontFamily: family }),
-      setTextIsBold: (bold) => set({ textIsBold: bold }),
-      setTextIsItalic: (italic) => set({ textIsItalic: italic }),
       setHighlightColor: (color) => set({ highlightColor: color }),
       setFillColor: (color) => set({ fillColor: color }),
-
-      setIsTextEditing: (editing) => set({ isTextEditing: editing }),
 
       // Helper method to get current tool settings
       getCurrentToolSettings: () => {
@@ -306,6 +294,4 @@ useDeviceUIStore.subscribe((state, prevState) => {
 export const selectTextColor = (s: DeviceUIState) => s.textColor;
 export const selectTextAlign = (s: DeviceUIState) => s.textAlign;
 export const selectTextSize = (s: DeviceUIState) => s.textSize;
-export const selectTextIsBold = (s: DeviceUIState) => s.textIsBold;
-export const selectTextIsItalic = (s: DeviceUIState) => s.textIsItalic;
 export const selectHighlightColor = (s: DeviceUIState) => s.highlightColor;

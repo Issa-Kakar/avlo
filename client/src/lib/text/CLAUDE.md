@@ -488,7 +488,7 @@ container.style.setProperty('--text-anchor-tx',
 
 ### Access
 
-No singleton indirection — `textTool` exported directly from `tool-registry.ts`. Public fields: `objectId`, `isEditorMounted()`, `updateColor()`, `updateFontSize()`, `updateTextAlign()`.
+No singleton indirection — `textTool` exported directly from `tool-registry.ts`. Public fields: `objectId`, `isEditorMounted()`, `getEditor()`, `getContainer()`.
 
 ---
 
@@ -603,10 +603,8 @@ this.undoManager = new Y.UndoManager([objects], {
 if (field === 'content') {
   textLayoutCache.invalidateContent(id);
   textContentChangedIds.add(id);
-} else if (field === 'fontSize') {
-  textLayoutCache.invalidateLayout(id);
-}
-// 'width' changes handled by comparison in getLayout()
+} 
+// 'width', 'fontSize', changes handled by comparison in getLayout()
 // 'origin'/'color' don't need cache invalidation
 ```
 

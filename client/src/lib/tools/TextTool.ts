@@ -27,7 +27,7 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
-import { FONT_CONFIG, getBaselineToTopRatio, anchorFactor } from '@/lib/text/text-system';
+import { FONT_CONFIG, getBaselineToTopRatio } from '@/lib/text/text-system';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
@@ -399,71 +399,6 @@ export class TextTool implements PointerTool {
     // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
     invalidateWorld(getVisibleWorldBounds());
     invalidateOverlay();
-  }
-
-  // =========================================================================
-  // Public Methods: Live Editing Updates
-  // =========================================================================
-
-  /**
-   * Update the color of the current text object.
-   * Y.Map observer in extensions.ts fires syncProps → handles DOM update.
-   */
-  updateColor(newColor: string): void {
-    if (!this.objectId) return;
-    const roomDoc = getActiveRoomDoc();
-    roomDoc.mutate(() => {
-      const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId!);
-      if (handle) handle.y.set('color', newColor);
-    });
-    useDeviceUIStore.getState().setTextColor(newColor);
-  }
-
-  /**
-   * Update the fontSize of the current text object.
-   * Y.Map observer fires syncProps → handles DOM + positioning update.
-   */
-  updateFontSize(newSize: number): void {
-    if (!this.objectId) return;
-    const roomDoc = getActiveRoomDoc();
-    roomDoc.mutate(() => {
-      const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId!);
-      if (handle) handle.y.set('fontSize', newSize);
-    });
-  }
-
-  /**
-   * Update the alignment of the current text object.
-   * Adjusts origin.x to preserve the text's left edge position.
-   * Y.Map observer fires syncProps → handles DOM update.
-   */
-  updateTextAlign(newAlign: TextAlign): void {
-    if (!this.objectId || !this.container) return;
-
-    const roomDoc = getActiveRoomDoc();
-    const handle = roomDoc.currentSnapshot.objectsById.get(this.objectId);
-    if (!handle) return;
-
-    const oldAlign = (handle.y.get('align') as TextAlign) ?? 'left';
-    if (oldAlign === newAlign) return;
-
-    const origin = handle.y.get('origin') as [number, number] | undefined;
-    if (!origin) return;
-
-    // Measure current width from DOM
-    const scale = useCameraStore.getState().scale;
-    const W = this.container.getBoundingClientRect().width / scale;
-
-    // Compute new origin.x to preserve left edge position
-    const oldF = anchorFactor(oldAlign);
-    const newF = anchorFactor(newAlign);
-    const leftX = origin[0] - oldF * W;
-    const newOriginX = leftX + newF * W;
-
-    roomDoc.mutate(() => {
-      handle.y.set('origin', [newOriginX, origin[1]]);
-      handle.y.set('align', newAlign);
-    });
   }
 
   // =========================================================================
