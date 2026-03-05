@@ -203,27 +203,6 @@
   border-radius: 4px;
 }
 
-/* ===== Alignment Buttons — Tight Group ===== */
-
-.ctx-group-tight {
-  display: flex;
-  align-items: center;
-  gap: 0;
-}
-
-.ctx-btn-align {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 4px;
-}
-
-/* 16x16 viewBox → render at 16px for 1:1 pixel grid (no blur) */
-.ctx-btn-align svg {
-  width: 16px;
-  height: 16px;
-}
-
 /* ===== Floating Container ===== */
 
 .context-menu-floating {
@@ -465,6 +444,49 @@
   min-width: 150px;
 }
 
+.ctx-submenu-font .ctx-type-item {
+  height: 40px;
+  font-size: 15px;
+}
+
+/* ===== Alignment Dropdown ===== */
+
+.ctx-submenu-align {
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: auto;
+  padding: 4px;
+  display: flex;
+  gap: 2px;
+}
+
+.ctx-align-item {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #374151;
+}
+
+.ctx-align-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.ctx-align-item-active {
+  background: rgba(59, 130, 246, 0.08);
+  color: #3b82f6;
+}
+
+.ctx-align-item svg {
+  width: 16px;
+  height: 16px;
+}
+
 .ctx-type-item {
   height: 36px;
   gap: 10px;
@@ -497,20 +519,42 @@
 
 /* ===== Highlight Picker Popover ===== */
 
-.ctx-submenu-highlight { min-width: auto; padding: 10px 12px; }
-.ctx-highlight-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.ctx-submenu-highlight {
+  min-width: auto;
+  padding: 10px 12px;
+}
+.ctx-highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
 .ctx-highlight-swatch {
-  width: 28px; height: 28px; border-radius: 6px;
-  border: 1.5px solid rgba(0,0,0,0.08); cursor: pointer; padding: 0;
-  position: relative; overflow: hidden;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+  overflow: hidden;
   transition: transform var(--transition-fast);
 }
-.ctx-highlight-swatch:hover { transform: scale(1.15); }
-.ctx-highlight-swatch.selected { border-color: #3b82f6; box-shadow: 0 0 0 1.5px #3b82f6; }
-.ctx-highlight-swatch-none { background: #e5e7eb; }
+.ctx-highlight-swatch:hover {
+  transform: scale(1.15);
+}
+.ctx-highlight-swatch.selected {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1.5px #3b82f6;
+}
+.ctx-highlight-swatch-none {
+  background: #e5e7eb;
+}
 .ctx-highlight-slash {
-  position: absolute; top: 50%; left: 50%;
-  width: 70%; height: 2px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70%;
+  height: 2px;
   background: #9ca3af;
   transform: translate(-50%, -50%) rotate(-45deg);
   border-radius: 1px;
@@ -519,4 +563,6 @@
 
 /* ===== Font Size Dropdown ===== */
 
-.ctx-submenu-fontsize { min-width: 90px; }
+.ctx-submenu-fontsize {
+  min-width: 90px;
+}

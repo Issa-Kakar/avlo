@@ -155,14 +155,14 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 ### `textOnly`
 
 ```
-[ShapeType ▾] | [Typeface ▾] | [−FontSize+] | [B] [I] | [L C R] | [TextColor] [Highlight]  |  🗑  …
+[ShapeType ▾] | [Typeface ▾] | [−FontSize+] | [B] [I] | [Align ▾] | [TextColor] [Highlight]  |  🗑  …
 ```
 
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text↔shape conversion).
 - **Typeface** — self-subscribing dropdown (ShapeTypeDropdown pattern). Subscribes to `selectedStyles.fontFamily`. Trigger shows current font's display name rendered in its own typeface (SVG text). Dropdown: 4 items (Draw/Inter/Lora/Mono), each rendered in their own font, checkmark on active. Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
 - **FontSize** — stepper with dropdown. Display range: 1–999 (never 4+ digits). `−`/`+` buttons step through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. In-between values (from future uniform scaling) step to the next preset up. Dropdown lists all presets with checkmark on active. Mixed font size across selected text objects: shows the first object's value. Calls `decrementFontSize`, `incrementFontSize`, `setSelectedFontSize`.
 - **Bold** / **Italic** — self-subscribing `memo` components with `selectInlineBold`/`selectInlineItalic`. Active state (blue) only when the **entire** selection has the inline style applied uniformly. When TipTap is mounted: driven by editor `onTransaction`. When not mounted: driven by `computeUniformInlineStyles` from text-system cache. Actions: `toggleSelectedBold`/`toggleSelectedItalic` — editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`. Deep observer auto-refreshes cache + styles.
-- **Alignment** — 3 buttons: Left, Center, Right. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
+- **Alignment** — `AlignDropdown`. Self-subscribing dropdown (subscribes to `selectedStyles.textAlign`). Trigger shows active alignment icon + chevron. Dropdown: compact horizontal row of 3 icon buttons (left/center/right), active icon gets blue highlight. Defaults to `'left'` when null. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
 - **TextColor** — `TextColorPopover`. Icon is "A" with colored bar. Dropdown: 9×2 grid. Calls `setSelectedTextColor`. Persists to `device-ui-store.textColor`.
 - **Highlight** — `HighlightPickerPopover`. Self-subscribes to `selectInlineHighlightColor`. Icon is marker pen with colored bar (or striped grey when null). Dropdown: 4×2 grid of rounded-square swatches from `HIGHLIGHT_COLORS` + "none" swatch with diagonal slash. Calls `setSelectedHighlight(color | null)`. Editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`.
 
@@ -201,6 +201,7 @@ ContextMenu                         ← gate on menuOpen, renders null when clos
 | `HighlightPickerPopover` | `onSelect?` | Self-subscribes to `selectInlineHighlightColor`. 4×2 rounded-square grid + none. |
 | `SizeLabel` | `value, kind, onSelect?` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | ±buttons + SVG text center value + dropdown of presets. |
+| `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Compact horizontal 3-icon dropdown. |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. 4-item font family dropdown. |
 | `ShapeTypeDropdown` | `mode: 'shapes'\|'text'` | Subscribes to `selectedStyles.shapeType`. 5-item dropdown. |
 | `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts. |
@@ -219,7 +220,7 @@ Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-alig
 
 ### Self-Subscribing Components
 
-`BoldButton`, `ItalicButton`, and `HighlightPickerPopover` each subscribe to their own narrow store slice. Parent `TextStyleGroup` does not re-render when their state changes.
+`BoldButton`, `ItalicButton`, `AlignDropdown`, and `HighlightPickerPopover` each subscribe to their own narrow store slice. Parent `TextStyleGroup` does not re-render when their state changes.
 
 ---
 
@@ -374,6 +375,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `HighlightPickerPopover.tsx` | Self-subscribing. 4×2 rounded-square grid + none swatch. |
 | `SizeLabel.tsx` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper.tsx` | ± buttons + SVG center value + preset dropdown |
+| `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 icons, horizontal compact submenu) |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families, ShapeTypeDropdown pattern) |
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 5-item type switcher. |
 | `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts |

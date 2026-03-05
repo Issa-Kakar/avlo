@@ -3,14 +3,17 @@ import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
-import { filterSelectionByKind, selectInlineBold, selectInlineItalic } from '@/stores/selection-store';
+import {
+  filterSelectionByKind,
+  selectInlineBold,
+  selectInlineItalic,
+} from '@/stores/selection-store';
 import {
   setSelectedWidth,
   setSelectedColor,
   setSelectedFillColor,
   setSelectedTextColor,
   setSelectedFontSize,
-  setSelectedTextAlign,
   setSelectedHighlight,
   toggleSelectedBold,
   toggleSelectedItalic,
@@ -30,15 +33,8 @@ import { ColorPickerPopover } from './ColorPickerPopover';
 import { TextColorPopover } from './TextColorPopover';
 import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
-import {
-  IconAlignTextLeft,
-  IconAlignTextCenter,
-  IconAlignTextRight,
-  IconBold,
-  IconItalic,
-  IconMoreDots,
-  IconTrash,
-} from './icons';
+import { AlignDropdown } from './AlignDropdown';
+import { IconBold, IconItalic, IconMoreDots, IconTrash } from './icons';
 
 // === Selectors (stable module-level references) ===
 
@@ -61,7 +57,6 @@ const selectShapeStyles = (s: SelectionStore) => ({
 });
 const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
-  textAlign: s.selectedStyles.textAlign,
   color: s.selectedStyles.color,
 });
 const selectConnectorStyles = (s: SelectionStore) => ({
@@ -144,9 +139,7 @@ const ItalicButton = memo(function ItalicButton() {
 });
 
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, textAlign, color } = useSelectionStore(
-    useShallow(selectTextStyles),
-  );
+  const { fontSize, color } = useSelectionStore(useShallow(selectTextStyles));
   return (
     <ButtonGroup>
       <TypefaceButton />
@@ -163,17 +156,7 @@ const TextStyleGroup = memo(function TextStyleGroup() {
       <BoldButton />
       <ItalicButton />
       <div className="ctx-divider" />
-      <div className="ctx-group-tight">
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'left'} onClick={() => setSelectedTextAlign('left')}>
-          <IconAlignTextLeft />
-        </MenuButton>
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'center'} onClick={() => setSelectedTextAlign('center')}>
-          <IconAlignTextCenter />
-        </MenuButton>
-        <MenuButton className="ctx-btn ctx-btn-align" active={textAlign === 'right'} onClick={() => setSelectedTextAlign('right')}>
-          <IconAlignTextRight />
-        </MenuButton>
-      </div>
+      <AlignDropdown />
       <div className="ctx-divider" />
       <TextColorPopover color={color} onSelect={setSelectedTextColor} />
       <HighlightPickerPopover onSelect={setSelectedHighlight} />
