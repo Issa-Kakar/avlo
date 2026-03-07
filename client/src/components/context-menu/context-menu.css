@@ -69,8 +69,8 @@
 }
 
 .ctx-btn-sq svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .ctx-btn-color {
@@ -103,9 +103,9 @@
 }
 
 .ctx-btn-font {
-  padding: 0 10px;
-  gap: 6px;
-  min-width: 72px;
+  padding: 0 6px;
+  gap: 4px;
+  min-width: 56px;
 }
 
 .ctx-btn-font svg:last-child {
@@ -132,50 +132,17 @@
   gap: 2px;
 }
 
-/* ===== Size Stepper ===== */
+/* ===== Font Size Stepper ===== */
 
-.ctx-size-group {
+.ctx-fontsize-group {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 3px;
+  margin: 0 2px;
 }
 
-.ctx-size-btn {
-  width: 22px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: #374151;
-  cursor: pointer;
-  transition: background var(--transition-fast);
-  outline: none;
-  padding: 0;
-}
-
-.ctx-size-btn:hover {
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.ctx-size-btn:active {
-  background: rgba(0, 0, 0, 0.08);
-}
-
-.ctx-size-btn:focus-visible {
-  outline: 2px solid #3b82f6;
-  outline-offset: -1px;
-}
-
-.ctx-size-btn svg {
-  width: 12px;
-  height: 12px;
-}
-
-.ctx-size-value {
-  min-width: 26px;
+.ctx-fontsize-value {
+  min-width: 30px;
   height: 28px;
   display: inline-flex;
   align-items: center;
@@ -189,18 +156,59 @@
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   outline: none;
-  padding: 0;
+  padding: 0 2px;
 }
 
-.ctx-size-value:hover {
+.ctx-fontsize-value:hover {
   background: rgba(0, 0, 0, 0.05);
   border-radius: 4px;
 }
 
-.ctx-size-value:focus-visible {
+.ctx-fontsize-value:focus-visible {
   outline: 2px solid #3b82f6;
   outline-offset: -1px;
   border-radius: 4px;
+}
+
+.ctx-fontsize-arrows {
+  display: flex;
+  flex-direction: column;
+  width: 18px;
+  gap: 1px;
+}
+
+.ctx-fontsize-arrow {
+  width: 18px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #374151;
+  cursor: pointer;
+  padding: 0;
+  outline: none;
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+
+.ctx-fontsize-arrow:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.ctx-fontsize-arrow:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.ctx-fontsize-arrow:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -1px;
+}
+
+.ctx-fontsize-arrow svg {
+  width: 12px;
+  height: 7px;
 }
 
 /* ===== Floating Container ===== */
@@ -323,7 +331,7 @@
 .ctx-size-label-btn {
   height: 34px;
   padding: 0 10px;
-  gap: 8px;
+  gap: 6px;
   display: inline-flex;
   align-items: center;
   background: transparent;

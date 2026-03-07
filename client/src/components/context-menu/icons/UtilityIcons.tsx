@@ -40,6 +40,30 @@ export const IconCheck = (props: SvgProps) => (
   </svg>
 );
 
+export const IconStepUp = (props: SvgProps) => (
+  <svg viewBox="0 0 10 6" fill="none" aria-hidden="true" {...props}>
+    <path
+      d="M1 5L5 1L9 5"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+export const IconStepDown = (props: SvgProps) => (
+  <svg viewBox="0 0 10 6" fill="none" aria-hidden="true" {...props}>
+    <path
+      d="M1 1L5 5L9 1"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const IconNoFill = (props: SvgProps) => (
   <svg viewBox="0 0 18 18" fill="none" aria-hidden="true" {...props}>
     <circle cx="9" cy="9" r="7" stroke="#9CA3AF" strokeWidth="1.8" />

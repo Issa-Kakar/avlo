@@ -7,6 +7,8 @@ import {
   getFontSize,
   getFontFamily,
   getAlign,
+  getLabelColor,
+  hasLabel,
   bboxTupleToWorldBounds,
   type TextAlign,
   type FontFamily,
@@ -49,8 +51,10 @@ export interface SelectedStyles {
   fontSize: number | null;
   /** Uniform text alignment, null if mixed. Used by textOnly. */
   textAlign: TextAlign | null;
-  /** First text object's font family. Used by textOnly. */
+  /** First text object's font family. Used by textOnly, shapesOnly. */
   fontFamily: FontFamily | null;
+  /** Text color for text objects or shape labels. Used by textOnly, shapesOnly. */
+  labelColor: string | null;
 }
 
 // === Constants ===
@@ -67,6 +71,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   fontSize: null,
   textAlign: null,
   fontFamily: null,
+  labelColor: null,
 };
 export const EMPTY_KIND_COUNTS: KindCounts = {
   strokes: 0,
@@ -198,7 +203,8 @@ export function computeStyles(
   const trackWidth = kind !== 'textOnly';
   const trackFill = kind === 'shapesOnly' || kind === 'textOnly';
   const trackShapeType = kind === 'shapesOnly';
-  const trackText = kind === 'textOnly';
+  const trackTextAlign = kind === 'textOnly';
+  const needsTextFields = kind === 'textOnly' || kind === 'shapesOnly';
 
   let firstColor: string | null = null;
   let colorMixed = false;
@@ -211,10 +217,11 @@ export function computeStyles(
   let firstShapeType: string | null = null;
   let shapeTypeMixed = false;
   let firstFontSize: number | null = null;
-  let fontSizeMixed = false;
   let firstAlign: TextAlign | null = null;
   let alignMixed = false;
   let firstFontFamily: FontFamily | null = null;
+  let firstLabelColor: string | null = null;
+  let textFieldsSet = false;
   let first = true;
 
   for (const id of ids) {
@@ -226,36 +233,44 @@ export function computeStyles(
       if (trackWidth) firstWidth = getWidth(handle.y);
       if (trackFill) firstFill = getFillColor(handle.y) ?? null;
       if (trackShapeType) firstShapeType = getShapeType(handle.y);
-      if (trackText) {
-        firstFontSize = Math.round(getFontSize(handle.y));
-        firstAlign = getAlign(handle.y);
-        firstFontFamily = getFontFamily(handle.y);
-      }
       first = false;
-      continue;
+    } else {
+      if (!colorMixed && getColor(handle.y) !== firstColor) {
+        colorMixed = true;
+        colorSecond = getColor(handle.y);
+      }
+      if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
+      if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) {
+        fillMixed = true;
+        fillSecond = getFillColor(handle.y) ?? null;
+      }
+      if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType)
+        shapeTypeMixed = true;
+      if (trackTextAlign && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
     }
 
-    if (!colorMixed && getColor(handle.y) !== firstColor) {
-      colorMixed = true;
-      colorSecond = getColor(handle.y);
+    // Text fields: first object with text data wins (text objects always, shapes only if labeled)
+    if (needsTextFields && !textFieldsSet) {
+      if (handle.kind === 'text') {
+        firstLabelColor = getColor(handle.y);
+        firstFontSize = Math.round(getFontSize(handle.y));
+        firstFontFamily = getFontFamily(handle.y);
+        if (trackTextAlign) firstAlign = getAlign(handle.y);
+        textFieldsSet = true;
+      } else if (handle.kind === 'shape' && hasLabel(handle.y)) {
+        firstLabelColor = getLabelColor(handle.y);
+        firstFontSize = Math.round(getFontSize(handle.y));
+        firstFontFamily = getFontFamily(handle.y);
+        textFieldsSet = true;
+      }
     }
-    if (trackWidth && !widthMixed && getWidth(handle.y) !== firstWidth) widthMixed = true;
-    if (trackFill && !fillMixed && (getFillColor(handle.y) ?? null) !== firstFill) {
-      fillMixed = true;
-      fillSecond = getFillColor(handle.y) ?? null;
-    }
-    if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType)
-      shapeTypeMixed = true;
-    if (trackText && !fontSizeMixed && Math.round(getFontSize(handle.y)) !== firstFontSize)
-      fontSizeMixed = true;
-    if (trackText && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
 
     if (
       colorMixed &&
       (!trackWidth || widthMixed) &&
       (!trackFill || fillMixed) &&
       (!trackShapeType || shapeTypeMixed) &&
-      (!trackText || (fontSizeMixed && alignMixed))
+      (!trackTextAlign || alignMixed)
     )
       break;
   }
@@ -275,9 +290,10 @@ export function computeStyles(
       : kind === 'textOnly'
         ? 'text'
         : null,
-    fontSize: trackText ? firstFontSize : null,
-    textAlign: trackText ? (alignMixed ? null : firstAlign) : null,
-    fontFamily: trackText ? firstFontFamily : null,
+    fontSize: needsTextFields ? firstFontSize : null,
+    textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
+    fontFamily: needsTextFields ? firstFontFamily : null,
+    labelColor: needsTextFields ? firstLabelColor : null,
   };
 }
 
@@ -293,7 +309,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign &&
-    a.fontFamily === b.fontFamily
+    a.fontFamily === b.fontFamily &&
+    a.labelColor === b.labelColor
   );
 }
 
@@ -318,7 +335,8 @@ export function computeUniformInlineStyles(
 
   for (const id of ids) {
     const handle = objectsById.get(id);
-    if (!handle || handle.kind !== 'text') continue;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape')) continue;
+    if (handle.kind === 'shape' && !hasLabel(handle.y)) continue;
     const u = getInlineStyles(id);
     if (!u) continue;
     if (!hasAny) {

@@ -1,6 +1,5 @@
 import { TEXT_FONT_SIZE_PRESETS } from '@/stores/device-ui-store';
-import { MenuButton } from './MenuButton';
-import { IconMinus, IconPlus, IconCheck } from './icons/UtilityIcons';
+import { IconStepUp, IconStepDown, IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 interface FontSizeStepperProps {
@@ -10,24 +9,32 @@ interface FontSizeStepperProps {
   onSelectSize?: (size: number) => void;
 }
 
-export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize }: FontSizeStepperProps) => {
+export const FontSizeStepper = ({
+  value,
+  onDecrement,
+  onIncrement,
+  onSelectSize,
+}: FontSizeStepperProps) => {
   const { open, containerRef, toggle, close } = useDropdown();
   const display = Math.min(999, Math.max(1, Math.round(value)));
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }} className="ctx-size-group">
-      <MenuButton className="ctx-size-btn" onClick={onDecrement}>
-        <IconMinus width={12} height={12} />
-      </MenuButton>
-      <button
-        className="ctx-size-value"
-        onMouseDown={toggle}
-      >
-        <svg width={26} height={16} viewBox="0 0 26 16" fill="none" aria-hidden style={{ flexShrink: 0 }}>
+    <div ref={containerRef} style={{ position: 'relative' }} className="ctx-fontsize-group">
+      <button className="ctx-fontsize-value" onMouseDown={toggle}>
+        <svg
+          width={30}
+          height={16}
+          viewBox="0 0 30 16"
+          fill="none"
+          aria-hidden
+          style={{ flexShrink: 0 }}
+        >
           <text
-            x="13" y="12"
+            x="15"
+            y="12"
             fill="#374151"
-            fontSize="13" fontWeight="600"
+            fontSize="15"
+            fontWeight="600"
             fontFamily="var(--font-stack)"
             textRendering="geometricPrecision"
             textAnchor="middle"
@@ -36,9 +43,26 @@ export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize 
           </text>
         </svg>
       </button>
-      <MenuButton className="ctx-size-btn" onClick={onIncrement}>
-        <IconPlus width={12} height={12} />
-      </MenuButton>
+      <div className="ctx-fontsize-arrows">
+        <button
+          className="ctx-fontsize-arrow"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onIncrement?.();
+          }}
+        >
+          <IconStepUp />
+        </button>
+        <button
+          className="ctx-fontsize-arrow"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onDecrement?.();
+          }}
+        >
+          <IconStepDown />
+        </button>
+      </div>
       {open && (
         <div className="ctx-submenu ctx-submenu-fontsize">
           {TEXT_FONT_SIZE_PRESETS.map((preset) => {

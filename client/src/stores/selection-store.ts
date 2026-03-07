@@ -614,7 +614,11 @@ export const useSelectionStore = create<SelectionStore>()(
       if (!stylesEqual(current, next)) patch.selectedStyles = next;
 
       // Inline text styles — only when editor is NOT mounted
-      if (textEditingId === null && kind === 'textOnly' && ids.length > 0) {
+      if (
+        textEditingId === null &&
+        (kind === 'textOnly' || kind === 'shapesOnly') &&
+        ids.length > 0
+      ) {
         const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
         if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
       }

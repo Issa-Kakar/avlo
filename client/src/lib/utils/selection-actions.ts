@@ -5,6 +5,7 @@ import {
   getOrigin,
   getAlign,
   getContent,
+  hasLabel,
   type TextAlign,
   type FontFamily,
 } from '@avlo/shared';
@@ -188,7 +189,15 @@ export function setSelectedTextColor(color: string): void {
 
   const { objectsById } = getCurrentSnapshot();
   getActiveRoomDoc().mutate(() => {
-    for (const id of ids) objectsById.get(id)?.y.set('color', color);
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle) continue;
+      if (handle.kind === 'text') {
+        handle.y.set('color', color);
+      } else if (handle.kind === 'shape' && hasLabel(handle.y)) {
+        handle.y.set('labelColor', color);
+      }
+    }
   });
 
   useDeviceUIStore.getState().setTextColor(color);
@@ -206,7 +215,10 @@ export function setSelectedFontSize(size: number): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind === 'text') handle.y.set('fontSize', clamped);
+      if (!handle) continue;
+      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+        handle.y.set('fontSize', clamped);
+      }
     }
   });
 
@@ -215,8 +227,8 @@ export function setSelectedFontSize(size: number): void {
 }
 
 export function incrementFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
-  if (fontSize === null) return;
+  const fontSize =
+    useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
   const current = Math.round(fontSize);
   if (current < 10) {
     setSelectedFontSize(10);
@@ -227,8 +239,8 @@ export function incrementFontSize(): void {
 }
 
 export function decrementFontSize(): void {
-  const fontSize = useSelectionStore.getState().selectedStyles.fontSize;
-  if (fontSize === null) return;
+  const fontSize =
+    useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
   const current = Math.round(fontSize);
   if (current > 144) {
     setSelectedFontSize(144);
@@ -251,7 +263,10 @@ export function setSelectedFontFamily(family: FontFamily): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind === 'text') handle.y.set('fontFamily', family);
+      if (!handle) continue;
+      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+        handle.y.set('fontFamily', family);
+      }
     }
   });
   useDeviceUIStore.getState().setFontFamily(family);
@@ -316,7 +331,7 @@ export function toggleSelectedBold(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { bold: allBold ? null : true });
     }
@@ -338,7 +353,7 @@ export function toggleSelectedItalic(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { italic: allItalic ? null : true });
     }
@@ -360,7 +375,7 @@ export function setSelectedHighlight(color: string | null): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { highlight: color ? { color } : null });
     }

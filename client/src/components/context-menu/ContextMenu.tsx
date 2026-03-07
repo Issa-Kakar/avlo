@@ -21,6 +21,7 @@ import {
   decrementFontSize,
   deleteSelected,
 } from '@/lib/utils/selection-actions';
+import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
 
 import { MenuButton } from './MenuButton';
@@ -54,10 +55,12 @@ const selectShapeStyles = (s: SelectionStore) => ({
   fillColor: s.selectedStyles.fillColor,
   fillColorMixed: s.selectedStyles.fillColorMixed,
   fillColorSecond: s.selectedStyles.fillColorSecond,
+  fontSize: s.selectedStyles.fontSize,
+  labelColor: s.selectedStyles.labelColor,
 });
 const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
-  color: s.selectedStyles.color,
+  labelColor: s.selectedStyles.labelColor,
   fillColor: s.selectedStyles.fillColor,
   fillColorMixed: s.selectedStyles.fillColorMixed,
   fillColorSecond: s.selectedStyles.fillColorSecond,
@@ -82,8 +85,6 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
   );
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
-      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant="filled"
@@ -92,17 +93,35 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
         selectedColor={color}
         onSelect={setSelectedColor}
       />
+      <div className="ctx-divider" />
+      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });
 
 const ShapeStyleGroup = memo(function ShapeStyleGroup() {
-  const { color, width, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
-    useShallow(selectShapeStyles),
-  );
+  const { color, width, fillColor, fillColorMixed, fillColorSecond, fontSize, labelColor } =
+    useSelectionStore(useShallow(selectShapeStyles));
+  const deviceTextColor = useDeviceUIStore(selectTextColor);
+  const deviceTextSize = useDeviceUIStore(selectTextSize);
+  const effectiveLabelColor = labelColor ?? deviceTextColor;
+  const effectiveFontSize = fontSize ?? deviceTextSize;
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <TypefaceButton />
+      <div className="ctx-divider" />
+      <FontSizeStepper
+        value={effectiveFontSize}
+        onDecrement={decrementFontSize}
+        onIncrement={incrementFontSize}
+        onSelectSize={setSelectedFontSize}
+      />
+      <div className="ctx-divider" />
+      <BoldButton />
+      <ItalicButton />
+      <div className="ctx-divider" />
+      <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
       <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
@@ -119,6 +138,8 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
         selectedColor={fillColor}
         onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
       />
+      <div className="ctx-divider" />
+      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });
@@ -142,9 +163,10 @@ const ItalicButton = memo(function ItalicButton() {
 });
 
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, color, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
+  const { fontSize, labelColor, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
     useShallow(selectTextStyles),
   );
+  const effectiveColor = labelColor ?? '#262626';
   return (
     <ButtonGroup>
       <TypefaceButton />
@@ -163,7 +185,7 @@ const TextStyleGroup = memo(function TextStyleGroup() {
       <div className="ctx-divider" />
       <AlignDropdown />
       <div className="ctx-divider" />
-      <TextColorPopover color={color} onSelect={setSelectedTextColor} />
+      <TextColorPopover color={effectiveColor} onSelect={setSelectedTextColor} />
       <HighlightPickerPopover onSelect={setSelectedHighlight} />
       <div className="ctx-divider" />
       <ColorPickerPopover
@@ -184,8 +206,6 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   );
   return (
     <ButtonGroup>
-      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
-      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant="filled"
@@ -194,6 +214,8 @@ const ConnectorGroup = memo(function ConnectorGroup() {
         selectedColor={color}
         onSelect={setSelectedColor}
       />
+      <div className="ctx-divider" />
+      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });
@@ -221,7 +243,7 @@ const OverflowButton = memo(function OverflowButton() {
 function ContextMenuBar() {
   const kind = useSelectionStore(selectKind);
   const editing = useSelectionStore(selectEditing);
-  const effectiveKind: SelectionKind = editing !== null ? 'textOnly' : kind;
+  const effectiveKind: SelectionKind = editing !== null && kind === 'none' ? 'textOnly' : kind;
 
   return (
     <div className="ctx-menu">

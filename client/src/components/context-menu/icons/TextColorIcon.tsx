@@ -8,10 +8,10 @@ export const TextColorIcon = ({ barColor, ...rest }: TextColorIconProps) => (
   <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" {...rest}>
     <text
       x="10"
-      y="13.5"
+      y="15"
       textAnchor="middle"
       fontFamily="Inter, system-ui, sans-serif"
-      fontSize="16"
+      fontSize="18"
       fontWeight="600"
       fill="currentColor"
     >

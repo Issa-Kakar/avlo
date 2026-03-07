@@ -1,5 +1,6 @@
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { setSelectedFontFamily } from '@/lib/utils/selection-actions';
 import type { FontFamily } from '@avlo/shared';
 import { FONT_FAMILIES } from '@/lib/text/text-system';
@@ -8,6 +9,7 @@ import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 const selectFontFamily = (s: SelectionStore) => s.selectedStyles.fontFamily;
+const selectDeviceFontFamily = (s: { textFontFamily: FontFamily }) => s.textFontFamily;
 
 const FONT_ITEMS: { family: FontFamily; display: string }[] = [
   { family: 'Grandstander', display: 'Draw' },
@@ -19,17 +21,19 @@ const FONT_ITEMS: { family: FontFamily; display: string }[] = [
 export function TypefaceButton() {
   const { open, containerRef, toggle, close } = useDropdown();
   const fontFamily = useSelectionStore(selectFontFamily);
+  const fallbackFamily = useDeviceUIStore(selectDeviceFontFamily);
+  const effective = fontFamily ?? fallbackFamily;
 
-  const current = FONT_ITEMS.find((f) => f.family === fontFamily) ?? FONT_ITEMS[0];
+  const current = FONT_ITEMS.find((f) => f.family === effective) ?? FONT_ITEMS[0];
   const cssFallback = FONT_FAMILIES[current.family].fallback;
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-font" onMouseDown={toggle} aria-expanded={open}>
         <svg
-          width={52}
+          width={40}
           height={16}
-          viewBox="0 0 52 16"
+          viewBox="0 0 40 16"
           fill="none"
           aria-hidden="true"
           style={{ flexShrink: 0 }}
@@ -38,7 +42,7 @@ export function TypefaceButton() {
             x="0"
             y="13"
             fill="#374151"
-            fontSize="14"
+            fontSize="16"
             fontWeight="500"
             fontFamily={cssFallback}
             textRendering="geometricPrecision"
@@ -52,7 +56,7 @@ export function TypefaceButton() {
       {open && (
         <div className="ctx-submenu ctx-submenu-font">
           {FONT_ITEMS.map(({ family, display }) => {
-            const active = fontFamily === family;
+            const active = effective === family;
             return (
               <button
                 key={family}
