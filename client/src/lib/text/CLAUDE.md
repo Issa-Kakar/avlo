@@ -40,6 +40,7 @@ WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, support
   color: string,                       // Hex color
   align: 'left' | 'center' | 'right', // TextAlign
   width: 'auto' | number,             // TextWidth — 'auto' or fixed width in world units
+  fillColor?: string,                 // Optional background fill (reuses shape's Y.Map key + getFillColor accessor)
   content: Y.XmlFragment,             // Rich text (Tiptap structure)
   ownerId: string,
   createdAt: number
@@ -275,18 +276,18 @@ export const textLayoutCache: TextLayoutCache;
 ### Renderer: `renderTextLayout()`
 
 ```typescript
-renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left')
+renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left', fillColor?: string)
 ```
 
 1. `textBaseline = 'alphabetic'` — origin is first line baseline
-2. Per line: `startX = getLineStartX(originX, boxWidth, lineW, align)` where:
+2. **Pass 0 (optional):** If `fillColor`, draws a `fillRect` covering the full text block — `getBoxLeftX` for left edge, `boxWidth` for width, `originY - baselineToTop` for top, `lines.length * lineHeight` for height. Works for both auto and fixed modes, scales naturally via `ctx.scale()` during transforms.
+3. Per line: `startX = getLineStartX(originX, boxWidth, lineW, align)` where:
    - `lineW = advanceWidth` in auto mode
    - `lineW = alignmentWidth` in fixed mode (handles both wrap-hanging and paragraph-end cases)
-3. Two-pass per line:
-   - Pass 1: `fillRect` for runs with `run.highlight` — fixed mode clamps to container bounds (no `ctx.clip`)
-   - Pass 2: `fillText` for all runs
-4. Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior)
-5. Fixed-mode overflow: trailing ws `fillText` past container edge is invisible (no ink); highlight rects are clamped arithmetically via `containerLeft`/`containerRight`
+4. Pass 1: `fillRect` for runs with `run.highlight` — fixed mode clamps to container bounds (no `ctx.clip`)
+5. Pass 2: `fillText` for all runs
+6. Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior)
+7. Fixed-mode overflow: trailing ws `fillText` past container edge is invisible (no ink); highlight rects are clamped arithmetically via `containerLeft`/`containerRight`
 
 ### Alignment Math
 
@@ -382,7 +383,7 @@ Per-session undo of fontSize change
 
 Without this observer, undoing a property change would update the CRDT but the DOM overlay would show stale values.
 
-**Tracked keys:** `origin`, `fontSize`, `fontFamily`, `color`, `align`, `width`.
+**Tracked keys:** `origin`, `fontSize`, `fontFamily`, `color`, `fillColor`, `align`, `width`.
 
 ---
 
@@ -437,7 +438,8 @@ Double-click works naturally via this two-click state machine (no timer needed).
 ### createTextObject
 
 ```typescript
-yObj.set('fontFamily', fontFamily);  // From useDeviceUIStore.textFontFamily
+yObj.set('fontFamily', fontFamily);      // From useDeviceUIStore.textFontFamily
+if (textFillColor) yObj.set('fillColor', textFillColor);  // From useDeviceUIStore.textFillColor
 yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');  // Temporary dev boolean
 ```
 
@@ -456,6 +458,8 @@ TextCollaboration.configure({
 ```
 
 **Font family:** `container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback` — inline style overrides CSS default.
+
+**Fill color:** If `getFillColor(handle.y)` is truthy, sets `container.style.backgroundColor` — plain rect matching canvas `fillRect` (WYSIWYG).
 
 **Width handling:**
 ```typescript
@@ -479,7 +483,7 @@ Also sets `--hl-pad` CSS variable for dynamic highlight padding (see CSS Archite
 
 Called by extension's Y.Map observer on undo/redo of property changes:
 - Reads values fresh from `handle.y` — no local state to update
-- `color` → sets CSS variable; `align` → `applyAlignCSS()`
+- `color` → sets CSS variable; `fillColor` → sets `container.style.backgroundColor` (or clears it); `align` → `applyAlignCSS()`
 - `origin`/`fontSize`/`fontFamily`/`width` → delegates to `positionEditor()` which reads all from Y.Map
 
 ### commitAndClose
@@ -585,10 +589,13 @@ Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount:
 function drawText(ctx, handle) {
   if (useSelectionStore.getState().textEditingId === handle.id) return;  // Skip if editing
   const props = getTextProps(handle.y);
+  const fillColor = getFillColor(handle.y);
   const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
-  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
+  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
 }
 ```
+
+`fillColor` is also passed through in `drawScaledTextPreview` and `drawReflowedTextPreview` — the fill rect scales naturally via `ctx.scale()` or adapts to reflow layout dimensions.
 
 ### Scale Transform Preview (`drawScaledTextPreview` / `drawReflowedTextPreview`)
 
@@ -711,6 +718,7 @@ DOM and canvas match because:
 - Same line-height (`fontSize * lineHeightMultiplier`)
 - Same vertical positioning via `getBaselineToTopRatio(fontFamily)` — uses CSS half-leading formula with measured `fontBoundingBoxAscent`/`Descent`, correct for all fonts regardless of content area size
 - Canvas flow engine implements identical whitespace semantics (pending whitespace pattern)
+- Fill color: CSS `background-color` on container ↔ canvas `fillRect` covering same block bounds
 - Sub-pixel differences (~0.5px) expected from per-token vs native text shaping
 
 ---

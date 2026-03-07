@@ -210,6 +210,7 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
           keys.has('fontSize') ||
           keys.has('fontFamily') ||
           keys.has('color') ||
+          keys.has('fillColor') ||
           keys.has('align') ||
           keys.has('width')
         ) {

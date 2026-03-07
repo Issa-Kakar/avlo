@@ -155,7 +155,7 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 ### `textOnly`
 
 ```
-[ShapeType ▾] | [Typeface ▾] | [−FontSize+] | [B] [I] | [Align ▾] | [TextColor] [Highlight]  |  🗑  …
+[ShapeType ▾] | [Typeface ▾] | [−FontSize+] | [B] [I] | [Align ▾] | [TextColor] [Highlight] | [Fill ●▾]  |  🗑  …
 ```
 
 - **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text↔shape conversion).
@@ -165,6 +165,7 @@ All bars end with: `| Trash | … |` (the `…` overflow button has no functiona
 - **Alignment** — `AlignDropdown`. Self-subscribing dropdown (subscribes to `selectedStyles.textAlign`). Trigger shows active alignment icon + chevron. Dropdown: compact horizontal row of 3 icon buttons (left/center/right), active icon gets blue highlight. Defaults to `'left'` when null. Calls `setSelectedTextAlign(align)`. Preserves left edge via `anchorFactor` math on origin.
 - **TextColor** — `TextColorPopover`. Icon is "A" with colored bar. Dropdown: 9×2 grid. Calls `setSelectedTextColor`. Persists to `device-ui-store.textColor`.
 - **Highlight** — `HighlightPickerPopover`. Self-subscribes to `selectInlineHighlightColor`. Icon is marker pen with colored bar (or striped grey when null). Dropdown: 4×2 grid of rounded-square swatches from `HIGHLIGHT_COLORS` + "none" swatch with diagonal slash. Calls `setSelectedHighlight(color | null)`. Editor mounted → TipTap chain, no editor → `Y.XmlText.format()` via `formatFragment()`.
+- **Fill** — `ColorPickerPopover` (fill mode), identical pattern to shape fill. Filled circle variant when fill exists, checkered `none` when no fill, split circle when mixed. Dropdown: 9×2 grid with no-fill slot. `NO_FILL` sentinel maps to `setSelectedFillColor(null)`. Persists to `device-ui-store.textFillColor`.
 
 ### `mixed`
 
@@ -244,7 +245,7 @@ interface SelectedStyles {
   colorMixed: boolean;            // Multiple different stroke colors
   colorSecond: string | null;     // Second stroke color for split indicator
   width: number | null;           // Uniform width or null if mixed
-  fillColor: string | null;       // First shape's fill color, null = no fill. Kept even when mixed.
+  fillColor: string | null;       // First shape/text fill color, null = no fill. Kept even when mixed.
   fillColorMixed: boolean;        // Multiple different fill colors
   fillColorSecond: string | null; // Second fill color for split indicator
   shapeType: string | null;       // Uniform shape type, 'text' for textOnly, null if mixed
@@ -261,7 +262,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | `strokesOnly` | color, width |
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType |
 | `connectorsOnly` | color, width |
-| `textOnly` | color, fontSize, textAlign, fontFamily, shapeType='text' |
+| `textOnly` | color, fontSize, textAlign, fontFamily, fillColor, fillColorMixed, fillColorSecond, shapeType='text' |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
 
 ### InlineStyles
@@ -314,7 +315,7 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | Function | Scope | Persists To | Notes |
 |----------|-------|-------------|-------|
 | `setSelectedColor(color)` | All objects | `drawingColor` | Stroke/border color |
-| `setSelectedFillColor(color\|null)` | Shapes only | `fillColor` + `fillEnabled` | `null` deletes fillColor key |
+| `setSelectedFillColor(color\|null)` | Shapes + Text | Shapes: `fillColor` + `fillEnabled`; Text: `textFillColor` | `null` deletes fillColor key. Uses text-editing fallback for text. |
 | `setSelectedWidth(width)` | All objects | `connectorSize` or `drawingSize` by kind | |
 | `setSelectedShapeType(shapeType)` | Shapes only | — | |
 | `deleteSelected()` | All objects | — | Anchor cleanup for connectors, then `clearSelection()` |

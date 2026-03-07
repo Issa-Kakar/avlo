@@ -941,6 +941,7 @@ export function renderTextLayout(
   originY: number,
   color: string,
   align: TextAlign = 'left',
+  fillColor?: string,
 ): void {
   ctx.save();
   ctx.textBaseline = 'alphabetic';
@@ -951,6 +952,14 @@ export function renderTextLayout(
   // Container bounds for fixed-mode overflow clipping (matches CSS overflow:hidden)
   const containerLeft = isFixed ? getBoxLeftX(originX, boxWidth, align) : 0;
   const containerRight = isFixed ? containerLeft + boxWidth : 0;
+  // Pass 0: background fill rect
+  if (fillColor) {
+    const blockLeft = getBoxLeftX(originX, boxWidth, align);
+    const blockTop = originY - baselineToTop;
+    const blockHeight = layout.lines.length * lineHeight;
+    ctx.fillStyle = fillColor;
+    ctx.fillRect(blockLeft, blockTop, boxWidth, blockHeight);
+  }
   const hlR = fontSize * 0.25;
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;

@@ -58,6 +58,9 @@ const selectShapeStyles = (s: SelectionStore) => ({
 const selectTextStyles = (s: SelectionStore) => ({
   fontSize: s.selectedStyles.fontSize,
   color: s.selectedStyles.color,
+  fillColor: s.selectedStyles.fillColor,
+  fillColorMixed: s.selectedStyles.fillColorMixed,
+  fillColorSecond: s.selectedStyles.fillColorSecond,
 });
 const selectConnectorStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
@@ -139,7 +142,9 @@ const ItalicButton = memo(function ItalicButton() {
 });
 
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, color } = useSelectionStore(useShallow(selectTextStyles));
+  const { fontSize, color, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
+    useShallow(selectTextStyles),
+  );
   return (
     <ButtonGroup>
       <TypefaceButton />
@@ -160,6 +165,15 @@ const TextStyleGroup = memo(function TextStyleGroup() {
       <div className="ctx-divider" />
       <TextColorPopover color={color} onSelect={setSelectedTextColor} />
       <HighlightPickerPopover onSelect={setSelectedHighlight} />
+      <div className="ctx-divider" />
+      <ColorPickerPopover
+        color={fillColor ?? '#fff'}
+        variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
+        secondColor={fillColorMixed ? fillColorSecond : undefined}
+        mode="fill"
+        selectedColor={fillColor}
+        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
+      />
     </ButtonGroup>
   );
 });

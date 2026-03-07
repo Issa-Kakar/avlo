@@ -89,6 +89,7 @@ interface DeviceUIState {
   textAlign: TextAlign;
   textFontFamily: FontFamily;
   highlightColor: string | null;
+  textFillColor: string | null;
 
   // Fill color (separate from fill toggle)
   fillColor: string;
@@ -122,6 +123,7 @@ interface DeviceUIState {
   setTextAlign: (align: TextAlign) => void;
   setFontFamily: (family: FontFamily) => void;
   setHighlightColor: (color: string | null) => void;
+  setTextFillColor: (color: string | null) => void;
   setFillColor: (color: string) => void;
 
   getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
@@ -152,6 +154,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       textAlign: 'left' as TextAlign,
       textFontFamily: 'Grandstander' as FontFamily,
       highlightColor: null,
+      textFillColor: null,
 
       image: { enabled: false },
 
@@ -201,6 +204,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setTextAlign: (align) => set({ textAlign: align }),
       setFontFamily: (family) => set({ textFontFamily: family }),
       setHighlightColor: (color) => set({ highlightColor: color }),
+      setTextFillColor: (color) => set({ textFillColor: color }),
       setFillColor: (color) => set({ fillColor: color }),
 
       // Helper method to get current tool settings

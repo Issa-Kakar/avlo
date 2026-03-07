@@ -31,7 +31,7 @@ import {
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { getTextProps, getColor, type TextAlign } from '@avlo/shared';
+import { getTextProps, getColor, getFillColor, type TextAlign } from '@avlo/shared';
 import {
   FONT_FAMILIES,
   getBaselineToTopRatio,
@@ -185,6 +185,7 @@ export class TextTool implements PointerTool {
       textColor: color,
       textAlign: align,
       textFontFamily: fontFamily,
+      textFillColor,
     } = useDeviceUIStore.getState();
 
     roomDoc.mutate((ydoc) => {
@@ -201,6 +202,7 @@ export class TextTool implements PointerTool {
       yObj.set('align', align);
       yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');
       yObj.set('content', new Y.XmlFragment());
+      if (textFillColor) yObj.set('fillColor', textFillColor);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
 
@@ -268,6 +270,8 @@ export class TextTool implements PointerTool {
       `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
     );
     applyAlignCSS(container, align);
+    const fillColor = getFillColor(handle.y);
+    if (fillColor) container.style.backgroundColor = fillColor;
 
     host.appendChild(container);
 
@@ -450,6 +454,7 @@ export class TextTool implements PointerTool {
     if (!handle) return;
 
     if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
+    if (keys.has('fillColor')) this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
     if (keys.has('align'))
       applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
     if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width'))

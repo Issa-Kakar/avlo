@@ -53,24 +53,31 @@ export function setSelectedColor(color: string): void {
 // === Fill Color ===
 
 export function setSelectedFillColor(fillColor: string | null): void {
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
+  const { selectedIds, selectionKind, textEditingId } = useSelectionStore.getState();
+  const isText = textEditingId !== null || selectionKind === 'textOnly';
+  const ids = isText ? getTextIds() : selectedIds;
+  if (ids.length === 0) return;
 
+  const { objectsById } = getCurrentSnapshot();
   getActiveRoomDoc().mutate(() => {
-    for (const id of ctx.selectedIds) {
-      const handle = ctx.objectsById.get(id);
-      if (handle?.kind !== 'shape') continue;
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
       if (fillColor === null) handle.y.delete('fillColor');
       else handle.y.set('fillColor', fillColor);
     }
   });
 
   const ui = useDeviceUIStore.getState();
-  if (fillColor === null) {
-    ui.setFillEnabled(false);
+  if (isText) {
+    ui.setTextFillColor(fillColor);
   } else {
-    ui.setFillColor(fillColor);
-    ui.setFillEnabled(true);
+    if (fillColor === null) {
+      ui.setFillEnabled(false);
+    } else {
+      ui.setFillColor(fillColor);
+      ui.setFillEnabled(true);
+    }
   }
   useSelectionStore.getState().refreshStyles();
 }

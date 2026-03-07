@@ -261,6 +261,7 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (!props) return;
 
   const color = getColor(y);
+  const fillColor = getFillColor(y);
   const layout = textLayoutCache.getLayout(
     id,
     props.content,
@@ -268,7 +269,7 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.fontFamily,
     props.width,
   );
-  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align);
+  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -582,6 +583,7 @@ function drawScaledTextPreview(
 
   // Reuse cached layout — ctx.scale does the visual scaling
   const color = getColor(handle.y);
+  const fillColor = getFillColor(handle.y);
   const layout = textLayoutCache.getLayout(
     handle.id,
     props.content,
@@ -593,7 +595,7 @@ function drawScaledTextPreview(
   ctx.save();
   ctx.translate(newOriginX, newOriginY);
   ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  renderTextLayout(ctx, layout, 0, 0, color, props.align);
+  renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor);
   ctx.restore();
 }
 
@@ -618,6 +620,7 @@ function drawReflowedTextPreview(
     reflowOrigin[1],
     getColor(handle.y),
     getAlign(handle.y),
+    getFillColor(handle.y),
   );
 }
 

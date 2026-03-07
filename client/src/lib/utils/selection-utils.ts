@@ -196,7 +196,7 @@ export function computeStyles(
   if (kind === 'none' || kind === 'mixed' || ids.length === 0) return EMPTY_STYLES;
 
   const trackWidth = kind !== 'textOnly';
-  const trackFill = kind === 'shapesOnly';
+  const trackFill = kind === 'shapesOnly' || kind === 'textOnly';
   const trackShapeType = kind === 'shapesOnly';
   const trackText = kind === 'textOnly';
 
@@ -310,7 +310,8 @@ export function computeUniformInlineStyles(
   ids: string[],
   objectsById: ReadonlyMap<string, ObjectHandle>,
 ): InlineStyles {
-  let bold = true, italic = true;
+  let bold = true,
+    italic = true;
   let firstHighlight: string | null = null;
   let highlightMixed = false;
   let hasAny = false;
