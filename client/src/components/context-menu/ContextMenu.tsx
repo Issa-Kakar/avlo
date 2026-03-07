@@ -148,7 +148,7 @@ const BoldButton = memo(function BoldButton() {
   const bold = useSelectionStore(selectInlineBold);
   return (
     <MenuButton className="ctx-btn-sq" active={bold} onClick={toggleSelectedBold}>
-      <IconBold style={{ width: 15, height: 15 }} />
+      <IconBold style={{ width: 16, height: 16 }} />
     </MenuButton>
   );
 });
@@ -157,7 +157,7 @@ const ItalicButton = memo(function ItalicButton() {
   const italic = useSelectionStore(selectInlineItalic);
   return (
     <MenuButton className="ctx-btn-sq" active={italic} onClick={toggleSelectedItalic}>
-      <IconItalic style={{ width: 15, height: 15 }} />
+      <IconItalic style={{ width: 16, height: 16 }} />
     </MenuButton>
   );
 });

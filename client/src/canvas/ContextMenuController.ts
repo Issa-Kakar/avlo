@@ -37,12 +37,14 @@ class ContextMenuController {
     this.el = el;
     this.storeUnsubs.push(
       useSelectionStore.subscribe(
-        s => s.menuOpen,
-        open => open ? this.activate() : this.deactivate(),
+        (s) => s.menuOpen,
+        (open) => (open ? this.activate() : this.deactivate()),
       ),
       useSelectionStore.subscribe(
-        s => s.boundsVersion,
-        () => { if (this.active && this.visible) this.schedulePosition(); },
+        (s) => s.boundsVersion,
+        () => {
+          if (this.active && this.visible) this.schedulePosition();
+        },
       ),
     );
   }
@@ -153,8 +155,8 @@ class ContextMenuController {
         return;
       }
 
-      this.el.style.left = `${x}px`;
-      this.el.style.top = `${y}px`;
+      this.el.style.left = `${Math.round(x)}px`;
+      this.el.style.top = `${Math.round(y)}px`;
       this.el.classList.remove('ctx-hidden');
     });
   }
@@ -167,9 +169,14 @@ function createVirtualElement(worldBounds: WorldBounds): VirtualElement {
       const [left, top] = worldToClient(worldBounds.minX, worldBounds.minY);
       const [right, bottom] = worldToClient(worldBounds.maxX, worldBounds.maxY);
       return {
-        x: left, y: top,
-        top, left, right, bottom,
-        width: right - left, height: bottom - top,
+        x: left,
+        y: top,
+        top,
+        left,
+        right,
+        bottom,
+        width: right - left,
+        height: bottom - top,
       };
     },
   };

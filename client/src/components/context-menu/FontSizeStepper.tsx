@@ -19,30 +19,52 @@ export const FontSizeStepper = ({
   const display = Math.min(999, Math.max(1, Math.round(value)));
 
   return (
-    <div ref={containerRef} style={{ position: 'relative' }} className="ctx-fontsize-group">
-      <button className="ctx-fontsize-value" onMouseDown={toggle}>
-        <svg
-          width={30}
-          height={16}
-          viewBox="0 0 30 16"
-          fill="none"
-          aria-hidden
-          style={{ flexShrink: 0 }}
-        >
-          <text
-            x="15"
-            y="12"
-            fill="#374151"
-            fontSize="15"
-            fontWeight="500"
-            fontFamily="var(--font-stack)"
-            textRendering="geometricPrecision"
-            textAnchor="middle"
+    <div className="ctx-fontsize-group">
+      <div ref={containerRef} style={{ position: 'relative' }}>
+        <button className="ctx-fontsize-value" onMouseDown={toggle}>
+          <svg
+            width={30}
+            height={16}
+            viewBox="0 0 30 16"
+            fill="none"
+            aria-hidden
+            style={{ flexShrink: 0 }}
           >
-            {display}
-          </text>
-        </svg>
-      </button>
+            <text
+              x="15"
+              y="12"
+              fill="#374151"
+              fontSize="15"
+              fontWeight="500"
+              fontFamily="var(--font-stack)"
+              textRendering="geometricPrecision"
+              textAnchor="middle"
+            >
+              {display}
+            </text>
+          </svg>
+        </button>
+        {open && (
+          <div className="ctx-submenu ctx-submenu-fontsize">
+            {TEXT_FONT_SIZE_PRESETS.map((preset) => {
+              const isActive = preset === display;
+              return (
+                <button
+                  key={preset}
+                  className={`ctx-submenu-item${isActive ? ' ctx-submenu-item-active' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onSelectSize?.(preset);
+                    close();
+                  }}
+                >
+                  <span className="ctx-size-item-label">{preset}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
       <div className="ctx-fontsize-arrows">
         <button
           className="ctx-fontsize-arrow"
@@ -63,26 +85,6 @@ export const FontSizeStepper = ({
           <IconStepDown />
         </button>
       </div>
-      {open && (
-        <div className="ctx-submenu ctx-submenu-fontsize">
-          {TEXT_FONT_SIZE_PRESETS.map((preset) => {
-            const isActive = preset === display;
-            return (
-              <button
-                key={preset}
-                className={`ctx-submenu-item${isActive ? ' ctx-submenu-item-active' : ''}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  onSelectSize?.(preset);
-                  close();
-                }}
-              >
-                <span className="ctx-size-item-label">{preset}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 };
