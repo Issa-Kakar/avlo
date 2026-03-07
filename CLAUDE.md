@@ -20,7 +20,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 
 ## File Map
 
-### Canvas System (7 files)
+### Canvas System (8 files)
 | File | Responsibility |
 |------|----------------|
 | `client/src/canvas/Canvas.tsx` | Thin React wrapper - mounts DOM, sets room context, creates runtime |
@@ -30,6 +30,7 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | `client/src/canvas/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
 | `client/src/canvas/room-runtime.ts` | Module-level room context for imperative access |
 | `client/src/canvas/invalidation-helpers.ts` | Setter/getter pattern for render loop invalidation |
+| `client/src/canvas/ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
 
 ### Core Files
 | File | Responsibility |
@@ -132,41 +133,21 @@ interface ConnectorTopology {
 | `Toast.tsx` | Toast notification system |
 | `UsersModal.tsx` | Users list modal |
 | `UserAvatarCluster.tsx` | Avatar cluster in top-right |
-| `SelectionContextMenu.tsx` + `.css` | Selection context menu (demo, inactive) |
 | `context-menu/` | Context menu system (see below) |
 | `icons/index.tsx` | SVG icon components |
 
 ### Context Menu (`client/src/components/context-menu/`)
-| File | Responsibility |
-|------|----------------|
-| `ContextMenu.tsx` | Gate (menuOpen) → ContextMenuBar → kind-branched groups |
-| `ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide/active lifecycle |
-| `context-menu.css` | All context menu styling, floating container, submenu dropdowns |
-| `MenuButton.tsx` | Base button primitive (mouseDown preventDefault) |
-| `Divider.tsx` | Single consistent divider (24px) |
-| `ButtonGroup.tsx` | Flex row wrapper |
-| `ColorCircle.tsx` | `variant='filled'\|'hollow'\|'none'`, optional `secondColor` split |
-| `ColorPickerPopover.tsx` | `mode='stroke'\|'fill'`, 9x2 grid, `selectedColor` ring, fill mode has no-fill slot |
-| `SizeLabel.tsx` | SVG text "Size S/M/L/XL" button + chevron. **Always renders** — non-preset/mixed values show blank |
-| `FontSizeStepper.tsx` | ± buttons + numeric value (text font size only) |
-| `TypefaceButton.tsx` | SVG text font name + chevron |
-| `FilterObjectsDropdown.tsx` | Mixed selection kind filter |
-| `color-palette.ts` | 18 colors (9x2: solids row, pastels row), `NO_FILL` sentinel |
-| `icons/` | Custom 16x16 SVGs — **fill-based paths** (not stroke) for pixel-crisp rendering at small sizes |
+**Docs:** `client/src/components/context-menu/CLAUDE.md`
+
+Selection-aware contextual toolbar. Controller at `canvas/ContextMenuController.ts`, React components render via portal from `Canvas.tsx`.
 
 **Bar layout per selectionKind** (all end with `| Trash | … |`):
-- `strokesOnly` → `[Size M] | [Color ▾]`
-- `shapesOnly` → `[Size M] | [Border ▾ (hollow)] [Fill ▾ (filled)]`
-- `connectorsOnly` → `[Size M] | [Color ▾]`
-- `textOnly` → `[Typeface ▾] | [±FontSize] | [B] [I] | [L C R] | [TextColor] [Highlight]`
+- `strokesOnly` → `[Size S/M/L/XL] | [Color ▾]`
+- `shapesOnly` → `[ShapeType ▾] | [Size S/M/L/XL] | [Border ▾] [Fill ▾]`
+- `connectorsOnly` → `[Size S/M/L/XL] | [Color ▾]`
+- `textOnly` → `[ShapeType ▾] | [Typeface ▾] | [±FontSize] | [B] [I] | [Align ▾] | [TextColor] [Highlight] | [Fill ▾]`
 - `mixed` → `[Filter dropdown]` (no style controls — filters to single kind)
 - Text editing overrides kind to `textOnly` regardless of selection
-
-**Key conventions:**
-- Icons use 16x16 viewBox with integer coordinates and fill paths — stroke-based icons blur at small render sizes
-- SizeLabel/TypefaceButton use SVG `<text>` with `textRendering="geometricPrecision"` and fixed widths to prevent layout shift
-- SizeLabel always renders even for non-preset widths (mixed sizes show "Size" + blank + chevron)
-- One divider style everywhere — consistent 24px height
 
 ---
 
@@ -479,10 +460,8 @@ start(config: RuntimeConfig): void {
 Y.Doc { guid: roomId }
 └─ root: Y.Map
    ├─ v: 2                          // Schema version
-   ├─ meta: Y.Map                   // TTL timestamps
+   ├─ meta: Y.Map                   // Legacy
    ├─ objects: Y.Map<Y.Map<any>>    // All objects by ULID
-   ├─ code: Y.Map                   // Legacy (future migration)
-   └─ outputs: Y.Array              // Legacy (future migration)
 ```
 
 ### Object Kinds
@@ -506,9 +485,10 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 
 **Text** (origin-based positioning, rich text via Y.XmlFragment):
 ```typescript
-{ id, kind: 'text', origin: [anchorX, baseline], fontSize, color,
+{ id, kind: 'text', origin: [anchorX, baseline], fontSize, fontFamily, color,
   align: 'left'|'center'|'right',
   width: 'auto' | number,       // TextWidth — 'auto' or fixed width in world units
+  fillColor?,                    // Optional background fill (hex string)
   content: Y.XmlFragment, ownerId, createdAt }
 // NOTE: No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
 // Use getTextFrame(objectId) from text-system.ts to read the cached derived frame.
@@ -592,13 +572,14 @@ getStartAnchor(y), getEndAnchor(y) → StoredAnchor | undefined
 getStartCap(y), getEndCap(y) → 'arrow' | 'none'
 
 // Text-specific
-getFontSize(y), getOrigin(y), getAlign(y), getTextWidth(y), getContent(y)
+getFontSize(y), getFontFamily(y), getOrigin(y), getAlign(y), getTextWidth(y), getContent(y)
 getTextProps(y)              → TextProps | null  // All text properties in one call
 
 // Text types (exported from accessors)
 type TextAlign = 'left' | 'center' | 'right'
 type TextWidth = 'auto' | number
-interface TextProps { content: Y.XmlFragment, origin, fontSize, align: TextAlign, width: TextWidth }
+type FontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
+interface TextProps { content: Y.XmlFragment, origin, fontSize, fontFamily: FontFamily, align: TextAlign, width: TextWidth }
 ```
 
 ### StoredAnchor (Connector Anchoring)
@@ -726,12 +707,20 @@ releasePointer(e.pointerId);
 ### State
 ```typescript
 interface DeviceUIState {
-  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'image'|'code';
-  drawingSettings: { size: 10|14|18|22; color: string; opacity: number; fill: boolean };
+  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'image'|'code';
+  drawingSettings: { size: 6|10|14|18; color: string; opacity: number; fill: boolean };
   highlighterOpacity: 0.45;  // Fixed
-  textSize: 20|30|40|50;
-  shapeVariant: 'diamond'|'rectangle'|'ellipse'|'arrow';
-  cursorOverride: string | null;  // e.g., 'grabbing' during pan
+  textSize: number;                    // Default 24, presets in TEXT_FONT_SIZE_PRESETS
+  connectorSize: 2|4|6|8;
+  shapeVariant: 'diamond'|'rectangle'|'ellipse';
+  fillColor: string;                   // Shape fill color
+  // Text-specific (persisted, used as defaults for new text objects)
+  textColor: string;
+  textAlign: TextAlign;
+  textFontFamily: FontFamily;
+  highlightColor: string | null;
+  textFillColor: string | null;        // Text background fill
+  cursorOverride: string | null;
 }
 ```
 
@@ -761,13 +750,13 @@ interface DeviceUIState {
 
 ### SelectTool
 
-**File:** `client/src/lib/tools/SelectTool.ts` (~1355 lines)
+**File:** `client/src/lib/tools/SelectTool.ts` 
 **Status:** Full — shapes, strokes, text, and connectors with endpoint editing.
 
 #### Selection Modes & Kinds
 ```typescript
 type SelectionMode = 'none' | 'standard' | 'connector';  // UX paradigm
-type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'connectorsOnly' | 'mixed';
+type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'connectorsOnly' | 'mixed';
 ```
 
 | Selection | Mode | UX |
@@ -790,9 +779,10 @@ When shapes transform, attached connectors reroute via `ConnectorTopology` (comp
 - **EndpointSpec:** `string` = frame override (shapeId), `true` = free position override, `null` = canonical
 - **Render:** `objects.ts` reads `topology.reroutes` for preview; commit writes final points
 
-#### Transform Behavior (Strokes/Shapes)
+#### Transform Behavior
 - **Strokes:** Uniform scale, position preserved, width scales WYSIWYG
 - **Shapes:** Non-uniform scale, stroke width unchanged
+- **Text:** Corner/N/S (textOnly) = uniform scale (fontSize + origin + width). E/W = reflow (width change, auto→fixed). Mixed N/S = edge-pin translate
 - **Mixed + side handle:** Strokes translate (edge-pin), shapes scale
 
 #### Hit Testing (`geometry/hit-testing.ts`)
@@ -835,9 +825,6 @@ interface ConnectorPreview {
 ---
 
 ## NOT Implemented Yet / Planned
-
-- **Text resize handles:** Select tool E/W side handles to interactively set fixed width
-- **Text scale transforms:** Font size scaling during select transforms
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Shape labels:** Text inside shapes
 - **Images**
