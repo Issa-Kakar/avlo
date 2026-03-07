@@ -109,8 +109,13 @@
 }
 
 .tiptap[data-width-mode='label'] {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   text-align: center;
+  scrollbar-width: none;
+}
+.tiptap[data-width-mode='label']::-webkit-scrollbar {
+  display: none;
 }
 
 .tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {

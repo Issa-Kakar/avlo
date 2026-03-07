@@ -149,7 +149,11 @@ export class SelectTool implements PointerTool {
     const { mode, selectedIds, textEditingId } = store;
 
     // 1. Mode-specific first-priority hit targets
-    if (mode === 'standard' && selectedIds.length > 0 && !textEditingId) {
+    if (
+      mode === 'standard' &&
+      selectedIds.length > 0 &&
+      (!textEditingId || textTool.isEditingLabel())
+    ) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
       const { scale } = useCameraStore.getState();
@@ -189,7 +193,11 @@ export class SelectTool implements PointerTool {
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
       // Single text re-click: undo hide so editor mounts without menu flash (hide deferred to move)
-      if (isSelected && selectedIds.length === 1 && hit.kind === 'text') {
+      if (
+        isSelected &&
+        selectedIds.length === 1 &&
+        (hit.kind === 'text' || textTool.justClosedLabelId === hit.id)
+      ) {
         contextMenuController.cancelHide();
       }
       invalidateOverlay();
@@ -507,7 +515,11 @@ export class SelectTool implements PointerTool {
               (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape') &&
               !textTool.isEditorMounted()
             ) {
-              textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
+              if (textTool.justClosedLabelId === this.hitAtDown!.id) {
+                textTool.justClosedLabelId = null;
+              } else {
+                textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
+              }
             }
             break;
 
@@ -623,6 +635,7 @@ export class SelectTool implements PointerTool {
       contextMenuController.show();
     }
 
+    textTool.justClosedLabelId = null;
     invalidateOverlay();
   }
 
@@ -656,6 +669,7 @@ export class SelectTool implements PointerTool {
       contextMenuController.show();
     }
 
+    textTool.justClosedLabelId = null;
     invalidateOverlay();
   }
 
@@ -704,7 +718,8 @@ export class SelectTool implements PointerTool {
       kind: 'selection',
       selectionBounds,
       marqueeRect,
-      handles: isTransforming || store.textEditingId ? null : handles,
+      handles:
+        isTransforming || (store.textEditingId && !textTool.isEditingLabel()) ? null : handles,
       isTransforming,
       selectedIds,
       bbox: null,
@@ -749,7 +764,7 @@ export class SelectTool implements PointerTool {
 
     const { scale } = useCameraStore.getState();
 
-    if (mode === 'standard' && !store.textEditingId) {
+    if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel())) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);

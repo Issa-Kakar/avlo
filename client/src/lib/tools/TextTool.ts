@@ -80,6 +80,8 @@ export class TextTool implements PointerTool {
   private editor: Editor | null = null;
   objectId: string | null = null; // public — mirrors textEditingId
 
+  justClosedLabelId: string | null = null;
+
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
@@ -190,6 +192,11 @@ export class TextTool implements PointerTool {
 
   isEditorMounted(): boolean {
     return this.editor !== null;
+  }
+
+  isEditingLabel(): boolean {
+    if (!this.objectId) return false;
+    return getCurrentSnapshot().objectsById.get(this.objectId)?.kind === 'shape' || false;
   }
 
   getEditor(): Editor | null {
@@ -499,10 +506,10 @@ export class TextTool implements PointerTool {
 
   private commitAndClose(): void {
     if (!this.editor || !this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
 
     // Delete empty content on close
     if (this.editor.isEmpty) {
-      const handle = getCurrentSnapshot().objectsById.get(this.objectId);
       if (handle?.kind === 'shape') {
         // Shape label: remove label fields, keep shape
         getActiveRoomDoc().mutate(() => {
@@ -521,6 +528,9 @@ export class TextTool implements PointerTool {
         });
       }
     }
+
+    // Track shape label close for remount prevention
+    if (handle?.kind === 'shape') this.justClosedLabelId = this.objectId;
 
     this.removeEditorHandlers();
 

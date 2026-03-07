@@ -748,6 +748,7 @@ interface DeviceUIState {
 - Canvas layout engine: tokenizer + flow engine matching CSS `pre-wrap` + `break-word`
 - Three-tier cache: content → measurement → flow (width change only re-flows)
 - Derived frame in `TextLayoutCache` (no stored frame in Y.Map), read via `getTextFrame(id)`
+- **Shape labels:** `justClosedLabelId` prevents close→remount cycle; `isEditingLabel()` lets SelectTool show handles during label editing
 
 ### PanTool
 

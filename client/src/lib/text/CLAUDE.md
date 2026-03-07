@@ -898,7 +898,7 @@ Key differences from text objects:
 - Color from `getLabelColor()` (not `getColor()`)
 - No `backgroundColor` — the shape itself is the visual background
 - No Placeholder extension — empty labels show nothing
-- `data-width-mode='label'` — triggers CSS for center align + overflow hidden + placeholder suppression
+- `data-width-mode='label'` — triggers CSS for center align + scrollable overflow (hidden scrollbar) + placeholder suppression
 
 #### positionEditor — Label Branch
 
@@ -910,7 +910,15 @@ Tracked keys for labels: `labelColor` → `--text-color`, `frame`/`shapeType`/`f
 
 #### commitAndClose — Label Cleanup
 
-If `editor.isEmpty` and `handle.kind === 'shape'`: deletes only label fields (`content`, `fontSize`, `fontFamily`, `labelColor`). The shape persists. Text objects still delete the entire object.
+If `editor.isEmpty` and `handle.kind === 'shape'`: deletes only label fields (`content`, `fontSize`, `fontFamily`, `labelColor`). The shape persists. Text objects still delete the entire object. On close, sets `justClosedLabelId` for shape labels to prevent remount (see below).
+
+#### Label Editing UX (TextTool ↔ SelectTool coordination)
+
+Shape label containers are smaller than the shape bounds (inscribed text box). This creates two interactions that differ from text objects:
+
+1. **Remount prevention:** Clicking the shape body outside the text container fires `commitAndClose()` (capture phase) then reaches SelectTool `end()` (bubble phase). Without a guard, SelectTool sees an in-selection shape with no editor and calls `startEditing()` — unwanted remount. Fix: `justClosedLabelId` flag set in `commitAndClose()`, checked and consumed in SelectTool `end()`. Unconditionally cleared at end of `end()`/`cancel()`.
+
+2. **Handles visible during label editing:** Unlike text objects (whose container covers the full bounds), label containers don't occlude handles. SelectTool's `isEditingLabel()` checks allow handle hit-testing, handle rendering, and hover cursor during shape label editing. Text object editing still suppresses handles.
 
 ### CSS (`index.css`)
 
@@ -921,8 +929,13 @@ If `editor.isEmpty` and `handle.kind === 'shape'`: deletes only label fields (`c
 }
 
 .tiptap[data-width-mode='label'] {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   text-align: center;
+  scrollbar-width: none;  /* Firefox */
+}
+.tiptap[data-width-mode='label']::-webkit-scrollbar {
+  display: none;           /* Chrome/Safari */
 }
 
 .tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
@@ -946,7 +959,7 @@ Additional tracked keys: `labelColor`, `frame`, `shapeType`. These fire `onProps
 DOM and canvas label rendering match because:
 - Both center content horizontally within the text box (`text-align: center` ↔ `tbx + (tbw - lineW) / 2`)
 - Both center content vertically (CSS `translate(-50%, -50%)` from text box center ↔ canvas `tby + (tbh - contentHeight) / 2`)
-- Both clip overflow (`overflow: hidden` + `maxHeight` ↔ `ctx.clip()`)
+- Both clip overflow (`overflow-y: auto` + `maxHeight` ↔ `ctx.clip()`) — DOM scrolls during editing, canvas clips at rest
 - Same font metrics, same line height, same `baselineToTop` ratio
 - After editor close, ProseMirror scrollTop resets — canvas "rest position" matches the DOM un-scrolled state
 
@@ -959,6 +972,8 @@ DOM and canvas label rendering match because:
 - **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns → label invisible but Y.XmlFragment content preserved
 - **Collaboration:** Y.XmlFragment CRDT + TextCollaboration ySyncPlugin handle concurrent label edits identically to text objects
 - **Shape type change during editing:** `shapeType` key tracked by extension observer → `positionEditor()` recomputes text box for new shape geometry
+- **Click shape body during label editing:** Editor closes, shape stays selected, editor does NOT remount (justClosedLabelId guard); next click re-opens
+- **Handle click during label editing:** Capture phase closes editor → textEditingId null → begin() tests handles normally → scale gesture starts
 
 ### Not Yet Implemented
 
