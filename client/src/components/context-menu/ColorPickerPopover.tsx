@@ -1,7 +1,7 @@
 import { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
 import { MenuButton } from './MenuButton';
 import { ColorCircle } from './ColorCircle';
-import { IconChevronDown, IconNoFill } from './icons';
+import { IconNoFill } from './icons';
 import { useDropdown } from './useDropdown';
 
 interface ColorPickerPopoverProps {
@@ -25,25 +25,15 @@ export function ColorPickerPopover({
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton
-        className="ctx-btn-color-dd"
-        onMouseDown={toggle}
-      >
-        <ColorCircle
-          color={color}
-          variant={variant}
-          secondColor={secondColor}
-        />
-        <IconChevronDown className="ctx-dd-arrow" />
+      <MenuButton className="ctx-btn-color" onMouseDown={toggle}>
+        <ColorCircle color={color} variant={variant} secondColor={secondColor} />
       </MenuButton>
       {open && (
         <div className="ctx-submenu" style={{ minWidth: 'auto', padding: 0 }}>
           <div className="ctx-color-grid">
             {CONTEXT_MENU_COLORS.map((c, i) => {
               const isPastel = i >= 9;
-              const isSelected = selectedColor !== undefined
-                ? selectedColor === c
-                : color === c;
+              const isSelected = selectedColor !== undefined ? selectedColor === c : color === c;
 
               // In fill mode, replace white (index 10) with no-fill icon
               if (mode === 'fill' && i === 10) {

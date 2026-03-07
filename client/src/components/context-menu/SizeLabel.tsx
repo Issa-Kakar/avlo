@@ -1,8 +1,18 @@
 import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
-const STROKE_PRESETS: [string, number][] = [['S', 6], ['M', 10], ['L', 14], ['XL', 18]];
-const CONNECTOR_PRESETS: [string, number][] = [['S', 2], ['M', 4], ['L', 6], ['XL', 8]];
+const STROKE_PRESETS: [string, number][] = [
+  ['S', 6],
+  ['M', 10],
+  ['L', 14],
+  ['XL', 18],
+];
+const CONNECTOR_PRESETS: [string, number][] = [
+  ['S', 2],
+  ['M', 4],
+  ['L', 6],
+  ['XL', 8],
+];
 
 const STROKE_LABELS: Record<number, string> = { 6: 'S', 10: 'M', 14: 'L', 18: 'XL' };
 const CONNECTOR_LABELS: Record<number, string> = { 2: 'S', 4: 'M', 6: 'L', 8: 'XL' };
@@ -27,10 +37,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <button
-        className="ctx-size-label-btn"
-        onMouseDown={toggle}
-      >
+      <button className="ctx-size-label-btn" onMouseDown={toggle}>
         <svg
           width={svgW}
           height={16}
@@ -43,8 +50,8 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
             x="0"
             y="12"
             fill="#111827"
-            fontSize="13"
-            fontWeight="700"
+            fontSize="14"
+            fontWeight="500"
             fontFamily="var(--font-stack)"
             textRendering="geometricPrecision"
           >
@@ -55,8 +62,8 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
               x="33"
               y="12"
               fill="#111827"
-              fontSize="13"
-              fontWeight="700"
+              fontSize="14"
+              fontWeight="500"
               fontFamily="var(--font-stack)"
               textRendering="geometricPrecision"
             >
@@ -80,9 +87,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
                   close();
                 }}
               >
-                {active
-                  ? <IconCheck width={16} height={16} />
-                  : <span style={{ width: 16 }} />}
+                {active ? <IconCheck width={16} height={16} /> : <span style={{ width: 16 }} />}
                 <span className="ctx-size-item-label">{lbl}</span>
                 <span className="ctx-size-item-value">{size}px</span>
               </button>

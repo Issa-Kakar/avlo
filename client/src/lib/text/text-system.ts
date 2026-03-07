@@ -823,11 +823,16 @@ class TextLayoutCache {
     return layout;
   }
 
-  /** Content invalidation — content changed, must re-parse. */
-  invalidateContent(objectId: string): void {
+  /** Content invalidation — content changed, must re-parse.
+   *  When fragment is provided, eagerly re-tokenizes so getInlineStyles()
+   *  returns fresh data immediately (critical for shape labels where no
+   *  getLayout() call happens before refreshStyles in the observer path).
+   *  Always nulls measuredFontSize to force re-measure + re-layout on next getLayout(). */
+  invalidateContent(objectId: string, fragment?: Y.XmlFragment): void {
     const e = this.cache.get(objectId);
     if (e) {
-      e.tokenized = null;
+      e.tokenized = fragment ? parseAndTokenize(fragment) : null;
+      e.measuredFontSize = null;
       e.frame = null;
     }
   }

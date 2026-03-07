@@ -1,5 +1,5 @@
 import { TEXT_FONT_SIZE_PRESETS } from '@/stores/device-ui-store';
-import { IconStepUp, IconStepDown, IconCheck } from './icons/UtilityIcons';
+import { IconStepUp, IconStepDown } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 interface FontSizeStepperProps {
@@ -34,7 +34,7 @@ export const FontSizeStepper = ({
             y="12"
             fill="#374151"
             fontSize="15"
-            fontWeight="600"
+            fontWeight="500"
             fontFamily="var(--font-stack)"
             textRendering="geometricPrecision"
             textAnchor="middle"
@@ -77,7 +77,6 @@ export const FontSizeStepper = ({
                   close();
                 }}
               >
-                {isActive && <IconCheck width={14} height={14} />}
                 <span className="ctx-size-item-label">{preset}</span>
               </button>
             );

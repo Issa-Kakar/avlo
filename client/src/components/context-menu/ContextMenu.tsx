@@ -85,6 +85,8 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
   );
   return (
     <ButtonGroup>
+      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
+      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant="filled"
@@ -93,8 +95,6 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
         selectedColor={color}
         onSelect={setSelectedColor}
       />
-      <div className="ctx-divider" />
-      <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });
@@ -148,7 +148,7 @@ const BoldButton = memo(function BoldButton() {
   const bold = useSelectionStore(selectInlineBold);
   return (
     <MenuButton className="ctx-btn-sq" active={bold} onClick={toggleSelectedBold}>
-      <IconBold />
+      <IconBold style={{ width: 15, height: 15 }} />
     </MenuButton>
   );
 });
@@ -157,7 +157,7 @@ const ItalicButton = memo(function ItalicButton() {
   const italic = useSelectionStore(selectInlineItalic);
   return (
     <MenuButton className="ctx-btn-sq" active={italic} onClick={toggleSelectedItalic}>
-      <IconItalic />
+      <IconItalic style={{ width: 15, height: 15 }} />
     </MenuButton>
   );
 });
@@ -206,6 +206,8 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   );
   return (
     <ButtonGroup>
+      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
+      <div className="ctx-divider" />
       <ColorPickerPopover
         color={color}
         variant="filled"
@@ -214,8 +216,6 @@ const ConnectorGroup = memo(function ConnectorGroup() {
         selectedColor={color}
         onSelect={setSelectedColor}
       />
-      <div className="ctx-divider" />
-      <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />
     </ButtonGroup>
   );
 });

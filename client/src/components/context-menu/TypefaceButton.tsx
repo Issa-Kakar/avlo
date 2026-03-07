@@ -5,7 +5,7 @@ import { setSelectedFontFamily } from '@/lib/utils/selection-actions';
 import type { FontFamily } from '@avlo/shared';
 import { FONT_FAMILIES } from '@/lib/text/text-system';
 import { MenuButton } from './MenuButton';
-import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
+import { IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 const selectFontFamily = (s: SelectionStore) => s.selectedStyles.fontFamily;
@@ -50,7 +50,6 @@ export function TypefaceButton() {
             {current.display}
           </text>
         </svg>
-        <IconChevronDown className="ctx-dd-arrow" />
       </MenuButton>
 
       {open && (

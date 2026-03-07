@@ -940,9 +940,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
         touchedIds.add(id);
 
-        // Y.XmlFragment change: invalidate text cache (full)
+        // Y.XmlFragment change: invalidate text cache (eager re-tokenize for inline styles)
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
-          textLayoutCache.invalidateContent(id);
+          const fragment = objects.get(id)?.get('content');
+          textLayoutCache.invalidateContent(
+            id,
+            fragment instanceof Y.XmlFragment ? fragment : undefined,
+          );
         }
       }
 

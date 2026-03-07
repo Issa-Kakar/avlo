@@ -108,12 +108,6 @@
   min-width: 56px;
 }
 
-.ctx-btn-font svg:last-child {
-  width: 10px;
-  height: 10px;
-  flex-shrink: 0;
-}
-
 /* ===== Divider ===== */
 
 .ctx-divider {
@@ -137,12 +131,12 @@
 .ctx-fontsize-group {
   display: flex;
   align-items: center;
-  gap: 3px;
-  margin: 0 2px;
+  gap: 4px;
+  margin: 0 5px;
 }
 
 .ctx-fontsize-value {
-  min-width: 30px;
+  min-width: 32px;
   height: 28px;
   display: inline-flex;
   align-items: center;
@@ -152,11 +146,11 @@
   color: #374151;
   font-family: var(--font-stack);
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
   outline: none;
-  padding: 0 2px;
+  padding: 0 4px;
 }
 
 .ctx-fontsize-value:hover {
@@ -284,8 +278,8 @@
 }
 
 .ctx-size-item-label {
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: 500;
+  font-size: 15px;
   min-width: 24px;
 }
 
@@ -572,5 +566,7 @@
 /* ===== Font Size Dropdown ===== */
 
 .ctx-submenu-fontsize {
-  min-width: 90px;
+  min-width: 56px;
+  left: 0;
+  transform: none;
 }
