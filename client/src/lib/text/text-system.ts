@@ -927,6 +927,44 @@ function getLineStartX(
   return left + (boxWidth - lineVisualWidth);
 }
 
+// --- Label text box ---
+
+const LABEL_PADDING = 10;
+const SQRT2_OVER_2 = Math.SQRT2 / 2;
+
+export function computeLabelTextBox(shapeType: string, frame: FrameTuple): FrameTuple {
+  const [fx, fy, fw, fh] = frame;
+  const pad = LABEL_PADDING;
+  switch (shapeType) {
+    case 'ellipse': {
+      const iw = fw * SQRT2_OVER_2,
+        ih = fh * SQRT2_OVER_2;
+      const cx = fx + fw / 2,
+        cy = fy + fh / 2;
+      return [
+        cx - iw / 2 + pad,
+        cy - ih / 2 + pad,
+        Math.max(0, iw - 2 * pad),
+        Math.max(0, ih - 2 * pad),
+      ];
+    }
+    case 'diamond': {
+      const iw = fw / 2,
+        ih = fh / 2;
+      const cx = fx + fw / 2,
+        cy = fy + fh / 2;
+      return [
+        cx - iw / 2 + pad,
+        cy - ih / 2 + pad,
+        Math.max(0, iw - 2 * pad),
+        Math.max(0, ih - 2 * pad),
+      ];
+    }
+    default:
+      return [fx + pad, fy + pad, Math.max(0, fw - 2 * pad), Math.max(0, fh - 2 * pad)];
+  }
+}
+
 // --- Renderer ---
 
 /**
@@ -1000,6 +1038,72 @@ export function renderTextLayout(
     }
   }
   ctx.restore();
+}
+
+// --- Shape label renderer ---
+
+export function renderShapeLabel(
+  ctx: CanvasRenderingContext2D,
+  layout: TextLayout,
+  textBox: FrameTuple,
+  color: string,
+  fontFamily: FontFamily,
+): void {
+  const [tbx, tby, tbw, tbh] = textBox;
+  if (tbw <= 0 || tbh <= 0 || layout.lines.length === 0) return;
+
+  const { fontSize, lineHeight } = layout;
+  const contentHeight = layout.lines.length * lineHeight;
+  const baselineToTop = fontSize * getBaselineToTopRatio(fontFamily);
+  const needsClip = contentHeight > tbh;
+
+  const contentTopY = needsClip ? tby : tby + (tbh - contentHeight) / 2;
+  const firstBaselineY = contentTopY + baselineToTop;
+
+  if (needsClip) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(tbx, tby, tbw, tbh);
+    ctx.clip();
+  }
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.textRendering = 'optimizeSpeed';
+
+  const hlR = fontSize * 0.25;
+  for (const line of layout.lines) {
+    if (line.runs.length === 0) continue;
+    const lineY = firstBaselineY + line.baselineY;
+    const lineW = line.alignmentWidth;
+    const startX = tbx + (tbw - lineW) / 2;
+
+    // Pass 1: highlights
+    for (const run of line.runs) {
+      if (!run.highlight) continue;
+      ctx.fillStyle = run.highlight;
+      const hlX = startX + run.advanceX;
+      const hlY = lineY - baselineToTop;
+      const hlEnd = hlX + run.advanceWidth;
+      const clL = Math.max(hlX, tbx);
+      const clR = Math.min(hlEnd, tbx + tbw);
+      if (clR > clL) {
+        const rL = clL > hlX ? 0 : hlR,
+          rR = clR < hlEnd ? 0 : hlR;
+        ctx.beginPath();
+        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
+        ctx.fill();
+      }
+    }
+
+    // Pass 2: text
+    ctx.fillStyle = color;
+    for (const run of line.runs) {
+      ctx.font = run.font;
+      ctx.fillText(run.text, startX + run.advanceX, lineY);
+    }
+  }
+
+  if (needsClip) ctx.restore();
 }
 
 // --- Spatial index + derived frame ---

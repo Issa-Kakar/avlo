@@ -480,7 +480,10 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 **Shape** (rect/ellipse/diamond/roundedRect):
 ```typescript
 { id, kind: 'shape', shapeType, color, width, opacity, fillColor?,
-  frame: [x, y, w, h], ownerId, createdAt }
+  frame: [x, y, w, h],
+  // Optional label fields (added on first edit, removed if empty on close):
+  content?: Y.XmlFragment, fontSize?: number, fontFamily?: FontFamily, labelColor?: string,
+  ownerId, createdAt }
 ```
 
 **Text** (origin-based positioning, rich text via Y.XmlFragment):
@@ -826,5 +829,4 @@ interface ConnectorPreview {
 
 ## NOT Implemented Yet / Planned
 - **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
-- **Shape labels:** Text inside shapes
 - **Images**

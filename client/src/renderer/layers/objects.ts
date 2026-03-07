@@ -1,4 +1,4 @@
-import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry } from '@avlo/shared';
+import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry, FrameTuple } from '@avlo/shared';
 import {
   getColor,
   getOpacity,
@@ -10,6 +10,11 @@ import {
   getStrokeTool,
   getStartCap,
   getEndCap,
+  hasLabel,
+  getLabelColor,
+  getContent,
+  getFontSize,
+  getFontFamily,
 } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
@@ -34,6 +39,9 @@ import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
 import {
   textLayoutCache,
   renderTextLayout,
+  renderShapeLabel,
+  computeLabelTextBox,
+  layoutMeasuredContent,
   anchorFactor,
   getBaselineToTopRatio,
   getTextFrame,
@@ -241,7 +249,37 @@ function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     ctx.stroke(path);
   }
 
+  if (hasLabel(y)) drawShapeLabel(ctx, handle);
+
   ctx.restore();
+}
+
+function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  if (useSelectionStore.getState().textEditingId === handle.id) return;
+  const content = getContent(handle.y);
+  if (!content) return;
+  const frame = getFrame(handle.y)!;
+  const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+  if (textBox[2] <= 0 || textBox[3] <= 0) return;
+  const fontSize = getFontSize(handle.y);
+  const fontFamily = getFontFamily(handle.y);
+  const layout = textLayoutCache.getLayout(handle.id, content, fontSize, fontFamily, textBox[2]);
+  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily);
+}
+
+function drawShapeLabelWithFrame(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  frame: FrameTuple,
+): void {
+  if (useSelectionStore.getState().textEditingId === handle.id) return;
+  const measured = textLayoutCache.getMeasuredContent(handle.id);
+  if (!measured) return;
+  const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+  if (textBox[2] <= 0 || textBox[3] <= 0) return;
+  const fontSize = getFontSize(handle.y);
+  const layout = layoutMeasuredContent(measured, textBox[2], fontSize);
+  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), getFontFamily(handle.y));
 }
 
 /**
@@ -424,6 +462,8 @@ function drawShapeWithTransform(
     ctx.stroke(path);
   }
 
+  if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, transformedFrame);
+
   ctx.restore();
 }
 
@@ -533,6 +573,8 @@ function drawShapeWithUniformScale(
     ctx.lineJoin = 'round';
     ctx.stroke(path);
   }
+
+  if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, transformedFrame);
 
   ctx.restore();
 }

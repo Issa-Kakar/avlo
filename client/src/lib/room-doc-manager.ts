@@ -985,8 +985,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         processShapeDeleted(id); // Clean up lookup entry for this shape
       }
 
-      // Remove text cache entry on deletion
-      if (handle.kind === 'text') {
+      // Remove text layout cache entry on deletion
+      if (handle.kind === 'text' || handle.kind === 'shape') {
         textLayoutCache.remove(id);
       }
     }
@@ -1002,7 +1002,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Deletion bridge
     if (selectedSet.size > 0) {
       for (const id of deletedIds) {
-        if (selectedSet.has(id)) { sel.clearSelection(); break; }
+        if (selectedSet.has(id)) {
+          sel.clearSelection();
+          break;
+        }
       }
     } else if (editingId && deletedIds.has(editingId)) {
       useSelectionStore.getState().endTextEditing();
@@ -1086,7 +1089,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Bridge: apply accumulated flags
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
-    if (needsReposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+    if (needsReposition)
+      useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
   }
 
   // ============================================================

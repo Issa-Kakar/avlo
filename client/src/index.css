@@ -87,14 +87,14 @@
   pointer-events: auto;
   z-index: 1000;
   outline: none;
+  overflow: hidden;
   overflow-wrap: break-word;
   white-space: pre-wrap;
   /* Dynamic properties */
   color: var(--text-color, #000000);
-
   /* Alignment anchor transform */
   width: max-content;
-  transform: translateX(var(--text-anchor-tx, 0%));
+  transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
   text-align: var(--text-align, left);
 }
 
@@ -105,6 +105,15 @@
 }
 
 .tiptap[data-width-mode='fixed'] .is-editor-empty:first-child::before {
+  display: none;
+}
+
+.tiptap[data-width-mode='label'] {
+  overflow: hidden;
+  text-align: center;
+}
+
+.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
   display: none;
 }
 /* Paragraph styling */

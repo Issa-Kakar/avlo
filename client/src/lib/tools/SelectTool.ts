@@ -503,7 +503,10 @@ export class SelectTool implements PointerTool {
             // Click on already-selected object → "drill down" if multi-select
             if (store.selectedIds.length > 1) {
               store.setSelection([this.hitAtDown!.id]);
-            } else if (this.hitAtDown!.kind === 'text' && !textTool.isEditorMounted()) {
+            } else if (
+              (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape') &&
+              !textTool.isEditorMounted()
+            ) {
               textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
             }
             break;

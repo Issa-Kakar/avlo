@@ -12,7 +12,7 @@
  * @module accessors/object-accessors
  */
 
-import type * as Y from 'yjs';
+import * as Y from 'yjs';
 import type { FrameTuple, Frame } from '../types/geometry';
 
 // ============================================================================
@@ -116,6 +116,14 @@ export function getShapeType(y: Y.Map<unknown>): string {
  */
 export function getFillColor(y: Y.Map<unknown>): string | undefined {
   return y.get('fillColor') as string | undefined;
+}
+
+export function getLabelColor(y: Y.Map<unknown>, fallback = '#000'): string {
+  return (y.get('labelColor') as string | undefined) ?? fallback;
+}
+
+export function hasLabel(y: Y.Map<unknown>): boolean {
+  return y.get('content') instanceof Y.XmlFragment;
 }
 
 // ============================================================================

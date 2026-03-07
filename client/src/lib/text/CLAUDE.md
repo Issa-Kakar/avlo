@@ -778,6 +778,196 @@ Lora's max weight is 700, so all fonts are now clamped to `wght 450–700`.
 
 ---
 
+## Shape Labels
+
+Text labels inside shapes (rect, ellipse, diamond, roundedRect). Reuses the full text pipeline — same Y.XmlFragment, same tokenizer/measure/layout, same Tiptap editor — but with shape-aware positioning, text box computation, and a dedicated canvas renderer.
+
+### Y.Doc Schema (Label Fields on Shape Object)
+
+Labels are NOT separate objects. They add fields directly to the existing shape Y.Map:
+
+```typescript
+// Existing shape fields (unchanged)
+{ id, kind: 'shape', shapeType, color, width, opacity, fillColor?, frame, ownerId, createdAt }
+
+// Label fields (added on first edit, removed if empty on close)
+{
+  content: Y.XmlFragment,     // Rich text — same structure as text objects
+  fontSize: number,            // World units
+  fontFamily: FontFamily,      // 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
+  labelColor: string,          // Text color (separate from shape border `color`)
+}
+```
+
+**Key difference from text objects:** No `origin`, `align`, or `width` fields. Labels are always center-aligned H+V within the inscribed text box, and width is derived from the shape frame. Color uses `labelColor` (not `color`, which is the shape border color).
+
+### Accessors (`object-accessors.ts`)
+
+```typescript
+getLabelColor(y, fallback = '#000'): string   // Reads 'labelColor' key
+hasLabel(y): boolean                           // y.get('content') instanceof Y.XmlFragment
+```
+
+`hasLabel()` is the canonical check — shapes without labels have no `content` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged (same key names, separate Y.Map instances).
+
+### Text Box Computation (`text-system.ts` → `computeLabelTextBox`)
+
+```typescript
+computeLabelTextBox(shapeType: string, frame: FrameTuple): FrameTuple
+```
+
+Pure function. Returns the max inscribed text rectangle within the shape, inset by `LABEL_PADDING = 10`:
+
+| Shape | Inscribed rect | Math |
+|-------|---------------|------|
+| rect, roundedRect | Frame minus padding | `[fx+pad, fy+pad, fw-2*pad, fh-2*pad]` |
+| ellipse | Max inscribed rect of ellipse, minus padding | `a√2 × b√2` centered, then inset by pad |
+| diamond | Half-size rect centered | `w/2 × h/2` centered, then inset by pad |
+
+`Math.max(0, ...)` prevents negative dimensions on tiny shapes — `renderShapeLabel` and `drawShapeLabel` early-return when dims ≤ 0.
+
+Rect and roundedRect share the same formula — roundedRect's max corner inset (~5.86px at default radius) is less than the 10px padding, so the full inscribed rect is within the rounded area.
+
+### Canvas Rendering
+
+**At rest — `drawShapeLabel()`** (`objects.ts`):
+
+Called at end of `drawShape()` inside the opacity `ctx.save()`/`ctx.restore()` scope, gated by `hasLabel(y)`. Skips if `textEditingId === handle.id` (DOM overlay handles it during editing).
+
+```
+drawShape() → stroke/fill shape → if (hasLabel) drawShapeLabel() → ctx.restore()
+```
+
+Calls `textLayoutCache.getLayout()` with the text box width — this goes through the normal three-tier cache (content → measure → layout). Width changes from shape resizing trigger re-flow automatically via the cache's width comparison.
+
+**During transforms — `drawShapeLabelWithFrame()`** (`objects.ts`):
+
+Used by `drawShapeWithTransform()` (non-uniform scale) and `drawShapeWithUniformScale()` (mixed + corner). Takes an explicit transformed frame instead of reading from Y.Map.
+
+Does NOT call `textLayoutCache.getLayout()` — instead reads cached `MeasuredContent` via `textLayoutCache.getMeasuredContent()` and calls `layoutMeasuredContent()` directly with the ephemeral text box width. This avoids polluting the cache with transient transform frame widths that would cause staleness bugs on gesture cancel. The `MeasuredContent` is guaranteed fresh because the shape was rendered at rest (triggering `getLayout`) before any transform begins.
+
+**Translate transforms** work automatically — `ctx.translate(dx,dy)` + `drawObject` → `drawShape` → `drawShapeLabel` inherits the translate context.
+
+### Shape Label Renderer (`text-system.ts` → `renderShapeLabel`)
+
+```typescript
+renderShapeLabel(ctx, layout, textBox, color, fontFamily)
+```
+
+Differs from `renderTextLayout` in positioning strategy:
+
+- **Horizontal:** Always center-aligned. `startX = tbx + (tbw - lineW) / 2` — no origin/anchorFactor indirection
+- **Vertical:** Content block centered in text box. `contentTopY = tby + (tbh - contentHeight) / 2`. First baseline = `contentTopY + baselineToTop`
+- **Overflow:** When `contentHeight > tbh`, content clamps to top of text box (`contentTopY = tby`) and clips via `ctx.clip()` with a rect matching the text box. This matches the DOM behavior where `overflow: hidden` + ProseMirror internal scroll clips at the container edge
+- **Highlights:** Same highlight rect rendering as `renderTextLayout` — `roundRect` with `fontSize * 0.25` radius, clamped to text box bounds
+
+### DOM Editing (TextTool)
+
+#### Entry Point
+
+SelectTool drill-down handles both text objects and shapes:
+
+```
+Click 1 on shape → select
+Click 2 on selected shape → textTool.startEditing(shapeId, clickPos)
+```
+
+`startEditing()` checks `handle.kind === 'shape'`:
+- If no label exists (`!hasLabel(handle.y)`): creates label fields in a single transaction (`content`, `fontSize`, `fontFamily`, `labelColor` from device-ui-store defaults)
+- Then mounts editor with `isNew = isNewLabel`
+
+#### No Stored `isLabel` Flag
+
+TextTool derives label vs text mode from `handle.kind === 'shape'` inline at every call site (mountEditor, positionEditor, syncProps, commitAndClose). No stored `isLabel` field — future object kind mutations (text↔shape) convert seamlessly.
+
+#### mountEditor — Label Branch
+
+Positioning: text box center via `worldToClient(tbx + tbw/2, tby + tbh/2)`, CSS transform `translate(-50%, -50%)` centers the DOM content block at that point.
+
+```typescript
+container.style.setProperty('--text-anchor-tx', '-50%');
+container.style.setProperty('--text-anchor-ty', '-50%');
+container.style.maxWidth = `${tbw * scale}px`;
+container.style.maxHeight = `${tbh * scale}px`;
+container.dataset.widthMode = 'label';
+container.style.setProperty('--text-color', getLabelColor(handle.y));
+```
+
+Key differences from text objects:
+- Uses `maxWidth`/`maxHeight` (not `width`) — content auto-grows up to text box bounds
+- Color from `getLabelColor()` (not `getColor()`)
+- No `backgroundColor` — the shape itself is the visual background
+- No Placeholder extension — empty labels show nothing
+- `data-width-mode='label'` — triggers CSS for center align + overflow hidden + placeholder suppression
+
+#### positionEditor — Label Branch
+
+Reads `getFrame(handle.y)` + `getShapeType(handle.y)` → `computeLabelTextBox()` → updates `left`, `top`, `maxWidth`, `maxHeight`, font sizing. Called on pan/zoom (`onViewChange`) and on undo/redo of shape properties.
+
+#### syncProps — Label Branch
+
+Tracked keys for labels: `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily` → `positionEditor()`. Does NOT react to `fillColor` changes (shape IS the background) or `color` changes (that's the shape border).
+
+#### commitAndClose — Label Cleanup
+
+If `editor.isEmpty` and `handle.kind === 'shape'`: deletes only label fields (`content`, `fontSize`, `fontFamily`, `labelColor`). The shape persists. Text objects still delete the entire object.
+
+### CSS (`index.css`)
+
+```css
+.tiptap {
+  transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
+  /* --text-anchor-ty added for label vertical centering, defaults to 0% — existing text unaffected */
+}
+
+.tiptap[data-width-mode='label'] {
+  overflow: hidden;
+  text-align: center;
+}
+
+.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
+  display: none;
+}
+```
+
+### Extension Observer (`extensions.ts`)
+
+Additional tracked keys: `labelColor`, `frame`, `shapeType`. These fire `onPropsSync` when the shape is resized, type-changed, or label color is changed during editing. Harmless for text objects (they never have these keys changed during editing).
+
+### Cache Integration
+
+- **At rest:** `drawShapeLabel` → `textLayoutCache.getLayout(shapeId, ...)` — normal three-tier cache, width = text box width
+- **Deep observer:** `field === 'content'` → `invalidateContent(id)` — works for shapes too (same key name)
+- **Deletion:** `textLayoutCache.remove(id)` for both `kind === 'text'` and `kind === 'shape'` — no-op for shapes without labels (no cache entry)
+- **Transform preview:** `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes, no staleness
+
+### WYSIWYG Parity
+
+DOM and canvas label rendering match because:
+- Both center content horizontally within the text box (`text-align: center` ↔ `tbx + (tbw - lineW) / 2`)
+- Both center content vertically (CSS `translate(-50%, -50%)` from text box center ↔ canvas `tby + (tbh - contentHeight) / 2`)
+- Both clip overflow (`overflow: hidden` + `maxHeight` ↔ `ctx.clip()`)
+- Same font metrics, same line height, same `baselineToTop` ratio
+- After editor close, ProseMirror scrollTop resets — canvas "rest position" matches the DOM un-scrolled state
+
+### Edge Cases
+
+- **Empty label on close:** Label fields deleted, shape persists, layout cache cleaned up
+- **Shape deletion with label:** `textLayoutCache.remove(id)` cleans cache; Y.Map deletion includes label fields
+- **Undo label creation:** Main UndoManager reverses field additions; `hasLabel()` returns false; shape renders without label
+- **Shape resize during editing:** `frame` key change → extension observer fires → `syncProps` → `positionEditor()` updates DOM position + maxWidth/maxHeight
+- **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns → label invisible but Y.XmlFragment content preserved
+- **Collaboration:** Y.XmlFragment CRDT + TextCollaboration ySyncPlugin handle concurrent label edits identically to text objects
+- **Shape type change during editing:** `shapeType` key tracked by extension observer → `positionEditor()` recomputes text box for new shape geometry
+
+### Not Yet Implemented
+
+- Context menu `labelColor` vs `color` routing
+- `computeStyles` / `selection-actions` adaptations for label-aware text controls on shapes
+- Font size scaling of labels during shape uniform-scale transforms (font size stays fixed, only text box adapts)
+
+---
+
 ## Remaining Work
 
 - **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed

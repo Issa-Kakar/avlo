@@ -212,7 +212,10 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
           keys.has('color') ||
           keys.has('fillColor') ||
           keys.has('align') ||
-          keys.has('width')
+          keys.has('width') ||
+          keys.has('labelColor') ||
+          keys.has('frame') ||
+          keys.has('shapeType')
         ) {
           onPropsSync(keys);
         }

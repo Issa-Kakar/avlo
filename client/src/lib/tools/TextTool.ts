@@ -31,11 +31,24 @@ import {
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
-import { getTextProps, getColor, getFillColor, type TextAlign } from '@avlo/shared';
+import {
+  getTextProps,
+  getColor,
+  getFillColor,
+  getFrame,
+  getShapeType,
+  getContent,
+  getFontSize,
+  getFontFamily,
+  getLabelColor,
+  hasLabel,
+  type TextAlign,
+} from '@avlo/shared';
 import {
   FONT_FAMILIES,
   getBaselineToTopRatio,
   getMeasuredAscentRatio,
+  computeLabelTextBox,
 } from '@/lib/text/text-system';
 import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -154,10 +167,25 @@ export class TextTool implements PointerTool {
    * Called by SelectTool (double-click on text) with the click position for cursor placement.
    */
   startEditing(objectId: string, entryPoint: [number, number]): void {
+    const handle = getCurrentSnapshot().objectsById.get(objectId);
+    if (!handle) return;
+
+    // Create label fields if shape without label
+    const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
+    if (isNewLabel) {
+      const { textSize, textFontFamily, textColor } = useDeviceUIStore.getState();
+      getActiveRoomDoc().mutate(() => {
+        handle.y.set('content', new Y.XmlFragment());
+        handle.y.set('fontSize', textSize);
+        handle.y.set('fontFamily', textFontFamily);
+        handle.y.set('labelColor', textColor);
+      });
+    }
+
     this.downWorld = entryPoint;
-    useSelectionStore.getState().beginTextEditing(objectId, false);
+    useSelectionStore.getState().beginTextEditing(objectId, isNewLabel);
     invalidateWorld(getVisibleWorldBounds());
-    this.mountEditor(objectId, false);
+    this.mountEditor(objectId, isNewLabel);
   }
 
   isEditorMounted(): boolean {
@@ -231,47 +259,82 @@ export class TextTool implements PointerTool {
       return;
     }
 
-    const props = getTextProps(handle.y);
-    if (!props) {
-      console.error('[TextTool] Object missing required properties:', objectId);
+    const isLabel = handle.kind === 'shape';
+
+    // Read shared properties
+    let fragment: Y.XmlFragment | null;
+    let fontSize: number;
+    let fontFamily: import('@avlo/shared').FontFamily;
+
+    if (isLabel) {
+      fragment = getContent(handle.y);
+      fontSize = getFontSize(handle.y);
+      fontFamily = getFontFamily(handle.y);
+    } else {
+      const props = getTextProps(handle.y);
+      if (!props) {
+        console.error('[TextTool] Object missing required properties:', objectId);
+        return;
+      }
+      fragment = props.content;
+      fontSize = props.fontSize;
+      fontFamily = props.fontFamily;
+    }
+
+    if (!fragment) {
+      console.error('[TextTool] No content fragment:', objectId);
       return;
     }
 
-    const color = getColor(handle.y);
-    const { content: fragment, origin, fontSize, fontFamily, align, width } = props;
     const familyConfig = FONT_FAMILIES[fontFamily];
+    const scale = useCameraStore.getState().scale;
+    const scaledFontSize = fontSize * scale;
 
     // Create container div
     const container = document.createElement('div');
     container.className = 'tiptap';
-
-    // Calculate screen position
-    const [screenX, screenY] = worldToClient(origin[0], origin[1]);
-    const scale = useCameraStore.getState().scale;
-    const scaledFontSize = fontSize * scale;
-
-    // Position container: baseline aligns with origin via precomputed ratio
-    // that accounts for CSS line-height leading
     container.style.position = 'absolute';
-    container.style.left = `${screenX}px`;
-    container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio(fontFamily)}px`;
-    if (typeof width === 'number') {
-      container.style.width = `${width * scale}px`;
-      container.dataset.widthMode = 'fixed';
-    } else {
-      container.dataset.widthMode = 'auto';
-    }
     container.style.fontSize = `${scaledFontSize}px`;
     container.style.lineHeight = `${scaledFontSize * familyConfig.lineHeightMultiplier}px`;
     container.style.fontFamily = familyConfig.fallback;
-    container.style.setProperty('--text-color', color);
     container.style.setProperty(
       '--hl-pad',
       `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
     );
-    applyAlignCSS(container, align);
-    const fillColor = getFillColor(handle.y);
-    if (fillColor) container.style.backgroundColor = fillColor;
+
+    if (isLabel) {
+      // Label: position at text box center, translate(-50%, -50%)
+      const frame = getFrame(handle.y)!;
+      const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+      const [tbx, tby, tbw, tbh] = textBox;
+      const [cx, cy] = worldToClient(tbx + tbw / 2, tby + tbh / 2);
+      container.style.left = `${cx}px`;
+      container.style.top = `${cy}px`;
+      container.style.setProperty('--text-anchor-tx', '-50%');
+      container.style.setProperty('--text-anchor-ty', '-50%');
+      container.style.maxWidth = `${tbw * scale}px`;
+      container.style.maxHeight = `${tbh * scale}px`;
+      container.dataset.widthMode = 'label';
+      container.style.setProperty('--text-color', getLabelColor(handle.y));
+    } else {
+      // Text object: origin-based positioning
+      const props = getTextProps(handle.y)!;
+      const { origin, align, width } = props;
+      const color = getColor(handle.y);
+      const [screenX, screenY] = worldToClient(origin[0], origin[1]);
+      container.style.left = `${screenX}px`;
+      container.style.top = `${screenY - scaledFontSize * getBaselineToTopRatio(fontFamily)}px`;
+      if (typeof width === 'number') {
+        container.style.width = `${width * scale}px`;
+        container.dataset.widthMode = 'fixed';
+      } else {
+        container.dataset.widthMode = 'auto';
+      }
+      container.style.setProperty('--text-color', color);
+      applyAlignCSS(container, align);
+      const fillColor = getFillColor(handle.y);
+      if (fillColor) container.style.backgroundColor = fillColor;
+    }
 
     host.appendChild(container);
 
@@ -279,25 +342,28 @@ export class TextTool implements PointerTool {
     const clickWorld = this.downWorld;
     const clientCoords = !isNew && clickWorld ? worldToClient(clickWorld[0], clickWorld[1]) : null;
 
+    // Build extensions — labels skip Placeholder
+    const extensions = [
+      Document,
+      ...(isLabel ? [] : [Placeholder.configure({ placeholder: 'Type something...' })]),
+      Paragraph,
+      Text,
+      Bold,
+      Italic,
+      Highlight.configure({ multicolor: true }),
+      TextCollaboration.configure({
+        fragment,
+        yObj: handle.y,
+        userId: userProfileManager.getIdentity().userId,
+        mainUndoManager: roomDoc.getUndoManager(),
+        onPropsSync: (keys) => this.syncProps(keys),
+      }),
+    ];
+
     // Create Tiptap Editor
     const editor = new Editor({
       element: { mount: container },
-      extensions: [
-        Document,
-        Placeholder.configure({ placeholder: 'Type something...' }),
-        Paragraph,
-        Text,
-        Bold,
-        Italic,
-        Highlight.configure({ multicolor: true }),
-        TextCollaboration.configure({
-          fragment,
-          yObj: handle.y,
-          userId: userProfileManager.getIdentity().userId,
-          mainUndoManager: roomDoc.getUndoManager(),
-          onPropsSync: (keys) => this.syncProps(keys),
-        }),
-      ],
+      extensions,
       autofocus: isNew ? 'end' : false,
       onCreate: ({ editor: ed }) => {
         syncInlineStylesToStore(ed);
@@ -385,24 +451,46 @@ export class TextTool implements PointerTool {
     if (!this.container || !this.objectId) return;
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
-    const props = getTextProps(handle.y);
-    if (!props) return;
 
-    const { origin, fontSize, fontFamily, width } = props;
     const scale = useCameraStore.getState().scale;
-    const sf = fontSize * scale;
-    const [sx, sy] = worldToClient(origin[0], origin[1]);
 
-    this.container.style.left = `${sx}px`;
-    this.container.style.top = `${sy - sf * getBaselineToTopRatio(fontFamily)}px`;
-    this.container.style.fontSize = `${sf}px`;
-    this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
-    this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
-    this.container.style.setProperty(
-      '--hl-pad',
-      `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
-    );
-    if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
+    if (handle.kind === 'shape') {
+      const frame = getFrame(handle.y);
+      if (!frame) return;
+      const fontSize = getFontSize(handle.y);
+      const fontFamily = getFontFamily(handle.y);
+      const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
+      const [tbx, tby, tbw, tbh] = textBox;
+      const [cx, cy] = worldToClient(tbx + tbw / 2, tby + tbh / 2);
+      const sf = fontSize * scale;
+      this.container.style.left = `${cx}px`;
+      this.container.style.top = `${cy}px`;
+      this.container.style.maxWidth = `${tbw * scale}px`;
+      this.container.style.maxHeight = `${tbh * scale}px`;
+      this.container.style.fontSize = `${sf}px`;
+      this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
+      this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
+      this.container.style.setProperty(
+        '--hl-pad',
+        `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
+      );
+    } else {
+      const props = getTextProps(handle.y);
+      if (!props) return;
+      const { origin, fontSize, fontFamily, width } = props;
+      const sf = fontSize * scale;
+      const [sx, sy] = worldToClient(origin[0], origin[1]);
+      this.container.style.left = `${sx}px`;
+      this.container.style.top = `${sy - sf * getBaselineToTopRatio(fontFamily)}px`;
+      this.container.style.fontSize = `${sf}px`;
+      this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
+      this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
+      this.container.style.setProperty(
+        '--hl-pad',
+        `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
+      );
+      if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
+    }
   }
 
   // =========================================================================
@@ -412,14 +500,26 @@ export class TextTool implements PointerTool {
   private commitAndClose(): void {
     if (!this.editor || !this.objectId) return;
 
-    // Delete empty text objects on close (avoids invisible fixed-width rects)
+    // Delete empty content on close
     if (this.editor.isEmpty) {
-      const roomDoc = getActiveRoomDoc();
-      roomDoc.mutate((ydoc) => {
-        const root = ydoc.getMap('root');
-        const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-        objects.delete(this.objectId!);
-      });
+      const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+      if (handle?.kind === 'shape') {
+        // Shape label: remove label fields, keep shape
+        getActiveRoomDoc().mutate(() => {
+          handle.y.delete('content');
+          handle.y.delete('fontSize');
+          handle.y.delete('fontFamily');
+          handle.y.delete('labelColor');
+        });
+      } else {
+        // Text object: delete entirely
+        const roomDoc = getActiveRoomDoc();
+        roomDoc.mutate((ydoc) => {
+          const root = ydoc.getMap('root');
+          const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
+          objects.delete(this.objectId!);
+        });
+      }
     }
 
     this.removeEditorHandlers();
@@ -453,12 +553,25 @@ export class TextTool implements PointerTool {
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
 
-    if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
-    if (keys.has('fillColor')) this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
-    if (keys.has('align'))
-      applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
-    if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width'))
-      this.positionEditor();
+    if (handle.kind === 'shape') {
+      if (keys.has('labelColor'))
+        this.container.style.setProperty('--text-color', getLabelColor(handle.y));
+      if (
+        keys.has('frame') ||
+        keys.has('shapeType') ||
+        keys.has('fontSize') ||
+        keys.has('fontFamily')
+      )
+        this.positionEditor();
+    } else {
+      if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
+      if (keys.has('fillColor'))
+        this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
+      if (keys.has('align'))
+        applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
+      if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width'))
+        this.positionEditor();
+    }
   }
 
   // =========================================================================
