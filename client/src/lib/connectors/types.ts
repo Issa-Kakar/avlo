@@ -13,6 +13,12 @@ import type { Frame, Dir as SharedDir } from '@avlo/shared';
 // Re-export from shared for convenience
 export type { Frame, FrameTuple, StoredAnchor } from '@avlo/shared';
 
+/** Connector routing style */
+export type ConnectorType = 'elbow' | 'straight';
+
+/** Connector endpoint cap style */
+export type ConnectorCap = 'arrow' | 'none';
+
 // ============================================================================
 // DIRECTION & GEOMETRY TYPES
 // ============================================================================
@@ -36,9 +42,9 @@ export type AABB = Frame;
  * - Facing checks: `a.right <= b.left` vs `a.x + a.w <= b.x`
  */
 export interface Bounds {
-  left: number;   // minX
-  top: number;    // minY
-  right: number;  // maxX
+  left: number; // minX
+  top: number; // minY
+  right: number; // maxX
   bottom: number; // maxY
 }
 

@@ -176,6 +176,15 @@ export function getEndCap(y: Y.Map<unknown>): 'arrow' | 'none' {
   return cap === 'arrow' ? 'arrow' : 'none';
 }
 
+/**
+ * Get connector type from Y.Map.
+ * Returns 'elbow' as default.
+ */
+export function getConnectorType(y: Y.Map<unknown>): 'elbow' | 'straight' {
+  const type = y.get('connectorType') as string | undefined;
+  return type === 'straight' ? 'straight' : 'elbow';
+}
+
 // ============================================================================
 // TEXT-SPECIFIC ACCESSORS
 // ============================================================================

@@ -22,6 +22,8 @@ export type {
   AStarNode,
   SnapTarget,
   SnapContext,
+  ConnectorType,
+  ConnectorCap,
 } from './types';
 
 // Constants
@@ -61,17 +63,13 @@ export {
 } from './connector-utils';
 
 // Snapping
-export {
-  findBestSnapTarget,
-  computeSnapForShape,
-  findNearestEdgePoint,
-} from './snap';
+export { findBestSnapTarget, computeSnapForShape, findNearestEdgePoint } from './snap';
 
 // Routing
 export { computeAStarRoute } from './routing-astar';
 export { createRoutingContext, buildSimpleGrid } from './routing-context';
 export type { RerouteResult } from './reroute-connector';
-export { rerouteConnector } from './reroute-connector';
+export { rerouteConnector, routeNewConnector } from './reroute-connector';
 
 // Path building (for cache and preview)
 export type {
