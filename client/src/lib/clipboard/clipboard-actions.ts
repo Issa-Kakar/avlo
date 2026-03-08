@@ -3,27 +3,45 @@
  *
  * Uses nonce-based clipboard ordering to distinguish internal paste
  * (full fidelity from in-memory data) from external text paste.
+ * Supports rich text (bold/italic/highlight) from external HTML.
  *
  * @module lib/clipboard/clipboard-actions
  */
 
 import * as Y from 'yjs';
 import { ulid } from 'ulid';
+import { generateJSON } from '@tiptap/core';
+import Document from '@tiptap/extension-document';
+import Paragraph from '@tiptap/extension-paragraph';
+import Text from '@tiptap/extension-text';
+import Bold from '@tiptap/extension-bold';
+import Italic from '@tiptap/extension-italic';
+import Highlight from '@tiptap/extension-highlight';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getCurrentTool } from '@/canvas/tool-registry';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getLastCursorWorld } from '@/canvas/cursor-tracking';
-import { getVisibleWorldBounds } from '@/stores/camera-store';
+import { getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
+import { animateToFit } from '@/canvas/animation/ZoomAnimator';
 import { deleteSelected } from '@/lib/utils/selection-actions';
 import { userProfileManager } from '@/lib/user-profile-manager';
+import type { WorldBounds } from '@avlo/shared';
 import {
   serializeObjects,
   deserializeFragment,
   extractPlainText,
   type ClipboardPayload,
 } from './clipboard-serializer';
+
+// === Constants ===
+
+const PASTE_CHAR_LIMIT = 50_000;
+const PASTE_EXTENSIONS = [
+  Document, Paragraph, Text, Bold, Italic,
+  Highlight.configure({ multicolor: true }),
+];
 
 // === Nonce State ===
 
@@ -80,9 +98,12 @@ export async function pasteFromClipboard(): Promise<void> {
           return;
         }
 
-        // Nonce mismatch — clipboard was overwritten externally
+        // Nonce mismatch — external HTML
         clipboardNonce = null;
         clipboardPayload = null;
+
+        pasteExternalHtml(html);
+        return;
       }
 
       // Fallback: plain text
@@ -207,13 +228,102 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
     useSelectionStore.getState().setSelection(newIds);
     invalidateOverlay();
   }
+
+  // Zoom-to-fit if placed bounds are off-screen
+  const placedBounds: WorldBounds = {
+    minX: payload.bounds.minX + dx,
+    minY: payload.bounds.minY + dy,
+    maxX: payload.bounds.maxX + dx,
+    maxY: payload.bounds.maxY + dy,
+  };
+  ensureVisible(placedBounds);
 }
 
-// === External Text Paste ===
+// === External HTML Paste ===
 
-function pasteExternalText(text: string): void {
-  if (!text.trim()) return;
+function pasteExternalHtml(html: string): void {
+  // Strip avlo nonce comment if present
+  const cleaned = html.replace(/<!-- avlo:[a-f0-9-]+ -->/, '');
 
+  // Extract plain text for char limit check
+  const plainText = cleaned.replace(/<[^>]*>/g, '');
+  if (!plainText.trim()) return;
+
+  if (plainText.length > PASTE_CHAR_LIMIT) {
+    // Over limit — fall back to truncated plain text
+    pasteExternalText(plainText.slice(0, PASTE_CHAR_LIMIT));
+    return;
+  }
+
+  // Parse HTML to ProseMirror JSON
+  let doc: Record<string, any>;
+  try {
+    doc = generateJSON(cleaned, PASTE_EXTENSIONS);
+  } catch {
+    // Parse failure — fall back to plain text
+    pasteExternalText(plainText);
+    return;
+  }
+
+  const fragment = prosemirrorJsonToFragment(doc);
+  if (!fragment) {
+    pasteExternalText(plainText);
+    return;
+  }
+
+  createPastedTextObject(fragment, plainText.length);
+}
+
+// === ProseMirror JSON → Y.XmlFragment ===
+
+function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | null {
+  if (!doc.content || !Array.isArray(doc.content)) return null;
+
+  const fragment = new Y.XmlFragment();
+  let hasContent = false;
+
+  for (const node of doc.content) {
+    if (node.type !== 'paragraph') continue;
+
+    const para = new Y.XmlElement('paragraph');
+    const xmlText = new Y.XmlText();
+
+    if (node.content && Array.isArray(node.content)) {
+      for (const inline of node.content) {
+        if (inline.type !== 'text' || typeof inline.text !== 'string') continue;
+
+        const attrs: Record<string, any> = {};
+        if (inline.marks && Array.isArray(inline.marks)) {
+          for (const mark of inline.marks) {
+            switch (mark.type) {
+              case 'bold':
+                attrs.bold = true;
+                break;
+              case 'italic':
+                attrs.italic = true;
+                break;
+              case 'highlight':
+                attrs.highlight = mark.attrs?.color || '#ffd43b';
+                break;
+            }
+          }
+        }
+
+        xmlText.insert(xmlText.length, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
+        if (inline.text) hasContent = true;
+      }
+    }
+
+    para.insert(0, [xmlText]);
+    fragment.insert(fragment.length, [para]);
+  }
+
+  return hasContent ? fragment : null;
+}
+
+// === Shared Text Object Creation ===
+
+function createPastedTextObject(fragment: Y.XmlFragment, charCount: number): void {
   const {
     textSize: fontSize,
     textFontFamily: fontFamily,
@@ -225,6 +335,7 @@ function pasteExternalText(text: string): void {
   const [worldX, worldY] = getPasteTarget();
   const objectId = ulid();
   const userId = userProfileManager.getIdentity().userId;
+  const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
   getActiveRoomDoc().mutate((ydoc) => {
     const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
@@ -237,18 +348,7 @@ function pasteExternalText(text: string): void {
     yObj.set('fontFamily', fontFamily);
     yObj.set('color', color);
     yObj.set('align', align);
-    yObj.set('width', 'auto');
-
-    // Build content from text lines
-    const fragment = new Y.XmlFragment();
-    const lines = text.split('\n');
-    for (const line of lines) {
-      const para = new Y.XmlElement('paragraph');
-      const xmlText = new Y.XmlText();
-      if (line) xmlText.insert(0, line);
-      para.insert(0, [xmlText]);
-      fragment.insert(fragment.length, [para]);
-    }
+    yObj.set('width', pasteWidth);
     yObj.set('content', fragment);
 
     if (textFillColor) yObj.set('fillColor', textFillColor);
@@ -263,6 +363,33 @@ function pasteExternalText(text: string): void {
     useSelectionStore.getState().setSelection([objectId]);
     invalidateOverlay();
   }
+
+  // Zoom-to-fit for fixed-width pastes (auto = short text, already near viewport)
+  if (typeof pasteWidth === 'number') {
+    ensureVisible({ minX: worldX, minY: worldY, maxX: worldX + pasteWidth, maxY: worldY });
+  }
+}
+
+// === External Text Paste ===
+
+function pasteExternalText(text: string): void {
+  if (!text.trim()) return;
+
+  // Character limit
+  const truncated = text.length > PASTE_CHAR_LIMIT ? text.slice(0, PASTE_CHAR_LIMIT) : text;
+
+  // Build plain Y.XmlFragment from text lines
+  const fragment = new Y.XmlFragment();
+  const lines = truncated.split('\n');
+  for (const line of lines) {
+    const para = new Y.XmlElement('paragraph');
+    const xmlText = new Y.XmlText();
+    if (line) xmlText.insert(0, line);
+    para.insert(0, [xmlText]);
+    fragment.insert(fragment.length, [para]);
+  }
+
+  createPastedTextObject(fragment, truncated.length);
 }
 
 // === Cut ===
@@ -281,7 +408,8 @@ export function duplicateSelected(): void {
   const payload = serializeObjects(selectedIds);
   if (!payload) return;
 
-  pasteInternal(payload, [20, 20]);
+  const offset = computeSmartOffset(payload.bounds, new Set(selectedIds));
+  pasteInternal(payload, offset);
 }
 
 // === Select All ===
@@ -294,6 +422,46 @@ export function selectAll(): void {
   useDeviceUIStore.getState().setActiveTool('select');
   useSelectionStore.getState().setSelection(ids);
   invalidateOverlay();
+}
+
+// === Smart Duplicate Offset ===
+
+function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [number, number] {
+  const { spatialIndex } = getCurrentSnapshot();
+  if (!spatialIndex) return [40, 40];
+  const w = bounds.maxX - bounds.minX;
+  const h = bounds.maxY - bounds.minY;
+  const gap = 20;
+  const eps = 2;
+
+  // Try: right, below, above, left
+  const candidates: [number, number, WorldBounds][] = [
+    [w + gap, 0, { minX: bounds.maxX + gap - eps, minY: bounds.minY - eps, maxX: bounds.maxX + gap + w + eps, maxY: bounds.maxY + eps }],
+    [0, h + gap, { minX: bounds.minX - eps, minY: bounds.maxY + gap - eps, maxX: bounds.maxX + eps, maxY: bounds.maxY + gap + h + eps }],
+    [0, -(h + gap), { minX: bounds.minX - eps, minY: bounds.minY - gap - h - eps, maxX: bounds.maxX + eps, maxY: bounds.minY - gap + eps }],
+    [-(w + gap), 0, { minX: bounds.minX - gap - w - eps, minY: bounds.minY - eps, maxX: bounds.minX - gap + eps, maxY: bounds.maxY + eps }],
+  ];
+
+  for (const [dx, dy, queryBounds] of candidates) {
+    const results = spatialIndex.query(queryBounds);
+    const hasCollision = results.some((r) => !excludeIds.has(r.id));
+    if (!hasCollision) return [dx, dy];
+  }
+
+  // Fallback
+  return [40, 40];
+}
+
+// === Visibility ===
+
+function ensureVisible(bounds: WorldBounds): void {
+  const vp = getVisibleWorldBounds();
+  // Already fully contained — nothing to do
+  if (bounds.minX >= vp.minX && bounds.maxX <= vp.maxX &&
+      bounds.minY >= vp.minY && bounds.maxY <= vp.maxY) return;
+  const { scale } = useCameraStore.getState();
+  // Only zoom out (cap at current scale), floor at 25% to avoid extreme zoom-out
+  animateToFit(bounds, 80, scale, 0.25);
 }
 
 // === Helpers ===

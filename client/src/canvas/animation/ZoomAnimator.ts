@@ -112,6 +112,27 @@ export function animateZoomReset(): void {
   animateZoom(1, { x: 0, y: 0 });
 }
 
+/** Animate camera to fit given world bounds with padding.
+ *  maxScale caps zoom (pass current scale to only zoom out).
+ *  minScale floors zoom (prevents extreme zoom-out on huge content). */
+export function animateToFit(
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  padding = 80,
+  maxScale = Infinity,
+  minScale = 0,
+): void {
+  const { cssWidth, cssHeight } = useCameraStore.getState();
+  const bw = bounds.maxX - bounds.minX;
+  const bh = bounds.maxY - bounds.minY;
+  if (bw <= 0 || bh <= 0) return;
+  let fitScale = Math.min((cssWidth - padding * 2) / bw, (cssHeight - padding * 2) / bh);
+  // Apply floor then cap: ensures "never zoom in" wins over floor when currentScale < minScale
+  fitScale = clampScale(Math.min(Math.max(fitScale, minScale), maxScale));
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  animateZoom(fitScale, { x: cx - cssWidth / (2 * fitScale), y: cy - cssHeight / (2 * fitScale) });
+}
+
 /** Cancel any in-progress zoom animation. */
 export function cancelZoom(): void {
   if (rafId !== null) {

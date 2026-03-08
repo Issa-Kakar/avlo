@@ -14,14 +14,20 @@
  * @module canvas/keyboard-manager
  */
 
-import { getCurrentTool, textTool } from './tool-registry';
+import { getCurrentTool, panTool, textTool } from './tool-registry';
 import { getActiveRoomDoc, getCurrentSnapshot, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, type Tool } from '@/stores/device-ui-store';
-import { deleteSelected } from '@/lib/utils/selection-actions';
+import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
+import {
+  deleteSelected,
+  toggleSelectedBold,
+  toggleSelectedItalic,
+  setSelectedHighlight,
+} from '@/lib/utils/selection-actions';
 import { invalidateOverlay } from './invalidation-helpers';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getFrame } from '@avlo/shared';
+import { computeUniformInlineStyles } from '@/lib/utils/selection-utils';
 import {
   copySelected,
   pasteFromClipboard,
@@ -30,14 +36,26 @@ import {
   selectAll,
 } from '@/lib/clipboard/clipboard-actions';
 
+// === Spacebar Pan State ===
+
+let spacebarPanMode = false;
+
+export function isSpacebarPanMode(): boolean {
+  return spacebarPanMode;
+}
+
 // === Lifecycle ===
 
 export function attach(): void {
   document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
 }
 
 export function detach(): void {
   document.removeEventListener('keydown', onKeyDown);
+  document.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('blur', onBlur);
 }
 
 // === Main Dispatch ===
@@ -82,6 +100,17 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
 
+  // Spacebar — ephemeral pan mode (hold-to-pan)
+  if (key === ' ') {
+    e.preventDefault();
+    if (e.repeat || spacebarPanMode) return;
+    if (!gestureActive && !isEditing) {
+      spacebarPanMode = true;
+      setCursorOverride('grab');
+    }
+    return;
+  }
+
   // Block remaining bare keys during gesture or text editing
   if (gestureActive || isEditing) return;
 
@@ -118,6 +147,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'a':
       e.preventDefault();
+      if (gestureActive && useDeviceUIStore.getState().activeTool !== 'select') tool!.cancel();
       selectAll();
       return;
 
@@ -136,6 +166,31 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       if (gestureActive) tool!.cancel();
       getActiveRoomDoc().redo();
       return;
+
+    case 'b':
+      e.preventDefault();
+      if (!gestureActive) toggleSelectedBold();
+      return;
+
+    case 'i':
+      e.preventDefault();
+      if (!gestureActive) toggleSelectedItalic();
+      return;
+
+    case 'h':
+      e.preventDefault();
+      if (!gestureActive) {
+        const { selectedIds } = useSelectionStore.getState();
+        const { objectsById } = getCurrentSnapshot();
+        const { highlightColor } = computeUniformInlineStyles(selectedIds, objectsById);
+        if (highlightColor) {
+          setSelectedHighlight(null);
+        } else {
+          const deviceHighlight = useDeviceUIStore.getState().highlightColor;
+          setSelectedHighlight(deviceHighlight || '#ffd43b');
+        }
+      }
+      return;
   }
 }
 
@@ -143,20 +198,37 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
 const TOOL_KEYS: Record<string, Tool> = {
   p: 'pen',
-  h: 'highlighter',
   e: 'eraser',
   t: 'text',
   v: 'select',
-  ' ': 'pan',
-  c: 'connector',
+  h: 'pan',
+  a: 'connector',
+};
+
+const SHAPE_KEYS: Record<string, ShapeVariant> = {
+  r: 'rectangle',
+  o: 'ellipse',
+  d: 'diamond',
 };
 
 function handleBareKey(e: KeyboardEvent, key: string): void {
+  if (spacebarPanMode) return; // Block tool switches during space-hold
+
   // Tool switch
   const toolId = TOOL_KEYS[key];
   if (toolId) {
     e.preventDefault();
     useDeviceUIStore.getState().setActiveTool(toolId);
+    return;
+  }
+
+  // Shape variant switch
+  const variant = SHAPE_KEYS[key];
+  if (variant) {
+    e.preventDefault();
+    const store = useDeviceUIStore.getState();
+    store.setActiveTool('shape');
+    store.setShapeVariant(variant);
     return;
   }
 
@@ -186,5 +258,24 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     e.preventDefault();
     textTool.startEditing(handle.id, [centerX, centerY]);
     return;
+  }
+}
+
+// === Key Up & Blur ===
+
+function onKeyUp(e: KeyboardEvent): void {
+  if (e.key === ' ' && spacebarPanMode) {
+    spacebarPanMode = false;
+    if (!panTool.isActive()) {
+      setCursorOverride(null);
+    }
+    // If panTool IS active (mid-drag), let it finish via pointerup
+  }
+}
+
+function onBlur(): void {
+  if (spacebarPanMode) {
+    spacebarPanMode = false;
+    if (!panTool.isActive()) setCursorOverride(null);
   }
 }

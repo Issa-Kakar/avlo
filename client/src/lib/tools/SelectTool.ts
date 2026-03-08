@@ -59,6 +59,7 @@ import {
 } from '@avlo/shared';
 import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { isShiftPointer, isCtrlOrMetaPointer } from '@/canvas/cursor-tracking';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from '@/canvas/ContextMenuController';
@@ -125,6 +126,10 @@ export class SelectTool implements PointerTool {
   private transformEnvelope: WorldRect | null = null;
 
   constructor() {}
+
+  private hasAddModifier(): boolean {
+    return isShiftPointer() || isCtrlOrMetaPointer();
+  }
 
   // --- PointerTool Interface ---
 
@@ -503,13 +508,29 @@ export class SelectTool implements PointerTool {
             break;
 
           case 'objectOutsideSelection':
-            // Click → select that object
-            store.setSelection([this.hitAtDown!.id]);
+            if (this.hasAddModifier()) {
+              // Additive: add to current selection
+              const current = store.selectedIds;
+              if (!current.includes(this.hitAtDown!.id)) {
+                store.setSelection([...current, this.hitAtDown!.id]);
+              }
+            } else {
+              // Replace selection
+              store.setSelection([this.hitAtDown!.id]);
+            }
             break;
 
           case 'objectInSelection':
-            // Click on already-selected object → "drill down" if multi-select
-            if (store.selectedIds.length > 1) {
+            if (this.hasAddModifier()) {
+              // Subtractive: remove from selection
+              const remaining = store.selectedIds.filter(id => id !== this.hitAtDown!.id);
+              if (remaining.length > 0) {
+                store.setSelection(remaining);
+              } else {
+                store.clearSelection();
+              }
+            } else if (store.selectedIds.length > 1) {
+              // Drill down to single object
               store.setSelection([this.hitAtDown!.id]);
             } else if (
               (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape') &&

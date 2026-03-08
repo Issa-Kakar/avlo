@@ -27,8 +27,9 @@ import {
   setHoldPreviewFn,
 } from './invalidation-helpers';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
-import { attach as attachKeyboard, detach as detachKeyboard } from './keyboard-manager';
-import { setLastCursorWorld } from './cursor-tracking';
+import { attach as attachKeyboard, detach as detachKeyboard, isSpacebarPanMode } from './keyboard-manager';
+import { setLastCursorWorld, storePointerModifiers } from './cursor-tracking';
+import { setCursorOverride } from '@/stores/device-ui-store';
 import { getObjectCacheInstance } from '@/renderer/object-cache';
 import {
   screenToWorld,
@@ -194,12 +195,23 @@ export class CanvasRuntime {
   // === Event Handlers (called by InputManager) ===
 
   handlePointerDown(e: PointerEvent): void {
+    storePointerModifiers(e);
     panTool.cancelCoast();
     cancelZoom();
 
     // MMB = button 1: always pan (if allowed)
     if (e.button === 1) {
       if (!canStartMMBPan()) return;
+      e.preventDefault();
+      const world = screenToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      capturePointer(e.pointerId);
+      panTool.begin(e.pointerId, world[0], world[1]);
+      return;
+    }
+
+    // Spacebar pan: left-click while holding space → route to panTool
+    if (e.button === 0 && isSpacebarPanMode()) {
       e.preventDefault();
       const world = screenToWorld(e.clientX, e.clientY);
       if (!world) return;
@@ -234,6 +246,9 @@ export class CanvasRuntime {
       return;
     }
 
+    // Spacebar pan: suppress tool hover (prevents cursor override reset)
+    if (isSpacebarPanMode()) return;
+
     // Tool (active gesture or hover)
     const tool = getCurrentTool();
     if (tool && world) {
@@ -242,10 +257,14 @@ export class CanvasRuntime {
   }
 
   handlePointerUp(e: PointerEvent): void {
-    // Pan release (from MMB or pan tool mode)
+    // Pan release (from MMB, pan tool mode, or spacebar pan)
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       releasePointer(e.pointerId);
       panTool.end();
+      // Restore grab cursor if spacebar still held (open hand between drags)
+      if (isSpacebarPanMode()) {
+        setCursorOverride('grab');
+      }
       return;
     }
 
