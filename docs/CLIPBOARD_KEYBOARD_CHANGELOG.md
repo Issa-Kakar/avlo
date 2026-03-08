@@ -78,6 +78,7 @@ If the clipboard has no `text/html` type (e.g. terminal copy), plain text paste 
 Previously pasted text used `width: 'auto'`, causing single-line text to stretch infinitely without wrapping.
 
 Now:
+
 - **Short text (< 65 chars):** `width: 'auto'` — natural sizing, no awkward wide box for a single word or sentence
 - **Longer text (>= 65 chars):** `width = max(300, fontSize * 34)` — gives ~65 characters per line at any font size. Examples: fontSize 24 → 816wu, fontSize 64 → 2176wu, fontSize 10 → 340wu (floor 300)
 
@@ -112,20 +113,20 @@ Extracted `createPastedTextObject(fragment, charCount)` as a shared helper used 
 
 ## Files (v1–v2)
 
-| File                                               | Action                                                       |
-| -------------------------------------------------- | ------------------------------------------------------------ |
-| `client/src/canvas/keyboard-manager.ts`            | Created; v2: Cmd+A cancels non-select tool gesture           |
-| `client/src/canvas/cursor-tracking.ts`             | Created                                                      |
-| `client/src/lib/clipboard/clipboard-serializer.ts` | Created                                                      |
+| File                                               | Action                                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `client/src/canvas/keyboard-manager.ts`            | Created; v2: Cmd+A cancels non-select tool gesture                                    |
+| `client/src/canvas/cursor-tracking.ts`             | Created                                                                               |
+| `client/src/lib/clipboard/clipboard-serializer.ts` | Created                                                                               |
 | `client/src/lib/clipboard/clipboard-actions.ts`    | Created; v2: rich text paste, smart duplicate, paste width, char limit, ensureVisible |
-| `client/src/canvas/animation/ZoomAnimator.ts`      | Modified — new `animateToFit(bounds, padding, maxScale, minScale)` |
-| `client/src/canvas/CanvasRuntime.ts`               | Modified — keyboard + cursor tracking                        |
-| `client/src/components/RoomPage.tsx`               | Modified — removed hooks                                     |
-| `client/src/components/ToolPanel.tsx`              | Modified — direct undo/redo                                  |
-| `client/vite.config.ts`                            | Modified — env-based ports                                   |
-| `package.json`                                     | Modified — dev:p scripts                                     |
-| `client/src/hooks/useKeyboardShortcuts.ts`         | Deleted                                                      |
-| `client/src/hooks/use-undo-redo.ts`                | Deleted                                                      |
+| `client/src/canvas/animation/ZoomAnimator.ts`      | Modified — new `animateToFit(bounds, padding, maxScale, minScale)`                    |
+| `client/src/canvas/CanvasRuntime.ts`               | Modified — keyboard + cursor tracking                                                 |
+| `client/src/components/RoomPage.tsx`               | Modified — removed hooks                                                              |
+| `client/src/components/ToolPanel.tsx`              | Modified — direct undo/redo                                                           |
+| `client/vite.config.ts`                            | Modified — env-based ports                                                            |
+| `package.json`                                     | Modified — dev:p scripts                                                              |
+| `client/src/hooks/useKeyboardShortcuts.ts`         | Deleted                                                                               |
+| `client/src/hooks/use-undo-redo.ts`                | Deleted                                                                               |
 
 ---
 
@@ -135,14 +136,14 @@ Extracted `createPastedTextObject(fragment, charCount)` as a shared helper used 
 
 Remapped to match Excalidraw/tldraw conventions. Spacebar removed as a tool switch (now ephemeral pan).
 
-| Key | Before       | After       |
-| --- | ------------ | ----------- |
-| `h` | highlighter  | pan (hand)  |
-| `a` | —            | connector (arrow) |
-| `c` | connector    | — (removed) |
-| `r` | —            | shape: rectangle |
-| `o` | —            | shape: ellipse   |
-| `d` | —            | shape: diamond   |
+| Key | Before       | After                |
+| --- | ------------ | -------------------- |
+| `h` | highlighter  | pan (hand)           |
+| `a` | —            | connector (arrow)    |
+| `c` | connector    | — (removed)          |
+| `r` | —            | shape: rectangle     |
+| `o` | —            | shape: ellipse       |
+| `d` | —            | shape: diamond       |
 | ` ` | pan (switch) | ephemeral pan (hold) |
 
 Highlighter loses its keybinding since `h` was reassigned.
@@ -156,12 +157,14 @@ Hold-to-pan without switching `activeTool`. Follows Figma/Excalidraw convention:
 **State:** Module-level `spacebarPanMode` boolean + exported `isSpacebarPanMode()` getter.
 
 **Lifecycle:**
+
 - `onKeyDown` (space): sets `spacebarPanMode = true`, `setCursorOverride('grab')`. Guards: `e.repeat` prevents key-repeat re-entry, `!gestureActive` prevents interrupting active tool gestures, `!isEditing` prevents activation during text editing. Input focus guard at top of `onKeyDown` already prevents activation during Tiptap contentEditable focus.
 - `onKeyUp` (space): clears `spacebarPanMode`. If panTool not mid-drag, clears cursor override. If mid-drag, panTool continues until pointerup (standard Figma behavior).
 - `onBlur` (window): clears stale state when user tabs away.
 - `handleBareKey`: early-returns if `spacebarPanMode` — all bare keys blocked during space-hold.
 
 **CanvasRuntime integration:**
+
 - `handlePointerDown`: after MMB check, before left-click dispatch — if `button === 0 && isSpacebarPanMode()`, routes to `panTool.begin()`.
 - `handlePointerMove`: after pan-active check — if `isSpacebarPanMode()`, returns early to suppress tool hover dispatch (prevents `SelectTool.handleHoverCursor()` from calling `setCursorOverride(null)` and killing the grab cursor).
 - `handlePointerUp`: after `panTool.end()` — if `isSpacebarPanMode()`, restores `setCursorOverride('grab')` (open hand between drags).
@@ -172,10 +175,10 @@ Hold-to-pan without switching `activeTool`. Follows Figma/Excalidraw convention:
 
 Added to `handleModifierShortcut` in keyboard-manager. Works on selected text objects, shapes with labels, and mixed selections containing text.
 
-| Shortcut | Action |
-| -------- | ------ |
-| Cmd+B    | Toggle bold on all text in selection |
-| Cmd+I    | Toggle italic on all text in selection |
+| Shortcut | Action                                    |
+| -------- | ----------------------------------------- |
+| Cmd+B    | Toggle bold on all text in selection      |
+| Cmd+I    | Toggle italic on all text in selection    |
 | Cmd+H    | Toggle highlight on all text in selection |
 
 **During text editing:** Guard 1 (input focus check) catches contentEditable focus, so Tiptap handles Cmd+B/I natively. These handlers only fire for non-editing selection. Cmd+H isn't a default Tiptap keybinding (Tiptap uses Cmd+Shift+H for highlight), so it's keyboard-manager-only.
@@ -197,21 +200,34 @@ Additive and subtractive click selection, matching standard whiteboard behavior.
 
 **SelectTool changes** (`SelectTool.ts`): private `hasAddModifier()` returns `isShiftPointer() || isCtrlOrMetaPointer()`. Only the `end()` method's `pendingClick` phase changes — `begin()`, drag transitions, marquee, translate, scale all unchanged.
 
-| Case | Without modifier (unchanged) | With shift/ctrl |
-| ---- | ---------------------------- | --------------- |
-| `objectOutsideSelection` | Replace selection with clicked object | Add clicked object to existing selection |
-| `objectInSelection` (multi) | Drill down to single object | Remove clicked object from selection |
-| `objectInSelection` (single) | Start text/label editing | Remove → `clearSelection()` |
-| `background` | Clear selection | Clear selection (unchanged) |
-| `selectionGap` | Clear on quick tap | Clear on quick tap (unchanged) |
-| `handle` / `connectorEndpoint` | No-op / drill down | No-op / drill down (unchanged) |
+| Case                           | Without modifier (unchanged)          | With shift/ctrl                          |
+| ------------------------------ | ------------------------------------- | ---------------------------------------- |
+| `objectOutsideSelection`       | Replace selection with clicked object | Add clicked object to existing selection |
+| `objectInSelection` (multi)    | Drill down to single object           | Remove clicked object from selection     |
+| `objectInSelection` (single)   | Start text/label editing              | Remove → `clearSelection()`              |
+| `background`                   | Clear selection                       | Clear selection (unchanged)              |
+| `selectionGap`                 | Clear on quick tap                    | Clear on quick tap (unchanged)           |
+| `handle` / `connectorEndpoint` | No-op / drill down                    | No-op / drill down (unchanged)           |
+
+### Ctrl suppresses connector snapping
+
+Holding Ctrl during connector creation or endpoint drag prevents binding to shapes. `isCtrlHeld()` (live Ctrl state from `cursor-tracking.ts`, updated every pointer event) is checked before each `findBestSnapTarget()` call — when true, snap is forced to `null`, producing a free (unanchored) endpoint with no snap dots.
+
+| Tool          | Call site             | Effect                                                |
+| ------------- | --------------------- | ----------------------------------------------------- |
+| ConnectorTool | `begin()`             | Start endpoint stays free even if clicking on a shape |
+| ConnectorTool | `move()` idle         | No hover snap dots shown on shapes                    |
+| ConnectorTool | `move()` creating     | End endpoint stays free, no snap dots                 |
+| SelectTool    | `move()` endpointDrag | Dragged endpoint stays free, no snap dots             |
+
+Release Ctrl mid-drag to resume snapping immediately.
 
 ### Files (v3)
 
-| File | Changes |
-| ---- | ------- |
-| `client/src/canvas/keyboard-manager.ts` | TOOL_KEYS/SHAPE_KEYS remapped, spacebar pan (keydown+keyup+blur lifecycle), Cmd+B/I/H handlers, `isSpacebarPanMode` export, bare key block during space-hold |
-| `client/src/canvas/CanvasRuntime.ts` | Spacebar pan routing in handlePointerDown/Up, `storePointerModifiers` call, `isSpacebarPanMode` hover suppression in handlePointerMove |
-| `client/src/canvas/cursor-tracking.ts` | Added `storePointerModifiers`, `isShiftPointer`, `isCtrlOrMetaPointer` |
-| `client/src/lib/tools/SelectTool.ts` | Import modifier getters, `hasAddModifier` helper, additive/subtractive logic in `end()` pendingClick |
-| `client/src/lib/utils/selection-actions.ts` | `toggleSelectedBold/Italic` compute inline styles live via `computeUniformInlineStyles` |
+| File                                        | Changes                                                                                                                                                      |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `client/src/canvas/keyboard-manager.ts`     | TOOL_KEYS/SHAPE_KEYS remapped, spacebar pan (keydown+keyup+blur lifecycle), Cmd+B/I/H handlers, `isSpacebarPanMode` export, bare key block during space-hold |
+| `client/src/canvas/CanvasRuntime.ts`        | Spacebar pan routing in handlePointerDown/Up, `storePointerModifiers` call, `isSpacebarPanMode` hover suppression in handlePointerMove                       |
+| `client/src/canvas/cursor-tracking.ts`      | Added `storePointerModifiers`, `isShiftPointer`, `isCtrlOrMetaPointer`                                                                                       |
+| `client/src/lib/tools/SelectTool.ts`        | Import modifier getters, `hasAddModifier` helper, additive/subtractive logic in `end()` pendingClick                                                         |
+| `client/src/lib/utils/selection-actions.ts` | `toggleSelectedBold/Italic` compute inline styles live via `computeUniformInlineStyles`                                                                      |

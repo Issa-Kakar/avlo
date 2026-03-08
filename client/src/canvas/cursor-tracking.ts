@@ -34,3 +34,16 @@ export function isShiftPointer(): boolean {
 export function isCtrlOrMetaPointer(): boolean {
   return lastPointerCtrlOrMeta;
 }
+
+// --- Live Ctrl state (updated every pointer event, read during drag) ---
+
+let liveCtrlKey = false;
+
+/** Update live Ctrl state from any pointer event. Uses ctrlKey only — Cmd conflicts with clipboard shortcuts. */
+export function updateLiveCtrl(e: PointerEvent): void {
+  liveCtrlKey = e.ctrlKey;
+}
+
+export function isCtrlHeld(): boolean {
+  return liveCtrlKey;
+}

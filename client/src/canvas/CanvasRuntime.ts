@@ -27,8 +27,12 @@ import {
   setHoldPreviewFn,
 } from './invalidation-helpers';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
-import { attach as attachKeyboard, detach as detachKeyboard, isSpacebarPanMode } from './keyboard-manager';
-import { setLastCursorWorld, storePointerModifiers } from './cursor-tracking';
+import {
+  attach as attachKeyboard,
+  detach as detachKeyboard,
+  isSpacebarPanMode,
+} from './keyboard-manager';
+import { setLastCursorWorld, storePointerModifiers, updateLiveCtrl } from './cursor-tracking';
 import { setCursorOverride } from '@/stores/device-ui-store';
 import { getObjectCacheInstance } from '@/renderer/object-cache';
 import {
@@ -196,6 +200,7 @@ export class CanvasRuntime {
 
   handlePointerDown(e: PointerEvent): void {
     storePointerModifiers(e);
+    updateLiveCtrl(e);
     panTool.cancelCoast();
     cancelZoom();
 
@@ -234,6 +239,7 @@ export class CanvasRuntime {
   }
 
   handlePointerMove(e: PointerEvent): void {
+    updateLiveCtrl(e);
     const world = screenToWorld(e.clientX, e.clientY);
     if (world) {
       setLastCursorWorld(world);
@@ -257,6 +263,7 @@ export class CanvasRuntime {
   }
 
   handlePointerUp(e: PointerEvent): void {
+    updateLiveCtrl(e);
     // Pan release (from MMB, pan tool mode, or spacebar pan)
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       releasePointer(e.pointerId);

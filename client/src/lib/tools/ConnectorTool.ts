@@ -31,6 +31,7 @@ import {
   routeNewConnector,
   inferDragDirection,
 } from '@/lib/connectors';
+import { isCtrlHeld } from '@/canvas/cursor-tracking';
 
 type Phase = 'idle' | 'creating';
 
@@ -83,12 +84,14 @@ export class ConnectorTool implements PointerTool {
 
     const scale = useCameraStore.getState().scale;
 
-    // Check if starting on a shape
-    const snap = findBestSnapTarget({
-      cursorWorld: [worldX, worldY],
-      scale,
-      prevAttach: null,
-    });
+    // Check if starting on a shape (Ctrl suppresses snapping)
+    const snap = isCtrlHeld()
+      ? null
+      : findBestSnapTarget({
+          cursorWorld: [worldX, worldY],
+          scale,
+          prevAttach: null,
+        });
 
     this.fromSnap = snap;
     this.fromPosition = snap ? snap.position : [worldX, worldY];
@@ -106,12 +109,14 @@ export class ConnectorTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
 
     if (this.phase === 'idle') {
-      // Hover mode - show anchor dots on nearby shapes
-      const snap = findBestSnapTarget({
-        cursorWorld: [worldX, worldY],
-        scale,
-        prevAttach: this.prevSnap,
-      });
+      // Hover mode - show anchor dots on nearby shapes (Ctrl suppresses)
+      const snap = isCtrlHeld()
+        ? null
+        : findBestSnapTarget({
+            cursorWorld: [worldX, worldY],
+            scale,
+            prevAttach: this.prevSnap,
+          });
 
       this.hoverSnap = snap;
       this.prevSnap = snap;
@@ -119,12 +124,14 @@ export class ConnectorTool implements PointerTool {
       return;
     }
 
-    // Creating phase - update 'to' endpoint
-    const snap = findBestSnapTarget({
-      cursorWorld: [worldX, worldY],
-      scale,
-      prevAttach: this.prevSnap,
-    });
+    // Creating phase - update 'to' endpoint (Ctrl suppresses snapping)
+    const snap = isCtrlHeld()
+      ? null
+      : findBestSnapTarget({
+          cursorWorld: [worldX, worldY],
+          scale,
+          prevAttach: this.prevSnap,
+        });
 
     this.hoverSnap = snap;
     this.prevSnap = snap;

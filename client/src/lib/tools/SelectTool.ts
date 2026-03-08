@@ -66,6 +66,7 @@ import { contextMenuController } from '@/canvas/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
+import { isCtrlHeld } from '@/canvas/cursor-tracking';
 import {
   anchorFactor,
   getBaselineToTopRatio,
@@ -443,12 +444,14 @@ export class SelectTool implements PointerTool {
         const { scale } = useCameraStore.getState();
         const { connectorId, endpoint } = epTransform;
 
-        // 1. Find snap target
-        const snap = findBestSnapTarget({
-          cursorWorld: [worldX, worldY],
-          scale,
-          prevAttach: epTransform.currentSnap,
-        });
+        // 1. Find snap target (Ctrl suppresses snapping)
+        const snap = isCtrlHeld()
+          ? null
+          : findBestSnapTarget({
+              cursorWorld: [worldX, worldY],
+              scale,
+              prevAttach: epTransform.currentSnap,
+            });
 
         // 2. Build endpoint override
         const overrideValue: EndpointOverrideValue = snap ?? [worldX, worldY];
@@ -523,7 +526,7 @@ export class SelectTool implements PointerTool {
           case 'objectInSelection':
             if (this.hasAddModifier()) {
               // Subtractive: remove from selection
-              const remaining = store.selectedIds.filter(id => id !== this.hitAtDown!.id);
+              const remaining = store.selectedIds.filter((id) => id !== this.hitAtDown!.id);
               if (remaining.length > 0) {
                 store.setSelection(remaining);
               } else {

@@ -380,6 +380,14 @@ Snapping respects Z-order and fill state:
 | Shallow inside or outside | Edge sliding with midpoint stickiness |
 | Outside snap radius | No snap |
 
+### Ctrl Suppresses Snapping
+
+Holding Ctrl during any connector endpoint interaction prevents binding. `isCtrlHeld()` from `cursor-tracking.ts` is checked before every `findBestSnapTarget()` call — when true, snap is forced to `null`. Affects:
+- **ConnectorTool:** `begin()` (start endpoint), `move()` idle (hover dots), `move()` creating (end endpoint)
+- **SelectTool:** `move()` endpointDrag phase
+
+Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handlePointerMove`, `handlePointerUp` in CanvasRuntime), so releasing Ctrl mid-drag resumes snapping immediately. No rendering changes needed — null snap already means no dots in both renderers.
+
 ### Midpoint Stickiness (Hysteresis)
 
 - Snap IN at 16px from midpoint
