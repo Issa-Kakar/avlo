@@ -18,9 +18,7 @@ import { UserAvatarCluster } from './UserAvatarCluster';
 import { ToastProvider, useToast } from './Toast';
 
 // Hooks
-import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useClearScene } from '../hooks/useRoomIntegration';
-import { useUndoRedo } from '../hooks/use-undo-redo';
 
 // CSS
 import './RoomPage.css';
@@ -33,7 +31,6 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const { showToast } = useToast();
   const clearScene = useClearScene(roomId);
-  const { undo, redo } = useUndoRedo(roomId);
 
   const handleClear = () => {
     if (window.confirm('Clear the board for everyone? This cannot be undone.')) {
@@ -56,26 +53,6 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
       showToast('Failed to copy link');
     }
   };
-
-  const handleUndo = () => {
-    undo();
-    // Optionally show toast for feedback
-    // showToast('Undo');
-  };
-
-  const handleRedo = () => {
-    redo();
-    // Optionally show toast for feedback
-    // showToast('Redo');
-  };
-
-  // Keyboard shortcuts
-  useKeyboardShortcuts({
-    onClear: handleClear,
-    onUndo: handleUndo,
-    onRedo: handleRedo,
-    onToast: showToast,
-  });
 
   return (
     <div className="app-container">
@@ -124,20 +101,15 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
             <UserAvatarCluster roomId={roomId} onShowModal={() => setUsersModalOpen(true)} />
 
             {/* Invite button */}
-            <button
-              className="micro micro-invite"
-              onClick={handleInvite}
-              title="Copy invite link"
-            >
+            <button className="micro micro-invite" onClick={handleInvite} title="Copy invite link">
               Invite
             </button>
           </div>
 
           {/* Floating UI elements */}
-          <ToolPanel onToast={showToast} onUndo={handleUndo} onRedo={handleRedo} />
+          <ToolPanel onToast={showToast} />
           <ZoomControls />
         </div>
-
       </div>
 
       {/* Users Modal */}

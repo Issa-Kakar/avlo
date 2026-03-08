@@ -21,8 +21,14 @@ import { cancelZoom } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
+import {
+  setWorldInvalidator,
+  setOverlayInvalidator,
+  setHoldPreviewFn,
+} from './invalidation-helpers';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
+import { attach as attachKeyboard, detach as detachKeyboard } from './keyboard-manager';
+import { setLastCursorWorld } from './cursor-tracking';
 import { getObjectCacheInstance } from '@/renderer/object-cache';
 import {
   screenToWorld,
@@ -43,12 +49,12 @@ export interface RuntimeConfig {
 }
 
 // --- Zoom constants ---
-const WHEEL_BASE = 1.15;          // 15% per notch at boost 1x (mouse wheel)
-const VELOCITY_WINDOW_MS = 200;   // Sliding window for event rate
-const MIN_RATE = 3;               // Events/sec below this = no boost
-const RAMP_DIVISOR = 16;          // Gradual ramp — max boost at ~19 eps
-const MAX_BOOST = 2.0;            // Ceiling multiplier (32% per fast notch)
-const PINCH_SENSITIVITY = 0.01;   // Trackpad pinch scaling
+const WHEEL_BASE = 1.15; // 15% per notch at boost 1x (mouse wheel)
+const VELOCITY_WINDOW_MS = 200; // Sliding window for event rate
+const MIN_RATE = 3; // Events/sec below this = no boost
+const RAMP_DIVISOR = 16; // Gradual ramp — max boost at ~19 eps
+const MAX_BOOST = 2.0; // Ceiling multiplier (32% per fast notch)
+const PINCH_SENSITIVITY = 0.01; // Trackpad pinch scaling
 
 export class CanvasRuntime {
   private inputManager: InputManager | null = null;
@@ -87,9 +93,10 @@ export class CanvasRuntime {
     setOverlayInvalidator(() => this.overlayLoop?.invalidateAll());
     setHoldPreviewFn(() => this.overlayLoop?.holdPreviewForOneFrame());
 
-    // 4. Input manager
+    // 4. Input manager + keyboard
     this.inputManager = new InputManager(this);
     this.inputManager.attach();
+    attachKeyboard();
 
     // 6. Camera subscription for tool view changes + context menu repositioning
     this.cameraUnsub = useCameraStore.subscribe(
@@ -98,7 +105,7 @@ export class CanvasRuntime {
         getCurrentTool()?.onViewChange();
         contextMenuController.onCameraMove();
       },
-      { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py }
+      { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
     );
 
     // 7. Snapshot subscription for dirty rect invalidation (event-driven)
@@ -128,7 +135,7 @@ export class CanvasRuntime {
               this.renderLoop?.invalidateWorld(bounds);
             }
           }
-        } 
+        }
 
         // Update overlay for new doc content
         this.overlayLoop?.invalidateAll();
@@ -153,6 +160,7 @@ export class CanvasRuntime {
     this.cameraUnsub?.();
 
     this.inputManager?.detach();
+    detachKeyboard();
     cancelZoom();
 
     setWorldInvalidator(null);
@@ -215,7 +223,10 @@ export class CanvasRuntime {
 
   handlePointerMove(e: PointerEvent): void {
     const world = screenToWorld(e.clientX, e.clientY);
-    if (world) updatePresenceCursor(world[0], world[1]);
+    if (world) {
+      setLastCursorWorld(world);
+      updatePresenceCursor(world[0], world[1]);
+    }
 
     // Pan active? (from MMB or pan tool mode)
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
@@ -288,8 +299,9 @@ export class CanvasRuntime {
 
     // Normalize delta across browsers/modes
     let delta = e.deltaY;
-    if (e.deltaMode === 1) delta *= 40;       // DOM_DELTA_LINE
-    else if (e.deltaMode === 2) delta *= 800;  // DOM_DELTA_PAGE
+    if (e.deltaMode === 1)
+      delta *= 40; // DOM_DELTA_LINE
+    else if (e.deltaMode === 2) delta *= 800; // DOM_DELTA_PAGE
 
     const pivot = { x: canvas[0], y: canvas[1] };
 
