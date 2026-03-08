@@ -1130,8 +1130,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear dirty tracking - this is a full rebuild
     this.dirtyRects.length = 0;
     this.cacheEvictIds.clear();
-    // Clear text layout cache on full rebuild
+    // Clear text/code layout caches on full rebuild
     textLayoutCache.clear();
+    codeSystem.clear();
 
     // Build handles from Y.Doc
     const handles: ObjectHandle[] = [];
@@ -1150,6 +1151,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           const fontSize = (yObj.get('fontSize') as number) ?? 20;
           bbox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
         }
+      } else if (kind === 'code') {
+        bbox = computeCodeBBox(id, yObj);
       } else {
         bbox = computeBBoxFor(kind, yObj);
       }

@@ -432,7 +432,8 @@ export function syncTokenize(text: string, language: CodeLanguage): CodeToken[][
         continue;
       }
 
-      // --- Fallback: skip unknown char ---
+      // --- Fallback: emit default token for unknown char ---
+      tokens.push({ from: i, to: i + 1, color: CODE_DEFAULT });
       i++;
     }
 
@@ -917,6 +918,8 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
     '.cm-content': {
       fontFamily: CODE_FONT,
       padding: `${PADDING_TOP}px 0 ${PADDING_BOTTOM}px 0`,
+      overflowWrap: 'break-word',
+      wordBreak: 'break-all',
     },
     '.cm-line': {
       padding: `0 ${PADDING_RIGHT}px 0 0`,

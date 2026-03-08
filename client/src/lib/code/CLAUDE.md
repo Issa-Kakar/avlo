@@ -338,11 +338,18 @@ Uses `getCodeFrame(id)` for rectangle hit testing and marquee intersection. Code
 
 ## Known Issues / TODO
 
-- **Font weight:** `FONT_WEIGHT=400` but JetBrains Mono woff2 may only have 450-700 range, causing fallback rendering
-- **Flash on mount:** Editor container is appended to DOM before CM modules finish loading (async), causing brief visible flash. Need to coordinate timing (hide until CM ready, or preload)
-- **UndoManager:** Per-session UM + main UM capture timeout widening is a partial attempt at atomic undo sealing. Needs proper implementation matching TextTool's pattern
-- **WYSIWYG mismatch:** Canvas renderer and CM editor have spacing differences (line number spacing, bottom padding). Needs investigation to align padding constants exactly
-- **Theme:** Currently One Dark — planned to change to more purple/contrast palette
-- **Default width:** May be further reduced from current DEFAULT_CHARS=48
-- **No dirty comparison:** `handleContentChange` always invalidates — could compare old/new text to skip no-ops
-- **Phase 4 not done:** Selection transforms (scale, width resize), language dropdown, filter dropdown for mixed selections
+### Critical — DOM/Canvas WYSIWYG Mismatch
+- **Blurry on zoom:** CSS `transform: scale()` rasterizes at base resolution then scales. Need screen-space rendering (compute all dimensions × scale directly, no CSS transform). Requires CM theme padding to also scale — CSS custom properties or per-mount theme.
+- **Padding doesn't scale with fontSize:** PADDING_TOP/BOTTOM/LEFT/RIGHT are fixed world-unit px (24/24/12/12). A fontSize=28 block has the same padding as fontSize=14. Consider making padding proportional to fontSize.
+- **Height mismatch DOM vs canvas:** CM's actual line-height may differ from `fontSize * LINE_HEIGHT_MULT`. Canvas uses exact `fontSize * 1.5`, CM may compute differently.
+- **Gutter-to-code spacing off:** Canvas uses `charWidth(fontSize) = fontSize * 0.6` for gutter width. CM's actual monospace character width may differ slightly, causing gutter/code alignment mismatch.
+
+### Frame / Cache Bugs
+- **Empty block frame null:** `getLayout()` re-nulls frame on every call when `text === '' && !tokens` (line 564). After hydration sets frame via `computeCodeBBox`, next render call re-enters that branch and nulls it. Fix: have `getLayout` cache the frame, or guard the re-read more carefully.
+- **No tokenization on hydration:** `syncTokenize` + `requestParse` only run in `handleContentChange` (observer path). After page reload, code blocks render with no syntax highlighting until the first edit. Fix: trigger tokenization in `getLayout` when tokens are null, or in `computeCodeBBox` during hydration.
+
+### Other
+- **UndoManager:** Per-session UM handles CM undo. Main UM capture timeout hacking removed — main UM may capture individual keystrokes. Needs proper origin-based filtering like TextTool's `ySyncPluginKey` pattern.
+- **Flash on mount:** `beginCodeEditing` called from `end()` hides canvas rendering before async `mountEditor` completes. Currently mitigated by also calling `beginCodeEditing` inside `mountEditor` after EditorView creation, but the early call in `end()` for the hit-existing path can still flash. The call in `end()` is commented out as a WIP fix.
+- **Font weight:** `FONT_WEIGHT=400` but JetBrains Mono woff2 may only have 450-700 range
+- **Phase 4 not done:** Selection transforms (scale, width resize), language dropdown, mixed selection filter

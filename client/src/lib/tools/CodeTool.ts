@@ -20,7 +20,6 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { getCodeProps } from '@avlo/shared';
 import {
-  DEFAULT_FONT_SIZE,
   getDefaultWidth,
   getCodeFrame,
   PADDING_TOP,
@@ -110,7 +109,7 @@ export class CodeTool implements PointerTool {
     const y = worldY ?? this.downWorld?.[1] ?? 0;
 
     if (this.hitCodeId) {
-      useSelectionStore.getState().beginCodeEditing(this.hitCodeId);
+      //useSelectionStore.getState().beginCodeEditing(this.hitCodeId);
       this.mountEditor(this.hitCodeId);
     } else {
       this.createCodeObject(x, y);
@@ -174,7 +173,7 @@ export class CodeTool implements PointerTool {
 
   private createCodeObject(worldX: number, worldY: number): void {
     const roomDoc = getActiveRoomDoc();
-    const fontSize = DEFAULT_FONT_SIZE;
+    const fontSize = useDeviceUIStore.getState().textSize;
     const width = getDefaultWidth(fontSize);
     const lh = lineHeightFn(fontSize);
 
@@ -318,13 +317,7 @@ export class CodeTool implements PointerTool {
     if (selState.codeEditingId !== objectId) {
       selState.beginCodeEditing(objectId);
     }
-
-    // Main UM: widen capture window to avoid merging editor edits
-    const mainUM = getActiveRoomDoc().getUndoManager();
-    if (mainUM) {
-      mainUM.stopCapturing();
-      (mainUM as unknown as { captureTimeout: number }).captureTimeout = 600_000;
-    }
+    invalidateWorld(getVisibleWorldBounds());
 
     this.setupEditorHandlers();
   }
@@ -409,13 +402,6 @@ export class CodeTool implements PointerTool {
 
     // Destroy EditorView
     (this.editorView as { destroy(): void }).destroy();
-
-    // Main UM: restore normal capture timeout
-    const mainUM = getActiveRoomDoc().getUndoManager();
-    if (mainUM) {
-      mainUM.stopCapturing();
-      (mainUM as unknown as { captureTimeout: number }).captureTimeout = 500;
-    }
 
     // Clear per-session UM
     if (this.sessionUM) {
