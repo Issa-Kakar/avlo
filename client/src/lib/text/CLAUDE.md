@@ -258,20 +258,28 @@ class TextLayoutCache {
   //   same content, different fontSize or fontFamily → re-measure + re-flow
   //   stale content (or no entry) → full pipeline
 
-  invalidateContent(objectId)  // Content changed → nulls tokenized → forces full pipeline
+  invalidateContent(objectId, fragment?)
+  // Content changed. When fragment provided: eagerly re-tokenizes via parseAndTokenize(fragment)
+  // so getInlineStyles() returns fresh data immediately. Critical for shape labels where no
+  // getLayout() call happens before refreshStyles in the observer path.
+  // When fragment omitted: nulls tokenized → lazy re-parse on next getLayout().
+  // Always nulls measuredFontSize → forces re-measure + re-layout on next getLayout().
+
   invalidateLayout(objectId)   // FontSize changed → nulls measuredFontSize → forces re-measure
   invalidateFlow(objectId)     // Width changed → nulls layoutWidth → forces re-flow
   remove(objectId)             // Object deleted
   clear()                      // Full clear (+ all measurement LRUs)
   setFrame(objectId, frame)    // Derived frame storage (set by computeTextBBox)
   getFrame(objectId): FrameTuple | null
-  getMeasuredContent(objectId): MeasuredContent | null  // For reflow (SelectTool E/W transforms)
+  getMeasuredContent(objectId): MeasuredContent | null  // For reflow (SelectTool E/W transforms, shape label transforms)
   getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
 }
 export const textLayoutCache: TextLayoutCache;
 ```
 
 **Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. Re-flows automatically — no explicit `invalidateFlow()` needed for the render path (but it exists for the observer path). FontFamily change detection works the same way: `entry.measuredFontFamily !== fontFamily` triggers re-measure + re-flow.
+
+**Eager vs lazy tokenization:** `invalidateContent(id, fragment)` with a fragment eagerly calls `parseAndTokenize(fragment)` and stores the result, so `getInlineStyles()` returns fresh `UniformStyles` immediately. Without the fragment, tokenized is nulled for lazy re-parse on next `getLayout()`. Both paths null `measuredFontSize` and `frame`, ensuring re-measure and BBox recomputation. The eager path is critical for shape labels — their content changes arrive via the deep observer, and the context menu queries `getInlineStyles()` before any `getLayout()` call would trigger lazy tokenization.
 
 ### Renderer: `renderTextLayout()`
 
@@ -558,7 +566,7 @@ Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount:
   white-space: pre-wrap;
   overflow-wrap: break-word;       /* Safe default — no-op in auto (max-content) */
   width: max-content;              /* Auto mode: grows with content */
-  transform: translateX(var(--text-anchor-tx, 0%));
+  transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
   text-align: var(--text-align, left);
   color: var(--text-color, #000000);
 }
@@ -621,13 +629,19 @@ this.undoManager = new Y.UndoManager([objects], {
 ### Deep Observer
 
 ```typescript
-if (field === 'content') {
-  textLayoutCache.invalidateContent(id);
-  textContentChangedIds.add(id);
-} 
-// 'width', 'fontSize', changes handled by comparison in getLayout()
+// Y.XmlFragment change: eager re-tokenize for inline styles
+if (path[1] === 'content') {
+  const fragment = objects.get(id)?.get('content');
+  textLayoutCache.invalidateContent(
+    id,
+    fragment instanceof Y.XmlFragment ? fragment : undefined,
+  );
+}
+// 'width', 'fontSize' changes handled by comparison in getLayout()
 // 'origin'/'color' don't need cache invalidation
 ```
+
+The observer retrieves the fresh `Y.XmlFragment` and passes it to `invalidateContent()` for eager tokenization. This ensures `getInlineStyles()` returns fresh data immediately — critical for the context menu's `computeUniformInlineStyles()` which runs in `refreshStyles()` for both `textOnly` and `shapesOnly` selections.
 
 ### Deletion / Rebuild
 
@@ -753,28 +767,8 @@ Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pi
 ## Changelog — Multi-Font Setup
 
 ### Font Files (`client/public/fonts/`)
-
-Replaced 4 static single-weight Grandstander files with 8 variable fonts (4 families × upright + italic):
-
-| File | Size | Notes |
-|------|------|-------|
-| `Grandstander.woff2` / `-Italic.woff2` | 34 / 35 KB | ss01 baked as default glyphs, ss02/dlig/liga stripped |
-| `Inter.woff2` / `-Italic.woff2` | 26 / 28 KB | `opsz` axis pinned to 14 (eliminates WYSIWYG variability) |
-| `Lora.woff2` / `-Italic.woff2` | 34 / 37 KB | — |
-| `JetBrainsMono.woff2` / `-Italic.woff2` | 15 / 16 KB | No kern (monospace), `calt` stripped (coding ligatures) |
-
-**All fonts:** variable `wght 450–700`, Latin subset only, `liga`/`calt`/`dlig` stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix). Features kept: `kern`, `mark`, `mkmk`, `ccmp`, `locl`. Hints removed. Total: 223 KB (down from 1250 KB source).
-
-**Subsetting pipeline:** `fontTools.varLib.instancer` (axis restriction) → `normalize_font()` (BytesIO round-trip to fix stale HVAR refs) → ss01 baking (Grandstander only: 59 cmap remaps) → `fontTools.subset` (Latin range, feature allowlist, dehint) → woff2 compress. Python venv at `.venv/` (gitignored).
-
-### Weight Change (550/800 → 450/700)
-
-Lora's max weight is 700, so all fonts are now clamped to `wght 450–700`.
-
-- `font-config.ts`: `weightNormal: 450`, `weightBold: 700` — propagates to `buildFontString()` (canvas) and `font-loader.ts`
-- `index.css`: `.tiptap { font-weight: 450 }`, `.tiptap strong { font-weight: 700 }`
-- `index.css`: 8 `@font-face` declarations with `font-weight: 450 700` range syntax
-- Tiptap Bold extension unchanged — renders `<strong>`, CSS controls weight
+- **Fonts:*** Grandstander, Inter, Lora, JetBrains Mono
+**All fonts:** variable `wght 450–700`, Latin subset only, `liga`/`calt`/`dlig` stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix). Features kept: `kern`, `mark`, `mkmk`, `ccmp`, `locl`. 
 
 ---
 
@@ -782,14 +776,11 @@ Lora's max weight is 700, so all fonts are now clamped to `wght 450–700`.
 
 Text labels inside shapes (rect, ellipse, diamond, roundedRect). Reuses the full text pipeline — same Y.XmlFragment, same tokenizer/measure/layout, same Tiptap editor — but with shape-aware positioning, text box computation, and a dedicated canvas renderer.
 
-### Y.Doc Schema (Label Fields on Shape Object)
+### Y.Doc Schema
 
-Labels are NOT separate objects. They add fields directly to the existing shape Y.Map:
+Labels are NOT separate objects. They add fields directly to the shape Y.Map:
 
 ```typescript
-// Existing shape fields (unchanged)
-{ id, kind: 'shape', shapeType, color, width, opacity, fillColor?, frame, ownerId, createdAt }
-
 // Label fields (added on first edit, removed if empty on close)
 {
   content: Y.XmlFragment,     // Rich text — same structure as text objects
@@ -799,191 +790,86 @@ Labels are NOT separate objects. They add fields directly to the existing shape 
 }
 ```
 
-**Key difference from text objects:** No `origin`, `align`, or `width` fields. Labels are always center-aligned H+V within the inscribed text box, and width is derived from the shape frame. Color uses `labelColor` (not `color`, which is the shape border color).
+**Key differences from text objects:** No `origin`, `align`, or `width`. Labels are always center-aligned H+V within the inscribed text box, width derived from shape frame. `hasLabel(y)` (`y.get('content') instanceof Y.XmlFragment`) is the canonical check. `getLabelColor(y)` reads the `labelColor` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged.
 
-### Accessors (`object-accessors.ts`)
-
-```typescript
-getLabelColor(y, fallback = '#000'): string   // Reads 'labelColor' key
-hasLabel(y): boolean                           // y.get('content') instanceof Y.XmlFragment
-```
-
-`hasLabel()` is the canonical check — shapes without labels have no `content` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged (same key names, separate Y.Map instances).
-
-### Text Box Computation (`text-system.ts` → `computeLabelTextBox`)
+### Text Box Computation (`computeLabelTextBox`)
 
 ```typescript
 computeLabelTextBox(shapeType: string, frame: FrameTuple): FrameTuple
 ```
 
-Pure function. Returns the max inscribed text rectangle within the shape, inset by `LABEL_PADDING = 10`:
+Pure function. Returns max inscribed text rectangle within the shape, inset by `LABEL_PADDING = 10`:
 
-| Shape | Inscribed rect | Math |
-|-------|---------------|------|
-| rect, roundedRect | Frame minus padding | `[fx+pad, fy+pad, fw-2*pad, fh-2*pad]` |
-| ellipse | Max inscribed rect of ellipse, minus padding | `a√2 × b√2` centered, then inset by pad |
-| diamond | Half-size rect centered | `w/2 × h/2` centered, then inset by pad |
+| Shape | Math |
+|-------|------|
+| rect, roundedRect | `[fx+pad, fy+pad, fw-2*pad, fh-2*pad]` |
+| ellipse | `a√2 × b√2` centered, then inset by pad |
+| diamond | `w/2 × h/2` centered, then inset by pad |
 
-`Math.max(0, ...)` prevents negative dimensions on tiny shapes — `renderShapeLabel` and `drawShapeLabel` early-return when dims ≤ 0.
-
-Rect and roundedRect share the same formula — roundedRect's max corner inset (~5.86px at default radius) is less than the 10px padding, so the full inscribed rect is within the rounded area.
+`Math.max(0, ...)` prevents negative dimensions — renderer early-returns when dims ≤ 0.
 
 ### Canvas Rendering
 
-**At rest — `drawShapeLabel()`** (`objects.ts`):
+**At rest — `drawShapeLabel()`:** Called at end of `drawShape()`, gated by `hasLabel(y)`. Skips if `textEditingId === handle.id`. Uses `textLayoutCache.getLayout()` with text box width — width changes from shape resizing trigger re-flow automatically.
 
-Called at end of `drawShape()` inside the opacity `ctx.save()`/`ctx.restore()` scope, gated by `hasLabel(y)`. Skips if `textEditingId === handle.id` (DOM overlay handles it during editing).
+**During transforms — `drawShapeLabelWithFrame()`:** Takes explicit transformed frame. Reads cached `MeasuredContent` via `getMeasuredContent()` and calls `layoutMeasuredContent()` directly — avoids polluting cache with transient widths.
 
-```
-drawShape() → stroke/fill shape → if (hasLabel) drawShapeLabel() → ctx.restore()
-```
-
-Calls `textLayoutCache.getLayout()` with the text box width — this goes through the normal three-tier cache (content → measure → layout). Width changes from shape resizing trigger re-flow automatically via the cache's width comparison.
-
-**During transforms — `drawShapeLabelWithFrame()`** (`objects.ts`):
-
-Used by `drawShapeWithTransform()` (non-uniform scale) and `drawShapeWithUniformScale()` (mixed + corner). Takes an explicit transformed frame instead of reading from Y.Map.
-
-Does NOT call `textLayoutCache.getLayout()` — instead reads cached `MeasuredContent` via `textLayoutCache.getMeasuredContent()` and calls `layoutMeasuredContent()` directly with the ephemeral text box width. This avoids polluting the cache with transient transform frame widths that would cause staleness bugs on gesture cancel. The `MeasuredContent` is guaranteed fresh because the shape was rendered at rest (triggering `getLayout`) before any transform begins.
-
-**Translate transforms** work automatically — `ctx.translate(dx,dy)` + `drawObject` → `drawShape` → `drawShapeLabel` inherits the translate context.
-
-### Shape Label Renderer (`text-system.ts` → `renderShapeLabel`)
-
-```typescript
-renderShapeLabel(ctx, layout, textBox, color, fontFamily)
-```
-
-Differs from `renderTextLayout` in positioning strategy:
-
-- **Horizontal:** Always center-aligned. `startX = tbx + (tbw - lineW) / 2` — no origin/anchorFactor indirection
-- **Vertical:** Content block centered in text box. `contentTopY = tby + (tbh - contentHeight) / 2`. First baseline = `contentTopY + baselineToTop`
-- **Overflow:** When `contentHeight > tbh`, content clamps to top of text box (`contentTopY = tby`) and clips via `ctx.clip()` with a rect matching the text box. This matches the DOM behavior where `overflow: hidden` + ProseMirror internal scroll clips at the container edge
-- **Highlights:** Same highlight rect rendering as `renderTextLayout` — `roundRect` with `fontSize * 0.25` radius, clamped to text box bounds
+**`renderShapeLabel(ctx, layout, textBox, color, fontFamily)`:** Center-aligned H+V. Overflow clips via `ctx.clip()`. Same highlight rects as `renderTextLayout`.
 
 ### DOM Editing (TextTool)
 
-#### Entry Point
+TextTool derives label vs text mode from `handle.kind === 'shape'` inline at every call site — no stored flag.
 
-SelectTool drill-down handles both text objects and shapes:
+**Entry:** `startEditing()` creates label fields in a single transaction if `!hasLabel(handle.y)` (`content`, `fontSize`, `fontFamily`, `labelColor` from device-ui-store defaults).
 
-```
-Click 1 on shape → select
-Click 2 on selected shape → textTool.startEditing(shapeId, clickPos)
-```
+**mountEditor — Label branch:** Positioned at text box center via `worldToClient`, CSS `translate(-50%, -50%)`. Uses `maxWidth`/`maxHeight` (not `width`). `data-width-mode='label'` triggers CSS for center align + hidden-scrollbar overflow. No `backgroundColor` (shape is the background). No Placeholder extension.
 
-`startEditing()` checks `handle.kind === 'shape'`:
-- If no label exists (`!hasLabel(handle.y)`): creates label fields in a single transaction (`content`, `fontSize`, `fontFamily`, `labelColor` from device-ui-store defaults)
-- Then mounts editor with `isNew = isNewLabel`
+**syncProps — Label branch:** `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily` → `positionEditor()`. Does NOT react to shape `fillColor` or `color` changes.
 
-#### No Stored `isLabel` Flag
+**commitAndClose:** Empty labels: deletes only label fields, shape persists. Sets `justClosedLabelId` for remount prevention.
 
-TextTool derives label vs text mode from `handle.kind === 'shape'` inline at every call site (mountEditor, positionEditor, syncProps, commitAndClose). No stored `isLabel` field — future object kind mutations (text↔shape) convert seamlessly.
+**SelectTool coordination:**
+- **Remount prevention:** `justClosedLabelId` flag prevents click-off → immediate remount cycle. Checked and consumed in SelectTool `end()`.
+- **Handles visible:** Label containers don't occlude handles. `isEditingLabel()` allows handle hit-testing/rendering during label editing.
 
-#### mountEditor — Label Branch
+### Extension Observer
 
-Positioning: text box center via `worldToClient(tbx + tbw/2, tby + tbh/2)`, CSS transform `translate(-50%, -50%)` centers the DOM content block at that point.
+Additional tracked keys: `labelColor`, `frame`, `shapeType`. Fires `onPropsSync` on shape resize, type-change, or label color change during editing. Harmless for text objects.
 
-```typescript
-container.style.setProperty('--text-anchor-tx', '-50%');
-container.style.setProperty('--text-anchor-ty', '-50%');
-container.style.maxWidth = `${tbw * scale}px`;
-container.style.maxHeight = `${tbh * scale}px`;
-container.dataset.widthMode = 'label';
-container.style.setProperty('--text-color', getLabelColor(handle.y));
-```
+### Cache & Content Invalidation
 
-Key differences from text objects:
-- Uses `maxWidth`/`maxHeight` (not `width`) — content auto-grows up to text box bounds
-- Color from `getLabelColor()` (not `getColor()`)
-- No `backgroundColor` — the shape itself is the visual background
-- No Placeholder extension — empty labels show nothing
-- `data-width-mode='label'` — triggers CSS for center align + scrollable overflow (hidden scrollbar) + placeholder suppression
-
-#### positionEditor — Label Branch
-
-Reads `getFrame(handle.y)` + `getShapeType(handle.y)` → `computeLabelTextBox()` → updates `left`, `top`, `maxWidth`, `maxHeight`, font sizing. Called on pan/zoom (`onViewChange`) and on undo/redo of shape properties.
-
-#### syncProps — Label Branch
-
-Tracked keys for labels: `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily` → `positionEditor()`. Does NOT react to `fillColor` changes (shape IS the background) or `color` changes (that's the shape border).
-
-#### commitAndClose — Label Cleanup
-
-If `editor.isEmpty` and `handle.kind === 'shape'`: deletes only label fields (`content`, `fontSize`, `fontFamily`, `labelColor`). The shape persists. Text objects still delete the entire object. On close, sets `justClosedLabelId` for shape labels to prevent remount (see below).
-
-#### Label Editing UX (TextTool ↔ SelectTool coordination)
-
-Shape label containers are smaller than the shape bounds (inscribed text box). This creates two interactions that differ from text objects:
-
-1. **Remount prevention:** Clicking the shape body outside the text container fires `commitAndClose()` (capture phase) then reaches SelectTool `end()` (bubble phase). Without a guard, SelectTool sees an in-selection shape with no editor and calls `startEditing()` — unwanted remount. Fix: `justClosedLabelId` flag set in `commitAndClose()`, checked and consumed in SelectTool `end()`. Unconditionally cleared at end of `end()`/`cancel()`.
-
-2. **Handles visible during label editing:** Unlike text objects (whose container covers the full bounds), label containers don't occlude handles. SelectTool's `isEditingLabel()` checks allow handle hit-testing, handle rendering, and hover cursor during shape label editing. Text object editing still suppresses handles.
+- **At rest:** `drawShapeLabel` → `textLayoutCache.getLayout(shapeId, ...)` — normal three-tier cache
+- **Deep observer:** `path[1] === 'content'` → `invalidateContent(id, fragment)` — eager re-tokenize for inline styles (see TextLayoutCache section above)
+- **Transform preview:** `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes
+- **Deletion:** `textLayoutCache.remove(id)` — no-op for shapes without labels
 
 ### CSS (`index.css`)
 
 ```css
 .tiptap {
   transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
-  /* --text-anchor-ty added for label vertical centering, defaults to 0% — existing text unaffected */
+  /* --text-anchor-ty defaults to 0% — only labels set -50% */
 }
 
 .tiptap[data-width-mode='label'] {
   overflow-x: hidden;
   overflow-y: auto;
   text-align: center;
-  scrollbar-width: none;  /* Firefox */
+  scrollbar-width: none;
 }
-.tiptap[data-width-mode='label']::-webkit-scrollbar {
-  display: none;           /* Chrome/Safari */
-}
-
-.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
-  display: none;
-}
+.tiptap[data-width-mode='label']::-webkit-scrollbar { display: none; }
+.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before { display: none; }
 ```
-
-### Extension Observer (`extensions.ts`)
-
-Additional tracked keys: `labelColor`, `frame`, `shapeType`. These fire `onPropsSync` when the shape is resized, type-changed, or label color is changed during editing. Harmless for text objects (they never have these keys changed during editing).
-
-### Cache Integration
-
-- **At rest:** `drawShapeLabel` → `textLayoutCache.getLayout(shapeId, ...)` — normal three-tier cache, width = text box width
-- **Deep observer:** `field === 'content'` → `invalidateContent(id)` — works for shapes too (same key name)
-- **Deletion:** `textLayoutCache.remove(id)` for both `kind === 'text'` and `kind === 'shape'` — no-op for shapes without labels (no cache entry)
-- **Transform preview:** `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes, no staleness
 
 ### WYSIWYG Parity
 
-DOM and canvas label rendering match because:
-- Both center content horizontally within the text box (`text-align: center` ↔ `tbx + (tbw - lineW) / 2`)
-- Both center content vertically (CSS `translate(-50%, -50%)` from text box center ↔ canvas `tby + (tbh - contentHeight) / 2`)
-- Both clip overflow (`overflow-y: auto` + `maxHeight` ↔ `ctx.clip()`) — DOM scrolls during editing, canvas clips at rest
-- Same font metrics, same line height, same `baselineToTop` ratio
-- After editor close, ProseMirror scrollTop resets — canvas "rest position" matches the DOM un-scrolled state
+Both DOM and canvas center content H+V within text box, clip overflow (`overflow-y: auto` + `maxHeight` ↔ `ctx.clip()`), use same font metrics/lineHeight/baselineToTop. ProseMirror scrollTop resets on close — canvas "rest position" matches un-scrolled DOM state.
 
 ### Edge Cases
 
-- **Empty label on close:** Label fields deleted, shape persists, layout cache cleaned up
-- **Shape deletion with label:** `textLayoutCache.remove(id)` cleans cache; Y.Map deletion includes label fields
-- **Undo label creation:** Main UndoManager reverses field additions; `hasLabel()` returns false; shape renders without label
-- **Shape resize during editing:** `frame` key change → extension observer fires → `syncProps` → `positionEditor()` updates DOM position + maxWidth/maxHeight
-- **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns → label invisible but Y.XmlFragment content preserved
-- **Collaboration:** Y.XmlFragment CRDT + TextCollaboration ySyncPlugin handle concurrent label edits identically to text objects
-- **Shape type change during editing:** `shapeType` key tracked by extension observer → `positionEditor()` recomputes text box for new shape geometry
-- **Click shape body during label editing:** Editor closes, shape stays selected, editor does NOT remount (justClosedLabelId guard); next click re-opens
-- **Handle click during label editing:** Capture phase closes editor → textEditingId null → begin() tests handles normally → scale gesture starts
-
-### Not Yet Implemented
-
-- Context menu `labelColor` vs `color` routing
-- `computeStyles` / `selection-actions` adaptations for label-aware text controls on shapes
-- Font size scaling of labels during shape uniform-scale transforms (font size stays fixed, only text box adapts)
-
----
-
-## Remaining Work
-
-- **`DEV_FORCE_FIXED_WIDTH` removal** — temporary; remove now that resize handles have landed
-- **Live width changes during editing** — resize while editor mounted
+- **Empty label:** Fields deleted on close, shape persists, cache cleaned
+- **Undo label creation:** Main UndoManager reverses field additions; `hasLabel()` returns false
+- **Shape resize during editing:** `frame` key → extension observer → `positionEditor()` updates DOM
+- **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns, content preserved
+- **Click shape body during editing:** Editor closes, shape stays selected, `justClosedLabelId` prevents remount
+- **Handle click during editing:** Capture phase closes editor → handle gesture starts normally
