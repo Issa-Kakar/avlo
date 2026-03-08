@@ -20,6 +20,7 @@ import { TextTool } from '@/lib/tools/TextTool';
 import { PanTool } from '@/lib/tools/PanTool';
 import { SelectTool } from '@/lib/tools/SelectTool';
 import { ConnectorTool } from '@/lib/tools/ConnectorTool';
+import { CodeTool } from '@/lib/tools/CodeTool';
 import { useDeviceUIStore, type Tool as ToolId } from '@/stores/device-ui-store';
 import type { PointerTool, PreviewData } from '@/lib/tools/types';
 
@@ -33,6 +34,7 @@ const textTool = new TextTool();
 const panTool = new PanTool();
 const selectTool = new SelectTool();
 const connectorTool = new ConnectorTool();
+const codeTool = new CodeTool();
 
 // ===========================================
 // TOOL LOOKUP
@@ -52,7 +54,8 @@ const toolMap = new Map<ToolId, PointerTool>([
   ['pan', panTool],
   ['select', selectTool],
   ['connector', connectorTool],
-  // 'image' and 'code' intentionally omitted - no tool implementation
+  ['code', codeTool],
+  // 'image' intentionally omitted - no tool implementation
 ]);
 
 // ===========================================
@@ -61,7 +64,7 @@ const toolMap = new Map<ToolId, PointerTool>([
 
 /**
  * Get tool by ID.
- * Returns undefined for 'image', 'code' (no implementation).
+ * Returns undefined for 'image' (no implementation).
  */
 export function getToolById(toolId: ToolId): PointerTool | undefined {
   return toolMap.get(toolId);
@@ -103,7 +106,15 @@ export function canStartMMBPan(): boolean {
 // ===========================================
 
 /** Export panTool for direct MMB access, textTool for direct access */
-export { panTool, textTool };
+export { panTool, textTool, codeTool };
 
 /** Export all tools for testing/debugging */
-export const allTools = { drawingTool, eraserTool, textTool, panTool, selectTool, connectorTool };
+export const allTools = {
+  drawingTool,
+  eraserTool,
+  textTool,
+  panTool,
+  selectTool,
+  connectorTool,
+  codeTool,
+};

@@ -20,6 +20,8 @@ import {
   incrementFontSize,
   decrementFontSize,
   deleteSelected,
+  incrementCodeFontSize,
+  decrementCodeFontSize,
 } from '@/lib/utils/selection-actions';
 import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
@@ -200,6 +202,25 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   );
 });
 
+const selectCodeStyles = (s: SelectionStore) => ({
+  fontSize: s.selectedStyles.fontSize,
+});
+
+const CodeStyleGroup = memo(function CodeStyleGroup() {
+  const { fontSize } = useSelectionStore(useShallow(selectCodeStyles));
+  const effectiveFontSize = fontSize ?? 14;
+  return (
+    <ButtonGroup>
+      <FontSizeStepper
+        value={effectiveFontSize}
+        onDecrement={decrementCodeFontSize}
+        onIncrement={incrementCodeFontSize}
+        onSelectSize={setSelectedFontSize}
+      />
+    </ButtonGroup>
+  );
+});
+
 const ConnectorGroup = memo(function ConnectorGroup() {
   const { color, colorMixed, colorSecond, width } = useSelectionStore(
     useShallow(selectConnectorStyles),
@@ -273,6 +294,12 @@ function ContextMenuBar() {
               <ShapeTypeDropdown mode="text" />
               <div className="ctx-divider" />
               <TextStyleGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
+          {effectiveKind === 'codeOnly' && (
+            <>
+              <CodeStyleGroup />
               <div className="ctx-divider" />
             </>
           )}

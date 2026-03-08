@@ -256,6 +256,45 @@ export function getContent(y: Y.Map<unknown>): Y.XmlFragment | null {
 }
 
 // ============================================================================
+// CODE-SPECIFIC ACCESSORS
+// ============================================================================
+
+export type CodeLanguage = 'javascript' | 'typescript' | 'python';
+
+export function getLanguage(
+  y: Y.Map<unknown>,
+  fallback: CodeLanguage = 'javascript',
+): CodeLanguage {
+  return (y.get('language') as CodeLanguage | undefined) ?? fallback;
+}
+
+export function getCodeText(y: Y.Map<unknown>): Y.Text | null {
+  const content = y.get('content');
+  return content instanceof Y.Text ? content : null;
+}
+
+export interface CodeProps {
+  content: Y.Text;
+  origin: [number, number];
+  fontSize: number;
+  width: number;
+  language: CodeLanguage;
+}
+
+export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
+  const origin = y.get('origin') as [number, number] | undefined;
+  const content = y.get('content');
+  if (!origin || !(content instanceof Y.Text)) return null;
+  return {
+    content: content as Y.Text,
+    origin,
+    fontSize: (y.get('fontSize') as number) ?? 14,
+    width: (y.get('width') as number) ?? 570,
+    language: (y.get('language') as CodeLanguage) ?? 'javascript',
+  };
+}
+
+// ============================================================================
 // STROKE-SPECIFIC ACCESSORS
 // ============================================================================
 

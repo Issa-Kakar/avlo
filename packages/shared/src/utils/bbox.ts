@@ -1,15 +1,26 @@
 import type * as Y from 'yjs';
 import type { ObjectKind, WorldBounds } from '../types/objects';
-import { getPoints, getFrame, getWidth, getStartCap, getEndCap } from '../accessors/object-accessors';
+import {
+  getPoints,
+  getFrame,
+  getWidth,
+  getStartCap,
+  getEndCap,
+} from '../accessors/object-accessors';
 
-export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number, number, number, number] {
+export function computeBBoxFor(
+  kind: ObjectKind,
+  yMap: Y.Map<unknown>,
+): [number, number, number, number] {
   switch (kind) {
     case 'stroke': {
       const points = getPoints(yMap);
       if (points.length < 1) return [0, 0, 0, 0];
 
-      let minX = points[0][0], minY = points[0][1];
-      let maxX = minX, maxY = minY;
+      let minX = points[0][0],
+        minY = points[0][1];
+      let maxX = minX,
+        maxY = minY;
 
       for (let i = 1; i < points.length; i++) {
         const [x, y] = points[i];
@@ -24,12 +35,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number,
       const width = getWidth(yMap, 1);
       const padding = width * 0.5 + 1;
 
-      return [
-        minX - padding,
-        minY - padding,
-        maxX + padding,
-        maxY + padding
-      ];
+      return [minX - padding, minY - padding, maxX + padding, maxY + padding];
     }
 
     case 'shape': {
@@ -41,26 +47,24 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number,
         frame[0] - padding,
         frame[1] - padding,
         frame[0] + frame[2] + padding,
-        frame[1] + frame[3] + padding
+        frame[1] + frame[3] + padding,
       ];
     }
 
-    case 'text': {
+    case 'text':
+    case 'code': {
       const frame = getFrame(yMap) ?? [0, 0, 0, 0];
-      return [
-        frame[0],
-        frame[1],
-        frame[0] + frame[2],
-        frame[1] + frame[3]
-      ];
+      return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
     }
 
     case 'connector': {
       const points = getPoints(yMap);
       if (points.length < 2) return [0, 0, 0, 0];
 
-      let minX = points[0][0], minY = points[0][1];
-      let maxX = minX, maxY = minY;
+      let minX = points[0][0],
+        minY = points[0][1];
+      let maxX = minX,
+        maxY = minY;
 
       for (let i = 1; i < points.length; i++) {
         const [x, y] = points[i];
@@ -93,12 +97,7 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number,
         padding = strokePadding + 1;
       }
 
-      return [
-        minX - padding,
-        minY - padding,
-        maxX + padding,
-        maxY + padding
-      ];
+      return [minX - padding, minY - padding, maxX + padding, maxY + padding];
     }
 
     default:
@@ -113,12 +112,14 @@ export function computeBBoxFor(kind: ObjectKind, yMap: Y.Map<unknown>): [number,
  */
 export function computeConnectorBBoxFromPoints(
   points: [number, number][],
-  yMap: Y.Map<unknown>
+  yMap: Y.Map<unknown>,
 ): [number, number, number, number] {
   if (points.length < 2) return [0, 0, 0, 0];
 
-  let minX = points[0][0], minY = points[0][1];
-  let maxX = minX, maxY = minY;
+  let minX = points[0][0],
+    minY = points[0][1];
+  let maxX = minX,
+    maxY = minY;
 
   for (let i = 1; i < points.length; i++) {
     const [x, y] = points[i];
@@ -145,17 +146,12 @@ export function computeConnectorBBoxFromPoints(
     padding = strokePadding + 1;
   }
 
-  return [
-    minX - padding,
-    minY - padding,
-    maxX + padding,
-    maxY + padding
-  ];
+  return [minX - padding, minY - padding, maxX + padding, maxY + padding];
 }
 
 export function bboxEquals(
   a: [number, number, number, number],
-  b: [number, number, number, number]
+  b: [number, number, number, number],
 ): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
 }
@@ -165,6 +161,6 @@ export function bboxToBounds(bbox: [number, number, number, number]): WorldBound
     minX: bbox[0],
     minY: bbox[1],
     maxX: bbox[2],
-    maxY: bbox[3]
+    maxY: bbox[3],
   };
 }

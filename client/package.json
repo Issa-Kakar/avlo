@@ -10,7 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.2",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.2",
+    "@codemirror/state": "^6.5.4",
+    "@codemirror/view": "^6.39.16",
     "@floating-ui/dom": "^1.7.5",
+    "@lezer/common": "^1.5.1",
+    "@lezer/highlight": "^1.2.3",
     "@tiptap/core": "^3.20.0",
     "@tiptap/extension-bold": "^3.20.0",
     "@tiptap/extension-document": "^3.20.0",
@@ -26,6 +34,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.8.2",
+    "y-codemirror.next": "^0.3.5",
     "y-indexeddb": "^9.0.12",
     "y-partyserver": "^0.0.51",
     "y-webrtc": "^10.3.0",

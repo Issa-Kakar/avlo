@@ -381,3 +381,56 @@ export function setSelectedHighlight(color: string | null): void {
     }
   });
 }
+
+// === Code Block Actions ===
+
+const CODE_FONT_SIZE_PRESETS = [10, 12, 14, 16, 18, 20, 24] as const;
+
+export function setSelectedCodeLanguage(language: string): void {
+  const ctx = getSelectedHandles();
+  if (!ctx) return;
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ctx.selectedIds) {
+      const handle = ctx.objectsById.get(id);
+      if (handle?.kind !== 'code') continue;
+      handle.y.set('language', language);
+    }
+  });
+
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function incrementCodeFontSize(): void {
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
+  const current = Math.round(fontSize);
+  const next = CODE_FONT_SIZE_PRESETS.find((p) => p > current);
+  if (next !== undefined) setSelectedCodeFontSize(next);
+}
+
+export function decrementCodeFontSize(): void {
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
+  const current = Math.round(fontSize);
+  let prev: number | undefined;
+  for (const p of CODE_FONT_SIZE_PRESETS) {
+    if (p >= current) break;
+    prev = p;
+  }
+  if (prev !== undefined) setSelectedCodeFontSize(prev);
+}
+
+function setSelectedCodeFontSize(size: number): void {
+  const clamped = Math.max(8, Math.min(48, Math.round(size)));
+  const ctx = getSelectedHandles();
+  if (!ctx) return;
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ctx.selectedIds) {
+      const handle = ctx.objectsById.get(id);
+      if (handle?.kind !== 'code') continue;
+      handle.y.set('fontSize', clamped);
+    }
+  });
+
+  useSelectionStore.getState().refreshStyles();
+}

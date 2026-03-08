@@ -14,6 +14,7 @@ import {
   type FontFamily,
 } from '@avlo/shared';
 import { getTextFrame, getInlineStyles } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import { expandEnvelope, frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { SelectionKind } from '@/stores/selection-store';
@@ -27,6 +28,7 @@ export interface KindCounts {
   shapes: number;
   text: number;
   connectors: number;
+  code: number;
   total: number;
 }
 
@@ -78,6 +80,7 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   shapes: 0,
   text: 0,
   connectors: 0,
+  code: 0,
   total: 0,
 };
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
@@ -105,7 +108,8 @@ export function computeSelectionComposition(ids: string[]) {
   let strokes = 0,
     shapes = 0,
     text = 0,
-    connectors = 0;
+    connectors = 0,
+    code = 0;
   const selectedIdSet = new Set<string>();
 
   for (const id of ids) {
@@ -125,6 +129,9 @@ export function computeSelectionComposition(ids: string[]) {
       case 'connector':
         connectors++;
         break;
+      case 'code':
+        code++;
+        break;
     }
   }
 
@@ -133,11 +140,16 @@ export function computeSelectionComposition(ids: string[]) {
     shapes,
     text,
     connectors,
+    code,
     total: selectedIdSet.size,
   };
 
   const nonZero =
-    (strokes > 0 ? 1 : 0) + (shapes > 0 ? 1 : 0) + (text > 0 ? 1 : 0) + (connectors > 0 ? 1 : 0);
+    (strokes > 0 ? 1 : 0) +
+    (shapes > 0 ? 1 : 0) +
+    (text > 0 ? 1 : 0) +
+    (connectors > 0 ? 1 : 0) +
+    (code > 0 ? 1 : 0);
 
   let selectionKind: SelectionKind;
   if (nonZero === 0) selectionKind = 'none';
@@ -145,6 +157,7 @@ export function computeSelectionComposition(ids: string[]) {
   else if (strokes > 0) selectionKind = 'strokesOnly';
   else if (shapes > 0) selectionKind = 'shapesOnly';
   else if (text > 0) selectionKind = 'textOnly';
+  else if (code > 0) selectionKind = 'codeOnly';
   else selectionKind = 'connectorsOnly';
 
   const mode =
@@ -180,6 +193,11 @@ export function computeSelectionBounds(): WorldBounds | null {
       if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
       continue;
     }
+    if (handle.kind === 'code') {
+      const frame = getCodeFrame(id);
+      if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
+      continue;
+    }
     result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
   }
 
@@ -199,6 +217,16 @@ export function computeStyles(
   objectsById: ReadonlyMap<string, ObjectHandle>,
 ): SelectedStyles {
   if (kind === 'none' || kind === 'mixed' || ids.length === 0) return EMPTY_STYLES;
+
+  // Code blocks: only track fontSize
+  if (kind === 'codeOnly') {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle || handle.kind !== 'code') continue;
+      return { ...EMPTY_STYLES, fontSize: Math.round(getFontSize(handle.y, 14)) };
+    }
+    return EMPTY_STYLES;
+  }
 
   const trackWidth = kind !== 'textOnly';
   const trackFill = kind === 'shapesOnly' || kind === 'textOnly';

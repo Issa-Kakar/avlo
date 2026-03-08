@@ -17,14 +17,14 @@ export {
 // shape = geometric shapes (ALWAYS polyline: rect/ellipse/line)
 // text = text blocks (frame-based positioning)
 // connector = connection lines/arrows (ALWAYS polyline)
-export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
+export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code';
 
 // Lightweight handle pointing to Y.Map
 export interface ObjectHandle {
   id: string;
   kind: ObjectKind;
-  y: Y.Map<unknown>;  // Direct Y.Map reference
-  bbox: BBoxTuple;  // Computed locally, NOT stored in Y.Map
+  y: Y.Map<unknown>; // Direct Y.Map reference
+  bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
 }
 
 // Spatial index entry (minimal)

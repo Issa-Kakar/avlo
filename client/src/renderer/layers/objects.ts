@@ -46,8 +46,9 @@ import {
   getBaselineToTopRatio,
   getTextFrame,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign } from '@avlo/shared';
+import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
+import { codeSystem, renderCodeLayout } from '@/lib/code/code-system';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -197,6 +198,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     case 'connector':
       drawConnector(ctx, handle);
       break;
+    case 'code':
+      drawCode(ctx, handle);
+      break;
   }
 }
 
@@ -308,6 +312,26 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.width,
   );
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
+}
+
+function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  const { id, y } = handle;
+
+  // Skip rendering if currently being edited (Phase 2)
+  const codeEditingId = useSelectionStore.getState().codeEditingId;
+  if (codeEditingId === id) return;
+
+  const props = getCodeProps(y);
+  if (!props) return;
+
+  const layout = codeSystem.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1]);
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -762,6 +786,12 @@ function renderSelectedObjectWithScaleTransform(
     } else {
       drawText(ctx, handle);
     }
+    return;
+  }
+
+  // CASE 5: Code — translate only for now (Phase 4 will add proper scale)
+  if (handle.kind === 'code') {
+    drawObject(ctx, handle);
     return;
   }
 

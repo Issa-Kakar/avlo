@@ -26,9 +26,35 @@ import {
 import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox } from './text/text-system';
+import { codeSystem, requestParse, deltaToChangedRanges } from './code/code-system';
+import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
+import type { BBoxTuple } from '@avlo/shared';
 
 type Unsub = () => void;
+
+/**
+ * Compute bbox for a code object using its layout cache.
+ * Mirrors computeTextBBox pattern — derives frame from content.
+ */
+function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
+  const props = getCodeProps(yObj);
+  if (!props) {
+    const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+    return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
+  }
+  const layout = codeSystem.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
+  const [ox, oy] = props.origin;
+  const frame: [number, number, number, number] = [ox, oy, layout.totalWidth, layout.totalHeight];
+  codeSystem.setFrame(id, frame);
+  return frame;
+}
 
 // Type aliases for Y structures
 // Use Y.Map<unknown> and cast when accessing specific properties
@@ -815,8 +841,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear connector lookup
     clearConnectorLookup();
 
-    // Clear text layout cache
+    // Clear layout caches
     textLayoutCache.clear();
+    codeSystem.clear();
 
     // Clear object maps
     this.objectsById.clear();
@@ -941,12 +968,25 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         touchedIds.add(id);
 
         // Y.XmlFragment change: invalidate text cache (eager re-tokenize for inline styles)
+        // Y.Text change (code blocks): sync tokenize + dispatch to Lezer worker
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
-          const fragment = objects.get(id)?.get('content');
-          textLayoutCache.invalidateContent(
-            id,
-            fragment instanceof Y.XmlFragment ? fragment : undefined,
-          );
+          const yObj = objects.get(id);
+          const content = yObj?.get('content');
+          const kind = yObj?.get('kind') as string | undefined;
+          if (kind === 'code' && ev instanceof Y.YTextEvent) {
+            const yText = ev.target as Y.Text;
+            const text = yText.toString();
+            const lines = text.split('\n');
+            const lang =
+              (yObj?.get('language') as 'javascript' | 'typescript' | 'python') ?? 'javascript';
+            const changes = deltaToChangedRanges(
+              ev.delta as { insert?: string | object; delete?: number; retain?: number }[],
+            );
+            codeSystem.handleContentChange(id, text, lines, lang);
+            requestParse(id, text, lang, changes.length > 0 ? changes : undefined);
+          } else if (content instanceof Y.XmlFragment) {
+            textLayoutCache.invalidateContent(id, content);
+          }
         }
       }
 
@@ -989,9 +1029,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         processShapeDeleted(id); // Clean up lookup entry for this shape
       }
 
-      // Remove text layout cache entry on deletion
+      // Remove layout cache entries on deletion
       if (handle.kind === 'text' || handle.kind === 'shape') {
         textLayoutCache.remove(id);
+      }
+      if (handle.kind === 'code') {
+        codeSystem.remove(id);
       }
     }
 
@@ -1014,6 +1057,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     } else if (editingId && deletedIds.has(editingId)) {
       useSelectionStore.getState().endTextEditing();
     }
+    // Code editing deletion bridge
+    const codeEditingId = sel.codeEditingId;
+    if (codeEditingId && deletedIds.has(codeEditingId)) {
+      useSelectionStore.getState().endCodeEditing();
+    }
 
     for (const id of touchedIds) {
       const yObj = objects.get(id);
@@ -1023,7 +1071,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const prev = this.objectsById.get(id);
       const oldBBox = prev?.bbox ?? null;
 
-      // Compute new bbox - use specialized computation for text
+      // Compute new bbox - use specialized computation for text and code
       let newBBox: [number, number, number, number];
       if (kind === 'text') {
         const props = getTextProps(yObj);
@@ -1034,6 +1082,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           const fontSize = (yObj.get('fontSize') as number) ?? 20;
           newBBox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
         }
+      } else if (kind === 'code') {
+        newBBox = computeCodeBBox(id, yObj);
       } else {
         newBBox = computeBBoxFor(kind, yObj);
       }

@@ -216,10 +216,7 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
         <ToolButton
           tool="code"
           isActive={activeTool === 'code'}
-          onClick={() => {
-            setActiveTool('code');
-            onToast?.('Code block coming soon!');
-          }}
+          onClick={() => setActiveTool('code')}
           tooltip="Code"
         >
           <IconCode className="icon" />

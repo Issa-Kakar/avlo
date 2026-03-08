@@ -162,3 +162,26 @@
 .dom-overlay-root > * {
   pointer-events: auto;
 }
+
+/* =============================================================================
+   CODE EDITOR OVERLAY (CodeMirror)
+   ============================================================================= */
+
+.code-editor {
+  pointer-events: auto;
+  z-index: 1000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.code-editor .cm-editor {
+  height: auto;
+  border-radius: 8px;
+  outline: none;
+}
+.code-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.code-editor .cm-scroller {
+  font-family: 'JetBrains Mono', monospace;
+  overflow: auto;
+}

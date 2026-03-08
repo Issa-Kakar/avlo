@@ -15,6 +15,7 @@ import {
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import { getTextFrame, type TextLayout } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -48,6 +49,7 @@ export type SelectionKind =
   | 'strokesOnly'
   | 'shapesOnly'
   | 'textOnly'
+  | 'codeOnly'
   | 'connectorsOnly'
   | 'mixed';
 
@@ -190,6 +192,10 @@ export interface SelectionState {
   textEditingId: string | null;
   /** True if this text object was just created (for empty deletion on blur) */
   textEditingIsNew: boolean;
+
+  // Code editing
+  /** Code object ID being edited, null if not editing */
+  codeEditingId: string | null;
 }
 
 // === Actions Interface ===
@@ -237,6 +243,10 @@ export interface SelectionActions {
   beginTextEditing: (objectId: string, isNew: boolean) => void;
   /** End text editing */
   endTextEditing: () => void;
+
+  // Code editing actions
+  beginCodeEditing: (objectId: string) => void;
+  endCodeEditing: () => void;
 
   // Inline text styles
   setInlineStyles: (next: InlineStyles) => void;
@@ -353,7 +363,8 @@ function computeConnectorTopology(
   // Pass 2: Non-selected connectors anchored to selected shapes
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
-    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'code'))
+      continue;
     const connectors = getConnectorsForShape(id);
     if (!connectors) continue;
     for (const connId of connectors) {
@@ -366,8 +377,14 @@ function computeConnectorTopology(
   // Collect original frames for all selected shapes (for frame overrides)
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
-    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
-    const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'code'))
+      continue;
+    const frame =
+      handle.kind === 'text'
+        ? getTextFrame(handle.id)
+        : handle.kind === 'code'
+          ? getCodeFrame(handle.id)
+          : getFrame(handle.y);
     if (frame) originalFrames.set(id, frame);
   }
 
@@ -410,6 +427,7 @@ export const useSelectionStore = create<SelectionStore>()(
     textReflow: null,
     textEditingId: null,
     textEditingIsNew: false,
+    codeEditingId: null,
 
     // === Selection Actions ===
 
@@ -591,6 +609,18 @@ export const useSelectionStore = create<SelectionStore>()(
       get().refreshStyles();
     },
 
+    // === Code Editing Actions ===
+
+    beginCodeEditing: (objectId) => {
+      set({ codeEditingId: objectId, menuOpen: true });
+      get().refreshStyles();
+    },
+
+    endCodeEditing: () => {
+      const { selectedIds } = get();
+      set({ codeEditingId: null, menuOpen: selectedIds.length > 0 });
+    },
+
     setInlineStyles: (next) => {
       if (inlineStylesEqual(get().inlineStyles, next)) return;
       set({ inlineStyles: next });
@@ -634,7 +664,9 @@ export const useSelectionStore = create<SelectionStore>()(
  * Filter current selection to only objects of the given kind.
  * No-op if no objects of that kind are selected.
  */
-export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'connectors'): void {
+export function filterSelectionByKind(
+  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code',
+): void {
   const { selectedIds } = useSelectionStore.getState();
   const snapshot = getCurrentSnapshot();
   const targetKind =
@@ -644,7 +676,9 @@ export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'con
         ? 'shape'
         : kind === 'connectors'
           ? 'connector'
-          : 'text';
+          : kind === 'code'
+            ? 'code'
+            : 'text';
   const filtered = selectedIds.filter((id) => snapshot.objectsById.get(id)?.kind === targetKind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);
