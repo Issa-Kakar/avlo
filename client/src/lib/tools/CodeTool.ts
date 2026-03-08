@@ -110,12 +110,15 @@ export class CodeTool implements PointerTool {
     const y = worldY ?? this.downWorld?.[1] ?? 0;
 
     if (this.hitCodeId) {
+      useSelectionStore.getState().beginCodeEditing(this.hitCodeId);
       this.mountEditor(this.hitCodeId);
     } else {
       this.createCodeObject(x, y);
     }
 
     this.resetGesture();
+    invalidateOverlay();
+    invalidateWorld(getVisibleWorldBounds());
   }
 
   cancel(): void {
@@ -200,10 +203,8 @@ export class CodeTool implements PointerTool {
       createdId = id;
     });
 
-    // Mount editor after rAF so observer has created the ObjectHandle
     if (createdId) {
-      const id = createdId;
-      requestAnimationFrame(() => this.mountEditor(id));
+      this.mountEditor(createdId);
     }
   }
 
@@ -228,19 +229,20 @@ export class CodeTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
     const { origin, fontSize, width } = props;
 
-    // Create container div
+    // Create container div — world-unit dimensions, CSS transform for zoom
     const container = document.createElement('div');
     container.className = 'code-editor';
     container.style.position = 'absolute';
 
-    // Position
     const [sx, sy] = worldToClient(origin[0], origin[1]);
     container.style.left = `${sx}px`;
     container.style.top = `${sy}px`;
-    container.style.width = `${width * scale}px`;
-    container.style.fontSize = `${fontSize * scale}px`;
+    container.style.width = `${width}px`;
+    container.style.fontSize = `${fontSize}px`;
     container.style.lineHeight = `${LINE_HEIGHT_MULT}`;
     container.style.fontFamily = CODE_FONT;
+    container.style.transform = `scale(${scale})`;
+    container.style.transformOrigin = '0 0';
 
     host.appendChild(container);
 
@@ -294,16 +296,13 @@ export class CodeTool implements PointerTool {
       doc: yText.toString(),
       extensions: [
         cmView.lineNumbers(),
+        cmView.EditorView.lineWrapping,
         langExt,
         cmLang.indentUnit.of('    '),
         cmView.keymap.of([cmCommands.indentWithTab]),
         cmYCollab.yCollab(yText, null, { undoManager: this.sessionUM }),
         ...(themeExts as import('@codemirror/state').Extension[]),
         tabNormalizer,
-        cmView.EditorView.theme({
-          '&': { fontSize: `${fontSize * scale}px` },
-          '.cm-content': { fontFamily: CODE_FONT },
-        }),
       ],
     });
 
@@ -314,8 +313,11 @@ export class CodeTool implements PointerTool {
     this.container = container;
     this.objectId = objectId;
 
-    // Selection store
-    useSelectionStore.getState().beginCodeEditing(objectId);
+    // For new blocks (created in createCodeObject), beginCodeEditing hasn't been called yet
+    const selState = useSelectionStore.getState();
+    if (selState.codeEditingId !== objectId) {
+      selState.beginCodeEditing(objectId);
+    }
 
     // Main UM: widen capture window to avoid merging editor edits
     const mainUM = getActiveRoomDoc().getUndoManager();
@@ -392,8 +394,8 @@ export class CodeTool implements PointerTool {
 
     this.container.style.left = `${sx}px`;
     this.container.style.top = `${sy}px`;
-    this.container.style.width = `${props.width * scale}px`;
-    this.container.style.fontSize = `${props.fontSize * scale}px`;
+    this.container.style.transform = `scale(${scale})`;
+    // width/fontSize stay at world units — no update needed on zoom
   }
 
   // =========================================================================

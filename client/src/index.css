@@ -172,6 +172,8 @@
   z-index: 1000;
   border-radius: 8px;
   overflow: hidden;
+  will-change: transform;
+  transform-origin: 0 0;
 }
 .code-editor .cm-editor {
   height: auto;
@@ -183,5 +185,6 @@
 }
 .code-editor .cm-scroller {
   font-family: 'JetBrains Mono', monospace;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }

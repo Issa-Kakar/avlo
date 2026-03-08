@@ -10,8 +10,9 @@
  * Tokens are NEVER null after first content — no default-color flicker.
  */
 
-import type { FrameTuple } from '@avlo/shared';
+import type { BBoxTuple, FrameTuple } from '@avlo/shared';
 import type { CodeLanguage } from '@avlo/shared';
+import { getCodeProps } from '@avlo/shared';
 import * as Y from 'yjs';
 
 // ============================================================================
@@ -28,10 +29,10 @@ export const CODE_FONT = '"JetBrains Mono", monospace';
 // === Sizing ===
 export const DEFAULT_FONT_SIZE = 14;
 export const MIN_CHARS = 24;
-export const DEFAULT_CHARS = 60;
-export const PADDING_TOP = 12;
-export const PADDING_BOTTOM = 12;
-export const PADDING_LEFT = 8;
+export const DEFAULT_CHARS = 48;
+export const PADDING_TOP = 24;
+export const PADDING_BOTTOM = 24;
+export const PADDING_LEFT = 12;
 export const PADDING_RIGHT = 12;
 export const GUTTER_PAD_RIGHT = 10;
 export const BORDER_RADIUS = 8;
@@ -102,7 +103,8 @@ export interface CodeLayoutLine {
 }
 
 export interface CodeLayout {
-  lines: CodeLayoutLine[];
+  lines: CodeLayoutLine[]; // Visual (wrapped) lines
+  sourceLineCount: number; // Original source line count (for gutter numbering)
   fontSize: number;
   lineHeight: number;
   charWidth: number;
@@ -498,6 +500,22 @@ function isPunctuation(ch: string): boolean {
   );
 }
 
+/** Clip token ranges to [from, to) and shift positions to 0-based. */
+function sliceTokens(tokens: CodeToken[], from: number, to: number): CodeToken[] {
+  const result: CodeToken[] = [];
+  for (const t of tokens) {
+    if (t.to <= from || t.from >= to) continue;
+    result.push({
+      from: Math.max(t.from, from) - from,
+      to: Math.min(t.to, to) - from,
+      color: t.color,
+      bold: t.bold,
+      italic: t.italic,
+    });
+  }
+  return result;
+}
+
 // ============================================================================
 // §4 CACHE
 // ============================================================================
@@ -563,20 +581,34 @@ class CodeSystemCache {
     const tokens = e.tokens;
     const cw = charWidth(fontSize);
     const lh = lineHeight(fontSize);
-    const digits = Math.max(2, String(lines.length).length);
+    const sourceLineCount = lines.length;
+    const digits = Math.max(2, String(sourceLineCount).length);
     const gw = gutterWidth(digits, fontSize);
     const cl = contentLeft(digits, fontSize);
 
-    const layoutLines: CodeLayoutLine[] = lines.map((text, i) => ({
-      index: i,
-      text,
-      tokens: tokens?.[i] ?? [],
-    }));
+    // Wrap lines at character boundary for monospace
+    const maxChars = Math.floor((width - cl - PADDING_RIGHT) / cw);
+    const visualLines: CodeLayoutLine[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const text = lines[i];
+      const lineTokens = tokens?.[i] ?? [];
+      if (text.length <= maxChars || maxChars <= 0) {
+        visualLines.push({ index: i, text, tokens: lineTokens });
+      } else {
+        for (let offset = 0; offset < text.length; offset += maxChars) {
+          const segEnd = Math.min(offset + maxChars, text.length);
+          const segText = text.slice(offset, segEnd);
+          const segTokens = sliceTokens(lineTokens, offset, segEnd);
+          visualLines.push({ index: offset === 0 ? i : -1, text: segText, tokens: segTokens });
+        }
+      }
+    }
 
-    const totalHeight = PADDING_TOP + lines.length * lh + PADDING_BOTTOM;
+    const totalHeight = PADDING_TOP + visualLines.length * lh + PADDING_BOTTOM;
 
     e.layout = {
-      lines: layoutLines,
+      lines: visualLines,
+      sourceLineCount,
       fontSize,
       lineHeight: lh,
       charWidth: cw,
@@ -592,15 +624,24 @@ class CodeSystemCache {
 
   /**
    * Called synchronously from deep observer on Y.Text change.
-   * Runs sync regex tokenizer immediately — tokens are NEVER null after this.
+   * Runs sync regex tokenizer immediately + dispatches to Lezer worker.
+   * Consolidates all observer logic — room-doc-manager just calls this.
    */
-  handleContentChange(id: string, text: string, lines: string[], language: CodeLanguage): void {
+  handleContentChange(id: string, ev: Y.YTextEvent, language: CodeLanguage): void {
+    const yText = ev.target as Y.Text;
+    const text = yText.toString();
+    const lines = text.split('\n');
     const e = this.getOrCreate(id);
     e.text = text;
     e.lines = lines;
     e.tokens = syncTokenize(text, language);
     e.layout = null;
     e.frame = null;
+    // Async worker parse
+    const changes = deltaToChangedRanges(
+      ev.delta as { insert?: string | object; delete?: number; retain?: number }[],
+    );
+    requestParse(id, text, language, changes.length > 0 ? changes : undefined);
   }
 
   /**
@@ -640,6 +681,26 @@ export const codeSystem = new CodeSystemCache();
 /** Get derived frame for a code object. Mirrors getTextFrame() pattern. */
 export function getCodeFrame(id: string): FrameTuple | null {
   return codeSystem.getFrame(id);
+}
+
+/** Compute bbox for a code object — frame→bbox conversion (Phase 1 fix). */
+export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
+  const props = getCodeProps(yObj);
+  if (!props) {
+    const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+    return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
+  }
+  const layout = codeSystem.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
+  const [ox, oy] = props.origin;
+  const frame: FrameTuple = [ox, oy, layout.totalWidth, layout.totalHeight];
+  codeSystem.setFrame(id, frame);
+  return [ox, oy, ox + layout.totalWidth, oy + layout.totalHeight];
 }
 
 // ============================================================================
@@ -780,12 +841,7 @@ export function renderCodeLayout(
   ctx.roundRect(originX, originY, totalWidth, totalHeight, BORDER_RADIUS);
   ctx.fill();
 
-  // 2. Clip to background bounds
-  ctx.beginPath();
-  ctx.roundRect(originX, originY, totalWidth, totalHeight, BORDER_RADIUS);
-  ctx.clip();
-
-  // 3. Set font
+  // 2. Set font
   ctx.textBaseline = 'alphabetic';
   const baselineOffset = lh * 0.7;
 
@@ -793,14 +849,16 @@ export function renderCodeLayout(
     const line = lines[i];
     const baseY = originY + PADDING_TOP + i * lh + baselineOffset;
 
-    // 4. Gutter (right-aligned line numbers)
-    ctx.fillStyle = CODE_GUTTER;
-    ctx.font = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
-    const lineNum = String(i + 1);
-    const gutterX = originX + PADDING_LEFT + (gutterDigits - lineNum.length) * cw;
-    ctx.fillText(lineNum, gutterX, baseY);
+    // 3. Gutter — only on first visual line of each source line (index >= 0)
+    if (line.index >= 0) {
+      ctx.fillStyle = CODE_GUTTER;
+      ctx.font = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
+      const lineNum = String(line.index + 1);
+      const gutterX = originX + PADDING_LEFT + (gutterDigits - lineNum.length) * cw;
+      ctx.fillText(lineNum, gutterX, baseY);
+    }
 
-    // 5. Code text
+    // 4. Code text
     const codeX = originX + cl;
 
     if (line.tokens.length > 0) {
@@ -853,6 +911,7 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       backgroundColor: CODE_BG,
       color: CODE_GUTTER,
       border: 'none',
+      paddingLeft: `${PADDING_LEFT}px`,
       paddingRight: `${GUTTER_PAD_RIGHT}px`,
     },
     '.cm-content': {
