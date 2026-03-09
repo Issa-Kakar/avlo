@@ -45,6 +45,7 @@ import {
 } from '@/stores/camera-store';
 import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { contextMenuController } from './ContextMenuController';
+import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
 
 export interface RuntimeConfig {
   container: HTMLElement;
@@ -107,7 +108,7 @@ export class CanvasRuntime {
     this.cameraUnsub = useCameraStore.subscribe(
       (s) => ({ scale: s.scale, px: s.pan.x, py: s.pan.y }),
       () => {
-        getCurrentTool()?.onViewChange();
+        if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
         contextMenuController.onCameraMove();
       },
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
@@ -167,6 +168,7 @@ export class CanvasRuntime {
     this.inputManager?.detach();
     detachKeyboard();
     cancelZoom();
+    stopEdgeScroll();
 
     setWorldInvalidator(null);
     this.renderLoop?.stop();
@@ -260,10 +262,13 @@ export class CanvasRuntime {
     if (tool && world) {
       tool.move(world[0], world[1]);
     }
+
+    updateEdgeScroll(e.clientX, e.clientY);
   }
 
   handlePointerUp(e: PointerEvent): void {
     updateLiveCtrl(e);
+    stopEdgeScroll();
     // Pan release (from MMB, pan tool mode, or spacebar pan)
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       releasePointer(e.pointerId);
@@ -285,6 +290,7 @@ export class CanvasRuntime {
   }
 
   handlePointerCancel(e: PointerEvent): void {
+    stopEdgeScroll();
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       panTool.cancel();
       return;
@@ -303,6 +309,7 @@ export class CanvasRuntime {
   }
 
   handleLostPointerCapture(e: PointerEvent): void {
+    stopEdgeScroll();
     if (panTool.isActive() && panTool.getPointerId() === e.pointerId) {
       panTool.cancel();
       return;

@@ -17,7 +17,12 @@
 import { getCurrentTool, panTool, textTool } from './tool-registry';
 import { getActiveRoomDoc, getCurrentSnapshot, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
+import {
+  useDeviceUIStore,
+  setCursorOverride,
+  type Tool,
+  type ShapeVariant,
+} from '@/stores/device-ui-store';
 import {
   deleteSelected,
   toggleSelectedBold,
@@ -35,6 +40,8 @@ import {
   duplicateSelected,
   selectAll,
 } from '@/lib/clipboard/clipboard-actions';
+import { zoomIn, zoomOut, animateZoomReset } from './animation/ZoomAnimator';
+import { startDirection, stopDirection, stopAll as stopArrowPan } from './arrow-key-pan';
 
 // === Spacebar Pan State ===
 
@@ -108,6 +115,15 @@ function onKeyDown(e: KeyboardEvent): void {
       spacebarPanMode = true;
       setCursorOverride('grab');
     }
+    return;
+  }
+
+  // Arrow keys — continuous pan
+  if (e.key.startsWith('Arrow')) {
+    if (e.repeat) return;
+    if (gestureActive || isEditing || spacebarPanMode) return;
+    e.preventDefault();
+    startDirection(e.key);
     return;
   }
 
@@ -191,6 +207,22 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
         }
       }
       return;
+
+    case '=':
+    case '+':
+      e.preventDefault();
+      zoomIn();
+      return;
+
+    case '-':
+      e.preventDefault();
+      zoomOut();
+      return;
+
+    case '0':
+      e.preventDefault();
+      animateZoomReset();
+      return;
   }
 }
 
@@ -271,6 +303,10 @@ function onKeyUp(e: KeyboardEvent): void {
     }
     // If panTool IS active (mid-drag), let it finish via pointerup
   }
+
+  if (e.key.startsWith('Arrow')) {
+    stopDirection(e.key);
+  }
 }
 
 function onBlur(): void {
@@ -278,4 +314,5 @@ function onBlur(): void {
     spacebarPanMode = false;
     if (!panTool.isActive()) setCursorOverride(null);
   }
+  stopArrowPan();
 }

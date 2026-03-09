@@ -231,3 +231,66 @@ Release Ctrl mid-drag to resume snapping immediately.
 | `client/src/canvas/cursor-tracking.ts`      | Added `storePointerModifiers`, `isShiftPointer`, `isCtrlOrMetaPointer`                                                                                       |
 | `client/src/lib/tools/SelectTool.ts`        | Import modifier getters, `hasAddModifier` helper, additive/subtractive logic in `end()` pendingClick                                                         |
 | `client/src/lib/utils/selection-actions.ts` | `toggleSelectedBold/Italic` compute inline styles live via `computeUniformInlineStyles`                                                                      |
+
+---
+
+## Zoom Shortcuts, Arrow Key Pan & Edge Scrolling (v4)
+
+### Ctrl +/- zoom shortcuts
+
+Standard browser zoom keys now control canvas zoom instead of page zoom. Added to `handleModifierShortcut()` in keyboard-manager.
+
+| Shortcut | Action                                    |
+| -------- | ----------------------------------------- |
+| Ctrl+=   | Zoom in one step (animated, accumulates)  |
+| Ctrl++   | Zoom in (same as Ctrl+=)                  |
+| Ctrl+-   | Zoom out one step (animated, accumulates) |
+| Ctrl+0   | Reset to 100% zoom (animated)             |
+
+`e.preventDefault()` blocks browser page zoom. Rapid press accumulation already handled by ZoomAnimator's `pendingStep`.
+
+### Arrow key panning
+
+Smooth continuous canvas pan while arrow keys are held. New module `arrow-key-pan.ts` with its own RAF loop.
+
+**Speed:** easeInQuad acceleration from 200 → 800 CSS px/s over 400ms. Diagonal movement normalized to prevent 1.41x speed. Pan direction matches PanTool "grab" semantics (ArrowRight → content to the right).
+
+**Guards:** Blocked during active gestures, text editing, and spacebar pan mode. Key repeat events ignored (only initial keydown starts). `onBlur` cleans up stale held-key state.
+
+**keyboard-manager integration:** Arrow handling placed after escape/spacebar but before the `gestureActive || isEditing` bare-key guard, with its own explicit guard check. `onKeyUp` calls `stopDirection()`, `onBlur` calls `stopAll()`.
+
+### Edge scrolling during drag
+
+Auto-pan when pointer nears viewport edge during qualifying tool drags. New module `edge-scroll.ts`.
+
+**Eligible tools:** `select`, `connector`, `shape` only. Pen, highlighter, eraser, text, and pan are excluded via `activeTool` check.
+
+**Proximity model:** 40px edge zone. Proximity is **squared** (`px * px`) for fine-grained control — entering the zone at proximity 0.25 yields only 0.0625 factor (~34 CSS px/s), while proximity 1.0 at the edge yields full speed (~540 CSS px/s). Signed proximity supports beyond-edge pointer capture (clamped at magnitude 1).
+
+**Timing:** 120ms delay prevents accidental trigger. 300ms easeInQuad ramp after delay provides smooth acceleration. Combined with proximity squaring, gives precise user control over scroll speed.
+
+**Speed:** BASE_SPEED=9 CSS px/tick, all speeds are screen-space (÷ scale for world delta), ensuring consistent visual speed regardless of zoom level. Small screen factor (0.65×) per axis when viewport dimension < 1000px.
+
+**Tool re-dispatch:** After each pan, `tool.move()` is called with updated world coordinates (screen position unchanged, world position shifted). Safe for all eligible tools — SelectTool translate/scale/marquee, ConnectorTool snap+routing, DrawingTool shape preview all update naturally.
+
+**Camera subscription optimization:** `isEdgeScrolling()` guard in CanvasRuntime's camera subscription prevents redundant `onViewChange()` calls since `tool.move()` is dispatched immediately after pan. Context menu repositioning is not guarded (must always reposition).
+
+**Stop conditions:** pointerUp, pointerCancel, lostPointerCapture, runtime stop, eligibility loss, or pointer returning to interior (delay resets on re-entry).
+
+### Bug fix: objects disappearing during edge scroll transforms
+
+**Root cause:** The spatial index stores objects at their original (pre-commit) positions. During transforms, objects render at `original + offset` via `ctx.translate()`, but the spatial query in `drawObjects()` queries using original positions. When edge scroll pans the camera far enough, original positions exit the viewport query bounds while rendered positions remain on screen — objects get culled from the candidate list.
+
+This also caused objects to stay invisible after stopping edge scroll (dirty rect queries also missed original positions), and intermittent appearance/disappearance with zooming (viewport bounds changes randomly catching/missing original positions).
+
+**Fix:** In `objects.ts:drawObjects()`, during active transforms, all selected objects and connector topology objects are injected into the candidate list unconditionally, bypassing the spatial query for them. This is O(selectedIds + topology size) — negligible overhead.
+
+### Files (v4)
+
+| File                                    | Action   | Changes                                                                                                                                                                  |
+| --------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `client/src/canvas/keyboard-manager.ts` | Modified | Import zoom functions + arrow-key-pan. Ctrl+=/+/-/0 cases in modifier handler. Arrow key handling in keydown/keyup/blur                                                  |
+| `client/src/canvas/arrow-key-pan.ts`    | Created  | ~65 lines. Module-level arrow key pan state + RAF loop with easeInQuad acceleration                                                                                      |
+| `client/src/canvas/edge-scroll.ts`      | Created  | ~110 lines. Module-level edge scroll state, proximity² detection, delay+easeInQuad, tool re-dispatch                                                                     |
+| `client/src/canvas/CanvasRuntime.ts`    | Modified | Import edge-scroll. `updateEdgeScroll` in handlePointerMove. `stopEdgeScroll` in handlePointerUp/Cancel/LostCapture/stop. `isEdgeScrolling` guard in camera subscription |
+| `client/src/renderer/layers/objects.ts` | Modified | Inject selected + topology objects into candidate list during active transforms                                                                                          |
