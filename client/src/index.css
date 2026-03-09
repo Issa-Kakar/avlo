@@ -170,14 +170,11 @@
 .code-editor {
   pointer-events: auto;
   z-index: 1000;
-  border-radius: 8px;
   overflow: hidden;
-  will-change: transform;
-  transform-origin: 0 0;
 }
 .code-editor .cm-editor {
   height: auto;
-  border-radius: 8px;
+  border-radius: inherit;
   outline: none;
 }
 .code-editor .cm-editor.cm-focused {
@@ -187,4 +184,7 @@
   font-family: 'JetBrains Mono', monospace;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Force inherit container's explicit px line-height — CM base theme sets 1.4
+     which fights our theme's 1.5 at identical specificity. !important bypasses. */
+  line-height: inherit !important;
 }

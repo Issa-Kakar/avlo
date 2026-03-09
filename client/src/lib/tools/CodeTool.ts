@@ -1,8 +1,9 @@
 /**
  * CodeTool — Click-to-place code blocks + CodeMirror DOM overlay editing.
  *
- * Phase 1: Creates code objects and renders on canvas.
- * Phase 2: CodeMirror overlay with y-codemirror.next for collaborative editing.
+ * Screen-space rendering: all dimensions computed as world * scale in px.
+ * No CSS transform: scale() — text stays crisp at all zoom levels.
+ * Padding uses em units in CM theme (scales with fontSize automatically).
  */
 
 import * as Y from 'yjs';
@@ -22,10 +23,10 @@ import { getCodeProps } from '@avlo/shared';
 import {
   getDefaultWidth,
   getCodeFrame,
-  PADDING_TOP,
-  PADDING_BOTTOM,
-  CODE_FONT,
-  LINE_HEIGHT_MULT,
+  padTop,
+  padBottom,
+  CODE_FONT_FAMILY,
+  BORDER_RADIUS,
   lineHeight as lineHeightFn,
   getCodeMirrorExtensions,
 } from '@/lib/code/code-system';
@@ -109,7 +110,6 @@ export class CodeTool implements PointerTool {
     const y = worldY ?? this.downWorld?.[1] ?? 0;
 
     if (this.hitCodeId) {
-      //useSelectionStore.getState().beginCodeEditing(this.hitCodeId);
       this.mountEditor(this.hitCodeId);
     } else {
       this.createCodeObject(x, y);
@@ -179,7 +179,7 @@ export class CodeTool implements PointerTool {
 
     // Center placement: origin = click minus half block size
     const originX = worldX - width / 2;
-    const originY = worldY - (PADDING_TOP + lh + PADDING_BOTTOM) / 2;
+    const originY = worldY - (padTop(fontSize) + lh + padBottom(fontSize)) / 2;
 
     let createdId: string | null = null;
 
@@ -208,7 +208,7 @@ export class CodeTool implements PointerTool {
   }
 
   // =========================================================================
-  // Private: Editor Mounting
+  // Private: Editor Mounting — screen-space rendering (no CSS transform)
   // =========================================================================
 
   private async mountEditor(objectId: string): Promise<void> {
@@ -228,7 +228,12 @@ export class CodeTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
     const { origin, fontSize, width } = props;
 
-    // Create container div — world-unit dimensions, CSS transform for zoom
+    // Screen-space dimensions — no CSS transform
+    const screenFS = fontSize * scale;
+    const screenW = width * scale;
+    const screenLH = lineHeightFn(fontSize) * scale;
+
+    // Create container div
     const container = document.createElement('div');
     container.className = 'code-editor';
     container.style.position = 'absolute';
@@ -236,12 +241,11 @@ export class CodeTool implements PointerTool {
     const [sx, sy] = worldToClient(origin[0], origin[1]);
     container.style.left = `${sx}px`;
     container.style.top = `${sy}px`;
-    container.style.width = `${width}px`;
-    container.style.fontSize = `${fontSize}px`;
-    container.style.lineHeight = `${LINE_HEIGHT_MULT}`;
-    container.style.fontFamily = CODE_FONT;
-    container.style.transform = `scale(${scale})`;
-    container.style.transformOrigin = '0 0';
+    container.style.width = `${screenW}px`;
+    container.style.fontSize = `${screenFS}px`;
+    container.style.lineHeight = `${screenLH}px`;
+    container.style.fontFamily = `'${CODE_FONT_FAMILY}', monospace`;
+    container.style.borderRadius = `${BORDER_RADIUS * scale}px`;
 
     host.appendChild(container);
 
@@ -294,7 +298,12 @@ export class CodeTool implements PointerTool {
     const state = cmState.EditorState.create({
       doc: yText.toString(),
       extensions: [
-        cmView.lineNumbers(),
+        cmView.lineNumbers({
+          formatNumber: (n: number, state: { doc: { lines: number } }) => {
+            const digits = Math.max(2, String(state.doc.lines).length);
+            return String(n).padStart(digits, ' ');
+          },
+        }),
         cmView.EditorView.lineWrapping,
         langExt,
         cmLang.indentUnit.of('    '),
@@ -307,6 +316,28 @@ export class CodeTool implements PointerTool {
 
     const view = new cmView.EditorView({ state, parent: container });
     view.focus();
+
+    // DEBUG: verify gutter-content alignment after parseInt fix
+    setTimeout(() => {
+      const _line = container.querySelector('.cm-line');
+      const _scroller = container.querySelector('.cm-scroller');
+      const _content = container.querySelector('.cm-content');
+      // Get actual visible gutter elements (skip first spacer whose height=0)
+      const gutterEls = container.querySelectorAll('.cm-lineNumbers .cm-gutterElement');
+      const _gutter = Array.from(gutterEls).find(el => (el as HTMLElement).offsetHeight > 0) as HTMLElement | undefined;
+      if (_line && _scroller && _content) {
+        const lRect = (_line as HTMLElement).getBoundingClientRect();
+        const sRect = (_scroller as HTMLElement).getBoundingClientRect();
+        const cntRect = (_content as HTMLElement).getBoundingClientRect();
+        const canvasPadTop = padTop(fontSize) * scale;
+        console.log('[CodeTool] scrollerPad:', (lRect.top - sRect.top).toFixed(2), 'contentPad:', (cntRect.top - sRect.top).toFixed(2), 'canvasPad:', canvasPadTop.toFixed(2));
+        console.log('[CodeTool] line0 top:', lRect.top.toFixed(2), 'height:', lRect.height.toFixed(2), 'lineHeight expected:', screenLH.toFixed(2));
+        if (_gutter) {
+          const gRect = _gutter.getBoundingClientRect();
+          console.log('[CodeTool] gutter top:', gRect.top.toFixed(2), 'line top:', lRect.top.toFixed(2), 'GUTTER-LINE DIFF:', (gRect.top - lRect.top).toFixed(3), '(should be ~0)');
+        }
+      }
+    }, 50);
 
     this.editorView = view;
     this.container = container;
@@ -371,7 +402,7 @@ export class CodeTool implements PointerTool {
   }
 
   // =========================================================================
-  // Private: Editor Positioning
+  // Private: Editor Positioning — screen-space, no CSS transform
   // =========================================================================
 
   private positionEditor(): void {
@@ -384,11 +415,22 @@ export class CodeTool implements PointerTool {
 
     const scale = useCameraStore.getState().scale;
     const [sx, sy] = worldToClient(props.origin[0], props.origin[1]);
+    const screenFS = props.fontSize * scale;
+    const screenW = props.width * scale;
+    const screenLH = lineHeightFn(props.fontSize) * scale;
 
-    this.container.style.left = `${sx}px`;
-    this.container.style.top = `${sy}px`;
-    this.container.style.transform = `scale(${scale})`;
-    // width/fontSize stay at world units — no update needed on zoom
+    const c = this.container;
+    c.style.left = `${sx}px`;
+    c.style.top = `${sy}px`;
+    c.style.width = `${screenW}px`;
+    c.style.fontSize = `${screenFS}px`;
+    c.style.lineHeight = `${screenLH}px`;
+    c.style.borderRadius = `${BORDER_RADIUS * scale}px`;
+
+    // Trigger CM relayout after size change
+    if (this.editorView) {
+      (this.editorView as { requestMeasure(): void }).requestMeasure();
+    }
   }
 
   // =========================================================================
