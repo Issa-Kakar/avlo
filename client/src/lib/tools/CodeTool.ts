@@ -3,7 +3,7 @@
  *
  * Screen-space rendering: all dimensions computed as world * scale in px.
  * No CSS transform: scale() — text stays crisp at all zoom levels.
- * Padding uses em units in CM theme (scales with fontSize automatically).
+ * All CM padding/sizing via CSS custom properties (--c-*) set as exact px.
  */
 
 import * as Y from 'yjs';
@@ -25,6 +25,10 @@ import {
   getCodeFrame,
   padTop,
   padBottom,
+  padLeft,
+  padRight,
+  gutterPad,
+  charWidth,
   CODE_FONT_FAMILY,
   BORDER_RADIUS,
   lineHeight as lineHeightFn,
@@ -192,7 +196,7 @@ export class CodeTool implements PointerTool {
       yObj.set('kind', 'code');
       yObj.set('origin', [originX, originY]);
       yObj.set('content', new Y.Text());
-      yObj.set('language', 'javascript');
+      yObj.set('language', 'typescript');
       yObj.set('fontSize', fontSize);
       yObj.set('width', width);
       yObj.set('ownerId', '');
@@ -205,6 +209,23 @@ export class CodeTool implements PointerTool {
     if (createdId) {
       this.mountEditor(createdId);
     }
+  }
+
+  // =========================================================================
+  // Private: CSS var helper — sets exact px values for CM theme vars
+  // =========================================================================
+
+  /** Set all --c-* CSS custom properties as exact px on the container.
+   *  CM theme references these instead of em units, eliminating browser
+   *  em→px conversion rounding that causes sub-pixel mismatches vs canvas. */
+  private setCSSVars(container: HTMLDivElement, fontSize: number, scale: number): void {
+    const s = container.style;
+    s.setProperty('--c-pt', `${padTop(fontSize) * scale}px`);
+    s.setProperty('--c-pb', `${padBottom(fontSize) * scale}px`);
+    s.setProperty('--c-gl', `${padLeft(fontSize) * scale}px`);
+    s.setProperty('--c-gr', `${gutterPad(fontSize) * scale}px`);
+    s.setProperty('--c-pr', `${padRight(fontSize) * scale}px`);
+    s.setProperty('--c-gw', `${2 * charWidth(fontSize) * scale}px`);
   }
 
   // =========================================================================
@@ -246,6 +267,7 @@ export class CodeTool implements PointerTool {
     container.style.lineHeight = `${screenLH}px`;
     container.style.fontFamily = `'${CODE_FONT_FAMILY}', monospace`;
     container.style.borderRadius = `${BORDER_RADIUS * scale}px`;
+    this.setCSSVars(container, fontSize, scale);
 
     host.appendChild(container);
 
@@ -343,7 +365,6 @@ export class CodeTool implements PointerTool {
     this.container = container;
     this.objectId = objectId;
 
-    // For new blocks (created in createCodeObject), beginCodeEditing hasn't been called yet
     const selState = useSelectionStore.getState();
     if (selState.codeEditingId !== objectId) {
       selState.beginCodeEditing(objectId);
@@ -426,6 +447,7 @@ export class CodeTool implements PointerTool {
     c.style.fontSize = `${screenFS}px`;
     c.style.lineHeight = `${screenLH}px`;
     c.style.borderRadius = `${BORDER_RADIUS * scale}px`;
+    this.setCSSVars(c, props.fontSize, scale);
 
     // Trigger CM relayout after size change
     if (this.editorView) {

@@ -317,21 +317,16 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
-  // Skip rendering if currently being edited (Phase 2)
+  // Skip rendering if currently being edited (DOM overlay handles it)
   const codeEditingId = useSelectionStore.getState().codeEditingId;
   if (codeEditingId === id) return;
 
   const props = getCodeProps(y);
   if (!props) return;
 
-  const layout = codeSystem.getLayout(
-    id,
-    props.content,
-    props.fontSize,
-    props.width,
-    props.language,
-  );
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1]);
+  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language);
+  const runs = codeSystem.getRuns(id);
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, runs);
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {

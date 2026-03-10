@@ -1,14 +1,14 @@
 /**
- * Lezer Worker — Incremental parsing + token extraction
+ * Lezer Worker — Incremental parsing + TextRun extraction via gap-fill
  *
  * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments).
  * Main thread never touches parse state.
  *
  * Protocol:
- *   Main → Worker: { type:'parse', id, text, language, changes? }
+ *   Main → Worker: { type:'parse', id, text, language, version, changes? }
  *   Main → Worker: { type:'remove', id }
  *   Main → Worker: { type:'clearAll' }
- *   Worker → Main: { type:'tokens', id, tokens: CodeToken[][] }
+ *   Worker → Main: { type:'runs', id, version, runs: TextRun[][] }
  */
 
 import { parser as jsParser } from '@lezer/javascript';
@@ -18,16 +18,18 @@ import { tagHighlighter, tags } from '@lezer/highlight';
 import { TreeFragment } from '@lezer/common';
 import type { Tree, Parser } from '@lezer/common';
 
-import type { CodeToken } from './code-system';
-import { TAG_STYLES, CODE_DEFAULT } from './code-system';
+import type { TextRun, SparseHighlight } from './code-shared';
+import { TAG_STYLES, highlightsToRuns } from './code-shared';
 
 // ============================================================================
-// Tag Highlighter — maps Lezer tags to TAG_STYLES keys
+// Tag Highlighter — expanded tag list for complete coloring
 // ============================================================================
 
 const styleHighlighter = tagHighlighter([
   { tag: tags.keyword, class: 'keyword' },
   { tag: tags.string, class: 'string' },
+  { tag: tags.special(tags.string), class: 'string' },
+  { tag: tags.escape, class: 'string' },
   { tag: tags.number, class: 'number' },
   { tag: [tags.lineComment, tags.blockComment], class: 'comment' },
   { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], class: 'function' },
@@ -39,6 +41,17 @@ const styleHighlighter = tagHighlighter([
   { tag: tags.null, class: 'number' },
   { tag: tags.regexp, class: 'string' },
   { tag: tags.definition(tags.variableName), class: 'variable' },
+  // Expanded tags
+  { tag: tags.separator, class: 'punctuation' },
+  { tag: tags.bracket, class: 'punctuation' },
+  { tag: tags.angleBracket, class: 'punctuation' },
+  { tag: tags.squareBracket, class: 'punctuation' },
+  { tag: tags.paren, class: 'punctuation' },
+  { tag: tags.brace, class: 'punctuation' },
+  { tag: tags.derefOperator, class: 'punctuation' },
+  { tag: tags.meta, class: 'keyword' },
+  { tag: tags.self, class: 'keyword' },
+  { tag: tags.atom, class: 'number' },
 ]);
 
 // ============================================================================
@@ -81,12 +94,10 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
   let fragments: readonly TreeFragment[];
 
   if (prev && changes && changes.length > 0) {
-    // Incremental: apply changes to fragments, then parse
     const updatedFragments = TreeFragment.applyChanges(prev.fragments, changes);
     tree = parser.parse(text, updatedFragments);
     fragments = TreeFragment.addTree(tree, updatedFragments);
   } else {
-    // Full parse
     tree = parser.parse(text);
     fragments = TreeFragment.addTree(tree);
   }
@@ -96,44 +107,41 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
 }
 
 // ============================================================================
-// Token extraction — walks tree, maps Lezer tags to colors, splits multi-line
+// Run extraction — walks tree, maps Lezer tags to SparseHighlights, gap-fills
 // ============================================================================
 
-function extractTokens(tree: Tree, text: string): CodeToken[][] {
+function extractRuns(tree: Tree, text: string): TextRun[][] {
   const lines = text.split('\n');
-  const result: CodeToken[][] = Array.from({ length: lines.length }, () => []);
+  const highlightsPerLine: SparseHighlight[][] = Array.from({ length: lines.length }, () => []);
 
   // Build line offset table for fast line lookup
   const lineOffsets: number[] = [0];
   for (let i = 0; i < lines.length - 1; i++) {
-    lineOffsets.push(lineOffsets[i] + lines[i].length + 1); // +1 for \n
+    lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
   }
 
   highlightTree(tree, styleHighlighter, (from, to, classes) => {
-    const style = TAG_STYLES[classes] ?? { color: CODE_DEFAULT };
+    const style = TAG_STYLES[classes];
+    if (!style) return;
 
-    // Find which lines this span covers
     let lineIdx = binarySearchLine(lineOffsets, from);
 
     while (lineIdx < lines.length) {
       const lineStart = lineOffsets[lineIdx];
       const lineEnd = lineStart + lines[lineIdx].length;
 
-      if (from >= lineEnd) {
-        lineIdx++;
-        continue;
-      }
+      if (from >= lineEnd) { lineIdx++; continue; }
       if (to <= lineStart) break;
 
       const tokenFrom = Math.max(0, from - lineStart);
       const tokenTo = Math.min(lines[lineIdx].length, to - lineStart);
 
       if (tokenFrom < tokenTo) {
-        result[lineIdx].push({
+        highlightsPerLine[lineIdx].push({
           from: tokenFrom,
           to: tokenTo,
           color: style.color,
-          bold: style.bold,
+          bold: !!style.bold,
         });
       }
 
@@ -142,7 +150,8 @@ function extractTokens(tree: Tree, text: string): CodeToken[][] {
     }
   });
 
-  return result;
+  // Gap-fill each line
+  return lines.map((line, i) => highlightsToRuns(line, highlightsPerLine[i]));
 }
 
 function binarySearchLine(offsets: number[], pos: number): number {
@@ -165,10 +174,10 @@ self.onmessage = (e: MessageEvent) => {
 
   switch (msg.type) {
     case 'parse': {
-      const { id, text, language, changes } = msg;
+      const { id, text, language, version, changes } = msg;
       const tree = parse(id, text, language, changes);
-      const tokens = extractTokens(tree, text);
-      (self as unknown as Worker).postMessage({ type: 'tokens', id, tokens });
+      const runs = extractRuns(tree, text);
+      (self as unknown as Worker).postMessage({ type: 'runs', id, version, runs });
       break;
     }
     case 'remove':

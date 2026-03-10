@@ -1,6 +1,6 @@
 # Code Block System
 
-Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax highlighting, and Yjs collaborative binding.
+Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax highlighting, and Yjs collaborative binding. **Work in progress** — not yet fully integrated with the codebase (no selection transforms, no language dropdown, no mixed selection filter).
 
 ---
 
@@ -8,9 +8,10 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-system.ts` | Constants, types, sync tokenizer, layout cache, canvas renderer, worker pool, delta conversion, CM theme |
-| `lezer-worker.ts` | Web Worker — incremental Lezer parsing + token extraction (2-worker pool) |
-| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + CodeMirror DOM overlay lifecycle |
+| `code-shared.ts` | Types (`TextRun`, `SparseHighlight`) + color constants (One Dark palette) + `TAG_STYLES` map + gap-fill (`highlightsToRuns`) + run slicing (`sliceRuns`) — imported by both main thread and worker |
+| `code-system.ts` | Singleton `CodeSystemCache`, sync regex tokenizer, canvas renderer (`renderCodeLayout`), worker pool (2 warm workers), delta→ChangedRange conversion, CM theme extensions, font metrics measurement, layout computation with word-aware wrapping |
+| `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, incremental parsing, `highlightTree` → `SparseHighlight[][]` via expanded `tagHighlighter`, gap-fill to `TextRun[][]` |
+| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) |
 
 ---
 
@@ -30,17 +31,23 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 }
 ```
 
-**Key differences from text objects:**
-- `Y.Text` not `Y.XmlFragment` — code is plain text, delta events map to Lezer `ChangedRange`
+**Differences from text objects:**
+- `Y.Text` not `Y.XmlFragment` — code is plain text; delta events map to Lezer `ChangedRange`
 - `origin` = top-left (not baseline). Code blocks are rectangular, no alignment modes
 - `width` always stored number — no 'auto' mode
-- Height derived: `PADDING_TOP + visualLineCount * lineHeight + PADDING_BOTTOM`, cached in code system
+- Height derived: `padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)`
 - No `color`/`fillColor` — dark theme is fixed chrome
 - Empty blocks are NOT deleted on close (unlike text) — visible dark bg + line numbers
+
+**Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `@avlo/shared`). Returns `{ content: Y.Text, origin, fontSize, width, language }`.
 
 ---
 
 ## Architecture
+
+### TextRun Gap-Fill Model
+
+The core data model for rendering. Both the sync tokenizer and Lezer worker produce `SparseHighlight[][]` (sparse tokens with `{ from, to, color, bold }`). The `highlightsToRuns()` function converts these into a complete `TextRun[]` partition per line, filling gaps between highlights with `CODE_DEFAULT`. Invariant: `runs.map(r => r.text).join('') === lineText`. The renderer iterates runs sequentially, advancing an x cursor by `run.text.length * charWidth` — every character appears in exactly one run.
 
 ### Coordinate System & Positioning
 
@@ -48,45 +55,65 @@ Code blocks use **origin-based top-left positioning**. The `origin` field stores
 
 **Frame derivation:** No stored frame in Y.Doc. Frame is computed from layout and cached:
 ```
-frame = [origin[0], origin[1], layout.totalWidth, layout.totalHeight]
+frame = [origin[0], origin[1], layout.totalWidth, totalHeight(layout, fontSize)]
 ```
-Read via `getCodeFrame(id)`. Mirrors `getTextFrame()` pattern.
+Read via `getCodeFrame(id)`. `computeCodeBBox(id, yObj)` computes layout, derives frame, caches it, and returns bbox.
 
-**BBox derivation:** Frame-to-bbox conversion:
+### Block Sizing — fontSize-Proportional
+
+All padding is a ratio of `fontSize`:
 ```
-bbox = [origin[0], origin[1], origin[0] + totalWidth, origin[1] + totalHeight]
-```
-`computeCodeBBox()` in `code-system.ts` handles this — it computes layout, caches frame, returns proper `[minX, minY, maxX, maxY]` BBoxTuple.
+padTop(fs)    = fs * 1.5          padBottom(fs) = fs * 1.5
+padLeft(fs)   = fs * 0.85         padRight(fs)  = fs * 0.85
+gutterPad(fs) = fs * 0.7
 
-### Block Sizing
-
-All sizing constants in `code-system.ts §1`:
-
-```
 totalWidth  = stored width field (set at creation from getDefaultWidth)
-totalHeight = PADDING_TOP + visualLineCount * lineHeight(fontSize) + PADDING_BOTTOM
+totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
 
-getDefaultWidth(fontSize) = DEFAULT_CHARS * charWidth + PADDING_LEFT + PADDING_RIGHT + gutterWidth(2) + GUTTER_PAD_RIGHT
-getMinWidth(fontSize)     = MIN_CHARS * charWidth + same padding
-charWidth(fontSize)       = fontSize * CHAR_WIDTH_RATIO (0.6)
-lineHeight(fontSize)      = fontSize * LINE_HEIGHT_MULT (1.5)
+charWidth(fs)  = fs * measuredCharWidthRatio  (measured via canvas, fallback 0.6)
+lineHeight(fs) = fs * 1.5
 ```
 
-Current constants: `DEFAULT_CHARS=48`, `MIN_CHARS=24`, `PADDING_TOP/BOTTOM=24`, `PADDING_LEFT=12`, `PADDING_RIGHT=12`, `GUTTER_PAD_RIGHT=10`, `BORDER_RADIUS=8`.
+Gutter width = `maxDigits * charWidth(fs)`, where `maxDigits = max(2, String(sourceLineCount).length)`.
+Content left offset = `padLeft(fs) + gutterWidth + gutterPad(fs)`.
+
+`BORDER_RADIUS` is currently a fixed constant (12). Will become fontSize-proportional.
+
+### Measured Font Metrics
+
+Singleton lazy measurement via canvas `measureText()` at 100px:
+- `charWidthRatio` — `measureText('M').width / 100`
+- `baselineRatio` — `(halfLeading + fontBoundingBoxAscent) / lineHeight` using CSS half-leading formula
+
+Both canvas renderer and CM theme use the same measured ratios.
 
 ### Content Layout
 
-The `contentLeft` offset positions code text after the gutter:
+```typescript
+interface VisualLine {
+  srcIdx: number;   // source line index
+  from: number;     // char offset in source line (0 = first segment → show gutter)
+  text: string;     // visual line text
+}
+interface CodeLayout {
+  lines: VisualLine[];
+  sourceLineCount: number;
+  totalWidth: number;
+}
 ```
-contentLeft = PADDING_LEFT + gutterWidth(digits, fontSize) + GUTTER_PAD_RIGHT
-```
-Where `gutterWidth = maxDigits * charWidth` and `digits = max(2, String(sourceLineCount).length)`.
 
-### Line Wrapping
+Layout stores only geometry-independent data. All dimensional values (height, gutter width, content offset) are derived from `fontSize` via getter functions.
 
-Canvas wraps at character boundary for monospace: `maxChars = floor((width - contentLeft - PADDING_RIGHT) / charWidth)`. Source lines exceeding `maxChars` are split into visual lines. The layout's `lines` array contains visual lines; `sourceLineCount` tracks original count. Continuation lines have `index: -1` (no gutter number).
+### Line Wrapping — WYSIWYG Match
 
-CodeMirror uses `EditorView.lineWrapping` + `overflow-x: hidden` on `.cm-scroller`.
+The canvas wrapping algorithm matches CodeMirror's `lineWrapping` extension behavior. CM uses `overflow-wrap: anywhere` + `word-break: break-word` + the CSS forces `white-space: break-spaces` via the scroller. The canvas `computeLayout()` mirrors this:
+
+1. Compute `maxChars = floor((width - contentLeft - padRight) / charWidth)`
+2. For lines exceeding `maxChars`, scan backward from the break point for a space/tab boundary
+3. If a word boundary is found, break there (whole-word wrap)
+4. If no boundary found within the window, break at `maxChars` (character-level fallback)
+
+Continuation lines have `from > 0` (no gutter number). `sliceRuns()` slices `TextRun[]` to the visual line's character range.
 
 ---
 
@@ -97,58 +124,54 @@ CodeMirror uses `EditorView.lineWrapping` + `overflow-x: hidden` on `.cm-scrolle
 Y.Text change (typing or remote sync)
   → deep observer fires synchronously
   → codeSystem.handleContentChange(id, ev, lang)
-    → syncTokenize() runs (~30-50us) — regex tokenizer, main thread
-    → cache updated with regex tokens (layout/frame nulled)
-    → requestParse() dispatched to worker pool (async)
+    → syncTokenize(text, lang) → SparseHighlight[][] (fast regex)
+    → highlightsToRuns() per line → TextRun[][] (gap-filled)
+    → cache.runs updated, layout/frame nulled, version incremented
+    → deltaToChangedRanges(ev.delta) → ChangedRange[]
+    → dispatch to worker pool: { type:'parse', id, text, language, version, changes }
 
 Same rAF frame:
-  → renderer calls getLayout() → gets regex tokens → draws correct colors
+  → renderer calls getLayout() → gets sync-tokenized runs → draws all chars
 
-Next frame (worker responds):
-  → applyTokens() upgrades cache to Lezer tokens, nulls layout
-  → NO invalidateWorld (observer dirty rect already covers it)
-  → renderer calls getLayout() → draws Lezer tokens
+Worker responds (typically next frame):
+  → applyWorkerRuns(id, runs, forVersion)
+  → version-gated: discarded if stale
+  → swaps runs (only colors change), invalidateWorld() for redraw
+  → renderer draws Lezer-accurate colors
 ```
 
-Tokens are **never null** after first content change. Worker upgrade is invisible ~95% of the time (regex and Lezer agree on most tokens).
+Runs are **always populated** after entry creation. Cold miss in `getLayout()` creates a full entry with sync-tokenized runs and dispatches a worker parse. No blank-until-first-edit.
 
-### Sync Regex Tokenizer (`syncTokenize`)
+### Sync Tokenizer (`syncTokenize`)
 
-Single-pass state machine per line. Cross-line state for block comments and template strings. Handles:
-- Keywords (language-specific `Set` for O(1) lookup)
-- Strings (single/double/backtick/triple-quote)
-- Numbers (int, float, hex, scientific notation)
-- Comments (line `//`, block `/* */`, Python `#`)
-- Operators, punctuation
+Regex-based highlight emitter — returns `SparseHighlight[][]`. Provides instant coloring on the same frame as a content change.
 
-Heuristic classification: `ident(` → function, `Uppercase` → type, keyword set → keyword, else → variable.
+Handles: keywords (JS/TS/Python sets, sorted longest-first), strings (including template literals with `${}` nesting, Python f/r/b-prefix strings, triple quotes), numbers (hex/binary/octal/scientific/separators/BigInt), comments (line `//`, block `/* */`, Python `#`, hashbang `#!`), operators (including `=>`, `?.`, `??`, `...`), decorators (`@name`), identifiers (keywords bolded, function calls colored by `FUNCTION`, PascalCase by `TYPE`, others by `VARIABLE`).
+
+Does NOT emit tokens for punctuation, brackets, or whitespace — these become `CODE_DEFAULT`-colored gaps via gap-fill.
+
+Multi-line state tracked via `inBlockComment` and `inTemplateString` flags across lines.
 
 ### Lezer Worker Pool
 
-2 warm workers created at first `requestParse()`, persist for app lifetime. Round-robin dispatch.
+2 warm workers. Round-robin dispatch. Lazy initialization (first `dispatch()` call creates them).
 
-Each worker owns per-object parse state (`Tree` + `TreeFragments`) for incremental parsing. `deltaToChangedRanges()` converts Y.Text delta to Lezer `ChangedRange[]`. Token extraction via `highlightTree` + `tagHighlighter` mapping Lezer tags to `TAG_STYLES`.
+**Per-object state:** Each worker maintains a `Map<string, { tree: Tree, fragments: TreeFragment[] }>`. When `changes` are provided, `TreeFragment.applyChanges()` enables incremental parsing. Without changes (cold parse or language change), a full parse is performed.
+
+**Run extraction:** `highlightTree()` walks the Lezer `Tree` with an expanded `tagHighlighter` that maps Lezer tags to class names. `TAG_STYLES` maps class names to `{ color, bold }`. The highlighter covers: keyword, string, number, comment, function, variable, type, operator, plus expanded tags (separator, bracket, angleBracket, squareBracket, paren, brace, derefOperator, meta, self, atom). Line offsets are binary-searched for fast token-to-line mapping.
 
 **Protocol:**
 ```
-Main → Worker: { type:'parse', id, text, language, changes? }
+Main → Worker: { type:'parse', id, text, language, version, changes? }
 Main → Worker: { type:'remove', id }
 Main → Worker: { type:'clearAll' }
-Worker → Main: { type:'tokens', id, tokens: CodeToken[][] }
+Worker → Main: { type:'runs', id, version, runs: TextRun[][] }
 ```
 
-### TAG_STYLES
-
-Shared between sync tokenizer, Lezer worker, and CM `HighlightStyle`. One Dark inspired palette:
-- keyword → `#c678dd` (purple, bold)
-- string → `#98c379` (green)
-- number → `#d19a66` (orange)
-- comment → `#5c6370` (dim gray)
-- function → `#61afef` (blue)
-- variable → `#e06c75` (red)
-- type → `#e5c07b` (yellow)
-- operator → `#56b6c2` (cyan)
-- punctuation → `#abb2bf` (default)
+**Language → Parser mapping:**
+- `'python'` → `@lezer/python`
+- `'typescript'` → `@lezer/javascript` configured with `dialect: 'ts jsx'`
+- `'javascript'` (default) → `@lezer/javascript` configured with `dialect: 'jsx'`
 
 ---
 
@@ -158,130 +181,162 @@ Singleton `codeSystem`. Per-object `CacheEntry`:
 
 ```typescript
 interface CacheEntry {
-  text: string;           // Current full text
-  lines: string[];        // text.split('\n')
-  tokens: CodeToken[][];  // null only before first content; regex floor → Lezer upgrade
-  layout: CodeLayout | null;   // null = needs recompute
-  layoutFontSize: number;      // Cache key — layout invalidated if fontSize changes
-  layoutWidth: number;         // Cache key — layout invalidated if width changes
-  frame: FrameTuple | null;    // Derived, set by computeCodeBBox
+  text: string;
+  sourceLines: string[];
+  version: number;           // Monotonic, incremented on content or language change
+  runs: TextRun[][];         // Always populated — gap-filled per source line
+  layout: CodeLayout | null; // null = needs recompute
+  layoutFontSize: number;    // Cache key
+  layoutWidth: number;       // Cache key
+  language: CodeLanguage;    // Cache key — language change triggers retokenize + reparse
+  frame: FrameTuple | null;  // Derived, set by computeCodeBBox
 }
 ```
 
-**Invalidation rules:**
-- `handleContentChange` → nulls `layout` + `frame` (text/tokens changed, dimensions may change)
-- `applyTokens` → nulls `layout` only (dimensions unchanged, just colors)
-- fontSize/width mismatch in `getLayout` → nulls `layout` + `frame`
+### Invalidation Rules
 
-**Public API:**
+| Trigger | What changes | Layout | Frame | Version |
+|---------|-------------|--------|-------|---------|
+| `handleContentChange` | New text, new sync-tokenized runs | nulled | nulled | incremented |
+| `applyWorkerRuns` | Runs swapped (colors only) | unchanged | unchanged | checked (must match) |
+| fontSize/width change (detected in `getLayout`) | — | recomputed | nulled | unchanged |
+| Language change (detected in `getLayout`) | Re-tokenized runs | recomputed | nulled | incremented |
+
+`applyWorkerRuns` does NOT null the layout — only colors change, not geometry. It calls `invalidateWorld(frameBounds)` if a cached frame exists.
+
+### Public API
+
 | Method | Called by | Purpose |
 |--------|-----------|---------|
-| `getLayout(id, yText, fontSize, width, lang)` | `computeCodeBBox`, `drawCode` | Build or return cached layout |
-| `handleContentChange(id, ev, lang)` | Deep observer | Sync tokenize + dispatch worker parse |
-| `applyTokens(id, tokens)` | Worker response handler | Upgrade to Lezer tokens |
+| `getLayout(id, yText, fontSize, width, lang)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
+| `handleContentChange(id, ev, lang)` | Deep observer | Sync tokenize + dispatch worker parse with delta changes |
+| `applyWorkerRuns(id, runs, forVersion)` | Worker response handler | Version-gated run upgrade |
+| `getRuns(id)` | `drawCode` in objects.ts | Get TextRun[][] for renderer |
 | `getFrame(id)` / `setFrame(id, frame)` | Hit testing, selection, bbox | Read/write cached frame |
-| `remove(id)` / `clear()` | Deletion / room change | Cleanup + worker notification |
-
-**External getters:**
-- `getCodeFrame(id)` — reads cached frame (mirrors `getTextFrame` pattern)
-- `computeCodeBBox(id, yObj)` — computes layout, caches frame, returns `[minX, minY, maxX, maxY]`
+| `remove(id)` / `clear()` | Deletion / room change | Cleanup entries + notify workers |
 
 ---
 
 ## Canvas Renderer (`renderCodeLayout`)
 
-Renders a `CodeLayout` at `(originX, originY)` in world coords:
-1. Background: `roundRect` fill with `CODE_BG`
-2. Per visual line: gutter number (right-aligned, only on `index >= 0` lines) + code text with per-token coloring
-3. Monospace positioning: each token rendered at `codeX + token.from * charWidth`
-4. Baseline offset: `lineHeight * 0.7` (alphabetic baseline)
+Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, runs)`
 
-Font: `FONT_WEIGHT fontSize CODE_FONT` (400 weight, JetBrains Mono).
+All metrics derived from `fontSize` inline. Steps:
 
-**Skip rule:** `drawCode()` in `objects.ts` skips rendering when `codeEditingId === id` (DOM editor visible instead).
-
----
-
-## CodeTool Lifecycle
-
-### Gesture → Object Creation / Editor Mount
-
-```
-begin(pointerId, worldX, worldY)
-  → hit test existing code blocks via spatial index + frame check
-
-end(worldX, worldY)
-  → if hit existing: beginCodeEditing() → mountEditor(hitId)
-  → if no hit: createCodeObject(x, y) → mountEditor(newId)
-  → resetGesture() + invalidate
-
-onViewChange() → positionEditor() (transform-based repositioning)
-destroy() → commitAndClose()
-```
-
-### `createCodeObject(worldX, worldY)`
-
-Center placement: `origin = [click - width/2, click - (PADDING_TOP + lineHeight + PADDING_BOTTOM)/2]`.
-Creates Y.Map with empty `Y.Text()`, `language: 'javascript'`, default fontSize/width.
-`mutate()` is synchronous — observer fires synchronously — handle exists when mutate returns.
-Calls `mountEditor(id)` directly (no RAF).
-
-### `mountEditor(objectId)` — async
-
-1. Close existing editor (`commitAndClose` if already editing)
-2. Create container div with **world-unit** dimensions: `width`, `fontSize` in world px
-3. CSS `transform: scale(${scale})` + `transformOrigin: 0 0` handles zoom
-4. Position via `worldToClient(origin)` → `left/top` in screen px
-5. Lazy-load CM modules (8 parallel imports via `Promise.all`)
-6. Create per-session `Y.UndoManager(yText)` with 500ms capture
-7. CM extensions: `lineNumbers`, `lineWrapping`, language, `indentUnit('    ')`, `indentWithTab`, `yCollab`, theme+highlight, tab normalizer
-8. `EditorView.focus()`
-9. `beginCodeEditing(objectId)` on selection store (if not already set)
-10. Main UndoManager: widen `captureTimeout` to 600s (isolate editor edits)
-11. Setup escape + click-outside handlers
-
-### `positionEditor()` — called on zoom/pan
-
-Only updates `left/top` (via `worldToClient`) and `transform: scale(${scale})`. Width/fontSize stay at world units — CSS transform handles zoom scaling.
-
-### `commitAndClose()`
-
-1. Remove keyboard/pointer handlers
-2. `EditorView.destroy()`
-3. Restore main UM `captureTimeout` to 500ms, clear session UM
-4. Remove container from DOM
-5. `endCodeEditing()` on selection store
-6. `invalidateWorld` + `invalidateOverlay`
-
-Does **not** delete empty blocks (unlike TextTool).
-
-### Public API
-
-- `startEditing(objectId)` — for SelectTool double-click-to-edit
-- `isEditorMounted()` — guard check
-- `objectId` — public field, current editing target
+1. **Background:** `roundRect` fill with `CODE_BG`, `BORDER_RADIUS`
+2. **Per visual line:** Compute `baseY = originY + padTop + i * lineHeight + baselineOffset`
+3. **Gutter:** On lines where `vline.from === 0`, right-align line number within gutter area: `originX + padLeft + (digits - lineNum.length) * charWidth`
+4. **Code text:** `sliceRuns(runs[srcIdx], from, from + text.length)` → iterate, `fillText` per run; x cursor advances by `run.text.length * charWidth`
+5. **Batching:** Font and fillStyle only set on change (`prevFont` tracking). Whitespace-only runs skip `fillText`.
 
 ---
 
-## DOM Editor Zoom Strategy
+## Screen-Space DOM Editor — CSS Custom Properties
 
-Container uses world-unit dimensions. CSS `transform: scale(${scale})` handles zoom.
-No per-instance CM theme needed — font inherits from container.
+CodeMirror needs to render crisply at all zoom levels. CSS `transform: scale()` would cause blurriness. Leaving dimensions unscaled would produce incorrect world-to-screen-space alignment. The solution: all dimensions computed as `world * scale` in exact px values.
 
-**CSS (index.css):**
+### Dimensional Properties (set at mount + every zoom/pan change)
+
+```
+screenFS = fontSize * scale      → container.style.fontSize
+screenW  = width * scale         → container.style.width
+screenLH = lineHeight(fs) * scale → container.style.lineHeight
+borderRadius = BORDER_RADIUS * scale → container.style.borderRadius
+```
+
+Position via `worldToClient(origin)` → `left/top` in CSS px.
+
+### CSS Custom Properties (`--c-*`)
+
+The CM theme references CSS custom properties instead of `em` units. `setCSSVars()` writes them as exact px on the container at mount and on every `positionEditor()` call:
+
+| CSS var | Value | Used by |
+|---------|-------|---------|
+| `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
+| `--c-pb` | `padBottom(fs) * scale` px | `.cm-scroller` paddingBottom |
+| `--c-gl` | `padLeft(fs) * scale` px | `.cm-gutters` paddingLeft |
+| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-gutters` paddingRight |
+| `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
+| `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
+
+This avoids browser `em→px` conversion which introduces sub-pixel rounding mismatches versus the canvas renderer.
+
+### Padding Placement: Scroller, Not Content
+
+Vertical padding (`--c-pt`, `--c-pb`) is on `.cm-scroller`, not `.cm-content`. CM's `viewState.measure()` reads `contentDOM` padding with `parseInt()`, which truncates fractional px values, causing gutter-content vertical misalignment. Placing padding on the scroller avoids this.
+
+### `positionEditor()`
+
+Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional properties (position, width, fontSize, lineHeight, borderRadius, CSS vars) + calls `editorView.requestMeasure()` to trigger CM relayout.
+
+### CSS (index.css)
+
 ```css
 .code-editor {
-  will-change: transform;
-  transform-origin: 0 0;
+  pointer-events: auto;
+  z-index: 1000;
   overflow: hidden;
 }
-.cm-scroller {
+.code-editor .cm-editor {
+  height: auto;
+  border-radius: inherit;
+  outline: none;
+}
+.code-editor .cm-scroller {
+  font-family: 'JetBrains Mono', monospace;
   overflow-y: auto;
-  overflow-x: hidden;  /* lineWrapping handles wrap */
+  overflow-x: hidden;
+  line-height: inherit !important;  /* Override CM base theme's 1.4 */
 }
 ```
 
-**CM Theme (getCodeMirrorExtensions):** Shared singleton. Sets bg, gutter colors/padding, content padding (PADDING_TOP/BOTTOM), line padding (PADDING_RIGHT), cursor color, active line, selection. Gutter has `paddingLeft: PADDING_LEFT` for WYSIWYG match.
+The `line-height: inherit !important` forces the scroller to use the container's explicit px line-height instead of CM's base theme value of `1.4`, which fights the code system's `1.5` multiplier at identical specificity.
+
+---
+
+## CodeMirror Extensions
+
+Lazy-loaded via `getCodeMirrorExtensions()` (cached after first call). Two extensions:
+
+1. **Theme** (`EditorView.theme`, dark mode): Background, gutter, cursor, selection colors. All padding/sizing via `var(--c-*)`. Line-height set as the `LINE_HEIGHT_MULT` ratio on `.cm-scroller`. Gutter elements use `fontFeatureSettings: '"tnum"'` for tabular numbers.
+
+2. **Syntax highlighting** (`HighlightStyle.define`): Maps Lezer `tags` to the same color constants used by the sync tokenizer and canvas renderer (`KEYWORD`, `STRING`, `NUMBER`, etc.). Keywords are bold.
+
+### Editor State Extensions (set at mount)
+
+- `lineNumbers()` with `formatNumber` callback — pads line numbers with spaces to match canvas gutter digit reservation (`max(2, String(lines).length)`)
+- `EditorView.lineWrapping` — enables CM's native word-wrapping
+- Language extension: `python()` or `javascript({ typescript: true, jsx: true })`
+- `indentUnit.of('    ')` — 4-space indentation
+- `keymap.of([indentWithTab])` — Tab key indents
+- `yCollab(yText, null, { undoManager })` — Yjs collaborative binding with per-session UndoManager
+- Tab normalizer transaction filter — replaces `\t` with 4 spaces in all insertions
+
+---
+
+## CodeTool — PointerTool Implementation
+
+Registered in `tool-registry.ts` as singleton `codeTool`, mapped to `'code'` tool ID.
+
+### Gesture Flow
+
+1. `begin()`: Hit-test existing code blocks via spatial index query (8px screen-space radius, Z-order by ULID descending)
+2. `end()`: If hit → `mountEditor(hitId)`. If no hit → `createCodeObject(x, y)` at center-placed position, then `mountEditor(createdId)`.
+
+### Object Creation
+
+Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2`. Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`.
+
+### Editor Lifecycle
+
+**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`) → create `Y.UndoManager(yText)` → build `EditorState` with extensions → create `EditorView` → focus → `beginCodeEditing(objectId)` on selection store → invalidate world.
+
+**Close (`commitAndClose`):** Remove event handlers → destroy EditorView → clear UndoManager → remove container from DOM → null all refs → `endCodeEditing()` on selection store → invalidate world + overlay.
+
+### Event Handlers
+
+- **Escape key** (capture phase): Close editor
+- **Click outside** (capture phase, 100ms delayed attach): Close editor. Clicks on `.ctx-menu` are excluded. Canvas clicks are consumed (`stopPropagation`) when code tool is active.
 
 ---
 
@@ -296,60 +351,47 @@ if (kind === 'code' && ev instanceof Y.YTextEvent) {
   codeSystem.handleContentChange(id, ev, lang);
 }
 ```
-Single call — `handleContentChange` does toString, split, syncTokenize, and requestParse internally.
 
-**Deletion bridge:** If `codeEditingId` matches a deleted object, calls `endCodeEditing()`.
+BBox computation: `computeCodeBBox(id, yObj)` called in both hydration and incremental update paths.
 
-**BBox computation:** `computeCodeBBox(id, yObj)` imported from `code-system.ts`.
+Deletion: `codeSystem.remove(id)` called when a code object is deleted. Deletion bridge: if `codeEditingId` matches a deleted object, calls `endCodeEditing()`.
+
+Room change / full rebuild: `codeSystem.clear()`.
 
 ### objects.ts — Render Dispatch
 
 ```typescript
-case 'code':
-  drawCode(ctx, handle);  // skips if codeEditingId === id
+function drawCode(ctx, handle) {
+  if (useSelectionStore.getState().codeEditingId === handle.id) return; // DOM overlay active
+  const props = getCodeProps(handle.y);
+  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language);
+  const runs = codeSystem.getRuns(id);
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, runs);
+}
 ```
-Transform preview: currently translate-only (Phase 4 will add proper scale).
 
-### hit-testing.ts
-
-Uses `getCodeFrame(id)` for rectangle hit testing and marquee intersection. Code blocks are always filled (dark bg = opaque interior).
+During scale transforms, code blocks currently fall through to `drawObject()` (no scale transform rendering yet).
 
 ### selection-store.ts
 
-- `codeEditingId: string | null` — tracks which code block is being edited
-- `beginCodeEditing(objectId)` → sets `codeEditingId`, opens context menu, refreshes styles
-- `endCodeEditing()` → clears `codeEditingId`
-- `selectionKind: 'codeOnly'` when all selected objects are code blocks
+```typescript
+codeEditingId: string | null;
+beginCodeEditing: (objectId) => set({ codeEditingId: objectId, menuOpen: true });
+endCodeEditing: () => set({ codeEditingId: null, menuOpen: selectedIds.length > 0 });
+```
 
-### selection-utils.ts
+### hit-testing.ts
 
-- `computeSelectionComposition` counts code objects, derives `'codeOnly'` kind
-- `computeStyles` for `'codeOnly'`: only tracks `fontSize`
-
-### Context Menu
-
-`effectiveKind === 'codeOnly'` renders `CodeStyleGroup` — currently just a `FontSizeStepper`.
-
-### tool-registry.ts
-
-`codeTool` = singleton `CodeTool`, mapped to `'code'` tool ID. Exported directly for external access.
+Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial index queries. CodeTool does its own hit testing (frame-based point-in-rect against `getCodeFrame()`).
 
 ---
 
-## Known Issues / TODO
+## Known Issues / Not Yet Implemented
 
-### Critical — DOM/Canvas WYSIWYG Mismatch
-- **Blurry on zoom:** CSS `transform: scale()` rasterizes at base resolution then scales. Need screen-space rendering (compute all dimensions × scale directly, no CSS transform). Requires CM theme padding to also scale — CSS custom properties or per-mount theme.
-- **Padding doesn't scale with fontSize:** PADDING_TOP/BOTTOM/LEFT/RIGHT are fixed world-unit px (24/24/12/12). A fontSize=28 block has the same padding as fontSize=14. Consider making padding proportional to fontSize.
-- **Height mismatch DOM vs canvas:** CM's actual line-height may differ from `fontSize * LINE_HEIGHT_MULT`. Canvas uses exact `fontSize * 1.5`, CM may compute differently.
-- **Gutter-to-code spacing off:** Canvas uses `charWidth(fontSize) = fontSize * 0.6` for gutter width. CM's actual monospace character width may differ slightly, causing gutter/code alignment mismatch.
-
-### Frame / Cache Bugs
-- **Empty block frame null:** `getLayout()` re-nulls frame on every call when `text === '' && !tokens` (line 564). After hydration sets frame via `computeCodeBBox`, next render call re-enters that branch and nulls it. Fix: have `getLayout` cache the frame, or guard the re-read more carefully.
-- **No tokenization on hydration:** `syncTokenize` + `requestParse` only run in `handleContentChange` (observer path). After page reload, code blocks render with no syntax highlighting until the first edit. Fix: trigger tokenization in `getLayout` when tokens are null, or in `computeCodeBBox` during hydration.
-
-### Other
-- **UndoManager:** Per-session UM handles CM undo. Main UM capture timeout hacking removed — main UM may capture individual keystrokes. Needs proper origin-based filtering like TextTool's `ySyncPluginKey` pattern.
-- **Flash on mount:** `beginCodeEditing` called from `end()` hides canvas rendering before async `mountEditor` completes. Currently mitigated by also calling `beginCodeEditing` inside `mountEditor` after EditorView creation, but the early call in `end()` for the hit-existing path can still flash. The call in `end()` is commented out as a WIP fix.
-- **Font weight:** `FONT_WEIGHT=400` but JetBrains Mono woff2 may only have 450-700 range
-- **Phase 4 not done:** Selection transforms (scale, width resize), language dropdown, mixed selection filter
+- **Selection transforms:** Code blocks have no scale/translate preview during SelectTool transforms (renders static)
+- **Language dropdown:** No UI to change language
+- **Mixed selection filter:** Code blocks not filtered in context menu
+- **UndoManager:** Per-session UM handles CM undo. Needs proper origin-based filtering like TextTool's pattern
+- **Flash on mount:** Async CM load means brief canvas frame visible before DOM overlay appears
+- **Long code blocks:** CM's internal viewport optimization causes WYSIWYG mismatch on very tall blocks (content outside CM's visible window is virtualized)
+- **Language change + worker tree:** On language change, a full re-parse is dispatched (no `changes`). The worker's previous `Tree`/`TreeFragment` state for that object is overwritten by the fresh parse. This is correct — Lezer trees are parser-specific, so fragments from one language's parser cannot be reused by another.

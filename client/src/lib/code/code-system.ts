@@ -66,8 +66,8 @@ export const CODE_FONT = `'${CODE_FONT_FAMILY}', monospace`;
 // === Sizing ===
 export const DEFAULT_FONT_SIZE = 14;
 export const MIN_CHARS = 20;
-export const DEFAULT_CHARS = 40;
-export const BORDER_RADIUS = 8;
+export const DEFAULT_CHARS = 48;
+export const BORDER_RADIUS = 12;
 
 // === Proportional padding ratios ===
 const PAD_TOP_RATIO = 1.5;
@@ -684,11 +684,24 @@ class CodeSystemCache {
       const text = sourceLines[i];
       if (text.length <= maxChars) {
         lines.push({ srcIdx: i, from: 0, text });
-      } else {
-        for (let offset = 0; offset < text.length; offset += maxChars) {
-          const segEnd = Math.min(offset + maxChars, text.length);
-          lines.push({ srcIdx: i, from: offset, text: text.slice(offset, segEnd) });
+        continue;
+      }
+      // Word-aware wrapping matching CSS break-spaces + overflow-wrap: anywhere
+      let pos = 0;
+      while (pos < text.length) {
+        if (text.length - pos <= maxChars) {
+          lines.push({ srcIdx: i, from: pos, text: text.slice(pos) });
+          break;
         }
+        // Scan backward for last space/tab break opportunity within window
+        let breakAt = -1;
+        for (let j = pos + maxChars - 1; j >= pos; j--) {
+          const c = text.charCodeAt(j);
+          if (c === 32 || c === 9) { breakAt = j + 1; break; }
+        }
+        if (breakAt === -1) breakAt = pos + maxChars; // character-level fallback
+        lines.push({ srcIdx: i, from: pos, text: text.slice(pos, breakAt) });
+        pos = breakAt;
       }
     }
 
@@ -917,9 +930,6 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
     import('@lezer/highlight'),
   ]);
 
-  const metrics = measureCodeFontMetrics();
-  const cwRatio = metrics.charWidthRatio;
-
   const codeEditorTheme = EditorView.theme(
     {
       '&': {
@@ -927,41 +937,38 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         color: CODE_DEFAULT,
         borderRadius: 'inherit',
       },
+      // All padding/sizing via CSS vars (--c-*) set as exact px by CodeTool
+      // at mount and on every zoom change.  Avoids em→px browser conversion
+      // which introduces sub-pixel rounding mismatches vs canvas rendering.
+      // Vertical padding on .cm-scroller (not .cm-content) because CM's
+      // viewState.measure() reads contentDOM padding with parseInt() which
+      // truncates fractional px → gutter misalignment.
       '.cm-scroller': {
         lineHeight: `${LINE_HEIGHT_MULT}`,
-        // Vertical padding lives here — NOT on .cm-content — because CM's
-        // viewState.measure() reads contentDOM padding with parseInt() which
-        // truncates fractional px.  That truncated value feeds documentPadding
-        // → gutter marginTop, while CSS keeps the full float → gutter sits
-        // above content by the truncated fraction.  Padding on .cm-scroller
-        // avoids this entirely: documentPadding.top = 0 (integer), gutters
-        // and content are both pushed down equally by the scroller padding.
-        paddingTop: `${PAD_TOP_RATIO}em`,
-        paddingBottom: `${PAD_BOTTOM_RATIO}em`,
+        paddingTop: 'var(--c-pt)',
+        paddingBottom: 'var(--c-pb)',
       },
       '.cm-gutters': {
         backgroundColor: CODE_BG,
         color: CODE_GUTTER,
         border: 'none',
-        paddingLeft: `${PAD_LEFT_RATIO}em`,
-        paddingRight: `${GUTTER_PAD_RATIO}em`,
+        paddingLeft: 'var(--c-gl)',
+        paddingRight: 'var(--c-gr)',
       },
       '.cm-content': {
         fontFamily: `'${CODE_FONT_FAMILY}', monospace`,
-        padding: '0', // Override base theme's 4px 0 — see .cm-scroller comment
-        overflowWrap: 'break-word',
-        wordBreak: 'break-all',
-        textRendering: 'geometricPrecision',
+        padding: '0', // Override base theme's 4px 0 — padding lives on scroller
+        // Let CM's lineWrapping extension use its native overflow-wrap/word-break
       },
       '.cm-line': {
-        padding: `0 ${PAD_RIGHT_RATIO}em 0 0`,
+        padding: '0 var(--c-pr) 0 0',
       },
       '.cm-lineNumbers .cm-gutterElement': {
         padding: '0',
         fontFamily: `'${CODE_FONT_FAMILY}', monospace`,
         fontFeatureSettings: '"tnum"',
         textAlign: 'right',
-        minWidth: `${2 * cwRatio}em`,
+        minWidth: 'var(--c-gw)',
       },
       '.cm-cursor': { borderLeftColor: '#528bff' },
       '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,0.04)' },
