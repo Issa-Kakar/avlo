@@ -2,7 +2,7 @@
  * Code System — Cache, Sync Tokenizer, Renderer, Worker Pool, CM Theme, Font Metrics
  *
  * Two-tier tokenization: sync regex (floor) + Lezer worker (ceiling).
- * TextRun gap-fill model: every character belongs to exactly one run — no missing chars.
+ * RunSpans model: flat Uint16Array of [offset, length, styleIndex] triples per line.
  * Proportional padding (fontSize-relative) + measured font metrics for pixel-perfect alignment.
  */
 
@@ -14,8 +14,11 @@ import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 
 import {
-  type TextRun,
-  type SparseHighlight,
+  type RunSpans,
+  S,
+  PALETTE,
+  isBold,
+  packRunSpans,
   CODE_BG,
   CODE_DEFAULT,
   CODE_GUTTER,
@@ -34,13 +37,15 @@ import {
   TYPE,
   OPERATOR,
   ATTRIBUTE,
-  highlightsToRuns,
-  sliceRuns,
 } from './code-shared';
 
 // Re-export shared types/constants used by consumers
-export type { TextRun, SparseHighlight } from './code-shared';
+export type { RunSpans } from './code-shared';
 export {
+  S,
+  PALETTE,
+  isBold,
+  packRunSpans,
   CODE_BG,
   CODE_DEFAULT,
   CODE_GUTTER,
@@ -60,8 +65,6 @@ export {
   OPERATOR,
   ATTRIBUTE,
   TAG_STYLES,
-  highlightsToRuns,
-  sliceRuns,
 } from './code-shared';
 
 // ============================================================================
@@ -78,7 +81,7 @@ export const CODE_FONT = `'${CODE_FONT_FAMILY}', monospace`;
 // === Sizing ===
 export const DEFAULT_FONT_SIZE = 14;
 export const MIN_CHARS = 20;
-export const DEFAULT_CHARS = 48;
+export const DEFAULT_CHARS = 50;
 export const BORDER_RADIUS = 12;
 
 // === Proportional padding ratios ===
@@ -86,7 +89,7 @@ const PAD_TOP_RATIO = 1.5;
 const PAD_BOTTOM_RATIO = 1.5;
 const PAD_LEFT_RATIO = 0.85;
 const PAD_RIGHT_RATIO = 0.85;
-const GUTTER_PAD_RATIO = 0.7;
+const GUTTER_PAD_RATIO = 2.0;
 
 export function padTop(fs: number): number {
   return fs * PAD_TOP_RATIO;
@@ -151,12 +154,24 @@ export function contentLeft(maxDigits: number, fontSize: number): number {
 
 export function getMinWidth(fontSize: number): number {
   const cw = charWidth(fontSize);
-  return MIN_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
+  return (
+    MIN_CHARS * cw +
+    padLeft(fontSize) +
+    padRight(fontSize) +
+    gutterWidth(2, fontSize) +
+    gutterPad(fontSize)
+  );
 }
 
 export function getDefaultWidth(fontSize: number): number {
   const cw = charWidth(fontSize);
-  return DEFAULT_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
+  return (
+    DEFAULT_CHARS * cw +
+    padLeft(fontSize) +
+    padRight(fontSize) +
+    gutterWidth(2, fontSize) +
+    gutterPad(fontSize)
+  );
 }
 
 // ============================================================================
@@ -181,30 +196,110 @@ export function totalHeight(layout: CodeLayout, fontSize: number): number {
 }
 
 // ============================================================================
-// §3 SYNC TOKENIZER — outputs SparseHighlight[][] (highlight emitter)
+// §3 SYNC TOKENIZER — outputs RunSpans[] (flat packed triples)
 // ============================================================================
 
 // Language keyword sets — sorted longest-first for greedy match
 const JS_KEYWORDS = [
-  'instanceof', 'continue', 'debugger', 'function', 'default', 'extends',
-  'finally', 'delete', 'export', 'import', 'return', 'switch', 'typeof',
-  'async', 'await', 'break', 'catch', 'class', 'const', 'false', 'super',
-  'throw', 'while', 'yield', 'case', 'else', 'enum', 'from', 'null',
-  'this', 'true', 'void', 'with', 'for', 'let', 'new', 'try', 'var',
-  'if', 'in', 'of', 'do',
+  'instanceof',
+  'continue',
+  'debugger',
+  'function',
+  'default',
+  'extends',
+  'finally',
+  'delete',
+  'export',
+  'import',
+  'return',
+  'switch',
+  'typeof',
+  'async',
+  'await',
+  'break',
+  'catch',
+  'class',
+  'const',
+  'false',
+  'super',
+  'throw',
+  'while',
+  'yield',
+  'case',
+  'else',
+  'enum',
+  'from',
+  'null',
+  'this',
+  'true',
+  'void',
+  'with',
+  'for',
+  'let',
+  'new',
+  'try',
+  'var',
+  'if',
+  'in',
+  'of',
+  'do',
 ];
 
 const TS_EXTRAS = [
-  'implements', 'interface', 'namespace', 'protected', 'abstract', 'readonly',
-  'override', 'private', 'declare', 'public', 'module', 'keyof', 'infer',
-  'never', 'type', 'any', 'as', 'is',
+  'implements',
+  'interface',
+  'namespace',
+  'protected',
+  'abstract',
+  'readonly',
+  'override',
+  'private',
+  'declare',
+  'public',
+  'module',
+  'keyof',
+  'infer',
+  'never',
+  'type',
+  'any',
+  'as',
+  'is',
 ];
 
 const PY_KEYWORDS = [
-  'continue', 'nonlocal', 'finally', 'lambda', 'global', 'assert', 'except',
-  'import', 'return', 'False', 'raise', 'while', 'break', 'class', 'yield',
-  'None', 'True', 'from', 'pass', 'with', 'elif', 'else', 'and', 'def',
-  'del', 'for', 'not', 'try', 'as', 'if', 'in', 'is', 'or',
+  'continue',
+  'nonlocal',
+  'finally',
+  'lambda',
+  'global',
+  'assert',
+  'except',
+  'import',
+  'return',
+  'False',
+  'raise',
+  'while',
+  'break',
+  'class',
+  'yield',
+  'None',
+  'True',
+  'from',
+  'pass',
+  'with',
+  'elif',
+  'else',
+  'and',
+  'def',
+  'del',
+  'for',
+  'not',
+  'try',
+  'as',
+  'if',
+  'in',
+  'is',
+  'or',
 ];
 
 const jsKeywordSet = new Set(JS_KEYWORDS);
@@ -217,49 +312,69 @@ function getKeywordSet(lang: CodeLanguage): Set<string> {
   return jsKeywordSet;
 }
 
-// Definition keywords → DEF_KEYWORD (yellow)
+// Definition keywords → S.DEF_KW (yellow)
 const jsDefKwSet = new Set(['function', 'class', 'const', 'let', 'var']);
 const tsDefExtras = new Set(['type', 'interface', 'enum']);
 const pyDefKwSet = new Set(['def', 'class', 'lambda']);
 
-// Modifier / module keywords → MODIFIER (warm red)
+// Modifier / module keywords → S.MODIFIER (cyan)
 const jsModifierSet = new Set(['export', 'import', 'from', 'default', 'async', 'static']);
 const tsModifierExtras = new Set([
-  'declare', 'abstract', 'readonly', 'override', 'private', 'protected', 'public',
-  'namespace', 'module',
+  'declare',
+  'abstract',
+  'readonly',
+  'override',
+  'private',
+  'protected',
+  'public',
+  'namespace',
+  'module',
 ]);
 const pyModifierSet = new Set(['global', 'nonlocal', 'from', 'import', 'async']);
 
-function keywordColor(word: string, lang: CodeLanguage): string {
+function keywordStyle(word: string, lang: CodeLanguage): number {
   if (lang === 'python') {
-    if (pyDefKwSet.has(word)) return DEF_KEYWORD;
-    if (pyModifierSet.has(word)) return MODIFIER;
+    if (pyDefKwSet.has(word)) return S.DEF_KW;
+    if (pyModifierSet.has(word)) return S.MODIFIER;
   } else if (lang === 'typescript') {
-    if (jsDefKwSet.has(word) || tsDefExtras.has(word)) return DEF_KEYWORD;
-    if (jsModifierSet.has(word) || tsModifierExtras.has(word)) return MODIFIER;
+    if (jsDefKwSet.has(word) || tsDefExtras.has(word)) return S.DEF_KW;
+    if (jsModifierSet.has(word) || tsModifierExtras.has(word)) return S.MODIFIER;
   } else {
-    if (jsDefKwSet.has(word)) return DEF_KEYWORD;
-    if (jsModifierSet.has(word)) return MODIFIER;
+    if (jsDefKwSet.has(word)) return S.DEF_KW;
+    if (jsModifierSet.has(word)) return S.MODIFIER;
   }
-  return KEYWORD;
+  return S.KEYWORD;
+}
+
+// Reusable buffer for highlight triples — reset per line via counter
+let _syncBuf: number[] = [];
+let _syncBufCount = 0;
+
+function pushTriple(from: number, to: number, style: number): void {
+  const idx = _syncBufCount * 3;
+  if (idx + 2 >= _syncBuf.length) _syncBuf.length = idx + 30; // grow in chunks
+  _syncBuf[idx] = from;
+  _syncBuf[idx + 1] = to;
+  _syncBuf[idx + 2] = style;
+  _syncBufCount++;
 }
 
 /**
- * Sync regex tokenizer — highlight emitter. Returns SparseHighlight[][] per source line.
- * Gaps between highlights are filled by highlightsToRuns() with CODE_DEFAULT.
+ * Sync regex tokenizer — returns RunSpans[] (one packed Uint16Array per source line).
+ * Gaps between highlights are filled by packRunSpans with S.DEFAULT.
  */
-export function syncTokenize(text: string, language: CodeLanguage): SparseHighlight[][] {
+export function syncTokenize(text: string, language: CodeLanguage): RunSpans[] {
   const lines = text.split('\n');
   const kwSet = getKeywordSet(language);
   const isPython = language === 'python';
-  const result: SparseHighlight[][] = [];
+  const result: RunSpans[] = new Array(lines.length);
 
   let inBlockComment = false;
   let inTemplateString = false;
 
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx];
-    const highlights: SparseHighlight[] = [];
+    _syncBufCount = 0;
     let i = 0;
 
     while (i < line.length) {
@@ -267,10 +382,10 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
       if (inBlockComment) {
         const end = line.indexOf('*/', i);
         if (end === -1) {
-          highlights.push({ from: i, to: line.length, color: COMMENT, bold: false });
+          pushTriple(i, line.length, S.COMMENT);
           i = line.length;
         } else {
-          highlights.push({ from: i, to: end + 2, color: COMMENT, bold: false });
+          pushTriple(i, end + 2, S.COMMENT);
           i = end + 2;
           inBlockComment = false;
         }
@@ -279,8 +394,7 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
 
       // --- Template string continuation ---
       if (inTemplateString) {
-        const { end, highlights: tplHighlights } = scanTemplateLiteral(line, i);
-        highlights.push(...tplHighlights);
+        const end = scanTemplateLiteral(line, i);
         if (end === -1) {
           i = line.length;
         } else {
@@ -293,11 +407,21 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
       const ch = line[i];
 
       // --- Whitespace: skip (gap-fill handles it) ---
-      if (ch === ' ' || ch === '\t') { i++; continue; }
+      if (ch === ' ' || ch === '\t') {
+        i++;
+        continue;
+      }
 
       // --- Hashbang on line 0 ---
-      if (lineIdx === 0 && i === 0 && ch === '#' && i + 1 < line.length && line[i + 1] === '!' && !isPython) {
-        highlights.push({ from: i, to: line.length, color: COMMENT, bold: false });
+      if (
+        lineIdx === 0 &&
+        i === 0 &&
+        ch === '#' &&
+        i + 1 < line.length &&
+        line[i + 1] === '!' &&
+        !isPython
+      ) {
+        pushTriple(i, line.length, S.COMMENT);
         i = line.length;
         continue;
       }
@@ -305,25 +429,25 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
       // --- Line comments ---
       if (!isPython && ch === '/' && i + 1 < line.length) {
         if (line[i + 1] === '/') {
-          highlights.push({ from: i, to: line.length, color: COMMENT, bold: false });
+          pushTriple(i, line.length, S.COMMENT);
           i = line.length;
           continue;
         }
         if (line[i + 1] === '*') {
           const end = line.indexOf('*/', i + 2);
           if (end === -1) {
-            highlights.push({ from: i, to: line.length, color: COMMENT, bold: false });
+            pushTriple(i, line.length, S.COMMENT);
             i = line.length;
             inBlockComment = true;
           } else {
-            highlights.push({ from: i, to: end + 2, color: COMMENT, bold: false });
+            pushTriple(i, end + 2, S.COMMENT);
             i = end + 2;
           }
           continue;
         }
       }
       if (isPython && ch === '#') {
-        highlights.push({ from: i, to: line.length, color: COMMENT, bold: false });
+        pushTriple(i, line.length, S.COMMENT);
         i = line.length;
         continue;
       }
@@ -333,18 +457,16 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
         const start = i;
         i++; // skip @
         while (i < line.length && isIdentPart(line[i])) i++;
-        highlights.push({ from: start, to: i, color: MODIFIER, bold: false });
+        pushTriple(start, i, S.MODIFIER);
         continue;
       }
 
       // --- Strings ---
       if (ch === '"' || ch === "'" || ch === '`') {
-        // Python f-strings / r-strings handled via prefix check below
         if (ch === '`' && !isPython) {
           // Template literal with ${} expression support
-          const { end, highlights: tplHighlights } = scanTemplateLiteral(line, i + 1);
-          highlights.push({ from: i, to: i + 1, color: STRING, bold: false }); // opening `
-          highlights.push(...tplHighlights);
+          pushTriple(i, i + 1, S.STRING); // opening `
+          const end = scanTemplateLiteral(line, i + 1);
           if (end === -1) {
             i = line.length;
             inTemplateString = true;
@@ -358,16 +480,16 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
           const closeSeq = ch + ch + ch;
           const end = line.indexOf(closeSeq, i + 3);
           if (end === -1) {
-            highlights.push({ from: i, to: line.length, color: STRING, bold: false });
+            pushTriple(i, line.length, S.STRING);
             i = line.length;
           } else {
-            highlights.push({ from: i, to: end + 3, color: STRING, bold: false });
+            pushTriple(i, end + 3, S.STRING);
             i = end + 3;
           }
           continue;
         }
         const end = findStringEnd(line, i + 1, ch);
-        highlights.push({ from: i, to: end === -1 ? line.length : end + 1, color: STRING, bold: false });
+        pushTriple(i, end === -1 ? line.length : end + 1, S.STRING);
         i = end === -1 ? line.length : end + 1;
         continue;
       }
@@ -399,12 +521,15 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
         }
         // BigInt suffix
         if (i < line.length && line[i] === 'n') i++;
-        highlights.push({ from: start, to: i, color: NUMBER, bold: false });
+        pushTriple(start, i, S.NUMBER);
         continue;
       }
 
       // --- Python string prefixes (f/r/b) ---
-      if (isPython && (ch === 'f' || ch === 'r' || ch === 'b' || ch === 'F' || ch === 'R' || ch === 'B')) {
+      if (
+        isPython &&
+        (ch === 'f' || ch === 'r' || ch === 'b' || ch === 'F' || ch === 'R' || ch === 'B')
+      ) {
         const nextCh = i + 1 < line.length ? line[i + 1] : '';
         if (nextCh === '"' || nextCh === "'") {
           const start = i;
@@ -415,15 +540,15 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
             const closeSeq = q + q + q;
             const end = line.indexOf(closeSeq, i + 3);
             if (end === -1) {
-              highlights.push({ from: start, to: line.length, color: STRING, bold: false });
+              pushTriple(start, line.length, S.STRING);
               i = line.length;
             } else {
-              highlights.push({ from: start, to: end + 3, color: STRING, bold: false });
+              pushTriple(start, end + 3, S.STRING);
               i = end + 3;
             }
           } else {
             const end = findStringEnd(line, i + 1, q);
-            highlights.push({ from: start, to: end === -1 ? line.length : end + 1, color: STRING, bold: false });
+            pushTriple(start, end === -1 ? line.length : end + 1, S.STRING);
             i = end === -1 ? line.length : end + 1;
           }
           continue;
@@ -438,13 +563,13 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
         const word = line.slice(start, i);
 
         if (kwSet.has(word)) {
-          highlights.push({ from: start, to: i, color: keywordColor(word, language), bold: true });
+          pushTriple(start, i, keywordStyle(word, language));
         } else if (i < line.length && line[i] === '(') {
-          highlights.push({ from: start, to: i, color: FUNCTION, bold: false });
+          pushTriple(start, i, S.FUNCTION);
         } else if (word[0] >= 'A' && word[0] <= 'Z') {
-          highlights.push({ from: start, to: i, color: TYPE, bold: false });
+          pushTriple(start, i, S.TYPE);
         } else {
-          highlights.push({ from: start, to: i, color: VARIABLE, bold: false });
+          pushTriple(start, i, S.VARIABLE);
         }
         continue;
       }
@@ -454,22 +579,22 @@ export function syncTokenize(text: string, language: CodeLanguage): SparseHighli
         const start = i;
         i++;
         while (i < line.length && isOperator(line[i])) i++;
-        highlights.push({ from: start, to: i, color: OPERATOR, bold: false });
+        pushTriple(start, i, S.OPERATOR);
         continue;
       }
 
       // --- Spread/rest ---
       if (ch === '.' && i + 2 < line.length && line[i + 1] === '.' && line[i + 2] === '.') {
-        highlights.push({ from: i, to: i + 3, color: OPERATOR, bold: false });
+        pushTriple(i, i + 3, S.OPERATOR);
         i += 3;
         continue;
       }
 
-      // --- Everything else (punctuation, unknown) → gap, filled by highlightsToRuns ---
+      // --- Everything else (punctuation, unknown) → gap, filled by packRunSpans ---
       i++;
     }
 
-    result.push(highlights);
+    result[lineIdx] = packRunSpans(line.length, _syncBuf, _syncBufCount);
   }
 
   return result;
@@ -492,12 +617,11 @@ function scanDecimal(line: string, start: number): void {
   scanDecimalEnd = i;
 }
 
-/** Scan a template literal body for ${} expressions. Returns end position (after closing `) or -1. */
-function scanTemplateLiteral(
-  line: string,
-  start: number,
-): { end: number; highlights: SparseHighlight[] } {
-  const highlights: SparseHighlight[] = [];
+/**
+ * Scan a template literal body for ${} expressions.
+ * Pushes triples directly into _syncBuf. Returns end position (after closing `) or -1.
+ */
+function scanTemplateLiteral(line: string, start: number): number {
   let i = start;
   let strStart = start;
 
@@ -509,15 +633,15 @@ function scanTemplateLiteral(
     if (line[i] === '`') {
       // End of template literal
       if (i > strStart) {
-        highlights.push({ from: strStart, to: i, color: STRING, bold: false });
+        pushTriple(strStart, i, S.STRING);
       }
-      highlights.push({ from: i, to: i + 1, color: STRING, bold: false }); // closing `
-      return { end: i + 1, highlights };
+      pushTriple(i, i + 1, S.STRING); // closing `
+      return i + 1;
     }
     if (line[i] === '$' && i + 1 < line.length && line[i + 1] === '{') {
       // String portion before ${
       if (i > strStart) {
-        highlights.push({ from: strStart, to: i, color: STRING, bold: false });
+        pushTriple(strStart, i, S.STRING);
       }
       // ${ itself — skip, gap-filled as default
       i += 2;
@@ -537,14 +661,17 @@ function scanTemplateLiteral(
 
   // Unterminated — rest is string
   if (i > strStart) {
-    highlights.push({ from: strStart, to: line.length, color: STRING, bold: false });
+    pushTriple(strStart, line.length, S.STRING);
   }
-  return { end: -1, highlights };
+  return -1;
 }
 
 function findStringEnd(line: string, start: number, quote: string): number {
   for (let i = start; i < line.length; i++) {
-    if (line[i] === '\\') { i++; continue; }
+    if (line[i] === '\\') {
+      i++;
+      continue;
+    }
     if (line[i] === quote) return i;
   }
   return -1;
@@ -563,9 +690,22 @@ function isIdentPart(ch: string): boolean {
 }
 
 function isOperator(ch: string): boolean {
-  return ch === '+' || ch === '-' || ch === '*' || ch === '/' || ch === '=' ||
-    ch === '<' || ch === '>' || ch === '!' || ch === '&' || ch === '|' ||
-    ch === '^' || ch === '~' || ch === '%' || ch === '?';
+  return (
+    ch === '+' ||
+    ch === '-' ||
+    ch === '*' ||
+    ch === '/' ||
+    ch === '=' ||
+    ch === '<' ||
+    ch === '>' ||
+    ch === '!' ||
+    ch === '&' ||
+    ch === '|' ||
+    ch === '^' ||
+    ch === '~' ||
+    ch === '%' ||
+    ch === '?'
+  );
 }
 
 // ============================================================================
@@ -573,10 +713,9 @@ function isOperator(ch: string): boolean {
 // ============================================================================
 
 interface CacheEntry {
-  text: string;
   sourceLines: string[];
   version: number;
-  runs: TextRun[][];
+  spans: RunSpans[];
   layout: CodeLayout | null;
   layoutFontSize: number;
   layoutWidth: number;
@@ -600,29 +739,37 @@ class CodeSystemCache {
     if (!e) {
       const text = yText.toString();
       const sourceLines = text.split('\n');
-      const highlights = syncTokenize(text, language);
-      const runs = sourceLines.map((line, i) => highlightsToRuns(line, highlights[i] ?? []));
+      const spans = syncTokenize(text, language);
       const layout = this.computeLayout(sourceLines, fontSize, width);
       e = {
-        text, sourceLines, version: 1, runs, layout,
-        layoutFontSize: fontSize, layoutWidth: width, language, frame: null,
+        sourceLines,
+        version: 1,
+        spans,
+        layout,
+        layoutFontSize: fontSize,
+        layoutWidth: width,
+        language,
+        frame: null,
       };
       this.entries.set(id, e);
       requestParse(id, text, language, e.version);
       return layout;
     }
 
-    // Language changed — full rebuild
+    // Language changed — re-tokenize spans only, keep layout if dims unchanged
     if (e.language !== language) {
-      const highlights = syncTokenize(e.text, language);
-      e.runs = e.sourceLines.map((line, i) => highlightsToRuns(line, highlights[i] ?? []));
-      e.layout = this.computeLayout(e.sourceLines, fontSize, width);
-      e.layoutFontSize = fontSize;
-      e.layoutWidth = width;
+      const text = e.sourceLines.join('\n');
+      e.spans = syncTokenize(text, language);
       e.language = language;
       e.version++;
-      e.frame = null;
-      requestParse(id, e.text, language, e.version);
+      requestParse(id, text, language, e.version);
+      // Only recompute layout if fontSize/width also changed
+      if (!e.layout || e.layoutFontSize !== fontSize || e.layoutWidth !== width) {
+        e.layoutFontSize = fontSize;
+        e.layoutWidth = width;
+        e.frame = null;
+        e.layout = this.computeLayout(e.sourceLines, fontSize, width);
+      }
       return e.layout;
     }
 
@@ -643,27 +790,31 @@ class CodeSystemCache {
 
   /**
    * Called synchronously from deep observer on Y.Text change.
-   * Runs sync tokenizer → gap-fill → dispatches to Lezer worker.
+   * Runs sync tokenizer → dispatches to Lezer worker.
    */
   handleContentChange(id: string, ev: Y.YTextEvent, language: CodeLanguage): void {
     const yText = ev.target as Y.Text;
     const text = yText.toString();
     const sourceLines = text.split('\n');
-    const highlights = syncTokenize(text, language);
-    const runs = sourceLines.map((line, i) => highlightsToRuns(line, highlights[i] ?? []));
+    const spans = syncTokenize(text, language);
 
     let e = this.entries.get(id);
     if (e) {
-      e.text = text;
       e.sourceLines = sourceLines;
       e.version++;
-      e.runs = runs;
+      e.spans = spans;
       e.layout = null;
       e.frame = null;
     } else {
       e = {
-        text, sourceLines, version: 1, runs,
-        layout: null, layoutFontSize: 0, layoutWidth: 0, language, frame: null,
+        sourceLines,
+        version: 1,
+        spans,
+        layout: null,
+        layoutFontSize: 0,
+        layoutWidth: 0,
+        language,
+        frame: null,
       };
       this.entries.set(id, e);
     }
@@ -675,12 +826,12 @@ class CodeSystemCache {
   }
 
   /**
-   * Apply Lezer worker runs (ceiling upgrade). Version-gated to discard stale results.
+   * Apply Lezer worker spans (ceiling upgrade). Version-gated to discard stale results.
    */
-  applyWorkerRuns(id: string, runs: TextRun[][], forVersion: number): void {
+  applyWorkerSpans(id: string, spans: RunSpans[], forVersion: number): void {
     const e = this.entries.get(id);
     if (!e || forVersion !== e.version) return;
-    e.runs = runs;
+    e.spans = spans;
     // Layout dimensions unchanged — only colors differ. No layout null.
     // Trigger redraw if frame is known
     if (e.frame) {
@@ -688,8 +839,12 @@ class CodeSystemCache {
     }
   }
 
-  getRuns(id: string): TextRun[][] {
-    return this.entries.get(id)?.runs ?? [];
+  getSpans(id: string): RunSpans[] {
+    return this.entries.get(id)?.spans ?? [];
+  }
+
+  getSourceLines(id: string): string[] {
+    return this.entries.get(id)?.sourceLines ?? [];
   }
 
   setFrame(id: string, frame: FrameTuple): void {
@@ -736,7 +891,10 @@ class CodeSystemCache {
         let breakAt = -1;
         for (let j = pos + maxChars - 1; j >= pos; j--) {
           const c = text.charCodeAt(j);
-          if (c === 32 || c === 9) { breakAt = j + 1; break; }
+          if (c === 32 || c === 9) {
+            breakAt = j + 1;
+            break;
+          }
         }
         if (breakAt === -1) breakAt = pos + maxChars; // character-level fallback
         lines.push({ srcIdx: i, from: pos, text: text.slice(pos, breakAt) });
@@ -763,7 +921,13 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
     return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
   }
-  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language);
+  const layout = codeSystem.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
   const [ox, oy] = props.origin;
   const th = totalHeight(layout, props.fontSize);
   const frame: FrameTuple = [ox, oy, layout.totalWidth, th];
@@ -772,7 +936,7 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
 }
 
 // ============================================================================
-// §5 WORKER POOL — Warm, Persistent, Round-Robin
+// §5 WORKER POOL — Warm, Persistent, Hash-Based Routing
 // ============================================================================
 
 export interface ChangedRange {
@@ -783,21 +947,32 @@ export interface ChangedRange {
 }
 
 type WorkerRequest =
-  | { type: 'parse'; id: string; text: string; language: CodeLanguage; version: number; changes?: ChangedRange[] }
+  | {
+      type: 'parse';
+      id: string;
+      text: string;
+      language: CodeLanguage;
+      version: number;
+      changes?: ChangedRange[];
+    }
   | { type: 'remove'; id: string }
   | { type: 'clearAll' };
 
 interface WorkerResponse {
-  type: 'runs';
+  type: 'spans';
   id: string;
   version: number;
-  runs: TextRun[][];
+  spans: RunSpans[];
 }
 
 const POOL_SIZE = 2;
 const workers: Worker[] = [];
-let nextWorker = 0;
 let workersReady = false;
+
+/** Deterministic hash: same object always goes to the same worker (preserves incremental parse trees). */
+function workerFor(id: string): number {
+  return id.charCodeAt(id.length - 1) % POOL_SIZE;
+}
 
 function ensureWorkers(): void {
   if (workersReady) return;
@@ -811,13 +986,18 @@ function ensureWorkers(): void {
 
 function dispatch(msg: WorkerRequest): void {
   ensureWorkers();
-  workers[nextWorker].postMessage(msg);
-  nextWorker = (nextWorker + 1) % POOL_SIZE;
+  if (msg.type === 'clearAll') {
+    // Broadcast to ALL workers (fixes bug where only one got cleared)
+    for (const w of workers) w.postMessage(msg);
+    return;
+  }
+  // Route by object ID hash for parse/remove
+  workers[workerFor(msg.id)].postMessage(msg);
 }
 
 function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
-  const { id, version, runs } = e.data;
-  codeSystem.applyWorkerRuns(id, runs, version);
+  const { id, version, spans } = e.data;
+  codeSystem.applyWorkerSpans(id, spans, version);
 }
 
 /** Dispatch parse request to worker pool. */
@@ -877,12 +1057,12 @@ export function deltaToChangedRanges(
 }
 
 // ============================================================================
-// §7 CANVAS RENDERER
+// §7 CANVAS RENDERER — Zero-Allocation Span Iteration
 // ============================================================================
 
 /**
- * Render a code layout onto the canvas using TextRun[] gap-filled model.
- * Every character in every run — no missing chars.
+ * Render a code layout onto the canvas using RunSpans (packed Uint16Array triples).
+ * No intermediate object allocation — iterates spans inline with offset clipping for wrapping.
  */
 export function renderCodeLayout(
   ctx: CanvasRenderingContext2D,
@@ -890,7 +1070,8 @@ export function renderCodeLayout(
   originX: number,
   originY: number,
   fontSize: number,
-  runs: TextRun[][],
+  spans: RunSpans[],
+  sourceLines: string[],
 ): void {
   const lh = lineHeight(fontSize);
   const cw = charWidth(fontSize);
@@ -924,30 +1105,60 @@ export function renderCodeLayout(
     // 3. Gutter — only on first segment of source line
     if (vline.from === 0) {
       ctx.fillStyle = CODE_GUTTER;
-      if (prevFont !== normalFont) { ctx.font = normalFont; prevFont = normalFont; }
+      if (prevFont !== normalFont) {
+        ctx.font = normalFont;
+        prevFont = normalFont;
+      }
       const lineNum = String(vline.srcIdx + 1);
       ctx.fillText(lineNum, originX + pl + (digits - lineNum.length) * cw, baseY);
     }
 
-    // 4. Code text — iterate sliced runs, advance x cursor
-    const lineRuns = runs[vline.srcIdx];
-    if (!lineRuns) continue;
-    const sliced = vline.from === 0 && vline.text.length === (layout.lines[i + 1]?.srcIdx === vline.srcIdx ? -1 : -1)
-      ? lineRuns // Optimization: if full line and no wrap, use runs directly
-      : sliceRuns(lineRuns, vline.from, vline.from + vline.text.length);
+    // 4. Code text — iterate RunSpans with inline [vFrom, vTo) clipping
+    const lineSpans = spans[vline.srcIdx];
+    const lineText = sourceLines[vline.srcIdx];
+    if (!lineSpans || !lineText) continue;
 
+    const vFrom = vline.from;
+    const vTo = vline.from + vline.text.length;
     let x = originX + cl;
-    for (const run of sliced) {
-      if (run.text.length === 0) continue;
-      // Batch font/color changes
-      const font = run.bold ? boldFont : normalFont;
-      if (prevFont !== font) { ctx.font = font; prevFont = font; }
-      ctx.fillStyle = run.color;
-      // Only fillText for non-whitespace (whitespace is invisible anyway)
-      if (!/^\s+$/.test(run.text)) {
-        ctx.fillText(run.text, x, baseY);
+
+    for (let si = 0; si < lineSpans.length; si += 3) {
+      const spanOff = lineSpans[si];
+      const spanLen = lineSpans[si + 1];
+      const style = lineSpans[si + 2];
+      const spanEnd = spanOff + spanLen;
+
+      // Skip spans entirely outside [vFrom, vTo)
+      if (spanEnd <= vFrom) continue;
+      if (spanOff >= vTo) break;
+
+      // Clip to visual line range
+      const drawFrom = Math.max(spanOff, vFrom);
+      const drawTo = Math.min(spanEnd, vTo);
+      const drawLen = drawTo - drawFrom;
+      if (drawLen <= 0) continue;
+
+      // Set font/color
+      const font = isBold(style) ? boldFont : normalFont;
+      if (prevFont !== font) {
+        ctx.font = font;
+        prevFont = font;
       }
-      x += run.text.length * cw;
+      ctx.fillStyle = PALETTE[style];
+
+      // Only fillText for non-whitespace
+      let allWhitespace = true;
+      for (let ci = drawFrom; ci < drawTo; ci++) {
+        const cc = lineText.charCodeAt(ci);
+        if (cc !== 32 && cc !== 9) {
+          allWhitespace = false;
+          break;
+        }
+      }
+      if (!allWhitespace) {
+        ctx.fillText(lineText.substring(drawFrom, drawTo), x, baseY);
+      }
+      x += drawLen * cw;
     }
   }
 
@@ -1042,26 +1253,69 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
   const codeHighlightStyle = syntaxHighlighting(
     HighlightStyle.define([
       // Control keywords
-      { tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword], color: KEYWORD, fontWeight: 'bold' },
+      {
+        tag: [tags.keyword, tags.operatorKeyword, tags.controlKeyword],
+        color: KEYWORD,
+        fontWeight: 'bold',
+      },
       // Definition keywords
       { tag: tags.definitionKeyword, color: DEF_KEYWORD, fontWeight: 'bold' },
       // Module keywords + modifiers
       { tag: [tags.moduleKeyword, tags.modifier], color: MODIFIER, fontWeight: 'bold' },
       // Strings
-      { tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.escape, tags.regexp, tags.character], color: STRING },
+      {
+        tag: [
+          tags.string,
+          tags.special(tags.string),
+          tags.special(tags.brace),
+          tags.escape,
+          tags.regexp,
+          tags.character,
+        ],
+        color: STRING,
+      },
       // Numbers / atoms
-      { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], color: NUMBER },
+      {
+        tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom],
+        color: NUMBER,
+      },
       // Comments
       { tag: [tags.lineComment, tags.blockComment, tags.docComment], color: COMMENT },
       // Functions / class names / definitions
-      { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))], color: FUNCTION },
-      { tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)], color: FUNCTION },
+      {
+        tag: [
+          tags.function(tags.variableName),
+          tags.function(tags.propertyName),
+          tags.function(tags.definition(tags.variableName)),
+        ],
+        color: FUNCTION,
+      },
+      {
+        tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)],
+        color: FUNCTION,
+      },
       // Variables
       { tag: [tags.variableName, tags.self, tags.definition(tags.variableName)], color: VARIABLE },
       // Types / properties / tags
-      { tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace], color: TYPE },
+      {
+        tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace],
+        color: TYPE,
+      },
       // Operators
-      { tag: [tags.operator, tags.compareOperator, tags.logicOperator, tags.arithmeticOperator, tags.bitwiseOperator, tags.updateOperator, tags.definitionOperator, tags.typeOperator, tags.controlOperator], color: OPERATOR },
+      {
+        tag: [
+          tags.operator,
+          tags.compareOperator,
+          tags.logicOperator,
+          tags.arithmeticOperator,
+          tags.bitwiseOperator,
+          tags.updateOperator,
+          tags.definitionOperator,
+          tags.typeOperator,
+          tags.controlOperator,
+        ],
+        color: OPERATOR,
+      },
       // Deref → default
       { tag: tags.derefOperator, color: CODE_DEFAULT },
       // Attributes (JSX/HTML)
@@ -1069,7 +1323,10 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       // Meta (decorators, hashbang)
       { tag: tags.meta, color: MODIFIER },
       // Punctuation / brackets
-      { tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace], color: CODE_DEFAULT },
+      {
+        tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace],
+        color: CODE_DEFAULT,
+      },
       // Labels
       { tag: tags.labelName, color: VARIABLE },
       // Invalid

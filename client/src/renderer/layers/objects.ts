@@ -324,9 +324,16 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const props = getCodeProps(y);
   if (!props) return;
 
-  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language);
-  const runs = codeSystem.getRuns(id);
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, runs);
+  const layout = codeSystem.getLayout(
+    id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
+  const spans = codeSystem.getSpans(id);
+  const lines = codeSystem.getSourceLines(id);
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines);
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {

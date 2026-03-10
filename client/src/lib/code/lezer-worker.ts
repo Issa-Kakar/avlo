@@ -1,5 +1,5 @@
 /**
- * Lezer Worker — Incremental parsing + TextRun extraction via gap-fill
+ * Lezer Worker — Incremental parsing + RunSpans extraction
  *
  * One of 2 warm pool workers. Owns per-object parse state (Tree + TreeFragments).
  * Main thread never touches parse state.
@@ -8,7 +8,7 @@
  *   Main → Worker: { type:'parse', id, text, language, version, changes? }
  *   Main → Worker: { type:'remove', id }
  *   Main → Worker: { type:'clearAll' }
- *   Worker → Main: { type:'runs', id, version, runs: TextRun[][] }
+ *   Worker → Main: { type:'spans', id, version, spans: RunSpans[] }  (transferred)
  */
 
 import { parser as jsParser } from '@lezer/javascript';
@@ -18,46 +18,67 @@ import { tagHighlighter, tags } from '@lezer/highlight';
 import { TreeFragment } from '@lezer/common';
 import type { Tree, Parser } from '@lezer/common';
 
-import type { TextRun, SparseHighlight } from './code-shared';
-import { TAG_STYLES, highlightsToRuns } from './code-shared';
+import type { RunSpans } from './code-shared';
+import { TAG_STYLE_INDEX, packRunSpans, EMPTY_SPANS } from './code-shared';
 
 // ============================================================================
 // Tag Highlighter — expanded tag list for complete coloring
 // ============================================================================
 
 const styleHighlighter = tagHighlighter([
-  // Keywords — control flow
   { tag: tags.keyword, class: 'keyword' },
   { tag: tags.self, class: 'variable' },
-  // Keywords — definition
   { tag: tags.definitionKeyword, class: 'def-keyword' },
-  // Keywords — module/modifier
   { tag: [tags.moduleKeyword, tags.modifier], class: 'modifier' },
   { tag: tags.meta, class: 'modifier' },
-  // Strings
   { tag: tags.string, class: 'string' },
   { tag: [tags.special(tags.string), tags.special(tags.brace)], class: 'string' },
   { tag: [tags.escape, tags.regexp, tags.character], class: 'string' },
-  // Numbers / atoms
-  { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], class: 'number' },
-  // Comments
+  {
+    tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom],
+    class: 'number',
+  },
   { tag: [tags.lineComment, tags.blockComment, tags.docComment], class: 'comment' },
-  // Functions / definitions
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))], class: 'function' },
-  { tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)], class: 'function' },
-  // Variables
-  { tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName], class: 'variable' },
-  // Types / properties / tags
-  { tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace], class: 'type' },
-  // Operators
-  { tag: [tags.operator, tags.compareOperator, tags.logicOperator, tags.arithmeticOperator, tags.bitwiseOperator, tags.updateOperator, tags.definitionOperator, tags.typeOperator, tags.controlOperator], class: 'operator' },
-  // Deref (dot access) → default color
+  {
+    tag: [
+      tags.function(tags.variableName),
+      tags.function(tags.propertyName),
+      tags.function(tags.definition(tags.variableName)),
+    ],
+    class: 'function',
+  },
+  {
+    tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)],
+    class: 'function',
+  },
+  {
+    tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName],
+    class: 'variable',
+  },
+  {
+    tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace],
+    class: 'type',
+  },
+  {
+    tag: [
+      tags.operator,
+      tags.compareOperator,
+      tags.logicOperator,
+      tags.arithmeticOperator,
+      tags.bitwiseOperator,
+      tags.updateOperator,
+      tags.definitionOperator,
+      tags.typeOperator,
+      tags.controlOperator,
+    ],
+    class: 'operator',
+  },
   { tag: tags.derefOperator, class: 'deref' },
-  // Attributes (JSX/HTML)
   { tag: tags.attributeName, class: 'attribute' },
-  // Punctuation
-  { tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace], class: 'punctuation' },
-  // Invalid
+  {
+    tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace],
+    class: 'punctuation',
+  },
   { tag: tags.invalid, class: 'invalid' },
 ]);
 
@@ -73,13 +94,16 @@ interface ParseState {
 const state = new Map<string, ParseState>();
 
 // ============================================================================
-// Parser selection
+// Cached configured parsers — created once at worker startup
 // ============================================================================
+
+const tsParser = jsParser.configure({ dialect: 'ts jsx' });
+const jsxParser = jsParser.configure({ dialect: 'jsx' });
 
 function getParser(language: string): Parser {
   if (language === 'python') return pythonParser;
-  if (language === 'typescript') return jsParser.configure({ dialect: 'ts jsx' });
-  return jsParser.configure({ dialect: 'jsx' });
+  if (language === 'typescript') return tsParser;
+  return jsxParser;
 }
 
 // ============================================================================
@@ -114,42 +138,57 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
 }
 
 // ============================================================================
-// Run extraction — walks tree, maps Lezer tags to SparseHighlights, gap-fills
+// Span extraction — walks tree, maps Lezer tags to RunSpans via packRunSpans
 // ============================================================================
 
-function extractRuns(tree: Tree, text: string): TextRun[][] {
+// Reusable buffer for highlight triples per line
+let _lineBuf: number[] = [];
+
+function extractSpans(tree: Tree, text: string): RunSpans[] {
   const lines = text.split('\n');
-  const highlightsPerLine: SparseHighlight[][] = Array.from({ length: lines.length }, () => []);
+  const lineCount = lines.length;
+  const spans: RunSpans[] = new Array(lineCount);
+
+  // Per-line triple buffers: track count per line, push into shared flat array
+  const lineBufStart: number[] = new Array(lineCount);
+  const lineBufCount: number[] = new Array(lineCount);
+  for (let i = 0; i < lineCount; i++) {
+    lineBufStart[i] = 0;
+    lineBufCount[i] = 0;
+  }
 
   // Build line offset table for fast line lookup
   const lineOffsets: number[] = [0];
-  for (let i = 0; i < lines.length - 1; i++) {
+  for (let i = 0; i < lineCount - 1; i++) {
     lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
   }
 
+  // Collect all highlights into a flat buffer, grouped by line
+  // First pass: count per line
+  const highlights: { lineIdx: number; from: number; to: number; style: number }[] = [];
+
   highlightTree(tree, styleHighlighter, (from, to, classes) => {
-    const style = TAG_STYLES[classes];
-    if (!style) return;
+    const style = TAG_STYLE_INDEX[classes];
+    if (style === undefined) return;
 
     let lineIdx = binarySearchLine(lineOffsets, from);
 
-    while (lineIdx < lines.length) {
+    while (lineIdx < lineCount) {
       const lineStart = lineOffsets[lineIdx];
       const lineEnd = lineStart + lines[lineIdx].length;
 
-      if (from >= lineEnd) { lineIdx++; continue; }
+      if (from >= lineEnd) {
+        lineIdx++;
+        continue;
+      }
       if (to <= lineStart) break;
 
       const tokenFrom = Math.max(0, from - lineStart);
       const tokenTo = Math.min(lines[lineIdx].length, to - lineStart);
 
       if (tokenFrom < tokenTo) {
-        highlightsPerLine[lineIdx].push({
-          from: tokenFrom,
-          to: tokenTo,
-          color: style.color,
-          bold: !!style.bold,
-        });
+        highlights.push({ lineIdx, from: tokenFrom, to: tokenTo, style });
+        lineBufCount[lineIdx]++;
       }
 
       if (to <= lineEnd) break;
@@ -157,8 +196,29 @@ function extractRuns(tree: Tree, text: string): TextRun[][] {
     }
   });
 
-  // Gap-fill each line
-  return lines.map((line, i) => highlightsToRuns(line, highlightsPerLine[i]));
+  // Second pass: pack each line
+  for (let i = 0; i < lineCount; i++) {
+    if (lineBufCount[i] === 0) {
+      spans[i] = lines[i].length === 0 ? EMPTY_SPANS : packRunSpans(lines[i].length, [], 0);
+      continue;
+    }
+
+    // Gather triples for this line into _lineBuf
+    const count = lineBufCount[i];
+    if (_lineBuf.length < count * 3) _lineBuf = new Array(count * 3);
+    let wi = 0;
+    for (let j = 0; j < highlights.length; j++) {
+      const h = highlights[j];
+      if (h.lineIdx === i) {
+        _lineBuf[wi++] = h.from;
+        _lineBuf[wi++] = h.to;
+        _lineBuf[wi++] = h.style;
+      }
+    }
+    spans[i] = packRunSpans(lines[i].length, _lineBuf, count);
+  }
+
+  return spans;
 }
 
 function binarySearchLine(offsets: number[], pos: number): number {
@@ -183,8 +243,13 @@ self.onmessage = (e: MessageEvent) => {
     case 'parse': {
       const { id, text, language, version, changes } = msg;
       const tree = parse(id, text, language, changes);
-      const runs = extractRuns(tree, text);
-      (self as unknown as Worker).postMessage({ type: 'runs', id, version, runs });
+      const spans = extractSpans(tree, text);
+      // Transfer ArrayBuffers — zero-copy. Worker arrays become detached.
+      const transfer = [];
+      for (let i = 0; i < spans.length; i++) {
+        if (spans[i].byteLength > 0) transfer.push(spans[i].buffer);
+      }
+      (self as unknown as Worker).postMessage({ type: 'spans', id, version, spans }, transfer);
       break;
     }
     case 'remove':
