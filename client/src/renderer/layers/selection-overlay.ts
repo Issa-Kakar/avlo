@@ -16,13 +16,24 @@
 
 import type { SelectionPreview, HandleId } from '@/lib/tools/types';
 import type { Snapshot } from '@avlo/shared';
-import { getFrame, getShapeType } from '@avlo/shared';
+import {
+  getFrame,
+  getShapeType,
+  getConnectorType,
+  getStartAnchor,
+  getEndAnchor,
+} from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getObjectCacheInstance } from '../object-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
-import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
+import {
+  getEndpointEdgePosition,
+  getShapeTypeMidpoints,
+  applyAnchorToFrame,
+} from '@/lib/connectors/connector-utils';
 import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
 import type { SnapTarget } from '@/lib/connectors/types';
+import { isAnchorInterior } from '@/lib/connectors/types';
 
 // =============================================================================
 // STYLING CONSTANTS
@@ -349,6 +360,11 @@ function drawConnectorEndpointDots(
     ctx.stroke();
     ctx.restore();
   }
+
+  // Dashed guides for straight connectors with interior anchors
+  if (getConnectorType(handle.y) === 'straight') {
+    drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale);
+  }
 }
 
 /**
@@ -366,7 +382,8 @@ function drawSnapMidpointDots(
   const shapeHandle = snapshot.objectsById.get(snap.shapeId);
   if (!shapeHandle) return;
 
-  const shapeFrame = shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+  const shapeFrame =
+    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
   if (!shapeFrame) return;
 
   const shapeType = getShapeType(shapeHandle.y);
@@ -411,5 +428,73 @@ function drawSnapMidpointDots(
   ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
   ctx.lineWidth = strokeWidth;
   ctx.stroke();
+  ctx.restore();
+}
+
+// =============================================================================
+// STRAIGHT CONNECTOR DASHED GUIDES
+// =============================================================================
+
+/**
+ * Draw dashed guide lines for a selected straight connector with interior anchors.
+ * Shows the interior anchor position connected to the visible line endpoint.
+ */
+function drawStraightConnectorGuides(
+  ctx: CanvasRenderingContext2D,
+  handle: import('@avlo/shared').ObjectHandle,
+  startPos: [number, number],
+  endPos: [number, number],
+  snapshot: Snapshot,
+  scale: number,
+): void {
+  const startAnchor = getStartAnchor(handle.y);
+  const endAnchor = getEndAnchor(handle.y);
+
+  // Check start endpoint
+  if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
+    const shapeHandle = snapshot.objectsById.get(startAnchor.id);
+    if (shapeHandle) {
+      const frame =
+        shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+      if (frame) {
+        const interiorPos = applyAnchorToFrame(startAnchor.anchor, frame, startAnchor.side);
+        drawDashedGuideLine(ctx, startPos, interiorPos, scale);
+      }
+    }
+  }
+
+  // Check end endpoint
+  if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
+    const shapeHandle = snapshot.objectsById.get(endAnchor.id);
+    if (shapeHandle) {
+      const frame =
+        shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+      if (frame) {
+        const interiorPos = applyAnchorToFrame(endAnchor.anchor, frame, endAnchor.side);
+        drawDashedGuideLine(ctx, endPos, interiorPos, scale);
+      }
+    }
+  }
+}
+
+/** Draw a dashed guide line between two points. */
+function drawDashedGuideLine(
+  ctx: CanvasRenderingContext2D,
+  from: [number, number],
+  to: [number, number],
+  scale: number,
+): void {
+  const dashLen = pxToWorld(6, scale);
+  const gapLen = pxToWorld(4, scale);
+  ctx.save();
+  ctx.setLineDash([dashLen, gapLen]);
+  ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
+  ctx.lineWidth = 1.5 / scale;
+  ctx.globalAlpha = 0.5;
+  ctx.beginPath();
+  ctx.moveTo(from[0], from[1]);
+  ctx.lineTo(to[0], to[1]);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.restore();
 }

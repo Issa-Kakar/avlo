@@ -22,6 +22,7 @@ import type { ObjectHandle, FrameTuple } from '@avlo/shared';
 import { getShapeType, getFillColor, getFrame } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import type { Dir, SnapTarget, SnapContext } from './types';
+import { isAnchorInterior } from './types';
 
 /**
  * Compute normalized anchor and offset position from edge point.
@@ -36,7 +37,7 @@ function computeAnchorAndPosition(
   edgeX: number,
   edgeY: number,
   frame: FrameTuple,
-  side: Dir
+  side: Dir,
 ): { normalizedAnchor: [number, number]; position: [number, number] } {
   const [x, y, w, h] = frame;
   // Clamp to [0,1] to guard against floating-point errors
@@ -45,10 +46,7 @@ function computeAnchorAndPosition(
     Math.max(0, Math.min(1, (edgeY - y) / h)),
   ];
   const [dx, dy] = directionVector(side);
-  const position: [number, number] = [
-    edgeX + dx * EDGE_CLEARANCE_W,
-    edgeY + dy * EDGE_CLEARANCE_W,
-  ];
+  const position: [number, number] = [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
   return { normalizedAnchor, position };
 }
 
@@ -109,9 +107,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   }
 
   // Sort by Z-order: ULID descending (topmost first)
-  candidates.sort((a, b) =>
-    a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0
-  );
+  candidates.sort((a, b) => (a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0));
 
   // Fill-aware visual ordering: scan from top, stop at filled occlusion
   let bestUnfilled: { candidate: Candidate; snap: SnapTarget } | null = null;
@@ -164,7 +160,7 @@ export function computeSnapForShape(
   shapeId: string,
   frame: FrameTuple,
   shapeType: string,
-  ctx: SnapContext
+  ctx: SnapContext,
 ): SnapTarget | null {
   const { cursorWorld, scale, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
@@ -185,7 +181,8 @@ export function computeSnapForShape(
     insideDepth = edgeResult?.dist ?? 0;
   }
 
-  const forceMidpointsOnly = isInside && insideDepth > forceMidpointDepthW;
+  const isStraight = ctx.connectorType === 'straight';
+  const forceMidpointsOnly = !isStraight && isInside && insideDepth > forceMidpointDepthW;
 
   // Get midpoints (on actual shape perimeter)
   const midpoints = getShapeTypeMidpoints(frame, shapeType);
@@ -201,11 +198,86 @@ export function computeSnapForShape(
     }
   }
 
-  // CASE 1: Deep inside - only snap to midpoints
+  // CASE 1a (straight, inside shape): center snap → midpoint stickiness → interior anchor
+  if (isStraight && isInside) {
+    const [fx, fy, fw, fh] = frame;
+    const centerX = fx + fw / 2;
+    const centerY = fy + fh / 2;
+    const centerDist = Math.hypot(cx - centerX, cy - centerY);
+    const centerSnapW = pxToWorld(SNAP_CONFIG.CENTER_SNAP_RADIUS_PX, scale);
+
+    // Hysteresis: was previously center-snapped on this shape?
+    const wasCenter =
+      prevAttach?.shapeId === shapeId &&
+      prevAttach.normalizedAnchor[0] === 0.5 &&
+      prevAttach.normalizedAnchor[1] === 0.5 &&
+      isAnchorInterior(prevAttach.normalizedAnchor);
+
+    const centerThreshold = wasCenter ? centerSnapW * 1.3 : centerSnapW;
+
+    if (centerDist <= centerThreshold) {
+      return {
+        shapeId,
+        side: nearestMidSide,
+        normalizedAnchor: [0.5, 0.5],
+        isMidpoint: false,
+        position: [centerX, centerY],
+        edgePosition: [centerX, centerY],
+        isInside: true,
+      };
+    }
+
+    // Midpoint stickiness check (same as edge case below)
+    const wasPreviouslyMidpoint =
+      prevAttach?.shapeId === shapeId &&
+      prevAttach?.isMidpoint &&
+      prevAttach?.side === nearestMidSide;
+    const shouldStayMid = wasPreviouslyMidpoint && nearestMidDist <= midOutW;
+    const shouldEnterMid = nearestMidDist <= midInW;
+
+    if (shouldStayMid || shouldEnterMid) {
+      const midpoint = midpoints[nearestMidSide];
+      const { normalizedAnchor, position } = computeAnchorAndPosition(
+        midpoint[0],
+        midpoint[1],
+        frame,
+        nearestMidSide,
+      );
+      return {
+        shapeId,
+        side: nearestMidSide,
+        normalizedAnchor,
+        isMidpoint: true,
+        position,
+        edgePosition: midpoint,
+        isInside: true,
+      };
+    }
+
+    // Interior anchor at cursor position
+    const normalizedAnchor: [number, number] = [
+      Math.max(0.01, Math.min(0.99, (cx - fx) / fw)),
+      Math.max(0.01, Math.min(0.99, (cy - fy) / fh)),
+    ];
+    return {
+      shapeId,
+      side: nearestMidSide,
+      normalizedAnchor,
+      isMidpoint: false,
+      position: [cx, cy],
+      edgePosition: [cx, cy],
+      isInside: true,
+    };
+  }
+
+  // CASE 1b (elbow): Deep inside - only snap to midpoints
   if (forceMidpointsOnly) {
     const midpoint = midpoints[nearestMidSide];
     const { normalizedAnchor, position } = computeAnchorAndPosition(
-      midpoint[0], midpoint[1], frame, nearestMidSide
+      midpoint[0],
+      midpoint[1],
+      frame,
+      nearestMidSide,
     );
     return {
       shapeId,
@@ -257,7 +329,10 @@ export function computeSnapForShape(
   if (shouldStayMidpoint || shouldEnterMidpoint) {
     const midpoint = midpoints[effectiveMidSide];
     const { normalizedAnchor, position } = computeAnchorAndPosition(
-      midpoint[0], midpoint[1], frame, effectiveMidSide
+      midpoint[0],
+      midpoint[1],
+      frame,
+      effectiveMidSide,
     );
     return {
       shapeId,
@@ -272,7 +347,10 @@ export function computeSnapForShape(
 
   // Snap to edge point (not midpoint)
   const { normalizedAnchor, position } = computeAnchorAndPosition(
-    edgeSnap.x, edgeSnap.y, frame, edgeSnap.side
+    edgeSnap.x,
+    edgeSnap.y,
+    frame,
+    edgeSnap.side,
   );
   return {
     shapeId,
@@ -298,7 +376,7 @@ export function findNearestEdgePoint(
   cx: number,
   cy: number,
   frame: FrameTuple,
-  shapeType: string
+  shapeType: string,
 ): { side: Dir; t: number; x: number; y: number; dist: number } | null {
   const [x, y, w, h] = frame;
 
@@ -383,7 +461,7 @@ export function findNearestEdgePoint(
 function findNearestOnEdges(
   cx: number,
   cy: number,
-  edges: { side: Dir; p1: [number, number]; p2: [number, number] }[]
+  edges: { side: Dir; p1: [number, number]; p2: [number, number] }[],
 ): { side: Dir; t: number; x: number; y: number; dist: number } | null {
   let best: { side: Dir; t: number; x: number; y: number; dist: number } | null = null;
 

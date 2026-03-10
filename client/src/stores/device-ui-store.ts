@@ -158,7 +158,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       connectorSize: 4,
       connectorStartCap: 'none' as ConnectorCap,
       connectorEndCap: 'arrow' as ConnectorCap,
-      connectorType: 'elbow' as ConnectorType,
+      connectorType: 'straight' as ConnectorType,
       shapeVariant: 'rectangle',
       fillColor: '#BFDBFE',
 

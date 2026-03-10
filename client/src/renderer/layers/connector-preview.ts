@@ -40,7 +40,7 @@ import {
 export function drawConnectorPreview(
   ctx: CanvasRenderingContext2D,
   preview: ConnectorPreview,
-  scale: number
+  scale: number,
 ): void {
   const {
     points,
@@ -90,6 +90,24 @@ export function drawConnectorPreview(
     ctx.restore();
   }
 
+  // 1b. Draw dashed guide lines (straight connectors with interior anchors)
+  if (preview.connectorType === 'straight' && hasRoute) {
+    if (preview.startDashTo && points.length >= 2) {
+      drawDashedGuide(ctx, points[0], preview.startDashTo, color, width, scale, opacity);
+    }
+    if (preview.endDashTo && points.length >= 2) {
+      drawDashedGuide(
+        ctx,
+        points[points.length - 1],
+        preview.endDashTo,
+        color,
+        width,
+        scale,
+        opacity,
+      );
+    }
+  }
+
   // 2. Draw snap indicator dots
   // Show dots during:
   // - Idle hover (!fromIsAttached): show dots for hovered shape
@@ -110,7 +128,9 @@ export function drawConnectorPreview(
       snapSide,
       activeMidpointSide !== null, // isMidpoint
       scale,
-      snapPosition
+      snapPosition,
+      preview.connectorType === 'straight',
+      preview.isCenterSnap,
     );
   }
 }
@@ -122,7 +142,7 @@ export function drawConnectorPreview(
 function drawArrowWithRoundedCorners(
   ctx: CanvasRenderingContext2D,
   arrowPath: Path2D,
-  color: string
+  color: string,
 ): void {
   ctx.fillStyle = color;
   ctx.strokeStyle = color;
@@ -130,7 +150,7 @@ function drawArrowWithRoundedCorners(
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  ctx.fill(arrowPath);   // Solid interior
+  ctx.fill(arrowPath); // Solid interior
   ctx.stroke(arrowPath); // Adds rounded corners (radius = lineWidth/2)
 }
 
@@ -159,7 +179,9 @@ function drawSnapDots(
   side: Dir,
   isMidpoint: boolean,
   scale: number,
-  snapPosition: [number, number]
+  snapPosition: [number, number],
+  isStraight: boolean = false,
+  isCenterSnap: boolean = false,
 ): void {
   const [x, y, w, h] = frame;
 
@@ -197,7 +219,40 @@ function drawSnapDots(
     ctx.stroke();
   }
 
-  // Draw active dot with glow effect
+  // Draw center dot for straight connectors
+  if (isStraight) {
+    const centerX = x + w / 2;
+    const centerY = y + h / 2;
+    if (isCenterSnap) {
+      // Active center dot with glow
+      ctx.save();
+      ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
+      ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, activeRadius, 0, Math.PI * 2);
+      ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
+      ctx.lineWidth = strokeWidth;
+      ctx.stroke();
+      ctx.restore();
+    } else {
+      // Inactive center dot
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, smallRadius, 0, Math.PI * 2);
+      ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
+      ctx.fill();
+      ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+      ctx.stroke();
+    }
+  }
+
+  // Draw active dot with glow effect (skip if center snap — already drawn)
+  if (isCenterSnap) return;
   ctx.save();
 
   // Glow effect via shadow blur
@@ -220,6 +275,33 @@ function drawSnapDots(
   ctx.lineWidth = strokeWidth;
   ctx.stroke();
 
+  ctx.restore();
+}
+
+/**
+ * Draw a dashed guide line between two points (for interior anchors on straight connectors).
+ */
+function drawDashedGuide(
+  ctx: CanvasRenderingContext2D,
+  from: [number, number],
+  to: [number, number],
+  color: string,
+  width: number,
+  scale: number,
+  opacity: number,
+): void {
+  const dashLen = pxToWorld(6, scale);
+  const gapLen = pxToWorld(4, scale);
+  ctx.save();
+  ctx.setLineDash([dashLen, gapLen]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1 / scale, width * 0.6);
+  ctx.globalAlpha = opacity * 0.5;
+  ctx.beginPath();
+  ctx.moveTo(from[0], from[1]);
+  ctx.lineTo(to[0], to[1]);
+  ctx.stroke();
+  ctx.setLineDash([]);
   ctx.restore();
 }
 

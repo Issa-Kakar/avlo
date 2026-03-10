@@ -55,6 +55,7 @@ import {
   getEndAnchor,
   getOrigin,
   getTextProps,
+  getConnectorType,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import * as Y from 'yjs';
@@ -444,6 +445,11 @@ export class SelectTool implements PointerTool {
         const { scale } = useCameraStore.getState();
         const { connectorId, endpoint } = epTransform;
 
+        // Read connector type for snap context
+        const epSnapshot = getCurrentSnapshot();
+        const connHandle = epSnapshot.objectsById.get(connectorId);
+        const epConnectorType = connHandle ? getConnectorType(connHandle.y) : 'elbow';
+
         // 1. Find snap target (Ctrl suppresses snapping)
         const snap = isCtrlHeld()
           ? null
@@ -451,6 +457,7 @@ export class SelectTool implements PointerTool {
               cursorWorld: [worldX, worldY],
               scale,
               prevAttach: epTransform.currentSnap,
+              connectorType: epConnectorType,
             });
 
         // 2. Build endpoint override

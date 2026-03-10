@@ -30,6 +30,9 @@ export const SNAP_CONFIG = {
 
   /** Connector endpoint handle radius */
   ENDPOINT_RADIUS_PX: 8,
+
+  /** Center snap radius (small — allows free interior placement around center) */
+  CENTER_SNAP_RADIUS_PX: 12,
 } as const;
 
 /**

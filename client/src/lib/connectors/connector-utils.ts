@@ -15,6 +15,7 @@ import type { FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
 import { getStart, getEnd, getStartAnchor, getEndAnchor, getFrame } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import type { Dir, AABB, Bounds } from './types';
+import { isAnchorInterior } from './types';
 import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
 
 /**
@@ -33,7 +34,7 @@ import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
  */
 export function getShapeTypeMidpoints(
   frame: FrameTuple,
-  shapeType: string
+  shapeType: string,
 ): Record<Dir, [number, number]> {
   if (shapeType === 'diamond') {
     return getDiamondApexMidpoints(frame);
@@ -115,10 +116,10 @@ function getDiamondApexMidpoints(frame: FrameTuple): Record<Dir, [number, number
 
   // Apex positions: vertex + offset toward center
   return {
-    N: [cx, y + offset_TB],           // top apex moves down
-    E: [x + w - offset_LR, cy],       // right apex moves left
-    S: [cx, y + h - offset_TB],       // bottom apex moves up
-    W: [x + offset_LR, cy],           // left apex moves right
+    N: [cx, y + offset_TB], // top apex moves down
+    E: [x + w - offset_LR, cy], // right apex moves left
+    S: [cx, y + h - offset_TB], // bottom apex moves up
+    W: [x + offset_LR, cy], // left apex moves right
   };
 }
 
@@ -161,10 +162,14 @@ export function isVertical(dir: Dir): boolean {
  */
 export function directionVector(dir: Dir): [number, number] {
   switch (dir) {
-    case 'N': return [0, -1];
-    case 'E': return [1, 0];
-    case 'S': return [0, 1];
-    case 'W': return [-1, 0];
+    case 'N':
+      return [0, -1];
+    case 'E':
+      return [1, 0];
+    case 'S':
+      return [0, 1];
+    case 'W':
+      return [-1, 0];
   }
 }
 
@@ -301,7 +306,7 @@ export function computeSignature(points: [number, number][]): string {
 export function resolveFreeStartDir(
   fromPos: [number, number],
   toTerminal: { position: [number, number]; outwardDir: Dir; shapeBounds: AABB },
-  strokeWidth: number
+  strokeWidth: number,
 ): Dir {
   const { x, y, w, h } = toTerminal.shapeBounds;
   const [fx, fy] = fromPos;
@@ -337,11 +342,15 @@ export function resolveFreeStartDir(
 
   // Spatial relationship
   const sameSide =
-    (anchorDir === 'N' && above) || (anchorDir === 'S' && below) ||
-    (anchorDir === 'E' && rightOf) || (anchorDir === 'W' && leftOf);
+    (anchorDir === 'N' && above) ||
+    (anchorDir === 'S' && below) ||
+    (anchorDir === 'E' && rightOf) ||
+    (anchorDir === 'W' && leftOf);
   const oppSide =
-    (anchorDir === 'N' && below) || (anchorDir === 'S' && above) ||
-    (anchorDir === 'E' && leftOf) || (anchorDir === 'W' && rightOf);
+    (anchorDir === 'N' && below) ||
+    (anchorDir === 'S' && above) ||
+    (anchorDir === 'E' && leftOf) ||
+    (anchorDir === 'W' && rightOf);
 
   // Compute sliver escape ONCE (anchor axis determines check priority)
   let sliverDir: Dir | null = null;
@@ -363,7 +372,7 @@ export function resolveFreeStartDir(
   if (inFullPad) {
     if (oppSide) {
       // Wrap toward target position on perpendicular axis
-      return !anchorIsH ? (fx < tx ? 'E' : 'W') : (fy < ty ? 'S' : 'N');
+      return !anchorIsH ? (fx < tx ? 'E' : 'W') : fy < ty ? 'S' : 'N';
     }
     return anchorDir; // same side or adjacent: escape outward
   }
@@ -373,14 +382,12 @@ export function resolveFreeStartDir(
   // Same side: L-route (axis mismatch) checks sliver, then both Z/L go toward shape
   if (sameSide) {
     if (anchorIsH !== hDominant && sliverDir) return sliverDir;
-    return hDominant ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+    return hDominant ? (dx >= 0 ? 'E' : 'W') : dy >= 0 ? 'S' : 'N';
   }
 
   // Opposite + contained: wrap around via shape center
   if (oppSide && nearX && nearY) {
-    return anchorIsH
-      ? (fy < y + h / 2 ? 'N' : 'S')
-      : (fx < x + w / 2 ? 'W' : 'E');
+    return anchorIsH ? (fy < y + h / 2 ? 'N' : 'S') : fx < x + w / 2 ? 'W' : 'E';
   }
 
   // Adjacent or opposite-not-contained: sliver escape, else anchorDir
@@ -397,16 +404,13 @@ export function resolveFreeStartDir(
  * @param toPos - Free cursor position
  * @returns Direction for to.outwardDir
  */
-export function computeFreeEndDir(
-  fromPos: [number, number],
-  toPos: [number, number]
-): Dir {
+export function computeFreeEndDir(fromPos: [number, number], toPos: [number, number]): Dir {
   const dx = toPos[0] - fromPos[0];
   const dy = toPos[1] - fromPos[1];
   const ax = Math.abs(dx);
   const ay = Math.abs(dy);
   const axis = ax >= ay ? 'H' : 'V';
-  return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+  return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : dy >= 0 ? 'S' : 'N';
 }
 
 /**
@@ -423,7 +427,7 @@ export function inferDragDirection(
   from: [number, number],
   cursor: [number, number],
   prevDir: Dir | null,
-  hysteresisRatio: number = 1.04
+  hysteresisRatio: number = 1.04,
 ): Dir {
   const dx = cursor[0] - from[0];
   const dy = cursor[1] - from[1];
@@ -476,16 +480,19 @@ export function inferDragDirection(
 export function applyAnchorToFrame(
   anchor: [number, number],
   frame: FrameTuple,
-  side: Dir
+  side: Dir,
 ): [number, number] {
   const [nx, ny] = anchor;
   const [x, y, w, h] = frame;
-  const edgeX = x + nx * w;
-  const edgeY = y + ny * h;
+  const posX = x + nx * w;
+  const posY = y + ny * h;
 
-  // Apply edge clearance offset in outward direction
+  // Interior anchors: return position directly (no edge offset)
+  if (isAnchorInterior(anchor)) return [posX, posY];
+
+  // Edge anchors: apply edge clearance offset in outward direction
   const [dx, dy] = directionVector(side);
-  return [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
+  return [posX + dx * EDGE_CLEARANCE_W, posY + dy * EDGE_CLEARANCE_W];
 }
 
 /**
@@ -507,7 +514,7 @@ export function applyAnchorToFrame(
 export function getEndpointEdgePosition(
   handle: ObjectHandle,
   endpoint: 'start' | 'end',
-  snapshot: Snapshot
+  snapshot: Snapshot,
 ): [number, number] {
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
@@ -522,10 +529,182 @@ export function getEndpointEdgePosition(
   const shapeHandle = snapshot.objectsById.get(anchor.id);
   if (!shapeHandle) return storedPos ?? [0, 0];
 
-  const frame = shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+  const frame =
+    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
   if (!frame) return storedPos ?? [0, 0];
 
   const [nx, ny] = anchor.anchor;
   const [x, y, w, h] = frame;
   return [x + nx * w, y + ny * h];
+}
+
+// ============================================================================
+// SHAPE EDGE INTERSECTION (for straight connectors)
+// ============================================================================
+
+/**
+ * Find where a ray from an interior point toward a target exits a convex shape.
+ *
+ * Used by straight connectors with interior anchors: the visible line stops at the
+ * shape edge, and a dashed guide continues to the interior anchor.
+ *
+ * @returns Intersection point and side, or null if no valid intersection
+ */
+export function computeShapeEdgeIntersection(
+  shapeType: string,
+  frame: FrameTuple,
+  interiorPoint: [number, number],
+  target: [number, number],
+): { point: [number, number]; side: Dir } | null {
+  const [x, y, w, h] = frame;
+  if (w < 0.001 || h < 0.001) return null;
+
+  const [ix, iy] = interiorPoint;
+  const dx = target[0] - ix;
+  const dy = target[1] - iy;
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return null;
+
+  switch (shapeType) {
+    case 'ellipse':
+      return rayEllipseIntersection(x, y, w, h, ix, iy, dx, dy);
+    case 'diamond':
+      return rayDiamondIntersection(x, y, w, h, ix, iy, dx, dy);
+    default: // rect, roundedRect
+      return rayRectIntersection(x, y, w, h, ix, iy, dx, dy);
+  }
+}
+
+/** Ray vs axis-aligned rectangle. Take smallest positive t. */
+function rayRectIntersection(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  ox: number,
+  oy: number,
+  dx: number,
+  dy: number,
+): { point: [number, number]; side: Dir } | null {
+  let bestT = Infinity;
+  let bestSide: Dir = 'N';
+
+  const edges: { val: number; axis: 'x' | 'y'; side: Dir }[] = [
+    { val: x, axis: 'x', side: 'W' },
+    { val: x + w, axis: 'x', side: 'E' },
+    { val: y, axis: 'y', side: 'N' },
+    { val: y + h, axis: 'y', side: 'S' },
+  ];
+
+  for (const e of edges) {
+    const d = e.axis === 'x' ? dx : dy;
+    const o = e.axis === 'x' ? ox : oy;
+    if (Math.abs(d) < 1e-12) continue;
+    const t = (e.val - o) / d;
+    if (t <= 1e-9 || t >= bestT) continue;
+
+    // Check cross-axis range
+    const cross = e.axis === 'x' ? oy + t * dy : ox + t * dx;
+    const [cMin, cMax] = e.axis === 'x' ? [y, y + h] : [x, x + w];
+    if (cross >= cMin - 0.001 && cross <= cMax + 0.001) {
+      bestT = t;
+      bestSide = e.side;
+    }
+  }
+
+  if (bestT === Infinity) return null;
+  return { point: [ox + bestT * dx, oy + bestT * dy], side: bestSide };
+}
+
+/** Ray vs ellipse. Solve quadratic in parameter t. */
+function rayEllipseIntersection(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  ox: number,
+  oy: number,
+  dx: number,
+  dy: number,
+): { point: [number, number]; side: Dir } | null {
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const rx = w / 2;
+  const ry = h / 2;
+
+  // Substituting P(t) = (ox + t*dx, oy + t*dy) into ellipse equation
+  const a = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+  const b = 2 * (((ox - cx) * dx) / (rx * rx) + ((oy - cy) * dy) / (ry * ry));
+  const c = (ox - cx) ** 2 / (rx * rx) + (oy - cy) ** 2 / (ry * ry) - 1;
+
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return null;
+
+  const sqrtDisc = Math.sqrt(disc);
+  const t1 = (-b + sqrtDisc) / (2 * a);
+  const t2 = (-b - sqrtDisc) / (2 * a);
+
+  // Take smallest positive t
+  let t = Infinity;
+  if (t1 > 1e-9 && t1 < t) t = t1;
+  if (t2 > 1e-9 && t2 < t) t = t2;
+  if (t === Infinity) return null;
+
+  const px = ox + t * dx;
+  const py = oy + t * dy;
+
+  // Side from quadrant
+  const angle = Math.atan2(py - cy, px - cx);
+  const normAngle = (angle + Math.PI * 2) % (Math.PI * 2);
+  let side: Dir;
+  if (normAngle < Math.PI / 4 || normAngle >= (Math.PI * 7) / 4) side = 'E';
+  else if (normAngle < (Math.PI * 3) / 4) side = 'S';
+  else if (normAngle < (Math.PI * 5) / 4) side = 'W';
+  else side = 'N';
+
+  return { point: [px, py], side };
+}
+
+/** Ray vs diamond (4 diagonal segments). */
+function rayDiamondIntersection(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  ox: number,
+  oy: number,
+  dx: number,
+  dy: number,
+): { point: [number, number]; side: Dir } | null {
+  const top: [number, number] = [x + w / 2, y];
+  const right: [number, number] = [x + w, y + h / 2];
+  const bottom: [number, number] = [x + w / 2, y + h];
+  const left: [number, number] = [x, y + h / 2];
+
+  const segments: { p1: [number, number]; p2: [number, number]; side: Dir }[] = [
+    { p1: top, p2: right, side: 'E' },
+    { p1: right, p2: bottom, side: 'S' },
+    { p1: bottom, p2: left, side: 'W' },
+    { p1: left, p2: top, side: 'N' },
+  ];
+
+  let bestT = Infinity;
+  let bestSide: Dir = 'N';
+
+  for (const seg of segments) {
+    const ex = seg.p2[0] - seg.p1[0];
+    const ey = seg.p2[1] - seg.p1[1];
+    const denom = dx * ey - dy * ex;
+    if (Math.abs(denom) < 1e-12) continue;
+
+    const t = ((seg.p1[0] - ox) * ey - (seg.p1[1] - oy) * ex) / denom;
+    const u = ((seg.p1[0] - ox) * dy - (seg.p1[1] - oy) * dx) / denom;
+
+    if (t > 1e-9 && t < bestT && u >= -0.001 && u <= 1.001) {
+      bestT = t;
+      bestSide = seg.side;
+    }
+  }
+
+  if (bestT === Infinity) return null;
+  return { point: [ox + bestT * dx, oy + bestT * dy], side: bestSide };
 }

@@ -28,8 +28,16 @@ import {
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import { computeAStarRoute } from './routing-astar';
-import { applyAnchorToFrame, resolveFreeStartDir, computeFreeEndDir } from './connector-utils';
-import type { Dir, AABB, SnapTarget } from './types';
+import {
+  applyAnchorToFrame,
+  resolveFreeStartDir,
+  computeFreeEndDir,
+  computeShapeEdgeIntersection,
+} from './connector-utils';
+import type { Dir, AABB, SnapTarget, ConnectorType } from './types';
+import { isAnchorInterior } from './types';
+import { getConnectorType, getShapeType } from '@avlo/shared';
+import { EDGE_CLEARANCE_W } from './constants';
 
 /**
  * Endpoint override value for rerouteConnector.
@@ -103,6 +111,14 @@ export function rerouteConnector(
     snapshot,
   );
 
+  // Branch: straight vs elbow
+  const connectorType = getConnectorType(yMap);
+  if (connectorType === 'straight') {
+    const straight = computeStraightRoute(startResolved, endResolved);
+    const bboxTuple = computeConnectorBBoxFromPoints(straight.points, yMap);
+    return { points: straight.points, bbox: bboxToBounds(bboxTuple) };
+  }
+
   // Resolve directions based on endpoint configuration
   const { startDir, endDir } = resolveDirections(startResolved, endResolved, strokeWidth);
 
@@ -132,6 +148,10 @@ interface ResolvedEndpoint {
   dir: Dir | null; // null means needs to be computed from spatial relationship
   shapeBounds: AABB | null;
   isAnchored: boolean;
+  // Straight connector fields (populated when anchored)
+  normalizedAnchor?: [number, number];
+  shapeType?: string;
+  frame?: FrameTuple;
 }
 
 /**
@@ -165,7 +185,6 @@ function resolveEndpoint(
     if ('frame' in override) {
       // { frame: FrameTuple } — apply anchor to given transformed frame
       if (!anchor) {
-        // No anchor data → treat as canonical stored position
         return {
           position: storedPosition,
           dir: null,
@@ -173,6 +192,8 @@ function resolveEndpoint(
           isAnchored: false,
         };
       }
+      const shapeHandle = snapshot.objectsById.get(anchor.id);
+      const sType = shapeHandle?.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
       const pos = applyAnchorToFrame(anchor.anchor, override.frame, anchor.side);
       return {
         position: pos,
@@ -184,6 +205,9 @@ function resolveEndpoint(
           h: override.frame[3],
         },
         isAnchored: true,
+        normalizedAnchor: anchor.anchor,
+        shapeType: sType,
+        frame: override.frame,
       };
     }
 
@@ -196,12 +220,16 @@ function resolveEndpoint(
           ? getTextFrame(handle.id)
           : getFrame(handle.y)
         : null;
+    const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
 
     return {
       position: snap.position,
       dir: snap.side,
       shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
       isAnchored: true,
+      normalizedAnchor: snap.normalizedAnchor,
+      shapeType: sType,
+      frame: frame ?? undefined,
     };
   }
 
@@ -216,12 +244,16 @@ function resolveEndpoint(
         : null;
 
     if (frame) {
+      const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
       const position = applyAnchorToFrame(anchor.anchor, frame, anchor.side);
       return {
         position,
         dir: anchor.side,
         shapeBounds: { x: frame[0], y: frame[1], w: frame[2], h: frame[3] },
         isAnchored: true,
+        normalizedAnchor: anchor.anchor,
+        shapeType: sType,
+        frame,
       };
     }
 
@@ -285,6 +317,13 @@ function resolveDirections(
 // NEW CONNECTOR ROUTING (companion to rerouteConnector)
 // ============================================================================
 
+/** Result from routeNewConnector — includes dash info for straight connectors. */
+export interface NewRouteResult {
+  points: [number, number][];
+  startDashTo: [number, number] | null;
+  endDashTo: [number, number] | null;
+}
+
 /**
  * Route a new connector from endpoint specs.
  * Companion to rerouteConnector — same routing pipeline, no Y.map data needed.
@@ -297,12 +336,18 @@ export function routeNewConnector(
   start: SnapTarget | [number, number],
   end: SnapTarget | [number, number],
   strokeWidth: number,
+  connectorType: ConnectorType = 'elbow',
   dragDir?: Dir | null,
-): [number, number][] {
+): NewRouteResult {
   const snapshot = getCurrentSnapshot();
 
   const startResolved = resolveNewEndpoint(start, snapshot);
   const endResolved = resolveNewEndpoint(end, snapshot);
+
+  if (connectorType === 'straight') {
+    const result = computeStraightRoute(startResolved, endResolved);
+    return result;
+  }
 
   // Apply drag direction for free start (inferDragDirection hysteresis)
   if (!startResolved.isAnchored && dragDir) {
@@ -311,15 +356,19 @@ export function routeNewConnector(
 
   const { startDir, endDir } = resolveDirections(startResolved, endResolved, strokeWidth);
 
-  return computeAStarRoute(
-    startResolved.position,
-    startDir,
-    endResolved.position,
-    endDir,
-    startResolved.shapeBounds,
-    endResolved.shapeBounds,
-    strokeWidth,
-  ).points;
+  return {
+    points: computeAStarRoute(
+      startResolved.position,
+      startDir,
+      endResolved.position,
+      endDir,
+      startResolved.shapeBounds,
+      endResolved.shapeBounds,
+      strokeWidth,
+    ).points,
+    startDashTo: null,
+    endDashTo: null,
+  };
 }
 
 /** Resolve a snap-or-position endpoint for new connector routing. */
@@ -338,10 +387,98 @@ function resolveNewEndpoint(
         ? getTextFrame(handle.id)
         : getFrame(handle.y)
       : null;
+  const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
   return {
     position: snap.position,
     dir: snap.side,
     shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
     isAnchored: true,
+    normalizedAnchor: snap.normalizedAnchor,
+    shapeType: sType,
+    frame: frame ?? undefined,
   };
+}
+
+// ============================================================================
+// STRAIGHT CONNECTOR ROUTING
+// ============================================================================
+
+/**
+ * Compute a straight-line route between two resolved endpoints.
+ * Interior anchors produce edge intersections + dashed guides.
+ */
+function computeStraightRoute(
+  start: ResolvedEndpoint,
+  end: ResolvedEndpoint,
+): {
+  points: [number, number][];
+  startDashTo: [number, number] | null;
+  endDashTo: [number, number] | null;
+} {
+  let startPt = start.position;
+  let endPt = end.position;
+  let startDashTo: [number, number] | null = null;
+  let endDashTo: [number, number] | null = null;
+
+  // Process start endpoint
+  if (
+    start.isAnchored &&
+    start.normalizedAnchor &&
+    isAnchorInterior(start.normalizedAnchor) &&
+    start.frame &&
+    start.shapeType
+  ) {
+    const intersection = computeShapeEdgeIntersection(
+      start.shapeType,
+      start.frame,
+      start.position,
+      end.position,
+    );
+    if (intersection) {
+      const dx = end.position[0] - intersection.point[0];
+      const dy = end.position[1] - intersection.point[1];
+      const len = Math.hypot(dx, dy);
+      if (len > 0.001) {
+        startPt = [
+          intersection.point[0] + (dx / len) * EDGE_CLEARANCE_W,
+          intersection.point[1] + (dy / len) * EDGE_CLEARANCE_W,
+        ];
+      } else {
+        startPt = intersection.point;
+      }
+      startDashTo = start.position;
+    }
+  }
+
+  // Process end endpoint
+  if (
+    end.isAnchored &&
+    end.normalizedAnchor &&
+    isAnchorInterior(end.normalizedAnchor) &&
+    end.frame &&
+    end.shapeType
+  ) {
+    const intersection = computeShapeEdgeIntersection(
+      end.shapeType,
+      end.frame,
+      end.position,
+      start.position,
+    );
+    if (intersection) {
+      const dx = start.position[0] - intersection.point[0];
+      const dy = start.position[1] - intersection.point[1];
+      const len = Math.hypot(dx, dy);
+      if (len > 0.001) {
+        endPt = [
+          intersection.point[0] + (dx / len) * EDGE_CLEARANCE_W,
+          intersection.point[1] + (dy / len) * EDGE_CLEARANCE_W,
+        ];
+      } else {
+        endPt = intersection.point;
+      }
+      endDashTo = end.position;
+    }
+  }
+
+  return { points: [startPt, endPt], startDashTo, endDashTo };
 }
