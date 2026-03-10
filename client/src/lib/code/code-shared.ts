@@ -37,7 +37,7 @@ export const CODE_CARET        = '#FFFFFFA6';
 // Token colors
 export const KEYWORD           = '#2BF1DC';     // control flow (if/else/return/for/while)
 export const DEF_KEYWORD       = '#F8FBB1';     // definitions (const/let/var/function/class)
-export const MODIFIER          = '#D1A3FF';     // modifiers + module (export/import/async/static/private)
+export const MODIFIER          = '#2BF1DC';     // modifiers + module — merged with KEYWORD cyan
 export const STRING            = '#8DFF8E';
 export const NUMBER            = '#62E9BD';
 export const COMMENT           = '#AEAEAE';
