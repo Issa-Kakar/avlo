@@ -26,32 +26,39 @@ import { TAG_STYLES, highlightsToRuns } from './code-shared';
 // ============================================================================
 
 const styleHighlighter = tagHighlighter([
+  // Keywords — control flow
   { tag: tags.keyword, class: 'keyword' },
+  { tag: tags.self, class: 'variable' },
+  // Keywords — definition
+  { tag: tags.definitionKeyword, class: 'def-keyword' },
+  // Keywords — module/modifier
+  { tag: [tags.moduleKeyword, tags.modifier], class: 'modifier' },
+  { tag: tags.meta, class: 'modifier' },
+  // Strings
   { tag: tags.string, class: 'string' },
-  { tag: tags.special(tags.string), class: 'string' },
-  { tag: tags.escape, class: 'string' },
-  { tag: tags.number, class: 'number' },
-  { tag: [tags.lineComment, tags.blockComment], class: 'comment' },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], class: 'function' },
-  { tag: tags.variableName, class: 'variable' },
-  { tag: [tags.typeName, tags.className], class: 'type' },
-  { tag: [tags.operator, tags.compareOperator, tags.logicOperator], class: 'operator' },
-  { tag: tags.propertyName, class: 'variable' },
-  { tag: tags.bool, class: 'number' },
-  { tag: tags.null, class: 'number' },
-  { tag: tags.regexp, class: 'string' },
-  { tag: tags.definition(tags.variableName), class: 'variable' },
-  // Expanded tags
-  { tag: tags.separator, class: 'punctuation' },
-  { tag: tags.bracket, class: 'punctuation' },
-  { tag: tags.angleBracket, class: 'punctuation' },
-  { tag: tags.squareBracket, class: 'punctuation' },
-  { tag: tags.paren, class: 'punctuation' },
-  { tag: tags.brace, class: 'punctuation' },
-  { tag: tags.derefOperator, class: 'punctuation' },
-  { tag: tags.meta, class: 'keyword' },
-  { tag: tags.self, class: 'keyword' },
-  { tag: tags.atom, class: 'number' },
+  { tag: [tags.special(tags.string), tags.special(tags.brace)], class: 'string' },
+  { tag: [tags.escape, tags.regexp, tags.character], class: 'string' },
+  // Numbers / atoms
+  { tag: [tags.number, tags.integer, tags.float, tags.bool, tags.null, tags.atom], class: 'number' },
+  // Comments
+  { tag: [tags.lineComment, tags.blockComment, tags.docComment], class: 'comment' },
+  // Functions / definitions
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))], class: 'function' },
+  { tag: [tags.className, tags.definition(tags.propertyName), tags.definition(tags.typeName)], class: 'function' },
+  // Variables
+  { tag: [tags.variableName, tags.definition(tags.variableName), tags.labelName], class: 'variable' },
+  // Types / properties / tags
+  { tag: [tags.typeName, tags.propertyName, tags.tagName, tags.angleBracket, tags.namespace], class: 'type' },
+  // Operators
+  { tag: [tags.operator, tags.compareOperator, tags.logicOperator, tags.arithmeticOperator, tags.bitwiseOperator, tags.updateOperator, tags.definitionOperator, tags.typeOperator, tags.controlOperator], class: 'operator' },
+  // Deref (dot access) → default color
+  { tag: tags.derefOperator, class: 'deref' },
+  // Attributes (JSX/HTML)
+  { tag: tags.attributeName, class: 'attribute' },
+  // Punctuation
+  { tag: [tags.separator, tags.bracket, tags.squareBracket, tags.paren, tags.brace], class: 'punctuation' },
+  // Invalid
+  { tag: tags.invalid, class: 'invalid' },
 ]);
 
 // ============================================================================

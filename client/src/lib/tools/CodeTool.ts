@@ -272,7 +272,7 @@ export class CodeTool implements PointerTool {
     host.appendChild(container);
 
     // Load CodeMirror modules lazily (parallel)
-    const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, themeExts] =
+    const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, cmAutocomplete, themeExts] =
       await Promise.all([
         import('@codemirror/state'),
         import('@codemirror/view'),
@@ -281,6 +281,7 @@ export class CodeTool implements PointerTool {
         import('@codemirror/lang-javascript'),
         import('@codemirror/lang-python'),
         import('y-codemirror.next'),
+        import('@codemirror/autocomplete'),
         getCodeMirrorExtensions(),
       ]);
 
@@ -326,10 +327,14 @@ export class CodeTool implements PointerTool {
             return String(n).padStart(digits, ' ');
           },
         }),
+        cmView.highlightActiveLine(),
+        cmView.highlightActiveLineGutter(),
         cmView.EditorView.lineWrapping,
+        cmLang.bracketMatching(),
+        cmAutocomplete.closeBrackets(),
         langExt,
         cmLang.indentUnit.of('    '),
-        cmView.keymap.of([cmCommands.indentWithTab]),
+        cmView.keymap.of([...cmAutocomplete.closeBracketsKeymap, cmCommands.indentWithTab]),
         cmYCollab.yCollab(yText, null, { undoManager: this.sessionUM }),
         ...(themeExts as import('@codemirror/state').Extension[]),
         tabNormalizer,

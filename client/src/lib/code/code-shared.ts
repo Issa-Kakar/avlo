@@ -23,35 +23,48 @@ export interface SparseHighlight {
 }
 
 // ============================================================================
-// CONSTANTS — Dark theme palette (One Dark inspired)
+// CONSTANTS — CoolGlow palette (ThemeMirror)
 // ============================================================================
 
-export const CODE_BG = '#282c34';
-export const CODE_DEFAULT = '#abb2bf';
-export const CODE_GUTTER = '#636d83';
+// Chrome
+export const CODE_BG           = '#060521';
+export const CODE_DEFAULT      = '#E0E0E0';
+export const CODE_GUTTER       = '#E0E0E090';
+export const CODE_SELECTION    = '#122BBB';
+export const CODE_LINE_HL      = '#FFFFFF0F';
+export const CODE_CARET        = '#FFFFFFA6';
 
-export const KEYWORD = '#c678dd';
-export const STRING = '#98c379';
-export const NUMBER = '#d19a66';
-export const COMMENT = '#5c6370';
-export const FUNCTION = '#61afef';
-export const VARIABLE = '#e06c75';
-export const TYPE = '#e5c07b';
-export const OPERATOR = '#56b6c2';
+// Token colors
+export const KEYWORD           = '#2BF1DC';     // control flow (if/else/return/for/while)
+export const DEF_KEYWORD       = '#F8FBB1';     // definitions (const/let/var/function/class)
+export const MODIFIER          = '#D1A3FF';     // modifiers + module (export/import/async/static/private)
+export const STRING            = '#8DFF8E';
+export const NUMBER            = '#62E9BD';
+export const COMMENT           = '#AEAEAE';
+export const FUNCTION          = '#A3EBFF';
+export const VARIABLE          = '#B683CA';
+export const TYPE              = '#60A4F1';
+export const OPERATOR          = '#2BF1DC';     // matches KEYWORD
+export const ATTRIBUTE         = '#7BACCA';
 
 export const CODE_FONT_FAMILY = 'JetBrains Mono';
 
 /** TAG_STYLES map — maps token class names to style. Used by worker + CM theme. */
 export const TAG_STYLES: Record<string, { color: string; bold?: boolean }> = {
-  keyword: { color: KEYWORD, bold: true },
-  string: { color: STRING },
-  number: { color: NUMBER },
-  comment: { color: COMMENT },
-  function: { color: FUNCTION },
-  variable: { color: VARIABLE },
-  type: { color: TYPE },
-  operator: { color: OPERATOR },
-  punctuation: { color: CODE_DEFAULT },
+  keyword:       { color: KEYWORD, bold: true },
+  'def-keyword': { color: DEF_KEYWORD, bold: true },
+  modifier:      { color: MODIFIER, bold: true },
+  string:        { color: STRING },
+  number:        { color: NUMBER },
+  comment:       { color: COMMENT },
+  function:      { color: FUNCTION },
+  variable:      { color: VARIABLE },
+  type:          { color: TYPE },
+  operator:      { color: OPERATOR },
+  attribute:     { color: ATTRIBUTE },
+  deref:         { color: CODE_DEFAULT },
+  punctuation:   { color: CODE_DEFAULT },
+  invalid:       { color: '#FF5370' },
 };
 
 // ============================================================================
