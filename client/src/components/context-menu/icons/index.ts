@@ -10,8 +10,15 @@ export {
   IconNoFill,
   IconCheck,
 } from './UtilityIcons';
-export { IconShapes, IconPenStroke, IconConnectorLine, IconTextType } from './FilterIcons';
+export {
+  IconShapes,
+  IconPenStroke,
+  IconConnectorLine,
+  IconTextType,
+  IconCodeBlock,
+} from './FilterIcons';
 export { IconTrash } from './TrashIcon';
+export { IconCodeLines } from './CodeIcons';
 export {
   IconRectType,
   IconCircleType,

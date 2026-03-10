@@ -35,7 +35,33 @@ export const IconConnectorLine = (props: SvgProps) => (
       strokeWidth="1.5"
       strokeLinecap="round"
     />
-    <path d="M10 2L13 4.5L10 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path
+      d="M10 2L13 4.5L10 7"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+/** Angle brackets < > (kind: code) */
+export const IconCodeBlock = (props: SvgProps) => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+    <path
+      d="M5.5 3.5L2 8L5.5 12.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M10.5 3.5L14 8L10.5 12.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   </svg>
 );
 

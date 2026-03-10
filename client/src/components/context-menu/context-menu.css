@@ -562,6 +562,14 @@
   pointer-events: none;
 }
 
+/* ===== Language Dropdown ===== */
+
+.ctx-submenu-lang {
+  left: 0;
+  transform: none;
+  min-width: 150px;
+}
+
 /* ===== Font Size Dropdown ===== */
 
 .ctx-submenu-fontsize {

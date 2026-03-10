@@ -629,14 +629,25 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Context Menu Actions ===
 
     refreshStyles: () => {
-      const { selectedIds, selectionKind, textEditingId, selectedStyles: current } = get();
+      const {
+        selectedIds,
+        selectionKind,
+        textEditingId,
+        codeEditingId,
+        selectedStyles: current,
+      } = get();
       const snapshot = getCurrentSnapshot();
-      const ids =
-        textEditingId !== null && selectedIds.length === 0 ? [textEditingId] : selectedIds;
-      const kind =
-        textEditingId !== null && selectedIds.length === 0
-          ? ('textOnly' as SelectionKind)
-          : selectionKind;
+      let ids = selectedIds as string[];
+      let kind = selectionKind as SelectionKind;
+      if (selectedIds.length === 0) {
+        if (textEditingId !== null) {
+          ids = [textEditingId];
+          kind = 'textOnly';
+        } else if (codeEditingId !== null) {
+          ids = [codeEditingId];
+          kind = 'codeOnly';
+        }
+      }
 
       const patch: Partial<SelectionState> = {};
 

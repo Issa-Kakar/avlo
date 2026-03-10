@@ -8,10 +8,12 @@ import {
   getFontFamily,
   getAlign,
   getLabelColor,
+  getLanguage,
   hasLabel,
   bboxTupleToWorldBounds,
   type TextAlign,
   type FontFamily,
+  type CodeLanguage,
 } from '@avlo/shared';
 import { getTextFrame, getInlineStyles } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
@@ -57,6 +59,8 @@ export interface SelectedStyles {
   fontFamily: FontFamily | null;
   /** Text color for text objects or shape labels. Used by textOnly, shapesOnly. */
   labelColor: string | null;
+  /** Code block language. Used by codeOnly. */
+  codeLanguage: CodeLanguage | null;
 }
 
 // === Constants ===
@@ -74,6 +78,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   textAlign: null,
   fontFamily: null,
   labelColor: null,
+  codeLanguage: null,
 };
 export const EMPTY_KIND_COUNTS: KindCounts = {
   strokes: 0,
@@ -178,8 +183,15 @@ export function computeSelectionComposition(ids: string[]) {
  * Text uses derived frame (WYSIWYG-accurate), others use bbox.
  */
 export function computeSelectionBounds(): WorldBounds | null {
-  const { selectedIds, textEditingId } = useSelectionStore.getState();
-  const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : [];
+  const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
+  const ids =
+    selectedIds.length > 0
+      ? selectedIds
+      : textEditingId
+        ? [textEditingId]
+        : codeEditingId
+          ? [codeEditingId]
+          : [];
   if (ids.length === 0) return null;
 
   const snapshot = getCurrentSnapshot();
@@ -218,12 +230,16 @@ export function computeStyles(
 ): SelectedStyles {
   if (kind === 'none' || kind === 'mixed' || ids.length === 0) return EMPTY_STYLES;
 
-  // Code blocks: only track fontSize
+  // Code blocks: track fontSize + language
   if (kind === 'codeOnly') {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle || handle.kind !== 'code') continue;
-      return { ...EMPTY_STYLES, fontSize: Math.round(getFontSize(handle.y, 14)) };
+      return {
+        ...EMPTY_STYLES,
+        fontSize: Math.round(getFontSize(handle.y, 14)),
+        codeLanguage: getLanguage(handle.y),
+      };
     }
     return EMPTY_STYLES;
   }
@@ -322,6 +338,7 @@ export function computeStyles(
     textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
     fontFamily: needsTextFields ? firstFontFamily : null,
     labelColor: needsTextFields ? firstLabelColor : null,
+    codeLanguage: null,
   };
 }
 
@@ -338,7 +355,8 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign &&
     a.fontFamily === b.fontFamily &&
-    a.labelColor === b.labelColor
+    a.labelColor === b.labelColor &&
+    a.codeLanguage === b.codeLanguage
   );
 }
 

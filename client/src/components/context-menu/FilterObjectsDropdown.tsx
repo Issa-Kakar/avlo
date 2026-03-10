@@ -2,10 +2,10 @@ import type React from 'react';
 import type { KindCounts } from '@/stores/selection-store';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown } from './icons';
-import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType } from './icons';
+import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock } from './icons';
 import { useDropdown } from './useDropdown';
 
-type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors';
+type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors' | 'code';
 
 const KIND_CONFIG: {
   key: FilterKind;
@@ -16,6 +16,7 @@ const KIND_CONFIG: {
   { key: 'shapes', label: 'Shapes', Icon: IconShapes },
   { key: 'text', label: 'Text', Icon: IconTextType },
   { key: 'connectors', label: 'Connectors', Icon: IconConnectorLine },
+  { key: 'code', label: 'Code Block', Icon: IconCodeBlock },
 ];
 
 interface FilterObjectsDropdownProps {
@@ -28,11 +29,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton
-        className="ctx-btn-filter"
-        onMouseDown={toggle}
-        aria-expanded={open}
-      >
+      <MenuButton className="ctx-btn-filter" onMouseDown={toggle} aria-expanded={open}>
         <svg
           width={74}
           height={26}

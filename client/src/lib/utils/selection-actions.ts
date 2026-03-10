@@ -5,9 +5,11 @@ import {
   getOrigin,
   getAlign,
   getContent,
+  getFontSize,
   hasLabel,
   type TextAlign,
   type FontFamily,
+  type CodeLanguage,
 } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
@@ -384,9 +386,7 @@ export function setSelectedHighlight(color: string | null): void {
 
 // === Code Block Actions ===
 
-const CODE_FONT_SIZE_PRESETS = [10, 12, 14, 16, 18, 20, 24] as const;
-
-export function setSelectedCodeLanguage(language: string): void {
+export function setSelectedCodeLanguage(language: CodeLanguage): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
@@ -404,23 +404,31 @@ export function setSelectedCodeLanguage(language: string): void {
 export function incrementCodeFontSize(): void {
   const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
   const current = Math.round(fontSize);
-  const next = CODE_FONT_SIZE_PRESETS.find((p) => p > current);
+  if (current < 10) {
+    setSelectedCodeFontSize(10);
+    return;
+  }
+  const next = TEXT_FONT_SIZE_PRESETS.find((p) => p > current);
   if (next !== undefined) setSelectedCodeFontSize(next);
 }
 
 export function decrementCodeFontSize(): void {
   const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? 14;
   const current = Math.round(fontSize);
+  if (current > 144) {
+    setSelectedCodeFontSize(144);
+    return;
+  }
   let prev: number | undefined;
-  for (const p of CODE_FONT_SIZE_PRESETS) {
+  for (const p of TEXT_FONT_SIZE_PRESETS) {
     if (p >= current) break;
     prev = p;
   }
   if (prev !== undefined) setSelectedCodeFontSize(prev);
 }
 
-function setSelectedCodeFontSize(size: number): void {
-  const clamped = Math.max(8, Math.min(48, Math.round(size)));
+export function setSelectedCodeFontSize(size: number): void {
+  const clamped = Math.max(1, Math.min(999, Math.round(size)));
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
@@ -428,7 +436,10 @@ function setSelectedCodeFontSize(size: number): void {
     for (const id of ctx.selectedIds) {
       const handle = ctx.objectsById.get(id);
       if (handle?.kind !== 'code') continue;
+      const curFs = getFontSize(handle.y, 14);
+      const curW = (handle.y.get('width') as number) ?? 570;
       handle.y.set('fontSize', clamped);
+      handle.y.set('width', Math.round(curW * (clamped / curFs)));
     }
   });
 

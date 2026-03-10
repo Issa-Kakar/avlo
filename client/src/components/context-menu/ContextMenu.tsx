@@ -22,6 +22,7 @@ import {
   deleteSelected,
   incrementCodeFontSize,
   decrementCodeFontSize,
+  setSelectedCodeFontSize,
 } from '@/lib/utils/selection-actions';
 import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
@@ -37,13 +38,15 @@ import { TextColorPopover } from './TextColorPopover';
 import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
-import { IconBold, IconItalic, IconMoreDots, IconTrash } from './icons';
+import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines } from './icons';
+import { LanguageDropdown } from './LanguageDropdown';
 
 // === Selectors (stable module-level references) ===
 
 const selectMenuOpen = (s: SelectionStore) => s.menuOpen;
 const selectKind = (s: SelectionStore) => s.selectionKind;
 const selectEditing = (s: SelectionStore) => s.textEditingId;
+const selectCodeEditing = (s: SelectionStore) => s.codeEditingId;
 const selectKindCounts = (s: SelectionStore) => s.kindCounts;
 const selectStrokeStyles = (s: SelectionStore) => ({
   color: s.selectedStyles.color,
@@ -202,21 +205,25 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   );
 });
 
-const selectCodeStyles = (s: SelectionStore) => ({
-  fontSize: s.selectedStyles.fontSize,
-});
+const selectCodeFontSize = (s: SelectionStore) => s.selectedStyles.fontSize;
 
 const CodeStyleGroup = memo(function CodeStyleGroup() {
-  const { fontSize } = useSelectionStore(useShallow(selectCodeStyles));
+  const fontSize = useSelectionStore(selectCodeFontSize);
   const effectiveFontSize = fontSize ?? 14;
   return (
     <ButtonGroup>
+      <LanguageDropdown />
+      <div className="ctx-divider" />
       <FontSizeStepper
         value={effectiveFontSize}
         onDecrement={decrementCodeFontSize}
         onIncrement={incrementCodeFontSize}
-        onSelectSize={setSelectedFontSize}
+        onSelectSize={setSelectedCodeFontSize}
       />
+      <div className="ctx-divider" />
+      <MenuButton className="ctx-btn-sq">
+        <IconCodeLines style={{ width: 22, height: 16 }} />
+      </MenuButton>
     </ButtonGroup>
   );
 });
@@ -264,7 +271,13 @@ const OverflowButton = memo(function OverflowButton() {
 function ContextMenuBar() {
   const kind = useSelectionStore(selectKind);
   const editing = useSelectionStore(selectEditing);
-  const effectiveKind: SelectionKind = editing !== null && kind === 'none' ? 'textOnly' : kind;
+  const codeEditing = useSelectionStore(selectCodeEditing);
+  const effectiveKind: SelectionKind =
+    editing !== null && kind === 'none'
+      ? 'textOnly'
+      : codeEditing !== null && kind === 'none'
+        ? 'codeOnly'
+        : kind;
 
   return (
     <div className="ctx-menu">

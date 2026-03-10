@@ -124,11 +124,15 @@ Adding `ctx-hidden` = instant hide (no transition). Removing it = spring reveal 
 Text editing does **not** unconditionally override to `textOnly`. The bar preserves `selectionKind` from the store, so shape label editing shows `shapesOnly` (with text controls embedded). Only when `textEditingId !== null` AND `kind === 'none'` (standalone text object editing with no selection) does it fall back to `textOnly`:
 
 ```typescript
-const effectiveKind = editing !== null && kind === 'none' ? 'textOnly' : kind;
+const effectiveKind =
+  editing !== null && kind === 'none' ? 'textOnly'
+  : codeEditing !== null && kind === 'none' ? 'codeOnly'
+  : kind;
 ```
 
 This means:
 - Editing a standalone text object -> `textOnly` bar
+- Editing a code block -> `codeOnly` bar
 - Editing a shape label -> `shapesOnly` bar (shape is in selection, so `kind === 'shapesOnly'`)
 
 All bars end with: `| Trash | ... |` (the `...` overflow button has no functionality yet).
@@ -186,13 +190,23 @@ Shapes now include the full text formatting suite for shape labels:
 - **Size** — connector width. Presets: 2=S, 4=M, 6=L, 8=XL.
 - **Color** — same as strokes.
 
+### `codeOnly`
+
+```
+[Language ▾] | [-FontSize+] | [CodeLines]  |  Trash  ...
+```
+
+- **Language** — `LanguageDropdown`. Self-subscribing to `selectedStyles.codeLanguage`. Trigger: "LANGUAGE" label + current name. Dropdown: 3 items (JavaScript, TypeScript, Python) with checkmark. Calls `setSelectedCodeLanguage(key)`.
+- **FontSize** — same `FontSizeStepper` component. Wired to `incrementCodeFontSize`/`decrementCodeFontSize`/`setSelectedCodeFontSize`. Font size change proportionally scales code block width (`width * newFs/oldFs`). Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144.
+- **CodeLines** — `IconCodeLines` toggle button (placeholder, no handler).
+
 ### `mixed`
 
 ```
 [Filter "{N} objects"]  |  Trash  ...
 ```
 
-- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count). Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
+- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count): Strokes, Shapes, Text, Connectors, Code Block. Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
 
 ---
 
@@ -223,7 +237,8 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Compact horizontal 3-icon dropdown. |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. 4-item font family dropdown. |
 | `ShapeTypeDropdown` | `mode: 'shapes'\|'text'` | Subscribes to `selectedStyles.shapeType`. 5-item dropdown. |
-| `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts. |
+| `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block). |
+| `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
 | `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. 16x16 icon. |
 | `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. 16x16 icon. |
 
@@ -254,6 +269,7 @@ Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-alig
 | `inlineStyles` | `InlineStyles` | `EMPTY_INLINE_STYLES` | `refreshStyles` (cache path) or `setInlineStyles` (editor path) |
 | `boundsVersion` | `number` | `0` | `setSelection`, observer bridge (bbox changes) |
 | `textEditingId` | `string \| null` | `null` | `beginTextEditing`, `endTextEditing` |
+| `codeEditingId` | `string \| null` | `null` | `beginCodeEditing`, `endCodeEditing` |
 
 ### SelectedStyles
 
@@ -271,6 +287,7 @@ interface SelectedStyles {
   textAlign: TextAlign | null;    // Uniform alignment or null if mixed (textOnly only)
   fontFamily: FontFamily | null;  // First text/labeled-shape font family
   labelColor: string | null;      // Text color — getColor for text objects, getLabelColor for shapes
+  codeLanguage: CodeLanguage | null; // Code block language (codeOnly only)
 }
 ```
 
@@ -282,6 +299,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType, fontSize, fontFamily, labelColor |
 | `connectorsOnly` | color, width |
 | `textOnly` | color, fontSize, textAlign, fontFamily, labelColor, fillColor, fillColorMixed, fillColorSecond, shapeType='text' |
+| `codeOnly` | fontSize, codeLanguage |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
 
 **Text field resolution in `computeStyles`:** First object with text data wins. For text objects, reads `getColor()` as `labelColor`. For shapes, reads `getLabelColor()`. Only reads from shapes that `hasLabel()`. Returns `null` for `fontSize`/`fontFamily`/`labelColor` when no text data found (unlabeled shapes).
@@ -318,6 +336,8 @@ selectIsTextEditing    = s => s.textEditingId !== null
 | `clearSelection()` | `false` | No (resets to empty) | Resets to 0 |
 | `beginTextEditing()` | `true` | Yes | No |
 | `endTextEditing()` | Conditional | Yes | No |
+| `beginCodeEditing()` | `true` | Yes | No |
+| `endCodeEditing()` | Conditional | No | No |
 | `refreshStyles()` | No | (is itself) | No |
 | `setInlineStyles(next)` | No | No | No |
 
@@ -349,6 +369,10 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `toggleSelectedBold()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `toggleSelectedItalic()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `setSelectedHighlight(color\|null)` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
+| `setSelectedCodeLanguage(lang)` | Code blocks | -- | Sets `language` key |
+| `setSelectedCodeFontSize(size)` | Code blocks | -- | Proportionally scales width (`width * newFs/oldFs`) |
+| `incrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
+| `decrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
 
 ---
 
@@ -378,7 +402,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
 | `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts` |
 | `selection-utils.ts` | Pure functions: `computeStyles`, `computeSelectionBounds`, `computeUniformInlineStyles` |
-| `selection-actions.ts` | 14 mutation functions called by menu buttons |
+| `selection-actions.ts` | 18 mutation functions called by menu buttons |
 
 ---
 
@@ -400,7 +424,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 icons, horizontal compact submenu) |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families, ShapeTypeDropdown pattern) |
 | `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 5-item type switcher. |
-| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts |
+| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts (incl. Code Block) |
+| `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
 | `icons/` | Custom SVGs: fill-based paths for pixel-crisp rendering at small sizes |
@@ -410,7 +435,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | File | Exports |
 |------|---------|
 | `UtilityIcons.tsx` | `IconChevronDown`, `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck`, `IconNoFill`, `IconStepUp`, `IconStepDown` |
-| `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType` |
+| `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType`, `IconCodeBlock` |
+| `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
 | `AlignIcons.tsx` | `IconAlignTextLeft`, `IconAlignTextCenter`, `IconAlignTextRight` |
 | `FormatIcons.tsx` | `IconBold` (20x20 viewBox), `IconItalic` (20x20 viewBox) |
 | `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType` |
