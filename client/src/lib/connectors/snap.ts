@@ -198,8 +198,10 @@ export function computeSnapForShape(
     }
   }
 
-  // CASE 1a (straight, inside shape): center snap → midpoint stickiness → interior anchor
-  if (isStraight && isInside) {
+  // CASE 1a (straight, deep inside shape): center snap → midpoint stickiness → interior anchor
+  // Shallow inside (< threshold) falls through to CASE 2 for edge sliding
+  const straightInteriorDepthW = pxToWorld(SNAP_CONFIG.STRAIGHT_INTERIOR_DEPTH_PX, scale);
+  if (isStraight && isInside && insideDepth > straightInteriorDepthW) {
     const [fx, fy, fw, fh] = frame;
     const centerX = fx + fw / 2;
     const centerY = fy + fh / 2;

@@ -1,6 +1,6 @@
 # Straight Connectors — Technical Reference
 
-> **Status:** First pass implementation. Core pipeline works end-to-end. Multiple UX/offset/snap issues known and documented — see "Known Issues" at the bottom.
+> **Status:** Production-ready. Edge sliding, offset direction, dashed guides, overlap handling, and snap dot rendering all working correctly.
 
 ## Overview
 
@@ -20,8 +20,8 @@ Straight connectors introduce a distinction that doesn't exist for elbow connect
 
 `normalizedAnchor` has at least one coordinate at 0 or 1 (within `INTERIOR_EPS = 1e-6`).
 
-- Position computed by `applyAnchorToFrame()` with standard `EDGE_CLEARANCE_W` (11 units) outward offset
-- Line goes straight from A to B — **can pass through shapes** (no obstacle avoidance)
+- Raw on-edge position computed from normalized anchor interpolation
+- `EDGE_CLEARANCE_W` (11 units) applied as **pull-back toward the other endpoint** (not outward like elbow)
 - Visually identical to elbow edge anchors in terms of snap dots
 
 ### Interior Anchors
@@ -30,8 +30,8 @@ Straight connectors introduce a distinction that doesn't exist for elbow connect
 
 - Position is the raw interior point (no edge offset — `applyAnchorToFrame` returns directly)
 - The **visible line stops at the shape edge** (ray intersection computed by `computeShapeEdgeIntersection`)
-- A **dashed guide line** connects the edge intersection to the interior anchor point (overlay only, not committed)
-- `EDGE_CLEARANCE_W` offset applied along the approach direction (from intersection toward the other endpoint)
+- `EDGE_CLEARANCE_W` applied as pull-back from intersection toward the other endpoint
+- A **dashed guide line** connects the interior anchor point to the line endpoint on the shape edge (overlay only)
 
 ### Center Snap (`[0.5, 0.5]`)
 
@@ -63,14 +63,14 @@ This epsilon is intentionally much stricter than the snap clamping range `[0.01,
 **Used by:**
 
 - `applyAnchorToFrame()` — skip edge offset for interior anchors
-- `computeStraightRoute()` — trigger edge intersection + dashed guide
-- `computeSnapForShape()` — center snap hysteresis detection
+- `computeStraightRoute()` — trigger edge intersection + dashed guide vs edge pull-back
+- `computeSnapForShape()` — center snap hysteresis detection, depth gate for interior mode
 - `ConnectorTool.getPreview()` — `isCenterSnap` preview field
-- `selection-overlay.ts` — dashed guide rendering for selected connectors
+- `selection-overlay.ts` — dashed guide rendering + center dot detection during endpoint drag
 
 ---
 
-## Snap System Changes (`snap.ts`)
+## Snap System (`snap.ts`)
 
 ### `SnapContext` Extension
 
@@ -79,22 +79,22 @@ interface SnapContext {
   cursorWorld: [number, number];
   scale: number;
   prevAttach: SnapTarget | null;
-  connectorType?: ConnectorType; // NEW — defaults to 'elbow' behavior
+  connectorType?: ConnectorType; // defaults to 'elbow' behavior
 }
 ```
 
-All `findBestSnapTarget()` calls now pass `connectorType` from either:
-
-- The frozen connector type (during creation in ConnectorTool)
-- The live store value (during idle hover in ConnectorTool)
-- The connector's Y.Map value (during endpoint drag in SelectTool)
-
 ### `computeSnapForShape()` — Straight Inside-Shape Logic
 
-The function now has a straight-specific branch (`CASE 1a`) that fires when `isStraight && isInside`:
+The function has a straight-specific branch (`CASE 1a`) with a **depth gate** that preserves edge sliding:
 
 ```
-CASE 1a (straight, inside shape):
+Depth gate: STRAIGHT_INTERIOR_DEPTH_PX (20px)
+  When cursor is shallowly inside (< 20px from nearest edge):
+    → Falls through to CASE 2 (edge sliding) — identical to elbow behavior
+  When cursor is deeply inside (> 20px):
+    → Enters CASE 1a interior mode
+
+CASE 1a (straight, deep inside shape):
   Priority cascade:
   1. Center snap: cursor within CENTER_SNAP_RADIUS_PX of shape center
      - Hysteresis: if previously center-snapped, OUT threshold = 1.3x IN threshold
@@ -105,28 +105,30 @@ CASE 1a (straight, inside shape):
      - normalizedAnchor = clamped to [0.01, 0.99] range
      - position = cursor world position (no offset)
      - edgePosition = cursor world position
-     - side = nearest edge side (for `StoredAnchor.side`)
+     - side = nearest edge side (for StoredAnchor.side)
 
 CASE 1b (elbow, deep inside shape):
-  Unchanged — force midpoint only (existing behavior)
+  Unchanged — force midpoint only (existing behavior, gate: FORCE_MIDPOINT_DEPTH_PX: 35)
 
-CASE 2 (outside or near edge):
-  Unchanged for both types — edge sliding + midpoint stickiness
+CASE 2 (outside or near edge — both types):
+  Edge sliding + midpoint stickiness. Straight connectors reach this
+  when shallowly inside (< 20px depth) via the depth gate.
 ```
 
-**Key behavior difference:** For elbow connectors, going deep inside a shape forces midpoint-only mode (`FORCE_MIDPOINT_DEPTH_PX: 35`). For straight connectors, this gate is skipped (`!isStraight && isInside && ...`), allowing interior placement.
+**Depth gate comparison:**
 
-### Known Issue: Edge Sliding When Inside
+| Connector Type | Threshold                        | Behavior when shallow inside |
+| -------------- | -------------------------------- | ---------------------------- |
+| Elbow          | `FORCE_MIDPOINT_DEPTH_PX: 35`    | Edge sliding (CASE 2)        |
+| Straight       | `STRAIGHT_INTERIOR_DEPTH_PX: 20` | Edge sliding (CASE 2)        |
 
-The current implementation enters the straight interior branch for **all** inside-shape positions, including shallow ones near the edge. This makes edge sliding very difficult for straight connectors — the cursor jumps to interior anchor mode as soon as it crosses the shape boundary. The elbow connector's shallow-inside edge sliding (CASE 2 with `!isInside` check) doesn't apply because the straight branch catches first.
-
-**Desired behavior:** Edge sliding should work identically to elbow when cursor is near the edge. Only transition to interior anchors when significantly inside the shape.
+The straight threshold is smaller because interior anchors are a valid destination (unlike elbow where deep-inside forces midpoint-only).
 
 ---
 
 ## Routing (`reroute-connector.ts`)
 
-### `ResolvedEndpoint` Extension
+### `ResolvedEndpoint`
 
 ```typescript
 interface ResolvedEndpoint {
@@ -134,14 +136,15 @@ interface ResolvedEndpoint {
   dir: Dir | null;
   shapeBounds: AABB | null;
   isAnchored: boolean;
-  // NEW — populated when anchored (for straight connector routing)
+  // Straight connector fields (populated when anchored)
   normalizedAnchor?: [number, number];
   shapeType?: string;
   frame?: FrameTuple;
+  shapeId?: string; // Target shape ID — enables same-shape detection
 }
 ```
 
-Both `resolveEndpoint()` (for existing connectors) and `resolveNewEndpoint()` (for new connectors) now populate these fields from shape lookups. The data was already available in the lookup paths — just assigned to the result.
+Both `resolveEndpoint()` and `resolveNewEndpoint()` populate all fields including `shapeId` from shape lookups / snap targets / stored anchors.
 
 ### `computeStraightRoute()` — Core Routing Function
 
@@ -156,24 +159,67 @@ function computeStraightRoute(
 };
 ```
 
+**Helpers:**
+
+```typescript
+// Raw anchor position = frame interpolation with NO offset
+function getRawAnchorPosition(ep: ResolvedEndpoint): [number, number] {
+  return [frame[0] + anchor[0] * frame[2], frame[1] + anchor[1] * frame[3]];
+}
+
+// EDGE_CLEARANCE_W offset along the connector line direction (toward other endpoint)
+function applyPullBack(point, toward): [number, number] {
+  return point + normalize(toward - point) * EDGE_CLEARANCE_W;
+}
+```
+
 **Per-endpoint logic:**
 
-| Endpoint State                                     | Line Position                                          | Dash Guide                                  |
-| -------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------- |
-| Free (`!isAnchored`)                               | `position` as-is                                       | None                                        |
-| Edge anchor (`isAnchored && !isAnchorInterior`)    | `position` (has edge offset from `applyAnchorToFrame`) | None                                        |
-| Interior anchor (`isAnchored && isAnchorInterior`) | Edge intersection + `EDGE_CLEARANCE_W` along approach  | Dashed line from intersection to `position` |
+| Endpoint State                    | Line Position                                              | Dash Guide                                     |
+| --------------------------------- | ---------------------------------------------------------- | ---------------------------------------------- |
+| Free (`!isAnchored`)              | `position` as-is                                           | None                                           |
+| Edge anchor (`!isAnchorInterior`) | `applyPullBack(rawEdge, otherRaw)` — toward other endpoint | None                                           |
+| Interior anchor, same shape       | `rawPosition` directly — no edge intersection              | None                                           |
+| Interior anchor, different shape  | Edge intersection + `applyPullBack` along approach         | Dashed line from raw interior to line endpoint |
 
-**Interior anchor processing:**
+**Key offset difference from elbow:** Elbow connectors apply `EDGE_CLEARANCE_W` **outward** (perpendicular to shape edge via `directionVector(side)`). Straight connectors apply it as **pull-back along the connector line** (toward the other endpoint). This ensures the arrow tip points directly at the edge, not above or beside the shape.
 
-1. `computeShapeEdgeIntersection(shapeType, frame, interiorPoint, otherEndpoint)`
-2. If intersection found:
-   - Compute approach direction: `normalize(otherPos - intersection)`
-   - `lineEndpoint = intersection + approachDir * EDGE_CLEARANCE_W`
-   - `dashTo = interiorPoint` (the raw interior position)
-3. If no intersection (fallback): use `interiorPoint` directly
+### Same-Shape Detection
 
-**Always returns exactly 2 points** — straight connectors have no waypoints.
+When both endpoints are interior anchors on the **same shape** (`start.shapeId === end.shapeId`), the edge intersection is skipped entirely. The visible line goes directly from `startRaw` to `endRaw`. No dashed guides.
+
+This prevents the "spinning clock" effect that occurs when both ray intersections exit the same convex shape — the rays would exit on opposite far sides, producing a wildly incorrect segment.
+
+### Overlap Detection (Flipped/Collapsed Segment Safety)
+
+After computing both `startPt` and `endPt` through normal per-endpoint logic, a final safety check validates the result:
+
+```typescript
+const rawDx = endRaw[0] - startRaw[0];
+const rawDy = endRaw[1] - startRaw[1];
+if (rawDx * rawDx + rawDy * rawDy > 0.001) {
+  const visDx = endPt[0] - startPt[0];
+  const visDy = endPt[1] - startPt[1];
+  if (visDx * rawDx + visDy * rawDy <= 0 || Math.hypot(visDx, visDy) < EDGE_CLEARANCE_W) {
+    return { points: [startRaw, endRaw], startDashTo: null, endDashTo: null };
+  }
+}
+```
+
+**What it detects:** When shapes overlap, edge intersections or pull-backs can produce a visible segment that is:
+
+- **Flipped** (dot product ≤ 0) — line points opposite to the raw A→B direction
+- **Collapsed** (length < EDGE_CLEARANCE_W) — endpoints pulled past each other
+
+**Geometric cause:** For interior anchors, if endRaw is inside shape A (overlap region), the ray from startRaw exits A on the far side past endRaw. For edge anchors, if the gap between edges is less than `2 × EDGE_CLEARANCE_W` (22 units), both pull-backs overshoot past each other.
+
+**Fallback:** Direct `[startRaw, endRaw]` with no dashes — same visual as same-shape interior. For interior anchors, the line starts/ends at the raw interior positions. For edge anchors, the line touches the shape edges directly (no clearance gap). Both are acceptable degraded visuals for the degenerate overlap case.
+
+**No false positives:**
+
+- Same-shape case: returns early before this check
+- Normal non-overlapping: dot product is positive and segment length is reasonable
+- Free endpoints: `startPt === startRaw`, so the check is trivially satisfied
 
 ### Branching in `rerouteConnector()`
 
@@ -191,13 +237,9 @@ if (connectorType === 'straight') {
 
 Straight connectors skip direction resolution, A\* routing, and grid construction entirely.
 
-### `routeNewConnector()` Return Type Change
+### `routeNewConnector()` Return Type
 
 ```typescript
-// OLD
-function routeNewConnector(...): [number, number][]
-
-// NEW
 interface NewRouteResult {
   points: [number, number][];
   startDashTo: [number, number] | null;
@@ -206,7 +248,7 @@ interface NewRouteResult {
 function routeNewConnector(..., connectorType: ConnectorType = 'elbow', ...): NewRouteResult
 ```
 
-For elbow connectors, `startDashTo` and `endDashTo` are always `null`. ConnectorTool stores the dash values for preview rendering.
+For elbow connectors, `startDashTo` and `endDashTo` are always `null`.
 
 ---
 
@@ -225,24 +267,13 @@ export function computeShapeEdgeIntersection(
 
 Casts a ray from `interiorPoint` toward `target` and finds where it exits the shape boundary.
 
-**Per shape type:**
+| Shape                  | Method                                                                                  | Side Derivation                |
+| ---------------------- | --------------------------------------------------------------------------------------- | ------------------------------ |
+| `rect` / `roundedRect` | Ray vs 4 axis-aligned edges. Smallest positive `t` with valid cross-axis range.         | Which edge was hit             |
+| `ellipse`              | Parametric substitution into ellipse equation. Solve quadratic, smallest positive root. | Quadrant of intersection angle |
+| `diamond`              | Ray vs 4 diagonal line segments. Cramer's rule for ray-segment intersection.            | Which segment was hit          |
 
-| Shape                  | Method                                                                                                                        | Side Derivation                |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `rect` / `roundedRect` | Ray vs 4 axis-aligned edges. Smallest positive `t` with valid cross-axis range.                                               | Which edge was hit             |
-| `ellipse`              | Parametric substitution into ellipse equation `((Px-cx)/rx)^2 + ((Py-cy)/ry)^2 = 1`. Solve quadratic, smallest positive root. | Quadrant of intersection angle |
-| `diamond`              | Ray vs 4 diagonal line segments (top↔right, right↔bottom, bottom↔left, left↔top). Cramer's rule for ray-segment intersection. | Which segment was hit          |
-
-**Edge cases handled:**
-
-- Degenerate shapes (`w < 0.001` or `h < 0.001`): returns `null`
-- Zero-length ray (`target ≈ interiorPoint`): returns `null`
-- Ray parallel to edge: skipped (denominator check)
-- Target inside same shape: may return `null` if no positive-`t` intersection (ray never exits)
-
----
-
-## `applyAnchorToFrame()` Modification
+### `applyAnchorToFrame()` Modification
 
 ```typescript
 export function applyAnchorToFrame(anchor, frame, side): [number, number] {
@@ -258,7 +289,7 @@ export function applyAnchorToFrame(anchor, frame, side): [number, number] {
 }
 ```
 
-**Safety:** Interior anchors cannot exist for elbow connectors (the snap system's `forceMidpointsOnly` prevents it), so this change has zero impact on elbow routing.
+**Note:** This outward offset is used by **elbow connectors** and by `resolveEndpoint`'s `position` field. For straight connectors, `computeStraightRoute` computes its own offsets from raw positions, ignoring `position` in favor of `getRawAnchorPosition()` + `applyPullBack()`.
 
 ---
 
@@ -271,8 +302,8 @@ interface ConnectorPreview {
   // ... existing fields ...
 
   connectorType: 'elbow' | 'straight'; // Routing type for rendering decisions
-  startDashTo: [number, number] | null; // Interior anchor position (dashed guide start)
-  endDashTo: [number, number] | null; // Interior anchor position (dashed guide end)
+  startDashTo: [number, number] | null; // Interior anchor position (dashed guide target)
+  endDashTo: [number, number] | null; // Interior anchor position (dashed guide target)
   isCenterSnap: boolean; // Center dot should be highlighted
 }
 ```
@@ -290,6 +321,8 @@ if (preview.startDashTo) drawDashedGuide(ctx, points[0], preview.startDashTo, ..
 if (preview.endDashTo) drawDashedGuide(ctx, points[last], preview.endDashTo, ...);
 ```
 
+Direction: from line endpoint (edge intersection) TO interior anchor position.
+
 **`drawDashedGuide()` style:**
 
 - Dash pattern: 6px dash, 4px gap (screen-space via `pxToWorld`)
@@ -299,26 +332,72 @@ if (preview.endDashTo) drawDashedGuide(ctx, points[last], preview.endDashTo, ...
 
 ### Center Dot in `drawSnapDots()`
 
-Two new parameters: `isStraight: boolean`, `isCenterSnap: boolean`.
+Two parameters: `isStraight: boolean`, `isCenterSnap: boolean`.
 
 When `isStraight`:
 
 - A 5th dot drawn at shape center `[x + w/2, y + h/2]`
-- If `isCenterSnap`: rendered as active dot (blue fill, glow) at large radius
+- If `isCenterSnap`: rendered as active dot (blue fill, glow) at large radius, then early return (skip normal active dot)
 - Otherwise: rendered as inactive dot (white fill, blue stroke) at small radius
-- When `isCenterSnap`, the regular active sliding dot is skipped (early return)
+
+### Start Endpoint Dot During Creation
+
+After snap dots, when `fromIsAttached && fromPosition && hasRoute`:
+
+- Draws an inactive-style endpoint dot at `fromPosition`
+- Uses `ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX` and `INACTIVE_FILL/STROKE`
+- Visible from the moment the connector creation begins from a shape
+
+---
+
+## Selection Overlay (`selection-overlay.ts`)
+
+### `drawConnectorEndpointDots()` — Straight Connector Awareness
+
+After drawing endpoint dots, if the connector is straight:
+
+**During endpoint drag** (`transform.kind === 'endpointDrag'`):
+
+- Reads `transform.routedPoints` for live line endpoint positions
+- Dragged endpoint: if `currentSnap` is interior, draws dashed guide from `edgePosition` to `routedPoints[0]` or `routedPoints[last]`
+- Non-dragged endpoint: reads stored anchor from Y.Map, if interior, draws dashed guide from canonical position to `routedPoints`
+- Snap midpoint dots include center dot: detects `isCenterSnap` from `currentSnap.normalizedAnchor === [0.5, 0.5]` and passes to `drawSnapMidpointDots`
+
+**Idle** (no active transform):
+
+- Calls `drawStraightConnectorGuides()` which reads stored `points` from Y.Map
+- For each interior anchor: dashed line from dot position (`getEndpointEdgePosition`) to `points[0]` / `points[last]`
+
+### `drawStraightConnectorGuides()` — Idle Dashed Guides
+
+```typescript
+function drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale) {
+  const points = getPoints(handle.y);
+  if (points.length < 2) return;
+
+  if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
+    drawDashedGuideLine(ctx, startPos, points[0], scale);
+  }
+  if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
+    drawDashedGuideLine(ctx, endPos, points[points.length - 1], scale);
+  }
+}
+```
+
+**Key design:** Uses stored `points[0]`/`points[last]` as the dashed line target (the edge intersection point on the committed connector). The endpoint dot is at the interior anchor position via `getEndpointEdgePosition()` (which interpolates the normalized anchor within the shape frame). This ensures the dashed line connects the visible dot to the visible line endpoint.
+
+### `drawSnapMidpointDots()` — Center Dot Support
+
+Extended with `isStraight` and `isCenterSnap` parameters:
+
+- When `isStraight`: draws a center dot at shape center
+  - `isCenterSnap`: active style (blue fill, glow, large radius), early return
+  - Otherwise: inactive style (white fill, blue stroke, small radius)
+- Provides visual parity with `connector-preview.ts`'s `drawSnapDots()` center dot behavior
 
 ---
 
 ## ConnectorTool Integration (`ConnectorTool.ts`)
-
-### New Instance Fields
-
-```typescript
-private frozenConnectorType: ConnectorType | null = null;
-private startDashTo: [number, number] | null = null;
-private endDashTo: [number, number] | null = null;
-```
 
 ### Lifecycle
 
@@ -330,50 +409,6 @@ private endDashTo: [number, number] | null = null;
 | `getPreview()`    | `this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType` |
 | `resetState()`    | Cleared to `null`                                                       |
 
-### `begin()` Changes
-
-Passes `connectorType` to `findBestSnapTarget()`:
-
-```typescript
-findBestSnapTarget({
-  cursorWorld,
-  scale,
-  prevAttach: null,
-  connectorType: this.frozenConnectorType,
-});
-```
-
-### `move()` Creating Changes
-
-Routes via `routeNewConnector()` with type, captures dash info:
-
-```typescript
-const routeResult = routeNewConnector(
-  start,
-  end,
-  width,
-  this.frozenConnectorType ?? 'elbow',
-  this.dragDir,
-);
-this.routedPoints = routeResult.points;
-this.startDashTo = routeResult.startDashTo;
-this.endDashTo = routeResult.endDashTo;
-```
-
-### `getPreview()` Changes
-
-Populates new `ConnectorPreview` fields:
-
-```typescript
-connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType,
-startDashTo: this.startDashTo,
-endDashTo: this.endDashTo,
-isCenterSnap: !!(this.hoverSnap
-  && this.hoverSnap.normalizedAnchor[0] === 0.5
-  && this.hoverSnap.normalizedAnchor[1] === 0.5
-  && isAnchorInterior(this.hoverSnap.normalizedAnchor)),
-```
-
 ### `commitConnector()` Changes
 
 Writes `connectorType` to Y.Map (only when not default `'elbow'`):
@@ -384,63 +419,25 @@ if (this.frozenConnectorType && this.frozenConnectorType !== 'elbow') {
 }
 ```
 
-Stores routed points as start/end for consistency:
-
-```typescript
-connectorMap.set('start', this.routedPoints[0]);
-connectorMap.set('end', this.routedPoints[this.routedPoints.length - 1]);
-```
-
 ---
 
 ## SelectTool Integration (`SelectTool.ts`)
 
-### Endpoint Drag — `move()` endpointDrag Phase
+### Endpoint Drag
 
 Reads connector type from Y.Map and passes to snap:
 
 ```typescript
 const connHandle = snapshot.objectsById.get(connectorId);
 const connectorType = connHandle ? getConnectorType(connHandle.y) : 'elbow';
-
-findBestSnapTarget({
-  cursorWorld: [worldX, worldY],
-  scale,
-  prevAttach: epTransform.currentSnap,
-  connectorType,
-});
+findBestSnapTarget({ cursorWorld, scale, prevAttach, connectorType });
 ```
 
 No other SelectTool changes needed — `rerouteConnector()` reads `connectorType` from Y.Map internally and branches to `computeStraightRoute`.
 
 ### Shape Transform (translate/scale)
 
-No changes. The connector topology system (`ConnectorTopology`) is type-agnostic. `rerouteConnector()` handles the straight/elbow branching internally. Interior anchors move with their shape naturally during transforms.
-
----
-
-## Selection Overlay (`selection-overlay.ts`)
-
-### `drawConnectorEndpointDots()` Extension
-
-After drawing endpoint dots, checks if the selected connector is straight:
-
-```typescript
-if (getConnectorType(handle.y) === 'straight') {
-  drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale);
-}
-```
-
-### `drawStraightConnectorGuides()`
-
-For each endpoint (start, end):
-
-1. Read `StoredAnchor` from Y.Map
-2. Check `isAnchorInterior(anchor.anchor)`
-3. If interior: look up shape frame, compute interior position via `applyAnchorToFrame()` (returns raw interior pos, no offset)
-4. Draw dashed guide from endpoint dot position to interior position
-
-**Style:** Uses `SELECTION_STYLE.PRIMARY` color (blue), 1.5px line width, 50% opacity, 6/4px dash pattern.
+No changes. The connector topology system is type-agnostic. `rerouteConnector()` handles the straight/elbow branching internally.
 
 ---
 
@@ -459,34 +456,31 @@ Read via `getConnectorType(y)` from `@avlo/shared` (returns `'elbow'` if missing
 
 ## Files Modified
 
-| File                                   | What Changed                                                                                                   |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `connectors/types.ts`                  | `isAnchorInterior()`, `SnapContext.connectorType`                                                              |
-| `connectors/constants.ts`              | `SNAP_CONFIG.CENTER_SNAP_RADIUS_PX: 12`                                                                        |
-| `connectors/connector-utils.ts`        | `computeShapeEdgeIntersection()` (3 shape types), `applyAnchorToFrame` interior bypass                         |
-| `connectors/snap.ts`                   | CASE 1a: straight inside-shape snapping (center → midpoint → interior)                                         |
-| `connectors/reroute-connector.ts`      | `computeStraightRoute()`, `NewRouteResult`, `ResolvedEndpoint` extended fields, branching in both routing APIs |
-| `connectors/index.ts`                  | Re-exports: `isAnchorInterior`, `computeShapeEdgeIntersection`, `NewRouteResult`                               |
-| `lib/tools/types.ts`                   | `ConnectorPreview`: 4 new fields                                                                               |
-| `renderer/layers/connector-preview.ts` | `drawDashedGuide()`, center dot in `drawSnapDots()`                                                            |
-| `lib/tools/ConnectorTool.ts`           | Freeze/pass `connectorType`, dash state, commit type                                                           |
-| `lib/tools/SelectTool.ts`              | Pass `connectorType` to snap in endpoint drag                                                                  |
-| `renderer/layers/selection-overlay.ts` | `drawStraightConnectorGuides()`, `drawDashedGuideLine()`                                                       |
-| `stores/device-ui-store.ts`            | Default changed to `'straight'` for testing (revert to `'elbow'` for production)                               |
+| File                                   | What Changed                                                                                                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `connectors/types.ts`                  | `isAnchorInterior()`, `SnapContext.connectorType`                                                                                                                                        |
+| `connectors/constants.ts`              | `CENTER_SNAP_RADIUS_PX`, `STRAIGHT_INTERIOR_DEPTH_PX`                                                                                                                                    |
+| `connectors/connector-utils.ts`        | `computeShapeEdgeIntersection()` (3 shape types), `applyAnchorToFrame` interior bypass                                                                                                   |
+| `connectors/snap.ts`                   | CASE 1a: depth-gated straight inside-shape snapping (center → midpoint → interior)                                                                                                       |
+| `connectors/reroute-connector.ts`      | `computeStraightRoute()` with pull-back offsets, same-shape detection, overlap safety; `ResolvedEndpoint.shapeId`; `NewRouteResult`; `getRawAnchorPosition()`, `applyPullBack()` helpers |
+| `connectors/index.ts`                  | Re-exports: `isAnchorInterior`, `computeShapeEdgeIntersection`, `NewRouteResult`                                                                                                         |
+| `lib/tools/types.ts`                   | `ConnectorPreview`: 4 new fields                                                                                                                                                         |
+| `renderer/layers/connector-preview.ts` | `drawDashedGuide()`, center dot in `drawSnapDots()`, start endpoint dot                                                                                                                  |
+| `lib/tools/ConnectorTool.ts`           | Freeze/pass `connectorType`, dash state, commit type                                                                                                                                     |
+| `lib/tools/SelectTool.ts`              | Pass `connectorType` to snap in endpoint drag                                                                                                                                            |
+| `renderer/layers/selection-overlay.ts` | `drawStraightConnectorGuides()` using stored `points`; drag-aware dashed guides via `routedPoints`; center dot in `drawSnapMidpointDots()`                                               |
 
 ## Untouched Files
 
-These explicitly do NOT need changes:
-
-| File                    | Why                                                                                                    |
-| ----------------------- | ------------------------------------------------------------------------------------------------------ |
-| `connector-paths.ts`    | 2-point polyline already works. `buildRoundedPolylinePath` handles it. Arrows work.                    |
-| `object-cache.ts`       | Same `buildConnectorPaths` for both types.                                                             |
-| `objects.ts` (renderer) | Committed rendering uses stored `points` — works for any point count. No dashed guides on base canvas. |
-| `routing-context.ts`    | Only used for elbow A\*.                                                                               |
-| `routing-astar.ts`      | Only used for elbow A\*.                                                                               |
-| `connector-lookup.ts`   | Type-agnostic reverse map.                                                                             |
-| `selection-store.ts`    | Topology system is type-agnostic. `rerouteConnector` handles branching.                                |
+| File                    | Why                                                                                 |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| `connector-paths.ts`    | 2-point polyline already works. `buildRoundedPolylinePath` handles it. Arrows work. |
+| `object-cache.ts`       | Same `buildConnectorPaths` for both types.                                          |
+| `objects.ts` (renderer) | Committed rendering uses stored `points` — works for any point count.               |
+| `routing-context.ts`    | Only used for elbow A\*.                                                            |
+| `routing-astar.ts`      | Only used for elbow A\*.                                                            |
+| `connector-lookup.ts`   | Type-agnostic reverse map.                                                          |
+| `selection-store.ts`    | Topology system is type-agnostic. `rerouteConnector` handles branching.             |
 
 ---
 
@@ -497,14 +491,18 @@ These explicitly do NOT need changes:
 ```
 ConnectorTool.begin()
   → freeze connectorType from device-ui-store
-  → findBestSnapTarget({ connectorType }) → SnapTarget with interior anchor
+  → findBestSnapTarget({ connectorType }) → SnapTarget (edge/interior/center)
 
 ConnectorTool.move()
   → findBestSnapTarget({ connectorType }) for end endpoint
   → routeNewConnector(start, end, width, connectorType, dragDir)
-    → resolveNewEndpoint() → ResolvedEndpoint with normalizedAnchor/shapeType/frame
+    → resolveNewEndpoint() → ResolvedEndpoint with shapeId/normalizedAnchor/shapeType/frame
     → computeStraightRoute()
-      → isAnchorInterior? → computeShapeEdgeIntersection → offset along approach
+      → getRawAnchorPosition() for each anchored endpoint
+      → same-shape? → direct raw, no dash
+      → interior? → computeShapeEdgeIntersection → applyPullBack toward other
+      → edge? → applyPullBack toward other (not outward)
+      → overlap safety check (dot product + length)
       → returns { points: [A, B], startDashTo, endDashTo }
   → store routedPoints, startDashTo, endDashTo
 
@@ -516,6 +514,7 @@ OverlayRenderLoop
     → draw polyline + arrows (same as elbow, just 2 points)
     → if straight: drawDashedGuide() for each non-null dashTo
     → drawSnapDots() with isStraight + isCenterSnap (center dot + 4 midpoints)
+    → if fromIsAttached: draw start endpoint dot
 
 ConnectorTool.commitConnector()
   → Y.Map: connectorType='straight', points, start/end, anchors
@@ -528,7 +527,7 @@ SelectTool.move() endpointDrag
   → getConnectorType(connHandle.y) → 'straight'
   → findBestSnapTarget({ connectorType }) → SnapTarget
   → rerouteConnector(connectorId, { [endpoint]: snapOrPos })
-    → resolveEndpoint() → ResolvedEndpoint with straight fields
+    → resolveEndpoint() → ResolvedEndpoint with shapeId + straight fields
     → getConnectorType(yMap) → 'straight'
     → computeStraightRoute() → { points, ... }
     → bbox from points
@@ -539,45 +538,20 @@ SelectTool.invalidateTransformPreview() (shape drag)
     → computeStraightRoute() → new 2-point path
 ```
 
-### Selection overlay (selected connector, idle)
+### Selection overlay (selected connector)
 
 ```
 drawSelectionOverlay()
   → drawConnectorEndpointDots()
     → draw start/end dots (same as elbow)
     → getConnectorType(handle.y) === 'straight'?
-      → drawStraightConnectorGuides()
-        → for each anchor: isAnchorInterior?
-          → applyAnchorToFrame (returns raw interior pos)
-          → drawDashedGuideLine from endpoint to interior pos
+      → if endpointDrag:
+        → read transform.routedPoints for live line endpoints
+        → dragged endpoint: interior snap? → dashed guide to routedPoints edge
+        → non-dragged: stored anchor interior? → dashed guide to routedPoints edge
+        → snap midpoint dots with center dot support
+      → else (idle):
+        → drawStraightConnectorGuides()
+          → read stored points from Y.Map
+          → for each interior anchor: dashed from dot to points[0]/points[last]
 ```
-
----
-
-## Known Issues & Areas for Second Pass
-
-### 1. Edge Sliding Broken for Straight Connectors (snap.ts)
-
-**Problem:** The straight inside-shape branch (CASE 1a) fires for ALL inside positions, including cursor positions right near the shape edge. This prevents the edge-sliding behavior that elbow connectors have when cursor is shallowly inside a shape.
-
-**Root cause:** `if (isStraight && isInside)` catches everything. The elbow code has a depth gate (`forceMidpointDepthW`) that allows shallow-inside cursors to fall through to edge sliding (CASE 2). The straight branch doesn't have an equivalent gate.
-
-**Expected fix:** Add a depth threshold for straight connectors before entering the interior branch. When shallow inside, fall through to CASE 2 (edge sliding) like elbow does.
-
-### 2. Offset Issues
-
-**Problem:** The `EDGE_CLEARANCE_W` offset for interior anchors may not look right in all cases. The offset is applied along the approach direction (from edge intersection toward the other endpoint), but for very short connectors or endpoints close to each other, this can look wrong.
-
-**Expected fix:** May need to tune the offset distance or use a different clearance value for straight connectors.
-
-### 3. Device UI Store Default
-
-`connectorType` is currently defaulted to `'straight'` in device-ui-store for testing. **Must revert to `'elbow'` before production.**
-
-### 4. No UI Toggle
-
-No toolbar UI exists to switch between elbow and straight. Currently testing via the store default only. The `setConnectorType` action already exists in the store.
-
-### 5. Dashed Guide Visibility
-
-Dashed guides only appear on the overlay canvas (preview during creation, selection overlay when selected). They are NOT rendered on the base canvas for committed connectors. This is by design, but the guide might need to be visible in more contexts depending on UX feedback.

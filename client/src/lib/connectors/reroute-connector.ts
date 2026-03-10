@@ -152,6 +152,7 @@ interface ResolvedEndpoint {
   normalizedAnchor?: [number, number];
   shapeType?: string;
   frame?: FrameTuple;
+  shapeId?: string;
 }
 
 /**
@@ -208,6 +209,7 @@ function resolveEndpoint(
         normalizedAnchor: anchor.anchor,
         shapeType: sType,
         frame: override.frame,
+        shapeId: anchor.id,
       };
     }
 
@@ -230,6 +232,7 @@ function resolveEndpoint(
       normalizedAnchor: snap.normalizedAnchor,
       shapeType: sType,
       frame: frame ?? undefined,
+      shapeId: snap.shapeId,
     };
   }
 
@@ -254,6 +257,7 @@ function resolveEndpoint(
         normalizedAnchor: anchor.anchor,
         shapeType: sType,
         frame,
+        shapeId: anchor.id,
       };
     }
 
@@ -396,6 +400,7 @@ function resolveNewEndpoint(
     normalizedAnchor: snap.normalizedAnchor,
     shapeType: sType,
     frame: frame ?? undefined,
+    shapeId: snap.shapeId,
   };
 }
 
@@ -403,9 +408,31 @@ function resolveNewEndpoint(
 // STRAIGHT CONNECTOR ROUTING
 // ============================================================================
 
+/** Get raw anchor position (no offset) from a resolved endpoint. */
+function getRawAnchorPosition(ep: ResolvedEndpoint): [number, number] {
+  const [nx, ny] = ep.normalizedAnchor!;
+  const [x, y, w, h] = ep.frame!;
+  return [x + nx * w, y + ny * h];
+}
+
+/** Apply EDGE_CLEARANCE_W pull-back toward a target point. */
+function applyPullBack(point: [number, number], toward: [number, number]): [number, number] {
+  const dx = toward[0] - point[0];
+  const dy = toward[1] - point[1];
+  const len = Math.hypot(dx, dy);
+  if (len < 0.001) return point;
+  return [point[0] + (dx / len) * EDGE_CLEARANCE_W, point[1] + (dy / len) * EDGE_CLEARANCE_W];
+}
+
 /**
  * Compute a straight-line route between two resolved endpoints.
- * Interior anchors produce edge intersections + dashed guides.
+ *
+ * For each anchored endpoint:
+ * - Interior anchor: compute edge intersection toward other endpoint, apply pull-back offset,
+ *   dashed guide from interior position to line endpoint.
+ *   Same-shape interior: direct A→B, no edge intersection or dash.
+ * - Edge anchor: apply EDGE_CLEARANCE_W pull-back toward other endpoint (not outward).
+ * - Free endpoint: use position as-is.
  */
 function computeStraightRoute(
   start: ResolvedEndpoint,
@@ -420,63 +447,79 @@ function computeStraightRoute(
   let startDashTo: [number, number] | null = null;
   let endDashTo: [number, number] | null = null;
 
+  // Compute raw positions for anchored endpoints (needed for offset direction)
+  const startRaw =
+    start.isAnchored && start.normalizedAnchor && start.frame
+      ? getRawAnchorPosition(start)
+      : start.position;
+  const endRaw =
+    end.isAnchored && end.normalizedAnchor && end.frame ? getRawAnchorPosition(end) : end.position;
+
+  const sameShape = !!(start.shapeId && end.shapeId && start.shapeId === end.shapeId);
+  const startIsInterior = !!(start.normalizedAnchor && isAnchorInterior(start.normalizedAnchor));
+  const endIsInterior = !!(end.normalizedAnchor && isAnchorInterior(end.normalizedAnchor));
+
   // Process start endpoint
-  if (
-    start.isAnchored &&
-    start.normalizedAnchor &&
-    isAnchorInterior(start.normalizedAnchor) &&
-    start.frame &&
-    start.shapeType
-  ) {
-    const intersection = computeShapeEdgeIntersection(
-      start.shapeType,
-      start.frame,
-      start.position,
-      end.position,
-    );
-    if (intersection) {
-      const dx = end.position[0] - intersection.point[0];
-      const dy = end.position[1] - intersection.point[1];
-      const len = Math.hypot(dx, dy);
-      if (len > 0.001) {
-        startPt = [
-          intersection.point[0] + (dx / len) * EDGE_CLEARANCE_W,
-          intersection.point[1] + (dy / len) * EDGE_CLEARANCE_W,
-        ];
-      } else {
-        startPt = intersection.point;
+  if (start.isAnchored && start.normalizedAnchor && start.frame) {
+    if (startIsInterior) {
+      if (sameShape) {
+        // Same shape interior → direct, no dash
+        startPt = startRaw;
+      } else if (start.shapeType) {
+        const intersection = computeShapeEdgeIntersection(
+          start.shapeType,
+          start.frame,
+          startRaw,
+          endRaw,
+        );
+        if (intersection) {
+          startPt = applyPullBack(intersection.point, endRaw);
+          startDashTo = startRaw;
+        } else {
+          startPt = startRaw;
+        }
       }
-      startDashTo = start.position;
+    } else {
+      // Edge anchor: pull-back toward other endpoint
+      startPt = applyPullBack(startRaw, endRaw);
     }
   }
 
   // Process end endpoint
-  if (
-    end.isAnchored &&
-    end.normalizedAnchor &&
-    isAnchorInterior(end.normalizedAnchor) &&
-    end.frame &&
-    end.shapeType
-  ) {
-    const intersection = computeShapeEdgeIntersection(
-      end.shapeType,
-      end.frame,
-      end.position,
-      start.position,
-    );
-    if (intersection) {
-      const dx = start.position[0] - intersection.point[0];
-      const dy = start.position[1] - intersection.point[1];
-      const len = Math.hypot(dx, dy);
-      if (len > 0.001) {
-        endPt = [
-          intersection.point[0] + (dx / len) * EDGE_CLEARANCE_W,
-          intersection.point[1] + (dy / len) * EDGE_CLEARANCE_W,
-        ];
-      } else {
-        endPt = intersection.point;
+  if (end.isAnchored && end.normalizedAnchor && end.frame) {
+    if (endIsInterior) {
+      if (sameShape) {
+        endPt = endRaw;
+      } else if (end.shapeType) {
+        const intersection = computeShapeEdgeIntersection(
+          end.shapeType,
+          end.frame,
+          endRaw,
+          startRaw,
+        );
+        if (intersection) {
+          endPt = applyPullBack(intersection.point, startRaw);
+          endDashTo = endRaw;
+        } else {
+          endPt = endRaw;
+        }
       }
-      endDashTo = end.position;
+    } else {
+      // Edge anchor: pull-back toward other endpoint
+      endPt = applyPullBack(endRaw, startRaw);
+    }
+  }
+
+  // Overlap safety: if edge intersections or pullbacks produced a flipped/collapsed
+  // segment (e.g. overlapping shapes where exit points overshoot), fall back to direct
+  // raw positions — avoids "spinning clock" artifacts
+  const rawDx = endRaw[0] - startRaw[0];
+  const rawDy = endRaw[1] - startRaw[1];
+  if (rawDx * rawDx + rawDy * rawDy > 0.001) {
+    const visDx = endPt[0] - startPt[0];
+    const visDy = endPt[1] - startPt[1];
+    if (visDx * rawDx + visDy * rawDy <= 0 || Math.hypot(visDx, visDy) < EDGE_CLEARANCE_W) {
+      return { points: [startRaw, endRaw], startDashTo: null, endDashTo: null };
     }
   }
 

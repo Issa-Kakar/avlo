@@ -22,15 +22,12 @@ import {
   getConnectorType,
   getStartAnchor,
   getEndAnchor,
+  getPoints,
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getObjectCacheInstance } from '../object-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
-import {
-  getEndpointEdgePosition,
-  getShapeTypeMidpoints,
-  applyAnchorToFrame,
-} from '@/lib/connectors/connector-utils';
+import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
 import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
 import type { SnapTarget } from '@/lib/connectors/types';
 import { isAnchorInterior } from '@/lib/connectors/types';
@@ -311,7 +308,13 @@ function drawConnectorEndpointDots(
 
     // Draw snap midpoint dots on target shape
     if (currentSnap) {
-      drawSnapMidpointDots(ctx, currentSnap, snapshot, scale);
+      const isStraight = getConnectorType(handle.y) === 'straight';
+      const isCenterSnap =
+        isStraight &&
+        isAnchorInterior(currentSnap.normalizedAnchor) &&
+        currentSnap.normalizedAnchor[0] === 0.5 &&
+        currentSnap.normalizedAnchor[1] === 0.5;
+      drawSnapMidpointDots(ctx, currentSnap, snapshot, scale, isStraight, isCenterSnap);
     }
   } else {
     // Idle: both at canonical positions, both inactive
@@ -363,7 +366,32 @@ function drawConnectorEndpointDots(
 
   // Dashed guides for straight connectors with interior anchors
   if (getConnectorType(handle.y) === 'straight') {
-    drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale);
+    if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {
+      // During drag: use routedPoints for live dashed guides
+      const { endpoint, currentSnap, routedPoints } = transform;
+      if (routedPoints && routedPoints.length >= 2) {
+        // Dragged endpoint: draw dashed guide if current snap is interior
+        if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
+          const draggedPos = currentSnap.edgePosition;
+          const lineEnd =
+            endpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
+          drawDashedGuideLine(ctx, draggedPos, lineEnd, scale);
+        }
+        // Non-dragged endpoint: use stored anchor + routedPoints
+        const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
+        const otherAnchor =
+          otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
+        if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
+          const otherPos = getEndpointEdgePosition(handle, otherEndpoint, snapshot);
+          const otherLineEnd =
+            otherEndpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
+          drawDashedGuideLine(ctx, otherPos, otherLineEnd, scale);
+        }
+      }
+    } else {
+      // Idle: use stored points
+      drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale);
+    }
   }
 }
 
@@ -372,12 +400,15 @@ function drawConnectorEndpointDots(
  *
  * Shows 4 midpoints (N/E/S/W) on the target shape. When snapped to a midpoint,
  * all dots grow to large radius. The active side dot renders with blue fill and glow.
+ * For straight connectors, also draws center dot when applicable.
  */
 function drawSnapMidpointDots(
   ctx: CanvasRenderingContext2D,
   snap: SnapTarget,
   snapshot: Snapshot,
   scale: number,
+  isStraight: boolean = false,
+  isCenterSnap: boolean = false,
 ): void {
   const shapeHandle = snapshot.objectsById.get(snap.shapeId);
   if (!shapeHandle) return;
@@ -411,6 +442,37 @@ function drawSnapMidpointDots(
     ctx.stroke();
   }
 
+  // Center dot for straight connectors
+  if (isStraight) {
+    const centerX = shapeFrame[0] + shapeFrame[2] / 2;
+    const centerY = shapeFrame[1] + shapeFrame[3] / 2;
+    if (isCenterSnap) {
+      ctx.save();
+      ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
+      ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, largeRadius, 0, Math.PI * 2);
+      ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
+      ctx.lineWidth = strokeWidth;
+      ctx.stroke();
+      ctx.restore();
+      return; // Center snap is the active dot — skip normal active dot
+    } else {
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, smallRadius, 0, Math.PI * 2);
+      ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
+      ctx.fill();
+      ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+      ctx.stroke();
+    }
+  }
+
   // Active dot at edge position with glow
   ctx.save();
   ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
@@ -437,43 +499,30 @@ function drawSnapMidpointDots(
 
 /**
  * Draw dashed guide lines for a selected straight connector with interior anchors.
- * Shows the interior anchor position connected to the visible line endpoint.
+ * Draws from the interior anchor dot position to the stored line endpoint on the shape edge.
  */
 function drawStraightConnectorGuides(
   ctx: CanvasRenderingContext2D,
   handle: import('@avlo/shared').ObjectHandle,
   startPos: [number, number],
   endPos: [number, number],
-  snapshot: Snapshot,
+  _snapshot: Snapshot,
   scale: number,
 ): void {
+  const points = getPoints(handle.y);
+  if (points.length < 2) return;
+
   const startAnchor = getStartAnchor(handle.y);
   const endAnchor = getEndAnchor(handle.y);
 
-  // Check start endpoint
+  // Dashed guide from interior dot position to line start (edge intersection)
   if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
-    const shapeHandle = snapshot.objectsById.get(startAnchor.id);
-    if (shapeHandle) {
-      const frame =
-        shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
-      if (frame) {
-        const interiorPos = applyAnchorToFrame(startAnchor.anchor, frame, startAnchor.side);
-        drawDashedGuideLine(ctx, startPos, interiorPos, scale);
-      }
-    }
+    drawDashedGuideLine(ctx, startPos, points[0], scale);
   }
 
-  // Check end endpoint
+  // Dashed guide from interior dot position to line end (edge intersection)
   if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
-    const shapeHandle = snapshot.objectsById.get(endAnchor.id);
-    if (shapeHandle) {
-      const frame =
-        shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
-      if (frame) {
-        const interiorPos = applyAnchorToFrame(endAnchor.anchor, frame, endAnchor.side);
-        drawDashedGuideLine(ctx, endPos, interiorPos, scale);
-      }
-    }
+    drawDashedGuideLine(ctx, endPos, points[points.length - 1], scale);
   }
 }
 

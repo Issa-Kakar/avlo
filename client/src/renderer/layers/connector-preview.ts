@@ -133,6 +133,19 @@ export function drawConnectorPreview(
       preview.isCenterSnap,
     );
   }
+
+  // Draw start endpoint dot when attached (during creation)
+  if (fromIsAttached && preview.fromPosition && hasRoute) {
+    const dotRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
+    const sw = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+    ctx.lineWidth = sw;
+    ctx.beginPath();
+    ctx.arc(preview.fromPosition[0], preview.fromPosition[1], dotRadius, 0, Math.PI * 2);
+    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
+    ctx.fill();
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+    ctx.stroke();
+  }
 }
 
 /**
