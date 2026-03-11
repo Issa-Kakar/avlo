@@ -22,7 +22,6 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { getCodeProps } from '@avlo/shared';
 import {
   getDefaultWidth,
-  getCodeFrame,
   padTop,
   padBottom,
   padLeft,
@@ -34,44 +33,8 @@ import {
 } from '@/lib/code/code-system';
 import { CODE_FONT_FAMILY } from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
-import type { Snapshot } from '@avlo/shared';
+import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
 import type { PointerTool, PreviewData } from './types';
-
-/**
- * Hit test for code blocks at a world position.
- */
-function hitTestCode(
-  worldX: number,
-  worldY: number,
-  snapshot: Snapshot,
-  scale: number,
-): string | null {
-  const radius = 8 / scale;
-  const index = snapshot.spatialIndex;
-  if (!index) return null;
-
-  const results = index.query({
-    minX: worldX - radius,
-    minY: worldY - radius,
-    maxX: worldX + radius,
-    maxY: worldY + radius,
-  });
-
-  // Sort by ULID descending (topmost first)
-  const sorted = [...results].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-
-  for (const entry of sorted) {
-    if (entry.kind !== 'code') continue;
-    const frame = getCodeFrame(entry.id);
-    if (!frame) continue;
-    const [x, y, w, h] = frame;
-    if (worldX >= x && worldX <= x + w && worldY >= y && worldY <= y + h) {
-      return entry.id;
-    }
-  }
-
-  return null;
-}
 
 export class CodeTool implements PointerTool {
   private gestureActive = false;
@@ -100,7 +63,7 @@ export class CodeTool implements PointerTool {
     const roomDoc = getActiveRoomDoc();
     const snapshot = roomDoc.currentSnapshot;
     const scale = useCameraStore.getState().scale;
-    this.hitCodeId = hitTestCode(worldX, worldY, snapshot, scale);
+    this.hitCodeId = hitTestVisibleCode(worldX, worldY, snapshot, scale);
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -352,52 +315,6 @@ export class CodeTool implements PointerTool {
 
     const view = new cmView.EditorView({ state, parent: container });
     view.focus();
-
-    // DEBUG: verify gutter-content alignment after parseInt fix
-    setTimeout(() => {
-      const _line = container.querySelector('.cm-line');
-      const _scroller = container.querySelector('.cm-scroller');
-      const _content = container.querySelector('.cm-content');
-      // Get actual visible gutter elements (skip first spacer whose height=0)
-      const gutterEls = container.querySelectorAll('.cm-lineNumbers .cm-gutterElement');
-      const _gutter = Array.from(gutterEls).find((el) => (el as HTMLElement).offsetHeight > 0) as
-        | HTMLElement
-        | undefined;
-      if (_line && _scroller && _content) {
-        const lRect = (_line as HTMLElement).getBoundingClientRect();
-        const sRect = (_scroller as HTMLElement).getBoundingClientRect();
-        const cntRect = (_content as HTMLElement).getBoundingClientRect();
-        const canvasPadTop = padTop(fontSize) * scale;
-        console.log(
-          '[CodeTool] scrollerPad:',
-          (lRect.top - sRect.top).toFixed(2),
-          'contentPad:',
-          (cntRect.top - sRect.top).toFixed(2),
-          'canvasPad:',
-          canvasPadTop.toFixed(2),
-        );
-        console.log(
-          '[CodeTool] line0 top:',
-          lRect.top.toFixed(2),
-          'height:',
-          lRect.height.toFixed(2),
-          'lineHeight expected:',
-          screenLH.toFixed(2),
-        );
-        if (_gutter) {
-          const gRect = _gutter.getBoundingClientRect();
-          console.log(
-            '[CodeTool] gutter top:',
-            gRect.top.toFixed(2),
-            'line top:',
-            lRect.top.toFixed(2),
-            'GUTTER-LINE DIFF:',
-            (gRect.top - lRect.top).toFixed(3),
-            '(should be ~0)',
-          );
-        }
-      }
-    }, 50);
 
     this.editorView = view;
     this.container = container;

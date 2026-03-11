@@ -184,9 +184,9 @@ Decorators (`@name`) use `S.MODIFIER`. The Lezer pass uses semantic tags (`defin
 Y.Text change (typing or remote sync)
   → deep observer fires synchronously
   → codeSystem.handleContentChange(id, ev, lang)
-    → syncTokenize(text, lang) → RunSpans[] (flat packed triples)
+    → syncTokenize(sourceLines, lang) → RunSpans[] (flat packed triples)
     → cache.spans updated, layout/frame nulled, version incremented
-    → deltaToChangedRanges(ev.delta) → ChangedRange[]
+    → deltaToChangedRanges(ev.delta) → ChangedRange[] (adjacent ranges merged)
     → dispatch to worker (hash-routed): { type:'parse', id, text, language, version, changes }
 
 Same rAF frame:
@@ -203,7 +203,7 @@ Spans are **always populated** after entry creation. Cold miss in `getLayout()` 
 
 ### Sync Tokenizer (`syncTokenize`)
 
-Regex-based tokenizer — returns `RunSpans[]`. Pushes `(from, to, styleIndex)` triples into a reusable module-level buffer, then calls `packRunSpans()` per line. No per-highlight object allocation.
+Regex-based tokenizer — signature `syncTokenize(lines: string[], lang)`, returns `RunSpans[]`. Callers pass pre-split `sourceLines[]` (no internal `text.split('\n')`). Pushes `(from, to, styleIndex)` triples into a reusable module-level buffer, then calls `packRunSpans()` per line. No per-highlight object allocation.
 
 Handles: keywords (JS/TS/Python sets, three-tier classification via `keywordStyle()`), strings (including template literals with `${}` nesting, Python f/r/b-prefix strings, triple quotes), numbers (hex/binary/octal/scientific/separators/BigInt), comments (line `//`, block `/* */`, Python `#`, hashbang `#!`), operators (including `=>`, `?.`, `??`, `...`), decorators (`@name` → S.MODIFIER), identifiers (function calls → S.FUNCTION, PascalCase → S.TYPE, others → S.VARIABLE).
 
@@ -219,7 +219,7 @@ Multi-line state tracked via `inBlockComment` and `inTemplateString` flags acros
 
 **Per-object state:** Each worker maintains a `Map<string, { tree: Tree, fragments: TreeFragment[] }>`. When `changes` are provided, `TreeFragment.applyChanges()` enables incremental parsing. Without changes (cold parse or language change), a full parse is performed.
 
-**Span extraction (`extractSpans`):** `highlightTree()` walks the Lezer `Tree` with the `styleHighlighter`. Callback uses `TAG_STYLE_INDEX[classes]` to get `S` enum value. Per-line triples are collected, then `packRunSpans` produces the final `RunSpans`. Line offsets are binary-searched for fast token-to-line mapping.
+**Span extraction (`extractSpans`):** `highlightTree()` walks the Lezer `Tree` with the `styleHighlighter`. Callback stores `[lineIdx, from, to, style]` quads into a reusable flat `number[]` buffer (zero object allocation). Second pass uses a sequential cursor scan — O(highlights) total vs previous O(highlights × lines). Line offsets are binary-searched for fast token-to-line mapping.
 
 **Zero-copy transfer:** Worker transfers `RunSpans` ArrayBuffers to main thread (no structured clone overhead). Worker arrays become detached after postMessage.
 
@@ -272,6 +272,7 @@ interface CacheEntry {
 
 | Method | Called by | Purpose |
 |--------|-----------|---------|
+| `computeLayout(sourceLines, fontSize, width)` | SelectTool width reflow preview | Pure layout computation (exported) |
 | `getLayout(id, yText, fontSize, width, lang)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
 | `handleContentChange(id, ev, lang)` | Deep observer | Sync tokenize + dispatch worker parse with delta changes |
 | `applyWorkerSpans(id, spans, forVersion)` | Worker response handler | Version-gated span upgrade |
@@ -320,7 +321,7 @@ The CM theme references CSS custom properties instead of `em` units. `setCSSVars
 | `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
 | `--c-pb` | `padBottom(fs) * scale` px | `.cm-scroller` paddingBottom |
 | `--c-gl` | `padLeft(fs) * scale` px | `.cm-gutters` paddingLeft |
-| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-gutters` paddingRight |
+| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-gutterElement` paddingRight |
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
 | `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
 
@@ -388,7 +389,7 @@ Registered in `tool-registry.ts` as singleton `codeTool`, mapped to `'code'` too
 
 ### Gesture Flow
 
-1. `begin()`: Hit-test existing code blocks via spatial index query (8px screen-space radius, Z-order by ULID descending)
+1. `begin()`: Hit-test existing code blocks via `hitTestVisibleCode()` (occlusion-aware, Z-order by ULID descending)
 2. `end()`: If hit → `mountEditor(hitId)`. If no hit → `createCodeObject(x, y)` at center-placed position, then `mountEditor(createdId)`.
 
 ### Object Creation
@@ -451,7 +452,7 @@ endCodeEditing: () => set({ codeEditingId: null, menuOpen: selectedIds.length > 
 
 ### hit-testing.ts
 
-Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial index queries. CodeTool does its own hit testing (frame-based point-in-rect against `getCodeFrame()`).
+Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial index queries. `hitTestVisibleCode()` in `hit-testing.ts` handles code block hit testing with Z-order occlusion (same pattern as `hitTestVisibleText`): spatial query → `testObjectHit` → Z-sort → occlusion scan. Code blocks always occlude (opaque bg); unfilled shape interiors are transparent.
 
 ---
 

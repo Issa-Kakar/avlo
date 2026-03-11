@@ -60,7 +60,6 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         color: CODE_GUTTER,
         border: 'none',
         paddingLeft: 'var(--c-gl)',
-        paddingRight: 'var(--c-gr)',
       },
       '.cm-content': {
         fontFamily: `'${CODE_FONT_FAMILY}', monospace`,
@@ -71,6 +70,7 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       },
       '.cm-lineNumbers .cm-gutterElement': {
         padding: '0',
+        paddingRight: 'var(--c-gr)',
         fontFamily: `'${CODE_FONT_FAMILY}', monospace`,
         fontFeatureSettings: '"tnum"',
         textAlign: 'right',

@@ -141,21 +141,15 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
 // Span extraction — walks tree, maps Lezer tags to RunSpans via packRunSpans
 // ============================================================================
 
-// Reusable buffer for highlight triples per line
+// Reusable buffers — persisted across calls, zero allocation per parse
 let _lineBuf: number[] = [];
+let _hlBuf: number[] = [];
+let _hlCount = 0;
 
 function extractSpans(tree: Tree, text: string): RunSpans[] {
   const lines = text.split('\n');
   const lineCount = lines.length;
   const spans: RunSpans[] = new Array(lineCount);
-
-  // Per-line triple buffers: track count per line, push into shared flat array
-  const lineBufStart: number[] = new Array(lineCount);
-  const lineBufCount: number[] = new Array(lineCount);
-  for (let i = 0; i < lineCount; i++) {
-    lineBufStart[i] = 0;
-    lineBufCount[i] = 0;
-  }
 
   // Build line offset table for fast line lookup
   const lineOffsets: number[] = [0];
@@ -163,9 +157,9 @@ function extractSpans(tree: Tree, text: string): RunSpans[] {
     lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
   }
 
-  // Collect all highlights into a flat buffer, grouped by line
-  // First pass: count per line
-  const highlights: { lineIdx: number; from: number; to: number; style: number }[] = [];
+  // First pass: collect highlights into flat quad buffer [lineIdx, from, to, style]
+  // Zero object allocation — reuses _hlBuf across calls
+  _hlCount = 0;
 
   highlightTree(tree, styleHighlighter, (from, to, classes) => {
     const style = TAG_STYLE_INDEX[classes];
@@ -187,8 +181,13 @@ function extractSpans(tree: Tree, text: string): RunSpans[] {
       const tokenTo = Math.min(lines[lineIdx].length, to - lineStart);
 
       if (tokenFrom < tokenTo) {
-        highlights.push({ lineIdx, from: tokenFrom, to: tokenTo, style });
-        lineBufCount[lineIdx]++;
+        const idx = _hlCount * 4;
+        if (idx + 3 >= _hlBuf.length) _hlBuf.length = idx + 64;
+        _hlBuf[idx] = lineIdx;
+        _hlBuf[idx + 1] = tokenFrom;
+        _hlBuf[idx + 2] = tokenTo;
+        _hlBuf[idx + 3] = style;
+        _hlCount++;
       }
 
       if (to <= lineEnd) break;
@@ -196,25 +195,29 @@ function extractSpans(tree: Tree, text: string): RunSpans[] {
     }
   });
 
-  // Second pass: pack each line
+  // Second pass: sequential cursor scan — O(highlights) total
+  // highlightTree emits in document order, so quads are sorted by lineIdx
+  let cursor = 0;
+
   for (let i = 0; i < lineCount; i++) {
-    if (lineBufCount[i] === 0) {
+    if (cursor >= _hlCount || _hlBuf[cursor * 4] !== i) {
       spans[i] = lines[i].length === 0 ? EMPTY_SPANS : packRunSpans(lines[i].length, [], 0);
       continue;
     }
 
-    // Gather triples for this line into _lineBuf
-    const count = lineBufCount[i];
-    if (_lineBuf.length < count * 3) _lineBuf = new Array(count * 3);
-    let wi = 0;
-    for (let j = 0; j < highlights.length; j++) {
-      const h = highlights[j];
-      if (h.lineIdx === i) {
-        _lineBuf[wi++] = h.from;
-        _lineBuf[wi++] = h.to;
-        _lineBuf[wi++] = h.style;
-      }
+    let count = 0;
+    let j = cursor;
+    while (j < _hlCount && _hlBuf[j * 4] === i) {
+      const base = j * 4;
+      const tripleBase = count * 3;
+      if (tripleBase + 2 >= _lineBuf.length) _lineBuf.length = tripleBase + 30;
+      _lineBuf[tripleBase] = _hlBuf[base + 1];
+      _lineBuf[tripleBase + 1] = _hlBuf[base + 2];
+      _lineBuf[tripleBase + 2] = _hlBuf[base + 3];
+      count++;
+      j++;
     }
+    cursor = j;
     spans[i] = packRunSpans(lines[i].length, _lineBuf, count);
   }
 

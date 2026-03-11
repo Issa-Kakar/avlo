@@ -173,7 +173,7 @@ export function getDefaultWidth(fontSize: number): number {
 // §4 LAYOUT
 // ============================================================================
 
-function computeLayout(sourceLines: string[], fontSize: number, width: number): CodeLayout {
+export function computeLayout(sourceLines: string[], fontSize: number, width: number): CodeLayout {
   const sourceLineCount = sourceLines.length;
   const digits = Math.max(2, String(sourceLineCount).length);
   const cl = contentLeft(digits, fontSize);
@@ -306,6 +306,22 @@ export function deltaToChangedRanges(
     }
   }
 
+  // Merge adjacent ranges (select+type/paste → delete+insert at same position)
+  let wi = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    if (
+      wi > 0 &&
+      ranges[wi - 1].toA === ranges[i].fromA &&
+      ranges[wi - 1].toB === ranges[i].fromB
+    ) {
+      ranges[wi - 1].toA = ranges[i].toA;
+      ranges[wi - 1].toB = ranges[i].toB;
+    } else {
+      ranges[wi++] = ranges[i];
+    }
+  }
+  ranges.length = wi;
+
   return ranges;
 }
 
@@ -329,7 +345,7 @@ class CodeSystemCache {
     if (!e) {
       const text = yText.toString();
       const sourceLines = text.split('\n');
-      const spans = syncTokenize(text, language);
+      const spans = syncTokenize(sourceLines, language);
       const layout = computeLayout(sourceLines, fontSize, width);
       e = {
         sourceLines,
@@ -348,11 +364,10 @@ class CodeSystemCache {
 
     // Language changed — re-tokenize spans only, keep layout if dims unchanged
     if (e.language !== language) {
-      const text = e.sourceLines.join('\n');
-      e.spans = syncTokenize(text, language);
+      e.spans = syncTokenize(e.sourceLines, language);
       e.language = language;
       e.version++;
-      requestParse(id, text, language, e.version);
+      requestParse(id, e.sourceLines.join('\n'), language, e.version);
       // Only recompute layout if fontSize/width also changed
       if (!e.layout || e.layoutFontSize !== fontSize || e.layoutWidth !== width) {
         e.layoutFontSize = fontSize;
@@ -386,7 +401,7 @@ class CodeSystemCache {
     const yText = ev.target as Y.Text;
     const text = yText.toString();
     const sourceLines = text.split('\n');
-    const spans = syncTokenize(text, language);
+    const spans = syncTokenize(sourceLines, language);
 
     let e = this.entries.get(id);
     if (e) {

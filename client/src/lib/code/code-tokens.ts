@@ -481,8 +481,7 @@ function scanTemplateLiteral(line: string, start: number): number {
  * Sync regex tokenizer — returns RunSpans[] (one packed Uint16Array per source line).
  * Gaps between highlights are filled by packRunSpans with S.DEFAULT.
  */
-export function syncTokenize(text: string, language: CodeLanguage): RunSpans[] {
-  const lines = text.split('\n');
+export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[] {
   const kwSet = getKeywordSet(language);
   const isPython = language === 'python';
   const result: RunSpans[] = new Array(lines.length);
