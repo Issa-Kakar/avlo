@@ -185,11 +185,13 @@ export function buildFontString(
 // --- Font metrics (measured, not approximated) ---
 
 const _measuredAscentRatio = new Map<FontFamily, number>();
+const _measuredDescentRatio = new Map<FontFamily, number>();
 const _baselineToTopRatio = new Map<FontFamily, number>();
 const _minCharWidthRatio = new Map<FontFamily, number>();
 
-/** Generic fallback (used if fonts not loaded yet) */
+/** Generic fallbacks (used if fonts not loaded yet) */
 const FALLBACK_ASCENT_RATIO = 0.8;
+const FALLBACK_DESCENT_RATIO = 0.2;
 
 /**
  * Get the actual font ascent ratio by measuring with canvas.
@@ -221,6 +223,19 @@ export function getMeasuredAscentRatio(fontFamily: FontFamily = 'Grandstander'):
 }
 
 /**
+ * Get the actual font descent ratio by measuring with canvas.
+ * Uses fontBoundingBoxDescent which is the same metric CSS uses.
+ * Cached per font family. Triggers full measurement via getBaselineToTopRatio.
+ */
+export function getMeasuredDescentRatio(fontFamily: FontFamily = 'Grandstander'): number {
+  const cached = _measuredDescentRatio.get(fontFamily);
+  if (cached !== undefined) return cached;
+  if (!areFontsLoaded()) return FALLBACK_DESCENT_RATIO;
+  getBaselineToTopRatio(fontFamily); // side-populates descent cache
+  return _measuredDescentRatio.get(fontFamily) ?? FALLBACK_DESCENT_RATIO;
+}
+
+/**
  * Get the offset from baseline to DOM container top (as ratio of fontSize).
  * CSS half-leading formula: halfLeading = (lineHeight - contentArea) / 2
  * where contentArea = fontBoundingBoxAscent + fontBoundingBoxDescent (can differ from fontSize).
@@ -245,9 +260,12 @@ export function getBaselineToTopRatio(fontFamily: FontFamily = 'Grandstander'): 
   const lineHeight = testSize * lineHeightMultiplier;
   const ratio = ((lineHeight - contentArea) / 2 + ascent) / testSize;
 
-  // Side-populate ascent ratio cache (avoids duplicate measurement)
+  // Side-populate ascent + descent ratio caches (avoids duplicate measurement)
   if (!_measuredAscentRatio.has(fontFamily)) {
     _measuredAscentRatio.set(fontFamily, ascent / testSize);
+  }
+  if (!_measuredDescentRatio.has(fontFamily)) {
+    _measuredDescentRatio.set(fontFamily, m.fontBoundingBoxDescent / testSize);
   }
 
   _baselineToTopRatio.set(fontFamily, ratio);
@@ -276,6 +294,7 @@ export function getMinCharWidth(fontSize: number, fontFamily: FontFamily = 'Gran
  */
 export function resetFontMetrics(): void {
   _measuredAscentRatio.clear();
+  _measuredDescentRatio.clear();
   _baselineToTopRatio.clear();
   _minCharWidthRatio.clear();
 }

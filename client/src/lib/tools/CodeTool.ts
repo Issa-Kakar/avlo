@@ -29,11 +29,11 @@ import {
   padRight,
   gutterPad,
   charWidth,
-  CODE_FONT_FAMILY,
   BORDER_RADIUS,
   lineHeight as lineHeightFn,
-  getCodeMirrorExtensions,
 } from '@/lib/code/code-system';
+import { CODE_FONT_FAMILY } from '@/lib/code/code-tokens';
+import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import type { Snapshot } from '@avlo/shared';
 import type { PointerTool, PreviewData } from './types';
 
@@ -272,18 +272,27 @@ export class CodeTool implements PointerTool {
     host.appendChild(container);
 
     // Load CodeMirror modules lazily (parallel)
-    const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, cmAutocomplete, themeExts] =
-      await Promise.all([
-        import('@codemirror/state'),
-        import('@codemirror/view'),
-        import('@codemirror/commands'),
-        import('@codemirror/language'),
-        import('@codemirror/lang-javascript'),
-        import('@codemirror/lang-python'),
-        import('y-codemirror.next'),
-        import('@codemirror/autocomplete'),
-        getCodeMirrorExtensions(),
-      ]);
+    const [
+      cmState,
+      cmView,
+      cmCommands,
+      cmLang,
+      cmJS,
+      cmPython,
+      cmYCollab,
+      cmAutocomplete,
+      themeExts,
+    ] = await Promise.all([
+      import('@codemirror/state'),
+      import('@codemirror/view'),
+      import('@codemirror/commands'),
+      import('@codemirror/language'),
+      import('@codemirror/lang-javascript'),
+      import('@codemirror/lang-python'),
+      import('y-codemirror.next'),
+      import('@codemirror/autocomplete'),
+      getCodeMirrorExtensions(),
+    ]);
 
     // Per-session UndoManager for the Y.Text
     const yText = props.content;
@@ -351,17 +360,41 @@ export class CodeTool implements PointerTool {
       const _content = container.querySelector('.cm-content');
       // Get actual visible gutter elements (skip first spacer whose height=0)
       const gutterEls = container.querySelectorAll('.cm-lineNumbers .cm-gutterElement');
-      const _gutter = Array.from(gutterEls).find(el => (el as HTMLElement).offsetHeight > 0) as HTMLElement | undefined;
+      const _gutter = Array.from(gutterEls).find((el) => (el as HTMLElement).offsetHeight > 0) as
+        | HTMLElement
+        | undefined;
       if (_line && _scroller && _content) {
         const lRect = (_line as HTMLElement).getBoundingClientRect();
         const sRect = (_scroller as HTMLElement).getBoundingClientRect();
         const cntRect = (_content as HTMLElement).getBoundingClientRect();
         const canvasPadTop = padTop(fontSize) * scale;
-        console.log('[CodeTool] scrollerPad:', (lRect.top - sRect.top).toFixed(2), 'contentPad:', (cntRect.top - sRect.top).toFixed(2), 'canvasPad:', canvasPadTop.toFixed(2));
-        console.log('[CodeTool] line0 top:', lRect.top.toFixed(2), 'height:', lRect.height.toFixed(2), 'lineHeight expected:', screenLH.toFixed(2));
+        console.log(
+          '[CodeTool] scrollerPad:',
+          (lRect.top - sRect.top).toFixed(2),
+          'contentPad:',
+          (cntRect.top - sRect.top).toFixed(2),
+          'canvasPad:',
+          canvasPadTop.toFixed(2),
+        );
+        console.log(
+          '[CodeTool] line0 top:',
+          lRect.top.toFixed(2),
+          'height:',
+          lRect.height.toFixed(2),
+          'lineHeight expected:',
+          screenLH.toFixed(2),
+        );
         if (_gutter) {
           const gRect = _gutter.getBoundingClientRect();
-          console.log('[CodeTool] gutter top:', gRect.top.toFixed(2), 'line top:', lRect.top.toFixed(2), 'GUTTER-LINE DIFF:', (gRect.top - lRect.top).toFixed(3), '(should be ~0)');
+          console.log(
+            '[CodeTool] gutter top:',
+            gRect.top.toFixed(2),
+            'line top:',
+            lRect.top.toFixed(2),
+            'GUTTER-LINE DIFF:',
+            (gRect.top - lRect.top).toFixed(3),
+            '(should be ~0)',
+          );
         }
       }
     }, 50);

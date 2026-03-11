@@ -18,8 +18,8 @@ import { tagHighlighter, tags } from '@lezer/highlight';
 import { TreeFragment } from '@lezer/common';
 import type { Tree, Parser } from '@lezer/common';
 
-import type { RunSpans } from './code-shared';
-import { TAG_STYLE_INDEX, packRunSpans, EMPTY_SPANS } from './code-shared';
+import type { RunSpans } from './code-tokens';
+import { TAG_STYLE_INDEX, packRunSpans, EMPTY_SPANS } from './code-tokens';
 
 // ============================================================================
 // Tag Highlighter — expanded tag list for complete coloring

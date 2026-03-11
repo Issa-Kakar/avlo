@@ -10,8 +10,9 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-shared.ts` | Style enum (`S`), `PALETTE`, `RunSpans` type, `packRunSpans` gap-fill, `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants — imported by both main thread and worker |
-| `code-system.ts` | Singleton `CodeSystemCache`, sync regex tokenizer, zero-allocation canvas renderer (`renderCodeLayout`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, CM theme extensions, font metrics measurement, layout computation with word-aware wrapping |
+| `code-tokens.ts` | Style enum (`S`), `PALETTE`, `RunSpans` type, `packRunSpans` gap-fill, `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, keyword sets + classification, sync regex tokenizer (`syncTokenize`) — imported by main thread, worker, and theme |
+| `code-system.ts` | Singleton `CodeSystemCache`, zero-allocation canvas renderer (`renderCodeLayout`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system), layout computation with word-aware wrapping |
+| `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
 | `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → `RunSpans[]` via `TAG_STYLE_INDEX` + `packRunSpans`, zero-copy transfer |
 | `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) |
 
@@ -78,7 +79,7 @@ gutterPad(fs) = fs * 0.7
 totalWidth  = stored width field (set at creation from getDefaultWidth)
 totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
 
-charWidth(fs)  = fs * measuredCharWidthRatio  (measured via canvas, fallback 0.6)
+charWidth(fs)  = fs * getMinCharWidthRatio('JetBrains Mono')  (from text-system cache)
 lineHeight(fs) = fs * 1.5
 ```
 
@@ -87,13 +88,14 @@ Content left offset = `padLeft(fs) + gutterWidth + gutterPad(fs)`.
 
 `BORDER_RADIUS` is currently a fixed constant (12). Will become fontSize-proportional.
 
-### Measured Font Metrics
+### Font Metrics — Derived from text-system
 
-Singleton lazy measurement via canvas `measureText()` at 100px:
-- `charWidthRatio` — `measureText('M').width / 100`
-- `baselineRatio` — `(halfLeading + fontBoundingBoxAscent) / lineHeight` using CSS half-leading formula
+No separate measurement canvas. Metrics derived from `text-system.ts`'s per-font measurement cache (`getMeasuredAscentRatio`, `getMeasuredDescentRatio`, `getMinCharWidthRatio`). JetBrains Mono is true monospace — advance width identical across all weights, so `getMinCharWidthRatio` (bold 'W') equals any-weight any-glyph advance.
 
-Both canvas renderer and CM theme use the same measured ratios.
+- `charWidth(fs)` = `fs * getMinCharWidthRatio('JetBrains Mono')`
+- `baselineOffset(fs)` = `fs * (LINE_HEIGHT_MULT + ascentR - descentR) / 2` — CSS half-leading formula with code's 1.5 line height (text system uses 1.3 for rich text JetBrains Mono)
+
+Both canvas renderer and CM theme use the same derived metrics.
 
 ### Content Layout
 
@@ -127,7 +129,7 @@ Continuation lines have `from > 0` (no gutter number). The renderer clips `RunSp
 
 ## Theme — CoolGlow Palette
 
-Single fixed dark theme (no user-selectable themes). All constants in `code-shared.ts`, consumed by sync tokenizer, Lezer worker, CM theme, and canvas renderer.
+Single fixed dark theme (no user-selectable themes). All constants in `code-tokens.ts`, consumed by sync tokenizer, Lezer worker, CM theme, and canvas renderer.
 
 ### Chrome
 | Constant | Hex | Purpose |
