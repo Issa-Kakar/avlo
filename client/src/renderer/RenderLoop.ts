@@ -1,81 +1,66 @@
-import { DirtyRectTracker } from './DirtyRectTracker';
-import {
-  FrameStats,
-  FRAME_CONFIG,
-  InvalidationReason,
-  WorldBounds,
-  DirtyClipRegion,
-  type CSSPixelRect,
-} from './types';
-import {
-  drawBackground,
-  drawObjects,
-} from './layers';
-import {
-  useCameraStore,
-  getViewTransform,
-  getViewportInfo,
-  getVisibleWorldBounds,
-  isMobile,
-} from '@/stores/camera-store';
-import { getBaseContext } from '@/canvas/SurfaceManager';
+import { drawBackground, drawObjects } from './layers';
+import { FRAME_CONFIG } from './types';
+import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
+import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getOpacity } from '@avlo/shared';
+import type { WorldBounds, ViewTransform } from '@avlo/shared';
+
+// Dirty rect constants
+const MAX_RECTS = 10;
+const AA_MARGIN = 2; // device pixels
+const AREA_RATIO = 0.33;
+const COALESCE_SNAP = 2; // device pixels
 
 export class RenderLoop {
   private started = false;
-  private dirtyTracker = new DirtyRectTracker();
   private cameraUnsubscribe: (() => void) | null = null;
-  private frameStats: FrameStats = {
-    frameCount: 0,
-    avgMs: 0,
-    fps: 60,
-    overBudgetCount: 0,
-    skippedCount: 0,
-    lastClearType: 'none',
-    rectCount: 0,
-  };
 
+  // Inline dirty rect state (zero-allocation buffer)
+  private readonly dirtyBuf = new Float64Array(MAX_RECTS * 4); // [minX,minY,maxX,maxY,...]
+  private dirtyCount = 0;
+  private fullClear = false;
+  private canvasW = 0;
+  private canvasH = 0;
+
+  // Independent resize detection (not reliant on applyPendingResize return value)
+  private lastCanvasW = 0;
+  private lastCanvasH = 0;
+
+  // Scheduling
   private rafId: number | null = null;
+  private needsFrame = false;
+  private urgent = false;
   private lastFrameTime = 0;
-  private skipNextFrame = false;
+  private throttleTimeout: ReturnType<typeof setTimeout> | null = null;
+  private nativeRafUntil = 0; // Bypass 60fps throttle until this timestamp (post-resize font warmup)
+
+  // Visibility
   private isHidden = false;
-  private hiddenIntervalId: number | null = null; // Browser timer returns number, not NodeJS.Timeout
-  private needsFrame = false; // EVENT-DRIVEN: Only schedule when dirty
-  private framesSinceInvalidation = 0; // Count frames since last invalidation
+  private hiddenIntervalId: number | null = null;
+
+  private hasTranslucent = false;
 
   constructor() {
-    // Listen for visibility changes
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
   }
 
-  /**
-   * Start the render loop.
-   * All dependencies are read from module registries - no config needed.
-   */
   start(): void {
-    if (this.started) {
-      console.warn('RenderLoop already started');
-      return;
-    }
-
+    if (this.started) return;
     this.started = true;
     this.lastFrameTime = performance.now();
 
-    // Get initial viewport for tracker sizing from camera store
-    const viewport = getViewportInfo();
-    this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
+    // Initialize canvas dimensions
+    const { cssWidth, cssHeight, dpr } = useCameraStore.getState();
+    this.canvasW = Math.round(cssWidth * dpr);
+    this.canvasH = Math.round(cssHeight * dpr);
+    this.lastCanvasW = this.canvasW;
+    this.lastCanvasH = this.canvasH;
 
-    // Initialize dirty tracker with current transform state
-    const initialView = getViewTransform();
-    this.dirtyTracker.notifyTransformChange(initialView);
-
-    // Subscribe to camera store for self-invalidation on viewport/transform changes
-    // This eliminates the need for Canvas.tsx to be a middleman
+    // Any camera change → full clear + schedule frame
     this.cameraUnsubscribe = useCameraStore.subscribe(
-      // Selector: extract all relevant camera state
       (state) => ({
         scale: state.scale,
         panX: state.pan.x,
@@ -84,26 +69,12 @@ export class RenderLoop {
         cssHeight: state.cssHeight,
         dpr: state.dpr,
       }),
-      // Callback: runs when selected values change
-      (curr, prev) => {
-        // Viewport changed -> update canvas size and full clear
-        if (curr.cssWidth !== prev.cssWidth || curr.cssHeight !== prev.cssHeight || curr.dpr !== prev.dpr) {
-          const pixelWidth = Math.round(curr.cssWidth * curr.dpr);
-          const pixelHeight = Math.round(curr.cssHeight * curr.dpr);
-          this.dirtyTracker.setCanvasSize(pixelWidth, pixelHeight, curr.dpr);
-          this.dirtyTracker.invalidateAll('geometry-change');
-          this.markDirty();
-          return; // Full clear handles everything
-        }
-
-        // Transform changed -> notify tracker for full clear and schedule frame
-        if (curr.scale !== prev.scale || curr.panX !== prev.panX || curr.panY !== prev.panY) {
-          this.dirtyTracker.notifyTransformChange({
-            scale: curr.scale,
-            pan: { x: curr.panX, y: curr.panY }
-          });
-          this.markDirty();
-        }
+      (curr) => {
+        this.canvasW = Math.round(curr.cssWidth * curr.dpr);
+        this.canvasH = Math.round(curr.cssHeight * curr.dpr);
+        this.fullClear = true;
+        this.dirtyCount = 0;
+        this.markDirty();
       },
       {
         equalityFn: (a, b) =>
@@ -113,406 +84,363 @@ export class RenderLoop {
           a.cssWidth === b.cssWidth &&
           a.cssHeight === b.cssHeight &&
           a.dpr === b.dpr,
-      }
+      },
     );
 
-    // EVENT-DRIVEN: Don't schedule frame on start - wait for invalidation
-    // Only start hidden loop if already hidden
-    if (document.hidden) {
-      this.startHiddenLoop();
-    }
-
-    // Stats are published opportunistically at the end of rendered frames only
-    // This maintains true zero idle CPU - no timers when nothing is dirty
+    if (document.hidden) this.startHiddenLoop();
   }
 
-  // Stop the render loop
   stop(): void {
-    // Cancel camera store subscription first
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
 
-    // Clear any pending animation frames first
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
-
-    // Clear any hidden tab intervals
     if (this.hiddenIntervalId !== null) {
       clearInterval(this.hiddenIntervalId);
       this.hiddenIntervalId = null;
     }
+    if (this.throttleTimeout !== null) {
+      clearTimeout(this.throttleTimeout);
+      this.throttleTimeout = null;
+    }
 
-    // Reset all state
     this.started = false;
-    this.dirtyTracker.reset();
+    this.dirtyCount = 0;
+    this.fullClear = false;
     this.needsFrame = false;
-    this.framesSinceInvalidation = 0;
-    this.skipNextFrame = false;
+    this.urgent = false;
     this.lastFrameTime = 0;
-
-    // Reset frame stats to initial state
-    this.frameStats = {
-      frameCount: 0,
-      avgMs: 0,
-      fps: 60,
-      overBudgetCount: 0,
-      skippedCount: 0,
-      lastClearType: 'none',
-      rectCount: 0,
-    };
+    this.nativeRafUntil = 0;
+    this.lastCanvasW = 0;
+    this.lastCanvasH = 0;
+    this.hasTranslucent = false;
   }
 
-  // Handle visibility change
-  private handleVisibilityChange = (): void => {
-    this.isHidden = document.hidden;
-
-    if (this.isHidden) {
-      // Switch to low FPS timer if we have pending work
-      if (this.rafId !== null) {
-        cancelAnimationFrame(this.rafId);
-        this.rafId = null;
-      }
-      if (this.needsFrame) {
-        this.startHiddenLoop();
-      }
-    } else {
-      // Switch back to rAF if we have pending work
-      if (this.hiddenIntervalId !== null) {
-        clearInterval(this.hiddenIntervalId);
-        this.hiddenIntervalId = null;
-      }
-      if (this.needsFrame) {
-        this.scheduleFrameIfNeeded();
-      }
-    }
-  };
-
-  // Low FPS loop for hidden tabs
-  private startHiddenLoop(): void {
-    if (this.hiddenIntervalId || !this.started) return;
-
-    const intervalMs = 1000 / FRAME_CONFIG.HIDDEN_FPS;
-    this.hiddenIntervalId = window.setInterval(() => {
-      // Safety check - might have been stopped
-      if (this.started && this.needsFrame) {
-        this.tick();
-      } else if (!this.started && this.hiddenIntervalId !== null) {
-        // Clean up interval if stopped
-        clearInterval(this.hiddenIntervalId);
-        this.hiddenIntervalId = null;
-      }
-    }, intervalMs);
-  }
-
-  // EVENT-DRIVEN: Schedule frame only when needed
-  private scheduleFrameIfNeeded(): void {
-    if (!this.started || this.isHidden || this.rafId !== null) return;
-
-    // Check if we should throttle FPS on mobile (isMobile from camera-store)
-    const targetFPS = isMobile() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS;
-    const targetMs = 1000 / targetFPS;
-
-    // NEVER throttle the first frame after invalidation for instant response
-    // Only throttle subsequent frames while still dirty
-    const now = performance.now();
-    const elapsed = now - this.lastFrameTime;
-
-    // Don't throttle the first frame (framesSinceInvalidation === 0)
-    // Only apply FPS throttling to subsequent continuous frames
-    if (this.framesSinceInvalidation > 0 && elapsed < targetMs) {
-      // We've rendered recently and need to respect FPS cap
-      window.setTimeout(() => this.scheduleFrameIfNeeded(), targetMs - elapsed);
-      return;
-    }
-
-    this.rafId = requestAnimationFrame(() => {
-      this.rafId = null;
-      this.tick();
-      // Only schedule next frame if still dirty after this frame
-      if (this.needsFrame) {
-        this.scheduleFrameIfNeeded();
-      }
-    });
-  }
-
-  // Main render tick
-  private tick(): void {
-    if (!this.started) return;
-
-    const startTime = performance.now();
-    this.lastFrameTime = startTime;
-
-    // Clear the needsFrame flag - will be set again if new work arrives
-    this.needsFrame = false;
-    this.framesSinceInvalidation++; // Increment frame counter
-
-    // Skip frame if previous was over budget
-    if (this.skipNextFrame) {
-      this.skipNextFrame = false;
-      this.frameStats.skippedCount++;
-      return;
-    }
-
-    // Get context from registry (replaces stageRef.current)
-    const ctx = getBaseContext();
-    if (!ctx) return;
-
-    // Read view and viewport from camera store
-    const view = getViewTransform();
-    // Read snapshot from room-runtime (replaces getSnapshot callback)
-    const snapshot = getCurrentSnapshot();
-    const viewport = getViewportInfo();
-
-    // Early exit if viewport is not yet sized
-    if (viewport.cssWidth <= 0 || viewport.cssHeight <= 0) {
-      return;
-    }
-
-    // Validate view transform to prevent rendering issues
-    if (
-      !view ||
-      !isFinite(view.scale) ||
-      view.scale <= 0 ||
-      !isFinite(view.pan.x) ||
-      !isFinite(view.pan.y)
-    ) {
-      console.error('[RenderLoop] Invalid view transform:', view);
-      // Force full clear and return early - invalid transform can't be rendered
-      this.dirtyTracker.invalidateAll('transform-change');
-      return;
-    }
-
-    // Update dirty tracker canvas size if changed
-    this.dirtyTracker.setCanvasSize(viewport.pixelWidth, viewport.pixelHeight, viewport.dpr);
-
-    // Transform changes are handled by the camera store subscription callback
-    // which calls dirtyTracker.notifyTransformChange() before marking dirty
-
-    // Get clear instructions early to check if we need to do anything
-    let clearInstructions = this.dirtyTracker.getClearInstructions();
-
-    // Coalesce dirty rectangles only if we have dirty rects (not full clear or none)
-    if (
-      clearInstructions.type === 'dirty' &&
-      clearInstructions.rects &&
-      clearInstructions.rects.length > 1
-    ) {
-      this.dirtyTracker.coalesce();
-      // Get updated instructions after coalescing
-      clearInstructions = this.dirtyTracker.getClearInstructions();
-    }
-
-    // Check if we have translucent strokes in view that require full clear
-    // This prevents alpha accumulation artifacts when using dirty rect optimization
-    if (clearInstructions.type === 'dirty') {
-      // Check if any translucent stroke intersects the viewport
-      // TODO: Re-implement translucency check with Y.Map objects in Phase 6
-      let hasTranslucentInView = false;
-
-      if (snapshot.spatialIndex) {
-        const visibleBounds = getVisibleWorldBounds();
-        // Use spatial query for efficiency
-        const visibleObjects = snapshot.spatialIndex.query({
-          minX: visibleBounds.minX,
-          minY: visibleBounds.minY,
-          maxX: visibleBounds.maxX,
-          maxY: visibleBounds.maxY,
-        });
-        hasTranslucentInView = visibleObjects.some(
-          (entry) => {
-            const handle = snapshot.objectsById.get(entry.id);
-            return handle && getOpacity(handle.y) < 1;
-          }
-        );
-      }
-
-      // Promote to full clear if we have translucent content visible
-      if (hasTranslucentInView) {
-        this.dirtyTracker.invalidateAll('content-change');
-        clearInstructions = this.dirtyTracker.getClearInstructions();
-      }
-    }
-
-    // Early exit if nothing to do
-    if (clearInstructions.type === 'none' && this.frameStats.frameCount > 0) {
-      this.frameStats.lastClearType = 'none';
-      this.frameStats.rectCount = 0; // Reset rect count on no-op
-      return;
-    }
-
-    // Clear pass (identity transform)
-    ctx.save();
-    // Reset to identity for clearing
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-    if (clearInstructions.type === 'full') {
-      // Full clear in device pixels
-      ctx.clearRect(0, 0, viewport.pixelWidth, viewport.pixelHeight);
-      this.frameStats.lastClearType = 'full';
-      this.frameStats.rectCount = 0; // Reset rect count on full clear
-    } else if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
-      // Dirty rectangle clears - rects are already in device pixels
-      for (const rect of clearInstructions.rects) {
-        ctx.clearRect(rect.x, rect.y, rect.width, rect.height);
-      }
-      this.frameStats.lastClearType = 'dirty';
-      this.frameStats.rectCount = clearInstructions.rects.length;
-    }
-    ctx.restore();
-
-    // Draw pass 1: World content (world transform)
-    ctx.save();
-    // Apply explicit world transform: DPR × scale × translate combined
-    const { dpr } = viewport;
-    ctx.setTransform(
-      dpr * view.scale, 0,
-      0, dpr * view.scale,
-      -view.pan.x * dpr * view.scale,
-      -view.pan.y * dpr * view.scale
-    );
-
-    // Calculate visible world bounds for culling (reads from camera store)
-    const visibleBounds = getVisibleWorldBounds();
-
-    // CRITICAL: Apply clipping if we have dirty rects
-    let clipRegion: DirtyClipRegion | undefined;
-    if (clearInstructions.type === 'dirty' && clearInstructions.rects) {
-      // Convert device pixel rects to world coordinates for clipping
-      clipRegion = {
-        worldRects: clearInstructions.rects.map(rect => {
-          // Convert device pixels → CSS pixels → world
-          const cssX = rect.x / viewport.dpr;
-          const cssY = rect.y / viewport.dpr;
-          const cssW = rect.width / viewport.dpr;
-          const cssH = rect.height / viewport.dpr;
-
-          const [worldX1, worldY1] = view.canvasToWorld(cssX, cssY);
-          const [worldX2, worldY2] = view.canvasToWorld(cssX + cssW, cssY + cssH);
-
-          return {
-            minX: worldX1,
-            minY: worldY1,
-            maxX: worldX2,
-            maxY: worldY2,
-          };
-        })
-      };
-
-      // Create clipping path for all dirty regions in world space
-      ctx.save();
-      ctx.beginPath();
-      for (const worldRect of clipRegion.worldRects) {
-        ctx.rect(
-          worldRect.minX,
-          worldRect.minY,
-          worldRect.maxX - worldRect.minX,
-          worldRect.maxY - worldRect.minY
-        );
-      }
-      ctx.clip();
-    }
-
-    const augmentedViewport = {
-      ...viewport,
-      visibleWorldBounds: visibleBounds,
-      clipRegion, // Pass dirty regions for spatial queries
-    };
-
-    // Draw world layers
-    drawBackground(ctx, snapshot, view, augmentedViewport);
-    drawObjects(ctx, snapshot, view, augmentedViewport);
-
-    // Restore clipping state
-    if (clipRegion) {
-      ctx.restore();
-    }
-    ctx.restore();
-
-    // Reset dirty tracker for next frame
-    this.dirtyTracker.reset();
-
-    // Update frame stats
-    const frameDuration = performance.now() - startTime;
-    this.updateStats(frameDuration);
-
-    // Check if we should skip next frame
-    if (frameDuration > FRAME_CONFIG.SKIP_THRESHOLD_MS) {
-      this.skipNextFrame = true;
-    }
-  }
-
-  // Update frame statistics
-  private updateStats(frameDuration: number): void {
-    this.frameStats.frameCount++;
-
-    // Exponential moving average
-    const alpha = 0.1;
-    this.frameStats.avgMs = this.frameStats.avgMs * (1 - alpha) + frameDuration * alpha;
-
-    // Calculate FPS
-    if (this.frameStats.avgMs > 0) {
-      this.frameStats.fps = 1000 / this.frameStats.avgMs;
-    }
-
-    // Track budget overruns
-    if (frameDuration > FRAME_CONFIG.TARGET_MS) {
-      this.frameStats.overBudgetCount++;
-    }
-  }
-
-  // Public invalidation APIs - EVENT-DRIVEN: These trigger frame scheduling
-  invalidateWorld(bounds: WorldBounds): void {
-    if (!this.started) return;
-    // Read view from camera store
-    const view = getViewTransform();
-    this.dirtyTracker.invalidateWorldBounds(bounds, view);
-    this.markDirty();
-  }
-
-  invalidateCanvas(rect: CSSPixelRect): void {
-    if (!this.started) return;
-    // Read view and viewport from camera store
-    const { scale } = useCameraStore.getState();
-    const viewport = getViewportInfo();
-    // Pass CSS pixel rect - dirtyTracker converts to device pixels internally
-    this.dirtyTracker.invalidateCanvasPixels(rect, scale, viewport.dpr);
-    this.markDirty();
-  }
-
-  invalidateAll(reason: InvalidationReason): void {
-    this.dirtyTracker.invalidateAll(reason);
-    this.markDirty();
-  }
-
-  setResizeInfo(info: { width: number; height: number; dpr: number }): void {
-    // Resize always triggers full clear (width/height are device pixels)
-    this.dirtyTracker.setCanvasSize(info.width, info.height, info.dpr);
-    this.dirtyTracker.invalidateAll('geometry-change');
-    this.markDirty();
-  }
-
-  // EVENT-DRIVEN: Mark dirty and schedule frame if needed
-  private markDirty(): void {
-    // Safety check - don't schedule if not started
-    if (!this.started) return;
-
-    if (!this.needsFrame) {
-      this.needsFrame = true;
-      this.framesSinceInvalidation = 0; // Reset counter for new invalidation
-      this.scheduleFrameIfNeeded();
-    }
-  }
-
-  // Cleanup
   destroy(): void {
-    // Ensure subscription is cleaned up (stop() also does this, but be explicit)
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
     this.stop();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     }
+  }
+
+  // =============================================
+  // PUBLIC API
+  // =============================================
+
+  /** Add a world-space dirty rect. BBox must already include stroke width. */
+  invalidateWorld(bounds: WorldBounds): void {
+    if (!this.started || this.fullClear) return;
+
+    const { scale, pan, dpr } = useCameraStore.getState();
+
+    // World → device pixels with AA margin (no MAX_WORLD_LINE_WIDTH - bbox includes stroke)
+    const i = this.dirtyCount * 4;
+    this.dirtyBuf[i] = (bounds.minX - pan.x) * scale * dpr - AA_MARGIN;
+    this.dirtyBuf[i + 1] = (bounds.minY - pan.y) * scale * dpr - AA_MARGIN;
+    this.dirtyBuf[i + 2] = (bounds.maxX - pan.x) * scale * dpr + AA_MARGIN;
+    this.dirtyBuf[i + 3] = (bounds.maxY - pan.y) * scale * dpr + AA_MARGIN;
+    this.dirtyCount++;
+
+    // Check promotion
+    if (this.dirtyCount >= MAX_RECTS) {
+      this.fullClear = true;
+      this.dirtyCount = 0;
+    } else {
+      this.checkAreaPromotion();
+    }
+
+    this.markDirty();
+  }
+
+  /** Force full clear on next frame. */
+  invalidateAll(): void {
+    this.fullClear = true;
+    this.dirtyCount = 0;
+    this.markDirty();
+  }
+
+  // =============================================
+  // SCHEDULING
+  // =============================================
+
+  private markDirty(): void {
+    if (!this.started) return;
+    this.needsFrame = true;
+    this.urgent = true;
+    if (this.throttleTimeout !== null) {
+      clearTimeout(this.throttleTimeout);
+      this.throttleTimeout = null;
+    }
+    this.scheduleFrame();
+  }
+
+  private scheduleFrame(): void {
+    if (!this.started || this.isHidden || this.rafId !== null) return;
+
+    if (!this.urgent && performance.now() >= this.nativeRafUntil) {
+      const targetMs = 1000 / (isMobile() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS);
+      const elapsed = performance.now() - this.lastFrameTime;
+      if (elapsed < targetMs) {
+        this.throttleTimeout = setTimeout(() => {
+          this.throttleTimeout = null;
+          this.scheduleFrame();
+        }, targetMs - elapsed);
+        return;
+      }
+    }
+
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.tick();
+      if (this.needsFrame) {
+        this.urgent = false;
+        this.scheduleFrame();
+      }
+    });
+  }
+
+  // =============================================
+  // MAIN TICK
+  // =============================================
+
+  private tick(): void {
+    if (!this.started) return;
+    this.lastFrameTime = performance.now();
+    this.needsFrame = false;
+
+    // 1. Get context
+    const ctx = getBaseContext();
+    if (!ctx) return;
+
+    // 2. Apply pending resize + detect canvas dimension change independently
+    applyPendingResize();
+    if (ctx.canvas.width !== this.lastCanvasW || ctx.canvas.height !== this.lastCanvasH) {
+      this.lastCanvasW = ctx.canvas.width;
+      this.lastCanvasH = ctx.canvas.height;
+      this.fullClear = true;
+      this.dirtyCount = 0;
+      // Render at native rAF (bypass 60fps throttle) for 150ms after context reset.
+      // Continuous full redraws give the GPU multiple frames to warm font caches.
+      this.nativeRafUntil = performance.now() + 150;
+    }
+
+    // 3. Read camera state (single read for entire frame)
+    const { scale, pan, dpr, cssWidth, cssHeight } = useCameraStore.getState();
+    if (cssWidth <= 0 || cssHeight <= 0) return;
+    if (!isFinite(scale) || scale <= 0 || !isFinite(pan.x) || !isFinite(pan.y)) return;
+
+    const pixelW = Math.round(cssWidth * dpr);
+    const pixelH = Math.round(cssHeight * dpr);
+    this.canvasW = pixelW;
+    this.canvasH = pixelH;
+
+    // 4. Read snapshot
+    const snapshot = getCurrentSnapshot();
+
+    // 5. Translucency check — dirty rects can't composite correctly with opacity < 1
+    this.hasTranslucent = false;
+    if (snapshot.spatialIndex) {
+      const vb = getVisibleWorldBounds();
+      const visible = snapshot.spatialIndex.query(vb);
+      this.hasTranslucent = visible.some((entry) => {
+        const handle = snapshot.objectsById.get(entry.id);
+        return handle && getOpacity(handle.y) < 1;
+      });
+    }
+    if (this.hasTranslucent && !this.fullClear) {
+      this.fullClear = true;
+      this.dirtyCount = 0;
+    }
+
+    // 6. Coalesce overlapping dirty rects
+    if (this.dirtyCount > 1) this.coalesce();
+
+    // 7. Determine clear mode
+    const hasDirty = this.dirtyCount > 0;
+    if (!this.fullClear && !hasDirty) return; // Nothing to do
+
+    // 8. CLEAR PASS (identity transform)
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (this.fullClear) {
+      ctx.clearRect(0, 0, pixelW, pixelH);
+    } else {
+      const buf = this.dirtyBuf;
+      for (let i = 0; i < this.dirtyCount; i++) {
+        const off = i * 4;
+        ctx.clearRect(buf[off], buf[off + 1], buf[off + 2] - buf[off], buf[off + 3] - buf[off + 1]);
+      }
+    }
+    ctx.restore();
+
+    // 9. DRAW PASS (world transform)
+    ctx.save();
+    const s = dpr * scale;
+    ctx.setTransform(s, 0, 0, s, -pan.x * s, -pan.y * s);
+
+    const visibleBounds = getVisibleWorldBounds();
+
+    // Build clip region from dirty rects (device px → world coords)
+    let clipWorldRects: WorldBounds[] | undefined;
+    if (!this.fullClear && hasDirty) {
+      clipWorldRects = [];
+      const invS = 1 / (scale * dpr);
+      const buf = this.dirtyBuf;
+
+      ctx.save();
+      ctx.beginPath();
+      for (let i = 0; i < this.dirtyCount; i++) {
+        const off = i * 4;
+        const wMinX = buf[off] * invS + pan.x;
+        const wMinY = buf[off + 1] * invS + pan.y;
+        const wMaxX = buf[off + 2] * invS + pan.x;
+        const wMaxY = buf[off + 3] * invS + pan.y;
+        ctx.rect(wMinX, wMinY, wMaxX - wMinX, wMaxY - wMinY);
+        clipWorldRects.push({ minX: wMinX, minY: wMinY, maxX: wMaxX, maxY: wMaxY });
+      }
+      ctx.clip();
+    }
+
+    // Construct view transform inline (avoids second getState call)
+    const view: ViewTransform = {
+      worldToCanvas: (x, y) => [(x - pan.x) * scale, (y - pan.y) * scale],
+      canvasToWorld: (x, y) => {
+        const safeS = Math.max(1e-6, scale);
+        return [x / safeS + pan.x, y / safeS + pan.y];
+      },
+      scale,
+      pan,
+    };
+
+    const viewport = {
+      pixelWidth: pixelW,
+      pixelHeight: pixelH,
+      cssWidth,
+      cssHeight,
+      dpr,
+      visibleWorldBounds: visibleBounds,
+      clipWorldRects,
+    };
+
+    drawBackground(ctx, snapshot, view, viewport);
+    drawObjects(ctx, snapshot, view, viewport);
+
+    if (clipWorldRects) ctx.restore();
+    ctx.restore();
+
+    // 10. Reset dirty state
+    this.dirtyCount = 0;
+    this.fullClear = false;
+
+    // 11. Native rAF window: keep redrawing for GPU font cache warmup
+    if (performance.now() < this.nativeRafUntil) {
+      this.fullClear = true;
+      this.needsFrame = true;
+    }
+  }
+
+  // =============================================
+  // COALESCE (in-place on buffer, O(n^2) with swap-remove)
+  // =============================================
+
+  private coalesce(): void {
+    const buf = this.dirtyBuf;
+    let count = this.dirtyCount;
+    let merged = true;
+
+    while (merged) {
+      merged = false;
+      for (let i = 0; i < count && !merged; i++) {
+        const ai = i * 4;
+        for (let j = i + 1; j < count; j++) {
+          const bj = j * 4;
+          // Check overlap with snap margin
+          if (
+            buf[ai] <= buf[bj + 2] + COALESCE_SNAP &&
+            buf[ai + 2] >= buf[bj] - COALESCE_SNAP &&
+            buf[ai + 1] <= buf[bj + 3] + COALESCE_SNAP &&
+            buf[ai + 3] >= buf[bj + 1] - COALESCE_SNAP
+          ) {
+            // Merge j into i (expand bounds)
+            if (buf[bj] < buf[ai]) buf[ai] = buf[bj];
+            if (buf[bj + 1] < buf[ai + 1]) buf[ai + 1] = buf[bj + 1];
+            if (buf[bj + 2] > buf[ai + 2]) buf[ai + 2] = buf[bj + 2];
+            if (buf[bj + 3] > buf[ai + 3]) buf[ai + 3] = buf[bj + 3];
+            // Swap-remove j
+            count--;
+            if (j < count) {
+              const li = count * 4;
+              buf[bj] = buf[li];
+              buf[bj + 1] = buf[li + 1];
+              buf[bj + 2] = buf[li + 2];
+              buf[bj + 3] = buf[li + 3];
+            }
+            merged = true;
+            break;
+          }
+        }
+      }
+    }
+
+    this.dirtyCount = count;
+    this.checkAreaPromotion();
+  }
+
+  private checkAreaPromotion(): void {
+    if (this.dirtyCount === 0 || this.canvasW === 0 || this.canvasH === 0) return;
+    const buf = this.dirtyBuf;
+    let uMinX = Infinity,
+      uMinY = Infinity,
+      uMaxX = -Infinity,
+      uMaxY = -Infinity;
+    for (let i = 0; i < this.dirtyCount; i++) {
+      const off = i * 4;
+      if (buf[off] < uMinX) uMinX = buf[off];
+      if (buf[off + 1] < uMinY) uMinY = buf[off + 1];
+      if (buf[off + 2] > uMaxX) uMaxX = buf[off + 2];
+      if (buf[off + 3] > uMaxY) uMaxY = buf[off + 3];
+    }
+    if (((uMaxX - uMinX) * (uMaxY - uMinY)) / (this.canvasW * this.canvasH) > AREA_RATIO) {
+      this.fullClear = true;
+      this.dirtyCount = 0;
+    }
+  }
+
+  // =============================================
+  // VISIBILITY
+  // =============================================
+
+  private handleVisibilityChange = (): void => {
+    this.isHidden = document.hidden;
+    if (this.isHidden) {
+      if (this.rafId !== null) {
+        cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+      }
+      if (this.needsFrame) this.startHiddenLoop();
+    } else {
+      if (this.hiddenIntervalId !== null) {
+        clearInterval(this.hiddenIntervalId);
+        this.hiddenIntervalId = null;
+      }
+      if (this.needsFrame) this.scheduleFrame();
+    }
+  };
+
+  private startHiddenLoop(): void {
+    if (this.hiddenIntervalId || !this.started) return;
+    this.hiddenIntervalId = window.setInterval(() => {
+      if (this.started && this.needsFrame) {
+        this.tick();
+      } else if (!this.started && this.hiddenIntervalId !== null) {
+        clearInterval(this.hiddenIntervalId);
+        this.hiddenIntervalId = null;
+      }
+    }, 1000 / FRAME_CONFIG.HIDDEN_FPS);
   }
 }

@@ -176,6 +176,16 @@ export interface ConnectorPreview {
   /** Position of 'to' endpoint in world coords */
   toPosition: [number, number] | null;
 
+  // === Straight connector fields ===
+  /** Connector routing type */
+  connectorType: 'elbow' | 'straight';
+  /** Interior anchor position for dashed start guide (straight only) */
+  startDashTo: [number, number] | null;
+  /** Interior anchor position for dashed end guide (straight only) */
+  endDashTo: [number, number] | null;
+  /** True when snapped to shape center (straight only) */
+  isCenterSnap: boolean;
+
   /** Always null for overlay previews */
   bbox: null;
 }

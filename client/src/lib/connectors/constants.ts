@@ -30,6 +30,12 @@ export const SNAP_CONFIG = {
 
   /** Connector endpoint handle radius */
   ENDPOINT_RADIUS_PX: 8,
+
+  /** Center snap radius (small — allows free interior placement around center) */
+  CENTER_SNAP_RADIUS_PX: 12,
+
+  /** Depth inside shape before straight connectors enter interior anchor mode (allows edge sliding when shallow) */
+  STRAIGHT_INTERIOR_DEPTH_PX: 20,
 } as const;
 
 /**

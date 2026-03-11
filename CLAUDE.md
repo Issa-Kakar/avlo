@@ -516,7 +516,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
   color, width, opacity, ownerId, createdAt
 }
 ```
-**Note:** Detailed connector docs in `docs/CONNECTOR_ROUTING_SYSTEM_V2.md`
+**Note:** Detailed connector docs in `connectors/CLAUDE.md`
 
 ### ObjectHandle (Live Reference)
 ```typescript

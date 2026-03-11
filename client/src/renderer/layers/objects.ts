@@ -74,11 +74,11 @@ export function drawObjects(
   // Use spatial index for efficient querying
   let candidateEntries: IndexEntry[];
 
-  if (viewport.clipRegion?.worldRects) {
+  if (viewport.clipWorldRects) {
     // OPTIMIZATION: Query each dirty rect and union results
     const entrySet = new Map<string, IndexEntry>();
 
-    for (const rect of viewport.clipRegion.worldRects) {
+    for (const rect of viewport.clipWorldRects) {
       const results = spatialIndex.query({
         minX: rect.minX,
         minY: rect.minY,
@@ -96,6 +96,33 @@ export function drawObjects(
   } else {
     // Full viewport query
     candidateEntries = spatialIndex.query(visibleBounds);
+  }
+
+  // During active transforms, spatial index stores ORIGINAL positions. If the camera
+  // has panned (e.g. edge scroll), originals may leave the viewport/dirty-rect bounds
+  // while rendered positions (original + offset) are still on screen. Inject all
+  // selected + topology objects so they're never culled mid-transform.
+  if (isTransforming) {
+    const candidateSet = new Set(candidateEntries.map((e) => e.id));
+    const inject = (id: string) => {
+      if (candidateSet.has(id)) return;
+      const h = objectsById.get(id);
+      if (!h) return;
+      candidateEntries.push({
+        id,
+        kind: h.kind,
+        minX: h.bbox[0],
+        minY: h.bbox[1],
+        maxX: h.bbox[2],
+        maxY: h.bbox[3],
+      });
+      candidateSet.add(id);
+    };
+    for (const id of selectionState.selectedIds) inject(id);
+    if (connTopology) {
+      for (const id of connTopology.translateIdSet) inject(id);
+      for (const id of connTopology.reroutes.keys()) inject(id);
+    }
   }
 
   // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========

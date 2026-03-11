@@ -55,16 +55,19 @@ import {
   getEndAnchor,
   getOrigin,
   getTextProps,
+  getConnectorType,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { isShiftPointer, isCtrlOrMetaPointer } from '@/canvas/cursor-tracking';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from '@/canvas/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/lib/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/lib/connectors/snap';
 import type { SnapTarget } from '@/lib/connectors/types';
+import { isCtrlHeld } from '@/canvas/cursor-tracking';
 import {
   anchorFactor,
   getBaselineToTopRatio,
@@ -125,6 +128,10 @@ export class SelectTool implements PointerTool {
   private transformEnvelope: WorldRect | null = null;
 
   constructor() {}
+
+  private hasAddModifier(): boolean {
+    return isShiftPointer() || isCtrlOrMetaPointer();
+  }
 
   // --- PointerTool Interface ---
 
@@ -438,12 +445,20 @@ export class SelectTool implements PointerTool {
         const { scale } = useCameraStore.getState();
         const { connectorId, endpoint } = epTransform;
 
-        // 1. Find snap target
-        const snap = findBestSnapTarget({
-          cursorWorld: [worldX, worldY],
-          scale,
-          prevAttach: epTransform.currentSnap,
-        });
+        // Read connector type for snap context
+        const epSnapshot = getCurrentSnapshot();
+        const connHandle = epSnapshot.objectsById.get(connectorId);
+        const epConnectorType = connHandle ? getConnectorType(connHandle.y) : 'elbow';
+
+        // 1. Find snap target (Ctrl suppresses snapping)
+        const snap = isCtrlHeld()
+          ? null
+          : findBestSnapTarget({
+              cursorWorld: [worldX, worldY],
+              scale,
+              prevAttach: epTransform.currentSnap,
+              connectorType: epConnectorType,
+            });
 
         // 2. Build endpoint override
         const overrideValue: EndpointOverrideValue = snap ?? [worldX, worldY];
@@ -503,13 +518,29 @@ export class SelectTool implements PointerTool {
             break;
 
           case 'objectOutsideSelection':
-            // Click → select that object
-            store.setSelection([this.hitAtDown!.id]);
+            if (this.hasAddModifier()) {
+              // Additive: add to current selection
+              const current = store.selectedIds;
+              if (!current.includes(this.hitAtDown!.id)) {
+                store.setSelection([...current, this.hitAtDown!.id]);
+              }
+            } else {
+              // Replace selection
+              store.setSelection([this.hitAtDown!.id]);
+            }
             break;
 
           case 'objectInSelection':
-            // Click on already-selected object → "drill down" if multi-select
-            if (store.selectedIds.length > 1) {
+            if (this.hasAddModifier()) {
+              // Subtractive: remove from selection
+              const remaining = store.selectedIds.filter((id) => id !== this.hitAtDown!.id);
+              if (remaining.length > 0) {
+                store.setSelection(remaining);
+              } else {
+                store.clearSelection();
+              }
+            } else if (store.selectedIds.length > 1) {
+              // Drill down to single object
               store.setSelection([this.hitAtDown!.id]);
             } else if (
               (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape') &&

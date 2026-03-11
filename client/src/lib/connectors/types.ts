@@ -13,6 +13,23 @@ import type { Frame, Dir as SharedDir } from '@avlo/shared';
 // Re-export from shared for convenience
 export type { Frame, FrameTuple, StoredAnchor } from '@avlo/shared';
 
+/** Connector routing style */
+export type ConnectorType = 'elbow' | 'straight';
+
+const INTERIOR_EPS = 1e-6;
+/** True if anchor is strictly inside the shape (not on any edge). */
+export function isAnchorInterior(anchor: [number, number]): boolean {
+  return (
+    anchor[0] > INTERIOR_EPS &&
+    anchor[0] < 1 - INTERIOR_EPS &&
+    anchor[1] > INTERIOR_EPS &&
+    anchor[1] < 1 - INTERIOR_EPS
+  );
+}
+
+/** Connector endpoint cap style */
+export type ConnectorCap = 'arrow' | 'none';
+
 // ============================================================================
 // DIRECTION & GEOMETRY TYPES
 // ============================================================================
@@ -36,9 +53,9 @@ export type AABB = Frame;
  * - Facing checks: `a.right <= b.left` vs `a.x + a.w <= b.x`
  */
 export interface Bounds {
-  left: number;   // minX
-  top: number;    // minY
-  right: number;  // maxX
+  left: number; // minX
+  top: number; // minY
+  right: number; // maxX
   bottom: number; // maxY
 }
 
@@ -148,6 +165,8 @@ export interface SnapContext {
   scale: number;
   /** Previous snap target (for hysteresis) */
   prevAttach: SnapTarget | null;
+  /** Connector type — straight connectors allow interior/center anchors */
+  connectorType?: ConnectorType;
 }
 
 // ============================================================================

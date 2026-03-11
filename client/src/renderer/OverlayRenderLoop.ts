@@ -6,7 +6,7 @@ import { drawPerfectShapePreview } from './layers/perfect-shape-preview';
 import { drawConnectorPreview } from './layers/connector-preview';
 import { drawSelectionOverlay } from './layers/selection-overlay';
 import { useCameraStore, getViewTransform, getViewportInfo } from '@/stores/camera-store';
-import { getOverlayContext } from '@/canvas/SurfaceManager';
+import { getOverlayContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot, getCurrentPresence, getGateStatus } from '@/canvas/room-runtime';
 import { getActivePreview } from '@/canvas/tool-registry';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -24,6 +24,10 @@ export class OverlayRenderLoop {
   private holdPreviewOneFrame = false;
   private cameraUnsubscribe: (() => void) | null = null;
   private toolUnsubscribe: (() => void) | null = null;
+
+  // Independent resize detection (not reliant on applyPendingResize return value)
+  private lastCanvasW = 0;
+  private lastCanvasH = 0;
 
   /**
    * Start the overlay render loop.
@@ -60,7 +64,7 @@ export class OverlayRenderLoop {
           a.cssWidth === b.cssWidth &&
           a.cssHeight === b.cssHeight &&
           a.dpr === b.dpr,
-      }
+      },
     );
 
     // Subscribe to tool changes - clear cached preview when tool switches
@@ -114,9 +118,19 @@ export class OverlayRenderLoop {
   private frame(): void {
     if (!this.started) return;
 
-    // Get context from registry (replaces stage)
+    // Apply pending resize + detect canvas dimension change independently
+    applyPendingResize();
+
     const ctx = getOverlayContext();
     if (!ctx) return;
+
+    if (ctx.canvas.width !== this.lastCanvasW || ctx.canvas.height !== this.lastCanvasH) {
+      this.lastCanvasW = ctx.canvas.width;
+      this.lastCanvasH = ctx.canvas.height;
+      requestAnimationFrame(() => {
+        if (this.started) this.invalidateAll();
+      });
+    }
 
     // Get viewport from camera store (single source of truth)
     const vpInfo = getViewportInfo();
@@ -146,111 +160,119 @@ export class OverlayRenderLoop {
       this.cachedPreview = preview;
     }
     // Draw preview if we have one OR if holding cached for one frame
-    const usingCached =
-    !preview && this.holdPreviewOneFrame && this.cachedPreview;
+    const usingCached = !preview && this.holdPreviewOneFrame && this.cachedPreview;
     const previewToDraw = preview || (usingCached && this.cachedPreview) || null;
 
     if (previewToDraw) {
       ctx.save();
       // Check preview kind using discriminant
       if (previewToDraw?.kind === 'stroke') {
-          // Existing stroke preview (world space)
-          // Explicit world transform: DPR × scale × translate combined
+        // Existing stroke preview (world space)
+        // Explicit world transform: DPR × scale × translate combined
+        ctx.setTransform(
+          vp.dpr * view.scale,
+          0,
+          0,
+          vp.dpr * view.scale,
+          -view.pan.x * vp.dpr * view.scale,
+          -view.pan.y * vp.dpr * view.scale,
+        );
+        drawStrokePreview(ctx, previewToDraw);
+      } else if (previewToDraw?.kind === 'eraser') {
+        // Eraser preview: only draw dimmed strokes
+        // Trail is now handled by AnimationController
+        const snapshot = getCurrentSnapshot();
+
+        // World-space dimming for objects under eraser
+        if (previewToDraw.hitIds.length > 0) {
           ctx.setTransform(
-            vp.dpr * view.scale, 0,
-            0, vp.dpr * view.scale,
+            vp.dpr * view.scale,
+            0,
+            0,
+            vp.dpr * view.scale,
             -view.pan.x * vp.dpr * view.scale,
-            -view.pan.y * vp.dpr * view.scale
+            -view.pan.y * vp.dpr * view.scale,
           );
-          drawStrokePreview(ctx, previewToDraw);
-
-        } else if (previewToDraw?.kind === 'eraser') {
-          // Eraser preview: only draw dimmed strokes
-          // Trail is now handled by AnimationController
-          const snapshot = getCurrentSnapshot();
-
-          // World-space dimming for objects under eraser
-          if (previewToDraw.hitIds.length > 0) {
-            ctx.setTransform(
-              vp.dpr * view.scale, 0,
-              0, vp.dpr * view.scale,
-              -view.pan.x * vp.dpr * view.scale,
-              -view.pan.y * vp.dpr * view.scale
-            );
-            drawDimmedStrokes(ctx, previewToDraw.hitIds, snapshot, previewToDraw.dimOpacity);
-          }
-
-        } else if (previewToDraw?.kind === 'text') {
-          // Text preview (world space)
-          // Explicit world transform: DPR × scale × translate combined
-          ctx.setTransform(
-            vp.dpr * view.scale, 0,
-            0, vp.dpr * view.scale,
-            -view.pan.x * vp.dpr * view.scale,
-            -view.pan.y * vp.dpr * view.scale
-          );
-
-          // Draw placement box with dashed outline
-          ctx.strokeStyle = previewToDraw.isPlacing
-            ? 'rgba(59, 130, 246, 0.5)'
-            : 'rgba(0, 0, 0, 0.3)';
-          ctx.lineWidth = 2 / view.scale; // Keep consistent visual thickness
-          ctx.setLineDash([4, 4]);
-          ctx.strokeRect(
-            previewToDraw.box.x,
-            previewToDraw.box.y,
-            previewToDraw.box.w,
-            previewToDraw.box.h,
-          );
-
-          // Optional: Draw placement crosshair
-          if (previewToDraw.isPlacing) {
-            ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
-            ctx.lineWidth = 1 / view.scale;
-            ctx.setLineDash([]);
-            // Vertical line
-            ctx.beginPath();
-            ctx.moveTo(previewToDraw.box.x, previewToDraw.box.y - 5);
-            ctx.lineTo(previewToDraw.box.x, previewToDraw.box.y + 5);
-            ctx.stroke();
-            // Horizontal line
-            ctx.beginPath();
-            ctx.moveTo(previewToDraw.box.x - 5, previewToDraw.box.y);
-            ctx.lineTo(previewToDraw.box.x + 5, previewToDraw.box.y);
-            ctx.stroke();
-          }
-        } else if (previewToDraw?.kind === 'perfectShape') {
-          // Perfect shape preview (world space)
-          // Explicit world transform: DPR × scale × translate combined
-          ctx.setTransform(
-            vp.dpr * view.scale, 0,
-            0, vp.dpr * view.scale,
-            -view.pan.x * vp.dpr * view.scale,
-            -view.pan.y * vp.dpr * view.scale
-          );
-          drawPerfectShapePreview(ctx, previewToDraw);
-
-        } else if (previewToDraw?.kind === 'selection') {
-          // Selection preview (world space for bounds, screen space for handle sizing)
-          ctx.setTransform(
-            vp.dpr * view.scale, 0,
-            0, vp.dpr * view.scale,
-            -view.pan.x * vp.dpr * view.scale,
-            -view.pan.y * vp.dpr * view.scale
-          );
-          const snapshot = getCurrentSnapshot();
-          drawSelectionOverlay(ctx, previewToDraw, view.scale, snapshot);
-        } else if (previewToDraw?.kind === 'connector') {
-          // Connector preview (world space)
-          // Explicit world transform: DPR × scale × translate combined
-          ctx.setTransform(
-            vp.dpr * view.scale, 0,
-            0, vp.dpr * view.scale,
-            -view.pan.x * vp.dpr * view.scale,
-            -view.pan.y * vp.dpr * view.scale
-          );
-          drawConnectorPreview(ctx, previewToDraw, view.scale);
+          drawDimmedStrokes(ctx, previewToDraw.hitIds, snapshot, previewToDraw.dimOpacity);
         }
+      } else if (previewToDraw?.kind === 'text') {
+        // Text preview (world space)
+        // Explicit world transform: DPR × scale × translate combined
+        ctx.setTransform(
+          vp.dpr * view.scale,
+          0,
+          0,
+          vp.dpr * view.scale,
+          -view.pan.x * vp.dpr * view.scale,
+          -view.pan.y * vp.dpr * view.scale,
+        );
+
+        // Draw placement box with dashed outline
+        ctx.strokeStyle = previewToDraw.isPlacing
+          ? 'rgba(59, 130, 246, 0.5)'
+          : 'rgba(0, 0, 0, 0.3)';
+        ctx.lineWidth = 2 / view.scale; // Keep consistent visual thickness
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(
+          previewToDraw.box.x,
+          previewToDraw.box.y,
+          previewToDraw.box.w,
+          previewToDraw.box.h,
+        );
+
+        // Optional: Draw placement crosshair
+        if (previewToDraw.isPlacing) {
+          ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+          ctx.lineWidth = 1 / view.scale;
+          ctx.setLineDash([]);
+          // Vertical line
+          ctx.beginPath();
+          ctx.moveTo(previewToDraw.box.x, previewToDraw.box.y - 5);
+          ctx.lineTo(previewToDraw.box.x, previewToDraw.box.y + 5);
+          ctx.stroke();
+          // Horizontal line
+          ctx.beginPath();
+          ctx.moveTo(previewToDraw.box.x - 5, previewToDraw.box.y);
+          ctx.lineTo(previewToDraw.box.x + 5, previewToDraw.box.y);
+          ctx.stroke();
+        }
+      } else if (previewToDraw?.kind === 'perfectShape') {
+        // Perfect shape preview (world space)
+        // Explicit world transform: DPR × scale × translate combined
+        ctx.setTransform(
+          vp.dpr * view.scale,
+          0,
+          0,
+          vp.dpr * view.scale,
+          -view.pan.x * vp.dpr * view.scale,
+          -view.pan.y * vp.dpr * view.scale,
+        );
+        drawPerfectShapePreview(ctx, previewToDraw);
+      } else if (previewToDraw?.kind === 'selection') {
+        // Selection preview (world space for bounds, screen space for handle sizing)
+        ctx.setTransform(
+          vp.dpr * view.scale,
+          0,
+          0,
+          vp.dpr * view.scale,
+          -view.pan.x * vp.dpr * view.scale,
+          -view.pan.y * vp.dpr * view.scale,
+        );
+        const snapshot = getCurrentSnapshot();
+        drawSelectionOverlay(ctx, previewToDraw, view.scale, snapshot);
+      } else if (previewToDraw?.kind === 'connector') {
+        // Connector preview (world space)
+        // Explicit world transform: DPR × scale × translate combined
+        ctx.setTransform(
+          vp.dpr * view.scale,
+          0,
+          0,
+          vp.dpr * view.scale,
+          -view.pan.x * vp.dpr * view.scale,
+          -view.pan.y * vp.dpr * view.scale,
+        );
+        drawConnectorPreview(ctx, previewToDraw, view.scale);
+      }
       ctx.restore();
 
       // Clear the hold flag and cache after drawing the held frame
@@ -267,13 +289,19 @@ export class OverlayRenderLoop {
       ctx.save();
       // Explicit DPR-only transform for screen-space presence
       ctx.setTransform(vp.dpr, 0, 0, vp.dpr, 0, 0);
-      drawPresenceOverlays(ctx, presence, view, {
-        pixelWidth: Math.round(vp.cssWidth * vp.dpr),
-        pixelHeight: Math.round(vp.cssHeight * vp.dpr),
-        cssWidth: vp.cssWidth,
-        cssHeight: vp.cssHeight,
-        dpr: vp.dpr,
-      }, gates);
+      drawPresenceOverlays(
+        ctx,
+        presence,
+        view,
+        {
+          pixelWidth: Math.round(vp.cssWidth * vp.dpr),
+          pixelHeight: Math.round(vp.cssHeight * vp.dpr),
+          cssWidth: vp.cssWidth,
+          cssHeight: vp.cssHeight,
+          dpr: vp.dpr,
+        },
+        gates,
+      );
       ctx.restore();
     }
 

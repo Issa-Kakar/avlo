@@ -6,6 +6,7 @@ import {
   TEXT_COLOR_PALETTE,
   useDeviceUIStore,
 } from '../stores/device-ui-store';
+import { getActiveRoomDoc, hasActiveRoom } from '../canvas/room-runtime';
 
 import './ToolPanel.css';
 
@@ -30,11 +31,9 @@ import {
 
 interface ToolPanelProps {
   onToast?: (message: string) => void;
-  onUndo?: () => void;
-  onRedo?: () => void;
 }
 
-export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
+export function ToolPanel({ onToast }: ToolPanelProps) {
   const {
     activeTool,
     drawingSettings,
@@ -270,10 +269,18 @@ export function ToolPanel({ onToast, onUndo, onRedo }: ToolPanelProps) {
 
         {/* Compact Undo/Redo container - moved inside toolbar */}
         <div className="undo-redo-compact">
-          <button className="undo-btn" aria-label="Undo" onClick={onUndo}>
+          <button
+            className="undo-btn"
+            aria-label="Undo"
+            onClick={() => hasActiveRoom() && getActiveRoomDoc().undo()}
+          >
             <IconUndo className="undo-icon" />
           </button>
-          <button className="redo-btn" aria-label="Redo" onClick={onRedo}>
+          <button
+            className="redo-btn"
+            aria-label="Redo"
+            onClick={() => hasActiveRoom() && getActiveRoomDoc().redo()}
+          >
             <IconRedo className="redo-icon" />
           </button>
         </div>

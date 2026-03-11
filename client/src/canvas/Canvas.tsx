@@ -67,45 +67,46 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     return () => contextMenuController.destroy();
   }, []);
 
-  return (<>
-    <div ref={containerRef} className="relative w-full h-full" style={{ backgroundColor: '#FFFFFF' }}>
-      <canvas
-        ref={baseCanvasRef}
-        className={className}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 1,
-          display: 'block',
-          width: '100%',
-          height: '100%',
-          touchAction: 'none',
-        }}
-      />
-      <canvas
-        ref={overlayCanvasRef}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 2,
-          display: 'block',
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-        }}
-      />
+  return (
+    <>
       <div
-        ref={editorHostRef}
-        className="dom-overlay-root"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 3,
-          pointerEvents: 'none',
-        }}
-      />
-    </div>
-    {createPortal(<ContextMenu />, document.getElementById('context-menu-portal')!)}
-  </>
+        ref={containerRef}
+        className="relative w-full h-full overflow-hidden"
+        style={{ backgroundColor: '#FFFFFF' }}
+      >
+        <canvas
+          ref={baseCanvasRef}
+          className={className}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 1,
+            display: 'block',
+            touchAction: 'none',
+          }}
+        />
+        <canvas
+          ref={overlayCanvasRef}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2,
+            display: 'block',
+            pointerEvents: 'none',
+          }}
+        />
+        <div
+          ref={editorHostRef}
+          className="dom-overlay-root"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 3,
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+      {createPortal(<ContextMenu />, document.getElementById('context-menu-portal')!)}
+    </>
   );
 };

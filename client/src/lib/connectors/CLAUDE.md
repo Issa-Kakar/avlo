@@ -2,6 +2,7 @@
 
 > **System Status:** Primitives-based routing API, full A* orthogonal routing, SelectTool integration ready via `rerouteConnector()`.
 
+> **Maintenance note:** This is a system-level architectural overview, not a changelog. When updating after code changes, match the detail level of surrounding content — don't inflate coverage of your specific change at the expense of the big-picture pipeline flow and cache interactions that make this document useful.
 ## Overview
 
 The connector routing system implements **orthogonal (Manhattan) routing** with automatic obstacle avoidance. Routes prefer centerlines between shapes and use dynamic bounding boxes to produce aesthetically pleasing paths.
@@ -21,7 +22,7 @@ The connector routing system implements **orthogonal (Manhattan) routing** with 
 
 ```
 client/src/lib/connectors/
-├── types.ts               # Dir, Bounds, AABB, Terminal, SnapTarget, RoutingContext, Grid
+├── types.ts               # Dir, Bounds, AABB, Terminal, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap
 ├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas
 ├── connector-utils.ts     # Anchor application, direction resolution, bounds conversion
 ├── snap.ts                # Shape snapping with fill-aware visual ordering
@@ -29,7 +30,7 @@ client/src/lib/connectors/
 ├── routing-astar.ts       # A* pathfinding with segment intersection checking
 ├── connector-paths.ts     # Path2D builders (polyline, arrows) for cache and preview
 ├── connector-lookup.ts    # Reverse map: shapeId → Set<connectorId>
-├── reroute-connector.ts   # High-level API for SelectTool integration
+├── reroute-connector.ts   # High-level routing: rerouteConnector (existing Y.map) + routeNewConnector (snap/position)
 └── index.ts               # Public API exports
 ```
 
@@ -379,6 +380,14 @@ Snapping respects Z-order and fill state:
 | Shallow inside or outside | Edge sliding with midpoint stickiness |
 | Outside snap radius | No snap |
 
+### Ctrl Suppresses Snapping
+
+Holding Ctrl during any connector endpoint interaction prevents binding. `isCtrlHeld()` from `cursor-tracking.ts` is checked before every `findBestSnapTarget()` call — when true, snap is forced to `null`. Affects:
+- **ConnectorTool:** `begin()` (start endpoint), `move()` idle (hover dots), `move()` creating (end endpoint)
+- **SelectTool:** `move()` endpointDrag phase
+
+Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handlePointerMove`, `handlePointerUp` in CanvasRuntime), so releasing Ctrl mid-drag resumes snapping immediately. No rendering changes needed — null snap already means no dots in both renderers.
+
 ### Midpoint Stickiness (Hysteresis)
 
 - Snap IN at 16px from midpoint
@@ -481,9 +490,11 @@ if (connectorIds) {
 
 ---
 
-## The `rerouteConnector` API
+## The Rerouting APIs
 
-The high-level API for SelectTool integration. Reads Y.map data, applies overrides, resolves directions, and routes.
+Two companion functions sharing `resolveDirections()` internally:
+- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies overrides (SelectTool)
+- **`routeNewConnector(start, end, strokeWidth, dragDir?)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
 
 ### Signature
 
@@ -694,7 +705,7 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 
 | Task | API | Notes |
 |------|-----|-------|
-| Create new connector | `computeAStarRoute()` | 7 primitives directly |
+| Create new connector | `routeNewConnector()` | SnapTarget or [x,y] per endpoint |
 | Reroute existing connector | `rerouteConnector()` | Reads Y.map, applies overrides |
 | Find snap target | `findBestSnapTarget()` | Fill-aware, returns SnapTarget |
 | Get connectors for shape | `getConnectorsForShape()` | O(1) reverse lookup |

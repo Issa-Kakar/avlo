@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
 import type { FontFamily } from '@avlo/shared';
+import type { ConnectorCap, ConnectorType } from '@/lib/connectors';
 
 export type Tool =
   | 'pen'
@@ -91,6 +92,11 @@ interface DeviceUIState {
   highlightColor: string | null;
   textFillColor: string | null;
 
+  // Connector cap/type settings
+  connectorStartCap: ConnectorCap;
+  connectorEndCap: ConnectorCap;
+  connectorType: ConnectorType;
+
   // Fill color (separate from fill toggle)
   fillColor: string;
 
@@ -117,6 +123,9 @@ interface DeviceUIState {
   setHighlighterOpacity: (opacity: number) => void;
   setTextSize: (size: number) => void;
   setConnectorSize: (size: ConnectorSizePreset) => void;
+  setConnectorStartCap: (cap: ConnectorCap) => void;
+  setConnectorEndCap: (cap: ConnectorCap) => void;
+  setConnectorType: (type: ConnectorType) => void;
   setShapeVariant: (variant: ShapeVariant) => void;
 
   setTextColor: (color: string) => void;
@@ -147,6 +156,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       highlighterOpacity: 0.45,
       textSize: 24,
       connectorSize: 4,
+      connectorStartCap: 'none' as ConnectorCap,
+      connectorEndCap: 'arrow' as ConnectorCap,
+      connectorType: 'straight' as ConnectorType,
       shapeVariant: 'rectangle',
       fillColor: '#BFDBFE',
 
@@ -198,6 +210,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setHighlighterOpacity: (opacity) => set({ highlighterOpacity: opacity }),
       setTextSize: (size) => set({ textSize: size }),
       setConnectorSize: (size) => set({ connectorSize: size }),
+      setConnectorStartCap: (cap) => set({ connectorStartCap: cap }),
+      setConnectorEndCap: (cap) => set({ connectorEndCap: cap }),
+      setConnectorType: (type) => set({ connectorType: type }),
       setShapeVariant: (variant) => set({ shapeVariant: variant }),
 
       setTextColor: (color) => set({ textColor: color }),

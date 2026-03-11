@@ -3,31 +3,29 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 
+const clientPort = parseInt(process.env.VITE_PORT || '3000', 10);
+const workerPort = parseInt(process.env.WORKER_PORT || '8787', 10);
+
 export default defineConfig({
-  plugins: [
-    react(),
-    tailwindcss(),
-  ],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      '@avlo/shared': path.resolve(__dirname, '../packages/shared/src')
-    }
+      '@avlo/shared': path.resolve(__dirname, '../packages/shared/src'),
+    },
   },
   server: {
-    port: 3000,
+    port: clientPort,
     proxy: {
-      // Proxy WebSocket connections to wrangler dev server
       '/parties': {
-        target: 'ws://localhost:8787',
+        target: `ws://localhost:${workerPort}`,
         ws: true,
-        changeOrigin: true
+        changeOrigin: true,
       },
-      // Also proxy regular HTTP requests to /parties
       '/parties/*': {
-        target: 'http://localhost:8787',
-        changeOrigin: true
-      }
-    }
-  }
+        target: `http://localhost:${workerPort}`,
+        changeOrigin: true,
+      },
+    },
+  },
 });

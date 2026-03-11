@@ -20,6 +20,7 @@ import {
 } from '@/stores/device-ui-store';
 import { textTool } from '@/canvas/tool-registry';
 import { getTextFrame, anchorFactor } from '@/lib/text/text-system';
+import { computeUniformInlineStyles } from './selection-utils';
 import * as Y from 'yjs';
 
 // === Helpers ===
@@ -328,7 +329,7 @@ export function toggleSelectedBold(): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
   const { objectsById } = getCurrentSnapshot();
-  const allBold = useSelectionStore.getState().inlineStyles.bold;
+  const { bold: allBold } = computeUniformInlineStyles(ids, objectsById);
 
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
@@ -350,7 +351,7 @@ export function toggleSelectedItalic(): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
   const { objectsById } = getCurrentSnapshot();
-  const allItalic = useSelectionStore.getState().inlineStyles.italic;
+  const { italic: allItalic } = computeUniformInlineStyles(ids, objectsById);
 
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {

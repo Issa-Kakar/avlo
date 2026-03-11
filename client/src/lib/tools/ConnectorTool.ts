@@ -1,11 +1,10 @@
 /**
  * ConnectorTool - Draws orthogonal connectors between shapes
  *
- * Slice 1 Implementation:
- * - Drawing connectors with orthogonal routing (start → cursor/target)
- * - Shape hovering/snapping with midpoint anchor dots
- * - Preview rendering for both connector line and anchor dots
- * - Committing connector to Y.Doc on pointer-up
+ * Lean snap-based state inspired by SelectTool's endpointDrag:
+ * - Snap targets and positions instead of ToolTerminal
+ * - Routing delegated to routeNewConnector()
+ * - Caps frozen from store at begin()
  *
  * State Machine:
  * - idle: waiting for gesture, showing hover dots on nearby shapes
@@ -27,33 +26,16 @@ import { getTextFrame } from '@/lib/text/text-system';
 import {
   type Dir,
   type SnapTarget,
-  type AABB,
+  type ConnectorCap,
+  type ConnectorType,
   findBestSnapTarget,
-  computeAStarRoute,
+  routeNewConnector,
   inferDragDirection,
-  oppositeDir,
-  resolveFreeStartDir,
-  computeFreeEndDir,
 } from '@/lib/connectors';
+import { isAnchorInterior } from '@/lib/connectors/types';
+import { isCtrlHeld } from '@/canvas/cursor-tracking';
 
 type Phase = 'idle' | 'creating';
-
-/**
- * Internal terminal state during interaction.
- * Contains all info needed for routing AND commit.
- */
-interface ToolTerminal {
-  position: [number, number];
-  outwardDir: Dir;
-  isAnchored: boolean;
-  hasCap: boolean;
-  // Shape bounds for obstacle avoidance (only set when isAnchored === true)
-  shapeBounds?: AABB;
-  // Shape-specific commit info (only set when isAnchored === true)
-  shapeId?: string;
-  side?: Dir;
-  normalizedAnchor?: [number, number];
-}
 
 /**
  * ConnectorTool - Implements PointerTool interface for drawing connectors.
@@ -63,20 +45,29 @@ export class ConnectorTool implements PointerTool {
   private phase: Phase = 'idle';
   private pointerId: number | null = null;
 
-  // Gesture state
-  private from: ToolTerminal | null = null;
-  private to: ToolTerminal | null = null;
+  // Gesture state — just snap targets and positions
+  private fromSnap: SnapTarget | null = null;
+  private fromPosition: [number, number] | null = null;
+  private toSnap: SnapTarget | null = null;
+  private toPosition: [number, number] | null = null;
   private routedPoints: [number, number][] = [];
 
-  // Hover/snap state (used in both phases)
+  // Hover/snap (both phases)
   private hoverSnap: SnapTarget | null = null;
   private prevSnap: SnapTarget | null = null;
   private dragDir: Dir | null = null;
 
   // Frozen settings (captured at begin)
-  private frozenColor: string = '#000000';
-  private frozenWidth: number = 2;
-  private frozenOpacity: number = 1;
+  private frozenColor = '#000000';
+  private frozenWidth = 2;
+  private frozenOpacity = 1;
+  private frozenStartCap: ConnectorCap = 'none';
+  private frozenEndCap: ConnectorCap = 'arrow';
+  private frozenConnectorType: ConnectorType | null = null;
+
+  // Straight connector dash info
+  private startDashTo: [number, number] | null = null;
+  private endDashTo: [number, number] | null = null;
 
   constructor() {}
 
@@ -95,51 +86,30 @@ export class ConnectorTool implements PointerTool {
     this.frozenColor = state.drawingSettings.color;
     this.frozenWidth = state.connectorSize;
     this.frozenOpacity = state.drawingSettings.opacity;
+    this.frozenStartCap = state.connectorStartCap;
+    this.frozenEndCap = state.connectorEndCap;
+    this.frozenConnectorType = state.connectorType;
 
     const scale = useCameraStore.getState().scale;
 
-    // Check if starting on a shape
-    const snap = findBestSnapTarget({
-      cursorWorld: [worldX, worldY],
-      scale,
-      prevAttach: null,
-    });
+    // Check if starting on a shape (Ctrl suppresses snapping)
+    const snap = isCtrlHeld()
+      ? null
+      : findBestSnapTarget({
+          cursorWorld: [worldX, worldY],
+          scale,
+          prevAttach: null,
+          connectorType: this.frozenConnectorType,
+        });
 
-    if (snap) {
-      // Start attached to shape - snap.position already includes offset
-      this.from = {
-        position: snap.position,
-        outwardDir: snap.side, // Extends away from shape
-        isAnchored: true,
-        hasCap: false, // startCap = 'none'
-        shapeId: snap.shapeId,
-        side: snap.side,
-        normalizedAnchor: snap.normalizedAnchor,
-      };
-      // Will be refined on move(): initialize 'to' at same position as 'from' - prevents routing occurring inside shape
-      this.to = this.from;
-
-    } else {
-      // Free start point - will be refined on move based on drag direction
-      this.from = {
-        position: [worldX, worldY],
-        outwardDir: 'E', // Default, refined in move()
-        isAnchored: false,
-        hasCap: false,
-      };
-      // Initialize 'to' at cursor position
-      this.to = {
-        position: [worldX, worldY],
-        outwardDir: 'W', // Opposite of default from direction
-        isAnchored: false,
-        hasCap: true, // endCap = 'arrow'
-      };
-    }
-
+    this.fromSnap = snap;
+    this.fromPosition = snap ? snap.position : [worldX, worldY];
+    this.toSnap = null;
+    this.toPosition = snap ? snap.position : [worldX, worldY];
     this.dragDir = null;
     this.prevSnap = snap;
     this.hoverSnap = snap;
-    this.updateRoute();
+    this.routedPoints = [];
 
     invalidateOverlay();
   }
@@ -148,12 +118,15 @@ export class ConnectorTool implements PointerTool {
     const scale = useCameraStore.getState().scale;
 
     if (this.phase === 'idle') {
-      // Hover mode - show anchor dots on nearby shapes
-      const snap = findBestSnapTarget({
-        cursorWorld: [worldX, worldY],
-        scale,
-        prevAttach: this.prevSnap,
-      });
+      // Hover mode - show anchor dots on nearby shapes (Ctrl suppresses)
+      const snap = isCtrlHeld()
+        ? null
+        : findBestSnapTarget({
+            cursorWorld: [worldX, worldY],
+            scale,
+            prevAttach: this.prevSnap,
+            connectorType: useDeviceUIStore.getState().connectorType,
+          });
 
       this.hoverSnap = snap;
       this.prevSnap = snap;
@@ -161,58 +134,40 @@ export class ConnectorTool implements PointerTool {
       return;
     }
 
-    // Creating phase - update 'to' endpoint
-    const snap = findBestSnapTarget({
-      cursorWorld: [worldX, worldY],
-      scale,
-      prevAttach: this.prevSnap,
-    });
+    // Creating phase - update 'to' endpoint (Ctrl suppresses snapping)
+    const snap = isCtrlHeld()
+      ? null
+      : findBestSnapTarget({
+          cursorWorld: [worldX, worldY],
+          scale,
+          prevAttach: this.prevSnap,
+          connectorType: this.frozenConnectorType ?? 'elbow',
+        });
 
     this.hoverSnap = snap;
     this.prevSnap = snap;
+    this.toSnap = snap;
+    this.toPosition = snap ? snap.position : [worldX, worldY];
 
-    if (snap) {
-      // Snapped to shape - snap.position already includes offset
-      const handle = getCurrentSnapshot().objectsById.get(snap.shapeId);
-      const frame = handle && (handle.kind === 'shape' || handle.kind === 'text')
-        ? (handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y))
-        : null;
-      const shapeBounds = frame
-        ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] }
-        : undefined;
-
-      this.to = {
-        position: snap.position,
-        outwardDir: snap.side, // Extends AWAY from shape
-        isAnchored: true,
-        hasCap: true, // endCap = 'arrow'
-        shapeBounds,
-        shapeId: snap.shapeId,
-        side: snap.side,
-        normalizedAnchor: snap.normalizedAnchor,
-      };
-      this.dragDir = null; // Reset drag direction when snapped
+    if (!snap) {
+      this.dragDir = inferDragDirection(this.fromPosition!, [worldX, worldY], this.dragDir);
     } else {
-      // Free endpoint - infer direction from drag
-      const fromPos = this.from!.position;
-      const cursorPos: [number, number] = [worldX, worldY];
-
-      this.dragDir = inferDragDirection(fromPos, cursorPos, this.dragDir);
-
-      // Update from.outwardDir for free starts so first segment updates with drag
-      if (!this.from!.isAnchored) {
-        this.from!.outwardDir = this.dragDir;
-      }
-
-      this.to = {
-        position: [worldX, worldY],
-        outwardDir: oppositeDir(this.dragDir), // Approaching from opposite of travel
-        isAnchored: false,
-        hasCap: true, // endCap = 'arrow'
-      };
+      this.dragDir = null;
     }
 
-    this.updateRoute();
+    const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition!;
+    const end: SnapTarget | [number, number] = snap ?? [worldX, worldY];
+    const routeResult = routeNewConnector(
+      start,
+      end,
+      this.frozenWidth,
+      this.frozenConnectorType ?? 'elbow',
+      this.dragDir,
+    );
+    this.routedPoints = routeResult.points;
+    this.startDashTo = routeResult.startDashTo;
+    this.endDashTo = routeResult.endDashTo;
+
     invalidateOverlay();
   }
 
@@ -223,12 +178,11 @@ export class ConnectorTool implements PointerTool {
     }
 
     // Only commit if we have a valid connector (at least 2 points with some distance)
-    if (this.from && this.to && this.routedPoints.length >= 2) {
-      const [fx, fy] = this.from.position;
-      const [tx, ty] = this.to.position;
+    if (this.fromPosition && this.toPosition && this.routedPoints.length >= 2) {
+      const [fx, fy] = this.fromPosition;
+      const [tx, ty] = this.toPosition;
       const dist = Math.hypot(tx - fx, ty - fy);
       if (dist > 5) {
-        // Minimum distance threshold
         this.commitConnector();
       }
     }
@@ -278,8 +232,8 @@ export class ConnectorTool implements PointerTool {
       color: this.frozenColor,
       width: this.frozenWidth,
       opacity: this.frozenOpacity,
-      startCap: 'none',
-      endCap: 'arrow',
+      startCap: this.frozenStartCap,
+      endCap: this.frozenEndCap,
 
       // Snap state (only set when actually snapped - dots appear when snapped)
       snapShapeId,
@@ -287,13 +241,24 @@ export class ConnectorTool implements PointerTool {
       snapShapeType,
       activeMidpointSide: this.hoverSnap?.isMidpoint ? this.hoverSnap.side : null,
       snapSide: this.hoverSnap?.side ?? null,
-      snapPosition: this.hoverSnap?.edgePosition ?? null, // Use edgePosition for dot rendering
+      snapPosition: this.hoverSnap?.edgePosition ?? null,
 
       // Endpoint states
-      fromIsAttached: this.from?.isAnchored ?? false,
-      fromPosition: this.from?.position ?? null,
-      toIsAttached: this.to?.isAnchored ?? false,
-      toPosition: this.to?.position ?? null,
+      fromIsAttached: this.fromSnap !== null,
+      fromPosition: this.fromPosition,
+      toIsAttached: this.toSnap !== null,
+      toPosition: this.toPosition,
+
+      // Straight connector fields
+      connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType,
+      startDashTo: this.startDashTo,
+      endDashTo: this.endDashTo,
+      isCenterSnap: !!(
+        this.hoverSnap &&
+        this.hoverSnap.normalizedAnchor[0] === 0.5 &&
+        this.hoverSnap.normalizedAnchor[1] === 0.5 &&
+        isAnchorInterior(this.hoverSnap.normalizedAnchor)
+      ),
 
       bbox: null,
     };
@@ -308,8 +273,19 @@ export class ConnectorTool implements PointerTool {
   }
 
   onViewChange(): void {
-    if (this.phase === 'creating') {
-      this.updateRoute();
+    if (this.phase === 'creating' && this.fromPosition && this.toPosition) {
+      const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition;
+      const end: SnapTarget | [number, number] = this.toSnap ?? this.toPosition;
+      const routeResult = routeNewConnector(
+        start,
+        end,
+        this.frozenWidth,
+        this.frozenConnectorType ?? 'elbow',
+        this.dragDir,
+      );
+      this.routedPoints = routeResult.points;
+      this.startDashTo = routeResult.startDashTo;
+      this.endDashTo = routeResult.endDashTo;
     }
     invalidateOverlay();
   }
@@ -323,74 +299,20 @@ export class ConnectorTool implements PointerTool {
   private resetState(): void {
     this.phase = 'idle';
     this.pointerId = null;
-    this.from = null;
-    this.to = null;
+    this.fromSnap = null;
+    this.fromPosition = null;
+    this.toSnap = null;
+    this.toPosition = null;
     this.routedPoints = [];
     this.dragDir = null;
+    this.startDashTo = null;
+    this.endDashTo = null;
+    this.frozenConnectorType = null;
     // Keep hoverSnap/prevSnap for continued hover behavior
   }
 
-  private updateRoute(): void {
-    if (!this.from || !this.to) {
-      this.routedPoints = [];
-      return;
-    }
-
-    const snapshot = getCurrentSnapshot();
-
-    // Get source shape bounds if attached (for bidirectional obstacle avoidance)
-    let fromShapeBounds: AABB | null = null;
-    if (this.from.isAnchored && this.from.shapeId) {
-      const handle = snapshot.objectsById.get(this.from.shapeId);
-      if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
-        const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
-        if (frame) {
-          fromShapeBounds = { x: frame[0], y: frame[1], w: frame[2], h: frame[3] };
-        }
-      }
-    }
-
-    // Get target shape bounds (already set in move() for to terminal)
-    const toShapeBounds: AABB | null = this.to.shapeBounds ?? null;
-
-    // Determine endpoint configuration
-    const fromAnchored = this.from.isAnchored;
-    const toAnchored = this.to.isAnchored;
-
-    // Resolve directions based on endpoint configuration
-    let resolvedFromDir = this.from.outwardDir;
-    let resolvedToDir = this.to.outwardDir;
-
-    if (!fromAnchored && toAnchored && toShapeBounds) {
-      // FREE→ANCHORED: Compute start direction from spatial relationship
-      resolvedFromDir = resolveFreeStartDir(
-        this.from.position,
-        { position: this.to.position, outwardDir: this.to.outwardDir, shapeBounds: toShapeBounds },
-        this.frozenWidth,
-      );
-    } else if (fromAnchored && !toAnchored) {
-      // ANCHORED→FREE: Compute end direction from primary axis
-      resolvedToDir = computeFreeEndDir(this.from.position, this.to.position);
-    }
-    // Both free: A-star routing becomes Z-route, uses inferDragDirection (already set in move())
-    // Both anchored: Both directions from snap.side (already set)
-
-    // Call primitives-based A* routing directly
-    const result = computeAStarRoute(
-      this.from.position,
-      resolvedFromDir,
-      this.to.position,
-      resolvedToDir,
-      fromShapeBounds,
-      toShapeBounds,
-      this.frozenWidth,
-    );
-
-    this.routedPoints = result.points;
-  }
-
   private commitConnector(): void {
-    if (!this.from || !this.to || this.routedPoints.length < 2) return;
+    if (!this.fromPosition || !this.toPosition || this.routedPoints.length < 2) return;
 
     const id = ulid();
     const userId = userProfileManager.getIdentity().userId;
@@ -408,30 +330,33 @@ export class ConnectorTool implements PointerTool {
       // Full routed path (assembled, ready to render)
       connectorMap.set('points', this.routedPoints);
 
-      // Endpoint positions (always present)
-      connectorMap.set('start', this.from!.position);
-      connectorMap.set('end', this.to!.position);
+      // Endpoint positions (use routed path endpoints for consistency)
+      connectorMap.set('start', this.routedPoints[0]);
+      connectorMap.set('end', this.routedPoints[this.routedPoints.length - 1]);
 
-      // Anchor data (grouped, only if anchored)
-      if (this.from!.isAnchored) {
+      // Anchor data (only if snapped to a shape)
+      if (this.fromSnap) {
         connectorMap.set('startAnchor', {
-          id: this.from!.shapeId,
-          side: this.from!.side,
-          anchor: this.from!.normalizedAnchor,
+          id: this.fromSnap.shapeId,
+          side: this.fromSnap.side,
+          anchor: this.fromSnap.normalizedAnchor,
         });
       }
 
-      if (this.to!.isAnchored) {
+      if (this.toSnap) {
         connectorMap.set('endAnchor', {
-          id: this.to!.shapeId,
-          side: this.to!.side,
-          anchor: this.to!.normalizedAnchor,
+          id: this.toSnap.shapeId,
+          side: this.toSnap.side,
+          anchor: this.toSnap.normalizedAnchor,
         });
       }
 
-      // Caps (flat)
-      connectorMap.set('startCap', 'none');
-      connectorMap.set('endCap', 'arrow');
+      // Caps and type
+      connectorMap.set('startCap', this.frozenStartCap);
+      connectorMap.set('endCap', this.frozenEndCap);
+      if (this.frozenConnectorType && this.frozenConnectorType !== 'elbow') {
+        connectorMap.set('connectorType', this.frozenConnectorType);
+      }
 
       // Styling
       connectorMap.set('color', this.frozenColor);
