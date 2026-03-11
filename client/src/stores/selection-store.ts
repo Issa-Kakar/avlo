@@ -15,7 +15,7 @@ import {
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
 import { getTextFrame, type TextLayout } from '@/lib/text/text-system';
-import { getCodeFrame } from '@/lib/code/code-system';
+import { getCodeFrame, type CodeLayout } from '@/lib/code/code-system';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -103,6 +103,13 @@ export interface TextReflowState {
   origins: Map<string, [number, number]>;
 }
 
+// === Code Reflow State ===
+
+export interface CodeReflowState {
+  layouts: Map<string, CodeLayout>;
+  origins: Map<string, [number, number]>;
+}
+
 // === Transform Types ===
 
 export interface TranslateTransform {
@@ -186,6 +193,8 @@ export interface SelectionState {
   connectorTopology: ConnectorTopology | null;
   /** Text reflow state during E/W side handle scale transforms */
   textReflow: TextReflowState | null;
+  /** Code reflow state during E/W side handle scale transforms */
+  codeReflow: CodeReflowState | null;
 
   // Text editing - primitives only
   /** Object ID being edited, null if not editing */
@@ -425,6 +434,7 @@ export const useSelectionStore = create<SelectionStore>()(
     marquee: { active: false, anchor: null, current: null },
     connectorTopology: null,
     textReflow: null,
+    codeReflow: null,
     textEditingId: null,
     textEditingIsNew: false,
     codeEditingId: null,
@@ -447,6 +457,7 @@ export const useSelectionStore = create<SelectionStore>()(
         marquee: { active: false, anchor: null, current: null },
         connectorTopology: null,
         textReflow: null,
+        codeReflow: null,
         boundsVersion: get().boundsVersion + 1,
       });
       get().refreshStyles();
@@ -467,6 +478,7 @@ export const useSelectionStore = create<SelectionStore>()(
         marquee: { active: false, anchor: null, current: null },
         connectorTopology: null,
         textReflow: null,
+        codeReflow: null,
       }),
 
     // === Transform Actions ===
@@ -495,6 +507,8 @@ export const useSelectionStore = create<SelectionStore>()(
       const isEW = handleId === 'e' || handleId === 'w';
       const textReflow: TextReflowState | null =
         isEW && kindCounts.text > 0 ? { layouts: new Map(), origins: new Map() } : null;
+      const codeReflow: CodeReflowState | null =
+        isEW && kindCounts.code > 0 ? { layouts: new Map(), origins: new Map() } : null;
 
       set({
         transform: {
@@ -511,6 +525,7 @@ export const useSelectionStore = create<SelectionStore>()(
         },
         connectorTopology: topology,
         textReflow,
+        codeReflow,
       });
     },
 
@@ -525,6 +540,7 @@ export const useSelectionStore = create<SelectionStore>()(
         transform: { kind: 'none' },
         connectorTopology: null,
         textReflow: null,
+        codeReflow: null,
       }),
 
     cancelTransform: () =>
@@ -532,6 +548,7 @@ export const useSelectionStore = create<SelectionStore>()(
         transform: { kind: 'none' },
         connectorTopology: null,
         textReflow: null,
+        codeReflow: null,
       }),
 
     // === Endpoint Drag Actions ===

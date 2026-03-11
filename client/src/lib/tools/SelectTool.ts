@@ -1,5 +1,5 @@
 import type { WorldRect, HandleId, PointerTool, PreviewData } from './types';
-import { textTool } from '@/canvas/tool-registry';
+import { textTool, codeTool } from '@/canvas/tool-registry';
 import {
   useSelectionStore,
   type SelectionKind,
@@ -8,6 +8,7 @@ import {
   type ScaleTransform,
   type ConnectorTopology,
   type TextReflowState,
+  type CodeReflowState,
   computeHandles,
   computeSelectionBounds,
   getScaleOrigin,
@@ -55,6 +56,7 @@ import {
   getEndAnchor,
   getOrigin,
   getTextProps,
+  getCodeProps,
   getConnectorType,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
@@ -77,6 +79,13 @@ import {
   getMinCharWidth,
 } from '@/lib/text/text-system';
 import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
+import {
+  getCodeFrame,
+  computeLayout as computeCodeLayout,
+  totalHeight as codeTotalHeight,
+  getMinWidth as getCodeMinWidth,
+  codeSystem,
+} from '@/lib/code/code-system';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -159,7 +168,8 @@ export class SelectTool implements PointerTool {
     if (
       mode === 'standard' &&
       selectedIds.length > 0 &&
-      (!textEditingId || textTool.isEditingLabel())
+      (!textEditingId || textTool.isEditingLabel()) &&
+      !store.codeEditingId
     ) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
@@ -199,11 +209,11 @@ export class SelectTool implements PointerTool {
       //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
-      // Single text re-click: undo hide so editor mounts without menu flash (hide deferred to move)
+      // Single text/code re-click: undo hide so editor mounts without menu flash (hide deferred to move)
       if (
         isSelected &&
         selectedIds.length === 1 &&
-        (hit.kind === 'text' || textTool.justClosedLabelId === hit.id)
+        (hit.kind === 'text' || hit.kind === 'code' || textTool.justClosedLabelId === hit.id)
       ) {
         contextMenuController.cancelHide();
       }
@@ -551,6 +561,12 @@ export class SelectTool implements PointerTool {
               } else {
                 textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
               }
+            } else if (this.hitAtDown!.kind === 'code' && !codeTool.isEditorMounted()) {
+              if (codeTool.justClosedCodeId === this.hitAtDown!.id) {
+                codeTool.justClosedCodeId = null;
+              } else {
+                codeTool.startEditing(this.hitAtDown!.id);
+              }
             }
             break;
 
@@ -608,7 +624,7 @@ export class SelectTool implements PointerTool {
 
         const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } =
           store.transform;
-        const { selectedIds, connectorTopology, textReflow } = store;
+        const { selectedIds, connectorTopology, textReflow, codeReflow } = store;
 
         // Clear transform BEFORE mutate
         store.endTransform();
@@ -626,6 +642,7 @@ export class SelectTool implements PointerTool {
             originBounds,
             connectorTopology,
             textReflow,
+            codeReflow,
           );
         }
         break;
@@ -661,12 +678,13 @@ export class SelectTool implements PointerTool {
 
     this.resetState();
 
-    const { selectedIds, textEditingId } = useSelectionStore.getState();
-    if (selectedIds.length > 0 || textEditingId !== null) {
+    const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
+    if (selectedIds.length > 0 || textEditingId !== null || codeEditingId !== null) {
       contextMenuController.show();
     }
 
     textTool.justClosedLabelId = null;
+    codeTool.justClosedCodeId = null;
     invalidateOverlay();
   }
 
@@ -695,12 +713,13 @@ export class SelectTool implements PointerTool {
     applyCursor();
     this.resetState();
 
-    const { selectedIds, textEditingId } = useSelectionStore.getState();
-    if (selectedIds.length > 0 || textEditingId !== null) {
+    const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
+    if (selectedIds.length > 0 || textEditingId !== null || codeEditingId !== null) {
       contextMenuController.show();
     }
 
     textTool.justClosedLabelId = null;
+    codeTool.justClosedCodeId = null;
     invalidateOverlay();
   }
 
@@ -750,7 +769,9 @@ export class SelectTool implements PointerTool {
       selectionBounds,
       marqueeRect,
       handles:
-        isTransforming || (store.textEditingId && !textTool.isEditingLabel()) ? null : handles,
+        isTransforming || (store.textEditingId && !textTool.isEditingLabel()) || store.codeEditingId
+          ? null
+          : handles,
       isTransforming,
       selectedIds,
       bbox: null,
@@ -763,6 +784,7 @@ export class SelectTool implements PointerTool {
 
   onViewChange(): void {
     if (textTool.isEditorMounted()) textTool.onViewChange();
+    if (codeTool.isEditorMounted()) codeTool.onViewChange();
     invalidateOverlay();
   }
 
@@ -795,7 +817,11 @@ export class SelectTool implements PointerTool {
 
     const { scale } = useCameraStore.getState();
 
-    if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel())) {
+    if (
+      mode === 'standard' &&
+      (!store.textEditingId || textTool.isEditingLabel()) &&
+      !store.codeEditingId
+    ) {
       const bounds = computeSelectionBounds();
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);
@@ -875,6 +901,7 @@ export class SelectTool implements PointerTool {
     const transform = store.transform;
     const topology = store.connectorTopology;
     const textReflow = store.textReflow;
+    const codeReflow = store.codeReflow;
 
     // --- 1. CONNECTOR TOPOLOGY ---
     if (topology) {
@@ -1061,6 +1088,62 @@ export class SelectTool implements PointerTool {
           } else {
             continue;
           }
+        } else if (handle.kind === 'code') {
+          const codeFrame = getCodeFrame(handle.id);
+          if (!codeFrame) continue;
+
+          if (
+            handleKind === 'corner' ||
+            ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')
+          ) {
+            const codeBounds = frameTupleToWorldBounds(codeFrame);
+            objBounds = computeUniformScaleBounds(codeBounds, originBounds, origin, scaleX, scaleY);
+          } else if ((handleId === 'e' || handleId === 'w') && codeReflow) {
+            const props = getCodeProps(handle.y);
+            if (!props) continue;
+            const sourceLines = codeSystem.getSourceLines(handle.id);
+            if (!sourceLines) continue;
+
+            const [fx, fy, fw] = codeFrame;
+            const ox = origin[0];
+            const scaledLeft = ox + (fx - ox) * scaleX;
+            const scaledRight = ox + (fx + fw - ox) * scaleX;
+            const left = Math.min(scaledLeft, scaledRight);
+            const right = Math.max(scaledLeft, scaledRight);
+            const rawWidth = right - left;
+            const minW = getCodeMinWidth(props.fontSize);
+            const targetWidth = Math.max(minW, rawWidth);
+
+            let newLeft: number;
+            if (targetWidth > rawWidth) {
+              newLeft = Math.abs(left - ox) <= Math.abs(right - ox) ? left : right - targetWidth;
+            } else {
+              newLeft = left;
+            }
+
+            const layout = computeCodeLayout(sourceLines, props.fontSize, targetWidth);
+            codeReflow.layouts.set(handle.id, layout);
+            codeReflow.origins.set(handle.id, [newLeft, props.origin[1]]);
+
+            const newHeight = codeTotalHeight(layout, props.fontSize);
+            objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
+          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+            const [fx, , fw, fh] = codeFrame;
+            const { dx, dy } = computeEdgePinTranslation(
+              fx,
+              fx + fw,
+              codeFrame[1],
+              codeFrame[1] + fh,
+              originBounds,
+              scaleX,
+              scaleY,
+              origin,
+              handleId,
+            );
+            objBounds = translateBounds(frameTupleToWorldBounds(codeFrame), dx, dy);
+          } else {
+            continue;
+          }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
@@ -1113,9 +1196,8 @@ export class SelectTool implements PointerTool {
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
-        } else if (handle.kind === 'text') {
-          // Text stores position as origin [anchorX, baseline], not frame.
-          // Translate the origin directly; derived frame recomputes on observer.
+        } else if (handle.kind === 'text' || handle.kind === 'code') {
+          // Text/code store position as origin, not frame.
           const origin = getOrigin(yMap);
           if (!origin) continue;
           yMap.set('origin', [origin[0] + dx, origin[1] + dy]);
@@ -1164,6 +1246,7 @@ export class SelectTool implements PointerTool {
     originBounds: WorldBounds,
     topology: ConnectorTopology | null,
     textReflow: TextReflowState | null,
+    codeReflow: CodeReflowState | null,
   ): void {
     const snapshot = getCurrentSnapshot();
 
@@ -1288,6 +1371,68 @@ export class SelectTool implements PointerTool {
             if (curOrigin) {
               yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
             }
+          }
+          continue;
+        }
+
+        // Code: corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
+        if (handle.kind === 'code') {
+          if (
+            handleKind === 'corner' ||
+            ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')
+          ) {
+            const codeFrame = getCodeFrame(handle.id);
+            if (!codeFrame) continue;
+            const props = getCodeProps(yMap);
+            if (!props) continue;
+
+            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+            const rawAbsScale = Math.abs(uniformScale);
+            const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+            const effectiveAbsScale = roundedFontSize / props.fontSize;
+
+            const [fx, fy, fw, fh] = codeFrame;
+            const cx = fx + fw / 2;
+            const cy = fy + fh / 2;
+            const [newCx, newCy] = computePreservedPosition(
+              cx,
+              cy,
+              originBounds,
+              origin,
+              uniformScale,
+            );
+
+            const nfw = fw * effectiveAbsScale;
+            const nfx = newCx - nfw / 2;
+            const nfy = newCy - (fh * effectiveAbsScale) / 2;
+
+            yMap.set('origin', [nfx, nfy]);
+            yMap.set('fontSize', roundedFontSize);
+            yMap.set('width', props.width * effectiveAbsScale);
+          } else if ((handleId === 'e' || handleId === 'w') && codeReflow) {
+            const layout = codeReflow.layouts.get(handle.id);
+            const reflowOrigin = codeReflow.origins.get(handle.id);
+            if (layout && reflowOrigin) {
+              yMap.set('width', layout.totalWidth);
+              yMap.set('origin', reflowOrigin);
+            }
+          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+            const codeFrame = getCodeFrame(handle.id);
+            if (!codeFrame) continue;
+            const [fx, , fw, fh] = codeFrame;
+            const { dy } = computeEdgePinTranslation(
+              fx,
+              fx + fw,
+              codeFrame[1],
+              codeFrame[1] + fh,
+              originBounds,
+              scaleX,
+              scaleY,
+              origin,
+              handleId,
+            );
+            const curOrigin = getOrigin(yMap);
+            if (curOrigin) yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
           }
           continue;
         }

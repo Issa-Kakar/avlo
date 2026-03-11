@@ -43,6 +43,9 @@ export class CodeTool implements PointerTool {
   private downWorld: [number, number] | null = null;
   private hitCodeId: string | null = null;
 
+  // Public: prevent close→remount cycle (mirrors textTool.justClosedLabelId)
+  justClosedCodeId: string | null = null;
+
   // Editor state
   objectId: string | null = null;
   private container: HTMLDivElement | null = null;
@@ -505,6 +508,7 @@ export class CodeTool implements PointerTool {
   commitAndClose(): void {
     if (!this.editorView || !this.objectId) return;
 
+    this.justClosedCodeId = this.objectId;
     this.removeEditorHandlers();
 
     // Unseal main UndoManager

@@ -13,17 +13,21 @@
 import type { WorldBounds, FrameTuple, BBoxTuple, ObjectHandle } from '@avlo/shared';
 import { getFrame, getPoints } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
-import {
-  computeUniformScaleNoThreshold,
-  computePreservedPosition,
-} from './transform';
+import { getCodeFrame } from '@/lib/code/code-system';
+import { computeUniformScaleNoThreshold, computePreservedPosition } from './transform';
 
 // ============================================================================
 // BBOX TUPLE HELPERS
 // ============================================================================
 
 /** Expand bbox in-place to include the given extents. */
-export function expandBBox(b: BBoxTuple, minX: number, minY: number, maxX: number, maxY: number): void {
+export function expandBBox(
+  b: BBoxTuple,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): void {
   b[0] = Math.min(b[0], minX);
   b[1] = Math.min(b[1], minY);
   b[2] = Math.max(b[2], maxX);
@@ -50,10 +54,7 @@ export function unionBounds(a: WorldBounds, b: WorldBounds): WorldBounds {
  * Expand envelope with new bounds (accumulator pattern - never shrinks).
  * Returns new bounds if envelope is null, otherwise unions.
  */
-export function expandEnvelope(
-  envelope: WorldBounds | null,
-  bounds: WorldBounds
-): WorldBounds {
+export function expandEnvelope(envelope: WorldBounds | null, bounds: WorldBounds): WorldBounds {
   return envelope ? unionBounds(envelope, bounds) : bounds;
 }
 
@@ -64,11 +65,7 @@ export function expandEnvelope(
 /**
  * Translate bounds by offset.
  */
-export function translateBounds(
-  bounds: WorldBounds,
-  dx: number,
-  dy: number
-): WorldBounds {
+export function translateBounds(bounds: WorldBounds, dx: number, dy: number): WorldBounds {
   return {
     minX: bounds.minX + dx,
     minY: bounds.minY + dy,
@@ -84,7 +81,7 @@ export function scaleBoundsAround(
   bounds: WorldBounds,
   origin: [number, number],
   scaleX: number,
-  scaleY: number
+  scaleY: number,
 ): WorldBounds {
   const [ox, oy] = origin;
   const x1 = ox + (bounds.minX - ox) * scaleX;
@@ -107,10 +104,7 @@ export function scaleBoundsAround(
 /**
  * Create bounds from two corner points (for marquee rectangles).
  */
-export function pointsToWorldBounds(
-  p1: [number, number],
-  p2: [number, number]
-): WorldBounds {
+export function pointsToWorldBounds(p1: [number, number], p2: [number, number]): WorldBounds {
   return {
     minX: Math.min(p1[0], p2[0]),
     minY: Math.min(p1[1], p2[1]),
@@ -188,7 +182,7 @@ export function computeUniformScaleBounds(
   originBounds: WorldBounds,
   origin: [number, number],
   scaleX: number,
-  scaleY: number
+  scaleY: number,
 ): WorldBounds {
   const cx = (bbox.minX + bbox.maxX) / 2;
   const cy = (bbox.minY + bbox.maxY) / 2;
@@ -220,14 +214,20 @@ export function computeUniformScaleBounds(
  *
  * Used for scale origin computation to prevent anchor sliding.
  */
-export function computeRawGeometryBounds(
-  handles: Iterable<ObjectHandle>
-): WorldBounds | null {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): WorldBounds | null {
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
 
   for (const handle of handles) {
-    if (handle.kind === 'shape' || handle.kind === 'text') {
-      const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+    if (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code') {
+      const frame =
+        handle.kind === 'text'
+          ? getTextFrame(handle.id)
+          : handle.kind === 'code'
+            ? getCodeFrame(handle.id)
+            : getFrame(handle.y);
       if (!frame) continue;
       const [x, y, w, h] = frame;
       minX = Math.min(minX, x);

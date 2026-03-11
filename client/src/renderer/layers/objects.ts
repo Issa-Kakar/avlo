@@ -25,6 +25,7 @@ import {
   type ScaleTransform,
   type ConnectorTopology,
   type TextReflowState,
+  type CodeReflowState,
 } from '@/stores/selection-store';
 import {
   computeEdgePinTranslation,
@@ -48,7 +49,7 @@ import {
 } from '@/lib/text/text-system';
 import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
-import { codeSystem, renderCodeLayout } from '@/lib/code/code-system';
+import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -64,9 +65,10 @@ export function drawObjects(
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
-  // Read connector topology and text reflow state
+  // Read connector topology and text/code reflow state
   const connTopology = selectionState.connectorTopology;
   const textReflow = selectionState.textReflow;
+  const codeReflow = selectionState.codeReflow;
 
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
@@ -173,7 +175,14 @@ export function drawObjects(
         }
       } else if (transform.kind === 'scale') {
         // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology, textReflow);
+        renderSelectedObjectWithScaleTransform(
+          ctx,
+          handle,
+          transform,
+          connTopology,
+          textReflow,
+          codeReflow,
+        );
       } else if (transform.kind === 'endpointDrag') {
         // Endpoint drag: draw from rerouted points if available
         if (
@@ -720,6 +729,83 @@ function drawReflowedTextPreview(
 }
 
 /**
+ * Draw code block with uniform scale preview using ctx.scale on cached layout.
+ * Font size is rounded to 3dp for WYSIWYG match with commit.
+ */
+function drawScaledCodePreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform,
+): void {
+  const codeFrame = getCodeFrame(handle.id);
+  if (!codeFrame) {
+    drawCode(ctx, handle);
+    return;
+  }
+
+  const props = getCodeProps(handle.y);
+  if (!props) return;
+
+  const { scaleX, scaleY, originBounds, origin } = transform;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const rawAbsScale = Math.abs(uniformScale);
+  if (rawAbsScale < 0.001) return;
+
+  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+  const effectiveAbsScale = roundedFontSize / props.fontSize;
+
+  const [fx, fy, fw, fh] = codeFrame;
+  const cx = fx + fw / 2;
+  const cy = fy + fh / 2;
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+
+  const nfw = fw * effectiveAbsScale;
+  const nfx = newCx - nfw / 2;
+  const nfy = newCy - (fh * effectiveAbsScale) / 2;
+
+  // Reuse cached layout — ctx.scale does the visual scaling
+  const layout = codeSystem.getLayout(
+    handle.id,
+    props.content,
+    props.fontSize,
+    props.width,
+    props.language,
+  );
+  const spans = codeSystem.getSpans(handle.id);
+  const lines = codeSystem.getSourceLines(handle.id);
+
+  ctx.save();
+  ctx.translate(nfx, nfy);
+  ctx.scale(effectiveAbsScale, effectiveAbsScale);
+  renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines);
+  ctx.restore();
+}
+
+/**
+ * Draw code block with reflow preview from pre-computed layout/origin.
+ */
+function drawReflowedCodePreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  codeReflow: CodeReflowState,
+): void {
+  const layout = codeReflow.layouts.get(handle.id);
+  const reflowOrigin = codeReflow.origins.get(handle.id);
+  if (!layout || !reflowOrigin) {
+    drawCode(ctx, handle);
+    return;
+  }
+
+  const props = getCodeProps(handle.y);
+  if (!props) return;
+
+  const spans = codeSystem.getSpans(handle.id);
+  const lines = codeSystem.getSourceLines(handle.id);
+  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines);
+}
+
+/**
  * Context-aware scale transform rendering for selected objects.
  * Dispatches to correct rendering strategy based on selectionKind + handleKind.
  */
@@ -729,6 +815,7 @@ function renderSelectedObjectWithScaleTransform(
   transform: ScaleTransform,
   connTopology: ConnectorTopology | null,
   textReflow: TextReflowState | null,
+  codeReflow: CodeReflowState | null,
 ): void {
   const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
 
@@ -818,9 +905,40 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 5: Code — translate only for now (Phase 4 will add proper scale)
+  // CASE 5: Code — corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'code') {
-    drawObject(ctx, handle);
+    if (
+      handleKind === 'corner' ||
+      ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')
+    ) {
+      drawScaledCodePreview(ctx, handle, transform);
+    } else if ((handleId === 'e' || handleId === 'w') && codeReflow?.layouts.has(handle.id)) {
+      drawReflowedCodePreview(ctx, handle, codeReflow);
+    } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
+      const codeFrame = getCodeFrame(handle.id);
+      if (codeFrame) {
+        const [fx, , fw, fh] = codeFrame;
+        const { dx, dy } = computeEdgePinTranslation(
+          fx,
+          fx + fw,
+          codeFrame[1],
+          codeFrame[1] + fh,
+          originBounds,
+          scaleX,
+          scaleY,
+          origin,
+          handleId,
+        );
+        ctx.save();
+        ctx.translate(dx, dy);
+        drawCode(ctx, handle);
+        ctx.restore();
+      } else {
+        drawCode(ctx, handle);
+      }
+    } else {
+      drawCode(ctx, handle);
+    }
     return;
   }
 

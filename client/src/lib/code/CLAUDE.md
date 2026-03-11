@@ -2,7 +2,7 @@
 
 > **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
 
-Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax highlighting, and Yjs collaborative binding. **Work in progress** — not yet fully integrated with the codebase (no selection transforms, no language dropdown, no mixed selection filter).
+Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax highlighting, and Yjs collaborative binding. Fully integrated with SelectTool (translate, scale, reflow, double-click-to-edit).
 
 ---
 
@@ -14,7 +14,7 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 | `code-system.ts` | Singleton `CodeSystemCache`, zero-allocation canvas renderer (`renderCodeLayout`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system), layout computation with word-aware wrapping |
 | `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
 | `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → `RunSpans[]` via `TAG_STYLE_INDEX` + `packRunSpans`, zero-copy transfer |
-| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) |
+| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
 
 ---
 
@@ -462,15 +462,29 @@ function drawCode(ctx, handle) {
 }
 ```
 
-During scale transforms, code blocks currently fall through to `drawObject()` (no scale transform rendering yet).
+During scale transforms, code blocks get full context-aware rendering:
+- **Corner / codeOnly N/S:** `drawScaledCodePreview()` — ctx.scale on cached layout with rounded fontSize
+- **E/W:** `drawReflowedCodePreview()` — renders from pre-computed `CodeReflowState` layout/origin
+- **Mixed N/S:** Edge-pin translate via `computeEdgePinTranslation()`
 
 ### selection-store.ts
 
 ```typescript
 codeEditingId: string | null;
+codeReflow: CodeReflowState | null;  // E/W reflow state during scale transforms
 beginCodeEditing: (objectId) => set({ codeEditingId: objectId, menuOpen: true });
 endCodeEditing: () => set({ codeEditingId: null, menuOpen: selectedIds.length > 0 });
 ```
+
+`CodeReflowState` (same shape as `TextReflowState`): `{ layouts: Map<string, CodeLayout>, origins: Map<string, [number, number]> }`. Initialized in `beginScale` for E/W handles when `kindCounts.code > 0`, cleared in `endTransform`/`cancelTransform`.
+
+### SelectTool.ts — Code Block Integration
+
+- **Translate:** Code blocks translate via `origin` (same as text), not `frame`
+- **Scale:** Full dispatch in `invalidateTransformPreview` and `commitScale` — uniform scale (corner/codeOnly N/S), reflow (E/W), edge-pin (mixed N/S)
+- **Double-click to edit:** `objectInSelection` click on code block calls `codeTool.startEditing(id)` with `justClosedCodeId` guard
+- **Guards:** `codeEditingId` blocks handle hit testing, hover cursors, and hides resize handles during editing
+- **onViewChange:** Forwards to `codeTool.onViewChange()` when editor is mounted
 
 ### hit-testing.ts
 
@@ -480,6 +494,4 @@ Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial i
 
 ## Known Issues / Not Yet Implemented
 
-- **Selection transforms:** Code blocks have no scale/translate preview during SelectTool transforms (renders static)
-- **Mixed selection filter:** Code blocks not filtered in context menu
 - **Long code blocks:** CM's internal viewport optimization causes WYSIWYG mismatch on very tall blocks (content outside CM's visible window is virtualized)

@@ -52,12 +52,13 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 | File | Status |
 |------|--------|
 | `client/src/lib/tools/types.ts` | PointerTool interface + all preview types |
-| `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale, connector endpoint editing |
+| `client/src/lib/tools/SelectTool.ts` | **Full** - Selection, translate, scale, connector endpoint editing, code block editing entry |
 | `client/src/lib/tools/DrawingTool.ts` | **Full** - Pen, highlighter, AND shape drawing |
 | `client/src/lib/tools/EraserTool.ts` | **Full** - Geometry-aware hit testing |
 | `client/src/lib/tools/TextTool.ts` | **Full** - WYSIWYG rich text with Tiptap DOM overlay + canvas rendering |
 | `client/src/lib/tools/PanTool.ts` | **Full** - Viewport panning |
 | `client/src/lib/tools/ConnectorTool.ts` | **Full** - Orthogonal connector drawing + snapping |
+| `client/src/lib/tools/CodeTool.ts` | **Full** - Click-to-place code blocks + CodeMirror DOM overlay editing |
 
 ### Connectors (Orthogonal Routing System)
 **Docs:** `docs/CONNECTOR_ROUTING_SYSTEM_V2.md`, `docs/CONNECTOR_SELECT_CHANGELOG.md`
@@ -88,10 +89,13 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 interface SelectionState {
   selectedIds: string[];
   mode: SelectionMode;              // Derived in setSelection: 1 connector → 'connector', else 'standard'
-  selectionKind: SelectionKind;     // 'strokesOnly' | 'shapesOnly' | 'connectorsOnly' | 'mixed'
+  selectionKind: SelectionKind;     // 'strokesOnly' | 'shapesOnly' | 'codeOnly' | 'connectorsOnly' | 'mixed'
   transform: TransformState;        // 'none' | TranslateTransform | ScaleTransform | EndpointDragTransform
   marquee: MarqueeState;
   connectorTopology: ConnectorTopology | null;
+  textReflow: TextReflowState | null;
+  codeReflow: CodeReflowState | null;   // E/W reflow for code blocks during scale
+  codeEditingId: string | null;          // Code object being edited via CodeMirror
 }
 
 interface ConnectorTopology {
@@ -196,7 +200,8 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
 ├── eraserTool
 ├── textTool
 ├── panTool      (used by both dedicated mode AND MMB)
-└── selectTool
+├── selectTool
+└── codeTool
 
                 │
                 ▼
@@ -306,7 +311,8 @@ const toolMap = {
   'pan' → panTool,
   'select' → selectTool,
   'connector' → connectorTool,
-  // 'image' and 'code' intentionally omitted (no impl)
+  'code' → codeTool,
+  // 'image' intentionally omitted (no impl)
 }
 ```
 
@@ -316,7 +322,7 @@ getCurrentTool(): PointerTool | undefined  // Reads activeTool from device-ui-st
 getToolById(toolId): PointerTool | undefined
 getActivePreview(): PreviewData | null     // For OverlayRenderLoop
 canStartMMBPan(): boolean                  // Blocks MMB if tool gesture active
-export { panTool }                         // Direct export for MMB pan
+export { panTool, textTool, codeTool }     // Direct exports for cross-tool access
 ```
 
 ### Zero-Arg Constructor Pattern
@@ -466,7 +472,7 @@ Y.Doc { guid: roomId }
 
 ### Object Kinds
 ```typescript
-type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
+type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code';
 ```
 
 ### Object Schemas
@@ -496,6 +502,16 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector';
 // NOTE: No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
 // Use getTextFrame(objectId) from text-system.ts to read the cached derived frame.
 // Delta attributes: bold, italic, highlight (multicolor: { color: '#hex' } or presence → '#ffd43b')
+```
+
+**Code** (origin-based positioning, Y.Text content, CodeMirror editing):
+```typescript
+{ id, kind: 'code', origin: [topLeftX, topLeftY], fontSize, width: number,
+  language: 'typescript' | 'python',
+  content: Y.Text, ownerId, createdAt }
+// NOTE: No stored 'frame'. Frame is derived in CodeSystemCache via computeCodeBBox().
+// Use getCodeFrame(objectId) from code-system.ts to read the cached derived frame.
+// Origin = top-left corner (unlike text where origin = alignment anchor + baseline).
 ```
 
 **Connector** (orthogonal routing with optional shape anchoring):
@@ -578,6 +594,9 @@ getStartCap(y), getEndCap(y) → 'arrow' | 'none'
 getFontSize(y), getFontFamily(y), getOrigin(y), getAlign(y), getTextWidth(y), getContent(y)
 getTextProps(y)              → TextProps | null  // All text properties in one call
 
+// Code-specific
+getCodeProps(y)              → CodeProps | null  // { content: Y.Text, origin, fontSize, width, language }
+
 // Text types (exported from accessors)
 type TextAlign = 'left' | 'center' | 'right'
 type TextWidth = 'auto' | number
@@ -634,6 +653,7 @@ for (entry of sortedByULID) {
 }
 ```
 - Text rendering via `drawText()` in `objects.ts`: uses `getTextProps()` → `textLayoutCache.getLayout()` → `renderTextLayout()`
+- Code rendering via `drawCode()` in `objects.ts`: uses `getCodeProps()` → `codeSystem.getLayout()` → `renderCodeLayout()`
 - Shape paths via `lib/utils/shape-path.ts`: `buildShapePathFromFrame(shapeType, frame)`
 ### Coordinate Spaces
 - **World:** Logical document coords
@@ -750,17 +770,28 @@ interface DeviceUIState {
 - Derived frame in `TextLayoutCache` (no stored frame in Y.Map), read via `getTextFrame(id)`
 - **Shape labels:** `justClosedLabelId` prevents close→remount cycle; `isEditingLabel()` lets SelectTool show handles during label editing
 
+### CodeTool
+- Click-to-place code blocks with CodeMirror DOM overlay editing
+- Screen-space rendering: all dimensions computed as world * scale in px (no CSS transform)
+- Origin-based positioning: `origin` = top-left corner (unlike text's anchor+baseline)
+- Width always stored as number (no 'auto' mode), height derived from layout
+- `justClosedCodeId` prevents close→remount cycle (mirrors `textTool.justClosedLabelId`)
+- `startEditing(objectId)` public API for SelectTool double-click entry
+- Per-session Y.UndoManager scoped to Y.Text + Y.Map
+- Dynamic language switching via CodeMirror compartment
+- Derived frame in `CodeSystemCache`, read via `getCodeFrame(id)` from `code-system.ts`
+
 ### PanTool
 
 ### SelectTool
 
 **File:** `client/src/lib/tools/SelectTool.ts` 
-**Status:** Full — shapes, strokes, text, and connectors with endpoint editing.
+**Status:** Full — shapes, strokes, text, code blocks, and connectors with endpoint editing.
 
 #### Selection Modes & Kinds
 ```typescript
 type SelectionMode = 'none' | 'standard' | 'connector';  // UX paradigm
-type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'connectorsOnly' | 'mixed';
+type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'codeOnly' | 'connectorsOnly' | 'mixed';
 ```
 
 | Selection | Mode | UX |
@@ -787,6 +818,7 @@ When shapes transform, attached connectors reroute via `ConnectorTopology` (comp
 - **Strokes:** Uniform scale, position preserved, width scales WYSIWYG
 - **Shapes:** Non-uniform scale, stroke width unchanged
 - **Text:** Corner/N/S (textOnly) = uniform scale (fontSize + origin + width). E/W = reflow (width change, auto→fixed). Mixed N/S = edge-pin translate
+- **Code:** Corner/N/S (codeOnly) = uniform scale (fontSize + width + origin). E/W = reflow (width change, layout recompute). Mixed N/S = edge-pin translate. Origin = top-left (no anchorFactor).
 - **Mixed + side handle:** Strokes translate (edge-pin), shapes scale
 
 #### Hit Testing (`geometry/hit-testing.ts`)
@@ -829,5 +861,4 @@ interface ConnectorPreview {
 ---
 
 ## NOT Implemented Yet / Planned
-- **Code Block Tool:** Placeholder in toolbar, shows "coming soon" toast
 - **Images**
