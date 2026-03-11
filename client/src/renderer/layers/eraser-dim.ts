@@ -1,6 +1,7 @@
 import type { Snapshot } from '@avlo/shared';
 import { getWidth, getFillColor } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import { getObjectCacheInstance } from '../object-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 
@@ -82,6 +83,11 @@ export function drawDimmedStrokes(
     } else if (kind === 'text') {
       // Text: dim the bounding box
       const frame = getTextFrame(handle.id);
+      if (!frame) continue;
+      const [x, y, w, h] = frame;
+      ctx.fillRect(x, y, w, h);
+    } else if (kind === 'code') {
+      const frame = getCodeFrame(handle.id);
       if (!frame) continue;
       const [x, y, w, h] = frame;
       ctx.fillRect(x, y, w, h);

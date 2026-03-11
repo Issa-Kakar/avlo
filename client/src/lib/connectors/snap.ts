@@ -21,6 +21,7 @@ import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { ObjectHandle, FrameTuple } from '@avlo/shared';
 import { getShapeType, getFillColor, getFrame } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import type { Dir, SnapTarget, SnapContext } from './types';
 import { isAnchorInterior } from './types';
 
@@ -81,7 +82,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const handles: ObjectHandle[] = [];
   for (const entry of results) {
     const h = snapshot.objectsById.get(entry.id);
-    if (h && (h.kind === 'shape' || h.kind === 'text')) {
+    if (h && (h.kind === 'shape' || h.kind === 'text' || h.kind === 'code')) {
       handles.push(h);
     }
   }
@@ -99,10 +100,15 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const candidates: Candidate[] = [];
 
   for (const handle of handles) {
-    const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+    const frame =
+      handle.kind === 'text'
+        ? getTextFrame(handle.id)
+        : handle.kind === 'code'
+          ? getCodeFrame(handle.id)
+          : getFrame(handle.y);
     if (!frame) continue;
     const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
-    const isFilled = handle.kind === 'text' || !!getFillColor(handle.y);
+    const isFilled = handle.kind === 'text' || handle.kind === 'code' || !!getFillColor(handle.y);
     candidates.push({ handle, frame, area: frame[2] * frame[3], shapeType, isFilled });
   }
 

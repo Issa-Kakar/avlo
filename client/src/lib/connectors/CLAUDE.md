@@ -359,6 +359,10 @@ interface SnapTarget {
 }
 ```
 
+### Connectable Kinds
+
+Snapping targets shapes, text, and code blocks (`kind === 'shape' || 'text' || 'code'`). Text and code blocks use derived frames (`getTextFrame`/`getCodeFrame`); both are treated as always-filled rects. The same kind/frame pattern is mirrored in `reroute-connector.ts` and `connector-utils.ts`.
+
 ### Fill-Aware Visual Ordering
 
 Snapping respects Z-order and fill state:

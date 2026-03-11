@@ -9,8 +9,17 @@ import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/c
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getAnimationController } from '@/canvas/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
-import { getFrame, getPoints, getWidth, getShapeType, getFillColor, getStartAnchor, getEndAnchor } from '@avlo/shared';
+import {
+  getFrame,
+  getPoints,
+  getWidth,
+  getShapeType,
+  getFillColor,
+  getStartAnchor,
+  getEndAnchor,
+} from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import * as Y from 'yjs';
 import type { PointerTool } from './types';
 
@@ -215,6 +224,17 @@ export class EraserTool implements PointerTool {
 
         case 'text': {
           const frame = getTextFrame(handle.id);
+          if (!frame) break;
+
+          const [x, y, w, h] = frame;
+          if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
+            this.state.hitNow.add(handle.id);
+          }
+          break;
+        }
+
+        case 'code': {
+          const frame = getCodeFrame(handle.id);
           if (!frame) break;
 
           const [x, y, w, h] = frame;

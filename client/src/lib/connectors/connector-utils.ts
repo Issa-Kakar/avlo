@@ -14,6 +14,7 @@
 import type { FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
 import { getStart, getEnd, getStartAnchor, getEndAnchor, getFrame } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import type { Dir, AABB, Bounds } from './types';
 import { isAnchorInterior } from './types';
 import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
@@ -530,7 +531,11 @@ export function getEndpointEdgePosition(
   if (!shapeHandle) return storedPos ?? [0, 0];
 
   const frame =
-    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+    shapeHandle.kind === 'text'
+      ? getTextFrame(shapeHandle.id)
+      : shapeHandle.kind === 'code'
+        ? getCodeFrame(shapeHandle.id)
+        : getFrame(shapeHandle.y);
   if (!frame) return storedPos ?? [0, 0];
 
   const [nx, ny] = anchor.anchor;

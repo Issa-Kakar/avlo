@@ -27,6 +27,7 @@ import {
   type WorldBounds,
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import { computeAStarRoute } from './routing-astar';
 import {
   applyAnchorToFrame,
@@ -217,10 +218,12 @@ function resolveEndpoint(
     const snap = override as SnapTarget;
     const handle = snapshot.objectsById.get(snap.shapeId);
     const frame =
-      handle && (handle.kind === 'shape' || handle.kind === 'text')
+      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
         ? handle.kind === 'text'
           ? getTextFrame(handle.id)
-          : getFrame(handle.y)
+          : handle.kind === 'code'
+            ? getCodeFrame(handle.id)
+            : getFrame(handle.y)
         : null;
     const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
 
@@ -240,10 +243,12 @@ function resolveEndpoint(
   if (anchor) {
     const handle = snapshot.objectsById.get(anchor.id);
     const frame =
-      handle && (handle.kind === 'shape' || handle.kind === 'text')
+      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
         ? handle.kind === 'text'
           ? getTextFrame(handle.id)
-          : getFrame(handle.y)
+          : handle.kind === 'code'
+            ? getCodeFrame(handle.id)
+            : getFrame(handle.y)
         : null;
 
     if (frame) {
@@ -386,10 +391,12 @@ function resolveNewEndpoint(
   const snap = value;
   const handle = snapshot.objectsById.get(snap.shapeId);
   const frame =
-    handle && (handle.kind === 'shape' || handle.kind === 'text')
+    handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
       ? handle.kind === 'text'
         ? getTextFrame(handle.id)
-        : getFrame(handle.y)
+        : handle.kind === 'code'
+          ? getCodeFrame(handle.id)
+          : getFrame(handle.y)
       : null;
   const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
   return {
