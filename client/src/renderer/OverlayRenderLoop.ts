@@ -25,6 +25,10 @@ export class OverlayRenderLoop {
   private cameraUnsubscribe: (() => void) | null = null;
   private toolUnsubscribe: (() => void) | null = null;
 
+  // Independent resize detection (not reliant on applyPendingResize return value)
+  private lastCanvasW = 0;
+  private lastCanvasH = 0;
+
   /**
    * Start the overlay render loop.
    * All dependencies are read from module registries - no config needed.
@@ -114,12 +118,19 @@ export class OverlayRenderLoop {
   private frame(): void {
     if (!this.started) return;
 
-    // Apply pending resize before drawing
+    // Apply pending resize + detect canvas dimension change independently
     applyPendingResize();
 
-    // Get context from registry (replaces stage)
     const ctx = getOverlayContext();
     if (!ctx) return;
+
+    if (ctx.canvas.width !== this.lastCanvasW || ctx.canvas.height !== this.lastCanvasH) {
+      this.lastCanvasW = ctx.canvas.width;
+      this.lastCanvasH = ctx.canvas.height;
+      requestAnimationFrame(() => {
+        if (this.started) this.invalidateAll();
+      });
+    }
 
     // Get viewport from camera store (single source of truth)
     const vpInfo = getViewportInfo();

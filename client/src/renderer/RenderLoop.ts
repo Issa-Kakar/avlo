@@ -23,19 +23,22 @@ export class RenderLoop {
   private canvasW = 0;
   private canvasH = 0;
 
+  // Independent resize detection (not reliant on applyPendingResize return value)
+  private lastCanvasW = 0;
+  private lastCanvasH = 0;
+
   // Scheduling
   private rafId: number | null = null;
   private needsFrame = false;
   private urgent = false;
   private lastFrameTime = 0;
   private throttleTimeout: ReturnType<typeof setTimeout> | null = null;
+  private nativeRafUntil = 0; // Bypass 60fps throttle until this timestamp (post-resize font warmup)
 
   // Visibility
   private isHidden = false;
   private hiddenIntervalId: number | null = null;
 
-  // Translucency cache (recomputed per docVersion)
-  private translucentDocVersion = -1;
   private hasTranslucent = false;
 
   constructor() {
@@ -53,6 +56,8 @@ export class RenderLoop {
     const { cssWidth, cssHeight, dpr } = useCameraStore.getState();
     this.canvasW = Math.round(cssWidth * dpr);
     this.canvasH = Math.round(cssHeight * dpr);
+    this.lastCanvasW = this.canvasW;
+    this.lastCanvasH = this.canvasH;
 
     // Any camera change → full clear + schedule frame
     this.cameraUnsubscribe = useCameraStore.subscribe(
@@ -108,7 +113,9 @@ export class RenderLoop {
     this.needsFrame = false;
     this.urgent = false;
     this.lastFrameTime = 0;
-    this.translucentDocVersion = -1;
+    this.nativeRafUntil = 0;
+    this.lastCanvasW = 0;
+    this.lastCanvasH = 0;
     this.hasTranslucent = false;
   }
 
@@ -175,7 +182,7 @@ export class RenderLoop {
   private scheduleFrame(): void {
     if (!this.started || this.isHidden || this.rafId !== null) return;
 
-    if (!this.urgent) {
+    if (!this.urgent && performance.now() >= this.nativeRafUntil) {
       const targetMs = 1000 / (isMobile() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS);
       const elapsed = performance.now() - this.lastFrameTime;
       if (elapsed < targetMs) {
@@ -206,15 +213,21 @@ export class RenderLoop {
     this.lastFrameTime = performance.now();
     this.needsFrame = false;
 
-    // 1. Apply pending resize from SurfaceManager
-    if (applyPendingResize()) {
-      // Schedule safety frame for font cache warmup after context reset
-      setTimeout(() => this.invalidateAll(), 50);
-    }
-
-    // 2. Get context
+    // 1. Get context
     const ctx = getBaseContext();
     if (!ctx) return;
+
+    // 2. Apply pending resize + detect canvas dimension change independently
+    applyPendingResize();
+    if (ctx.canvas.width !== this.lastCanvasW || ctx.canvas.height !== this.lastCanvasH) {
+      this.lastCanvasW = ctx.canvas.width;
+      this.lastCanvasH = ctx.canvas.height;
+      this.fullClear = true;
+      this.dirtyCount = 0;
+      // Render at native rAF (bypass 60fps throttle) for 150ms after context reset.
+      // Continuous full redraws give the GPU multiple frames to warm font caches.
+      this.nativeRafUntil = performance.now() + 150;
+    }
 
     // 3. Read camera state (single read for entire frame)
     const { scale, pan, dpr, cssWidth, cssHeight } = useCameraStore.getState();
@@ -229,18 +242,15 @@ export class RenderLoop {
     // 4. Read snapshot
     const snapshot = getCurrentSnapshot();
 
-    // 5. Translucency cache check (recomputed per docVersion)
-    if (snapshot.docVersion !== this.translucentDocVersion) {
-      this.translucentDocVersion = snapshot.docVersion;
-      this.hasTranslucent = false;
-      if (snapshot.spatialIndex) {
-        const vb = getVisibleWorldBounds();
-        const visible = snapshot.spatialIndex.query(vb);
-        this.hasTranslucent = visible.some((entry) => {
-          const handle = snapshot.objectsById.get(entry.id);
-          return handle && getOpacity(handle.y) < 1;
-        });
-      }
+    // 5. Translucency check — dirty rects can't composite correctly with opacity < 1
+    this.hasTranslucent = false;
+    if (snapshot.spatialIndex) {
+      const vb = getVisibleWorldBounds();
+      const visible = snapshot.spatialIndex.query(vb);
+      this.hasTranslucent = visible.some((entry) => {
+        const handle = snapshot.objectsById.get(entry.id);
+        return handle && getOpacity(handle.y) < 1;
+      });
     }
     if (this.hasTranslucent && !this.fullClear) {
       this.fullClear = true;
@@ -326,6 +336,12 @@ export class RenderLoop {
     // 10. Reset dirty state
     this.dirtyCount = 0;
     this.fullClear = false;
+
+    // 11. Native rAF window: keep redrawing for GPU font cache warmup
+    if (performance.now() < this.nativeRafUntil) {
+      this.fullClear = true;
+      this.needsFrame = true;
+    }
   }
 
   // =============================================

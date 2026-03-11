@@ -28,6 +28,8 @@ let overlayCtx: CanvasRenderingContext2D | null = null;
 let editorHost: HTMLDivElement | null = null;
 
 // Deferred resize state - applied at start of next render frame
+let pendingCssW = 0;
+let pendingCssH = 0;
 let pendingPixelW = 0;
 let pendingPixelH = 0;
 let hasPendingResize = false;
@@ -54,8 +56,8 @@ export function setEditorHost(el: HTMLDivElement | null): void {
 
 /**
  * Apply pending canvas resize. Called at the start of each render frame.
- * First loop to run applies it; second sees nothing pending.
- * Returns true if a resize was applied (canvas context was reset).
+ * Sets CSS display dimensions and backing store atomically so the browser
+ * never CSS-scales stale content into a differently-sized box.
  */
 export function applyPendingResize(): boolean {
   if (!hasPendingResize) return false;
@@ -64,6 +66,14 @@ export function applyPendingResize(): boolean {
   const oCanvas = overlayCtx?.canvas;
   if (!bCanvas || !oCanvas) return false;
   if (bCanvas.width === pendingPixelW && bCanvas.height === pendingPixelH) return false;
+  // CSS display size (integer px) — set BEFORE backing store so layout is correct
+  const cssW = pendingCssW + 'px';
+  const cssH = pendingCssH + 'px';
+  bCanvas.style.width = cssW;
+  bCanvas.style.height = cssH;
+  oCanvas.style.width = cssW;
+  oCanvas.style.height = cssH;
+  // Backing store (device pixels) — resets context state
   bCanvas.width = pendingPixelW;
   bCanvas.height = pendingPixelH;
   oCanvas.width = pendingPixelW;
@@ -120,6 +130,9 @@ export class SurfaceManager {
     applyCursor();
 
     // 5. Single ResizeObserver on container (not individual canvases)
+    // No debounce needed: applyPendingResize() sets CSS dims + backing store
+    // atomically, so no CSS stretching regardless of update frequency.
+    // ResizeObserver fires once per frame; canvas updates on the next rAF.
     this.resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -166,22 +179,28 @@ export class SurfaceManager {
   private updateCanvasSize(cssWidth: number, cssHeight: number, dpr: number): void {
     const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
 
-    // Calculate pixel dimensions with clamping
-    const rawPixelW = cssWidth * dpr;
-    const rawPixelH = cssHeight * dpr;
+    // Round CSS dims to integers — eliminates sub-pixel jitter from flexbox/percentage layout
+    const roundedCssW = Math.round(cssWidth);
+    const roundedCssH = Math.round(cssHeight);
+    if (roundedCssW <= 0 || roundedCssH <= 0) return;
+
+    const rawPixelW = roundedCssW * dpr;
+    const rawPixelH = roundedCssH * dpr;
     const pixelW = Math.min(Math.round(rawPixelW), maxDim);
     const pixelH = Math.min(Math.round(rawPixelH), maxDim);
 
     // CRITICAL: Compute effective DPR when dimensions are clamped
-    const effectiveDpr = Math.min(pixelW / cssWidth, pixelH / cssHeight);
+    const effectiveDpr = Math.min(pixelW / roundedCssW, pixelH / roundedCssH);
 
     // Queue resize for next render frame (avoids clearing canvas between frames)
+    pendingCssW = roundedCssW;
+    pendingCssH = roundedCssH;
     pendingPixelW = pixelW;
     pendingPixelH = pixelH;
     hasPendingResize = true;
 
     // Coordinate transforms need current values immediately
-    useCameraStore.getState().setViewport(cssWidth, cssHeight, effectiveDpr);
+    useCameraStore.getState().setViewport(roundedCssW, roundedCssH, effectiveDpr);
   }
 
   /**
