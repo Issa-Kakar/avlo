@@ -74,7 +74,7 @@ All padding is a ratio of `fontSize`:
 ```
 padTop(fs)    = fs * 1.5          padBottom(fs) = fs * 1.5
 padLeft(fs)   = fs * 0.85         padRight(fs)  = fs * 0.85
-gutterPad(fs) = fs * 0.7
+gutterPad(fs) = fs * 2.0
 
 totalWidth  = stored width field (set at creation from getDefaultWidth)
 totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
@@ -294,6 +294,7 @@ Zero-allocation span iteration — no `sliceRuns`, no intermediate objects. Step
 3. **Gutter:** On lines where `vline.from === 0`, right-align line number within gutter area
 4. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
 5. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
+6. **Placeholder:** After the loop, if `sourceLines.length === 1 && sourceLines[0] === ''`, draw grey "Type something..." at first line position (same font, color as CM6 placeholder)
 
 ---
 
@@ -321,7 +322,7 @@ The CM theme references CSS custom properties instead of `em` units. `setCSSVars
 | `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
 | `--c-pb` | `padBottom(fs) * scale` px | `.cm-scroller` paddingBottom |
 | `--c-gl` | `padLeft(fs) * scale` px | `.cm-gutters` paddingLeft |
-| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-gutterElement` paddingRight |
+| `--c-gr` | `gutterPad(fs) * scale` px | `.cm-line` padding-left (gutter-to-content gap) |
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
 | `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
 
@@ -330,6 +331,10 @@ This avoids browser `em→px` conversion which introduces sub-pixel rounding mis
 ### Padding Placement: Scroller, Not Content
 
 Vertical padding (`--c-pt`, `--c-pb`) is on `.cm-scroller`, not `.cm-content`. CM's `viewState.measure()` reads `contentDOM` padding with `parseInt()`, which truncates fractional px values, causing gutter-content vertical misalignment. Placing padding on the scroller avoids this.
+
+### Gutter-Content Gap: Line, Not Gutters
+
+The gutter-to-content gap (`--c-gr`, `gutterPad`) is applied as `padding-left` on `.cm-line`, not as `padding-right` on `.cm-gutters` or `.cm-gutterElement`. CM6's base theme sets `box-sizing: border-box` on `.cm-gutterElement`, which absorbs padding into the element's box without propagating it to push `.cm-content` rightward. Placing the gap on `.cm-line` ensures correct alignment AND makes `.cm-activeLine` background cover the gap area seamlessly (no highlight discontinuity between gutter and content).
 
 ### `positionEditor()`
 
@@ -364,21 +369,22 @@ The `line-height: inherit !important` forces the scroller to use the container's
 
 Lazy-loaded via `getCodeMirrorExtensions()` (cached after first call). Two extensions:
 
-1. **Theme** (`EditorView.theme`, dark mode): CoolGlow chrome — background, gutter, cursor (`CODE_CARET`), selection (`CODE_SELECTION`), active line (`CODE_LINE_HL`), bracket matching (cyan/red outlines), search match, tooltip, fold placeholder. All padding/sizing via `var(--c-*)`. Line-height set as the `LINE_HEIGHT_MULT` ratio on `.cm-scroller`. Gutter elements use `fontFeatureSettings: '"tnum"'` for tabular numbers.
+1. **Theme** (`EditorView.theme`, dark mode): CoolGlow chrome — background, gutter, cursor (`CODE_CARET`), selection (`CODE_SELECTION`), active line (`CODE_LINE_HL`), bracket matching (cyan/red outlines), search match, tooltip, fold placeholder, placeholder hint. All padding/sizing via `var(--c-*)`. Line-height set as the `LINE_HEIGHT_MULT` ratio on `.cm-scroller`. Gutter elements use `fontFeatureSettings: '"tnum"'` for tabular numbers.
 
 2. **Syntax highlighting** (`HighlightStyle.define`): Comprehensive Lezer tag mapping using the three-tier keyword system. Tags grouped by semantic role: control keywords → `KEYWORD`, definition keywords → `DEF_KEYWORD`, module/modifier → `MODIFIER`, plus full coverage of strings (including special(brace), character), numbers (integer, float), comments (doc), functions (className, definition types), variables (self, labelName), types (angleBracket, namespace), all operator subtypes, attributes, deref, punctuation, and invalid.
 
 ### Editor State Extensions (set at mount)
 
 - `lineNumbers()` with `formatNumber` callback — pads line numbers with spaces to match canvas gutter digit reservation (`max(2, String(lines).length)`)
-- `highlightActiveLine()` + `highlightActiveLineGutter()` — subtle white highlight on current line
+- `highlightActiveLine()` + `highlightActiveLineGutter()` — continuous active line highlight (gutter meets content, no gap)
 - `EditorView.lineWrapping` — enables CM's native word-wrapping
 - `bracketMatching()` — highlights matching bracket pairs (cyan outline) and mismatches (red outline)
 - `closeBrackets()` — auto-closes brackets, quotes, template literals; `closeBracketsKeymap` for Backspace pair-deletion
-- Language extension: `python()` or `javascript({ typescript: true, jsx: true })`
+- Language extension in `Compartment` — `python()` or `javascript({ typescript: true, jsx: true })`, dynamically reconfigurable via `switchLanguage()`
 - `indentUnit.of('    ')` — 4-space indentation
-- `keymap.of([...closeBracketsKeymap, indentWithTab])` — closeBrackets keymap before indentWithTab for precedence
-- `yCollab(yText, null, { undoManager })` — Yjs collaborative binding with per-session UndoManager
+- `keymap.of([backspaceIndent, ...closeBracketsKeymap, indentWithTab, ...yUndoManagerKeymap])` — indent-unit Backspace first (deletes 4 spaces at col % 4 boundaries), then closeBrackets, Tab, explicit undo/redo
+- `yCollab(yText, null, { undoManager: sessionUM })` — Yjs collaborative binding with per-session UndoManager scoped to `[yText, yMap]`
+- `placeholder('Type something...')` — grey hint text in empty editors (matches canvas placeholder)
 - Tab normalizer transaction filter — replaces `\t` with 4 spaces in all insertions
 
 ---
@@ -398,14 +404,30 @@ Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2`.
 
 ### Editor Lifecycle
 
-**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`, includes `@codemirror/autocomplete`) → create `Y.UndoManager(yText)` → build `EditorState` with extensions → create `EditorView` → focus → `beginCodeEditing(objectId)` on selection store → invalidate world.
+**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`) → create session UM scoped to `[yText, yMap]` with `trackedOrigins: new Set([userId])` → build `EditorState` with extensions → create `EditorView` → focus → extract `syncConf` via `ySyncFacet` → seal main UM (add syncConf origin, captureTimeout → 600s) → register Y.Map observer → `beginCodeEditing(objectId)` on selection store → invalidate world.
 
-**Close (`commitAndClose`):** Remove event handlers → destroy EditorView → clear UndoManager → remove container from DOM → null all refs → `endCodeEditing()` on selection store → invalidate world + overlay.
+**Close (`commitAndClose`):** Remove event handlers → unseal main UM (remove syncConf origin, captureTimeout → 500ms) → unobserve Y.Map → destroy EditorView → clear session UM → remove container from DOM → null all refs → `endCodeEditing()` on selection store → invalidate world + overlay.
 
 ### Event Handlers
 
 - **Escape key** (capture phase): Close editor
 - **Click outside** (capture phase, 100ms delayed attach): Close editor. Clicks on `.ctx-menu` are excluded. Canvas clicks are consumed (`stopPropagation`) when code tool is active.
+
+### UndoManager Integration
+
+Two-level undo: per-session UM for in-editor Ctrl+Z/Y, main UM for post-close atomic undo. Same pattern as TextTool's `TextCollaboration` extension.
+
+**Session UM:** `Y.UndoManager([yText, yMap], { trackedOrigins: new Set([userId]) })`. Scoped to both Y.Text (content) and Y.Map (properties). `yCollab()` auto-adds `syncConf` (YSyncConfig) as a tracked origin so local CM edits are captured. `yUndoManagerKeymap` provides explicit Mod-z/Mod-y/Mod-Shift-z bindings.
+
+**Main UM sealing:** After EditorView creation, `syncConf` extracted via `view.state.facet(ySyncFacet)` and added to main UM's tracked origins. `captureTimeout` set to 600s so entire session merges into one undo item. On close, `syncConf` removed and `captureTimeout` restored to 500ms.
+
+### Y.Map Observer — Live Property Sync
+
+Registered after EditorView creation on `handle.y`. Listens for `keysChanged`:
+- `fontSize`, `width`, `origin` → `positionEditor()` (re-reads fresh props, updates all screen-space dimensions + CSS vars)
+- `language` → `switchLanguage()` (lazy-loads parser, reconfigures language `Compartment`)
+
+Cleanup: `yMap.unobserve()` in `commitAndClose` before view destroy.
 
 ---
 
@@ -459,9 +481,5 @@ Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial i
 ## Known Issues / Not Yet Implemented
 
 - **Selection transforms:** Code blocks have no scale/translate preview during SelectTool transforms (renders static)
-- **Language dropdown:** No UI to change language
 - **Mixed selection filter:** Code blocks not filtered in context menu
-- **UndoManager:** Per-session UM handles CM undo. Needs proper origin-based filtering like TextTool's pattern
-- **Flash on mount:** Async CM load means brief canvas frame visible before DOM overlay appears
 - **Long code blocks:** CM's internal viewport optimization causes WYSIWYG mismatch on very tall blocks (content outside CM's visible window is virtualized)
-- **Language change + worker tree:** On language change, a full re-parse is dispatched (no `changes`). The worker's previous `Tree`/`TreeFragment` state for that object is overwritten by the fresh parse. This is correct — Lezer trees are parser-specific, so fragments from one language's parser cannot be reused by another.

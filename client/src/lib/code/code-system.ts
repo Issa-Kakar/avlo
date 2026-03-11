@@ -611,5 +611,12 @@ export function renderCodeLayout(
     }
   }
 
+  // 5. Placeholder — empty block shows grey hint text at first line position
+  if (sourceLines.length === 1 && sourceLines[0] === '') {
+    ctx.fillStyle = CODE_GUTTER;
+    ctx.font = normalFont;
+    ctx.fillText('Type something...', originX + cl, originY + pt + bl);
+  }
+
   ctx.restore();
 }

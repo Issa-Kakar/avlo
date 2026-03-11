@@ -34,6 +34,7 @@ import {
 import { CODE_FONT_FAMILY } from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
+import { userProfileManager } from '@/lib/user-profile-manager';
 import type { PointerTool, PreviewData } from './types';
 
 export class CodeTool implements PointerTool {
@@ -49,6 +50,9 @@ export class CodeTool implements PointerTool {
   private sessionUM: Y.UndoManager | null = null;
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
+  private syncConf: unknown = null;
+  private langCompartment: unknown = null;
+  private yMapUnobserve: (() => void) | null = null;
 
   canBegin(): boolean {
     return !this.gestureActive;
@@ -257,9 +261,14 @@ export class CodeTool implements PointerTool {
       getCodeMirrorExtensions(),
     ]);
 
-    // Per-session UndoManager for the Y.Text
+    // Per-session UndoManager scoped to Y.Text + Y.Map (captures content + property changes)
     const yText = props.content;
-    this.sessionUM = new Y.UndoManager(yText, { captureTimeout: 500 });
+    const yMap = handle.y;
+    const userId = userProfileManager.getIdentity().userId;
+    this.sessionUM = new Y.UndoManager([yText, yMap], {
+      trackedOrigins: new Set([userId]),
+      captureTimeout: 500,
+    });
 
     // Tab normalizer: replace \t with 4 spaces in all insertions
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -284,7 +293,27 @@ export class CodeTool implements PointerTool {
       return [tr, { changes: edits }];
     });
 
-    // Language extension
+    // Backspace at 4-space indent boundaries deletes the unit
+
+    const backspaceIndent = {
+      key: 'Backspace',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      run: (v: any) => {
+        const sel = v.state.selection.main;
+        if (!sel.empty) return false;
+        const pos = sel.head;
+        const line = v.state.doc.lineAt(pos);
+        const col = pos - line.from;
+        if (col === 0 || col % 4 !== 0) return false;
+        if (v.state.doc.sliceString(pos - 4, pos) !== '    ') return false;
+        v.dispatch({ changes: { from: pos - 4, to: pos } });
+        return true;
+      },
+    };
+
+    // Language extension in compartment for dynamic reconfiguration
+    const langCompartment = new cmState.Compartment();
+    this.langCompartment = langCompartment;
     const langExt =
       props.language === 'python'
         ? cmPython.python()
@@ -304,10 +333,16 @@ export class CodeTool implements PointerTool {
         cmView.EditorView.lineWrapping,
         cmLang.bracketMatching(),
         cmAutocomplete.closeBrackets(),
-        langExt,
+        langCompartment.of(langExt),
         cmLang.indentUnit.of('    '),
-        cmView.keymap.of([...cmAutocomplete.closeBracketsKeymap, cmCommands.indentWithTab]),
+        cmView.keymap.of([
+          backspaceIndent,
+          ...cmAutocomplete.closeBracketsKeymap,
+          cmCommands.indentWithTab,
+          ...cmYCollab.yUndoManagerKeymap,
+        ]),
         cmYCollab.yCollab(yText, null, { undoManager: this.sessionUM }),
+        cmView.placeholder('Type something...'),
         ...(themeExts as import('@codemirror/state').Extension[]),
         tabNormalizer,
       ],
@@ -315,6 +350,32 @@ export class CodeTool implements PointerTool {
 
     const view = new cmView.EditorView({ state, parent: container });
     view.focus();
+
+    // Extract syncConf for main UM integration
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const syncConf = (view.state as any).facet(cmYCollab.ySyncFacet);
+    this.syncConf = syncConf;
+
+    // Seal main UM — entire editing session merges into one undo item
+    const mainUM = getActiveRoomDoc().getUndoManager();
+    if (mainUM) {
+      mainUM.addTrackedOrigin(syncConf);
+      mainUM.stopCapturing();
+      mainUM.captureTimeout = 600_000;
+    }
+
+    // Y.Map observer for live property sync (fontSize, width, origin, language)
+    const mapObserver = (evt: Y.YMapEvent<unknown>) => {
+      const keys = evt.keysChanged;
+      if (keys.has('fontSize') || keys.has('width') || keys.has('origin')) {
+        this.positionEditor();
+      }
+      if (keys.has('language')) {
+        this.switchLanguage(yMap);
+      }
+    };
+    yMap.observe(mapObserver);
+    this.yMapUnobserve = () => yMap.unobserve(mapObserver);
 
     this.editorView = view;
     this.container = container;
@@ -411,6 +472,26 @@ export class CodeTool implements PointerTool {
   }
 
   // =========================================================================
+  // Private: Dynamic Language Switching
+  // =========================================================================
+
+  private async switchLanguage(yMap: Y.Map<unknown>): Promise<void> {
+    if (!this.editorView || !this.langCompartment) return;
+    const lang = yMap.get('language') as string;
+    const [cmJS, cmPython] = await Promise.all([
+      import('@codemirror/lang-javascript'),
+      import('@codemirror/lang-python'),
+    ]);
+    const ext =
+      lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editorView as any).dispatch({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      effects: (this.langCompartment as any).reconfigure(ext),
+    });
+  }
+
+  // =========================================================================
   // Private: Commit and Close
   // =========================================================================
 
@@ -418,6 +499,20 @@ export class CodeTool implements PointerTool {
     if (!this.editorView || !this.objectId) return;
 
     this.removeEditorHandlers();
+
+    // Unseal main UndoManager
+    const mainUM = getActiveRoomDoc().getUndoManager();
+    if (mainUM && this.syncConf) {
+      mainUM.removeTrackedOrigin(this.syncConf);
+      mainUM.stopCapturing();
+      mainUM.captureTimeout = 500;
+    }
+    this.syncConf = null;
+
+    // Clean up Y.Map observer + language compartment
+    this.yMapUnobserve?.();
+    this.yMapUnobserve = null;
+    this.langCompartment = null;
 
     // Destroy EditorView
     (this.editorView as { destroy(): void }).destroy();

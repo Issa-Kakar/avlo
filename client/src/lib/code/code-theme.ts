@@ -66,11 +66,10 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         padding: '0',
       },
       '.cm-line': {
-        padding: '0 var(--c-pr) 0 0',
+        padding: '0 var(--c-pr) 0 var(--c-gr)',
       },
       '.cm-lineNumbers .cm-gutterElement': {
         padding: '0',
-        paddingRight: 'var(--c-gr)',
         fontFamily: `'${CODE_FONT_FAMILY}', monospace`,
         fontFeatureSettings: '"tnum"',
         textAlign: 'right',
@@ -102,6 +101,10 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
         backgroundColor: CODE_SELECTION,
         color: CODE_DEFAULT,
         border: 'none',
+      },
+      '.cm-placeholder': {
+        color: CODE_GUTTER,
+        fontStyle: 'normal',
       },
     },
     { dark: true },
