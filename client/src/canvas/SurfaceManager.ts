@@ -27,6 +27,11 @@ let baseCtx: CanvasRenderingContext2D | null = null;
 let overlayCtx: CanvasRenderingContext2D | null = null;
 let editorHost: HTMLDivElement | null = null;
 
+// Deferred resize state - applied at start of next render frame
+let pendingPixelW = 0;
+let pendingPixelH = 0;
+let hasPendingResize = false;
+
 /** Get base canvas 2D context. Returns null if not mounted. */
 export function getBaseContext(): CanvasRenderingContext2D | null {
   return baseCtx;
@@ -45,6 +50,25 @@ export function getEditorHost(): HTMLDivElement | null {
 /** Set editor host div. Called by CanvasRuntime.start(). */
 export function setEditorHost(el: HTMLDivElement | null): void {
   editorHost = el;
+}
+
+/**
+ * Apply pending canvas resize. Called at the start of each render frame.
+ * First loop to run applies it; second sees nothing pending.
+ * Returns true if a resize was applied (canvas context was reset).
+ */
+export function applyPendingResize(): boolean {
+  if (!hasPendingResize) return false;
+  hasPendingResize = false;
+  const bCanvas = baseCtx?.canvas;
+  const oCanvas = overlayCtx?.canvas;
+  if (!bCanvas || !oCanvas) return false;
+  if (bCanvas.width === pendingPixelW && bCanvas.height === pendingPixelH) return false;
+  bCanvas.width = pendingPixelW;
+  bCanvas.height = pendingPixelH;
+  oCanvas.width = pendingPixelW;
+  oCanvas.height = pendingPixelH;
+  return true;
 }
 
 // ============================================
@@ -107,10 +131,11 @@ export class SurfaceManager {
     // DPR change listener
     this.dprCleanup = this.setupDprListener();
 
-    // Trigger initial sizing
+    // Trigger initial sizing (synchronous - no content to protect yet)
     const rect = this.container.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       this.updateCanvasSize(rect.width, rect.height, this.currentDpr);
+      applyPendingResize();
     }
   }
 
@@ -123,6 +148,9 @@ export class SurfaceManager {
     this.resizeObserver = null;
     this.dprCleanup?.();
     this.dprCleanup = null;
+
+    // Clear pending resize
+    hasPendingResize = false;
 
     // Clear all DOM refs
     baseCtx = null;
@@ -145,19 +173,14 @@ export class SurfaceManager {
     const pixelH = Math.min(Math.round(rawPixelH), maxDim);
 
     // CRITICAL: Compute effective DPR when dimensions are clamped
-    // This fixes the bug where camera store received raw DPR but canvas was clamped
     const effectiveDpr = Math.min(pixelW / cssWidth, pixelH / cssHeight);
 
-    // Only set if changed - setting canvas dimensions ALWAYS clears the canvas!
-    if (this.baseCanvas.width !== pixelW || this.baseCanvas.height !== pixelH) {
-      this.baseCanvas.width = pixelW;
-      this.baseCanvas.height = pixelH;
-      this.overlayCanvas.width = pixelW;
-      this.overlayCanvas.height = pixelH;
-    }
+    // Queue resize for next render frame (avoids clearing canvas between frames)
+    pendingPixelW = pixelW;
+    pendingPixelH = pixelH;
+    hasPendingResize = true;
 
-    // Update camera store with EFFECTIVE DPR
-    // Render loops subscribe to this and will invalidate appropriately
+    // Coordinate transforms need current values immediately
     useCameraStore.getState().setViewport(cssWidth, cssHeight, effectiveDpr);
   }
 

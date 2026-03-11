@@ -73,11 +73,11 @@ export function drawObjects(
   // Use spatial index for efficient querying
   let candidateEntries: IndexEntry[];
 
-  if (viewport.clipRegion?.worldRects) {
+  if (viewport.clipWorldRects) {
     // OPTIMIZATION: Query each dirty rect and union results
     const entrySet = new Map<string, IndexEntry>();
 
-    for (const rect of viewport.clipRegion.worldRects) {
+    for (const rect of viewport.clipWorldRects) {
       const results = spatialIndex.query({
         minX: rect.minX,
         minY: rect.minY,

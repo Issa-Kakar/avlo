@@ -124,7 +124,7 @@ export class CanvasRuntime {
         // Hold preview for one frame to prevent flash on commit
         this.overlayLoop?.holdPreviewForOneFrame();
         if (this.lastDocVersion < 2) {
-          this.renderLoop?.invalidateAll('content-change');
+          this.renderLoop?.invalidateAll();
         }
         // Process dirty patch from manager
         else if (snap.dirtyPatch) {

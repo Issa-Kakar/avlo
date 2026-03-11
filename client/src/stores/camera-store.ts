@@ -118,8 +118,7 @@ let mobileDetected: boolean | null = null;
 export function isMobile(): boolean {
   if (mobileDetected === null) {
     mobileDetected =
-      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-      navigator.maxTouchPoints > 1;
+      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
   }
   return mobileDetected;
 }
@@ -141,49 +140,52 @@ const INITIAL_STATE: CameraState = {
  * Camera store with subscribeWithSelector middleware for granular subscriptions.
  */
 export const useCameraStore = create<CameraStore>()(
-  subscribeWithSelector((set) => ({
+  subscribeWithSelector((set, get) => ({
     // Initial state
     ...INITIAL_STATE,
 
-    // Actions
+    // Actions (all with equality guards to skip no-op updates)
     setScale: (scale: number) => {
-      const clampedScale = Math.max(
+      const clamped = Math.max(
         PERFORMANCE_CONFIG.MIN_ZOOM,
-        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale)
+        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale),
       );
-      set({ scale: clampedScale });
+      if (clamped === get().scale) return;
+      set({ scale: clamped });
     },
 
     setPan: (pan: { x: number; y: number }) => {
-      const maxDistance = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
-      const clampedPan = {
-        x: Math.max(-maxDistance, Math.min(maxDistance, pan.x)),
-        y: Math.max(-maxDistance, Math.min(maxDistance, pan.y)),
-      };
-      set({ pan: clampedPan });
+      const max = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
+      const cx = Math.max(-max, Math.min(max, pan.x));
+      const cy = Math.max(-max, Math.min(max, pan.y));
+      const curr = get().pan;
+      if (cx === curr.x && cy === curr.y) return;
+      set({ pan: { x: cx, y: cy } });
     },
 
     setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
-      const clampedScale = Math.max(
+      const clamped = Math.max(
         PERFORMANCE_CONFIG.MIN_ZOOM,
-        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale)
+        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale),
       );
-      const maxDistance = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
-      const clampedPan = {
-        x: Math.max(-maxDistance, Math.min(maxDistance, pan.x)),
-        y: Math.max(-maxDistance, Math.min(maxDistance, pan.y)),
-      };
-      set({ scale: clampedScale, pan: clampedPan });
+      const max = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
+      const cx = Math.max(-max, Math.min(max, pan.x));
+      const cy = Math.max(-max, Math.min(max, pan.y));
+      const state = get();
+      if (clamped === state.scale && cx === state.pan.x && cy === state.pan.y) return;
+      set({ scale: clamped, pan: { x: cx, y: cy } });
     },
 
     setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
+      const state = get();
+      if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr) return;
       set({ cssWidth, cssHeight, dpr });
     },
 
     resetView: () => {
       set({ scale: 1, pan: { x: 0, y: 0 } });
     },
-  }))
+  })),
 );
 
 // ============================================
@@ -299,7 +301,9 @@ export const selectPan = (s: CameraStore): { x: number; y: number } => s.pan;
 export const selectDpr = (s: CameraStore): number => s.dpr;
 
 /** Selector for viewport dimensions */
-export const selectViewport = (s: CameraStore): { cssWidth: number; cssHeight: number; dpr: number } => ({
+export const selectViewport = (
+  s: CameraStore,
+): { cssWidth: number; cssHeight: number; dpr: number } => ({
   cssWidth: s.cssWidth,
   cssHeight: s.cssHeight,
   dpr: s.dpr,
