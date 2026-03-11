@@ -86,7 +86,7 @@ lineHeight(fs) = fs * 1.5
 Gutter width = `maxDigits * charWidth(fs)`, where `maxDigits = max(2, String(sourceLineCount).length)`.
 Content left offset = `padLeft(fs) + gutterWidth + gutterPad(fs)`.
 
-`BORDER_RADIUS` is currently a fixed constant (12). Will become fontSize-proportional.
+`borderRadius(fs)` = `fs * 0.85` — fontSize-proportional, same ratio as padLeft/padRight.
 
 ### Font Metrics — Derived from text-system
 
@@ -289,7 +289,7 @@ Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, sou
 
 Zero-allocation span iteration — no `sliceRuns`, no intermediate objects. Steps:
 
-1. **Background:** `roundRect` fill with `CODE_BG`, `BORDER_RADIUS`
+1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`
 2. **Per visual line:** Compute `baseY = originY + padTop + i * lineHeight + baselineOffset`
 3. **Gutter:** On lines where `vline.from === 0`, right-align line number within gutter area
 4. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
@@ -308,7 +308,7 @@ CodeMirror needs to render crisply at all zoom levels. CSS `transform: scale()` 
 screenFS = fontSize * scale      → container.style.fontSize
 screenW  = width * scale         → container.style.width
 screenLH = lineHeight(fs) * scale → container.style.lineHeight
-borderRadius = BORDER_RADIUS * scale → container.style.borderRadius
+borderRadius = borderRadius(fs) * scale → container.style.borderRadius
 ```
 
 Position via `worldToClient(origin)` → `left/top` in CSS px.

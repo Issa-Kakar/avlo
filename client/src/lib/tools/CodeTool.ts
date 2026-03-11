@@ -28,7 +28,7 @@ import {
   padRight,
   gutterPad,
   charWidth,
-  BORDER_RADIUS,
+  borderRadius,
   lineHeight as lineHeightFn,
 } from '@/lib/code/code-system';
 import { CODE_FONT_FAMILY } from '@/lib/code/code-tokens';
@@ -50,6 +50,7 @@ export class CodeTool implements PointerTool {
   private sessionUM: Y.UndoManager | null = null;
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
+  private clickTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private syncConf: unknown = null;
   private langCompartment: unknown = null;
   private yMapUnobserve: (() => void) | null = null;
@@ -233,7 +234,7 @@ export class CodeTool implements PointerTool {
     container.style.fontSize = `${screenFS}px`;
     container.style.lineHeight = `${screenLH}px`;
     container.style.fontFamily = `'${CODE_FONT_FAMILY}', monospace`;
-    container.style.borderRadius = `${BORDER_RADIUS * scale}px`;
+    container.style.borderRadius = `${borderRadius(fontSize) * scale}px`;
     this.setCSSVars(container, fontSize, scale);
 
     host.appendChild(container);
@@ -420,7 +421,8 @@ export class CodeTool implements PointerTool {
     };
 
     document.addEventListener('keydown', this.boundHandleKeyDown, true);
-    setTimeout(() => {
+    this.clickTimeoutId = setTimeout(() => {
+      this.clickTimeoutId = null;
       if (this.boundHandleClickOutside) {
         document.addEventListener('pointerdown', this.boundHandleClickOutside, true);
       }
@@ -428,6 +430,10 @@ export class CodeTool implements PointerTool {
   }
 
   private removeEditorHandlers(): void {
+    if (this.clickTimeoutId !== null) {
+      clearTimeout(this.clickTimeoutId);
+      this.clickTimeoutId = null;
+    }
     if (this.boundHandleKeyDown) {
       document.removeEventListener('keydown', this.boundHandleKeyDown, true);
       this.boundHandleKeyDown = null;
@@ -462,7 +468,7 @@ export class CodeTool implements PointerTool {
     c.style.width = `${screenW}px`;
     c.style.fontSize = `${screenFS}px`;
     c.style.lineHeight = `${screenLH}px`;
-    c.style.borderRadius = `${BORDER_RADIUS * scale}px`;
+    c.style.borderRadius = `${borderRadius(props.fontSize) * scale}px`;
     this.setCSSVars(c, props.fontSize, scale);
 
     // Trigger CM relayout after size change
@@ -482,6 +488,7 @@ export class CodeTool implements PointerTool {
       import('@codemirror/lang-javascript'),
       import('@codemirror/lang-python'),
     ]);
+    if (!this.editorView || !this.langCompartment) return;
     const ext =
       lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -514,14 +521,19 @@ export class CodeTool implements PointerTool {
     this.yMapUnobserve = null;
     this.langCompartment = null;
 
-    // Destroy EditorView
-    (this.editorView as { destroy(): void }).destroy();
-
-    // Clear per-session UM
+    // Clear per-session UM before destroy — flushes stack items holding plugin refs
     if (this.sessionUM) {
       this.sessionUM.clear();
       this.sessionUM = null;
     }
+
+    // Destroy EditorView + break internal back-reference cycles
+    const view = this.editorView as Record<string, unknown>;
+    (view as unknown as { destroy(): void }).destroy();
+    view.viewState = null;
+    view.docView = null;
+    view.inputState = null;
+    view.observer = null;
 
     // Remove container
     if (this.container && this.container.parentNode) {

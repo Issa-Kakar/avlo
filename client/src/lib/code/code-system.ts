@@ -87,7 +87,6 @@ interface WorkerResponse {
 // ============================================================================
 
 export const DEFAULT_FONT_SIZE = 14;
-export const BORDER_RADIUS = 12;
 export const MIN_CHARS = 20;
 export const DEFAULT_CHARS = 50;
 
@@ -100,6 +99,7 @@ const PAD_BOTTOM_RATIO = 1.5;
 const PAD_LEFT_RATIO = 0.85;
 const PAD_RIGHT_RATIO = 0.85;
 const GUTTER_PAD_RATIO = 2.0;
+const BORDER_RADIUS_RATIO = 0.85;
 
 // ============================================================================
 // §3 FONT METRICS & HELPERS
@@ -122,6 +122,9 @@ export function padRight(fs: number): number {
 }
 export function gutterPad(fs: number): number {
   return fs * GUTTER_PAD_RATIO;
+}
+export function borderRadius(fs: number): number {
+  return fs * BORDER_RADIUS_RATIO;
 }
 
 export function charWidth(fontSize: number): number {
@@ -539,7 +542,7 @@ export function renderCodeLayout(
   // 1. Background
   ctx.fillStyle = CODE_BG;
   ctx.beginPath();
-  ctx.roundRect(originX, originY, layout.totalWidth, th, BORDER_RADIUS);
+  ctx.roundRect(originX, originY, layout.totalWidth, th, borderRadius(fontSize));
   ctx.fill();
 
   // 2. Per visual line — alphabetic baseline from measured font metrics.
