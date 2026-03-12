@@ -1597,21 +1597,25 @@ export class SelectTool implements PointerTool {
 
     // Everything else that actually paints pixels at this point
     const classifyPaint = (c: HitCandidate): PaintClass | null => {
-      if (c.kind === 'stroke' || c.kind === 'connector' || c.kind === 'text') {
+      if (c.kind === 'stroke' || c.kind === 'connector') return 'ink';
+
+      if (c.kind === 'text') {
+        if (c.isFilled && c.insideInterior) return 'fill';
+        return 'ink';
+      }
+
+      if (c.kind === 'code') {
+        if (c.insideInterior) return 'fill';
         return 'ink';
       }
 
       if (c.kind === 'shape') {
-        if (c.isFilled) {
-          return 'fill'; // Filled shape interior or border
-        }
-        if (!c.isFilled && !c.insideInterior) {
-          return 'ink'; // Unfilled shape BORDER (outline stroke)
-        }
+        if (c.isFilled) return 'fill';
+        if (!c.insideInterior) return 'ink';
         return null; // Unfilled shape interior = transparent
       }
 
-      return 'ink'; // Fallback: treat as paint
+      return 'ink';
     };
 
     let bestFrame: HitCandidate | null = null; // Smallest unfilled interior

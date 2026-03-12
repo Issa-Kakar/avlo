@@ -742,7 +742,7 @@ export function testObjectHit(
           distance: hitResult.distance,
           insideInterior: hitResult.insideInterior,
           area: w * h,
-          isFilled: true,
+          isFilled: !!getFillColor(y),
         };
       }
       return null;
