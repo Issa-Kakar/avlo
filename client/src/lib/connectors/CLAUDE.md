@@ -1,11 +1,11 @@
 # Connector Routing System v2 - Technical Reference
 
-> **System Status:** Primitives-based routing API, full A* orthogonal routing, SelectTool integration ready via `rerouteConnector()`.
+> **System Status:** Dual routing modes (elbow A* + straight point-to-point), full SelectTool integration via `rerouteConnector()`.
 
 > **Maintenance note:** This is a system-level architectural overview, not a changelog. When updating after code changes, match the detail level of surrounding content — don't inflate coverage of your specific change at the expense of the big-picture pipeline flow and cache interactions that make this document useful.
 ## Overview
 
-The connector routing system implements **orthogonal (Manhattan) routing** with automatic obstacle avoidance. Routes prefer centerlines between shapes and use dynamic bounding boxes to produce aesthetically pleasing paths.
+The connector routing system implements two routing modes: **orthogonal (elbow)** with A* Manhattan routing and obstacle avoidance, and **straight** with direct point-to-point lines. Elbow routes prefer centerlines between shapes and use dynamic bounding boxes. All logic branches on `ConnectorType` checks — elbow code paths are completely untouched by straight connector additions.
 
 **Key Design Decisions:**
 
@@ -15,6 +15,7 @@ The connector routing system implements **orthogonal (Manhattan) routing** with 
 4. **Segment Intersection** — A* checks segments against obstacles (no cell blocking)
 5. **Normalized Anchors** — Shape-agnostic endpoint positions stored as `[0-1, 0-1]`
 6. **Override Patterns** — Clean separation between frame overrides and endpoint overrides
+7. **Connector Type Branching** — All straight logic gated on `connectorType` checks, zero regression risk to elbow
 
 ---
 
@@ -22,15 +23,15 @@ The connector routing system implements **orthogonal (Manhattan) routing** with 
 
 ```
 client/src/lib/connectors/
-├── types.ts               # Dir, Bounds, AABB, Terminal, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap
-├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas
-├── connector-utils.ts     # Anchor application, direction resolution, bounds conversion
-├── snap.ts                # Shape snapping with fill-aware visual ordering
+├── types.ts               # Dir, Bounds, AABB, Terminal, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap, isAnchorInterior
+├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas, CENTER_SNAP_RADIUS_PX, STRAIGHT_INTERIOR_DEPTH_PX
+├── connector-utils.ts     # Anchor application, direction resolution, bounds conversion, computeShapeEdgeIntersection
+├── snap.ts                # Shape snapping with fill-aware visual ordering, straight interior/center snap
 ├── routing-context.ts     # Centerlines, dynamic AABBs, stubs, grid construction
 ├── routing-astar.ts       # A* pathfinding with segment intersection checking
 ├── connector-paths.ts     # Path2D builders (polyline, arrows) for cache and preview
 ├── connector-lookup.ts    # Reverse map: shapeId → Set<connectorId>
-├── reroute-connector.ts   # High-level routing: rerouteConnector (existing Y.map) + routeNewConnector (snap/position)
+├── reroute-connector.ts   # High-level routing: rerouteConnector + routeNewConnector + computeStraightRoute
 └── index.ts               # Public API exports
 ```
 
@@ -70,6 +71,30 @@ type Dir = 'N' | 'E' | 'S' | 'W';
 
 `outwardDir` is the direction a route segment extends **from** an endpoint — the direction of travel away from the anchor point. For snapped endpoints, this matches the shape side.
 
+### ConnectorType
+
+```typescript
+type ConnectorType = 'elbow' | 'straight';
+```
+
+Stored per-connector in Y.Map (`connectorType?: 'straight'` — absent means elbow). Read via `getConnectorType(y)` from `@avlo/shared`. Device-ui-store holds the default for new connectors.
+
+### Interior Anchors
+
+Straight connectors introduce a distinction: **edge anchors** (at least one normalized coordinate at 0 or 1) vs **interior anchors** (both strictly inside `(0, 1)`).
+
+```typescript
+const INTERIOR_EPS = 1e-6;
+function isAnchorInterior(anchor: [number, number]): boolean {
+  return anchor[0] > INTERIOR_EPS && anchor[0] < 1 - INTERIOR_EPS
+      && anchor[1] > INTERIOR_EPS && anchor[1] < 1 - INTERIOR_EPS;
+}
+```
+
+**Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Renders a center dot on the shape in snap UI.
+
+**Used by:** `applyAnchorToFrame` (skip edge offset), `computeStraightRoute` (edge intersection vs pull-back), `computeSnapForShape` (depth gate), snap dot rendering (center dot), preview/overlay dashed guides.
+
 ### Bounds vs AABB
 
 ```typescript
@@ -104,7 +129,7 @@ interface RoutingContext {
 }
 ```
 
-**Critical insight:** `startBounds`/`endBounds` are **not** raw shape bounds — they're dynamic AABBs with centerline and padding already baked in. This is what makes grid construction trivial.
+**Critical insight:** `startBounds`/`endBounds` are **not** raw shape bounds — they're dynamic AABBs with centerline and padding already baked in. This is what makes grid construction trivial. Straight connectors skip RoutingContext entirely — they use `computeStraightRoute()` with `ResolvedEndpoint` data directly.
 
 ---
 
@@ -278,6 +303,36 @@ const fullPath = [ctx.startPos, ...astarPath.map(c => [c.x, c.y]), ctx.endPos];
 return { points: simplifyOrthogonal(fullPath), signature };
 ```
 
+### Straight Routing (`computeStraightRoute`)
+
+Straight connectors bypass the entire elbow pipeline. After endpoint resolution in `rerouteConnector()`:
+
+```typescript
+if (connectorType === 'straight') {
+  const result = computeStraightRoute(startResolved, endResolved);
+  return { points: result.points, bbox };
+}
+```
+
+Skipped: direction resolution, RoutingContext, grid construction, A* pathfinding.
+
+**Per-endpoint logic:**
+
+| Endpoint State | Line Position | Dash Guide |
+|---|---|---|
+| Free (`!isAnchored`) | `position` as-is | None |
+| Edge anchor | Pull-back toward other endpoint by `EDGE_CLEARANCE_W` | None |
+| Interior anchor (same shape) | Raw position directly | None |
+| Interior anchor (diff shape) | Edge intersection + pull-back | Dashed: interior → edge |
+
+**Key offset difference from elbow:** Elbow applies `EDGE_CLEARANCE_W` outward (perpendicular to shape edge via `directionVector(side)`). Straight applies it as **pull-back along the connector line** toward the other endpoint. This ensures the arrow tip points directly at the edge.
+
+**Same-shape detection:** Both endpoints interior on same shape (`start.shapeId === end.shapeId`) → skip edge intersection, direct line between raw positions. Prevents the "spinning clock" effect from opposing ray intersections on a convex shape.
+
+**Overlap safety:** Validates visible segment isn't flipped (dot product ≤ 0) or collapsed (length < `EDGE_CLEARANCE_W`). Falls back to raw `[startRaw, endRaw]` if degenerate.
+
+**Edge intersection** (`computeShapeEdgeIntersection`): Casts ray from interior anchor toward other endpoint, finds exit point on shape boundary. Supports rect/roundedRect (axis-aligned edges, smallest positive `t`), ellipse (quadratic parametric solve), diamond (Cramer's rule for ray-segment).
+
 ---
 
 ## Normalized Anchors & Frame Application
@@ -318,20 +373,19 @@ function applyAnchorToFrame(
   frame: FrameTuple,
   side: Dir
 ): [number, number] {
-  const [nx, ny] = anchor;
-  const [x, y, w, h] = frame;
+  const posX = frame[0] + anchor[0] * frame[2];
+  const posY = frame[1] + anchor[1] * frame[3];
 
-  // Interpolate within frame
-  const edgeX = x + nx * w;
-  const edgeY = y + ny * h;
+  // Interior anchors: return position directly (no edge offset)
+  if (isAnchorInterior(anchor)) return [posX, posY];
 
-  // Apply edge clearance offset in outward direction
+  // Edge anchors: apply EDGE_CLEARANCE_W in outward direction
   const [dx, dy] = directionVector(side);
-  return [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
+  return [posX + dx * EDGE_CLEARANCE_W, posY + dy * EDGE_CLEARANCE_W];
 }
 ```
 
-**Key insight:** Only `EDGE_CLEARANCE_W` (11 units) is applied — not the full approach offset. The approach offset (`CORNER_RADIUS + arrowLength + EDGE_CLEARANCE`) is for routing bounds, not endpoint positions.
+**Key insight:** Only `EDGE_CLEARANCE_W` (11 units) is applied for edge anchors — not the full approach offset. Interior anchors (straight connectors) skip the offset entirely; `computeStraightRoute` computes its own pull-back offsets from raw positions via `getRawAnchorPosition()` + `applyPullBack()`.
 
 ---
 
@@ -346,6 +400,7 @@ interface SnapContext {
   cursorWorld: [number, number];  // Cursor in world coords
   scale: number;                   // Viewport scale (for px→world)
   prevAttach: SnapTarget | null;   // Previous snap (for hysteresis)
+  connectorType?: ConnectorType;   // Defaults to 'elbow' behavior
 }
 
 interface SnapTarget {
@@ -378,11 +433,18 @@ Snapping respects Z-order and fill state:
 
 ### Snap Modes
 
-| Cursor Location | Behavior |
-|-----------------|----------|
-| Deep inside (> 35px) | Midpoints only (nearest of N/E/S/W) |
-| Shallow inside or outside | Edge sliding with midpoint stickiness |
-| Outside snap radius | No snap |
+| Cursor Location | Elbow | Straight |
+|---|---|---|
+| Deep inside (> 35px / > 20px) | Midpoints only | Center snap → midpoint → interior |
+| Shallow inside or near edge | Edge sliding + midpoint stickiness | Edge sliding + midpoint stickiness |
+| Outside snap radius | No snap | No snap |
+
+**Straight interior mode (CASE 1a):** When cursor is deeply inside a shape (> `STRAIGHT_INTERIOR_DEPTH_PX: 20`), priority cascade:
+1. **Center snap:** Cursor within `CENTER_SNAP_RADIUS_PX: 12` of shape center → `normalizedAnchor=[0.5, 0.5]`, hysteresis 1.3×
+2. **Midpoint stickiness:** Same as edge case
+3. **Interior anchor:** Fallback — `normalizedAnchor` clamped to `[0.01, 0.99]`, position at cursor
+
+The smaller depth threshold (20 vs elbow's 35) preserves edge sliding when shallowly inside, since interior anchors are a valid destination for straight connectors.
 
 ### Ctrl Suppresses Snapping
 
@@ -411,6 +473,8 @@ Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handleP
 ---
 
 ## Direction Resolution
+
+> **Note:** Straight connectors skip direction resolution entirely — they have no A* routing or stubs that need directional seeding.
 
 ### Free→Anchored: `resolveFreeStartDir()`
 
@@ -496,9 +560,10 @@ if (connectorIds) {
 
 ## The Rerouting APIs
 
-Two companion functions sharing `resolveDirections()` internally:
-- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies overrides (SelectTool)
-- **`routeNewConnector(start, end, strokeWidth, dragDir?)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
+Three functions:
+- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies overrides, branches on `connectorType` (SelectTool)
+- **`routeNewConnector(start, end, strokeWidth, connectorType, dragDir?)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
+- **`computeStraightRoute(start, end)`** — Pure straight routing from two `ResolvedEndpoint`s (called by both above)
 
 ### Signature
 
@@ -606,30 +671,56 @@ const points = rerouteConnector(
 );
 ```
 
+### ResolvedEndpoint
+
+Both `resolveEndpoint()` and `resolveNewEndpoint()` produce this. Straight-specific fields populated when anchored:
+
+```typescript
+interface ResolvedEndpoint {
+  position: [number, number];
+  dir: Dir | null;
+  shapeBounds: AABB | null;
+  isAnchored: boolean;
+  // Straight connector fields (populated when anchored)
+  normalizedAnchor?: [number, number];
+  shapeType?: string;
+  frame?: FrameTuple;
+  shapeId?: string;              // Enables same-shape detection
+}
+```
+
+### NewRouteResult
+
+Returned by `routeNewConnector()` — includes dash guide targets for preview rendering:
+
+```typescript
+interface NewRouteResult {
+  points: [number, number][];
+  startDashTo: [number, number] | null;  // Interior anchor position (dashed guide)
+  endDashTo: [number, number] | null;
+}
+```
+
+For elbow connectors, `startDashTo` and `endDashTo` are always `null`.
+
 ### Internal Flow
 
 ```typescript
 function rerouteConnector(connectorId, frameOverrides, endpointOverrides) {
   // 1. Read connector data from Y.map
-  const yMap = getConnectorYMap(connectorId);
-  const storedStart = getStart(yMap);
-  const startAnchor = getStartAnchor(yMap);
-  // ...
+  // 2. Resolve each endpoint → ResolvedEndpoint
+  //    (straight fields: normalizedAnchor, shapeType, frame, shapeId)
 
-  // 2. Resolve each endpoint
-  const startResolved = resolveEndpoint('start', ...);
-  const endResolved = resolveEndpoint('end', ...);
+  // 3. Branch on connector type
+  const connectorType = getConnectorType(yMap);
+  if (connectorType === 'straight') {
+    const result = computeStraightRoute(startResolved, endResolved);
+    return { points: result.points, bbox };
+  }
 
-  // 3. Resolve directions based on anchor state
-  const { startDir, endDir } = resolveDirections(startResolved, endResolved, strokeWidth);
-
-  // 4. Call primitives-based routing
-  return computeAStarRoute(
-    startResolved.position, startDir,
-    endResolved.position, endDir,
-    startResolved.shapeBounds, endResolved.shapeBounds,
-    strokeWidth
-  ).points;
+  // 4. Elbow: resolve directions + A* routing
+  const { startDir, endDir } = resolveDirections(...);
+  return computeAStarRoute(...).points;
 }
 ```
 
@@ -684,6 +775,7 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
     anchor: [number, number];       // Normalized [0-1, 0-1]
   };
   endAnchor?: { ... };              // Same structure
+  connectorType?: 'straight';       // Only stored when not 'elbow' (default)
   startCap: 'none' | 'arrow';
   endCap: 'none' | 'arrow';
   color, width, opacity, ownerId, createdAt
@@ -702,6 +794,9 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 6. **Normalized anchors are shape-agnostic** — `[0-1, 0-1]` + linear interpolation
 7. **EDGE_CLEARANCE_W for endpoints** — 11 units, NOT the full approach offset
 8. **Override patterns are orthogonal** — Frame and endpoint overrides compose cleanly
+9. **Straight routing skips A*** — `computeStraightRoute` bypasses RoutingContext, grid, and direction resolution
+10. **Interior anchors bypass edge offset** — `applyAnchorToFrame` returns raw position; `computeStraightRoute` handles its own pull-back
+11. **Same-shape interior goes direct** — No edge intersection when both endpoints share a shape
 
 ---
 
@@ -715,5 +810,8 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 | Get connectors for shape | `getConnectorsForShape()` | O(1) reverse lookup |
 | Build render paths | `buildConnectorPaths()` | Returns polyline + arrows |
 | Apply anchor to new frame | `applyAnchorToFrame()` | For transforms |
-| Resolve free→anchored direction | `resolveFreeStartDir()` | Complex spatial logic |
-| Resolve anchored→free direction | `computeFreeEndDir()` | Primary axis + sign |
+| Resolve free→anchored direction | `resolveFreeStartDir()` | Complex spatial logic (elbow only) |
+| Resolve anchored→free direction | `computeFreeEndDir()` | Primary axis + sign (elbow only) |
+| Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + dash guides |
+| Check interior anchor | `isAnchorInterior()` | Gates snap, routing, and rendering behavior |
+| Find shape edge exit | `computeShapeEdgeIntersection()` | Ray cast for interior anchors (rect/ellipse/diamond) |
