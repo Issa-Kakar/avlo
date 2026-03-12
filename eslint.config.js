@@ -84,8 +84,9 @@ export default [
     languageOptions: {
       globals: {
         // Remove Node.js globals for worker environment
-        ...Object.fromEntries(Object.keys(globals.node).map(key => [key, 'off'])),
+        ...Object.fromEntries(Object.keys(globals.node).map((key) => [key, 'off'])),
         // Add Cloudflare Workers globals
+        Cloudflare: 'readonly',
         DurableObjectNamespace: 'readonly',
         ExecutionContext: 'readonly',
         ExportedHandler: 'readonly',

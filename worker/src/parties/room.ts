@@ -1,7 +1,7 @@
-import * as Y from "yjs";
-import { YServer } from "y-partyserver";
-import type { Env } from "../index";
-import type { Connection } from "partyserver";
+import * as Y from 'yjs';
+import { YServer } from 'y-partyserver';
+import type { Env } from '../index';
+import type { Connection } from 'partyserver';
 
 // One canonical head per room, V2-encoded at rest
 const headKey = (room: string) => `rooms/${room}/head.v2.bin`;
@@ -11,7 +11,7 @@ export class RoomDurableObject extends YServer<Env> {
   static callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 };
   static options = {
     hibernate: true,
-  }
+  };
   /**
    * Ensure hydration completes before the first sync step.
    * YServer awaits onStart(), then onLoad(), installs debounced onSave(), then accepts sockets.
@@ -38,7 +38,7 @@ export class RoomDurableObject extends YServer<Env> {
   async onSave(): Promise<void> {
     const updateV2 = Y.encodeStateAsUpdateV2(this.document);
     await this.env.DOCS.put(headKey(this.name), updateV2, {
-      httpMetadata: { contentType: "application/octet-stream" },
+      httpMetadata: { contentType: 'application/octet-stream' },
       customMetadata: { ts: String(Date.now()) },
     });
   }
@@ -52,19 +52,21 @@ export class RoomDurableObject extends YServer<Env> {
     connection: Connection<unknown>,
     code: number,
     reason: string,
-    wasClean: boolean
+    wasClean: boolean,
   ): Promise<void> {
     // First let YServer prune the connection and awareness state.
     await super.onClose(connection, code, reason, wasClean);
 
     // If the room is now empty, flush the doc immediately (non-debounced).
-    if (this.document.conns.size === 0) {
+    // getConnections() yields only OPEN sockets; after super.onClose() the
+    // departing socket is already excluded.
+    if (this.getConnections()[Symbol.iterator]().next().done) {
       // One microturn in case a final Yjs update just landed
       await Promise.resolve();
       try {
         await this.onSave();
       } catch (err) {
-        console.error("flush-on-last-disconnect failed:", err);
+        console.error('flush-on-last-disconnect failed:', err);
       }
     }
   }
