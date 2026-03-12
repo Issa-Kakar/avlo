@@ -85,8 +85,9 @@ export default [
       globals: {
         // Remove Node.js globals for worker environment
         ...Object.fromEntries(Object.keys(globals.node).map((key) => [key, 'off'])),
-        // Add Cloudflare Workers globals
+        // Add Cloudflare Workers globals (from wrangler types + Web API)
         Cloudflare: 'readonly',
+        Env: 'readonly',
         DurableObjectNamespace: 'readonly',
         ExecutionContext: 'readonly',
         ExportedHandler: 'readonly',
@@ -95,8 +96,21 @@ export default [
         WebSocket: 'readonly',
         Request: 'readonly',
         Response: 'readonly',
+        Headers: 'readonly',
+        File: 'readonly',
+        Blob: 'readonly',
+        FormData: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        ReadableStream: 'readonly',
+        WritableStream: 'readonly',
+        TransformStream: 'readonly',
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
+        crypto: 'readonly',
         fetch: 'readonly',
         console: 'readonly',
+        R2Bucket: 'readonly',
       },
     },
     rules: {

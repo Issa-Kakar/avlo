@@ -52,7 +52,8 @@ export function computeBBoxFor(
     }
 
     case 'text':
-    case 'code': {
+    case 'code':
+    case 'image': {
       const frame = getFrame(yMap) ?? [0, 0, 0, 0];
       return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
     }

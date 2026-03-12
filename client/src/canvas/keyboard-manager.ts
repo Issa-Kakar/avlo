@@ -42,6 +42,7 @@ import {
 } from '@/lib/clipboard/clipboard-actions';
 import { zoomIn, zoomOut, animateZoomReset } from './animation/ZoomAnimator';
 import { startDirection, stopDirection, stopAll as stopArrowPan } from './arrow-key-pan';
+import { openImageFilePicker } from '@/lib/image/image-actions';
 
 // === Spacebar Pan State ===
 
@@ -261,6 +262,13 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     const store = useDeviceUIStore.getState();
     store.setActiveTool('shape');
     store.setShapeVariant(variant);
+    return;
+  }
+
+  // Image file picker (action, not a tool switch)
+  if (key === 'i') {
+    e.preventDefault();
+    openImageFilePicker();
     return;
   }
 

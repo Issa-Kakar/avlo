@@ -46,6 +46,11 @@ import {
 import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
+import {
+  setOnBitmapReady,
+  clear as clearImageManager,
+} from '@/lib/image/image-manager';
+import { createImageFromBlob } from '@/lib/image/image-actions';
 
 export interface RuntimeConfig {
   container: HTMLElement;
@@ -114,7 +119,13 @@ export class CanvasRuntime {
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
     );
 
-    // 7. Snapshot subscription for dirty rect invalidation (event-driven)
+    // 7. Image bitmap ready → invalidate world so image renders
+    setOnBitmapReady((_assetId) => {
+      // Full invalidate — bitmap decode is infrequent, and we don't track per-asset bounds here
+      this.renderLoop?.invalidateAll();
+    });
+
+    // 8. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
     this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
     this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
@@ -185,8 +196,10 @@ export class CanvasRuntime {
     // - Clearing canvas element
     this.surfaceManager?.stop();
 
-    // Clear object cache
+    // Clear object cache + image manager
     getObjectCacheInstance().clear();
+    setOnBitmapReady(null);
+    clearImageManager();
 
     this.inputManager = null;
     this.surfaceManager = null;
@@ -319,6 +332,21 @@ export class CanvasRuntime {
     if (tool?.getPointerId() === e.pointerId) {
       tool.cancel();
       tool.onPointerLeave();
+    }
+  }
+
+  handleDrop(e: DragEvent): void {
+    e.preventDefault();
+    if (!e.dataTransfer) return;
+
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+
+    const world = screenToWorld(e.clientX, e.clientY);
+    if (!world) return;
+
+    for (const file of files) {
+      createImageFromBlob(file, world[0], world[1]);
     }
   }
 

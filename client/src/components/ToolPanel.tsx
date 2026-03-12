@@ -7,6 +7,7 @@ import {
   useDeviceUIStore,
 } from '../stores/device-ui-store';
 import { getActiveRoomDoc, hasActiveRoom } from '../canvas/room-runtime';
+import { openImageFilePicker } from '@/lib/image/image-actions';
 
 import './ToolPanel.css';
 
@@ -29,11 +30,7 @@ import {
   IconRedo,
 } from './icons';
 
-interface ToolPanelProps {
-  onToast?: (message: string) => void;
-}
-
-export function ToolPanel({ onToast }: ToolPanelProps) {
+export function ToolPanel() {
   const {
     activeTool,
     drawingSettings,
@@ -225,11 +222,8 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
 
         <ToolButton
           tool="image"
-          isActive={activeTool === 'image'}
-          onClick={() => {
-            setActiveTool('image');
-            onToast?.('Image tool coming soon!');
-          }}
+          isActive={false}
+          onClick={() => openImageFilePicker()}
           tooltip="Image (I)"
         >
           <IconImage className="icon" />

@@ -50,6 +50,8 @@ import {
 import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
+import { getAssetId } from '@avlo/shared';
+import { getBitmap } from '@/lib/image/image-manager';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -237,6 +239,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     case 'code':
       drawCode(ctx, handle);
       break;
+    case 'image':
+      drawImage(ctx, handle);
+      break;
   }
 }
 
@@ -370,6 +375,61 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines);
+}
+
+function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  const frame = getFrame(handle.y);
+  if (!frame) return;
+  const assetId = getAssetId(handle.y);
+  if (!assetId) return;
+
+  const bitmap = getBitmap(assetId);
+  const opacity = getOpacity(handle.y);
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  if (bitmap) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, frame[0], frame[1], frame[2], frame[3]);
+  } else {
+    // Placeholder: light gray rect
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(frame[0], frame[1], frame[2], frame[3]);
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
+  }
+  ctx.restore();
+}
+
+function drawImageWithTransform(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: { origin?: [number, number]; scaleX?: number; scaleY?: number },
+): void {
+  const frame = getFrame(handle.y);
+  if (!frame) return;
+  const transformedFrame = applyTransformToFrame(frame, transform);
+  const [, , w, h] = transformedFrame;
+  if (w < 0.001 || h < 0.001) return;
+
+  const assetId = getAssetId(handle.y);
+  if (!assetId) return;
+  const bitmap = getBitmap(assetId);
+  const opacity = getOpacity(handle.y);
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  if (bitmap) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+  } else {
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+  }
+  ctx.restore();
 }
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -855,7 +915,35 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 3: Shape scaling
+  // CASE 3: Image scaling — non-uniform (same as shapes)
+  if (handle.kind === 'image') {
+    if (selectionKind === 'mixed' && handleKind === 'corner') {
+      // Uniform scale for mixed corner (uses same frame-based math as shapes)
+      const frame = getFrame(handle.y);
+      if (!frame) { drawObject(ctx, handle); return; }
+      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+      const assetId = getAssetId(handle.y);
+      if (!assetId) return;
+      const bitmap = getBitmap(assetId);
+      const opacity = getOpacity(handle.y);
+      ctx.save();
+      ctx.globalAlpha = opacity;
+      if (bitmap) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+      } else {
+        ctx.fillStyle = '#f0f0f0';
+        ctx.fillRect(transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+      }
+      ctx.restore();
+    } else {
+      drawImageWithTransform(ctx, handle, transform);
+    }
+    return;
+  }
+
+  // CASE 4: Shape scaling
   // Mixed + corner: uniform scale
   // Shapes-only or mixed+side: non-uniform scale (existing behavior)
   if (handle.kind === 'shape') {
@@ -867,7 +955,7 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Text — corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
+  // CASE 5: Text — corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'text') {
     if (
       handleKind === 'corner' ||
@@ -905,7 +993,7 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 5: Code — corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
+  // CASE 6: Code — corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'code') {
     if (
       handleKind === 'corner' ||

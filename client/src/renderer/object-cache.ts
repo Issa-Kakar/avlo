@@ -156,7 +156,8 @@ export class ObjectRenderCache {
       }
 
       case 'text':
-        // Text doesn't use Path2D
+      case 'image':
+        // Text/image don't use Path2D (rendered via ctx.drawImage / text system)
         return new Path2D();
 
       default:

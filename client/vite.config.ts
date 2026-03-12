@@ -26,6 +26,10 @@ export default defineConfig({
         target: `http://localhost:${workerPort}`,
         changeOrigin: true,
       },
+      '/api': {
+        target: `http://localhost:${workerPort}`,
+        changeOrigin: true,
+      },
     },
   },
 });

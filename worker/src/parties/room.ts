@@ -1,6 +1,5 @@
 import * as Y from 'yjs';
 import { YServer } from 'y-partyserver';
-import type { Env } from '../index';
 import type { Connection } from 'partyserver';
 
 // One canonical head per room, V2-encoded at rest

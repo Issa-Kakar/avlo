@@ -31,6 +31,7 @@ export interface KindCounts {
   text: number;
   connectors: number;
   code: number;
+  images: number;
   total: number;
 }
 
@@ -86,6 +87,7 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   text: 0,
   connectors: 0,
   code: 0,
+  images: 0,
   total: 0,
 };
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
@@ -114,7 +116,8 @@ export function computeSelectionComposition(ids: string[]) {
     shapes = 0,
     text = 0,
     connectors = 0,
-    code = 0;
+    code = 0,
+    images = 0;
   const selectedIdSet = new Set<string>();
 
   for (const id of ids) {
@@ -137,6 +140,9 @@ export function computeSelectionComposition(ids: string[]) {
       case 'code':
         code++;
         break;
+      case 'image':
+        images++;
+        break;
     }
   }
 
@@ -146,6 +152,7 @@ export function computeSelectionComposition(ids: string[]) {
     text,
     connectors,
     code,
+    images,
     total: selectedIdSet.size,
   };
 
@@ -154,7 +161,8 @@ export function computeSelectionComposition(ids: string[]) {
     (shapes > 0 ? 1 : 0) +
     (text > 0 ? 1 : 0) +
     (connectors > 0 ? 1 : 0) +
-    (code > 0 ? 1 : 0);
+    (code > 0 ? 1 : 0) +
+    (images > 0 ? 1 : 0);
 
   let selectionKind: SelectionKind;
   if (nonZero === 0) selectionKind = 'none';
@@ -163,6 +171,7 @@ export function computeSelectionComposition(ids: string[]) {
   else if (shapes > 0) selectionKind = 'shapesOnly';
   else if (text > 0) selectionKind = 'textOnly';
   else if (code > 0) selectionKind = 'codeOnly';
+  else if (images > 0) selectionKind = 'imagesOnly';
   else selectionKind = 'connectorsOnly';
 
   const mode =
@@ -228,7 +237,8 @@ export function computeStyles(
   kind: SelectionKind,
   objectsById: ReadonlyMap<string, ObjectHandle>,
 ): SelectedStyles {
-  if (kind === 'none' || kind === 'mixed' || ids.length === 0) return EMPTY_STYLES;
+  if (kind === 'none' || kind === 'mixed' || kind === 'imagesOnly' || ids.length === 0)
+    return EMPTY_STYLES;
 
   // Code blocks: track fontSize + language
   if (kind === 'codeOnly') {

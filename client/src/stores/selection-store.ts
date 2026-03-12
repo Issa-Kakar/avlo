@@ -51,6 +51,7 @@ export type SelectionKind =
   | 'textOnly'
   | 'codeOnly'
   | 'connectorsOnly'
+  | 'imagesOnly'
   | 'mixed';
 
 export type HandleKind = 'corner' | 'side';
@@ -372,7 +373,13 @@ function computeConnectorTopology(
   // Pass 2: Non-selected connectors anchored to selected shapes
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
-    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'code'))
+    if (
+      !handle ||
+      (handle.kind !== 'shape' &&
+        handle.kind !== 'text' &&
+        handle.kind !== 'code' &&
+        handle.kind !== 'image')
+    )
       continue;
     const connectors = getConnectorsForShape(id);
     if (!connectors) continue;
@@ -386,7 +393,13 @@ function computeConnectorTopology(
   // Collect original frames for all selected shapes (for frame overrides)
   for (const id of selectedIds) {
     const handle = snapshot.objectsById.get(id);
-    if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'code'))
+    if (
+      !handle ||
+      (handle.kind !== 'shape' &&
+        handle.kind !== 'text' &&
+        handle.kind !== 'code' &&
+        handle.kind !== 'image')
+    )
       continue;
     const frame =
       handle.kind === 'text'
@@ -693,7 +706,7 @@ export const useSelectionStore = create<SelectionStore>()(
  * No-op if no objects of that kind are selected.
  */
 export function filterSelectionByKind(
-  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code',
+  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'images',
 ): void {
   const { selectedIds } = useSelectionStore.getState();
   const snapshot = getCurrentSnapshot();
@@ -706,7 +719,9 @@ export function filterSelectionByKind(
           ? 'connector'
           : kind === 'code'
             ? 'code'
-            : 'text';
+            : kind === 'images'
+              ? 'image'
+              : 'text';
   const filtered = selectedIds.filter((id) => snapshot.objectsById.get(id)?.kind === targetKind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);

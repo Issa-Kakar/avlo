@@ -9,7 +9,7 @@
  * and object-aware dispatch that reads from ObjectHandle.
  */
 
-import type { WorldBounds, FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, ObjectHandle, Snapshot, ObjectKind } from '@avlo/shared';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
@@ -620,6 +620,12 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
 
+    case 'image': {
+      const frame = getFrame(y);
+      if (!frame) return false;
+      return rectsIntersect(frameTupleToWorldBounds(frame), rect);
+    }
+
     default:
       return false;
   }
@@ -635,7 +641,7 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
  */
 export interface HitCandidate {
   id: string; // Object ID (ULID provides Z-order: higher = topmost)
-  kind: 'stroke' | 'shape' | 'text' | 'connector' | 'code';
+  kind: ObjectKind;
   distance: number; // Distance to geometry edge (0 if inside/on stroke)
   insideInterior: boolean; // Hit inside shape/text bounds (not edge). Always false for strokes/connectors.
   area: number; // Bounding area - smaller = more nested = higher selection priority
@@ -762,6 +768,29 @@ export function testObjectHit(
           insideInterior: hitResult.insideInterior,
           area: w * h,
           isFilled: true, // Always filled (dark bg)
+        };
+      }
+      return null;
+    }
+
+    case 'image': {
+      const frame = getFrame(y);
+      if (!frame) return null;
+      const [x, yPos, w, h] = frame;
+
+      if (
+        worldX >= x &&
+        worldX <= x + w &&
+        worldY >= yPos &&
+        worldY <= yPos + h
+      ) {
+        return {
+          id: handle.id,
+          kind: 'image',
+          distance: 0,
+          insideInterior: true,
+          area: w * h,
+          isFilled: true, // Images are always opaque for hit testing
         };
       }
       return null;

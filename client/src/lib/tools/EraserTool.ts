@@ -243,6 +243,18 @@ export class EraserTool implements PointerTool {
           }
           break;
         }
+
+        case 'image': {
+          const frame = getFrame(handle.y);
+          if (!frame) break;
+
+          const [x, y, w, h] = frame;
+          // Images are always filled — circle-rect intersection
+          if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
+            this.state.hitNow.add(handle.id);
+          }
+          break;
+        }
       }
     }
 

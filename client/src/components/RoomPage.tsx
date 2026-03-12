@@ -107,7 +107,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           </div>
 
           {/* Floating UI elements */}
-          <ToolPanel onToast={showToast} />
+          <ToolPanel />
           <ZoomControls />
         </div>
       </div>

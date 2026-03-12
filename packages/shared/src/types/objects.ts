@@ -17,7 +17,7 @@ export {
 // shape = geometric shapes (ALWAYS polyline: rect/ellipse/line)
 // text = text blocks (frame-based positioning)
 // connector = connection lines/arrows (ALWAYS polyline)
-export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code';
+export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image';
 
 // Lightweight handle pointing to Y.Map
 export interface ObjectHandle {

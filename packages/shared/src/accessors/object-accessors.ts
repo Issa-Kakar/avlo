@@ -304,6 +304,44 @@ export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
 }
 
 // ============================================================================
+// IMAGE-SPECIFIC ACCESSORS
+// ============================================================================
+
+export function getAssetId(y: Y.Map<unknown>): string | null {
+  return (y.get('assetId') as string | undefined) ?? null;
+}
+
+export function getNaturalDimensions(y: Y.Map<unknown>): [number, number] | null {
+  const w = y.get('naturalWidth') as number | undefined;
+  const h = y.get('naturalHeight') as number | undefined;
+  if (w === undefined || h === undefined) return null;
+  return [w, h];
+}
+
+export interface ImageProps {
+  assetId: string;
+  frame: FrameTuple;
+  naturalWidth: number;
+  naturalHeight: number;
+  mimeType: string;
+}
+
+export function getImageProps(y: Y.Map<unknown>): ImageProps | null {
+  const assetId = y.get('assetId') as string | undefined;
+  const frame = y.get('frame') as FrameTuple | undefined;
+  const naturalWidth = y.get('naturalWidth') as number | undefined;
+  const naturalHeight = y.get('naturalHeight') as number | undefined;
+  if (!assetId || !frame || naturalWidth === undefined || naturalHeight === undefined) return null;
+  return {
+    assetId,
+    frame,
+    naturalWidth,
+    naturalHeight,
+    mimeType: (y.get('mimeType') as string | undefined) ?? 'image/png',
+  };
+}
+
+// ============================================================================
 // STROKE-SPECIFIC ACCESSORS
 // ============================================================================
 

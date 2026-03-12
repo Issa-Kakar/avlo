@@ -13,6 +13,10 @@ class_name = "RoomDurableObject"
 binding = "DOCS"
 bucket_name = "avlo-docs"
 
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "avlo-assets"
+
 # Enable SQLite storage for Durable Objects
 [[migrations]]
 tag = "v1"

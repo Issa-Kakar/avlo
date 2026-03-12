@@ -27,8 +27,9 @@ import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox } from './text/text-system';
 import { codeSystem, computeCodeBBox } from './code/code-system';
-import { getCodeProps } from '@avlo/shared';
+import { getCodeProps, getAssetId } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
+import { requestLoad as requestImageLoad, prefetchBatch as prefetchImages } from '@/lib/image/image-manager';
 
 type Unsub = () => void;
 
@@ -1083,6 +1084,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       }
 
+      // Trigger image asset loading for new image objects
+      if (kind === 'image' && !oldBBox) {
+        const assetId = getAssetId(yObj);
+        if (assetId) requestImageLoad(assetId);
+      }
+
       // Handle cache and dirty rects
       if (!oldBBox) {
         // New object
@@ -1169,6 +1176,17 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Hydrate connector lookup from built handles
     hydrateConnectorLookup(this.objectsById);
+
+    // Prefetch image assets for all image objects
+    const imageAssetIds: string[] = [];
+    for (const handle of handles) {
+      if (handle.kind === 'image') {
+        const assetId = getAssetId(handle.y);
+        if (assetId) imageAssetIds.push(assetId);
+      }
+    }
+    if (imageAssetIds.length > 0) prefetchImages(imageAssetIds);
+
     // Publishing happens via handleYDocUpdate → publishSnapshotNow()
   }
 

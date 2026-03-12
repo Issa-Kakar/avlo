@@ -8,6 +8,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "hono": "^4.7.0",
+    "hono-party": "^2.0.3",
     "yjs": "^13.6.27"
   },
   "devDependencies": {

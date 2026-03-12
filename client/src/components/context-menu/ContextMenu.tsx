@@ -322,6 +322,10 @@ function ContextMenuBar() {
               <div className="ctx-divider" />
             </>
           )}
+          {effectiveKind === 'imagesOnly' && (
+            // Images: no style controls, just the common actions (delete)
+            <></>
+          )}
         </>
       )}
       <CommonActionsGroup />

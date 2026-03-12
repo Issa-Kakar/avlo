@@ -34,6 +34,7 @@ import {
   extractPlainText,
   type ClipboardPayload,
 } from './clipboard-serializer';
+import { createImageFromBlob } from '@/lib/image/image-actions';
 
 // === Constants ===
 
@@ -87,6 +88,14 @@ export async function pasteFromClipboard(): Promise<void> {
   try {
     const items = await navigator.clipboard.read();
     for (const item of items) {
+      // Check for image types first
+      const imageType = item.types.find((t) => t.startsWith('image/'));
+      if (imageType) {
+        const blob = await item.getType(imageType);
+        await pasteImage(blob);
+        return;
+      }
+
       // Check for HTML with nonce
       if (item.types.includes('text/html')) {
         const blob = await item.getType('text/html');
@@ -423,6 +432,18 @@ export function selectAll(): void {
   useSelectionStore.getState().setSelection(ids);
   invalidateOverlay();
 }
+
+// === Image Paste ===
+
+async function pasteImage(blob: Blob): Promise<void> {
+  const [worldX, worldY] = getPasteTarget();
+  await createImageFromBlob(blob, worldX, worldY, {
+    selectAfter: !getCurrentTool()?.isActive(),
+  });
+}
+
+/** Public API for pasting an image blob (used by drag-drop). */
+export { pasteImage };
 
 // === Smart Duplicate Offset ===
 
