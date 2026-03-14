@@ -29,7 +29,7 @@ import { textLayoutCache, computeTextBBox } from './text/text-system';
 import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps, getAssetId } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
-import { requestLoad as requestImageLoad, prefetchBatch as prefetchImages } from '@/lib/image/image-manager';
+import { ensureAsset, hydrateImages } from '@/lib/image/image-manager';
 
 type Unsub = () => void;
 
@@ -1084,10 +1084,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       }
 
-      // Trigger image asset loading for new image objects
+      // Ensure new remote image blobs are cached in IDB (no decode — viewport-gated)
       if (kind === 'image' && !oldBBox) {
         const assetId = getAssetId(yObj);
-        if (assetId) requestImageLoad(assetId);
+        if (assetId) ensureAsset(assetId);
       }
 
       // Handle cache and dirty rects
@@ -1177,15 +1177,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Hydrate connector lookup from built handles
     hydrateConnectorLookup(this.objectsById);
 
-    // Prefetch image assets for all image objects
-    const imageAssetIds: string[] = [];
-    for (const handle of handles) {
-      if (handle.kind === 'image') {
-        const assetId = getAssetId(handle.y);
-        if (assetId) imageAssetIds.push(assetId);
-      }
-    }
-    if (imageAssetIds.length > 0) prefetchImages(imageAssetIds);
+    // Hydrate images: ensure all in IDB, decode only viewport-visible
+    hydrateImages(objects);
 
     // Publishing happens via handleYDocUpdate → publishSnapshotNow()
   }

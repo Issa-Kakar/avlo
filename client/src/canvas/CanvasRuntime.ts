@@ -46,11 +46,7 @@ import {
 import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
-import {
-  setOnBitmapReady,
-  clear as clearImageManager,
-  startUploadQueue,
-} from '@/lib/image/image-manager';
+import { clear as clearImageManager } from '@/lib/image/image-manager';
 import { createImageFromBlob } from '@/lib/image/image-actions';
 
 export interface RuntimeConfig {
@@ -78,7 +74,6 @@ export class CanvasRuntime {
   private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
   private wheelTimestamps: number[] = [];
-  private uploadQueueCleanup: (() => void) | null = null;
 
   /**
    * Start the canvas runtime.
@@ -121,16 +116,7 @@ export class CanvasRuntime {
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
     );
 
-    // 7. Image bitmap ready → invalidate world so image renders
-    setOnBitmapReady((_assetId) => {
-      // Full invalidate — bitmap decode is infrequent, and we don't track per-asset bounds here
-      this.renderLoop?.invalidateAll();
-    });
-
-    // 7b. Upload queue lifecycle (drains prior-session leftovers, listens for online)
-    this.uploadQueueCleanup = startUploadQueue();
-
-    // 8. Snapshot subscription for dirty rect invalidation (event-driven)
+    // 7. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
     this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
     this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
@@ -203,9 +189,6 @@ export class CanvasRuntime {
 
     // Clear object cache + image manager
     getObjectCacheInstance().clear();
-    this.uploadQueueCleanup?.();
-    this.uploadQueueCleanup = null;
-    setOnBitmapReady(null);
     clearImageManager();
 
     this.inputManager = null;

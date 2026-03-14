@@ -1,153 +1,37 @@
 /**
- * ImageManager — Central orchestrator for image assets.
+ * ImageManager — Thin main-thread coordinator for image assets.
  *
- * Manages the full lifecycle: IDB persistence, decode worker, bitmap cache,
- * viewport eviction, and persistent upload queue. Module-level singleton.
+ * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in image-worker.ts.
+ * This module only manages in-memory bitmap references and viewport-driven decode requests.
  *
- * Synchronous getBitmap() for render path; async requestLoad() for on-demand fetching.
- * Upload queue survives tab crashes via IDB. Content-addressed, so operations are idempotent.
+ * State:
+ *   bitmaps: Map<assetId, { bitmap, level }> — decoded bitmaps at current mip level
+ *   pending: Set<assetId> — in-flight decode requests (prevents duplicate worker messages)
+ *   errors:  Map<assetId, timestamp> — failed assets with cooldown-based retry (15s)
+ *   inflightIngests: Map<id, { resolve, reject }> — ingest promise tracking
+ *
+ * Invariant: spatial index IS the source of truth for visibility.
+ * No tracking maps — everything derived at query time from snapshot.
  */
 
-import type { DecodeRequest, WorkerResponse } from './image-decode-worker';
-import { validateImage } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@avlo/shared';
+import { getAssetId, getFrame, getNaturalDimensions } from '@avlo/shared';
+import type { WorkerInbound, WorkerOutbound } from './image-worker';
+import { invalidateWorld } from '@/canvas/invalidation-helpers';
+import { hasActiveRoom, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
+import type * as Y from 'yjs';
+import type { ObjectKind } from '@avlo/shared';
 
 // ============================================================
-// Section 1 — IDB Layer
+// Worker
 // ============================================================
 
-const DB_NAME = 'avlo-assets';
-const DB_VERSION = 1;
-const BLOBS_STORE = 'blobs';
-const UPLOADS_STORE = 'uploads';
-
-type UploadStatus = 'pending' | 'uploading' | 'failed';
-
-interface BlobEntry {
-  blob: Blob;
-  mimeType: string;
-  size: number;
-  storedAt: number;
-}
-
-interface UploadEntry {
-  status: UploadStatus;
-  retries: number;
-  lastAttempt: number;
-}
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function openDB(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(BLOBS_STORE)) db.createObjectStore(BLOBS_STORE);
-      if (!db.objectStoreNames.contains(UPLOADS_STORE)) db.createObjectStore(UPLOADS_STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => {
-      dbPromise = null;
-      reject(req.error);
-    };
-  });
-  return dbPromise;
-}
-
-function tx(store: string, mode: IDBTransactionMode): Promise<IDBObjectStore> {
-  return openDB().then((db) => db.transaction(store, mode).objectStore(store));
-}
-
-function idbOp<T>(fn: (store: IDBObjectStore) => IDBRequest): (store: IDBObjectStore) => Promise<T> {
-  return (store) => new Promise((resolve, reject) => {
-    const req = fn(store);
-    req.onsuccess = () => resolve(req.result as T);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-// Blob store
-async function getBlob(assetId: string): Promise<Blob | null> {
-  const store = await tx(BLOBS_STORE, 'readonly');
-  const entry = await idbOp<BlobEntry | undefined>((s) => s.get(assetId))(store);
-  return entry?.blob ?? null;
-}
-
-async function putBlob(assetId: string, blob: Blob, mimeType: string): Promise<void> {
-  const store = await tx(BLOBS_STORE, 'readwrite');
-  const entry: BlobEntry = { blob, mimeType, size: blob.size, storedAt: Date.now() };
-  await idbOp<void>((s) => s.put(entry, assetId))(store);
-}
-
-// Upload store
-async function getUploadEntry(assetId: string): Promise<UploadEntry | null> {
-  const store = await tx(UPLOADS_STORE, 'readonly');
-  const entry = await idbOp<UploadEntry | undefined>((s) => s.get(assetId))(store);
-  return entry ?? null;
-}
-
-async function putUploadEntry(assetId: string, entry: UploadEntry): Promise<void> {
-  const store = await tx(UPLOADS_STORE, 'readwrite');
-  await idbOp<void>((s) => s.put(entry, assetId))(store);
-}
-
-async function removeUploadEntry(assetId: string): Promise<void> {
-  const store = await tx(UPLOADS_STORE, 'readwrite');
-  await idbOp<void>((s) => s.delete(assetId))(store);
-}
-
-async function getAllPendingUploads(): Promise<string[]> {
-  const store = await tx(UPLOADS_STORE, 'readonly');
-  return idbOp<string[]>((s) => s.getAllKeys() as IDBRequest<string[]>)(store);
-}
+const worker = new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' });
 
 // ============================================================
-// Section 2 — Decode Worker
+// State
 // ============================================================
-
-let worker: Worker | null = null;
-let workerIdCounter = 0;
-const pendingDecodes = new Map<string, { resolve: (bmp: ImageBitmap) => void; reject: (err: Error) => void }>();
-
-function getWorker(): Worker {
-  if (!worker) {
-    worker = new Worker(new URL('./image-decode-worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
-      const msg = e.data;
-      const pending = pendingDecodes.get(msg.id);
-      if (!pending) return;
-      pendingDecodes.delete(msg.id);
-
-      if (msg.type === 'decoded') {
-        pending.resolve(msg.bitmap);
-      } else {
-        pending.reject(new Error(msg.message));
-      }
-    };
-  }
-  return worker;
-}
-
-function decodeBlob(blob: Blob): Promise<ImageBitmap> {
-  const id = String(++workerIdCounter);
-  return new Promise<ImageBitmap>((resolve, reject) => {
-    pendingDecodes.set(id, { resolve, reject });
-    getWorker().postMessage({ type: 'decode', id, blob } satisfies DecodeRequest);
-  });
-}
-
-// ============================================================
-// Section 3 — Bitmap Cache + Load Pipeline
-// ============================================================
-
-type AssetStatus = 'pending' | 'fetching' | 'decoding' | 'ready' | 'error';
-
-interface AssetEntry {
-  status: AssetStatus;
-  bitmap: ImageBitmap | null;
-  fetchPromise: Promise<void> | null;
-}
 
 export interface IngestResult {
   assetId: string;
@@ -156,249 +40,338 @@ export interface IngestResult {
   mimeType: string;
 }
 
-const assets = new Map<string, AssetEntry>();
+/** Decoded bitmaps at current mip level. One bitmap per assetId in memory at a time. */
+const bitmaps = new Map<string, { bitmap: ImageBitmap; level: number }>();
 
-// Invalidation callback — set by CanvasRuntime
-let onBitmapReady: ((assetId: string) => void) | null = null;
-
-// Asset URL base — set during init
-let assetsBaseUrl = '/api/assets';
-
-/** Synchronous bitmap access for render path. Returns null if not ready. */
-export function getBitmap(assetId: string): ImageBitmap | null {
-  return assets.get(assetId)?.bitmap ?? null;
-}
-
-/** Trigger async load: IDB check → CDN fetch → worker decode → invalidate. */
-export function requestLoad(assetId: string): void {
-  const existing = assets.get(assetId);
-  // Allow re-decode from IDB after eviction (status === 'pending')
-  if (existing && existing.status !== 'error' && existing.status !== 'pending') return;
-
-  const entry: AssetEntry = { status: 'pending', bitmap: null, fetchPromise: null };
-  assets.set(assetId, entry);
-
-  entry.fetchPromise = loadPipeline(assetId, entry);
-}
-
-async function loadPipeline(assetId: string, entry: AssetEntry): Promise<void> {
-  try {
-    // 1. Check IDB
-    let blob = await getBlob(assetId);
-
-    // 2. Fetch from CDN if not cached
-    if (!blob) {
-      entry.status = 'fetching';
-      const resp = await fetch(`${assetsBaseUrl}/${assetId}`);
-      if (!resp.ok) throw new Error(`fetch ${resp.status}`);
-      blob = await resp.blob();
-      await putBlob(assetId, blob, blob.type);
-    }
-
-    // 3. Decode
-    entry.status = 'decoding';
-    const bitmap = await decodeBlob(blob);
-
-    entry.status = 'ready';
-    entry.bitmap = bitmap;
-    entry.fetchPromise = null;
-
-    // 4. Invalidate render
-    onBitmapReady?.(assetId);
-  } catch (err) {
-    console.warn('[image] load failed:', assetId, err);
-    entry.status = 'error';
-    entry.fetchPromise = null;
-  }
-}
+/** AssetIds with in-flight decode requests — prevents duplicate worker messages. */
+const pending = new Set<string>();
 
 /**
- * Ingest a local file: hash → IDB → decode.
- * Returns immediately usable metadata. Bitmap is cached in memory.
+ * AssetIds that failed to decode/fetch, with timestamp of last error.
+ * Prevents infinite decode→error→decode loops. Retried after ERROR_COOLDOWN_MS.
+ * Cleared on successful bitmap receipt (self-healing when CDN becomes available).
  */
-export async function ingest(file: Blob): Promise<IngestResult> {
-  const buffer = await file.arrayBuffer();
+const errors = new Map<string, number>();
+const ERROR_COOLDOWN_MS = 15_000;
 
-  // Fail-fast: validate magic bytes before hashing/storing
-  const bytes = new Uint8Array(buffer);
-  const { valid, mimeType: detectedMime } = validateImage(bytes);
-  if (!valid) throw new Error('unsupported image format');
-  const mimeType = detectedMime || file.type || 'image/png';
+/** Ingest promise tracking — maps worker request ID to promise handlers. */
+let ingestIdCounter = 0;
+const inflightIngests = new Map<
+  string,
+  { resolve: (result: IngestResult) => void; reject: (err: Error) => void }
+>();
 
-  // SHA-256 hash
-  const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-  const hashArray = new Uint8Array(hashBuffer);
-  let assetId = '';
-  for (let i = 0; i < hashArray.length; i++) {
-    assetId += hashArray[i].toString(16).padStart(2, '0');
-  }
+// ============================================================
+// Helpers
+// ============================================================
 
-  // Dedup: check memory cache
-  const existing = assets.get(assetId);
-  if (existing?.status === 'ready' && existing.bitmap) {
-    return {
-      assetId,
-      naturalWidth: existing.bitmap.width,
-      naturalHeight: existing.bitmap.height,
-      mimeType,
-    };
-  }
+function bboxToBounds(bbox: [number, number, number, number]): WorldBounds {
+  return { minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3] };
+}
 
-  // Store blob in IDB (idempotent — content-addressed, so put is a no-op for same key)
-  const blob = new Blob([buffer], { type: mimeType });
-  await putBlob(assetId, blob, mimeType);
-
-  // Decode
-  const bitmap = await decodeBlob(blob);
-  assets.set(assetId, { status: 'ready', bitmap, fetchPromise: null });
-
+function padViewport(vb: WorldBounds): WorldBounds {
+  const vw = vb.maxX - vb.minX;
+  const vh = vb.maxY - vb.minY;
   return {
-    assetId,
-    naturalWidth: bitmap.width,
-    naturalHeight: bitmap.height,
-    mimeType,
+    minX: vb.minX - vw * 0.25,
+    minY: vb.minY - vh * 0.25,
+    maxX: vb.maxX + vw * 0.25,
+    maxY: vb.maxY + vh * 0.25,
   };
 }
 
-/** Bulk request on room hydration. Non-blocking. */
-export function prefetchBatch(assetIds: string[]): void {
-  for (const id of assetIds) {
-    requestLoad(id);
-  }
+function frameBoundsIntersect(frame: FrameTuple, vp: WorldBounds): boolean {
+  return (
+    frame[0] < vp.maxX &&
+    frame[0] + frame[2] > vp.minX &&
+    frame[1] < vp.maxY &&
+    frame[1] + frame[3] > vp.minY
+  );
 }
 
-/** Evict off-viewport bitmaps + trigger load for visible ones. */
-export function updateViewport(visibleAssetIds: Set<string>): void {
-  for (const [id, entry] of assets) {
-    if (entry.bitmap && !visibleAssetIds.has(id)) {
-      entry.bitmap.close();
-      entry.bitmap = null;
-      entry.status = 'pending';
-      entry.fetchPromise = null;
-    }
-  }
-  for (const id of visibleAssetIds) {
-    requestLoad(id);
-  }
-}
-
-/** Room teardown: close all bitmaps, clear caches. */
-export function clear(): void {
-  for (const entry of assets.values()) {
-    entry.bitmap?.close();
-  }
-  assets.clear();
-  pendingDecodes.clear();
-}
-
-/** Register invalidation callback (called by CanvasRuntime). */
-export function setOnBitmapReady(cb: ((assetId: string) => void) | null): void {
-  onBitmapReady = cb;
-}
-
-/** Set the base URL for asset fetching. */
-export function setAssetsBaseUrl(url: string): void {
-  assetsBaseUrl = url;
+function ppspToLevel(ppsp: number): 0 | 1 | 2 {
+  return ppsp > 0.5 ? 0 : ppsp > 0.25 ? 1 : 2;
 }
 
 // ============================================================
-// Section 4 — Upload Queue
+// Worker Message Handler
 // ============================================================
 
-const BASE_DELAY_MS = 1000;
-const MAX_BACKOFF_MS = 60_000;
+worker.onmessage = (e: MessageEvent<WorkerOutbound>) => {
+  const msg = e.data;
 
-let processing = false;
-let resetBackoff = false;
+  switch (msg.type) {
+    case 'ingested': {
+      // Close previous bitmap if exists (dedup: same assetId ingested twice)
+      const old = bitmaps.get(msg.assetId);
+      if (old) old.bitmap.close();
+      bitmaps.set(msg.assetId, { bitmap: msg.bitmap, level: msg.level });
+      errors.delete(msg.assetId);
 
-/** Enqueue an asset for upload. Idempotent. */
-export async function enqueue(assetId: string): Promise<void> {
-  const existing = await getUploadEntry(assetId);
-  if (existing) return;
-  await putUploadEntry(assetId, { status: 'pending', retries: 0, lastAttempt: 0 });
-  processQueue();
-}
-
-async function processQueue(): Promise<void> {
-  if (processing) return;
-  processing = true;
-
-  const ignoreBackoff = resetBackoff;
-  resetBackoff = false;
-
-  try {
-    const ids = await getAllPendingUploads();
-    for (const assetId of ids) {
-      const entry = await getUploadEntry(assetId);
-      if (!entry) continue;
-
-      // Exponential backoff (no max retries — offline-first means retry forever)
-      if (entry.status === 'failed' && !ignoreBackoff) {
-        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, entry.retries), MAX_BACKOFF_MS);
-        const elapsed = Date.now() - entry.lastAttempt;
-        if (elapsed < delay) continue;
+      // Resolve the ingest promise
+      const entry = inflightIngests.get(msg.id);
+      if (entry) {
+        inflightIngests.delete(msg.id);
+        entry.resolve({
+          assetId: msg.assetId,
+          naturalWidth: msg.w,
+          naturalHeight: msg.h,
+          mimeType: msg.mime,
+        });
       }
 
-      await uploadOne(assetId, entry);
+      // Targeted invalidation for any visible objects with this assetId
+      invalidateBitmapRegion(msg.assetId);
+      break;
     }
-  } finally {
-    processing = false;
+
+    case 'bitmap': {
+      // Guard: if room was torn down while decode was in-flight, discard
+      if (!hasActiveRoom()) {
+        msg.bitmap.close();
+        pending.delete(msg.assetId);
+        return;
+      }
+
+      const old = bitmaps.get(msg.assetId);
+      if (old) old.bitmap.close();
+      bitmaps.set(msg.assetId, { bitmap: msg.bitmap, level: msg.level });
+      pending.delete(msg.assetId);
+      errors.delete(msg.assetId); // Clear error on success (self-healing)
+
+      invalidateBitmapRegion(msg.assetId);
+      break;
+    }
+
+    case 'uploaded': {
+      // Informational — no action needed on main thread
+      break;
+    }
+
+    case 'error': {
+      // Resolve/reject ingest promise if this was an ingest error
+      if (msg.id) {
+        const entry = inflightIngests.get(msg.id);
+        if (entry) {
+          inflightIngests.delete(msg.id);
+          entry.reject(new Error(msg.message));
+        }
+      }
+
+      // Mark asset as errored with timestamp for cooldown-based retry
+      if (msg.assetId) {
+        pending.delete(msg.assetId);
+        errors.set(msg.assetId, Date.now());
+      }
+      break;
+    }
+  }
+};
+
+/** Query spatial index for objects with this assetId and invalidate their regions. */
+function invalidateBitmapRegion(assetId: string): void {
+  if (!hasActiveRoom()) return;
+  try {
+    const snapshot = getCurrentSnapshot();
+    if (!snapshot?.spatialIndex) return;
+    const vb = getVisibleWorldBounds();
+    const padded = padViewport(vb);
+    const entries = snapshot.spatialIndex.query(padded);
+    for (const entry of entries) {
+      if (entry.kind !== 'image') continue;
+      const handle = snapshot.objectsById.get(entry.id);
+      if (handle && getAssetId(handle.y) === assetId) {
+        invalidateWorld(bboxToBounds(handle.bbox));
+      }
+    }
+  } catch {
+    // No active room or snapshot — stale bitmap, ignore
   }
 }
 
-async function uploadOne(assetId: string, entry: UploadEntry): Promise<void> {
-  const blob = await getBlob(assetId);
-  if (!blob) {
-    await removeUploadEntry(assetId);
+// ============================================================
+// Public API
+// ============================================================
+
+/** Synchronous bitmap access for render path. Returns null if not decoded. */
+export function getBitmap(assetId: string): ImageBitmap | null {
+  return bitmaps.get(assetId)?.bitmap ?? null;
+}
+
+/**
+ * Viewport management — called from RenderLoop.tick() every frame.
+ *
+ * Reads camera store + snapshot internally. No parameters.
+ * 1. Queries spatial index with 1.5× padded viewport
+ * 2. Computes per-image ppsp → needed mip level
+ * 3. Requests decode for visible assets without correct mip (dedup via pending)
+ * 4. Evicts bitmaps for assets no longer visible
+ *
+ * Complexity: O(visible images) per frame. Only image entries from spatial index are processed.
+ */
+export function manageImageViewport(): void {
+  if (!hasActiveRoom()) return;
+
+  let snapshot;
+  try {
+    snapshot = getCurrentSnapshot();
+  } catch {
     return;
   }
+  if (!snapshot?.spatialIndex) return;
 
-  await putUploadEntry(assetId, { ...entry, status: 'uploading', lastAttempt: Date.now() });
+  const vb = getVisibleWorldBounds();
+  const padded = padViewport(vb);
+  const visible = snapshot.spatialIndex.query(padded);
 
-  try {
-    const resp = await fetch(`/api/assets/${assetId}`, { method: 'PUT', body: blob });
+  const { scale } = useCameraStore.getState();
+  const dpr = window.devicePixelRatio || 1;
 
-    if (resp.ok || resp.status === 409) {
-      await removeUploadEntry(assetId);
-      return;
+  // Collect visible assetIds + max ppsp per assetId
+  const visibleAssetIds = new Set<string>();
+  const assetMaxPpsp = new Map<string, number>();
+
+  for (const entry of visible) {
+    if (entry.kind !== 'image') continue;
+    const handle = snapshot.objectsById.get(entry.id);
+    if (!handle) continue;
+    const assetId = getAssetId(handle.y);
+    if (!assetId) continue;
+    const frame = getFrame(handle.y);
+    if (!frame) continue;
+
+    visibleAssetIds.add(assetId);
+
+    const dims = getNaturalDimensions(handle.y);
+    const nw = dims ? dims[0] : frame[2]; // Fall back to frame width if no natural dimensions
+    const ppsp = (frame[2] * scale * dpr) / nw;
+
+    const prev = assetMaxPpsp.get(assetId);
+    if (prev === undefined || ppsp > prev) {
+      assetMaxPpsp.set(assetId, ppsp);
     }
+  }
 
-    // Read server error body for diagnostics
-    const body = await resp.text().catch(() => '');
+  // Decode — request decode for visible assets that need it
+  const now = Date.now();
+  for (const [assetId, maxPpsp] of assetMaxPpsp) {
+    // Skip assets in error cooldown
+    const lastError = errors.get(assetId);
+    if (lastError && now - lastError < ERROR_COOLDOWN_MS) continue;
 
-    // 4xx = permanent failure (bad format, too large) — don't retry
-    if (resp.status >= 400 && resp.status < 500) {
-      console.warn('[image] upload rejected (permanent):', assetId, resp.status, body);
-      await removeUploadEntry(assetId);
-      return;
+    const neededLevel = ppspToLevel(maxPpsp);
+    const cached = bitmaps.get(assetId);
+
+    if (!cached && !pending.has(assetId)) {
+      // No bitmap at all — request decode
+      worker.postMessage({ type: 'decode', assetId, level: neededLevel } satisfies WorkerInbound);
+      pending.add(assetId);
+    } else if (cached && cached.level !== neededLevel && !pending.has(assetId)) {
+      // Bitmap exists at wrong mip level — request correct level
+      worker.postMessage({ type: 'decode', assetId, level: neededLevel } satisfies WorkerInbound);
+      pending.add(assetId);
     }
+  }
 
-    throw new Error(`upload ${resp.status}: ${body}`);
-  } catch (err) {
-    console.warn('[image] upload failed:', assetId, err);
-    await putUploadEntry(assetId, {
-      status: 'failed',
-      retries: entry.retries + 1,
-      lastAttempt: Date.now(),
-    });
+  // Eviction — close bitmaps for assets no longer in viewport
+  for (const [assetId, entry] of bitmaps) {
+    if (!visibleAssetIds.has(assetId)) {
+      entry.bitmap.close();
+      bitmaps.delete(assetId);
+      pending.delete(assetId); // Allow fresh request on scroll-back
+    }
   }
 }
 
 /**
- * Start the upload queue lifecycle. Registers online listener + safety interval.
- * Drains leftovers from prior sessions on first call.
- * Returns cleanup function for teardown.
+ * Ensure asset blob is cached in IDB (CDN fetch if missing). No decode.
+ * Used for new remote images arriving via Y.Doc sync.
+ * Decode happens via manageImageViewport on next render tick (only if in viewport).
  */
-export function startUploadQueue(): () => void {
-  const onOnline = () => { resetBackoff = true; processQueue(); };
-  window.addEventListener('online', onOnline);
-  const intervalId = setInterval(processQueue, 30_000);
-
-  // Drain leftovers immediately
-  processQueue();
-
-  return () => {
-    window.removeEventListener('online', onOnline);
-    clearInterval(intervalId);
-  };
+export function ensureAsset(assetId: string): void {
+  worker.postMessage({ type: 'ensure', assetId } satisfies WorkerInbound);
 }
+
+/**
+ * Ingest a local file: validate → hash → IDB → decode → bitmap.
+ * Decodes immediately (user expects instant display after drop/paste).
+ * Returns metadata for Y.Doc object creation.
+ */
+export function ingest(file: Blob): Promise<IngestResult> {
+  const id = String(++ingestIdCounter);
+  return new Promise<IngestResult>((resolve, reject) => {
+    inflightIngests.set(id, { resolve, reject });
+    worker.postMessage({ type: 'ingest', id, blob: file } satisfies WorkerInbound);
+  });
+}
+
+/**
+ * Hydrate images on room join.
+ * Ensures all image blobs are in IDB, decodes only viewport-visible ones.
+ * Pre-adds visible assetIds to pending to prevent duplicate decode on first manageImageViewport tick.
+ */
+export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
+  const { scale } = useCameraStore.getState();
+  const dpr = window.devicePixelRatio || 1;
+  const vb = getVisibleWorldBounds();
+  const padded = padViewport(vb);
+
+  // Collect per-assetId: best level (min level = highest quality) + representative frame
+  const assetMap = new Map<string, { frame: FrameTuple; level: 0 | 1 | 2 }>();
+
+  objects.forEach((yObj) => {
+    if ((yObj.get('kind') as ObjectKind) !== 'image') return;
+    const assetId = yObj.get('assetId') as string | undefined;
+    const frame = yObj.get('frame') as FrameTuple | undefined;
+    if (!assetId || !frame) return;
+
+    const nw = (yObj.get('naturalWidth') as number) ?? frame[2];
+    const ppsp = (frame[2] * scale * dpr) / nw;
+    const level = ppspToLevel(ppsp);
+
+    const existing = assetMap.get(assetId);
+    if (!existing || level < existing.level) {
+      assetMap.set(assetId, { frame, level });
+    }
+  });
+
+  if (assetMap.size === 0) return;
+
+  // Pre-add visible assetIds to pending — prevents duplicate decode on first manageImageViewport tick
+  for (const [assetId, { frame }] of assetMap) {
+    if (frameBoundsIntersect(frame, padded)) {
+      pending.add(assetId);
+    }
+  }
+
+  // Send single hydrate message with all assets
+  const assets = Array.from(assetMap, ([assetId, { frame, level }]) => ({ assetId, frame, level }));
+  worker.postMessage({ type: 'hydrate', assets, viewport: padded } satisfies WorkerInbound);
+}
+
+/** Enqueue asset for upload. Fire-and-forget. */
+export function enqueue(assetId: string): void {
+  worker.postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
+}
+
+/** Room teardown: close all bitmaps, clear all state. */
+export function clear(): void {
+  for (const entry of bitmaps.values()) {
+    entry.bitmap.close();
+  }
+  bitmaps.clear();
+  pending.clear();
+  errors.clear();
+  inflightIngests.clear();
+}
+
+// ============================================================
+// Module-level init (runs once on import)
+// ============================================================
+
+window.addEventListener('online', () => {
+  worker.postMessage({ type: 'online' } satisfies WorkerInbound);
+});
+
+// Drain pending uploads from prior sessions
+worker.postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);

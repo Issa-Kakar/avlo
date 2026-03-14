@@ -406,11 +406,10 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 function drawImageWithTransform(
   ctx: CanvasRenderingContext2D,
   handle: ObjectHandle,
-  transform: { origin?: [number, number]; scaleX?: number; scaleY?: number },
 ): void {
   const frame = getFrame(handle.y);
   if (!frame) return;
-  const transformedFrame = applyTransformToFrame(frame, transform);
+  const transformedFrame = applyTransformToFrame(frame, useSelectionStore.getState().transform);
   const [, , w, h] = transformedFrame;
   if (w < 0.001 || h < 0.001) return;
 
@@ -938,7 +937,7 @@ function renderSelectedObjectWithScaleTransform(
       }
       ctx.restore();
     } else {
-      drawImageWithTransform(ctx, handle, transform);
+      drawImageWithTransform(ctx, handle);
     }
     return;
   }

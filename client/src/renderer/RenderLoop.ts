@@ -3,9 +3,9 @@ import { FRAME_CONFIG } from './types';
 import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import { getOpacity, getAssetId } from '@avlo/shared';
+import { getOpacity } from '@avlo/shared';
 import type { WorldBounds, ViewTransform } from '@avlo/shared';
-import { updateViewport } from '@/lib/image/image-manager';
+import { manageImageViewport } from '@/lib/image/image-manager';
 
 // Dirty rect constants
 const MAX_RECTS = 10;
@@ -41,7 +41,6 @@ export class RenderLoop {
   private hiddenIntervalId: number | null = null;
 
   private hasTranslucent = false;
-  private evictCounter = 0;
 
   constructor() {
     if (typeof document !== 'undefined') {
@@ -119,7 +118,6 @@ export class RenderLoop {
     this.lastCanvasW = 0;
     this.lastCanvasH = 0;
     this.hasTranslucent = false;
-    this.evictCounter = 0;
   }
 
   destroy(): void {
@@ -260,29 +258,8 @@ export class RenderLoop {
       this.dirtyCount = 0;
     }
 
-    // 5b. Viewport-driven image eviction (~every 30 frames)
-    if (snapshot.spatialIndex && ++this.evictCounter >= 30) {
-      this.evictCounter = 0;
-      const vb = getVisibleWorldBounds();
-      const vw = vb.maxX - vb.minX;
-      const vh = vb.maxY - vb.minY;
-      const padded: WorldBounds = {
-        minX: vb.minX - vw, minY: vb.minY - vh,
-        maxX: vb.maxX + vw, maxY: vb.maxY + vh,
-      };
-      const nearby = snapshot.spatialIndex.query(padded);
-      const visibleAssetIds = new Set<string>();
-      for (const entry of nearby) {
-        if (entry.kind === 'image') {
-          const handle = snapshot.objectsById.get(entry.id);
-          if (handle) {
-            const aid = getAssetId(handle.y);
-            if (aid) visibleAssetIds.add(aid);
-          }
-        }
-      }
-      updateViewport(visibleAssetIds);
-    }
+    // 5b. Viewport-driven image management (decode visible, evict off-viewport, mip selection)
+    manageImageViewport();
 
     // 6. Coalesce overlapping dirty rects
     if (this.dirtyCount > 1) this.coalesce();
