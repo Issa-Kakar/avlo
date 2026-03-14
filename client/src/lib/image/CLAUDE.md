@@ -1,8 +1,6 @@
 # Image System
 
-Offline-first image objects with content-addressed asset storage, IndexedDB caching, off-thread decoding, and persistent upload queue. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
-
-**Status:** Initial implementation. Working locally but has known issues across the stack. See "Known Issues" at the end.
+Offline-first image objects with content-addressed asset storage, IndexedDB caching, off-thread decoding, persistent upload queue, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
 
 ---
 
@@ -12,13 +10,15 @@ Offline-first image objects with content-addressed asset storage, IndexedDB cach
 User drops/pastes/picks file
    ↓
 image-actions.ts: createImageFromBlob(blob, worldX, worldY)
+   ├─ SVG? → rasterizeSvg(blob) → PNG blob
    ├─ image-manager.ts: ingest(blob)
+   │   ├─ validateImage(bytes) → fail-fast on unsupported format
    │   ├─ SHA-256 hash → assetId (content-addressed)
-   │   ├─ asset-cache.ts: putBlob(assetId, blob) → IndexedDB `blobs` store
+   │   ├─ putBlob(assetId, blob) → IndexedDB `blobs` store
    │   └─ image-decode-worker.ts: createImageBitmap(blob) → ImageBitmap in memory cache
    ├─ Y.Doc mutation: create image object (kind:'image', assetId, frame, naturalDimensions)
    ├─ Select + switch to select tool
-   └─ upload-queue.ts: enqueue(assetId) → IDB `uploads` store → POST /api/assets/upload
+   └─ image-manager.ts: enqueue(assetId) → IDB `uploads` store → PUT /api/assets/:key
 
 Render path (synchronous):
    objects.ts → drawImage(ctx, handle) → getBitmap(assetId) → ctx.drawImage(bitmap, ...)
@@ -28,6 +28,11 @@ Remote peer joins:
    Y.Doc sync → new image object arrives
    room-doc-manager.ts observer → requestImageLoad(assetId)
    image-manager.ts: IDB check → CDN fetch → worker decode → invalidateAll()
+
+Viewport eviction (~every 30 frames, in RenderLoop.tick()):
+   padded viewport (3×3 = 9 viewports) → query spatial index → collect assetIds
+   evictDistant(visibleAssetIds) → close off-viewport bitmaps (GPU memory freed)
+   ensureLoaded(visibleAssetIds) → re-decode from IDB for evicted images scrolled back into view
 ```
 
 ---
@@ -57,19 +62,22 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 
 | File | Responsibility |
 |------|----------------|
-| `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()` |
-| `image-manager.ts` | Module-level singleton: memory cache, decode worker pool, load pipeline, `getBitmap()` |
-| `asset-cache.ts` | Raw IndexedDB wrapper: `blobs` store (image data) + `uploads` store (queue state) |
+| `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
+| `image-manager.ts` | Consolidated singleton: IDB layer, decode worker, bitmap cache, upload queue, `getBitmap()` |
 | `image-decode-worker.ts` | Web Worker: blob → `createImageBitmap()` off main thread |
-| `upload-queue.ts` | Persistent upload queue: IDB-backed, exponential backoff, idempotent |
+
+### Shared Package
+
+| File | Responsibility |
+|------|----------------|
+| `packages/shared/src/utils/image-validation.ts` | `validateImage()` (magic bytes: PNG/JPEG/WebP/GIF), `isSvg()` (XML/SVG prefix detection) |
 
 ### Worker (Server) Files
 
 | File | Responsibility |
 |------|----------------|
-| `worker/src/routes/assets.ts` | Hono router: `POST /upload` (validate + R2 put) + `GET /:key` (R2 read-through) |
-| `worker/src/lib/image-validation.ts` | Magic byte detection: PNG, JPEG, WebP, GIF |
-| `worker/src/index.ts` | Hono app: `/api/assets` → assets router, `*` → partyserver (Yjs sync) |
+| `worker/src/assets.ts` | `PUT /api/assets/:key` (raw binary upload, hash verification, R2 put) + `GET /api/assets/:key` (edge-cached R2 proxy) |
+| `worker/src/index.ts` | Hono app: CORS middleware on `/api/*`, asset routes, `partyserverMiddleware()` (Yjs sync) |
 
 ---
 
@@ -80,13 +88,15 @@ Four ways to create an image:
 | Trigger | Handler | Location |
 |---------|---------|----------|
 | Drag-drop files onto canvas | `CanvasRuntime.handleDrop()` | `canvas/CanvasRuntime.ts` |
-| Clipboard paste (Cmd+V) | `pasteFromClipboard()` → `pasteImage()` | `lib/clipboard/clipboard-actions.ts` |
+| Clipboard paste (Cmd+V) | DOM `paste` event → `pasteImage()` or `pasteFromClipboard()` | `canvas/keyboard-manager.ts` |
 | Keyboard shortcut `i` | `openImageFilePicker()` | `canvas/keyboard-manager.ts` |
 | Toolbar Image button | `openImageFilePicker()` | `components/ToolPanel.tsx` |
 
 All entry points converge to `createImageFromBlob(blob, worldX, worldY, opts?)`.
 
-**Important:** Image is NOT a persistent tool (no `ImageTool` class). The `i` key and toolbar button open a file picker as a one-shot action. The `'image'` string in `activeTool` is only used for toolbar button state and inspector visibility gating.
+**Important:** Image is NOT a persistent tool (no `ImageTool` class). The `i` key and toolbar button open a file picker as a one-shot action.
+
+**Paste architecture:** Cmd+V is NOT handled in keydown. Instead, a DOM `paste` event listener checks `clipboardData.files` for OS file copies (which `navigator.clipboard.read()` can't access), then falls back to `pasteFromClipboard()` for all other paste types (internal, external HTML/text, browser image copy).
 
 ---
 
@@ -95,7 +105,8 @@ All entry points converge to `createImageFromBlob(blob, worldX, worldY, opts?)`.
 ### 1. Ingest (`image-manager.ts: ingest`)
 
 ```
-Blob → ArrayBuffer → SHA-256 hash → assetId (hex string)
+Blob → ArrayBuffer → validateImage(bytes) → fail-fast if unsupported
+  → SHA-256 hash → assetId (hex string)
   → Dedup check: memory cache hit? Return immediately
   → putBlob(assetId, blob) → IndexedDB (idempotent)
   → decodeBlob(blob) → Worker → ImageBitmap
@@ -106,26 +117,27 @@ Blob → ArrayBuffer → SHA-256 hash → assetId (hex string)
 ### 2. Y.Doc Mutation (`image-actions.ts: createImageFromBlob`)
 
 ```
+SVG? → rasterizeSvg(blob) → PNG blob (parse viewBox/dimensions, draw to canvas, export PNG)
 ingest() result → compute frame (400wu wide, preserve aspect ratio)
   → getActiveRoomDoc().mutate() → Y.Map with all fields
   → setActiveTool('select') + setSelection([objectId])
   → enqueue(assetId) → upload queue
 ```
 
-### 3. Upload (`upload-queue.ts`)
+### 3. Upload (`image-manager.ts: upload queue`)
 
 ```
 enqueue(assetId) → putUploadEntry(assetId, { status: 'pending' })
   → processQueue() → one-at-a-time drain
-  → getBlob(assetId) from IDB → FormData → POST /api/assets/upload
-  → 201 Created or 409 Already Exists → removeUploadEntry()
-  → On failure: exponential backoff (1s, 2s, 4s, 8s, 16s), max 5 retries
-  → window.online event → processQueue() (resume after disconnect)
+  → getBlob(assetId) from IDB → PUT /api/assets/<assetId> (raw binary body)
+  → 200 Already Exists or 201 Created → removeUploadEntry()
+  → On failure: exponential backoff (1s base, 60s cap), no max retries (offline-first)
+  → On reconnect (online event): resetBackoff flag → immediate retry of failed uploads
+  → startUploadQueue(): registers window.online listener + 30s safety interval + immediate drain
+  → Cleanup function returned for CanvasRuntime.stop() teardown
 ```
 
 ### 4. Remote Load (`image-manager.ts: requestLoad / loadPipeline`)
-
-When a peer's image object arrives via Yjs sync:
 
 ```
 room-doc-manager observer → requestImageLoad(assetId)
@@ -138,28 +150,40 @@ room-doc-manager observer → requestImageLoad(assetId)
 
 ### 5. Room Hydration (`room-doc-manager.ts`)
 
-On full rebuild (`hydrateObjectsFromY`), collects all `assetId`s from image objects and calls `prefetchBatch(assetIds)` — triggers parallel `requestLoad()` for each.
+On full rebuild (`hydrateObjectsFromY`), collects all `assetId`s from image objects and calls `prefetchBatch(assetIds)`.
+
+### 6. Internal Copy/Paste (`clipboard-actions.ts`)
+
+After `pasteInternal()` Y.Doc mutation, image objects trigger `requestLoad()` + `enqueue()` to ensure bitmap is loaded and asset is uploaded (both idempotent).
 
 ---
 
 ## Memory Management
 
-### ImageBitmap Cache (`image-manager.ts`)
+### Bitmap Cache (`image-manager.ts`)
 
 - `assets: Map<assetId, AssetEntry>` — in-memory bitmap cache
 - `getBitmap(assetId)` — synchronous, returns `ImageBitmap | null` (render-path fast path)
-- `evictDistant(visibleAssetIds: Set<string>)` — closes bitmaps not in viewport, sets status back to `'pending'` for re-decode from IDB
+- `evictDistant(visibleAssetIds)` — closes bitmaps outside padded viewport, sets status to `'pending'`
+- `ensureLoaded(assetIds)` — triggers IDB→decode for `'pending'` entries re-entering viewport
 - `clear()` — room teardown: close all bitmaps, clear all maps
 
-### Decode Worker Pool
+### Viewport-Driven Eviction (`RenderLoop.ts`)
 
-- Single `Worker` instance, lazily created
+Runs every ~30 frames (~0.5s at 60fps) in `tick()` after the translucency check:
+1. Expand visible bounds by 1× viewport on each side (3×3 = 9 viewports padded region)
+2. Query spatial index → collect `assetId` set for nearby images
+3. `evictDistant(visibleAssetIds)` — close bitmaps more than 1 screen away
+4. `ensureLoaded(visibleAssetIds)` — re-decode evicted images that scrolled back in
+
+### Decode Worker
+
+- Single `Worker` instance, lazily created, never terminated (stays warm)
 - Message-based request/response with string IDs
 - `createImageBitmap()` runs off main thread
 - Bitmap transferred via `Transferable[]` (zero-copy to main thread)
-- `pendingDecodes: Map<id, { resolve, reject }>` for promise management
 
-### IndexedDB (`asset-cache.ts`)
+### IndexedDB (`image-manager.ts` — internal)
 
 Database: `avlo-assets`, version 1. Two object stores:
 
@@ -168,20 +192,13 @@ Database: `avlo-assets`, version 1. Two object stores:
 | `blobs` | assetId (SHA-256 hex) | `{ blob, mimeType, size, storedAt }` | Offline blob cache |
 | `uploads` | assetId | `{ status, retries, lastAttempt }` | Upload queue persistence |
 
-Global across rooms (content-addressed dedup). Raw IDB wrapper — no ORM.
+Global across rooms (content-addressed dedup).
 
 ---
 
 ## Rendering
 
 ### Base Canvas (`renderer/layers/objects.ts`)
-
-```typescript
-// In drawObject() switch:
-case 'image':
-  drawImage(ctx, handle);
-  break;
-```
 
 `drawImage()`:
 - Reads `getFrame(handle.y)` and `getAssetId(handle.y)`
@@ -190,73 +207,74 @@ case 'image':
 - Bitmap not ready → gray placeholder rect (`#f0f0f0` fill, `#d1d5db` stroke)
 - Respects `getOpacity(handle.y)` via `ctx.globalAlpha`
 
-### Transform Preview
-
-`drawImageWithTransform()` — applies scale transform to frame, draws bitmap at transformed coordinates. Used during SelectTool scale gestures.
-
-Mixed-corner special case: uniform scale via `applyUniformScaleToFrame()` (same as shapes). Other handles: non-uniform via `drawImageWithTransform()`.
-
 ### Object Cache (`renderer/object-cache.ts`)
 
-Images return an empty `new Path2D()` — they don't use the geometry cache. All rendering is via `ctx.drawImage()`.
+Images return an empty `new Path2D()` — they don't use the geometry cache.
 
 ---
 
 ## Hit Testing & Selection
 
-### Point Hit Test (`lib/geometry/hit-testing.ts: testObjectHit`)
-
-```typescript
-case 'image': {
-  const frame = getFrame(y);
-  // Simple rect containment — images are always filled
-  if (worldX >= x && worldX <= x + w && worldY >= yPos && worldY <= yPos + h) {
-    return { id, kind: 'image', distance: 0, insideInterior: true, area: w * h, isFilled: true };
-  }
-}
-```
-
-Images are always treated as opaque/filled for hit testing (like code blocks). No edge-only hit testing.
-
-### Marquee Intersection (`objectIntersectsRect`)
-
-```typescript
-case 'image': {
-  const frame = getFrame(y);
-  return rectsIntersect(frameTupleToWorldBounds(frame), rect);
-}
-```
-
-### Eraser (`lib/tools/EraserTool.ts`)
-
-Circle-rect intersection against frame. Images are always filled, so interior hits count.
-
-### Selection Kind (`stores/selection-store.ts`)
-
-`SelectionKind` includes `'imagesOnly'`. `selectionKind` computed in `computeSelectionComposition()` (`selection-utils.ts`).
-
-`KindCounts` has `images: number` field. Mixed selection filter supports `'images'` kind.
-
-### Selection Styles
-
-`computeStyles()` returns `EMPTY_STYLES` for `imagesOnly` — no style controls in context menu. The `imagesOnly` context menu bar shows only the common actions (delete) + overflow button.
-
-### Connector Topology
-
-Images are included in connector topology computation (`selection-store.ts: computeConnectorTopology`). Connectors can snap to image frames just like shapes.
+- **Point hit test:** Simple rect containment — images are always filled/opaque
+- **Marquee:** Rect intersection against frame
+- **Eraser:** Circle-rect intersection, interior hits count
+- **Selection kind:** `'imagesOnly'` supported. `computeStyles()` returns `EMPTY_STYLES` for images
+- **Connector topology:** Images included — connectors can snap to image frames
 
 ---
 
-## BBox Computation (`packages/shared/src/utils/bbox.ts`)
+## Worker API
+
+### Hono + PartyServer Architecture (`worker/src/index.ts`)
 
 ```typescript
-case 'image': {
-  const frame = getFrame(yMap) ?? [0, 0, 0, 0];
-  return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
-}
+const app = new Hono<{ Bindings: Env }>();
+app.use('/api/*', cors({ origin: ..., allowMethods: ['GET', 'PUT', 'OPTIONS'] }));
+app.put('/api/assets/:key', handleUpload);
+app.get('/api/assets/:key', handleGetAsset);
+app.use('*', partyserverMiddleware());
 ```
 
-No stroke padding (images have no border stroke).
+CORS middleware on `/api/*` allows `localhost:*` and `avlo.io`. Uses `hono-party` `partyserverMiddleware()` for Yjs WebSocket sync.
+
+### Upload Route (`PUT /api/assets/:key`)
+
+- Raw binary body (no FormData) — key in URL path
+- Origin validation (403 if missing/mismatch)
+- R2 dedup check (HEAD) → 200 if exists (avoids reading body)
+- 10 MB size limit
+- Magic byte validation via shared `validateImage()` (PNG, JPEG, WebP, GIF)
+- SHA-256 hash verification: recomputes hash from body, must match URL key
+- R2.put with `httpMetadata.contentType` from magic bytes
+- Returns 201 on success
+
+### Fetch Route (`GET /api/assets/:key`)
+
+Edge-cached R2 proxy:
+1. `caches.default.match()` → return cached if hit
+2. `R2.get(key, { range: headers, onlyIf: headers })` — R2 parses Range/If-None-Match internally
+3. `object.writeHttpMetadata(headers)` — Content-Type from stored metadata
+4. Response headers: `Cache-Control: immutable`, CSP, `X-Content-Type-Options`, `ETag`
+5. Body tee + `waitUntil(cache.put())` for edge cache population on 200
+6. 206 for range, 304 for conditional, 404 for missing
+
+### R2 Buckets (`wrangler.toml`)
+
+| Binding | Bucket | Purpose |
+|---------|--------|---------|
+| `DOCS` | `avlo-docs` | Y.Doc V2 snapshots (rooms) |
+| `ASSETS` | `avlo-assets` | Image blobs (content-addressed) |
+
+---
+
+## CanvasRuntime Integration
+
+| Hook | Location | What |
+|------|----------|------|
+| `setOnBitmapReady(cb)` | `start()` | Registers `renderLoop.invalidateAll()` on bitmap decode complete |
+| `startUploadQueue()` | `start()` | Returns cleanup fn, drains prior-session uploads, registers online listener |
+| `clearImageManager()` | `stop()` | Room teardown: close bitmaps, clear caches |
+| `handleDrop(e)` | Drop event | Filter `image/*` + `.svg` files → `createImageFromBlob()` per file |
 
 ---
 
@@ -268,138 +286,23 @@ getNaturalDimensions(y) → [number, number] | null
 getImageProps(y) → ImageProps | null    // { assetId, frame, naturalWidth, naturalHeight, mimeType }
 ```
 
-Bulk accessor `getImageProps()` is the preferred read path for rendering.
-
----
-
-## Worker API
-
-### Hono + PartyServer Architecture (`worker/src/index.ts`)
-
-```typescript
-const app = new Hono<{ Bindings: Env }>();
-app.route('/api/assets', assets);    // Image asset routes
-app.all('*', routePartykitRequest);  // Everything else → PartyServer (Yjs sync)
-```
-
-Uses `hono-party` pattern: Hono handles HTTP routes, PartyServer handles WebSocket upgrade for Yjs. Single worker entry point.
-
-### Upload Route (`POST /api/assets/upload`)
-
-```
-FormData { file: File } → validateImage(magic bytes)
-  → SHA-256 content-addressed key
-  → R2 ASSETS.head(key) dedup check → 409 if exists
-  → R2 ASSETS.put(key, buffer, { contentType })
-  → 201 { key, status: 'created' }
-```
-
-### Fetch Route (`GET /api/assets/:key`)
-
-R2 read-through with `Cache-Control: public, max-age=31536000, immutable`. Development fallback — production would use CDN domain pointing at R2.
-
-### Image Validation (`worker/src/lib/image-validation.ts`)
-
-Magic byte detection only (no decode). Supported: PNG (89504E47), JPEG (FFD8FF), WebP (RIFF...WEBP), GIF (GIF8).
-
-### R2 Buckets (`wrangler.toml`)
-
-| Binding | Bucket | Purpose |
-|---------|--------|---------|
-| `DOCS` | `avlo-docs` | Y.Doc V2 snapshots (rooms) |
-| `ASSETS` | `avlo-assets` | Image blobs (content-addressed) |
-
----
-
-## Room Durable Object (`worker/src/parties/room.ts`)
-
-`YServer<Env>` subclass with R2 persistence:
-
-- `onLoad()` — hydrate from `rooms/{roomId}/head.v2.bin` (V2 encoded)
-- `onSave()` — debounced (5s wait, 15s max) V2 snapshot to R2
-- `onClose()` — hard flush when last connection leaves
-- `static options = { hibernate: true }` — hibernation enabled
-- `static callbackOptions = { debounceWait: 5000, debounceMaxWait: 15000 }`
-
----
-
-## CanvasRuntime Integration
-
-| Hook | Location | What |
-|------|----------|------|
-| `setOnBitmapReady(cb)` | `start()` | Registers `renderLoop.invalidateAll()` on bitmap decode complete |
-| `clearImageManager()` | `stop()` | Room teardown: close bitmaps, clear caches |
-| `handleDrop(e)` | Drop event | Filter `image/*` files → `createImageFromBlob()` per file |
-
-### InputManager (`canvas/InputManager.ts`)
-
-Registers `dragover` (preventDefault, `dropEffect: 'copy'`) and `drop` (delegates to `runtime.handleDrop(e)`) on the canvas element.
-
----
-
-## Clipboard Integration (`lib/clipboard/clipboard-actions.ts`)
-
-Image types are checked **first** in the paste handler, before HTML or text:
-
-```typescript
-for (const item of items) {
-  const imageType = item.types.find(t => t.startsWith('image/'));
-  if (imageType) {
-    const blob = await item.getType(imageType);
-    await pasteImage(blob);
-    return;
-  }
-  // ... HTML / text paste
-}
-```
-
-`pasteImage(blob)` creates image at `getPasteTarget()` (last cursor position or viewport center).
-
----
-
-## Context Menu (`components/context-menu/ContextMenu.tsx`)
-
-```typescript
-{effectiveKind === 'imagesOnly' && (
-  // No style controls — just common actions (delete) + overflow
-  <></>
-)}
-```
-
-Images have no style editing in the context menu yet. Only delete and overflow buttons.
-
 ---
 
 ## Known Issues & Missing Features
 
-This initial implementation has several known problems that need fixing:
-
-### Client-Side Issues
+### Client-Side
 - No aspect-ratio-locked resize (images should maintain aspect ratio by default)
 - No image-specific context menu controls (crop, replace, opacity slider)
 - Multiple images dropped/picked at same position stack on top of each other (no offset)
 - No loading state indicator beyond the gray placeholder rect
 - No error state UI (failed decode / failed upload)
-- `evictDistant()` is defined but never called — no viewport-based GPU memory management
-- Upload queue `configureUploadQueue()` is never called — `getUploadToken` stays null, `uploadUrl` stays default `/api/assets/upload`
 - `setAssetsBaseUrl()` is never called — CDN URL not configured for production
-- No image serialization in clipboard (copy/paste internal images loses the asset)
-- Image file picker `change` listener registered twice (line 67 and 83 in `image-actions.ts`)
 
-### Worker-Side Issues
+### Worker-Side
 - No authentication on upload endpoint (anyone can upload)
-- No file size limits (could upload arbitrarily large files)
 - No image dimension limits
-- Upload route doesn't set `Cache-Control` headers on the R2 put (only the GET route does)
-- No CORS headers configured for the asset routes
 
 ### SelectTool Integration
 - Image scale commit not fully implemented (needs frame update on pointer up)
 - No rotation support
 - No double-click behavior defined for images
-
-### Architecture Notes
-- Worker uses `hono-party` pattern as intended: Hono for HTTP routes, `routePartykitRequest` fallback for PartyServer WebSocket
-- `partyserver` (not `partykit`) is the package — it's the Cloudflare Workers-native fork
-- R2 ASSETS bucket is separate from DOCS bucket (correct separation of concerns)
-- Content-addressed storage means dedup is automatic across rooms

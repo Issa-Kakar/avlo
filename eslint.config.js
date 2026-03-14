@@ -43,6 +43,10 @@ export default [
       ...js.configs.recommended.rules,
       ...tsPlugin.configs.recommended.rules,
 
+      // TypeScript handles variable scoping better than ESLint's no-undef,
+      // which can't resolve ambient types (e.g. IDBTransactionMode, R2GetOptions)
+      'no-undef': 'off',
+
       // Keep these light for fast pre-commit
       '@typescript-eslint/no-unused-vars': [
         'error',

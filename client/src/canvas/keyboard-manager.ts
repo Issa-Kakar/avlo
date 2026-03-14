@@ -39,6 +39,7 @@ import {
   cutSelected,
   duplicateSelected,
   selectAll,
+  pasteImage,
 } from '@/lib/clipboard/clipboard-actions';
 import { zoomIn, zoomOut, animateZoomReset } from './animation/ZoomAnimator';
 import { startDirection, stopDirection, stopAll as stopArrowPan } from './arrow-key-pan';
@@ -57,12 +58,14 @@ export function isSpacebarPanMode(): boolean {
 export function attach(): void {
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup', onKeyUp);
+  document.addEventListener('paste', onPaste);
   window.addEventListener('blur', onBlur);
 }
 
 export function detach(): void {
   document.removeEventListener('keydown', onKeyDown);
   document.removeEventListener('keyup', onKeyUp);
+  document.removeEventListener('paste', onPaste);
   window.removeEventListener('blur', onBlur);
 }
 
@@ -147,10 +150,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       copySelected();
       return;
 
-    case 'v':
-      e.preventDefault();
-      pasteFromClipboard();
-      return;
+    // case 'v' handled by DOM paste listener (onPaste) for OS file paste support
 
     case 'x':
       e.preventDefault();
@@ -299,6 +299,36 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     textTool.startEditing(handle.id, [centerX, centerY]);
     return;
   }
+}
+
+// === DOM Paste (handles OS file paste + all clipboard paste) ===
+
+function onPaste(e: ClipboardEvent): void {
+  const target = e.target as HTMLElement;
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target.contentEditable === 'true'
+  ) {
+    return;
+  }
+  if (!hasActiveRoom()) return;
+
+  e.preventDefault();
+
+  // OS file copy → clipboardData.files
+  const files = e.clipboardData?.files;
+  if (files && files.length > 0) {
+    for (const file of Array.from(files)) {
+      if (file.type.startsWith('image/')) {
+        pasteImage(file);
+        return;
+      }
+    }
+  }
+
+  // All other paste paths (internal, external HTML/text, browser image copy)
+  pasteFromClipboard();
 }
 
 // === Key Up & Blur ===

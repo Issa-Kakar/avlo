@@ -35,6 +35,7 @@ import {
   type ClipboardPayload,
 } from './clipboard-serializer';
 import { createImageFromBlob } from '@/lib/image/image-actions';
+import { requestLoad, enqueue } from '@/lib/image/image-manager';
 
 // === Constants ===
 
@@ -227,6 +228,14 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
       objects.set(newId, yObj);
     }
   });
+
+  // Ensure image assets are loaded + enqueued for pasted image objects
+  for (const obj of payload.objects) {
+    if (obj.kind === 'image' && typeof obj.props.assetId === 'string') {
+      requestLoad(obj.props.assetId);
+      enqueue(obj.props.assetId);
+    }
+  }
 
   // Only switch tool + select when no gesture is active
   const newIds = payload.objects.map((obj) => idMap.get(obj.props.id as string)!);

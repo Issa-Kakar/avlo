@@ -49,6 +49,7 @@ import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll
 import {
   setOnBitmapReady,
   clear as clearImageManager,
+  startUploadQueue,
 } from '@/lib/image/image-manager';
 import { createImageFromBlob } from '@/lib/image/image-actions';
 
@@ -77,6 +78,7 @@ export class CanvasRuntime {
   private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
   private wheelTimestamps: number[] = [];
+  private uploadQueueCleanup: (() => void) | null = null;
 
   /**
    * Start the canvas runtime.
@@ -124,6 +126,9 @@ export class CanvasRuntime {
       // Full invalidate — bitmap decode is infrequent, and we don't track per-asset bounds here
       this.renderLoop?.invalidateAll();
     });
+
+    // 7b. Upload queue lifecycle (drains prior-session leftovers, listens for online)
+    this.uploadQueueCleanup = startUploadQueue();
 
     // 8. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
@@ -198,6 +203,8 @@ export class CanvasRuntime {
 
     // Clear object cache + image manager
     getObjectCacheInstance().clear();
+    this.uploadQueueCleanup?.();
+    this.uploadQueueCleanup = null;
     setOnBitmapReady(null);
     clearImageManager();
 
@@ -339,7 +346,9 @@ export class CanvasRuntime {
     e.preventDefault();
     if (!e.dataTransfer) return;
 
-    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+    const files = Array.from(e.dataTransfer.files).filter(
+      (f) => f.type.startsWith('image/') || f.name.endsWith('.svg'),
+    );
     if (files.length === 0) return;
 
     const world = screenToWorld(e.clientX, e.clientY);

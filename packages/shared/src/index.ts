@@ -37,5 +37,8 @@ export type { IndexEntry } from './spatial';
 // Export bbox utilities
 export { computeBBoxFor, computeConnectorBBoxFromPoints, bboxEquals, bboxToBounds } from './utils/bbox';
 
+// Export image validation
+export { validateImage, isSvg } from './utils/image-validation';
+
 // Export object accessors
 export * from './accessors/object-accessors';
