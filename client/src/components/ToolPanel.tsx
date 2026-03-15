@@ -118,7 +118,7 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
     <div className="tool-dock-wrap">
       {/* Main toolbar */}
       <div className="tool-dock">
-        {/* Tools in order: Select, Pen, Highlighter, Eraser, Text, Arrow, Rectangle, Diamond, Ellipse, Code, Image, Pan */}
+        {/* Navigation */}
         <ToolButton
           tool="select"
           isActive={activeTool === 'select'}
@@ -128,6 +128,18 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           <IconSelect className="icon" />
         </ToolButton>
 
+        <ToolButton
+          tool="pan"
+          isActive={activeTool === 'pan'}
+          onClick={() => setActiveTool('pan')}
+          tooltip="Pan (Space)"
+        >
+          <IconPan className="icon" />
+        </ToolButton>
+
+        <div className="tool-divider" />
+
+        {/* Drawing — no divider, matches Mural compact style */}
         <ToolButton
           tool="pen"
           isActive={activeTool === 'pen'}
@@ -173,9 +185,6 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           <IconArrow className="icon" />
         </ToolButton>
 
-        <div className="tool-divider" />
-
-        {/* Shape tools - CRITICAL: Set both activeTool='shape' AND the variant */}
         <ToolButton
           tool="rectangle"
           isActive={activeTool === 'shape' && shapeVariant === 'rectangle'}
@@ -221,8 +230,6 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           <IconCode className="icon" />
         </ToolButton>
 
-        <div className="tool-divider" />
-
         <ToolButton
           tool="image"
           isActive={activeTool === 'image'}
@@ -233,15 +240,6 @@ export function ToolPanel({ onToast }: ToolPanelProps) {
           tooltip="Image (I)"
         >
           <IconImage className="icon" />
-        </ToolButton>
-
-        <ToolButton
-          tool="pan"
-          isActive={activeTool === 'pan'}
-          onClick={() => setActiveTool('pan')}
-          tooltip="Pan (Space)"
-        >
-          <IconPan className="icon" />
         </ToolButton>
 
         {/* Inspector with new color system - moved inside toolbar */}

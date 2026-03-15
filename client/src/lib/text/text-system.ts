@@ -163,7 +163,6 @@ function getMeasureContext(): CanvasRenderingContext2D {
     canvas.height = 1;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to create measurement context');
-    ctx.textRendering = 'optimizeSpeed';
     measureCtx = ctx;
   }
   return measureCtx;
@@ -1007,7 +1006,7 @@ export function renderTextLayout(
 ): void {
   ctx.save();
   ctx.textBaseline = 'alphabetic';
-  ctx.textRendering = 'optimizeSpeed';
+
   const { boxWidth, fontSize, fontFamily, lineHeight } = layout;
   const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
   const isFixed = layout.widthMode === 'fixed';

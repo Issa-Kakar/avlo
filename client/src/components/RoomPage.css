@@ -83,13 +83,15 @@
   --ring: #1D4ED8; /* Focus ring - matches accent */
   --ring-offset: 2px;
 
-  /* Component metrics - UPDATED FOR 48px RAIL */
-  --dock-h: 48px; /* New baseline height */
-  --btn: 40px; /* Button hit target - increased for 24px icons */
-  --btn-radius: 10px; /* Slightly larger radius */
-  --dock-radius: 12px; /* Rounder for taller rail */
-  --icon: 24px; /* Icon render size - crisp 24px */
-  --divider-h: 18px; /* Divider height */
+  /* Component metrics — MURAL-STYLE COMPACT */
+  --dock-h: 40px;
+  --btn: 32px;
+  --btn-radius: 8px;
+  --dock-radius: 12px;
+  --icon: 20px;
+  --divider-h: 16px;
+  --dock-gap: 1px;
+  --dock-pad: 3px;
 
   /* Inspector - kept tiny */
   --swatch: 18px; /* Increased from 14px to match pill height better */
@@ -222,11 +224,7 @@
 .icon {
   width: 20px;
   height: 20px;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  fill: none;
+  fill: currentColor;
 }
 
 .icon-sm {
@@ -314,11 +312,7 @@
 .icon-16 {
   width: 16px;
   height: 16px;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  fill: none;
+  fill: currentColor;
 }
 
 .micro-invite {

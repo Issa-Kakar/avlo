@@ -8,8 +8,8 @@ import type { WorldBounds } from '@avlo/shared';
 const SETTLE_MS = 150;
 
 // Exclusion zone padding — keeps menu clear of toolbar (top) and zoom controls (bottom-left)
-const FLIP_PADDING = { top: 72, bottom: 76, left: 12, right: 12 };
-const SHIFT_PADDING = { top: 72, bottom: 12, left: 12, right: 12 };
+const FLIP_PADDING = { top: 66, bottom: 76, left: 12, right: 12 };
+const SHIFT_PADDING = { top: 66, bottom: 12, left: 12, right: 12 };
 
 /**
  * ContextMenuController — floating-ui powered positioning for the context menu.
