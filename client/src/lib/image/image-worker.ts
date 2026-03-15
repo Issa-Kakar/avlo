@@ -2,28 +2,17 @@
  * Image Worker — handles ALL heavy image operations off the main thread.
  *
  * Responsibilities:
- * - IDB management (avlo-assets: blobs + uploads stores)
+ * - Cache API writes (local ingest blobs + generated mip variants)
  * - Magic byte validation + SHA-256 hashing
- * - CDN fetch (blob download when not in IDB)
- * - Server upload (PUT /api/assets/:key, sequential queue with exponential backoff)
  * - Bitmap decode (createImageBitmap) with mip variant generation
  * - Mip blob pre-generation via OffscreenCanvas
+ * - Server upload (PUT /api/assets/:key, sequential queue with exponential backoff)
+ * - IDB for upload queue metadata only
  *
- * Main thread never touches IDB, raw blobs, CDN fetches, hashing, or upload HTTP calls.
- * Only ImageBitmaps cross back via Transferable (zero-copy).
- *
- * State machine:
- *   Per-asset fetch: (none) → fetchPromises entry → CDN fetch → IDB store → (done, entry removed)
- *   Per-asset decode: ensureInIdb → read IDB → createImageBitmap → transfer bitmap
- *   Upload queue: IDB uploads store is source of truth. Existence = needs upload.
- *
- * Error handling:
- *   - CDN 404/5xx: throws → main thread uses time-based cooldown before retry
- *   - Corrupt blob (createImageBitmap fails): throws → main thread marks as errored
- *   - IDB errors: propagate → main thread handles via cooldown retry
- *   - Mip generation failures: non-fatal (stored without mips, decodes work at full res)
- *   - Upload 4xx: permanent failure, removed from queue (no retry)
- *   - Upload 5xx / network error: exponential backoff (1s base, 60s cap, no max retries)
+ * Reads via Cache API first, then fetch() as fallback (network or SW-intercepted).
+ * This makes the worker self-sufficient regardless of SW presence (critical for dev mode).
+ * Writes to Cache API for local ingest blobs, generated mip variants, and network responses.
+ * Only ImageBitmaps cross back to main thread via Transferable (zero-copy).
  */
 
 import { validateImage } from '@avlo/shared';
@@ -36,7 +25,6 @@ import type { FrameTuple, WorldBounds } from '@avlo/shared';
 export type WorkerInbound =
   | { type: 'ingest'; id: string; blob: Blob }
   | { type: 'hydrate'; assets: { assetId: string; frame: FrameTuple; level: 0 | 1 | 2 }[]; viewport: WorldBounds }
-  | { type: 'ensure'; assetId: string }
   | { type: 'decode'; assetId: string; level: 0 | 1 | 2 }
   | { type: 'enqueue-upload'; assetId: string }
   | { type: 'delete-asset'; assetId: string }
@@ -50,22 +38,12 @@ export type WorkerOutbound =
   | { type: 'error'; id?: string; assetId?: string; message: string };
 
 // ============================================================
-// IDB Layer
+// IDB Layer (upload queue only)
 // ============================================================
 
 const DB_NAME = 'avlo-assets';
-const DB_VERSION = 1;
-const BLOBS_STORE = 'blobs';
+const DB_VERSION = 2;
 const UPLOADS_STORE = 'uploads';
-
-interface BlobEntry {
-  blob: Blob;
-  half?: Blob;
-  quarter?: Blob;
-  w: number;
-  h: number;
-  mime: string;
-}
 
 interface UploadEntry {
   retries: number;
@@ -80,7 +58,6 @@ function openDB(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(BLOBS_STORE)) db.createObjectStore(BLOBS_STORE);
       if (!db.objectStoreNames.contains(UPLOADS_STORE)) db.createObjectStore(UPLOADS_STORE);
     };
     req.onsuccess = () => resolve(req.result);
@@ -106,41 +83,6 @@ function idbOp<T>(fn: (store: IDBObjectStore) => IDBRequest): (store: IDBObjectS
     });
 }
 
-/**
- * Read blob entry, normalizing old format ({ blob, mimeType, size, storedAt })
- * to new format ({ blob, half?, quarter?, w, h, mime }).
- * w === 0 signals old entry needing dimension backfill.
- */
-async function getBlobEntry(assetId: string): Promise<BlobEntry | null> {
-  const store = await tx(BLOBS_STORE, 'readonly');
-  const raw = await idbOp<Record<string, unknown> | undefined>((s) => s.get(assetId))(store);
-  if (!raw || !(raw.blob instanceof Blob)) return null;
-
-  return {
-    blob: raw.blob,
-    half: raw.half instanceof Blob ? raw.half : undefined,
-    quarter: raw.quarter instanceof Blob ? raw.quarter : undefined,
-    w: typeof raw.w === 'number' ? raw.w : 0,
-    h: typeof raw.h === 'number' ? raw.h : 0,
-    mime:
-      typeof raw.mime === 'string'
-        ? raw.mime
-        : typeof raw.mimeType === 'string'
-          ? raw.mimeType
-          : 'image/png',
-  };
-}
-
-async function putBlobEntry(assetId: string, entry: BlobEntry): Promise<void> {
-  const store = await tx(BLOBS_STORE, 'readwrite');
-  await idbOp<void>((s) => s.put(entry, assetId))(store);
-}
-
-async function deleteBlobEntry(assetId: string): Promise<void> {
-  const store = await tx(BLOBS_STORE, 'readwrite');
-  await idbOp<void>((s) => s.delete(assetId))(store);
-}
-
 async function getUploadEntry(assetId: string): Promise<UploadEntry | null> {
   const store = await tx(UPLOADS_STORE, 'readonly');
   const entry = await idbOp<UploadEntry | undefined>((s) => s.get(assetId))(store);
@@ -160,6 +102,61 @@ async function removeUploadEntry(assetId: string): Promise<void> {
 async function getAllPendingUploadIds(): Promise<string[]> {
   const store = await tx(UPLOADS_STORE, 'readonly');
   return idbOp<string[]>((s) => s.getAllKeys() as IDBRequest<string[]>)(store);
+}
+
+// ============================================================
+// Cache API Helpers
+// ============================================================
+
+const ASSET_CACHE = 'avlo-assets';
+
+function assetUrl(id: string): string {
+  return `/api/assets/${id}`;
+}
+
+function mipUrl(id: string, level: 1 | 2): string {
+  return `/api/assets/${id}?mip=${level === 1 ? 'half' : 'quarter'}`;
+}
+
+async function cacheBlob(url: string, blob: Blob): Promise<void> {
+  const cache = await caches.open(ASSET_CACHE);
+  await cache.put(url, new Response(blob, {
+    headers: { 'Content-Type': blob.type || 'application/octet-stream' },
+  }));
+}
+
+async function deleteCachedAsset(id: string): Promise<void> {
+  const cache = await caches.open(ASSET_CACHE);
+  await Promise.all([
+    cache.delete(assetUrl(id)),
+    cache.delete(mipUrl(id, 1)),
+    cache.delete(mipUrl(id, 2)),
+  ]);
+}
+
+/**
+ * Read an asset blob: cache-first, then network.
+ * Works with or without Service Worker — checks Cache API directly first.
+ * Caches network responses so future reads are local (essential in dev mode without SW).
+ */
+async function readAssetBlob(assetId: string): Promise<Blob | null> {
+  const url = assetUrl(assetId);
+  const cache = await caches.open(ASSET_CACHE);
+
+  // Direct cache read (works regardless of SW presence)
+  const cached = await cache.match(url);
+  if (cached) return cached.blob();
+
+  // Fall back to network (SW intercepts in prod; direct to server in dev)
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    // Cache the network response for future reads
+    cache.put(url, resp.clone());
+    return resp.blob();
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================
@@ -200,7 +197,7 @@ function frameBoundsIntersect(frame: FrameTuple, vp: WorldBounds): boolean {
 /**
  * Generate half and quarter resolution blobs from a decoded bitmap.
  * Non-fatal: returns empty object on failure (caller stores without mips).
- * Uses 2-step downscale (full → half canvas → quarter) for better quality.
+ * Uses 2-step downscale (full -> half canvas -> quarter) for better quality.
  */
 async function generateMips(
   fullBitmap: ImageBitmap,
@@ -240,90 +237,57 @@ async function generateMips(
   return result;
 }
 
-function pickBlobForLevel(entry: BlobEntry, level: 0 | 1 | 2): Blob {
-  if (level === 0) return entry.blob;
-  if (level === 1) return entry.half ?? entry.blob;
-  return entry.quarter ?? entry.half ?? entry.blob;
-}
-
 // ============================================================
-// Fetch Dedup + Ensure
+// Ensure Fetched + Mips
 // ============================================================
 
 /**
- * In-flight CDN fetch promises, keyed by assetId.
- * Coalesces concurrent ensure/decode requests for the same asset into one fetch.
- * Entries are deleted in the finally block after completion (success or failure).
+ * In-flight ensure promises, keyed by assetId.
+ * Coalesces concurrent decode requests for the same asset into one fetch + mip gen.
  */
-const fetchPromises = new Map<string, Promise<void>>();
+const ensurePromises = new Map<string, Promise<void>>();
 
-async function fetchAndStore(assetId: string): Promise<void> {
-  const resp = await fetch(`/api/assets/${assetId}`);
-  if (!resp.ok) throw new Error(`CDN fetch ${resp.status}`);
-  const blob = await resp.blob();
-
-  // Validate magic bytes
-  const bytes = new Uint8Array(await blob.slice(0, 12).arrayBuffer());
-  const { valid, mimeType: detectedMime } = validateImage(bytes);
-  const mime = valid ? detectedMime : blob.type || 'image/png';
-
-  // Decode once for dimensions + mip source
-  const fullBitmap = await createImageBitmap(blob);
-  const w = fullBitmap.width;
-  const h = fullBitmap.height;
-
-  // Generate mips (non-fatal)
-  const mips = await generateMips(fullBitmap, mime);
-  fullBitmap.close();
-
-  await putBlobEntry(assetId, { blob, ...mips, w, h, mime });
-}
+/** Tracks assets where mip generation was attempted this session (avoids re-checking small images). */
+const mipsAttempted = new Set<string>();
 
 /**
- * Ensure blob is in IDB (fetch from CDN if missing). Coalesces concurrent calls.
- *
- * Handles old IDB format migration (entries without w/h → backfill dimensions + mips).
- * Handles corrupt blobs (failed createImageBitmap → delete + re-fetch from CDN).
- *
- * Race condition safety: re-checks fetchPromises after async IDB read to prevent
- * duplicate fetches when multiple callers pass the initial check concurrently.
+ * Ensure full blob is available and mips are generated.
+ * Reads cache-first via readAssetBlob (works with or without SW).
  */
-async function ensureInIdb(assetId: string): Promise<void> {
-  // Fast path: already fetching
-  let inflight = fetchPromises.get(assetId);
+async function ensureFetched(assetId: string): Promise<void> {
+  if (mipsAttempted.has(assetId)) return;
+
+  let inflight = ensurePromises.get(assetId);
   if (inflight) return inflight;
 
-  // Check IDB
-  const entry = await getBlobEntry(assetId);
-  if (entry) {
-    if (entry.w > 0) return; // Valid entry with dimensions
-
-    // Old format: backfill dimensions + mips
-    try {
-      const bitmap = await createImageBitmap(entry.blob);
-      const w = bitmap.width;
-      const h = bitmap.height;
-      const mips = await generateMips(bitmap, entry.mime);
-      bitmap.close();
-      await putBlobEntry(assetId, { ...entry, w, h, ...mips });
+  const promise = (async () => {
+    // Check if mips already exist in cache
+    const cache = await caches.open(ASSET_CACHE);
+    if (await cache.match(mipUrl(assetId, 1))) {
+      mipsAttempted.add(assetId);
       return;
-    } catch {
-      // Corrupt blob in IDB — delete and re-fetch from CDN
-      console.warn('[image-worker] corrupt blob in IDB, will re-fetch:', assetId);
-      await deleteBlobEntry(assetId).catch(() => {});
     }
-  }
 
-  // Re-check after awaits — another caller may have started a fetch while we were reading IDB
-  inflight = fetchPromises.get(assetId);
-  if (inflight) return inflight;
+    // Read full blob (cache-first, then network)
+    const blob = await readAssetBlob(assetId);
+    if (!blob) throw new Error('asset not available');
 
-  const promise = fetchAndStore(assetId);
-  fetchPromises.set(assetId, promise);
+    // Generate mips
+    const bitmap = await createImageBitmap(blob);
+    const mime = blob.type || 'image/png';
+    const mips = await generateMips(bitmap, mime);
+    bitmap.close();
+
+    if (mips.half) await cacheBlob(mipUrl(assetId, 1), mips.half);
+    if (mips.quarter) await cacheBlob(mipUrl(assetId, 2), mips.quarter);
+    mipsAttempted.add(assetId);
+  })();
+
+  ensurePromises.set(assetId, promise);
   try {
     await promise;
   } finally {
-    fetchPromises.delete(assetId);
+    ensurePromises.delete(assetId);
   }
 }
 
@@ -331,12 +295,55 @@ async function ensureInIdb(assetId: string): Promise<void> {
 // Decode
 // ============================================================
 
+/**
+ * Decode a blob at the requested mip level and send bitmap to main thread.
+ * Full-res: readAssetBlob (cache-first). Mips: direct cache read (worker-generated).
+ */
 async function decodeAndSend(assetId: string, level: 0 | 1 | 2): Promise<void> {
-  const entry = await getBlobEntry(assetId);
-  if (!entry) throw new Error('no blob in IDB after ensure');
-  const blob = pickBlobForLevel(entry, level);
+  let blob: Blob | undefined;
+
+  if (level === 0) {
+    const result = await readAssetBlob(assetId);
+    if (!result) throw new Error('asset not available');
+    blob = result;
+  } else {
+    // Mip: direct cache read (worker-generated data, never on network)
+    const cache = await caches.open(ASSET_CACHE);
+    const mipResp = await cache.match(mipUrl(assetId, level));
+    if (mipResp) {
+      blob = await mipResp.blob();
+    } else if (level === 2) {
+      // Quarter not generated — try half
+      const halfResp = await cache.match(mipUrl(assetId, 1));
+      if (halfResp) blob = await halfResp.blob();
+    }
+
+    if (!blob) {
+      // No mips at all — fall back to full res
+      const result = await readAssetBlob(assetId);
+      if (!result) throw new Error('asset not available');
+      blob = result;
+    }
+  }
+
   const bitmap = await createImageBitmap(blob);
   post({ type: 'bitmap', assetId, bitmap, level }, [bitmap]);
+}
+
+// ============================================================
+// Concurrency Helper
+// ============================================================
+
+async function runConcurrent<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let i = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (i < items.length) {
+        const idx = i++;
+        await fn(items[idx]);
+      }
+    }),
+  );
 }
 
 // ============================================================
@@ -351,15 +358,16 @@ let uploading = false;
 let resetBackoff = false;
 
 async function uploadOne(assetId: string, entry: UploadEntry): Promise<void> {
-  const blobEntry = await getBlobEntry(assetId);
-  if (!blobEntry) {
-    // Blob was deleted (e.g., asset removed from board) — drop upload entry
+  // Read blob from cache (or network fallback)
+  const blob = await readAssetBlob(assetId);
+  if (!blob) {
+    // Blob not available anywhere — drop upload entry
     await removeUploadEntry(assetId);
     return;
   }
 
   try {
-    const resp = await fetch(`/api/assets/${assetId}`, { method: 'PUT', body: blobEntry.blob });
+    const resp = await fetch(assetUrl(assetId), { method: 'PUT', body: blob });
 
     if (resp.ok || resp.status === 409) {
       await removeUploadEntry(assetId);
@@ -436,30 +444,31 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
         const mime = detectedMime || blob.type || 'image/png';
         const assetId = await sha256Hex(buffer);
 
-        // Dedup: check IDB for existing complete entry
-        const existing = await getBlobEntry(assetId);
-        if (existing && existing.w > 0) {
-          const bitmap = await createImageBitmap(existing.blob);
+        // Dedup: check if already cached
+        const cache = await caches.open(ASSET_CACHE);
+        const existing = await cache.match(assetUrl(assetId));
+        if (existing) {
+          const cachedBlob = await existing.blob();
+          const bitmap = await createImageBitmap(cachedBlob);
           post(
-            { type: 'ingested', id, assetId, w: existing.w, h: existing.h, mime: existing.mime, bitmap, level: 0 },
+            { type: 'ingested', id, assetId, w: bitmap.width, h: bitmap.height, mime, bitmap, level: 0 },
             [bitmap],
           );
           return;
         }
 
-        // Decode for dimensions + mip generation
+        // New asset: decode + mip gen
         const ingestBlob = new Blob([buffer], { type: mime });
         const fullBitmap = await createImageBitmap(ingestBlob);
         const w = fullBitmap.width;
         const h = fullBitmap.height;
-
-        // Generate mips (non-fatal)
         const mips = await generateMips(fullBitmap, mime);
 
-        // Store in IDB
-        await putBlobEntry(assetId, { blob: ingestBlob, ...mips, w, h, mime });
+        // Cache: full blob + mips (worker writes, SW serves on future fetches)
+        await cacheBlob(assetUrl(assetId), ingestBlob);
+        if (mips.half) await cacheBlob(mipUrl(assetId, 1), mips.half);
+        if (mips.quarter) await cacheBlob(mipUrl(assetId, 2), mips.quarter);
 
-        // Transfer bitmap to main thread (fullBitmap is neutered after transfer)
         post({ type: 'ingested', id, assetId, w, h, mime, bitmap: fullBitmap, level: 0 }, [fullBitmap]);
       } catch (err) {
         errorMsg(err instanceof Error ? err.message : 'ingest failed', id);
@@ -469,31 +478,24 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
 
     case 'hydrate': {
       const { assets, viewport } = msg;
-      for (const { assetId, frame, level } of assets) {
-        const visible = frameBoundsIntersect(frame, viewport);
-        if (visible) {
-          // Ensure + decode visible assets
-          (async () => {
-            try {
-              await ensureInIdb(assetId);
-              await decodeAndSend(assetId, level);
-            } catch (err) {
-              errorMsg(err instanceof Error ? err.message : 'hydrate decode failed', undefined, assetId);
-            }
-          })();
-        } else {
-          // Just ensure non-visible assets are cached in IDB
-          ensureInIdb(assetId).catch((err) => {
-            errorMsg(err instanceof Error ? err.message : 'hydrate ensure failed', undefined, assetId);
-          });
-        }
-      }
-      break;
-    }
+      const visible = assets.filter((a) => frameBoundsIntersect(a.frame, viewport));
+      const offscreen = assets.filter((a) => !frameBoundsIntersect(a.frame, viewport));
 
-    case 'ensure': {
-      ensureInIdb(msg.assetId).catch((err) => {
-        errorMsg(err instanceof Error ? err.message : 'ensure failed', undefined, msg.assetId);
+      // Visible first: ensure + decode (6 concurrent)
+      runConcurrent(visible, 6, async ({ assetId, level }) => {
+        try {
+          await ensureFetched(assetId);
+          await decodeAndSend(assetId, level);
+        } catch (err) {
+          errorMsg(err instanceof Error ? err.message : 'hydrate failed', undefined, assetId);
+        }
+      });
+
+      // Offscreen: just ensure fetched (4 concurrent, fire-and-forget)
+      runConcurrent(offscreen, 4, async ({ assetId }) => {
+        ensureFetched(assetId).catch((err) =>
+          errorMsg(err instanceof Error ? err.message : 'hydrate ensure failed', undefined, assetId),
+        );
       });
       break;
     }
@@ -501,7 +503,7 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
     case 'decode': {
       (async () => {
         try {
-          await ensureInIdb(msg.assetId);
+          await ensureFetched(msg.assetId);
           await decodeAndSend(msg.assetId, msg.level);
         } catch (err) {
           errorMsg(err instanceof Error ? err.message : 'decode failed', undefined, msg.assetId);
@@ -523,7 +525,8 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
     }
 
     case 'delete-asset': {
-      await deleteBlobEntry(msg.assetId).catch(() => {});
+      mipsAttempted.delete(msg.assetId);
+      await deleteCachedAsset(msg.assetId).catch(() => {});
       await removeUploadEntry(msg.assetId).catch(() => {});
       break;
     }

@@ -35,7 +35,7 @@ import {
   type ClipboardPayload,
 } from './clipboard-serializer';
 import { createImageFromBlob } from '@/lib/image/image-actions';
-import { ensureAsset, enqueue } from '@/lib/image/image-manager';
+import { enqueue } from '@/lib/image/image-manager';
 
 // === Constants ===
 
@@ -229,10 +229,9 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
     }
   });
 
-  // Ensure image assets are cached in IDB + enqueued for upload (observer handles decode)
+  // Enqueue image assets for upload (viewport management handles decode)
   for (const obj of payload.objects) {
     if (obj.kind === 'image' && typeof obj.props.assetId === 'string') {
-      ensureAsset(obj.props.assetId);
       enqueue(obj.props.assetId);
     }
   }

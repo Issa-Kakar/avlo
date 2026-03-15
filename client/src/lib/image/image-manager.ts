@@ -284,15 +284,6 @@ export function manageImageViewport(): void {
 }
 
 /**
- * Ensure asset blob is cached in IDB (CDN fetch if missing). No decode.
- * Used for new remote images arriving via Y.Doc sync.
- * Decode happens via manageImageViewport on next render tick (only if in viewport).
- */
-export function ensureAsset(assetId: string): void {
-  worker.postMessage({ type: 'ensure', assetId } satisfies WorkerInbound);
-}
-
-/**
  * Ingest a local file: validate → hash → IDB → decode → bitmap.
  * Decodes immediately (user expects instant display after drop/paste).
  * Returns metadata for Y.Doc object creation.

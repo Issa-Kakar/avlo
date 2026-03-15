@@ -11,12 +11,18 @@
     <link rel="preload" href="/fonts/Inter.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/fonts/Lora.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="/fonts/JetBrainsMono.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/sw.js" as="script">
   </head>
   <body>
     <div id="root"></div>
     <div id="overlay-root">
       <div id="context-menu-portal" class="context-menu-floating ctx-hidden"></div>
     </div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js', { updateViaCache: 'all' }).catch(() => {});
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

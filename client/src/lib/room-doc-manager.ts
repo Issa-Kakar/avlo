@@ -27,9 +27,9 @@ import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox } from './text/text-system';
 import { codeSystem, computeCodeBBox } from './code/code-system';
-import { getCodeProps, getAssetId } from '@avlo/shared';
+import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
-import { ensureAsset, hydrateImages } from '@/lib/image/image-manager';
+import { hydrateImages } from '@/lib/image/image-manager';
 
 type Unsub = () => void;
 
@@ -1082,12 +1082,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         } else {
           processConnectorAdded(id, yObj);
         }
-      }
-
-      // Ensure new remote image blobs are cached in IDB (no decode — viewport-gated)
-      if (kind === 'image' && !oldBBox) {
-        const assetId = getAssetId(yObj);
-        if (assetId) ensureAsset(assetId);
       }
 
       // Handle cache and dirty rects

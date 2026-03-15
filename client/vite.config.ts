@@ -6,6 +6,22 @@ import path from 'path';
 const clientPort = parseInt(process.env.VITE_PORT || '3000', 10);
 const workerPort = parseInt(process.env.WORKER_PORT || '8787', 10);
 
+const proxyConfig = {
+  '/parties': {
+    target: `ws://localhost:${workerPort}`,
+    ws: true,
+    changeOrigin: true,
+  },
+  '/parties/*': {
+    target: `http://localhost:${workerPort}`,
+    changeOrigin: true,
+  },
+  '/api': {
+    target: `http://localhost:${workerPort}`,
+    changeOrigin: true,
+  },
+};
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -16,19 +32,21 @@ export default defineConfig({
   },
   server: {
     port: clientPort,
-    proxy: {
-      '/parties': {
-        target: `ws://localhost:${workerPort}`,
-        ws: true,
-        changeOrigin: true,
+    proxy: proxyConfig,
+  },
+  preview: {
+    port: clientPort,
+    proxy: proxyConfig,
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        sw: path.resolve(__dirname, 'src/sw.ts'),
       },
-      '/parties/*': {
-        target: `http://localhost:${workerPort}`,
-        changeOrigin: true,
-      },
-      '/api': {
-        target: `http://localhost:${workerPort}`,
-        changeOrigin: true,
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js',
       },
     },
   },
