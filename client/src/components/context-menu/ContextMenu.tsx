@@ -23,6 +23,7 @@ import {
   incrementCodeFontSize,
   decrementCodeFontSize,
   setSelectedCodeFontSize,
+  toggleCodeLineNumbers,
 } from '@/lib/utils/selection-actions';
 import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
@@ -221,7 +222,7 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
         onSelectSize={setSelectedCodeFontSize}
       />
       <div className="ctx-divider" />
-      <MenuButton className="ctx-btn-sq">
+      <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
         <IconCodeLines style={{ width: 22, height: 16 }} />
       </MenuButton>
     </ButtonGroup>

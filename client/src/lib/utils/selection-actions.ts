@@ -6,6 +6,7 @@ import {
   getAlign,
   getContent,
   getFontSize,
+  getLineNumbers,
   hasLabel,
   type TextAlign,
   type FontFamily,
@@ -387,13 +388,20 @@ export function setSelectedHighlight(color: string | null): void {
 
 // === Code Block Actions ===
 
+/** Resolve code IDs: prefer codeEditingId, fall back to selectedIds. */
+function getCodeIds(): string[] {
+  const { codeEditingId, selectedIds } = useSelectionStore.getState();
+  return codeEditingId ? [codeEditingId] : selectedIds;
+}
+
 export function setSelectedCodeLanguage(language: CodeLanguage): void {
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
+  const ids = getCodeIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
 
   getActiveRoomDoc().mutate(() => {
-    for (const id of ctx.selectedIds) {
-      const handle = ctx.objectsById.get(id);
+    for (const id of ids) {
+      const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
       handle.y.set('language', language);
     }
@@ -430,12 +438,13 @@ export function decrementCodeFontSize(): void {
 
 export function setSelectedCodeFontSize(size: number): void {
   const clamped = Math.max(1, Math.min(999, Math.round(size)));
-  const ctx = getSelectedHandles();
-  if (!ctx) return;
+  const ids = getCodeIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
 
   getActiveRoomDoc().mutate(() => {
-    for (const id of ctx.selectedIds) {
-      const handle = ctx.objectsById.get(id);
+    for (const id of ids) {
+      const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
       const curFs = getFontSize(handle.y, 14);
       const curW = (handle.y.get('width') as number) ?? 570;
@@ -444,5 +453,33 @@ export function setSelectedCodeFontSize(size: number): void {
     }
   });
 
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function toggleCodeLineNumbers(): void {
+  const ids = getCodeIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+
+  // Read current value from first code object
+  let current = true;
+  for (const id of ids) {
+    const handle = objectsById.get(id);
+    if (handle?.kind === 'code') {
+      current = getLineNumbers(handle.y);
+      break;
+    }
+  }
+  const newValue = !current;
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'code') continue;
+      handle.y.set('lineNumbers', newValue);
+    }
+  });
+
+  useDeviceUIStore.getState().setCodeLineNumbers(newValue);
   useSelectionStore.getState().refreshStyles();
 }

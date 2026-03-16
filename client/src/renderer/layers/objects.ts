@@ -366,6 +366,7 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.fontSize,
     props.width,
     props.language,
+    props.lineNumbers,
   );
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
@@ -771,6 +772,7 @@ function drawScaledCodePreview(
     props.fontSize,
     props.width,
     props.language,
+    props.lineNumbers,
   );
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);

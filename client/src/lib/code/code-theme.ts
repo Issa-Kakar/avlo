@@ -77,7 +77,11 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       },
       '.cm-cursor': { borderLeftColor: CODE_CARET },
       '.cm-activeLine': { backgroundColor: CODE_LINE_HL },
-      '.cm-activeLineGutter': { backgroundColor: CODE_LINE_HL },
+      '.cm-activeLineGutter': {
+        backgroundColor: CODE_LINE_HL,
+        marginLeft: 'calc(-1 * var(--c-gl))',
+        paddingLeft: 'var(--c-gl)',
+      },
       '.cm-selectionBackground, &.cm-focused .cm-selectionBackground': {
         backgroundColor: CODE_SELECTION,
       },

@@ -288,6 +288,11 @@ export interface CodeProps {
   fontSize: number;
   width: number;
   language: CodeLanguage;
+  lineNumbers: boolean;
+}
+
+export function getLineNumbers(y: Y.Map<unknown>, fallback = true): boolean {
+  return (y.get('lineNumbers') as boolean | undefined) ?? fallback;
 }
 
 export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
@@ -300,6 +305,7 @@ export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
     fontSize: (y.get('fontSize') as number) ?? 14,
     width: (y.get('width') as number) ?? 570,
     language: (y.get('language') as CodeLanguage) ?? 'javascript',
+    lineNumbers: (y.get('lineNumbers') as boolean) ?? true,
   };
 }
 

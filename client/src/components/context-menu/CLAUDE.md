@@ -198,7 +198,7 @@ Shapes now include the full text formatting suite for shape labels:
 
 - **Language** — `LanguageDropdown`. Self-subscribing to `selectedStyles.codeLanguage`. Trigger: "LANGUAGE" label + current name. Dropdown: 3 items (JavaScript, TypeScript, Python) with checkmark. Calls `setSelectedCodeLanguage(key)`.
 - **FontSize** — same `FontSizeStepper` component. Wired to `incrementCodeFontSize`/`decrementCodeFontSize`/`setSelectedCodeFontSize`. Font size change proportionally scales code block width (`width * newFs/oldFs`). Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144.
-- **CodeLines** — `IconCodeLines` toggle button (placeholder, no handler).
+- **CodeLines** — `IconCodeLines` stateless action button. Calls `toggleCodeLineNumbers()` on `mouseDown`. No `active` state tracking — reads fresh from Y.Map each click to determine toggle direction. Atomically sets/unsets `lineNumbers` on all selected (or editing) code objects. Persists new value to `device-ui-store.codeLineNumbers` for new block defaults.
 
 ### `mixed`
 
@@ -351,7 +351,7 @@ selectIsTextEditing    = s => s.textEditingId !== null
 
 Free mutation functions called by context menu buttons. Pattern: read IDs from store -> `getActiveRoomDoc().mutate()` -> persist to device-ui-store -> `refreshStyles()`.
 
-All text actions use the text-editing fallback: `ids = textEditingId ? [textEditingId] : selectedIds`.
+All text actions use the text-editing fallback: `ids = textEditingId ? [textEditingId] : selectedIds`. Code actions use an analogous pattern: `ids = codeEditingId ? [codeEditingId] : selectedIds` — this ensures language/fontSize/lineNumbers changes work during active CodeTool editing (not just via SelectTool selection).
 
 | Function | Scope | Persists To | Notes |
 |----------|-------|-------------|-------|
@@ -369,10 +369,11 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `toggleSelectedBold()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `toggleSelectedItalic()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `setSelectedHighlight(color\|null)` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
-| `setSelectedCodeLanguage(lang)` | Code blocks | -- | Sets `language` key |
-| `setSelectedCodeFontSize(size)` | Code blocks | -- | Proportionally scales width (`width * newFs/oldFs`) |
+| `setSelectedCodeLanguage(lang)` | Code blocks | -- | Sets `language` key. Uses `getCodeIds()` fallback |
+| `setSelectedCodeFontSize(size)` | Code blocks | -- | Proportionally scales width (`width * newFs/oldFs`). Uses `getCodeIds()` fallback |
 | `incrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
 | `decrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
+| `toggleCodeLineNumbers()` | Code blocks | `codeLineNumbers` | Reads first object's `lineNumbers`, sets all to inverse. Uses `getCodeIds()` fallback |
 
 ---
 
@@ -402,7 +403,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
 | `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts` |
 | `selection-utils.ts` | Pure functions: `computeStyles`, `computeSelectionBounds`, `computeUniformInlineStyles` |
-| `selection-actions.ts` | 18 mutation functions called by menu buttons |
+| `selection-actions.ts` | 19 mutation functions called by menu buttons |
 
 ---
 
