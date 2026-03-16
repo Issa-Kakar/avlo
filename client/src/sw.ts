@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 /**
  * Service Worker — owns the entire fetch/cache layer.
  *
@@ -23,15 +24,19 @@ sw.addEventListener('install', () => sw.skipWaiting());
 
 sw.addEventListener('activate', (e) => {
   e.waitUntil(
-    sw.clients.claim().then(() =>
-      caches.keys().then((names) =>
-        Promise.all(
-          names
-            .filter((n) => n.startsWith('avlo-shell-') && n !== SHELL_CACHE)
-            .map((n) => caches.delete(n)),
-        ),
+    sw.clients
+      .claim()
+      .then(() =>
+        caches
+          .keys()
+          .then((names) =>
+            Promise.all(
+              names
+                .filter((n) => n.startsWith('avlo-shell-') && n !== SHELL_CACHE)
+                .map((n) => caches.delete(n)),
+            ),
+          ),
       ),
-    ),
   );
 });
 
@@ -59,25 +64,9 @@ sw.addEventListener('fetch', (event) => {
   // Never intercept: party routes (WebSocket), non-GET (PUT uploads, etc.)
   if (url.pathname.startsWith('/parties/') || request.method !== 'GET') return;
 
-  // Asset routes: cache-first from avlo-assets
+  // Asset routes: cache-first from avlo-assets (immutable, content-addressed)
   if (url.pathname.startsWith('/api/assets/')) {
-    event.respondWith(
-      (async () => {
-        try {
-          const isMip = url.searchParams.has('mip');
-          const cache = await caches.open(ASSET_CACHE);
-          const cached = await cache.match(request);
-          if (cached) return cached;
-          // Mips are cache-only (worker-generated, server doesn't know about them)
-          if (isMip) return new Response(null, { status: 404 });
-          const resp = await fetch(request);
-          if (resp.ok) cache.put(request, resp.clone());
-          return resp;
-        } catch {
-          return fetch(request);
-        }
-      })(),
-    );
+    event.respondWith(cacheFirst(request, ASSET_CACHE));
     return;
   }
 
@@ -108,7 +97,11 @@ sw.addEventListener('fetch', (event) => {
           }
           return resp;
         } catch {
-          return (await caches.match(request)) ?? (await caches.match('/')) ?? new Response('Offline', { status: 503 });
+          return (
+            (await caches.match(request)) ??
+            (await caches.match('/')) ??
+            new Response('Offline', { status: 503 })
+          );
         }
       })(),
     );

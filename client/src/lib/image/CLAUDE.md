@@ -2,7 +2,7 @@
 
 > **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
 
-Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, dedicated web worker for compute (hash, decode, mip generation, upload), persistent upload queue, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
+Offline-first image objects with content-addressed asset storage, Service Worker for app shell + asset caching, dedicated web worker for compute (hash, decode, upload), persistent upload queue, and viewport-driven memory management. Images render as `ImageBitmap` on the base canvas via `ctx.drawImage()`.
 
 ---
 
@@ -16,28 +16,24 @@ Main Thread                   Image Worker                    Service Worker
 │ getBitmap()    │           │ Reads: cache → fetch  ──────►│ Cache-first:        │
 │ manageVP()     │           │   (readAssetBlob)       │    │  /api/assets/*      │
 │ ingest()       │           │                          │    │                     │
-│ hydrateImages()│           │ Writes: cache.put()     │    │ Mip URLs (?mip=*):  │
-│ enqueue()      │           │   full blob + mip blobs │    │  Cache-only, 404    │
-│                │           │                          │    │  on miss (synthetic)│
-│                │           │ Compute:                 │    │                     │
-│                │           │   SHA-256, validate      │    │ App shell:          │
-│                │           │   createImageBitmap      │    │  /assets/*.js/css   │
-│                │           │   OffscreenCanvas (mips) │    │  /fonts/*.woff2     │
-│                │           │                          │    │  HTML (net-first)   │
-│                │           │ IDB: upload queue only   │    │  /cursors/*.cur     │
-│                │           │   { retries, lastAttempt }│    │                     │
-│                │           │                          │    │ Passthrough:        │
+│ hydrateImages()│           │ Writes: cache.put()     │    │ App shell:          │
+│ enqueue()      │           │   full blob only        │    │  /assets/*.js/css   │
+│                │           │                          │    │  /fonts/*.woff2     │
+│                │           │ Compute:                 │    │  HTML (net-first)   │
+│                │           │   SHA-256, validate      │    │  /cursors/*.cur     │
+│                │           │   createImageBitmap      │    │                     │
+│                │           │   (dynamic resize)       │    │ Passthrough:        │
 │                │           │                          │    │  PUT /api/assets/*  │
-│                │           │                          │    │  /parties/*         │
-│                │           │                          │    │  /api/* (non-asset) │
+│                │           │ IDB: upload queue only   │    │  /parties/*         │
+│                │           │   { retries, lastAttempt }│    │  /api/* (non-asset) │
 └────────────────┘           └──────────────────────────┘    └─────────────────────┘
 ```
 
 **Key principles:**
-- **SW owns fetch/cache.** Intercepts all GET `/api/assets/*`. Cache-first for reads (immutable, content-addressed). Mip URLs (`?mip=*`) are cache-only — never fetched from network (synthetic, written by worker). Also caches app shell for offline.
+- **SW owns fetch/cache.** Intercepts all GET `/api/assets/*`. Cache-first for reads (immutable, content-addressed). Also caches app shell for offline.
 - **Worker is self-sufficient.** `readAssetBlob()` checks Cache API directly first, then falls back to `fetch()` (SW intercepts in prod; direct to server in dev). Works with or without SW — critical for dev mode where SW isn't built.
-- **Worker writes to cache:** local ingest blobs, generated mip blobs, and network fetch responses. Three cache keys per asset: full blob + half mip + quarter mip.
-- **Mips are pre-generated and cached.** `generateMips()` uses OffscreenCanvas to downscale (2-step: full→half→quarter), then caches the blobs. Decode reads the pre-generated mip blob from cache (fallback to full-res if unavailable).
+- **Worker writes to cache:** local ingest blobs and network fetch responses. One cache key per asset.
+- **Dynamic mips via `createImageBitmap` resize.** No pre-generated mip blobs. Manager computes target dimensions from natural dims + mip level, worker decodes at that resolution in a single hardware-accelerated operation (`createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: 'high' })`).
 
 ### Full Flow
 
@@ -47,7 +43,7 @@ User drops/pastes/picks file
 image-actions.ts: createImageFromBlob(blob, worldX, worldY)
    ├─ SVG? → rasterizeSvg(blob) → PNG blob (OffscreenCanvas, max 4096px)
    ├─ image-manager.ts: ingest(blob) → sends blob to worker
-   │   └─ Worker: validateImage(bytes) → SHA-256 → cache dedup → generateMips → cache all → decode → transfer bitmap
+   │   └─ Worker: validateImage(bytes) → SHA-256 → cache dedup → cache blob → decode → transfer bitmap
    ├─ Y.Doc mutation: create image object (kind:'image', assetId, frame, naturalDimensions)
    ├─ setActiveTool('select') + setSelection([objectId]) + invalidateOverlay()
    └─ image-manager.ts: enqueue(assetId) → Worker: IDB uploads store → PUT /api/assets/:key
@@ -65,8 +61,8 @@ Remote peer adds image:
 
 Viewport management (every frame in RenderLoop.tick()):
    manageImageViewport()
-   → 1.5× padded viewport → spatial index query → filter kind === 'image'
-   → per-image ppsp → mip level → decode if missing/wrong level, evict if off-viewport
+   → 1.25× padded viewport → spatial index query → filter kind === 'image'
+   → per-image ppsp → mip level + target dimensions → decode if missing/wrong level, evict if off-viewport
    → implicit ref counting: spatial index IS the source of truth
 ```
 
@@ -74,23 +70,19 @@ Viewport management (every frame in RenderLoop.tick()):
 
 ## Cache Layout
 
-**`avlo-assets`** — shared by SW (read/write for CDN responses) and worker (write for ingest blobs, mip blobs, network fallback responses).
+**`avlo-assets`** — shared by SW (read/write for CDN responses) and worker (write for ingest blobs, network fallback responses).
 
 | Cache key | Written by | Content |
 |-----------|-----------|---------|
 | `/api/assets/{assetId}` | SW (CDN fetch response) or worker (local ingest / network fallback) | Full-res blob, natural `Content-Type` |
-| `/api/assets/{assetId}?mip=half` | Worker (`generateMips`) | Half-res blob (w/2 × h/2). Only for source ≥ 512px wide |
-| `/api/assets/{assetId}?mip=quarter` | Worker (`generateMips`) | Quarter-res blob (w/4 × h/4). Only for source ≥ 1024px wide |
 
 **`avlo-shell-v1`** — owned by SW. JS bundles, CSS, fonts, cursors, HTML.
-
-Mip blobs are synthetic (server never sees them). SW returns 404 on mip cache miss — worker falls back through the mip chain to full-res.
 
 ---
 
 ## Service Worker (`client/src/sw.ts`)
 
-~120 lines. Separate tsconfig (`tsconfig.sw.json`) with `WebWorker` lib.
+~100 lines. Separate tsconfig (`tsconfig.sw.json`) with `WebWorker` lib.
 
 ### Install + Activate
 
@@ -101,8 +93,7 @@ Mip blobs are synthetic (server never sees them). SW returns 404 on mip cache mi
 | Route | Strategy | Details |
 |-------|----------|---------|
 | `/parties/*`, non-GET | Passthrough | No `respondWith` — browser handles directly |
-| `/api/assets/*?mip=*` | Cache-only | Cache hit → serve. Miss → 404 (mips are synthetic, never on network) |
-| `/api/assets/*` (no mip) | Cache-first | Cache hit → serve. Miss → fetch CDN → cache on 200 → serve. Try-catch falls through to `fetch()` on cache errors |
+| `/api/assets/*` | Cache-first | Cache hit → serve. Miss → fetch CDN → cache on 200 → serve. Try-catch falls through to `fetch()` on cache errors |
 | `/api/*` (non-asset) | Passthrough | No `respondWith` |
 | `/assets/*` | Cache-first | Vite-hashed = immutable |
 | `/fonts/*`, `/cursors/*` | Cache-first | Static resources |
@@ -156,8 +147,8 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 |------|----------------|
 | `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
 | `image-manager.ts` | Thin main-thread coordinator: bitmap cache, viewport management, worker message passing |
-| `image-worker.ts` | Web Worker: Cache API reads/writes, SHA-256 hashing, OffscreenCanvas mip generation, upload queue, decode |
-| `../../sw.ts` | Service Worker: cache-first asset serving, mip-aware routing, app shell caching, offline support |
+| `image-worker.ts` | Web Worker: Cache API reads/writes, SHA-256 hashing, dynamic resize decode, upload queue |
+| `../../sw.ts` | Service Worker: cache-first asset serving, app shell caching, offline support |
 
 ### Shared Package
 
@@ -219,9 +210,7 @@ Per-image PPSP (Pixels Per Source Pixel): `ppsp = (frameWidth × cameraScale × 
 | 0.25 < ppsp ≤ 0.5 | 1 (half) | naturalW/2 × naturalH/2 | Half res sufficient |
 | ppsp ≤ 0.25 | 2 (quarter) | naturalW/4 × naturalH/4 | Quarter res sufficient |
 
-**Cached mips:** `generateMips()` runs in the worker via OffscreenCanvas. Two-step downscale (full→half, half→quarter) for quality. Blobs cached at `?mip=half` and `?mip=quarter` URLs. Size thresholds: half only for source ≥ 512px wide, quarter only for ≥ 1024px. Output MIME matches input (JPEG→JPEG, PNG→PNG, WebP→WebP, GIF→PNG fallback). Non-fatal: partial mips returned on failure.
-
-**Decode with fallback chain:** Worker reads the pre-generated mip blob from cache for the requested level. Fallback: quarter miss → try half → try full-res. This means images always render even if mip generation failed.
+**Dynamic decode:** Manager computes target dimensions from `naturalWidth / divisor` and `naturalHeight / divisor` (divisor: 1/2/4 for levels 0/1/2). Worker decodes via `createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: 'high' })` — single hardware-accelerated operation, no pre-generated blobs. Level 0 decodes at full resolution (no resize options).
 
 Multiple objects sharing an assetId: use MAX ppsp → highest quality level.
 
@@ -238,6 +227,7 @@ bitmaps: Map<assetId, { bitmap: ImageBitmap; level: number }>  // One bitmap per
 pending: Set<assetId>              // In-flight decode requests (dedup)
 errors:  Map<assetId, timestamp>   // Failed assets, 15s cooldown retry (cleared on success)
 inflightIngests: Map<id, { resolve, reject }>  // Ingest promise tracking
+_assetInfo: Map<assetId, { ppsp, nw, nh }>    // Reused per frame (cleared + repopulated each tick)
 ```
 
 No `tracked` map, no `assetFrames` map. Spatial index IS the source of truth for visibility.
@@ -249,7 +239,7 @@ Ref counting is implicit: multiple objects sharing an assetId all appear in spat
 getBitmap(assetId): ImageBitmap | null     // Synchronous render path
 manageImageViewport(): void                // Called from RenderLoop.tick() every frame
 ingest(blob): Promise<IngestResult>        // Local drop: validate → hash → decode → bitmap
-hydrateImages(objects: Y.Map): void        // Room join: batch ensure + decode visible
+hydrateImages(objects: Y.Map): void        // Room join: batch decode visible + prefetch offscreen
 enqueue(assetId): void                     // Queue upload to R2
 clear(): void                              // Room teardown: close all bitmaps
 ```
@@ -267,13 +257,12 @@ No CanvasRuntime coupling for upload queue or invalidation — self-managed.
 ## Worker State (image-worker.ts)
 
 ```typescript
-ensurePromises: Map<assetId, Promise<void>>  // Fetch dedup (concurrent calls coalesce)
-mipsAttempted: Set<assetId>                   // Fast sync skip: already fetched + mips generated this session
-uploading: boolean                            // Guard against concurrent drain loops
-resetBackoff: boolean                         // Skip backoff delays on 'online' event
+fetchPromises: Map<assetId, Promise<Blob | null>>  // Fetch dedup (concurrent calls coalesce)
+uploading: boolean                                   // Guard against concurrent drain loops
+resetBackoff: boolean                                // Skip backoff delays on 'online' event
 ```
 
-Per-asset fetch state is transient (cleared in `finally` after `ensureFetched` completes). `mipsAttempted` persists for worker lifetime (content-addressed = immutable). IDB is durable state for upload queue only.
+`fetchPromises` is transient (cleared in `finally` after fetch completes). IDB is durable state for upload queue only.
 
 ### readAssetBlob(assetId) — Core Read Path
 
@@ -285,19 +274,16 @@ Cache-first, then network. Works with or without Service Worker:
 
 This makes the worker self-sufficient regardless of SW presence (critical for `vite dev` where SW isn't built).
 
-### ensureFetched(assetId) — Prefetch + Mip Generation
+### getAssetBlob(assetId) — Deduped Fetch
 
-Deduped via `ensurePromises` map (concurrent calls coalesce on same promise). Session-tracked via `mipsAttempted` set.
+Wraps `readAssetBlob` with `fetchPromises` map for dedup. Concurrent calls for the same assetId coalesce on the same promise. Cleaned up in `finally`.
 
-1. If `mipsAttempted.has(assetId)` → return immediately (already done this session)
-2. If another call in-flight → await existing promise (coalesce)
-3. Check cache for existing mip → if present, mark done and return
-4. `readAssetBlob(assetId)` → fetch full-res blob (cache-first)
-5. Decode to `ImageBitmap` via `createImageBitmap(blob)`
-6. `generateMips(bitmap, mime)` → OffscreenCanvas downscale → `{ half?: Blob, quarter?: Blob }`
-7. Cache mip blobs at `?mip=half` and `?mip=quarter` URLs
-8. Close bitmap, mark `mipsAttempted`
-9. `finally`: delete from `ensurePromises` (allow fresh attempt if errored)
+### decodeAndSend(assetId, level, width, height) — Dynamic Resize Decode
+
+1. `getAssetBlob(assetId)` → fetch full-res blob (deduped)
+2. Level 0: `createImageBitmap(blob)` — full resolution
+3. Level 1/2: `createImageBitmap(blob, { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' })` — hardware-accelerated downscale
+4. Transfer bitmap to main thread via `Transferable[]`
 
 ### IDB Schema
 
@@ -324,7 +310,6 @@ Global across rooms (content-addressed dedup).
 | Upload 5xx / network error | Worker upload | Exponential backoff (1s-60s) | Retries forever (offline-first) |
 | Stale bitmap after delete | Spatial index | Auto-evicted next tick | Implicit via viewport mgmt |
 | Cache API unavailable | Worker cache ops | Error propagates | 15s cooldown retry |
-| Mip generation fails | Worker OffscreenCanvas | Non-fatal, partial mips | Decode falls back through chain |
 
 **Self-healing:** Errors cleared on successful bitmap receipt. If a peer uploads an asset that was previously 404, the next retry after cooldown succeeds and the error is cleared.
 
@@ -339,23 +324,23 @@ Global across rooms (content-addressed dedup).
 Called every frame from `RenderLoop.tick()`. Reads camera store + snapshot internally.
 
 1. Guard: `hasActiveRoom()` + snapshot + spatialIndex must exist
-2. Query spatial index with 1.5× padded viewport (0.25× padding on each side)
-3. Collect visible assetIds + compute max ppsp per assetId → needed mip level
-4. **Decode:** For each visible asset not in error cooldown: request decode if no bitmap or wrong mip level. Dedup via `pending` set.
-5. **Evict:** Close bitmaps for assetIds not in visible set. Also `pending.delete()` to allow fresh request on scroll-back.
+2. Query spatial index with 1.25× padded viewport (0.125× padding on each side)
+3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions per assetId
+4. **Decode:** For each visible asset not in error cooldown: compute target dimensions from natural dims + level divisor, request decode if no bitmap or wrong mip level. Dedup via `pending` set.
+5. **Evict:** Close bitmaps for assetIds not in `_assetInfo`. Also `pending.delete()` to allow fresh request on scroll-back.
 
 ### Hydration (hydrateImages)
 
 Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join.
 
-1. Traverse Y.Map for all image objects → collect `{ assetId, frame }` per object
+1. Traverse Y.Map for all image objects → collect `{ assetId, frame, nw, nh }` per object
 2. Compute ppsp per asset from current camera state → mip level, deduped by assetId (min level = highest quality)
-3. Pre-add visible assetIds to `pending` (prevents duplicate decode on first `manageImageViewport` tick)
-4. Send single `'hydrate'` message to worker with all assets + padded viewport bounds
-5. Worker separates visible vs offscreen by frame-viewport intersection:
-   - **Visible (6 concurrent):** `ensureFetched` + `decodeAndSend` — full decode pipeline
-   - **Offscreen (4 concurrent, fire-and-forget):** `ensureFetched` only — cache-warm for scroll-in
-   - Work-stealing concurrency: N workers pull items from shared index
+3. Manager splits visible (exact viewport, no padding) vs offscreen using `frameTupleIntersectsBounds`
+4. Pre-add visible assetIds to `pending` (prevents duplicate decode on first `manageImageViewport` tick)
+5. Send single `'hydrate'` message with pre-split `visible` (with decode dimensions) + `prefetch` (assetId only)
+6. Worker handles:
+   - **Visible (8 concurrent):** `decodeAndSend` with target dimensions
+   - **Prefetch (6 concurrent, fire-and-forget):** `getAssetBlob` — cache-warm for scroll-in
 
 ### Bitmap Invalidation
 
@@ -370,8 +355,8 @@ On `'ingested'` message: same targeted invalidation. The ingest resolve also tri
 Main → Worker:
 ```typescript
 | { type: 'ingest', id: string, blob: Blob }
-| { type: 'hydrate', assets: { assetId, frame, level }[], viewport: WorldBounds }
-| { type: 'decode', assetId: string, level: 0 | 1 | 2 }
+| { type: 'hydrate', visible: { assetId, level, width, height }[], prefetch: string[] }
+| { type: 'decode', assetId: string, level: 0 | 1 | 2, width: number, height: number }
 | { type: 'enqueue-upload', assetId: string }
 | { type: 'delete-asset', assetId: string }
 | { type: 'online' }
@@ -564,6 +549,3 @@ Checks first 256 bytes for `<?xml` or `<svg` prefix (after optional UTF-8 BOM). 
 - Image scale commit not fully implemented (needs frame update on pointer up)
 - No rotation support
 - No double-click behavior defined for images
-
-### Planned
-- **Dynamic mips:** Replace cached OffscreenCanvas mip blobs with `createImageBitmap(blob, { resizeWidth, resizeHeight, resizeQuality: 'high' })`. Decode directly at target resolution in a single hardware-accelerated operation — no pre-generated blobs needed. Saves ~30% cache storage per asset with minimal decode overhead (~20ms per transition). Eliminates `generateMips()`, `ensureFetched()` mip path, and `?mip=*` cache keys/SW routing entirely.

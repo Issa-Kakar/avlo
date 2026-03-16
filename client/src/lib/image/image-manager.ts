@@ -15,7 +15,13 @@
  */
 
 import type { WorldBounds, FrameTuple } from '@avlo/shared';
-import { getAssetId, getFrame, getNaturalDimensions } from '@avlo/shared';
+import {
+  getAssetId,
+  getFrame,
+  getNaturalDimensions,
+  bboxToBounds,
+  frameTupleIntersectsBounds,
+} from '@avlo/shared';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import { hasActiveRoom, getCurrentSnapshot } from '@/canvas/room-runtime';
@@ -65,10 +71,6 @@ const inflightIngests = new Map<
 // Helpers
 // ============================================================
 
-function bboxToBounds(bbox: [number, number, number, number]): WorldBounds {
-  return { minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3] };
-}
-
 function padViewport(vb: WorldBounds): WorldBounds {
   const vw = vb.maxX - vb.minX;
   const vh = vb.maxY - vb.minY;
@@ -80,17 +82,12 @@ function padViewport(vb: WorldBounds): WorldBounds {
   };
 }
 
-function frameBoundsIntersect(frame: FrameTuple, vp: WorldBounds): boolean {
-  return (
-    frame[0] < vp.maxX &&
-    frame[0] + frame[2] > vp.minX &&
-    frame[1] < vp.maxY &&
-    frame[1] + frame[3] > vp.minY
-  );
-}
-
 function ppspToLevel(ppsp: number): 0 | 1 | 2 {
   return ppsp > 0.5 ? 0 : ppsp > 0.25 ? 1 : 2;
+}
+
+function levelDivisor(level: 0 | 1 | 2): number {
+  return level === 0 ? 1 : level === 1 ? 2 : 4;
 }
 
 // ============================================================
@@ -198,12 +195,20 @@ export function getBitmap(assetId: string): ImageBitmap | null {
   return bitmaps.get(assetId)?.bitmap ?? null;
 }
 
+/** Per-asset info reused each frame to avoid allocations. */
+interface AssetInfo {
+  ppsp: number;
+  nw: number;
+  nh: number;
+}
+const _assetInfo = new Map<string, AssetInfo>();
+
 /**
  * Viewport management — called from RenderLoop.tick() every frame.
  *
  * Reads camera store + snapshot internally. No parameters.
  * 1. Queries spatial index with 1.5× padded viewport
- * 2. Computes per-image ppsp → needed mip level
+ * 2. Computes per-image ppsp → needed mip level + target decode dimensions
  * 3. Requests decode for visible assets without correct mip (dedup via pending)
  * 4. Evicts bitmaps for assets no longer visible
  *
@@ -227,9 +232,7 @@ export function manageImageViewport(): void {
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;
 
-  // Collect visible assetIds + max ppsp per assetId
-  const visibleAssetIds = new Set<string>();
-  const assetMaxPpsp = new Map<string, number>();
+  _assetInfo.clear();
 
   for (const entry of visible) {
     if (entry.kind !== 'image') continue;
@@ -240,42 +243,45 @@ export function manageImageViewport(): void {
     const frame = getFrame(handle.y);
     if (!frame) continue;
 
-    visibleAssetIds.add(assetId);
-
     const dims = getNaturalDimensions(handle.y);
-    const nw = dims ? dims[0] : frame[2]; // Fall back to frame width if no natural dimensions
+    const nw = dims ? dims[0] : frame[2];
+    const nh = dims ? dims[1] : frame[3];
     const ppsp = (frame[2] * scale * dpr) / nw;
 
-    const prev = assetMaxPpsp.get(assetId);
-    if (prev === undefined || ppsp > prev) {
-      assetMaxPpsp.set(assetId, ppsp);
+    const prev = _assetInfo.get(assetId);
+    if (!prev || ppsp > prev.ppsp) {
+      _assetInfo.set(assetId, { ppsp, nw, nh });
     }
   }
 
   // Decode — request decode for visible assets that need it
   const now = Date.now();
-  for (const [assetId, maxPpsp] of assetMaxPpsp) {
+  for (const [assetId, info] of _assetInfo) {
     // Skip assets in error cooldown
     const lastError = errors.get(assetId);
     if (lastError && now - lastError < ERROR_COOLDOWN_MS) continue;
 
-    const neededLevel = ppspToLevel(maxPpsp);
+    const neededLevel = ppspToLevel(info.ppsp);
     const cached = bitmaps.get(assetId);
 
-    if (!cached && !pending.has(assetId)) {
-      // No bitmap at all — request decode
-      worker.postMessage({ type: 'decode', assetId, level: neededLevel } satisfies WorkerInbound);
-      pending.add(assetId);
-    } else if (cached && cached.level !== neededLevel && !pending.has(assetId)) {
-      // Bitmap exists at wrong mip level — request correct level
-      worker.postMessage({ type: 'decode', assetId, level: neededLevel } satisfies WorkerInbound);
+    if ((!cached || cached.level !== neededLevel) && !pending.has(assetId)) {
+      const div = levelDivisor(neededLevel);
+      const width = neededLevel === 0 ? 0 : Math.round(info.nw / div);
+      const height = neededLevel === 0 ? 0 : Math.round(info.nh / div);
+      worker.postMessage({
+        type: 'decode',
+        assetId,
+        level: neededLevel,
+        width,
+        height,
+      } satisfies WorkerInbound);
       pending.add(assetId);
     }
   }
 
   // Eviction — close bitmaps for assets no longer in viewport
   for (const [assetId, entry] of bitmaps) {
-    if (!visibleAssetIds.has(assetId)) {
+    if (!_assetInfo.has(assetId)) {
       entry.bitmap.close();
       bitmaps.delete(assetId);
       pending.delete(assetId); // Allow fresh request on scroll-back
@@ -298,17 +304,20 @@ export function ingest(file: Blob): Promise<IngestResult> {
 
 /**
  * Hydrate images on room join.
- * Ensures all image blobs are in IDB, decodes only viewport-visible ones.
+ * Manager splits visible vs offscreen, computes decode dimensions for visible.
+ * Uses exact viewport (no padding) for decode visibility.
  * Pre-adds visible assetIds to pending to prevent duplicate decode on first manageImageViewport tick.
  */
 export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;
   const vb = getVisibleWorldBounds();
-  const padded = padViewport(vb);
 
-  // Collect per-assetId: best level (min level = highest quality) + representative frame
-  const assetMap = new Map<string, { frame: FrameTuple; level: 0 | 1 | 2 }>();
+  // Collect per-assetId: best level (min level = highest quality) + natural dims + representative frame
+  const assetMap = new Map<
+    string,
+    { frame: FrameTuple; level: 0 | 1 | 2; nw: number; nh: number }
+  >();
 
   objects.forEach((yObj) => {
     if ((yObj.get('kind') as ObjectKind) !== 'image') return;
@@ -317,27 +326,38 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
     if (!assetId || !frame) return;
 
     const nw = (yObj.get('naturalWidth') as number) ?? frame[2];
+    const nh = (yObj.get('naturalHeight') as number) ?? frame[3];
     const ppsp = (frame[2] * scale * dpr) / nw;
     const level = ppspToLevel(ppsp);
 
     const existing = assetMap.get(assetId);
     if (!existing || level < existing.level) {
-      assetMap.set(assetId, { frame, level });
+      assetMap.set(assetId, { frame, level, nw, nh });
     }
   });
 
   if (assetMap.size === 0) return;
 
-  // Pre-add visible assetIds to pending — prevents duplicate decode on first manageImageViewport tick
-  for (const [assetId, { frame }] of assetMap) {
-    if (frameBoundsIntersect(frame, padded)) {
+  // Manager-side split: visible (exact viewport) vs prefetch
+  const visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number }[] = [];
+  const prefetch: string[] = [];
+
+  for (const [assetId, { frame, level, nw, nh }] of assetMap) {
+    if (frameTupleIntersectsBounds(frame, vb)) {
+      const div = levelDivisor(level);
+      visible.push({
+        assetId,
+        level,
+        width: level === 0 ? 0 : Math.round(nw / div),
+        height: level === 0 ? 0 : Math.round(nh / div),
+      });
       pending.add(assetId);
+    } else {
+      prefetch.push(assetId);
     }
   }
 
-  // Send single hydrate message with all assets
-  const assets = Array.from(assetMap, ([assetId, { frame, level }]) => ({ assetId, frame, level }));
-  worker.postMessage({ type: 'hydrate', assets, viewport: padded } satisfies WorkerInbound);
+  worker.postMessage({ type: 'hydrate', visible, prefetch } satisfies WorkerInbound);
 }
 
 /** Enqueue asset for upload. Fire-and-forget. */
