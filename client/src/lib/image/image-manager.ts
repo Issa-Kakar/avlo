@@ -1,14 +1,18 @@
 /**
  * ImageManager — Thin main-thread coordinator for image assets.
  *
- * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in image-worker.ts.
- * This module only manages in-memory bitmap references and viewport-driven decode requests.
+ * All heavy work (IDB, CDN fetch, hashing, upload, decode) runs in two image-worker instances.
+ * Worker 0 (primary): upload queue + ingest + decode. Worker 1 (decoder): decode only.
+ * Decode requests are hash-routed by assetId for consistent per-asset worker affinity.
  *
  * State:
  *   bitmaps: Map<assetId, { bitmap, level }> — decoded bitmaps at current mip level
- *   pending: Set<assetId> — in-flight decode requests (prevents duplicate worker messages)
+ *   pending: Map<assetId, { gen, level }> — in-flight decode requests with generation tracking
  *   errors:  Map<assetId, timestamp> — failed assets with cooldown-based retry (15s)
  *   inflightIngests: Map<id, { resolve, reject }> — ingest promise tracking
+ *
+ * Generation-based staleness: when mip level changes during zoom, a new decode request
+ * supersedes the old one immediately (no waiting). Workers discard stale results.
  *
  * Invariant: spatial index IS the source of truth for visibility.
  * No tracking maps — everything derived at query time from snapshot.
@@ -30,10 +34,21 @@ import type * as Y from 'yjs';
 import type { ObjectKind } from '@avlo/shared';
 
 // ============================================================
-// Worker
+// Workers
 // ============================================================
 
-const worker = new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' });
+const workers: [Worker, Worker] = [
+  new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
+  new Worker(new URL('./image-worker.ts', import.meta.url), { type: 'module' }),
+];
+
+workers[0].postMessage({ type: 'init', role: 'primary' } satisfies WorkerInbound);
+workers[1].postMessage({ type: 'init', role: 'decoder' } satisfies WorkerInbound);
+
+/** Hash-route by assetId first char for consistent per-asset worker affinity. */
+function workerFor(assetId: string): Worker {
+  return workers[assetId.charCodeAt(0) & 1];
+}
 
 // ============================================================
 // State
@@ -49,8 +64,9 @@ export interface IngestResult {
 /** Decoded bitmaps at current mip level. One bitmap per assetId in memory at a time. */
 const bitmaps = new Map<string, { bitmap: ImageBitmap; level: number }>();
 
-/** AssetIds with in-flight decode requests — prevents duplicate worker messages. */
-const pending = new Set<string>();
+/** In-flight decode requests with generation tracking for staleness. */
+const pending = new Map<string, { gen: number; level: number }>();
+let genCounter = 0;
 
 /**
  * AssetIds that failed to decode/fetch, with timestamp of last error.
@@ -75,10 +91,10 @@ function padViewport(vb: WorldBounds): WorldBounds {
   const vw = vb.maxX - vb.minX;
   const vh = vb.maxY - vb.minY;
   return {
-    minX: vb.minX - vw * 0.25,
-    minY: vb.minY - vh * 0.25,
-    maxX: vb.maxX + vw * 0.25,
-    maxY: vb.maxY + vh * 0.25,
+    minX: vb.minX - vw * 2.25,
+    minY: vb.minY - vh * 2.25,
+    maxX: vb.maxX + vw * 2.25,
+    maxY: vb.maxY + vh * 2.25,
   };
 }
 
@@ -90,11 +106,15 @@ function levelDivisor(level: 0 | 1 | 2): number {
   return level === 0 ? 1 : level === 1 ? 2 : 4;
 }
 
+function mipDim(natural: number, div: number): number {
+  return Math.max(1, Math.round(natural / div));
+}
+
 // ============================================================
 // Worker Message Handler
 // ============================================================
 
-worker.onmessage = (e: MessageEvent<WorkerOutbound>) => {
+function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
   const msg = e.data;
 
   switch (msg.type) {
@@ -126,7 +146,13 @@ worker.onmessage = (e: MessageEvent<WorkerOutbound>) => {
       // Guard: if room was torn down while decode was in-flight, discard
       if (!hasActiveRoom()) {
         msg.bitmap.close();
-        pending.delete(msg.assetId);
+        return;
+      }
+
+      // Staleness check: discard if gen doesn't match current pending request
+      const p = pending.get(msg.assetId);
+      if (!p || p.gen !== msg.gen) {
+        msg.bitmap.close();
         return;
       }
 
@@ -157,27 +183,47 @@ worker.onmessage = (e: MessageEvent<WorkerOutbound>) => {
 
       // Mark asset as errored with timestamp for cooldown-based retry
       if (msg.assetId) {
+        // Only process if gen matches (don't set cooldown for superseded requests)
+        if (msg.gen != null) {
+          const p = pending.get(msg.assetId);
+          if (!p || p.gen !== msg.gen) return; // stale error
+        }
         pending.delete(msg.assetId);
         errors.set(msg.assetId, Date.now());
       }
       break;
     }
   }
-};
+}
 
-/** Query spatial index for objects with this assetId and invalidate their regions. */
+for (const w of workers) w.onmessage = handleWorkerMessage;
+
+/** Invalidate canvas region for decoded bitmap. O(1) via cached bounds, gated on actual viewport. */
 function invalidateBitmapRegion(assetId: string): void {
+  // Fast path: pre-computed union bounds from most recent manageImageViewport tick.
+  // Only invalidate if actually visible — off-viewport bitmaps sit in the map silently
+  // until the user scrolls to them (the render pass will draw them naturally).
+  const info = _assetInfo.get(assetId);
+  if (info) {
+    const vb = getVisibleWorldBounds();
+    const b = info.bounds;
+    if (b.maxX >= vb.minX && b.minX <= vb.maxX && b.maxY >= vb.minY && b.minY <= vb.maxY) {
+      invalidateWorld(b);
+    }
+    return;
+  }
+  // Fallback for bitmaps arriving before first render tick (hydration):
+  // simple bounds intersection, no spatial query
   if (!hasActiveRoom()) return;
   try {
     const snapshot = getCurrentSnapshot();
-    if (!snapshot?.spatialIndex) return;
+    if (!snapshot) return;
     const vb = getVisibleWorldBounds();
-    const padded = padViewport(vb);
-    const entries = snapshot.spatialIndex.query(padded);
-    for (const entry of entries) {
-      if (entry.kind !== 'image') continue;
-      const handle = snapshot.objectsById.get(entry.id);
-      if (handle && getAssetId(handle.y) === assetId) {
+    for (const handle of snapshot.objectsById.values()) {
+      if (handle.kind !== 'image') continue;
+      if (getAssetId(handle.y) !== assetId) continue;
+      const [minX, minY, maxX, maxY] = handle.bbox;
+      if (maxX >= vb.minX && minX <= vb.maxX && maxY >= vb.minY && minY <= vb.maxY) {
         invalidateWorld(bboxToBounds(handle.bbox));
       }
     }
@@ -195,11 +241,12 @@ export function getBitmap(assetId: string): ImageBitmap | null {
   return bitmaps.get(assetId)?.bitmap ?? null;
 }
 
-/** Per-asset info reused each frame to avoid allocations. */
+/** Per-asset info reused each frame to avoid allocations. Includes union bounds for O(1) invalidation. */
 interface AssetInfo {
   ppsp: number;
   nw: number;
   nh: number;
+  bounds: WorldBounds;
 }
 const _assetInfo = new Map<string, AssetInfo>();
 
@@ -207,10 +254,10 @@ const _assetInfo = new Map<string, AssetInfo>();
  * Viewport management — called from RenderLoop.tick() every frame.
  *
  * Reads camera store + snapshot internally. No parameters.
- * 1. Queries spatial index with 1.5× padded viewport
+ * 1. Queries spatial index with 3× padded viewport
  * 2. Computes per-image ppsp → needed mip level + target decode dimensions
- * 3. Requests decode for visible assets without correct mip (dedup via pending)
- * 4. Evicts bitmaps for assets no longer visible
+ * 3. Requests decode for visible assets without correct mip (supersedes stale requests)
+ * 4. Evicts bitmaps for assets no longer visible, cancels in-flight decodes
  *
  * Complexity: O(visible images) per frame. Only image entries from spatial index are processed.
  */
@@ -247,10 +294,27 @@ export function manageImageViewport(): void {
     const nw = dims ? dims[0] : frame[2];
     const nh = dims ? dims[1] : frame[3];
     const ppsp = (frame[2] * scale * dpr) / nw;
+    const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
 
     const prev = _assetInfo.get(assetId);
-    if (!prev || ppsp > prev.ppsp) {
-      _assetInfo.set(assetId, { ppsp, nw, nh });
+    if (!prev) {
+      _assetInfo.set(assetId, {
+        ppsp,
+        nw,
+        nh,
+        bounds: { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY },
+      });
+    } else {
+      if (ppsp > prev.ppsp) {
+        prev.ppsp = ppsp;
+        prev.nw = nw;
+        prev.nh = nh;
+      }
+      const pb = prev.bounds;
+      if (bMinX < pb.minX) pb.minX = bMinX;
+      if (bMinY < pb.minY) pb.minY = bMinY;
+      if (bMaxX > pb.maxX) pb.maxX = bMaxX;
+      if (bMaxY > pb.maxY) pb.maxY = bMaxY;
     }
   }
 
@@ -263,28 +327,35 @@ export function manageImageViewport(): void {
 
     const neededLevel = ppspToLevel(info.ppsp);
     const cached = bitmaps.get(assetId);
+    const p = pending.get(assetId);
 
-    if ((!cached || cached.level !== neededLevel) && !pending.has(assetId)) {
+    // Send decode if: no bitmap or wrong level, AND no pending request for this level
+    if ((!cached || cached.level !== neededLevel) && (!p || p.level !== neededLevel)) {
       const div = levelDivisor(neededLevel);
-      const width = neededLevel === 0 ? 0 : Math.round(info.nw / div);
-      const height = neededLevel === 0 ? 0 : Math.round(info.nh / div);
-      worker.postMessage({
+      const width = neededLevel === 0 ? 0 : mipDim(info.nw, div);
+      const height = neededLevel === 0 ? 0 : mipDim(info.nh, div);
+      const gen = ++genCounter;
+      pending.set(assetId, { gen, level: neededLevel });
+      workerFor(assetId).postMessage({
         type: 'decode',
         assetId,
         level: neededLevel,
         width,
         height,
+        gen,
       } satisfies WorkerInbound);
-      pending.add(assetId);
     }
   }
 
-  // Eviction — close bitmaps for assets no longer in viewport
+  // Eviction — close bitmaps for assets no longer in viewport, cancel in-flight decodes
   for (const [assetId, entry] of bitmaps) {
     if (!_assetInfo.has(assetId)) {
       entry.bitmap.close();
       bitmaps.delete(assetId);
-      pending.delete(assetId); // Allow fresh request on scroll-back
+      if (pending.has(assetId)) {
+        workerFor(assetId).postMessage({ type: 'cancel', assetId } satisfies WorkerInbound);
+        pending.delete(assetId);
+      }
     }
   }
 }
@@ -298,7 +369,7 @@ export function ingest(file: Blob): Promise<IngestResult> {
   const id = String(++ingestIdCounter);
   return new Promise<IngestResult>((resolve, reject) => {
     inflightIngests.set(id, { resolve, reject });
-    worker.postMessage({ type: 'ingest', id, blob: file } satisfies WorkerInbound);
+    workers[0].postMessage({ type: 'ingest', id, blob: file } satisfies WorkerInbound);
   });
 }
 
@@ -306,7 +377,7 @@ export function ingest(file: Blob): Promise<IngestResult> {
  * Hydrate images on room join.
  * Manager splits visible vs offscreen, computes decode dimensions for visible.
  * Uses exact viewport (no padding) for decode visibility.
- * Pre-adds visible assetIds to pending to prevent duplicate decode on first manageImageViewport tick.
+ * Distributes items across workers by hash routing, assigns gen per visible item.
  */
 export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
   const { scale } = useCameraStore.getState();
@@ -338,34 +409,56 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
 
   if (assetMap.size === 0) return;
 
-  // Manager-side split: visible (exact viewport) vs prefetch
-  const visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number }[] = [];
-  const prefetch: string[] = [];
+  // Group by worker via hash routing
+  const byWorker: [
+    {
+      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
+      prefetch: string[];
+    },
+    {
+      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
+      prefetch: string[];
+    },
+  ] = [
+    { visible: [], prefetch: [] },
+    { visible: [], prefetch: [] },
+  ];
 
   for (const [assetId, { frame, level, nw, nh }] of assetMap) {
+    const idx = assetId.charCodeAt(0) & 1;
     if (frameTupleIntersectsBounds(frame, vb)) {
       const div = levelDivisor(level);
-      visible.push({
+      const gen = ++genCounter;
+      byWorker[idx].visible.push({
         assetId,
         level,
-        width: level === 0 ? 0 : Math.round(nw / div),
-        height: level === 0 ? 0 : Math.round(nh / div),
+        width: level === 0 ? 0 : mipDim(nw, div),
+        height: level === 0 ? 0 : mipDim(nh, div),
+        gen,
       });
-      pending.add(assetId);
+      pending.set(assetId, { gen, level });
     } else {
-      prefetch.push(assetId);
+      byWorker[idx].prefetch.push(assetId);
     }
   }
 
-  worker.postMessage({ type: 'hydrate', visible, prefetch } satisfies WorkerInbound);
+  for (let i = 0; i < 2; i++) {
+    if (byWorker[i].visible.length > 0 || byWorker[i].prefetch.length > 0) {
+      workers[i].postMessage({
+        type: 'hydrate',
+        visible: byWorker[i].visible,
+        prefetch: byWorker[i].prefetch,
+      } satisfies WorkerInbound);
+    }
+  }
 }
 
 /** Enqueue asset for upload. Fire-and-forget. */
 export function enqueue(assetId: string): void {
-  worker.postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
+  workers[0].postMessage({ type: 'enqueue-upload', assetId } satisfies WorkerInbound);
 }
 
-/** Room teardown: close all bitmaps, clear all state. */
+/** Room teardown: close all bitmaps, clear all state, notify workers. */
 export function clear(): void {
   for (const entry of bitmaps.values()) {
     entry.bitmap.close();
@@ -374,6 +467,7 @@ export function clear(): void {
   pending.clear();
   errors.clear();
   inflightIngests.clear();
+  for (const w of workers) w.postMessage({ type: 'clear' } satisfies WorkerInbound);
 }
 
 // ============================================================
@@ -381,8 +475,8 @@ export function clear(): void {
 // ============================================================
 
 window.addEventListener('online', () => {
-  worker.postMessage({ type: 'online' } satisfies WorkerInbound);
+  workers[0].postMessage({ type: 'online' } satisfies WorkerInbound);
 });
 
 // Drain pending uploads from prior sessions
-worker.postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);
+workers[0].postMessage({ type: 'drain-uploads' } satisfies WorkerInbound);

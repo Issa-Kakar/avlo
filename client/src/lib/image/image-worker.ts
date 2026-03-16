@@ -1,12 +1,16 @@
 /**
  * Image Worker — handles ALL heavy image operations off the main thread.
  *
+ * Two instances run: primary (upload queue + ingest + decode) and decoder (decode only).
+ * Decode requests hash-routed by assetId from main thread. Each worker tracks latestGen
+ * per assetId for staleness — superseded decodes are discarded immediately.
+ *
  * Responsibilities:
  * - Cache API writes (local ingest blobs)
- * - Magic byte validation + SHA-256 hashing
+ * - Magic byte validation + SHA-256 hashing (primary only)
  * - Bitmap decode (createImageBitmap with dynamic resize for mip levels)
- * - Server upload (PUT /api/assets/:key, sequential queue with exponential backoff)
- * - IDB for upload queue metadata only
+ * - Server upload (PUT /api/assets/:key, primary only, sequential queue with exponential backoff)
+ * - IDB for upload queue metadata only (primary only)
  *
  * Reads via Cache API first, then fetch() as fallback (network or SW-intercepted).
  * This makes the worker self-sufficient regardless of SW presence (critical for dev mode).
@@ -20,17 +24,27 @@ import { validateImage } from '@avlo/shared';
 // ============================================================
 
 export type WorkerInbound =
+  | { type: 'init'; role: 'primary' | 'decoder' }
   | { type: 'ingest'; id: string; blob: Blob }
   | {
       type: 'hydrate';
-      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number }[];
+      visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
       prefetch: string[];
     }
-  | { type: 'decode'; assetId: string; level: 0 | 1 | 2; width: number; height: number }
+  | {
+      type: 'decode';
+      assetId: string;
+      level: 0 | 1 | 2;
+      width: number;
+      height: number;
+      gen: number;
+    }
   | { type: 'enqueue-upload'; assetId: string }
   | { type: 'delete-asset'; assetId: string }
   | { type: 'online' }
-  | { type: 'drain-uploads' };
+  | { type: 'drain-uploads' }
+  | { type: 'cancel'; assetId: string }
+  | { type: 'clear' };
 
 export type WorkerOutbound =
   | {
@@ -43,9 +57,9 @@ export type WorkerOutbound =
       bitmap: ImageBitmap;
       level: 0;
     }
-  | { type: 'bitmap'; assetId: string; bitmap: ImageBitmap; level: 0 | 1 | 2 }
+  | { type: 'bitmap'; assetId: string; bitmap: ImageBitmap; level: 0 | 1 | 2; gen: number }
   | { type: 'uploaded'; assetId: string }
-  | { type: 'error'; id?: string; assetId?: string; message: string };
+  | { type: 'error'; id?: string; assetId?: string; message: string; gen?: number };
 
 // ============================================================
 // IDB Layer (upload queue only)
@@ -175,6 +189,13 @@ async function getAssetBlob(assetId: string): Promise<Blob | null> {
 }
 
 // ============================================================
+// Role & Staleness
+// ============================================================
+
+let role: 'primary' | 'decoder' = 'decoder';
+const latestGen = new Map<string, number>();
+
+// ============================================================
 // Helpers
 // ============================================================
 
@@ -182,8 +203,8 @@ function post(msg: WorkerOutbound, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(msg, transfer ?? []);
 }
 
-function errorMsg(message: string, id?: string, assetId?: string): void {
-  post({ type: 'error', id, assetId, message });
+function errorMsg(message: string, id?: string, assetId?: string, gen?: number): void {
+  post({ type: 'error', id, assetId, message, gen });
 }
 
 const HEX_LUT = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
@@ -203,15 +224,23 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
 /**
  * Decode a blob at the requested mip level using dynamic resize and send bitmap to main thread.
  * Level 0: full-res decode. Level 1/2: createImageBitmap with resizeWidth/resizeHeight.
+ * Three staleness checks (before fetch, after fetch, after decode) to discard superseded requests.
  */
 async function decodeAndSend(
   assetId: string,
   level: 0 | 1 | 2,
   width: number,
   height: number,
+  gen: number,
 ): Promise<void> {
+  latestGen.set(assetId, Math.max(gen, latestGen.get(assetId) ?? -1));
+  if (latestGen.get(assetId) !== gen) return;
+
   const blob = await getAssetBlob(assetId);
   if (!blob) throw new Error('asset not available');
+
+  if (latestGen.get(assetId) !== gen) return;
+
   const bitmap =
     level === 0
       ? await createImageBitmap(blob)
@@ -220,31 +249,17 @@ async function decodeAndSend(
           resizeHeight: height,
           resizeQuality: 'medium',
         });
-  post({ type: 'bitmap', assetId, bitmap, level }, [bitmap]);
+
+  if (latestGen.get(assetId) !== gen) {
+    bitmap.close();
+    return;
+  }
+
+  post({ type: 'bitmap', assetId, bitmap, level, gen }, [bitmap]);
 }
 
 // ============================================================
-// Concurrency Helper
-// ============================================================
-
-async function runConcurrent<T>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> {
-  let i = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (i < items.length) {
-        const idx = i++;
-        await fn(items[idx]);
-      }
-    }),
-  );
-}
-
-// ============================================================
-// Upload Queue (fully in-worker)
+// Upload Queue (fully in-worker, primary only)
 // ============================================================
 
 const BASE_DELAY_MS = 1000;
@@ -317,9 +332,6 @@ async function drainUploads(): Promise<void> {
   }
 }
 
-// 30s safety interval — catches any uploads that fell through the cracks
-setInterval(drainUploads, SAFETY_INTERVAL_MS);
-
 // ============================================================
 // Message Handler
 // ============================================================
@@ -328,7 +340,26 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
   const msg = e.data;
 
   switch (msg.type) {
+    case 'init': {
+      role = msg.role;
+      if (role === 'primary') {
+        setInterval(drainUploads, SAFETY_INTERVAL_MS);
+      }
+      break;
+    }
+
+    case 'cancel': {
+      latestGen.delete(msg.assetId);
+      break;
+    }
+
+    case 'clear': {
+      latestGen.clear();
+      break;
+    }
+
     case 'ingest': {
+      if (role !== 'primary') break;
       const { id, blob } = msg;
       try {
         const buffer = await blob.arrayBuffer();
@@ -387,41 +418,33 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
 
     case 'hydrate': {
       const { visible, prefetch } = msg;
-
-      // Visible first: decode at target dimensions (8 concurrent)
-      runConcurrent(visible, 8, async ({ assetId, level, width, height }) => {
-        try {
-          await decodeAndSend(assetId, level, width, height);
-        } catch (err) {
-          errorMsg(err instanceof Error ? err.message : 'hydrate failed', undefined, assetId);
-        }
-      });
-
-      // Offscreen: just fetch blob into cache (6 concurrent, fire-and-forget)
-      runConcurrent(prefetch, 6, async (assetId) => {
-        getAssetBlob(assetId).catch((err) =>
-          errorMsg(
-            err instanceof Error ? err.message : 'hydrate prefetch failed',
-            undefined,
-            assetId,
-          ),
+      // Fire-and-forget per item — results stream as each decode completes
+      for (const { assetId, level, width, height, gen } of visible) {
+        decodeAndSend(assetId, level, width, height, gen).catch((err) =>
+          errorMsg(err instanceof Error ? err.message : 'hydrate failed', undefined, assetId, gen),
         );
-      });
+      }
+      // Offscreen: just fetch blob into cache (fire-and-forget)
+      for (const assetId of prefetch) {
+        getAssetBlob(assetId).catch(() => {});
+      }
       break;
     }
 
     case 'decode': {
-      (async () => {
-        try {
-          await decodeAndSend(msg.assetId, msg.level, msg.width, msg.height);
-        } catch (err) {
-          errorMsg(err instanceof Error ? err.message : 'decode failed', undefined, msg.assetId);
-        }
-      })();
+      decodeAndSend(msg.assetId, msg.level, msg.width, msg.height, msg.gen).catch((err) =>
+        errorMsg(
+          err instanceof Error ? err.message : 'decode failed',
+          undefined,
+          msg.assetId,
+          msg.gen,
+        ),
+      );
       break;
     }
 
     case 'enqueue-upload': {
+      if (role !== 'primary') break;
       try {
         const existing = await getUploadEntry(msg.assetId);
         if (existing) return; // Idempotent
@@ -434,18 +457,21 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
     }
 
     case 'delete-asset': {
+      if (role !== 'primary') break;
       await deleteCachedAsset(msg.assetId).catch(() => {});
       await removeUploadEntry(msg.assetId).catch(() => {});
       break;
     }
 
     case 'online': {
+      if (role !== 'primary') break;
       resetBackoff = true;
       drainUploads();
       break;
     }
 
     case 'drain-uploads': {
+      if (role !== 'primary') break;
       drainUploads();
       break;
     }
