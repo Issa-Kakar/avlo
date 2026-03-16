@@ -6,6 +6,8 @@ import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { WorldBounds, ViewTransform } from '@avlo/shared';
 import { manageImageViewport } from '@/lib/image/image-manager';
 
+const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
+
 // Dirty rect constants
 const MAX_RECTS = 16;
 const AA_MARGIN = 2; // device pixels
@@ -182,7 +184,7 @@ export class RenderLoop {
   private scheduleFrame(): void {
     if (!this.started || this.isHidden || this.rafId !== null) return;
 
-    if (!this.urgent && performance.now() >= this.nativeRafUntil) {
+    if (!NATIVE_RAF && !this.urgent && performance.now() >= this.nativeRafUntil) {
       const targetMs = 1000 / (isMobile() ? FRAME_CONFIG.MOBILE_FPS : FRAME_CONFIG.TARGET_FPS);
       const elapsed = performance.now() - this.lastFrameTime;
       if (elapsed < targetMs) {
