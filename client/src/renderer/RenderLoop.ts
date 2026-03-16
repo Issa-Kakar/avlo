@@ -3,12 +3,11 @@ import { FRAME_CONFIG } from './types';
 import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import { getOpacity } from '@avlo/shared';
 import type { WorldBounds, ViewTransform } from '@avlo/shared';
 import { manageImageViewport } from '@/lib/image/image-manager';
 
 // Dirty rect constants
-const MAX_RECTS = 10;
+const MAX_RECTS = 16;
 const AA_MARGIN = 2; // device pixels
 const AREA_RATIO = 0.33;
 const COALESCE_SNAP = 2; // device pixels
@@ -39,8 +38,6 @@ export class RenderLoop {
   // Visibility
   private isHidden = false;
   private hiddenIntervalId: number | null = null;
-
-  private hasTranslucent = false;
 
   constructor() {
     if (typeof document !== 'undefined') {
@@ -117,7 +114,6 @@ export class RenderLoop {
     this.nativeRafUntil = 0;
     this.lastCanvasW = 0;
     this.lastCanvasH = 0;
-    this.hasTranslucent = false;
   }
 
   destroy(): void {
@@ -141,16 +137,19 @@ export class RenderLoop {
 
     // World → device pixels with AA margin (no MAX_WORLD_LINE_WIDTH - bbox includes stroke)
     const i = this.dirtyCount * 4;
-    this.dirtyBuf[i] = (bounds.minX - pan.x) * scale * dpr - AA_MARGIN;
-    this.dirtyBuf[i + 1] = (bounds.minY - pan.y) * scale * dpr - AA_MARGIN;
-    this.dirtyBuf[i + 2] = (bounds.maxX - pan.x) * scale * dpr + AA_MARGIN;
-    this.dirtyBuf[i + 3] = (bounds.maxY - pan.y) * scale * dpr + AA_MARGIN;
+    this.dirtyBuf[i] = Math.floor((bounds.minX - pan.x) * scale * dpr - AA_MARGIN);
+    this.dirtyBuf[i + 1] = Math.floor((bounds.minY - pan.y) * scale * dpr - AA_MARGIN);
+    this.dirtyBuf[i + 2] = Math.ceil((bounds.maxX - pan.x) * scale * dpr + AA_MARGIN);
+    this.dirtyBuf[i + 3] = Math.ceil((bounds.maxY - pan.y) * scale * dpr + AA_MARGIN);
     this.dirtyCount++;
 
-    // Check promotion
+    // Check promotion — coalesce before giving up on dirty rects
     if (this.dirtyCount >= MAX_RECTS) {
-      this.fullClear = true;
-      this.dirtyCount = 0;
+      this.coalesce();
+      if (this.dirtyCount >= MAX_RECTS) {
+        this.fullClear = true;
+        this.dirtyCount = 0;
+      }
     } else {
       this.checkAreaPromotion();
     }
@@ -243,22 +242,7 @@ export class RenderLoop {
     // 4. Read snapshot
     const snapshot = getCurrentSnapshot();
 
-    // 5. Translucency check — dirty rects can't composite correctly with opacity < 1
-    this.hasTranslucent = false;
-    if (snapshot.spatialIndex) {
-      const vb = getVisibleWorldBounds();
-      const visible = snapshot.spatialIndex.query(vb);
-      this.hasTranslucent = visible.some((entry) => {
-        const handle = snapshot.objectsById.get(entry.id);
-        return handle && getOpacity(handle.y) < 1;
-      });
-    }
-    if (this.hasTranslucent && !this.fullClear) {
-      this.fullClear = true;
-      this.dirtyCount = 0;
-    }
-
-    // 5b. Viewport-driven image management (decode visible, evict off-viewport, mip selection)
+    // 5. Viewport-driven image management (decode visible, evict off-viewport, mip selection)
     manageImageViewport();
 
     // 6. Coalesce overlapping dirty rects
@@ -398,18 +382,12 @@ export class RenderLoop {
   private checkAreaPromotion(): void {
     if (this.dirtyCount === 0 || this.canvasW === 0 || this.canvasH === 0) return;
     const buf = this.dirtyBuf;
-    let uMinX = Infinity,
-      uMinY = Infinity,
-      uMaxX = -Infinity,
-      uMaxY = -Infinity;
+    let totalArea = 0;
     for (let i = 0; i < this.dirtyCount; i++) {
       const off = i * 4;
-      if (buf[off] < uMinX) uMinX = buf[off];
-      if (buf[off + 1] < uMinY) uMinY = buf[off + 1];
-      if (buf[off + 2] > uMaxX) uMaxX = buf[off + 2];
-      if (buf[off + 3] > uMaxY) uMaxY = buf[off + 3];
+      totalArea += (buf[off + 2] - buf[off]) * (buf[off + 3] - buf[off + 1]);
     }
-    if (((uMaxX - uMinX) * (uMaxY - uMinY)) / (this.canvasW * this.canvasH) > AREA_RATIO) {
+    if (totalArea / (this.canvasW * this.canvasH) > AREA_RATIO) {
       this.fullClear = true;
       this.dirtyCount = 0;
     }
