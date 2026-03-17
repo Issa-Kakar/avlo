@@ -22,7 +22,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
           aria-label="Zoom out"
           title="Zoom Out"
         >
-          <svg className="icon icon-sm" viewBox="0 0 24 24">
+          <svg className="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
         </button>
@@ -44,7 +44,7 @@ export function ZoomControls({ className = '' }: ZoomControlsProps) {
           aria-label="Zoom in"
           title="Zoom In"
         >
-          <svg className="icon icon-sm" viewBox="0 0 24 24">
+          <svg className="icon icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="5" y1="12" x2="19" y2="12" />
             <line x1="12" y1="5" x2="12" y2="19" />
           </svg>
