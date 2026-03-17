@@ -236,7 +236,7 @@ pending: Map<assetId, { gen: number; level: number }>          // In-flight deco
 genCounter: number                                              // Monotonic generation counter
 errors:  Map<assetId, timestamp>   // Failed assets, 15s cooldown retry (cleared on success)
 inflightIngests: Map<id, { resolve, reject }>  // Ingest promise tracking
-_assetInfo: Map<assetId, { ppsp, nw, nh }>    // Reused per frame (cleared + repopulated each tick)
+_assetInfo: Map<assetId, { ppsp, nw, nh, bounds }>  // Reused per frame (cleared + repopulated each tick)
 ```
 
 No `tracked` map, no `assetFrames` map. Spatial index IS the source of truth for visibility.
@@ -359,8 +359,8 @@ Called every frame from `RenderLoop.tick()`. Reads camera store + snapshot inter
 
 1. Guard: `hasActiveRoom()` + snapshot + spatialIndex must exist
 2. Query spatial index with 5.5× padded viewport (2.25× padding on each side) — aggressive pre-decode
-3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bounds per assetId
-4. **Decode:** For each visible asset not in error cooldown: compute target dimensions from natural dims + level divisor. Send decode if no bitmap or wrong mip level AND no pending request for that level. If pending exists but for different level (mip change during zoom), supersede with new gen.
+3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bounds per assetId. During active scale transforms, selected images get `ppsp = Infinity` (forces full-res decode for crisp preview).
+4. **Decode:** For each visible asset not in error cooldown: compute target dimensions from natural dims + level divisor. Send decode if no bitmap or worse quality (`cached.level > neededLevel` — never downgrades, higher-quality bitmaps stay until eviction), AND no pending request for that level. If pending exists but for different level (mip change during zoom), supersede with new gen.
 5. **Evict:** Close bitmaps for assetIds not in `_assetInfo`. Send `cancel` to assigned worker for in-flight decodes. `pending.delete()` for fresh request on scroll-back.
 
 ### Hydration (hydrateImages)
@@ -498,7 +498,16 @@ Client port: 3000 (`VITE_PORT`). Worker port: 8787 (`WORKER_PORT`).
 
 ### Scale Transform Rendering
 
-During selection scale transforms, images use `applyTransformToFrame()` / `applyUniformScaleToFrame()` to compute the transformed frame, then draw the existing bitmap at the new frame dimensions. Scale commits update the Y.Doc frame — the bitmap stays the same (ppsp recalculates on next tick for mip adjustment).
+Images always uniform-scale (aspect ratio preserved), mirroring stroke behavior:
+
+| Selection | Corner handles | Side handles |
+|-----------|---------------|-------------|
+| **imagesOnly** | Uniform scale | Uniform scale |
+| **mixed** | Uniform scale | Edge-pin translate (position shift only, no dimension change) |
+
+Preview: `applyUniformScaleToFrame()` → draw bitmap at transformed frame. Edge-pin: `computeEdgePinTranslation()` → `ctx.translate(dx, dy)` + draw at original frame. Commit updates Y.Doc `frame` — bitmap stays, ppsp recalculates next tick for mip adjustment.
+
+Images must be included in `computeRawGeometryBounds()` (`bounds.ts`) for scale transforms to work — this provides `originBounds` for the scale origin and edge-pin detection.
 
 ### Object Cache (`renderer/object-cache.ts`)
 
@@ -512,8 +521,7 @@ Images return an empty `new Path2D()` — they don't use the geometry cache. Cac
 - **Marquee:** Rect intersection against frame
 - **Eraser:** Circle-rect intersection, interior hits count (same as shapes with fill)
 - **Selection kind:** `'imagesOnly'` supported. `computeStyles()` returns `EMPTY_STYLES` for images (no color/width/fill controls)
-- **Connector topology:** Images included — connectors can snap to image frames
-- **Transform behavior:** Translate works. Scale renders preview via transformed frame. No rotation.
+- **Connector topology:** Images included — connectors can snap to image frames. `transformFrameForTopology()` has per-kind dispatch for images (always uniform, mixed+side = edge-pin).
 
 ---
 
@@ -584,6 +592,5 @@ Checks first 256 bytes for `<?xml` or `<svg` prefix (after optional UTF-8 BOM). 
 - No image dimension limits (only 10 MB file size limit)
 
 ### SelectTool Integration
-- Image scale commit not fully implemented (needs frame update on pointer up)
 - No rotation support
 - No double-click behavior defined for images
