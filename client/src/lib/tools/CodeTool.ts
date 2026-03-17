@@ -19,7 +19,7 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getCodeProps } from '@avlo/shared';
+import { getCodeProps, getLineNumbers } from '@avlo/shared';
 import {
   getDefaultWidth,
   padTop,
@@ -56,6 +56,7 @@ export class CodeTool implements PointerTool {
   private clickTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private syncConf: unknown = null;
   private langCompartment: unknown = null;
+  private lineNumbersCompartment: unknown = null;
   private yMapUnobserve: (() => void) | null = null;
 
   canBegin(): boolean {
@@ -148,7 +149,9 @@ export class CodeTool implements PointerTool {
 
   private createCodeObject(worldX: number, worldY: number): void {
     const roomDoc = getActiveRoomDoc();
-    const fontSize = useDeviceUIStore.getState().textSize;
+    const uiState = useDeviceUIStore.getState();
+    const fontSize = uiState.textSize;
+    const lineNumbers = uiState.codeLineNumbers;
     const width = getDefaultWidth(fontSize);
     const lh = lineHeightFn(fontSize);
 
@@ -170,6 +173,7 @@ export class CodeTool implements PointerTool {
       yObj.set('language', 'typescript');
       yObj.set('fontSize', fontSize);
       yObj.set('width', width);
+      yObj.set('lineNumbers', lineNumbers);
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
 
@@ -189,14 +193,25 @@ export class CodeTool implements PointerTool {
   /** Set all --c-* CSS custom properties as exact px on the container.
    *  CM theme references these instead of em units, eliminating browser
    *  em→px conversion rounding that causes sub-pixel mismatches vs canvas. */
-  private setCSSVars(container: HTMLDivElement, fontSize: number, scale: number): void {
+  private setCSSVars(
+    container: HTMLDivElement,
+    fontSize: number,
+    scale: number,
+    lineNumbers = true,
+  ): void {
     const s = container.style;
     s.setProperty('--c-pt', `${padTop(fontSize) * scale}px`);
     s.setProperty('--c-pb', `${padBottom(fontSize) * scale}px`);
-    s.setProperty('--c-gl', `${padLeft(fontSize) * scale}px`);
-    s.setProperty('--c-gr', `${gutterPad(fontSize) * scale}px`);
     s.setProperty('--c-pr', `${padRight(fontSize) * scale}px`);
-    s.setProperty('--c-gw', `${2 * charWidth(fontSize) * scale}px`);
+    if (lineNumbers) {
+      s.setProperty('--c-gl', `${padLeft(fontSize) * scale}px`);
+      s.setProperty('--c-gr', `${gutterPad(fontSize) * scale}px`);
+      s.setProperty('--c-gw', `${2 * charWidth(fontSize) * scale}px`);
+    } else {
+      s.setProperty('--c-gl', '0px');
+      s.setProperty('--c-gr', `${padLeft(fontSize) * scale}px`);
+      s.setProperty('--c-gw', '0px');
+    }
   }
 
   // =========================================================================
@@ -238,7 +253,7 @@ export class CodeTool implements PointerTool {
     container.style.lineHeight = `${screenLH}px`;
     container.style.fontFamily = `'${CODE_FONT_FAMILY}', monospace`;
     container.style.borderRadius = `${borderRadius(fontSize) * scale}px`;
-    this.setCSSVars(container, fontSize, scale);
+    this.setCSSVars(container, fontSize, scale, props.lineNumbers);
 
     host.appendChild(container);
 
@@ -323,15 +338,22 @@ export class CodeTool implements PointerTool {
         ? cmPython.python()
         : cmJS.javascript({ typescript: true, jsx: true });
 
-    const state = cmState.EditorState.create({
-      doc: yText.toString(),
-      extensions: [
-        cmView.lineNumbers({
+    // Line numbers in compartment for dynamic toggle
+    const lineNumbersCompartment = new cmState.Compartment();
+    this.lineNumbersCompartment = lineNumbersCompartment;
+    const lineNumbersExt = props.lineNumbers
+      ? cmView.lineNumbers({
           formatNumber: (n: number, state: { doc: { lines: number } }) => {
             const digits = Math.max(2, String(state.doc.lines).length);
             return String(n).padStart(digits, ' ');
           },
-        }),
+        })
+      : [];
+
+    const state = cmState.EditorState.create({
+      doc: yText.toString(),
+      extensions: [
+        lineNumbersCompartment.of(lineNumbersExt),
         cmView.highlightActiveLine(),
         cmView.highlightActiveLineGutter(),
         cmView.EditorView.lineWrapping,
@@ -376,6 +398,10 @@ export class CodeTool implements PointerTool {
       }
       if (keys.has('language')) {
         this.switchLanguage(yMap);
+      }
+      if (keys.has('lineNumbers')) {
+        this.switchLineNumbers(yMap);
+        this.positionEditor();
       }
     };
     yMap.observe(mapObserver);
@@ -472,12 +498,36 @@ export class CodeTool implements PointerTool {
     c.style.fontSize = `${screenFS}px`;
     c.style.lineHeight = `${screenLH}px`;
     c.style.borderRadius = `${borderRadius(props.fontSize) * scale}px`;
-    this.setCSSVars(c, props.fontSize, scale);
+    this.setCSSVars(c, props.fontSize, scale, props.lineNumbers);
 
     // Trigger CM relayout after size change
     if (this.editorView) {
       (this.editorView as { requestMeasure(): void }).requestMeasure();
     }
+  }
+
+  // =========================================================================
+  // Private: Dynamic Line Numbers Toggle
+  // =========================================================================
+
+  private async switchLineNumbers(yMap: Y.Map<unknown>): Promise<void> {
+    if (!this.editorView || !this.lineNumbersCompartment) return;
+    const ln = getLineNumbers(yMap);
+    const cmView = await import('@codemirror/view');
+    if (!this.editorView || !this.lineNumbersCompartment) return;
+    const ext = ln
+      ? cmView.lineNumbers({
+          formatNumber: (n: number, state: { doc: { lines: number } }) => {
+            const digits = Math.max(2, String(state.doc.lines).length);
+            return String(n).padStart(digits, ' ');
+          },
+        })
+      : [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.editorView as any).dispatch({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      effects: (this.lineNumbersCompartment as any).reconfigure(ext),
+    });
   }
 
   // =========================================================================
@@ -524,6 +574,7 @@ export class CodeTool implements PointerTool {
     this.yMapUnobserve?.();
     this.yMapUnobserve = null;
     this.langCompartment = null;
+    this.lineNumbersCompartment = null;
 
     // Clear per-session UM before destroy — flushes stack items holding plugin refs
     if (this.sessionUM) {

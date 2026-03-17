@@ -29,6 +29,7 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
   language: 'javascript' | 'typescript' | 'python',
   fontSize: number,              // World units, default 14
   width: number,                 // World units, stored (never 'auto')
+  lineNumbers: boolean,          // Gutter visibility (default true, collaborative)
   ownerId: string,
   createdAt: number,
 }
@@ -42,7 +43,7 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 - No `color`/`fillColor` — dark theme is fixed chrome
 - Empty blocks are NOT deleted on close (unlike text) — visible dark bg + line numbers
 
-**Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `@avlo/shared`). Returns `{ content: Y.Text, origin, fontSize, width, language }`.
+**Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `@avlo/shared`). Returns `{ content: Y.Text, origin, fontSize, width, language, lineNumbers }`. Also: `getLineNumbers(y, fallback = true): boolean`.
 
 ---
 
@@ -73,8 +74,8 @@ Read via `getCodeFrame(id)`. `computeCodeBBox(id, yObj)` computes layout, derive
 All padding is a ratio of `fontSize`:
 ```
 padTop(fs)    = fs * 1.5          padBottom(fs) = fs * 1.5
-padLeft(fs)   = fs * 0.85         padRight(fs)  = fs * 0.85
-gutterPad(fs) = fs * 2.0
+padLeft(fs)   = fs * 1.0          padRight(fs)  = fs * 0.85
+gutterPad(fs) = fs * 2.2
 
 totalWidth  = stored width field (set at creation from getDefaultWidth)
 totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
@@ -84,9 +85,11 @@ lineHeight(fs) = fs * 1.5
 ```
 
 Gutter width = `maxDigits * charWidth(fs)`, where `maxDigits = max(2, String(sourceLineCount).length)`.
-Content left offset = `padLeft(fs) + gutterWidth + gutterPad(fs)`.
+Content left offset = `contentLeft(digits, fs, lineNumbers)`:
+- `lineNumbers=true`: `padLeft(fs) + gutterWidth + gutterPad(fs)`
+- `lineNumbers=false`: `padLeft(fs)` — gutter space becomes content space, block width unchanged
 
-`borderRadius(fs)` = `fs * 0.85` — fontSize-proportional, same ratio as padLeft/padRight.
+`borderRadius(fs)` = `fs * 0.85` — fontSize-proportional.
 
 ### Font Metrics — Derived from text-system
 
@@ -109,10 +112,11 @@ interface CodeLayout {
   lines: VisualLine[];
   sourceLineCount: number;
   totalWidth: number;
+  lineNumbers: boolean;    // Gutter visibility — controls contentLeft + renderer gutter skip
 }
 ```
 
-Layout stores only geometry-independent data. All dimensional values (height, gutter width, content offset) are derived from `fontSize` via getter functions.
+Layout stores only geometry-independent data plus `lineNumbers` (which affects `contentLeft` and gutter rendering). All dimensional values (height, gutter width, content offset) are derived from `fontSize` via getter functions.
 
 ### Line Wrapping — WYSIWYG Match
 
@@ -245,13 +249,14 @@ Singleton `codeSystem`. Per-object `CacheEntry`:
 ```typescript
 interface CacheEntry {
   sourceLines: string[];
-  version: number;           // Monotonic, incremented on content or language change
-  spans: RunSpans[];         // Always populated — packed per source line
-  layout: CodeLayout | null; // null = needs recompute
-  layoutFontSize: number;    // Cache key
-  layoutWidth: number;       // Cache key
-  language: CodeLanguage;    // Cache key
-  frame: FrameTuple | null;  // Derived, set by computeCodeBBox
+  version: number;              // Monotonic, incremented on content or language change
+  spans: RunSpans[];            // Always populated — packed per source line
+  layout: CodeLayout | null;    // null = needs recompute
+  layoutFontSize: number;       // Cache key
+  layoutWidth: number;          // Cache key
+  layoutLineNumbers: boolean;   // Cache key
+  language: CodeLanguage;       // Cache key
+  frame: FrameTuple | null;     // Derived, set by computeCodeBBox
 }
 ```
 
@@ -261,7 +266,7 @@ interface CacheEntry {
 |---------|-------------|--------|-------|---------|
 | `handleContentChange` | New text, new sync-tokenized spans | nulled | nulled | incremented |
 | `applyWorkerSpans` | Spans swapped (colors only) | unchanged | unchanged | checked (must match) |
-| fontSize/width change (detected in `getLayout`) | — | recomputed | nulled | unchanged |
+| fontSize/width/lineNumbers change (detected in `getLayout`) | — | recomputed | nulled | unchanged |
 | Language change (detected in `getLayout`) | Re-tokenized spans | **preserved** if dims unchanged | preserved | incremented |
 
 `applyWorkerSpans` does NOT null the layout — only colors change, not geometry. It calls `invalidateWorld(frameBounds)` if a cached frame exists.
@@ -272,8 +277,8 @@ interface CacheEntry {
 
 | Method | Called by | Purpose |
 |--------|-----------|---------|
-| `computeLayout(sourceLines, fontSize, width)` | SelectTool width reflow preview | Pure layout computation (exported) |
-| `getLayout(id, yText, fontSize, width, lang)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
+| `computeLayout(sourceLines, fontSize, width, lineNumbers?)` | SelectTool width reflow preview | Pure layout computation (exported) |
+| `getLayout(id, yText, fontSize, width, lang, lineNumbers?)` | `computeCodeBBox`, `drawCode` | Build or return cached layout; handles cold miss, language change, relayout |
 | `handleContentChange(id, ev, lang)` | Deep observer | Sync tokenize + dispatch worker parse with delta changes |
 | `applyWorkerSpans(id, spans, forVersion)` | Worker response handler | Version-gated span upgrade |
 | `getSpans(id)` | `drawCode` in objects.ts | Get RunSpans[] for renderer |
@@ -291,7 +296,7 @@ Zero-allocation span iteration — no `sliceRuns`, no intermediate objects. Step
 
 1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`
 2. **Per visual line:** Compute `baseY = originY + padTop + i * lineHeight + baselineOffset`
-3. **Gutter:** On lines where `vline.from === 0`, right-align line number within gutter area
+3. **Gutter:** When `layout.lineNumbers` is true and `vline.from === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false.
 4. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
 5. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
 6. **Placeholder:** After the loop, if `sourceLines.length === 1 && sourceLines[0] === ''`, draw grey "Type something..." at first line position (same font, color as CM6 placeholder)
@@ -315,8 +320,9 @@ Position via `worldToClient(origin)` → `left/top` in CSS px.
 
 ### CSS Custom Properties (`--c-*`)
 
-The CM theme references CSS custom properties instead of `em` units. `setCSSVars()` writes them as exact px on the container at mount and on every `positionEditor()` call:
+The CM theme references CSS custom properties instead of `em` units. `setCSSVars()` writes them as exact px on the container at mount and on every `positionEditor()` call. Values depend on `lineNumbers`:
 
+**lineNumbers ON (default):**
 | CSS var | Value | Used by |
 |---------|-------|---------|
 | `--c-pt` | `padTop(fs) * scale` px | `.cm-scroller` paddingTop |
@@ -325,6 +331,8 @@ The CM theme references CSS custom properties instead of `em` units. `setCSSVars
 | `--c-gr` | `gutterPad(fs) * scale` px | `.cm-line` padding-left (gutter-to-content gap) |
 | `--c-pr` | `padRight(fs) * scale` px | `.cm-line` padding-right |
 | `--c-gw` | `2 * charWidth(fs) * scale` px | `.cm-gutterElement` minWidth |
+
+**lineNumbers OFF:** `--c-gl` = `0px`, `--c-gw` = `0px`, `--c-gr` = `padLeft(fs) * scale` px (provides block left indent via `.cm-line` padding since CM removes `.cm-gutters` entirely when the `lineNumbers` extension is absent).
 
 This avoids browser `em→px` conversion which introduces sub-pixel rounding mismatches versus the canvas renderer.
 
@@ -375,12 +383,12 @@ Lazy-loaded via `getCodeMirrorExtensions()` (cached after first call). Two exten
 
 ### Editor State Extensions (set at mount)
 
-- `lineNumbers()` with `formatNumber` callback — pads line numbers with spaces to match canvas gutter digit reservation (`max(2, String(lines).length)`)
-- `highlightActiveLine()` + `highlightActiveLineGutter()` — continuous active line highlight (gutter meets content, no gap)
+- `lineNumbers()` in `Compartment` — `formatNumber` callback pads with spaces to match canvas digit reservation. When `lineNumbers=false`, compartment holds empty `[]` (CM removes `.cm-gutters` entirely). Dynamically reconfigurable via `switchLineNumbers()`
+- `highlightActiveLine()` + `highlightActiveLineGutter()` — continuous active line highlight. `.cm-activeLineGutter` uses negative `marginLeft` + `paddingLeft` (both `var(--c-gl)`) to extend the highlight background to the block's left edge
 - `EditorView.lineWrapping` — enables CM's native word-wrapping
 - `bracketMatching()` — highlights matching bracket pairs (cyan outline) and mismatches (red outline)
 - `closeBrackets()` — auto-closes brackets, quotes, template literals; `closeBracketsKeymap` for Backspace pair-deletion
-- Language extension in `Compartment` — `python()` or `javascript({ typescript: true, jsx: true })`, dynamically reconfigurable via `switchLanguage()`
+- Language extension in `Compartment` — `python()` or `javascript({ typescript: true, jsx: true })`, dynamically reconfigurable via `switchLanguage()`. Same lazy-import pattern used by `switchLineNumbers()`
 - `indentUnit.of('    ')` — 4-space indentation
 - `keymap.of([backspaceIndent, ...closeBracketsKeymap, indentWithTab, ...yUndoManagerKeymap])` — indent-unit Backspace first (deletes 4 spaces at col % 4 boundaries), then closeBrackets, Tab, explicit undo/redo
 - `yCollab(yText, null, { undoManager: sessionUM })` — Yjs collaborative binding with per-session UndoManager scoped to `[yText, yMap]`
@@ -400,7 +408,7 @@ Registered in `tool-registry.ts` as singleton `codeTool`, mapped to `'code'` too
 
 ### Object Creation
 
-Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2`. Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`.
+Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2`. Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`. `lineNumbers` from `useDeviceUIStore.codeLineNumbers` (persisted preference).
 
 ### Editor Lifecycle
 
@@ -426,6 +434,7 @@ Two-level undo: per-session UM for in-editor Ctrl+Z/Y, main UM for post-close at
 Registered after EditorView creation on `handle.y`. Listens for `keysChanged`:
 - `fontSize`, `width`, `origin` → `positionEditor()` (re-reads fresh props, updates all screen-space dimensions + CSS vars)
 - `language` → `switchLanguage()` (lazy-loads parser, reconfigures language `Compartment`)
+- `lineNumbers` → `switchLineNumbers()` (reconfigures lineNumbers `Compartment`) + `positionEditor()` (updates CSS vars for gutter/no-gutter mode)
 
 Cleanup: `yMap.unobserve()` in `commitAndClose` before view destroy.
 
@@ -455,7 +464,7 @@ Room change / full rebuild: `codeSystem.clear()`.
 function drawCode(ctx, handle) {
   if (useSelectionStore.getState().codeEditingId === handle.id) return; // DOM overlay active
   const props = getCodeProps(handle.y);
-  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language);
+  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines);

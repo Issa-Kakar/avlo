@@ -43,6 +43,7 @@ export interface CodeLayout {
   lines: VisualLine[];
   sourceLineCount: number;
   totalWidth: number;
+  lineNumbers: boolean;
 }
 
 interface CacheEntry {
@@ -52,6 +53,7 @@ interface CacheEntry {
   layout: CodeLayout | null;
   layoutFontSize: number;
   layoutWidth: number;
+  layoutLineNumbers: boolean;
   language: CodeLanguage;
   frame: FrameTuple | null;
 }
@@ -96,9 +98,9 @@ export const CODE_FONT = `'${CODE_FONT_FAMILY}', monospace`;
 
 const PAD_TOP_RATIO = 1.5;
 const PAD_BOTTOM_RATIO = 1.5;
-const PAD_LEFT_RATIO = 0.85;
+const PAD_LEFT_RATIO = 1.0;
 const PAD_RIGHT_RATIO = 0.85;
-const GUTTER_PAD_RATIO = 2.0;
+const GUTTER_PAD_RATIO = 2.2;
 const BORDER_RADIUS_RATIO = 0.85;
 
 // ============================================================================
@@ -146,7 +148,8 @@ export function gutterWidth(maxDigits: number, fontSize: number): number {
   return maxDigits * charWidth(fontSize);
 }
 
-export function contentLeft(maxDigits: number, fontSize: number): number {
+export function contentLeft(maxDigits: number, fontSize: number, lineNumbers = true): number {
+  if (!lineNumbers) return padLeft(fontSize);
   return padLeft(fontSize) + gutterWidth(maxDigits, fontSize) + gutterPad(fontSize);
 }
 
@@ -176,10 +179,15 @@ export function getDefaultWidth(fontSize: number): number {
 // §4 LAYOUT
 // ============================================================================
 
-export function computeLayout(sourceLines: string[], fontSize: number, width: number): CodeLayout {
+export function computeLayout(
+  sourceLines: string[],
+  fontSize: number,
+  width: number,
+  lineNumbers = true,
+): CodeLayout {
   const sourceLineCount = sourceLines.length;
   const digits = Math.max(2, String(sourceLineCount).length);
-  const cl = contentLeft(digits, fontSize);
+  const cl = contentLeft(digits, fontSize, lineNumbers);
   const cw = charWidth(fontSize);
   const maxChars = Math.max(1, Math.floor((width - cl - padRight(fontSize)) / cw));
 
@@ -212,7 +220,7 @@ export function computeLayout(sourceLines: string[], fontSize: number, width: nu
     }
   }
 
-  return { lines, sourceLineCount, totalWidth: width };
+  return { lines, sourceLineCount, totalWidth: width, lineNumbers };
 }
 
 /** Compute total height from layout + fontSize — not stored. */
@@ -341,6 +349,7 @@ class CodeSystemCache {
     fontSize: number,
     width: number,
     language: CodeLanguage,
+    lineNumbers = true,
   ): CodeLayout {
     let e = this.entries.get(id);
 
@@ -349,7 +358,7 @@ class CodeSystemCache {
       const text = yText.toString();
       const sourceLines = text.split('\n');
       const spans = syncTokenize(sourceLines, language);
-      const layout = computeLayout(sourceLines, fontSize, width);
+      const layout = computeLayout(sourceLines, fontSize, width, lineNumbers);
       e = {
         sourceLines,
         version: 1,
@@ -357,6 +366,7 @@ class CodeSystemCache {
         layout,
         layoutFontSize: fontSize,
         layoutWidth: width,
+        layoutLineNumbers: lineNumbers,
         language,
         frame: null,
       };
@@ -371,28 +381,44 @@ class CodeSystemCache {
       e.language = language;
       e.version++;
       requestParse(id, e.sourceLines.join('\n'), language, e.version);
-      // Only recompute layout if fontSize/width also changed
-      if (!e.layout || e.layoutFontSize !== fontSize || e.layoutWidth !== width) {
+      // Only recompute layout if fontSize/width/lineNumbers also changed
+      if (
+        !e.layout ||
+        e.layoutFontSize !== fontSize ||
+        e.layoutWidth !== width ||
+        e.layoutLineNumbers !== lineNumbers
+      ) {
         e.layoutFontSize = fontSize;
         e.layoutWidth = width;
+        e.layoutLineNumbers = lineNumbers;
         e.frame = null;
-        e.layout = computeLayout(e.sourceLines, fontSize, width);
+        e.layout = computeLayout(e.sourceLines, fontSize, width, lineNumbers);
       }
       return e.layout;
     }
 
     // Cached layout still valid?
-    if (e.layout && e.layoutFontSize === fontSize && e.layoutWidth === width) {
+    if (
+      e.layout &&
+      e.layoutFontSize === fontSize &&
+      e.layoutWidth === width &&
+      e.layoutLineNumbers === lineNumbers
+    ) {
       return e.layout;
     }
 
-    // Relayout needed (fontSize or width changed)
-    if (e.layoutFontSize !== fontSize || e.layoutWidth !== width) {
+    // Relayout needed (fontSize, width, or lineNumbers changed)
+    if (
+      e.layoutFontSize !== fontSize ||
+      e.layoutWidth !== width ||
+      e.layoutLineNumbers !== lineNumbers
+    ) {
       e.layoutFontSize = fontSize;
       e.layoutWidth = width;
+      e.layoutLineNumbers = lineNumbers;
       e.frame = null;
     }
-    e.layout = computeLayout(e.sourceLines, fontSize, width);
+    e.layout = computeLayout(e.sourceLines, fontSize, width, lineNumbers);
     return e.layout;
   }
 
@@ -421,6 +447,7 @@ class CodeSystemCache {
         layout: null,
         layoutFontSize: 0,
         layoutWidth: 0,
+        layoutLineNumbers: true,
         language,
         frame: null,
       };
@@ -500,6 +527,7 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     props.fontSize,
     props.width,
     props.language,
+    props.lineNumbers,
   );
   const [ox, oy] = props.origin;
   const th = totalHeight(layout, props.fontSize);
@@ -529,11 +557,9 @@ export function renderCodeLayout(
   const cw = charWidth(fontSize);
   const pt = padTop(fontSize);
   const pl = padLeft(fontSize);
-  const gp = gutterPad(fontSize);
   const th = totalHeight(layout, fontSize);
   const digits = Math.max(2, String(layout.sourceLineCount).length);
-  const gw = gutterWidth(digits, fontSize);
-  const cl = pl + gw + gp;
+  const cl = contentLeft(digits, fontSize, layout.lineNumbers);
   const normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
   const boldFont = `${FONT_WEIGHT_BOLD} ${fontSize}px ${CODE_FONT}`;
 
@@ -554,8 +580,8 @@ export function renderCodeLayout(
     const vline = layout.lines[i];
     const baseY = originY + pt + i * lh + bl;
 
-    // 3. Gutter — only on first segment of source line
-    if (vline.from === 0) {
+    // 3. Gutter — only on first segment of source line, when lineNumbers enabled
+    if (layout.lineNumbers && vline.from === 0) {
       ctx.fillStyle = CODE_GUTTER;
       if (prevFont !== normalFont) {
         ctx.font = normalFont;

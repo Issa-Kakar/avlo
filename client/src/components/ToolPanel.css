@@ -1,41 +1,12 @@
-/* ===== Tool Buttons Base ===== */
-.tool-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  display: grid;
-  place-items: center;
-  color: var(--text-secondary);
-  background: transparent;
-  transition: all var(--transition-fast);
-  position: relative;
-  border: none;
-  cursor: pointer;
-}
+/* ===== Mural-Style Compact Toolbar ===== */
 
-.tool-btn:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-.tool-btn.active {
-  background: var(--brand-primary);
-  color: white;
-}
-
-.tool-divider {
-  height: 1px;
-  background: var(--border-light);
-  margin: var(--space-xs) var(--space-sm);
-}
-
-/* Tooltip */
+/* Tooltip — below button */
 .tool-btn::after {
   content: attr(data-tooltip);
   position: absolute;
-  left: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%) scale(0.9);
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.9);
   background: var(--text-primary);
   color: var(--text-inverse);
   padding: 4px 8px;
@@ -46,33 +17,31 @@
   opacity: 0;
   pointer-events: none;
   transition: all var(--transition-fast);
+  z-index: 10;
 }
 
 .tool-btn:hover::after {
   opacity: 1;
-  transform: translateY(-50%) scale(1);
+  transform: translateX(-50%) scale(1);
 }
 
-/* ===== 48px Fixed Top Toolbar ===== */
+/* ===== Fixed Top Toolbar ===== */
 
-/* Fixed top toolbar container */
 .tool-dock-wrap {
   position: fixed;
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 380;
-  /* Simple positioning container - no flex layout */
 }
 
-/* The main toolbar dock bar */
 .tool-dock {
-  position: relative; /* Create positioning context for inspector */
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--dock-gap);
   height: var(--dock-h);
-  padding: 0 10px;
+  padding: var(--dock-pad);
   border-radius: var(--dock-radius);
   background: var(--dock-bg);
   border: 1px solid var(--dock-border);
@@ -87,25 +56,21 @@
   display: grid;
   place-items: center;
   border-radius: var(--btn-radius);
-  border: 1px solid transparent;
   background: transparent;
   color: var(--icon-muted);
+  border: none;
   transition:
     background 120ms ease,
-    border-color 120ms ease,
     color 120ms ease;
   cursor: pointer;
+  position: relative;
 }
 
 .tool-dock .tool-btn .icon {
   width: var(--icon);
   height: var(--icon);
   color: inherit;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  fill: currentColor;
 }
 
 .tool-dock .tool-btn:hover {
@@ -114,7 +79,6 @@
 
 .tool-dock .tool-btn.active {
   background: var(--accent);
-  border-color: var(--accent-border);
   color: var(--icon-selected);
 }
 
@@ -135,20 +99,20 @@
   width: 1px;
   height: var(--divider-h);
   background: var(--divider);
-  margin: 0 2px;
+  margin: 0 1px;
 }
 
 /* ===== Inspector ===== */
 .inspector {
   position: absolute;
-  right: calc(100% + 6px); /* Position 6px to the left of toolbar */
-  top: 50%; /* Center vertically */
-  transform: translateY(-50%); /* Center vertically */
+  right: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
-  gap: 8px; /* Restored original horizontal spacing */
-  height: auto; /* Allow natural height based on content */
-  padding: 4px 8px; /* Tight vertical (4px), original horizontal (8px) */
+  gap: 8px;
+  height: auto;
+  padding: 3px 6px;
   border-radius: var(--dock-radius);
   background: var(--dock-bg);
   border: 1px solid var(--dock-border);
@@ -158,14 +122,14 @@
 .inspector .row {
   display: inline-flex;
   align-items: center;
-  gap: 6px; /* Original horizontal spacing restored */
+  gap: 6px;
 }
 
 /* Color swatches */
 .swatch-row {
   display: flex;
   align-items: center;
-  gap: var(--gap-xs); /* Original spacing restored (6px) */
+  gap: var(--gap-xs);
 }
 
 .swatch {
@@ -209,10 +173,9 @@
   border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
-/* Custom color dot overlay (80% size, centered on rainbow circle) */
 .swatch-plus .custom-color-dot {
   position: absolute;
-  width: 90%; /* Slightly smaller from 85% for better visual balance */
+  width: 90%;
   height: 93%;
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -261,7 +224,7 @@
 .color-popover {
   position: absolute;
   z-index: 500;
-  top: calc(var(--dock-h) + 8px);
+  top: calc(var(--dock-h) + 6px);
   left: 0;
   width: 232px;
   padding: 10px;
@@ -354,7 +317,7 @@
 
 /* Fill button in inspector */
 .inspector .icon-btn {
-  width: 24px; /* Compact size for inspector */
+  width: 24px;
   height: 24px;
   border-radius: 6px;
   display: grid;
@@ -385,15 +348,15 @@
 /* ===== Undo/Redo ===== */
 .undo-redo-compact {
   position: absolute;
-  left: calc(100% + 4px); /* 4px to RIGHT of toolbar - tight spacing */
-  top: 50%; /* Center vertically */
-  transform: translateY(-50%); /* Center vertically */
+  left: calc(100% + 4px);
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  height: 36px;
-  padding: 3px;
-  border-radius: 10px;
+  height: 32px;
+  padding: 2px;
+  border-radius: 8px;
   background: var(--dock-bg);
   border: 1px solid var(--dock-border);
   box-shadow: var(--dock-shadow);
@@ -402,17 +365,16 @@
 
 .undo-btn,
 .redo-btn {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  border: 1px solid transparent;
+  border-radius: 6px;
+  border: none;
   background: transparent;
   color: var(--icon-muted);
   transition:
     background 120ms ease,
-    border-color 120ms ease,
     color 120ms ease;
   cursor: pointer;
 }
@@ -438,9 +400,5 @@
   width: 16px;
   height: 16px;
   color: inherit;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  fill: currentColor;
 }

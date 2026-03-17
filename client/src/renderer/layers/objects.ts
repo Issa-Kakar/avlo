@@ -371,6 +371,7 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.fontSize,
     props.width,
     props.language,
+    props.lineNumbers,
   );
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
@@ -403,10 +404,7 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   ctx.restore();
 }
 
-function drawImageWithTransform(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-): void {
+function drawImageWithTransform(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const frame = getFrame(handle.y);
   if (!frame) return;
   const transformedFrame = applyTransformToFrame(frame, useSelectionStore.getState().transform);
@@ -423,10 +421,21 @@ function drawImageWithTransform(
   if (bitmap) {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+    ctx.drawImage(
+      bitmap,
+      transformedFrame[0],
+      transformedFrame[1],
+      transformedFrame[2],
+      transformedFrame[3],
+    );
   } else {
     ctx.fillStyle = '#f0f0f0';
-    ctx.fillRect(transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+    ctx.fillRect(
+      transformedFrame[0],
+      transformedFrame[1],
+      transformedFrame[2],
+      transformedFrame[3],
+    );
   }
   ctx.restore();
 }
@@ -830,6 +839,7 @@ function drawScaledCodePreview(
     props.fontSize,
     props.width,
     props.language,
+    props.lineNumbers,
   );
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
@@ -919,8 +929,17 @@ function renderSelectedObjectWithScaleTransform(
     if (selectionKind === 'mixed' && handleKind === 'corner') {
       // Uniform scale for mixed corner (uses same frame-based math as shapes)
       const frame = getFrame(handle.y);
-      if (!frame) { drawObject(ctx, handle); return; }
-      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+      if (!frame) {
+        drawObject(ctx, handle);
+        return;
+      }
+      const transformedFrame = applyUniformScaleToFrame(
+        frame,
+        originBounds,
+        origin,
+        scaleX,
+        scaleY,
+      );
       const assetId = getAssetId(handle.y);
       if (!assetId) return;
       const bitmap = getBitmap(assetId);
@@ -930,10 +949,21 @@ function renderSelectedObjectWithScaleTransform(
       if (bitmap) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+        ctx.drawImage(
+          bitmap,
+          transformedFrame[0],
+          transformedFrame[1],
+          transformedFrame[2],
+          transformedFrame[3],
+        );
       } else {
         ctx.fillStyle = '#f0f0f0';
-        ctx.fillRect(transformedFrame[0], transformedFrame[1], transformedFrame[2], transformedFrame[3]);
+        ctx.fillRect(
+          transformedFrame[0],
+          transformedFrame[1],
+          transformedFrame[2],
+          transformedFrame[3],
+        );
       }
       ctx.restore();
     } else {

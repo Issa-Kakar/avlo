@@ -1121,7 +1121,12 @@ export class SelectTool implements PointerTool {
               newLeft = left;
             }
 
-            const layout = computeCodeLayout(sourceLines, props.fontSize, targetWidth);
+            const layout = computeCodeLayout(
+              sourceLines,
+              props.fontSize,
+              targetWidth,
+              props.lineNumbers,
+            );
             codeReflow.layouts.set(handle.id, layout);
             codeReflow.origins.set(handle.id, [newLeft, props.origin[1]]);
 

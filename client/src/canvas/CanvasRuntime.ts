@@ -102,7 +102,7 @@ export class CanvasRuntime {
     setHoldPreviewFn(() => this.overlayLoop?.holdPreviewForOneFrame());
 
     // 4. Input manager + keyboard
-    this.inputManager = new InputManager(this);
+    this.inputManager = new InputManager(this, container);
     this.inputManager.attach();
     attachKeyboard();
 

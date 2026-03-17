@@ -22,8 +22,14 @@ import type { CanvasRuntime } from './CanvasRuntime';
 
 export class InputManager {
   private canvas: HTMLCanvasElement | null = null;
+  private container: HTMLElement;
 
-  constructor(private runtime: CanvasRuntime) {}
+  constructor(
+    private runtime: CanvasRuntime,
+    container: HTMLElement,
+  ) {
+    this.container = container;
+  }
 
   /**
    * Attach event listeners to the canvas element.
@@ -39,7 +45,7 @@ export class InputManager {
     this.canvas.addEventListener('pointercancel', this.onPointerCancel, { passive: false });
     this.canvas.addEventListener('pointerleave', this.onPointerLeave, { passive: false });
     this.canvas.addEventListener('lostpointercapture', this.onLostCapture, { passive: false });
-    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.container.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('dragover', this.onDragOver, { passive: false });
     this.canvas.addEventListener('drop', this.onDrop, { passive: false });
   }
@@ -56,7 +62,7 @@ export class InputManager {
     this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('lostpointercapture', this.onLostCapture);
-    this.canvas.removeEventListener('wheel', this.onWheel);
+    this.container.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('dragover', this.onDragOver);
     this.canvas.removeEventListener('drop', this.onDrop);
 
