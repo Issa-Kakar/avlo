@@ -82,6 +82,8 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
             inset: 0,
             zIndex: 1,
             display: 'block',
+            width: '100%',
+            height: '100%',
             touchAction: 'none',
           }}
         />
@@ -92,6 +94,8 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
             inset: 0,
             zIndex: 2,
             display: 'block',
+            width: '100%',
+            height: '100%',
             pointerEvents: 'none',
           }}
         />

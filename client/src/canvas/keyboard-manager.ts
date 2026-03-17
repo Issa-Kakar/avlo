@@ -77,7 +77,7 @@ function onKeyDown(e: KeyboardEvent): void {
   if (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
-    target.contentEditable === 'true'
+    target.isContentEditable
   ) {
     return;
   }
@@ -308,7 +308,7 @@ function onPaste(e: ClipboardEvent): void {
   if (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
-    target.contentEditable === 'true'
+    target.isContentEditable
   ) {
     return;
   }

@@ -41,7 +41,11 @@ import { enqueue } from '@/lib/image/image-manager';
 
 const PASTE_CHAR_LIMIT = 50_000;
 const PASTE_EXTENSIONS = [
-  Document, Paragraph, Text, Bold, Italic,
+  Document,
+  Paragraph,
+  Text,
+  Bold,
+  Italic,
   Highlight.configure({ multicolor: true }),
 ];
 
@@ -63,7 +67,7 @@ export async function copySelected(): Promise<void> {
   clipboardNonce = nonce;
   clipboardPayload = payload;
 
-  const plainText = extractPlainText(payload.objects) || 'Avlo objects';
+  const plainText = extractPlainText(payload.objects) || ' ';
 
   try {
     const htmlContent = `<!-- avlo:${nonce} -->${escapeHtml(plainText)}`;
@@ -224,6 +228,11 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
       if (obj.content) {
         yObj.set('content', deserializeFragment(obj.content));
       }
+      if (obj.textContent !== undefined) {
+        const yText = new Y.Text();
+        yText.insert(0, obj.textContent);
+        yObj.set('content', yText);
+      }
 
       objects.set(newId, yObj);
     }
@@ -326,7 +335,11 @@ function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | nu
           }
         }
 
-        xmlText.insert(xmlText.length, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
+        xmlText.insert(
+          xmlText.length,
+          inline.text,
+          Object.keys(attrs).length > 0 ? attrs : undefined,
+        );
         if (inline.text) hasContent = true;
       }
     }
@@ -465,10 +478,46 @@ function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [numb
 
   // Try: right, below, above, left
   const candidates: [number, number, WorldBounds][] = [
-    [w + gap, 0, { minX: bounds.maxX + gap - eps, minY: bounds.minY - eps, maxX: bounds.maxX + gap + w + eps, maxY: bounds.maxY + eps }],
-    [0, h + gap, { minX: bounds.minX - eps, minY: bounds.maxY + gap - eps, maxX: bounds.maxX + eps, maxY: bounds.maxY + gap + h + eps }],
-    [0, -(h + gap), { minX: bounds.minX - eps, minY: bounds.minY - gap - h - eps, maxX: bounds.maxX + eps, maxY: bounds.minY - gap + eps }],
-    [-(w + gap), 0, { minX: bounds.minX - gap - w - eps, minY: bounds.minY - eps, maxX: bounds.minX - gap + eps, maxY: bounds.maxY + eps }],
+    [
+      w + gap,
+      0,
+      {
+        minX: bounds.maxX + gap - eps,
+        minY: bounds.minY - eps,
+        maxX: bounds.maxX + gap + w + eps,
+        maxY: bounds.maxY + eps,
+      },
+    ],
+    [
+      0,
+      h + gap,
+      {
+        minX: bounds.minX - eps,
+        minY: bounds.maxY + gap - eps,
+        maxX: bounds.maxX + eps,
+        maxY: bounds.maxY + gap + h + eps,
+      },
+    ],
+    [
+      0,
+      -(h + gap),
+      {
+        minX: bounds.minX - eps,
+        minY: bounds.minY - gap - h - eps,
+        maxX: bounds.maxX + eps,
+        maxY: bounds.minY - gap + eps,
+      },
+    ],
+    [
+      -(w + gap),
+      0,
+      {
+        minX: bounds.minX - gap - w - eps,
+        minY: bounds.minY - eps,
+        maxX: bounds.minX - gap + eps,
+        maxY: bounds.maxY + eps,
+      },
+    ],
   ];
 
   for (const [dx, dy, queryBounds] of candidates) {
@@ -486,8 +535,13 @@ function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [numb
 function ensureVisible(bounds: WorldBounds): void {
   const vp = getVisibleWorldBounds();
   // Already fully contained — nothing to do
-  if (bounds.minX >= vp.minX && bounds.maxX <= vp.maxX &&
-      bounds.minY >= vp.minY && bounds.maxY <= vp.maxY) return;
+  if (
+    bounds.minX >= vp.minX &&
+    bounds.maxX <= vp.maxX &&
+    bounds.minY >= vp.minY &&
+    bounds.maxY <= vp.maxY
+  )
+    return;
   const { scale } = useCameraStore.getState();
   // Only zoom out (cap at current scale), floor at 25% to avoid extreme zoom-out
   animateToFit(bounds, 80, scale, 0.25);

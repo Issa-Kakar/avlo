@@ -28,8 +28,6 @@ let overlayCtx: CanvasRenderingContext2D | null = null;
 let editorHost: HTMLDivElement | null = null;
 
 // Deferred resize state - applied at start of next render frame
-let pendingCssW = 0;
-let pendingCssH = 0;
 let pendingPixelW = 0;
 let pendingPixelH = 0;
 let hasPendingResize = false;
@@ -56,8 +54,8 @@ export function setEditorHost(el: HTMLDivElement | null): void {
 
 /**
  * Apply pending canvas resize. Called at the start of each render frame.
- * Sets CSS display dimensions and backing store atomically so the browser
- * never CSS-scales stale content into a differently-sized box.
+ * Sets backing store (device pixels) only — CSS sizing is handled by
+ * `position: absolute; inset: 0` on the canvas elements.
  */
 export function applyPendingResize(): boolean {
   if (!hasPendingResize) return false;
@@ -66,13 +64,6 @@ export function applyPendingResize(): boolean {
   const oCanvas = overlayCtx?.canvas;
   if (!bCanvas || !oCanvas) return false;
   if (bCanvas.width === pendingPixelW && bCanvas.height === pendingPixelH) return false;
-  // CSS display size (integer px) — set BEFORE backing store so layout is correct
-  const cssW = pendingCssW + 'px';
-  const cssH = pendingCssH + 'px';
-  bCanvas.style.width = cssW;
-  bCanvas.style.height = cssH;
-  oCanvas.style.width = cssW;
-  oCanvas.style.height = cssH;
   // Backing store (device pixels) — resets context state
   bCanvas.width = pendingPixelW;
   bCanvas.height = pendingPixelH;
@@ -193,8 +184,6 @@ export class SurfaceManager {
     const effectiveDpr = Math.min(pixelW / roundedCssW, pixelH / roundedCssH);
 
     // Queue resize for next render frame (avoids clearing canvas between frames)
-    pendingCssW = roundedCssW;
-    pendingCssH = roundedCssH;
     pendingPixelW = pixelW;
     pendingPixelH = pixelH;
     hasPendingResize = true;

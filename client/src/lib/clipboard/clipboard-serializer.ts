@@ -23,6 +23,7 @@ export interface SerializedObject {
   kind: ObjectKind;
   props: Record<string, unknown>;
   content?: SerializedContent;
+  textContent?: string;
 }
 
 export interface SerializedContent {
@@ -38,11 +39,21 @@ export interface SerializedParagraph {
 export function serializeObjects(ids: string[]): ClipboardPayload | null {
   const { objectsById } = getCurrentSnapshot();
   const objects: SerializedObject[] = [];
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
 
   for (const id of ids) {
     const handle = objectsById.get(id);
     if (!handle) continue;
     objects.push(serializeHandle(handle));
+    // Canonical bbox from snapshot — correct for all kinds including text/code
+    const b = handle.bbox;
+    minX = Math.min(minX, b[0]);
+    minY = Math.min(minY, b[1]);
+    maxX = Math.max(maxX, b[2]);
+    maxY = Math.max(maxY, b[3]);
   }
 
   if (objects.length === 0) return null;
@@ -50,7 +61,7 @@ export function serializeObjects(ids: string[]): ClipboardPayload | null {
   return {
     version: 1,
     objects,
-    bounds: computePayloadBounds(objects),
+    bounds: isFinite(minX) ? { minX, minY, maxX, maxY } : { minX: 0, minY: 0, maxX: 0, maxY: 0 },
   };
 }
 
@@ -58,15 +69,19 @@ function serializeHandle(handle: ObjectHandle): SerializedObject {
   const props: Record<string, unknown> = {};
   let content: SerializedContent | undefined;
 
+  let textContent: string | undefined;
+
   for (const [key, value] of handle.y.entries()) {
     if (key === 'content' && value instanceof Y.XmlFragment) {
       content = serializeFragment(value);
+    } else if (key === 'content' && value instanceof Y.Text) {
+      textContent = value.toString();
     } else {
       props[key] = value;
     }
   }
 
-  return { kind: handle.kind, props, content };
+  return { kind: handle.kind, props, content, textContent };
 }
 
 export function serializeFragment(fragment: Y.XmlFragment): SerializedContent {
@@ -121,67 +136,15 @@ export function extractPlainText(objects: SerializedObject[]): string {
   const parts: string[] = [];
 
   for (const obj of objects) {
-    if (!obj.content) continue;
-    const text = obj.content.paragraphs
-      .map((p) => p.delta.map((d) => d.insert).join(''))
-      .join('\n');
-    if (text) parts.push(text);
+    if (obj.textContent) {
+      parts.push(obj.textContent);
+    } else if (obj.content) {
+      const text = obj.content.paragraphs
+        .map((p) => p.delta.map((d) => d.insert).join(''))
+        .join('\n');
+      if (text) parts.push(text);
+    }
   }
 
   return parts.join('\n\n');
-}
-
-// === Bounds Computation ===
-
-export function computePayloadBounds(objects: SerializedObject[]): WorldBounds {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  for (const obj of objects) {
-    const { props } = obj;
-
-    if (props.frame) {
-      const [x, y, w, h] = props.frame as [number, number, number, number];
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + w);
-      maxY = Math.max(maxY, y + h);
-    } else if (props.origin) {
-      const [ox, oy] = props.origin as [number, number];
-      minX = Math.min(minX, ox);
-      minY = Math.min(minY, oy);
-      maxX = Math.max(maxX, ox);
-      maxY = Math.max(maxY, oy);
-    } else if (props.points) {
-      for (const [px, py] of props.points as [number, number][]) {
-        minX = Math.min(minX, px);
-        minY = Math.min(minY, py);
-        maxX = Math.max(maxX, px);
-        maxY = Math.max(maxY, py);
-      }
-    }
-
-    // Also include connector start/end
-    if (props.start) {
-      const [sx, sy] = props.start as [number, number];
-      minX = Math.min(minX, sx);
-      minY = Math.min(minY, sy);
-      maxX = Math.max(maxX, sx);
-      maxY = Math.max(maxY, sy);
-    }
-    if (props.end) {
-      const [ex, ey] = props.end as [number, number];
-      minX = Math.min(minX, ex);
-      minY = Math.min(minY, ey);
-      maxX = Math.max(maxX, ex);
-      maxY = Math.max(maxY, ey);
-    }
-  }
-
-  // Fallback if no geometry found
-  if (!isFinite(minX)) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-
-  return { minX, minY, maxX, maxY };
 }
