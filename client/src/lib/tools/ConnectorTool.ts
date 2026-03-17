@@ -23,6 +23,7 @@ import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { getShapeType, getFrame } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import {
   type Dir,
   type SnapTarget,
@@ -216,12 +217,15 @@ export class ConnectorTool implements PointerTool {
 
     if (this.hoverSnap) {
       const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
-      if (handle && (handle.kind === 'shape' || handle.kind === 'text')) {
-        const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+      if (handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image')) {
+        const frame =
+          handle.kind === 'text' ? getTextFrame(handle.id)
+          : handle.kind === 'code' ? getCodeFrame(handle.id)
+          : getFrame(handle.y);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
           snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];
-          snapShapeType = handle.kind === 'text' ? 'rect' : getShapeType(handle.y);
+          snapShapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
         }
       }
     }

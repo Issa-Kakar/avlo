@@ -19,12 +19,14 @@ import type { Snapshot } from '@avlo/shared';
 import {
   getFrame,
   getShapeType,
+  getWidth,
   getConnectorType,
   getStartAnchor,
   getEndAnchor,
   getPoints,
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
+import { getCodeFrame } from '@/lib/code/code-system';
 import { getObjectCacheInstance } from '../object-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
@@ -160,8 +162,25 @@ function drawObjectHighlights(
     if (handle.kind === 'text') {
       const frame = getTextFrame(id);
       if (frame) {
-        const [x, y, w, h] = frame;
-        ctx.strokeRect(x, y, w, h);
+        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
+      }
+      continue;
+    }
+
+    // Code: stroke the derived frame rect
+    if (handle.kind === 'code') {
+      const frame = getCodeFrame(id);
+      if (frame) {
+        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
+      }
+      continue;
+    }
+
+    // Image: stroke the stored frame rect
+    if (handle.kind === 'image') {
+      const frame = getFrame(handle.y);
+      if (frame) {
+        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
       }
       continue;
     }
@@ -173,9 +192,27 @@ function drawObjectHighlights(
       continue;
     }
 
-    // Shapes: stroke the cached Path2D (follows actual geometry)
+    // Shapes: stroke cached Path2D scaled to visual outer edge
+    // Scale the context around the shape center so the path expands outward
+    // by half the stroke width — aligning the highlight with the painted edge.
     const path = cache.getPath(id, handle);
-    ctx.stroke(path);
+    const frame = getFrame(handle.y);
+    if (frame) {
+      const sw = getWidth(handle.y, 2);
+      const [fx, fy, fw, fh] = frame;
+      const cx = fx + fw / 2;
+      const cy = fy + fh / 2;
+      const sx = fw > 0 ? (fw + sw) / fw : 1;
+      const sy = fh > 0 ? (fh + sw) / fh : 1;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(sx, sy);
+      ctx.translate(-cx, -cy);
+      ctx.stroke(path);
+      ctx.restore();
+    } else {
+      ctx.stroke(path);
+    }
   }
 }
 
@@ -414,10 +451,35 @@ function drawSnapMidpointDots(
   if (!shapeHandle) return;
 
   const shapeFrame =
-    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id) : getFrame(shapeHandle.y);
+    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id)
+    : shapeHandle.kind === 'code' ? getCodeFrame(shapeHandle.id)
+    : getFrame(shapeHandle.y);
   if (!shapeFrame) return;
 
-  const shapeType = getShapeType(shapeHandle.y);
+  const shapeType = shapeHandle.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
+
+  // Draw snap target highlight — cached geometry for shapes, strokeRect for others
+  ctx.save();
+  ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+  ctx.lineWidth = 2 / scale;
+  ctx.lineJoin = 'round';
+  if (shapeHandle.kind === 'shape') {
+    const cache = getObjectCacheInstance();
+    const path = cache.getPath(shapeHandle.id, shapeHandle);
+    const sw = getWidth(shapeHandle.y, 2);
+    const [fx, fy, fw, fh] = shapeFrame;
+    const cx = fx + fw / 2;
+    const cy = fy + fh / 2;
+    const sx = fw > 0 ? (fw + sw) / fw : 1;
+    const sy = fh > 0 ? (fh + sw) / fh : 1;
+    ctx.translate(cx, cy);
+    ctx.scale(sx, sy);
+    ctx.translate(-cx, -cy);
+    ctx.stroke(path);
+  } else {
+    ctx.strokeRect(shapeFrame[0], shapeFrame[1], shapeFrame[2], shapeFrame[3]);
+  }
+  ctx.restore();
 
   const smallRadius = pxToWorld(ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX, scale);
   const largeRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);

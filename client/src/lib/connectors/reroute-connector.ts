@@ -218,7 +218,7 @@ function resolveEndpoint(
     const snap = override as SnapTarget;
     const handle = snapshot.objectsById.get(snap.shapeId);
     const frame =
-      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
+      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image')
         ? handle.kind === 'text'
           ? getTextFrame(handle.id)
           : handle.kind === 'code'
@@ -243,7 +243,7 @@ function resolveEndpoint(
   if (anchor) {
     const handle = snapshot.objectsById.get(anchor.id);
     const frame =
-      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
+      handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image')
         ? handle.kind === 'text'
           ? getTextFrame(handle.id)
           : handle.kind === 'code'
@@ -391,7 +391,7 @@ function resolveNewEndpoint(
   const snap = value;
   const handle = snapshot.objectsById.get(snap.shapeId);
   const frame =
-    handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code')
+    handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image')
       ? handle.kind === 'text'
         ? getTextFrame(handle.id)
         : handle.kind === 'code'

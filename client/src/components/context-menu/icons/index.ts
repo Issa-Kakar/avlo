@@ -16,6 +16,7 @@ export {
   IconConnectorLine,
   IconTextType,
   IconCodeBlock,
+  IconImages,
 } from './FilterIcons';
 export { IconTrash } from './TrashIcon';
 export { IconCodeLines } from './CodeIcons';

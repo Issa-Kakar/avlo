@@ -26,6 +26,9 @@ import {
   computeEndTrimInfo,
   ARROW_ROUNDING_LINE_WIDTH,
 } from '@/lib/connectors/connector-paths';
+import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getObjectCacheInstance } from '../object-cache';
+import { getWidth } from '@avlo/shared';
 
 /**
  * Draw connector preview on overlay canvas.
@@ -121,6 +124,29 @@ export function drawConnectorPreview(
     snapShapeType !== null;
 
   if (shouldShowDots) {
+    // Draw snap target highlight — cached geometry for shapes, strokeRect for others
+    const snapHandle = getCurrentSnapshot().objectsById.get(preview.snapShapeId ?? '');
+    ctx.save();
+    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
+    ctx.lineWidth = 2 / scale;
+    ctx.lineJoin = 'round';
+    if (snapHandle?.kind === 'shape') {
+      const cache = getObjectCacheInstance();
+      const path = cache.getPath(snapHandle.id, snapHandle);
+      const sw = getWidth(snapHandle.y, 2);
+      const cx = snapShapeFrame[0] + snapShapeFrame[2] / 2;
+      const cy = snapShapeFrame[1] + snapShapeFrame[3] / 2;
+      const sx = snapShapeFrame[2] > 0 ? (snapShapeFrame[2] + sw) / snapShapeFrame[2] : 1;
+      const sy = snapShapeFrame[3] > 0 ? (snapShapeFrame[3] + sw) / snapShapeFrame[3] : 1;
+      ctx.translate(cx, cy);
+      ctx.scale(sx, sy);
+      ctx.translate(-cx, -cy);
+      ctx.stroke(path);
+    } else {
+      ctx.strokeRect(snapShapeFrame[0], snapShapeFrame[1], snapShapeFrame[2], snapShapeFrame[3]);
+    }
+    ctx.restore();
+
     drawSnapDots(
       ctx,
       snapShapeFrame,

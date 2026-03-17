@@ -65,6 +65,17 @@ export const IconCodeBlock = (props: SvgProps) => (
   </svg>
 );
 
+/** Mountain landscape (kind: images) */
+export const IconImages = (props: SvgProps) => (
+  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
+    <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"
+      stroke="currentColor" strokeWidth="1.5" />
+    <circle cx="5" cy="6" r="1.25" fill="currentColor" />
+    <path d="M2 12L5.5 8L8 10.5L10.5 7.5L14 12"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 /** T with baseline (kind: text) */
 export const IconTextType = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
