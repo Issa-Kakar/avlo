@@ -404,42 +404,6 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   ctx.restore();
 }
 
-function drawImageWithTransform(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const frame = getFrame(handle.y);
-  if (!frame) return;
-  const transformedFrame = applyTransformToFrame(frame, useSelectionStore.getState().transform);
-  const [, , w, h] = transformedFrame;
-  if (w < 0.001 || h < 0.001) return;
-
-  const assetId = getAssetId(handle.y);
-  if (!assetId) return;
-  const bitmap = getBitmap(assetId);
-  const opacity = getOpacity(handle.y);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-  if (bitmap) {
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(
-      bitmap,
-      transformedFrame[0],
-      transformedFrame[1],
-      transformedFrame[2],
-      transformedFrame[3],
-    );
-  } else {
-    ctx.fillStyle = '#f0f0f0';
-    ctx.fillRect(
-      transformedFrame[0],
-      transformedFrame[1],
-      transformedFrame[2],
-      transformedFrame[3],
-    );
-  }
-  ctx.restore();
-}
-
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
@@ -924,22 +888,26 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 3: Image scaling — non-uniform (same as shapes)
+  // CASE 3: Image scaling — always uniform, except mixed+side = edge-pin translate
   if (handle.kind === 'image') {
-    if (selectionKind === 'mixed' && handleKind === 'corner') {
-      // Uniform scale for mixed corner (uses same frame-based math as shapes)
-      const frame = getFrame(handle.y);
-      if (!frame) {
-        drawObject(ctx, handle);
-        return;
-      }
-      const transformedFrame = applyUniformScaleToFrame(
-        frame,
-        originBounds,
-        origin,
-        scaleX,
-        scaleY,
+    const frame = getFrame(handle.y);
+    if (!frame) { drawObject(ctx, handle); return; }
+
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      // Edge-pin translate (no dimension change)
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+        originBounds, scaleX, scaleY, origin, handleId,
       );
+      ctx.save();
+      ctx.translate(dx, dy);
+      drawImage(ctx, handle);
+      ctx.restore();
+    } else {
+      // Uniform scale for all other cases
+      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+      const [, , tw, th] = transformedFrame;
+      if (tw < 0.001 || th < 0.001) return;
       const assetId = getAssetId(handle.y);
       if (!assetId) return;
       const bitmap = getBitmap(assetId);
@@ -949,25 +917,12 @@ function renderSelectedObjectWithScaleTransform(
       if (bitmap) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(
-          bitmap,
-          transformedFrame[0],
-          transformedFrame[1],
-          transformedFrame[2],
-          transformedFrame[3],
-        );
+        ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], tw, th);
       } else {
         ctx.fillStyle = '#f0f0f0';
-        ctx.fillRect(
-          transformedFrame[0],
-          transformedFrame[1],
-          transformedFrame[2],
-          transformedFrame[3],
-        );
+        ctx.fillRect(transformedFrame[0], transformedFrame[1], tw, th);
       }
       ctx.restore();
-    } else {
-      drawImageWithTransform(ctx, handle);
     }
     return;
   }

@@ -30,6 +30,7 @@ import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import { hasActiveRoom, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import type * as Y from 'yjs';
 import type { ObjectKind } from '@avlo/shared';
 
@@ -318,6 +319,19 @@ export function manageImageViewport(): void {
     }
   }
 
+  // During scale transforms, force full-res for selected images (crisp preview)
+  const { transform: selTransform, kindCounts, selectedIdSet } = useSelectionStore.getState();
+  if (selTransform.kind === 'scale' && kindCounts.images > 0) {
+    for (const id of selectedIdSet) {
+      const handle = snapshot.objectsById.get(id);
+      if (!handle || handle.kind !== 'image') continue;
+      const aid = getAssetId(handle.y);
+      if (!aid) continue;
+      const info = _assetInfo.get(aid);
+      if (info) info.ppsp = Infinity;
+    }
+  }
+
   // Decode — request decode for visible assets that need it
   const now = Date.now();
   for (const [assetId, info] of _assetInfo) {
@@ -329,8 +343,10 @@ export function manageImageViewport(): void {
     const cached = bitmaps.get(assetId);
     const p = pending.get(assetId);
 
-    // Send decode if: no bitmap or wrong level, AND no pending request for this level
-    if ((!cached || cached.level !== neededLevel) && (!p || p.level !== neededLevel)) {
+    // Send decode if: no bitmap or worse quality, AND no pending request for this level
+    // cached.level > neededLevel = cached is worse than needed (level 0=best, 2=worst)
+    // Never downgrade — higher-quality bitmaps stay until eviction
+    if ((!cached || cached.level > neededLevel) && (!p || p.level !== neededLevel)) {
       const div = levelDivisor(neededLevel);
       const width = neededLevel === 0 ? 0 : mipDim(info.nw, div);
       const height = neededLevel === 0 ? 0 : mipDim(info.nh, div);

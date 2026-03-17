@@ -7,7 +7,7 @@
  */
 
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds, FrameTuple } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, ObjectKind } from '@avlo/shared';
 import { translateBounds, scaleBoundsAround } from './bounds';
 import { isCornerHandle } from '@/stores/selection-store';
 import type { TranslateTransform, ScaleTransform } from '@/stores/selection-store';
@@ -441,12 +441,28 @@ export function applyUniformScaleToFrame(
 export function transformFrameForTopology(
   frame: FrameTuple,
   transform: TranslateTransform | ScaleTransform,
+  kind?: ObjectKind,
 ): FrameTuple {
   if (transform.kind === 'translate') {
     return [frame[0] + transform.dx, frame[1] + transform.dy, frame[2], frame[3]];
   }
-  const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
-  if ((selectionKind === 'mixed' || selectionKind === 'textOnly') && handleKind === 'corner') {
+  const { origin, scaleX, scaleY, selectionKind, handleKind, handleId, originBounds } = transform;
+
+  // Images: always uniform, except mixed+side = edge-pin translate
+  if (kind === 'image') {
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+        originBounds, scaleX, scaleY, origin, handleId,
+      );
+      return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    }
+    return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+  }
+
+  if (
+    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
+  ) {
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
   return applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
@@ -454,7 +470,7 @@ export function transformFrameForTopology(
 
 /**
  * Transform a free endpoint position for connector topology rerouting.
- * Uses position preservation for mixed+corner, raw scale otherwise.
+ * Uses position preservation for uniform-scaling selection kinds, raw scale otherwise.
  */
 export function transformPositionForTopology(
   position: [number, number],
@@ -464,7 +480,10 @@ export function transformPositionForTopology(
     return [position[0] + transform.dx, position[1] + transform.dy];
   }
   const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
-  if ((selectionKind === 'mixed' || selectionKind === 'textOnly') && handleKind === 'corner') {
+  if (
+    selectionKind === 'imagesOnly' ||
+    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
+  ) {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);
     return computePreservedPosition(position[0], position[1], originBounds, origin, u);
   }

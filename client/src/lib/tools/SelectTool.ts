@@ -904,6 +904,7 @@ export class SelectTool implements PointerTool {
     const codeReflow = store.codeReflow;
 
     // --- 1. CONNECTOR TOPOLOGY ---
+    const snapshot = getCurrentSnapshot();
     if (topology) {
       // Reroute entries: compute new routes + expand envelope
       for (const entry of topology.entries) {
@@ -913,13 +914,16 @@ export class SelectTool implements PointerTool {
 
         if (typeof entry.startSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.startSpec);
-          if (origFrame)
+          if (origFrame) {
+            const startHandle = snapshot.objectsById.get(entry.startSpec);
             overrides.start = {
               frame: transformFrameForTopology(
                 origFrame,
                 transform as TranslateTransform | ScaleTransform,
+                startHandle?.kind,
               ),
             };
+          }
         } else if (entry.startSpec === true) {
           overrides.start = transformPositionForTopology(
             entry.originalPoints[0],
@@ -929,13 +933,16 @@ export class SelectTool implements PointerTool {
 
         if (typeof entry.endSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.endSpec);
-          if (origFrame)
+          if (origFrame) {
+            const endHandle = snapshot.objectsById.get(entry.endSpec);
             overrides.end = {
               frame: transformFrameForTopology(
                 origFrame,
                 transform as TranslateTransform | ScaleTransform,
+                endHandle?.kind,
               ),
             };
+          }
         } else if (entry.endSpec === true) {
           overrides.end = transformPositionForTopology(
             entry.originalPoints[entry.originalPoints.length - 1],
@@ -977,7 +984,6 @@ export class SelectTool implements PointerTool {
         this.transformEnvelope = expandEnvelope(this.transformEnvelope, transformedBounds);
       }
     } else if (transform.kind === 'scale') {
-      const snapshot = getCurrentSnapshot();
       const {
         selectionKind,
         handleKind,
@@ -1148,6 +1154,18 @@ export class SelectTool implements PointerTool {
             objBounds = translateBounds(frameTupleToWorldBounds(codeFrame), dx, dy);
           } else {
             continue;
+          }
+        } else if (handle.kind === 'image') {
+          const frame = getFrame(handle.y);
+          if (!frame) continue;
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            const { dx, dy } = computeEdgePinTranslation(
+              frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            objBounds = translateBounds(frameTupleToWorldBounds(frame), dx, dy);
+          } else {
+            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
@@ -1438,6 +1456,22 @@ export class SelectTool implements PointerTool {
             );
             const curOrigin = getOrigin(yMap);
             if (curOrigin) yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
+          }
+          continue;
+        }
+
+        // Image scaling: always uniform, except mixed+side = edge-pin translate
+        if (handle.kind === 'image') {
+          const frame = getFrame(yMap);
+          if (!frame) continue;
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            const { dx, dy } = computeEdgePinTranslation(
+              frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
+          } else {
+            yMap.set('frame', applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY));
           }
           continue;
         }
