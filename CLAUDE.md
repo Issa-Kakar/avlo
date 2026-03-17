@@ -28,7 +28,7 @@ All paths relative to `client/src/` unless noted.
 | `canvas/Canvas.tsx` | Thin React wrapper — mounts DOM, sets room context, creates runtime |
 | `canvas/CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch, edge scroll |
 | `canvas/SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
-| `canvas/InputManager.ts` | Dumb DOM event forwarder |
+| `canvas/InputManager.ts` | DOM event forwarder (pointer events → canvas, wheel → container for overlay passthrough) |
 | `canvas/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
 | `canvas/room-runtime.ts` | Module-level room context for imperative access |
 | `canvas/invalidation-helpers.ts` | Setter/getter pattern for render loop invalidation |
