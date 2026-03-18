@@ -47,7 +47,7 @@ Worker 0 (primary)                 Worker 1 (decoder)              Service Worke
 User drops/pastes/picks file
    ↓
 image-actions.ts: createImageFromBlob(blob, worldX, worldY)
-   ├─ SVG? → rasterizeSvg(blob) → PNG blob (OffscreenCanvas, max 4096px)
+   ├─ SVG? → rasterizeSvg(blob) → modify SVG dims (2048–4096px) → <img> + canvas → PNG blob
    ├─ image-manager.ts: ingest(blob) → sends blob to worker
    │   └─ Worker: validateImage(bytes) → SHA-256 → cache dedup → cache blob → decode → transfer bitmap
    ├─ Y.Doc mutation: create image object (kind:'image', assetId, frame, naturalDimensions)
@@ -151,7 +151,7 @@ Images use stored `frame` (like shapes), not derived frames (unlike text/code). 
 
 | File | Responsibility |
 |------|----------------|
-| `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
+| `image-actions.ts` | Entry points: `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization (`<img>` + canvas, 2048–4096px) |
 | `image-manager.ts` | Thin main-thread coordinator: bitmap cache, viewport management, two-worker routing, generation tracking |
 | `image-worker.ts` | Web Worker (2 instances): Cache API reads/writes, SHA-256 hashing, dynamic resize decode, upload queue (primary), staleness tracking |
 | `../../sw.ts` | Service Worker: cache-first asset serving, app shell caching, offline support |

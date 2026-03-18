@@ -15,57 +15,89 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 
-/** Rasterize an SVG blob to a PNG blob via offscreen canvas. */
+const MAX_SVG_INPUT = 10 * 1024 * 1024; // 10 MB
+const SVG_TIMEOUT = 10_000; // 10 s
+
+/**
+ * Rasterize an SVG blob to a high-res PNG via <img> + canvas.
+ *
+ * Modifies the SVG markup to set target pixel dimensions (2048–4096px range)
+ * so the browser's SVG renderer rasterizes the vector art at high resolution
+ * instead of at tiny intrinsic size (e.g. 24×24 icon → 2048×2048 PNG).
+ */
 async function rasterizeSvg(blob: Blob): Promise<Blob> {
+  if (blob.size > MAX_SVG_INPUT) throw new Error('SVG exceeds 10 MB');
+
   const text = await blob.text();
 
-  // Parse dimensions from viewBox or width/height attributes
-  let width = 800;
-  let height = 600;
-  const viewBoxMatch = text.match(/viewBox=["']([^"']+)["']/);
-  if (viewBoxMatch) {
-    const parts = viewBoxMatch[1].trim().split(/[\s,]+/).map(Number);
+  // Parse intrinsic dimensions (viewBox > width/height > SVG spec default 300×150)
+  let w = 300, h = 150;
+  const vbMatch = text.match(/viewBox=["']([^"']+)["']/);
+  if (vbMatch) {
+    const parts = vbMatch[1].trim().split(/[\s,]+/).map(Number);
     if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) {
-      width = parts[2];
-      height = parts[3];
+      w = parts[2];
+      h = parts[3];
     }
   } else {
-    const wMatch = text.match(/\bwidth=["'](\d+(?:\.\d+)?)/);
-    const hMatch = text.match(/\bheight=["'](\d+(?:\.\d+)?)/);
-    if (wMatch && hMatch) {
-      width = parseFloat(wMatch[1]);
-      height = parseFloat(hMatch[1]);
+    const wm = text.match(/\bwidth=["'](\d+(?:\.\d+)?)/);
+    const hm = text.match(/\bheight=["'](\d+(?:\.\d+)?)/);
+    if (wm && hm) {
+      w = parseFloat(wm[1]);
+      h = parseFloat(hm[1]);
     }
   }
 
-  // Clamp to reasonable maximum
-  const maxDim = 4096;
-  if (width > maxDim || height > maxDim) {
-    const scale = maxDim / Math.max(width, height);
-    width = Math.round(width * scale);
-    height = Math.round(height * scale);
-  }
+  // Scale longest side into [2048, 4096] range
+  const longest = Math.max(w, h);
+  let scale = 1;
+  if (longest < 2048) scale = 2048 / longest;
+  else if (longest > 4096) scale = 4096 / longest;
+  const tw = Math.max(1, Math.round(w * scale));
+  const th = Math.max(1, Math.round(h * scale));
 
-  const dataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`;
+  // Modify SVG: strip width/height, ensure viewBox, inject target dims.
+  // This makes <img> rasterize the vector art at target resolution, not tiny intrinsic size.
+  const modified = text.replace(/<svg([^>]*)>/, (_match, attrs: string) => {
+    let clean = attrs
+      .replace(/\bwidth\s*=\s*["'][^"']*["']/g, '')
+      .replace(/\bheight\s*=\s*["'][^"']*["']/g, '');
+    if (!/viewBox/.test(clean)) {
+      clean += ` viewBox="0 0 ${w} ${h}"`;
+    }
+    return `<svg${clean} width="${tw}" height="${th}">`;
+  });
+
+  // Load modified SVG into <img> — browser's SVG sandbox renders at target resolution
+  const url = URL.createObjectURL(new Blob([modified], { type: 'image/svg+xml' }));
   const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error('SVG decode failed'));
-    img.src = dataUrl;
-  });
+  try {
+    await Promise.race([
+      new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('SVG decode failed'));
+        img.src = url;
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('SVG rasterization timed out')), SVG_TIMEOUT),
+      ),
+    ]);
 
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(img, 0, 0, width, height);
+    const canvas = document.createElement('canvas');
+    canvas.width = tw;
+    canvas.height = th;
+    canvas.getContext('2d')!.drawImage(img, 0, 0, tw, th);
 
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((b) => {
-      if (b) resolve(b);
-      else reject(new Error('canvas.toBlob failed'));
-    }, 'image/png');
-  });
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((b) => {
+        if (!b) return reject(new Error('canvas.toBlob failed'));
+        if (b.size > 10 * 1024 * 1024) return reject(new Error('Output PNG exceeds 10 MB'));
+        resolve(b);
+      }, 'image/png');
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** Create an image object from a blob at a world position. */
