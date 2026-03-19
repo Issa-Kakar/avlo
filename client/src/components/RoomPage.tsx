@@ -9,6 +9,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 
 // Components
 import { Canvas } from '../canvas/Canvas';
+import { TopBar } from './TopBar';
 import { ToolPanel } from './ToolPanel';
 import { ZoomControls } from './ZoomControls';
 import { UsersModal } from './UsersModal';
@@ -48,15 +49,8 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           {/* Main Canvas */}
           <Canvas roomId={roomId} className="canvas" />
 
-          {/* Top-left micro cluster */}
-          <div className="micro-cluster">
-            {/* Kebab menu (placeholder for future features) */}
-            <button className="micro micro-kebab" aria-label="More options">
-              <span className="dot"></span>
-              <span className="dot"></span>
-              <span className="dot"></span>
-            </button>
-          </div>
+          {/* Top-left panel — logo, sidebar toggle, board name, settings */}
+          <TopBar />
 
           {/* Top-right micro cluster */}
           <div className="micro-cluster-right">
