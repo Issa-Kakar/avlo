@@ -42,6 +42,7 @@ export class CodeTool implements PointerTool {
   private pointerId: number | null = null;
   private downWorld: [number, number] | null = null;
   private hitCodeId: string | null = null;
+  private pendingEntryWorld: [number, number] | null = null;
 
   // Public: prevent close→remount cycle (mirrors textTool.justClosedLabelId)
   justClosedCodeId: string | null = null;
@@ -86,7 +87,7 @@ export class CodeTool implements PointerTool {
     const y = worldY ?? this.downWorld?.[1] ?? 0;
 
     if (this.hitCodeId) {
-      this.mountEditor(this.hitCodeId);
+      this.startEditing(this.hitCodeId, this.downWorld ?? undefined);
     } else {
       this.createCodeObject(x, y);
     }
@@ -124,7 +125,8 @@ export class CodeTool implements PointerTool {
   }
 
   // Public API for SelectTool double-click-to-edit
-  startEditing(objectId: string): void {
+  startEditing(objectId: string, entryWorld?: [number, number]): void {
+    this.pendingEntryWorld = entryWorld ?? null;
     this.mountEditor(objectId);
   }
 
@@ -376,6 +378,22 @@ export class CodeTool implements PointerTool {
 
     const view = new cmView.EditorView({ state, parent: container });
     view.focus();
+
+    // Place cursor at click position for existing blocks
+    const entryWorld = this.pendingEntryWorld;
+    this.pendingEntryWorld = null;
+    if (entryWorld) {
+      const [cx, cy] = worldToClient(entryWorld[0], entryWorld[1]);
+      requestAnimationFrame(() => {
+        if (!this.editorView) return;
+        const v = this.editorView as { posAtCoords(coords: { x: number; y: number }): number | null; dispatch(spec: unknown): void; focus(): void };
+        const pos = v.posAtCoords({ x: cx, y: cy });
+        if (pos != null) {
+          v.dispatch({ selection: { anchor: pos } });
+        }
+        v.focus();
+      });
+    }
 
     // Extract syncConf for main UM integration
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,5 +1,7 @@
 @import 'tailwindcss';
 
+html { overflow: hidden; }
+
 /* =============================================================================
    FONT DEFINITIONS — Variable Fonts (Latin subset, wght 450–700)
 
@@ -157,6 +159,7 @@
 /* DOM overlay root - ensure it doesn't block events except for children */
 .dom-overlay-root {
   pointer-events: none;
+  overflow: clip;
 }
 
 .dom-overlay-root > * {

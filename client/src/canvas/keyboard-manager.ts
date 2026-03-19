@@ -14,7 +14,7 @@
  * @module canvas/keyboard-manager
  */
 
-import { getCurrentTool, panTool, textTool } from './tool-registry';
+import { getCurrentTool, panTool, textTool, codeTool } from './tool-registry';
 import { getActiveRoomDoc, getCurrentSnapshot, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
@@ -77,7 +77,10 @@ function onKeyDown(e: KeyboardEvent): void {
   if (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
-    target.isContentEditable
+    target.isContentEditable ||
+    (document.activeElement as HTMLElement | null)?.isContentEditable ||
+    textTool.isEditorMounted() ||
+    codeTool.isEditorMounted()
   ) {
     return;
   }
@@ -308,7 +311,10 @@ function onPaste(e: ClipboardEvent): void {
   if (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
-    target.isContentEditable
+    target.isContentEditable ||
+    (document.activeElement as HTMLElement | null)?.isContentEditable ||
+    textTool.isEditorMounted() ||
+    codeTool.isEditorMounted()
   ) {
     return;
   }

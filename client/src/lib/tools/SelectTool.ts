@@ -565,7 +565,7 @@ export class SelectTool implements PointerTool {
               if (codeTool.justClosedCodeId === this.hitAtDown!.id) {
                 codeTool.justClosedCodeId = null;
               } else {
-                codeTool.startEditing(this.hitAtDown!.id);
+                codeTool.startEditing(this.hitAtDown!.id, this.downWorld!);
               }
             }
             break;
