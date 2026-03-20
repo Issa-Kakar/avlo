@@ -6,7 +6,7 @@ import React from 'react';
  */
 export const AvloLogo: React.FC<React.SVGProps<SVGSVGElement>> = ({ height = 34, ...props }) => (
   <svg
-    viewBox="0 4 75 34"
+    viewBox="0 4 58 34"
     height={height}
     xmlns="http://www.w3.org/2000/svg"
     aria-label="avlo"
