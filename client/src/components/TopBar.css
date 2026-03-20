@@ -1,0 +1,108 @@
+/* ===== Top Bar — Floating Logo Panel ===== */
+
+.top-bar {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 400;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px 0 4px;
+  gap: 2px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.1),
+    0 0 1px rgba(0, 0, 0, 0.06);
+  font-family: var(--font-stack);
+  user-select: none;
+}
+
+/* Sidebar toggle button */
+.top-bar-sidebar {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1a1a1a;
+  transition: background var(--transition-fast);
+}
+
+.top-bar-sidebar:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.top-bar-sidebar-icon {
+  width: 24px;
+  height: 24px;
+}
+
+/* Logo (decorative) */
+.top-bar-logo {
+  color: #1a1a1a;
+  flex-shrink: 0;
+  margin-left: 9px;
+  position: relative;
+  top: -1px;
+}
+
+/* Vertical divider */
+.top-bar-divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(0, 0, 0, 0.16);
+  margin: 0 4px 0 9px;
+  flex-shrink: 0;
+}
+
+/* Board name */
+.top-bar-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #3d3d3d;
+  padding: 0 6px;
+  cursor: text;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--transition-fast);
+}
+
+.top-bar-name:hover {
+  color: #000000;
+}
+
+/* Board settings kebab */
+.top-bar-settings {
+  width: 28px;
+  margin-left: 4px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #1a1a1a;
+  transition: background var(--transition-fast);
+}
+
+.top-bar-settings:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* ===== Responsive ===== */
+
+@media (max-width: 768px) {
+  .top-bar {
+    top: 8px;
+    left: 8px;
+  }
+}
