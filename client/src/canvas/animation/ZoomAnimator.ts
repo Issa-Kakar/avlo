@@ -87,7 +87,7 @@ export function animateZoom(toScale: number, toPan: { x: number; y: number }): v
 export function zoomIn(): void {
   const { scale } = useCameraStore.getState();
   // If a pending step is ahead of current, use it as base (rapid click accumulation)
-  const base = (pendingStep !== null && pendingStep > scale + STEP_EPS) ? pendingStep : scale;
+  const base = pendingStep !== null && pendingStep > scale + STEP_EPS ? pendingStep : scale;
   const targetScale = nextZoomStep(base);
   if (targetScale <= scale + STEP_EPS) return;
   pendingStep = targetScale;
@@ -98,10 +98,16 @@ export function zoomIn(): void {
 /** Zoom out one step toward viewport center. Rapid clicks accumulate. */
 export function zoomOut(): void {
   const { scale } = useCameraStore.getState();
-  const base = (pendingStep !== null && pendingStep < scale - STEP_EPS) ? pendingStep : scale;
+  const base = pendingStep !== null && pendingStep < scale - STEP_EPS ? pendingStep : scale;
   const targetScale = prevZoomStep(base);
   if (targetScale >= scale - STEP_EPS) return;
   pendingStep = targetScale;
+  const target = centerZoomTarget(targetScale);
+  animateZoom(target.scale, target.pan);
+}
+
+/** Animate to a specific zoom level, centered on viewport. */
+export function zoomTo(targetScale: number): void {
   const target = centerZoomTarget(targetScale);
   animateZoom(target.scale, target.pan);
 }

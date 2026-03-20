@@ -11,4 +11,12 @@ export {
 } from './AnimationController';
 
 export { EraserTrailAnimation } from './EraserTrailAnimation';
-export { animateZoom, zoomIn, zoomOut, animateZoomReset, cancelZoom } from './ZoomAnimator';
+export {
+  animateZoom,
+  zoomIn,
+  zoomOut,
+  zoomTo,
+  animateZoomReset,
+  animateToFit,
+  cancelZoom,
+} from './ZoomAnimator';
