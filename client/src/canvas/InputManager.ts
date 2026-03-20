@@ -46,6 +46,7 @@ export class InputManager {
     this.canvas.addEventListener('pointerleave', this.onPointerLeave, { passive: false });
     this.canvas.addEventListener('lostpointercapture', this.onLostCapture, { passive: false });
     this.container.addEventListener('wheel', this.onWheel, { passive: false });
+    this.container.addEventListener('pointerdown', this.onOverlayPointerDown, { passive: false });
     this.canvas.addEventListener('dragover', this.onDragOver, { passive: false });
     this.canvas.addEventListener('drop', this.onDrop, { passive: false });
   }
@@ -63,6 +64,7 @@ export class InputManager {
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('lostpointercapture', this.onLostCapture);
     this.container.removeEventListener('wheel', this.onWheel);
+    this.container.removeEventListener('pointerdown', this.onOverlayPointerDown);
     this.canvas.removeEventListener('dragover', this.onDragOver);
     this.canvas.removeEventListener('drop', this.onDrop);
 
@@ -77,6 +79,12 @@ export class InputManager {
   private onPointerLeave = (e: PointerEvent) => this.runtime.handlePointerLeave(e);
   private onLostCapture = (e: PointerEvent) => this.runtime.handleLostPointerCapture(e);
   private onWheel = (e: WheelEvent) => this.runtime.handleWheel(e);
+  private onOverlayPointerDown = (e: PointerEvent) => {
+    if (e.button !== 1) return;
+    if (!(e.target as HTMLElement).closest?.('.dom-overlay-root')) return;
+    e.preventDefault();
+    this.runtime.handlePointerDown(e);
+  };
   private onDragOver = (e: DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
