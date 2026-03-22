@@ -50,6 +50,7 @@ import {
 import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
+import { CODE_EXTENSIONS } from '@avlo/shared';
 import { getAssetId } from '@avlo/shared';
 import { getBitmap } from '@/lib/image/image-manager';
 
@@ -375,7 +376,9 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   );
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines);
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -807,11 +810,13 @@ function drawScaledCodePreview(
   );
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
 
   ctx.save();
   ctx.translate(nfx, nfy);
   ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines);
+  renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output);
   ctx.restore();
 }
 
@@ -835,7 +840,9 @@ function drawReflowedCodePreview(
 
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
-  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines);
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines, title, output);
 }
 
 /**

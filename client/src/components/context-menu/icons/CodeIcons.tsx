@@ -2,6 +2,22 @@ import type React from 'react';
 
 type SvgProps = React.SVGProps<SVGSVGElement>;
 
+/** Header bar toggle icon (H with horizontal bar) */
+export const IconCodeHeader = (props: SvgProps) => (
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+    <rect x="1" y="1" width="14" height="4" rx="1" opacity="0.6" />
+    <rect x="1" y="7" width="14" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.2" />
+  </svg>
+);
+
+/** Output panel toggle icon (terminal-like output indicator) */
+export const IconCodeOutput = (props: SvgProps) => (
+  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" {...props}>
+    <rect x="1" y="1" width="14" height="8" rx="1" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    <rect x="1" y="11" width="14" height="4" rx="1" opacity="0.6" />
+  </svg>
+);
+
 /** Line numbers 1/2 with code bars (kind: code lines toggle) */
 export const IconCodeLines = (props: SvgProps) => (
   <svg viewBox="0 0 22 16" fill="currentColor" aria-hidden="true" {...props}>

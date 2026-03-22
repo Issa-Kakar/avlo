@@ -19,7 +19,7 @@ export {
   IconImages,
 } from './FilterIcons';
 export { IconTrash } from './TrashIcon';
-export { IconCodeLines } from './CodeIcons';
+export { IconCodeLines, IconCodeHeader, IconCodeOutput } from './CodeIcons';
 export {
   IconRectType,
   IconCircleType,

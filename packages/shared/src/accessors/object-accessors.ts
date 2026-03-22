@@ -289,6 +289,10 @@ export interface CodeProps {
   width: number;
   language: CodeLanguage;
   lineNumbers: boolean;
+  title: string | undefined;
+  headerVisible: boolean;
+  outputVisible: boolean;
+  output: string | undefined;
 }
 
 export function getLineNumbers(y: Y.Map<unknown>, fallback = true): boolean {
@@ -306,7 +310,30 @@ export function getCodeProps(y: Y.Map<unknown>): CodeProps | null {
     width: (y.get('width') as number) ?? 570,
     language: (y.get('language') as CodeLanguage) ?? 'javascript',
     lineNumbers: (y.get('lineNumbers') as boolean) ?? true,
+    title: y.get('title') as string | undefined,
+    headerVisible: (y.get('headerVisible') as boolean | undefined) ?? true,
+    outputVisible: (y.get('outputVisible') as boolean | undefined) ?? false,
+    output: y.get('output') as string | undefined,
   };
+}
+
+export const CODE_EXTENSIONS: Record<CodeLanguage, string> = {
+  javascript: 'js',
+  typescript: 'ts',
+  python: 'py',
+};
+
+
+export function getHeaderVisible(y: Y.Map<unknown>, fallback = true): boolean {
+  return (y.get('headerVisible') as boolean | undefined) ?? fallback;
+}
+
+export function getOutputVisible(y: Y.Map<unknown>, fallback = false): boolean {
+  return (y.get('outputVisible') as boolean | undefined) ?? fallback;
+}
+
+export function getCodeOutput(y: Y.Map<unknown>): string | undefined {
+  return y.get('output') as string | undefined;
 }
 
 // ============================================================================

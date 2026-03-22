@@ -24,6 +24,8 @@ import {
   decrementCodeFontSize,
   setSelectedCodeFontSize,
   toggleCodeLineNumbers,
+  toggleCodeHeader,
+  toggleCodeOutput,
 } from '@/lib/utils/selection-actions';
 import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
@@ -39,7 +41,7 @@ import { TextColorPopover } from './TextColorPopover';
 import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
-import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines } from './icons';
+import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines, IconCodeHeader, IconCodeOutput } from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
 
 // === Selectors (stable module-level references) ===
@@ -206,10 +208,14 @@ const TextStyleGroup = memo(function TextStyleGroup() {
   );
 });
 
-const selectCodeFontSize = (s: SelectionStore) => s.selectedStyles.fontSize;
+const selectCodeStyles = (s: SelectionStore) => ({
+  fontSize: s.selectedStyles.fontSize,
+  headerVisible: s.selectedStyles.codeHeaderVisible,
+  outputVisible: s.selectedStyles.codeOutputVisible,
+});
 
 const CodeStyleGroup = memo(function CodeStyleGroup() {
-  const fontSize = useSelectionStore(selectCodeFontSize);
+  const { fontSize, headerVisible, outputVisible } = useSelectionStore(useShallow(selectCodeStyles));
   const effectiveFontSize = fontSize ?? 14;
   return (
     <ButtonGroup>
@@ -224,6 +230,12 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
       <div className="ctx-divider" />
       <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
         <IconCodeLines style={{ width: 22, height: 16 }} />
+      </MenuButton>
+      <MenuButton className="ctx-btn-sq" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
+        <IconCodeHeader style={{ width: 16, height: 16 }} />
+      </MenuButton>
+      <MenuButton className="ctx-btn-sq" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
+        <IconCodeOutput style={{ width: 16, height: 16 }} />
       </MenuButton>
     </ButtonGroup>
   );

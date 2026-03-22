@@ -24,9 +24,21 @@ import {
   isBold,
   syncTokenize,
   CODE_BG,
+  CODE_DEFAULT,
   CODE_GUTTER,
   CODE_FONT_FAMILY,
   LINE_HEIGHT_MULT,
+  CHROME_FONT_RATIO,
+  HEADER_HEIGHT_RATIO,
+  OUTPUT_LABEL_H_RATIO,
+  OUTPUT_LINE_H_MULT,
+  OUTPUT_PAD_BOTTOM_RATIO,
+  MAX_OUTPUT_CANVAS_LINES,
+  CODE_SEPARATOR,
+  CODE_TITLE_COLOR,
+  CODE_PLAY_GREEN,
+  CODE_PLAY_GLOW,
+  CODE_OUTPUT_LABEL,
 } from './code-tokens';
 
 // ============================================================================
@@ -226,6 +238,45 @@ export function computeLayout(
 /** Compute total height from layout + fontSize — not stored. */
 export function totalHeight(layout: CodeLayout, fontSize: number): number {
   return padTop(fontSize) + layout.lines.length * lineHeight(fontSize) + padBottom(fontSize);
+}
+
+// ============================================================================
+// §4b CHROME HEIGHT HELPERS — header bar + output panel
+// ============================================================================
+
+export function chromeFontSize(fs: number): number {
+  return fs * CHROME_FONT_RATIO;
+}
+
+export function headerBarHeight(fs: number): number {
+  return fs * HEADER_HEIGHT_RATIO;
+}
+
+export function outputPanelHeight(fs: number, output: string | undefined): number {
+  const cfs = chromeFontSize(fs);
+  const outputLH = cfs * OUTPUT_LINE_H_MULT;
+  const labelH = fs * OUTPUT_LABEL_H_RATIO;
+  const padB = fs * OUTPUT_PAD_BOTTOM_RATIO;
+  if (!output) return labelH + padB;
+  const lineCount = Math.min(output.split('\n').length, MAX_OUTPUT_CANVAS_LINES);
+  return labelH + lineCount * outputLH + padB;
+}
+
+/** Full block height including header + code content + output panel. */
+export function blockHeight(
+  layout: CodeLayout,
+  fontSize: number,
+  headerVisible: boolean,
+  outputVisible: boolean,
+  output: string | undefined,
+): number {
+  return (
+    (headerVisible ? headerBarHeight(fontSize) : 0) +
+    padTop(fontSize) +
+    layout.lines.length * lineHeight(fontSize) +
+    padBottom(fontSize) +
+    (outputVisible ? outputPanelHeight(fontSize, output) : 0)
+  );
 }
 
 // ============================================================================
@@ -530,10 +581,10 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     props.lineNumbers,
   );
   const [ox, oy] = props.origin;
-  const th = totalHeight(layout, props.fontSize);
-  const frame: FrameTuple = [ox, oy, layout.totalWidth, th];
+  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
+  const frame: FrameTuple = [ox, oy, layout.totalWidth, bh];
   codeSystem.setFrame(id, frame);
-  return [ox, oy, ox + layout.totalWidth, oy + th];
+  return [ox, oy, ox + layout.totalWidth, oy + bh];
 }
 
 // ============================================================================
@@ -552,35 +603,83 @@ export function renderCodeLayout(
   fontSize: number,
   spans: RunSpans[],
   sourceLines: string[],
+  title?: string,
+  output?: string,
 ): void {
   const lh = lineHeight(fontSize);
   const cw = charWidth(fontSize);
   const pt = padTop(fontSize);
   const pl = padLeft(fontSize);
-  const th = totalHeight(layout, fontSize);
+  const hh = title !== undefined ? headerBarHeight(fontSize) : 0;
+  const bgH = blockHeight(
+    layout, fontSize, title !== undefined, output !== undefined, output,
+  );
   const digits = Math.max(2, String(layout.sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, layout.lineNumbers);
   const normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;
   const boldFont = `${FONT_WEIGHT_BOLD} ${fontSize}px ${CODE_FONT}`;
+  const cfs = chromeFontSize(fontSize);
+  const chromeFont = `${FONT_WEIGHT} ${cfs}px ${CODE_FONT}`;
 
   ctx.save();
 
   // 1. Background
   ctx.fillStyle = CODE_BG;
   ctx.beginPath();
-  ctx.roundRect(originX, originY, layout.totalWidth, th, borderRadius(fontSize));
+  ctx.roundRect(originX, originY, layout.totalWidth, bgH, borderRadius(fontSize));
   ctx.fill();
 
-  // 2. Per visual line — alphabetic baseline from measured font metrics.
+  // 2. Header bar
+  if (title !== undefined) {
+    const sepY = originY + hh;
+    // Separator line
+    ctx.fillStyle = CODE_SEPARATOR;
+    ctx.fillRect(originX, sepY, layout.totalWidth, 1);
+
+    ctx.textBaseline = 'middle';
+    // Title text
+    ctx.fillStyle = CODE_TITLE_COLOR;
+    ctx.font = chromeFont;
+    ctx.fillText(title, originX + pl, originY + hh / 2);
+
+    // Play button — green circle with white triangle
+    const btnR = fontSize * 0.5;
+    const btnCx = originX + layout.totalWidth - padRight(fontSize) - btnR;
+    const btnCy = originY + hh / 2;
+
+    ctx.save();
+    ctx.shadowColor = CODE_PLAY_GLOW;
+    ctx.shadowBlur = 4;
+    ctx.fillStyle = CODE_PLAY_GREEN;
+    ctx.beginPath();
+    ctx.arc(btnCx, btnCy, btnR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // White play triangle inside
+    const triH = btnR * 0.9;
+    const triW = triH * 0.85;
+    const triX = btnCx - triW * 0.35;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.moveTo(triX, btnCy - triH / 2);
+    ctx.lineTo(triX + triW, btnCy);
+    ctx.lineTo(triX, btnCy + triH / 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // 3. Code content — shifted down by header height
+  const codeTop = originY + hh;
   ctx.textBaseline = 'alphabetic';
   const bl = baselineOffset(fontSize);
   let prevFont = '';
 
   for (let i = 0; i < layout.lines.length; i++) {
     const vline = layout.lines[i];
-    const baseY = originY + pt + i * lh + bl;
+    const baseY = codeTop + pt + i * lh + bl;
 
-    // 3. Gutter — only on first segment of source line, when lineNumbers enabled
+    // Gutter — only on first segment of source line, when lineNumbers enabled
     if (layout.lineNumbers && vline.from === 0) {
       ctx.fillStyle = CODE_GUTTER;
       if (prevFont !== normalFont) {
@@ -591,7 +690,7 @@ export function renderCodeLayout(
       ctx.fillText(lineNum, originX + pl + (digits - lineNum.length) * cw, baseY);
     }
 
-    // 4. Code text — iterate RunSpans with inline [vFrom, vTo) clipping
+    // Code text — iterate RunSpans with inline [vFrom, vTo) clipping
     const lineSpans = spans[vline.srcIdx];
     const lineText = sourceLines[vline.srcIdx];
     if (!lineSpans || !lineText) continue;
@@ -606,17 +705,14 @@ export function renderCodeLayout(
       const style = lineSpans[si + 2];
       const spanEnd = spanOff + spanLen;
 
-      // Skip spans entirely outside [vFrom, vTo)
       if (spanEnd <= vFrom) continue;
       if (spanOff >= vTo) break;
 
-      // Clip to visual line range
       const drawFrom = Math.max(spanOff, vFrom);
       const drawTo = Math.min(spanEnd, vTo);
       const drawLen = drawTo - drawFrom;
       if (drawLen <= 0) continue;
 
-      // Set font/color
       const font = isBold(style) ? boldFont : normalFont;
       if (prevFont !== font) {
         ctx.font = font;
@@ -624,7 +720,6 @@ export function renderCodeLayout(
       }
       ctx.fillStyle = PALETTE[style];
 
-      // Only fillText for non-whitespace
       let allWhitespace = true;
       for (let ci = drawFrom; ci < drawTo; ci++) {
         const cc = lineText.charCodeAt(ci);
@@ -640,11 +735,41 @@ export function renderCodeLayout(
     }
   }
 
-  // 5. Placeholder — empty block shows grey hint text at first line position
+  // Placeholder — empty block shows grey hint text at first line position
   if (sourceLines.length === 1 && sourceLines[0] === '') {
     ctx.fillStyle = CODE_GUTTER;
     ctx.font = normalFont;
-    ctx.fillText('Type something...', originX + cl, originY + pt + bl);
+    ctx.fillText('Type something...', originX + cl, codeTop + pt + bl);
+  }
+
+  // 4. Output panel
+  if (output !== undefined) {
+    const codeBottomY = codeTop + pt + layout.lines.length * lh + padBottom(fontSize);
+    // Separator line
+    ctx.fillStyle = CODE_SEPARATOR;
+    ctx.fillRect(originX, codeBottomY, layout.totalWidth, 1);
+
+    const labelH = fontSize * OUTPUT_LABEL_H_RATIO;
+    const outputLH = cfs * OUTPUT_LINE_H_MULT;
+
+    // "Output" label
+    ctx.textBaseline = 'middle';
+    ctx.font = chromeFont;
+    ctx.fillStyle = CODE_OUTPUT_LABEL;
+    ctx.fillText('Output', originX + pl, codeBottomY + labelH / 2);
+
+    // Output text lines
+    if (output) {
+      const outputLines = output.split('\n');
+      const maxLines = Math.min(outputLines.length, MAX_OUTPUT_CANVAS_LINES);
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = CODE_DEFAULT;
+      ctx.font = chromeFont;
+      const chromeBl = (cfs * (OUTPUT_LINE_H_MULT + 0.8)) / 2; // approximate ascent
+      for (let i = 0; i < maxLines; i++) {
+        ctx.fillText(outputLines[i], originX + pl, codeBottomY + labelH + i * outputLH + chromeBl);
+      }
+    }
   }
 
   ctx.restore();

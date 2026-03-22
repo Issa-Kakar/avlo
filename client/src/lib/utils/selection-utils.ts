@@ -9,6 +9,8 @@ import {
   getAlign,
   getLabelColor,
   getLanguage,
+  getHeaderVisible,
+  getOutputVisible,
   hasLabel,
   bboxTupleToWorldBounds,
   type TextAlign,
@@ -62,6 +64,10 @@ export interface SelectedStyles {
   labelColor: string | null;
   /** Code block language. Used by codeOnly. */
   codeLanguage: CodeLanguage | null;
+  /** Code block header visibility. Used by codeOnly. */
+  codeHeaderVisible: boolean | null;
+  /** Code block output visibility. Used by codeOnly. */
+  codeOutputVisible: boolean | null;
 }
 
 // === Constants ===
@@ -80,6 +86,8 @@ export const EMPTY_STYLES: SelectedStyles = {
   fontFamily: null,
   labelColor: null,
   codeLanguage: null,
+  codeHeaderVisible: null,
+  codeOutputVisible: null,
 };
 export const EMPTY_KIND_COUNTS: KindCounts = {
   strokes: 0,
@@ -240,7 +248,7 @@ export function computeStyles(
   if (kind === 'none' || kind === 'mixed' || kind === 'imagesOnly' || ids.length === 0)
     return EMPTY_STYLES;
 
-  // Code blocks: track fontSize + language
+  // Code blocks: track fontSize + language + chrome visibility
   if (kind === 'codeOnly') {
     for (const id of ids) {
       const handle = objectsById.get(id);
@@ -249,6 +257,8 @@ export function computeStyles(
         ...EMPTY_STYLES,
         fontSize: Math.round(getFontSize(handle.y, 14)),
         codeLanguage: getLanguage(handle.y),
+        codeHeaderVisible: getHeaderVisible(handle.y),
+        codeOutputVisible: getOutputVisible(handle.y),
       };
     }
     return EMPTY_STYLES;
@@ -349,6 +359,8 @@ export function computeStyles(
     fontFamily: needsTextFields ? firstFontFamily : null,
     labelColor: needsTextFields ? firstLabelColor : null,
     codeLanguage: null,
+    codeHeaderVisible: null,
+    codeOutputVisible: null,
   };
 }
 
@@ -366,7 +378,9 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.textAlign === b.textAlign &&
     a.fontFamily === b.fontFamily &&
     a.labelColor === b.labelColor &&
-    a.codeLanguage === b.codeLanguage
+    a.codeLanguage === b.codeLanguage &&
+    a.codeHeaderVisible === b.codeHeaderVisible &&
+    a.codeOutputVisible === b.codeOutputVisible
   );
 }
 

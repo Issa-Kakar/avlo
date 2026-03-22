@@ -7,6 +7,8 @@ import {
   getContent,
   getFontSize,
   getLineNumbers,
+  getHeaderVisible,
+  getOutputVisible,
   hasLabel,
   type TextAlign,
   type FontFamily,
@@ -481,5 +483,55 @@ export function toggleCodeLineNumbers(): void {
   });
 
   useDeviceUIStore.getState().setCodeLineNumbers(newValue);
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function toggleCodeHeader(): void {
+  const ids = getCodeIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+
+  let current = true;
+  for (const id of ids) {
+    const handle = objectsById.get(id);
+    if (handle?.kind === 'code') {
+      current = getHeaderVisible(handle.y);
+      break;
+    }
+  }
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'code') continue;
+      handle.y.set('headerVisible', !current);
+    }
+  });
+
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function toggleCodeOutput(): void {
+  const ids = getCodeIds();
+  if (ids.length === 0) return;
+  const { objectsById } = getCurrentSnapshot();
+
+  let current = false;
+  for (const id of ids) {
+    const handle = objectsById.get(id);
+    if (handle?.kind === 'code') {
+      current = getOutputVisible(handle.y);
+      break;
+    }
+  }
+
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (handle?.kind !== 'code') continue;
+      handle.y.set('outputVisible', !current);
+    }
+  });
+
   useSelectionStore.getState().refreshStyles();
 }

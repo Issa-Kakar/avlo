@@ -19,7 +19,8 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getCodeProps, getLineNumbers } from '@avlo/shared';
+import { getCodeProps, getLineNumbers, getLanguage, getHeaderVisible, getOutputVisible, getCodeOutput, CODE_EXTENSIONS } from '@avlo/shared';
+import type { CodeLanguage } from '@avlo/shared';
 import {
   getDefaultWidth,
   padTop,
@@ -30,8 +31,10 @@ import {
   charWidth,
   borderRadius,
   lineHeight as lineHeightFn,
+  chromeFontSize,
+  headerBarHeight,
 } from '@/lib/code/code-system';
-import { CODE_FONT_FAMILY } from '@/lib/code/code-tokens';
+import { CODE_FONT_FAMILY, MAX_TITLE_LENGTH, MAX_OUTPUT_CANVAS_LINES, OUTPUT_LINE_H_MULT, OUTPUT_PAD_BOTTOM_RATIO } from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -51,6 +54,10 @@ export class CodeTool implements PointerTool {
   objectId: string | null = null;
   private container: HTMLDivElement | null = null;
   private editorView: unknown | null = null; // EditorView — typed as unknown to keep imports lazy
+  private headerDiv: HTMLDivElement | null = null;
+  private titleInput: HTMLInputElement | null = null;
+  private outputDiv: HTMLDivElement | null = null;
+  private outputTextDiv: HTMLDivElement | null = null;
   private sessionUM: Y.UndoManager | null = null;
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private boundHandleClickOutside: ((e: PointerEvent) => void) | null = null;
@@ -157,9 +164,10 @@ export class CodeTool implements PointerTool {
     const width = getDefaultWidth(fontSize);
     const lh = lineHeightFn(fontSize);
 
-    // Center placement: origin = click minus half block size
+    // Center placement: origin = click minus half block size (including header)
+    const singleLineH = headerBarHeight(fontSize) + padTop(fontSize) + lh + padBottom(fontSize);
     const originX = worldX - width / 2;
-    const originY = worldY - (padTop(fontSize) + lh + padBottom(fontSize)) / 2;
+    const originY = worldY - singleLineH / 2;
 
     let createdId: string | null = null;
 
@@ -176,6 +184,8 @@ export class CodeTool implements PointerTool {
       yObj.set('fontSize', fontSize);
       yObj.set('width', width);
       yObj.set('lineNumbers', lineNumbers);
+      yObj.set('headerVisible', true);
+      yObj.set('outputVisible', false);
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
 
@@ -256,6 +266,11 @@ export class CodeTool implements PointerTool {
     container.style.fontFamily = `'${CODE_FONT_FAMILY}', monospace`;
     container.style.borderRadius = `${borderRadius(fontSize) * scale}px`;
     this.setCSSVars(container, fontSize, scale, props.lineNumbers);
+
+    // Header bar (before CM editor)
+    if (props.headerVisible) {
+      this.createHeaderDiv(container, handle.y, props.fontSize, scale);
+    }
 
     host.appendChild(container);
 
@@ -379,6 +394,11 @@ export class CodeTool implements PointerTool {
     const view = new cmView.EditorView({ state, parent: container });
     view.focus();
 
+    // Output panel (after CM editor)
+    if (props.outputVisible) {
+      this.createOutputDiv(container, handle.y, props.fontSize, scale);
+    }
+
     // Place cursor at click position for existing blocks
     const entryWorld = this.pendingEntryWorld;
     this.pendingEntryWorld = null;
@@ -408,7 +428,7 @@ export class CodeTool implements PointerTool {
       mainUM.captureTimeout = 600_000;
     }
 
-    // Y.Map observer for live property sync (fontSize, width, origin, language)
+    // Y.Map observer for live property sync (fontSize, width, origin, language, chrome)
     const mapObserver = (evt: Y.YMapEvent<unknown>) => {
       const keys = evt.keysChanged;
       if (keys.has('fontSize') || keys.has('width') || keys.has('origin')) {
@@ -416,10 +436,29 @@ export class CodeTool implements PointerTool {
       }
       if (keys.has('language')) {
         this.switchLanguage(yMap);
+        this.updateTitleForLanguageChange(yMap);
       }
       if (keys.has('lineNumbers')) {
         this.switchLineNumbers(yMap);
         this.positionEditor();
+      }
+      if (keys.has('headerVisible')) {
+        this.updateHeaderVisibility(yMap);
+        this.positionEditor();
+      }
+      if (keys.has('outputVisible')) {
+        this.updateOutputVisibility(yMap);
+        this.positionEditor();
+      }
+      if (keys.has('title')) {
+        if (this.titleInput && document.activeElement !== this.titleInput) {
+          const raw = yMap.get('title') as string | undefined;
+          const lang = getLanguage(yMap) as CodeLanguage;
+          this.titleInput.value = raw || `Untitled.${CODE_EXTENSIONS[lang]}`;
+        }
+      }
+      if (keys.has('output')) {
+        this.updateOutputContent(yMap);
       }
     };
     yMap.observe(mapObserver);
@@ -518,6 +557,28 @@ export class CodeTool implements PointerTool {
     c.style.borderRadius = `${borderRadius(props.fontSize) * scale}px`;
     this.setCSSVars(c, props.fontSize, scale, props.lineNumbers);
 
+    // Update header dimensions
+    if (this.headerDiv) {
+      const hh = headerBarHeight(props.fontSize) * scale;
+      const cfs = chromeFontSize(props.fontSize) * scale;
+      this.headerDiv.style.height = `${hh}px`;
+      this.headerDiv.style.padding = `0 ${padRight(props.fontSize) * scale}px 0 ${padLeft(props.fontSize) * scale}px`;
+      if (this.titleInput) this.titleInput.style.fontSize = `${cfs}px`;
+    }
+
+    // Update output dimensions
+    if (this.outputDiv) {
+      const cfs = chromeFontSize(props.fontSize) * scale;
+      const outputLH = cfs * OUTPUT_LINE_H_MULT;
+      this.outputDiv.style.fontSize = `${cfs}px`;
+      const padB = props.fontSize * OUTPUT_PAD_BOTTOM_RATIO * scale;
+      this.outputDiv.style.padding = `0 ${padRight(props.fontSize) * scale}px ${padB}px ${padLeft(props.fontSize) * scale}px`;
+      if (this.outputTextDiv) {
+        this.outputTextDiv.style.maxHeight = `${MAX_OUTPUT_CANVAS_LINES * outputLH}px`;
+        this.outputTextDiv.style.lineHeight = `${outputLH}px`;
+      }
+    }
+
     // Trigger CM relayout after size change
     if (this.editorView) {
       (this.editorView as { requestMeasure(): void }).requestMeasure();
@@ -576,6 +637,8 @@ export class CodeTool implements PointerTool {
   commitAndClose(): void {
     if (!this.editorView || !this.objectId) return;
 
+    this.saveTitle();
+    this.titleInput = null; // Prevent blur-triggered re-save during DOM removal
     this.justClosedCodeId = this.objectId;
     this.removeEditorHandlers();
 
@@ -616,9 +679,174 @@ export class CodeTool implements PointerTool {
     this.container = null;
     this.editorView = null;
     this.objectId = null;
+    this.headerDiv = null;
+    this.titleInput = null;
+    this.outputDiv = null;
+    this.outputTextDiv = null;
 
     useSelectionStore.getState().endCodeEditing();
     invalidateWorld(getVisibleWorldBounds());
     invalidateOverlay();
+  }
+
+  // =========================================================================
+  // Private: Header / Output DOM Helpers
+  // =========================================================================
+
+  private createHeaderDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
+    const hh = headerBarHeight(fs) * scale;
+    const cfs = chromeFontSize(fs) * scale;
+    const lang = getLanguage(y) as CodeLanguage;
+
+    const header = document.createElement('div');
+    header.className = 'code-header';
+    header.style.height = `${hh}px`;
+    header.style.padding = `0 ${padRight(fs) * scale}px 0 ${padLeft(fs) * scale}px`;
+
+    const input = document.createElement('input');
+    input.className = 'code-title';
+    input.type = 'text';
+    input.maxLength = MAX_TITLE_LENGTH;
+    const raw = y.get('title') as string | undefined;
+    input.value = raw || `Untitled.${CODE_EXTENSIONS[lang]}`;
+    input.style.fontSize = `${cfs}px`;
+    input.addEventListener('blur', () => this.saveTitle());
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+        if (this.editorView) (this.editorView as { focus(): void }).focus();
+      } else if (e.key === 'Escape') {
+        e.stopPropagation();
+        input.blur();
+        if (this.editorView) (this.editorView as { focus(): void }).focus();
+      }
+    });
+
+    const playBtn = document.createElement('button');
+    playBtn.className = 'code-run-btn';
+    playBtn.style.width = `${fs * scale}px`;
+    playBtn.style.height = `${fs * scale}px`;
+    playBtn.style.background = '#4ADE80';
+    playBtn.style.boxShadow = '0 0 4px #4ADE8060';
+    playBtn.innerHTML = `<svg viewBox="0 0 16 16" width="${cfs * 0.8}px" height="${cfs * 0.8}px"><path d="M5 3l8 5-8 5V3z" fill="white"/></svg>`;
+
+    header.appendChild(input);
+    header.appendChild(playBtn);
+    container.appendChild(header);
+
+    this.headerDiv = header;
+    this.titleInput = input;
+  }
+
+  private createOutputDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
+    const cfs = chromeFontSize(fs) * scale;
+    const outputLH = cfs * OUTPUT_LINE_H_MULT;
+    const maxH = MAX_OUTPUT_CANVAS_LINES * outputLH;
+
+    const output = document.createElement('div');
+    output.className = 'code-output';
+    output.style.fontSize = `${cfs}px`;
+    const padB = fs * OUTPUT_PAD_BOTTOM_RATIO * scale;
+    output.style.padding = `0 ${padRight(fs) * scale}px ${padB}px ${padLeft(fs) * scale}px`;
+
+    const label = document.createElement('div');
+    label.className = 'code-output-label';
+    label.textContent = 'Output';
+    label.style.lineHeight = `${fs * 2.0 * scale}px`;
+
+    const textDiv = document.createElement('div');
+    textDiv.className = 'code-output-text';
+    textDiv.style.maxHeight = `${maxH}px`;
+    textDiv.style.lineHeight = `${outputLH}px`;
+    textDiv.textContent = (getCodeOutput(y) as string) ?? '';
+
+    output.appendChild(label);
+    output.appendChild(textDiv);
+    container.appendChild(output);
+
+    this.outputDiv = output;
+    this.outputTextDiv = textDiv;
+  }
+
+  private saveTitle(): void {
+    if (!this.titleInput || !this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    if (!handle) return;
+
+    const trimmed = this.titleInput.value.trim();
+    const lang = getLanguage(handle.y) as CodeLanguage;
+    const fallbackTitle = `Untitled.${CODE_EXTENSIONS[lang]}`;
+    const raw = handle.y.get('title') as string | undefined;
+
+    if (trimmed === '' || trimmed === fallbackTitle) {
+      if (raw !== undefined) {
+        getActiveRoomDoc().mutate(() => { handle.y.delete('title'); });
+      }
+    } else if (trimmed !== raw) {
+      getActiveRoomDoc().mutate(() => { handle.y.set('title', trimmed); });
+    }
+  }
+
+  toggleHeader(): void {
+    if (!this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    if (!handle) return;
+    const current = getHeaderVisible(handle.y);
+    getActiveRoomDoc().mutate(() => { handle.y.set('headerVisible', !current); });
+  }
+
+  toggleOutput(): void {
+    if (!this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    if (!handle) return;
+    const current = getOutputVisible(handle.y);
+    getActiveRoomDoc().mutate(() => { handle.y.set('outputVisible', !current); });
+  }
+
+  private updateHeaderVisibility(y: Y.Map<unknown>): void {
+    const visible = getHeaderVisible(y);
+    if (visible && !this.headerDiv && this.container) {
+      const props = getCodeProps(y);
+      if (!props) return;
+      const scale = useCameraStore.getState().scale;
+      this.createHeaderDiv(this.container, y, props.fontSize, scale);
+      // Move header to be the first child (before chevrons + CM)
+      if (this.headerDiv && this.container.firstChild !== this.headerDiv) {
+        this.container.insertBefore(this.headerDiv, this.container.firstChild);
+      }
+    } else if (!visible && this.headerDiv) {
+      this.headerDiv.remove();
+      this.headerDiv = null;
+      this.titleInput = null;
+    }
+  }
+
+  private updateOutputVisibility(y: Y.Map<unknown>): void {
+    const visible = getOutputVisible(y);
+    if (visible && !this.outputDiv && this.container) {
+      const props = getCodeProps(y);
+      if (!props) return;
+      const scale = useCameraStore.getState().scale;
+      this.createOutputDiv(this.container, y, props.fontSize, scale);
+    } else if (!visible && this.outputDiv) {
+      this.outputDiv.remove();
+      this.outputDiv = null;
+      this.outputTextDiv = null;
+    }
+  }
+
+  private updateOutputContent(y: Y.Map<unknown>): void {
+    if (!this.outputTextDiv) return;
+    this.outputTextDiv.textContent = getCodeOutput(y) ?? '';
+  }
+
+  private updateTitleForLanguageChange(y: Y.Map<unknown>): void {
+    if (!this.titleInput) return;
+    const raw = y.get('title') as string | undefined;
+    if (raw === undefined || raw === '') {
+      const lang = getLanguage(y) as CodeLanguage;
+      this.titleInput.value = `Untitled.${CODE_EXTENSIONS[lang]}`;
+    }
   }
 }

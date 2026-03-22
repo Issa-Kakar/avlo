@@ -82,7 +82,7 @@ import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
 import {
   getCodeFrame,
   computeLayout as computeCodeLayout,
-  totalHeight as codeTotalHeight,
+  blockHeight as codeBlockHeight,
   getMinWidth as getCodeMinWidth,
   codeSystem,
 } from '@/lib/code/code-system';
@@ -1136,7 +1136,7 @@ export class SelectTool implements PointerTool {
             codeReflow.layouts.set(handle.id, layout);
             codeReflow.origins.set(handle.id, [newLeft, props.origin[1]]);
 
-            const newHeight = codeTotalHeight(layout, props.fontSize);
+            const newHeight = codeBlockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
             objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
           } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
             const [fx, , fw, fh] = codeFrame;
