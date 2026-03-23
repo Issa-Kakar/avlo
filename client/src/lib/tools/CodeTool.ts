@@ -34,7 +34,7 @@ import {
   chromeFontSize,
   headerBarHeight,
 } from '@/lib/code/code-system';
-import { CODE_FONT_FAMILY, MAX_TITLE_LENGTH, MAX_OUTPUT_CANVAS_LINES, OUTPUT_LINE_H_MULT, OUTPUT_PAD_BOTTOM_RATIO } from '@/lib/code/code-tokens';
+import { CODE_FONT_FAMILY, MAX_TITLE_LENGTH, MAX_OUTPUT_CANVAS_LINES, OUTPUT_LINE_H_MULT, OUTPUT_PAD_BOTTOM_RATIO, OUTPUT_LABEL_H_RATIO } from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -392,18 +392,23 @@ export class CodeTool implements PointerTool {
     });
 
     const view = new cmView.EditorView({ state, parent: container });
-    view.focus();
 
     // Output panel (after CM editor)
     if (props.outputVisible) {
       this.createOutputDiv(container, handle.y, props.fontSize, scale);
     }
 
-    // Place cursor at click position for existing blocks
+    // Focus routing: title input if click landed in header region, else CM
     const entryWorld = this.pendingEntryWorld;
     this.pendingEntryWorld = null;
-    if (entryWorld) {
+    const clickedHeader = entryWorld && props.headerVisible
+      && entryWorld[1] < origin[1] + headerBarHeight(fontSize);
+
+    if (clickedHeader && this.titleInput) {
+      this.titleInput.focus();
+    } else if (entryWorld) {
       const [cx, cy] = worldToClient(entryWorld[0], entryWorld[1]);
+      view.focus();
       requestAnimationFrame(() => {
         if (!this.editorView) return;
         const v = this.editorView as { posAtCoords(coords: { x: number; y: number }): number | null; dispatch(spec: unknown): void; focus(): void };
@@ -413,6 +418,8 @@ export class CodeTool implements PointerTool {
         }
         v.focus();
       });
+    } else {
+      view.focus();
     }
 
     // Extract syncConf for main UM integration
@@ -454,7 +461,7 @@ export class CodeTool implements PointerTool {
         if (this.titleInput && document.activeElement !== this.titleInput) {
           const raw = yMap.get('title') as string | undefined;
           const lang = getLanguage(yMap) as CodeLanguage;
-          this.titleInput.value = raw || `Untitled.${CODE_EXTENSIONS[lang]}`;
+          this.titleInput.value = raw ?? `Untitled.${CODE_EXTENSIONS[lang]}`;
         }
       }
       if (keys.has('output')) {
@@ -573,6 +580,18 @@ export class CodeTool implements PointerTool {
       this.outputDiv.style.fontSize = `${cfs}px`;
       const padB = props.fontSize * OUTPUT_PAD_BOTTOM_RATIO * scale;
       this.outputDiv.style.padding = `0 ${padRight(props.fontSize) * scale}px ${padB}px ${padLeft(props.fontSize) * scale}px`;
+      // Update separator margins
+      const sep = this.outputDiv.firstElementChild;
+      if (sep && (sep as HTMLElement).style.height === '1px') {
+        (sep as HTMLElement).style.margin = `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
+      }
+      // Update label height
+      const label = this.outputDiv.querySelector('.code-output-label') as HTMLElement | null;
+      if (label) {
+        const labelH = props.fontSize * OUTPUT_LABEL_H_RATIO * scale;
+        label.style.height = `${labelH}px`;
+        label.style.lineHeight = `${labelH}px`;
+      }
       if (this.outputTextDiv) {
         this.outputTextDiv.style.maxHeight = `${MAX_OUTPUT_CANVAS_LINES * outputLH}px`;
         this.outputTextDiv.style.lineHeight = `${outputLH}px`;
@@ -708,18 +727,16 @@ export class CodeTool implements PointerTool {
     input.type = 'text';
     input.maxLength = MAX_TITLE_LENGTH;
     const raw = y.get('title') as string | undefined;
-    input.value = raw || `Untitled.${CODE_EXTENSIONS[lang]}`;
+    input.value = raw ?? `Untitled.${CODE_EXTENSIONS[lang]}`;
     input.style.fontSize = `${cfs}px`;
     input.addEventListener('blur', () => this.saveTitle());
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        input.blur();
-        if (this.editorView) (this.editorView as { focus(): void }).focus();
+        input.blur(); // Confirm title — editor stays mounted, no CM focus
       } else if (e.key === 'Escape') {
-        e.stopPropagation();
+        e.stopPropagation(); // Prevent document-level handler from closing editor
         input.blur();
-        if (this.editorView) (this.editorView as { focus(): void }).focus();
       }
     });
 
@@ -727,9 +744,8 @@ export class CodeTool implements PointerTool {
     playBtn.className = 'code-run-btn';
     playBtn.style.width = `${fs * scale}px`;
     playBtn.style.height = `${fs * scale}px`;
-    playBtn.style.background = '#4ADE80';
-    playBtn.style.boxShadow = '0 0 4px #4ADE8060';
-    playBtn.innerHTML = `<svg viewBox="0 0 16 16" width="${cfs * 0.8}px" height="${cfs * 0.8}px"><path d="M5 3l8 5-8 5V3z" fill="white"/></svg>`;
+    playBtn.style.background = '#4ADE8035';
+    playBtn.innerHTML = `<svg viewBox="0 0 16 16" width="${cfs * 0.8}px" height="${cfs * 0.8}px"><path d="M5 3l8 5-8 5V3z" fill="#4ADE80"/></svg>`;
 
     header.appendChild(input);
     header.appendChild(playBtn);
@@ -750,10 +766,18 @@ export class CodeTool implements PointerTool {
     const padB = fs * OUTPUT_PAD_BOTTOM_RATIO * scale;
     output.style.padding = `0 ${padRight(fs) * scale}px ${padB}px ${padLeft(fs) * scale}px`;
 
+    // Separator line — matches canvas fillRect (1px within the output area)
+    const sep = document.createElement('div');
+    sep.style.height = '1px';
+    sep.style.background = 'rgba(255, 255, 255, 0.125)';
+    sep.style.margin = `0 ${-padRight(fs) * scale}px 0 ${-padLeft(fs) * scale}px`;
+
     const label = document.createElement('div');
     label.className = 'code-output-label';
     label.textContent = 'Output';
-    label.style.lineHeight = `${fs * 2.0 * scale}px`;
+    const labelH = fs * OUTPUT_LABEL_H_RATIO * scale;
+    label.style.height = `${labelH}px`;
+    label.style.lineHeight = `${labelH}px`;
 
     const textDiv = document.createElement('div');
     textDiv.className = 'code-output-text';
@@ -761,6 +785,7 @@ export class CodeTool implements PointerTool {
     textDiv.style.lineHeight = `${outputLH}px`;
     textDiv.textContent = (getCodeOutput(y) as string) ?? '';
 
+    output.appendChild(sep);
     output.appendChild(label);
     output.appendChild(textDiv);
     container.appendChild(output);
@@ -775,13 +800,12 @@ export class CodeTool implements PointerTool {
     if (!handle) return;
 
     const trimmed = this.titleInput.value.trim();
-    const lang = getLanguage(handle.y) as CodeLanguage;
-    const fallbackTitle = `Untitled.${CODE_EXTENSIONS[lang]}`;
     const raw = handle.y.get('title') as string | undefined;
 
-    if (trimmed === '' || trimmed === fallbackTitle) {
-      if (raw !== undefined) {
-        getActiveRoomDoc().mutate(() => { handle.y.delete('title'); });
+    if (trimmed === '') {
+      // Deliberate clear — store empty string (distinct from undefined = show fallback)
+      if (raw !== '') {
+        getActiveRoomDoc().mutate(() => { handle.y.set('title', ''); });
       }
     } else if (trimmed !== raw) {
       getActiveRoomDoc().mutate(() => { handle.y.set('title', trimmed); });
@@ -844,7 +868,7 @@ export class CodeTool implements PointerTool {
   private updateTitleForLanguageChange(y: Y.Map<unknown>): void {
     if (!this.titleInput) return;
     const raw = y.get('title') as string | undefined;
-    if (raw === undefined || raw === '') {
+    if (raw === undefined) {
       const lang = getLanguage(y) as CodeLanguage;
       this.titleInput.value = `Untitled.${CODE_EXTENSIONS[lang]}`;
     }

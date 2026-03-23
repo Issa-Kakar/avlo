@@ -197,7 +197,7 @@ html { overflow: hidden; }
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.125);
 }
 .code-title {
   background: transparent;
@@ -223,7 +223,6 @@ html { overflow: hidden; }
   pointer-events: none;
 }
 .code-output {
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
   font-family: 'JetBrains Mono', monospace;
   overflow: hidden;
   box-sizing: border-box;

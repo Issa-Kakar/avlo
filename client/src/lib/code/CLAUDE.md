@@ -10,11 +10,11 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | Style enum (`S`), `PALETTE`, `RunSpans` type, `packRunSpans` gap-fill, `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, keyword sets + classification, sync regex tokenizer (`syncTokenize`) — imported by main thread, worker, and theme |
-| `code-system.ts` | Singleton `CodeSystemCache`, zero-allocation canvas renderer (`renderCodeLayout`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system), layout computation with word-aware wrapping |
+| `code-tokens.ts` | Style enum (`S`), `PALETTE`, `RunSpans` type, `packRunSpans` gap-fill, `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenize`) — imported by main thread, worker, and theme |
+| `code-system.ts` | Singleton `CodeSystemCache`, zero-allocation canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers (`chromeFontSize`, `headerBarHeight`, `outputPanelHeight`, `blockHeight`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system), layout computation with word-aware wrapping |
 | `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
 | `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → `RunSpans[]` via `TAG_STYLE_INDEX` + `packRunSpans`, zero-copy transfer |
-| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
+| `CodeTool.ts` (in `lib/tools/`) | PointerTool — click-to-place + hit-test existing blocks + CodeMirror DOM overlay lifecycle (screen-space rendering via CSS custom properties) + header/output DOM chrome (title input, play button, output panel). `justClosedCodeId` prevents close→remount cycle; `startEditing(id)` public API for SelectTool double-click entry |
 
 ---
 
@@ -30,6 +30,10 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
   fontSize: number,              // World units, default 14
   width: number,                 // World units, stored (never 'auto')
   lineNumbers: boolean,          // Gutter visibility (default true, collaborative)
+  title: string | undefined,     // Header text — undefined=fallback, ''=deliberately empty
+  headerVisible: boolean,        // Header bar visibility (default true)
+  outputVisible: boolean,        // Output panel visibility (default false)
+  output: string | undefined,    // Execution output text (not yet populated)
   ownerId: string,
   createdAt: number,
 }
@@ -39,11 +43,13 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 - `Y.Text` not `Y.XmlFragment` — code is plain text; delta events map to Lezer `ChangedRange`
 - `origin` = top-left (not baseline). Code blocks are rectangular, no alignment modes
 - `width` always stored number — no 'auto' mode
-- Height derived: `padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)`
+- Height derived: `blockHeight(layout, fs, headerVisible, outputVisible, output)`
 - No `color`/`fillColor` — dark theme is fixed chrome
 - Empty blocks are NOT deleted on close (unlike text) — visible dark bg + line numbers
 
-**Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `@avlo/shared`). Returns `{ content: Y.Text, origin, fontSize, width, language, lineNumbers }`. Also: `getLineNumbers(y, fallback = true): boolean`.
+**Title semantics:** `undefined` → show `"Untitled.{ext}"` fallback (via `CODE_EXTENSIONS` map). `''` → user deliberately cleared, show nothing. `'Foo'` → show "Foo". Stored via `saveTitle()` on blur; `??` (not `||`) used everywhere for fallback to preserve empty string.
+
+**Typed accessor:** `getCodeProps(y)` → `CodeProps | null` (in `@avlo/shared`). Returns `{ content: Y.Text, origin, fontSize, width, language, lineNumbers, title, headerVisible, outputVisible, output }`. Also: `getLineNumbers(y, fallback = true)`, `getHeaderVisible(y, fallback = true)`, `getOutputVisible(y, fallback = false)`, `getCodeOutput(y)`.
 
 ---
 
@@ -65,7 +71,7 @@ Code blocks use **origin-based top-left positioning**. The `origin` field stores
 
 **Frame derivation:** No stored frame in Y.Doc. Frame is computed from layout and cached:
 ```
-frame = [origin[0], origin[1], layout.totalWidth, totalHeight(layout, fontSize)]
+frame = [origin[0], origin[1], layout.totalWidth, blockHeight(layout, fs, headerVisible, outputVisible, output)]
 ```
 Read via `getCodeFrame(id)`. `computeCodeBBox(id, yObj)` computes layout, derives frame, caches it, and returns bbox.
 
@@ -83,6 +89,23 @@ totalHeight = padTop(fs) + visualLines.length * lineHeight(fs) + padBottom(fs)
 charWidth(fs)  = fs * getMinCharWidthRatio('JetBrains Mono')  (from text-system cache)
 lineHeight(fs) = fs * 1.5
 ```
+
+**Chrome sizing** (header bar + output panel):
+```
+chromeFontSize(fs)    = fs * 0.72          — smaller, minimal chrome text
+headerBarHeight(fs)   = fs * 2.5           — title + play button area
+outputPanelHeight(fs, output) =
+    fs * 2.0                               — "Output" label height
+  + min(outputLines, 12) * cfs * 1.4       — output text (capped at 12 lines)
+  + fs * 0.8                               — bottom padding
+
+blockHeight(layout, fs, headerVisible, outputVisible, output) =
+    [headerBarHeight(fs)]                  — only if headerVisible
+  + padTop(fs) + lines * lineHeight(fs) + padBottom(fs)   — code area
+  + [outputPanelHeight(fs, output)]        — only if outputVisible
+```
+
+`totalHeight()` is still exported for internal use but `blockHeight()` is used for bbox/frame computation.
 
 Gutter width = `maxDigits * charWidth(fs)`, where `maxDigits = max(2, String(sourceLineCount).length)`.
 Content left offset = `contentLeft(digits, fs, lineNumbers)`:
@@ -144,6 +167,11 @@ Single fixed dark theme (no user-selectable themes). All constants in `code-toke
 | `CODE_SELECTION` | `#122BBB` | CM selection background |
 | `CODE_LINE_HL` | `#FFFFFF0F` | CM active line highlight |
 | `CODE_CARET` | `#FFFFFFA6` | CM cursor |
+| `CODE_SEPARATOR` | `#FFFFFF20` | Header/output separator lines (~12.5% white) |
+| `CODE_TITLE_COLOR` | `#AEAEAE` | Title text in header bar |
+| `CODE_PLAY_GREEN` | `#4ADE80` | Play button triangle |
+| `CODE_PLAY_BG` | `#4ADE8035` | Play button circle background (~21% green) |
+| `CODE_OUTPUT_LABEL` | `#E0E0E090` | "Output" label text |
 
 ### Token Colors — Two-Tier Keywords
 | S Enum | Hex | Semantic | Examples |
@@ -290,16 +318,22 @@ interface CacheEntry {
 
 ## Canvas Renderer (`renderCodeLayout`)
 
-Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, sourceLines)`
+Signature: `renderCodeLayout(ctx, layout, originX, originY, fontSize, spans, sourceLines, title?, output?)`
+
+`title` and `output` are optional: `undefined` = section hidden, present string = section visible. Callers in `objects.ts` build these from `headerVisible`/`outputVisible` props.
 
 Zero-allocation span iteration — no `sliceRuns`, no intermediate objects. Steps:
 
-1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`
-2. **Per visual line:** Compute `baseY = originY + padTop + i * lineHeight + baselineOffset`
-3. **Gutter:** When `layout.lineNumbers` is true and `vline.from === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false.
-4. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
-5. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
-6. **Placeholder:** After the loop, if `sourceLines.length === 1 && sourceLines[0] === ''`, draw grey "Type something..." at first line position (same font, color as CM6 placeholder)
+1. **Background:** `roundRect` fill with `CODE_BG`, `borderRadius(fontSize)`. Height = `blockHeight(...)` (includes chrome when present)
+2. **Separator helper (`drawSep`):** Pixel-snapped hairline — reads `ctx.getTransform()`, converts Y to device coords via `Math.round()`, draws exactly `dpr` device pixels (= 1 CSS pixel) with `resetTransform()`. Prevents sub-pixel anti-aliasing from halving apparent separator opacity
+3. **Header bar** (when `title !== undefined`): Separator at `originY + headerBarHeight(fs)`. Title text at chrome font size, vertically centered. Play button: `CODE_PLAY_BG` circle (radius `fs * 0.5`) + `CODE_PLAY_GREEN` triangle, right-aligned
+4. **Code content:** All lines offset down by `headerBarHeight(fs)` when header present (`codeTop = originY + hh`)
+5. **Per visual line:** Compute `baseY = codeTop + padTop + i * lineHeight + baselineOffset`
+6. **Gutter:** When `layout.lineNumbers` is true and `vline.from === 0`, right-align line number within gutter area. Skipped entirely when lineNumbers is false
+7. **Code text:** Iterate `RunSpans` triples with inline `[vFrom, vTo)` clipping. `PALETTE[style]` for color, `isBold(style)` for font. `lineText.substring(drawFrom, drawTo)` for fillText (V8 SlicedString optimization). Whitespace checked via `charCodeAt` (no regex)
+8. **Batching:** Font and fillStyle only set on change (`prevFont` tracking)
+9. **Placeholder:** After the loop, if `sourceLines.length === 1 && sourceLines[0] === ''`, draw grey "Type something..." at first line position
+10. **Output panel** (when `output !== undefined`): Separator at code bottom. "Output" label at chrome font size, vertically centered. Output text lines (max `MAX_OUTPUT_CANVAS_LINES`) at chrome font size, `CODE_DEFAULT` color
 
 ---
 
@@ -346,30 +380,42 @@ The gutter-to-content gap (`--c-gr`, `gutterPad`) is applied as `padding-left` o
 
 ### `positionEditor()`
 
-Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional properties (position, width, fontSize, lineHeight, borderRadius, CSS vars) + calls `editorView.requestMeasure()` to trigger CM relayout.
+Called on every zoom/pan change (`onViewChange()`). Updates ALL dimensional properties (position, width, fontSize, lineHeight, borderRadius, CSS vars) + header div (height, padding, title font size) + output div (font size, padding, separator margins, label height, text maxHeight/lineHeight) + calls `editorView.requestMeasure()` to trigger CM relayout.
 
 ### CSS (index.css)
 
 ```css
 .code-editor {
-  pointer-events: auto;
-  z-index: 1000;
-  overflow: hidden;
+  pointer-events: auto; z-index: 1000; overflow: hidden; background: #060521;
 }
-.code-editor .cm-editor {
-  height: auto;
-  border-radius: inherit;
-  outline: none;
-}
+.code-editor .cm-editor { height: auto; border-radius: inherit; outline: none; }
 .code-editor .cm-scroller {
   font-family: 'JetBrains Mono', monospace;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow-y: auto; overflow-x: hidden;
   line-height: inherit !important;  /* Override CM base theme's 1.4 */
 }
+
+/* Header/output chrome */
+.code-header {
+  display: flex; align-items: center; box-sizing: border-box;
+  border-bottom: 1px solid rgba(255,255,255,0.125);  /* CODE_SEPARATOR */
+}
+.code-title {
+  background: transparent; border: none; outline: none; color: #AEAEAE;
+  font-family: 'JetBrains Mono', monospace; flex: 1; min-width: 0; padding: 0;
+}
+.code-run-btn {
+  flex-shrink: 0; border: none; border-radius: 50%; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
+.code-output { font-family: 'JetBrains Mono', monospace; overflow: hidden; box-sizing: border-box; }
+.code-output-label { color: #E0E0E090; font-weight: 450; }
+.code-output-text { color: #AEAEAE; white-space: pre-wrap; word-break: break-all; overflow-y: auto; }
 ```
 
 The `line-height: inherit !important` forces the scroller to use the container's explicit px line-height instead of CM's base theme value of `1.4`, which fights the code system's `1.5` multiplier at identical specificity.
+
+All dynamic chrome sizing (fontSize, padding, height, lineHeight) is set via inline styles in CodeTool, not CSS — matches the screen-space rendering model where everything is `world * scale` in exact px.
 
 ---
 
@@ -408,13 +454,34 @@ Registered in `tool-registry.ts` as singleton `codeTool`, mapped to `'code'` too
 
 ### Object Creation
 
-Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2`. Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`. `lineNumbers` from `useDeviceUIStore.codeLineNumbers` (persisted preference).
+Center-placed: `originX = clickX - width/2`, `originY = clickY - blockHeight/2` (includes `headerBarHeight` in centering). Default language: `typescript`. Width from `getDefaultWidth(fontSize)`. fontSize from `useDeviceUIStore.textSize`. `lineNumbers` from `useDeviceUIStore.codeLineNumbers`. New blocks set `headerVisible: true`, `outputVisible: false`. `title` and `output` are NOT set (undefined → defaults).
 
 ### Editor Lifecycle
 
-**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`) → create session UM scoped to `[yText, yMap]` with `trackedOrigins: new Set([userId])` → build `EditorState` with extensions → create `EditorView` → focus → extract `syncConf` via `ySyncFacet` → seal main UM (add syncConf origin, captureTimeout → 600s) → register Y.Map observer → `beginCodeEditing(objectId)` on selection store → invalidate world.
+**Mount:** Close existing editor if open → create container div → set screen-space dimensions + CSS vars → create header div if `headerVisible` → append to `editorHost` → lazy-load CM modules (parallel `Promise.all`) → create session UM → build `EditorState` with extensions → create `EditorView` → create output div if `outputVisible` → **focus routing** (see below) → extract `syncConf` → seal main UM (captureTimeout → 600s) → register Y.Map observer → `beginCodeEditing(objectId)` → invalidate world.
 
-**Close (`commitAndClose`):** Remove event handlers → unseal main UM (remove syncConf origin, captureTimeout → 500ms) → unobserve Y.Map → destroy EditorView → clear session UM → remove container from DOM → null all refs → `endCodeEditing()` on selection store → invalidate world + overlay.
+**Focus routing on mount:** If `pendingEntryWorld` Y < `origin[1] + headerBarHeight(fontSize)` AND header visible → focus title input. Else if entry world exists → focus CM, place cursor at click position via `posAtCoords()` in rAF. Else (new block) → focus CM.
+
+**Close (`commitAndClose`):** `saveTitle()` → null `titleInput` (prevents blur re-entry during DOM removal) → remove event handlers → unseal main UM (captureTimeout → 500ms) → unobserve Y.Map → destroy EditorView → clear session UM → remove container from DOM → null all refs → `endCodeEditing()` → invalidate world + overlay.
+
+### Header DOM Lifecycle
+
+`createHeaderDiv(container, y, fs, scale)`: Creates flex div with title input + play button. Title input reads `y.get('title') ?? "Untitled.{ext}"` (uses `??` to preserve empty string). Play button: circle bg `#4ADE8035`, green triangle SVG `#4ADE80`, `pointer-events: none` (decorative).
+
+**Title input events:**
+- **Blur:** Calls `saveTitle()` to persist
+- **Enter:** `preventDefault()` + `blur()` — confirms title, editor stays mounted unfocused (no CM jump)
+- **Escape:** `stopPropagation()` + `blur()` — prevents document-level close handler from firing
+
+`saveTitle()`: Trims input. Empty string → stores `''` (deliberate clear, distinct from undefined). Non-empty and different from stored → sets title. No-op if unchanged.
+
+**Visibility toggle:** `updateHeaderVisibility(y)` — creates/removes header div. On show, inserts before first child. On hide, removes div and nulls refs.
+
+### Output DOM Lifecycle
+
+`createOutputDiv(container, y, fs, scale)`: Creates div with separator (1px div, negative margins for full-width), label ("Output", explicit height = `fs * OUTPUT_LABEL_H_RATIO * scale`), text div (max height capped at `MAX_OUTPUT_CANVAS_LINES` lines). No CSS `border-top` — separator is a child div to match canvas `drawSep` exactly.
+
+**Visibility toggle:** `updateOutputVisibility(y)` — creates/removes output div.
 
 ### Event Handlers
 
@@ -432,9 +499,13 @@ Two-level undo: per-session UM for in-editor Ctrl+Z/Y, main UM for post-close at
 ### Y.Map Observer — Live Property Sync
 
 Registered after EditorView creation on `handle.y`. Listens for `keysChanged`:
-- `fontSize`, `width`, `origin` → `positionEditor()` (re-reads fresh props, updates all screen-space dimensions + CSS vars)
-- `language` → `switchLanguage()` (lazy-loads parser, reconfigures language `Compartment`)
-- `lineNumbers` → `switchLineNumbers()` (reconfigures lineNumbers `Compartment`) + `positionEditor()` (updates CSS vars for gutter/no-gutter mode)
+- `fontSize`, `width`, `origin` → `positionEditor()`
+- `language` → `switchLanguage()` + `updateTitleForLanguageChange()` (updates fallback only if title is undefined, not empty string)
+- `lineNumbers` → `switchLineNumbers()` + `positionEditor()`
+- `headerVisible` → `updateHeaderVisibility()` + `positionEditor()`
+- `outputVisible` → `updateOutputVisibility()` + `positionEditor()`
+- `title` → update input value if not focused (uses `??` for fallback — preserves empty string)
+- `output` → `updateOutputContent()` (sets textDiv content)
 
 Cleanup: `yMap.unobserve()` in `commitAndClose` before view destroy.
 
@@ -467,13 +538,17 @@ function drawCode(ctx, handle) {
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines);
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
 }
 ```
 
+Title/output args: `headerVisible` → `title` (undefined hides header, string shows it). `outputVisible` → `output` (undefined hides panel, string shows it). All three render functions (`drawCode`, `drawScaledCodePreview`, `drawReflowedCodePreview`) use identical arg-building logic.
+
 During scale transforms, code blocks get full context-aware rendering:
 - **Corner / codeOnly N/S:** `drawScaledCodePreview()` — ctx.scale on cached layout with rounded fontSize
-- **E/W:** `drawReflowedCodePreview()` — renders from pre-computed `CodeReflowState` layout/origin
+- **E/W:** `drawReflowedCodePreview()` — renders from pre-computed `CodeReflowState` layout/origin. E/W reflow uses `blockHeight(layout, fs, headerVisible, outputVisible, output)` for dirty rect computation
 - **Mixed N/S:** Edge-pin translate via `computeEdgePinTranslation()`
 
 ### selection-store.ts
@@ -485,12 +560,14 @@ beginCodeEditing: (objectId) => set({ codeEditingId: objectId, menuOpen: true })
 endCodeEditing: () => set({ codeEditingId: null, menuOpen: selectedIds.length > 0 });
 ```
 
+**SelectedStyles** includes `codeHeaderVisible: boolean | null` and `codeOutputVisible: boolean | null` — read from first selected code object, used by context menu toggle buttons.
+
 `CodeReflowState` (same shape as `TextReflowState`): `{ layouts: Map<string, CodeLayout>, origins: Map<string, [number, number]> }`. Initialized in `beginScale` for E/W handles when `kindCounts.code > 0`, cleared in `endTransform`/`cancelTransform`.
 
 ### SelectTool.ts — Code Block Integration
 
 - **Translate:** Code blocks translate via `origin` (same as text), not `frame`
-- **Scale:** Full dispatch in `invalidateTransformPreview` and `commitScale` — uniform scale (corner/codeOnly N/S), reflow (E/W), edge-pin (mixed N/S)
+- **Scale:** Full dispatch in `invalidateTransformPreview` and `commitScale` — uniform scale (corner/codeOnly N/S), reflow (E/W, uses `blockHeight` with chrome fields for dirty rects), edge-pin (mixed N/S)
 - **Double-click to edit:** `objectInSelection` click on code block calls `codeTool.startEditing(id)` with `justClosedCodeId` guard
 - **Guards:** `codeEditingId` blocks handle hit testing, hover cursors, and hides resize handles during editing
 - **onViewChange:** Forwards to `codeTool.onViewChange()` when editor is mounted
@@ -501,6 +578,13 @@ Code blocks are included in `ObjectKind` (`'code'`) and participate in spatial i
 
 ---
 
+### Context Menu — Header/Output Toggles
+
+`CodeStyleGroup` in `ContextMenu.tsx` renders toggle buttons for line numbers, header, and output. `toggleCodeHeader()` and `toggleCodeOutput()` in `selection-actions.ts` read current state from first selected code object and toggle all selected code objects atomically.
+
+---
+
 ## Known Issues / Not Yet Implemented
 
 - **Long code blocks:** CM's internal viewport optimization causes WYSIWYG mismatch on very tall blocks (content outside CM's visible window is virtualized)
+- **Play button:** Decorative only (`pointer-events: none`). No execution runtime

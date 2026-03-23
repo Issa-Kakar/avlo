@@ -88,7 +88,7 @@ export const LINE_HEIGHT_MULT = 1.5;
 // CHROME CONSTANTS — header bar, output panel
 // ============================================================================
 
-export const CHROME_FONT_RATIO = 0.82;
+export const CHROME_FONT_RATIO = 0.72;
 export const HEADER_HEIGHT_RATIO = 2.5;
 export const OUTPUT_LABEL_H_RATIO = 2.0;
 export const OUTPUT_LINE_H_MULT = 1.4;
@@ -97,10 +97,10 @@ export const MAX_OUTPUT_CANVAS_LINES = 12;
 export const MAX_OUTPUT_CHARS = 4096;
 export const MAX_TITLE_LENGTH = 48;
 
-export const CODE_SEPARATOR = '#FFFFFF12';
+export const CODE_SEPARATOR = '#FFFFFF20';
 export const CODE_TITLE_COLOR = '#AEAEAE';
 export const CODE_PLAY_GREEN = '#4ADE80';
-export const CODE_PLAY_GLOW = '#4ADE8060';
+export const CODE_PLAY_BG = '#4ADE8035';
 export const CODE_OUTPUT_LABEL = '#E0E0E090';
 
 // ============================================================================

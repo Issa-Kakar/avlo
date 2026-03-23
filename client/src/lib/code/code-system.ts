@@ -37,7 +37,7 @@ import {
   CODE_SEPARATOR,
   CODE_TITLE_COLOR,
   CODE_PLAY_GREEN,
-  CODE_PLAY_GLOW,
+  CODE_PLAY_BG,
   CODE_OUTPUT_LABEL,
 } from './code-tokens';
 
@@ -629,12 +629,24 @@ export function renderCodeLayout(
   ctx.roundRect(originX, originY, layout.totalWidth, bgH, borderRadius(fontSize));
   ctx.fill();
 
+  // Helper: pixel-snapped hairline (1 CSS px, device-aligned)
+  const m = ctx.getTransform();
+  const dpr = window.devicePixelRatio || 1;
+  const drawSep = (y: number) => {
+    const devX = Math.round(m.a * originX + m.e);
+    const devY = Math.round(m.d * y + m.f);
+    const devW = Math.round(m.a * (originX + layout.totalWidth) + m.e) - devX;
+    ctx.save();
+    ctx.resetTransform();
+    ctx.fillStyle = CODE_SEPARATOR;
+    ctx.fillRect(devX, devY, devW, dpr);
+    ctx.restore();
+  };
+
   // 2. Header bar
   if (title !== undefined) {
     const sepY = originY + hh;
-    // Separator line
-    ctx.fillStyle = CODE_SEPARATOR;
-    ctx.fillRect(originX, sepY, layout.totalWidth, 1);
+    drawSep(sepY);
 
     ctx.textBaseline = 'middle';
     // Title text
@@ -647,20 +659,16 @@ export function renderCodeLayout(
     const btnCx = originX + layout.totalWidth - padRight(fontSize) - btnR;
     const btnCy = originY + hh / 2;
 
-    ctx.save();
-    ctx.shadowColor = CODE_PLAY_GLOW;
-    ctx.shadowBlur = 4;
-    ctx.fillStyle = CODE_PLAY_GREEN;
+    ctx.fillStyle = CODE_PLAY_BG;
     ctx.beginPath();
     ctx.arc(btnCx, btnCy, btnR, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
 
-    // White play triangle inside
+    // Green play triangle inside
     const triH = btnR * 0.9;
     const triW = triH * 0.85;
     const triX = btnCx - triW * 0.35;
-    ctx.fillStyle = '#FFFFFF';
+    ctx.fillStyle = CODE_PLAY_GREEN;
     ctx.beginPath();
     ctx.moveTo(triX, btnCy - triH / 2);
     ctx.lineTo(triX + triW, btnCy);
@@ -705,9 +713,11 @@ export function renderCodeLayout(
       const style = lineSpans[si + 2];
       const spanEnd = spanOff + spanLen;
 
+      // Skip spans entirely outside [vFrom, vTo)
       if (spanEnd <= vFrom) continue;
       if (spanOff >= vTo) break;
 
+      // Clip to visual line range
       const drawFrom = Math.max(spanOff, vFrom);
       const drawTo = Math.min(spanEnd, vTo);
       const drawLen = drawTo - drawFrom;
@@ -720,6 +730,7 @@ export function renderCodeLayout(
       }
       ctx.fillStyle = PALETTE[style];
 
+      // Only fillText for non-whitespace
       let allWhitespace = true;
       for (let ci = drawFrom; ci < drawTo; ci++) {
         const cc = lineText.charCodeAt(ci);
@@ -745,9 +756,7 @@ export function renderCodeLayout(
   // 4. Output panel
   if (output !== undefined) {
     const codeBottomY = codeTop + pt + layout.lines.length * lh + padBottom(fontSize);
-    // Separator line
-    ctx.fillStyle = CODE_SEPARATOR;
-    ctx.fillRect(originX, codeBottomY, layout.totalWidth, 1);
+    drawSep(codeBottomY);
 
     const labelH = fontSize * OUTPUT_LABEL_H_RATIO;
     const outputLH = cfs * OUTPUT_LINE_H_MULT;
