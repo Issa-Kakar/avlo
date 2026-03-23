@@ -236,6 +236,7 @@ const TOOL_KEYS: Record<string, Tool> = {
   p: 'pen',
   e: 'eraser',
   t: 'text',
+  n: 'note',
   v: 'select',
   h: 'pan',
   a: 'connector',

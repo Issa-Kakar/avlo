@@ -110,6 +110,17 @@ html { overflow: hidden; }
   display: none;
 }
 
+.tiptap[data-width-mode='note'] {
+  overflow: visible;
+  text-align: left;
+}
+.tiptap[data-width-mode='note'] p {
+  margin: 0;
+}
+.tiptap[data-width-mode='note'] .is-editor-empty:first-child::before {
+  display: none;
+}
+
 .tiptap[data-width-mode='label'] {
   overflow-x: hidden;
   overflow-y: auto;

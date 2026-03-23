@@ -25,7 +25,8 @@ import {
 } from './connectors';
 import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
-import { textLayoutCache, computeTextBBox } from './text/text-system';
+import { textLayoutCache, computeTextBBox, computeNoteBBox } from './text/text-system';
+import { isNote } from '@avlo/shared';
 import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -1045,7 +1046,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (kind === 'text') {
         const props = getTextProps(yObj);
         if (props) {
-          newBBox = computeTextBBox(id, props);
+          newBBox = isNote(yObj) ? computeNoteBBox(id, props) : computeTextBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
           const fontSize = (yObj.get('fontSize') as number) ?? 20;
@@ -1146,7 +1147,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (kind === 'text') {
         const props = getTextProps(yObj);
         if (props) {
-          bbox = computeTextBBox(id, props);
+          bbox = isNote(yObj) ? computeNoteBBox(id, props) : computeTextBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
           const fontSize = (yObj.get('fontSize') as number) ?? 20;

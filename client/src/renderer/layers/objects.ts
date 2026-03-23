@@ -46,8 +46,13 @@ import {
   anchorFactor,
   getBaselineToTopRatio,
   getTextFrame,
+  renderNoteBody,
+  getNotePadding,
+  getNoteContentWidth,
+  computeNoteHeight,
+  NOTE_FILL_COLOR,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
+import { getTextProps, getAlign, getCodeProps, isNote } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 import { getAssetId } from '@avlo/shared';
@@ -333,12 +338,35 @@ function drawShapeLabelWithFrame(
  */
 function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-
-  // Skip rendering if this text is being edited
   const textEditingId = useSelectionStore.getState().textEditingId;
-  if (textEditingId === id) {
+
+  // --- Note dispatch (before editing guard — body always draws) ---
+  if (isNote(y)) {
+    const props = getTextProps(y);
+    if (!props) return;
+    const color = getColor(y);
+    const fillColor = getFillColor(y) || NOTE_FILL_COLOR;
+    const contentWidth = getNoteContentWidth(props.width as number, props.fontSize);
+    const layout = textLayoutCache.getLayout(
+      id, props.content, props.fontSize, props.fontFamily, contentWidth,
+    );
+    const noteHeight = computeNoteHeight(layout, props.fontSize, props.width as number);
+
+    renderNoteBody(ctx, props.origin[0], props.origin[1],
+      props.width as number, noteHeight, fillColor);
+
+    if (textEditingId === id) return;
+
+    const padding = getNotePadding(props.fontSize);
+    const textX = props.origin[0] + padding;
+    const textY = props.origin[1] + padding
+      + props.fontSize * getBaselineToTopRatio(props.fontFamily);
+    renderTextLayout(ctx, layout, textX, textY, color, props.align);
     return;
   }
+
+  // --- Regular text ---
+  if (textEditingId === id) return;
 
   const props = getTextProps(y);
   if (!props) return;
