@@ -236,6 +236,7 @@ const TOOL_KEYS: Record<string, Tool> = {
   p: 'pen',
   e: 'eraser',
   t: 'text',
+  n: 'note',
   v: 'select',
   h: 'pan',
   a: 'connector',
@@ -289,10 +290,12 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     if (selectedIds.length !== 1) return;
     const { objectsById } = getCurrentSnapshot();
     const handle = objectsById.get(selectedIds[0]);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape')) return;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) return;
 
     // Compute center
-    const frame = handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y);
+    const frame = handle.kind === 'text' || handle.kind === 'note'
+      ? getTextFrame(handle.id)
+      : getFrame(handle.y);
     if (!frame) return;
 
     const centerX = frame[0] + frame[2] / 2;

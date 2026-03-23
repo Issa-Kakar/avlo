@@ -24,8 +24,10 @@ import * as Y from 'yjs';
 import type {
   BBoxTuple,
   FrameTuple,
+  NoteProps,
   TextProps,
   TextAlign,
+  TextAlignV,
   TextWidth,
   FontFamily,
 } from '@avlo/shared';
@@ -35,7 +37,45 @@ import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
 export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 export type { FontFamilyConfig } from './font-config';
-export type { TextAlign, TextWidth, TextProps, FontFamily } from '@avlo/shared';
+export type { TextAlign, TextAlignV, TextWidth, TextProps, FontFamily } from '@avlo/shared';
+
+// =============================================================================
+// STICKY NOTE CONSTANTS & HELPERS
+// =============================================================================
+
+export const NOTE_WIDTH = 280;
+export const NOTE_FILL_COLOR = '#FEF3AC';
+const NOTE_PADDING_RATIO = 12 / 280;
+const NOTE_CORNER_RADIUS_RATIO = 0.011;
+const NOTE_SHADOW_PAD_RATIO = 0.15;
+
+export function getNotePadding(noteWidth: number): number {
+  return noteWidth * NOTE_PADDING_RATIO;
+}
+
+export function getNoteCornerRadius(noteWidth: number): number {
+  return noteWidth * NOTE_CORNER_RADIUS_RATIO;
+}
+
+export function getNoteContentWidth(noteWidth: number): number {
+  return noteWidth - 2 * getNotePadding(noteWidth);
+}
+
+export function computeNoteHeight(layout: TextLayout, noteWidth: number): number {
+  const contentHeight = layout.lines.length * layout.lineHeight;
+  return Math.max(noteWidth, contentHeight + 2 * getNotePadding(noteWidth));
+}
+
+/** Vertical offset for note content alignment (matches CSS clamp behavior). */
+export function getNoteContentOffsetY(
+  alignV: TextAlignV,
+  maxContentH: number,
+  contentH: number,
+): number {
+  if (alignV === 'top') return 0;
+  const space = Math.max(0, maxContentH - contentH);
+  return alignV === 'middle' ? space / 2 : space;
+}
 
 // =============================================================================
 // §1  TYPES — Pipeline data model
@@ -938,7 +978,7 @@ function getBoxLeftX(originX: number, boxWidth: number, align: TextAlign): numbe
 }
 
 /** Line start X within container */
-function getLineStartX(
+export function getLineStartX(
   originX: number,
   boxWidth: number,
   lineVisualWidth: number,
@@ -1129,6 +1169,126 @@ export function renderShapeLabel(
   if (needsClip) ctx.restore();
 }
 
+// =============================================================================
+// STICKY NOTE — Shadow, Body Renderer, BBox
+// =============================================================================
+
+function getNoteShadowPad(noteWidth: number): number {
+  return noteWidth * NOTE_SHADOW_PAD_RATIO;
+}
+
+// --- 9-Slice Shadow Cache ---
+
+interface ShadowCache {
+  canvas: OffscreenCanvas;
+  padPx: number;
+  rectPx: number;
+  dpr: number;
+}
+
+let _shadowCache: ShadowCache | null = null;
+
+function ensureShadowCache(): ShadowCache {
+  const dpr = window.devicePixelRatio || 1;
+  if (_shadowCache && _shadowCache.dpr === dpr) return _shadowCache;
+
+  const padPx = 100,
+    rectPx = 80;
+  const total = rectPx + 2 * padPx; // 280
+  const radius = 5;
+
+  const canvas = new OffscreenCanvas(total * dpr, total * dpr);
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = '#000';
+
+  // Layer 1: Floor shadow — wide soft Gaussian with large Y offset.
+  // The large offset pushes the shadow almost entirely below the body:
+  //   bottom: full opacity at edge (shadow rect overlaps body bottom by offsetY)
+  //   sides: α/2 at edge, drops with σ=17 → moderate
+  //   top: nearly invisible (offset >> σ cancels blur)
+  ctx.shadowColor = 'rgba(0,0,0,0.10)';
+  ctx.shadowBlur = 34;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 28;
+  ctx.beginPath();
+  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
+  ctx.fill();
+
+  // Layer 2: Contact shadow — tight edge definition.
+  // Small blur + small offset → adds ~3% to all edges, fades within ~10px.
+  // Combines with floor shadow for correct edge opacity without hard lines.
+  ctx.shadowColor = 'rgba(0,0,0,0.06)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 3;
+  ctx.beginPath();
+  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
+  ctx.fill();
+
+  // Punch out body rect — expanded 1px to eliminate anti-aliased fringe
+  // between shadow edge and body fill
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.beginPath();
+  ctx.roundRect(padPx - 1, padPx - 1, rectPx + 2, rectPx + 2, radius);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  _shadowCache = { canvas, padPx, rectPx, dpr };
+  return _shadowCache;
+}
+
+function drawNoteShadow(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): void {
+  const sc = ensureShadowCache();
+  const d = sc.dpr;
+  const sp = sc.padPx * d;
+  const sm = sc.rectPx * d;
+  const dp = getNoteShadowPad(w);
+  const src = sc.canvas;
+
+  // TL, TC, TR
+  ctx.drawImage(src, 0, 0, sp, sp, x - dp, y - dp, dp, dp);
+  ctx.drawImage(src, sp, 0, sm, sp, x, y - dp, w, dp);
+  ctx.drawImage(src, sp + sm, 0, sp, sp, x + w, y - dp, dp, dp);
+  // ML, MR
+  ctx.drawImage(src, 0, sp, sp, sm, x - dp, y, dp, h);
+  ctx.drawImage(src, sp + sm, sp, sp, sm, x + w, y, dp, h);
+  // BL, BC, BR
+  ctx.drawImage(src, 0, sp + sm, sp, sp, x - dp, y + h, dp, dp);
+  ctx.drawImage(src, sp, sp + sm, sm, sp, x, y + h, w, dp);
+  ctx.drawImage(src, sp + sm, sp + sm, sp, sp, x + w, y + h, dp, dp);
+}
+
+// --- Note body renderer ---
+
+export function renderNoteBody(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  fillColor: string,
+): void {
+  const radius = getNoteCornerRadius(w);
+
+  drawNoteShadow(ctx, x, y, w, h);
+
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, radius);
+  ctx.fill();
+}
+
 // --- Spatial index + derived frame ---
 
 /**
@@ -1146,6 +1306,19 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   const fh = layout.lines.length * layout.lineHeight;
   textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, fh]);
   return [fx - padding, fy - padding, fx + layout.boxWidth + padding, fy + fh + padding];
+}
+
+export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
+  const { content, origin, fontSize, fontFamily, width } = props;
+  const contentWidth = getNoteContentWidth(width);
+  const layout = textLayoutCache.getLayout(objectId, content, fontSize, fontFamily, contentWidth);
+  const noteHeight = computeNoteHeight(layout, width);
+
+  const frame: FrameTuple = [origin[0], origin[1], width, noteHeight];
+  textLayoutCache.setFrame(objectId, frame);
+
+  const sp = getNoteShadowPad(width);
+  return [frame[0] - sp, frame[1] - sp, frame[0] + frame[2] + sp, frame[1] + frame[3] + sp];
 }
 
 /**

@@ -51,6 +51,7 @@ const toolMap = new Map<ToolId, PointerTool>([
   ['shape', drawingTool],
   ['eraser', eraserTool],
   ['text', textTool],
+  ['note', textTool],
   ['pan', panTool],
   ['select', selectTool],
   ['connector', connectorTool],

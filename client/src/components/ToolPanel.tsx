@@ -25,6 +25,7 @@ import {
   IconCode,
   IconImage,
   IconPan,
+  IconStickyNote,
   IconFill,
   IconUndo,
   IconRedo,
@@ -61,7 +62,7 @@ export function ToolPanel() {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector'].includes(activeTool);
+  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(activeTool);
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle =
@@ -89,7 +90,7 @@ export function ToolPanel() {
 
   // Size presets
   const getSizePresets = () => {
-    if (activeTool === 'text') return []; // Sizes managed in context menu
+    if (activeTool === 'text' || activeTool === 'note') return []; // Sizes managed in context menu
     if (activeTool === 'connector') return [2, 4, 6, 8];
     return [6, 10, 14, 18];
   };
@@ -135,6 +136,15 @@ export function ToolPanel() {
         </ToolButton>
 
         <div className="tool-divider" />
+
+        <ToolButton
+          tool="note"
+          isActive={activeTool === 'note'}
+          onClick={() => setActiveTool('note')}
+          tooltip="Sticky Note (N)"
+        >
+          <IconStickyNote className="icon" />
+        </ToolButton>
 
         {/* Drawing — no divider, matches Mural compact style */}
         <ToolButton

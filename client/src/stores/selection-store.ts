@@ -50,6 +50,7 @@ export type SelectionKind =
   | 'shapesOnly'
   | 'textOnly'
   | 'codeOnly'
+  | 'notesOnly'
   | 'connectorsOnly'
   | 'imagesOnly'
   | 'mixed';
@@ -672,7 +673,8 @@ export const useSelectionStore = create<SelectionStore>()(
       if (selectedIds.length === 0) {
         if (textEditingId !== null) {
           ids = [textEditingId];
-          kind = 'textOnly';
+          const handle = snapshot.objectsById.get(textEditingId);
+          kind = handle?.kind === 'note' ? 'notesOnly' : 'textOnly';
         } else if (codeEditingId !== null) {
           ids = [codeEditingId];
           kind = 'codeOnly';
@@ -687,7 +689,7 @@ export const useSelectionStore = create<SelectionStore>()(
       // Inline text styles — only when editor is NOT mounted
       if (
         textEditingId === null &&
-        (kind === 'textOnly' || kind === 'shapesOnly') &&
+        (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') &&
         ids.length > 0
       ) {
         const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
@@ -706,7 +708,7 @@ export const useSelectionStore = create<SelectionStore>()(
  * No-op if no objects of that kind are selected.
  */
 export function filterSelectionByKind(
-  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'images',
+  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images',
 ): void {
   const { selectedIds } = useSelectionStore.getState();
   const snapshot = getCurrentSnapshot();
@@ -719,9 +721,11 @@ export function filterSelectionByKind(
           ? 'connector'
           : kind === 'code'
             ? 'code'
-            : kind === 'images'
-              ? 'image'
-              : 'text';
+            : kind === 'notes'
+              ? 'note'
+              : kind === 'images'
+                ? 'image'
+                : 'text';
   const filtered = selectedIds.filter((id) => snapshot.objectsById.get(id)?.kind === targetKind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);

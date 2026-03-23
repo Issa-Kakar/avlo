@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
-import type { FontFamily } from '@avlo/shared';
+import type { FontFamily, TextAlignV } from '@avlo/shared';
 import type { ConnectorCap, ConnectorType } from '@/lib/connectors';
 
 export type Tool =
@@ -15,7 +15,8 @@ export type Tool =
   | 'shape'
   | 'image'
   | 'code'
-  | 'connector';
+  | 'connector'
+  | 'note';
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
 
 // Size types
@@ -92,6 +93,12 @@ interface DeviceUIState {
   highlightColor: string | null;
   textFillColor: string | null;
 
+  // Note-specific settings
+  noteSize: number;
+  noteAlign: TextAlign;
+  noteAlignV: TextAlignV;
+  noteFontFamily: FontFamily;
+
   // Code-specific settings
   codeLineNumbers: boolean;
 
@@ -99,6 +106,9 @@ interface DeviceUIState {
   connectorStartCap: ConnectorCap;
   connectorEndCap: ConnectorCap;
   connectorType: ConnectorType;
+
+  // Shape vertical alignment
+  shapeAlignV: TextAlignV;
 
   // Fill color (separate from fill toggle)
   fillColor: string;
@@ -137,6 +147,11 @@ interface DeviceUIState {
   setFontFamily: (family: FontFamily) => void;
   setHighlightColor: (color: string | null) => void;
   setTextFillColor: (color: string | null) => void;
+  setNoteSize: (size: number) => void;
+  setNoteAlign: (align: TextAlign) => void;
+  setNoteAlignV: (alignV: TextAlignV) => void;
+  setNoteFontFamily: (family: FontFamily) => void;
+  setShapeAlignV: (alignV: TextAlignV) => void;
   setFillColor: (color: string) => void;
 
   getCurrentToolSettings: () => { size: number; color: string; opacity: number; fill?: boolean };
@@ -165,6 +180,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       connectorEndCap: 'arrow' as ConnectorCap,
       connectorType: 'straight' as ConnectorType,
       shapeVariant: 'rectangle',
+      shapeAlignV: 'middle' as TextAlignV,
       fillColor: '#BFDBFE',
 
       textColor: '#262626',
@@ -172,6 +188,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       textFontFamily: 'Grandstander' as FontFamily,
       highlightColor: null,
       textFillColor: null,
+
+      noteSize: 20,
+      noteAlign: 'center' as TextAlign,
+      noteAlignV: 'middle' as TextAlignV,
+      noteFontFamily: 'Grandstander' as FontFamily,
 
       image: { enabled: false },
 
@@ -226,6 +247,11 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setFontFamily: (family) => set({ textFontFamily: family }),
       setHighlightColor: (color) => set({ highlightColor: color }),
       setTextFillColor: (color) => set({ textFillColor: color }),
+      setNoteSize: (size) => set({ noteSize: size }),
+      setNoteAlign: (align) => set({ noteAlign: align }),
+      setNoteAlignV: (alignV) => set({ noteAlignV: alignV }),
+      setNoteFontFamily: (family) => set({ noteFontFamily: family }),
+      setShapeAlignV: (alignV) => set({ shapeAlignV: alignV }),
       setFillColor: (color) => set({ fillColor: color }),
 
       // Helper method to get current tool settings
@@ -248,6 +274,9 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             break;
           case 'text':
             settings.size = textSize;
+            break;
+          case 'note':
+            settings.size = state.noteSize;
             break;
           case 'connector':
             settings.size = connectorSize;
@@ -295,6 +324,7 @@ function computeBaseCursor(): string {
     case 'select':
       return 'default';
     case 'text':
+    case 'note':
       return 'text';
     default:
       return 'crosshair';

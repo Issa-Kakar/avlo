@@ -7,6 +7,7 @@ import {
   getFontSize,
   getFontFamily,
   getAlign,
+  getAlignV,
   getLabelColor,
   getLanguage,
   getHeaderVisible,
@@ -14,6 +15,7 @@ import {
   hasLabel,
   bboxTupleToWorldBounds,
   type TextAlign,
+  type TextAlignV,
   type FontFamily,
   type CodeLanguage,
 } from '@avlo/shared';
@@ -33,6 +35,7 @@ export interface KindCounts {
   text: number;
   connectors: number;
   code: number;
+  notes: number;
   images: number;
   total: number;
 }
@@ -56,8 +59,10 @@ export interface SelectedStyles {
   shapeType: string | null;
   /** First text object's fontSize (rounded). Used by textOnly. */
   fontSize: number | null;
-  /** Uniform text alignment, null if mixed. Used by textOnly. */
+  /** Uniform text alignment, null if mixed. Used by textOnly, notesOnly. */
   textAlign: TextAlign | null;
+  /** Uniform vertical alignment, null if mixed. Used by notesOnly. */
+  textAlignV: TextAlignV | null;
   /** First text object's font family. Used by textOnly, shapesOnly. */
   fontFamily: FontFamily | null;
   /** Text color for text objects or shape labels. Used by textOnly, shapesOnly. */
@@ -83,6 +88,7 @@ export const EMPTY_STYLES: SelectedStyles = {
   shapeType: null,
   fontSize: null,
   textAlign: null,
+  textAlignV: null,
   fontFamily: null,
   labelColor: null,
   codeLanguage: null,
@@ -95,6 +101,7 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   text: 0,
   connectors: 0,
   code: 0,
+  notes: 0,
   images: 0,
   total: 0,
 };
@@ -125,6 +132,7 @@ export function computeSelectionComposition(ids: string[]) {
     text = 0,
     connectors = 0,
     code = 0,
+    notes = 0,
     images = 0;
   const selectedIdSet = new Set<string>();
 
@@ -148,6 +156,9 @@ export function computeSelectionComposition(ids: string[]) {
       case 'code':
         code++;
         break;
+      case 'note':
+        notes++;
+        break;
       case 'image':
         images++;
         break;
@@ -160,6 +171,7 @@ export function computeSelectionComposition(ids: string[]) {
     text,
     connectors,
     code,
+    notes,
     images,
     total: selectedIdSet.size,
   };
@@ -170,6 +182,7 @@ export function computeSelectionComposition(ids: string[]) {
     (text > 0 ? 1 : 0) +
     (connectors > 0 ? 1 : 0) +
     (code > 0 ? 1 : 0) +
+    (notes > 0 ? 1 : 0) +
     (images > 0 ? 1 : 0);
 
   let selectionKind: SelectionKind;
@@ -179,6 +192,7 @@ export function computeSelectionComposition(ids: string[]) {
   else if (shapes > 0) selectionKind = 'shapesOnly';
   else if (text > 0) selectionKind = 'textOnly';
   else if (code > 0) selectionKind = 'codeOnly';
+  else if (notes > 0) selectionKind = 'notesOnly';
   else if (images > 0) selectionKind = 'imagesOnly';
   else selectionKind = 'connectorsOnly';
 
@@ -262,6 +276,44 @@ export function computeStyles(
       };
     }
     return EMPTY_STYLES;
+  }
+
+  // Notes: track fillColor, fontSize, fontFamily, textAlign, textAlignV
+  if (kind === 'notesOnly') {
+    let firstFill: string | null = null;
+    let firstFontSize: number | null = null;
+    let firstFontFamily: FontFamily | null = null;
+    let firstAlign: TextAlign | null = null;
+    let firstAlignV: TextAlignV | null = null;
+    let alignMixed = false;
+    let alignVMixed = false;
+    let first = true;
+
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle || handle.kind !== 'note') continue;
+      if (first) {
+        firstFill = getFillColor(handle.y) ?? null;
+        firstFontSize = Math.round(getFontSize(handle.y));
+        firstFontFamily = getFontFamily(handle.y);
+        firstAlign = getAlign(handle.y);
+        firstAlignV = getAlignV(handle.y);
+        first = false;
+      } else {
+        if (!alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
+        if (!alignVMixed && getAlignV(handle.y) !== firstAlignV) alignVMixed = true;
+        if (alignMixed && alignVMixed) break;
+      }
+    }
+    if (first) return EMPTY_STYLES;
+    return {
+      ...EMPTY_STYLES,
+      fillColor: firstFill,
+      fontSize: firstFontSize,
+      fontFamily: firstFontFamily,
+      textAlign: alignMixed ? null : firstAlign,
+      textAlignV: alignVMixed ? null : firstAlignV,
+    };
   }
 
   const trackWidth = kind !== 'textOnly';
@@ -356,6 +408,7 @@ export function computeStyles(
         : null,
     fontSize: needsTextFields ? firstFontSize : null,
     textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
+    textAlignV: null,
     fontFamily: needsTextFields ? firstFontFamily : null,
     labelColor: needsTextFields ? firstLabelColor : null,
     codeLanguage: null,
@@ -376,6 +429,7 @@ export function stylesEqual(a: SelectedStyles, b: SelectedStyles): boolean {
     a.shapeType === b.shapeType &&
     a.fontSize === b.fontSize &&
     a.textAlign === b.textAlign &&
+    a.textAlignV === b.textAlignV &&
     a.fontFamily === b.fontFamily &&
     a.labelColor === b.labelColor &&
     a.codeLanguage === b.codeLanguage &&
@@ -405,7 +459,7 @@ export function computeUniformInlineStyles(
 
   for (const id of ids) {
     const handle = objectsById.get(id);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape')) continue;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) continue;
     if (handle.kind === 'shape' && !hasLabel(handle.y)) continue;
     const u = getInlineStyles(id);
     if (!u) continue;

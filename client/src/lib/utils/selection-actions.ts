@@ -11,6 +11,7 @@ import {
   getOutputVisible,
   hasLabel,
   type TextAlign,
+  type TextAlignV,
   type FontFamily,
   type CodeLanguage,
 } from '@avlo/shared';
@@ -61,29 +62,33 @@ export function setSelectedColor(color: string): void {
 
 export function setSelectedFillColor(fillColor: string | null): void {
   const { selectedIds, selectionKind, textEditingId } = useSelectionStore.getState();
-  const isText = textEditingId !== null || selectionKind === 'textOnly';
-  const ids = isText ? getTextIds() : selectedIds;
+  const isNote = selectionKind === 'notesOnly';
+  const isText = !isNote && (textEditingId !== null || selectionKind === 'textOnly');
+  const ids = isText || isNote ? getTextIds() : selectedIds;
   if (ids.length === 0) return;
 
   const { objectsById } = getCurrentSnapshot();
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note')) continue;
       if (fillColor === null) handle.y.delete('fillColor');
       else handle.y.set('fillColor', fillColor);
     }
   });
 
-  const ui = useDeviceUIStore.getState();
-  if (isText) {
-    ui.setTextFillColor(fillColor);
-  } else {
-    if (fillColor === null) {
-      ui.setFillEnabled(false);
+  // Note fill is per-object, not a device default — skip device-ui persist
+  if (!isNote) {
+    const ui = useDeviceUIStore.getState();
+    if (isText) {
+      ui.setTextFillColor(fillColor);
     } else {
-      ui.setFillColor(fillColor);
-      ui.setFillEnabled(true);
+      if (fillColor === null) {
+        ui.setFillEnabled(false);
+      } else {
+        ui.setFillColor(fillColor);
+        ui.setFillEnabled(true);
+      }
     }
   }
   useSelectionStore.getState().refreshStyles();
@@ -222,13 +227,18 @@ export function setSelectedFontSize(size: number): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontSize', clamped);
       }
     }
   });
 
-  useDeviceUIStore.getState().setTextSize(clamped);
+  const { selectionKind } = useSelectionStore.getState();
+  if (selectionKind === 'notesOnly') {
+    useDeviceUIStore.getState().setNoteSize(clamped);
+  } else {
+    useDeviceUIStore.getState().setTextSize(clamped);
+  }
   useSelectionStore.getState().refreshStyles();
 }
 
@@ -270,12 +280,17 @@ export function setSelectedFontFamily(family: FontFamily): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontFamily', family);
       }
     }
   });
-  useDeviceUIStore.getState().setFontFamily(family);
+  const { selectionKind } = useSelectionStore.getState();
+  if (selectionKind === 'notesOnly') {
+    useDeviceUIStore.getState().setNoteFontFamily(family);
+  } else {
+    useDeviceUIStore.getState().setFontFamily(family);
+  }
   useSelectionStore.getState().refreshStyles();
 }
 
@@ -289,7 +304,15 @@ export function setSelectedTextAlign(align: TextAlign): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || handle.kind !== 'text') continue;
+      if (!handle) continue;
+
+      // Notes: top-left origin, no anchor math
+      if (handle.kind === 'note') {
+        handle.y.set('align', align);
+        continue;
+      }
+
+      if (handle.kind !== 'text') continue;
 
       const oldAlign = getAlign(handle.y);
       if (oldAlign === align) continue;
@@ -305,7 +328,29 @@ export function setSelectedTextAlign(align: TextAlign): void {
     }
   });
 
-  useDeviceUIStore.getState().setTextAlign(align);
+  const { selectionKind } = useSelectionStore.getState();
+  if (selectionKind === 'notesOnly') {
+    useDeviceUIStore.getState().setNoteAlign(align);
+  } else {
+    useDeviceUIStore.getState().setTextAlign(align);
+  }
+  useSelectionStore.getState().refreshStyles();
+}
+
+export function setSelectedTextAlignV(alignV: TextAlignV): void {
+  const ids = getTextIds();
+  if (ids.length === 0) return;
+
+  const { objectsById } = getCurrentSnapshot();
+  getActiveRoomDoc().mutate(() => {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle || handle.kind !== 'note') continue;
+      handle.y.set('alignV', alignV);
+    }
+  });
+
+  useDeviceUIStore.getState().setNoteAlignV(alignV);
   useSelectionStore.getState().refreshStyles();
 }
 
@@ -337,7 +382,7 @@ export function toggleSelectedBold(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { bold: allBold ? null : true });
     }
@@ -359,7 +404,7 @@ export function toggleSelectedItalic(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { italic: allItalic ? null : true });
     }
@@ -381,7 +426,7 @@ export function setSelectedHighlight(color: string | null): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { highlight: color ? { color } : null });
     }

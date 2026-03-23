@@ -46,8 +46,14 @@ import {
   anchorFactor,
   getBaselineToTopRatio,
   getTextFrame,
+  getLineStartX,
+  getNoteContentOffsetY,
+  renderNoteBody,
+  getNotePadding,
+  getNoteContentWidth,
+  computeNoteHeight,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign, getCodeProps } from '@avlo/shared';
+import { getTextProps, getAlign, getCodeProps, getNoteProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 import { CODE_EXTENSIONS } from '@avlo/shared';
@@ -243,6 +249,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     case 'image':
       drawImage(ctx, handle);
       break;
+    case 'note':
+      drawStickyNote(ctx, handle);
+      break;
   }
 }
 
@@ -334,12 +343,7 @@ function drawShapeLabelWithFrame(
  */
 function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-
-  // Skip rendering if this text is being edited
-  const textEditingId = useSelectionStore.getState().textEditingId;
-  if (textEditingId === id) {
-    return;
-  }
+  if (useSelectionStore.getState().textEditingId === id) return;
 
   const props = getTextProps(y);
   if (!props) return;
@@ -354,6 +358,87 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.width,
   );
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
+}
+
+function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  const { id, y } = handle;
+  const props = getNoteProps(y);
+  if (!props) return;
+
+  const {
+    origin,
+    fontSize,
+    fontFamily,
+    width: noteWidth,
+    fillColor,
+    content,
+    align,
+    alignV,
+  } = props;
+  const padding = getNotePadding(noteWidth);
+  const contentWidth = getNoteContentWidth(noteWidth);
+  const maxContentH = contentWidth; // square content box
+  const layout = textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth);
+  const noteHeight = computeNoteHeight(layout, noteWidth);
+
+  // Always draw body + shadow (even during editing)
+  renderNoteBody(ctx, origin[0], origin[1], noteWidth, noteHeight, fillColor);
+
+  if (useSelectionStore.getState().textEditingId === id) return;
+
+  // --- Text rendering with alignment ---
+  const { lineHeight } = layout;
+  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
+  const contentH = layout.lines.length * lineHeight;
+
+  // Vertical alignment offset (clamped — matches CSS clamp behavior)
+  const vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH);
+  const textY = origin[1] + padding + vOffset + baselineToTop;
+
+  // Horizontal alignment — virtual anchor for getLineStartX reuse
+  const noteAnchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
+
+  // Container bounds for highlight clamping (always the content area)
+  const containerLeft = origin[0] + padding;
+  const containerRight = containerLeft + contentWidth;
+  const hlR = fontSize * 0.25;
+
+  ctx.save();
+  ctx.textBaseline = 'alphabetic';
+
+  for (const line of layout.lines) {
+    if (line.runs.length === 0) continue;
+    const lineY = textY + line.baselineY;
+    const lineW = line.alignmentWidth;
+    const startX = getLineStartX(noteAnchorX, contentWidth, lineW, align);
+
+    // Pass 1: highlight rects (clamped to container, rounded corners)
+    for (const run of line.runs) {
+      if (!run.highlight) continue;
+      ctx.fillStyle = run.highlight;
+      const hlX = startX + run.advanceX;
+      const hlY = lineY - baselineToTop;
+      const hlEnd = hlX + run.advanceWidth;
+      const clL = Math.max(hlX, containerLeft);
+      const clR = Math.min(hlEnd, containerRight);
+      if (clR > clL) {
+        const rL = clL > hlX ? 0 : hlR;
+        const rR = clR < hlEnd ? 0 : hlR;
+        ctx.beginPath();
+        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
+        ctx.fill();
+      }
+    }
+
+    // Pass 2: text
+    ctx.fillStyle = '#1a1a1a';
+    for (const run of line.runs) {
+      ctx.font = run.font;
+      ctx.fillText(run.text, startX + run.advanceX, lineY);
+    }
+  }
+
+  ctx.restore();
 }
 
 function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -898,13 +983,23 @@ function renderSelectedObjectWithScaleTransform(
   // CASE 3: Image scaling — always uniform, except mixed+side = edge-pin translate
   if (handle.kind === 'image') {
     const frame = getFrame(handle.y);
-    if (!frame) { drawObject(ctx, handle); return; }
+    if (!frame) {
+      drawObject(ctx, handle);
+      return;
+    }
 
     if (selectionKind === 'mixed' && handleKind === 'side') {
       // Edge-pin translate (no dimension change)
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
-        originBounds, scaleX, scaleY, origin, handleId,
+        frame[0],
+        frame[0] + frame[2],
+        frame[1],
+        frame[1] + frame[3],
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
       );
       ctx.save();
       ctx.translate(dx, dy);
@@ -912,7 +1007,13 @@ function renderSelectedObjectWithScaleTransform(
       ctx.restore();
     } else {
       // Uniform scale for all other cases
-      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+      const transformedFrame = applyUniformScaleToFrame(
+        frame,
+        originBounds,
+        origin,
+        scaleX,
+        scaleY,
+      );
       const [, , tw, th] = transformedFrame;
       if (tw < 0.001 || th < 0.001) return;
       const assetId = getAssetId(handle.y);

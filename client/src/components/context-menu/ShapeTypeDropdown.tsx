@@ -10,6 +10,7 @@ import {
   IconCircleType,
   IconDiamondType,
   IconRoundedRectType,
+  IconStickySquareFold,
 } from './icons/ShapeTypeIcons';
 import { useDropdown } from './useDropdown';
 
@@ -29,23 +30,26 @@ const TYPE_ITEMS: { key: string; label: string; Icon: React.FC<React.SVGProps<SV
     { key: 'diamond', label: 'Diamond', Icon: IconDiamondType },
     { key: 'roundedRect', label: 'Rounded', Icon: IconRoundedRectType },
     { key: 'text', label: 'Text', Icon: IconTextType },
+    { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
   ];
 
 interface ShapeTypeDropdownProps {
-  mode: 'shapes' | 'text';
+  mode: 'shapes' | 'text' | 'note';
 }
 
 export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
   const { open, containerRef, toggle, close } = useDropdown();
   const shapeType = useSelectionStore(selectShapeType);
 
-  // Trigger icon: text mode always shows T, shapes mode shows current type or composite
+  // Trigger icon: text mode always shows T, note mode always shows fold, shapes mode shows current type or composite
   const TriggerIcon =
     mode === 'text'
       ? IconTextType
-      : shapeType
-        ? (SHAPE_ICON[shapeType] ?? IconRectType)
-        : IconShapes;
+      : mode === 'note'
+        ? IconStickySquareFold
+        : shapeType
+          ? (SHAPE_ICON[shapeType] ?? IconRectType)
+          : IconShapes;
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>

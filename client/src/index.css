@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 
-html { overflow: hidden; }
+html {
+  overflow: hidden;
+}
 
 /* =============================================================================
    FONT DEFINITIONS — Variable Fonts (Latin subset, wght 450–700)
@@ -107,6 +109,17 @@ html { overflow: hidden; }
 }
 
 .tiptap[data-width-mode='fixed'] .is-editor-empty:first-child::before {
+  display: none;
+}
+
+.tiptap[data-width-mode='note'] {
+  overflow: visible;
+  text-align: var(--text-align, center);
+}
+.tiptap[data-width-mode='note'] p {
+  margin: 0;
+}
+.tiptap[data-width-mode='note'] .is-editor-empty:first-child::before {
   display: none;
 }
 

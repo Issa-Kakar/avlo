@@ -488,6 +488,27 @@
   height: 16px;
 }
 
+.ctx-submenu-note-align {
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ctx-align-row {
+  display: flex;
+  gap: 2px;
+}
+
+.ctx-align-divider {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.1);
+  margin: 2px 0;
+}
+
 .ctx-type-item {
   height: 36px;
   gap: 10px;
