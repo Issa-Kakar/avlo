@@ -2,10 +2,10 @@ import type React from 'react';
 import type { KindCounts } from '@/stores/selection-store';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown } from './icons';
-import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages } from './icons';
+import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages, IconStickySquareFold } from './icons';
 import { useDropdown } from './useDropdown';
 
-type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'images';
+type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images';
 
 const KIND_CONFIG: {
   key: FilterKind;
@@ -17,6 +17,7 @@ const KIND_CONFIG: {
   { key: 'text', label: 'Text', Icon: IconTextType },
   { key: 'connectors', label: 'Connectors', Icon: IconConnectorLine },
   { key: 'code', label: 'Code Block', Icon: IconCodeBlock },
+  { key: 'notes', label: 'Sticky Note', Icon: IconStickySquareFold },
   { key: 'images', label: 'Images', Icon: IconImages },
 ];
 

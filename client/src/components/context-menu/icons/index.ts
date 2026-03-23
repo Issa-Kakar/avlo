@@ -1,4 +1,11 @@
-export { IconAlignTextLeft, IconAlignTextCenter, IconAlignTextRight } from './AlignIcons';
+export {
+  IconAlignTextLeft,
+  IconAlignTextCenter,
+  IconAlignTextRight,
+  IconAlignVTop,
+  IconAlignVMiddle,
+  IconAlignVBottom,
+} from './AlignIcons';
 export { TextColorIcon } from './TextColorIcon';
 export { HighlightIcon } from './HighlightIcon';
 export { IconBold, IconItalic } from './FormatIcons';
@@ -25,4 +32,5 @@ export {
   IconCircleType,
   IconDiamondType,
   IconRoundedRectType,
+  IconStickySquareFold,
 } from './ShapeTypeIcons';

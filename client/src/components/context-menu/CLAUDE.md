@@ -121,19 +121,23 @@ Adding `ctx-hidden` = instant hide (no transition). Removing it = spring reveal 
 
 ### effectiveKind Logic
 
-Text editing does **not** unconditionally override to `textOnly`. The bar preserves `selectionKind` from the store, so shape label editing shows `shapesOnly` (with text controls embedded). Only when `textEditingId !== null` AND `kind === 'none'` (standalone text object editing with no selection) does it fall back to `textOnly`:
+Text editing does **not** unconditionally override to `textOnly`. The bar preserves `selectionKind` from the store, so shape label editing shows `shapesOnly` (with text controls embedded). When `textEditingId !== null` AND `kind === 'none'` (standalone editing with no selection), the kind is resolved by looking up the editing object's actual kind from the snapshot:
 
 ```typescript
 const effectiveKind =
-  editing !== null && kind === 'none' ? 'textOnly'
+  editing !== null && kind === 'none'
+    ? (getCurrentSnapshot().objectsById.get(editing)?.kind === 'note' ? 'notesOnly' : 'textOnly')
   : codeEditing !== null && kind === 'none' ? 'codeOnly'
   : kind;
 ```
 
 This means:
 - Editing a standalone text object -> `textOnly` bar
+- Editing a sticky note -> `notesOnly` bar
 - Editing a code block -> `codeOnly` bar
 - Editing a shape label -> `shapesOnly` bar (shape is in selection, so `kind === 'shapesOnly'`)
+
+The same resolution happens in `refreshStyles()` when `textEditingId` is set and `selectedIds` is empty — the snapshot is checked to determine whether to use `'notesOnly'` or `'textOnly'`.
 
 All bars end with: `| Trash | ... |` (the `...` overflow button has no functionality yet).
 
@@ -154,7 +158,7 @@ All bars end with: `| Trash | ... |` (the `...` overflow button has no functiona
 
 Shapes now include the full text formatting suite for shape labels:
 
-- **ShapeType** — leftmost. Shows current type icon, or composite `IconShapes` when mixed/null. Dropdown: Rectangle, Circle, Diamond, Rounded, Text (text is no-op placeholder). Calls `setSelectedShapeType(key)`.
+- **ShapeType** — leftmost. Shows current type icon, or composite `IconShapes` when mixed/null. Dropdown: Rectangle, Circle, Diamond, Rounded, Text, Sticky Note (text/note are no-op placeholders). Calls `setSelectedShapeType(key)`.
 - **Typeface** — self-subscribing. Shows current font rendered in its own typeface. Dropdown: 4 items (Draw/Inter/Lora/Mono). Calls `setSelectedFontFamily(family)`. Persists to `device-ui-store.textFontFamily`.
 - **FontSize** — stepper with dropdown. `IconStepUp`/`IconStepDown` chevron arrows (not +/-). Display range: 1-999. Stepper steps through `TEXT_FONT_SIZE_PRESETS`, caps at 10 min / 144 max. Dropdown lists all presets with checkmark. Dropdown items center-aligned (`ctx-submenu-fontsize` with `justify-content: center`).
 - **Bold** / **Italic** — self-subscribing `memo` components. Active state (blue) when entire selection has the style applied uniformly. Same TipTap/`formatFragment()` dual path as text objects.
@@ -172,7 +176,7 @@ Shapes now include the full text formatting suite for shape labels:
 [ShapeType] | [Typeface] | [-FontSize+] | [B] [I] | [Align] | [TextColor] [Highlight] | [Fill filled-circle]  |  Trash  ...
 ```
 
-- **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text<->shape conversion).
+- **ShapeType** — always shows `IconTextType`. Dropdown items all no-op (future: text<->shape conversion). Includes Sticky Note item.
 - **Typeface** — same as shapesOnly.
 - **FontSize** — same stepper with chevron arrows. Only renders if `fontSize !== null`.
 - **Bold** / **Italic** — same self-subscribing components.
@@ -180,6 +184,24 @@ Shapes now include the full text formatting suite for shape labels:
 - **TextColor** — "A" icon with colored bar. Falls back to `'#262626'` when `labelColor` is null.
 - **Highlight** — same as shapesOnly.
 - **Fill** — filled circle variant, identical pattern to shape fill. No border/stroke controls (text objects don't have stroke).
+
+### `notesOnly`
+
+```
+[NoteType] | [Typeface] | [-FontSize+] | [B] [I] | [NoteAlign] | [Highlight] | [Fill filled-circle]  |  Trash  ...
+```
+
+Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`):
+
+- **NoteType** — always shows `IconStickySquareFold`. Same `ShapeTypeDropdown` with `mode='note'`. Dropdown items include all shape types + text + sticky note (all no-op, type conversion not yet implemented).
+- **Typeface** — same self-subscribing `TypefaceButton`. Persists to `device-ui-store.noteFontFamily` (not `textFontFamily`).
+- **FontSize** — same `FontSizeStepper`. Persists to `device-ui-store.noteSize` (not `textSize`).
+- **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
+- **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon + chevron. Submenu: H-align row (left/center/right) + divider + V-align row (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
+- **Highlight** — same as other kinds.
+- **Fill** — filled circle variant. Default color `'#FEF3AC'` (warm sticky yellow). No no-fill slot needed (notes always have fill). Device-ui persist is skipped (note fill is per-object, not a device default).
+
+**Note-specific device-ui persistence:** Font size, font family, and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteSize`, `noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
 
 ### `connectorsOnly`
 
@@ -206,7 +228,7 @@ Shapes now include the full text formatting suite for shape labels:
 [Filter "{N} objects"]  |  Trash  ...
 ```
 
-- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count): Strokes, Shapes, Text, Connectors, Code Block. Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
+- **Filter** — `FilterObjectsDropdown`. Shows count of total objects. Dropdown lists each kind with count > 0 (icon + label + count): Strokes, Shapes, Text, Connectors, Code Block, Sticky Note. Clicking a kind calls `filterSelectionByKind(kind)` — filters `selectedIds` to that kind only. No style controls for mixed.
 
 ---
 
@@ -235,14 +257,15 @@ ContextMenu                         <- gate on menuOpen, renders null when close
 | `SizeLabel` | `value, kind, onSelect?` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper` | `value, onDecrement?, onIncrement?, onSelectSize?` | Chevron up/down arrows + SVG text center value + dropdown of presets. |
 | `AlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign`. Compact horizontal 3-icon dropdown. |
+| `NoteAlignDropdown` | (no props) | Self-subscribes to `selectedStyles.textAlign` + `textAlignV`. Two-row submenu: H-align (left/center/right) + divider + V-align (top/middle/bottom). |
 | `TypefaceButton` | (no props) | Self-subscribes to `selectedStyles.fontFamily`. 4-item font family dropdown. |
-| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'` | Subscribes to `selectedStyles.shapeType`. 5-item dropdown. |
-| `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block). |
+| `ShapeTypeDropdown` | `mode: 'shapes'\|'text'\|'note'` | Subscribes to `selectedStyles.shapeType`. 6-item dropdown (rect, circle, diamond, rounded, text, sticky note). Trigger icon: shapes mode = current type or composite, text mode = `IconTextType`, note mode = `IconStickySquareFold`. |
+| `FilterObjectsDropdown` | `kindCounts, onFilterByKind` | Left-aligned dropdown listing kinds with counts (incl. Code Block, Sticky Note). |
 | `LanguageDropdown` | (no props) | Self-subscribes to `selectedStyles.codeLanguage`. 3-item language picker. |
 | `BoldButton` | (internal memo) | Self-subscribes to `selectInlineBold`. 16x16 icon. |
 | `ItalicButton` | (internal memo) | Self-subscribes to `selectInlineItalic`. 16x16 icon. |
 
-### Dropdown Pattern (`useDropdown` hook, shared by 7 components)
+### Dropdown Pattern (`useDropdown` hook, shared by 8 components)
 
 All dropdowns use the `useDropdown()` hook which encapsulates:
 - `open` state + `containerRef` for outside-click detection
@@ -254,7 +277,7 @@ Dropdown positioned via CSS absolute (`ctx-submenu` class, centered or left-alig
 
 ### Self-Subscribing Components
 
-`BoldButton`, `ItalicButton`, `AlignDropdown`, `TypefaceButton`, and `HighlightPickerPopover` each subscribe to their own narrow store slice. Parent groups do not re-render when their state changes.
+`BoldButton`, `ItalicButton`, `AlignDropdown`, `NoteAlignDropdown`, `TypefaceButton`, and `HighlightPickerPopover` each subscribe to their own narrow store slice. Parent groups do not re-render when their state changes.
 
 ---
 
@@ -279,13 +302,14 @@ interface SelectedStyles {
   colorMixed: boolean;            // Multiple different stroke colors
   colorSecond: string | null;     // Second stroke color for split indicator
   width: number | null;           // Uniform width or null if mixed
-  fillColor: string | null;       // First shape/text fill color, null = no fill
+  fillColor: string | null;       // First shape/text/note fill color, null = no fill
   fillColorMixed: boolean;        // Multiple different fill colors
   fillColorSecond: string | null; // Second fill color for split indicator
   shapeType: string | null;       // Uniform shape type, 'text' for textOnly, null if mixed
-  fontSize: number | null;        // First text/labeled-shape fontSize (rounded)
-  textAlign: TextAlign | null;    // Uniform alignment or null if mixed (textOnly only)
-  fontFamily: FontFamily | null;  // First text/labeled-shape font family
+  fontSize: number | null;        // First text/labeled-shape/note fontSize (rounded)
+  textAlign: TextAlign | null;    // Uniform H-alignment or null if mixed (textOnly, notesOnly)
+  textAlignV: TextAlignV | null;  // Uniform V-alignment or null if mixed (notesOnly only)
+  fontFamily: FontFamily | null;  // First text/labeled-shape/note font family
   labelColor: string | null;      // Text color — getColor for text objects, getLabelColor for shapes
   codeLanguage: CodeLanguage | null; // Code block language (codeOnly only)
 }
@@ -299,10 +323,13 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType, fontSize, fontFamily, labelColor |
 | `connectorsOnly` | color, width |
 | `textOnly` | color, fontSize, textAlign, fontFamily, labelColor, fillColor, fillColorMixed, fillColorSecond, shapeType='text' |
+| `notesOnly` | fillColor, fontSize, fontFamily, textAlign, textAlignV (multi-note mismatch → null for align fields) |
 | `codeOnly` | fontSize, codeLanguage |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
 
 **Text field resolution in `computeStyles`:** First object with text data wins. For text objects, reads `getColor()` as `labelColor`. For shapes, reads `getLabelColor()`. Only reads from shapes that `hasLabel()`. Returns `null` for `fontSize`/`fontFamily`/`labelColor` when no text data found (unlabeled shapes).
+
+**Note field resolution in `computeStyles`:** Multi-note loop tracks fillColor from first note only, plus fontSize and fontFamily. textAlign and textAlignV are tracked with mismatch detection — null if mixed across selected notes.
 
 ### InlineStyles
 
@@ -316,7 +343,7 @@ interface InlineStyles {
 
 Two sources:
 1. **Editor active** — TipTap `onTransaction` reads `editor.isActive('bold'|'italic'|'highlight')` -> `setInlineStyles()` (equality-gated).
-2. **No editor** — `refreshStyles()` calls `computeUniformInlineStyles(ids, objectsById)` when `textEditingId === null` AND kind is `'textOnly'` **or `'shapesOnly'`**. Skips shapes without labels. Uses `getInlineStyles(id)` from text-system cache (requires eager tokenization — see text-system CLAUDE.md).
+2. **No editor** — `refreshStyles()` calls `computeUniformInlineStyles(ids, objectsById)` when `textEditingId === null` AND kind is `'textOnly'`, `'shapesOnly'`, **or `'notesOnly'`**. Skips shapes without labels. Uses `getInlineStyles(id)` from text-system cache (requires eager tokenization — see text-system CLAUDE.md).
 
 ### Selectors
 
@@ -343,7 +370,7 @@ selectIsTextEditing    = s => s.textEditingId !== null
 
 ### Free Function
 
-`filterSelectionByKind(kind)` — filters `selectedIds` to matching kind, calls `setSelection` -> re-derives everything. Used by `FilterObjectsDropdown`.
+`filterSelectionByKind(kind)` — filters `selectedIds` to matching kind, calls `setSelection` -> re-derives everything. Used by `FilterObjectsDropdown`. Supports: strokes, shapes, text, connectors, code, notes, images.
 
 ---
 
@@ -353,22 +380,25 @@ Free mutation functions called by context menu buttons. Pattern: read IDs from s
 
 All text actions use the text-editing fallback: `ids = textEditingId ? [textEditingId] : selectedIds`. Code actions use an analogous pattern: `ids = codeEditingId ? [codeEditingId] : selectedIds` — this ensures language/fontSize/lineNumbers changes work during active CodeTool editing (not just via SelectTool selection).
 
+**Note-specific device-ui routing:** Actions that persist to device-ui (`setSelectedFontSize`, `setSelectedFontFamily`, `setSelectedTextAlign`) check `selectionKind === 'notesOnly'` and route to note-specific setters (`setNoteSize`, `setNoteFontFamily`, `setNoteAlign`) instead of text defaults. `setSelectedFillColor` skips device-ui persist entirely for notes (note fill is per-object, not a device default).
+
 | Function | Scope | Persists To | Notes |
 |----------|-------|-------------|-------|
 | `setSelectedColor(color)` | All objects | `drawingColor` | Stroke/border color |
-| `setSelectedFillColor(color\|null)` | Shapes + Text | Shapes: `fillColor` + `fillEnabled`; Text: `textFillColor` | `null` deletes fillColor key |
+| `setSelectedFillColor(color\|null)` | Shapes + Text + Notes | Shapes: `fillColor` + `fillEnabled`; Text: `textFillColor`; Notes: no persist | `null` deletes fillColor key |
 | `setSelectedWidth(width)` | All objects | `connectorSize` or `drawingSize` by kind | |
 | `setSelectedShapeType(shapeType)` | Shapes only | -- | |
 | `deleteSelected()` | All objects | -- | Anchor cleanup for connectors, then `clearSelection()` |
-| `setSelectedFontFamily(family)` | Text + labeled shapes | `textFontFamily` | |
+| `setSelectedFontFamily(family)` | Text + Notes + labeled shapes | `textFontFamily` or `noteFontFamily` by kind | |
 | `setSelectedTextColor(color)` | Text + labeled shapes | `textColor` | Text: sets `color` key. Shapes: sets `labelColor` key |
-| `setSelectedFontSize(size)` | Text + labeled shapes | `textSize` | Clamped 1-999, rounded |
-| `incrementFontSize()` | Text + labeled shapes | `textSize` | Steps through presets, caps 10-144 |
-| `decrementFontSize()` | Text + labeled shapes | `textSize` | Steps through presets, caps 10-144 |
-| `setSelectedTextAlign(align)` | Text only (not shapes) | `textAlign` | Preserves left edge via anchorFactor math |
-| `toggleSelectedBold()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
-| `toggleSelectedItalic()` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
-| `setSelectedHighlight(color\|null)` | Text + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
+| `setSelectedFontSize(size)` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Clamped 1-999, rounded |
+| `incrementFontSize()` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Steps through presets, caps 10-144 |
+| `decrementFontSize()` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Steps through presets, caps 10-144 |
+| `setSelectedTextAlign(align)` | Text + Notes | `textAlign` or `noteAlign` by kind | Text: preserves left edge via anchorFactor math. Notes: just sets `align` key (top-left origin, no anchor shift) |
+| `setSelectedTextAlignV(alignV)` | Notes only | `noteAlignV` | Sets `alignV` key on Y.Map |
+| `toggleSelectedBold()` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
+| `toggleSelectedItalic()` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
+| `setSelectedHighlight(color\|null)` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
 | `setSelectedCodeLanguage(lang)` | Code blocks | -- | Sets `language` key. Uses `getCodeIds()` fallback |
 | `setSelectedCodeFontSize(size)` | Code blocks | -- | Proportionally scales width (`width * newFs/oldFs`). Uses `getCodeIds()` fallback |
 | `incrementCodeFontSize()` | Code blocks | -- | Steps through `TEXT_FONT_SIZE_PRESETS`, caps 10-144 |
@@ -403,7 +433,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
 | `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts` |
 | `selection-utils.ts` | Pure functions: `computeStyles`, `computeSelectionBounds`, `computeUniformInlineStyles` |
-| `selection-actions.ts` | 19 mutation functions called by menu buttons |
+| `selection-actions.ts` | 21 mutation functions called by menu buttons |
 
 ---
 
@@ -422,10 +452,11 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `HighlightPickerPopover.tsx` | Self-subscribing. 4x2 rounded-square grid + none swatch. |
 | `SizeLabel.tsx` | SVG text "Size S/M/L/XL" + dropdown. Fixed widths prevent layout shift. |
 | `FontSizeStepper.tsx` | Chevron up/down arrows + SVG center value + preset dropdown |
-| `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 icons, horizontal compact submenu) |
+| `AlignDropdown.tsx` | Self-subscribing alignment dropdown (3 H-align icons, horizontal compact submenu) |
+| `NoteAlignDropdown.tsx` | Self-subscribing H+V alignment dropdown. Two-row submenu: left/center/right + divider + top/middle/bottom. |
 | `TypefaceButton.tsx` | Self-subscribing font family dropdown (4 families, ShapeTypeDropdown pattern) |
-| `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 5-item type switcher. |
-| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts (incl. Code Block) |
+| `ShapeTypeDropdown.tsx` | Subscribes to `shapeType`. 6-item type switcher. Modes: `'shapes'`/`'text'`/`'note'`. |
+| `FilterObjectsDropdown.tsx` | Mixed selection kind filter with counts (incl. Code Block, Sticky Note) |
 | `LanguageDropdown.tsx` | Self-subscribing code language picker (JS/TS/Python) |
 | `color-palette.ts` | `CONTEXT_MENU_COLORS` (18 hex), `NO_FILL` sentinel |
 | `useDropdown.ts` | Shared hook: open state, containerRef, toggle, close, outside-click dismiss |
@@ -438,14 +469,14 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `UtilityIcons.tsx` | `IconChevronDown`, `IconMinus`, `IconPlus`, `IconMoreDots`, `IconCheck`, `IconNoFill`, `IconStepUp`, `IconStepDown` |
 | `FilterIcons.tsx` | `IconShapes`, `IconPenStroke`, `IconConnectorLine`, `IconTextType`, `IconCodeBlock` |
 | `CodeIcons.tsx` | `IconCodeLines` (22x16 viewBox, filled digits + stroke code bars) |
-| `AlignIcons.tsx` | `IconAlignTextLeft`, `IconAlignTextCenter`, `IconAlignTextRight` |
+| `AlignIcons.tsx` | `IconAlignTextLeft`, `IconAlignTextCenter`, `IconAlignTextRight`, `IconAlignVTop`, `IconAlignVMiddle`, `IconAlignVBottom` |
 | `FormatIcons.tsx` | `IconBold` (20x20 viewBox), `IconItalic` (20x20 viewBox) |
-| `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType` |
+| `ShapeTypeIcons.tsx` | `IconRectType`, `IconCircleType`, `IconDiamondType`, `IconRoundedRectType`, `IconStickySquareFold` |
 | `TextColorIcon.tsx` | `TextColorIcon` (props: `barColor`) |
 | `HighlightIcon.tsx` | `HighlightIcon` (props: `barColor`) |
 | `TrashIcon.tsx` | `IconTrash` |
 
-**Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons.
+**Convention:** `fill="currentColor"` with fill-based paths (not stroke), except step/chevron arrows which use `stroke="currentColor"`. SVG text elements use `textRendering="geometricPrecision"` to prevent subpixel shift during scale animation. `IconStepUp`/`IconStepDown` are 10x6 viewBox chevron arrows, rendered at 12x7 CSS size inside 18x14 buttons. Vertical alignment icons (`IconAlignVTop/Middle/Bottom`) use 24x24 viewBox Mural SVG paths.
 
 ---
 
@@ -456,7 +487,7 @@ All property mutations (including style-only changes like color, fill, opacity) 
 - `.ctx-fontsize-arrows`: flex column, 18px wide, gap 1px. Each arrow button 18x14, SVG 12x7.
 - `.ctx-fontsize-value`: 32px min-width, 28px height, SVG 30x16 viewBox.
 - `.ctx-submenu-fontsize`: 56px min-width, items center-aligned (`justify-content: center`).
+- `.ctx-submenu-note-align`: flex column, centered. Contains `.ctx-align-row` (flex row, gap 2px) + `.ctx-align-divider` (1px separator).
 - `.ctx-divider`: 1px wide, 24px tall, rgba(0,0,0,0.18).
 
 ---
-

@@ -41,6 +41,8 @@ import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
 import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines } from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
+import { NoteAlignDropdown } from './NoteAlignDropdown';
+import { getCurrentSnapshot } from '@/canvas/room-runtime';
 
 // === Selectors (stable module-level references) ===
 
@@ -76,6 +78,10 @@ const selectConnectorStyles = (s: SelectionStore) => ({
   colorMixed: s.selectedStyles.colorMixed,
   colorSecond: s.selectedStyles.colorSecond,
   width: s.selectedStyles.width,
+});
+const selectNoteStyles = (s: SelectionStore) => ({
+  fillColor: s.selectedStyles.fillColor,
+  fontSize: s.selectedStyles.fontSize,
 });
 
 // === Group Components ===
@@ -249,6 +255,38 @@ const ConnectorGroup = memo(function ConnectorGroup() {
   );
 });
 
+const NoteStyleGroup = memo(function NoteStyleGroup() {
+  const { fillColor, fontSize } = useSelectionStore(useShallow(selectNoteStyles));
+  const effectiveFontSize = fontSize ?? 20;
+  return (
+    <ButtonGroup>
+      <TypefaceButton />
+      <div className="ctx-divider" />
+      <FontSizeStepper
+        value={effectiveFontSize}
+        onDecrement={decrementFontSize}
+        onIncrement={incrementFontSize}
+        onSelectSize={setSelectedFontSize}
+      />
+      <div className="ctx-divider" />
+      <BoldButton />
+      <ItalicButton />
+      <div className="ctx-divider" />
+      <NoteAlignDropdown />
+      <div className="ctx-divider" />
+      <HighlightPickerPopover onSelect={setSelectedHighlight} />
+      <div className="ctx-divider" />
+      <ColorPickerPopover
+        color={fillColor ?? '#FEF3AC'}
+        variant="filled"
+        mode="fill"
+        selectedColor={fillColor}
+        onSelect={(c) => setSelectedFillColor(c === NO_FILL ? null : c)}
+      />
+    </ButtonGroup>
+  );
+});
+
 const CommonActionsGroup = memo(function CommonActionsGroup() {
   return (
     <ButtonGroup>
@@ -275,7 +313,7 @@ function ContextMenuBar() {
   const codeEditing = useSelectionStore(selectCodeEditing);
   const effectiveKind: SelectionKind =
     editing !== null && kind === 'none'
-      ? 'textOnly'
+      ? (getCurrentSnapshot().objectsById.get(editing)?.kind === 'note' ? 'notesOnly' : 'textOnly')
       : codeEditing !== null && kind === 'none'
         ? 'codeOnly'
         : kind;
@@ -308,6 +346,14 @@ function ContextMenuBar() {
               <ShapeTypeDropdown mode="text" />
               <div className="ctx-divider" />
               <TextStyleGroup />
+              <div className="ctx-divider" />
+            </>
+          )}
+          {effectiveKind === 'notesOnly' && (
+            <>
+              <ShapeTypeDropdown mode="note" />
+              <div className="ctx-divider" />
+              <NoteStyleGroup />
               <div className="ctx-divider" />
             </>
           )}

@@ -41,3 +41,11 @@ export const IconRoundedRectType = (props: SvgProps) => (
     />
   </svg>
 );
+
+/** Sticky note with fold corner — Mural stickySquareFold */
+export const IconStickySquareFold = (props: SvgProps) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+    <path d="M6 2h12a4 4 0 0 1 4 4v5.5a1.5 1.5 0 0 1-1.5 1.5H18a5 5 0 0 0-5 5v2.5a1.5 1.5 0 0 1-1.5 1.5H6a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4Z" />
+    <path d="M15 21.552c0 .168.174.274.293.155l6.414-6.414c.119-.119.013-.293-.155-.293H18a3 3 0 0 0-3 3v3.552Z" />
+  </svg>
+);
