@@ -50,9 +50,8 @@ import {
   getNotePadding,
   getNoteContentWidth,
   computeNoteHeight,
-  NOTE_FILL_COLOR,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign, getCodeProps, isNote } from '@avlo/shared';
+import { getTextProps, getAlign, getCodeProps, getNoteProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 import { getAssetId } from '@avlo/shared';
@@ -247,6 +246,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     case 'image':
       drawImage(ctx, handle);
       break;
+    case 'note':
+      drawStickyNote(ctx, handle);
+      break;
   }
 }
 
@@ -338,35 +340,7 @@ function drawShapeLabelWithFrame(
  */
 function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-  const textEditingId = useSelectionStore.getState().textEditingId;
-
-  // --- Note dispatch (before editing guard — body always draws) ---
-  if (isNote(y)) {
-    const props = getTextProps(y);
-    if (!props) return;
-    const color = getColor(y);
-    const fillColor = getFillColor(y) || NOTE_FILL_COLOR;
-    const contentWidth = getNoteContentWidth(props.width as number, props.fontSize);
-    const layout = textLayoutCache.getLayout(
-      id, props.content, props.fontSize, props.fontFamily, contentWidth,
-    );
-    const noteHeight = computeNoteHeight(layout, props.fontSize, props.width as number);
-
-    renderNoteBody(ctx, props.origin[0], props.origin[1],
-      props.width as number, noteHeight, fillColor);
-
-    if (textEditingId === id) return;
-
-    const padding = getNotePadding(props.fontSize);
-    const textX = props.origin[0] + padding;
-    const textY = props.origin[1] + padding
-      + props.fontSize * getBaselineToTopRatio(props.fontFamily);
-    renderTextLayout(ctx, layout, textX, textY, color, props.align);
-    return;
-  }
-
-  // --- Regular text ---
-  if (textEditingId === id) return;
+  if (useSelectionStore.getState().textEditingId === id) return;
 
   const props = getTextProps(y);
   if (!props) return;
@@ -381,6 +355,70 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     props.width,
   );
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
+}
+
+function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
+  const { id, y } = handle;
+  const props = getNoteProps(y);
+  if (!props) return;
+
+  const { origin, fontSize, fontFamily, width: noteWidth, fillColor, content } = props;
+  const contentWidth = getNoteContentWidth(noteWidth);
+  const layout = textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth);
+  const noteHeight = computeNoteHeight(layout, noteWidth);
+
+  // Always draw body + shadow (even during editing)
+  renderNoteBody(ctx, origin[0], origin[1], noteWidth, noteHeight, fillColor);
+
+  if (useSelectionStore.getState().textEditingId === id) return;
+
+  // --- Text rendering (replicates renderTextLayout fixed-mode logic) ---
+  const padding = getNotePadding(noteWidth);
+  const textX = origin[0] + padding;
+  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
+  const textY = origin[1] + padding + baselineToTop;
+  const { lineHeight } = layout;
+
+  // Container bounds for overflow clamping
+  const containerLeft = textX;
+  const containerRight = textX + contentWidth;
+  const hlR = fontSize * 0.25;
+
+  ctx.save();
+  ctx.textBaseline = 'alphabetic';
+
+  for (const line of layout.lines) {
+    if (line.runs.length === 0) continue;
+    const lineY = textY + line.baselineY;
+    const startX = textX;
+
+    // Pass 1: highlight rects (clamped to container, rounded corners)
+    for (const run of line.runs) {
+      if (!run.highlight) continue;
+      ctx.fillStyle = run.highlight;
+      const hlX = startX + run.advanceX;
+      const hlY = lineY - baselineToTop;
+      const hlEnd = hlX + run.advanceWidth;
+      const clL = Math.max(hlX, containerLeft);
+      const clR = Math.min(hlEnd, containerRight);
+      if (clR > clL) {
+        const rL = clL > hlX ? 0 : hlR;
+        const rR = clR < hlEnd ? 0 : hlR;
+        ctx.beginPath();
+        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
+        ctx.fill();
+      }
+    }
+
+    // Pass 2: text
+    ctx.fillStyle = '#1a1a1a';
+    for (const run of line.runs) {
+      ctx.font = run.font;
+      ctx.fillText(run.text, startX + run.advanceX, lineY);
+    }
+  }
+
+  ctx.restore();
 }
 
 function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {

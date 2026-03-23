@@ -553,7 +553,7 @@ export class SelectTool implements PointerTool {
               // Drill down to single object
               store.setSelection([this.hitAtDown!.id]);
             } else if (
-              (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape') &&
+              (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape' || this.hitAtDown!.kind === 'note') &&
               !textTool.isEditorMounted()
             ) {
               if (textTool.justClosedLabelId === this.hitAtDown!.id) {

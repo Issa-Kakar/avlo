@@ -50,6 +50,7 @@ export type SelectionKind =
   | 'shapesOnly'
   | 'textOnly'
   | 'codeOnly'
+  | 'notesOnly'
   | 'connectorsOnly'
   | 'imagesOnly'
   | 'mixed';
@@ -687,7 +688,7 @@ export const useSelectionStore = create<SelectionStore>()(
       // Inline text styles — only when editor is NOT mounted
       if (
         textEditingId === null &&
-        (kind === 'textOnly' || kind === 'shapesOnly') &&
+        (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') &&
         ids.length > 0
       ) {
         const inline = computeUniformInlineStyles(ids, snapshot.objectsById);

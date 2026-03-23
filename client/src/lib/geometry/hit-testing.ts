@@ -620,6 +620,12 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
 
+    case 'note': {
+      const frame = getTextFrame(handle.id);
+      if (!frame) return false;
+      return rectsIntersect(frameTupleToWorldBounds(frame), rect);
+    }
+
     case 'image': {
       const frame = getFrame(y);
       if (!frame) return false;
@@ -773,6 +779,24 @@ export function testObjectHit(
       return null;
     }
 
+    case 'note': {
+      const frame = getTextFrame(handle.id);
+      if (!frame) return null;
+      const [x, yPos, w, h] = frame;
+      const hitResult = shapeHitTest(worldX, worldY, radiusWorld, [x, yPos, w, h], 'rect', 0);
+      if (hitResult) {
+        return {
+          id: handle.id,
+          kind: 'note',
+          distance: hitResult.distance,
+          insideInterior: hitResult.insideInterior,
+          area: w * h,
+          isFilled: true,
+        };
+      }
+      return null;
+    }
+
     case 'image': {
       const frame = getFrame(y);
       if (!frame) return null;
@@ -842,6 +866,55 @@ export function hitTestVisibleText(
   // Scan with occlusion
   for (const c of candidates) {
     if (c.kind === 'text') return c.id;
+    // Unfilled shape interior = transparent, keep scanning
+    if (c.kind === 'shape' && !c.isFilled && c.insideInterior) continue;
+    // Anything else occludes
+    break;
+  }
+
+  return null;
+}
+
+// === Note Hit Testing (for TextTool click-to-edit in note mode) ===
+
+/**
+ * Hit test for visible note at a point, respecting Z-order occlusion.
+ * Returns the ID of the topmost visible note object, or null.
+ */
+export function hitTestVisibleNote(
+  worldX: number,
+  worldY: number,
+  snapshot: Snapshot,
+  scale: number,
+): string | null {
+  const radiusWorld = 8 / scale;
+
+  const index = snapshot.spatialIndex;
+  if (!index) return null;
+
+  const results = index.query({
+    minX: worldX - radiusWorld,
+    minY: worldY - radiusWorld,
+    maxX: worldX + radiusWorld,
+    maxY: worldY + radiusWorld,
+  });
+
+  const candidates: HitCandidate[] = [];
+  for (const entry of results) {
+    const handle = snapshot.objectsById.get(entry.id);
+    if (!handle) continue;
+    const candidate = testObjectHit(worldX, worldY, radiusWorld, handle);
+    if (candidate) candidates.push(candidate);
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Sort by ULID descending (topmost first)
+  candidates.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+
+  // Scan with occlusion
+  for (const c of candidates) {
+    if (c.kind === 'note') return c.id;
     // Unfilled shape interior = transparent, keep scanning
     if (c.kind === 'shape' && !c.isFilled && c.insideInterior) continue;
     // Anything else occludes

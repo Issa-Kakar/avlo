@@ -24,6 +24,7 @@ import * as Y from 'yjs';
 import type {
   BBoxTuple,
   FrameTuple,
+  NoteProps,
   TextProps,
   TextAlign,
   TextWidth,
@@ -43,25 +44,25 @@ export type { TextAlign, TextWidth, TextProps, FontFamily } from '@avlo/shared';
 
 export const NOTE_WIDTH = 280;
 export const NOTE_FILL_COLOR = '#FEF3AC';
-const NOTE_PADDING_RATIO = 0.6;
+const NOTE_PADDING_RATIO = 12 / 280;
 const NOTE_CORNER_RADIUS_RATIO = 0.011;
 const NOTE_SHADOW_PAD_RATIO = 0.15;
 
-export function getNotePadding(fontSize: number): number {
-  return fontSize * NOTE_PADDING_RATIO;
+export function getNotePadding(noteWidth: number): number {
+  return noteWidth * NOTE_PADDING_RATIO;
 }
 
 export function getNoteCornerRadius(noteWidth: number): number {
   return noteWidth * NOTE_CORNER_RADIUS_RATIO;
 }
 
-export function getNoteContentWidth(noteWidth: number, fontSize: number): number {
-  return noteWidth - 2 * getNotePadding(fontSize);
+export function getNoteContentWidth(noteWidth: number): number {
+  return noteWidth - 2 * getNotePadding(noteWidth);
 }
 
-export function computeNoteHeight(layout: TextLayout, fontSize: number, noteWidth: number): number {
+export function computeNoteHeight(layout: TextLayout, noteWidth: number): number {
   const contentHeight = layout.lines.length * layout.lineHeight;
-  return Math.max(noteWidth, contentHeight + 2 * getNotePadding(fontSize));
+  return Math.max(noteWidth, contentHeight + 2 * getNotePadding(noteWidth));
 }
 
 // =============================================================================
@@ -1288,17 +1289,16 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   return [fx - padding, fy - padding, fx + layout.boxWidth + padding, fy + fh + padding];
 }
 
-export function computeNoteBBox(objectId: string, props: TextProps): BBoxTuple {
+export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
   const { content, origin, fontSize, fontFamily, width } = props;
-  const noteWidth = width as number;
-  const contentWidth = getNoteContentWidth(noteWidth, fontSize);
+  const contentWidth = getNoteContentWidth(width);
   const layout = textLayoutCache.getLayout(objectId, content, fontSize, fontFamily, contentWidth);
-  const noteHeight = computeNoteHeight(layout, fontSize, noteWidth);
+  const noteHeight = computeNoteHeight(layout, width);
 
-  const frame: FrameTuple = [origin[0], origin[1], noteWidth, noteHeight];
+  const frame: FrameTuple = [origin[0], origin[1], width, noteHeight];
   textLayoutCache.setFrame(objectId, frame);
 
-  const sp = getNoteShadowPad(noteWidth);
+  const sp = getNoteShadowPad(width);
   return [
     frame[0] - sp, frame[1] - sp,
     frame[0] + frame[2] + sp, frame[1] + frame[3] + sp,

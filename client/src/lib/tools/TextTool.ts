@@ -42,7 +42,7 @@ import {
   getFontFamily,
   getLabelColor,
   hasLabel,
-  isNote,
+  getNoteProps,
   type TextAlign,
 } from '@avlo/shared';
 import {
@@ -55,7 +55,7 @@ import {
   getNotePadding,
   getNoteContentWidth,
 } from '@/lib/text/text-system';
-import { hitTestVisibleText } from '@/lib/geometry/hit-testing';
+import { hitTestVisibleText, hitTestVisibleNote } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
 
@@ -106,7 +106,10 @@ export class TextTool implements PointerTool {
     this.gestureActive = true;
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
-    this.hitTextId = hitTestVisibleText(worldX, worldY, snapshot, scale);
+    const tool = useDeviceUIStore.getState().activeTool;
+    this.hitTextId = tool === 'note'
+      ? hitTestVisibleNote(worldX, worldY, snapshot, scale)
+      : hitTestVisibleText(worldX, worldY, snapshot, scale);
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -226,21 +229,20 @@ export class TextTool implements PointerTool {
 
       const yObj = new Y.Map<unknown>();
       yObj.set('id', objectId);
-      yObj.set('kind', 'text');
       yObj.set('origin', [worldX, worldY]);
       yObj.set('content', new Y.XmlFragment());
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
 
       if (isNoteMode) {
-        yObj.set('note', true);
+        yObj.set('kind', 'note');
         yObj.set('fontSize', store.noteSize);
         yObj.set('fontFamily', store.noteFontFamily);
-        yObj.set('color', '#1a1a1a');
-        yObj.set('align', 'left');
+        yObj.set('align', store.noteAlign);
         yObj.set('width', NOTE_WIDTH);
         yObj.set('fillColor', NOTE_FILL_COLOR);
       } else {
+        yObj.set('kind', 'text');
         yObj.set('fontSize', store.textSize);
         yObj.set('fontFamily', store.textFontFamily);
         yObj.set('color', store.textColor);
@@ -317,7 +319,7 @@ export class TextTool implements PointerTool {
       `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
     );
 
-    const isNoteObj = !isLabel && isNote(handle.y);
+    const isNoteObj = !isLabel && handle.kind === 'note';
 
     if (isLabel) {
       // Label: position at text box center, translate(-50%, -50%)
@@ -335,10 +337,10 @@ export class TextTool implements PointerTool {
       container.style.setProperty('--text-color', getLabelColor(handle.y));
     } else if (isNoteObj) {
       // Sticky note: origin is top-left, text area starts at padding offset
-      const props = getTextProps(handle.y)!;
+      const props = getNoteProps(handle.y)!;
       const { origin, width: noteWidth } = props;
-      const padding = getNotePadding(fontSize);
-      const contentWidth = getNoteContentWidth(noteWidth as number, fontSize);
+      const padding = getNotePadding(noteWidth);
+      const contentWidth = getNoteContentWidth(noteWidth);
       const [sx, sy] = worldToClient(origin[0] + padding, origin[1] + padding);
       container.style.left = `${sx}px`;
       container.style.top = `${sy}px`;
@@ -346,7 +348,7 @@ export class TextTool implements PointerTool {
       container.style.setProperty('--text-anchor-tx', '0%');
       container.style.setProperty('--text-anchor-ty', '0%');
       container.dataset.widthMode = 'note';
-      container.style.setProperty('--text-color', getColor(handle.y));
+      container.style.setProperty('--text-color', '#1a1a1a');
     } else {
       // Text object: origin-based positioning
       const props = getTextProps(handle.y)!;
@@ -506,13 +508,13 @@ export class TextTool implements PointerTool {
         '--hl-pad',
         `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
       );
-    } else if (isNote(handle.y)) {
-      const props = getTextProps(handle.y);
+    } else if (handle.kind === 'note') {
+      const props = getNoteProps(handle.y);
       if (!props) return;
       const { origin, fontSize, fontFamily, width: noteWidth } = props;
       const sf = fontSize * scale;
-      const padding = getNotePadding(fontSize);
-      const contentWidth = getNoteContentWidth(noteWidth as number, fontSize);
+      const padding = getNotePadding(noteWidth);
+      const contentWidth = getNoteContentWidth(noteWidth);
       const [sx, sy] = worldToClient(origin[0] + padding, origin[1] + padding);
       this.container.style.left = `${sx}px`;
       this.container.style.top = `${sy}px`;
@@ -561,7 +563,7 @@ export class TextTool implements PointerTool {
           handle.y.delete('fontFamily');
           handle.y.delete('labelColor');
         });
-      } else if (!handle || !isNote(handle.y)) {
+      } else if (!handle || handle.kind !== 'note') {
         // Regular text object: delete entirely
         const roomDoc = getActiveRoomDoc();
         roomDoc.mutate((ydoc) => {
@@ -618,7 +620,7 @@ export class TextTool implements PointerTool {
         this.positionEditor();
     } else {
       if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
-      if (keys.has('fillColor') && !isNote(handle.y))
+      if (keys.has('fillColor') && handle.kind !== 'note')
         this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
       if (keys.has('align'))
         applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');

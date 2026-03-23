@@ -26,7 +26,7 @@ import {
 import { getTextProps } from '@avlo/shared';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox, computeNoteBBox } from './text/text-system';
-import { isNote } from '@avlo/shared';
+import { getNoteProps } from '@avlo/shared';
 import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -1000,7 +1000,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       }
 
       // Remove layout cache entries on deletion
-      if (handle.kind === 'text' || handle.kind === 'shape') {
+      if (handle.kind === 'text' || handle.kind === 'shape' || handle.kind === 'note') {
         textLayoutCache.remove(id);
       }
       if (handle.kind === 'code') {
@@ -1043,10 +1043,19 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       // Compute new bbox - use specialized computation for text and code
       let newBBox: [number, number, number, number];
-      if (kind === 'text') {
+      if (kind === 'note') {
+        const props = getNoteProps(yObj);
+        if (props) {
+          newBBox = computeNoteBBox(id, props);
+        } else {
+          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+          const w = (yObj.get('width') as number) ?? 280;
+          newBBox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
+        }
+      } else if (kind === 'text') {
         const props = getTextProps(yObj);
         if (props) {
-          newBBox = isNote(yObj) ? computeNoteBBox(id, props) : computeTextBBox(id, props);
+          newBBox = computeTextBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
           const fontSize = (yObj.get('fontSize') as number) ?? 20;
@@ -1142,12 +1151,21 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
 
-      // Compute bbox - use specialized computation for text
+      // Compute bbox - use specialized computation for text/note/code
       let bbox: [number, number, number, number];
-      if (kind === 'text') {
+      if (kind === 'note') {
+        const props = getNoteProps(yObj);
+        if (props) {
+          bbox = computeNoteBBox(id, props);
+        } else {
+          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
+          const w = (yObj.get('width') as number) ?? 280;
+          bbox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
+        }
+      } else if (kind === 'text') {
         const props = getTextProps(yObj);
         if (props) {
-          bbox = isNote(yObj) ? computeNoteBBox(id, props) : computeTextBBox(id, props);
+          bbox = computeTextBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
           const fontSize = (yObj.get('fontSize') as number) ?? 20;

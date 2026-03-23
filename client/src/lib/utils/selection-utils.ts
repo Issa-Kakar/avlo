@@ -31,6 +31,7 @@ export interface KindCounts {
   text: number;
   connectors: number;
   code: number;
+  notes: number;
   images: number;
   total: number;
 }
@@ -87,6 +88,7 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   text: 0,
   connectors: 0,
   code: 0,
+  notes: 0,
   images: 0,
   total: 0,
 };
@@ -117,6 +119,7 @@ export function computeSelectionComposition(ids: string[]) {
     text = 0,
     connectors = 0,
     code = 0,
+    notes = 0,
     images = 0;
   const selectedIdSet = new Set<string>();
 
@@ -140,6 +143,9 @@ export function computeSelectionComposition(ids: string[]) {
       case 'code':
         code++;
         break;
+      case 'note':
+        notes++;
+        break;
       case 'image':
         images++;
         break;
@@ -152,6 +158,7 @@ export function computeSelectionComposition(ids: string[]) {
     text,
     connectors,
     code,
+    notes,
     images,
     total: selectedIdSet.size,
   };
@@ -162,6 +169,7 @@ export function computeSelectionComposition(ids: string[]) {
     (text > 0 ? 1 : 0) +
     (connectors > 0 ? 1 : 0) +
     (code > 0 ? 1 : 0) +
+    (notes > 0 ? 1 : 0) +
     (images > 0 ? 1 : 0);
 
   let selectionKind: SelectionKind;
@@ -171,6 +179,7 @@ export function computeSelectionComposition(ids: string[]) {
   else if (shapes > 0) selectionKind = 'shapesOnly';
   else if (text > 0) selectionKind = 'textOnly';
   else if (code > 0) selectionKind = 'codeOnly';
+  else if (notes > 0) selectionKind = 'notesOnly';
   else if (images > 0) selectionKind = 'imagesOnly';
   else selectionKind = 'connectorsOnly';
 
@@ -249,6 +258,21 @@ export function computeStyles(
         ...EMPTY_STYLES,
         fontSize: Math.round(getFontSize(handle.y, 14)),
         codeLanguage: getLanguage(handle.y),
+      };
+    }
+    return EMPTY_STYLES;
+  }
+
+  // Notes: track fillColor, fontSize, fontFamily
+  if (kind === 'notesOnly') {
+    for (const id of ids) {
+      const handle = objectsById.get(id);
+      if (!handle || handle.kind !== 'note') continue;
+      return {
+        ...EMPTY_STYLES,
+        fillColor: getFillColor(handle.y) ?? null,
+        fontSize: Math.round(getFontSize(handle.y)),
+        fontFamily: getFontFamily(handle.y),
       };
     }
     return EMPTY_STYLES;
@@ -391,7 +415,7 @@ export function computeUniformInlineStyles(
 
   for (const id of ids) {
     const handle = objectsById.get(id);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape')) continue;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) continue;
     if (handle.kind === 'shape' && !hasLabel(handle.y)) continue;
     const u = getInlineStyles(id);
     if (!u) continue;

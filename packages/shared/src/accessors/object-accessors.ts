@@ -348,11 +348,32 @@ export function getImageProps(y: Y.Map<unknown>): ImageProps | null {
 }
 
 // ============================================================================
-// NOTE ACCESSOR
+// NOTE-SPECIFIC ACCESSORS
 // ============================================================================
 
-export function isNote(y: Y.Map<unknown>): boolean {
-  return y.get('note') === true;
+export interface NoteProps {
+  content: Y.XmlFragment;
+  origin: [number, number];
+  fontSize: number;
+  fontFamily: FontFamily;
+  align: TextAlign;
+  width: number;
+  fillColor: string;
+}
+
+export function getNoteProps(y: Y.Map<unknown>): NoteProps | null {
+  const origin = y.get('origin') as [number, number] | undefined;
+  const content = y.get('content');
+  if (!origin || !(content instanceof Y.XmlFragment)) return null;
+  return {
+    content,
+    origin,
+    fontSize: (y.get('fontSize') as number) ?? 20,
+    fontFamily: (y.get('fontFamily') as FontFamily) ?? 'Grandstander',
+    align: (y.get('align') as TextAlign) ?? 'left',
+    width: (y.get('width') as number) ?? 280,
+    fillColor: (y.get('fillColor') as string) ?? '#FEF3AC',
+  };
 }
 
 // ============================================================================

@@ -67,7 +67,7 @@ export function setSelectedFillColor(fillColor: string | null): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text')) continue;
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note')) continue;
       if (fillColor === null) handle.y.delete('fillColor');
       else handle.y.set('fillColor', fillColor);
     }
@@ -220,7 +220,7 @@ export function setSelectedFontSize(size: number): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontSize', clamped);
       }
     }
@@ -268,7 +268,7 @@ export function setSelectedFontFamily(family: FontFamily): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontFamily', family);
       }
     }
@@ -335,7 +335,7 @@ export function toggleSelectedBold(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { bold: allBold ? null : true });
     }
@@ -357,7 +357,7 @@ export function toggleSelectedItalic(): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { italic: allItalic ? null : true });
     }
@@ -379,7 +379,7 @@ export function setSelectedHighlight(color: string | null): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (handle?.kind !== 'text' && handle?.kind !== 'shape') continue;
+      if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
       const content = getContent(handle.y);
       if (content) formatFragment(content, { highlight: color ? { color } : null });
     }

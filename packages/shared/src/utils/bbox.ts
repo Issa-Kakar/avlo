@@ -58,6 +58,13 @@ export function computeBBoxFor(
       return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
     }
 
+    case 'note': {
+      // Fallback only — room-doc-manager uses computeNoteBBox from text-system
+      const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
+      const w = (yMap.get('width') as number) ?? 280;
+      return [origin[0], origin[1], origin[0] + w, origin[1] + w];
+    }
+
     case 'connector': {
       const points = getPoints(yMap);
       if (points.length < 2) return [0, 0, 0, 0];

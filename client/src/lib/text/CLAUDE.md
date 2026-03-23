@@ -873,3 +873,179 @@ Both DOM and canvas center content H+V within text box, clip overflow (`overflow
 - **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns, content preserved
 - **Click shape body during editing:** Editor closes, shape stays selected, `justClosedLabelId` prevents remount
 - **Handle click during editing:** Capture phase closes editor → handle gesture starts normally
+
+---
+
+## Sticky Notes
+
+First-class `kind: 'note'` ObjectKind — a separate object type that reuses the text pipeline (Y.XmlFragment, Tiptap editor, TextLayoutCache, three-tier invalidation) like shape labels. Key differences from text objects: origin = top-left (not anchor+baseline), width always fixed, padding/dimensions width-based (not fontSize-based), canvas always draws body+shadow (even during editing).
+
+### Y.Doc Schema
+
+```typescript
+{
+  id: string,
+  kind: 'note',
+  origin: [number, number],     // [topLeftX, topLeftY] — always top-left
+  fontSize: number,              // Default 20 (from device-ui-store noteSize)
+  fontFamily: FontFamily,        // Default 'Grandstander' (from noteFontFamily)
+  align: TextAlign,              // Stored but rendering currently left-only
+  width: number,                 // Always fixed number (NOTE_WIDTH = 280), never 'auto'
+  fillColor: string,             // Note background color (NOTE_FILL_COLOR = '#FEF3AC')
+  content: Y.XmlFragment,
+  ownerId: string,
+  createdAt: number
+}
+```
+
+No `color` field — text is hardcoded to `'#1a1a1a'`. No `note: true` flag. Separate device-ui-store settings: `noteSize`, `noteAlign`, `noteFontFamily`.
+
+### Dimensional Model
+
+Two categories — **body properties** scale with `noteWidth`, **content properties** derive from width:
+
+| Property | Formula | At defaults (w=280) |
+|----------|---------|---------------------|
+| Content padding | `noteWidth * (12/280)` | 12wu |
+| Content width | `noteWidth - 2*padding` | 256wu |
+| Height | `max(noteWidth, contentH + 2*padding)` | 280wu min (square) |
+| Corner radius | `noteWidth * 0.011` | 3.08wu |
+| Shadow pad | `noteWidth * 0.15` | 42wu |
+
+Changing font size only affects text layout inside the note — body, shadow, corners, and padding are stable. This is the key difference from text objects where everything derives from fontSize.
+
+### Canvas Rendering — `drawStickyNote` (`objects.ts`)
+
+Own case in `drawObject` switch — does NOT call `renderTextLayout`. Instead replicates the fixed-mode rendering logic directly:
+
+```
+drawStickyNote(ctx, handle):
+  1. getNoteProps(y) → { origin, fontSize, fontFamily, width, fillColor, content }
+  2. textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth)
+  3. computeNoteHeight(layout, noteWidth)
+  4. renderNoteBody(ctx, x, y, w, h, fillColor)    ← always drawn, even during editing
+  5. if textEditingId === id → return              ← DOM overlay handles text
+  6. Two-pass per line (same as renderTextLayout fixed mode):
+     - Pass 1: highlight roundRects clamped to [textX, textX + contentWidth]
+       - Radius: fontSize * 0.25 (matches CSS border-radius: 0.25em)
+       - Clamped sides get flat edge (radius 0) — matches CSS overflow:hidden
+     - Pass 2: fillText with hardcoded '#1a1a1a'
+```
+
+Text positioning: `textX = origin[0] + padding`, `textY = origin[1] + padding + baselineToTop`. No alignment computation — `startX = textX` (always left-aligned).
+
+Key differences from `renderTextLayout`:
+- No `fillColor` background rect (body drawn by `renderNoteBody` instead)
+- Container bounds = note content area, not text block box
+- No `getLineStartX` / `getBoxLeftX` alignment math
+- Color hardcoded, not from Y.Map
+
+### Shadow System — 9-Slice Cache
+
+Dual-layer Gaussian shadow pre-rendered on a DPR-scaled `OffscreenCanvas`, drawn via 8 `drawImage` calls (9-slice, center skipped). Zero per-frame shadow cost.
+
+**Source canvas:** `(280 * dpr) × (280 * dpr)` pixels. Logical layout: `[100px pad][80px rect][100px pad]`. `ctx.scale(dpr, dpr)` — all drawing in logical pixels.
+
+**Dual layers** (both drawn with opaque `#000` fill, body area punched out with `destination-out`):
+
+| Layer | Purpose | blur | offsetY | α |
+|-------|---------|------|---------|---|
+| Floor | Long bottom tail, 3D lift | 34 | 28 | 0.10 |
+| Contact | Soft edge definition | 10 | 3 | 0.06 |
+
+Why dual-layer: a single Gaussian can't produce the asymmetry of a real sticky note shadow. The floor shadow's large offsetY pushes it below the body, creating a long bottom tail while leaving the top nearly invisible. The contact shadow adds soft edge definition on all sides.
+
+Why opaque fill + punch-out: browsers skip shadow rendering for zero-alpha fill. The `destination-out` compositing removes the opaque fill from the body area, leaving only the shadow fringe. Punch-out rect expanded 1px beyond body to eliminate the anti-aliased fringe at the shadow-body boundary.
+
+**Cache invalidation:** Auto-rebuilds when `window.devicePixelRatio` changes. Module-level singleton (`_shadowCache`).
+
+**Destination mapping:** Source pad (100px) maps to `noteWidth * 0.15` destination world units. At w=280, this is 42wu — compression ~2.4× at DPR=1. The DPR-scaled source provides enough resolution for smooth gradients at any DPR/zoom.
+
+**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** Calls `drawNoteShadow` (9-slice), then `roundRect` fill with `fillColor` at `getNoteCornerRadius(w)`.
+
+### BBox + Derived Frame
+
+`computeNoteBBox(objectId, props: NoteProps)` — called from room-doc-manager (steady-state + hydration):
+
+1. `getNoteContentWidth(width)` → layout via cache → `computeNoteHeight(layout, width)`
+2. Frame cached via `textLayoutCache.setFrame(id, [origin[0], origin[1], width, noteHeight])`
+3. Returns frame + shadow pad on all sides
+
+Frame = body rectangle (no shadow). BBox = body + shadow pad. Hit testing and selection use `getTextFrame(id)` (body only). Dirty rect tracking uses BBox (includes shadow).
+
+Fallback in `computeBBoxFor` (`bbox.ts`): `[origin[0], origin[1], origin[0]+w, origin[1]+w]` — safety net only.
+
+### TextTool — Creation and Editing
+
+**Tool mode:** `'note'` in `Tool` union. Maps to `textTool` singleton in `tool-registry.ts` (same pattern as pen/highlighter/shape). `activeTool` read at creation time to branch note vs text.
+
+**`begin()`:** Branches hit testing by tool mode — `hitTestVisibleNote` for note tool, `hitTestVisibleText` for text tool. Same occlusion model (unfilled shape interiors transparent, everything else occludes).
+
+**`createTextObject()`:** Note mode:
+```
+kind: 'note', fontSize: store.noteSize, fontFamily: store.noteFontFamily,
+align: store.noteAlign, width: NOTE_WIDTH, fillColor: NOTE_FILL_COLOR
+```
+No `color` field (unlike text objects). No `note: true` flag.
+
+**`mountEditor()` — note branch:** `handle.kind === 'note'` detected inline (no stored flag). Uses `getNoteProps`. DOM overlay positioned at `origin + padding` (top-left of text area within note body). Width = `contentWidth * scale`. `data-width-mode='note'`. No `backgroundColor` (canvas draws body underneath). Text color hardcoded to `'#1a1a1a'`.
+
+**`positionEditor()` — note branch:** Same as mount — reads fresh `getNoteProps`, width-based padding. Pan/zoom updates recalculate screen position.
+
+**`commitAndClose()`:** Empty notes preserved — the `handle.kind !== 'note'` guard skips deletion. Empty notes are valid visual elements (body + shadow render regardless of content).
+
+**`syncProps()`:** Notes skip `fillColor → backgroundColor` sync (`handle.kind !== 'note'`). Canvas draws note body fill, DOM overlay is transparent.
+
+### Hit Testing (`hit-testing.ts`)
+
+**`testObjectHit`** — `case 'note'`: uses `getTextFrame(handle.id)` + `shapeHitTest` with `'rect'`. Always `isFilled: true` — note body is always opaque for Z-order occlusion.
+
+**`objectIntersectsRect`** — `case 'note'`: uses `getTextFrame` + `rectsIntersect`. Standard marquee intersection.
+
+**`hitTestVisibleNote`:** Clone of `hitTestVisibleText` — same spatial query, same occlusion scan, but returns on `c.kind === 'note'` instead of `'text'`.
+
+### Selection System
+
+**`SelectionKind`:** `'notesOnly'` added to union. Derived in `computeSelectionComposition` via `notes` counter in `KindCounts`.
+
+**`computeStyles` for `'notesOnly'`:** Early return with `fillColor`, `fontSize`, `fontFamily` from first note.
+
+**`computeUniformInlineStyles`:** Notes included alongside text and labeled shapes — bold/italic/highlight tracking works for selected notes.
+
+**`refreshStyles`:** `'notesOnly'` included in inline styles gate (alongside `'textOnly'`, `'shapesOnly'`).
+
+**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontSize`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field) or `setSelectedTextAlign` (alignment deferred).
+
+**SelectTool:** Double-click on note → `textTool.startEditing(id)`. Keyboard Enter-to-edit: notes use `getTextFrame` for frame resolution.
+
+### CSS (`index.css`)
+
+```css
+.tiptap[data-width-mode='note'] {
+  overflow: visible;
+  text-align: left;
+}
+.tiptap[data-width-mode='note'] p { margin: 0; }
+.tiptap[data-width-mode='note'] .is-editor-empty:first-child::before { display: none; }
+```
+
+`overflow: visible` — no clipping, note body grows with content. `p { margin: 0 }` — prevents ProseMirror paragraph margins from breaking WYSIWYG parity. Placeholder hidden — empty notes are preserved (unlike text).
+
+### Room Doc Manager
+
+**BBox dispatch** (deep observer + hydration): `kind === 'note'` → `getNoteProps` + `computeNoteBBox`. Separate from text case.
+
+**Content invalidation:** Caught implicitly by `content instanceof Y.XmlFragment` check — no kind gate needed.
+
+**Deletion cleanup:** `handle.kind === 'note'` included in `textLayoutCache.remove(id)` guard.
+
+### NOT Implemented Yet
+
+- **Transforms** — no SelectTool scale/translate for notes
+- **Eraser** — no eraser integration
+- **Connector anchoring** — notes don't participate as connector endpoints
+- **Alignment** — stored but always renders left-aligned (no CSS or canvas alignment handling)
+- **Vertical centering** — text starts at top padding, no V-center
+- **Note resize** — no drag-to-resize
+- **Multiple note colors** — only `'#FEF3AC'` in creation, but fillColor can be changed via selection actions
+- **Context menu** — no note-specific filtering
