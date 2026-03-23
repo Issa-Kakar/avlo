@@ -27,6 +27,7 @@ import type {
   NoteProps,
   TextProps,
   TextAlign,
+  TextAlignV,
   TextWidth,
   FontFamily,
 } from '@avlo/shared';
@@ -36,7 +37,7 @@ import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
 export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 export type { FontFamilyConfig } from './font-config';
-export type { TextAlign, TextWidth, TextProps, FontFamily } from '@avlo/shared';
+export type { TextAlign, TextAlignV, TextWidth, TextProps, FontFamily } from '@avlo/shared';
 
 // =============================================================================
 // STICKY NOTE CONSTANTS & HELPERS
@@ -63,6 +64,17 @@ export function getNoteContentWidth(noteWidth: number): number {
 export function computeNoteHeight(layout: TextLayout, noteWidth: number): number {
   const contentHeight = layout.lines.length * layout.lineHeight;
   return Math.max(noteWidth, contentHeight + 2 * getNotePadding(noteWidth));
+}
+
+/** Vertical offset for note content alignment (matches CSS clamp behavior). */
+export function getNoteContentOffsetY(
+  alignV: TextAlignV,
+  maxContentH: number,
+  contentH: number,
+): number {
+  if (alignV === 'top') return 0;
+  const space = Math.max(0, maxContentH - contentH);
+  return alignV === 'middle' ? space / 2 : space;
 }
 
 // =============================================================================
@@ -966,7 +978,7 @@ function getBoxLeftX(originX: number, boxWidth: number, align: TextAlign): numbe
 }
 
 /** Line start X within container */
-function getLineStartX(
+export function getLineStartX(
   originX: number,
   boxWidth: number,
   lineVisualWidth: number,
@@ -1180,7 +1192,8 @@ function ensureShadowCache(): ShadowCache {
   const dpr = window.devicePixelRatio || 1;
   if (_shadowCache && _shadowCache.dpr === dpr) return _shadowCache;
 
-  const padPx = 100, rectPx = 80;
+  const padPx = 100,
+    rectPx = 80;
   const total = rectPx + 2 * padPx; // 280
   const radius = 5;
 
@@ -1231,7 +1244,10 @@ function ensureShadowCache(): ShadowCache {
 
 function drawNoteShadow(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
 ): void {
   const sc = ensureShadowCache();
   const d = sc.dpr;
@@ -1257,7 +1273,10 @@ function drawNoteShadow(
 
 export function renderNoteBody(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, w: number, h: number,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
   fillColor: string,
 ): void {
   const radius = getNoteCornerRadius(w);
@@ -1299,10 +1318,7 @@ export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
   textLayoutCache.setFrame(objectId, frame);
 
   const sp = getNoteShadowPad(width);
-  return [
-    frame[0] - sp, frame[1] - sp,
-    frame[0] + frame[2] + sp, frame[1] + frame[3] + sp,
-  ];
+  return [frame[0] - sp, frame[1] - sp, frame[0] + frame[2] + sp, frame[1] + frame[3] + sp];
 }
 
 /**

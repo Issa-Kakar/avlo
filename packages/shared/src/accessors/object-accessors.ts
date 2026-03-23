@@ -204,6 +204,7 @@ export function getOrigin(y: Y.Map<unknown>): [number, number] | null {
 }
 
 export type TextAlign = 'left' | 'center' | 'right';
+export type TextAlignV = 'top' | 'middle' | 'bottom';
 export type TextWidth = 'auto' | number;
 export type FontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono';
 
@@ -255,6 +256,10 @@ export function getTextWidth(y: Y.Map<unknown>): TextWidth {
  */
 export function getAlign(y: Y.Map<unknown>, fallback: TextAlign = 'left'): TextAlign {
   return (y.get('align') as TextAlign | undefined) ?? fallback;
+}
+
+export function getAlignV(y: Y.Map<unknown>, fallback: TextAlignV = 'middle'): TextAlignV {
+  return (y.get('alignV') as TextAlignV | undefined) ?? fallback;
 }
 
 /**
@@ -357,6 +362,7 @@ export interface NoteProps {
   fontSize: number;
   fontFamily: FontFamily;
   align: TextAlign;
+  alignV: TextAlignV;
   width: number;
   fillColor: string;
 }
@@ -370,7 +376,8 @@ export function getNoteProps(y: Y.Map<unknown>): NoteProps | null {
     origin,
     fontSize: (y.get('fontSize') as number) ?? 20,
     fontFamily: (y.get('fontFamily') as FontFamily) ?? 'Grandstander',
-    align: (y.get('align') as TextAlign) ?? 'left',
+    align: (y.get('align') as TextAlign) ?? 'center',
+    alignV: (y.get('alignV') as TextAlignV) ?? 'middle',
     width: (y.get('width') as number) ?? 280,
     fillColor: (y.get('fillColor') as string) ?? '#FEF3AC',
   };

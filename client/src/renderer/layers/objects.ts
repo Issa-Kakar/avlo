@@ -46,6 +46,8 @@ import {
   anchorFactor,
   getBaselineToTopRatio,
   getTextFrame,
+  getLineStartX,
+  getNoteContentOffsetY,
   renderNoteBody,
   getNotePadding,
   getNoteContentWidth,
@@ -362,8 +364,19 @@ function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   const props = getNoteProps(y);
   if (!props) return;
 
-  const { origin, fontSize, fontFamily, width: noteWidth, fillColor, content } = props;
+  const {
+    origin,
+    fontSize,
+    fontFamily,
+    width: noteWidth,
+    fillColor,
+    content,
+    align,
+    alignV,
+  } = props;
+  const padding = getNotePadding(noteWidth);
   const contentWidth = getNoteContentWidth(noteWidth);
+  const maxContentH = contentWidth; // square content box
   const layout = textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth);
   const noteHeight = computeNoteHeight(layout, noteWidth);
 
@@ -372,16 +385,21 @@ function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
 
   if (useSelectionStore.getState().textEditingId === id) return;
 
-  // --- Text rendering (replicates renderTextLayout fixed-mode logic) ---
-  const padding = getNotePadding(noteWidth);
-  const textX = origin[0] + padding;
-  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
-  const textY = origin[1] + padding + baselineToTop;
+  // --- Text rendering with alignment ---
   const { lineHeight } = layout;
+  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
+  const contentH = layout.lines.length * lineHeight;
 
-  // Container bounds for overflow clamping
-  const containerLeft = textX;
-  const containerRight = textX + contentWidth;
+  // Vertical alignment offset (clamped — matches CSS clamp behavior)
+  const vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH);
+  const textY = origin[1] + padding + vOffset + baselineToTop;
+
+  // Horizontal alignment — virtual anchor for getLineStartX reuse
+  const noteAnchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
+
+  // Container bounds for highlight clamping (always the content area)
+  const containerLeft = origin[0] + padding;
+  const containerRight = containerLeft + contentWidth;
   const hlR = fontSize * 0.25;
 
   ctx.save();
@@ -390,7 +408,8 @@ function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;
     const lineY = textY + line.baselineY;
-    const startX = textX;
+    const lineW = line.alignmentWidth;
+    const startX = getLineStartX(noteAnchorX, contentWidth, lineW, align);
 
     // Pass 1: highlight rects (clamped to container, rounded corners)
     for (const run of line.runs) {
@@ -957,13 +976,23 @@ function renderSelectedObjectWithScaleTransform(
   // CASE 3: Image scaling — always uniform, except mixed+side = edge-pin translate
   if (handle.kind === 'image') {
     const frame = getFrame(handle.y);
-    if (!frame) { drawObject(ctx, handle); return; }
+    if (!frame) {
+      drawObject(ctx, handle);
+      return;
+    }
 
     if (selectionKind === 'mixed' && handleKind === 'side') {
       // Edge-pin translate (no dimension change)
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
-        originBounds, scaleX, scaleY, origin, handleId,
+        frame[0],
+        frame[0] + frame[2],
+        frame[1],
+        frame[1] + frame[3],
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
       );
       ctx.save();
       ctx.translate(dx, dy);
@@ -971,7 +1000,13 @@ function renderSelectedObjectWithScaleTransform(
       ctx.restore();
     } else {
       // Uniform scale for all other cases
-      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+      const transformedFrame = applyUniformScaleToFrame(
+        frame,
+        originBounds,
+        origin,
+        scaleX,
+        scaleY,
+      );
       const [, , tw, th] = transformedFrame;
       if (tw < 0.001 || th < 0.001) return;
       const assetId = getAssetId(handle.y);

@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 
-html { overflow: hidden; }
+html {
+  overflow: hidden;
+}
 
 /* =============================================================================
    FONT DEFINITIONS — Variable Fonts (Latin subset, wght 450–700)
@@ -112,7 +114,7 @@ html { overflow: hidden; }
 
 .tiptap[data-width-mode='note'] {
   overflow: visible;
-  text-align: left;
+  text-align: var(--text-align, center);
 }
 .tiptap[data-width-mode='note'] p {
   margin: 0;

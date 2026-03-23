@@ -878,7 +878,7 @@ Both DOM and canvas center content H+V within text box, clip overflow (`overflow
 
 ## Sticky Notes
 
-First-class `kind: 'note'` ObjectKind — a separate object type that reuses the text pipeline (Y.XmlFragment, Tiptap editor, TextLayoutCache, three-tier invalidation) like shape labels. Key differences from text objects: origin = top-left (not anchor+baseline), width always fixed, padding/dimensions width-based (not fontSize-based), canvas always draws body+shadow (even during editing).
+First-class `kind: 'note'` ObjectKind — a separate object type that reuses the text pipeline (Y.XmlFragment, Tiptap editor, TextLayoutCache, three-tier invalidation) like shape labels. Key differences from text objects: origin = top-left (not anchor+baseline), width always fixed, padding/dimensions width-based (not fontSize-based), canvas always draws body+shadow (even during editing). Supports full horizontal + vertical alignment with auto-grow height and vertical clamping.
 
 ### Y.Doc Schema
 
@@ -886,10 +886,11 @@ First-class `kind: 'note'` ObjectKind — a separate object type that reuses the
 {
   id: string,
   kind: 'note',
-  origin: [number, number],     // [topLeftX, topLeftY] — always top-left
+  origin: [number, number],     // [topLeftX, topLeftY] — always top-left (doesn't shift with alignment)
   fontSize: number,              // Default 20 (from device-ui-store noteSize)
   fontFamily: FontFamily,        // Default 'Grandstander' (from noteFontFamily)
-  align: TextAlign,              // Stored but rendering currently left-only
+  align: TextAlign,              // 'left' | 'center' | 'right' — horizontal, default 'center'
+  alignV: TextAlignV,            // 'top' | 'middle' | 'bottom' — vertical, default 'middle'
   width: number,                 // Always fixed number (NOTE_WIDTH = 280), never 'auto'
   fillColor: string,             // Note background color (NOTE_FILL_COLOR = '#FEF3AC')
   content: Y.XmlFragment,
@@ -898,7 +899,9 @@ First-class `kind: 'note'` ObjectKind — a separate object type that reuses the
 }
 ```
 
-No `color` field — text is hardcoded to `'#1a1a1a'`. No `note: true` flag. Separate device-ui-store settings: `noteSize`, `noteAlign`, `noteFontFamily`.
+No `color` field — text is hardcoded to `'#1a1a1a'`. No `note: true` flag. Separate device-ui-store settings: `noteSize`, `noteAlign`, `noteAlignV`, `noteFontFamily`. Defaults: `align: 'center'`, `alignV: 'middle'`.
+
+**Origin semantics differ from text objects:** `origin` is always the top-left corner of the note body, regardless of alignment. For text objects, `origin[0]` shifts with horizontal alignment (left/center/right anchor). For notes, alignment is applied as an offset within the content area — origin stays fixed.
 
 ### Dimensional Model
 
@@ -908,36 +911,94 @@ Two categories — **body properties** scale with `noteWidth`, **content propert
 |----------|---------|---------------------|
 | Content padding | `noteWidth * (12/280)` | 12wu |
 | Content width | `noteWidth - 2*padding` | 256wu |
+| Max content height | `contentWidth` (= square content box) | 256wu |
 | Height | `max(noteWidth, contentH + 2*padding)` | 280wu min (square) |
 | Corner radius | `noteWidth * 0.011` | 3.08wu |
 | Shadow pad | `noteWidth * 0.15` | 42wu |
 
 Changing font size only affects text layout inside the note — body, shadow, corners, and padding are stable. This is the key difference from text objects where everything derives from fontSize.
 
+`maxContentH = contentWidth` — the height of the content area when the note is a perfect square. This is the threshold where vertical alignment transitions from centering within available space to clamping at the top.
+
+### Alignment System
+
+Notes support 3×3 alignment (H×V) with two key behaviors:
+
+1. **Horizontal alignment** — auto-grow width (like shape labels): container uses `width: max-content` + `maxWidth`, growing to fit content up to the full content width. Position anchored at `contentLeft + anchorFactor(align) * contentWidth`, then `translateX` offsets the container (`0%` / `-50%` / `-100%`). `text-align` CSS variable aligns lines within the container.
+
+2. **Vertical alignment with clamping** — CSS `clamp()` in `translateY` prevents content from overflowing the top of the note body when it exceeds the square content box height.
+
+#### Vertical Alignment Math — CSS `clamp()` Approach
+
+Position `top` at the vertical anchor point within the content area, then clamp `translateY`:
+
+```
+vFactor = top:0, middle:0.5, bottom:1
+topWorldY = origin[1] + padding + vFactor * maxContentH
+maxTy = vFactor * maxContentH * scale
+--text-anchor-ty = alignV === 'top' ? '0%' : clamp(-maxTy px, -vFactor*100 %, 0px)
+```
+
+**How it works (middle, vFactor=0.5):**
+- Container `top` set at vertical middle of content area (screen px)
+- `translateY(clamp(-maxTy, -50%, 0px))` — CSS resolves `%` to element height at used-value time
+- When element height H < maxContentH: `-50%` (= `-H/2`) is less negative than `-maxTy` → clamp picks `-50%` → perfectly centered
+- When H > maxContentH: `-50%` is more negative than `-maxTy` → clamp picks `-maxTy` → top clamped at padding edge
+- Transition is continuous: centering offset smoothly decreases to 0 as content fills the available space
+
+**Clamping behavior:** Once content exceeds the square content box height, the note body auto-grows downward only. The text top edge stays pinned at the padding boundary — identical to how horizontal center alignment works on the longest line that defines the width (centering is always based on *available* space).
+
+#### Canvas Alignment — Matching Formulas
+
+Canvas uses `getNoteContentOffsetY` which produces identical positions to the CSS clamp:
+
+```typescript
+getNoteContentOffsetY(alignV, maxContentH, contentH):
+  if (alignV === 'top') return 0
+  space = max(0, maxContentH - contentH)
+  return alignV === 'middle' ? space / 2 : space
+```
+
+**Proof of equivalence (middle):**
+- CSS effective offset: position at middle → translateY picks `min(-H/2, -maxTy)` → top = `padding + max(0, (maxContentH - H)/2)`
+- Canvas: `padding + getNoteContentOffsetY('middle', maxContentH, contentH)` = `padding + max(0, (maxContentH - contentH)/2)`
+- Identical for all H values, continuous transition at H = maxContentH ✓
+
+Horizontal alignment uses `getLineStartX` with a virtual anchor:
+```
+noteAnchorX = origin[0] + padding + anchorFactor(align) * contentWidth
+startX = getLineStartX(noteAnchorX, contentWidth, lineW, align)
+```
+The anchor factor cancels with `getBoxLeftX` internally, producing `contentLeft + alignment offset` — correct for all 3 modes.
+
 ### Canvas Rendering — `drawStickyNote` (`objects.ts`)
 
-Own case in `drawObject` switch — does NOT call `renderTextLayout`. Instead replicates the fixed-mode rendering logic directly:
+Own case in `drawObject` switch — does NOT call `renderTextLayout`. Instead replicates the fixed-mode rendering logic with alignment:
 
 ```
 drawStickyNote(ctx, handle):
-  1. getNoteProps(y) → { origin, fontSize, fontFamily, width, fillColor, content }
+  1. getNoteProps(y) → { origin, fontSize, fontFamily, width, fillColor, content, align, alignV }
   2. textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth)
   3. computeNoteHeight(layout, noteWidth)
   4. renderNoteBody(ctx, x, y, w, h, fillColor)    ← always drawn, even during editing
   5. if textEditingId === id → return              ← DOM overlay handles text
-  6. Two-pass per line (same as renderTextLayout fixed mode):
-     - Pass 1: highlight roundRects clamped to [textX, textX + contentWidth]
+  6. Compute alignment offsets:
+     - vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH)
+     - textY = origin[1] + padding + vOffset + baselineToTop
+     - noteAnchorX = origin[0] + padding + anchorFactor(align) * contentWidth
+  7. Two-pass per line:
+     - startX = getLineStartX(noteAnchorX, contentWidth, line.alignmentWidth, align)
+     - Pass 1: highlight roundRects clamped to [containerLeft, containerRight]
        - Radius: fontSize * 0.25 (matches CSS border-radius: 0.25em)
        - Clamped sides get flat edge (radius 0) — matches CSS overflow:hidden
      - Pass 2: fillText with hardcoded '#1a1a1a'
 ```
 
-Text positioning: `textX = origin[0] + padding`, `textY = origin[1] + padding + baselineToTop`. No alignment computation — `startX = textX` (always left-aligned).
-
 Key differences from `renderTextLayout`:
 - No `fillColor` background rect (body drawn by `renderNoteBody` instead)
-- Container bounds = note content area, not text block box
-- No `getLineStartX` / `getBoxLeftX` alignment math
+- Container bounds = note content area (always `origin[0]+padding` to `+contentWidth`), not text block box
+- Uses `getLineStartX` with virtual anchor (not `getBoxLeftX` with origin-based anchor)
+- Vertical offset via `getNoteContentOffsetY` (not origin-baseline positioning)
 - Color hardcoded, not from Y.Map
 
 ### Shadow System — 9-Slice Cache
@@ -973,6 +1034,8 @@ Why opaque fill + punch-out: browsers skip shadow rendering for zero-alpha fill.
 
 Frame = body rectangle (no shadow). BBox = body + shadow pad. Hit testing and selection use `getTextFrame(id)` (body only). Dirty rect tracking uses BBox (includes shadow).
 
+Alignment does not affect BBox or frame — the body rectangle is determined by origin + width + content height. Alignment only shifts text *within* the body.
+
 Fallback in `computeBBoxFor` (`bbox.ts`): `[origin[0], origin[1], origin[0]+w, origin[1]+w]` — safety net only.
 
 ### TextTool — Creation and Editing
@@ -984,17 +1047,25 @@ Fallback in `computeBBoxFor` (`bbox.ts`): `[origin[0], origin[1], origin[0]+w, o
 **`createTextObject()`:** Note mode:
 ```
 kind: 'note', fontSize: store.noteSize, fontFamily: store.noteFontFamily,
-align: store.noteAlign, width: NOTE_WIDTH, fillColor: NOTE_FILL_COLOR
+align: store.noteAlign, alignV: store.noteAlignV, width: NOTE_WIDTH, fillColor: NOTE_FILL_COLOR
 ```
 No `color` field (unlike text objects). No `note: true` flag.
 
-**`mountEditor()` — note branch:** `handle.kind === 'note'` detected inline (no stored flag). Uses `getNoteProps`. DOM overlay positioned at `origin + padding` (top-left of text area within note body). Width = `contentWidth * scale`. `data-width-mode='note'`. No `backgroundColor` (canvas draws body underneath). Text color hardcoded to `'#1a1a1a'`.
+**`mountEditor()` — note branch:** `handle.kind === 'note'` detected inline (no stored flag). Uses `getNoteProps`. Alignment-aware positioning:
+- Horizontal: container positioned at `origin + padding + anchorFactor(align) * contentWidth`, translated via `--text-anchor-tx` (`0%`/`-50%`/`-100%`). `--text-align` CSS variable set for multi-line alignment.
+- Vertical: container positioned at `origin + padding + vFactor * maxContentH`, translated via `--text-anchor-ty` with CSS `clamp()` for clamped centering.
+- Uses `maxWidth` (NOT `width`) — container is `width: max-content` from base CSS, auto-growing horizontally up to `contentWidth * scale`.
+- `data-width-mode='note'`. No `backgroundColor` (canvas draws body underneath). Text color hardcoded to `'#1a1a1a'`.
 
-**`positionEditor()` — note branch:** Same as mount — reads fresh `getNoteProps`, width-based padding. Pan/zoom updates recalculate screen position.
+**`positionEditor()` — note branch:** Same alignment logic as mount — reads fresh `getNoteProps`, recomputes anchor positions + clamp values. Pan/zoom updates recalculate screen positions.
 
 **`commitAndClose()`:** Empty notes preserved — the `handle.kind !== 'note'` guard skips deletion. Empty notes are valid visual elements (body + shadow render regardless of content).
 
-**`syncProps()`:** Notes skip `fillColor → backgroundColor` sync (`handle.kind !== 'note'`). Canvas draws note body fill, DOM overlay is transparent.
+**`syncProps()`:** Notes skip `fillColor → backgroundColor` sync (`handle.kind !== 'note'`). For notes, `align` and `alignV` changes route through `positionEditor()` (anchor point shifts) rather than `applyAlignCSS()` — notes need full repositioning because the DOM anchor point changes with alignment.
+
+### Extension Observer (`extensions.ts`)
+
+Tracked keys include `alignV` alongside `origin`, `fontSize`, `fontFamily`, `color`, `fillColor`, `align`, `width`, `labelColor`, `frame`, `shapeType`. When the per-session UndoManager undoes/redoes an `alignV` change, the observer fires `onPropsSync(keys)` → `TextTool.syncProps()` → `positionEditor()` updates the DOM overlay.
 
 ### Hit Testing (`hit-testing.ts`)
 
@@ -1014,7 +1085,7 @@ No `color` field (unlike text objects). No `note: true` flag.
 
 **`refreshStyles`:** `'notesOnly'` included in inline styles gate (alongside `'textOnly'`, `'shapesOnly'`).
 
-**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontSize`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field) or `setSelectedTextAlign` (alignment deferred).
+**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontSize`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field).
 
 **SelectTool:** Double-click on note → `textTool.startEditing(id)`. Keyboard Enter-to-edit: notes use `getTextFrame` for frame resolution.
 
@@ -1023,13 +1094,15 @@ No `color` field (unlike text objects). No `note: true` flag.
 ```css
 .tiptap[data-width-mode='note'] {
   overflow: visible;
-  text-align: left;
+  text-align: var(--text-align, center);
 }
 .tiptap[data-width-mode='note'] p { margin: 0; }
 .tiptap[data-width-mode='note'] .is-editor-empty:first-child::before { display: none; }
 ```
 
-`overflow: visible` — no clipping, note body grows with content. `p { margin: 0 }` — prevents ProseMirror paragraph margins from breaking WYSIWYG parity. Placeholder hidden — empty notes are preserved (unlike text).
+`overflow: visible` — no clipping, note body grows with content. `text-align: var(--text-align, center)` — horizontal alignment driven by JS via CSS variable (default center). `p { margin: 0 }` — prevents ProseMirror paragraph margins from breaking WYSIWYG parity. Placeholder hidden — empty notes are preserved (unlike text).
+
+Base `.tiptap` CSS provides `width: max-content` and `transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%))` — notes reuse these for alignment positioning. JS sets `maxWidth` (not `width`) so the container auto-grows horizontally.
 
 ### Room Doc Manager
 
@@ -1044,8 +1117,7 @@ No `color` field (unlike text objects). No `note: true` flag.
 - **Transforms** — no SelectTool scale/translate for notes
 - **Eraser** — no eraser integration
 - **Connector anchoring** — notes don't participate as connector endpoints
-- **Alignment** — stored but always renders left-aligned (no CSS or canvas alignment handling)
-- **Vertical centering** — text starts at top padding, no V-center
 - **Note resize** — no drag-to-resize
 - **Multiple note colors** — only `'#FEF3AC'` in creation, but fillColor can be changed via selection actions
 - **Context menu** — no note-specific filtering
+- **Alignment UI** — alignment is plumbed and defaults to center/middle, but no context menu controls to change it yet

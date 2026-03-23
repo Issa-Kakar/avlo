@@ -212,6 +212,7 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
           keys.has('color') ||
           keys.has('fillColor') ||
           keys.has('align') ||
+          keys.has('alignV') ||
           keys.has('width') ||
           keys.has('labelColor') ||
           keys.has('frame') ||
