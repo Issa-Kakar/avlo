@@ -906,6 +906,57 @@ function drawScaledCodePreview(
 }
 
 /**
+ * Draw sticky note with uniform scale preview using ctx.scale.
+ * Uses bbox center for position preservation (handles are at bbox positions).
+ */
+function drawScaledNotePreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform,
+): void {
+  const props = getNoteProps(handle.y);
+  if (!props) {
+    drawStickyNote(ctx, handle);
+    return;
+  }
+
+  const { scaleX, scaleY, originBounds, origin } = transform;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const rawAbsScale = Math.abs(uniformScale);
+  if (rawAbsScale < 0.001) return;
+
+  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
+  const effectiveAbsScale = roundedFontSize / props.fontSize;
+
+  // Use bbox center for position preservation (mirrors commitScale exactly)
+  const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+  const bcx = (bMinX + bMaxX) / 2;
+  const bcy = (bMinY + bMaxY) / 2;
+  const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
+
+  // Derive new origin from bbox center + scaled offset
+  const bboxW = bMaxX - bMinX;
+  const bboxH = bMaxY - bMinY;
+  const newBboxW = bboxW * effectiveAbsScale;
+  const newBboxH = bboxH * effectiveAbsScale;
+  const newBMinX = newBcx - newBboxW / 2;
+  const newBMinY = newBcy - newBboxH / 2;
+  const oxOff = props.origin[0] - bMinX;
+  const oyOff = props.origin[1] - bMinY;
+  const newOriginX = newBMinX + oxOff * effectiveAbsScale;
+  const newOriginY = newBMinY + oyOff * effectiveAbsScale;
+
+  // Scale around origin: translate to new origin, scale, then draw at (0,0)
+  ctx.save();
+  ctx.translate(newOriginX, newOriginY);
+  ctx.scale(effectiveAbsScale, effectiveAbsScale);
+  ctx.translate(-props.origin[0], -props.origin[1]);
+  drawStickyNote(ctx, handle);
+  ctx.restore();
+}
+
+/**
  * Draw code block with reflow preview from pre-computed layout/origin.
  */
 function drawReflowedCodePreview(
@@ -1035,7 +1086,26 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // CASE 4: Shape scaling
+  // CASE 4: Note scaling — always uniform, except mixed+side = edge-pin translate
+  if (handle.kind === 'note') {
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      // Edge-pin: use bbox bounds (matches computeRawGeometryBounds)
+      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+      const { dx, dy } = computeEdgePinTranslation(
+        bMinX, bMaxX, bMinY, bMaxY,
+        originBounds, scaleX, scaleY, origin, handleId,
+      );
+      ctx.save();
+      ctx.translate(dx, dy);
+      drawStickyNote(ctx, handle);
+      ctx.restore();
+    } else {
+      drawScaledNotePreview(ctx, handle, transform);
+    }
+    return;
+  }
+
+  // CASE 5: Shape scaling
   // Mixed + corner: uniform scale
   // Shapes-only or mixed+side: non-uniform scale (existing behavior)
   if (handle.kind === 'shape') {

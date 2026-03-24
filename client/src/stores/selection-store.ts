@@ -379,7 +379,8 @@ function computeConnectorTopology(
       (handle.kind !== 'shape' &&
         handle.kind !== 'text' &&
         handle.kind !== 'code' &&
-        handle.kind !== 'image')
+        handle.kind !== 'image' &&
+        handle.kind !== 'note')
     )
       continue;
     const connectors = getConnectorsForShape(id);
@@ -399,11 +400,12 @@ function computeConnectorTopology(
       (handle.kind !== 'shape' &&
         handle.kind !== 'text' &&
         handle.kind !== 'code' &&
-        handle.kind !== 'image')
+        handle.kind !== 'image' &&
+        handle.kind !== 'note')
     )
       continue;
     const frame =
-      handle.kind === 'text'
+      handle.kind === 'text' || handle.kind === 'note'
         ? getTextFrame(handle.id)
         : handle.kind === 'code'
           ? getCodeFrame(handle.id)

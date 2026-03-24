@@ -460,6 +460,21 @@ export function transformFrameForTopology(
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
+  // Notes: same as images, but edge-pin must use bbox (body + shadow pad)
+  // because originBounds uses bbox for notes (handles at bbox positions).
+  if (kind === 'note') {
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      const sp = frame[2] * 0.15; // NOTE_SHADOW_PAD_RATIO — matches text-system.ts
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0] - sp, frame[0] + frame[2] + sp,
+        frame[1] - sp, frame[1] + frame[3] + sp,
+        originBounds, scaleX, scaleY, origin, handleId,
+      );
+      return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    }
+    return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
+  }
+
   if (
     ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
   ) {
@@ -482,6 +497,7 @@ export function transformPositionForTopology(
   const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
   if (
     selectionKind === 'imagesOnly' ||
+    selectionKind === 'notesOnly' ||
     ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
   ) {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);

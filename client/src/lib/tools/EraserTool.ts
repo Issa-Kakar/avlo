@@ -255,6 +255,17 @@ export class EraserTool implements PointerTool {
           }
           break;
         }
+
+        case 'note': {
+          const frame = getTextFrame(handle.id);
+          if (!frame) break;
+
+          const [x, y, w, h] = frame;
+          if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
+            this.state.hitNow.add(handle.id);
+          }
+          break;
+        }
       }
     }
 

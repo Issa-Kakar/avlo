@@ -91,6 +91,11 @@ export function drawDimmedStrokes(
       if (!frame) continue;
       const [x, y, w, h] = frame;
       ctx.fillRect(x, y, w, h);
+    } else if (kind === 'note') {
+      const frame = getTextFrame(handle.id);
+      if (!frame) continue;
+      const [x, y, w, h] = frame;
+      ctx.fillRect(x, y, w, h);
     }
   }
 

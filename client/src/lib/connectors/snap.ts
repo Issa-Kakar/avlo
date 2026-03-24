@@ -82,7 +82,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const handles: ObjectHandle[] = [];
   for (const entry of results) {
     const h = snapshot.objectsById.get(entry.id);
-    if (h && (h.kind === 'shape' || h.kind === 'text' || h.kind === 'code' || h.kind === 'image')) {
+    if (h && (h.kind === 'shape' || h.kind === 'text' || h.kind === 'code' || h.kind === 'image' || h.kind === 'note')) {
       handles.push(h);
     }
   }
@@ -101,14 +101,14 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
 
   for (const handle of handles) {
     const frame =
-      handle.kind === 'text'
+      handle.kind === 'text' || handle.kind === 'note'
         ? getTextFrame(handle.id)
         : handle.kind === 'code'
           ? getCodeFrame(handle.id)
           : getFrame(handle.y);
     if (!frame) continue;
     const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
-    const isFilled = handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image' || !!getFillColor(handle.y);
+    const isFilled = handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image' || handle.kind === 'note' || !!getFillColor(handle.y);
     candidates.push({ handle, frame, area: frame[2] * frame[3], shapeType, isFilled });
   }
 

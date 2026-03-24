@@ -203,7 +203,8 @@ export class TextTool implements PointerTool {
 
   isEditingLabel(): boolean {
     if (!this.objectId) return false;
-    return getCurrentSnapshot().objectsById.get(this.objectId)?.kind === 'shape' || false;
+    const kind = getCurrentSnapshot().objectsById.get(this.objectId)?.kind;
+    return kind === 'shape' || kind === 'note' || false;
   }
 
   getEditor(): Editor | null {
@@ -614,7 +615,7 @@ export class TextTool implements PointerTool {
     }
 
     // Track shape label close for remount prevention
-    if (handle?.kind === 'shape') this.justClosedLabelId = this.objectId;
+    if (handle?.kind === 'shape' || handle?.kind === 'note') this.justClosedLabelId = this.objectId;
 
     this.removeEditorHandlers();
 

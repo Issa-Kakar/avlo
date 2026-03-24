@@ -221,6 +221,15 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): World
     maxY = -Infinity;
 
   for (const handle of handles) {
+    // Notes: use bbox (includes shadow) — handles are at bbox positions
+    if (handle.kind === 'note') {
+      const [minX_, minY_, maxX_, maxY_] = handle.bbox;
+      minX = Math.min(minX, minX_);
+      minY = Math.min(minY, minY_);
+      maxX = Math.max(maxX, maxX_);
+      maxY = Math.max(maxY, maxY_);
+      continue;
+    }
     if (handle.kind === 'shape' || handle.kind === 'image' || handle.kind === 'text' || handle.kind === 'code') {
       const frame =
         handle.kind === 'text'

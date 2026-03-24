@@ -57,6 +57,7 @@ import {
   getOrigin,
   getTextProps,
   getCodeProps,
+  getNoteProps,
   getConnectorType,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
@@ -213,7 +214,7 @@ export class SelectTool implements PointerTool {
       if (
         isSelected &&
         selectedIds.length === 1 &&
-        (hit.kind === 'text' || hit.kind === 'code' || textTool.justClosedLabelId === hit.id)
+        (hit.kind === 'text' || hit.kind === 'code' || hit.kind === 'note' || textTool.justClosedLabelId === hit.id)
       ) {
         contextMenuController.cancelHide();
       }
@@ -1155,6 +1156,17 @@ export class SelectTool implements PointerTool {
           } else {
             continue;
           }
+        } else if (handle.kind === 'note') {
+          // Notes: edge-pin uses bbox (must match computeRawGeometryBounds which uses bbox)
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            const { dx, dy } = computeEdgePinTranslation(
+              bbox.minX, bbox.maxX, bbox.minY, bbox.maxY,
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            objBounds = translateBounds(bbox, dx, dy);
+          } else {
+            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
+          }
         } else if (handle.kind === 'image') {
           const frame = getFrame(handle.y);
           if (!frame) continue;
@@ -1219,8 +1231,8 @@ export class SelectTool implements PointerTool {
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
-        } else if (handle.kind === 'text' || handle.kind === 'code') {
-          // Text/code store position as origin, not frame.
+        } else if (handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'note') {
+          // Text/code/note store position as origin, not frame.
           const origin = getOrigin(yMap);
           if (!origin) continue;
           yMap.set('origin', [origin[0] + dx, origin[1] + dy]);
@@ -1456,6 +1468,51 @@ export class SelectTool implements PointerTool {
             );
             const curOrigin = getOrigin(yMap);
             if (curOrigin) yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
+          }
+          continue;
+        }
+
+        // Note scaling: always uniform, except mixed+side = edge-pin translate
+        if (handle.kind === 'note') {
+          const noteProps = getNoteProps(yMap);
+          if (!noteProps) continue;
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            // Edge-pin: use bbox bounds (must match computeRawGeometryBounds which uses bbox for notes)
+            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+            const { dx, dy } = computeEdgePinTranslation(
+              bMinX, bMaxX, bMinY, bMaxY,
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            yMap.set('origin', [noteProps.origin[0] + dx, noteProps.origin[1] + dy]);
+          } else {
+            // Uniform scale: fontSize round, width round, origin from bbox-center preservation
+            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+            const rawAbsScale = Math.abs(uniformScale);
+            const roundedFontSize = Math.round(noteProps.fontSize * rawAbsScale * 1000) / 1000;
+            const effectiveAbsScale = roundedFontSize / noteProps.fontSize;
+
+            // Use bbox center for position preservation (handles are at bbox)
+            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+            const bcx = (bMinX + bMaxX) / 2;
+            const bcy = (bMinY + bMaxY) / 2;
+            const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
+
+            // Derive new origin: offset from bbox center to frame origin is constant ratio
+            const bboxW = bMaxX - bMinX;
+            const bboxH = bMaxY - bMinY;
+            const newBboxW = bboxW * effectiveAbsScale;
+            const newBboxH = bboxH * effectiveAbsScale;
+            const newBMinX = newBcx - newBboxW / 2;
+            const newBMinY = newBcy - newBboxH / 2;
+            // Origin offset within bbox = original origin - bbox min
+            const oxOff = noteProps.origin[0] - bMinX;
+            const oyOff = noteProps.origin[1] - bMinY;
+            const newOriginX = newBMinX + oxOff * effectiveAbsScale;
+            const newOriginY = newBMinY + oyOff * effectiveAbsScale;
+
+            yMap.set('origin', [newOriginX, newOriginY]);
+            yMap.set('fontSize', roundedFontSize);
+            yMap.set('width', Math.round(noteProps.width * effectiveAbsScale * 1000) / 1000);
           }
           continue;
         }

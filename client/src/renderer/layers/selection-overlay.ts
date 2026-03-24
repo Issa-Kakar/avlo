@@ -185,6 +185,13 @@ function drawObjectHighlights(
       continue;
     }
 
+    // Note: stroke bbox (includes shadow — user likes the offset appearance)
+    if (handle.kind === 'note') {
+      const [minX, minY, maxX, maxY] = handle.bbox;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+      continue;
+    }
+
     // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
     if (handle.kind === 'stroke' || handle.kind === 'connector') {
       const [minX, minY, maxX, maxY] = handle.bbox;
