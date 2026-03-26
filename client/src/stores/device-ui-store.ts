@@ -20,7 +20,7 @@ export type Tool =
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
 
 // Size types
-export type SizePreset = 6 | 10 | 14 | 18;
+export type SizePreset = 4 | 7 | 10 | 13;
 export type ConnectorSizePreset = 2 | 4 | 6 | 8;
 
 // Unified font size presets (used by context menu + store)
@@ -166,7 +166,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       activeTool: 'pen',
 
       drawingSettings: {
-        size: 6,
+        size: 4,
         color: '#262626',
         opacity: 1.0,
         fill: false,

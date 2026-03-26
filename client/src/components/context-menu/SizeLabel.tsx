@@ -2,10 +2,10 @@ import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 const STROKE_PRESETS: [string, number][] = [
-  ['S', 6],
-  ['M', 10],
-  ['L', 14],
-  ['XL', 18],
+  ['S', 4],
+  ['M', 7],
+  ['L', 10],
+  ['XL', 13],
 ];
 const CONNECTOR_PRESETS: [string, number][] = [
   ['S', 2],
@@ -14,7 +14,7 @@ const CONNECTOR_PRESETS: [string, number][] = [
   ['XL', 8],
 ];
 
-const STROKE_LABELS: Record<number, string> = { 6: 'S', 10: 'M', 14: 'L', 18: 'XL' };
+const STROKE_LABELS: Record<number, string> = { 4: 'S', 7: 'M', 10: 'L', 13: 'XL' };
 const CONNECTOR_LABELS: Record<number, string> = { 2: 'S', 4: 'M', 6: 'L', 8: 'XL' };
 
 // Fixed SVG widths per label to prevent layout shift

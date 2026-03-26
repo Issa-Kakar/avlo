@@ -92,7 +92,7 @@ export function ToolPanel() {
   const getSizePresets = () => {
     if (activeTool === 'text' || activeTool === 'note') return []; // Sizes managed in context menu
     if (activeTool === 'connector') return [2, 4, 6, 8];
-    return [6, 10, 14, 18];
+    return [4, 7, 10, 13];
   };
 
   const sizePresets = getSizePresets();

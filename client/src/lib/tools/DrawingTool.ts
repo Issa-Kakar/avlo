@@ -2,7 +2,7 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { DrawingState, PreviewData, PointerTool } from './types';
 import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
-import { worldToCanvas } from '@/stores/camera-store';
+import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
 import { HoldDetector } from '../input/HoldDetector';
 import {
   recognizePerfectShapePointCloud,
@@ -341,10 +341,16 @@ export class DrawingTool implements PointerTool {
   addPoint(worldX: number, worldY: number): void {
     if (!this.state.isDrawing) return;
 
-    // Drop exact duplicate (but DO NOT decimate otherwise)
+    // Drop sub-pixel moves (< 1 CSS pixel distance)
     const pts = this.state.points;
     const L = pts.length;
-    if (L >= 1 && pts[L - 1][0] === worldX && pts[L - 1][1] === worldY) return;
+    if (L >= 1) {
+      const last = pts[L - 1];
+      const scale = useCameraStore.getState().scale;
+      const dx = (worldX - last[0]) * scale;
+      const dy = (worldY - last[1]) * scale;
+      if (dx * dx + dy * dy < 1.0) return;
+    }
 
     // Append immediately to tuple array
     this.state.points.push([worldX, worldY]);
@@ -410,6 +416,12 @@ export class DrawingTool implements PointerTool {
 
     // Set snap based on recognized kind
     switch (result.best.kind) {
+      case 'line':
+        this.snap = {
+          kind: 'line',
+          anchors: { A: this.state.points[0] },
+        };
+        break;
       case 'circle':
         this.snap = {
           kind: 'circle',
@@ -556,10 +568,28 @@ export class DrawingTool implements PointerTool {
     const userId = userProfileManager.getIdentity().userId;
 
     if (this.snap.kind === 'line') {
-      // Line is not a shape object, skip for now
-      // TODO: Implement connector tool for lines
-      console.log('Line shapes not yet supported as shape objects');
-      this.cancelDrawing();
+      // Commit as a 2-point stroke
+      const { A } = this.snap.anchors;
+      const strokeId = ulid();
+      roomDoc.mutate((ydoc) => {
+        const root = ydoc.getMap('root');
+        const objects = root.get('objects') as Y.Map<Y.Map<any>>;
+        const strokeMap = new Y.Map();
+        strokeMap.set('id', strokeId);
+        strokeMap.set('kind', 'stroke');
+        strokeMap.set('tool', this.state.config.tool);
+        strokeMap.set('color', this.state.config.color);
+        strokeMap.set('width', this.state.config.size);
+        strokeMap.set('opacity', this.state.config.opacity);
+        strokeMap.set('points', [A, finalCursor]);
+        strokeMap.set('ownerId', userId);
+        strokeMap.set('createdAt', Date.now());
+        objects.set(strokeId, strokeMap);
+      });
+      invalidateOverlay();
+      this.resetState();
+      this.snap = null;
+      this.liveCursorWU = null;
       return;
     } else if (this.snap.kind === 'circle') {
       const { center } = this.snap.anchors;

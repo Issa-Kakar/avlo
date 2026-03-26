@@ -75,6 +75,7 @@ export const PDOLLAR_CONFIG = {
   MAX_DISTANCE_BOX: 3.5,
   MAX_DISTANCE_DIAMOND: 4.5,
   MAX_DISTANCE_CIRCLE: 6, // Keep circle lenient (already hard to trigger)
+  MAX_DISTANCE_LINE: 3.0, // Strict — lines are simple shapes
   // Hybrid validation gates (for box/diamond only)
   MIN_TURN_ANGLE_DEG: 40, // Minimum angle change to count as a "turn"
   MIN_TURNS_BOX: 3, // Require at least 3 turns for box
@@ -128,10 +129,9 @@ const TEMPLATE_RATIOS = {
   circle: [1.0],
 
   /**
-   * Line: extreme ratios for degenerate case detection.
-   * If a line template wins, we reject as ambiguous.
+   * Line: covers horizontal, vertical, and diagonal angles.
    */
-  line: [25.0, 0.04],
+  line: [25.0, 2.0, 1.0, 0.5, 0.04],
 } as const;
 
 // =============================================================================
@@ -557,7 +557,7 @@ function buildAllTemplates(n: number): Template[] {
     });
   }
 
-  // Lines: 2 templates for degenerate case rejection
+  // Lines: 5 templates covering H/V/diagonal angles
   for (const ratio of TEMPLATE_RATIOS.line) {
     const { w, h } = aspectToWH(ratio);
     // Simple 2-point line (horizontal or vertical depending on ratio)
@@ -582,14 +582,14 @@ function buildAllTemplates(n: number): Template[] {
 }
 
 // =============================================================================
-// CACHED TEMPLATE LIBRARY (built once at module load)
+// CACHED TEMPLATE LIBRARY (lazy, built on first use)
 // =============================================================================
 
-/**
- * Pre-built templates using fixed aspect ratios.
- * Generated once at module import (~5ms, 173 templates).
- */
-const TEMPLATES: Template[] = buildAllTemplates(PDOLLAR_CONFIG.NUM_POINTS);
+let _templates: Template[] | null = null;
+function getTemplates(): Template[] {
+  if (!_templates) _templates = buildAllTemplates(PDOLLAR_CONFIG.NUM_POINTS);
+  return _templates;
+}
 
 // =============================================================================
 // PUBLIC API
@@ -672,7 +672,7 @@ export function recognizePerfectShapePointCloud(
   // This is the key difference: we use pre-built templates with fixed aspect ratios
   const all: PerfectShapeMatch[] = [];
 
-  for (const t of TEMPLATES) {
+  for (const t of getTemplates()) {
     const d = greedyCloudMatchQ(candidate, t.points, n, epsilon);
     all.push({ kind: t.kind, templateId: t.id, distance: d });
   }
@@ -686,18 +686,6 @@ export function recognizePerfectShapePointCloud(
   // Margin should compare circle vs box, not box@1.0 vs box@1.25
   const bestOfDifferentKind = all.find((m) => m.kind !== best.kind) ?? null;
 
-  // CRITICAL: If best match is 'line', reject as ambiguous
-  // This handles degenerate inputs (straight lines, very elongated strokes)
-  if (best.kind === 'line') {
-    return {
-      best,
-      secondBest: bestOfDifferentKind,
-      ambiguous: true, // Degenerate - continue freehand
-      margin: 0,
-      all,
-    };
-  }
-
   // Compute margin against best match of a DIFFERENT shape type
   // This prevents box@1.0 vs box@1.25 from triggering ambiguity
   const margin =
@@ -709,7 +697,9 @@ export function recognizePerfectShapePointCloud(
   // Shape-specific distance thresholds
   // =========================================================================
   let shapeMaxDistance: number;
-  if (best.kind === 'box') {
+  if (best.kind === 'line') {
+    shapeMaxDistance = PDOLLAR_CONFIG.MAX_DISTANCE_LINE;
+  } else if (best.kind === 'box') {
     shapeMaxDistance = PDOLLAR_CONFIG.MAX_DISTANCE_BOX;
   } else if (best.kind === 'diamond') {
     shapeMaxDistance = PDOLLAR_CONFIG.MAX_DISTANCE_DIAMOND;
@@ -814,7 +804,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   console.log(
     `Input: ${rawPointsWU.length} points, aspect: ${aspect.toFixed(2)}, diag: ${diag.toFixed(1)}`,
   );
-  console.log(`Templates: ${TEMPLATES.length} (closed only)`);
+  console.log(`Templates: ${getTemplates().length} (closed only)`);
   console.log(
     `Shape thresholds: box<${PDOLLAR_CONFIG.MAX_DISTANCE_BOX}, diamond<${PDOLLAR_CONFIG.MAX_DISTANCE_DIAMOND}, circle<${PDOLLAR_CONFIG.MAX_DISTANCE_CIRCLE}`,
   );
