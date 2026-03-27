@@ -53,6 +53,7 @@ export type SelectionKind =
   | 'notesOnly'
   | 'connectorsOnly'
   | 'imagesOnly'
+  | 'bookmarksOnly'
   | 'mixed';
 
 export type HandleKind = 'corner' | 'side';

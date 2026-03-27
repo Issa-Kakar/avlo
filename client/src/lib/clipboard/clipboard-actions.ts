@@ -28,6 +28,7 @@ import { animateToFit } from '@/canvas/animation/ZoomAnimator';
 import { deleteSelected } from '@/lib/utils/selection-actions';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import type { WorldBounds } from '@avlo/shared';
+import { normalizeUrl } from '@avlo/shared';
 import {
   serializeObjects,
   deserializeFragment,
@@ -36,6 +37,7 @@ import {
 } from './clipboard-serializer';
 import { createImageFromBlob } from '@/lib/image/image-actions';
 import { enqueue } from '@/lib/image/image-manager';
+import { beginUnfurl } from '@/lib/bookmark/bookmark-unfurl';
 
 // === Constants ===
 
@@ -243,6 +245,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
     if (obj.kind === 'image' && typeof obj.props.assetId === 'string') {
       enqueue(obj.props.assetId);
     }
+    // v2: internal-pasted bookmarks have all data present. No re-unfurl needed.
   }
 
   // Only switch tool + select when no gesture is active
@@ -274,6 +277,16 @@ function pasteExternalHtml(html: string): void {
   // Extract plain text for char limit check
   const plainText = cleaned.replace(/<[^>]*>/g, '');
   if (!plainText.trim()) return;
+
+  // URL detection — check if plain text starts with a URL
+  const urlResult = extractLeadingUrl(plainText);
+  if (urlResult) {
+    createBookmarkFromUrl(urlResult.url);
+    if (urlResult.remainder) {
+      pasteExternalText(urlResult.remainder);
+    }
+    return;
+  }
 
   if (plainText.length > PASTE_CHAR_LIMIT) {
     // Over limit — fall back to truncated plain text
@@ -400,10 +413,43 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number): voi
   }
 }
 
+// === URL Detection ===
+
+/**
+ * Check if text starts with a standalone URL (possibly followed by more text on new lines).
+ * Returns { url, remainder } if the first line is a valid URL, null otherwise.
+ */
+function extractLeadingUrl(text: string): { url: string; remainder: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const newlineIdx = trimmed.indexOf('\n');
+  const firstLine = newlineIdx === -1 ? trimmed : trimmed.slice(0, newlineIdx).trim();
+  const url = normalizeUrl(firstLine);
+  if (!url) return null;
+  const remainder = newlineIdx === -1 ? '' : trimmed.slice(newlineIdx + 1).trim();
+  return { url, remainder };
+}
+
+function createBookmarkFromUrl(url: string): void {
+  const [worldX, worldY] = getPasteTarget();
+  beginUnfurl(url, worldX, worldY);
+}
+
 // === External Text Paste ===
 
 function pasteExternalText(text: string): void {
   if (!text.trim()) return;
+
+  // URL detection — if text starts with a URL, create bookmark (+ paste remainder as text)
+  const urlResult = extractLeadingUrl(text);
+  if (urlResult) {
+    createBookmarkFromUrl(urlResult.url);
+    if (urlResult.remainder) {
+      // Paste the remainder as a separate text object
+      pasteExternalText(urlResult.remainder);
+    }
+    return;
+  }
 
   // Character limit
   const truncated = text.length > PASTE_CHAR_LIMIT ? text.slice(0, PASTE_CHAR_LIMIT) : text;

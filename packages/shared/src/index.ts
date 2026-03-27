@@ -35,10 +35,18 @@ export { ObjectSpatialIndex } from './spatial';
 export type { IndexEntry } from './spatial';
 
 // Export bbox utilities
-export { computeBBoxFor, computeConnectorBBoxFromPoints, bboxEquals, bboxToBounds } from './utils/bbox';
+export {
+  computeBBoxFor,
+  computeConnectorBBoxFromPoints,
+  bboxEquals,
+  bboxToBounds,
+} from './utils/bbox';
 
 // Export image validation
-export { validateImage, isSvg } from './utils/image-validation';
+export { validateImage, isSvg, parseImageDimensions } from './utils/image-validation';
+
+// Export URL utilities
+export { normalizeUrl, isValidHttpUrl, extractDomain } from './utils/url-utils';
 
 // Export object accessors
 export * from './accessors/object-accessors';

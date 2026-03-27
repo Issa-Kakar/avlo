@@ -35,6 +35,7 @@ export interface KindCounts {
   code: number;
   notes: number;
   images: number;
+  bookmarks: number;
   total: number;
 }
 
@@ -95,6 +96,7 @@ export const EMPTY_KIND_COUNTS: KindCounts = {
   code: 0,
   notes: 0,
   images: 0,
+  bookmarks: 0,
   total: 0,
 };
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
@@ -125,7 +127,8 @@ export function computeSelectionComposition(ids: string[]) {
     connectors = 0,
     code = 0,
     notes = 0,
-    images = 0;
+    images = 0,
+    bookmarks = 0;
   const selectedIdSet = new Set<string>();
 
   for (const id of ids) {
@@ -154,6 +157,9 @@ export function computeSelectionComposition(ids: string[]) {
       case 'image':
         images++;
         break;
+      case 'bookmark':
+        bookmarks++;
+        break;
     }
   }
 
@@ -165,6 +171,7 @@ export function computeSelectionComposition(ids: string[]) {
     code,
     notes,
     images,
+    bookmarks,
     total: selectedIdSet.size,
   };
 
@@ -175,7 +182,8 @@ export function computeSelectionComposition(ids: string[]) {
     (connectors > 0 ? 1 : 0) +
     (code > 0 ? 1 : 0) +
     (notes > 0 ? 1 : 0) +
-    (images > 0 ? 1 : 0);
+    (images > 0 ? 1 : 0) +
+    (bookmarks > 0 ? 1 : 0);
 
   let selectionKind: SelectionKind;
   if (nonZero === 0) selectionKind = 'none';
@@ -186,6 +194,7 @@ export function computeSelectionComposition(ids: string[]) {
   else if (code > 0) selectionKind = 'codeOnly';
   else if (notes > 0) selectionKind = 'notesOnly';
   else if (images > 0) selectionKind = 'imagesOnly';
+  else if (bookmarks > 0) selectionKind = 'bookmarksOnly';
   else selectionKind = 'connectorsOnly';
 
   const mode =
@@ -251,7 +260,13 @@ export function computeStyles(
   kind: SelectionKind,
   objectsById: ReadonlyMap<string, ObjectHandle>,
 ): SelectedStyles {
-  if (kind === 'none' || kind === 'mixed' || kind === 'imagesOnly' || ids.length === 0)
+  if (
+    kind === 'none' ||
+    kind === 'mixed' ||
+    kind === 'imagesOnly' ||
+    kind === 'bookmarksOnly' ||
+    ids.length === 0
+  )
     return EMPTY_STYLES;
 
   // Code blocks: track fontSize + language
@@ -445,7 +460,8 @@ export function computeUniformInlineStyles(
 
   for (const id of ids) {
     const handle = objectsById.get(id);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) continue;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note'))
+      continue;
     if (handle.kind === 'shape' && !hasLabel(handle.y)) continue;
     const u = getInlineStyles(id);
     if (!u) continue;

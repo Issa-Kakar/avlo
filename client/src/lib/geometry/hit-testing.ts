@@ -626,7 +626,8 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
 
-    case 'image': {
+    case 'image':
+    case 'bookmark': {
       const frame = getFrame(y);
       if (!frame) return false;
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
@@ -797,24 +798,20 @@ export function testObjectHit(
       return null;
     }
 
-    case 'image': {
+    case 'image':
+    case 'bookmark': {
       const frame = getFrame(y);
       if (!frame) return null;
       const [x, yPos, w, h] = frame;
 
-      if (
-        worldX >= x &&
-        worldX <= x + w &&
-        worldY >= yPos &&
-        worldY <= yPos + h
-      ) {
+      if (worldX >= x && worldX <= x + w && worldY >= yPos && worldY <= yPos + h) {
         return {
           id: handle.id,
-          kind: 'image',
+          kind: handle.kind,
           distance: 0,
           insideInterior: true,
           area: w * h,
-          isFilled: true, // Images are always opaque for hit testing
+          isFilled: true, // Always opaque for hit testing
         };
       }
       return null;

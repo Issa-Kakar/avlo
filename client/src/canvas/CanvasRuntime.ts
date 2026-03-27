@@ -47,6 +47,7 @@ import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
 import { clear as clearImageManager } from '@/lib/image/image-manager';
+import { cleanupOnRoomTeardown } from '@/lib/bookmark/bookmark-unfurl';
 import { createImageFromBlob } from '@/lib/image/image-actions';
 
 export interface RuntimeConfig {
@@ -187,9 +188,10 @@ export class CanvasRuntime {
     // - Clearing canvas element
     this.surfaceManager?.stop();
 
-    // Clear object cache + image manager
+    // Clear object cache + image manager + bookmark placeholders
     getObjectCacheInstance().clear();
     clearImageManager();
+    cleanupOnRoomTeardown();
 
     this.inputManager = null;
     this.surfaceManager = null;

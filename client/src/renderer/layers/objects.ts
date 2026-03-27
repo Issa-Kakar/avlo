@@ -58,6 +58,7 @@ import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 import { getAssetId } from '@avlo/shared';
 import { getBitmap } from '@/lib/image/image-manager';
+import { drawBookmark } from '@/lib/bookmark/bookmark-render';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -250,6 +251,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
       break;
     case 'note':
       drawStickyNote(ctx, handle);
+      break;
+    case 'bookmark':
+      drawBookmark(ctx, handle);
       break;
   }
 }
@@ -970,6 +974,12 @@ function renderSelectedObjectWithScaleTransform(
   // CASE 2: Stroke scaling (strokesOnly OR mixed+corner) = PF-per-frame
   if (isStroke) {
     drawScaledStrokePreview(ctx, handle, transform);
+    return;
+  }
+
+  // Bookmarks: no transform support yet — draw normally during transforms
+  if (handle.kind === 'bookmark') {
+    drawBookmark(ctx, handle);
     return;
   }
 

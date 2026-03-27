@@ -44,7 +44,9 @@ export type WorkerInbound =
   | { type: 'online' }
   | { type: 'drain-uploads' }
   | { type: 'cancel'; assetId: string }
-  | { type: 'clear' };
+  | { type: 'clear' }
+  | { type: 'unfurl'; objectId: string; url: string }
+  | { type: 'drain-unfurls' };
 
 export type WorkerOutbound =
   | {
@@ -59,6 +61,19 @@ export type WorkerOutbound =
     }
   | { type: 'bitmap'; assetId: string; bitmap: ImageBitmap; level: 0 | 1 | 2; gen: number }
   | { type: 'uploaded'; assetId: string }
+  | {
+      type: 'unfurled';
+      objectId: string;
+      data: {
+        title?: string;
+        description?: string;
+        ogImageAssetId?: string;
+        ogImageWidth?: number;
+        ogImageHeight?: number;
+        faviconAssetId?: string;
+      };
+    }
+  | { type: 'unfurl-failed'; objectId: string; permanent: boolean }
   | { type: 'error'; id?: string; assetId?: string; message: string; gen?: number };
 
 // ============================================================
@@ -66,8 +81,9 @@ export type WorkerOutbound =
 // ============================================================
 
 const DB_NAME = 'avlo-assets';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const UPLOADS_STORE = 'uploads';
+const UNFURLS_STORE = 'unfurls';
 
 interface UploadEntry {
   retries: number;
@@ -83,6 +99,7 @@ function openDB(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(UPLOADS_STORE)) db.createObjectStore(UPLOADS_STORE);
+      if (!db.objectStoreNames.contains(UNFURLS_STORE)) db.createObjectStore(UNFURLS_STORE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => {
@@ -127,6 +144,37 @@ async function removeUploadEntry(assetId: string): Promise<void> {
 
 async function getAllPendingUploadIds(): Promise<string[]> {
   const store = await tx(UPLOADS_STORE, 'readonly');
+  return idbOp<string[]>((s) => s.getAllKeys() as IDBRequest<string[]>)(store);
+}
+
+// ============================================================
+// IDB Layer (unfurl queue, primary only)
+// ============================================================
+
+interface UnfurlEntry {
+  url: string;
+  retries: number;
+  lastAttempt: number;
+}
+
+async function getUnfurlEntry(objectId: string): Promise<UnfurlEntry | null> {
+  const store = await tx(UNFURLS_STORE, 'readonly');
+  const entry = await idbOp<UnfurlEntry | undefined>((s) => s.get(objectId))(store);
+  return entry ?? null;
+}
+
+async function putUnfurlEntry(objectId: string, entry: UnfurlEntry): Promise<void> {
+  const store = await tx(UNFURLS_STORE, 'readwrite');
+  await idbOp<void>((s) => s.put(entry, objectId))(store);
+}
+
+async function removeUnfurlEntry(objectId: string): Promise<void> {
+  const store = await tx(UNFURLS_STORE, 'readwrite');
+  await idbOp<void>((s) => s.delete(objectId))(store);
+}
+
+async function getAllPendingUnfurlIds(): Promise<string[]> {
+  const store = await tx(UNFURLS_STORE, 'readonly');
   return idbOp<string[]>((s) => s.getAllKeys() as IDBRequest<string[]>)(store);
 }
 
@@ -333,6 +381,65 @@ async function drainUploads(): Promise<void> {
 }
 
 // ============================================================
+// Unfurl Queue (primary only)
+// ============================================================
+
+let unfurling = false;
+
+async function unfurlOne(objectId: string, entry: UnfurlEntry): Promise<void> {
+  try {
+    const resp = await fetch(`/api/unfurl?url=${encodeURIComponent(entry.url)}`);
+    if (resp.ok) {
+      const raw = (await resp.json()) as Record<string, unknown>;
+      // Strip unfurlStatus if server ever sends it (v1 compat)
+      delete raw.unfurlStatus;
+      delete raw.url;
+      delete raw.domain;
+      await removeUnfurlEntry(objectId);
+      post({ type: 'unfurled', objectId, data: raw as any });
+      return;
+    }
+    if (resp.status >= 400 && resp.status < 500) {
+      await removeUnfurlEntry(objectId);
+      post({ type: 'unfurl-failed', objectId, permanent: true });
+      return;
+    }
+    throw new Error(`unfurl ${resp.status}`);
+  } catch (err) {
+    console.warn('[image-worker] unfurl failed:', objectId, err);
+    // First transient failure: notify main thread to commit minimal bookmark
+    if (entry.retries === 0) {
+      post({ type: 'unfurl-failed', objectId, permanent: false });
+    }
+    await putUnfurlEntry(objectId, {
+      ...entry,
+      retries: entry.retries + 1,
+      lastAttempt: Date.now(),
+    });
+  }
+}
+
+async function drainUnfurls(): Promise<void> {
+  if (unfurling) return;
+  unfurling = true;
+  const ignoreBackoff = resetBackoff;
+  try {
+    const ids = await getAllPendingUnfurlIds();
+    for (const objectId of ids) {
+      const entry = await getUnfurlEntry(objectId);
+      if (!entry) continue;
+      if (!ignoreBackoff && entry.lastAttempt > 0) {
+        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, entry.retries), MAX_BACKOFF_MS);
+        if (Date.now() - entry.lastAttempt < delay) continue;
+      }
+      await unfurlOne(objectId, entry);
+    }
+  } finally {
+    unfurling = false;
+  }
+}
+
+// ============================================================
 // Message Handler
 // ============================================================
 
@@ -344,6 +451,7 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
       role = msg.role;
       if (role === 'primary') {
         setInterval(drainUploads, SAFETY_INTERVAL_MS);
+        setInterval(drainUnfurls, SAFETY_INTERVAL_MS);
       }
       break;
     }
@@ -467,12 +575,32 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
       if (role !== 'primary') break;
       resetBackoff = true;
       drainUploads();
+      drainUnfurls();
       break;
     }
 
     case 'drain-uploads': {
       if (role !== 'primary') break;
       drainUploads();
+      break;
+    }
+
+    case 'unfurl': {
+      if (role !== 'primary') break;
+      try {
+        const existing = await getUnfurlEntry(msg.objectId);
+        if (existing) return;
+        await putUnfurlEntry(msg.objectId, { url: msg.url, retries: 0, lastAttempt: 0 });
+        drainUnfurls();
+      } catch (err) {
+        console.warn('[image-worker] unfurl enqueue failed:', msg.objectId, err);
+      }
+      break;
+    }
+
+    case 'drain-unfurls': {
+      if (role !== 'primary') break;
+      drainUnfurls();
       break;
     }
   }

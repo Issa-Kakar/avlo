@@ -384,6 +384,43 @@ export function getNoteProps(y: Y.Map<unknown>): NoteProps | null {
 }
 
 // ============================================================================
+// BOOKMARK-SPECIFIC ACCESSORS
+// ============================================================================
+
+export interface BookmarkProps {
+  url: string;
+  domain: string;
+  frame: FrameTuple;
+  title?: string;
+  description?: string;
+  ogImageAssetId?: string;
+  ogImageWidth?: number;
+  ogImageHeight?: number;
+  faviconAssetId?: string;
+}
+
+export function getBookmarkProps(y: Y.Map<unknown>): BookmarkProps | null {
+  const url = y.get('url') as string | undefined;
+  const frame = y.get('frame') as FrameTuple | undefined;
+  if (!url || !frame) return null;
+  return {
+    url,
+    domain: (y.get('domain') as string | undefined) ?? '',
+    frame,
+    title: y.get('title') as string | undefined,
+    description: y.get('description') as string | undefined,
+    ogImageAssetId: y.get('ogImageAssetId') as string | undefined,
+    ogImageWidth: y.get('ogImageWidth') as number | undefined,
+    ogImageHeight: y.get('ogImageHeight') as number | undefined,
+    faviconAssetId: y.get('faviconAssetId') as string | undefined,
+  };
+}
+
+export function getBookmarkUrl(y: Y.Map<unknown>): string | null {
+  return (y.get('url') as string | undefined) ?? null;
+}
+
+// ============================================================================
 // STROKE-SPECIFIC ACCESSORS
 // ============================================================================
 
