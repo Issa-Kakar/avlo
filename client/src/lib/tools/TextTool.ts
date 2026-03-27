@@ -55,6 +55,7 @@ import {
   NOTE_FILL_COLOR,
   getNotePadding,
   getNoteContentWidth,
+  computeNoteAutoSize,
 } from '@/lib/text/text-system';
 import { hitTestVisibleText, hitTestVisibleNote } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -84,6 +85,10 @@ export class TextTool implements PointerTool {
   objectId: string | null = null; // public — mirrors textEditingId
 
   justClosedLabelId: string | null = null;
+
+  // Auto font size state
+  private isAutoSizeNote = false;
+  private autoFontSize = 0;
 
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
@@ -370,6 +375,14 @@ export class TextTool implements PointerTool {
       container.style.maxWidth = `${contentWidth * scale}px`;
       container.dataset.widthMode = 'note';
       container.style.setProperty('--text-color', '#1a1a1a');
+
+      // Auto-size: override fontSize/lineHeight, constrain height
+      this.isAutoSizeNote = true;
+      this.autoFontSize = computeNoteAutoSize(fragment!);
+      const sf = this.autoFontSize * scale;
+      container.style.fontSize = `${sf}px`;
+      container.style.lineHeight = `${sf * FONT_FAMILIES['Grandstander'].lineHeightMultiplier}px`;
+      container.style.maxHeight = `${maxContentH * scale}px`;
     } else {
       // Text object: origin-based positioning
       const props = getTextProps(handle.y)!;
@@ -423,8 +436,11 @@ export class TextTool implements PointerTool {
         syncInlineStylesToStore(ed);
         useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
       },
-      onTransaction: ({ editor: ed }) => {
+      onTransaction: ({ editor: ed, transaction }) => {
         syncInlineStylesToStore(ed);
+        if (this.isAutoSizeNote && transaction.docChanged) {
+          this.updateAutoSize();
+        }
       },
     });
 
@@ -533,7 +549,7 @@ export class TextTool implements PointerTool {
       const props = getNoteProps(handle.y);
       if (!props) return;
       const { origin, fontSize, fontFamily, width: noteWidth, align, alignV } = props;
-      const sf = fontSize * scale;
+      const sf = (this.isAutoSizeNote ? this.autoFontSize : fontSize) * scale;
       const padding = getNotePadding(noteWidth);
       const contentWidth = getNoteContentWidth(noteWidth);
       const maxContentH = contentWidth;
@@ -559,6 +575,9 @@ export class TextTool implements PointerTool {
       this.container.style.left = `${sx}px`;
       this.container.style.top = `${sy}px`;
       this.container.style.maxWidth = `${contentWidth * scale}px`;
+      if (this.isAutoSizeNote) {
+        this.container.style.maxHeight = `${maxContentH * scale}px`;
+      }
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
@@ -631,6 +650,8 @@ export class TextTool implements PointerTool {
     this.container = null;
     this.editor = null;
     this.objectId = null;
+    this.isAutoSizeNote = false;
+    this.autoFontSize = 0;
 
     useSelectionStore.getState().endTextEditing();
     // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
@@ -691,6 +712,24 @@ export class TextTool implements PointerTool {
   // =========================================================================
   // Private Helpers
   // =========================================================================
+
+  private updateAutoSize(): void {
+    if (!this.container || !this.objectId) return;
+    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    if (!handle) return;
+    const fragment = getContent(handle.y);
+    if (!fragment) return;
+
+    const newSize = computeNoteAutoSize(fragment);
+    if (newSize === this.autoFontSize) return; // no change — skip CSS write
+    this.autoFontSize = newSize;
+    console.log('updateAutoSize', newSize);
+
+    const scale = useCameraStore.getState().scale;
+    const sf = newSize * scale;
+    this.container.style.fontSize = `${sf}px`;
+    this.container.style.lineHeight = `${sf * FONT_FAMILIES['Grandstander'].lineHeightMultiplier}px`;
+  }
 
   private resetGesture(): void {
     this.gestureActive = false;

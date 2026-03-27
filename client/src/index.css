@@ -113,7 +113,7 @@ html {
 }
 
 .tiptap[data-width-mode='note'] {
-  overflow: visible;
+  overflow: hidden;
   text-align: var(--text-align, center);
 }
 .tiptap[data-width-mode='note'] p {

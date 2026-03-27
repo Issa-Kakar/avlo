@@ -77,6 +77,14 @@ export function getNoteContentOffsetY(
   return alignV === 'middle' ? space / 2 : space;
 }
 
+// --- Auto font size ---
+
+export const NOTE_FONT_STEPS: number[] = [
+  72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20,
+  18, 16, 15, 14, 13, 12, 11, 10, 9, 8,
+];
+const NOTE_PHASE1_FLOOR = 18;
+
 // =============================================================================
 // §1  TYPES — Pipeline data model
 // =============================================================================
@@ -786,6 +794,219 @@ export function layoutMeasuredContent(
 }
 
 // =============================================================================
+// §5b AUTO FONT SIZE — flowCheck + computeNoteAutoSize
+// =============================================================================
+
+type FlowResult = 'fits' | 'heightOverflow' | { wordTooWide: number };
+
+/**
+ * Lightweight layout simulation mirroring layoutMeasuredContent's flow logic.
+ * Counts lines instead of building runs. Bails early on overflow.
+ * Phase 1: rejects oversized words. Phase 2: char-breaks them via sliceTextToFit.
+ * All widths are in 100px measurement space.
+ */
+function flowCheck(
+  measured: MeasuredContent,
+  maxW: number,
+  maxLines: number,
+  phase: 1 | 2,
+): FlowResult {
+  let lineCount = 0;
+
+  for (const para of measured.paragraphs) {
+    if (para.tokens.length === 0) {
+      lineCount++;
+      if (lineCount > maxLines) return 'heightOverflow';
+      continue;
+    }
+
+    let curW = 0;
+    let hasInk = false;
+    let pendingW = 0;
+
+    for (const tok of para.tokens) {
+      if (tok.kind === 'space') {
+        if (!hasInk) curW += tok.advanceWidth; // leading ws: commit
+        else pendingW += tok.advanceWidth; // inter-word: buffer
+        continue;
+      }
+
+      // ── WORD TOKEN ──
+      const wordW = tok.advanceWidth;
+
+      // Oversized: word wider than a full empty line
+      if (wordW > maxW) {
+        if (phase === 1) return { wordTooWide: wordW };
+
+        // Phase 2: char-break — commit pending, start break from current position
+        // (matches layoutMeasuredContent: first chars share the line with prev content)
+        if (hasInk) {
+          curW += pendingW;
+          pendingW = 0;
+        }
+
+        // Walk segments, count lines via sliceTextToFit
+        for (const seg of tok.segments) {
+          let text = seg.text;
+          while (text.length > 0) {
+            let remaining = maxW - curW;
+            if (remaining <= 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              remaining = maxW;
+            }
+            const { tail, headW } = sliceTextToFit(seg.font, text, remaining);
+            // Forward-progress: forced grapheme overflows non-empty line
+            if (headW > remaining && curW > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              continue; // retry on fresh line
+            }
+            curW += headW;
+            text = tail;
+            if (text.length > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+            }
+          }
+        }
+        hasInk = true;
+        pendingW = 0;
+        continue;
+      }
+
+      // ── NORMAL WORD (fits on empty line) ──
+      if (hasInk) {
+        const testW = curW + pendingW + wordW;
+        if (testW <= maxW) {
+          curW = testW;
+          pendingW = 0;
+        } else {
+          // Wrap: push current line, start new with this word
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = wordW;
+          pendingW = 0;
+        }
+      } else {
+        // First word on line (may have leading ws accumulated in curW)
+        if (curW > 0 && curW + wordW > maxW) {
+          // Leading ws pushed over — push that line
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = wordW;
+        } else {
+          curW += wordW;
+        }
+        hasInk = true;
+        pendingW = 0;
+      }
+    }
+
+    // ── END OF PARAGRAPH ──
+    lineCount++;
+    if (lineCount > maxLines) return 'heightOverflow';
+  }
+
+  return 'fits';
+}
+
+/**
+ * Compute optimal font size for a sticky note's Y.XmlFragment.
+ * Two-phase search: Phase 1 (no char-breaking, floor 18px) then Phase 2 (char-breaking from top).
+ * Uses 100px measurement space with scaled container widths — zero per-token multiplication.
+ */
+export function computeNoteAutoSize(fragment: Y.XmlFragment): number {
+  const tokenized = parseAndTokenize(fragment);
+  const measured = measureTokenizedContent(tokenized, 100, 'Grandstander');
+
+  const contentWidth = getNoteContentWidth(NOTE_WIDTH); // 256
+  const contentHeight = contentWidth; // square
+  const lhMult = FONT_FAMILIES['Grandstander'].lineHeightMultiplier;
+  const lineH100 = 100 * lhMult; // 130
+  const paraCount = Math.max(1, measured.paragraphs.length);
+
+  // Max word width at 100px — determines width constraint
+  let maxWordW100 = 0;
+  for (const p of measured.paragraphs) {
+    for (const tok of p.tokens) {
+      if (tok.kind === 'word' && tok.advanceWidth > maxWordW100)
+        maxWordW100 = tok.advanceWidth;
+    }
+  }
+
+  // Educated starting index: skip steps that can't possibly fit
+  let startIdx = 0;
+  if (maxWordW100 > 0) {
+    const widthMax = (contentWidth * 100) / maxWordW100;
+    const heightMax = contentHeight / (paraCount * lhMult);
+    const maxSize = Math.min(widthMax, heightMax);
+    for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
+      if (NOTE_FONT_STEPS[i] <= maxSize) {
+        startIdx = i;
+        break;
+      }
+    }
+  }
+
+  // ── Phase 1: no character breaking ──
+  let phase2 = false;
+  for (let i = startIdx; i < NOTE_FONT_STEPS.length; i++) {
+    const step = NOTE_FONT_STEPS[i];
+    if (step < NOTE_PHASE1_FLOOR) {
+      phase2 = true;
+      break;
+    }
+
+    const scale = step / 100;
+    const maxLines = Math.floor(contentHeight / (lineH100 * scale));
+    if (maxLines < 1 || paraCount > maxLines) continue;
+
+    const maxW100 = contentWidth / scale;
+    const result = flowCheck(measured, maxW100, maxLines, 1);
+
+    if (result === 'fits') return step;
+    if (result === 'heightOverflow') continue;
+
+    // wordTooWide — educated jump: solve for step where word fits one line
+    const w100 = (result as { wordTooWide: number }).wordTooWide;
+    const needed = (contentWidth * 100) / w100;
+    let jumped = false;
+    for (let j = i + 1; j < NOTE_FONT_STEPS.length; j++) {
+      if (NOTE_FONT_STEPS[j] <= needed) {
+        if (NOTE_FONT_STEPS[j] < NOTE_PHASE1_FLOOR) {
+          phase2 = true;
+          break;
+        }
+        i = j - 1; // loop will i++ to reach j
+        jumped = true;
+        break;
+      }
+    }
+    if (phase2 || !jumped) {
+      phase2 = true;
+      break;
+    }
+  }
+
+  // ── Phase 2: character breaking enabled — restart from top ──
+  if (phase2) {
+    for (const step of NOTE_FONT_STEPS) {
+      const scale = step / 100;
+      const maxLines = Math.floor(contentHeight / (lineH100 * scale));
+      if (maxLines < 1 || paraCount > maxLines) continue;
+      const maxW100 = contentWidth / scale;
+      if (flowCheck(measured, maxW100, maxLines, 2) === 'fits') return step;
+    }
+  }
+
+  return NOTE_FONT_STEPS[NOTE_FONT_STEPS.length - 1]; // fallback: smallest
+}
+
+// =============================================================================
 // §6  CACHE — Three-tier orchestration (tokenize → measure → layout)
 // =============================================================================
 
@@ -1309,6 +1530,7 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
 }
 
 export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
+  console.log('computeNoteBBox');
   const { content, origin, fontSize, fontFamily, width } = props;
   const contentWidth = getNoteContentWidth(width);
   const layout = textLayoutCache.getLayout(objectId, content, fontSize, fontFamily, contentWidth);
