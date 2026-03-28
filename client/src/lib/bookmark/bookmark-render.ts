@@ -21,7 +21,8 @@ const DESC_MAX_LINES = 3;
 const FAVICON_SIZE = 20;
 const CARD_FILL = '#FFFFFF';
 const CARD_RADIUS = 8;
-const OPEN_BTN_SIZE = 28;
+const OPEN_BTN_W = 72;
+const OPEN_BTN_H = 28;
 const OPEN_BTN_RADIUS = 6;
 const OPEN_BTN_MARGIN = 10;
 
@@ -32,7 +33,6 @@ const OPEN_BTN_MARGIN = 10;
 interface BookmarkLayout {
   titleLines: string[];
   descLines: string[];
-  urlLines: string[];
   totalHeight: number;
   hasOgImage: boolean;
   ogDisplayH: number;
@@ -97,7 +97,7 @@ function wrapText(
 // ---------------------------------------------------------------------------
 
 function ogDisplayHeight(ogW: number, ogH: number): number {
-  if (ogW <= 0 || ogH <= 0) return 0;
+  if (ogW <= 0 || ogH <= 0) return MIN_OG_H;
   const natural = BOOKMARK_WIDTH * (ogH / ogW);
   return Math.min(Math.max(natural, MIN_OG_H), MAX_OG_H);
 }
@@ -113,8 +113,8 @@ function getLayout(
   const cached = layoutCache.get(id);
   if (cached) return cached;
 
-  const hasOgImage = !!props.ogImageAssetId && (props.ogImageWidth ?? 0) > 0;
-  const ogH = hasOgImage ? ogDisplayHeight(props.ogImageWidth!, props.ogImageHeight!) : 0;
+  const hasOgImage = !!props.ogImageAssetId;
+  const ogH = hasOgImage ? ogDisplayHeight(props.ogImageWidth ?? 0, props.ogImageHeight ?? 0) : 0;
   const textWidth = BOOKMARK_WIDTH - CARD_PADDING * 2;
 
   measureCtx.font = `bold ${TITLE_FONT_SIZE}px Inter, sans-serif`;
@@ -123,15 +123,11 @@ function getLayout(
   measureCtx.font = `${DESC_FONT_SIZE}px Inter, sans-serif`;
   const descLines = wrapText(measureCtx, props.description ?? '', textWidth, DESC_MAX_LINES);
 
-  measureCtx.font = `${TITLE_FONT_SIZE}px Inter, sans-serif`;
-  const urlLines = !props.title && !hasOgImage ? wrapText(measureCtx, props.url, textWidth, 2) : [];
-
-  const totalHeight = computeLayoutHeight(hasOgImage, ogH, titleLines, descLines, urlLines);
+  const totalHeight = computeLayoutHeight(hasOgImage, ogH, titleLines, descLines);
 
   const layout: BookmarkLayout = {
     titleLines,
     descLines,
-    urlLines,
     totalHeight,
     hasOgImage,
     ogDisplayH: ogH,
@@ -145,7 +141,6 @@ function computeLayoutHeight(
   ogH: number,
   titleLines: string[],
   descLines: string[],
-  urlLines: string[],
 ): number {
   const titleH = titleLines.length * TITLE_LINE_H;
   const descH = descLines.length * DESC_LINE_H;
@@ -157,9 +152,8 @@ function computeLayoutHeight(
   if (titleLines.length > 0) {
     return CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING;
   }
-  // Minimal: URL lines + domain
-  const urlH = urlLines.length * TITLE_LINE_H;
-  return CARD_PADDING + urlH + domainLineH + CARD_PADDING;
+  // Defensive minimum
+  return CARD_PADDING + domainLineH + CARD_PADDING;
 }
 
 /** Returns card height based on bookmark metadata. Works with partial unfurl data (no id/cache). */
@@ -170,8 +164,8 @@ export function computeBookmarkHeight(data: {
   ogImageWidth?: number;
   ogImageHeight?: number;
 }): number {
-  const hasOgImage = !!data.ogImageAssetId && (data.ogImageWidth ?? 0) > 0;
-  const ogH = hasOgImage ? ogDisplayHeight(data.ogImageWidth!, data.ogImageHeight!) : 0;
+  const hasOgImage = !!data.ogImageAssetId;
+  const ogH = hasOgImage ? ogDisplayHeight(data.ogImageWidth ?? 0, data.ogImageHeight ?? 0) : 0;
   const textWidth = BOOKMARK_WIDTH - CARD_PADDING * 2;
 
   measureCtx.font = `bold ${TITLE_FONT_SIZE}px Inter, sans-serif`;
@@ -186,8 +180,8 @@ export function computeBookmarkHeight(data: {
 
   if (hasOgImage) return ogH + CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING;
   if (titleLines.length > 0) return CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING;
-  // Minimal
-  return CARD_PADDING + TITLE_LINE_H * 2 + domainLineH + CARD_PADDING;
+  // Defensive minimum
+  return CARD_PADDING + domainLineH + CARD_PADDING;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +200,7 @@ export function clearBookmarkLayouts(): void {
 // Open-link icon (external arrow, ~10x10wu)
 // ---------------------------------------------------------------------------
 
-const openIconPath = new Path2D('M2 1h7v7M9 1L1 9');
+const boxArrowPath = new Path2D('M1 10H10V8 M1 10V1H3 M4 7L10 1M7 1H10V4');
 
 // ---------------------------------------------------------------------------
 // "Open" button drawing
@@ -214,25 +208,31 @@ const openIconPath = new Path2D('M2 1h7v7M9 1L1 9');
 
 function drawOpenButton(ctx: CanvasRenderingContext2D, bx: number, by: number): void {
   // Background rounded rect
-  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillStyle = '#F5F5F5';
   ctx.beginPath();
-  ctx.roundRect(bx, by, OPEN_BTN_SIZE, OPEN_BTN_SIZE, OPEN_BTN_RADIUS);
+  ctx.roundRect(bx, by, OPEN_BTN_W, OPEN_BTN_H, OPEN_BTN_RADIUS);
   ctx.fill();
   ctx.strokeStyle = '#e5e7eb';
   ctx.lineWidth = 1;
   ctx.stroke();
 
-  // Arrow icon centered in button
-  const iconSize = 10;
-  const iconX = bx + (OPEN_BTN_SIZE - iconSize) / 2;
-  const iconY = by + (OPEN_BTN_SIZE - iconSize) / 2;
+  // "Open" text on left
+  ctx.font = '12px Inter, sans-serif';
+  ctx.fillStyle = '#374151';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('Open', bx + 12, by + OPEN_BTN_H / 2);
+
+  // Box-arrow icon on right
+  const iconSize = 11;
+  const iconX = bx + OPEN_BTN_W - iconSize - 10;
+  const iconY = by + (OPEN_BTN_H - iconSize) / 2;
   ctx.save();
   ctx.translate(iconX, iconY);
   ctx.strokeStyle = '#374151';
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.stroke(openIconPath);
+  ctx.stroke(boxArrowPath);
   ctx.restore();
 }
 
@@ -253,8 +253,8 @@ export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle
   // 1. Shadow + body
   renderNoteBody(ctx, x, y, w, h, CARD_FILL);
 
-  // --- Full card (has OG image + title) ---
-  if (layout.hasOgImage && layout.titleLines.length > 0) {
+  // --- Full card (has OG image) ---
+  if (layout.hasOgImage) {
     drawFullCard(ctx, x, y, w, layout, props);
     return;
   }
@@ -262,11 +262,7 @@ export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle
   // --- Text card (has title, no OG image) ---
   if (layout.titleLines.length > 0) {
     drawTextCard(ctx, x, y, w, layout, props);
-    return;
   }
-
-  // --- Minimal card (only url + domain) ---
-  drawMinimalCard(ctx, x, y, w, layout, props);
 }
 
 // ---------------------------------------------------------------------------
@@ -316,8 +312,8 @@ function drawFullCard(
     // "Open" button overlaid on image bottom-right
     drawOpenButton(
       ctx,
-      x + w - OPEN_BTN_SIZE - OPEN_BTN_MARGIN,
-      y + displayH - OPEN_BTN_SIZE - OPEN_BTN_MARGIN,
+      x + w - OPEN_BTN_W - OPEN_BTN_MARGIN,
+      y + displayH - OPEN_BTN_H - OPEN_BTN_MARGIN,
     );
 
     cursorY += displayH;
@@ -363,35 +359,6 @@ function drawTextCard(
   cursorY += layout.descLines.length * DESC_LINE_H;
 
   // Bottom row: favicon + domain + "Open" button on right
-  drawBottomRow(ctx, textX, cursorY + 4, textWidth, props, true);
-}
-
-// ---------------------------------------------------------------------------
-// Minimal card layout
-// ---------------------------------------------------------------------------
-
-function drawMinimalCard(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  layout: BookmarkLayout,
-  props: NonNullable<ReturnType<typeof getBookmarkProps>>,
-): void {
-  let cursorY = y + CARD_PADDING;
-  const textX = x + CARD_PADDING;
-  const textWidth = w - CARD_PADDING * 2;
-
-  // URL text
-  ctx.font = `${TITLE_FONT_SIZE}px Inter, sans-serif`;
-  ctx.fillStyle = '#1a1a1a';
-  ctx.textBaseline = 'top';
-  for (const line of layout.urlLines) {
-    ctx.fillText(line, textX, cursorY);
-    cursorY += TITLE_LINE_H;
-  }
-
-  // Domain + "Open" button
   drawBottomRow(ctx, textX, cursorY + 4, textWidth, props, true);
 }
 
@@ -455,8 +422,8 @@ function drawBottomRow(
   if (showOpenButton) {
     drawOpenButton(
       ctx,
-      textX + textWidth - OPEN_BTN_SIZE,
-      domainY + (FAVICON_SIZE - OPEN_BTN_SIZE) / 2,
+      textX + textWidth - OPEN_BTN_W,
+      domainY + (FAVICON_SIZE - OPEN_BTN_H) / 2,
     );
   }
 }

@@ -12,6 +12,8 @@ export function normalizeUrl(raw: string): string | null {
     return null;
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const host = url.hostname;
+  if (!host.includes('.') && host !== 'localhost' && host !== '[::1]') return null;
   // Lowercase host, strip fragment, strip trailing slash on path
   url.hash = '';
   let normalized = url.href;

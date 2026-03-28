@@ -72,7 +72,10 @@ async function fetchAndStoreImage(
       headers: { 'User-Agent': UA },
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
-    if (!res.ok || !res.body) return null;
+    if (!res.ok || !res.body) {
+      console.warn('[unfurl] image fetch failed:', imageUrl, res.status);
+      return null;
+    }
 
     // Read with size guard
     const reader = res.body.getReader();
@@ -83,6 +86,7 @@ async function fetchAndStoreImage(
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
+        console.warn('[unfurl] image too large:', imageUrl, total);
         await reader.cancel();
         return null;
       }
@@ -98,9 +102,13 @@ async function fetchAndStoreImage(
     }
 
     const { valid, mimeType } = validateImage(bytes);
-    if (!valid) return null;
+    if (!valid) {
+      console.warn('[unfurl] image validation failed:', imageUrl);
+      return null;
+    }
 
     const dims = parseImageDimensions(bytes, mimeType);
+    console.warn('[unfurl] image dims:', imageUrl, dims.width, 'x', dims.height);
     const assetId = await sha256Hex(bytes);
 
     // Content-addressed dedup
@@ -110,7 +118,8 @@ async function fetchAndStoreImage(
       httpMetadata: { contentType: mimeType },
     });
     return { assetId, width: dims.width, height: dims.height };
-  } catch {
+  } catch (err) {
+    console.warn('[unfurl] image fetch error:', imageUrl, err);
     return null;
   }
 }
@@ -127,6 +136,7 @@ function resolveUrl(href: string | null | undefined, pageUrl: string): string | 
 // --- Handler ---
 
 export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) => {
+  console.warn('[unfurl] request:', url);
   const domain = extractDomain(url);
 
   // --- Edge cache check ---
@@ -149,12 +159,14 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
       },
       signal: AbortSignal.timeout(FETCH_TIMEOUT),
     });
-  } catch {
-    return jsonCached(c, cache, cacheKey, { url, domain });
+  } catch (err) {
+    console.warn('[unfurl] page fetch error:', url, err);
+    return c.body(null, 502);
   }
 
   if (!pageRes.ok) {
-    return jsonCached(c, cache, cacheKey, { url, domain });
+    console.warn('[unfurl] page fetch non-OK:', url, pageRes.status);
+    return c.body(null, 502);
   }
 
   const ct = pageRes.headers.get('content-type') ?? '';
@@ -162,20 +174,21 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Direct image URL handling ---
   if (ct.startsWith('image/')) {
     const imageResult = await fetchAndStoreImage(c.env.ASSETS, url, OG_IMAGE_MAX);
-    const data: Record<string, string | number> = { url, domain };
-    if (imageResult) {
-      // Use filename or URL path as title
-      try {
-        const pathname = new URL(url).pathname;
-        const filename = pathname.split('/').pop() || '';
-        if (filename) data.title = decodeURIComponent(filename);
-      } catch {
-        /* no title */
-      }
-      data.ogImageAssetId = imageResult.assetId;
-      data.ogImageWidth = imageResult.width;
-      data.ogImageHeight = imageResult.height;
+    if (!imageResult) {
+      console.warn('[unfurl] direct image failed to store:', url);
+      return c.body(null, 204);
     }
+    const data: Record<string, string | number> = { url, domain };
+    try {
+      const pathname = new URL(url).pathname;
+      const filename = pathname.split('/').pop() || '';
+      if (filename) data.title = decodeURIComponent(filename);
+    } catch {
+      /* no title */
+    }
+    data.ogImageAssetId = imageResult.assetId;
+    data.ogImageWidth = imageResult.width;
+    data.ogImageHeight = imageResult.height;
     return jsonCached(c, cache, cacheKey, data);
   }
 
@@ -185,7 +198,8 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     !ct.includes('application/xhtml+xml') &&
     !ct.includes('application/xml')
   ) {
-    return jsonCached(c, cache, cacheKey, { url, domain });
+    console.warn('[unfurl] non-HTML content type:', url, ct);
+    return c.body(null, 204);
   }
 
   // --- HTMLRewriter parse ---
@@ -208,16 +222,17 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
         const property = el.getAttribute('property');
         const name = el.getAttribute('name');
         const content = el.getAttribute('content');
-        if (!content) return;
+        const key = property || name;
+        if (!content || !key) return;
 
-        if (property === 'og:title') ogTitle = content;
-        else if (property === 'og:description') ogDescription = content;
-        else if (property === 'og:image') ogImage = content;
-        else if (property === 'og:image:secure_url') ogImageSecure = content;
-        else if (name === 'twitter:title') twitterTitle = content;
-        else if (name === 'twitter:description') twitterDescription = content;
-        else if (name === 'twitter:image') twitterImage = content;
-        else if (name === 'description') metaDescription = content;
+        if (key === 'og:title') ogTitle = content;
+        else if (key === 'og:description') ogDescription = content;
+        else if (key === 'og:image') ogImage = content;
+        else if (key === 'og:image:secure_url') ogImageSecure = content;
+        else if (key === 'twitter:title') twitterTitle = content;
+        else if (key === 'twitter:description') twitterDescription = content;
+        else if (key === 'twitter:image') twitterImage = content;
+        else if (key === 'description') metaDescription = content;
       },
     })
     .on('title', {
@@ -257,6 +272,12 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
       : null,
   ]);
 
+  // --- Check for useful metadata ---
+  if (!title && !ogImageResult) {
+    console.warn('[unfurl] no useful metadata:', url);
+    return c.body(null, 204);
+  }
+
   // --- Build response ---
   const data: Record<string, string | number> = { url, domain };
   if (title) data.title = title;
@@ -267,6 +288,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
     data.ogImageHeight = ogImageResult.height;
   }
   if (faviconAssetId) data.faviconAssetId = faviconAssetId;
+  console.warn('[unfurl] success:', url, { title: !!title, ogImage: !!ogImageResult, favicon: !!faviconAssetId });
 
   return jsonCached(c, cache, cacheKey, data);
 };

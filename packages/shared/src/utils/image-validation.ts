@@ -31,6 +31,10 @@ export function validateImage(bytes: Uint8Array): { valid: boolean; mimeType: st
   if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
     return { valid: true, mimeType: 'image/gif' };
   }
+  // ICO: 00 00 01 00 (reserved=0, type=1 icon)
+  if (bytes[0] === 0x00 && bytes[1] === 0x00 && bytes[2] === 0x01 && bytes[3] === 0x00) {
+    return { valid: true, mimeType: 'image/x-icon' };
+  }
 
   return { valid: false, mimeType: '' };
 }
@@ -94,6 +98,13 @@ export function parseImageDimensions(
             height: ((b1 >> 6) | (b2 << 2) | ((b3 & 0xf) << 10)) + 1,
           };
         }
+        if (bytes[15] === 0x58) {
+          // VP8X (extended) — canvas size at bytes 24-29 (24-bit LE, +1)
+          if (bytes.length < 30) return none;
+          const w = (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)) + 1;
+          const h = (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)) + 1;
+          return { width: w, height: h };
+        }
       }
       return none;
     }
@@ -104,6 +115,15 @@ export function parseImageDimensions(
       return {
         width: bytes[6] | (bytes[7] << 8),
         height: bytes[8] | (bytes[9] << 8),
+      };
+    }
+
+    case 'image/x-icon': {
+      // First image entry at byte 6: width (0 = 256), height (0 = 256)
+      if (bytes.length < 8) return none;
+      return {
+        width: bytes[6] || 256,
+        height: bytes[7] || 256,
       };
     }
 

@@ -1,6 +1,6 @@
 # Bookmark Subsystem
 
-URL bookmarks — paste a URL, get a card with OG image, title, description, domain, and "Open" button. Fully offline-first: loading state is local-only via HTML placeholder; Y.Doc receives a single atomic transaction once unfurl completes (or a minimal fallback on failure). No `unfurlStatus` field — other clients never see pending/loading states.
+URL bookmarks — paste a URL, get a card with OG image, title, description, domain, and "Open" button. Offline paste creates a plain text object (never enters bookmark pipeline). Online failures also fall back to text objects. Loading state is local-only via HTML placeholder; Y.Doc receives a single atomic transaction once unfurl completes. No `unfurlStatus` field — other clients never see pending/loading states.
 
 ## Y.Doc Schema (v2)
 
@@ -26,9 +26,9 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 ```
 
 **No `unfurlStatus` field.** Bookmark state is determined by which optional fields are present:
-- Full card: `ogImageAssetId` + `ogImageWidth > 0` + `title`
+- Full card: `ogImageAssetId` present (with or without `title`)
 - Text card: `title` present, no OG image
-- Minimal card: only `url` + `domain` (unfurl failed or offline commit)
+- No minimal card — offline/failed unfurls create text objects instead of bookmarks
 
 **Height is data-driven** — computed from `computeBookmarkHeight(data)` using OG image aspect ratio, title line count, and description line count.
 
@@ -38,7 +38,7 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 
 | File | Purpose |
 |------|---------|
-| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()`, text wrapping, height computation, three card layouts |
+| `client/src/lib/bookmark/bookmark-render.ts` | Layout cache, `drawBookmark()`, text wrapping, height computation, two card layouts (full + text) |
 | `client/src/lib/bookmark/bookmark-unfurl.ts` | Lifecycle coordinator: pending map, worker commands, atomic Y.Doc writes, placeholder management |
 | `client/src/lib/bookmark/bookmark-placeholder.ts` | HTML loading elements: spinner + domain label, camera-tracked positioning |
 | `worker/src/unfurl.ts` | Cloudflare Worker: Zod validation, SSRF guard, HTMLRewriter parse, image fetch/R2 store, edge cache |
@@ -57,10 +57,11 @@ User pastes URL
   ↓
 clipboard-actions.ts: extractLeadingUrl(text)
   ├── First line is valid HTTP(S) URL → createBookmarkFromUrl(url)
+  │     ├── canCreateBookmark() false (offline) → pasteUrlAsText(url) → text object, done
   │     └── beginUnfurl(url, worldX, worldY)    [bookmark-unfurl.ts]
   │           ├── objectId = ulid()              (pre-generated, not yet in Y.Doc)
   │           ├── domain = extractDomain(url)
-  │           ├── pendingBookmarks.set(objectId, { url, domain, worldX, worldY, committed:false })
+  │           ├── pendingBookmarks.set(objectId, { url, domain, worldX, worldY })
   │           ├── createPlaceholder(objectId, domain, wx, wy)   [bookmark-placeholder.ts]
   │           │     └── HTML div: spinner + domain label, appended to editorHost
   │           ├── postToPrimary({ type: 'unfurl', objectId, url })
@@ -74,53 +75,44 @@ clipboard-actions.ts: extractLeadingUrl(text)
 
 ```
 image-worker.ts (primary only):
-  ├── IDB enqueue (UNFURLS_STORE, idempotent by objectId)
-  └── drainUnfurls() → unfurlOne()
+  └── unfurlDirect(objectId, url)  — single direct fetch, no IDB queue
         ├── GET /api/unfurl?url=<encoded>
         │     ↓
         │   worker/unfurl.ts:
         │     ├── Zod validation + SSRF guard (middleware via zValidator)
         │     ├── Edge cache check (SHA-256 of normalized URL)
         │     ├── Content-type branching:
-        │     │   ├── image/* → direct image storage, filename as title
+        │     │   ├── image/* → direct image storage, filename as title → 200
         │     │   ├── text/html | application/xhtml+xml | application/xml → HTMLRewriter
-        │     │   └── anything else → minimal { url, domain }
+        │     │   └── anything else → 204
         │     ├── HTMLRewriter: og:title, og:image, og:image:secure_url, twitter:*, <title>, favicon
+        │     │   (meta tags checked via `property || name` — handles both attribute styles)
         │     ├── parseImageDimensions(bytes, mimeType) → { width, height } from binary headers
         │     ├── Parallel image fetch → SHA-256 → R2 put (content-addressed dedup)
-        │     └── Return JSON { url, domain, title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? }
+        │     ├── Substance check: must have title OR ogImage → 200, else → 204
+        │     └── Response codes: 200 (success, cached 7d), 204 (no metadata), 400 (bad URL), 502 (fetch failed)
         │
-        ├── Success → post({ type: 'unfurled', objectId, data })
+        ├── 200 → post({ type: 'unfurled', objectId, data })
         │     ↓
         │   image-manager.ts → handleUnfurlResult(objectId, data)
         │     ↓
         │   bookmark-unfurl.ts:
-        │     Case A (pending, not committed — online happy path):
-        │       ├── computeBookmarkHeight(data) → frame centered on worldX, worldY
-        │       ├── Y.Doc mutate: SINGLE ATOMIC TRANSACTION with ALL fields
-        │       │   (id, kind, url, domain, frame, title, description,
-        │       │    ogImageAssetId, ogImageWidth, ogImageHeight, faviconAssetId,
-        │       │    ownerId, createdAt)
+        │     Pending entry found:
+        │       ├── Substance check: has title OR ogImageAssetId?
+        │       │   ├── No → pasteUrlAsText(url, worldX, worldY, objectId) → text object fallback
+        │       │   └── Yes → computeBookmarkHeight(data) → frame centered on worldX, worldY
+        │       │         └── Y.Doc mutate: SINGLE ATOMIC TRANSACTION with ALL fields
         │       ├── removePlaceholder(objectId)
         │       └── pendingBookmarks.delete(objectId)
         │
-        │     Case B (pending, committed — offline→online recovery):
-        │       ├── Y.Doc mutate: UPDATE existing bookmark — patch title, desc, assets, recompute height
-        │       └── pendingBookmarks.delete(objectId)
-        │
-        │     Case C (no pending entry — page refresh recovery):
+        │     No pending entry (page refresh recovery):
         │       └── Check Y.Doc for objectId → upgrade if found, discard if not
         │
-        ├── 4xx → post({ type: 'unfurl-failed', objectId, permanent: true })
-        │     ↓ handleUnfurlFailed(objectId, true) → pendingBookmarks.delete()
-        │
-        └── 5xx/network (first failure, retries === 0):
-              ├── post({ type: 'unfurl-failed', objectId, permanent: false })
-              │     ↓ handleUnfurlFailed(objectId, false):
-              │       ├── Y.Doc mutate: minimal bookmark (url + domain + frame)
-              │       ├── removePlaceholder(objectId)
-              │       └── pending.committed = true  (kept in map for Case B recovery)
-              └── IDB entry retries++ (worker retries with exponential backoff)
+        └── Non-200 (204, 4xx, 5xx, network error) → post({ type: 'unfurl-failed' })
+              ↓ handleUnfurlFailed(objectId):
+                ├── pasteUrlAsText(url, worldX, worldY, objectId) → text object fallback
+                ├── removePlaceholder(objectId)
+                └── pendingBookmarks.delete(objectId)
 ```
 
 ### Image Pipeline for Bookmark Assets
@@ -153,7 +145,7 @@ hydrateObjectsFromY()
   └── hydrateImages(): collect ogImageAssetId + faviconAssetId at level 0
 ```
 
-No main-thread scan for pending bookmarks — image worker IDB queue drains on init.
+No main-thread scan for pending bookmarks — unfurls are direct fetch (no IDB queue).
 
 ---
 
@@ -166,20 +158,20 @@ interface PendingBookmark {
   domain: string;
   worldX: number;          // Paste position
   worldY: number;
-  committed: boolean;      // true after minimal offline commit to Y.Doc
   objectId: string;        // Pre-generated ULID
 }
 
 const pendingBookmarks = new Map<string, PendingBookmark>();
 ```
 
-This Map exists only on the creating client's main thread. Other clients never see it. The three cases in `handleUnfurlResult` cover all lifecycle scenarios:
+This Map exists only on the creating client's main thread. Other clients never see it. Two cases in `handleUnfurlResult`:
 
-| Scenario | Case | Behavior |
-|----------|------|----------|
-| Online paste, unfurl succeeds | A | Single atomic Y.Doc write with full data |
-| Offline paste, later comes online | B | Minimal bookmark already committed → upgrade with metadata |
-| Page refresh while worker retrying | C | No pending entry → check Y.Doc by objectId → upgrade if found |
+| Scenario | Behavior |
+|----------|----------|
+| Online paste, unfurl succeeds with substance | Single atomic Y.Doc write with full data |
+| Online paste, unfurl returns empty/fails | `pasteUrlAsText()` → text object fallback |
+| Offline paste | Never enters pipeline — `canCreateBookmark()` returns false → text object immediately |
+| Page refresh with stale IDB entry | No pending entry → check Y.Doc by objectId → upgrade if found |
 
 ---
 
@@ -215,17 +207,17 @@ el.style.transform = `translate(${(wx - pan.x) * scale}px, ${(wy - pan.y) * scal
 
 ## Rendering (bookmark-render.ts)
 
-### Three Data-Driven Layouts
+### Two Data-Driven Layouts
 
-No pending/failed visual states — layout determined purely by which metadata fields are present.
+No pending/failed visual states — layout determined purely by which metadata fields are present. Offline/failed unfurls create text objects, not bookmarks.
 
-**Full Card** (has `ogImageAssetId` + `ogImageWidth > 0` + `title`):
+**Full Card** (has `ogImageAssetId`):
 ```
 ┌──────────────────────────────┐
 │          OG Image            │  ← Variable height (80–300wu, aspect-ratio-aware)
-│                    [Open →]  │  ← Button overlaid on image bottom-right
+│                  [Open ↗]    │  ← 72×28 button overlaid on image bottom-right
 ├──────────────────────────────┤
-│ Title (bold 15px)            │  ← Max 2 lines, ellipsis
+│ Title (bold 15px)            │  ← Max 2 lines, ellipsis (if present)
 │ Description (13px gray)      │  ← Max 3 lines, ellipsis (if present)
 │ 🔗 domain.com               │  ← Favicon 20×20 + domain text
 └──────────────────────────────┘
@@ -236,15 +228,7 @@ No pending/failed visual states — layout determined purely by which metadata f
 ┌──────────────────────────────┐
 │ Title (bold 15px)            │
 │ Description (13px gray)      │
-│ 🔗 domain.com      [Open →] │  ← Button right-aligned in domain row
-└──────────────────────────────┘
-```
-
-**Minimal Card** (only `url` + `domain`):
-```
-┌──────────────────────────────┐
-│ https://example.com/path     │  ← URL wrapped, max 2 lines
-│ 🔗 domain.com      [Open →] │  ← Button right-aligned in domain row
+│ 🔗 domain.com    [Open ↗]   │  ← 72×28 button right-aligned in domain row
 └──────────────────────────────┘
 ```
 
@@ -258,7 +242,7 @@ Aspect-ratio-aware display height:
 
 ```typescript
 function ogDisplayHeight(ogW: number, ogH: number): number {
-  if (ogW <= 0 || ogH <= 0) return 0;
+  if (ogW <= 0 || ogH <= 0) return MIN_OG_H;  // Defensive fallback
   const natural = BOOKMARK_WIDTH * (ogH / ogW);  // Scale to card width
   return Math.min(Math.max(natural, MIN_OG_H), MAX_OG_H);  // Clamp [80, 300]
 }
@@ -279,10 +263,10 @@ Placeholder `#f5f5f5` rect while bitmap loading.
 
 ### "Open" Button
 
-28×28wu rounded rect (radius 6px). Semi-transparent white background (`rgba(255,255,255,0.85)`) with 1px `#e5e7eb` border. 10×10 arrow icon centered: stroke `#374151`, lineWidth 2, round caps/joins, path `M2 1h7v7 M9 1L1 9`.
+72×28wu rounded rect (radius 6px). Solid off-white `#F5F5F5` background with 1px `#e5e7eb` border. Left: "Open" text (12px Inter, `#374151`). Right: box-arrow icon (open-corner box with diagonal arrow, stroke `#374151`, lineWidth 1.5, round caps/joins).
 
 - **Full card:** overlaid on OG image, `OPEN_BTN_MARGIN` (10wu) from bottom-right of image area
-- **Text/Minimal card:** right-aligned in domain row, vertically centered with favicon
+- **Text card:** right-aligned in domain row, vertically centered with favicon
 
 ### Favicon
 
@@ -294,9 +278,8 @@ Placeholder `#f5f5f5` rect while bitmap loading.
 interface BookmarkLayout {
   titleLines: string[];       // Wrapped title, max 2 lines
   descLines: string[];        // Wrapped description, max 3 lines
-  urlLines: string[];         // Wrapped URL (minimal card), max 2 lines
   totalHeight: number;        // Computed total card height
-  hasOgImage: boolean;        // OG image available
+  hasOgImage: boolean;        // OG image available (!!ogImageAssetId)
   ogDisplayH: number;         // Clamped display height [80, 300]
 }
 ```
@@ -312,9 +295,9 @@ Module-level `Map<string, BookmarkLayout>` keyed by object ID. Computed on first
 
 ```typescript
 // Height formulas:
-Full:    ogDisplayH + CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
-Text:    CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
-Minimal: CARD_PADDING + urlLinesH + domainLineH + CARD_PADDING
+Full:      ogDisplayH + CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
+Text:      CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
+Defensive: CARD_PADDING + domainLineH + CARD_PADDING
 
 // Where:
 titleH      = titleLines.length * TITLE_LINE_H   (20px per line)
@@ -370,50 +353,37 @@ Stream consumed with `.blob()` (not `.text()`).
 `fetchAndStoreImage(assets, imageUrl, maxBytes)` → `{ assetId, width, height } | null`
 
 - Streamed with chunked size guard (OG: 5MB, favicon: 500KB)
-- Validated via `validateImage(bytes)` → PNG/JPEG/WebP/GIF only
+- Validated via `validateImage(bytes)` → PNG/JPEG/WebP/GIF/ICO
 - Dimensions parsed from binary headers via `parseImageDimensions(bytes, mimeType)`:
   - PNG: IHDR bytes 16-23 (big-endian uint32)
   - JPEG: scan SOF0/SOF2 markers for width/height
-  - WebP: VP8/VP8L header parsing
+  - WebP: VP8 (lossy), VP8L (lossless), VP8X (extended — alpha/EXIF/animation)
   - GIF: bytes 6-9 (little-endian uint16)
+  - ICO: first image entry at bytes 6-7 (0 = 256)
 - Content-addressed: `SHA-256(bytes)` → `assetId`, `R2.head()` dedup before write
 
 ### Edge Cache
 
 Synthetic key: `https://unfurl.avlo.internal/<sha256(normalizedUrl)>`. TTL: 7 days (`Cache-Control: public, max-age=604800`). `waitUntil(cache.put(response.clone()))` — non-blocking.
 
-### Error Strategy
+### Response Codes
 
-- Invalid/private URL → Zod validation rejects (400)
-- Network error / timeout / non-HTML → 200 with minimal `{ url, domain }`
-- Image fetch failure → silently skip, return text metadata only
-- Never fails loudly for fetch issues
+| Status | Meaning | When | Cache? |
+|--------|---------|------|--------|
+| **200** | Unfurl succeeded with useful data | Has `title` OR `ogImageAssetId` | 7 days |
+| **204** | No useful metadata extracted | HTML parsed but no title/OG image, or non-HTML/non-image content | No |
+| **400** | Invalid URL | Zod validation / SSRF guard | No |
+| **502** | Upstream fetch failed | Network error, non-OK response, timeout | No |
+
+Only 200 responses are edge-cached. All logging prefixed with `[unfurl]`.
 
 ---
 
-## Image Worker Queue
+## Image Worker Unfurl
 
-Mirrors the upload queue pattern exactly:
+**Direct fetch, no IDB queue.** Offline pastes never enter the bookmark pipeline (`canCreateBookmark()` guard), so there's nothing to retry. All failures are final — create a text object.
 
-| Aspect | Upload Queue | Unfurl Queue |
-|--------|-------------|--------------|
-| IDB Store | `uploads` | `unfurls` |
-| Entry | `{ retries, lastAttempt }` | `{ url, retries, lastAttempt }` |
-| Key | assetId | objectId |
-| Process | `uploadOne()` | `unfurlOne()` |
-| Drain | `drainUploads()` | `drainUnfurls()` |
-| Guard | `uploading` boolean | `unfurling` boolean |
-| Safety interval | 30s | 30s |
-| Backoff | `1000 * 2^retries`, max 60s | Same |
-| Permanent fail | 4xx → remove entry | 4xx → remove + notify main (`permanent: true`) |
-| Transient fail | 5xx/network → increment retries | Same + first-failure notify (`permanent: false`) |
-| Online reset | `resetBackoff` flag | Same (shared flag) |
-
-**Primary worker only.** Non-primary workers ignore unfurl messages.
-
-**First-failure notify (v2):** On first transient failure (`entry.retries === 0`), worker posts `{ type: 'unfurl-failed', objectId, permanent: false }` to main thread before incrementing retries. This triggers minimal bookmark commit + placeholder removal — user sees a card immediately instead of an indefinite spinner. Subsequent retries are silent; if one succeeds, `handleUnfurlResult` Case B upgrades the minimal bookmark.
-
-**Data stripping:** Worker strips `unfurlStatus`, `url`, `domain` from server response before posting to main thread (server may include them, but they're already known client-side or obsolete).
+`unfurlDirect(objectId, url)` in `image-worker.ts` (primary only): single fetch to `/api/unfurl`, posts `'unfurled'` on 200 or `'unfurl-failed'` on any other status/error. Strips `url`/`domain` from server response (already known client-side).
 
 ---
 
@@ -423,12 +393,13 @@ Mirrors the upload queue pattern exactly:
 
 Checks if first line of pasted text is a valid HTTP(S) URL via `normalizeUrl()`. Returns `{ url, remainder }` or `null`.
 
-- Single URL → bookmark only
-- URL + newline + text → bookmark + text object (split)
+- Single URL → bookmark (online) or text object (offline)
+- URL + newline + text → bookmark/text + text object (split)
 - Multi-word text → standard text paste
 - `ftp://`, `file://` → standard text paste
+- Hostname without `.` (e.g. `http://forum`) → rejected by `normalizeUrl()`, standard text paste
 
-Both `pasteExternalText()` and `pasteExternalHtml()` check `extractLeadingUrl()` first.
+Both `pasteExternalText()` and `pasteExternalHtml()` check `extractLeadingUrl()` first. `createBookmarkFromUrl()` checks `canCreateBookmark()` (offline guard) before entering the unfurl pipeline; offline pastes call `pasteUrlAsText()` directly.
 
 ### Internal Paste (Copy/Paste Between Clients)
 
@@ -498,7 +469,8 @@ DESC_MAX_LINES    = 3
 FAVICON_SIZE      = 20        20x20 (was 16 in v1)
 CARD_FILL         = '#FFFFFF'
 CARD_RADIUS       = 8
-OPEN_BTN_SIZE     = 28        Open button dimensions
+OPEN_BTN_W        = 72        Open button width
+OPEN_BTN_H        = 28        Open button height
 OPEN_BTN_RADIUS   = 6         Open button border radius
 OPEN_BTN_MARGIN   = 10        Margin from card edges
 PLACEHOLDER_W     = 360       HTML placeholder width
@@ -511,15 +483,14 @@ PLACEHOLDER_H     = 56        HTML placeholder height
 
 | Scenario | Handling |
 |----------|----------|
-| **Online paste** | HTML placeholder → worker fetch → atomic Y.Doc commit with all data → placeholder removed |
-| **Offline paste** | HTML placeholder → worker fails (first transient) → minimal Y.Doc commit (url+domain) → placeholder removed. IDB retries later. |
-| **Offline → online** | Worker retries from IDB → succeeds → `handleUnfurlResult` Case B: upgrade existing minimal bookmark with metadata |
-| **Page refresh with IDB entries** | Worker drains IDB on init → `handleUnfurlResult` Case C: no pending map entry, check Y.Doc, upgrade if found |
+| **Online paste, unfurl succeeds** | HTML placeholder → worker fetch → atomic Y.Doc commit with all data → placeholder removed |
+| **Online paste, unfurl fails/empty** | HTML placeholder → worker returns non-200 or empty data → `pasteUrlAsText()` → text object → placeholder removed |
+| **Offline paste** | `canCreateBookmark()` returns false → `pasteUrlAsText()` → text object immediately, no placeholder ever |
+| **Page refresh with stale IDB entries** | No pending map entry → check Y.Doc by objectId → upgrade if found, discard if not |
 | **Internal paste** | All data copied as-is from Y.Doc. No re-unfurl. Full metadata preserved. |
 | **Undo after online commit** | Single atomic transaction → undo removes entire bookmark cleanly |
-| **Undo after offline commit** | Undo removes minimal bookmark. If worker retry succeeds later, Case C finds no Y.Doc entry → discard |
 | **Room teardown mid-unfurl** | `cleanupOnRoomTeardown()` clears placeholders + pending map. Worker result arrives → `hasActiveRoom()` false → discard |
-| **Multiple rapid pastes** | Each gets unique objectId, own placeholder, own IDB entry. Independent lifecycles. |
+| **Multiple rapid pastes** | Each gets unique objectId, own placeholder. Independent lifecycles. |
 | **Multi-client** | Client A pastes URL → Client B sees nothing until bookmark appears fully formed (no pending state visible) |
 
 ---
@@ -530,5 +501,5 @@ PLACEHOLDER_H     = 56        HTML placeholder height
 - **Double-click behavior** — no editing mode (bookmarks are not editable)
 - **Link open on click** — "Open" button is visual-only, no navigation
 - **Context menu actions** — no bookmark-specific toolbar bar
-- **Re-unfurl** — no way to retry from UI (worker auto-retries via IDB queue)
+- **Re-unfurl** — no way to retry from UI (failures are final → text object)
 - **URL editing** — URL is immutable after creation

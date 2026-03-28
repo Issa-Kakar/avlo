@@ -37,7 +37,7 @@ import {
 } from './clipboard-serializer';
 import { createImageFromBlob } from '@/lib/image/image-actions';
 import { enqueue } from '@/lib/image/image-manager';
-import { beginUnfurl } from '@/lib/bookmark/bookmark-unfurl';
+import { beginUnfurl, canCreateBookmark } from '@/lib/bookmark/bookmark-unfurl';
 
 // === Constants ===
 
@@ -364,9 +364,31 @@ function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | nu
   return hasContent ? fragment : null;
 }
 
+// === Paste URL as Text ===
+
+export function pasteUrlAsText(
+  url: string,
+  worldX: number,
+  worldY: number,
+  objectId?: string,
+): void {
+  const fragment = new Y.XmlFragment();
+  const para = new Y.XmlElement('paragraph');
+  const xmlText = new Y.XmlText();
+  xmlText.insert(0, url);
+  para.insert(0, [xmlText]);
+  fragment.insert(fragment.length, [para]);
+  createPastedTextObject(fragment, url.length, [worldX, worldY], objectId);
+}
+
 // === Shared Text Object Creation ===
 
-function createPastedTextObject(fragment: Y.XmlFragment, charCount: number): void {
+function createPastedTextObject(
+  fragment: Y.XmlFragment,
+  charCount: number,
+  position?: [number, number],
+  existingId?: string,
+): void {
   const {
     textSize: fontSize,
     textFontFamily: fontFamily,
@@ -375,8 +397,8 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number): voi
     textFillColor,
   } = useDeviceUIStore.getState();
 
-  const [worldX, worldY] = getPasteTarget();
-  const objectId = ulid();
+  const [worldX, worldY] = position ?? getPasteTarget();
+  const objectId = existingId ?? ulid();
   const userId = userProfileManager.getIdentity().userId;
   const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
@@ -432,6 +454,10 @@ function extractLeadingUrl(text: string): { url: string; remainder: string } | n
 
 function createBookmarkFromUrl(url: string): void {
   const [worldX, worldY] = getPasteTarget();
+  if (!canCreateBookmark()) {
+    pasteUrlAsText(url, worldX, worldY);
+    return;
+  }
   beginUnfurl(url, worldX, worldY);
 }
 
