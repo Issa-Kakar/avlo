@@ -534,7 +534,12 @@ function measureTokenizedContent(
 // §5  STAGE 3: LAYOUT — MeasuredContent → TextLayout
 // =============================================================================
 
-/** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme. */
+// UAX#14-like soft wrap opportunity sets (preferred over arbitrary grapheme breaks)
+const BREAK_AFTER = new Set([':',',',';','/','!','?','%','-','}',']',')']);
+const BREAK_BEFORE = new Set(['{','[','(']);
+
+/** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme.
+ *  Prefers UAX#14-like break opportunities (punctuation) over arbitrary grapheme breaks. */
 function sliceTextToFit(
   font: string,
   text: string,
@@ -553,6 +558,12 @@ function sliceTextToFit(
     else hi = mid - 1;
   }
   if (lo === 0) lo = 1; // guarantee forward progress
+
+  // Prefer soft wrap opportunities within the fitting range
+  for (let i = lo; i >= 1; i--) {
+    if (BREAK_AFTER.has(g[i - 1])) { lo = i; break; }
+    if (i < g.length && BREAK_BEFORE.has(g[i])) { lo = i; break; }
+  }
 
   const head = g.slice(0, lo).join('');
   const tail = g.slice(lo).join('');
@@ -748,14 +759,10 @@ export function layoutMeasuredContent(
             b = placeWord(b, tok);
           }
         } else {
-          // Oversized word — commit pending if room for any prefix, else hang + wrap
-          if (b.advanceX + pendingW < maxWidth) {
-            if (pendingW > 0) commitPending(b);
-          } else {
-            commitPending(b);
-            pushLine(b);
-            b = newLineBuilder();
-          }
+          // Oversized word on non-empty line → new line first, then char-break (matches browser)
+          commitPending(b);
+          pushLine(b);
+          b = newLineBuilder();
           b = placeWord(b, tok);
         }
       } else {
@@ -845,9 +852,11 @@ function noteFlowCheck(
       if (wordW > maxW) {
         if (!phase2) return findStepForWord(wordW, contentWidth);
 
-        // Phase 2: char-break
+        // Phase 2: char-break — push to new line first if line has ink (matches browser)
         if (hasInk) {
-          curW += pendingW;
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = 0;
           pendingW = 0;
         }
         for (const seg of tok.segments) {
