@@ -386,11 +386,10 @@ export function getImageProps(y: Y.Map<unknown>): ImageProps | null {
 export interface NoteProps {
   content: Y.XmlFragment;
   origin: [number, number];
-  fontSize: number;
+  scale: number;
   fontFamily: FontFamily;
   align: TextAlign;
   alignV: TextAlignV;
-  width: number;
   fillColor: string;
 }
 
@@ -401,11 +400,10 @@ export function getNoteProps(y: Y.Map<unknown>): NoteProps | null {
   return {
     content,
     origin,
-    fontSize: (y.get('fontSize') as number) ?? 20,
+    scale: (y.get('scale') as number) ?? 1,
     fontFamily: (y.get('fontFamily') as FontFamily) ?? 'Grandstander',
     align: (y.get('align') as TextAlign) ?? 'center',
     alignV: (y.get('alignV') as TextAlignV) ?? 'middle',
-    width: (y.get('width') as number) ?? 280,
     fillColor: (y.get('fillColor') as string) ?? '#FEF3AC',
   };
 }

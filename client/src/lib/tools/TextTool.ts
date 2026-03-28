@@ -51,11 +51,11 @@ import {
   getMeasuredAscentRatio,
   computeLabelTextBox,
   anchorFactor,
-  NOTE_WIDTH,
   NOTE_FILL_COLOR,
   getNotePadding,
   getNoteContentWidth,
-  computeNoteAutoSize,
+  getNoteDerivedFontSize,
+  textLayoutCache,
 } from '@/lib/text/text-system';
 import { hitTestVisibleText, hitTestVisibleNote } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -85,10 +85,6 @@ export class TextTool implements PointerTool {
   objectId: string | null = null; // public — mirrors textEditingId
 
   justClosedLabelId: string | null = null;
-
-  // Auto font size state
-  private isAutoSizeNote = false;
-  private autoFontSize = 0;
 
   // Event handler refs
   private boundHandleKeyDown: ((e: KeyboardEvent) => void) | null = null;
@@ -244,11 +240,10 @@ export class TextTool implements PointerTool {
 
       if (isNoteMode) {
         yObj.set('kind', 'note');
-        yObj.set('fontSize', store.noteSize);
+        yObj.set('scale', 1);
         yObj.set('fontFamily', store.noteFontFamily);
         yObj.set('align', store.noteAlign);
         yObj.set('alignV', store.noteAlignV);
-        yObj.set('width', NOTE_WIDTH);
         yObj.set('fillColor', NOTE_FILL_COLOR);
       } else {
         yObj.set('kind', 'text');
@@ -296,6 +291,16 @@ export class TextTool implements PointerTool {
       fragment = getContent(handle.y);
       fontSize = getFontSize(handle.y);
       fontFamily = getFontFamily(handle.y);
+    } else if (handle.kind === 'note') {
+      const np = getNoteProps(handle.y);
+      if (!np) {
+        console.error('[TextTool] Note missing required properties:', objectId);
+        return;
+      }
+      fragment = np.content;
+      fontFamily = np.fontFamily;
+      textLayoutCache.getNoteLayout(objectId, np.content, np.fontFamily);
+      fontSize = getNoteDerivedFontSize(objectId) * np.scale;
     } else {
       const props = getTextProps(handle.y);
       if (!props) {
@@ -346,10 +351,11 @@ export class TextTool implements PointerTool {
       container.style.setProperty('--text-color', getLabelColor(handle.y));
     } else if (isNoteObj) {
       // Sticky note: alignment-aware positioning with vertical clamp
+      // fontSize/lineHeight/fontFamily already correct from the generic block above
       const props = getNoteProps(handle.y)!;
-      const { origin, width: noteWidth, align, alignV } = props;
-      const padding = getNotePadding(noteWidth);
-      const contentWidth = getNoteContentWidth(noteWidth);
+      const { origin, scale: noteScale, align, alignV } = props;
+      const padding = getNotePadding(noteScale);
+      const contentWidth = getNoteContentWidth(noteScale);
       const maxContentH = contentWidth; // square content box
 
       // Horizontal: position at alignment anchor within content area
@@ -373,16 +379,9 @@ export class TextTool implements PointerTool {
       container.style.left = `${sx}px`;
       container.style.top = `${sy}px`;
       container.style.maxWidth = `${contentWidth * scale}px`;
+      container.style.maxHeight = `${maxContentH * scale}px`;
       container.dataset.widthMode = 'note';
       container.style.setProperty('--text-color', '#1a1a1a');
-
-      // Auto-size: override fontSize/lineHeight, constrain height
-      this.isAutoSizeNote = true;
-      this.autoFontSize = computeNoteAutoSize(fragment!);
-      const sf = this.autoFontSize * scale;
-      container.style.fontSize = `${sf}px`;
-      container.style.lineHeight = `${sf * FONT_FAMILIES['Grandstander'].lineHeightMultiplier}px`;
-      container.style.maxHeight = `${maxContentH * scale}px`;
     } else {
       // Text object: origin-based positioning
       const props = getTextProps(handle.y)!;
@@ -438,8 +437,8 @@ export class TextTool implements PointerTool {
       },
       onTransaction: ({ editor: ed, transaction }) => {
         syncInlineStylesToStore(ed);
-        if (this.isAutoSizeNote && transaction.docChanged) {
-          this.updateAutoSize();
+        if (handle.kind === 'note' && transaction.docChanged) {
+          this.updateNoteAutoSize();
         }
       },
     });
@@ -548,10 +547,11 @@ export class TextTool implements PointerTool {
     } else if (handle.kind === 'note') {
       const props = getNoteProps(handle.y);
       if (!props) return;
-      const { origin, fontSize, fontFamily, width: noteWidth, align, alignV } = props;
-      const sf = (this.isAutoSizeNote ? this.autoFontSize : fontSize) * scale;
-      const padding = getNotePadding(noteWidth);
-      const contentWidth = getNoteContentWidth(noteWidth);
+      const { origin, scale: noteScale, fontFamily, align, alignV } = props;
+      const derivedFS = getNoteDerivedFontSize(this.objectId!);
+      const sf = derivedFS * noteScale * scale;
+      const padding = getNotePadding(noteScale);
+      const contentWidth = getNoteContentWidth(noteScale);
       const maxContentH = contentWidth;
 
       // Horizontal anchor
@@ -575,9 +575,7 @@ export class TextTool implements PointerTool {
       this.container.style.left = `${sx}px`;
       this.container.style.top = `${sy}px`;
       this.container.style.maxWidth = `${contentWidth * scale}px`;
-      if (this.isAutoSizeNote) {
-        this.container.style.maxHeight = `${maxContentH * scale}px`;
-      }
+      this.container.style.maxHeight = `${maxContentH * scale}px`;
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
@@ -650,8 +648,6 @@ export class TextTool implements PointerTool {
     this.container = null;
     this.editor = null;
     this.objectId = null;
-    this.isAutoSizeNote = false;
-    this.autoFontSize = 0;
 
     useSelectionStore.getState().endTextEditing();
     // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
@@ -685,14 +681,19 @@ export class TextTool implements PointerTool {
         this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
 
       if (handle.kind === 'note') {
-        // Notes: align/alignV changes reposition (anchor point shifts)
+        // fontFamily change: repopulate cache before positionEditor reads it
+        // (this observer fires before the deep observer's computeNoteBBox)
+        if (keys.has('fontFamily')) {
+          const content = getContent(handle.y);
+          const ff = getFontFamily(handle.y);
+          if (content) textLayoutCache.getNoteLayout(this.objectId!, content, ff);
+        }
         if (
           keys.has('align') ||
           keys.has('alignV') ||
           keys.has('origin') ||
-          keys.has('fontSize') ||
-          keys.has('fontFamily') ||
-          keys.has('width')
+          keys.has('scale') ||
+          keys.has('fontFamily')
         )
           this.positionEditor();
       } else {
@@ -713,22 +714,21 @@ export class TextTool implements PointerTool {
   // Private Helpers
   // =========================================================================
 
-  private updateAutoSize(): void {
+  private updateNoteAutoSize(): void {
     if (!this.container || !this.objectId) return;
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
-    const fragment = getContent(handle.y);
-    if (!fragment) return;
+    const props = getNoteProps(handle.y);
+    if (!props) return;
 
-    const newSize = computeNoteAutoSize(fragment);
-    if (newSize === this.autoFontSize) return; // no change — skip CSS write
-    this.autoFontSize = newSize;
-    console.log('updateAutoSize', newSize);
+    // Deep observer already invalidated cache → force repopulation
+    textLayoutCache.getNoteLayout(this.objectId, props.content, props.fontFamily);
+    const derivedFS = getNoteDerivedFontSize(this.objectId);
 
-    const scale = useCameraStore.getState().scale;
-    const sf = newSize * scale;
+    const cameraScale = useCameraStore.getState().scale;
+    const sf = derivedFS * props.scale * cameraScale;
     this.container.style.fontSize = `${sf}px`;
-    this.container.style.lineHeight = `${sf * FONT_FAMILIES['Grandstander'].lineHeightMultiplier}px`;
+    this.container.style.lineHeight = `${sf * FONT_FAMILIES[props.fontFamily].lineHeightMultiplier}px`;
   }
 
   private resetGesture(): void {

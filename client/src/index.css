@@ -93,6 +93,7 @@ html {
   outline: none;
   overflow: hidden;
   overflow-wrap: break-word;
+  word-break: break-word;
   white-space: pre-wrap;
   /* Dynamic properties */
   color: var(--text-color, #000000);

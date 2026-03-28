@@ -1485,11 +1485,11 @@ export class SelectTool implements PointerTool {
             );
             yMap.set('origin', [noteProps.origin[0] + dx, noteProps.origin[1] + dy]);
           } else {
-            // Uniform scale: fontSize round, width round, origin from bbox-center preservation
+            // Uniform scale: scale round, origin from bbox-center preservation
             const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
             const rawAbsScale = Math.abs(uniformScale);
-            const roundedFontSize = Math.round(noteProps.fontSize * rawAbsScale * 1000) / 1000;
-            const effectiveAbsScale = roundedFontSize / noteProps.fontSize;
+            const roundedScale = Math.round(noteProps.scale * rawAbsScale * 1000) / 1000;
+            const effectiveAbsScale = roundedScale / noteProps.scale;
 
             // Use bbox center for position preservation (handles are at bbox)
             const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
@@ -1504,15 +1504,13 @@ export class SelectTool implements PointerTool {
             const newBboxH = bboxH * effectiveAbsScale;
             const newBMinX = newBcx - newBboxW / 2;
             const newBMinY = newBcy - newBboxH / 2;
-            // Origin offset within bbox = original origin - bbox min
             const oxOff = noteProps.origin[0] - bMinX;
             const oyOff = noteProps.origin[1] - bMinY;
             const newOriginX = newBMinX + oxOff * effectiveAbsScale;
             const newOriginY = newBMinY + oyOff * effectiveAbsScale;
 
             yMap.set('origin', [newOriginX, newOriginY]);
-            yMap.set('fontSize', roundedFontSize);
-            yMap.set('width', Math.round(noteProps.width * effectiveAbsScale * 1000) / 1000);
+            yMap.set('scale', roundedScale);
           }
           continue;
         }

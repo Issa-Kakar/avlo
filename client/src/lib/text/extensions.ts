@@ -214,6 +214,7 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
           keys.has('align') ||
           keys.has('alignV') ||
           keys.has('width') ||
+          keys.has('scale') ||
           keys.has('labelColor') ||
           keys.has('frame') ||
           keys.has('shapeType')

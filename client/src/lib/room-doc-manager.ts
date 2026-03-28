@@ -1049,7 +1049,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           newBBox = computeNoteBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const w = (yObj.get('width') as number) ?? 280;
+          const s = (yObj.get('scale') as number) ?? 1;
+          const w = 280 * s;
           newBBox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
         }
       } else if (kind === 'text') {
@@ -1159,7 +1160,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           bbox = computeNoteBBox(id, props);
         } else {
           const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const w = (yObj.get('width') as number) ?? 280;
+          const s = (yObj.get('scale') as number) ?? 1;
+          const w = 280 * s;
           bbox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
         }
       } else if (kind === 'text') {

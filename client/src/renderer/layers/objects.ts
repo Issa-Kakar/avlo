@@ -51,7 +51,8 @@ import {
   renderNoteBody,
   getNotePadding,
   getNoteContentWidth,
-  computeNoteHeight,
+  getNoteDerivedFontSize,
+  NOTE_WIDTH,
 } from '@/lib/text/text-system';
 import { getTextProps, getAlign, getCodeProps, getNoteProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
@@ -365,45 +366,45 @@ function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   const props = getNoteProps(y);
   if (!props) return;
 
-  const {
-    origin,
-    fontSize,
-    fontFamily,
-    width: noteWidth,
-    fillColor,
-    content,
-    align,
-    alignV,
-  } = props;
-  const padding = getNotePadding(noteWidth);
-  const contentWidth = getNoteContentWidth(noteWidth);
-  const maxContentH = contentWidth; // square content box
-  const layout = textLayoutCache.getLayout(id, content, fontSize, fontFamily, contentWidth);
-  const noteHeight = computeNoteHeight(layout, noteWidth);
+  const { origin, scale: noteScale, fontFamily, fillColor, content, align, alignV } = props;
 
-  // Always draw body + shadow (even during editing)
-  renderNoteBody(ctx, origin[0], origin[1], noteWidth, noteHeight, fillColor);
-
-  if (useSelectionStore.getState().textEditingId === id) return;
-
-  // --- Text rendering with alignment ---
-  const { lineHeight } = layout;
-  const baselineToTop = getBaselineToTopRatio(fontFamily) * fontSize;
-  const contentH = layout.lines.length * lineHeight;
-
-  // Vertical alignment offset (clamped — matches CSS clamp behavior)
-  const vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH);
-  const textY = origin[1] + padding + vOffset + baselineToTop;
-
-  // Horizontal alignment — virtual anchor for getLineStartX reuse
-  const noteAnchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
-
-  // Container bounds for highlight clamping (always the content area)
-  const containerLeft = origin[0] + padding;
-  const containerRight = containerLeft + contentWidth;
-  const hlR = fontSize * 0.25;
+  const layout = textLayoutCache.getNoteLayout(id, content, fontFamily);
+  const derivedFontSize = getNoteDerivedFontSize(id);
 
   ctx.save();
+  ctx.translate(origin[0], origin[1]);
+  ctx.scale(noteScale, noteScale);
+
+  // Body at base dimensions (shadow + fill rect) — always drawn, even during editing
+  renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor);
+
+  if (useSelectionStore.getState().textEditingId === id) {
+    ctx.restore();
+    return;
+  }
+
+  // Text rendering at base dimensions
+  const padding = getNotePadding(1);
+  const contentWidth = getNoteContentWidth(1);
+  const maxContentH = contentWidth;
+  const { lineHeight } = layout;
+  const baselineToTop = getBaselineToTopRatio(fontFamily) * derivedFontSize;
+  const contentH = layout.lines.length * lineHeight;
+  const vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH);
+  const textY = padding + vOffset + baselineToTop;
+  const noteAnchorX = padding + anchorFactor(align) * contentWidth;
+  const containerLeft = padding;
+  const containerRight = padding + contentWidth;
+  const hlR = derivedFontSize * 0.25;
+
+  // Clip overflow (at min step + content overflows)
+  const needsClip = contentH > maxContentH;
+  if (needsClip) {
+    ctx.beginPath();
+    ctx.rect(padding, padding, contentWidth, maxContentH);
+    ctx.clip();
+  }
+
   ctx.textBaseline = 'alphabetic';
 
   for (const line of layout.lines) {
@@ -412,7 +413,7 @@ function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
     const lineW = line.alignmentWidth;
     const startX = getLineStartX(noteAnchorX, contentWidth, lineW, align);
 
-    // Pass 1: highlight rects (clamped to container, rounded corners)
+    // Pass 1: highlight rects
     for (const run of line.runs) {
       if (!run.highlight) continue;
       ctx.fillStyle = run.highlight;
@@ -908,6 +909,7 @@ function drawScaledCodePreview(
 /**
  * Draw sticky note with uniform scale preview using ctx.scale.
  * Uses bbox center for position preservation (handles are at bbox positions).
+ * drawStickyNote internally applies ctx.scale(noteScale) — nested scales compose.
  */
 function drawScaledNotePreview(
   ctx: CanvasRenderingContext2D,
@@ -923,19 +925,19 @@ function drawScaledNotePreview(
   const { scaleX, scaleY, originBounds, origin } = transform;
 
   const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const rawAbsScale = Math.abs(uniformScale);
-  if (rawAbsScale < 0.001) return;
+  const absScale = Math.abs(uniformScale);
+  if (absScale < 0.001) return;
 
-  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-  const effectiveAbsScale = roundedFontSize / props.fontSize;
+  // Quantize to 3dp for consistency with commit
+  const roundedScale = Math.round(props.scale * absScale * 1000) / 1000;
+  const effectiveAbsScale = roundedScale / props.scale;
 
-  // Use bbox center for position preservation (mirrors commitScale exactly)
+  // Use bbox center for position preservation
   const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
   const bcx = (bMinX + bMaxX) / 2;
   const bcy = (bMinY + bMaxY) / 2;
   const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
 
-  // Derive new origin from bbox center + scaled offset
   const bboxW = bMaxX - bMinX;
   const bboxH = bMaxY - bMinY;
   const newBboxW = bboxW * effectiveAbsScale;
@@ -947,7 +949,8 @@ function drawScaledNotePreview(
   const newOriginX = newBMinX + oxOff * effectiveAbsScale;
   const newOriginY = newBMinY + oyOff * effectiveAbsScale;
 
-  // Scale around origin: translate to new origin, scale, then draw at (0,0)
+  // drawStickyNote does ctx.translate(origin)+ctx.scale(noteScale), so we
+  // wrap it with the transform's uniform scale around the note's origin.
   ctx.save();
   ctx.translate(newOriginX, newOriginY);
   ctx.scale(effectiveAbsScale, effectiveAbsScale);
