@@ -289,7 +289,7 @@ Module-level `Map<string, BookmarkLayout>` keyed by object ID. Computed on first
 
 **Invalidation:**
 - `invalidateBookmarkLayout(id)` — on object deletion (called from `room-doc-manager.ts`)
-- `clearBookmarkLayouts()` — full cache clear
+- `clearBookmarkLayouts()` — full cache clear (called from `room-doc-manager.ts` on destroy + full rebuild)
 - Layout auto-recomputes on next render when Y.Map properties change (title, description, assets arrive via unfurl)
 
 ### Height Computation

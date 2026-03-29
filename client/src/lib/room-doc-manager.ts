@@ -31,7 +31,7 @@ import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
-import { invalidateBookmarkLayout } from '@/lib/bookmark/bookmark-render';
+import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
 
 type Unsub = () => void;
 
@@ -823,6 +823,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear layout caches
     textLayoutCache.clear();
     codeSystem.clear();
+    clearBookmarkLayouts();
 
     // Clear object maps
     this.objectsById.clear();
@@ -1145,9 +1146,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear dirty tracking - this is a full rebuild
     this.dirtyRects.length = 0;
     this.cacheEvictIds.clear();
-    // Clear text/code layout caches on full rebuild
+    // Clear layout caches on full rebuild
     textLayoutCache.clear();
     codeSystem.clear();
+    clearBookmarkLayouts();
 
     // Build handles from Y.Doc
     const handles: ObjectHandle[] = [];
