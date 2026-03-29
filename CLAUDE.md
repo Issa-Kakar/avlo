@@ -570,7 +570,7 @@ const scale = useCameraStore(selectScale);
 ```typescript
 interface DeviceUIState {
   activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'code'|'note';
-  drawingSettings: { size: 6|10|14|18; color: string; opacity: number; fill: boolean };
+  drawingSettings: { size: 4|7|10|13; color: string; opacity: number; fill: boolean };
   textSize: number;                    // Default 24
   connectorSize: 2|4|6|8;
   connectorStartCap, connectorEndCap, connectorType;
