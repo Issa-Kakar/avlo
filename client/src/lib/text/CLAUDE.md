@@ -2,70 +2,53 @@
 
 **Status:** WYSIWYG complete — auto + fixed-width modes verified
 
-> **Maintenance note:** This is a system-level architectural overview, not a changelog. When updating after code changes, match the detail level of surrounding content — don't inflate coverage of your specific change at the expense of the big-picture pipeline flow and cache interactions that make this document useful.
+> **Maintenance note:** System-level overview for Claude agents. When updating, match surrounding detail — don't inflate coverage of specific changes.
 
 ## Overview
 
-WYSIWYG rich text with **DOM overlay editing** and **canvas rendering**, supporting both auto-width and fixed-width (text wrapping) modes.
+WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rendering** (custom layout engine). Three text-bearing object types: text objects, shape labels, sticky notes.
 
-- **Editing:** Tiptap editor in absolute-positioned div, synced to Y.XmlFragment via custom TextCollaboration extension
-- **Rendering:** Canvas-based layout engine with tokenizer + flow engine matching CSS `pre-wrap` + `break-word`
-- **Positioning:** Measured font metrics ensure DOM <> canvas baseline alignment
-- **Collaboration:** Y.XmlFragment CRDT enables real-time sync
-- **Undo/Redo:** Two-tier UndoManager — per-session (in-editor content + property changes) + main (room-level atomic session merging)
+- **Editing:** Tiptap editor in absolute-positioned div, synced to Y.XmlFragment via TextCollaboration extension
+- **Rendering:** Canvas layout engine (tokenizer → measurement → flow) matching CSS `pre-wrap` + `break-word`
+- **Positioning:** Measured font metrics (`fontBoundingBox*`) ensure DOM ↔ canvas baseline alignment
+- **Collaboration:** Y.XmlFragment CRDT, two-tier UndoManager (per-session + room-level atomic session merging)
+- **WYSIWYG parity:** Same font/weight, same line-height (`fontSize * 1.3`), same baseline positioning via `getBaselineToTopRatio()` (CSS half-leading formula), identical whitespace semantics. Sub-pixel ~0.5px from per-token vs native shaping.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `lib/text/text-system.ts` | Layout engine: tokenizer, measurement, flow engine, cache, renderer, BBox |
-| `lib/text/extensions.ts` | TextCollaboration extension: per-session UndoManager, Y.Map observer, session merging |
-| `lib/text/font-config.ts` | `FONT_WEIGHTS`, `FONT_FAMILIES` per-family config (extracted to avoid circular deps) |
-| `lib/text/font-loader.ts` | `ensureFontsLoaded()`, `areFontsLoaded()` — loads all 4 families |
-| `lib/text/TextContextMenu.md` | Legacy floating toolbar reference (inactive — superseded by `context-menu/` system) |
-| `lib/text/text-menu-icons.ts` | SVG icon builders for context menu |
-| `lib/tools/TextTool.ts` | PointerTool: editor mounting, Y.Map creation, live editing, width handling |
+| `lib/text/text-system.ts` | Layout engine, cache, renderers, BBox, note auto-sizing, shadow |
+| `lib/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
+| `lib/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
+| `lib/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
+| `lib/tools/TextTool.ts` | Editor mounting, positioning, lifecycle — 3-way branch (text/label/note) |
+
+**Fonts:** Grandstander, Inter, Lora, JetBrains Mono. All variable `wght 450-700`, Latin subset, ligatures (`liga`/`calt`/`dlig`) stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix).
 
 ---
 
-## Y.Doc Object Schema
+## Y.Doc Schemas
+
+### Text Object
 
 ```typescript
 {
-  id: string,                          // ULID
-  kind: 'text',
-  origin: [number, number],            // [alignmentAnchorX, firstLineBaseline]
-  fontSize: number,                    // World units
-  fontFamily: FontFamily,              // 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
-  color: string,                       // Hex color
-  align: 'left' | 'center' | 'right', // TextAlign
-  width: 'auto' | number,             // TextWidth — 'auto' or fixed width in world units
-  fillColor?: string,                 // Optional background fill (reuses shape's Y.Map key + getFillColor accessor)
-  content: Y.XmlFragment,             // Rich text (Tiptap structure)
-  ownerId: string,
-  createdAt: number
+  id, kind: 'text',
+  origin: [anchorX, baseline],       // [0] = alignment anchor, [1] = first line baseline
+  fontSize, fontFamily, color,
+  align: 'left' | 'center' | 'right',
+  width: 'auto' | number,            // 'auto' = max-content, number = fixed wrapping width
+  fillColor?: string,                 // Optional background fill
+  content: Y.XmlFragment,
+  ownerId, createdAt
 }
-// No stored 'frame'. Frame is derived in TextLayoutCache via computeTextBBox().
+// No stored frame. Derived via computeTextBBox(), read via getTextFrame(id).
 ```
 
-### Origin Semantics
+**Origin semantics:** `origin[0]` shifts with alignment (left=left edge, center=center, right=right edge). Alignment changes recompute `origin[0]` to preserve left edge: `newOriginX = leftX + anchorFactor(newAlign) * W`.
 
-`origin[1]` = baseline of first line. `origin[0]` = alignment anchor:
-
-| `align` | `origin[0]` meaning |
-|---------|---------------------|
-| `'left'` | Left edge of text block |
-| `'center'` | Horizontal center of text block |
-| `'right'` | Right edge of text block |
-
-Alignment changes adjust `origin[0]` atomically to preserve the left edge position:
-```
-leftX = originX - anchorFactor(oldAlign) * W
-newOriginX = leftX + anchorFactor(newAlign) * W
-```
-
-### Y.XmlFragment Structure
-
+**Y.XmlFragment structure:**
 ```
 Y.XmlFragment
 ├── Y.XmlElement('paragraph')
@@ -73,883 +56,378 @@ Y.XmlFragment
 └── ...
 ```
 
+### Shape Label (fields on shape Y.Map)
+
+Labels are NOT separate objects — they add fields to the shape:
+
+```typescript
+{
+  content: Y.XmlFragment,
+  fontSize, fontFamily,
+  labelColor: string,                 // Separate from shape border color
+  align?: TextAlign,                  // Default 'center'
+  alignV?: TextAlignV,               // Default 'middle'
+}
+```
+
+No `origin` or `width` — width derived from shape frame. `hasLabel(y)` = `y.get('content') instanceof Y.XmlFragment`. Fields deleted if label empty on editor close.
+
+### Sticky Note
+
+```typescript
+{
+  id, kind: 'note',
+  origin: [topLeftX, topLeftY],       // Always top-left (NOT shifted by alignment)
+  scale: number,                       // Default 1 — uniform scale for entire note
+  fontFamily, align, alignV,
+  fillColor: string,                   // Default '#FEF3AC'
+  content: Y.XmlFragment,
+  ownerId, createdAt
+}
+// No fontSize (derived), no width (= NOTE_WIDTH * scale), no color (hardcoded '#1a1a1a').
+```
+
+See **Sticky Notes** section for full details.
+
 ---
 
 ## Text System Pipeline (`text-system.ts`)
 
-### Pipeline Overview
-
 ```
 Y.XmlFragment
     ↓ parseAndTokenize()
-TokenizedContent { paragraphs, uniformStyles: UniformStyles }
+TokenizedContent { paragraphs, uniformStyles }
     ↓ measureTokenizedContent(tokenized, fontSize, fontFamily)
-MeasuredContent { paragraphs: [{ tokens: MeasuredToken[] }], lineHeight, fontFamily }
-    ↓ layoutMeasuredContent(measured, width, fontSize)
-TextLayout { lines: MeasuredLine[], fontSize, fontFamily, boxWidth, ... }
+MeasuredContent { paragraphs: MeasuredToken[][], lineHeight }
+    ↓ layoutMeasuredContent(measured, width, fontSize)   ← exported
+TextLayout { lines: MeasuredLine[], fontSize, fontFamily, lineHeight, widthMode, boxWidth }
 ```
 
-Tokenize and measure are internal. `layoutMeasuredContent()` is exported for reflow during E/W transforms (SelectTool calls it with cached `MeasuredContent` + new target width). Primary public API: `textLayoutCache.getLayout()`.
+Primary API: `textLayoutCache.getLayout()`. `layoutMeasuredContent()` exported for reflow during E/W transforms.
 
-### Font Configuration
+### Font Metrics
 
-```typescript
-FONT_WEIGHTS = { normal: 450, bold: 700 }
+Per-family, measured from canvas `fontBoundingBoxAscent/Descent` (not hardcoded):
 
-FONT_FAMILIES: Record<FontFamily, FontFamilyConfig> = {
-  'Grandstander':   { fallback: '"Grandstander", cursive, sans-serif', lineHeightMultiplier: 1.3 },
-  'Inter':          { fallback: '"Inter", sans-serif',                  lineHeightMultiplier: 1.3 },
-  'Lora':           { fallback: '"Lora", serif',                        lineHeightMultiplier: 1.3 },
-  'JetBrains Mono': { fallback: '"JetBrains Mono", monospace',          lineHeightMultiplier: 1.3 },
-}
-// Record key IS the CSS font-family name — zero indirection.
-```
+| Function | Returns |
+|----------|---------|
+| `getBaselineToTopRatio(ff?)` | CSS half-leading: `((lineHeight - contentArea) / 2 + ascent) / fontSize` |
+| `getMeasuredAscentRatio(ff?)` | `fontBoundingBoxAscent / fontSize` (fallback 0.8) |
+| `getMinCharWidth(fs, ff?)` | Bold 'W' width — reflow minimum clamp |
+| `buildFontString(bold, italic, fs, ff?)` | `"italic 700 20px \"Inter\", sans-serif"` |
+| `resetFontMetrics()` | Clear all caches (call after font load) |
 
-### Font Metrics (per-family)
+### Stage 1: Tokenizer
 
-All metrics cached per `FontFamily` in Maps. Functions accept optional `fontFamily` parameter (defaults to `'Grandstander'`).
+Walks Y.XmlFragment → paragraphs → delta ops → regex split `/(\s+|\S+)/g` into word/space tokens. Adjacent same-styled segments coalesce via string concat. Tracks `UniformStyles` (allBold/allItalic/uniformHighlight) in same loop — used by context menu for active state when editor isn't mounted.
 
-```typescript
-getMeasuredAscentRatio(fontFamily?)    // fontBoundingBoxAscent / fontSize, cached per family
-                                       // Always normalized by fontSize (not contentArea). Fallback 0.8
-getBaselineToTopRatio(fontFamily?)     // = ((lineHeight - contentArea) / 2 + ascent) / fontSize
-                                       // Uses CSS half-leading: contentArea = ascent + descent (can differ from fontSize)
-                                       // Side-populates _measuredAscentRatio cache on first call
-getMinCharWidth(fontSize, fontFamily?) // = getMinCharWidthRatio(fontFamily) * fontSize — reflow clamp
-getMinCharWidthRatio(fontFamily?)      // Bold 'W' width / fontSize, cached per family (fallback 0.7)
-resetFontMetrics()                     // .clear() all 3 maps (call after font load)
-buildFontString(bold, italic, fontSize, fontFamily?)  // → "italic 700 20px \"Inter\", sans-serif"
-```
+Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color; presence without color → default `'#ffd43b'`. Highlight is rendering-only — `highlight` field threads through tokenizer → measurement → flow engine coalesce → renderer, but has zero impact on width calculation.
 
-### Stage 1: Tokenizer — `parseAndTokenize()`
+### Stage 2: Measurement
 
-Walks `Y.XmlFragment` → paragraph elements → `Y.XmlText` delta ops. Each delta op's insert string is split by regex `/(\s+|\S+)/g` into alternating word/space tokens. Adjacent segments with same bold/italic/highlight coalesce via string concat (no extra object). Highlight color extracted from `attrs.highlight` — multicolor stores `{ color: '#hex' }`, default toggle (no color) → mapped to `'#ffd43b'`.
+Canvas `measureText()` via singleton offscreen canvas. Caches: `MEASURE_LRU` (75k, key: `font+'\0'+text`), `SPACE_WIDTH_CACHE` (per font), `GRAPHEME_LRU` (10k, `Intl.Segmenter` splits). All cleared on `textLayoutCache.clear()`.
 
-```
-"hello world"     → [word:"hello", space:" ", word:"world"]
-"he<b>llo</b> w"  → [word:{seg:"he", seg:"llo"(bold)}, space:" ", word:{seg:"w"}]
-```
+### Stage 3: Flow Engine
 
-```typescript
-interface Token { kind: 'word' | 'space'; segments: StyledText[]; }
-interface StyledText { text: string; bold: boolean; italic: boolean; highlight: string | null; }
-interface UniformStyles { allBold: boolean; allItalic: boolean; uniformHighlight: string | null; }
-interface TokenizedContent { paragraphs: TokenizedParagraph[]; uniformStyles: UniformStyles; }
-```
+Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at width). Implements CSS `pre-wrap` + `break-word`.
 
-`uniformStyles` is computed in the same delta op loop as tokenization (zero extra iteration). Tracks whether all text shares the same bold/italic/highlight — used by the context menu to show active state when the editor is not mounted.
+**Pending whitespace state machine:** Leading WS (no ink on line) commits immediately and can overflow. Inter-word WS in fixed mode is *buffered* as pending. On next word: if `current + pending + word <= maxWidth`, commit pending + place word; else push line (pending WS kept for highlight rendering but excluded from `alignmentWidth`), word starts new line.
 
-### Stage 2: Measurement — `measureTokenizedContent()`
+**Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-Converts each `StyledText` segment → `MeasuredSegment` by calling `ctx.measureText()` on a singleton offscreen 1x1 canvas (`textRendering: optimizeSpeed`). Produces advance widths per segment.
+**Oversized words (break-word):** `sliceTextToFit()` binary-searches grapheme boundaries. Forward-progress: >=1 grapheme per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line.
 
-**Caches:**
+**Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
-| Cache | Size | Key | Purpose |
-|-------|------|-----|---------|
-| `MEASURE_LRU` | 75k entries | `font + '\0' + text` | Advance width (`number`) |
-| `SPACE_WIDTH_CACHE` | Unbounded Map | font string | Single space advance width per font |
-| `GRAPHEME_LRU` | 10k entries | text string | `Intl.Segmenter` grapheme split results |
-
-```typescript
-interface MeasuredSegment extends StyledText {
-  font: string; advanceWidth: number;
-  isWhitespace: boolean;
-}
-interface MeasuredToken { kind: TokenKind; segments: MeasuredSegment[]; advanceWidth: number; }
-```
-
-### Stage 3: Flow Engine — `layoutMeasuredContent()`
-
-Converts `MeasuredContent` → `TextLayout` by placing tokens onto lines. Implements CSS `white-space: pre-wrap` + `overflow-wrap: break-word`.
-
-**Two modes:**
-- **Auto:** `maxWidth = Infinity` — no wrapping, each paragraph = one line
-- **Fixed:** `maxWidth = width` — words wrap at container boundary
-
-#### LineBuilder
-
-Accumulates runs for the current line:
-- `advanceX` — total width including all committed runs
-- `visualWidth` — width up to end of last non-whitespace run (internal; becomes `alignmentWidth` on `MeasuredLine` via `pushLine`)
-- `hasInk` — at least one non-whitespace run exists (flow engine: leading vs inter-word ws distinction)
-
-`appendRun()` coalesces adjacent runs with identical font+highlight via string concat — reduces run count for the renderer.
-
-#### Pending Whitespace State Machine (CSS `pre-wrap` Semantics)
-
-CSS `pre-wrap`: trailing whitespace doesn't cause wrapping, but leading whitespace does. Implemented via a pending buffer:
-
-```
-LEADING ws (no ink on line yet) → commit immediately (can overflow — matches pre-wrap)
-INTER-WORD ws (auto mode)      → commit immediately (no wrapping)
-INTER-WORD ws (fixed mode)     → buffer as pending (pendingSegs[] + pendingW)
-```
-
-When next word token arrives in fixed mode:
-```
-if (currentAdvance + pendingW + wordW ≤ maxWidth)
-  → commit pending whitespace, place word on current line
-else
-  → commit pending (ws runs kept for highlight rendering), push line, place word on new line
-```
-Committed pending ws on the wrapped line gets the hanging `alignmentWidth` (= `visualWidth`), so it doesn't affect alignment — but the runs exist for highlight rect rendering.
-
-#### Word Placement: `placeWord()`
-
-Three paths:
-1. **Fits on current line** → append all segments as runs
-2. **Doesn't fit current line, fits empty line** → push line, start new, append word
-3. **Oversized (wider than maxWidth)** → `break-word`: iterates segments, each calling `sliceTextToFit()` (binary search at grapheme boundaries via `Intl.Segmenter`). Forward-progress guarantee forces >= 1 grapheme per slice. **Cross-segment guard:** if the forced grapheme overflows remaining space on a non-empty line (`headW > lineRemaining && b.runs.length > 0`), the line is pushed first and the segment retries on a fresh line — prevents multi-segment words from overflowing at style boundaries
-
-#### Main Flow Loop
-
-```
-for each paragraph:
-  for each token:
-    space → leading: commit; auto: commit; fixed inter-word: buffer as pending
-    word  → commit/discard pending per fit test, then placeWord()
-  end paragraph → commitPending, pushLine, fixupParagraphEnd, new LineBuilder
-```
-
-`commitPending` at paragraph end ensures trailing whitespace runs exist in `line.runs` (needed for highlight rendering). `fixupParagraphEnd` then overrides `alignmentWidth` from the hanging default (`visualWidth`) to `min(advanceWidth, maxWidth)` — trailing ws at paragraph end is content, not hanging.
-
-Empty paragraphs produce a blank line. If no lines produced at all, pushes one empty line.
-
-#### Layout-Level Computation
-
-After all lines placed:
-- `boxWidth` = auto: max `advanceWidth` across all lines; fixed: the explicit width
-
-### Exported Types
+### Layout Output Types
 
 ```typescript
 interface MeasuredRun {
   text: string; font: string; highlight: string | null;
-  advanceWidth: number; advanceX: number;  // X offset from line start
+  advanceWidth: number; advanceX: number;
 }
-
 interface MeasuredLine {
   runs: MeasuredRun[]; index: number;
-  advanceWidth: number;     // Total advance including trailing whitespace runs
-  alignmentWidth: number;   // Width for text-align calculation — two behaviors:
-  //   Wrap-caused break  → b.visualWidth (trailing ws hangs, excluded)
-  //   Paragraph end      → min(advanceWidth, maxWidth) (trailing ws is content)
+  advanceWidth: number;      // Total including trailing whitespace
+  alignmentWidth: number;    // Wrap-break -> visualWidth (WS hangs); paragraph-end -> min(advance, max)
   baselineY: number;
 }
-
 interface TextLayout {
-  lines: MeasuredLine[]; fontSize: number; lineHeight: number;
-  widthMode: 'auto' | 'fixed';
-  boxWidth: number;        // auto → max advanceWidth; fixed → explicit width
+  lines: MeasuredLine[]; fontSize: number; fontFamily: FontFamily;
+  lineHeight: number; widthMode: 'auto' | 'fixed';
+  boxWidth: number;          // auto -> max advanceWidth; fixed -> explicit width
 }
 ```
 
-### TextLayoutCache (singleton)
+---
 
-Three-tier cache: content → measurement → flow. Entry stores intermediate results so width-only changes skip tokenize and measure.
+## TextLayoutCache (singleton)
+
+Three-tier cache: content → measurement → flow.
 
 ```typescript
-class TextLayoutCache {
-  getLayout(objectId, fragment, fontSize, fontFamily: FontFamily = 'Grandstander', width: TextWidth = 'auto'): TextLayout
-  // Cache hit logic (checked in order):
-  //   same content + fontSize + fontFamily + width → return cached layout
-  //   same content + fontSize + fontFamily, different width → re-flow only
-  //   same content, different fontSize or fontFamily → re-measure + re-flow
-  //   stale content (or no entry) → full pipeline
+textLayoutCache.getLayout(id, fragment, fontSize, fontFamily?, width?)
+  // Hit order:
+  //   same content + fontSize + fontFamily + width -> cached layout
+  //   same content + fontSize + fontFamily, diff width -> reflow only
+  //   same content, diff fontSize/fontFamily -> re-measure + reflow
+  //   stale -> full pipeline
+  // Width/fontFamily changes detected by inline comparison — no explicit invalidation needed.
 
-  invalidateContent(objectId, fragment?)
-  // Content changed. When fragment provided: eagerly re-tokenizes via parseAndTokenize(fragment)
-  // so getInlineStyles() returns fresh data immediately. Critical for shape labels where no
-  // getLayout() call happens before refreshStyles in the observer path.
-  // When fragment omitted: nulls tokenized → lazy re-parse on next getLayout().
-  // Always nulls measuredFontSize → forces re-measure + re-layout on next getLayout().
+textLayoutCache.invalidateContent(id, fragment?)
+  // fragment provided -> eager re-tokenize (critical for shape labels — context menu
+  // queries getInlineStyles() before getLayout() runs)
+  // fragment omitted -> lazy re-parse on next getLayout()
+  // Both null measuredFontSize + frame -> forces re-measure + BBox recompute
 
-  invalidateLayout(objectId)   // FontSize changed → nulls measuredFontSize → forces re-measure
-  invalidateFlow(objectId)     // Width changed → nulls layoutWidth → forces re-flow
-  remove(objectId)             // Object deleted
-  clear()                      // Full clear (+ all measurement LRUs)
-  setFrame(objectId, frame)    // Derived frame storage (set by computeTextBBox)
-  getFrame(objectId): FrameTuple | null
-  getMeasuredContent(objectId): MeasuredContent | null  // For reflow (SelectTool E/W transforms, shape label transforms)
-  getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
-}
-export const textLayoutCache: TextLayoutCache;
+textLayoutCache.invalidateLayout(id)     // fontSize changed -> forces re-measure
+textLayoutCache.invalidateFlow(id)       // width changed -> forces reflow
+textLayoutCache.remove(id) / clear()     // Deletion / full rebuild (clear also clears LRUs)
+
+textLayoutCache.setFrame(id, frame)      // Derived frame (set by computeTextBBox/computeNoteBBox)
+textLayoutCache.getFrame(id)             // Read derived frame
+textLayoutCache.getMeasuredContent(id)   // For E/W reflow (skips tokenize + measure)
+textLayoutCache.getInlineStyles(id)      // UniformStyles from cached tokenized content
+
+// Note-specific (see Sticky Notes):
+textLayoutCache.getNoteLayout(id, fragment, fontFamily)
+textLayoutCache.getNoteDerivedFontSize(id)               // fallback 72
 ```
 
-**Width change detection:** `getLayout()` compares `entry.layoutWidth !== width`. Re-flows automatically — no explicit `invalidateFlow()` needed for the render path (but it exists for the observer path). FontFamily change detection works the same way: `entry.measuredFontFamily !== fontFamily` triggers re-measure + re-flow.
+---
 
-**Eager vs lazy tokenization:** `invalidateContent(id, fragment)` with a fragment eagerly calls `parseAndTokenize(fragment)` and stores the result, so `getInlineStyles()` returns fresh `UniformStyles` immediately. Without the fragment, tokenized is nulled for lazy re-parse on next `getLayout()`. Both paths null `measuredFontSize` and `frame`, ensuring re-measure and BBox recomputation. The eager path is critical for shape labels — their content changes arrive via the deep observer, and the context menu queries `getInlineStyles()` before any `getLayout()` call would trigger lazy tokenization.
+## Renderers, BBox & Helpers
 
-### Renderer: `renderTextLayout()`
+### `renderTextLayout(ctx, layout, originX, originY, color, align?, fillColor?)`
 
-```typescript
-renderTextLayout(ctx, layout, originX, originY, color, align: TextAlign = 'left', fillColor?: string)
-```
+Pass 0: fillRect background (if fillColor). Per line: compute `startX` via `anchorFactor(align)` + `getLineStartX()`. Pass 1: highlight roundRects (radius `fontSize * 0.25`; fixed mode clamps to container). Pass 2: fillText, `textBaseline = 'alphabetic'`. Fixed mode uses `alignmentWidth` for line width; auto uses `advanceWidth`.
 
-1. `textBaseline = 'alphabetic'` — origin is first line baseline
-2. **Pass 0 (optional):** If `fillColor`, draws a `fillRect` covering the full text block — `getBoxLeftX` for left edge, `boxWidth` for width, `originY - baselineToTop` for top, `lines.length * lineHeight` for height. Works for both auto and fixed modes, scales naturally via `ctx.scale()` during transforms.
-3. Per line: `startX = getLineStartX(originX, boxWidth, lineW, align)` where:
-   - `lineW = advanceWidth` in auto mode
-   - `lineW = alignmentWidth` in fixed mode (handles both wrap-hanging and paragraph-end cases)
-4. Pass 1: `fillRect` for runs with `run.highlight` — fixed mode clamps to container bounds (no `ctx.clip`)
-5. Pass 2: `fillText` for all runs
-6. Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior)
-7. Fixed-mode overflow: trailing ws `fillText` past container edge is invisible (no ink); highlight rects are clamped arithmetically via `containerLeft`/`containerRight`
+### `renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)`
 
-### Alignment Math
+H+V alignment within text box. Vertical via `getNoteContentOffsetY()`. Overflow clips via `ctx.clip()`.
+
+### Alignment Helpers
 
 ```typescript
-anchorFactor(align)  // left=0, center=0.5, right=1
-getBoxLeftX(originX, boxWidth, align)       // originX - anchorFactor * boxWidth
+anchorFactor(align)   // left=0, center=0.5, right=1
 getLineStartX(originX, boxWidth, lineW, align)
-  // left:   boxLeftX
-  // center: boxLeftX + (boxWidth - lineW) / 2
-  // right:  boxLeftX + (boxWidth - lineW)
+  // left: boxLeftX, center: boxLeftX+(boxWidth-lineW)/2, right: boxLeftX+(boxWidth-lineW)
+computeLabelTextBox(shapeType, frame)
+  // Max inscribed rect inset by LABEL_PADDING=10.
+  // ellipse: (a/sqrt2)x2 x (b/sqrt2)x2 centered; diamond: w/2 x h/2 centered; rect: simple inset
 ```
 
-### BBox + Derived Frame: `computeTextBBox()`
+### BBox + Derived Frame
 
 ```typescript
-computeTextBBox(objectId: string, props: TextProps): BBoxTuple
+computeTextBBox(id, props)   // Derives frame from layout, caches, returns frame + 2px padding
+computeNoteBBox(id, props)   // Square frame, caches, returns frame + shadow pad
+getTextFrame(id)             // Reads cached frame — used for BOTH text AND note objects
+getInlineStyles(id)          // UniformStyles from cached tokenized content
 ```
 
-Called from `room-doc-manager` for spatial index (both steady-state and hydration).
-
-1. Gets layout via cache
-2. **Derives and caches frame:**
-   - `x = getBoxLeftX(originX, boxWidth, align)`
-   - `y = originY - fontSize * getBaselineToTopRatio()` (matches DOM container top)
-   - `w = boxWidth`, `h = numLines * lineHeight`
-3. **Returns frame + 2px padding** as BBoxTuple — matches DOM overlay bounds exactly, covers highlight rects
-
-### Frame Getter
-
-```typescript
-getTextFrame(objectId): FrameTuple | null  // Reads derived frame from cache
-```
-
-All call sites: `handle.kind === 'text' ? getTextFrame(handle.id) : getFrame(handle.y)`
-
-### Inline Styles Getter
-
-```typescript
-getInlineStyles(objectId): UniformStyles | null  // From cached tokenized content
-```
-
-Returns `null` if the object hasn't been cached yet. Used by context menu for bold/italic/highlight active state when the editor is not mounted.
+Frame consumer pattern: `handle.kind === 'text' || 'note' ? getTextFrame(handle.id) : getFrame(handle.y)`. Used by hit-testing, connectors, eraser, selection-overlay, SelectTool, bounds.
 
 ---
 
 ## Undo/Redo Architecture
 
-Two-tier UndoManager system for text editing.
+### Two-Tier System
 
-### Per-Session UndoManager (TextCollaboration extension)
+**Per-session** (TextCollaboration extension): Created on editor mount. Scope: `[Y.XmlFragment, Y.Map]` — tracks content edits AND property changes (fontSize, color, align, etc.). Origins: `{ySyncPluginKey, userId}`. Cmd+Z while editing can undo font changes made via context menu.
 
-Created fresh on each editor mount. Provides in-editor Cmd+Z/Cmd+Y.
+**Main** (RoomDocManager): Tracks all objects map changes. Origins: `{userId, ySyncPluginKey}` — `ySyncPluginKey` critical so text content edits (which use that origin) are visible to main undo.
 
-**Scope:** `[Y.XmlFragment, Y.Map]` — tracks both content edits AND property changes (fontSize, color, align, origin, width). This means Cmd+Z while editing can undo a font size change made via the context menu.
+### Session Merging
 
-**Tracked origins:**
-- `ySyncPluginKey` — ProseMirror → Y.XmlFragment sync transactions (typing, formatting)
-- `userId` — `roomDoc.mutate()` changes to Y.Map properties (context menu actions)
-
-**Cursor fix:** yUndoPlugin stores cursors as Y.js RelativePositions (buggy). `selectionFixPlugin` stores raw ProseMirror positions on stack items, corrects selection after undo/redo via `applyPendingSelection()`.
-
-**Cleanup:** Extension `onDestroy()` calls `undoManager.clear()` to release CRDT GC protection held by stack items.
-
-### Main UndoManager (room-level, RoomDocManager)
-
-Tracks all objects map changes. Tracked origins: `[userId, ySyncPluginKey]` — the `ySyncPluginKey` origin is critical: without it, text content edits (which use `ySyncPluginKey` as transaction origin) would be invisible to the main undo stack.
-
-The TextCollaboration extension manipulates it for **atomic session merging**:
-
+Extension manipulates main UndoManager on lifecycle:
 ```
-onCreate():                                    // Editor mounted
-  mainUndoManager.stopCapturing()              // Force new capture group boundary
-  mainUndoManager.captureTimeout = 600_000     // 10 min — merge all edits into one item
-
-onDestroy():                                   // Editor unmounting
-  mainUndoManager.stopCapturing()              // Seal the capture group
-  mainUndoManager.captureTimeout = 500         // Restore normal batching
+onCreate():   mainUM.stopCapturing() + captureTimeout = 600_000  -> new group, merge all
+onDestroy():  mainUM.stopCapturing() + captureTimeout = 500      -> seal group, restore
 ```
+Effect: Room-level Cmd+Z undoes entire editing session atomically.
 
-**Effect:** All text edits during one editing session (content + properties) merge into a single undo item on the main stack. After closing the editor, Cmd+Z at room level undoes the entire text session atomically.
+**Cursor fix:** yUndoPlugin stores cursors as buggy Y.js RelativePositions. `selectionFixPlugin` stores raw ProseMirror positions on stack items, corrects selection after undo/redo via `applyPendingSelection()`.
 
-### Y.Map Observer (DOM Sync on Undo/Redo)
+### Y.Map Observer
 
-The extension registers a Y.Map observer that fires when tracked properties change. When the per-session UndoManager undoes/redoes a property change, the observer calls `TextTool.syncProps()` to update the DOM overlay:
+Extension observes Y.Map keys: `origin`, `fontSize`, `fontFamily`, `color`, `fillColor`, `align`, `alignV`, `width`, `scale`, `labelColor`, `frame`, `shapeType`. On per-session undo/redo of property changes -> `TextTool.syncProps()` updates DOM overlay.
 
-```
-Per-session undo of fontSize change
-  → Y.Map 'fontSize' mutated
-  → observer fires (keysChanged has 'fontSize')
-  → onPropsSync(keys) → TextTool.syncProps()
-    → reads fresh from Y.Map → updates container CSS / repositions editor
-```
+### Why Custom Extension
 
-Without this observer, undoing a property change would update the CRDT but the DOM overlay would show stale values.
-
-**Tracked keys:** `origin`, `fontSize`, `fontFamily`, `color`, `fillColor`, `align`, `alignV`, `width`, `scale`, `labelColor`, `frame`, `shapeType`.
+Official `@tiptap/extension-collaboration` captures `_observers` on destroy, preventing GC of detached EditorView DOM trees (linear leak in short-lived editors). This extension registers plugins directly without suspend/restore.
 
 ---
 
 ## TextTool (`TextTool.ts`)
 
-### State
+### Three-Way Branching
 
-Flat class fields — no wrapper objects. Editor state reads Y.Map fresh (no duplicated fields for origin/fontSize/color/align/width):
+Mode determined inline from `handle.kind` at every call site — no stored flag:
 
-```typescript
-// Gesture state
-private gestureActive = false;
-private pointerId: number | null = null;
-private downWorld: [number, number] | null = null;
-private hitTextId: string | null = null;
-
-// Editor state
-private container: HTMLDivElement | null = null;
-private editor: Editor | null = null;
-objectId: string | null = null;  // public — mirrors textEditingId
-```
-
-### PointerTool Lifecycle
-
-```
-begin() → hit test via hitTestVisibleText() → store hitTextId
-end()   → hitTextId ? mountEditor(hitTextId, false) : createTextObject → mountEditor(id, true)
-```
-
-### SelectTool Integration
-
-SelectTool mounts the editor for existing text via `textTool.startEditing(objectId, entryPoint)`:
-
-```
-Click 1 (unselected text): objectOutsideSelection → setSelection([id]) — text is now sole selection
-Click 2 (single selected text): objectInSelection → textTool.startEditing() → editor mounts
-```
-
-Double-click works naturally via this two-click state machine (no timer needed). Multi-selection drill-down follows the same pattern: click 1 drills to single, click 2 mounts.
-
-**Guards during text editing** (SelectTool reads `store.textEditingId`):
-- Handle hit testing skipped in `begin()` — no scale gestures while editing
-- Handle hover cursors skipped in `handleHoverCursor()` — no resize cursors
-- Handles nulled in `getPreview()` — no visual handles on overlay
-- `onViewChange()` forwards to `textTool.onViewChange()` — repositions DOM overlay on zoom/pan
-
-**Click-outside:** `pointerdown` on document (capture phase, 100ms delayed registration). Uses `pointerdown` not `mousedown` because CanvasRuntime calls `e.preventDefault()` which suppresses compatibility `mousedown` per spec. Guards:
-- `e.button !== 0` → skip (MMB pan / right-click work while editing)
-- Target inside container or `.ctx-menu` → skip (editing / menu clicks pass through)
-- After `commitAndClose()`: `e.stopPropagation()` only when `activeTool === 'text'` AND target is canvas — prevents creating a new text object on click-off. When SelectTool is active, the event passes through so the clicked object gets selected in one click.
-
-### createTextObject
-
-```typescript
-yObj.set('fontFamily', fontFamily);      // From useDeviceUIStore.textFontFamily
-if (textFillColor) yObj.set('fillColor', textFillColor);  // From useDeviceUIStore.textFillColor
-yObj.set('width', DEV_FORCE_FIXED_WIDTH ? 270 : 'auto');  // Temporary dev boolean
-```
-
-### mountEditor
-
-Reads props from Y.Map, creates container div, positions it, then creates Tiptap Editor with:
-
-```typescript
-TextCollaboration.configure({
-  fragment,                                        // Y.XmlFragment for content sync
-  yObj: handle.y,                                  // Y.Map — added to per-session UM scope
-  userId: userProfileManager.getIdentity().userId, // For tracked origins
-  mainUndoManager: roomDoc.getUndoManager(),       // For session merging
-  onPropsSync: (keys) => this.syncProps(keys),     // DOM sync on undo/redo
-})
-```
-
-**Font family:** `container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback` — inline style overrides CSS default.
-
-**Fill color:** If `getFillColor(handle.y)` is truthy, sets `container.style.backgroundColor` — plain rect matching canvas `fillRect` (WYSIWYG).
-
-**Width handling:**
-```typescript
-if (typeof width === 'number') {
-  container.style.width = `${width * scale}px`;  // World units → screen pixels
-  container.dataset.widthMode = 'fixed';
-} else {
-  container.dataset.widthMode = 'auto';           // CSS max-content applies
-}
-```
-
-### DOM Positioning Math
-
-```
-Container top = screenY - (scaledFontSize * getBaselineToTopRatio(fontFamily))
-```
-
-Also sets `--hl-pad` CSS variable for dynamic highlight padding (see CSS Architecture).
-
-### syncProps — Y.Map → DOM Overlay
-
-Called by extension's Y.Map observer on undo/redo of property changes:
-- Reads values fresh from `handle.y` — no local state to update
-- `color` → sets CSS variable; `fillColor` → sets `container.style.backgroundColor` (or clears it); `align` → `applyAlignCSS()`
-- `origin`/`fontSize`/`fontFamily`/`width` → delegates to `positionEditor()` which reads all from Y.Map
-
-### commitAndClose
-
-```typescript
-editor.destroy();                          // Triggers extension onDestroy → seals session, clears per-session UM
-(editor as any).editorState = null;        // Tiptap doesn't null this — release EditorState + plugin states
-```
-
-Empty new text objects are deleted before destroy.
-
-### Alignment CSS
-
-```typescript
-container.style.setProperty('--text-align', align);
-container.style.setProperty('--text-anchor-tx',
-  align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
-```
-
-### Access
-
-No singleton indirection — `textTool` exported directly from `tool-registry.ts`. Public fields: `objectId`, `isEditorMounted()`, `getEditor()`, `getContainer()`.
-
----
-
-## TextCollaboration Extension (`extensions.ts`)
-
-Custom Tiptap extension replacing `@tiptap/extension-collaboration`.
-
-### Options
-
-```typescript
-interface TextCollaborationOptions {
-  fragment: XmlFragment | null;           // Y.XmlFragment for content sync
-  yObj: Y.Map<unknown> | null;            // Y.Map — added to per-session UM scope
-  userId: string | null;                  // mutate() origin for tracked origins
-  mainUndoManager: Y.UndoManager | null;  // Room-level UM for session merging
-  onPropsSync: ((keys: Set<string>) => void) | null;  // DOM sync callback
-}
-```
-
-### Plugin Setup (`addProseMirrorPlugins`)
-
-```typescript
-scope = [fragment, yObj]                           // Content + property undo
-origins = new Set([ySyncPluginKey, userId])         // Sync plugin + mutate()
-undoManager = new Y.UndoManager(scope, { trackedOrigins: origins, captureTimeout: 500 })
-plugins = [ySyncPlugin(fragment), yUndoPlugin({ undoManager }), selectionFixPlugin]
-```
+| Check | Mode | Position basis | Width source | Color field |
+|-------|------|---------------|-------------|-------------|
+| `kind === 'shape'` | Label | Shape textBox | textBox width | `labelColor` |
+| `kind === 'note'` | Note | origin + padding + alignment | contentWidth | hardcoded `'#1a1a1a'` |
+| else | Text | origin (anchor + baseline) | `width` field | `color` |
 
 ### Lifecycle
 
 ```
-onCreate():   stopCapturing + set captureTimeout=10min on main UM; observe yObj for property changes
-onDestroy():  unobserve yObj; stopCapturing + restore captureTimeout=500 on main UM; clear per-session UM
+begin() -> hit test (hitTestVisibleNote for note tool, hitTestVisibleText otherwise)
+end()   -> hitTextId ? mountEditor(hitTextId) : createTextObject -> mountEditor(id)
 ```
 
-### Memory Leak Fix
+SelectTool enters editing via `textTool.startEditing(id)` — two-click state machine: click 1 on unselected text → `setSelection([id])`. Click 2 on sole-selected text → `startEditing()`. Double-click works naturally (no timer). Multi-selection drill-down: click 1 drills to single, click 2 mounts.
 
-Official `@tiptap/extension-collaboration` captures `_observers` into a restore closure on destroy, preventing GC of detached EditorView DOM trees (linear leak in short-lived editors). This extension registers plugins directly without suspend/restore.
+**Access:** `textTool` exported directly from `tool-registry.ts`. Public fields: `objectId`, `isEditorMounted()`, `getEditor()`, `getContainer()`.
+
+### SelectTool Guards During Editing
+
+SelectTool reads `store.textEditingId`:
+- Handle hit testing and hover cursors skipped — no scale gestures while editing
+- Visual handles hidden in `getPreview()`
+- `onViewChange()` forwarded to `textTool.onViewChange()` for DOM repositioning on zoom/pan
+- Exception: `isEditingLabel()` allows handle hit-testing/rendering during label editing (label containers don't occlude handles)
+
+### mountEditor Per-Mode
+
+Editor configured with `TextCollaboration.configure({ fragment, yObj: handle.y, userId, mainUndoManager, onPropsSync })`.
+
+**Text:** Position at `origin[0], origin[1] - fontSize * baselineToTopRatio`. Width: fixed -> explicit px, auto -> CSS `max-content`. `data-width-mode='auto'|'fixed'`.
+
+**Label:** Position within `computeLabelTextBox()`. Anchored at `tbx + anchorFactor(align) * tbw` / `tby + vFactor * tbh`. Uses `maxWidth`/`maxHeight`. `data-width-mode='label'`. No backgroundColor, no Placeholder.
+
+**Note:** Position at `origin + padding + anchorFactor(align) * contentWidth`. Vertical uses CSS `clamp()` for clamped centering. `fontSize = derivedFontSize * noteScale`. Uses `maxWidth`/`maxHeight`. `data-width-mode='note'`. No backgroundColor. See Sticky Notes for detail.
+
+### syncProps (Y.Map -> DOM on undo/redo)
+
+- **Text:** `color` -> CSS var; `fillColor` -> backgroundColor; `align` -> CSS vars; spatial props -> `positionEditor()`
+- **Label:** `labelColor` -> `--text-color`; `frame/shapeType/fontSize/fontFamily/align/alignV` -> `positionEditor()`
+- **Note:** `fontFamily` -> eagerly calls `getNoteLayout()` before `positionEditor()` (ensures correct derivedFontSize); `align/alignV/origin/scale` -> `positionEditor()`. Skips fillColor and applyAlignCSS (needs full repositioning).
+
+### commitAndClose
+
+- Empty labels: delete label fields, shape persists
+- Empty text: delete entire object
+- Empty notes: preserved (valid visual elements)
+- `(editor as any).editorState = null` — Tiptap doesn't null this; release EditorState + plugin states
+
+### Click-Outside
+
+`pointerdown` on document (capture phase, 100ms delayed registration — delay prevents catching the opening click). Uses `pointerdown` not `mousedown` because CanvasRuntime's `preventDefault()` suppresses compatibility mousedown per spec.
+
+After `commitAndClose()`, `e.stopPropagation()` fires **only when `activeTool === 'text'|'note'` AND target is canvas** — prevents creating a new text/note object on click-off. When SelectTool is active (e.g., label editing), the event intentionally propagates so the clicked object gets selected normally in one click.
+
+### Remount Prevention
+
+`justClosedLabelId` set for shapes AND notes on `commitAndClose()`. Prevents the immediate remount cycle: pointerdown on shape body while editing label → `commitAndClose()` fires → event propagates → SelectTool's `end()` sees same shape hit → would call `startEditing()` again. SelectTool checks and consumes this flag before calling `startEditing()`, breaking the loop.
 
 ---
 
-## CSS Architecture (`index.css`)
-
-Container element IS the Tiptap/ProseMirror element directly (Tiptap v3 `{mount: container}` API — no wrapper div). Container gets `.tiptap` + `.ProseMirror` classes on the same element.
+## CSS Architecture
 
 ```css
 .tiptap {
-  font-family: "Grandstander", cursive, sans-serif;
-  font-weight: 450;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;       /* Safe default — no-op in auto (max-content) */
-  width: max-content;              /* Auto mode: grows with content */
+  font-family: "Grandstander", cursive, sans-serif; font-weight: 450;
+  white-space: pre-wrap; overflow-wrap: break-word;
+  width: max-content;
   transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
-  text-align: var(--text-align, left);
-  color: var(--text-color, #000000);
+  text-align: var(--text-align, left); color: var(--text-color, #000000);
 }
-
-.tiptap[data-width-mode="fixed"] {
-  outline: 1px solid #1d4ed8;
-  overflow: hidden;                /* Clip trailing whitespace + highlight overflow */
-}
-
+.tiptap[data-width-mode="fixed"] { outline: 1px solid #1d4ed8; overflow: hidden; }
+.tiptap[data-width-mode='label'] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.tiptap[data-width-mode='note']  { overflow: visible; text-align: var(--text-align, center); }
+.tiptap[data-width-mode='note'] p { margin: 0; }
 .tiptap mark {
   background-color: #ffd43b;
-  padding-block: var(--hl-pad, 0.15em);          /* Extends to full line-height */
-  margin-block: calc(-1 * var(--hl-pad, 0.15em)); /* Cancel layout shift */
+  padding-block: var(--hl-pad, 0.15em);
+  margin-block: calc(-1 * var(--hl-pad, 0.15em));
   box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
 }
 ```
 
-**`--hl-pad` CSS variable:** Set by TextTool in `mountEditor()` and `positionEditor()` as `getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)` — this is the actual CSS half-leading for the current font. For Grandstander (content area ≈ em-square) it's ~0.15em. For fonts with larger content areas (Inter, Lora, JetBrains Mono) it's smaller, preventing highlight backgrounds from overflowing line box boundaries. The 0.15em fallback covers the case where the variable isn't set.
+**`--hl-pad`:** Set by TextTool as `baselineToTopRatio - measuredAscentRatio` — per-font CSS half-leading. Prevents highlight backgrounds from overflowing line boundaries.
 
-**JS inline styles** (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width` (fixed mode), `--hl-pad`.
-
----
-
-## Canvas Rendering (`objects.ts`)
-
-```typescript
-function drawText(ctx, handle) {
-  if (useSelectionStore.getState().textEditingId === handle.id) return;  // Skip if editing
-  const props = getTextProps(handle.y);
-  const fillColor = getFillColor(handle.y);
-  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.width);
-  renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
-}
-```
-
-`fillColor` is also passed through in `drawScaledTextPreview` and `drawReflowedTextPreview` — the fill rect scales naturally via `ctx.scale()` or adapts to reflow layout dimensions.
-
-### Scale Transform Preview (`drawScaledTextPreview` / `drawReflowedTextPreview`)
-
-**Corner handles:** `drawScaledTextPreview` — renders via `ctx.scale()` on the cached layout, no re-layout per frame. Computes new virtual origin in scaled frame, then `ctx.translate + ctx.scale + renderTextLayout(ctx, layout, 0, 0, ...)`.
-
-**E/W side handles:** `drawReflowedTextPreview` — reads pre-computed `TextLayout` and origin from `TextReflowState` on the selection store (computed per-frame in `invalidateTransformPreview`). Calls `renderTextLayout` with the reflow layout directly — no ctx transform needed.
-
----
-
-## Room Doc Manager Integration
-
-### Main UndoManager
-
-```typescript
-this.undoManager = new Y.UndoManager([objects], {
-  trackedOrigins: new Set([this.userId, ySyncPluginKey]),
-  captureTimeout: 500,
-});
-```
-
-`ySyncPluginKey` is critical: ProseMirror's Y.js sync plugin writes to Y.XmlFragment with this origin. Without tracking it, the main UndoManager would ignore text content changes.
-
-### Deep Observer
-
-```typescript
-// Y.XmlFragment change: eager re-tokenize for inline styles
-if (path[1] === 'content') {
-  const fragment = objects.get(id)?.get('content');
-  textLayoutCache.invalidateContent(
-    id,
-    fragment instanceof Y.XmlFragment ? fragment : undefined,
-  );
-}
-// 'width', 'fontSize' changes handled by comparison in getLayout()
-// 'origin'/'color' don't need cache invalidation
-```
-
-The observer retrieves the fresh `Y.XmlFragment` and passes it to `invalidateContent()` for eager tokenization. This ensures `getInlineStyles()` returns fresh data immediately — critical for the context menu's `computeUniformInlineStyles()` which runs in `refreshStyles()` for both `textOnly` and `shapesOnly` selections.
-
-### Deletion / Rebuild
-
-```typescript
-if (handle.kind === 'text') textLayoutCache.remove(id);  // Deletion
-textLayoutCache.clear();                                   // Full rebuild
-```
-
----
-
-## Derived Frame
-
-Text has no stored `frame` in Y.Map — derived from origin/fontSize/align/content/width, cached in `TextLayoutCache`, read via `getTextFrame(objectId)`.
-
-**Frame = BBox:** `computeTextBBox()` returns frame + 2px padding — matches DOM overlay bounds exactly. Both `getTextFrame()` and the spatial index BBox derive from the same logical frame.
-
-**Frame consumers:** `hit-testing.ts`, `EraserTool.ts`, `selection-overlay.ts`, `SelectTool.ts`, `connectors/*`, `bounds.ts`.
-
----
-
-## Scale Transforms (SelectTool)
-
-Uniform scaling of text via corner and N/S handle drag. Matches stroke uniform-scale pattern — center-based position preservation with `computePreservedPosition()`.
-
-### Handle Behavior
-
-| Selection | Handle | Text behavior |
-|-----------|--------|---------------|
-| textOnly / mixed | corner | Uniform scale (fontSize + origin + width) |
-| textOnly / mixed | E/W side | Reflow: changes width, re-layouts text, converts auto→fixed on commit |
-| textOnly | N/S side | Uniform scale (mirrors corner — fontSize + origin + width) |
-| mixed | N/S side | Edge-pin translate via `computeEdgePinTranslation()` (mirrors stroke mixed+side) |
-
-### Math — Font Size Rounding
-
-Font size is rounded to 3 decimal places (`Math.round(fontSize * absScale * 1000) / 1000`). The effective scale is then derived back from the rounded font size (`roundedFontSize / originalFontSize`). This ensures preview and commit produce identical geometry. At fontSize 20, this gives 20,000 distinct steps between scale 1.0→2.0 — visually imperceptible.
-
-### Math — Origin Derivation
-
-Text frame is derived (not stored). After computing the new scaled frame `[nfx, nfy, nfw, nfh]`:
-
-```
-newOriginX = nfx + anchorFactor(align) * nfw    // left=0, center=0.5, right=1
-newOriginY = nfy + roundedFontSize * getBaselineToTopRatio()
-```
-
-Position preservation uses raw `uniformScale` (continuous cursor tracking). Font size and dimensions use `effectiveAbsScale` (rounded/quantized).
-
-### Preview (`objects.ts` → `drawScaledTextPreview`)
-
-Corner + textOnly N/S: no re-layout per frame — reuses the cached `TextLayout` at the original font size. Visual scaling via `ctx.translate(newOriginX, newOriginY)` + `ctx.scale(effectiveAbsScale, effectiveAbsScale)` + `renderTextLayout(ctx, layout, 0, 0, ...)`. Mixed N/S: `ctx.translate(dx, dy)` + `drawText()` (edge-pin, no scaling).
-
-### Commit (`SelectTool.ts` → `commitScale`)
-
-Corner + textOnly N/S: writes to Y.Map: `origin` (derived from new frame), `fontSize` (rounded), and `width` (scaled, only if fixed-width). Mixed N/S: translates `origin[1]` by `dy` from `computeEdgePinTranslation()`. The deep observer fires → `computeTextBBox()` re-derives the frame from the new properties → spatial index updates.
-
-### Topology Integration (`transform.ts`)
-
-`transformFrameForTopology` and `transformPositionForTopology` use uniform scale for `textOnly` (not just `mixed`), ensuring connectors attached to text objects reroute correctly during scale drag and on commit.
-
-### E/W Reflow (Side Handle Width Change)
-
-`TextReflowState` on the selection store holds mutable per-frame maps (`layouts`, `origins`). Initialized in `beginScale` when E/W handle + text objects present.
-
-**Per-frame in `invalidateTransformPreview`:**
-1. Scale both frame edges from origin: `scaledLeft = ox + (fx - ox) * scaleX`, same for right
-2. `min/max` normalization handles handle crossing (scaleX < 0)
-3. Width clamped to `getMinCharWidth(fontSize)` — natural dead zone at minimum
-4. Anchor clamping: when clamped, pins edge closest to scale origin
-5. `layoutMeasuredContent(measured, targetWidth, fontSize)` — reuses cached `MeasuredContent` (skips tokenize + measure)
-6. New origin: `newOriginX = newLeft + anchorFactor(align) * targetWidth`, Y unchanged
-7. Results stored in `textReflow.layouts` / `textReflow.origins`
-
-**Commit:** Writes `width` (= `layout.boxWidth`) + `origin` to Y.Map. Converts auto-width text to fixed-width. Deep observer fires → `computeTextBBox()` re-derives frame.
-
-**Rendering:** `drawReflowedTextPreview` in `objects.ts` reads pre-computed layout/origin from store.
-
-### Dirty Rect Tracking (`invalidateTransformPreview`)
-
-Corner + textOnly N/S: `getTextFrame()` → `frameTupleToWorldBounds()` → `computeUniformScaleBounds()`. E/W handles: derives bounds from reflow layout (`[newLeft, fy, targetWidth, newHeight]`). Mixed N/S: `computeEdgePinTranslation()` → `translateBounds()`.
-
----
-
-## WYSIWYG Parity Contract
-
-DOM and canvas match because:
-- Same font (per-family, 450/700 weight), same `pre-wrap` + `break-word`, same container width
-- Same line-height (`fontSize * lineHeightMultiplier`)
-- Same vertical positioning via `getBaselineToTopRatio(fontFamily)` — uses CSS half-leading formula with measured `fontBoundingBoxAscent`/`Descent`, correct for all fonts regardless of content area size
-- Canvas flow engine implements identical whitespace semantics (pending whitespace pattern)
-- Fill color: CSS `background-color` on container ↔ canvas `fillRect` covering same block bounds
-- Sub-pixel differences (~0.5px) expected from per-token vs native text shaping
-
----
-
-## Highlight Support
-
-Multicolor text highlighting via `@tiptap/extension-highlight` (DOM) + canvas pipeline.
-
-### DOM (Tiptap)
-- `Highlight.configure({ multicolor: true })` in TextTool editor extensions
-- Renders `<mark style="background-color: #hex">` for explicit colors, plain `<mark>` for default toggle
-- CSS on `.tiptap mark`: `border-radius: 0.25em`, extends background to full line-height via `padding-block: var(--hl-pad)` + `margin-block: calc(-1 * var(--hl-pad))` — `--hl-pad` is the per-font half-leading set by TextTool
-- Default color: `#ffd43b` (first entry in `HIGHLIGHT_COLORS` palette)
-
-### Canvas Pipeline
-- `highlight: string | null` field on `StyledText` → threaded through tokenizer, measurement, flow engine coalesce checks, renderer
-- `parseAndTokenize()`: extracts from `attrs.highlight` — `{ color: '#hex' }` → that color, presence without color → `'#ffd43b'`
-- `renderTextLayout()`: two-pass per line — pass 1 draws `roundRect` (radius `fontSize * 0.25`, matches CSS `border-radius: 0.25em`) for highlighted runs, pass 2 draws `fillText`
-- Fixed-mode highlight rects clamped to `[containerLeft, containerRight]` via arithmetic (no `ctx.clip`); clamped sides get flat edge (radius 0) to match CSS `overflow:hidden`
-- Highlight rects cover whitespace runs too (matching CSS `<mark>` behavior) — trailing ws runs are committed (not discarded) at wrap points so highlights render
-- No measurement impact — highlight is rendering-only, rides existing pipeline
-
-### Context Menu
-- `editor.isActive('highlight')` drives button active state
-- `editor.isActive('highlight', { color })` drives per-swatch active state in submenu
-- Click swatch → `editor.chain().focus().setHighlight({ color }).run()`
-- Click none → `editor.chain().focus().unsetHighlight().run()`
-- Icon color synced from `editor.getAttributes('highlight').color` on every selection/transaction
-
----
-
-## Changelog — Multi-Font Setup
-
-### Font Files (`client/public/fonts/`)
-- **Fonts:*** Grandstander, Inter, Lora, JetBrains Mono
-**All fonts:** variable `wght 450–700`, Latin subset only, `liga`/`calt`/`dlig` stripped at font level (canvas has no `font-variant-ligatures: none` — stripping is the only cross-browser WYSIWYG fix). Features kept: `kern`, `mark`, `mkmk`, `ccmp`, `locl`. 
+JS inline styles (zoom-dependent): `fontSize`, `lineHeight`, `left`, `top`, `width`/`maxWidth`/`maxHeight`, `--hl-pad`.
 
 ---
 
 ## Shape Labels
 
-Text labels inside shapes (rect, ellipse, diamond, roundedRect). Reuses the full text pipeline — same Y.XmlFragment, same tokenizer/measure/layout, same Tiptap editor — but with shape-aware positioning, text box computation, and a dedicated canvas renderer.
+Reuses the full text pipeline with shape-aware positioning.
 
-### Y.Doc Schema
+### Text Box
 
-Labels are NOT separate objects. They add fields directly to the shape Y.Map:
-
-```typescript
-// Label fields (added on first edit, removed if empty on close)
-{
-  content: Y.XmlFragment,     // Rich text — same structure as text objects
-  fontSize: number,            // World units
-  fontFamily: FontFamily,      // 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
-  labelColor: string,          // Text color (separate from shape border `color`)
-  align?: TextAlign,           // 'left' | 'center' | 'right' — default 'center' via getAlign(y, 'center')
-  alignV?: TextAlignV,         // 'top' | 'middle' | 'bottom' — default 'middle' via getAlignV(y)
-}
-```
-
-**Key differences from text objects:** No `origin` or `width`. Width derived from shape frame. Alignment stored directly on the shape Y.Map (`align`/`alignV`), defaulting to center/middle for backward compatibility. `hasLabel(y)` (`y.get('content') instanceof Y.XmlFragment`) is the canonical check. `getLabelColor(y)` reads the `labelColor` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged.
-
-### Text Box Computation (`computeLabelTextBox`)
-
-```typescript
-computeLabelTextBox(shapeType: string, frame: FrameTuple): FrameTuple
-```
-
-Pure function. Returns max inscribed text rectangle within the shape, inset by `LABEL_PADDING = 10`:
-
-| Shape | Math |
-|-------|------|
-| rect, roundedRect | `[fx+pad, fy+pad, fw-2*pad, fh-2*pad]` |
-| ellipse | `a√2 × b√2` centered, then inset by pad |
-| diamond | `w/2 × h/2` centered, then inset by pad |
-
-`Math.max(0, ...)` prevents negative dimensions — renderer early-returns when dims ≤ 0.
+`computeLabelTextBox(shapeType, frame)` -> max inscribed rect, inset by `LABEL_PADDING = 10`. Ellipse: `(a/sqrt2)*2 x (b/sqrt2)*2`; diamond: `w/2 x h/2`; rect: simple inset. `Math.max(0, ...)` prevents negative dims.
 
 ### Canvas Rendering
 
-**At rest — `drawShapeLabel()`:** Called at end of `drawShape()`, gated by `hasLabel(y)`. Skips if `textEditingId === handle.id`. Uses `textLayoutCache.getLayout()` with text box width — width changes from shape resizing trigger re-flow automatically.
+**At rest:** `drawShapeLabel()` at end of `drawShape()`, gated by `hasLabel(y)`. Uses `textLayoutCache.getLayout()` with textBox width.
 
-**During transforms — `drawShapeLabelWithFrame()`:** Takes explicit transformed frame. Reads cached `MeasuredContent` via `getMeasuredContent()` and calls `layoutMeasuredContent()` directly — avoids polluting cache with transient widths.
+**During transforms:** `drawShapeLabelWithFrame()` takes explicit frame, uses `getMeasuredContent()` + `layoutMeasuredContent()` directly — avoids polluting cache.
 
-**`renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)`:** Alignment-aware H+V positioning within text box. Uses `anchorFactor(align)` + `getLineStartX()` for horizontal, `getNoteContentOffsetY(alignV, ...)` for vertical. Overflow clips via `ctx.clip()`. Same highlight rects as `renderTextLayout`. Defaults to center/middle for backward compatibility.
+### DOM Editing
 
-### DOM Editing (TextTool)
+`startEditing()` creates label fields in a single transaction if `!hasLabel(handle.y)`. Alignment-aware positioning matching the note pattern (CSS `clamp()` for vertical overflow). Label containers don't occlude selection handles — `isEditingLabel()` allows handle interaction during editing.
 
-TextTool derives label vs text mode from `handle.kind === 'shape'` inline at every call site — no stored flag.
+### Cache Invalidation
 
-**Entry:** `startEditing()` creates label fields in a single transaction if `!hasLabel(handle.y)` (`content`, `fontSize`, `fontFamily`, `labelColor`, `align`, `alignV` from device-ui-store defaults).
-
-**mountEditor — Label branch:** Alignment-aware positioning matching the note pattern. Horizontal: anchor at `tbx + anchorFactor(align) * tbw`, `--text-anchor-tx` offsets container (`0%`/`-50%`/`-100%`). Vertical: anchor at `tby + vFactor * tbh`, `--text-anchor-ty` with CSS `clamp()` for overflow clamping. Uses `maxWidth`/`maxHeight` (not `width`). `data-width-mode='label'` triggers CSS for `text-align: var(--text-align, center)` + hidden-scrollbar overflow. No `backgroundColor` (shape is the background). No Placeholder extension.
-
-**syncProps — Label branch:** `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily`/`align`/`alignV` → `positionEditor()`. Does NOT react to shape `fillColor` or `color` changes.
-
-**commitAndClose:** Empty labels: deletes all label fields (`content`, `fontSize`, `fontFamily`, `labelColor`, `align`, `alignV`), shape persists. Sets `justClosedLabelId` for remount prevention.
-
-**SelectTool coordination:**
-- **Remount prevention:** `justClosedLabelId` flag prevents click-off → immediate remount cycle. Checked and consumed in SelectTool `end()`.
-- **Handles visible:** Label containers don't occlude handles. `isEditingLabel()` allows handle hit-testing/rendering during label editing.
-
-### Extension Observer
-
-Additional tracked keys: `labelColor`, `frame`, `shapeType`, `align`, `alignV`. Fires `onPropsSync` on shape resize, type-change, label color change, or alignment change during editing. Harmless for text objects.
-
-### Cache & Content Invalidation
-
-- **At rest:** `drawShapeLabel` → `textLayoutCache.getLayout(shapeId, ...)` — normal three-tier cache
-- **Deep observer:** `path[1] === 'content'` → `invalidateContent(id, fragment)` — eager re-tokenize for inline styles (see TextLayoutCache section above)
-- **Transform preview:** `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes
-- **Deletion:** `textLayoutCache.remove(id)` — no-op for shapes without labels
-
-### CSS (`index.css`)
-
-```css
-.tiptap {
-  transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%));
-  /* --text-anchor-ty defaults to 0% — only labels set -50% */
-}
-
-.tiptap[data-width-mode='label'] {
-  overflow-x: hidden;
-  overflow-y: auto;
-  text-align: center;
-  scrollbar-width: none;
-}
-.tiptap[data-width-mode='label']::-webkit-scrollbar { display: none; }
-.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before { display: none; }
-```
-
-### WYSIWYG Parity
-
-Both DOM and canvas center content H+V within text box, clip overflow (`overflow-y: auto` + `maxHeight` ↔ `ctx.clip()`), use same font metrics/lineHeight/baselineToTop. ProseMirror scrollTop resets on close — canvas "rest position" matches un-scrolled DOM state.
-
-### Edge Cases
-
-- **Empty label:** Fields deleted on close, shape persists, cache cleaned
-- **Undo label creation:** Main UndoManager reverses field additions; `hasLabel()` returns false
-- **Shape resize during editing:** `frame` key → extension observer → `positionEditor()` updates DOM
-- **Tiny shapes:** `computeLabelTextBox` returns 0 dims → rendering early-returns, content preserved
-- **Click shape body during editing:** Editor closes, shape stays selected, `justClosedLabelId` prevents remount
-- **Handle click during editing:** Capture phase closes editor → handle gesture starts normally
+- Deep observer: `path[1] === 'content'` -> `invalidateContent(id, fragment)` — eager re-tokenize for inline styles
+- Transform preview: `getMeasuredContent()` + `layoutMeasuredContent()` — no cache writes
 
 ---
 
 ## Sticky Notes
 
-First-class `kind: 'note'` ObjectKind with **scale-based rendering** and **auto font sizing**. Font size is never stored — it's fully derived from content via a two-phase search algorithm. The Y.Map stores a single `scale` key (default 1) that uniformly scales the entire note. Canvas rendering uses `ctx.scale(noteScale, noteScale)` to draw everything at fixed base dimensions (280×280), scaled up by `noteScale`. This means changing `scale` never re-runs auto-sizing — only content or fontFamily changes trigger re-layout.
+First-class `kind: 'note'` with **scale-based rendering** and **auto font sizing**. Font size is never stored — fully derived from content via a two-phase search algorithm. The Y.Map stores `scale` (default 1) that uniformly scales the entire note. Canvas renders at fixed base dimensions (280x280) via `ctx.scale(noteScale)`, so scale changes never re-run auto-sizing.
 
-Reuses the text pipeline (Y.XmlFragment, Tiptap editor, TextLayoutCache) but with a dedicated cache path (`getNoteLayout`) that measures at 100px and auto-sizes via ratio scaling. Notes are always fixed squares — no height auto-grow. Overflow at min font step clips.
+Reuses text pipeline (Y.XmlFragment, Tiptap, TextLayoutCache) with dedicated cache path (`getNoteLayout`) that measures at 100px and auto-sizes via ratio scaling. Notes are always fixed squares. Overflow at min font step clips.
 
-### Y.Doc Schema
+### NoteProps Accessor
 
-```typescript
-{
-  id: string,
-  kind: 'note',
-  origin: [number, number],     // [topLeftX, topLeftY] — always top-left (doesn't shift with alignment)
-  scale: number,                 // Default 1 — uniform scale factor for entire note
-  fontFamily: FontFamily,        // Default 'Grandstander' (from noteFontFamily)
-  align: TextAlign,              // 'left' | 'center' | 'right' — horizontal, default 'center'
-  alignV: TextAlignV,            // 'top' | 'middle' | 'bottom' — vertical, default 'middle'
-  fillColor: string,             // Note background color (NOTE_FILL_COLOR = '#FEF3AC')
-  content: Y.XmlFragment,
-  ownerId: string,
-  createdAt: number
-}
-```
-
-No `fontSize` field — font size is derived via auto-sizing algorithm, cached in `TextLayoutCache.noteDerivedFontSize`. No `width` field — note width = `NOTE_WIDTH * scale`. No `color` field — text is hardcoded to `'#1a1a1a'`.
-
-**`NoteProps` accessor** (`object-accessors.ts`):
 ```typescript
 interface NoteProps {
   content: Y.XmlFragment;
   origin: [number, number];
   scale: number;           // (y.get('scale') as number) ?? 1
   fontFamily: FontFamily;
-  align: TextAlign;
-  alignV: TextAlignV;
-  fillColor: string;
+  align: TextAlign;        // ?? 'center'
+  alignV: TextAlignV;      // ?? 'middle'
+  fillColor: string;       // ?? '#FEF3AC'
 }
 ```
 
-**Origin semantics differ from text objects:** `origin` is always the top-left corner of the note body, regardless of alignment. For text objects, `origin[0]` shifts with horizontal alignment (left/center/right anchor). For notes, alignment is applied as an offset within the content area — origin stays fixed.
+**Origin differs from text:** Always top-left corner regardless of alignment. Text `origin[0]` shifts with align. Note alignment is an offset within the content area — origin stays fixed.
 
 ### Dimensional Model
 
-Everything derives from `NOTE_WIDTH * scale`. All helpers take `scale` as parameter:
+Everything derives from `NOTE_WIDTH (280) * scale`. All helpers take `scale`:
 
 ```typescript
-getNotePadding(scale)       → NOTE_WIDTH * scale * (12/280)
-getNoteContentWidth(scale)  → NOTE_WIDTH * scale * (1 - 2 * 12/280)
-getNoteCornerRadius(scale)  → NOTE_WIDTH * scale * 0.011
-getNoteShadowPad(scale)     → NOTE_WIDTH * scale * 0.15
+getNotePadding(scale)       -> NOTE_WIDTH * scale * (12/280)    // 12wu at scale=1
+getNoteContentWidth(scale)  -> NOTE_WIDTH * scale * (1-2*12/280) // 256wu at scale=1
+getNoteCornerRadius(scale)  -> NOTE_WIDTH * scale * 0.011       // 3.08wu at scale=1
+getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * 0.15        // 42wu at scale=1
 ```
 
-| Property | Formula | At scale=1 (w=280) |
-|----------|---------|---------------------|
-| Note width/height | `NOTE_WIDTH * scale` | 280wu (always square) |
-| Content padding | `getNotePadding(scale)` | 12wu |
-| Content width | `getNoteContentWidth(scale)` | 256wu |
-| Max content height | `= contentWidth` (square content box) | 256wu |
-| Corner radius | `getNoteCornerRadius(scale)` | 3.08wu |
-| Shadow pad | `getNoteShadowPad(scale)` | 42wu |
+| Property | At scale=1 |
+|----------|-----------|
+| Note width/height | 280wu (always square) |
+| Content padding | 12wu per side |
+| Content width/height | 256wu (square content box) |
+| Corner radius | 3.08wu |
+| Shadow pad | 42wu |
 
-`maxContentH = contentWidth` — the height of the content area when the note is a perfect square. This is the threshold where vertical alignment transitions from centering within available space to clamping at the top.
+`maxContentH = contentWidth = 256` — threshold where vertical alignment transitions from centering to clamping.
 
-**Key invariant:** Auto-sizing always operates at base dimensions (`BASE_CONTENT_WIDTH = 256`). Scale only affects world-space size — never the layout algorithm. This is why `scale` changes don't invalidate the cache.
+**Key invariant:** Auto-sizing always operates at base dimensions (`BASE_CONTENT_WIDTH = 256`). Scale only affects world-space size — never the layout algorithm. Scale changes don't invalidate cache.
 
 ### Auto Font Size Algorithm — `layoutNoteContent`
 
-Replaces the old `flowCheck` + `computeNoteAutoSize` with a single unified function. Located in `text-system.ts` (§5b).
-
 #### 100px Ratio Strategy
 
-Font glyph widths scale linearly with font size. Measure once at 100px via `measureTokenizedContent(tokenized, 100, fontFamily)`, then for candidate step `s`, compare token widths against a scaled-up container width: `maxW100 = contentWidth / (s / 100)`. Zero per-token multiplication during the search phase. Height check: `maxLines = floor(contentHeight / (s * lineHeightMultiplier))`.
+Font glyph widths scale linearly. Measure once at 100px via `measureTokenizedContent(tokenized, 100, fontFamily)`. For candidate step `s`: `maxW100 = contentWidth / (s / 100)`. Zero per-token multiplication during search. Height: `maxLines = floor(contentHeight / (s * lineHeightMultiplier))`.
 
 #### Font Size Steps
 
@@ -959,140 +437,147 @@ NOTE_FONT_STEPS = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20,
 NOTE_PHASE1_FLOOR = 18   // Below this, char-breaking activates
 ```
 
-#### Phase A: Find Font Step (zero allocations)
+#### Phase 1: Words Atomic (floor 18px)
 
-**Educated start:** Scans all tokens for `maxWordW100` (widest word at 100px), then computes upper bound: `min(contentWidth*100/maxWordW100, contentHeight/(paraCount*lhMult))`. Starts at the first step ≤ this bound, skipping steps that can't possibly fit.
+**Educated start:** Scans tokens for `maxWordW100` (widest word at 100px), computes upper bound: `min(contentWidth*100/maxWordW100, contentHeight/(paraCount*lhMult))`. Starts at first step <= bound.
 
-**Phase 1 (words atomic, floor 18px):** Top-down search from educated start. For each step, `noteFlowCheck` simulates the flow engine's pending whitespace state machine (leading ws committed, inter-word ws buffered, wrap on next word). Three outcomes:
-- `'fits'` → step is the answer, break
-- `'heightOverflow'` → step too large, continue to next
-- `number` (step index) → a word is too wide, `findStepForWord` computed the exact step where it fits. Jump directly to that index. If jumped step < floor (18) or no step fits → enter phase 2.
+Top-down search. For each step, `noteFlowCheck(measured, maxW100, maxLines, phase2=false, contentWidth)`:
+- `'fits'` -> this step is the answer
+- `'heightOverflow'` -> too large, continue
+- `number` (step index) -> word too wide, `findStepForWord` computed exact step. Jump directly. If jumped step < 18 -> Phase 2.
 
 ```typescript
-// Pure helper — first step index where word fits on one line
 function findStepForWord(wordW100: number, contentWidth: number): number {
   const maxStep = (contentWidth * 100) / wordW100;
-  for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
-    if (NOTE_FONT_STEPS[i] <= maxStep) return i;
-  }
-  return NOTE_FONT_STEPS.length; // no step fits
+  // Return first step index where NOTE_FONT_STEPS[i] <= maxStep
 }
 ```
 
-**Phase 2 (char-breaking from top):** Restarts search from step 0 (72px). `noteFlowCheck` now breaks oversized words at grapheme boundaries via `sliceTextToFit`. Font can jump UP (e.g., from 18 floor → 48) because wrapping long words to multiple lines allows larger fonts.
+#### Phase 2: Character Breaking (from top)
 
-**Fallback:** If no step fits in either phase, `derivedFontSize` stays at 8 (last step). Empty text naturally returns 72 from the flow simulation (1 empty paragraph = 1 line, fits at step 72).
+Restarts from step 0 (72px). `noteFlowCheck` breaks oversized words at grapheme boundaries via `sliceTextToFit`. Font can jump **up** (e.g., 18->48) because multi-line wrapping allows larger fonts.
+
+**Fallback:** If no step fits, `derivedFontSize = 8`. Empty text returns 72.
 
 #### `noteFlowCheck` — Inline Flow Simulation
 
 ```typescript
 type NoteFlowResult = 'fits' | 'heightOverflow' | number; // number = jumpToStepIdx
-
-function noteFlowCheck(
-  measured: MeasuredContent, maxW: number, maxLines: number,
-  phase2: boolean, contentWidth: number,
-): NoteFlowResult
 ```
 
-Mirrors `layoutMeasuredContent`'s pending whitespace state machine exactly:
-- Leading whitespace: committed immediately (can overflow)
-- Inter-word whitespace: buffered as `pendingW`, committed/discarded on next word arrival
+Mirrors `layoutMeasuredContent`'s pending whitespace state machine:
+- Leading WS: committed immediately (can overflow)
+- Inter-word WS: buffered as `pendingW`, commit/discard on next word
 - Paragraph boundaries: reset line, increment `lineCount`
-- Early bail: returns immediately when `lineCount > maxLines`
+- Early bail when `lineCount > maxLines`
 - Phase 1: returns `findStepForWord(wordW, contentWidth)` for oversized words
-- Phase 2: char-breaks oversized words segment by segment via `sliceTextToFit`
+- Phase 2: char-breaks oversized words segment by segment
 
 #### Phase B: Mutate + Build Layout
 
-After finding `derivedFontSize`, mutates the `MeasuredContent` (originally at 100px) in place:
+After finding `derivedFontSize`, mutates `MeasuredContent` (100px) in place:
 
 ```typescript
 const ratio = derivedFontSize / 100;
-for (const para of measured.paragraphs) {
-  for (const tok of para.tokens) {
-    tok.advanceWidth *= ratio;
-    for (const seg of tok.segments) {
-      seg.font = buildFontString(seg.bold, seg.italic, derivedFontSize, fontFamily);
-      seg.advanceWidth *= ratio;
-    }
-  }
-}
+for (tok) { tok.advanceWidth *= ratio; seg.advanceWidth *= ratio; seg.font = rebuild; }
 measured.lineHeight = derivedFontSize * lhMult;
+layoutMeasuredContent(measured, contentWidth, derivedFontSize);
 ```
 
-Then calls `layoutMeasuredContent(measured, contentWidth, derivedFontSize)` — one pass building `MeasuredLine[]`/`MeasuredRun[]`. Safe because the mutated `MeasuredContent` is never reused for 100px ratio work — on next cache miss, fresh `MeasuredContent` is created from re-measurement.
+Safe — mutated content never reused for 100px work. Fresh measurement on next cache miss.
 
-Returns `{ layout: TextLayout, derivedFontSize: number }`.
+### Cache — `getNoteLayout`
 
-### Cache — `getNoteLayout` on TextLayoutCache
-
-Separate from `getLayout` (text objects). No fontSize/width params — layout is always at base dimensions.
+Separate from `getLayout`. No fontSize/width params — always at base dimensions.
 
 ```typescript
-getNoteLayout(objectId: string, fragment: Y.XmlFragment, fontFamily: FontFamily): TextLayout
-getNoteDerivedFontSize(objectId: string): number  // from cache, fallback 72
+getNoteLayout(id, fragment, fontFamily): TextLayout
+getNoteDerivedFontSize(id): number  // fallback 72
 ```
 
-**`CacheEntry` addition:** `noteDerivedFontSize: number | null` — `null` means stale.
+**Two-tier:**
+1. **Hit:** tokenized valid + fontFamily matches + noteDerivedFontSize valid -> cached layout
+2. **Stale:** Re-measure at 100px + `layoutNoteContent` (reuses tokenized if content unchanged)
+3. **Full miss:** `parseAndTokenize` -> measure at 100px -> `layoutNoteContent`
 
-**Two-tier cache:**
+**Invalidation:** `invalidateContent(id)` nulls tokenized + noteDerivedFontSize. Scale changes don't invalidate. FontFamily detected by comparison.
 
-1. **Full hit:** `tokenized !== null && measuredFontFamily === fontFamily && noteDerivedFontSize !== null` → return cached `layout`
-2. **Content valid, fontFamily or derivedFontSize stale:** Re-measure at 100px + `layoutNoteContent` (reuses cached `tokenized`). Updates `measured`, `measuredFontFamily`, `layout`, `noteDerivedFontSize`.
-3. **Content stale or no entry:** Full pipeline — `parseAndTokenize` → `measureTokenizedContent(tokenized, 100, fontFamily)` → `layoutNoteContent(measured, fontFamily)`.
+### Canvas Rendering — `drawStickyNote`
 
-**Invalidation:** `invalidateContent(objectId)` nulls both `tokenized` (or eagerly re-tokenizes) and `noteDerivedFontSize`. Scale changes don't invalidate — layout is scale-independent. FontFamily changes detected by `measuredFontFamily !== fontFamily` comparison in tier 2.
+Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (280x280). Does NOT call `renderTextLayout` — custom rendering with alignment.
 
-**Module-level export:** `getNoteDerivedFontSize(objectId)` reads from cache, returns `NOTE_FONT_STEPS[0]` (72) if no entry.
-
-### BBox + Derived Frame
-
-`computeNoteBBox(objectId, props: NoteProps)` — called from room-doc-manager (steady-state + hydration):
-
-```typescript
-const noteW = NOTE_WIDTH * scale;
-const frame: FrameTuple = [origin[0], origin[1], noteW, noteW];  // always square
-textLayoutCache.getNoteLayout(objectId, content, fontFamily);     // populates cache
-textLayoutCache.setFrame(objectId, frame);
-const sp = getNoteShadowPad(scale);
-return [frame[0] - sp, frame[1] - sp, frame[0] + noteW + sp, frame[1] + noteW + sp];
+```
+drawStickyNote(ctx, handle):
+  1. getNoteProps(y) -> origin, scale, fontFamily, fillColor, content, align, alignV
+  2. getNoteLayout(id, content, fontFamily) -> layout at base dimensions
+  3. getNoteDerivedFontSize(id) -> derived font size
+  4. ctx.translate(origin) + ctx.scale(noteScale)
+  5. renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor) -- always drawn, even during editing
+  6. if textEditingId === id -> return (DOM overlay handles text)
+  7. Alignment at base dimensions:
+     padding = getNotePadding(1), contentWidth = getNoteContentWidth(1)
+     vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH)
+     textY = padding + vOffset + baselineToTop
+     noteAnchorX = padding + anchorFactor(align) * contentWidth
+  8. Clip if contentH > maxContentH
+  9. Two-pass per line: highlights -> fillText ('#1a1a1a')
 ```
 
-Frame = body rectangle (always square, no shadow). BBox = body + shadow pad. Hit testing and selection use `getTextFrame(id)` (body only). Dirty rect tracking uses BBox (includes shadow).
+Key differences from `renderTextLayout`:
+- All coordinates in base space, GPU handles scaling
+- No fillColor background rect (body drawn by `renderNoteBody`)
+- Container bounds = content area (not text block box)
+- Uses `getLineStartX` with virtual anchor
+- Vertical offset via `getNoteContentOffsetY` (not baseline positioning)
+- Clips overflow at content area boundary
 
-Alignment does not affect BBox or frame — the body rectangle is determined by `origin + NOTE_WIDTH * scale`. Alignment only shifts text *within* the body.
+### Shadow System — 9-Slice Cache
 
-Fallback in room-doc-manager (when `getNoteProps` fails): reads raw `scale` from Y.Map, computes `w = 280 * scale`.
+Dual-layer Gaussian shadow pre-rendered on DPR-scaled `OffscreenCanvas`, drawn via 8 `drawImage` calls (9-slice, center skipped).
+
+**Source canvas:** `(280 * dpr) x (280 * dpr)` px. Layout: `[100px pad][80px rect][100px pad]`.
+
+**Dual layers** (opaque `#000` fill, body punched out with `destination-out`):
+
+| Layer | blur | offsetY | alpha | Purpose |
+|-------|------|---------|-------|---------|
+| Floor | 34 | 28 | 0.10 | Long bottom tail, 3D lift |
+| Contact | 10 | 3 | 0.06 | Soft edge definition |
+
+Why dual-layer: single Gaussian can't produce asymmetric sticky-note shadow. Floor's large offsetY pushes it below body. Contact adds soft edges.
+
+Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punch-out expanded 1px to eliminate anti-aliased fringe.
+
+**Cache invalidation:** Auto-rebuilds on DPR change. Module-level singleton.
+
+**Destination mapping:** Source pad (100px) -> `w * NOTE_SHADOW_PAD_RATIO` (42wu at scale=1). Inside `ctx.scale(noteScale)`, draws at base dimensions.
+
+**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (9-slice) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`.
 
 ### Alignment System
 
-Notes support 3×3 alignment (H×V) with two key behaviors:
+3x3 alignment (H x V).
 
-1. **Horizontal alignment** — auto-grow width (like shape labels): container uses `width: max-content` + `maxWidth`, growing to fit content up to the full content width. Position anchored at `contentLeft + anchorFactor(align) * contentWidth`, then `translateX` offsets the container (`0%` / `-50%` / `-100%`). `text-align` CSS variable aligns lines within the container.
+#### Horizontal
 
-2. **Vertical alignment with clamping** — CSS `clamp()` in `translateY` prevents content from overflowing the top of the note body when it exceeds the square content box height.
+Container `width: max-content` + `maxWidth`, growing to fit content. Anchored at `contentLeft + anchorFactor(align) * contentWidth`, then `translateX` offsets (`0%`/`-50%`/`-100%`). `text-align` CSS variable aligns lines.
 
-#### Vertical Alignment Math — CSS `clamp()` Approach
+#### Vertical — CSS `clamp()`
 
-Position `top` at the vertical anchor point within the content area, then clamp `translateY`:
+Position `top` at vertical anchor, clamp `translateY`:
 
 ```
 vFactor = top:0, middle:0.5, bottom:1
 topWorldY = origin[1] + padding + vFactor * maxContentH
 maxTy = vFactor * maxContentH * cameraScale
---text-anchor-ty = alignV === 'top' ? '0%' : clamp(-maxTy px, -vFactor*100 %, 0px)
+--text-anchor-ty = alignV === 'top' ? '0%' : clamp(-maxTy px, -vFactor*100%, 0px)
 ```
 
-**How it works (middle, vFactor=0.5):**
-- Container `top` set at vertical middle of content area (screen px)
-- `translateY(clamp(-maxTy, -50%, 0px))` — CSS resolves `%` to element height at used-value time
-- When element height H < maxContentH: `-50%` (= `-H/2`) is less negative than `-maxTy` → clamp picks `-50%` → perfectly centered
-- When H > maxContentH: `-50%` is more negative than `-maxTy` → clamp picks `-maxTy` → top clamped at padding edge
-- Transition is continuous: centering offset smoothly decreases to 0 as content fills the available space
+- Content fits (H < maxContentH): `-vFactor*100%` wins -> centered
+- Content overflows: `-maxTy` wins -> top clamped at padding edge
+- Transition is continuous
 
-#### Canvas Alignment — Matching Formulas
-
-Canvas uses `getNoteContentOffsetY` which produces identical positions to the CSS clamp:
+#### Canvas Matching
 
 ```typescript
 getNoteContentOffsetY(alignV, maxContentH, contentH):
@@ -1101,211 +586,131 @@ getNoteContentOffsetY(alignV, maxContentH, contentH):
   return alignV === 'middle' ? space / 2 : space
 ```
 
-Horizontal alignment uses `getLineStartX` with a virtual anchor:
-```
-noteAnchorX = padding + anchorFactor(align) * contentWidth   // in base-dimension space
-startX = getLineStartX(noteAnchorX, contentWidth, lineW, align)
-```
-The anchor factor cancels with `getBoxLeftX` internally, producing `contentLeft + alignment offset` — correct for all 3 modes.
+Horizontal: `noteAnchorX = padding + anchorFactor(align) * contentWidth` -> `getLineStartX(noteAnchorX, contentWidth, lineW, align)`.
 
-### Canvas Rendering — `drawStickyNote` (`objects.ts`)
-
-Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (280×280). All coordinates are in base space (0,0 = note top-left). Does NOT call `renderTextLayout` — replicates the fixed-mode rendering logic with alignment.
-
-```
-drawStickyNote(ctx, handle):
-  1. getNoteProps(y) → { origin, scale: noteScale, fontFamily, fillColor, content, align, alignV }
-  2. textLayoutCache.getNoteLayout(id, content, fontFamily) → layout at base dimensions
-  3. getNoteDerivedFontSize(id) → derived font size from cache
-  4. ctx.save() + ctx.translate(origin) + ctx.scale(noteScale, noteScale)
-  5. renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor)  ← always drawn, even during editing
-  6. if textEditingId === id → ctx.restore() + return              ← DOM overlay handles text
-  7. All measurements at base dimensions (scale=1):
-     - padding = getNotePadding(1), contentWidth = getNoteContentWidth(1)
-     - vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH)
-     - textY = padding + vOffset + baselineToTop
-     - noteAnchorX = padding + anchorFactor(align) * contentWidth
-  8. Clip overflow when contentH > maxContentH:
-     - ctx.rect(padding, padding, contentWidth, maxContentH) + ctx.clip()
-  9. Two-pass per line:
-     - startX = getLineStartX(noteAnchorX, contentWidth, line.alignmentWidth, align)
-     - Pass 1: highlight roundRects clamped to [containerLeft, containerRight]
-       - Radius: derivedFontSize * 0.25 (matches CSS border-radius: 0.25em)
-       - Clamped sides get flat edge (radius 0) — matches CSS overflow:hidden
-     - Pass 2: fillText with hardcoded '#1a1a1a'
-  10. ctx.restore()
-```
-
-Key differences from `renderTextLayout`:
-- Renders inside `ctx.scale(noteScale)` — all coordinates in base space, GPU handles scaling
-- No `fillColor` background rect (body drawn by `renderNoteBody` instead)
-- Container bounds = note content area (always `padding` to `padding+contentWidth`), not text block box
-- Uses `getLineStartX` with virtual anchor (not `getBoxLeftX` with origin-based anchor)
-- Vertical offset via `getNoteContentOffsetY` (not origin-baseline positioning)
-- Clips overflow at content area boundary (content at min font step may exceed square)
-- Color hardcoded, not from Y.Map
-
-### Scale Transform Preview — `drawScaledNotePreview` (`objects.ts`)
-
-Uniform scale via `ctx.scale` composition. `drawStickyNote` internally applies `ctx.scale(noteScale)` — nested scales compose: total = `transformScale * noteScale`.
-
-```
-drawScaledNotePreview(ctx, handle, transform):
-  1. Quantize scale: roundedScale = round(props.scale * absScale * 1000) / 1000
-  2. effectiveAbsScale = roundedScale / props.scale
-  3. Bbox-center position preservation (handles are at bbox positions)
-  4. ctx.save()
-  5. ctx.translate(newOriginX, newOriginY)
-  6. ctx.scale(effectiveAbsScale, effectiveAbsScale)
-  7. ctx.translate(-props.origin[0], -props.origin[1])
-  8. drawStickyNote(ctx, handle)    ← internally does translate+scale(noteScale)
-  9. ctx.restore()
-```
-
-No re-layout per frame — reuses the cached `TextLayout` at base dimensions. Visual scaling is purely via GPU.
-
-### Shadow System — 9-Slice Cache
-
-Dual-layer Gaussian shadow pre-rendered on a DPR-scaled `OffscreenCanvas`, drawn via 8 `drawImage` calls (9-slice, center skipped). Zero per-frame shadow cost.
-
-**Source canvas:** `(280 * dpr) × (280 * dpr)` pixels. Logical layout: `[100px pad][80px rect][100px pad]`. `ctx.scale(dpr, dpr)` — all drawing in logical pixels.
-
-**Dual layers** (both drawn with opaque `#000` fill, body area punched out with `destination-out`):
-
-| Layer | Purpose | blur | offsetY | α |
-|-------|---------|------|---------|---|
-| Floor | Long bottom tail, 3D lift | 34 | 28 | 0.10 |
-| Contact | Soft edge definition | 10 | 3 | 0.06 |
-
-Why dual-layer: a single Gaussian can't produce the asymmetry of a real sticky note shadow. The floor shadow's large offsetY pushes it below the body, creating a long bottom tail while leaving the top nearly invisible. The contact shadow adds soft edge definition on all sides.
-
-Why opaque fill + punch-out: browsers skip shadow rendering for zero-alpha fill. The `destination-out` compositing removes the opaque fill from the body area, leaving only the shadow fringe. Punch-out rect expanded 1px beyond body to eliminate the anti-aliased fringe at the shadow-body boundary.
-
-**Cache invalidation:** Auto-rebuilds when `window.devicePixelRatio` changes. Module-level singleton (`_shadowCache`).
-
-**Destination mapping:** Source pad (100px) maps to `w * NOTE_SHADOW_PAD_RATIO` destination world units. At w=280, this is 42wu — compression ~2.4× at DPR=1. Inside `ctx.scale(noteScale)`, the shadow draws at base dimensions and the GPU scales it.
-
-**`renderNoteBody(ctx, x, y, w, h, fillColor)`:** Calls `drawNoteShadow` (9-slice), then `roundRect` fill with `fillColor` at `w * NOTE_CORNER_RADIUS_RATIO`.
-
-### TextTool — Creation and Editing
-
-**Tool mode:** `'note'` in `Tool` union. Maps to `textTool` singleton in `tool-registry.ts` (same pattern as pen/highlighter/shape). `activeTool` read at creation time to branch note vs text.
-
-**`begin()`:** Branches hit testing by tool mode — `hitTestVisibleNote` for note tool, `hitTestVisibleText` for text tool. Same occlusion model (unfilled shape interiors transparent, everything else occludes).
-
-**`createTextObject()`:** Note mode writes `scale: 1` — no `fontSize` or `width`:
-```
-kind: 'note', scale: 1, fontFamily: store.noteFontFamily,
-align: store.noteAlign, alignV: store.noteAlignV, fillColor: NOTE_FILL_COLOR
-```
-
-**`mountEditor()` — three-way property read:** Properties are read in a three-way branch (label → note → text) before the generic CSS block:
+### BBox + Frame
 
 ```typescript
-if (isLabel) {
-  fragment = getContent(handle.y);
-  fontSize = getFontSize(handle.y);
-  fontFamily = getFontFamily(handle.y);
-} else if (handle.kind === 'note') {
-  const np = getNoteProps(handle.y);
-  fragment = np.content;
-  fontFamily = np.fontFamily;
-  textLayoutCache.getNoteLayout(objectId, np.content, np.fontFamily); // populate cache
-  fontSize = getNoteDerivedFontSize(objectId) * np.scale;  // world-space font size
-} else {
-  const props = getTextProps(handle.y);
-  fragment = props.content;
-  fontSize = props.fontSize;
-  fontFamily = props.fontFamily;
-}
+computeNoteBBox(id, props):
+  frame = [origin[0], origin[1], NOTE_WIDTH*scale, NOTE_WIDTH*scale]  // always square
+  getNoteLayout(id, content, fontFamily)  // populate cache
+  setFrame(id, frame)
+  return frame +/- getNoteShadowPad(scale)
 ```
 
-The note branch populates the layout cache and sets `fontSize = derivedFontSize * noteScale` so the generic CSS block (`scaledFontSize = fontSize * cameraScale`) computes the correct screen-space font size (`derivedFS * noteScale * cameraScale`).
+Frame = body (square, no shadow). BBox = body + shadow. Alignment doesn't affect BBox. Fallback in room-doc-manager: `w = 280 * ((y.get('scale') as number) ?? 1)`.
 
-**Note positioning (mount + positionEditor):** Alignment-aware:
-- Horizontal: container positioned at `origin + padding + anchorFactor(align) * contentWidth`, translated via `--text-anchor-tx` (`0%`/`-50%`/`-100%`). `--text-align` CSS variable set for multi-line alignment.
-- Vertical: container positioned at `origin + padding + vFactor * maxContentH`, translated via `--text-anchor-ty` with CSS `clamp()` for clamped centering.
-- Uses `maxWidth` (NOT `width`) — container is `width: max-content` from base CSS, auto-growing horizontally up to `contentWidth * cameraScale`.
-- `maxHeight = maxContentH * cameraScale` — permanent constraint (fixed square, no auto-grow).
-- `data-width-mode='note'`. No `backgroundColor` (canvas draws body underneath). Text color hardcoded to `'#1a1a1a'`.
+### TextTool — Note-Specific
 
-**`positionEditor()` — note branch:** Reads `derivedFS = getNoteDerivedFontSize(objectId)`, computes `sf = derivedFS * noteScale * cameraScale`. Same alignment logic as mount — reads fresh `getNoteProps`, recomputes all anchor positions + clamp values + CSS font properties.
+**Creation:** `kind: 'note', scale: 1, fontFamily: store.noteFontFamily, align: store.noteAlign, alignV: store.noteAlignV, fillColor: NOTE_FILL_COLOR`.
 
-**`updateNoteAutoSize()`:** Called from `onTransaction` when `handle.kind === 'note'` and `transaction.docChanged`. Deep observer already invalidated cache → force repopulation via `textLayoutCache.getNoteLayout()`. Reads fresh `derivedFS`, sets CSS `fontSize` and `lineHeight` to `derivedFS * noteScale * cameraScale`.
+**mountEditor:** Populates cache via `getNoteLayout()`, sets `fontSize = derivedFontSize * noteScale`. Generic CSS block computes `scaledFontSize = fontSize * cameraScale` -> correct screen-space size.
 
-**`commitAndClose()`:** Empty notes preserved — the `handle.kind !== 'note'` guard skips deletion. Empty notes are valid visual elements (body + shadow render regardless of content).
+**positionEditor:** Reads fresh `getNoteProps`, recomputes alignment anchors + clamp values + CSS.
 
-**`syncProps()` — note branch:** Two critical behaviors:
+**updateNoteAutoSize:** Called from `onTransaction` when `docChanged`. Forces cache repopulation via `getNoteLayout()`, reads fresh `derivedFontSize`, updates container CSS.
 
-1. **fontFamily cache population:** Extension Y.Map observer fires before deep observer's `computeNoteBBox`. If `keys.has('fontFamily')`, eagerly calls `textLayoutCache.getNoteLayout(objectId, content, fontFamily)` with raw Y.Map values before `positionEditor()`. This ensures `getNoteDerivedFontSize` returns the correct value. The deep observer later finds the cache already populated — no duplicated work.
+**syncProps:** `fontFamily` -> eagerly calls `getNoteLayout()` before `positionEditor()` (extension observer fires before deep observer). `align/alignV/origin/scale` -> `positionEditor()`. Skips fillColor->backgroundColor, skips applyAlignCSS (needs full repositioning).
 
-2. **Routing:** `align`, `alignV`, `origin`, `scale`, `fontFamily` → `positionEditor()` (full repositioning because DOM anchor point changes). Notes skip `fillColor → backgroundColor` sync (`handle.kind !== 'note'`). Notes skip `applyAlignCSS()` — alignment requires full repositioning, not just CSS variable updates.
+**commitAndClose:** Empty notes preserved (valid visual elements).
 
-### Extension Observer (`extensions.ts`)
+### Scale Transform
 
-Tracked keys include `scale` and `alignV` alongside `origin`, `fontSize`, `fontFamily`, `color`, `fillColor`, `align`, `width`, `labelColor`, `frame`, `shapeType`. When the per-session UndoManager undoes/redoes a `scale` or `alignV` change, the observer fires `onPropsSync(keys)` → `TextTool.syncProps()` → `positionEditor()` updates the DOM overlay.
-
-### SelectTool — Scale Commit
-
-Notes use uniform scaling with `scale` quantization (not `fontSize` quantization). On commit:
+Quantizes `scale` (not fontSize). Bbox-center position preservation:
 
 ```typescript
-const roundedScale = Math.round(noteProps.scale * rawAbsScale * 1000) / 1000;
-const effectiveAbsScale = roundedScale / noteProps.scale;
-// Bbox-center position preservation
+roundedScale = Math.round(props.scale * rawAbsScale * 1000) / 1000;
+effectiveAbsScale = roundedScale / props.scale;
 yMap.set('origin', [newOriginX, newOriginY]);
 yMap.set('scale', roundedScale);
 ```
 
-Mixed selection + side handle → edge-pin translate (only `origin` written, no `scale` change). Same bbox-center preservation math as text uniform scale but operating on `scale` instead of `fontSize`.
+**Preview:** `drawScaledNotePreview` nests `ctx.scale(effectiveAbsScale)` before `drawStickyNote` (which applies its own `ctx.scale(noteScale)`). No re-layout per frame.
 
-### Hit Testing (`hit-testing.ts`)
+Mixed + side handle -> edge-pin translate (only origin, no scale change).
 
-**`testObjectHit`** — `case 'note'`: uses `getTextFrame(handle.id)` + `shapeHitTest` with `'rect'`. Always `isFilled: true` — note body is always opaque for Z-order occlusion.
+### Hit Testing & Selection
 
-**`objectIntersectsRect`** — `case 'note'`: uses `getTextFrame` + `rectsIntersect`. Standard marquee intersection.
+- Hit: `getTextFrame(id)` + `shapeHitTest('rect')`, always `isFilled: true`
+- Marquee: `getTextFrame` + `rectsIntersect`
+- `hitTestVisibleNote`: same spatial query as `hitTestVisibleText` but returns `kind === 'note'`
+- SelectionKind: `'notesOnly'`. Included in fillColor, fontFamily, bold/italic/highlight actions. NOT in textColor or fontSize.
+- Double-click/Enter -> `textTool.startEditing(id)`
 
-**`hitTestVisibleNote`:** Clone of `hitTestVisibleText` — same spatial query, same occlusion scan, but returns on `c.kind === 'note'` instead of `'text'`.
-
-### Selection System
-
-**`SelectionKind`:** `'notesOnly'` added to union. Derived in `computeSelectionComposition` via `notes` counter in `KindCounts`.
-
-**`computeStyles` for `'notesOnly'`:** Early return with `fillColor`, `fontFamily`, `textAlign`, `textAlignV` from first note. No `fontSize` — it's derived from scale.
-
-**`computeUniformInlineStyles`:** Notes included alongside text and labeled shapes — bold/italic/highlight tracking works for selected notes.
-
-**`refreshStyles`:** `'notesOnly'` included in inline styles gate (alongside `'textOnly'`, `'shapesOnly'`).
-
-**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field) or `setSelectedFontSize` (font size is derived from scale).
-
-**SelectTool:** Double-click on note → `textTool.startEditing(id)`. Keyboard Enter-to-edit: notes use `getTextFrame` for frame resolution.
-
-### CSS (`index.css`)
+### CSS
 
 ```css
-.tiptap[data-width-mode='note'] {
-  overflow: visible;
-  text-align: var(--text-align, center);
-}
+.tiptap[data-width-mode='note'] { overflow: visible; text-align: var(--text-align, center); }
 .tiptap[data-width-mode='note'] p { margin: 0; }
 .tiptap[data-width-mode='note'] .is-editor-empty:first-child::before { display: none; }
 ```
 
-`overflow: visible` — no clipping, note body grows with content. `text-align: var(--text-align, center)` — horizontal alignment driven by JS via CSS variable (default center). `p { margin: 0 }` — prevents ProseMirror paragraph margins from breaking WYSIWYG parity. Placeholder hidden — empty notes are preserved (unlike text).
-
-Base `.tiptap` CSS provides `width: max-content` and `transform: translateX(var(--text-anchor-tx, 0%)) translateY(var(--text-anchor-ty, 0%))` — notes reuse these for alignment positioning. JS sets `maxWidth` (not `width`) so the container auto-grows horizontally.
-
-### Room Doc Manager
-
-**BBox dispatch** (deep observer + hydration): `kind === 'note'` → `getNoteProps` + `computeNoteBBox`. Separate from text case. Fallback reads `scale` from raw Y.Map: `w = 280 * ((y.get('scale') as number) ?? 1)`.
-
-**Content invalidation:** Caught implicitly by `content instanceof Y.XmlFragment` check — no kind gate needed.
-
-**Deletion cleanup:** `handle.kind === 'note'` included in `textLayoutCache.remove(id)` guard.
+`p { margin: 0 }` prevents ProseMirror paragraph margins from breaking WYSIWYG. Placeholder hidden — empty notes preserved.
 
 ### NOT Implemented Yet
 
-- **Eraser** — no eraser integration
-- **Note resize** — no drag-to-resize (scale via SelectTool handles works)
-- **Multiple note colors** — only `'#FEF3AC'` in creation, but fillColor can be changed via selection actions
+- **Eraser** — no eraser integration for notes
+
+---
+
+## Scale Transforms (SelectTool)
+
+### Handle Behavior by Type
+
+| Selection | Handle | Text | Note | Label |
+|-----------|--------|------|------|-------|
+| kind-only / mixed | Corner | Uniform (fontSize + origin + width) | Uniform (scale + origin) | Follows shape |
+| kind-only | N/S | Uniform (same as corner) | Uniform | Follows shape |
+| mixed | N/S | Edge-pin translate (origin[1] only) | Edge-pin translate | Non-uniform |
+| any | E/W | Reflow (width change, auto->fixed) | N/A | Follows shape |
+
+### Text Uniform Scale (Corner + textOnly N/S)
+
+```
+roundedFontSize = round(fontSize * absScale * 1000) / 1000
+effectiveAbsScale = roundedFontSize / originalFontSize
+newOriginX = nfx + anchorFactor(align) * nfw
+newOriginY = nfy + roundedFontSize * baselineToTopRatio
+```
+
+Preview: `ctx.scale(effectiveAbsScale)` on cached layout — no per-frame re-layout. Commit writes `origin`, `fontSize`, `width` (if fixed).
+
+### Text E/W Reflow
+
+`TextReflowState` on selection store. Per frame:
+1. Scale both frame edges from scale origin
+2. Width clamped to `getMinCharWidth(fontSize)` — natural dead zone at minimum
+3. `layoutMeasuredContent(cached measured, targetWidth, fontSize)` — skips tokenize + measure
+4. New origin: `newOriginX = newLeft + anchorFactor(align) * targetWidth`
+
+Commit writes `width = layout.boxWidth` + `origin`. Converts auto->fixed.
+
+### Note Uniform Scale
+
+Quantizes `scale` to 3dp (not fontSize). Bbox-center position preservation. Writes `origin` + `scale`. Nested ctx.scale composition — no re-layout.
+
+### Dirty Rect Tracking
+
+- Corner/textOnly N/S: `getTextFrame()` -> `computeUniformScaleBounds()`
+- E/W: bounds from reflow layout dimensions
+- Mixed N/S: `computeEdgePinTranslation()` -> `translateBounds()`
+
+### Topology Integration
+
+`transformFrameForTopology` / `transformPositionForTopology` use uniform scale for text/notes, ensuring connector rerouting during transform drag and commit.
+
+---
+
+## Room Doc Manager Integration
+
+### Deep Observer
+
+Content changes (`path[1] === 'content'`): `textLayoutCache.invalidateContent(id, fragment)` with fresh `Y.XmlFragment` for eager tokenization. Other property changes (`fontSize`, `width`) handled by comparison in `getLayout()`.
+
+### BBox Dispatch
+
+- `kind === 'text'` -> `computeTextBBox(id, textProps)`
+- `kind === 'note'` -> `computeNoteBBox(id, noteProps)`
+- Labels: BBox from shape frame
+
+Deletion: `textLayoutCache.remove(id)`. Rebuild: `textLayoutCache.clear()`.
