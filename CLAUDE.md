@@ -58,7 +58,7 @@ All paths relative to `client/src/` unless noted.
 | `lib/tools/SelectTool.ts` | Selection, translate, scale, connector endpoints, code/text editing entry |
 | `lib/tools/DrawingTool.ts` | Pen, highlighter, AND shape drawing |
 | `lib/tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
-| `lib/tools/TextTool.ts` | WYSIWYG rich text, Tiptap DOM overlay. **Docs:** `lib/text/CLAUDE.md` |
+| `lib/tools/TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay. **Docs:** `lib/text/CLAUDE.md` |
 | `lib/tools/PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
 | `lib/tools/ConnectorTool.ts` | Elbow + straight connectors + snapping |
 | `lib/tools/CodeTool.ts` | Code blocks, CodeMirror overlay. **Docs:** `lib/code/CLAUDE.md` |
@@ -68,14 +68,16 @@ All paths relative to `client/src/` unless noted.
 |--------|----------|
 | `lib/connectors/` | Elbow A* + straight routing, snap, topology, reroute API |
 | `lib/code/` | RunSpans model, two-tier tokenization, CodeMirror, canvas renderer |
-| `lib/text/` | Layout engine, three-tier cache, TextCollaboration, shape labels |
+| `lib/text/` | Layout engine, three-tier cache, TextCollaboration, shape labels, sticky notes |
+| `lib/image/` | Offline-first image pipeline, mip levels, two web workers, viewport management |
+| `lib/bookmark/` | URL bookmarks: unfurl pipeline, OG metadata, placeholder lifecycle |
 | `components/context-menu/` | Selection-aware toolbar: bars by kind, mutation dispatch |
 
 ### Clipboard
 | File | Responsibility |
 |------|----------------|
 | `lib/clipboard/clipboard-serializer.ts` | Serialize/deserialize Y.Map objects + Y.XmlFragment to JSON |
-| `lib/clipboard/clipboard-actions.ts` | Copy, paste (internal/external + rich text), cut, duplicate, selectAll |
+| `lib/clipboard/clipboard-actions.ts` | Copy, paste (internal/external + rich text + images + URL→bookmark), cut, duplicate, selectAll |
 
 Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 
@@ -94,9 +96,26 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 |------|----------------|
 | `types/geometry.ts` | BBoxTuple, FrameTuple, WorldBounds, Frame + converters |
 | `types/objects.ts` | ObjectKind, ObjectHandle, IndexEntry, DirtyPatch |
-| `accessors/object-accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, etc.) |
+| `accessors/object-accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
 | `spatial/object-spatial-index.ts` | RBush R-tree wrapper |
 | `utils/bbox.ts` | BBox computation with stroke width inflation |
+| `utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()` |
+| `utils/image-validation.ts` | Magic byte validation (PNG/JPEG/WebP/GIF/ICO), `parseImageDimensions()`, `isSvg()` |
+
+### Service Worker & Image Pipeline
+| File | Responsibility |
+|------|----------------|
+| `sw.ts` | Service Worker: cache-first `/api/assets/*`, app shell caching, network-first HTML |
+| `lib/image/image-manager.ts` | Main-thread bitmap cache, viewport-driven decode, two-worker routing |
+| `lib/image/image-worker.ts` | Web Worker (2 instances): decode, ingest, upload queue, bookmark unfurl |
+| `lib/image/image-actions.ts` | `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
+
+### Server (`worker/src/`)
+| File | Responsibility |
+|------|----------------|
+| `index.ts` | Hono app: CORS, asset routes, unfurl route, `partyserverMiddleware()` for Yjs sync |
+| `assets.ts` | `PUT /api/assets/:key` (validate + R2 store), `GET /api/assets/:key` (edge-cached R2 proxy) |
+| `unfurl.ts` | `GET /api/unfurl?url=` — HTMLRewriter OG extraction, image→R2, SSRF guard, edge cache 7d |
 
 ### UI (`components/`)
 `RoomPage.tsx` (main view, layout), `ToolPanel.tsx` (toolbar + inspector), `ZoomControls.tsx`, `Toast.tsx`, `UsersModal.tsx`, `UserAvatarCluster.tsx`, `icons/index.tsx`
@@ -143,8 +162,9 @@ Canvas.tsx (~95 lines) - THIN REACT WRAPPER
                 ▼
 tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
 │   pen/highlighter/shape → drawingTool (same instance)
-│   eraser → eraserTool, text → textTool, pan → panTool
+│   eraser → eraserTool, text/note → textTool, pan → panTool
 │   select → selectTool, connector → connectorTool, code → codeTool
+│   image → one-shot file picker (no persistent tool)
 │
 │   Exports: getCurrentTool(), getToolById(), getActivePreview()
 │            canStartMMBPan(), panTool, textTool, codeTool
@@ -288,7 +308,7 @@ Y.Doc { guid: roomId }
 
 ### Object Kinds
 ```typescript
-type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code';
+type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' | 'note' | 'bookmark';
 ```
 
 ### Object Schemas
@@ -342,6 +362,39 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code';
 ```
 Detailed connector docs in `lib/connectors/CLAUDE.md`.
 
+**Note** (sticky note, auto-sizing text via TextTool):
+```typescript
+{ id, kind: 'note', origin: [topLeftX, topLeftY], scale: number,
+  fontFamily, align, alignV: 'top'|'center'|'bottom',
+  fillColor: string,             // Default '#FEF3AC'
+  content: Y.XmlFragment, ownerId, createdAt }
+// No fontSize (auto-derived from content + scale), no width (= NOTE_WIDTH × scale).
+// No color (hardcoded '#1a1a1a'). Origin always top-left (not shifted by alignment).
+```
+Detailed note docs in `lib/text/CLAUDE.md`.
+
+**Image** (content-addressed, offline-first):
+```typescript
+{ id, kind: 'image', assetId: string,    // SHA-256 hex (64 chars)
+  frame: [x, y, w, h],
+  naturalWidth: number, naturalHeight: number, mimeType: string,
+  opacity?: number, ownerId, createdAt }
+// Default 400wu wide, aspect-ratio-preserving height. Content-addressed: same file = same assetId.
+```
+Detailed image docs in `lib/image/CLAUDE.md`.
+
+**Bookmark** (URL card with OG metadata):
+```typescript
+{ id, kind: 'bookmark', url: string, domain: string,
+  frame: [x, y, w, h],                   // Fixed width 300wu, variable height
+  title?: string, description?: string,   // Set by unfurl worker
+  ogImageAssetId?: string, ogImageWidth?: number, ogImageHeight?: number,
+  faviconAssetId?: string, ownerId, createdAt }
+// No unfurlStatus field — state determined by which optional fields are present.
+// Offline/failed unfurls create text objects instead (never enter bookmark pipeline).
+```
+Detailed bookmark docs in `lib/bookmark/CLAUDE.md`.
+
 ### ObjectHandle (Live Reference)
 ```typescript
 interface ObjectHandle {
@@ -392,8 +445,20 @@ getFontSize(y), getFontFamily(y), getOrigin(y), getAlign(y), getTextWidth(y), ge
 getCodeProps(y) → CodeProps | null  // { content: Y.Text, origin, fontSize, width, language }
 getLanguage(y), getCodeText(y)
 
+// Note-specific — bulk accessor preferred
+getNoteProps(y) → NoteProps | null  // { content, origin, scale, fontFamily, align, alignV, fillColor }
+
+// Image-specific — bulk accessor preferred
+getImageProps(y) → ImageProps | null  // { assetId, frame, naturalWidth, naturalHeight, mimeType }
+getAssetId(y), getNaturalDimensions(y)
+
+// Bookmark-specific — bulk accessor preferred
+getBookmarkProps(y) → BookmarkProps | null  // { url, domain, frame, title?, description?, ogImageAssetId?, ... }
+getBookmarkUrl(y)
+
 // Exported types
 type TextAlign = 'left' | 'center' | 'right'
+type TextAlignV = 'top' | 'center' | 'bottom'
 type TextWidth = 'auto' | number
 type FontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
 type CodeLanguage = 'javascript' | 'typescript' | 'python'
@@ -418,10 +483,11 @@ subscribePresence(cb)       // Presence changes
 
 ### Deep Observer
 - `observeDeep()` on objects Y.Map for incremental updates
-- **Text:** `field === 'content'` → `textLayoutCache.invalidateContent(id)`, fontSize → invalidateLayout
+- **Text/Note:** `field === 'content'` → `textLayoutCache.invalidateContent(id)`, fontSize/scale → invalidateLayout
 - **Code:** `Y.YTextEvent` → `codeSystem.handleContentChange(id, ev, lang)`
+- **Bookmark:** `invalidateBookmarkLayout(id)` on deletion, `clearBookmarkLayouts()` on rebuild
 - **Connectors:** updates connector lookup reverse map (shapeId → Set<connectorId>)
-- **BBox:** per-kind computation (`computeTextBBox`, `computeCodeBBox`, or from frame/points)
+- **BBox:** per-kind computation (`computeTextBBox`, `computeNoteBBox`, `computeCodeBBox`, `computeBookmarkHeight`, or from frame/points)
 
 ---
 
@@ -441,11 +507,14 @@ switch (handle.kind) {
   case 'stroke':    // Path2D from cache
   case 'shape':     // buildShapePathFromFrame() + optional label via drawText()
   case 'text':      // getTextProps() → textLayoutCache.getLayout() → renderTextLayout()
+  case 'note':      // getNoteProps() → getNoteLayout() → renderNoteBody() + renderTextLayout()
   case 'code':      // getCodeProps() → codeSystem.getLayout() → renderCodeLayout()
   case 'connector': // ConnectorPaths from cache
+  case 'image':     // getBitmap(assetId) → ctx.drawImage() or gray placeholder
+  case 'bookmark':  // drawBookmark() — two layouts (full card with OG image, text-only card)
 }
 ```
-During scale transforms: code/text get `drawScaledPreview()` (uniform) or `drawReflowedPreview()` (E/W).
+During scale transforms: code/text/note get `drawScaledPreview()` (uniform) or `drawReflowedPreview()` (E/W). Images uniform-scale only. Bookmarks fixed-size (translate only).
 
 ### Coordinate Spaces
 - **World:** Logical document coords
@@ -500,14 +569,20 @@ const scale = useCameraStore(selectScale);
 
 ```typescript
 interface DeviceUIState {
-  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'code';
+  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'code'|'note';
   drawingSettings: { size: 6|10|14|18; color: string; opacity: number; fill: boolean };
   textSize: number;                    // Default 24
   connectorSize: 2|4|6|8;
+  connectorStartCap, connectorEndCap, connectorType;
   shapeVariant: 'diamond'|'rectangle'|'ellipse';
   fillColor: string;                   // Shape fill
-  // Text defaults (persisted, used for new text objects)
+  // Text defaults (persisted)
   textColor, textAlign, textFontFamily, highlightColor, textFillColor;
+  // Note defaults (persisted)
+  noteAlign, noteAlignV, noteFontFamily;
+  // Shape label defaults (persisted)
+  shapeAlign, shapeAlignV;
+  codeLineNumbers: boolean;
   cursorOverride: string | null;
 }
 ```
@@ -520,7 +595,7 @@ interface DeviceUIState {
 interface SelectionState {
   selectedIds: string[];
   mode: 'none' | 'standard' | 'connector';     // 1 connector → 'connector', else 'standard'
-  selectionKind: 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'codeOnly' | 'connectorsOnly' | 'mixed';
+  selectionKind: 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'codeOnly' | 'notesOnly' | 'connectorsOnly' | 'imagesOnly' | 'bookmarksOnly' | 'mixed';
   transform: TransformState;        // 'none' | TranslateTransform | ScaleTransform | EndpointDragTransform
   marquee: MarqueeState;
   connectorTopology: ConnectorTopology | null;
@@ -547,7 +622,7 @@ interface ConnectorTopology {
 
 ## SelectTool
 
-**File:** `lib/tools/SelectTool.ts` — shapes, strokes, text, code blocks, connectors with endpoint editing.
+**File:** `lib/tools/SelectTool.ts` — all object kinds: shapes, strokes, text, notes, code, images, bookmarks, connectors with endpoint editing.
 
 ### State Machine
 ```typescript
@@ -563,11 +638,14 @@ type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endp
 | **Strokes** | Uniform scale (width scales WYSIWYG) | — | Edge-pin translate |
 | **Shapes** | Non-uniform scale (stroke unchanged) | Non-uniform scale | Non-uniform scale |
 | **Text** | Uniform (fontSize + origin + width) | Reflow (width change, auto→fixed) | Edge-pin translate |
+| **Notes** | Uniform (scale + origin) | Reflow (scale change) | Edge-pin translate |
 | **Code** | Uniform (fontSize + width + origin) | Reflow (width + layout recompute) | Edge-pin translate |
 | **Connectors** | Via topology (translate or reroute) | Via topology | Via topology |
+| **Images** | Uniform scale (aspect ratio preserved) | Uniform scale | Edge-pin translate |
+| **Bookmarks** | Fixed size, position-only translate | Fixed size, edge-pin translate | Edge-pin translate |
 
-### Code/Text Editing Entry
-- Double-click text/shape label → `textTool.startEditing(id)` or `textTool.startLabelEditing(id)`
+### Code/Text/Note Editing Entry
+- Double-click text/note/shape label → `textTool.startEditing(id)` or `textTool.startLabelEditing(id)`
 - Double-click code block → `codeTool.startEditing(id)` (with `justClosedCodeId` guard)
 - `codeEditingId` blocks handle hit testing, hover cursors, hides resize handles
 
@@ -582,10 +660,10 @@ Fill-aware Z-order (unfilled interiors transparent), endpoint dots for connector
 Handles pen, highlighter, AND shape drawing. HoldDetector (600ms) for shape recognition. Click-to-place: 180wu fixed shape. Settings frozen at `begin()`.
 
 ### EraserTool
-Geometry-aware hit testing, deletes strokes/shapes/text/code/connectors.
+Geometry-aware hit testing, deletes all object kinds.
 
 ### TextTool
-WYSIWYG rich text with Tiptap DOM overlay + canvas rendering. Origin-based positioning, auto/fixed width, three-tier layout cache. Shape labels supported. **Details:** `lib/text/CLAUDE.md`
+WYSIWYG rich text with Tiptap DOM overlay + canvas rendering. Origin-based positioning, auto/fixed width, three-tier layout cache. Shape labels and sticky notes supported (note tool maps to TextTool). **Details:** `lib/text/CLAUDE.md`
 
 ### CodeTool
 Code blocks with CodeMirror DOM overlay. Screen-space rendering (world × scale in px). Two-tier tokenization (sync regex + Lezer workers). Per-session UndoManager. **Details:** `lib/code/CLAUDE.md`
@@ -602,12 +680,19 @@ Elbow A* + straight connectors with shape snapping. Ctrl suppresses snapping. **
 
 Standalone imperative modules. Full changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`.
 
-- **keyboard-manager:** Tool switches (`v`/`p`/`e`/`t`/`h`/`a`/`r`/`o`/`d`/`k`), Cmd+C/V/X/D/A/Z, Cmd+B/I/H formatting, spacebar ephemeral pan, Ctrl+±/0 zoom, arrow key pan, Enter to edit, Delete/Backspace. Guard hierarchy: input focus > modifiers > gesture-active > bare keys.
-- **clipboard-actions:** Internal paste (full-fidelity duplication with ID remap + connector anchor remap), external paste (plain + rich text with formatting), smart duplicate placement (tries 4 directions via spatial index), zoom-to-fit for out-of-view content.
+- **keyboard-manager:** Tool switches (`v`/`p`/`e`/`t`/`n`/`h`/`a`), `i` opens image file picker (one-shot). Cmd+C/V/X/D/A/Z, Cmd+B/I/H formatting, spacebar ephemeral pan, Ctrl+±/0 zoom, arrow key pan, Enter to edit, Delete/Backspace. Guard hierarchy: input focus > modifiers > gesture-active > bare keys.
+- **clipboard-actions:** Internal paste (full-fidelity duplication with ID remap + connector anchor remap), external paste (plain + rich text + images + URL→bookmark), smart duplicate placement (tries 4 directions via spatial index), zoom-to-fit for out-of-view content.
 - **edge-scroll:** Auto-pan during select/connector/shape drags. 40px edge zone, proximity² speed, 120ms delay + 300ms easeInQuad ramp. Tool re-dispatch after each pan. Stopped on pointerup/cancel.
 - **cursor-tracking:** `getLastCursorWorld()` for paste placement. `isShiftPointer()`/`isCtrlOrMetaPointer()` for multi-select. `isCtrlHeld()` for connector snap suppression.
 
 ---
 
-## NOT Implemented Yet
-- **Images**
+## Image & Bookmark Systems (Summary)
+
+Detailed docs in `lib/image/CLAUDE.md` and `lib/bookmark/CLAUDE.md`.
+
+**Images:** Offline-first with content-addressed R2 storage. Two web workers (hash-routed decode parallelism), generation-based mip superseding (3 levels), Service Worker cache-first asset serving. Viewport-driven: only decode visible images, evict off-screen bitmaps. Entry points: drag-drop, paste, `i` key file picker. All network I/O in workers.
+
+**Bookmarks:** Paste URL → HTML placeholder (local-only) → worker unfurl → atomic Y.Doc write. Unfurl extracts OG/Twitter metadata via HTMLRewriter, stores images to R2 (content-addressed). Offline/failed → text object fallback. Two card layouts: full (OG image + metadata) and text-only. No re-unfurl, no editing — failures are final.
+
+**Service Worker (`sw.ts`):** Cache-first for `/api/assets/*` (immutable, content-addressed) and app shell (`/assets/*`, `/fonts/*`). Network-first for HTML navigation. Workers self-sufficient via Cache API (works without SW in dev). `skipWaiting()` + `clients.claim()` for instant activation.
