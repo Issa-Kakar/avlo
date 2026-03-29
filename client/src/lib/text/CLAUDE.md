@@ -787,10 +787,12 @@ Labels are NOT separate objects. They add fields directly to the shape Y.Map:
   fontSize: number,            // World units
   fontFamily: FontFamily,      // 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
   labelColor: string,          // Text color (separate from shape border `color`)
+  align?: TextAlign,           // 'left' | 'center' | 'right' — default 'center' via getAlign(y, 'center')
+  alignV?: TextAlignV,         // 'top' | 'middle' | 'bottom' — default 'middle' via getAlignV(y)
 }
 ```
 
-**Key differences from text objects:** No `origin`, `align`, or `width`. Labels are always center-aligned H+V within the inscribed text box, width derived from shape frame. `hasLabel(y)` (`y.get('content') instanceof Y.XmlFragment`) is the canonical check. `getLabelColor(y)` reads the `labelColor` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged.
+**Key differences from text objects:** No `origin` or `width`. Width derived from shape frame. Alignment stored directly on the shape Y.Map (`align`/`alignV`), defaulting to center/middle for backward compatibility. `hasLabel(y)` (`y.get('content') instanceof Y.XmlFragment`) is the canonical check. `getLabelColor(y)` reads the `labelColor` key. Existing `getFontSize()`, `getFontFamily()`, `getContent()` work unchanged.
 
 ### Text Box Computation (`computeLabelTextBox`)
 
@@ -814,19 +816,19 @@ Pure function. Returns max inscribed text rectangle within the shape, inset by `
 
 **During transforms — `drawShapeLabelWithFrame()`:** Takes explicit transformed frame. Reads cached `MeasuredContent` via `getMeasuredContent()` and calls `layoutMeasuredContent()` directly — avoids polluting cache with transient widths.
 
-**`renderShapeLabel(ctx, layout, textBox, color, fontFamily)`:** Center-aligned H+V. Overflow clips via `ctx.clip()`. Same highlight rects as `renderTextLayout`.
+**`renderShapeLabel(ctx, layout, textBox, color, fontFamily, align?, alignV?)`:** Alignment-aware H+V positioning within text box. Uses `anchorFactor(align)` + `getLineStartX()` for horizontal, `getNoteContentOffsetY(alignV, ...)` for vertical. Overflow clips via `ctx.clip()`. Same highlight rects as `renderTextLayout`. Defaults to center/middle for backward compatibility.
 
 ### DOM Editing (TextTool)
 
 TextTool derives label vs text mode from `handle.kind === 'shape'` inline at every call site — no stored flag.
 
-**Entry:** `startEditing()` creates label fields in a single transaction if `!hasLabel(handle.y)` (`content`, `fontSize`, `fontFamily`, `labelColor` from device-ui-store defaults).
+**Entry:** `startEditing()` creates label fields in a single transaction if `!hasLabel(handle.y)` (`content`, `fontSize`, `fontFamily`, `labelColor`, `align`, `alignV` from device-ui-store defaults).
 
-**mountEditor — Label branch:** Positioned at text box center via `worldToClient`, CSS `translate(-50%, -50%)`. Uses `maxWidth`/`maxHeight` (not `width`). `data-width-mode='label'` triggers CSS for center align + hidden-scrollbar overflow. No `backgroundColor` (shape is the background). No Placeholder extension.
+**mountEditor — Label branch:** Alignment-aware positioning matching the note pattern. Horizontal: anchor at `tbx + anchorFactor(align) * tbw`, `--text-anchor-tx` offsets container (`0%`/`-50%`/`-100%`). Vertical: anchor at `tby + vFactor * tbh`, `--text-anchor-ty` with CSS `clamp()` for overflow clamping. Uses `maxWidth`/`maxHeight` (not `width`). `data-width-mode='label'` triggers CSS for `text-align: var(--text-align, center)` + hidden-scrollbar overflow. No `backgroundColor` (shape is the background). No Placeholder extension.
 
-**syncProps — Label branch:** `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily` → `positionEditor()`. Does NOT react to shape `fillColor` or `color` changes.
+**syncProps — Label branch:** `labelColor` → `--text-color`, `frame`/`shapeType`/`fontSize`/`fontFamily`/`align`/`alignV` → `positionEditor()`. Does NOT react to shape `fillColor` or `color` changes.
 
-**commitAndClose:** Empty labels: deletes only label fields, shape persists. Sets `justClosedLabelId` for remount prevention.
+**commitAndClose:** Empty labels: deletes all label fields (`content`, `fontSize`, `fontFamily`, `labelColor`, `align`, `alignV`), shape persists. Sets `justClosedLabelId` for remount prevention.
 
 **SelectTool coordination:**
 - **Remount prevention:** `justClosedLabelId` flag prevents click-off → immediate remount cycle. Checked and consumed in SelectTool `end()`.
@@ -834,7 +836,7 @@ TextTool derives label vs text mode from `handle.kind === 'shape'` inline at eve
 
 ### Extension Observer
 
-Additional tracked keys: `labelColor`, `frame`, `shapeType`. Fires `onPropsSync` on shape resize, type-change, or label color change during editing. Harmless for text objects.
+Additional tracked keys: `labelColor`, `frame`, `shapeType`, `align`, `alignV`. Fires `onPropsSync` on shape resize, type-change, label color change, or alignment change during editing. Harmless for text objects.
 
 ### Cache & Content Invalidation
 

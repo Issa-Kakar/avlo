@@ -106,7 +106,8 @@ interface DeviceUIState {
   connectorEndCap: ConnectorCap;
   connectorType: ConnectorType;
 
-  // Shape vertical alignment
+  // Shape alignment
+  shapeAlign: TextAlign;
   shapeAlignV: TextAlignV;
 
   // Fill color (separate from fill toggle)
@@ -149,6 +150,7 @@ interface DeviceUIState {
   setNoteAlign: (align: TextAlign) => void;
   setNoteAlignV: (alignV: TextAlignV) => void;
   setNoteFontFamily: (family: FontFamily) => void;
+  setShapeAlign: (align: TextAlign) => void;
   setShapeAlignV: (alignV: TextAlignV) => void;
   setFillColor: (color: string) => void;
 
@@ -178,6 +180,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       connectorEndCap: 'arrow' as ConnectorCap,
       connectorType: 'straight' as ConnectorType,
       shapeVariant: 'rectangle',
+      shapeAlign: 'center' as TextAlign,
       shapeAlignV: 'middle' as TextAlignV,
       fillColor: '#BFDBFE',
 
@@ -247,6 +250,7 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setNoteAlign: (align) => set({ noteAlign: align }),
       setNoteAlignV: (alignV) => set({ noteAlignV: alignV }),
       setNoteFontFamily: (family) => set({ noteFontFamily: family }),
+      setShapeAlign: (align) => set({ shapeAlign: align }),
       setShapeAlignV: (alignV) => set({ shapeAlignV: alignV }),
       setFillColor: (color) => set({ fillColor: color }),
 

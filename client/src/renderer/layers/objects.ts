@@ -54,7 +54,7 @@ import {
   getNoteDerivedFontSize,
   NOTE_WIDTH,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign, getCodeProps, getNoteProps } from '@avlo/shared';
+import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@avlo/shared';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
 import { CODE_EXTENSIONS } from '@avlo/shared';
@@ -319,8 +319,10 @@ function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   if (textBox[2] <= 0 || textBox[3] <= 0) return;
   const fontSize = getFontSize(handle.y);
   const fontFamily = getFontFamily(handle.y);
+  const align = getAlign(handle.y, 'center');
+  const alignV = getAlignV(handle.y);
   const layout = textLayoutCache.getLayout(handle.id, content, fontSize, fontFamily, textBox[2]);
-  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily);
+  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
 }
 
 function drawShapeLabelWithFrame(
@@ -334,8 +336,11 @@ function drawShapeLabelWithFrame(
   const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
   if (textBox[2] <= 0 || textBox[3] <= 0) return;
   const fontSize = getFontSize(handle.y);
+  const fontFamily = getFontFamily(handle.y);
+  const align = getAlign(handle.y, 'center');
+  const alignV = getAlignV(handle.y);
   const layout = layoutMeasuredContent(measured, textBox[2], fontSize);
-  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), getFontFamily(handle.y));
+  renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
 }
 
 /**

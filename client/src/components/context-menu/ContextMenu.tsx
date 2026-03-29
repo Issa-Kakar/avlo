@@ -133,6 +133,8 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
       <BoldButton />
       <ItalicButton />
       <div className="ctx-divider" />
+      <NoteAlignDropdown />
+      <div className="ctx-divider" />
       <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
       <HighlightPickerPopover onSelect={setSelectedHighlight} />
       <div className="ctx-divider" />

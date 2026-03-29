@@ -316,7 +316,7 @@ export function computeStyles(
   const trackWidth = kind !== 'textOnly';
   const trackFill = kind === 'shapesOnly' || kind === 'textOnly';
   const trackShapeType = kind === 'shapesOnly';
-  const trackTextAlign = kind === 'textOnly';
+  const trackTextAlign = kind === 'textOnly' || kind === 'shapesOnly';
   const needsTextFields = kind === 'textOnly' || kind === 'shapesOnly';
 
   let firstColor: string | null = null;
@@ -332,6 +332,8 @@ export function computeStyles(
   let firstFontSize: number | null = null;
   let firstAlign: TextAlign | null = null;
   let alignMixed = false;
+  let firstAlignV: TextAlignV | null = null;
+  let alignVMixed = false;
   let firstFontFamily: FontFamily | null = null;
   let firstLabelColor: string | null = null;
   let textFieldsSet = false;
@@ -374,8 +376,16 @@ export function computeStyles(
         firstLabelColor = getLabelColor(handle.y);
         firstFontSize = Math.round(getFontSize(handle.y));
         firstFontFamily = getFontFamily(handle.y);
+        if (trackTextAlign) {
+          firstAlign = getAlign(handle.y, 'center');
+          firstAlignV = getAlignV(handle.y);
+        }
         textFieldsSet = true;
       }
+    } else if (kind === 'shapesOnly' && handle.kind === 'shape' && hasLabel(handle.y)) {
+      // Track alignment mismatch across labeled shapes
+      if (!alignMixed && getAlign(handle.y, 'center') !== firstAlign) alignMixed = true;
+      if (!alignVMixed && getAlignV(handle.y) !== firstAlignV) alignVMixed = true;
     }
 
     if (
@@ -405,7 +415,7 @@ export function computeStyles(
         : null,
     fontSize: needsTextFields ? firstFontSize : null,
     textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
-    textAlignV: null,
+    textAlignV: kind === 'shapesOnly' ? (alignVMixed ? null : firstAlignV) : null,
     fontFamily: needsTextFields ? firstFontFamily : null,
     labelColor: needsTextFields ? firstLabelColor : null,
     codeLanguage: null,

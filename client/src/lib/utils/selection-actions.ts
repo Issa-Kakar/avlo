@@ -308,6 +308,12 @@ export function setSelectedTextAlign(align: TextAlign): void {
         continue;
       }
 
+      // Shapes: frame-based positioning, no anchor math needed
+      if (handle.kind === 'shape') {
+        handle.y.set('align', align);
+        continue;
+      }
+
       if (handle.kind !== 'text') continue;
 
       const oldAlign = getAlign(handle.y);
@@ -327,6 +333,8 @@ export function setSelectedTextAlign(align: TextAlign): void {
   const { selectionKind } = useSelectionStore.getState();
   if (selectionKind === 'notesOnly') {
     useDeviceUIStore.getState().setNoteAlign(align);
+  } else if (selectionKind === 'shapesOnly') {
+    useDeviceUIStore.getState().setShapeAlign(align);
   } else {
     useDeviceUIStore.getState().setTextAlign(align);
   }
@@ -341,12 +349,17 @@ export function setSelectedTextAlignV(alignV: TextAlignV): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || handle.kind !== 'note') continue;
+      if (!handle || (handle.kind !== 'note' && handle.kind !== 'shape')) continue;
       handle.y.set('alignV', alignV);
     }
   });
 
-  useDeviceUIStore.getState().setNoteAlignV(alignV);
+  const { selectionKind } = useSelectionStore.getState();
+  if (selectionKind === 'notesOnly') {
+    useDeviceUIStore.getState().setNoteAlignV(alignV);
+  } else if (selectionKind === 'shapesOnly') {
+    useDeviceUIStore.getState().setShapeAlignV(alignV);
+  }
   useSelectionStore.getState().refreshStyles();
 }
 

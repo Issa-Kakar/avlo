@@ -127,7 +127,7 @@ html {
 .tiptap[data-width-mode='label'] {
   overflow-x: hidden;
   overflow-y: auto;
-  text-align: center;
+  text-align: var(--text-align, center);
   scrollbar-width: none;
 }
 .tiptap[data-width-mode='label']::-webkit-scrollbar {

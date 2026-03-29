@@ -40,10 +40,13 @@ import {
   getContent,
   getFontSize,
   getFontFamily,
+  getAlign,
+  getAlignV,
   getLabelColor,
   hasLabel,
   getNoteProps,
   type TextAlign,
+  type TextAlignV,
 } from '@avlo/shared';
 import {
   FONT_FAMILIES,
@@ -188,12 +191,15 @@ export class TextTool implements PointerTool {
     // Create label fields if shape without label
     const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
     if (isNewLabel) {
-      const { textSize, textFontFamily, textColor } = useDeviceUIStore.getState();
+      const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } =
+        useDeviceUIStore.getState();
       getActiveRoomDoc().mutate(() => {
         handle.y.set('content', new Y.XmlFragment());
         handle.y.set('fontSize', textSize);
         handle.y.set('fontFamily', textFontFamily);
         handle.y.set('labelColor', textColor);
+        handle.y.set('align', shapeAlign);
+        handle.y.set('alignV', shapeAlignV);
       });
     }
 
@@ -341,15 +347,33 @@ export class TextTool implements PointerTool {
     const isNoteObj = !isLabel && handle.kind === 'note';
 
     if (isLabel) {
-      // Label: position at text box center, translate(-50%, -50%)
+      // Label: alignment-aware positioning within text box
       const frame = getFrame(handle.y)!;
       const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
       const [tbx, tby, tbw, tbh] = textBox;
-      const [cx, cy] = worldToClient(tbx + tbw / 2, tby + tbh / 2);
-      container.style.left = `${cx}px`;
-      container.style.top = `${cy}px`;
-      container.style.setProperty('--text-anchor-tx', '-50%');
-      container.style.setProperty('--text-anchor-ty', '-50%');
+      const align = getAlign(handle.y, 'center');
+      const alignV: TextAlignV = getAlignV(handle.y);
+
+      // Horizontal anchor
+      const anchorX = tbx + anchorFactor(align) * tbw;
+      container.style.setProperty(
+        '--text-anchor-tx',
+        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
+      );
+      container.style.setProperty('--text-align', align);
+
+      // Vertical anchor + clamp
+      const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
+      const anchorY = tby + vFactor * tbh;
+      const maxTy = vFactor * tbh * scale;
+      container.style.setProperty(
+        '--text-anchor-ty',
+        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
+      );
+
+      const [sx, sy] = worldToClient(anchorX, anchorY);
+      container.style.left = `${sx}px`;
+      container.style.top = `${sy}px`;
       container.style.maxWidth = `${tbw * scale}px`;
       container.style.maxHeight = `${tbh * scale}px`;
       container.dataset.widthMode = 'label';
@@ -536,10 +560,30 @@ export class TextTool implements PointerTool {
       const fontFamily = getFontFamily(handle.y);
       const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
       const [tbx, tby, tbw, tbh] = textBox;
-      const [cx, cy] = worldToClient(tbx + tbw / 2, tby + tbh / 2);
+      const align = getAlign(handle.y, 'center');
+      const alignV: TextAlignV = getAlignV(handle.y);
+
+      // Horizontal anchor
+      const anchorX = tbx + anchorFactor(align) * tbw;
+      this.container.style.setProperty(
+        '--text-anchor-tx',
+        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
+      );
+      this.container.style.setProperty('--text-align', align);
+
+      // Vertical anchor + clamp
+      const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
+      const anchorY = tby + vFactor * tbh;
+      const maxTy = vFactor * tbh * scale;
+      this.container.style.setProperty(
+        '--text-anchor-ty',
+        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
+      );
+
+      const [sx, sy] = worldToClient(anchorX, anchorY);
       const sf = fontSize * scale;
-      this.container.style.left = `${cx}px`;
-      this.container.style.top = `${cy}px`;
+      this.container.style.left = `${sx}px`;
+      this.container.style.top = `${sy}px`;
       this.container.style.maxWidth = `${tbw * scale}px`;
       this.container.style.maxHeight = `${tbh * scale}px`;
       this.container.style.fontSize = `${sf}px`;
@@ -624,6 +668,8 @@ export class TextTool implements PointerTool {
           handle.y.delete('fontSize');
           handle.y.delete('fontFamily');
           handle.y.delete('labelColor');
+          handle.y.delete('align');
+          handle.y.delete('alignV');
         });
       } else if (!handle || handle.kind !== 'note') {
         // Regular text object: delete entirely
@@ -677,7 +723,9 @@ export class TextTool implements PointerTool {
         keys.has('frame') ||
         keys.has('shapeType') ||
         keys.has('fontSize') ||
-        keys.has('fontFamily')
+        keys.has('fontFamily') ||
+        keys.has('align') ||
+        keys.has('alignV')
       )
         this.positionEditor();
     } else {

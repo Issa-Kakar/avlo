@@ -1459,6 +1459,8 @@ export function renderShapeLabel(
   textBox: FrameTuple,
   color: string,
   fontFamily: FontFamily,
+  align: TextAlign = 'center',
+  alignV: TextAlignV = 'middle',
 ): void {
   const [tbx, tby, tbw, tbh] = textBox;
   if (tbw <= 0 || tbh <= 0 || layout.lines.length === 0) return;
@@ -1468,7 +1470,8 @@ export function renderShapeLabel(
   const baselineToTop = fontSize * getBaselineToTopRatio(fontFamily);
   const needsClip = contentHeight > tbh;
 
-  const contentTopY = needsClip ? tby : tby + (tbh - contentHeight) / 2;
+  const vOffset = getNoteContentOffsetY(alignV, tbh, contentHeight);
+  const contentTopY = needsClip ? tby : tby + vOffset;
   const firstBaselineY = contentTopY + baselineToTop;
 
   if (needsClip) {
@@ -1481,12 +1484,13 @@ export function renderShapeLabel(
   ctx.textBaseline = 'alphabetic';
   ctx.textRendering = 'optimizeSpeed';
 
+  const shapeAnchorX = tbx + anchorFactor(align) * tbw;
   const hlR = fontSize * 0.25;
   for (const line of layout.lines) {
     if (line.runs.length === 0) continue;
     const lineY = firstBaselineY + line.baselineY;
     const lineW = line.alignmentWidth;
-    const startX = tbx + (tbw - lineW) / 2;
+    const startX = getLineStartX(shapeAnchorX, tbw, lineW, align);
 
     // Pass 1: highlights
     for (const run of line.runs) {
