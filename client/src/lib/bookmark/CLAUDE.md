@@ -10,7 +10,7 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
   kind: 'bookmark';
   url: string;                        // Normalized (http/https only, no fragment, no trailing /)
   domain: string;                     // Hostname minus www. (stored, not derived in render path)
-  frame: [x, y, w, h];               // Fixed width 360wu, variable height
+  frame: [x, y, w, h];               // Fixed width 300wu, variable height
 
   // Set by worker on successful unfurl (all optional — absent on minimal/failed bookmarks):
   title?: string;
@@ -134,7 +134,7 @@ manageImageViewport() (per render tick):
       getBitmap(assetId) available for drawBookmark()
 ```
 
-**Key difference from images:** Bookmarks always use `ppsp = Infinity` (full-resolution, no mip level selection). OG images are ≤360wu wide, favicons 20×20.
+**Key difference from images:** Bookmarks always use `ppsp = Infinity` (full-resolution, no mip level selection). OG images are ≤300wu wide (card width), favicons 18×18.
 
 ### Hydration (Room Join)
 
@@ -189,7 +189,7 @@ interface PlaceholderEntry {
 const placeholders = new Map<string, PlaceholderEntry>();
 ```
 
-**Visual:** 360×56px white card with 8px border-radius, subtle box-shadow, containing a 16px spinning circle + 12px domain text. Spinner uses CSS `@keyframes bk-spin` (injected once into `<head>`).
+**Visual:** 300×48px white card with 8px border-radius, subtle box-shadow, containing a 16px spinning circle + 12px domain text. Spinner uses CSS `@keyframes bk-spin` (injected once into `<head>`).
 
 **Positioning:** Each frame, `repositionAllPlaceholders()` (called from `manageImageViewport()`) applies camera transforms:
 
@@ -214,21 +214,21 @@ No pending/failed visual states — layout determined purely by which metadata f
 **Full Card** (has `ogImageAssetId`):
 ```
 ┌──────────────────────────────┐
-│          OG Image            │  ← Variable height (80–300wu, aspect-ratio-aware)
-│                  [Open ↗]    │  ← 72×28 button overlaid on image bottom-right
+│          OG Image            │  ← Variable height (70–250wu, aspect-ratio-aware)
+│                  [Open ↗]    │  ← 78×28 button overlaid on image bottom-right
 ├──────────────────────────────┤
-│ Title (bold 15px)            │  ← Max 2 lines, ellipsis (if present)
-│ Description (13px gray)      │  ← Max 3 lines, ellipsis (if present)
-│ 🔗 domain.com               │  ← Favicon 20×20 + domain text
+│ Title (bold 14px)            │  ← Max 2 lines, ellipsis (if present)
+│ Description (12px gray)      │  ← Max 3 lines, ellipsis (if present)
+│ 🔗 domain.com               │  ← Favicon 18×18 + domain text
 └──────────────────────────────┘
 ```
 
 **Text Card** (has `title`, no OG image):
 ```
 ┌──────────────────────────────┐
-│ Title (bold 15px)            │
-│ Description (13px gray)      │
-│ 🔗 domain.com    [Open ↗]   │  ← 72×28 button right-aligned in domain row
+│ Title (bold 14px)            │
+│ Description (12px gray)      │
+│ 🔗 domain.com    [Open ↗]   │  ← 78×28 button right-aligned in domain row
 └──────────────────────────────┘
 ```
 
@@ -244,7 +244,7 @@ Aspect-ratio-aware display height:
 function ogDisplayHeight(ogW: number, ogH: number): number {
   if (ogW <= 0 || ogH <= 0) return MIN_OG_H;  // Defensive fallback
   const natural = BOOKMARK_WIDTH * (ogH / ogW);  // Scale to card width
-  return Math.min(Math.max(natural, MIN_OG_H), MAX_OG_H);  // Clamp [80, 300]
+  return Math.min(Math.max(natural, MIN_OG_H), MAX_OG_H);  // Clamp [70, 250]
 }
 ```
 
@@ -263,14 +263,14 @@ Placeholder `#f5f5f5` rect while bitmap loading.
 
 ### "Open" Button
 
-72×28wu rounded rect (radius 6px). Solid off-white `#F5F5F5` background with 1px `#e5e7eb` border. Left: "Open" text (12px Inter, `#374151`). Right: box-arrow icon (open-corner box with diagonal arrow, stroke `#374151`, lineWidth 1.5, round caps/joins).
+78×28wu rounded rect (radius 6px). White `#FFFFFF` background (hover: `#e8e8e8`), 1px `#d1d5db` border. Left: "Open" text (600 13px Inter, `#374151`). Right: box-arrow icon (stroke `#374151`, lineWidth 1.8, round caps/joins).
 
 - **Full card:** overlaid on OG image, `OPEN_BTN_MARGIN` (10wu) from bottom-right of image area
 - **Text card:** right-aligned in domain row, vertically centered with favicon
 
 ### Favicon
 
-20×20wu (was 16 in v1). Drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of domain row, 6px spacing before domain text.
+18×18wu. Drawn via `getBitmap(props.faviconAssetId)` from `image-manager.ts`. Positioned at left edge of domain row, 6px spacing before domain text. Domain text color `#6b7280` (hover: `#2563eb`).
 
 ### Layout Cache
 
@@ -280,7 +280,8 @@ interface BookmarkLayout {
   descLines: string[];        // Wrapped description, max 3 lines
   totalHeight: number;        // Computed total card height
   hasOgImage: boolean;        // OG image available (!!ogImageAssetId)
-  ogDisplayH: number;         // Clamped display height [80, 300]
+  ogDisplayH: number;         // Clamped display height [70, 250]
+  domainTextWidth: number;    // Measured domain text width (for hit-test bounds)
 }
 ```
 
@@ -300,12 +301,33 @@ Text:      CARD_PADDING + titleH + descH + domainLineH + CARD_PADDING
 Defensive: CARD_PADDING + domainLineH + CARD_PADDING
 
 // Where:
-titleH      = titleLines.length * TITLE_LINE_H   (20px per line)
-descH       = descLines.length * DESC_LINE_H     (17px per line)
-domainLineH = DOMAIN_FONT_SIZE + 12              (24px)
+titleH      = titleLines.length * TITLE_LINE_H   (19px per line)
+descH       = descLines.length * DESC_LINE_H     (16px per line)
+domainLineH = DOMAIN_FONT_SIZE + 12              (23px)
 ```
 
 `computeBookmarkHeight(data)` is called before Y.Doc write (to set frame height). Does NOT use the layout cache — computes independently.
+
+### Hit-Test Helpers (for future click interactions)
+
+Exported types and functions for external hit testing of interactive regions:
+
+```typescript
+type BookmarkHoverTarget = 'button' | 'link';
+
+interface LocalRect { lx: number; ly: number; lw: number; lh: number }
+
+// Public layout accessor (delegates to internal cache)
+getBookmarkLayout(id, props, cardWidth?) → BookmarkLayout
+
+// Frame-local bounds of the "Open" button (full card: on OG image; text card: in domain row)
+getOpenButtonLocalBounds(layout, cardWidth) → LocalRect
+
+// Frame-local bounds of the domain text (for link click detection)
+getDomainLinkLocalBounds(layout, cardWidth, hasFavicon) → LocalRect
+```
+
+All coordinates are **frame-local** (relative to bookmark frame origin). Convert to world coords by adding `frame[0]`/`frame[1]`. These entry points are preparation for click-to-open and link navigation — not yet wired into SelectTool.
 
 ---
 
@@ -417,6 +439,32 @@ Bookmarks serialize as plain Y.Map props (url, domain, title, description, asset
 ### Hit Testing (`hit-testing.ts`)
 - Marquee: frame-based `rectsIntersect(frameTupleToWorldBounds(frame), rect)`
 - Point: simple rect containment, `isFilled: true` (always opaque)
+- Handle hit-test: single bookmark → no handles; multiple bookmarksOnly → all handles (corner + side)
+
+### Selection Overlay (`selection-overlay.ts`)
+- Highlight: bbox-based `strokeRect` (includes shadow padding), not frame
+
+### Transform (`transform.ts`, `SelectTool.ts`, `objects.ts`)
+Bookmarks have fixed dimensions — never resize. Only position changes.
+
+| Scenario | Corner Handles | Side Handles | Bookmark Behavior |
+|----------|---------------|--------------|-------------------|
+| bookmarksOnly, single | Hidden | Hidden | N/A (no handles) |
+| bookmarksOnly, multiple | Visible | Visible | Corner: preserved-position translate, Side: edge-pin translate |
+| mixed, corner drag | Visible | — | Preserved-position translate (fixed size) |
+| mixed, side drag | — | Visible | Edge-pin translate (fixed size) |
+
+- `computeBookmarkCornerTranslation()` — uniform scale on center position, dimensions unchanged
+- Side handles always use `computeEdgePinTranslation()` regardless of `selectionKind`
+- `transformFrameForTopology()` / `transformPositionForTopology()` — bookmark cases for connector rerouting
+
+### Connector Integration (`snap.ts`, `reroute-connector.ts`, `selection-store.ts`, `ConnectorTool.ts`)
+Bookmarks are connectable objects — rect frame, always treated as filled.
+
+- **Snap:** included in `findBestSnapTarget()` connectable kind filter + always-filled check
+- **Reroute:** `resolveEndpoint()` and `resolveNewEndpoint()` include bookmark in kind checks; falls through to `getFrame(handle.y)` for frame lookup
+- **Topology:** `computeConnectorTopology()` includes bookmarks in both passes (anchored connector discovery + original frame collection)
+- **ConnectorTool preview:** bookmark included in snap shape frame lookup for snap dot rendering
 
 ### Eraser (`EraserTool.ts`)
 - `case 'bookmark':` alongside `case 'image':` — `circleRectIntersect(wx, wy, radius, x, y, w, h)`
@@ -432,7 +480,7 @@ Bookmarks serialize as plain Y.Map props (url, domain, title, description, asset
 
 ### Renderer (`objects.ts`)
 - `case 'bookmark': drawBookmark(ctx, handle)` in `drawObject` switch
-- Transform preview: draws normally (no scale transform support yet)
+- Scale preview: `ctx.translate(dx, dy)` + `drawBookmark()` (fixed size, position only)
 
 ### Room Doc Manager (`room-doc-manager.ts`)
 - Hydration: standard `computeBBoxFor()` (frame-based with shadow padding)
@@ -455,26 +503,25 @@ No changes needed. `/api/assets/*` cache-first handles OG images and favicons. `
 ## Constants
 
 ```
-BOOKMARK_WIDTH    = 360       Card width (fixed)
-CARD_PADDING      = 16        Inner padding
-MIN_OG_H          = 80        Minimum OG image display height
-MAX_OG_H          = 300       Maximum OG image display height
-TITLE_FONT_SIZE   = 15        Bold Inter
-DESC_FONT_SIZE    = 13        Regular Inter
-DOMAIN_FONT_SIZE  = 12        Regular Inter, color #9ca3af
-TITLE_LINE_H      = 20        Title line height
-DESC_LINE_H       = 17        Description line height
+BOOKMARK_WIDTH    = 300       Card width (fixed)
+CARD_PADDING      = 14        Inner padding
+MIN_OG_H          = 70        Minimum OG image display height
+MAX_OG_H          = 250       Maximum OG image display height
+TITLE_FONT_SIZE   = 14        Bold Inter
+DESC_FONT_SIZE    = 12        Regular Inter
+DOMAIN_FONT_SIZE  = 11        Regular Inter, #6b7280 (hover: #2563eb)
+TITLE_LINE_H      = 19        Title line height
+DESC_LINE_H       = 16        Description line height
 TITLE_MAX_LINES   = 2
 DESC_MAX_LINES    = 3
-FAVICON_SIZE      = 20        20x20 (was 16 in v1)
+FAVICON_SIZE      = 18        18×18
 CARD_FILL         = '#FFFFFF'
 CARD_RADIUS       = 8
-OPEN_BTN_W        = 72        Open button width
+OPEN_BTN_W        = 78        Open button width
 OPEN_BTN_H        = 28        Open button height
 OPEN_BTN_RADIUS   = 6         Open button border radius
 OPEN_BTN_MARGIN   = 10        Margin from card edges
-PLACEHOLDER_W     = 360       HTML placeholder width
-PLACEHOLDER_H     = 56        HTML placeholder height
+PLACEHOLDER_H     = 48        HTML placeholder height (width = BOOKMARK_WIDTH)
 ```
 
 ---
@@ -497,9 +544,8 @@ PLACEHOLDER_H     = 56        HTML placeholder height
 
 ## NOT Implemented
 
-- **SelectTool transforms** — bookmarks draw normally during scale (no resize/reflow)
+- **Link open on click** — "Open" button and domain link have hit-test bounds exported (`getOpenButtonLocalBounds`, `getDomainLinkLocalBounds`) but no navigation wired yet
 - **Double-click behavior** — no editing mode (bookmarks are not editable)
-- **Link open on click** — "Open" button is visual-only, no navigation
 - **Context menu actions** — no bookmark-specific toolbar bar
 - **Re-unfurl** — no way to retry from UI (failures are final → text object)
 - **URL editing** — URL is immutable after creation

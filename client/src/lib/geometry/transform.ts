@@ -177,6 +177,24 @@ export function computeEdgePinTranslation(
 }
 
 /**
+ * Compute translation for a bookmark during corner/bookmarksOnly scale.
+ * Bookmark dimensions stay fixed — only the center translates using preserved position logic.
+ */
+export function computeBookmarkCornerTranslation(
+  frame: FrameTuple,
+  originBounds: WorldRect,
+  scaleX: number,
+  scaleY: number,
+  origin: [number, number],
+): { dx: number; dy: number } {
+  const cx = frame[0] + frame[2] / 2;
+  const cy = frame[1] + frame[3] / 2;
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+  return { dx: newCx - cx, dy: newCy - cy };
+}
+
+/**
  * Compute translation for a stroke in mixed + side handle scenario.
  * Reads points from handle, computes geometry bounds, delegates to computeEdgePinTranslation.
  */
@@ -460,6 +478,19 @@ export function transformFrameForTopology(
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
+  // Bookmarks: fixed size — side = edge-pin translate, corner = preserved-position translate
+  if (kind === 'bookmark') {
+    if (handleKind === 'side') {
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+        originBounds, scaleX, scaleY, origin, handleId,
+      );
+      return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    }
+    const { dx, dy } = computeBookmarkCornerTranslation(frame, originBounds, scaleX, scaleY, origin);
+    return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+  }
+
   if (
     ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
   ) {
@@ -481,7 +512,7 @@ export function transformPositionForTopology(
   }
   const { origin, scaleX, scaleY, selectionKind, handleKind, originBounds } = transform;
   if (
-    selectionKind === 'imagesOnly' ||
+    selectionKind === 'imagesOnly' || selectionKind === 'bookmarksOnly' ||
     ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
   ) {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);

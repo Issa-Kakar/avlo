@@ -185,6 +185,13 @@ function drawObjectHighlights(
       continue;
     }
 
+    // Bookmark: stroke the bbox (includes shadow padding)
+    if (handle.kind === 'bookmark') {
+      const [minX, minY, maxX, maxY] = handle.bbox;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+      continue;
+    }
+
     // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
     if (handle.kind === 'stroke' || handle.kind === 'connector') {
       const [minX, minY, maxX, maxY] = handle.bbox;

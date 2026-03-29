@@ -16,7 +16,7 @@ import { getCodeFrame } from '@/lib/code/code-system';
 import { getEndpointEdgePosition } from '@/lib/connectors/connector-utils';
 import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/lib/tools/types';
-import { computeHandles } from '@/stores/selection-store';
+import { computeHandles, type SelectionKind } from '@/stores/selection-store';
 
 // Alias for backwards compatibility
 export type WorldRect = WorldBounds;
@@ -513,8 +513,13 @@ export function hitTestHandle(
   worldY: number,
   bounds: WorldRect,
   scale: number,
+  selectionKind?: SelectionKind,
+  selectionCount?: number,
 ): HandleId | null {
   const handleRadius = HANDLE_HIT_PX / scale;
+
+  // Bookmarks: single = no handles at all; multiple = all handles
+  if (selectionKind === 'bookmarksOnly' && (selectionCount ?? 1) <= 1) return null;
 
   // Test corners first (they take priority)
   const corners = computeHandles(bounds);

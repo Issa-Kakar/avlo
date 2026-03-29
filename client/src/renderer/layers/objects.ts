@@ -30,6 +30,7 @@ import {
 import {
   computeEdgePinTranslation,
   computeStrokeTranslation,
+  computeBookmarkCornerTranslation,
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
@@ -977,9 +978,27 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // Bookmarks: no transform support yet — draw normally during transforms
+  // Bookmarks: fixed size — side = edge-pin, corner = preserved-position
   if (handle.kind === 'bookmark') {
-    drawBookmark(ctx, handle);
+    const frame = getFrame(handle.y);
+    if (!frame) { drawBookmark(ctx, handle); return; }
+
+    if (handleKind === 'side') {
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+        originBounds, scaleX, scaleY, origin, handleId,
+      );
+      ctx.save(); ctx.translate(dx, dy);
+      drawBookmark(ctx, handle);
+      ctx.restore();
+    } else {
+      const { dx, dy } = computeBookmarkCornerTranslation(
+        frame, originBounds, scaleX, scaleY, origin,
+      );
+      ctx.save(); ctx.translate(dx, dy);
+      drawBookmark(ctx, handle);
+      ctx.restore();
+    }
     return;
   }
 

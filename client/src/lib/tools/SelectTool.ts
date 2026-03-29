@@ -18,6 +18,7 @@ import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
   computeEdgePinTranslation,
   computeStrokeTranslation,
+  computeBookmarkCornerTranslation,
   applyTransformToBounds,
   computeScaleFactors,
   applyUniformScaleToFrame,
@@ -175,7 +176,7 @@ export class SelectTool implements PointerTool {
       const selectionBounds = computeSelectionBounds();
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds
-        ? hitTestHandle(worldX, worldY, selectionBounds, scale)
+        ? hitTestHandle(worldX, worldY, selectionBounds, scale, store.selectionKind, selectedIds.length)
         : null;
       if (handleHit) {
         this.activeHandle = handleHit;
@@ -769,7 +770,9 @@ export class SelectTool implements PointerTool {
       selectionBounds,
       marqueeRect,
       handles:
-        isTransforming || (store.textEditingId && !textTool.isEditingLabel()) || store.codeEditingId
+        isTransforming ||
+        (store.selectionKind === 'bookmarksOnly' && selectedIds.length <= 1) ||
+        (store.textEditingId && !textTool.isEditingLabel()) || store.codeEditingId
           ? null
           : handles,
       isTransforming,
@@ -824,7 +827,7 @@ export class SelectTool implements PointerTool {
     ) {
       const bounds = computeSelectionBounds();
       if (bounds) {
-        const handle = hitTestHandle(worldX, worldY, bounds, scale);
+        const handle = hitTestHandle(worldX, worldY, bounds, scale, store.selectionKind, selectedIds.length);
         if (handle) {
           setCursorOverride(getHandleCursor(handle));
           applyCursor();
@@ -1167,6 +1170,21 @@ export class SelectTool implements PointerTool {
           } else {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           }
+        } else if (handle.kind === 'bookmark') {
+          const frame = getFrame(handle.y);
+          if (!frame) continue;
+          if (handleKind === 'side') {
+            const { dx, dy } = computeEdgePinTranslation(
+              frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            objBounds = translateBounds(bboxTupleToWorldBounds(handle.bbox), dx, dy);
+          } else {
+            const { dx, dy } = computeBookmarkCornerTranslation(
+              frame, originBounds, scaleX, scaleY, origin,
+            );
+            objBounds = translateBounds(bboxTupleToWorldBounds(handle.bbox), dx, dy);
+          }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
@@ -1472,6 +1490,25 @@ export class SelectTool implements PointerTool {
             yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
           } else {
             yMap.set('frame', applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY));
+          }
+          continue;
+        }
+
+        // Bookmark scaling: fixed size — side = edge-pin, corner = preserved-position
+        if (handle.kind === 'bookmark') {
+          const frame = getFrame(yMap);
+          if (!frame) continue;
+          if (handleKind === 'side') {
+            const { dx, dy } = computeEdgePinTranslation(
+              frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
+              originBounds, scaleX, scaleY, origin, handleId,
+            );
+            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
+          } else {
+            const { dx, dy } = computeBookmarkCornerTranslation(
+              frame, originBounds, scaleX, scaleY, origin,
+            );
+            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
           }
           continue;
         }
