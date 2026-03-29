@@ -531,7 +531,7 @@ export function getEndpointEdgePosition(
   if (!shapeHandle) return storedPos ?? [0, 0];
 
   const frame =
-    shapeHandle.kind === 'text'
+    shapeHandle.kind === 'text' || shapeHandle.kind === 'note'
       ? getTextFrame(shapeHandle.id)
       : shapeHandle.kind === 'code'
         ? getCodeFrame(shapeHandle.id)

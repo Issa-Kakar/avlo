@@ -227,18 +227,14 @@ export function setSelectedFontSize(size: number): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (handle.kind === 'note') continue; // Notes derive fontSize from scale — skip
+      if (handle.kind === 'text' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontSize', clamped);
       }
     }
   });
 
-  const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'notesOnly') {
-    useDeviceUIStore.getState().setNoteSize(clamped);
-  } else {
-    useDeviceUIStore.getState().setTextSize(clamped);
-  }
+  useDeviceUIStore.getState().setTextSize(clamped);
   useSelectionStore.getState().refreshStyles();
 }
 

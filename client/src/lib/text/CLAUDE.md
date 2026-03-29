@@ -1269,13 +1269,13 @@ Mixed selection + side handle → edge-pin translate (only `origin` written, no 
 
 **`SelectionKind`:** `'notesOnly'` added to union. Derived in `computeSelectionComposition` via `notes` counter in `KindCounts`.
 
-**`computeStyles` for `'notesOnly'`:** Early return with `fillColor`, `fontSize`, `fontFamily` from first note.
+**`computeStyles` for `'notesOnly'`:** Early return with `fillColor`, `fontFamily`, `textAlign`, `textAlignV` from first note. No `fontSize` — it's derived from scale.
 
 **`computeUniformInlineStyles`:** Notes included alongside text and labeled shapes — bold/italic/highlight tracking works for selected notes.
 
 **`refreshStyles`:** `'notesOnly'` included in inline styles gate (alongside `'textOnly'`, `'shapesOnly'`).
 
-**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontSize`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field).
+**Selection actions:** Notes included in `setSelectedFillColor`, `setSelectedFontFamily`, `toggleSelectedBold`, `toggleSelectedItalic`, `setSelectedHighlight`. NOT included in `setSelectedTextColor` (no `color` field) or `setSelectedFontSize` (font size is derived from scale).
 
 **SelectTool:** Double-click on note → `textTool.startEditing(id)`. Keyboard Enter-to-edit: notes use `getTextFrame` for frame resolution.
 
@@ -1305,8 +1305,5 @@ Base `.tiptap` CSS provides `width: max-content` and `transform: translateX(var(
 ### NOT Implemented Yet
 
 - **Eraser** — no eraser integration
-- **Connector anchoring** — notes don't participate as connector endpoints
 - **Note resize** — no drag-to-resize (scale via SelectTool handles works)
 - **Multiple note colors** — only `'#FEF3AC'` in creation, but fillColor can be changed via selection actions
-- **Context menu** — no note-specific filtering
-- **Alignment UI** — alignment is plumbed and defaults to center/middle, but no context menu controls to change it yet

@@ -94,7 +94,6 @@ interface DeviceUIState {
   textFillColor: string | null;
 
   // Note-specific settings
-  noteSize: number;
   noteAlign: TextAlign;
   noteAlignV: TextAlignV;
   noteFontFamily: FontFamily;
@@ -147,7 +146,6 @@ interface DeviceUIState {
   setFontFamily: (family: FontFamily) => void;
   setHighlightColor: (color: string | null) => void;
   setTextFillColor: (color: string | null) => void;
-  setNoteSize: (size: number) => void;
   setNoteAlign: (align: TextAlign) => void;
   setNoteAlignV: (alignV: TextAlignV) => void;
   setNoteFontFamily: (family: FontFamily) => void;
@@ -189,7 +187,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       highlightColor: null,
       textFillColor: null,
 
-      noteSize: 20,
       noteAlign: 'center' as TextAlign,
       noteAlignV: 'middle' as TextAlignV,
       noteFontFamily: 'Grandstander' as FontFamily,
@@ -247,7 +244,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       setFontFamily: (family) => set({ textFontFamily: family }),
       setHighlightColor: (color) => set({ highlightColor: color }),
       setTextFillColor: (color) => set({ textFillColor: color }),
-      setNoteSize: (size) => set({ noteSize: size }),
       setNoteAlign: (align) => set({ noteAlign: align }),
       setNoteAlignV: (alignV) => set({ noteAlignV: alignV }),
       setNoteFontFamily: (family) => set({ noteFontFamily: family }),
@@ -274,9 +270,6 @@ export const useDeviceUIStore = create<DeviceUIState>()(
             break;
           case 'text':
             settings.size = textSize;
-            break;
-          case 'note':
-            settings.size = state.noteSize;
             break;
           case 'connector':
             settings.size = connectorSize;

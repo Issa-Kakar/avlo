@@ -458,7 +458,7 @@ function drawSnapMidpointDots(
   if (!shapeHandle) return;
 
   const shapeFrame =
-    shapeHandle.kind === 'text' ? getTextFrame(shapeHandle.id)
+    shapeHandle.kind === 'text' || shapeHandle.kind === 'note' ? getTextFrame(shapeHandle.id)
     : shapeHandle.kind === 'code' ? getCodeFrame(shapeHandle.id)
     : getFrame(shapeHandle.y);
   if (!shapeFrame) return;

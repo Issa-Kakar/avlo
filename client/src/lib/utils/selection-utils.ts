@@ -278,10 +278,9 @@ export function computeStyles(
     return EMPTY_STYLES;
   }
 
-  // Notes: track fillColor, fontSize, fontFamily, textAlign, textAlignV
+  // Notes: track fillColor, fontFamily, textAlign, textAlignV (fontSize is derived, not stored)
   if (kind === 'notesOnly') {
     let firstFill: string | null = null;
-    let firstFontSize: number | null = null;
     let firstFontFamily: FontFamily | null = null;
     let firstAlign: TextAlign | null = null;
     let firstAlignV: TextAlignV | null = null;
@@ -294,7 +293,6 @@ export function computeStyles(
       if (!handle || handle.kind !== 'note') continue;
       if (first) {
         firstFill = getFillColor(handle.y) ?? null;
-        firstFontSize = Math.round(getFontSize(handle.y));
         firstFontFamily = getFontFamily(handle.y);
         firstAlign = getAlign(handle.y);
         firstAlignV = getAlignV(handle.y);
@@ -309,7 +307,6 @@ export function computeStyles(
     return {
       ...EMPTY_STYLES,
       fillColor: firstFill,
-      fontSize: firstFontSize,
       fontFamily: firstFontFamily,
       textAlign: alignMixed ? null : firstAlign,
       textAlignV: alignVMixed ? null : firstAlignV,

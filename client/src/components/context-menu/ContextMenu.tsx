@@ -83,7 +83,6 @@ const selectConnectorStyles = (s: SelectionStore) => ({
 });
 const selectNoteStyles = (s: SelectionStore) => ({
   fillColor: s.selectedStyles.fillColor,
-  fontSize: s.selectedStyles.fontSize,
 });
 
 // === Group Components ===
@@ -268,18 +267,10 @@ const ConnectorGroup = memo(function ConnectorGroup() {
 });
 
 const NoteStyleGroup = memo(function NoteStyleGroup() {
-  const { fillColor, fontSize } = useSelectionStore(useShallow(selectNoteStyles));
-  const effectiveFontSize = fontSize ?? 20;
+  const { fillColor } = useSelectionStore(useShallow(selectNoteStyles));
   return (
     <ButtonGroup>
       <TypefaceButton />
-      <div className="ctx-divider" />
-      <FontSizeStepper
-        value={effectiveFontSize}
-        onDecrement={decrementFontSize}
-        onIncrement={incrementFontSize}
-        onSelectSize={setSelectedFontSize}
-      />
       <div className="ctx-divider" />
       <BoldButton />
       <ItalicButton />

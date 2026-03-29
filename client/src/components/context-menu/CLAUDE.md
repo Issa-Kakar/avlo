@@ -188,20 +188,19 @@ Shapes now include the full text formatting suite for shape labels:
 ### `notesOnly`
 
 ```
-[NoteType] | [Typeface] | [-FontSize+] | [B] [I] | [NoteAlign] | [Highlight] | [Fill filled-circle]  |  Trash  ...
+[NoteType] | [Typeface] | [B] [I] | [NoteAlign] | [Highlight] | [Fill filled-circle]  |  Trash  ...
 ```
 
-Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`):
+Sticky notes have a dedicated bar with no text color control (note text is hardcoded `#1a1a1a`) and no font size stepper (font size is derived from scale):
 
 - **NoteType** — always shows `IconStickySquareFold`. Same `ShapeTypeDropdown` with `mode='note'`. Dropdown items include all shape types + text + sticky note (all no-op, type conversion not yet implemented).
 - **Typeface** — same self-subscribing `TypefaceButton`. Persists to `device-ui-store.noteFontFamily` (not `textFontFamily`).
-- **FontSize** — same `FontSizeStepper`. Persists to `device-ui-store.noteSize` (not `textSize`).
 - **Bold** / **Italic** — same self-subscribing components. Uses TipTap chain when editor active, `formatFragment()` when not.
 - **NoteAlign** — `NoteAlignDropdown`. Self-subscribing to `selectedStyles.textAlign` and `selectedStyles.textAlignV`. Trigger: current H-align icon + chevron. Submenu: H-align row (left/center/right) + divider + V-align row (top/middle/bottom). H-align calls `setSelectedTextAlign`, V-align calls `setSelectedTextAlignV`. Notes use top-left origin so no anchor math needed for H-align (just sets `align` key). V-align sets `alignV` key. Persists to `device-ui-store.noteAlign`/`noteAlignV`.
 - **Highlight** — same as other kinds.
 - **Fill** — filled circle variant. Default color `'#FEF3AC'` (warm sticky yellow). No no-fill slot needed (notes always have fill). Device-ui persist is skipped (note fill is per-object, not a device default).
 
-**Note-specific device-ui persistence:** Font size, font family, and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteSize`, `noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
+**Note-specific device-ui persistence:** Font family and alignment actions detect `selectionKind === 'notesOnly'` and persist to note-specific device-ui fields (`noteFontFamily`, `noteAlign`, `noteAlignV`) rather than the text defaults.
 
 ### `connectorsOnly`
 
@@ -323,7 +322,7 @@ Computed by `computeStyles(ids, kind, objectsById)`. Tracks different fields per
 | `shapesOnly` | color, width, fillColor, fillColorMixed, fillColorSecond, shapeType, fontSize, fontFamily, labelColor |
 | `connectorsOnly` | color, width |
 | `textOnly` | color, fontSize, textAlign, fontFamily, labelColor, fillColor, fillColorMixed, fillColorSecond, shapeType='text' |
-| `notesOnly` | fillColor, fontSize, fontFamily, textAlign, textAlignV (multi-note mismatch → null for align fields) |
+| `notesOnly` | fillColor, fontFamily, textAlign, textAlignV (multi-note mismatch → null for align fields) |
 | `codeOnly` | fontSize, codeLanguage |
 | `mixed` | Returns `EMPTY_STYLES` immediately |
 
@@ -380,7 +379,7 @@ Free mutation functions called by context menu buttons. Pattern: read IDs from s
 
 All text actions use the text-editing fallback: `ids = textEditingId ? [textEditingId] : selectedIds`. Code actions use an analogous pattern: `ids = codeEditingId ? [codeEditingId] : selectedIds` — this ensures language/fontSize/lineNumbers changes work during active CodeTool editing (not just via SelectTool selection).
 
-**Note-specific device-ui routing:** Actions that persist to device-ui (`setSelectedFontSize`, `setSelectedFontFamily`, `setSelectedTextAlign`) check `selectionKind === 'notesOnly'` and route to note-specific setters (`setNoteSize`, `setNoteFontFamily`, `setNoteAlign`) instead of text defaults. `setSelectedFillColor` skips device-ui persist entirely for notes (note fill is per-object, not a device default).
+**Note-specific device-ui routing:** Actions that persist to device-ui (`setSelectedFontFamily`, `setSelectedTextAlign`) check `selectionKind === 'notesOnly'` and route to note-specific setters (`setNoteFontFamily`, `setNoteAlign`) instead of text defaults. `setSelectedFontSize` skips notes entirely (font size is derived from scale). `setSelectedFillColor` skips device-ui persist entirely for notes (note fill is per-object, not a device default).
 
 | Function | Scope | Persists To | Notes |
 |----------|-------|-------------|-------|
@@ -391,9 +390,9 @@ All text actions use the text-editing fallback: `ids = textEditingId ? [textEdit
 | `deleteSelected()` | All objects | -- | Anchor cleanup for connectors, then `clearSelection()` |
 | `setSelectedFontFamily(family)` | Text + Notes + labeled shapes | `textFontFamily` or `noteFontFamily` by kind | |
 | `setSelectedTextColor(color)` | Text + labeled shapes | `textColor` | Text: sets `color` key. Shapes: sets `labelColor` key |
-| `setSelectedFontSize(size)` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Clamped 1-999, rounded |
-| `incrementFontSize()` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Steps through presets, caps 10-144 |
-| `decrementFontSize()` | Text + Notes + labeled shapes | `textSize` or `noteSize` by kind | Steps through presets, caps 10-144 |
+| `setSelectedFontSize(size)` | Text + labeled shapes (skips notes) | `textSize` | Clamped 1-999, rounded |
+| `incrementFontSize()` | Text + labeled shapes (skips notes) | `textSize` | Steps through presets, caps 10-144 |
+| `decrementFontSize()` | Text + labeled shapes (skips notes) | `textSize` | Steps through presets, caps 10-144 |
 | `setSelectedTextAlign(align)` | Text + Notes | `textAlign` or `noteAlign` by kind | Text: preserves left edge via anchorFactor math. Notes: just sets `align` key (top-left origin, no anchor shift) |
 | `setSelectedTextAlignV(alignV)` | Notes only | `noteAlignV` | Sets `alignV` key on Y.Map |
 | `toggleSelectedBold()` | Text + Notes + labeled shapes | -- | Editor -> TipTap chain; no editor -> `formatFragment()` |
