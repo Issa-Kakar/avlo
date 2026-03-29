@@ -51,6 +51,7 @@ import {
   getMeasuredAscentRatio,
   computeLabelTextBox,
   anchorFactor,
+  NOTE_WIDTH,
   NOTE_FILL_COLOR,
   getNotePadding,
   getNoteContentWidth,
@@ -129,7 +130,11 @@ export class TextTool implements PointerTool {
       useSelectionStore.getState().beginTextEditing(this.hitTextId, false);
       this.mountEditor(this.hitTextId, false);
     } else {
-      const [x, y] = this.downWorld;
+      let [x, y] = this.downWorld;
+      if (useDeviceUIStore.getState().activeTool === 'note') {
+        x -= NOTE_WIDTH / 2;
+        y -= NOTE_WIDTH / 2;
+      }
       const objectId = this.createTextObject(x, y);
       useSelectionStore.getState().beginTextEditing(objectId, true);
       this.mountEditor(objectId, true);

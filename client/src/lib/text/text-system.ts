@@ -538,8 +538,18 @@ function measureTokenizedContent(
 const BREAK_AFTER = new Set([':',',',';','/','!','?','%','-','}',']',')']);
 const BREAK_BEFORE = new Set(['{','[','(']);
 
-/** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme.
- *  Prefers UAX#14-like break opportunities (punctuation) over arbitrary grapheme breaks. */
+/** Find end of first soft segment (UAX#14-like). Returns char index.
+ *  Break after: :,;/!?%-}])  Break before: {[(
+ *  No break adjacent to " (UAX#14 LB19: × QU / QU ×). */
+function nextSoftBreak(text: string): number {
+  for (let i = 0; i < text.length; i++) {
+    if (BREAK_AFTER.has(text[i]) && i + 1 < text.length && text[i + 1] !== '"') return i + 1;
+    if (i > 0 && BREAK_BEFORE.has(text[i]) && text[i - 1] !== '"') return i;
+  }
+  return text.length;
+}
+
+/** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme. */
 function sliceTextToFit(
   font: string,
   text: string,
@@ -558,12 +568,6 @@ function sliceTextToFit(
     else hi = mid - 1;
   }
   if (lo === 0) lo = 1; // guarantee forward progress
-
-  // Prefer soft wrap opportunities within the fitting range
-  for (let i = lo; i >= 1; i--) {
-    if (BREAK_AFTER.has(g[i - 1])) { lo = i; break; }
-    if (i < g.length && BREAK_BEFORE.has(g[i])) { lo = i; break; }
-  }
 
   const head = g.slice(0, lo).join('');
   const tail = g.slice(lo).join('');
@@ -683,7 +687,7 @@ export function layoutMeasuredContent(
       for (const seg of tok.segments) appendRun(b, seg, seg.text, seg.advanceWidth);
       return b;
     }
-    // break-word path
+    // break-word path — process soft segments (UAX#14) before character-level slicing
     if (remaining <= 0 && b.runs.length > 0) {
       pushLine(b);
       b = newLineBuilder();
@@ -697,9 +701,25 @@ export function layoutMeasuredContent(
           b = newLineBuilder();
           lineRemaining = maxWidth;
         }
+        // Try to place complete soft segments before resorting to char-level breaks
+        const segEnd = nextSoftBreak(text);
+        if (segEnd < text.length) {
+          const chunk = text.slice(0, segEnd);
+          const chunkW = measureTextCached(seg.font, chunk);
+          if (chunkW <= lineRemaining) {
+            appendRun(b, seg, chunk, chunkW);
+            text = text.slice(segEnd);
+            continue;
+          }
+          if (chunkW <= maxWidth) {
+            if (b.runs.length > 0) { pushLine(b); b = newLineBuilder(); }
+            appendRun(b, seg, chunk, chunkW);
+            text = text.slice(segEnd);
+            continue;
+          }
+        }
+        // Oversized segment or no soft break → character-level
         const { head, tail, headW } = sliceTextToFit(seg.font, text, lineRemaining);
-        // Forward-progress guarantee can force a grapheme that doesn't fit.
-        // On a non-empty line, wrap first and retry with full line width.
         if (headW > lineRemaining && b.runs.length > 0) {
           pushLine(b);
           b = newLineBuilder();
@@ -868,6 +888,22 @@ function noteFlowCheck(
               if (lineCount > maxLines) return 'heightOverflow';
               curW = 0;
               remaining = maxW;
+            }
+            // Try soft segments before char-level (mirrors placeWord)
+            const segEnd = nextSoftBreak(text);
+            if (segEnd < text.length) {
+              const chunkW = measureTextCached(seg.font, text.slice(0, segEnd));
+              if (chunkW <= remaining) {
+                curW += chunkW;
+                text = text.slice(segEnd);
+                continue;
+              }
+              if (chunkW <= maxW) {
+                if (curW > 0) { lineCount++; if (lineCount > maxLines) return 'heightOverflow'; curW = 0; }
+                curW += chunkW;
+                text = text.slice(segEnd);
+                continue;
+              }
             }
             const { tail, headW } = sliceTextToFit(seg.font, text, remaining);
             if (headW > remaining && curW > 0) {
