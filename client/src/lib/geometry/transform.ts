@@ -177,6 +177,24 @@ export function computeEdgePinTranslation(
 }
 
 /**
+ * Compute translation for a bookmark during corner/bookmarksOnly scale.
+ * Bookmark dimensions stay fixed — only the center translates using preserved position logic.
+ */
+export function computeBookmarkCornerTranslation(
+  frame: FrameTuple,
+  originBounds: WorldRect,
+  scaleX: number,
+  scaleY: number,
+  origin: [number, number],
+): { dx: number; dy: number } {
+  const cx = frame[0] + frame[2] / 2;
+  const cy = frame[1] + frame[3] / 2;
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
+  return { dx: newCx - cx, dy: newCy - cy };
+}
+
+/**
  * Compute translation for a stroke in mixed + side handle scenario.
  * Reads points from handle, computes geometry bounds, delegates to computeEdgePinTranslation.
  */
@@ -452,8 +470,15 @@ export function transformFrameForTopology(
   if (kind === 'image') {
     if (selectionKind === 'mixed' && handleKind === 'side') {
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0], frame[0] + frame[2], frame[1], frame[1] + frame[3],
-        originBounds, scaleX, scaleY, origin, handleId,
+        frame[0],
+        frame[0] + frame[2],
+        frame[1],
+        frame[1] + frame[3],
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
       );
       return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
     }
@@ -466,17 +491,50 @@ export function transformFrameForTopology(
     if (selectionKind === 'mixed' && handleKind === 'side') {
       const sp = frame[2] * 0.15; // NOTE_SHADOW_PAD_RATIO — matches text-system.ts
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0] - sp, frame[0] + frame[2] + sp,
-        frame[1] - sp, frame[1] + frame[3] + sp,
-        originBounds, scaleX, scaleY, origin, handleId,
+        frame[0] - sp,
+        frame[0] + frame[2] + sp,
+        frame[1] - sp,
+        frame[1] + frame[3] + sp,
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
       );
       return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
     }
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
+  // Bookmarks: fixed size — side = edge-pin translate, corner = preserved-position translate
+  if (kind === 'bookmark') {
+    if (handleKind === 'side') {
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0],
+        frame[0] + frame[2],
+        frame[1],
+        frame[1] + frame[3],
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
+      );
+      return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    }
+    const { dx, dy } = computeBookmarkCornerTranslation(
+      frame,
+      originBounds,
+      scaleX,
+      scaleY,
+      origin,
+    );
+    return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+  }
+
   if (
-    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
+    (selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') &&
+    handleKind === 'corner'
   ) {
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
@@ -498,7 +556,9 @@ export function transformPositionForTopology(
   if (
     selectionKind === 'imagesOnly' ||
     selectionKind === 'notesOnly' ||
-    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
+    selectionKind === 'bookmarksOnly' ||
+    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') &&
+      handleKind === 'corner')
   ) {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);
     return computePreservedPosition(position[0], position[1], originBounds, origin, u);

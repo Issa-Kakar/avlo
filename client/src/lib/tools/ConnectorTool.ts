@@ -217,11 +217,21 @@ export class ConnectorTool implements PointerTool {
 
     if (this.hoverSnap) {
       const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
-      if (handle && (handle.kind === 'shape' || handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'image' || handle.kind === 'note')) {
+      if (
+        handle &&
+        (handle.kind === 'shape' ||
+          handle.kind === 'text' ||
+          handle.kind === 'code' ||
+          handle.kind === 'image' ||
+          handle.kind === 'note' ||
+          handle.kind === 'bookmark')
+      ) {
         const frame =
-          handle.kind === 'text' || handle.kind === 'note' ? getTextFrame(handle.id)
-          : handle.kind === 'code' ? getCodeFrame(handle.id)
-          : getFrame(handle.y);
+          handle.kind === 'text' || handle.kind === 'note'
+            ? getTextFrame(handle.id)
+            : handle.kind === 'code'
+              ? getCodeFrame(handle.id)
+              : getFrame(handle.y);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
           snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];

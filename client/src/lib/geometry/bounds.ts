@@ -230,7 +230,13 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): World
       maxY = Math.max(maxY, maxY_);
       continue;
     }
-    if (handle.kind === 'shape' || handle.kind === 'image' || handle.kind === 'text' || handle.kind === 'code') {
+    if (
+      handle.kind === 'shape' ||
+      handle.kind === 'image' ||
+      handle.kind === 'text' ||
+      handle.kind === 'code' ||
+      handle.kind === 'bookmark'
+    ) {
       const frame =
         handle.kind === 'text'
           ? getTextFrame(handle.id)

@@ -8,9 +8,11 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.7.6",
     "hono": "^4.7.0",
     "hono-party": "^2.0.3",
-    "yjs": "^13.6.27"
+    "yjs": "^13.6.27",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251106.1",

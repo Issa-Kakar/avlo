@@ -30,6 +30,7 @@ import {
 import {
   computeEdgePinTranslation,
   computeStrokeTranslation,
+  computeBookmarkCornerTranslation,
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
@@ -60,6 +61,7 @@ import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-syst
 import { CODE_EXTENSIONS } from '@avlo/shared';
 import { getAssetId } from '@avlo/shared';
 import { getBitmap } from '@/lib/image/image-manager';
+import { drawBookmark } from '@/lib/bookmark/bookmark-render';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -252,6 +254,9 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
       break;
     case 'note':
       drawStickyNote(ctx, handle);
+      break;
+    case 'bookmark':
+      drawBookmark(ctx, handle);
       break;
   }
 }
@@ -467,9 +472,21 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   );
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const title = props.headerVisible
+    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
+    : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
+  renderCodeLayout(
+    ctx,
+    layout,
+    props.origin[0],
+    props.origin[1],
+    props.fontSize,
+    spans,
+    lines,
+    title,
+    output,
+  );
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -901,7 +918,9 @@ function drawScaledCodePreview(
   );
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const title = props.headerVisible
+    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
+    : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
 
   ctx.save();
@@ -984,9 +1003,21 @@ function drawReflowedCodePreview(
 
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
+  const title = props.headerVisible
+    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
+    : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines, title, output);
+  renderCodeLayout(
+    ctx,
+    layout,
+    reflowOrigin[0],
+    reflowOrigin[1],
+    props.fontSize,
+    spans,
+    lines,
+    title,
+    output,
+  );
 }
 
 /**
@@ -1036,6 +1067,46 @@ function renderSelectedObjectWithScaleTransform(
   // CASE 2: Stroke scaling (strokesOnly OR mixed+corner) = PF-per-frame
   if (isStroke) {
     drawScaledStrokePreview(ctx, handle, transform);
+    return;
+  }
+
+  // Bookmarks: fixed size — side = edge-pin, corner = preserved-position
+  if (handle.kind === 'bookmark') {
+    const frame = getFrame(handle.y);
+    if (!frame) {
+      drawBookmark(ctx, handle);
+      return;
+    }
+
+    if (handleKind === 'side') {
+      const { dx, dy } = computeEdgePinTranslation(
+        frame[0],
+        frame[0] + frame[2],
+        frame[1],
+        frame[1] + frame[3],
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
+      );
+      ctx.save();
+      ctx.translate(dx, dy);
+      drawBookmark(ctx, handle);
+      ctx.restore();
+    } else {
+      const { dx, dy } = computeBookmarkCornerTranslation(
+        frame,
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+      );
+      ctx.save();
+      ctx.translate(dx, dy);
+      drawBookmark(ctx, handle);
+      ctx.restore();
+    }
     return;
   }
 
@@ -1100,8 +1171,15 @@ function renderSelectedObjectWithScaleTransform(
       // Edge-pin: use bbox bounds (matches computeRawGeometryBounds)
       const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
       const { dx, dy } = computeEdgePinTranslation(
-        bMinX, bMaxX, bMinY, bMaxY,
-        originBounds, scaleX, scaleY, origin, handleId,
+        bMinX,
+        bMaxX,
+        bMinY,
+        bMaxY,
+        originBounds,
+        scaleX,
+        scaleY,
+        origin,
+        handleId,
       );
       ctx.save();
       ctx.translate(dx, dy);

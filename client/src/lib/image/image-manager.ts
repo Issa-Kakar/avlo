@@ -33,6 +33,8 @@ import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type * as Y from 'yjs';
 import type { ObjectKind } from '@avlo/shared';
+import { handleUnfurlResult, handleUnfurlFailed } from '@/lib/bookmark/bookmark-unfurl';
+import { repositionAllPlaceholders } from '@/lib/bookmark/bookmark-placeholder';
 
 // ============================================================
 // Workers
@@ -49,6 +51,11 @@ workers[1].postMessage({ type: 'init', role: 'decoder' } satisfies WorkerInbound
 /** Hash-route by assetId first char for consistent per-asset worker affinity. */
 function workerFor(assetId: string): Worker {
   return workers[assetId.charCodeAt(0) & 1];
+}
+
+/** Post a message to the primary worker. Used by bookmark-unfurl for unfurl commands. */
+export function postToPrimary(msg: WorkerInbound): void {
+  workers[0].postMessage(msg);
 }
 
 // ============================================================
@@ -172,6 +179,16 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
       break;
     }
 
+    case 'unfurled': {
+      handleUnfurlResult(msg.objectId, msg.data);
+      break;
+    }
+
+    case 'unfurl-failed': {
+      handleUnfurlFailed(msg.objectId, msg.permanent);
+      break;
+    }
+
     case 'error': {
       // Resolve/reject ingest promise if this was an ingest error
       if (msg.id) {
@@ -221,8 +238,13 @@ function invalidateBitmapRegion(assetId: string): void {
     if (!snapshot) return;
     const vb = getVisibleWorldBounds();
     for (const handle of snapshot.objectsById.values()) {
-      if (handle.kind !== 'image') continue;
-      if (getAssetId(handle.y) !== assetId) continue;
+      if (handle.kind !== 'image' && handle.kind !== 'bookmark') continue;
+      const handleAssetId =
+        handle.kind === 'image'
+          ? getAssetId(handle.y)
+          : ((handle.y.get('ogImageAssetId') as string | undefined) ??
+            (handle.y.get('faviconAssetId') as string | undefined));
+      if (handleAssetId !== assetId) continue;
       const [minX, minY, maxX, maxY] = handle.bbox;
       if (maxX >= vb.minX && minX <= vb.maxX && maxY >= vb.minY && minY <= vb.maxY) {
         invalidateWorld(bboxToBounds(handle.bbox));
@@ -250,6 +272,39 @@ interface AssetInfo {
   bounds: WorldBounds;
 }
 const _assetInfo = new Map<string, AssetInfo>();
+
+/** Register or merge asset info for viewport management. */
+function registerAssetInfo(
+  assetId: string,
+  ppsp: number,
+  nw: number,
+  nh: number,
+  bMinX: number,
+  bMinY: number,
+  bMaxX: number,
+  bMaxY: number,
+): void {
+  const prev = _assetInfo.get(assetId);
+  if (!prev) {
+    _assetInfo.set(assetId, {
+      ppsp,
+      nw,
+      nh,
+      bounds: { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY },
+    });
+  } else {
+    if (ppsp > prev.ppsp) {
+      prev.ppsp = ppsp;
+      prev.nw = nw;
+      prev.nh = nh;
+    }
+    const pb = prev.bounds;
+    if (bMinX < pb.minX) pb.minX = bMinX;
+    if (bMinY < pb.minY) pb.minY = bMinY;
+    if (bMaxX > pb.maxX) pb.maxX = bMaxX;
+    if (bMaxY > pb.maxY) pb.maxY = bMaxY;
+  }
+}
 
 /**
  * Viewport management — called from RenderLoop.tick() every frame.
@@ -283,6 +338,21 @@ export function manageImageViewport(): void {
   _assetInfo.clear();
 
   for (const entry of visible) {
+    if (entry.kind === 'bookmark') {
+      const handle = snapshot.objectsById.get(entry.id);
+      if (!handle) continue;
+      const ogId = handle.y.get('ogImageAssetId') as string | undefined;
+      const favId = handle.y.get('faviconAssetId') as string | undefined;
+      const frame = getFrame(handle.y);
+      if (!frame) continue;
+      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+      // OG image + favicon: always level 0, no mip levels needed
+      for (const aid of [ogId, favId]) {
+        if (!aid) continue;
+        registerAssetInfo(aid, Infinity, frame[2], frame[2], bMinX, bMinY, bMaxX, bMaxY);
+      }
+      continue;
+    }
     if (entry.kind !== 'image') continue;
     const handle = snapshot.objectsById.get(entry.id);
     if (!handle) continue;
@@ -297,26 +367,7 @@ export function manageImageViewport(): void {
     const ppsp = (frame[2] * scale * dpr) / nw;
     const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
 
-    const prev = _assetInfo.get(assetId);
-    if (!prev) {
-      _assetInfo.set(assetId, {
-        ppsp,
-        nw,
-        nh,
-        bounds: { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY },
-      });
-    } else {
-      if (ppsp > prev.ppsp) {
-        prev.ppsp = ppsp;
-        prev.nw = nw;
-        prev.nh = nh;
-      }
-      const pb = prev.bounds;
-      if (bMinX < pb.minX) pb.minX = bMinX;
-      if (bMinY < pb.minY) pb.minY = bMinY;
-      if (bMaxX > pb.maxX) pb.maxX = bMaxX;
-      if (bMaxY > pb.maxY) pb.maxY = bMaxY;
-    }
+    registerAssetInfo(assetId, ppsp, nw, nh, bMinX, bMinY, bMaxX, bMaxY);
   }
 
   // During scale transforms, force full-res for selected images (crisp preview)
@@ -374,6 +425,9 @@ export function manageImageViewport(): void {
       }
     }
   }
+
+  // Reposition bookmark loading placeholders to follow camera
+  repositionAllPlaceholders();
 }
 
 /**
@@ -407,7 +461,19 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
   >();
 
   objects.forEach((yObj) => {
-    if ((yObj.get('kind') as ObjectKind) !== 'image') return;
+    const kind = yObj.get('kind') as ObjectKind;
+    if (kind === 'bookmark') {
+      const ogId = yObj.get('ogImageAssetId') as string | undefined;
+      const favId = yObj.get('faviconAssetId') as string | undefined;
+      const frame = yObj.get('frame') as FrameTuple | undefined;
+      if (!frame) return;
+      for (const aid of [ogId, favId]) {
+        if (!aid) continue;
+        assetMap.set(aid, { frame, level: 0, nw: frame[2], nh: frame[3] });
+      }
+      return;
+    }
+    if (kind !== 'image') return;
     const assetId = yObj.get('assetId') as string | undefined;
     const frame = yObj.get('frame') as FrameTuple | undefined;
     if (!assetId || !frame) return;

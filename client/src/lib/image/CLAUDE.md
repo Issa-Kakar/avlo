@@ -17,7 +17,7 @@ Main Thread (image-manager.ts)
 ├── decode(B) → hash(B) → workers[1]
 ├── ingest/upload → always workers[0]       ← primary only
 │
-├── workers[0].onmessage → bitmap/ingested/uploaded/error
+├── workers[0].onmessage → bitmap/ingested/uploaded/unfurled/error
 └── workers[1].onmessage → bitmap/error
 
 Worker 0 (primary)                 Worker 1 (decoder)              Service Worker
@@ -29,12 +29,13 @@ Worker 0 (primary)                 Worker 1 (decoder)              Service Worke
 │ ─── primary only ───    │       │                      │       │ App shell:          │
 │ ingest (hash+decode)    │       └──────────────────────┘       │  /assets/*.js/css   │
 │ upload queue (IDB+PUT)  │                                       │  /fonts/*.woff2     │
-│ sha256Hex, validateImage│                                       │  HTML (net-first)   │
-└─────────────────────────┘                                       └─────────────────────┘
+│ unfurl (direct fetch)   │                                       │  HTML (net-first)   │
+│ sha256Hex, validateImage│                                       └─────────────────────┘
+└─────────────────────────┘
 ```
 
 **Key principles:**
-- **Two workers, one file.** Both instances of `image-worker.ts`. Primary handles ingest + upload + decode; decoder handles decode only. Decode requests hash-routed by `assetId.charCodeAt(0) & 1` for consistent per-asset affinity and decode parallelism.
+- **Two workers, one file.** Both instances of `image-worker.ts`. Primary handles ingest + upload + decode + bookmark unfurl; decoder handles decode only. Decode requests hash-routed by `assetId.charCodeAt(0) & 1` for consistent per-asset affinity and decode parallelism.
 - **Generation-based staleness.** `pending` is `Map<assetId, {gen, level}>`. When mip level changes during zoom, a new decode supersedes the old one immediately — no waiting. Workers track `latestGen` per assetId with 3 check points (before fetch, after fetch, after decode) to discard stale work.
 - **SW owns fetch/cache.** Intercepts all GET `/api/assets/*`. Cache-first for reads (immutable, content-addressed). Also caches app shell for offline.
 - **Workers are self-sufficient.** `readAssetBlob()` checks Cache API directly first, then falls back to `fetch()` (SW intercepts in prod; direct to server in dev). Works with or without SW — critical for dev mode where SW isn't built.
@@ -262,6 +263,7 @@ manageImageViewport(): void                // Called from RenderLoop.tick() ever
 ingest(blob): Promise<IngestResult>        // Local drop: validate → hash → decode → bitmap
 hydrateImages(objects: Y.Map): void        // Room join: distribute decode across workers + prefetch
 enqueue(assetId): void                     // Queue upload to R2
+postToPrimary(msg): void                   // Forward message to primary worker (used by bookmark-unfurl)
 clear(): void                              // Room teardown: close all bitmaps, notify workers
 ```
 
@@ -317,11 +319,12 @@ Three staleness checkpoints via `latestGen` — each `await` is a point where a 
 
 ### IDB Schema
 
-Database: `avlo-assets`, version 2. Single object store:
+Database: `avlo-assets`, version 3.
 
 | Store | Key | Value | Purpose |
 |-------|-----|-------|---------|
 | `uploads` | assetId (SHA-256 hex) | `{ retries, lastAttempt }` | Upload queue persistence |
+| `unfurls` | — | — | Allocated but unused (unfurl is direct fetch, no IDB queue) |
 
 Global across rooms (content-addressed dedup).
 
@@ -359,15 +362,16 @@ Called every frame from `RenderLoop.tick()`. Reads camera store + snapshot inter
 
 1. Guard: `hasActiveRoom()` + snapshot + spatialIndex must exist
 2. Query spatial index with 5.5× padded viewport (2.25× padding on each side) — aggressive pre-decode
-3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bounds per assetId. During active scale transforms, selected images get `ppsp = Infinity` (forces full-res decode for crisp preview).
+3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bounds per assetId. During active scale transforms, selected images get `ppsp = Infinity` (forces full-res decode for crisp preview). **Bookmarks** contribute `ogImageAssetId` + `faviconAssetId` with `ppsp = Infinity` (always full-res, no mip levels).
 4. **Decode:** For each visible asset not in error cooldown: compute target dimensions from natural dims + level divisor. Send decode if no bitmap or worse quality (`cached.level > neededLevel` — never downgrades, higher-quality bitmaps stay until eviction), AND no pending request for that level. If pending exists but for different level (mip change during zoom), supersede with new gen.
 5. **Evict:** Close bitmaps for assetIds not in `_assetInfo`. Send `cancel` to assigned worker for in-flight decodes. `pending.delete()` for fresh request on scroll-back.
+6. **Placeholders:** `repositionAllPlaceholders()` — reposition bookmark HTML loading placeholders to follow camera.
 
 ### Hydration (hydrateImages)
 
 Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join.
 
-1. Traverse Y.Map for all image objects → collect `{ assetId, frame, nw, nh }` per object
+1. Traverse Y.Map for all image and bookmark objects → collect `{ assetId, frame, nw, nh }` per asset. Bookmarks contribute `ogImageAssetId` + `faviconAssetId` at level 0.
 2. Compute ppsp per asset from current camera state → mip level, deduped by assetId (min level = highest quality)
 3. Manager splits visible (exact viewport, no padding) vs offscreen using `frameTupleIntersectsBounds`
 4. Group items by worker via hash routing (`assetId.charCodeAt(0) & 1`)
@@ -379,7 +383,7 @@ Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join.
 
 ### Bitmap Invalidation
 
-On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bounds. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorld`. This prevents the padded decode window from causing stutter via unnecessary dirty rect cascades. Fallback (hydration, before first tick): iterate `objectsById` with inline bbox intersection.
+On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bounds. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorld`. This prevents the padded decode window from causing stutter via unnecessary dirty rect cascades. Fallback (hydration, before first tick): iterate `objectsById` with inline bbox intersection — checks both `image` and `bookmark` kinds (bookmarks via `ogImageAssetId`/`faviconAssetId`).
 
 On `'ingested'` message: same targeted invalidation. The ingest resolve also triggers Y.Doc mutation → observer → snapshot update → render anyway, but the invalidation ensures the bitmap renders on the same frame.
 
@@ -394,6 +398,7 @@ Main → Worker:
 | { type: 'hydrate', visible: { assetId, level, width, height, gen }[], prefetch: string[] }
 | { type: 'decode', assetId: string, level: 0 | 1 | 2, width, height, gen: number }
 | { type: 'enqueue-upload', assetId: string }                                          // primary only
+| { type: 'unfurl', objectId: string, url: string }                                   // primary only
 | { type: 'delete-asset', assetId: string }                                            // primary only
 | { type: 'online' }                                                                   // primary only
 | { type: 'drain-uploads' }                                                            // primary only
@@ -406,10 +411,14 @@ Worker → Main:
 | { type: 'ingested', id, assetId, w, h, mime, bitmap: ImageBitmap, level: 0 }
 | { type: 'bitmap', assetId, bitmap: ImageBitmap, level: 0 | 1 | 2, gen: number }
 | { type: 'uploaded', assetId }
+| { type: 'unfurled', objectId, data: { title?, description?, ogImageAssetId?, ogImageWidth?, ogImageHeight?, faviconAssetId? } }
+| { type: 'unfurl-failed', objectId, permanent: boolean }
 | { type: 'error', id?, assetId?, message: string, gen?: number }
 ```
 
 All bitmaps transferred via `Transferable[]` (zero-copy). Bitmap is neutered in the worker after transfer. `gen` enables main thread staleness check on receipt.
+
+**Unfurl routing:** `'unfurled'` → `handleUnfurlResult()`, `'unfurl-failed'` → `handleUnfurlFailed()` (both from `bookmark-unfurl.ts`). Worker's `unfurlDirect()` does a single direct fetch to `/api/unfurl?url=<encoded>`, strips `url`/`domain` from server response, posts result back. No IDB queue — offline pastes never enter the bookmark pipeline.
 
 ---
 
@@ -431,6 +440,7 @@ app.use('/api/*', cors({
 }));
 app.put('/api/assets/:key', handleUpload);
 app.get('/api/assets/:key', handleGetAsset);
+app.get('/api/unfurl', zValidator('query', unfurlQuery), handleUnfurl);  // Zod-validated bookmark unfurl
 app.use('*', partyserverMiddleware());  // Yjs WebSocket sync via PartyServer
 ```
 
@@ -464,6 +474,14 @@ Edge-cached R2 proxy with full HTTP semantics:
 5. **Body streaming** → `body.tee()` for simultaneous cache write + response
 
 Response codes: 200 (full), 206 (range), 304 (conditional / If-None-Match), 404 (not found)
+
+### Unfurl Route — `GET /api/unfurl?url=<encoded>` (`worker/src/unfurl.ts`)
+
+Zod middleware (`zValidator('query', unfurlQuery)`) validates + normalizes URL + SSRF guard before handler. Fetches page, extracts OG/Twitter metadata via HTMLRewriter, stores OG image + favicon to R2 (content-addressed), returns JSON. Direct image URLs stored as OG image with filename as title. Edge-cached 7 days by SHA-256 of normalized URL. Called by image worker's `unfurlDirect()`.
+
+Response codes: 200 (success, has title or OG image), 204 (no useful metadata), 400 (invalid URL / SSRF), 502 (upstream fetch failed)
+
+Detailed docs: `lib/bookmark/CLAUDE.md`
 
 ### R2 Buckets (`wrangler.toml`)
 

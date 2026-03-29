@@ -31,6 +31,7 @@ import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps } from '@avlo/shared';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
+import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
 
 type Unsub = () => void;
 
@@ -822,6 +823,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear layout caches
     textLayoutCache.clear();
     codeSystem.clear();
+    clearBookmarkLayouts();
 
     // Clear object maps
     this.objectsById.clear();
@@ -1006,6 +1008,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (handle.kind === 'code') {
         codeSystem.remove(id);
       }
+      if (handle.kind === 'bookmark') {
+        invalidateBookmarkLayout(id);
+      }
     }
 
     // Process additions/updates
@@ -1142,9 +1147,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear dirty tracking - this is a full rebuild
     this.dirtyRects.length = 0;
     this.cacheEvictIds.clear();
-    // Clear text/code layout caches on full rebuild
+    // Clear layout caches on full rebuild
     textLayoutCache.clear();
     codeSystem.clear();
+    clearBookmarkLayouts();
 
     // Build handles from Y.Doc
     const handles: ObjectHandle[] = [];
@@ -1194,6 +1200,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Hydrate images: ensure all in IDB, decode only viewport-visible
     hydrateImages(objects);
+
+    // v2: bookmark unfurls are drained by image worker IDB queue on init (no main-thread scan needed)
 
     // Publishing happens via handleYDocUpdate → publishSnapshotNow()
   }

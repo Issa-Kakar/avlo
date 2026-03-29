@@ -53,6 +53,7 @@ export type SelectionKind =
   | 'notesOnly'
   | 'connectorsOnly'
   | 'imagesOnly'
+  | 'bookmarksOnly'
   | 'mixed';
 
 export type HandleKind = 'corner' | 'side';
@@ -380,7 +381,8 @@ function computeConnectorTopology(
         handle.kind !== 'text' &&
         handle.kind !== 'code' &&
         handle.kind !== 'image' &&
-        handle.kind !== 'note')
+        handle.kind !== 'note' &&
+        handle.kind !== 'bookmark')
     )
       continue;
     const connectors = getConnectorsForShape(id);
@@ -401,7 +403,8 @@ function computeConnectorTopology(
         handle.kind !== 'text' &&
         handle.kind !== 'code' &&
         handle.kind !== 'image' &&
-        handle.kind !== 'note')
+        handle.kind !== 'note' &&
+        handle.kind !== 'bookmark')
     )
       continue;
     const frame =

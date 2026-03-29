@@ -44,7 +44,8 @@ export type WorkerInbound =
   | { type: 'online' }
   | { type: 'drain-uploads' }
   | { type: 'cancel'; assetId: string }
-  | { type: 'clear' };
+  | { type: 'clear' }
+  | { type: 'unfurl'; objectId: string; url: string };
 
 export type WorkerOutbound =
   | {
@@ -59,6 +60,19 @@ export type WorkerOutbound =
     }
   | { type: 'bitmap'; assetId: string; bitmap: ImageBitmap; level: 0 | 1 | 2; gen: number }
   | { type: 'uploaded'; assetId: string }
+  | {
+      type: 'unfurled';
+      objectId: string;
+      data: {
+        title?: string;
+        description?: string;
+        ogImageAssetId?: string;
+        ogImageWidth?: number;
+        ogImageHeight?: number;
+        faviconAssetId?: string;
+      };
+    }
+  | { type: 'unfurl-failed'; objectId: string; permanent: boolean }
   | { type: 'error'; id?: string; assetId?: string; message: string; gen?: number };
 
 // ============================================================
@@ -66,8 +80,9 @@ export type WorkerOutbound =
 // ============================================================
 
 const DB_NAME = 'avlo-assets';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const UPLOADS_STORE = 'uploads';
+const UNFURLS_STORE = 'unfurls';
 
 interface UploadEntry {
   retries: number;
@@ -83,6 +98,7 @@ function openDB(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(UPLOADS_STORE)) db.createObjectStore(UPLOADS_STORE);
+      if (!db.objectStoreNames.contains(UNFURLS_STORE)) db.createObjectStore(UNFURLS_STORE);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => {
@@ -333,6 +349,28 @@ async function drainUploads(): Promise<void> {
 }
 
 // ============================================================
+// Unfurl (primary only, direct fetch — no IDB queue)
+// ============================================================
+
+async function unfurlDirect(objectId: string, url: string): Promise<void> {
+  try {
+    const resp = await fetch(`/api/unfurl?url=${encodeURIComponent(url)}`);
+    console.warn('[image-worker] unfurl response:', objectId, resp.status);
+    if (resp.status === 200) {
+      const data = await resp.json();
+      delete data.url;
+      delete data.domain;
+      post({ type: 'unfurled', objectId, data });
+    } else {
+      post({ type: 'unfurl-failed', objectId, permanent: true });
+    }
+  } catch (err) {
+    console.warn('[image-worker] unfurl fetch error:', objectId, err);
+    post({ type: 'unfurl-failed', objectId, permanent: true });
+  }
+}
+
+// ============================================================
 // Message Handler
 // ============================================================
 
@@ -473,6 +511,12 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
     case 'drain-uploads': {
       if (role !== 'primary') break;
       drainUploads();
+      break;
+    }
+
+    case 'unfurl': {
+      if (role !== 'primary') break;
+      unfurlDirect(msg.objectId, msg.url);
       break;
     }
   }

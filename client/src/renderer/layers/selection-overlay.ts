@@ -192,6 +192,13 @@ function drawObjectHighlights(
       continue;
     }
 
+    // Bookmark: stroke the bbox (includes shadow padding)
+    if (handle.kind === 'bookmark') {
+      const [minX, minY, maxX, maxY] = handle.bbox;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+      continue;
+    }
+
     // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
     if (handle.kind === 'stroke' || handle.kind === 'connector') {
       const [minX, minY, maxX, maxY] = handle.bbox;
@@ -458,9 +465,11 @@ function drawSnapMidpointDots(
   if (!shapeHandle) return;
 
   const shapeFrame =
-    shapeHandle.kind === 'text' || shapeHandle.kind === 'note' ? getTextFrame(shapeHandle.id)
-    : shapeHandle.kind === 'code' ? getCodeFrame(shapeHandle.id)
-    : getFrame(shapeHandle.y);
+    shapeHandle.kind === 'text' || shapeHandle.kind === 'note'
+      ? getTextFrame(shapeHandle.id)
+      : shapeHandle.kind === 'code'
+        ? getCodeFrame(shapeHandle.id)
+        : getFrame(shapeHandle.y);
   if (!shapeFrame) return;
 
   const shapeType = shapeHandle.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
