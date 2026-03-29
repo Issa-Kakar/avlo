@@ -5,6 +5,7 @@
 
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { useCameraStore } from '@/stores/camera-store';
+import { BOOKMARK_WIDTH } from './bookmark-render';
 
 interface PlaceholderEntry {
   el: HTMLDivElement;
@@ -14,8 +15,7 @@ interface PlaceholderEntry {
 
 const placeholders = new Map<string, PlaceholderEntry>();
 
-const PLACEHOLDER_W = 360;
-const PLACEHOLDER_H = 56;
+const PLACEHOLDER_H = 48;
 
 export function createPlaceholder(objectId: string, domain: string, wx: number, wy: number): void {
   const host = getEditorHost();
@@ -34,7 +34,7 @@ export function createPlaceholder(objectId: string, domain: string, wx: number, 
     position: absolute;
     left: 0; top: 0;
     transform-origin: 0 0;
-    width: ${PLACEHOLDER_W}px;
+    width: ${BOOKMARK_WIDTH}px;
     height: ${PLACEHOLDER_H}px;
   `;
 
