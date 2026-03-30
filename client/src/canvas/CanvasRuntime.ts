@@ -21,11 +21,8 @@ import { cancelZoom } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import {
-  setWorldInvalidator,
-  setOverlayInvalidator,
-  setHoldPreviewFn,
-} from './invalidation-helpers';
+import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
+import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
 import {
   attach as attachKeyboard,
@@ -100,7 +97,7 @@ export class CanvasRuntime {
     this.overlayLoop = new OverlayRenderLoop();
     this.overlayLoop.start();
     setOverlayInvalidator(() => this.overlayLoop?.invalidateAll());
-    setHoldPreviewFn(() => this.overlayLoop?.holdPreviewForOneFrame());
+    setHoldPreviewFn(holdPreviewForOneFrame);
 
     // 4. Input manager + keyboard
     this.inputManager = new InputManager(this, container);
@@ -125,7 +122,7 @@ export class CanvasRuntime {
       if (snap.docVersion !== this.lastDocVersion) {
         this.lastDocVersion = snap.docVersion;
         // Hold preview for one frame to prevent flash on commit
-        this.overlayLoop?.holdPreviewForOneFrame();
+        holdPreviewForOneFrame();
         if (this.lastDocVersion < 2) {
           this.renderLoop?.invalidateAll();
         }

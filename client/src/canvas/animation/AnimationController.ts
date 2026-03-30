@@ -1,54 +1,24 @@
 /**
  * AnimationController - Centralized animation job manager
  *
- * Manages all time-based animations (eraser trail, presence cursors, future transitions).
- * Decouples animation state updates from the overlay render loop.
- *
- * Pattern:
- * - OverlayRenderLoop calls tick() + render() each frame
- * - Animation jobs update their state in tick()
- * - Animation jobs draw their visuals in render()
- * - hasActiveAnimations() tells the render loop whether to continue animating
+ * Push-based invalidation: jobs return true from frame() to request more frames,
+ * controller calls invalidate() to schedule the next overlay render.
  *
  * @module canvas/animation/AnimationController
  */
 
-import type { ViewTransform } from '@avlo/shared';
-import type { ViewportInfo } from '@/renderer/types';
-
 /**
  * Animation job interface - implemented by each animation type.
- * Jobs manage their own state and rendering.
+ * frame() merges update + render into a single call.
  */
 export interface AnimationJob {
-  /** Unique identifier for this job */
   readonly id: string;
 
   /**
-   * Update animation state.
-   * Called every frame by AnimationController.tick().
-   * @param now - Current timestamp (performance.now())
-   * @param deltaMs - Time since last tick in milliseconds
-   * @returns true if animation should continue, false if completed
+   * Update state + render. Returns true if the job needs another frame.
+   * Each job handles its own coordinate space (save/restore + setTransform).
    */
-  update(now: number, deltaMs: number): boolean;
-
-  /**
-   * Render current animation state to canvas.
-   * Called every frame by AnimationController.render().
-   * Context is in screen space (DPR transform already applied).
-   */
-  render(
-    ctx: CanvasRenderingContext2D,
-    viewport: ViewportInfo,
-    view: ViewTransform
-  ): void;
-
-  /**
-   * Check if animation has work to do.
-   * Used to determine if render loop should continue.
-   */
-  isActive(): boolean;
+  frame(ctx: CanvasRenderingContext2D, now: number, dt: number): boolean;
 
   /** Clean up resources */
   destroy(): void;
@@ -61,18 +31,19 @@ export interface AnimationJob {
 class AnimationController {
   private jobs = new Map<string, AnimationJob>();
   private lastTickTime = 0;
+  private invalidate: (() => void) | null = null;
 
-  /**
-   * Register an animation job.
-   * Jobs are identified by their id property.
-   */
+  /** Wire the overlay loop's invalidateAll — called once at startup. */
+  setInvalidator(fn: () => void): void {
+    this.invalidate = fn;
+  }
+
+  /** Register an animation job. */
   register(job: AnimationJob): void {
     this.jobs.set(job.id, job);
   }
 
-  /**
-   * Unregister and destroy a job.
-   */
+  /** Unregister and destroy a job. */
   unregister(id: string): void {
     const job = this.jobs.get(id);
     if (job) {
@@ -81,73 +52,42 @@ class AnimationController {
     }
   }
 
-  /**
-   * Get a registered job by ID.
-   * Use type parameter to get correct type.
-   */
+  /** Get a registered job by ID. */
   get<T extends AnimationJob>(id: string): T | undefined {
     return this.jobs.get(id) as T | undefined;
   }
 
   /**
-   * Tick all animations - called from OverlayRenderLoop.frame().
-   * Updates animation state (decay trails, interpolate positions, etc.)
+   * Run all jobs. Self-invalidates if any job needs more frames.
+   * Called from OverlayRenderLoop.frame().
    */
-  tick(now: number): void {
-    const deltaMs = this.lastTickTime > 0 ? now - this.lastTickTime : 0;
+  run(ctx: CanvasRenderingContext2D, now: number): void {
+    const dt = this.lastTickTime > 0 ? now - this.lastTickTime : 0;
     this.lastTickTime = now;
 
+    let needsMore = false;
     for (const job of this.jobs.values()) {
-      job.update(now, deltaMs);
+      if (job.frame(ctx, now, dt)) needsMore = true;
     }
+
+    if (needsMore) this.invalidate?.();
   }
 
-  /**
-   * Render all active animations - called from OverlayRenderLoop.frame().
-   * Context should be in screen space (DPR transform applied).
-   */
-  render(
-    ctx: CanvasRenderingContext2D,
-    viewport: ViewportInfo,
-    view: ViewTransform
-  ): void {
-    for (const job of this.jobs.values()) {
-      if (job.isActive()) {
-        job.render(ctx, viewport, view);
-      }
-    }
-  }
-
-  /**
-   * Check if any animations need continued frames.
-   * Used by OverlayRenderLoop to self-invalidate.
-   */
-  hasActiveAnimations(): boolean {
-    for (const job of this.jobs.values()) {
-      if (job.isActive()) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Destroy all jobs and reset state.
-   */
+  /** Destroy all jobs and reset state. */
   destroy(): void {
     for (const job of this.jobs.values()) {
       job.destroy();
     }
     this.jobs.clear();
     this.lastTickTime = 0;
+    this.invalidate = null;
   }
 }
 
 // Module-level singleton
 let controller: AnimationController | null = null;
 
-/**
- * Get the animation controller singleton.
- * Creates one if it doesn't exist.
- */
+/** Get the animation controller singleton. Creates one if it doesn't exist. */
 export function getAnimationController(): AnimationController {
   if (!controller) {
     controller = new AnimationController();
@@ -155,10 +95,7 @@ export function getAnimationController(): AnimationController {
   return controller;
 }
 
-/**
- * Destroy the animation controller singleton.
- * Called on canvas unmount.
- */
+/** Destroy the animation controller singleton. Called on canvas unmount. */
 export function destroyAnimationController(): void {
   controller?.destroy();
   controller = null;

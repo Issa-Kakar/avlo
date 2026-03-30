@@ -1,7 +1,5 @@
 /**
  * Animation module exports
- *
- * Provides centralized animation management for the canvas.
  */
 
 export {

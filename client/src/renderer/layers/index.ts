@@ -1,7 +1,6 @@
-import type { PresenceView, Snapshot, ViewTransform } from '@avlo/shared';
+import type { Snapshot, ViewTransform } from '@avlo/shared';
 import { CANVAS_STYLE_CONFIG as Cfg } from '@avlo/shared';
 import type { ViewportInfo } from '../types';
-import { drawCursors } from './presence-cursors';
 
 // Export the unified objects renderer
 export { drawObjects } from './objects';
@@ -146,31 +145,3 @@ export function drawBackground(
   drawDotLayer(ctx, Cfg.GRID_SPACING_SUB_10, view, viewport, dotRadiusPx, baseAlpha);
 }
 
-export function drawPresenceOverlays(
-  ctx: CanvasRenderingContext2D,
-  presence: PresenceView,
-  view: ViewTransform,
-  _viewport: ViewportInfo,
-  gates: { awarenessReady: boolean; firstSnapshot: boolean },
-): void {
-  // Phase 7: Cursors and trails implementation
-  // CRITICAL GATE CHECK: Only render when BOTH gates are open
-  // - G_AWARENESS_READY: Ensures awareness channel is live (WS or RTC)
-  // - G_FIRST_SNAPSHOT: Ensures we have valid doc data to render against
-  // Without both, cursors are hidden immediately
-
-  if (import.meta.env.DEV && import.meta.env.VITE_DEBUG_RENDER_LAYERS) {
-    // eslint-disable-next-line no-console
-    console.log('[Layer] Presence Overlays', {
-      awarenessReady: gates.awarenessReady,
-      firstSnapshot: gates.firstSnapshot,
-      userCount: presence.users.size,
-    });
-  }
-
-  // Draw cursors with trails (Phase 7)
-  drawCursors(ctx, presence, view, {
-    awarenessReady: gates.awarenessReady,
-    firstSnapshot: gates.firstSnapshot,
-  });
-}

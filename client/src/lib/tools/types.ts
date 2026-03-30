@@ -61,17 +61,6 @@ export interface EraserPreview {
 }
 
 /**
- * TextPreview is the preview data for text tool
- * Used by TextTool and overlay rendering
- */
-export interface TextPreview {
-  kind: 'text';
-  box: { x: number; y: number; w: number; h: number }; // World coords
-  content?: string; // Optional preview content
-  isPlacing?: boolean; // True when placing, false when editing
-}
-
-/**
  * PerfectShapeAnchors defines anchor points for each shape type
  */
 export type PerfectShapeAnchors =
@@ -197,7 +186,6 @@ export interface ConnectorPreview {
 export type PreviewData =
   | StrokePreview
   | EraserPreview
-  | TextPreview
   | PerfectShapePreview
   | SelectionPreview
   | ConnectorPreview;

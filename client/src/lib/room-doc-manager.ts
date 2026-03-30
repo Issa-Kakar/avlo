@@ -9,7 +9,6 @@ import { Awareness as YAwareness } from 'y-protocols/awareness';
 import { createEmptySnapshot, AWARENESS_CONFIG } from '@avlo/shared';
 import { UserProfile } from './user-identity';
 import { userProfileManager } from './user-profile-manager';
-import { clearCursorTrails } from '@/renderer/layers/presence-cursors';
 import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
 import { ObjectSpatialIndex } from '@avlo/shared';
 import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
@@ -732,9 +731,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
     this.awarenessIsDirty = false;
 
-    // Clear cursor trails to prevent memory leaks and cross-room contamination
-    clearCursorTrails();
-
     // Cleanup providers (Phase 6A additions)
     if (this.indexeddbProvider) {
       this.indexeddbProvider.destroy();
@@ -1388,8 +1384,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           // This ensures cursors hide immediately when offline
           if (this.gates.awarenessReady) {
             this.closeGate('awarenessReady');
-            // Clear cursor trails to prevent stale data across sessions
-            clearCursorTrails();
             // Mark presence dirty to trigger immediate UI update
             this.publishState.presenceDirty = true;
 
