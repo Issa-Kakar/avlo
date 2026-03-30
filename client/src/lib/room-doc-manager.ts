@@ -58,19 +58,11 @@ export interface IRoomDocManager {
   redo(): void;
   getUndoManager(): Y.UndoManager | null;
 
-  // Gate status methods
-  getGateStatus(): Readonly<{
-    idbReady: boolean;
-    wsConnected: boolean;
-    wsSynced: boolean;
-    awarenessReady: boolean;
-    firstSnapshot: boolean;
-  }>;
-  isIndexedDBReady(): boolean;
+  // Connection status
+  isConnected(): boolean;
 
   // Awareness API
   updateCursor(worldX: number | undefined, worldY: number | undefined): void;
-  updateActivity(activity: 'idle' | 'drawing' | 'typing'): void;
 }
 
 // Options for RoomDocManager (currently empty, but preserved for future use)
@@ -138,7 +130,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private sawAnyDocUpdate = false; // Tracks if we've seen any doc updates
 
   // Awareness state tracking
-  private localActivity: 'idle' | 'drawing' | 'typing' = 'idle';
   private awarenessIsDirty = false;
 
   // Backpressure fields for awareness
@@ -149,7 +140,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS;
   private lastSentAwareness: {
     cursor?: { x: number; y: number };
-    activity: string;
     name: string;
     color: string;
   } | null = null;
@@ -163,7 +153,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     idbReady: false,
     wsConnected: false,
     wsSynced: false,
-    awarenessReady: false,
     firstSnapshot: false,
   };
   private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -202,14 +191,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Create awareness instance bound to this doc
     this.yAwareness = new YAwareness(this.ydoc);
 
-    // Mark awareness as dirty to trigger initial send when gate opens
-    // Don't send immediately - wait for awareness gate to open
+    // Mark awareness as dirty to trigger initial send when WS connects
     if (this.yAwareness) {
-      // Store initial values but don't send yet
-      this.localActivity = 'idle';
       this.awarenessIsDirty = true;
-      // The actual send will happen when G_AWARENESS_READY opens
-      // via the WebSocket status handler
     }
 
     // Initialize presence animation state
@@ -394,8 +378,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         name: string;
         color: string;
         cursor?: { x: number; y: number };
-        activity: string;
-        lastSeen: number;
       }
     >();
 
@@ -420,9 +402,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             name: state.name || 'Anonymous',
             color: state.color || '#808080',
             cursor: displayCursor,
-            activity: state.activity || 'idle',
-            // Use the timestamp from the remote state if available
-            lastSeen: typeof state.ts === 'number' ? state.ts : Date.now(),
           });
         }
       });
@@ -452,7 +431,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private sendAwareness(): void {
     // Check if gate is closed (offline) - remain dirty and retry
-    if (!this.gates.awarenessReady) {
+    if (!this.gates.wsConnected) {
       // Keep dirty flag and reschedule to try again when online
       this.scheduleAwarenessSend();
       return;
@@ -469,10 +448,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
-    // Check if actual state changed (not just seq/ts)
+    // Check if actual state changed (not just seq)
     const currentState = {
       cursor: this.localCursor,
-      activity: this.localActivity,
       name: this.userProfile.name,
       color: this.userProfile.color,
     };
@@ -487,7 +465,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           currentState.cursor.y === this.lastSentAwareness.cursor.y);
 
       const otherSame =
-        currentState.activity === this.lastSentAwareness.activity &&
         currentState.name === this.lastSentAwareness.name &&
         currentState.color === this.lastSentAwareness.color;
 
@@ -540,10 +517,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       name: this.userProfile.name,
       color: this.userProfile.color,
       cursor: isMobile ? undefined : this.localCursor, // No cursor on mobile
-      activity: isMobile ? 'idle' : this.localActivity, // Always idle on mobile
       seq: this.awarenessSeq,
-      ts: Date.now(),
-      aw_v: 1,
     });
 
     // Update last sent state and clear dirty flag
@@ -575,21 +549,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       // Only schedule send if gate is open
       // If offline, the dirty flag remains set and will trigger send on reconnect
-      if (this.gates.awarenessReady) {
-        this.scheduleAwarenessSend();
-      }
-    }
-  }
-
-  // Public API for updating activity
-  public updateActivity(activity: 'idle' | 'drawing' | 'typing'): void {
-    if (this.localActivity !== activity) {
-      this.localActivity = activity;
-      this.awarenessIsDirty = true;
-
-      // Only schedule send if gate is open
-      // If offline, the dirty flag remains set and will trigger send on reconnect
-      if (this.gates.awarenessReady) {
+      if (this.gates.wsConnected) {
         this.scheduleAwarenessSend();
       }
     }
@@ -1042,27 +1002,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const prev = this.objectsById.get(id);
       const oldBBox = prev?.bbox ?? null;
 
-      // Compute new bbox - use specialized computation for text and code
+      // Compute new bbox - use specialized computation for text/note/code
       let newBBox: [number, number, number, number];
       if (kind === 'note') {
         const props = getNoteProps(yObj);
-        if (props) {
-          newBBox = computeNoteBBox(id, props);
-        } else {
-          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const s = (yObj.get('scale') as number) ?? 1;
-          const w = 280 * s;
-          newBBox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
-        }
+        newBBox = props ? computeNoteBBox(id, props) : computeBBoxFor(kind, yObj);
       } else if (kind === 'text') {
         const props = getTextProps(yObj);
-        if (props) {
-          newBBox = computeTextBBox(id, props);
-        } else {
-          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const fontSize = (yObj.get('fontSize') as number) ?? 20;
-          newBBox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
-        }
+        newBBox = props ? computeTextBBox(id, props) : computeBBoxFor(kind, yObj);
       } else if (kind === 'code') {
         newBBox = computeCodeBBox(id, yObj);
       } else {
@@ -1158,23 +1105,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       let bbox: [number, number, number, number];
       if (kind === 'note') {
         const props = getNoteProps(yObj);
-        if (props) {
-          bbox = computeNoteBBox(id, props);
-        } else {
-          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const s = (yObj.get('scale') as number) ?? 1;
-          const w = 280 * s;
-          bbox = [origin[0], origin[1], origin[0] + w, origin[1] + w];
-        }
+        bbox = props ? computeNoteBBox(id, props) : computeBBoxFor(kind, yObj);
       } else if (kind === 'text') {
         const props = getTextProps(yObj);
-        if (props) {
-          bbox = computeTextBBox(id, props);
-        } else {
-          const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
-          const fontSize = (yObj.get('fontSize') as number) ?? 20;
-          bbox = [origin[0], origin[1] - fontSize, origin[0] + 1, origin[1] + 1];
-        }
+        bbox = props ? computeTextBBox(id, props) : computeBBoxFor(kind, yObj);
       } else if (kind === 'code') {
         bbox = computeCodeBBox(id, yObj);
       } else {
@@ -1346,7 +1280,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       this._onWebSocketStatus = (event: { status: string }) => {
         if (event.status === 'connected') {
-          // Handle connection gates
           if (!this.gates.wsConnected) {
             // Clear connection timeout
             const timeout = this.gateTimeouts.get('wsConnected');
@@ -1355,43 +1288,22 @@ export class RoomDocManagerImpl implements IRoomDocManager {
               this.gateTimeouts.delete('wsConnected');
             }
             this.openGate('wsConnected');
-          }
 
-          // Open awareness gate immediately on WS connect
-          if (!this.gates.awarenessReady) {
-            this.openGate('awarenessReady');
-
-            // Mark dirty to trigger initial awareness send on reconnect
+            // Trigger initial awareness send on connect/reconnect
             if (this.yAwareness) {
               this.awarenessIsDirty = true;
               this.scheduleAwarenessSend();
             }
-
-            // Also mark presence dirty to ensure initial publish
             this.publishState.presenceDirty = true;
           }
-          // WebSocket connected
         } else if (event.status === 'disconnected') {
-          // Close connection gates if they're open
           if (this.gates.wsConnected) {
             this.closeGate('wsConnected');
-          }
-          if (this.gates.wsSynced) {
-            this.closeGate('wsSynced');
-          }
-
-          // Close awareness gate on disconnect
-          // This ensures cursors hide immediately when offline
-          if (this.gates.awarenessReady) {
-            this.closeGate('awarenessReady');
             // Mark presence dirty to trigger immediate UI update
             this.publishState.presenceDirty = true;
 
             // Clear local cursor state
             this.localCursor = undefined;
-            // NOTE: We keep awarenessIsDirty true if it was true,
-            // and let sendAwareness() handle the retry logic when reconnected.
-            // This ensures pending state changes are sent once back online.
             // Force awareness state clear to signal departure to peers
             if (this.yAwareness) {
               try {
@@ -1401,7 +1313,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
               }
             }
           }
-          // WebSocket disconnected
+          if (this.gates.wsSynced) {
+            this.closeGate('wsSynced');
+          }
         }
       };
 
@@ -1445,12 +1359,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.gates[gateName] = true;
 
     // Force presence publish when both gates are open for the first time
-    // The RAF loop is already running from constructor, so just mark dirty
-    if (!wasOpen && gateName === 'firstSnapshot' && this.gates.awarenessReady) {
+    if (!wasOpen && gateName === 'firstSnapshot' && this.gates.wsConnected) {
       this.publishState.presenceDirty = true;
     }
-    // Similar check if awarenessReady opens after firstSnapshot
-    if (!wasOpen && gateName === 'awarenessReady' && this.gates.firstSnapshot) {
+    if (!wasOpen && gateName === 'wsConnected' && this.gates.firstSnapshot) {
       this.publishState.presenceDirty = true;
     }
 
@@ -1483,12 +1395,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     });
   }
 
-  public getGateStatus(): Readonly<typeof this.gates> {
-    return { ...this.gates };
-  }
-
-  public isIndexedDBReady(): boolean {
-    return this.gates.idbReady;
+  public isConnected(): boolean {
+    return this.gates.wsConnected;
   }
 
   // ============================================================

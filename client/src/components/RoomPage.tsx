@@ -3,7 +3,6 @@
  * fixed top toolbar at 48px with Inspector extension, and zoom controls.
  */
 
-import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -12,7 +11,6 @@ import { Canvas } from '../canvas/Canvas';
 import { TopBar } from './TopBar';
 import { ToolPanel } from './ToolPanel';
 import { ZoomControls } from './ZoomControls';
-import { UsersModal } from './UsersModal';
 import { UserAvatarCluster } from './UserAvatarCluster';
 import { ToastProvider, useToast } from './Toast';
 
@@ -24,7 +22,6 @@ interface RoomCanvasProps {
 }
 
 function RoomCanvas({ roomId }: RoomCanvasProps) {
-  const [usersModalOpen, setUsersModalOpen] = useState(false);
   const { showToast } = useToast();
 
   const handleInvite = async () => {
@@ -55,7 +52,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           {/* Top-right micro cluster */}
           <div className="micro-cluster-right">
             {/* Users avatars cluster */}
-            <UserAvatarCluster roomId={roomId} onShowModal={() => setUsersModalOpen(true)} />
+            <UserAvatarCluster roomId={roomId} />
 
             {/* Invite button */}
             <button className="micro micro-invite" onClick={handleInvite} title="Copy invite link">
@@ -68,13 +65,6 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           <ZoomControls />
         </div>
       </div>
-
-      {/* Users Modal */}
-      <UsersModal
-        roomId={roomId}
-        isOpen={usersModalOpen}
-        onClose={() => setUsersModalOpen(false)}
-      />
     </div>
   );
 }

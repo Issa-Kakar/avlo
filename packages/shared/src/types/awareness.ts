@@ -10,10 +10,7 @@ export interface Awareness {
     x: number; // world coordinates (always)
     y: number; // world coordinates (always)
   };
-  activity: 'idle' | 'drawing' | 'typing';
   seq: number; // monotonic sequence per-sender
-  ts: number; // send time ms epoch
-  aw_v?: number; // awareness version for evolution
 }
 
 // Presence view derived from awareness
@@ -24,8 +21,6 @@ export interface PresenceView {
       name: string;
       color: string;
       cursor?: { x: number; y: number };
-      activity: string;
-      lastSeen: number;
     }
   >;
   localUserId: UserId;

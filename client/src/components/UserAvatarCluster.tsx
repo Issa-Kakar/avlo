@@ -3,10 +3,9 @@ import { usePresence } from '@/hooks/use-presence';
 
 interface UserAvatarClusterProps {
   roomId: string;
-  onShowModal: () => void;
 }
 
-export function UserAvatarCluster({ roomId, onShowModal }: UserAvatarClusterProps) {
+export function UserAvatarCluster({ roomId }: UserAvatarClusterProps) {
   const presence = usePresence(roomId);
 
   // Get stable array of users with proper key tracking using Map entries
@@ -36,26 +35,21 @@ export function UserAvatarCluster({ roomId, onShowModal }: UserAvatarClusterProp
   };
 
   return (
-    <div className="user-avatar-cluster" onClick={onShowModal}>
+    <div className="user-avatar-cluster">
       {/* Show up to 4 other users with stable keys */}
       {usersWithIds.slice(0, displayCount).map((user) => (
         <div
           key={user.userId} // Use stable userId from Map key
           className="micro-avatar"
           style={{ backgroundColor: user.color }}
-          title={`${user.name}${user.activity !== 'idle' ? ` (${user.activity})` : ''}`}
+          title={user.name}
         >
-          <span className="micro-avatar-initials">
-            {getInitials(user.name)}
-          </span>
+          <span className="micro-avatar-initials">{getInitials(user.name)}</span>
         </div>
       ))}
 
       {/* Always show ME avatar last */}
-      <div
-        className="micro-avatar micro-avatar-me"
-        title="You"
-      >
+      <div className="micro-avatar micro-avatar-me" title="You">
         <span className="micro-avatar-initials">ME</span>
       </div>
 

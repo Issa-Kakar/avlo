@@ -15,9 +15,6 @@
 import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
 
-/** Gate status type from IRoomDocManager.getGateStatus() */
-export type GateStatus = ReturnType<IRoomDocManager['getGateStatus']>;
-
 interface RoomContext {
   roomId: RoomId;
   roomDoc: IRoomDocManager;
@@ -85,15 +82,6 @@ export function getCurrentSnapshot(): Snapshot {
  */
 export function getCurrentPresence(): PresenceView {
   return getActiveRoomDoc().currentPresence;
-}
-
-/**
- * Get the gate status from the active room.
- * Convenience wrapper for getActiveRoomDoc().getGateStatus()
- * Use this in render loops to check initialization gates.
- */
-export function getGateStatus(): GateStatus {
-  return getActiveRoomDoc().getGateStatus();
 }
 
 // ============================================
