@@ -32,7 +32,7 @@ import { fitCircle } from './fit-circle';
 import { fitAABB } from './fit-aabb';
 import { detectCorners, reconstructRectangleEdges, hasSelfIntersection, hasNearTouch } from './geometry-helpers';
 import { scoreCircle, scoreRectangleAABB } from './score';
-import { simplifyStroke } from '../tools/simplification';
+import { simplifyStroke } from './simplification';
 
 /**
  * Result of shape recognition

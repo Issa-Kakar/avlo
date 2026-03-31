@@ -264,3 +264,14 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): World
   if (!isFinite(minX)) return null;
   return { minX, minY, maxX, maxY };
 }
+
+// ============================================================================
+// INTERSECTION TEST
+// ============================================================================
+
+export function boundsIntersect(
+  a: { minX: number; minY: number; maxX: number; maxY: number },
+  b: { minX: number; minY: number; maxX: number; maxY: number },
+): boolean {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}

@@ -1,5 +1,29 @@
-import { clampScale, calculateZoomTransform } from '../internal/transforms';
-import { useCameraStore } from '@/stores/camera-store';
+import { useCameraStore, MIN_ZOOM, MAX_ZOOM } from '@/stores/camera-store';
+
+interface ZoomPoint {
+  x: number;
+  y: number;
+}
+
+export function clampScale(scale: number): number {
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+}
+
+export function calculateZoomTransform(
+  currentScale: number,
+  currentPan: ZoomPoint,
+  zoomFactor: number,
+  zoomCenter: ZoomPoint,
+): { scale: number; pan: ZoomPoint } {
+  const newScale = clampScale(currentScale * zoomFactor);
+  const worldX = zoomCenter.x / currentScale + currentPan.x;
+  const worldY = zoomCenter.y / currentScale + currentPan.y;
+  const newPan = {
+    x: worldX - zoomCenter.x / newScale,
+    y: worldY - zoomCenter.y / newScale,
+  };
+  return { scale: newScale, pan: newPan };
+}
 
 /**
  * Module-level animated zoom with fixed zoom steps for buttons.

@@ -15,7 +15,8 @@
 
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { MIN_ZOOM, MAX_ZOOM, MAX_PAN_DISTANCE } from '@/canvas/constants';
+export const MIN_ZOOM = 0.01;
+export const MAX_ZOOM = 5;
 import type { ViewTransform } from '@/types/snapshot';
 
 // ============================================
@@ -38,7 +39,7 @@ export interface CameraState {
 export interface CameraActions {
   /** Set scale with clamping to MIN_ZOOM/MAX_ZOOM */
   setScale: (scale: number) => void;
-  /** Set pan with clamping to MAX_PAN_DISTANCE */
+  /** Set pan position */
   setPan: (pan: { x: number; y: number }) => void;
   /** Set scale and pan atomically (for animations) */
   setScaleAndPan: (scale: number, pan: { x: number; y: number }) => void;
@@ -152,22 +153,16 @@ export const useCameraStore = create<CameraStore>()(
     },
 
     setPan: (pan: { x: number; y: number }) => {
-      const max = MAX_PAN_DISTANCE;
-      const cx = Math.max(-max, Math.min(max, pan.x));
-      const cy = Math.max(-max, Math.min(max, pan.y));
       const curr = get().pan;
-      if (cx === curr.x && cy === curr.y) return;
-      set({ pan: { x: cx, y: cy } });
+      if (pan.x === curr.x && pan.y === curr.y) return;
+      set({ pan });
     },
 
     setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
       const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
-      const max = MAX_PAN_DISTANCE;
-      const cx = Math.max(-max, Math.min(max, pan.x));
-      const cy = Math.max(-max, Math.min(max, pan.y));
       const state = get();
-      if (clamped === state.scale && cx === state.pan.x && cy === state.pan.y) return;
-      set({ scale: clamped, pan: { x: cx, y: cy } });
+      if (clamped === state.scale && pan.x === state.pan.x && pan.y === state.pan.y) return;
+      set({ scale: clamped, pan });
     },
 
     setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {

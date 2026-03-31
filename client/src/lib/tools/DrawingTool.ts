@@ -3,12 +3,12 @@ import * as Y from 'yjs';
 import type { DrawingState, PreviewData, PointerTool } from './types';
 import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
-import { HoldDetector } from '../input/HoldDetector';
+import { HoldDetector } from '../geometry/shape-recognition/HoldDetector';
 import {
   recognizePerfectShapePointCloud,
   debugRecognize,
   computeBboxCenterExtents,
-} from '../geometry/pdollar-recognizer';
+} from '../geometry/shape-recognition/pdollar-recognizer';
 import { createFillFromStroke } from '@/lib/utils/color';
 import { getActiveRoomDoc } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';

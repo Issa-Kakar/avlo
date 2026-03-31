@@ -40,7 +40,8 @@ import {
   useCameraStore,
   getVisibleWorldBounds,
 } from '@/stores/camera-store';
-import { calculateZoomTransform, boundsIntersect } from './internal/transforms';
+import { calculateZoomTransform } from './animation/ZoomAnimator';
+import { boundsIntersect } from '@/lib/geometry/bounds';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
 import { clear as clearImageManager } from '@/lib/image/image-manager';
