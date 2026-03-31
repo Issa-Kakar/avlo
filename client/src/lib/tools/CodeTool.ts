@@ -171,8 +171,7 @@ export class CodeTool implements PointerTool {
 
     let createdId: string | null = null;
 
-    roomDoc.mutate((ydoc) => {
-      const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
+    roomDoc.mutate(() => {
       const id = ulid();
       const yObj = new Y.Map<unknown>();
 
@@ -189,7 +188,7 @@ export class CodeTool implements PointerTool {
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
 
-      objects.set(id, yObj);
+      roomDoc.objects.set(id, yObj);
       createdId = id;
     });
 

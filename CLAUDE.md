@@ -211,7 +211,7 @@ Published by RoomDocManager on every Y.Doc change. Read by: RenderLoop (draw vis
 ### Write Path
 ```
 Tool.begin/move/end() → user gesture
-   → tool.commit() → getActiveRoomDoc().mutate(fn)
+   → tool.commit() → roomDoc.mutate(() => { roomDoc.objects.set(...) })
    → ydoc.transact() → Y.Map.set()
    → Observer fires → applyObjectChanges() → dirtyPatch computed
    → Snapshot published → CanvasRuntime invalidates dirty rects
@@ -300,10 +300,7 @@ Spacebar pan: `isSpacebarPanMode()` routes left-click to panTool and suppresses 
 
 ```typescript
 Y.Doc { guid: roomId }
-└─ root: Y.Map
-   ├─ v: 2                          // Schema version
-   ├─ meta: Y.Map                   // Legacy
-   ├─ objects: Y.Map<Y.Map<any>>    // All objects by ULID
+└─ objects: Y.Map<Y.Map<any>>       // Top-level, always exists — all objects by ULID
 ```
 
 ### Object Kinds
@@ -475,7 +472,7 @@ interface StoredAnchor { id: string; side: Dir; anchor: [number, number] }
 
 ### Key Methods
 ```typescript
-mutate(fn: (ydoc) => void)  // Transact with userId origin
+mutate(fn: () => void)      // Transact with userId origin — access roomDoc.objects directly
 undo() / redo()             // Y.UndoManager (500ms capture)
 subscribeSnapshot(cb)       // Doc changes
 subscribePresence(cb)       // Presence changes

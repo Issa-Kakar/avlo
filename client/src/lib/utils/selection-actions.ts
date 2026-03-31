@@ -177,16 +177,16 @@ export function deleteSelected(): void {
     }
   }
 
-  getActiveRoomDoc().mutate((ydoc) => {
+  const roomDoc = getActiveRoomDoc();
+  roomDoc.mutate(() => {
     // Clear dead anchors via live handle references
     for (const { y, clearStart, clearEnd } of anchorCleanups.values()) {
       if (clearStart) y.delete('startAnchor');
       if (clearEnd) y.delete('endAnchor');
     }
 
-    // Delete objects — need parent map for removal
-    const objects = ydoc.getMap('root').get('objects') as Y.Map<unknown>;
-    for (const id of idsToDelete) objects.delete(id);
+    // Delete objects
+    for (const id of idsToDelete) roomDoc.objects.delete(id);
   });
 
   useSelectionStore.getState().clearSelection();

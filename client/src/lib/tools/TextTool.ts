@@ -238,10 +238,7 @@ export class TextTool implements PointerTool {
     const store = useDeviceUIStore.getState();
     const isNoteMode = store.activeTool === 'note';
 
-    roomDoc.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-
+    roomDoc.mutate(() => {
       const yObj = new Y.Map<unknown>();
       yObj.set('id', objectId);
       yObj.set('origin', [worldX, worldY]);
@@ -266,7 +263,7 @@ export class TextTool implements PointerTool {
         if (store.textFillColor) yObj.set('fillColor', store.textFillColor);
       }
 
-      objects.set(objectId, yObj);
+      roomDoc.objects.set(objectId, yObj);
     });
 
     return objectId;
@@ -674,10 +671,8 @@ export class TextTool implements PointerTool {
       } else if (!handle || handle.kind !== 'note') {
         // Regular text object: delete entirely
         const roomDoc = getActiveRoomDoc();
-        roomDoc.mutate((ydoc) => {
-          const root = ydoc.getMap('root');
-          const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-          objects.delete(this.objectId!);
+        roomDoc.mutate(() => {
+          roomDoc.objects.delete(this.objectId!);
         });
       }
     }

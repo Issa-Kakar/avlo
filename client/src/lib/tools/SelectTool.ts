@@ -62,7 +62,6 @@ import {
   getConnectorType,
   bboxTupleToWorldBounds,
 } from '@avlo/shared';
-import * as Y from 'yjs';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { isShiftPointer, isCtrlOrMetaPointer } from '@/canvas/cursor-tracking';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -1280,11 +1279,9 @@ export class SelectTool implements PointerTool {
     topology: ConnectorTopology | null,
   ): void {
     const snapshot = getCurrentSnapshot();
+    const roomDoc = getActiveRoomDoc();
 
-    getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-
+    roomDoc.mutate(() => {
       for (const id of selectedIds) {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
@@ -1292,7 +1289,7 @@ export class SelectTool implements PointerTool {
         // Connectors: handled entirely by topology below
         if (handle.kind === 'connector') continue;
 
-        const yMap = objects.get(id);
+        const yMap = roomDoc.objects.get(id);
         if (!yMap) continue;
 
         if (handle.kind === 'stroke') {
@@ -1316,7 +1313,7 @@ export class SelectTool implements PointerTool {
       // Topology-managed connectors
       if (topology) {
         for (const entry of topology.entries) {
-          const yMap = objects.get(entry.connectorId);
+          const yMap = roomDoc.objects.get(entry.connectorId);
           if (!yMap) continue;
 
           if (entry.strategy === 'translate') {
@@ -1353,11 +1350,9 @@ export class SelectTool implements PointerTool {
     codeReflow: CodeReflowState | null,
   ): void {
     const snapshot = getCurrentSnapshot();
+    const roomDoc = getActiveRoomDoc();
 
-    getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-
+    roomDoc.mutate(() => {
       for (const id of selectedIds) {
         const handle = snapshot.objectsById.get(id);
         if (!handle) continue;
@@ -1365,7 +1360,7 @@ export class SelectTool implements PointerTool {
         // Connectors: handled entirely by topology below
         if (handle.kind === 'connector') continue;
 
-        const yMap = objects.get(id);
+        const yMap = roomDoc.objects.get(id);
         if (!yMap) continue;
 
         const isStroke = handle.kind === 'stroke';
@@ -1672,7 +1667,7 @@ export class SelectTool implements PointerTool {
           if (entry.strategy !== 'reroute') continue;
           const points = topology.reroutes.get(entry.connectorId);
           if (!points || points.length < 2) continue;
-          const yMap = objects.get(entry.connectorId);
+          const yMap = roomDoc.objects.get(entry.connectorId);
           if (!yMap) continue;
           yMap.set('points', points);
           yMap.set('start', points[0]);
@@ -1692,10 +1687,9 @@ export class SelectTool implements PointerTool {
     routedPoints: [number, number][],
     currentSnap: SnapTarget | null,
   ): void {
-    getActiveRoomDoc().mutate((ydoc: Y.Doc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-      const yMap = objects.get(connectorId);
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.mutate(() => {
+      const yMap = roomDoc.objects.get(connectorId);
       if (!yMap) return;
 
       // Update routed path

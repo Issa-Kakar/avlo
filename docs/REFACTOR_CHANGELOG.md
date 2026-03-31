@@ -1,6 +1,74 @@
-# Presence Refactor Changelog
+# Refactor Changelog
 
-Incremental cleanup toward the presence system redesign (`docs/PRESENCE_REDESIGN.md`).
+Incremental cleanup and architectural improvements. Architectural direction tracked in `docs/ARCHITECTURE_REDESIGN.md`.
+
+---
+
+## Phase 3: Flatten Y.Doc — Top-Level Objects Map
+
+Eliminated the triple-nested `ydoc.getMap('root').get('objects')` pattern. Objects map is now top-level via `ydoc.getMap('objects')` — a Yjs guarantee that always exists, never needs seeding.
+
+### Y.Doc structure
+
+```
+Before:                               After:
+Y.Doc { guid: roomId }                Y.Doc { guid: roomId }
+└─ root: Y.Map                        └─ objects: Y.Map<Y.Map<any>>
+   ├─ v: 2
+   ├─ meta: Y.Map
+   └─ objects: Y.Map<Y.Map<any>>
+```
+
+### RoomDocManager changes
+
+- **New public field:** `readonly objects: YObjects` on interface + class, initialized as `ydoc.getMap('objects')`
+- **Deleted:** `getRoot()`, `getMeta()`, `getObjects()` private methods — replaced by public `this.objects`
+- **Deleted:** `initializeYjsStructures()` — no seeding needed for top-level maps
+- **Deleted:** `delay()` helper, `YMeta` type alias
+- **Simplified constructor:** single `whenGateOpen('idbReady')` block (was two blocks with WS grace period + meta seed)
+- **Simplified `mutate()`:** `if (destroyed) return; ydoc.transact(fn, userId)` — was 20+ lines with meta guard + deferred write + replay
+- **Removed meta guard** from `publishSnapshotNow()`
+- All internal `this.getObjects()` calls → `this.objects`
+
+### Mutate pattern at callsites
+
+```typescript
+// Before (~35 occurrences across 11 files):
+roomDoc.mutate((ydoc) => {
+  const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<any>>;
+  objects.set(id, yMap);
+});
+
+// After:
+roomDoc.mutate(() => {
+  roomDoc.objects.set(id, yMap);
+});
+```
+
+### room-runtime.ts
+
+Added `getObjects()` convenience getter (re-exports `getActiveRoomDoc().objects`).
+
+### Files changed
+
+| File | Action | Delta |
+|------|--------|-------|
+| `lib/room-doc-manager.ts` | Rewritten (core) | −110 |
+| `canvas/room-runtime.ts` | Added getter | +12 |
+| `lib/tools/DrawingTool.ts` | Callsites | −9 |
+| `lib/tools/SelectTool.ts` | Callsites + removed Y import | −15 |
+| `lib/tools/TextTool.ts` | Callsites | −7 |
+| `lib/tools/ConnectorTool.ts` | Callsites | −4 |
+| `lib/tools/EraserTool.ts` | Callsites + removed Y import | −5 |
+| `lib/tools/CodeTool.ts` | Callsites | −2 |
+| `lib/clipboard/clipboard-actions.ts` | Callsites | −6 |
+| `lib/bookmark/bookmark-unfurl.ts` | Callsites | −4 |
+| `lib/image/image-actions.ts` | Callsites | −3 |
+| `lib/utils/selection-actions.ts` | Callsites | −3 |
+| `lib/__tests__/phase6-teardown.test.ts` | Updated to new API | ±0 |
+| `CLAUDE.md` | Updated Y.Doc structure + mutate docs | ±0 |
+
+**Net: −126 lines**
 
 ---
 

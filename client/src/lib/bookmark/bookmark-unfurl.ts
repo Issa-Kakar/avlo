@@ -127,8 +127,8 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
     ];
     const userId = userProfileManager.getIdentity().userId;
 
-    getActiveRoomDoc().mutate((ydoc) => {
-      const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
+    const roomDoc = getActiveRoomDoc();
+    roomDoc.mutate(() => {
       const yObj = new Y.Map<unknown>();
       yObj.set('id', objectId);
       yObj.set('kind', 'bookmark');
@@ -143,7 +143,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       if (data.faviconAssetId) yObj.set('faviconAssetId', data.faviconAssetId);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
-      objects.set(objectId, yObj);
+      roomDoc.objects.set(objectId, yObj);
     });
 
     removePlaceholder(objectId);
@@ -159,9 +159,9 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
     if (!handle || handle.kind !== 'bookmark') return;
 
     // Upgrade existing bookmark with metadata
-    getActiveRoomDoc().mutate((ydoc) => {
-      const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
-      const yObj = objects.get(objectId);
+    const roomDoc2 = getActiveRoomDoc();
+    roomDoc2.mutate(() => {
+      const yObj = roomDoc2.objects.get(objectId);
       if (!yObj || yObj.get('kind') !== 'bookmark') return;
 
       if (data.title != null) yObj.set('title', data.title);

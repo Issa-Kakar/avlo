@@ -128,8 +128,8 @@ export async function createImageFromBlob(
   const objectId = ulid();
   const userId = userProfileManager.getIdentity().userId;
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
+  const roomDoc = getActiveRoomDoc();
+  roomDoc.mutate(() => {
     const yObj = new Y.Map<unknown>();
     yObj.set('id', objectId);
     yObj.set('kind', 'image');
@@ -140,7 +140,7 @@ export async function createImageFromBlob(
     yObj.set('mimeType', result.mimeType);
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
-    objects.set(objectId, yObj);
+    roomDoc.objects.set(objectId, yObj);
   });
 
   if (opts?.selectAfter !== false) {

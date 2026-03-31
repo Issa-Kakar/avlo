@@ -34,15 +34,14 @@ import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/b
 
 type Unsub = () => void;
 
-// Type aliases for Y structures
-// Use Y.Map<unknown> and cast when accessing specific properties
-type YMeta = Y.Map<unknown>;
+// Type alias for Y structures
 type YObjects = Y.Map<Y.Map<unknown>>;
-// type YCode = Y.Map<unknown>;
-// type YOutputs = Y.Array<Output>;
 
 // Manager interface - public API
 export interface IRoomDocManager {
+  // Top-level objects map — always exists, no seeding needed
+  readonly objects: YObjects;
+
   // Snapshot - immutable view of Y.Doc state (no presence)
   readonly currentSnapshot: Snapshot;
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
@@ -52,7 +51,7 @@ export interface IRoomDocManager {
   subscribePresence(cb: (p: PresenceView) => void): Unsub;
 
   // Mutations
-  mutate(fn: (ydoc: Y.Doc) => void): void;
+  mutate(fn: () => void): void;
   destroy(): void;
   undo(): void;
   redo(): void;
@@ -97,6 +96,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private readonly ydoc: Y.Doc;
   private readonly userId: string; // stable userId
   private userProfile: UserProfile; // User name and color for awareness
+  readonly objects: YObjects;
 
   // Providers (will be null initially, added in later phases)
   private indexeddbProvider: IndexeddbPersistence | null = null;
@@ -187,6 +187,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Initialize Y.Doc with room GUID
     this.ydoc = new Y.Doc({ guid: roomId });
+    this.objects = this.ydoc.getMap('objects') as YObjects;
 
     // Create awareness instance bound to this doc
     this.yAwareness = new YAwareness(this.ydoc);
@@ -207,40 +208,15 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Setup observers (must be before IDB to catch updates)
     this.setupObservers();
-    // NOTE: setupObjectsObserver() will be called after Y.js structures are initialized
 
-    // CRITICAL FIX: Attach IDB FIRST before creating any structures
+    // Attach IDB FIRST before creating any structures
     this.initializeIndexedDBProvider();
     this.whenGateOpen('idbReady').then(() => {
-      const root = this.ydoc.getMap('root');
-      if (root.has('meta')) {
-        this.setupObjectsObserver();
-        this.attachUndoManager();
-      }
+      this.setupObjectsObserver();
+      this.attachUndoManager();
     });
     // Initialize WebSocket provider
     this.initializeWebSocketProvider();
-
-    // Seed only after IDB is ready *and* we've given WS a brief chance to sync.
-    this.whenGateOpen('idbReady').then(async () => {
-      await Promise.race([
-        this.whenGateOpen('wsSynced'),
-        this.delay(5_000), // prevents cross-tab fresh-room races
-      ]);
-
-      const root = this.ydoc.getMap('root');
-      if (!root.has('meta')) {
-        this.initializeYjsStructures();
-        this.setupObjectsObserver();
-        this.attachUndoManager();
-      }
-
-      // Now that structures exist (either from IDB/WS or freshly initialized),
-      // it's safe to attach array observers for incremental updates
-      this.setupObjectsObserver();
-      // Attach UndoManager after observers are set up
-      this.attachUndoManager();
-    });
 
     // - Doc changes: event-driven via handleYDocUpdate → publishSnapshotNow()
     // - Presence changes: triggered by awareness updates → triggerPresenceAnimation()
@@ -255,27 +231,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     return this.buildPresenceView();
   }
 
-  private getRoot(): Y.Map<unknown> {
-    return this.ydoc.getMap('root');
-  }
-
-  private getMeta(): YMeta | undefined {
-    const meta = this.getRoot().get('meta');
-    if (!(meta instanceof Y.Map)) {
-      return undefined;
-    }
-    return meta as YMeta;
-  }
-
-  private getObjects(): YObjects {
-    const root = this.getRoot();
-    const objects = root.get('objects');
-    if (!(objects instanceof Y.Map)) {
-      throw new Error('objects map not initialized');
-    }
-    return objects as YObjects;
-  }
-
   /**
    * Attach UndoManager to track local changes
    * CRITICAL: Only call after Y.Doc structures are initialized
@@ -286,12 +241,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       return;
     }
 
-    const objects = this.getObjects();
-
     // Track changes to objects map
     // ySyncPluginKey origin captures text fragment edits from ProseMirror sync plugin
     // (only fires when a local editor is mounted — zero impact on normal undo)
-    this.undoManager = new Y.UndoManager([objects], {
+    this.undoManager = new Y.UndoManager([this.objects], {
       trackedOrigins: new Set([this.userId, ySyncPluginKey]),
       captureTimeout: 500, // Merge rapid changes within 500ms
     });
@@ -555,32 +508,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  // Tiny helper to await a timeout (used for the WS-sync grace window)
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  // Initialize Y.js structures with proper setup
-  private initializeYjsStructures(): void {
-    this.ydoc.transact(() => {
-      const root = this.ydoc.getMap('root');
-      // Bump schema version for Y.Map migration
-      root.set('v', 2);
-      // Keep meta
-      if (!root.has('meta')) {
-        const meta = new Y.Map();
-        root.set('meta', meta);
-      }
-      // NEW: Create objects map instead of arrays
-      if (!root.has('objects')) {
-        root.set('objects', new Y.Map());
-      }
-    }, 'init-structures'); // Origin for debugging
-  }
-
-  // Step 4: Add output with size enforcement
-  // Step 6: Validate structure integrity
-
   // Subscription methods
   subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
     // Return no-op if destroyed
@@ -612,34 +539,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     };
   }
 
-  // Simple mutate method
-  mutate(fn: (ydoc: Y.Doc) => void): void {
-    // Check if destroyed first
+  mutate(fn: () => void): void {
     if (this.destroyed) return;
-
-    // Pre-init guard: before IDB hydration or seeding, don't create containers via writes.
-    // This prevents the race condition where writes could create fresh containers that
-    // compete with persisted ones from IDB or WS. Once 'meta' exists, structures are initialized.
-    const root = this.ydoc.getMap('root');
-    if (!root.has('meta')) {
-      // Defer writes until either (a) WS syncs, or (b) a long grace elapses after IDB.
-      this.whenGateOpen('idbReady').then(async () => {
-        await Promise.race([this.whenGateOpen('wsSynced'), this.delay(5_000)]);
-        const r = this.ydoc.getMap('root');
-        if (!r.has('meta')) {
-          // Truly fresh doc even after IDB + grace → seed once.
-          this.initializeYjsStructures();
-        }
-        this.mutate(fn); // replay the write
-      });
-      return;
-    }
-
-    // Execute in single transaction with user origin
-    // Doc changes are published immediately via handleYDocUpdate → publishSnapshotNow()
-    this.ydoc.transact(() => {
-      fn(this.ydoc);
-    }, this.userId); // Origin for undo/redo tracking
+    this.ydoc.transact(fn, this.userId);
   }
 
   undo(): void {
@@ -759,8 +661,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Remove objects observer
     if (this.objectsObserver) {
       try {
-        const objects = this.getObjects();
-        objects.unobserveDeep(this.objectsObserver);
+        this.objects.unobserveDeep(this.objectsObserver);
       } catch {
         // Ignore errors during cleanup
       }
@@ -873,8 +774,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private setupObjectsObserver(): void {
     if (this.objectsObserver) return; // idempotent
 
-    const objects = this.getObjects();
-
     this.objectsObserver = (events, _tx) => {
       // CRITICAL: Ignore during rebuild epoch
       if (this.needsSpatialRebuild) return;
@@ -884,7 +783,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       for (const ev of events) {
         // Top-level object adds/deletes
-        if (ev.target === objects && ev instanceof Y.YMapEvent) {
+        if (ev.target === this.objects && ev instanceof Y.YMapEvent) {
           for (const [key, change] of ev.changes.keys) {
             const id = String(key);
             if (change.action === 'delete') {
@@ -906,7 +805,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         // Y.XmlFragment change: invalidate text cache (eager re-tokenize for inline styles)
         // Y.Text change (code blocks): sync tokenize + dispatch to Lezer worker
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
-          const yObj = objects.get(id);
+          const yObj = this.objects.get(id);
           const content = yObj?.get('content');
           const kind = yObj?.get('kind') as string | undefined;
           if (kind === 'code' && ev instanceof Y.YTextEvent) {
@@ -924,12 +823,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // No flag needed - handleYDocUpdate → publishSnapshotNow() handles publishing
     };
 
-    objects.observeDeep(this.objectsObserver);
+    this.objects.observeDeep(this.objectsObserver);
     // needsSpatialRebuild is already true from initialization
   }
 
   private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
-    const objects = this.getObjects();
 
     // Process deletions
     for (const id of deletedIds) {
@@ -995,7 +893,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     for (const id of touchedIds) {
-      const yObj = objects.get(id);
+      const yObj = this.objects.get(id);
       if (!yObj) continue;
 
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -1080,7 +978,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   private hydrateObjectsFromY(): void {
-    const objects = this.getObjects();
 
     // Reset everything EXCEPT spatial index (already created in buildSnapshot)
     this.objectsById.clear();
@@ -1097,7 +994,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // Build handles from Y.Doc
     const handles: ObjectHandle[] = [];
-    objects.forEach((yObj, key) => {
+    this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
 
@@ -1129,7 +1026,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     hydrateConnectorLookup(this.objectsById);
 
     // Hydrate images: ensure all in IDB, decode only viewport-visible
-    hydrateImages(objects);
+    hydrateImages(this.objects);
 
     // v2: bookmark unfurls are drained by image worker IDB queue on init (no main-thread scan needed)
 
@@ -1410,12 +1307,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
    * Called directly from handleYDocUpdate for immediate publishing.
    */
   private publishSnapshotNow(): void {
-    const meta = this.getMeta();
-    // Guard: structures must exist
-    if (!meta) {
-      return;
-    }
-
     // Create spatial index ONCE (first time only)
     if (!this.spatialIndex) {
       this.spatialIndex = new ObjectSpatialIndex();

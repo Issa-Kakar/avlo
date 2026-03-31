@@ -530,10 +530,7 @@ export class DrawingTool implements PointerTool {
     const strokeId = ulid();
 
     try {
-      roomDoc.mutate((ydoc) => {
-        const root = ydoc.getMap('root');
-        const objects = root.get('objects') as Y.Map<Y.Map<any>>;
-
+      roomDoc.mutate(() => {
         const strokeMap = new Y.Map();
         strokeMap.set('id', strokeId);
         strokeMap.set('kind', 'stroke');
@@ -545,7 +542,7 @@ export class DrawingTool implements PointerTool {
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
 
-        objects.set(strokeId, strokeMap);
+        roomDoc.objects.set(strokeId, strokeMap);
       });
     } catch (err) {
       console.error('Failed to commit stroke:', err);
@@ -571,9 +568,7 @@ export class DrawingTool implements PointerTool {
       // Commit as a 2-point stroke
       const { A } = this.snap.anchors;
       const strokeId = ulid();
-      roomDoc.mutate((ydoc) => {
-        const root = ydoc.getMap('root');
-        const objects = root.get('objects') as Y.Map<Y.Map<any>>;
+      roomDoc.mutate(() => {
         const strokeMap = new Y.Map();
         strokeMap.set('id', strokeId);
         strokeMap.set('kind', 'stroke');
@@ -584,7 +579,7 @@ export class DrawingTool implements PointerTool {
         strokeMap.set('points', [A, finalCursor]);
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
-        objects.set(strokeId, strokeMap);
+        roomDoc.objects.set(strokeId, strokeMap);
       });
       invalidateOverlay();
       this.resetState();
@@ -655,13 +650,9 @@ export class DrawingTool implements PointerTool {
       this.cancelDrawing();
       return;
     }
-    console.log('frame', frame);
     // Commit as shape object
     const shapeId = ulid();
-    roomDoc.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
-
+    roomDoc.mutate(() => {
       const shapeMap = new Y.Map();
       shapeMap.set('id', shapeId);
       shapeMap.set('kind', 'shape');
@@ -680,7 +671,7 @@ export class DrawingTool implements PointerTool {
       shapeMap.set('ownerId', userId);
       shapeMap.set('createdAt', Date.now());
 
-      objects.set(shapeId, shapeMap);
+      roomDoc.objects.set(shapeId, shapeMap);
     });
 
     // Invalidate overlay to clear preview

@@ -106,9 +106,12 @@ describe('Phase 6 Teardown Hygiene', () => {
     const observersBefore = impl.ydoc._observers?.size || 0;
 
     // Add some mutations to ensure observers are active
-    manager.mutate((ydoc) => {
-      const strokes = ydoc.getMap('root').get('strokes') as any;
-      strokes.push([{ id: 'test', points: [0, 0, 1, 1] }]);
+    manager.mutate(() => {
+      const yObj = new Y.Map();
+      yObj.set('id', 'test');
+      yObj.set('kind', 'stroke');
+      yObj.set('points', [[0, 0], [1, 1]]);
+      manager.objects.set('test', yObj);
     });
 
     // Cleanup

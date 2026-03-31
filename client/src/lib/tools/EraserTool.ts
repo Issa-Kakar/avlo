@@ -20,7 +20,6 @@ import {
 } from '@avlo/shared';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
-import * as Y from 'yjs';
 import type { PointerTool } from './types';
 
 // Fixed radius configuration
@@ -476,13 +475,10 @@ export class EraserTool implements PointerTool {
     }
 
     // Single transaction: clear dead anchors + delete objects
-    roomDoc.mutate((ydoc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<any>>;
-
+    roomDoc.mutate(() => {
       // Step 1: Clear dead anchors from affected connectors
       for (const [connectorId, { clearStart, clearEnd }] of anchorCleanups) {
-        const connectorYMap = objects.get(connectorId);
+        const connectorYMap = roomDoc.objects.get(connectorId);
         if (!connectorYMap) continue;
 
         if (clearStart) {
@@ -495,7 +491,7 @@ export class EraserTool implements PointerTool {
 
       // Step 2: Delete the objects
       for (const id of idsToDelete) {
-        objects.delete(id);
+        roomDoc.objects.delete(id);
       }
     });
 

@@ -332,10 +332,7 @@ export class ConnectorTool implements PointerTool {
     const userId = userProfileManager.getIdentity().userId;
     const roomDoc = getActiveRoomDoc();
 
-    roomDoc.mutate((ydoc: Y.Doc) => {
-      const root = ydoc.getMap('root');
-      const objects = root.get('objects') as Y.Map<Y.Map<unknown>>;
-
+    roomDoc.mutate(() => {
       const connectorMap = new Y.Map<unknown>();
 
       connectorMap.set('id', id);
@@ -381,7 +378,7 @@ export class ConnectorTool implements PointerTool {
       connectorMap.set('ownerId', userId);
       connectorMap.set('createdAt', Date.now());
 
-      objects.set(id, connectorMap);
+      roomDoc.objects.set(id, connectorMap);
     });
   }
 }

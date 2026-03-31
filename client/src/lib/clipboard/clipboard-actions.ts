@@ -166,9 +166,8 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
   const userId = userProfileManager.getIdentity().userId;
   const now = Date.now();
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
-
+  const roomDoc = getActiveRoomDoc();
+  roomDoc.mutate(() => {
     for (const obj of payload.objects) {
       const oldId = obj.props.id as string;
       const newId = idMap.get(oldId)!;
@@ -236,7 +235,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
         yObj.set('content', yText);
       }
 
-      objects.set(newId, yObj);
+      roomDoc.objects.set(newId, yObj);
     }
   });
 
@@ -402,9 +401,8 @@ function createPastedTextObject(
   const userId = userProfileManager.getIdentity().userId;
   const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
-  getActiveRoomDoc().mutate((ydoc) => {
-    const objects = ydoc.getMap('root').get('objects') as Y.Map<Y.Map<unknown>>;
-
+  const roomDoc = getActiveRoomDoc();
+  roomDoc.mutate(() => {
     const yObj = new Y.Map<unknown>();
     yObj.set('id', objectId);
     yObj.set('kind', 'text');
@@ -420,7 +418,7 @@ function createPastedTextObject(
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
 
-    objects.set(objectId, yObj);
+    roomDoc.objects.set(objectId, yObj);
   });
 
   if (!getCurrentTool()?.isActive()) {

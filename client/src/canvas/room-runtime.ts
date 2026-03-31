@@ -105,6 +105,18 @@ export function clearPresenceCursor(): void {
 }
 
 // ============================================
+// OBJECTS MAP CONVENIENCE GETTER
+// ============================================
+
+/**
+ * Get the top-level objects Y.Map from the active room.
+ * Convenience wrapper for getActiveRoomDoc().objects
+ */
+export function getObjects(): ReturnType<typeof getActiveRoomDoc>['objects'] {
+  return getActiveRoomDoc().objects;
+}
+
+// ============================================
 // CONNECTOR LOOKUP RE-EXPORTS
 // ============================================
 
