@@ -10,8 +10,9 @@
  * - Raw geometry bounds extraction from ObjectHandle
  */
 
-import type { WorldBounds, FrameTuple, BBoxTuple, ObjectHandle } from '@avlo/shared';
-import { getFrame, getPoints } from '@avlo/shared';
+import type { WorldBounds, FrameTuple, BBoxTuple } from '@/types/geometry';
+import type { ObjectHandle } from '@/types/objects';
+import { getFrame, getPoints } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from './transform';

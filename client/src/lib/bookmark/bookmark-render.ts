@@ -1,5 +1,5 @@
-import type { ObjectHandle } from '@avlo/shared';
-import { getBookmarkProps, getFrame } from '@avlo/shared';
+import type { ObjectHandle } from '@/types/objects';
+import { getBookmarkProps, getFrame } from '@/lib/object-accessors';
 import { getBitmap } from '@/lib/image/image-manager';
 import { renderNoteBody } from '@/lib/text/text-system';
 

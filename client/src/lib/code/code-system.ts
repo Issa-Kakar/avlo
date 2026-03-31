@@ -6,9 +6,9 @@
  * Proportional padding (fontSize-relative) + measured font metrics for pixel-perfect alignment.
  */
 
-import type { BBoxTuple, FrameTuple } from '@avlo/shared';
-import type { CodeLanguage } from '@avlo/shared';
-import { getCodeProps } from '@avlo/shared';
+import type { BBoxTuple, FrameTuple } from '@/types/geometry';
+import type { CodeLanguage } from '@/lib/object-accessors';
+import { getCodeProps } from '@/lib/object-accessors';
 import * as Y from 'yjs';
 import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import { frameTupleToWorldBounds } from '@/lib/geometry/bounds';
@@ -581,7 +581,13 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     props.lineNumbers,
   );
   const [ox, oy] = props.origin;
-  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
+  const bh = blockHeight(
+    layout,
+    props.fontSize,
+    props.headerVisible,
+    props.outputVisible,
+    props.output,
+  );
   const frame: FrameTuple = [ox, oy, layout.totalWidth, bh];
   codeSystem.setFrame(id, frame);
   return [ox, oy, ox + layout.totalWidth, oy + bh];
@@ -611,9 +617,7 @@ export function renderCodeLayout(
   const pt = padTop(fontSize);
   const pl = padLeft(fontSize);
   const hh = title !== undefined ? headerBarHeight(fontSize) : 0;
-  const bgH = blockHeight(
-    layout, fontSize, title !== undefined, output !== undefined, output,
-  );
+  const bgH = blockHeight(layout, fontSize, title !== undefined, output !== undefined, output);
   const digits = Math.max(2, String(layout.sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, layout.lineNumbers);
   const normalFont = `${FONT_WEIGHT} ${fontSize}px ${CODE_FONT}`;

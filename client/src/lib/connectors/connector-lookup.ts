@@ -5,8 +5,8 @@
  * Provides O(1) lookup for SelectTool transforms and EraserTool deletions.
  */
 
-import type { ObjectHandle } from '@avlo/shared';
-import { getStartAnchor, getEndAnchor } from '@avlo/shared';
+import type { ObjectHandle } from '@/types/objects';
+import { getStartAnchor, getEndAnchor } from '@/lib/object-accessors';
 import type * as Y from 'yjs';
 
 // ============================================================

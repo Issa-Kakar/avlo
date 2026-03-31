@@ -21,23 +21,28 @@
  */
 
 import * as Y from 'yjs';
+import type { BBoxTuple, FrameTuple } from '@/types/geometry';
 import type {
-  BBoxTuple,
-  FrameTuple,
   NoteProps,
   TextProps,
   TextAlign,
   TextAlignV,
   TextWidth,
   FontFamily,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 
 import { areFontsLoaded } from './font-loader';
 import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
 export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 export type { FontFamilyConfig } from './font-config';
-export type { TextAlign, TextAlignV, TextWidth, TextProps, FontFamily } from '@avlo/shared';
+export type {
+  TextAlign,
+  TextAlignV,
+  TextWidth,
+  TextProps,
+  FontFamily,
+} from '@/lib/object-accessors';
 
 // =============================================================================
 // STICKY NOTE CONSTANTS & HELPERS
@@ -75,8 +80,7 @@ export function getNoteContentOffsetY(
 // --- Auto font size ---
 
 export const NOTE_FONT_STEPS: number[] = [
-  72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20,
-  18, 16, 15, 14, 13, 12, 11, 10, 9, 8,
+  72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8,
 ];
 const NOTE_PHASE1_FLOOR = 18;
 
@@ -535,8 +539,8 @@ function measureTokenizedContent(
 // =============================================================================
 
 // UAX#14-like soft wrap opportunity sets (preferred over arbitrary grapheme breaks)
-const BREAK_AFTER = new Set([':',',',';','/','!','?','%','-','}',']',')']);
-const BREAK_BEFORE = new Set(['{','[','(']);
+const BREAK_AFTER = new Set([':', ',', ';', '/', '!', '?', '%', '-', '}', ']', ')']);
+const BREAK_BEFORE = new Set(['{', '[', '(']);
 
 /** Find end of first soft segment (UAX#14-like). Returns char index.
  *  Break after: :,;/!?%-}])  Break before: {[(
@@ -712,7 +716,10 @@ export function layoutMeasuredContent(
             continue;
           }
           if (chunkW <= maxWidth) {
-            if (b.runs.length > 0) { pushLine(b); b = newLineBuilder(); }
+            if (b.runs.length > 0) {
+              pushLine(b);
+              b = newLineBuilder();
+            }
             appendRun(b, seg, chunk, chunkW);
             text = text.slice(segEnd);
             continue;
@@ -899,7 +906,11 @@ function noteFlowCheck(
                 continue;
               }
               if (chunkW <= maxW) {
-                if (curW > 0) { lineCount++; if (lineCount > maxLines) return 'heightOverflow'; curW = 0; }
+                if (curW > 0) {
+                  lineCount++;
+                  if (lineCount > maxLines) return 'heightOverflow';
+                  curW = 0;
+                }
                 curW += chunkW;
                 text = text.slice(segEnd);
                 continue;
@@ -981,8 +992,7 @@ function layoutNoteContent(
   let maxWordW100 = 0;
   for (const p of measured.paragraphs) {
     for (const tok of p.tokens) {
-      if (tok.kind === 'word' && tok.advanceWidth > maxWordW100)
-        maxWordW100 = tok.advanceWidth;
+      if (tok.kind === 'word' && tok.advanceWidth > maxWordW100) maxWordW100 = tok.advanceWidth;
     }
   }
   if (maxWordW100 > 0) {
@@ -1233,11 +1243,7 @@ class TextLayoutCache {
    * No fontSize/width params — layout is scale-independent.
    * Two-tier: content valid → re-measure + auto-size; content stale → full pipeline.
    */
-  getNoteLayout(
-    objectId: string,
-    fragment: Y.XmlFragment,
-    fontFamily: FontFamily,
-  ): TextLayout {
+  getNoteLayout(objectId: string, fragment: Y.XmlFragment, fontFamily: FontFamily): TextLayout {
     const entry = this.cache.get(objectId);
 
     // Cache hit — same content + fontFamily + derived font size computed

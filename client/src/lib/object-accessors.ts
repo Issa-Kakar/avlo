@@ -13,7 +13,7 @@
  */
 
 import * as Y from 'yjs';
-import type { FrameTuple, Frame } from '../types/geometry';
+import type { FrameTuple, Frame } from '@/types/geometry';
 
 // ============================================================================
 // DIRECTION TYPE (shared with connectors)

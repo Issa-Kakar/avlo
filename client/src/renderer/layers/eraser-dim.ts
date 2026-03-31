@@ -1,5 +1,5 @@
-import type { Snapshot } from '@avlo/shared';
-import { getWidth, getFillColor } from '@avlo/shared';
+import type { Snapshot } from '@/types/snapshot';
+import { getWidth, getFillColor } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { getObjectCacheInstance } from '../object-cache';

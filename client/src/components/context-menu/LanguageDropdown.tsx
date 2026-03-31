@@ -1,7 +1,7 @@
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { setSelectedCodeLanguage } from '@/lib/utils/selection-actions';
-import type { CodeLanguage } from '@avlo/shared';
+import type { CodeLanguage } from '@/lib/object-accessors';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown, IconCheck } from './icons';
 import { useDropdown } from './useDropdown';

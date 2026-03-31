@@ -1,4 +1,6 @@
-import type { Snapshot, ViewTransform, ObjectHandle, IndexEntry, FrameTuple } from '@avlo/shared';
+import type { Snapshot, ViewTransform } from '@/types/snapshot';
+import type { ObjectHandle, IndexEntry } from '@/types/objects';
+import type { FrameTuple } from '@/types/geometry';
 import {
   getColor,
   getOpacity,
@@ -15,7 +17,7 @@ import {
   getContent,
   getFontSize,
   getFontFamily,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 import type { ViewportInfo } from '../types';
 import { getObjectCacheInstance } from '../object-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
@@ -55,11 +57,16 @@ import {
   getNoteDerivedFontSize,
   NOTE_WIDTH,
 } from '@/lib/text/text-system';
-import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@avlo/shared';
+import {
+  getTextProps,
+  getAlign,
+  getAlignV,
+  getCodeProps,
+  getNoteProps,
+} from '@/lib/object-accessors';
 import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
-import { CODE_EXTENSIONS } from '@avlo/shared';
-import { getAssetId } from '@avlo/shared';
+import { CODE_EXTENSIONS, getAssetId } from '@/lib/object-accessors';
 import { getBitmap } from '@/lib/image/image-manager';
 import { drawBookmark } from '@/lib/bookmark/bookmark-render';
 

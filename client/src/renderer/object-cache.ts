@@ -1,4 +1,4 @@
-import type { ObjectHandle } from '@avlo/shared';
+import type { ObjectHandle } from '@/types/objects';
 import {
   getPoints,
   getFrame,
@@ -6,7 +6,7 @@ import {
   getShapeType,
   getStartCap,
   getEndCap,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
 import { buildConnectorPaths, type ConnectorPaths } from '@/lib/connectors/connector-paths';

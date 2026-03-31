@@ -15,7 +15,8 @@
  */
 
 import type { SelectionPreview, HandleId } from '@/lib/tools/types';
-import type { Snapshot } from '@avlo/shared';
+import type { Snapshot } from '@/types/snapshot';
+import type { ObjectHandle } from '@/types/objects';
 import {
   getFrame,
   getShapeType,
@@ -24,7 +25,7 @@ import {
   getStartAnchor,
   getEndAnchor,
   getPoints,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { getObjectCacheInstance } from '../object-cache';
@@ -581,7 +582,7 @@ function drawSnapMidpointDots(
  */
 function drawStraightConnectorGuides(
   ctx: CanvasRenderingContext2D,
-  handle: import('@avlo/shared').ObjectHandle,
+  handle: ObjectHandle,
   startPos: [number, number],
   endPos: [number, number],
   _snapshot: Snapshot,

@@ -28,7 +28,7 @@ import {
 } from '@/lib/connectors/connector-paths';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import { getObjectCacheInstance } from '../object-cache';
-import { getWidth } from '@avlo/shared';
+import { getWidth } from '@/lib/object-accessors';
 
 /**
  * Draw connector preview on overlay canvas.

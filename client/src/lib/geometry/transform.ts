@@ -7,7 +7,8 @@
  */
 
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds, FrameTuple, ObjectKind } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@/types/geometry';
+import type { ObjectKind } from '@/types/objects';
 import { translateBounds, scaleBoundsAround } from './bounds';
 import { isCornerHandle } from '@/stores/selection-store';
 import type { TranslateTransform, ScaleTransform } from '@/stores/selection-store';

@@ -1,6 +1,6 @@
 # Architecture Redesign — Ground Up
 
-Reasoning and direction for decoupling the system. Not a task list — each section captures the *why* and the target patterns. Implementation requires fresh sessions with focused scope.
+Reasoning and direction for decoupling the system. Not a task list — each section captures the _why_ and the target patterns. Implementation requires fresh sessions with focused scope.
 
 **Core philosophy:** Module-level singletons for read access, room-scoped lifecycle for write/ownership, direct access over indirection. Y.Doc IS the shared mutable state container — don't wrap it in another stateful container.
 
@@ -147,6 +147,7 @@ ws.on('synced', () => rebuildIndex());
 ```
 
 Scenarios:
+
 - **Returning user:** IDB loads fast -> first render with local data. WS syncs small delta -> observer handles incrementally. `synced` fires -> rebuild for clean tree.
 - **First-time user:** IDB loads instantly (empty) -> empty canvas. WS syncs full state -> observer processes incrementally until `synced` fires -> rebuild with everything, optimal tree.
 - **Reconnect after disconnect:** Index already built. WS re-syncs delta -> observer handles incrementally. `synced` fires -> rebuild catches missed changes.
@@ -167,12 +168,12 @@ Two data paths, completely separated. The module decomposition above is prerequi
 
 ### Four concerns, different characteristics
 
-| Concern | Frequency | Consumer | Allocation budget |
-|---------|-----------|----------|-------------------|
-| Send | ~20hz while moving, 0 when idle | Network (awareness protocol) | N/A |
-| Receive | ~20hz per peer | Mutable state | Zero — mutate in place |
-| Render | 60fps during animation | Canvas overlay | Zero — reuse objects |
-| React UI | On join/leave only | Components | New array ref (rare) |
+| Concern  | Frequency                       | Consumer                     | Allocation budget      |
+| -------- | ------------------------------- | ---------------------------- | ---------------------- |
+| Send     | ~20hz while moving, 0 when idle | Network (awareness protocol) | N/A                    |
+| Receive  | ~20hz per peer                  | Mutable state                | Zero — mutate in place |
+| Render   | 60fps during animation          | Canvas overlay               | Zero — reuse objects   |
+| React UI | On join/leave only              | Components                   | New array ref (rare)   |
 
 ### Principle: Two data paths, completely separated
 
@@ -185,6 +186,7 @@ These cannot be the same data structure. The current `PresenceView` conflates th
 ### Ownership
 
 **`presence.ts` — module-level, no class:**
+
 - Throttled local cursor sending (20hz, 50ms, leading+trailing)
 - `peerCursors: Map<clientId, {x, y}>` — mutated in place, read by renderer
 - `peerInfo: Map<clientId, {userId, name, color}>` — stable refs, read by Zustand selector
@@ -194,11 +196,13 @@ These cannot be the same data structure. The current `PresenceView` conflates th
 - Does NOT own: interpolation state (renderer's job), connection state (YAGNI)
 
 **`presence-cursors.ts` — renderer layer:**
+
 - Display positions: `Map<clientId, Float64Array(2)>` — interpolation state
 - Cursor bitmap cache: `Map<key, OffscreenCanvas>` — pre-rendered arrow+label
 - `drawCursors(ctx, dt): boolean` — returns true if still animating (self-sustaining invalidation)
 
 **Room connection (`connectRoom`):**
+
 - Does NOT own awareness (YProvider creates it, presence.ts wires it)
 - Does NOT own presence state or sending
 - Does NOT own presence rendering
@@ -325,12 +329,12 @@ REQUEST LIFETIME (ephemeral):
 
 ### Direct access over indirection
 
-| Before | After |
-|--------|-------|
-| `getCurrentSnapshot().spatialIndex?.query(bounds)` | `getSpatialIndex().query(bounds)` |
-| `getCurrentSnapshot().objectsById.get(id)` | `getObject(id)` |
+| Before                                                                | After                                                |
+| --------------------------------------------------------------------- | ---------------------------------------------------- |
+| `getCurrentSnapshot().spatialIndex?.query(bounds)`                    | `getSpatialIndex().query(bounds)`                    |
+| `getCurrentSnapshot().objectsById.get(id)`                            | `getObject(id)`                                      |
 | `roomDoc.mutate((ydoc) => { ydoc.getMap('root').get('objects')... })` | `roomDoc.mutate(() => { roomDoc.objects.set(...) })` |
-| `subscribe(snap => { snap.dirtyPatch?.rects... })` | `subscribeDirty(patch => { patch.rects... })` |
+| `subscribe(snap => { snap.dirtyPatch?.rects... })`                    | `subscribeDirty(patch => { patch.rects... })`        |
 
 ### No null fields, no deferred init
 
@@ -345,6 +349,75 @@ Cache eviction, layout cache invalidation, connector lookup updates — these ha
 Anything read by multiple subsystems (tools, renderer, hit testing) lives at module scope with a getter. Room lifecycle populates/clears it. No threading state through subscriptions or snapshots.
 
 ---
+
+## Ownership: Who Owns What
+
+### `presence.ts` — module-level, no class
+
+```
+Owns:
+  - Throttled local cursor sending
+  - peerCursors: mutable Map<clientId, {x, y}> (mutated in place)
+  - peerInfo: mutable Map<clientId, {userId, name, color}> (stable object refs)
+  - Zustand store with peerList for React (selector pattern, same as selection-store)
+  - Awareness 'change' wiring + disconnect cleanup
+
+Receives:
+  - The YProvider via init(provider) — provider owns the awareness instance
+  - Access provider.awareness for read/write, provider.ws if ever needed for backpressure
+```
+
+Why module-level, not a class:
+
+- One room per tab. No multi-instance need.
+- Matches camera-store, room-runtime, tool-registry pattern.
+- Simpler than constructing/destroying class instances.
+
+## Receiving: Mutable Maps, Fine-Grained React Notification
+
+### Listen on 'change' events
+
+The provider sends on 'change'. We receive on 'change'. Both filter clock-only renewals. The check interval is disabled on both client and server, so 'change' and 'update' fire at the same times anyway. 'change' is semantically correct.
+
+### Two separate data structures
+
+```typescript
+// ---- HOT PATH: cursor positions, mutated in place, read by renderer ----
+// The {x,y} objects are created once per peer and REUSED. Never recreated.
+const peerCursors = new Map<number, { x: number; y: number }>();
+
+// ---- WARM PATH: peer identity, stable refs, read by React via Zustand ----
+const peerInfo = new Map<number, { userId: string; name: string; color: string }>();
+```
+
+### Zustand store for React (same pattern as selection-store)
+
+```typescript
+import { create } from 'zustand';
+
+interface PeerEntry {
+  clientId: number;
+  userId: string;
+  name: string;
+  color: string;
+}
+
+export const usePresenceStore = create<{ peerList: PeerEntry[] }>(() => ({
+  peerList: [],
+}));
+```
+
+Components use selectors — same pattern as `useSelectionStore`:
+
+```typescript
+// UserAvatarCluster — only re-renders when peer list changes
+const peers = usePresenceStore((s) => s.peerList);
+
+// Could select just count if that's all you need
+const peerCount = usePresenceStore((s) => s.peerList.length);
+```
+
+`peerList` array reference only changes on join/leave/name/color. Cursor moves: zero React re-renders. Zero. No `useSyncExternalStore`, no manual subscription plumbing. Just Zustand with selectors, consistent with every other store.
 
 ## Open Questions
 

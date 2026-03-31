@@ -1,4 +1,9 @@
-import { STROKE_CONFIG } from '@avlo/shared';
+const PEN_SIMPLIFICATION_TOLERANCE = 0.8;
+const HIGHLIGHTER_SIMPLIFICATION_TOLERANCE = 0.5;
+const SIMPLIFICATION_TOLERANCE_MULTIPLIER = 1.5;
+const HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER = 1.5;
+export const MAX_STROKE_UPDATE_BYTES = 128 * 1024;
+export const MAX_POINTS_PER_STROKE = 10_000;
 
 export interface SimplificationResult {
   points: number[];
@@ -80,9 +85,7 @@ export function simplifyStroke(
   }
 
   const baseTol =
-    tool === 'pen'
-      ? STROKE_CONFIG.PEN_SIMPLIFICATION_TOLERANCE
-      : STROKE_CONFIG.HIGHLIGHTER_SIMPLIFICATION_TOLERANCE;
+    tool === 'pen' ? PEN_SIMPLIFICATION_TOLERANCE : HIGHLIGHTER_SIMPLIFICATION_TOLERANCE;
 
   let tolerance = baseTol;
   let simplified = douglasPeucker(points, tolerance);
@@ -92,29 +95,29 @@ export function simplifyStroke(
   const size = estimateEncodedSize(simplified);
   const count = simplified.length / 2;
 
-  if (size > STROKE_CONFIG.MAX_STROKE_UPDATE_BYTES || count > STROKE_CONFIG.MAX_POINTS_PER_STROKE) {
+  if (size > MAX_STROKE_UPDATE_BYTES || count > MAX_POINTS_PER_STROKE) {
     // One retry with increased tolerance
-    tolerance *= STROKE_CONFIG.SIMPLIFICATION_TOLERANCE_MULTIPLIER;
+    tolerance *= SIMPLIFICATION_TOLERANCE_MULTIPLIER;
 
     // Cap highlighter tolerance
     if (tool === 'highlighter') {
-      tolerance = Math.min(tolerance, baseTol * STROKE_CONFIG.HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER);
+      tolerance = Math.min(tolerance, baseTol * HIGHLIGHTER_TOLERANCE_MAX_MULTIPLIER);
     }
 
     simplified = douglasPeucker(points, tolerance);
     retries = 1;
 
     // Still too big? Hard downsample
-    if (simplified.length / 2 > STROKE_CONFIG.MAX_POINTS_PER_STROKE) {
-      simplified = hardDownsample(simplified, STROKE_CONFIG.MAX_POINTS_PER_STROKE);
+    if (simplified.length / 2 > MAX_POINTS_PER_STROKE) {
+      simplified = hardDownsample(simplified, MAX_POINTS_PER_STROKE);
     }
 
     // CRITICAL: Re-check 128KB budget after downsample
     const finalSize = estimateEncodedSize(simplified);
-    if (finalSize > STROKE_CONFIG.MAX_STROKE_UPDATE_BYTES) {
+    if (finalSize > MAX_STROKE_UPDATE_BYTES) {
       // Still exceeds budget even after downsample - stroke is too complex
       console.error(
-        `Stroke still too large after downsample: ${finalSize} bytes (max: ${STROKE_CONFIG.MAX_STROKE_UPDATE_BYTES})`,
+        `Stroke still too large after downsample: ${finalSize} bytes (max: ${MAX_STROKE_UPDATE_BYTES})`,
       );
       return { points: [], simplified: false, retries }; // Return empty to signal rejection
     }

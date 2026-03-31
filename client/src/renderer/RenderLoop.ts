@@ -1,9 +1,10 @@
-import { drawBackground, drawObjects } from './layers';
+import { drawObjects } from './layers';
 import { FRAME_CONFIG } from './types';
 import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import type { WorldBounds, ViewTransform } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
+import type { ViewTransform } from '@/types/snapshot';
 import { manageImageViewport } from '@/lib/image/image-manager';
 
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
@@ -317,7 +318,6 @@ export class RenderLoop {
       clipWorldRects,
     };
 
-    drawBackground(ctx, snapshot, view, viewport);
     drawObjects(ctx, snapshot, view, viewport);
 
     if (clipWorldRects) ctx.restore();

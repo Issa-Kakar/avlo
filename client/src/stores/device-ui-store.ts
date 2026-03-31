@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
-import type { FontFamily, TextAlignV } from '@avlo/shared';
+import type { FontFamily, TextAlignV } from '@/lib/object-accessors';
 import type { ConnectorCap, ConnectorType } from '@/lib/connectors';
 
 export type Tool =
@@ -30,7 +30,7 @@ export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36
 export type TextAlign = 'left' | 'center' | 'right';
 
 // Font family options
-export type { FontFamily } from '@avlo/shared';
+export type { FontFamily } from '@/lib/object-accessors';
 export const TEXT_FONT_FAMILIES: readonly FontFamily[] = [
   'Grandstander',
   'Inter',

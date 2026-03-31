@@ -18,21 +18,17 @@
  * No tracking maps — everything derived at query time from snapshot.
  */
 
-import type { WorldBounds, FrameTuple } from '@avlo/shared';
-import {
-  getAssetId,
-  getFrame,
-  getNaturalDimensions,
-  bboxToBounds,
-  frameTupleIntersectsBounds,
-} from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@/types/geometry';
+import { frameTupleIntersectsBounds } from '@/types/geometry';
+import { getAssetId, getFrame, getNaturalDimensions } from '@/lib/object-accessors';
+import { bboxToBounds } from '@/lib/geometry/bbox';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorld } from '@/canvas/invalidation-helpers';
 import { hasActiveRoom, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type * as Y from 'yjs';
-import type { ObjectKind } from '@avlo/shared';
+import type { ObjectKind } from '@/types/objects';
 import { handleUnfurlResult, handleUnfurlFailed } from '@/lib/bookmark/bookmark-unfurl';
 import { repositionAllPlaceholders } from '@/lib/bookmark/bookmark-placeholder';
 

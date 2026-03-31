@@ -12,7 +12,9 @@
  * @module canvas/room-runtime
  */
 
-import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
+import type { RoomId } from '@avlo/shared';
+import type { Snapshot } from '@/types/snapshot';
+import type { PresenceView } from '@/types/awareness';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
 
 interface RoomContext {

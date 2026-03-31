@@ -15,8 +15,9 @@
  * @module canvas/SurfaceManager
  */
 
-import { PERFORMANCE_CONFIG } from '@avlo/shared';
 import { useCameraStore, setCanvasElement } from '@/stores/camera-store';
+
+const MAX_CANVAS_DIMENSION = 16384;
 import { applyCursor } from '@/stores/device-ui-store';
 
 // ============================================
@@ -168,7 +169,7 @@ export class SurfaceManager {
    * Computes effective DPR when dimensions are clamped.
    */
   private updateCanvasSize(cssWidth: number, cssHeight: number, dpr: number): void {
-    const maxDim = PERFORMANCE_CONFIG.MAX_CANVAS_DIMENSION;
+    const maxDim = MAX_CANVAS_DIMENSION;
 
     // Round CSS dims to integers — eliminates sub-pixel jitter from flexbox/percentage layout
     const roundedCssW = Math.round(cssWidth);

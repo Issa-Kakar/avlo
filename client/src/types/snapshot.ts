@@ -3,7 +3,12 @@ import { ObjectHandle, DirtyPatch } from './objects';
 // Forward declare the ObjectSpatialIndex interface
 export interface ObjectSpatialIndex {
   insert(id: string, bbox: [number, number, number, number], kind: string): void;
-  update(id: string, oldBBox: [number, number, number, number], newBBox: [number, number, number, number], kind: string): void;
+  update(
+    id: string,
+    oldBBox: [number, number, number, number],
+    newBBox: [number, number, number, number],
+    kind: string,
+  ): void;
   remove(id: string, bbox: [number, number, number, number]): void;
   query(bounds: { minX: number; minY: number; maxX: number; maxY: number }): any[];
   bulkLoad(handles: ObjectHandle[]): void;
@@ -14,7 +19,7 @@ export interface ObjectSpatialIndex {
 // This is the event-driven snapshot type - published immediately on Y.Doc changes
 export interface Snapshot {
   docVersion: number;
-  objectsById: ReadonlyMap<string, ObjectHandle>;  // Live references
+  objectsById: ReadonlyMap<string, ObjectHandle>; // Live references
   spatialIndex: ObjectSpatialIndex | null;
   createdAt: number;
   dirtyPatch?: DirtyPatch | null;

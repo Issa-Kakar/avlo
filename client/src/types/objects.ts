@@ -1,17 +1,6 @@
 import type * as Y from 'yjs';
 import type { BBoxTuple, WorldBounds } from './geometry';
 
-// Re-export geometry types for convenience
-export type { BBoxTuple, FrameTuple, WorldBounds, Frame } from './geometry';
-export {
-  tupleToFrame,
-  frameToTuple,
-  frameToWorldBounds,
-  bboxTupleToWorldBounds,
-  worldBoundsToBBoxTuple,
-  worldBoundsToFrame,
-} from './geometry';
-
 // Object types - STRICT SEMANTIC SEPARATION
 // stroke = pen/highlighter (ALWAYS Perfect Freehand polygon)
 // shape = geometric shapes (ALWAYS polyline: rect/ellipse/line)

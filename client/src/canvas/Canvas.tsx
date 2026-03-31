@@ -85,6 +85,7 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
             width: '100%',
             height: '100%',
             touchAction: 'none',
+            backgroundColor: '#f8f9fa',
           }}
         />
         <canvas

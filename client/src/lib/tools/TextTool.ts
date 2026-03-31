@@ -45,9 +45,8 @@ import {
   getLabelColor,
   hasLabel,
   getNoteProps,
-  type TextAlign,
-  type TextAlignV,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
+import type { TextAlign, TextAlignV, FontFamily } from '@/lib/object-accessors';
 import {
   FONT_FAMILIES,
   getBaselineToTopRatio,
@@ -293,7 +292,7 @@ export class TextTool implements PointerTool {
     // Read shared properties
     let fragment: Y.XmlFragment | null;
     let fontSize: number;
-    let fontFamily: import('@avlo/shared').FontFamily;
+    let fontFamily: FontFamily;
 
     if (isLabel) {
       fragment = getContent(handle.y);

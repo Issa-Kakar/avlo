@@ -6,7 +6,7 @@
  * RunSpans: flat Uint16Array of [offset, length, styleIndex] triples per source line.
  */
 
-import type { CodeLanguage } from '@avlo/shared';
+import type { CodeLanguage } from '@/lib/object-accessors';
 
 // ============================================================================
 // STYLE ENUM — 13 styles, fits in a byte

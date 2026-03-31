@@ -10,11 +10,8 @@ import {
   getHeaderVisible,
   getOutputVisible,
   hasLabel,
-  type TextAlign,
-  type TextAlignV,
-  type FontFamily,
-  type CodeLanguage,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
+import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/lib/object-accessors';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
   useDeviceUIStore,
@@ -71,7 +68,8 @@ export function setSelectedFillColor(fillColor: string | null): void {
   getActiveRoomDoc().mutate(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note')) continue;
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note'))
+        continue;
       if (fillColor === null) handle.y.delete('fillColor');
       else handle.y.set('fillColor', fillColor);
     }
@@ -276,7 +274,11 @@ export function setSelectedFontFamily(family: FontFamily): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
+      if (
+        handle.kind === 'text' ||
+        handle.kind === 'note' ||
+        (handle.kind === 'shape' && hasLabel(handle.y))
+      ) {
         handle.y.set('fontFamily', family);
       }
     }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useCameraStore, selectScale } from '@/stores/camera-store';
-import { PERFORMANCE_CONFIG } from '@avlo/shared';
+import { MIN_ZOOM, MAX_ZOOM } from '@/canvas/constants';
 import { zoomIn, zoomOut, zoomTo, animateToFit } from '@/canvas/animation';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import { IconZoomPlus, IconZoomMinus, IconZoomToFit, IconHelp, IconMouseSettings } from './icons';
@@ -62,7 +62,7 @@ export function ZoomControls() {
       <button
         className="zoom-bar-btn"
         onClick={zoomOut}
-        disabled={scale <= PERFORMANCE_CONFIG.MIN_ZOOM}
+        disabled={scale <= MIN_ZOOM}
         title="Zoom out"
       >
         <IconZoomMinus />
@@ -79,7 +79,7 @@ export function ZoomControls() {
       <button
         className="zoom-bar-btn"
         onClick={zoomIn}
-        disabled={scale >= PERFORMANCE_CONFIG.MAX_ZOOM}
+        disabled={scale >= MAX_ZOOM}
         title="Zoom in"
       >
         <IconZoomPlus />

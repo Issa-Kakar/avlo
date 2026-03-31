@@ -7,7 +7,7 @@
 
 import * as Y from 'yjs';
 import { ulid } from 'ulid';
-import type { FrameTuple } from '@avlo/shared';
+import type { FrameTuple } from '@/types/geometry';
 import { extractDomain } from '@avlo/shared';
 import { hasActiveRoom, getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { pasteUrlAsText } from '@/lib/clipboard/clipboard-actions';

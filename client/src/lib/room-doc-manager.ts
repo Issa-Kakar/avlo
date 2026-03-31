@@ -6,13 +6,21 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
-import { createEmptySnapshot, AWARENESS_CONFIG } from '@avlo/shared';
+import { createEmptySnapshot } from '@/types/snapshot';
+
+const AWARENESS_HZ_BASE = 15;
+const AWARENESS_HZ_DEGRADED = 8;
+const WS_BUFFER_HIGH = 64 * 1024;
+const WS_BUFFER_CRITICAL = 256 * 1024;
 import { UserProfile } from './user-identity';
 import { userProfileManager } from './user-profile-manager';
-import type { RoomId, Snapshot, PresenceView } from '@avlo/shared';
-import { ObjectSpatialIndex } from '@avlo/shared';
-import type { ObjectHandle, ObjectKind, DirtyPatch, WorldBounds } from '@avlo/shared';
-import { computeBBoxFor, bboxEquals, bboxToBounds } from '@avlo/shared';
+import type { RoomId } from '@avlo/shared';
+import type { Snapshot } from '@/types/snapshot';
+import type { PresenceView } from '@/types/awareness';
+import { ObjectSpatialIndex } from '@/lib/spatial';
+import type { ObjectHandle, ObjectKind, DirtyPatch } from '@/types/objects';
+import type { WorldBounds } from '@/types/geometry';
+import { computeBBoxFor, bboxEquals, bboxToBounds } from '@/lib/geometry/bbox';
 import {
   initConnectorLookup,
   hydrateConnectorLookup,
@@ -22,12 +30,12 @@ import {
   processConnectorDeleted,
   processShapeDeleted,
 } from './connectors';
-import { getTextProps } from '@avlo/shared';
+import { getTextProps } from '@/lib/object-accessors';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache, computeTextBBox, computeNoteBBox } from './text/text-system';
-import { getNoteProps } from '@avlo/shared';
+import { getNoteProps } from '@/lib/object-accessors';
 import { codeSystem, computeCodeBBox } from './code/code-system';
-import { getCodeProps } from '@avlo/shared';
+import { getCodeProps } from '@/lib/object-accessors';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
 import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
@@ -137,7 +145,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private awarenessSeq = 0;
   private awarenessSendTimer: number | null = null;
   private awarenessSkipCount = 0;
-  private awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS;
+  private awarenessSendRate = AWARENESS_HZ_BASE;
   private lastSentAwareness: {
     cursor?: { x: number; y: number };
     name: string;
@@ -434,17 +442,17 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const ws: WebSocket | undefined = (this.websocketProvider as any)?.ws;
       if (ws && ws.readyState === WebSocket.OPEN) {
         const bufferedAmount = ws.bufferedAmount ?? 0;
-        if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_HIGH_BYTES) {
+        if (bufferedAmount > WS_BUFFER_HIGH) {
           shouldSkipDueToBackpressure = true;
           this.awarenessSkipCount++;
 
           // If critical, degrade send rate
-          if (bufferedAmount > AWARENESS_CONFIG.WEBSOCKET_BUFFER_CRITICAL_BYTES) {
-            this.awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_DEGRADED;
+          if (bufferedAmount > WS_BUFFER_CRITICAL) {
+            this.awarenessSendRate = AWARENESS_HZ_DEGRADED;
           }
-        } else if (this.awarenessSendRate < AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS) {
+        } else if (this.awarenessSendRate < AWARENESS_HZ_BASE) {
           // Buffer recovered, restore rate
-          this.awarenessSendRate = AWARENESS_CONFIG.AWARENESS_HZ_BASE_WS;
+          this.awarenessSendRate = AWARENESS_HZ_BASE;
         }
       }
       // If ws is missing or not OPEN, do NOT treat as fatal - proceed to send
@@ -828,7 +836,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
-
     // Process deletions
     for (const id of deletedIds) {
       const handle = this.objectsById.get(id);
@@ -978,7 +985,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   private hydrateObjectsFromY(): void {
-
     // Reset everything EXCEPT spatial index (already created in buildSnapshot)
     this.objectsById.clear();
     if (this.spatialIndex) {

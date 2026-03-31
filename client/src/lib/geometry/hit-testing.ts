@@ -9,8 +9,10 @@
  * and object-aware dispatch that reads from ObjectHandle.
  */
 
-import type { WorldBounds, FrameTuple, ObjectHandle, Snapshot, ObjectKind } from '@avlo/shared';
-import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@/types/geometry';
+import type { ObjectHandle, ObjectKind } from '@/types/objects';
+import type { Snapshot } from '@/types/snapshot';
+import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { getEndpointEdgePosition } from '@/lib/connectors/connector-utils';

@@ -27,7 +27,7 @@ import { getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
 import { animateToFit } from '@/canvas/animation/ZoomAnimator';
 import { deleteSelected } from '@/lib/utils/selection-actions';
 import { userProfileManager } from '@/lib/user-profile-manager';
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
 import { normalizeUrl } from '@avlo/shared';
 import {
   serializeObjects,

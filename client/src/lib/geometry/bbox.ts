@@ -1,12 +1,7 @@
 import type * as Y from 'yjs';
-import type { ObjectKind, WorldBounds } from '../types/objects';
-import {
-  getPoints,
-  getFrame,
-  getWidth,
-  getStartCap,
-  getEndCap,
-} from '../accessors/object-accessors';
+import type { ObjectKind } from '@/types/objects';
+import type { WorldBounds } from '@/types/geometry';
+import { getPoints, getFrame, getWidth, getStartCap, getEndCap } from '@/lib/object-accessors';
 
 export function computeBBoxFor(
   kind: ObjectKind,

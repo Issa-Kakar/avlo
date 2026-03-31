@@ -13,7 +13,7 @@
  * @module canvas/internal/transforms
  */
 
-import { PERFORMANCE_CONFIG } from '@avlo/shared';
+import { MIN_ZOOM, MAX_ZOOM } from '@/canvas/constants';
 
 export interface Point {
   x: number;
@@ -127,7 +127,7 @@ export function getVisibleWorldBounds(
  * Clamp a scale value to config limits
  */
 export function clampScale(scale: number): number {
-  return Math.max(PERFORMANCE_CONFIG.MIN_ZOOM, Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale));
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
 }
 
 /**
@@ -164,8 +164,7 @@ export function calculateZoomTransform(
 
 export function boundsIntersect(
   a: { minX: number; minY: number; maxX: number; maxY: number },
-  b: { minX: number; minY: number; maxX: number; maxY: number }
+  b: { minX: number; minY: number; maxX: number; maxY: number },
 ): boolean {
-  return !(a.maxX < b.minX || a.minX > b.maxX ||
-           a.maxY < b.minY || a.minY > b.maxY);
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 }

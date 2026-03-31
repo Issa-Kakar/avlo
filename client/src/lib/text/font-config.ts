@@ -5,7 +5,7 @@
  * Record key IS the CSS font-family name — zero indirection.
  */
 
-import type { FontFamily } from '@avlo/shared';
+import type { FontFamily } from '@/lib/object-accessors';
 
 export const FONT_WEIGHTS = { normal: 450, bold: 700 } as const;
 

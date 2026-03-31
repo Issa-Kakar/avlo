@@ -15,8 +15,8 @@
 
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import { PERFORMANCE_CONFIG } from '@avlo/shared';
-import type { ViewTransform } from '@avlo/shared';
+import { MIN_ZOOM, MAX_ZOOM, MAX_PAN_DISTANCE } from '@/canvas/constants';
+import type { ViewTransform } from '@/types/snapshot';
 
 // ============================================
 // TYPES
@@ -146,16 +146,13 @@ export const useCameraStore = create<CameraStore>()(
 
     // Actions (all with equality guards to skip no-op updates)
     setScale: (scale: number) => {
-      const clamped = Math.max(
-        PERFORMANCE_CONFIG.MIN_ZOOM,
-        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale),
-      );
+      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
       if (clamped === get().scale) return;
       set({ scale: clamped });
     },
 
     setPan: (pan: { x: number; y: number }) => {
-      const max = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
+      const max = MAX_PAN_DISTANCE;
       const cx = Math.max(-max, Math.min(max, pan.x));
       const cy = Math.max(-max, Math.min(max, pan.y));
       const curr = get().pan;
@@ -164,11 +161,8 @@ export const useCameraStore = create<CameraStore>()(
     },
 
     setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
-      const clamped = Math.max(
-        PERFORMANCE_CONFIG.MIN_ZOOM,
-        Math.min(PERFORMANCE_CONFIG.MAX_ZOOM, scale),
-      );
-      const max = PERFORMANCE_CONFIG.MAX_PAN_DISTANCE;
+      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+      const max = MAX_PAN_DISTANCE;
       const cx = Math.max(-max, Math.min(max, pan.x));
       const cy = Math.max(-max, Math.min(max, pan.y));
       const state = get();

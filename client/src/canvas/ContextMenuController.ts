@@ -3,7 +3,7 @@ import type { VirtualElement } from '@floating-ui/dom';
 import { useSelectionStore } from '@/stores/selection-store';
 import { computeSelectionBounds } from '@/lib/utils/selection-utils';
 import { worldToClient } from '@/stores/camera-store';
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
 
 const SETTLE_MS = 150;
 

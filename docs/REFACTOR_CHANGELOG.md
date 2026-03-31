@@ -4,6 +4,87 @@ Incremental cleanup and architectural improvements. Architectural direction trac
 
 ---
 
+## Phase 4: Clean Up `packages/shared`
+
+Gutted `packages/shared` from 19 files to 5. Types, accessors, spatial index, and bbox utils moved to client — shared now only exports identifiers + 3 utility modules used by the worker.
+
+### Dead code deleted
+
+- `types/room.ts` — legacy `Stroke`, `TextBlock`, `CodeCell`, `Meta`
+- `types/commands.ts` — legacy command pattern
+- `types/validation.ts` — validators for dead command types
+- `test-utils/generators.ts` — never imported
+- `__tests__/config.test.ts` — tests for dead config
+
+### Grid system deleted
+
+- `renderer/layers/index.ts`: removed `drawBackground()`, `drawDotLayer()`, `lerp()`, `invLerp()`, `gridAlpha()` (~146 lines)
+- `renderer/RenderLoop.ts`: removed `drawBackground` call — CSS `backgroundColor: '#f8f9fa'` on base canvas handles fill
+- `CANVAS_STYLE_CONFIG` no longer exists
+
+### `config.ts` deleted (422 lines), constants inlined
+
+| Constant                                   | New location                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------------- |
+| `MIN_ZOOM`, `MAX_ZOOM`, `MAX_PAN_DISTANCE` | `canvas/constants.ts` (new, shared by camera-store, transforms, ZoomControls) |
+| `MAX_CANVAS_DIMENSION`                     | `canvas/SurfaceManager.ts` (sole consumer)                                    |
+| 6 stroke simplification constants          | `lib/tools/simplification.ts` (sole consumer)                                 |
+| 4 awareness constants                      | `lib/room-doc-manager.ts` (sole consumer)                                     |
+
+All other config objects (`WEBRTC_CONFIG`, `BACKOFF_CONFIG`, `RATE_LIMIT_CONFIG`, `QUEUE_CONFIG`, `OFFLINE_THRESHOLD_CONFIG`, `PWA_CONFIG`, `TEXT_CONFIG`, `DEBUG_CONFIG`) were unused — deleted outright.
+
+### Types moved to `client/src/types/`
+
+| File           | Notes                                                               |
+| -------------- | ------------------------------------------------------------------- |
+| `geometry.ts`  | Standalone, no changes                                              |
+| `objects.ts`   | Removed re-exports of geometry (consumers import geometry directly) |
+| `snapshot.ts`  | `Snapshot`, `ViewTransform`, `createEmptySnapshot`                  |
+| `awareness.ts` | Changed `./identifiers` import → `@avlo/shared`                     |
+
+### Library files moved to client
+
+| From (shared)                     | To (client)                           | Import changes                                            |
+| --------------------------------- | ------------------------------------- | --------------------------------------------------------- |
+| `accessors/object-accessors.ts`   | `lib/object-accessors.ts`             | geometry import → `@/types/geometry`                      |
+| `utils/bbox.ts`                   | `lib/geometry/bbox.ts`                | types → `@/types/*`, accessors → `@/lib/object-accessors` |
+| `spatial/object-spatial-index.ts` | `lib/spatial/object-spatial-index.ts` | types → `@/types/objects`                                 |
+
+`rbush` + `@types/rbush` added to client `package.json`.
+
+### ~47 client files rewritten
+
+All `@avlo/shared` imports split to new local paths:
+
+| New import               | Symbols                                                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `@/types/geometry`       | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame`, converters                                                                   |
+| `@/types/objects`        | `ObjectKind`, `ObjectHandle`, `IndexEntry`, `DirtyPatch`                                                                        |
+| `@/types/snapshot`       | `Snapshot`, `ViewTransform`, `createEmptySnapshot`                                                                              |
+| `@/types/awareness`      | `Awareness`, `PresenceView`                                                                                                     |
+| `@/lib/object-accessors` | All 40+ accessors + types (`Dir`, `StoredAnchor`, `TextAlign`, `FontFamily`, `CodeLanguage`, etc.)                              |
+| `@/lib/geometry/bbox`    | `computeBBoxFor`, `computeConnectorBBoxFromPoints`, `bboxEquals`, `bboxToBounds`                                                |
+| `@/lib/spatial`          | `ObjectSpatialIndex`                                                                                                            |
+| `@avlo/shared` (kept)    | `RoomId`, `UserId`, `ulid`, `normalizeUrl`, `extractDomain`, `isValidHttpUrl`, `validateImage`, `isSvg`, `parseImageDimensions` |
+
+Re-export files updated: `lib/connectors/types.ts`, `lib/text/text-system.ts`, `stores/device-ui-store.ts`.
+
+### Shared package final state (5 files)
+
+```
+types/identifiers.ts       # RoomId, UserId, StrokeId, TextId
+utils/ulid.ts              # ulid()
+utils/url-utils.ts         # normalizeUrl, extractDomain, isValidHttpUrl
+utils/image-validation.ts  # validateImage, isSvg, parseImageDimensions
+index.ts                   # barrel
+```
+
+`package.json` deps trimmed: removed `rbush`, `@types/rbush`, `zod`. Kept `ulid`.
+
+Files importing `@avlo/shared`: ~12 (down from ~59).
+
+---
+
 ## Phase 3: Flatten Y.Doc — Top-Level Objects Map
 
 Eliminated the triple-nested `ydoc.getMap('root').get('objects')` pattern. Objects map is now top-level via `ydoc.getMap('objects')` — a Yjs guarantee that always exists, never needs seeding.
@@ -51,22 +132,22 @@ Added `getObjects()` convenience getter (re-exports `getActiveRoomDoc().objects`
 
 ### Files changed
 
-| File | Action | Delta |
-|------|--------|-------|
-| `lib/room-doc-manager.ts` | Rewritten (core) | −110 |
-| `canvas/room-runtime.ts` | Added getter | +12 |
-| `lib/tools/DrawingTool.ts` | Callsites | −9 |
-| `lib/tools/SelectTool.ts` | Callsites + removed Y import | −15 |
-| `lib/tools/TextTool.ts` | Callsites | −7 |
-| `lib/tools/ConnectorTool.ts` | Callsites | −4 |
-| `lib/tools/EraserTool.ts` | Callsites + removed Y import | −5 |
-| `lib/tools/CodeTool.ts` | Callsites | −2 |
-| `lib/clipboard/clipboard-actions.ts` | Callsites | −6 |
-| `lib/bookmark/bookmark-unfurl.ts` | Callsites | −4 |
-| `lib/image/image-actions.ts` | Callsites | −3 |
-| `lib/utils/selection-actions.ts` | Callsites | −3 |
-| `lib/__tests__/phase6-teardown.test.ts` | Updated to new API | ±0 |
-| `CLAUDE.md` | Updated Y.Doc structure + mutate docs | ±0 |
+| File                                    | Action                                | Delta |
+| --------------------------------------- | ------------------------------------- | ----- |
+| `lib/room-doc-manager.ts`               | Rewritten (core)                      | −110  |
+| `canvas/room-runtime.ts`                | Added getter                          | +12   |
+| `lib/tools/DrawingTool.ts`              | Callsites                             | −9    |
+| `lib/tools/SelectTool.ts`               | Callsites + removed Y import          | −15   |
+| `lib/tools/TextTool.ts`                 | Callsites                             | −7    |
+| `lib/tools/ConnectorTool.ts`            | Callsites                             | −4    |
+| `lib/tools/EraserTool.ts`               | Callsites + removed Y import          | −5    |
+| `lib/tools/CodeTool.ts`                 | Callsites                             | −2    |
+| `lib/clipboard/clipboard-actions.ts`    | Callsites                             | −6    |
+| `lib/bookmark/bookmark-unfurl.ts`       | Callsites                             | −4    |
+| `lib/image/image-actions.ts`            | Callsites                             | −3    |
+| `lib/utils/selection-actions.ts`        | Callsites                             | −3    |
+| `lib/__tests__/phase6-teardown.test.ts` | Updated to new API                    | ±0    |
+| `CLAUDE.md`                             | Updated Y.Doc structure + mutate docs | ±0    |
 
 **Net: −126 lines**
 

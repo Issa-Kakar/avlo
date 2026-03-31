@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PERFORMANCE_CONFIG } from '@avlo/shared';
+import { MIN_ZOOM, MAX_ZOOM } from '@/canvas/constants';
 import {
   transformBounds,
   isInViewport as _isInViewport,
@@ -44,8 +44,8 @@ describe('Transform utilities', () => {
 
   describe('clampScale', () => {
     it('clamps scale to config limits', () => {
-      expect(clampScale(0.05)).toBe(PERFORMANCE_CONFIG.MIN_ZOOM); // Below min
-      expect(clampScale(20)).toBe(PERFORMANCE_CONFIG.MAX_ZOOM); // Above max
+      expect(clampScale(0.005)).toBe(MIN_ZOOM); // Below min
+      expect(clampScale(20)).toBe(MAX_ZOOM); // Above max
       expect(clampScale(2)).toBe(2); // Within range
     });
   });
@@ -63,8 +63,8 @@ describe('Transform utilities', () => {
         { scale: 1, pan: { x: 0, y: 0 } },
         { scale: 2, pan: { x: 10, y: 20 } },
         { scale: 0.5, pan: { x: -100, y: -50 } },
-        { scale: PERFORMANCE_CONFIG.MIN_ZOOM, pan: { x: 500, y: 500 } },
-        { scale: PERFORMANCE_CONFIG.MAX_ZOOM, pan: { x: -200, y: 100 } },
+        { scale: MIN_ZOOM, pan: { x: 500, y: 500 } },
+        { scale: MAX_ZOOM, pan: { x: -200, y: 100 } },
       ];
 
       for (const config of configs) {

@@ -1,4 +1,4 @@
-import { UserId } from './identifiers';
+import type { UserId } from '@avlo/shared';
 
 // Ephemeral awareness data - NEVER persisted
 export interface Awareness {

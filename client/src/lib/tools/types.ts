@@ -1,6 +1,6 @@
 // Phase 5: Drawing Tool Types
 
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
 
 /**
  * WorldRect is an alias for WorldBounds from the shared package.

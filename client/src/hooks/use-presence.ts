@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { RoomId, PresenceView } from '@avlo/shared';
+import type { RoomId } from '@avlo/shared';
+import type { PresenceView } from '@/types/awareness';
 import { useRoomDoc } from './use-room-doc';
 
 /**

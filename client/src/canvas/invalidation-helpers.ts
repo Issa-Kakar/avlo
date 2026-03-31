@@ -7,7 +7,7 @@
  * @module canvas/invalidation-helpers
  */
 
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
 
 /**
  * Module-level references to render loop functions.

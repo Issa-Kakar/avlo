@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds, FrameTuple } from '@avlo/shared';
+import type { WorldBounds, FrameTuple } from '@/types/geometry';
 import type { SnapTarget } from '@/lib/connectors/types';
 import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
@@ -12,8 +12,8 @@ import {
   getEnd,
   getStartAnchor,
   getEndAnchor,
-  bboxTupleToWorldBounds,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
+import { bboxTupleToWorldBounds } from '@/types/geometry';
 import { getTextFrame, type TextLayout } from '@/lib/text/text-system';
 import { getCodeFrame, type CodeLayout } from '@/lib/code/code-system';
 import {

@@ -19,8 +19,16 @@ import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helper
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getCodeProps, getLineNumbers, getLanguage, getHeaderVisible, getOutputVisible, getCodeOutput, CODE_EXTENSIONS } from '@avlo/shared';
-import type { CodeLanguage } from '@avlo/shared';
+import {
+  getCodeProps,
+  getLineNumbers,
+  getLanguage,
+  getHeaderVisible,
+  getOutputVisible,
+  getCodeOutput,
+  CODE_EXTENSIONS,
+} from '@/lib/object-accessors';
+import type { CodeLanguage } from '@/lib/object-accessors';
 import {
   getDefaultWidth,
   padTop,
@@ -34,7 +42,14 @@ import {
   chromeFontSize,
   headerBarHeight,
 } from '@/lib/code/code-system';
-import { CODE_FONT_FAMILY, MAX_TITLE_LENGTH, MAX_OUTPUT_CANVAS_LINES, OUTPUT_LINE_H_MULT, OUTPUT_PAD_BOTTOM_RATIO, OUTPUT_LABEL_H_RATIO } from '@/lib/code/code-tokens';
+import {
+  CODE_FONT_FAMILY,
+  MAX_TITLE_LENGTH,
+  MAX_OUTPUT_CANVAS_LINES,
+  OUTPUT_LINE_H_MULT,
+  OUTPUT_PAD_BOTTOM_RATIO,
+  OUTPUT_LABEL_H_RATIO,
+} from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -400,8 +415,8 @@ export class CodeTool implements PointerTool {
     // Focus routing: title input if click landed in header region, else CM
     const entryWorld = this.pendingEntryWorld;
     this.pendingEntryWorld = null;
-    const clickedHeader = entryWorld && props.headerVisible
-      && entryWorld[1] < origin[1] + headerBarHeight(fontSize);
+    const clickedHeader =
+      entryWorld && props.headerVisible && entryWorld[1] < origin[1] + headerBarHeight(fontSize);
 
     if (clickedHeader && this.titleInput) {
       this.titleInput.focus();
@@ -410,7 +425,11 @@ export class CodeTool implements PointerTool {
       view.focus();
       requestAnimationFrame(() => {
         if (!this.editorView) return;
-        const v = this.editorView as { posAtCoords(coords: { x: number; y: number }): number | null; dispatch(spec: unknown): void; focus(): void };
+        const v = this.editorView as {
+          posAtCoords(coords: { x: number; y: number }): number | null;
+          dispatch(spec: unknown): void;
+          focus(): void;
+        };
         const pos = v.posAtCoords({ x: cx, y: cy });
         if (pos != null) {
           v.dispatch({ selection: { anchor: pos } });
@@ -582,7 +601,8 @@ export class CodeTool implements PointerTool {
       // Update separator margins
       const sep = this.outputDiv.firstElementChild;
       if (sep && (sep as HTMLElement).style.height === '1px') {
-        (sep as HTMLElement).style.margin = `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
+        (sep as HTMLElement).style.margin =
+          `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
       }
       // Update label height
       const label = this.outputDiv.querySelector('.code-output-label') as HTMLElement | null;
@@ -711,7 +731,12 @@ export class CodeTool implements PointerTool {
   // Private: Header / Output DOM Helpers
   // =========================================================================
 
-  private createHeaderDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
+  private createHeaderDiv(
+    container: HTMLDivElement,
+    y: Y.Map<unknown>,
+    fs: number,
+    scale: number,
+  ): void {
     const hh = headerBarHeight(fs) * scale;
     const cfs = chromeFontSize(fs) * scale;
     const lang = getLanguage(y) as CodeLanguage;
@@ -754,7 +779,12 @@ export class CodeTool implements PointerTool {
     this.titleInput = input;
   }
 
-  private createOutputDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
+  private createOutputDiv(
+    container: HTMLDivElement,
+    y: Y.Map<unknown>,
+    fs: number,
+    scale: number,
+  ): void {
     const cfs = chromeFontSize(fs) * scale;
     const outputLH = cfs * OUTPUT_LINE_H_MULT;
     const maxH = MAX_OUTPUT_CANVAS_LINES * outputLH;
@@ -804,10 +834,14 @@ export class CodeTool implements PointerTool {
     if (trimmed === '') {
       // Deliberate clear — store empty string (distinct from undefined = show fallback)
       if (raw !== '') {
-        getActiveRoomDoc().mutate(() => { handle.y.set('title', ''); });
+        getActiveRoomDoc().mutate(() => {
+          handle.y.set('title', '');
+        });
       }
     } else if (trimmed !== raw) {
-      getActiveRoomDoc().mutate(() => { handle.y.set('title', trimmed); });
+      getActiveRoomDoc().mutate(() => {
+        handle.y.set('title', trimmed);
+      });
     }
   }
 
@@ -816,7 +850,9 @@ export class CodeTool implements PointerTool {
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
     const current = getHeaderVisible(handle.y);
-    getActiveRoomDoc().mutate(() => { handle.y.set('headerVisible', !current); });
+    getActiveRoomDoc().mutate(() => {
+      handle.y.set('headerVisible', !current);
+    });
   }
 
   toggleOutput(): void {
@@ -824,7 +860,9 @@ export class CodeTool implements PointerTool {
     const handle = getCurrentSnapshot().objectsById.get(this.objectId);
     if (!handle) return;
     const current = getOutputVisible(handle.y);
-    getActiveRoomDoc().mutate(() => { handle.y.set('outputVisible', !current); });
+    getActiveRoomDoc().mutate(() => {
+      handle.y.set('outputVisible', !current);
+    });
   }
 
   private updateHeaderVisibility(y: Y.Map<unknown>): void {

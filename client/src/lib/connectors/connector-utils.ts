@@ -11,8 +11,10 @@
  * @module lib/connectors/connector-utils
  */
 
-import type { FrameTuple, ObjectHandle, Snapshot } from '@avlo/shared';
-import { getStart, getEnd, getStartAnchor, getEndAnchor, getFrame } from '@avlo/shared';
+import type { FrameTuple } from '@/types/geometry';
+import type { ObjectHandle } from '@/types/objects';
+import type { Snapshot } from '@/types/snapshot';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getFrame } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import type { Dir, AABB, Bounds } from './types';

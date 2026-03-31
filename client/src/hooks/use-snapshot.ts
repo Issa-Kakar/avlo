@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { RoomId, Snapshot } from '@avlo/shared';
+import type { RoomId } from '@avlo/shared';
+import type { Snapshot } from '@/types/snapshot';
 import { useRoomDoc } from './use-room-doc';
 
 /**

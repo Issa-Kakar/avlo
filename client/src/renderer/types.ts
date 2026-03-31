@@ -1,4 +1,4 @@
-import type { WorldBounds } from '@avlo/shared';
+import type { WorldBounds } from '@/types/geometry';
 
 // Viewport information
 export interface ViewportInfo {

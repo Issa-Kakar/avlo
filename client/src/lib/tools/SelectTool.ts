@@ -48,7 +48,9 @@ import {
   type HitCandidate,
   type EndpointHit,
 } from '@/lib/geometry/hit-testing';
-import type { ObjectHandle, WorldBounds } from '@avlo/shared';
+import type { ObjectHandle } from '@/types/objects';
+import type { WorldBounds } from '@/types/geometry';
+import { bboxTupleToWorldBounds } from '@/types/geometry';
 import {
   getFrame,
   getPoints,
@@ -60,8 +62,7 @@ import {
   getCodeProps,
   getNoteProps,
   getConnectorType,
-  bboxTupleToWorldBounds,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { isShiftPointer, isCtrlOrMetaPointer } from '@/canvas/cursor-tracking';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';

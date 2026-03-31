@@ -13,6 +13,7 @@
  */
 
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import type { FrameTuple, WorldBounds } from '@/types/geometry';
 import {
   getStart,
   getEnd,
@@ -20,12 +21,9 @@ import {
   getEndAnchor,
   getWidth,
   getFrame,
-  computeConnectorBBoxFromPoints,
-  bboxToBounds,
   type StoredAnchor,
-  type FrameTuple,
-  type WorldBounds,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
+import { computeConnectorBBoxFromPoints, bboxToBounds } from '@/lib/geometry/bbox';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { computeAStarRoute } from './routing-astar';
@@ -37,7 +35,7 @@ import {
 } from './connector-utils';
 import type { Dir, AABB, SnapTarget, ConnectorType } from './types';
 import { isAnchorInterior } from './types';
-import { getConnectorType, getShapeType } from '@avlo/shared';
+import { getConnectorType, getShapeType } from '@/lib/object-accessors';
 import { EDGE_CLEARANCE_W } from './constants';
 
 /**

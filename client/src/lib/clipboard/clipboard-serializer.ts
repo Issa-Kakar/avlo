@@ -8,7 +8,8 @@
  */
 
 import * as Y from 'yjs';
-import type { ObjectKind, WorldBounds, ObjectHandle } from '@avlo/shared';
+import type { ObjectKind, ObjectHandle } from '@/types/objects';
+import type { WorldBounds } from '@/types/geometry';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 
 // === Types ===

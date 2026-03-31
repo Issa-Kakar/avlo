@@ -21,7 +21,7 @@ import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
-import { getShapeType, getFrame } from '@avlo/shared';
+import { getShapeType, getFrame } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import {

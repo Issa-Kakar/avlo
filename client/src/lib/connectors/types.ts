@@ -8,10 +8,12 @@
  * @module lib/connectors/types
  */
 
-import type { Frame, Dir as SharedDir } from '@avlo/shared';
+import type { Frame } from '@/types/geometry';
+import type { Dir as SharedDir } from '@/lib/object-accessors';
 
-// Re-export from shared for convenience
-export type { Frame, FrameTuple, StoredAnchor } from '@avlo/shared';
+// Re-export for convenience
+export type { Frame, FrameTuple } from '@/types/geometry';
+export type { StoredAnchor } from '@/lib/object-accessors';
 
 /** Connector routing style */
 export type ConnectorType = 'elbow' | 'straight';

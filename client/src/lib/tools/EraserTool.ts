@@ -17,7 +17,7 @@ import {
   getFillColor,
   getStartAnchor,
   getEndAnchor,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import type { PointerTool } from './types';

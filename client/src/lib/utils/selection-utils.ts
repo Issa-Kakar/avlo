@@ -1,4 +1,6 @@
-import type { ObjectHandle, WorldBounds } from '@avlo/shared';
+import type { ObjectHandle } from '@/types/objects';
+import type { WorldBounds } from '@/types/geometry';
+import { bboxTupleToWorldBounds } from '@/types/geometry';
 import {
   getColor,
   getWidth,
@@ -13,12 +15,8 @@ import {
   getHeaderVisible,
   getOutputVisible,
   hasLabel,
-  bboxTupleToWorldBounds,
-  type TextAlign,
-  type TextAlignV,
-  type FontFamily,
-  type CodeLanguage,
-} from '@avlo/shared';
+} from '@/lib/object-accessors';
+import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/lib/object-accessors';
 import { getTextFrame, getInlineStyles } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
 import { expandEnvelope, frameTupleToWorldBounds } from '@/lib/geometry/bounds';
