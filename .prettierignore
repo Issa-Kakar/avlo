@@ -24,6 +24,9 @@ yarn.lock
 .git
 .husky/_
 
+# Auto-generated
+**/routeTree.gen.ts
+
 # Cache
 .cache
 .turbo
