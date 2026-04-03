@@ -1,12 +1,8 @@
 import { useMemo } from 'react';
 import { usePresence } from '@/hooks/use-presence';
 
-interface UserAvatarClusterProps {
-  roomId: string;
-}
-
-export function UserAvatarCluster({ roomId }: UserAvatarClusterProps) {
-  const presence = usePresence(roomId);
+export function UserAvatarCluster() {
+  const presence = usePresence();
 
   // Get stable array of users with proper key tracking using Map entries
   const usersWithIds = useMemo(() => {

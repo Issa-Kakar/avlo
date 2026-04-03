@@ -21,7 +21,11 @@ import { cancelZoom } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import { setWorldInvalidator, setOverlayInvalidator, setHoldPreviewFn } from './invalidation-helpers';
+import {
+  setWorldInvalidator,
+  setOverlayInvalidator,
+  setHoldPreviewFn,
+} from './invalidation-helpers';
 import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
 import {
@@ -118,6 +122,9 @@ export class CanvasRuntime {
     // 7. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
     this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
+    this.renderLoop?.invalidateAll();
+    this.overlayLoop?.invalidateAll();
+    console.log('subscribeSnapshot');
     this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
       // Doc content changed - event-driven, no presence polling
       if (snap.docVersion !== this.lastDocVersion) {

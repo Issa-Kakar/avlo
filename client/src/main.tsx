@@ -1,6 +1,6 @@
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
+import { RouterProvider } from '@tanstack/react-router';
+import { router } from './router';
 import './index.css';
 import { ensureFontsLoaded } from './lib/text/font-loader';
 import { resetFontMetrics } from './lib/text/text-system';
@@ -18,11 +18,7 @@ async function init() {
     // Continue anyway - will use fallback metrics
   }
 
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>,
-  );
+  ReactDOM.createRoot(document.getElementById('root')!).render(<RouterProvider router={router} />);
 }
 
 init();

@@ -25,12 +25,12 @@ All paths relative to `client/src/` unless noted.
 ### Canvas System
 | File | Responsibility |
 |------|----------------|
-| `canvas/Canvas.tsx` | Thin React wrapper — mounts DOM, sets room context, creates runtime |
+| `canvas/Canvas.tsx` | Thin React wrapper — mounts DOM, creates runtime |
 | `canvas/CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch, edge scroll |
 | `canvas/SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
 | `canvas/InputManager.ts` | DOM event forwarder (pointer events → canvas, wheel → container for overlay passthrough) |
 | `canvas/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
-| `canvas/room-runtime.ts` | Module-level room context for imperative access |
+| `canvas/room-runtime.ts` | Module-level room context — `connectRoom()` / `disconnectRoom()` + imperative getters |
 | `canvas/invalidation-helpers.ts` | Setter/getter pattern for render loop invalidation |
 | `canvas/ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide lifecycle |
 | `canvas/keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
@@ -126,10 +126,12 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 
 ### System Hierarchy
 ```
+Route beforeLoad           → connectRoom(roomId) → room-runtime.ts
+RoomPage cleanup effect    → disconnectRoom(roomId)
+
 Canvas.tsx (~95 lines) - THIN REACT WRAPPER
-│   Only does: mount DOM, set room context, create runtime
+│   Only does: mount DOM, create runtime
 │
-├── setActiveRoom(roomId, roomDoc)     → room-runtime.ts
 └── new CanvasRuntime().start({ container, baseCanvas, overlayCanvas, editorHost })
                 │
                 ▼
@@ -259,9 +261,9 @@ interface PointerTool {
 
 ## Room Runtime (`room-runtime.ts`)
 
-Module-level room context for imperative access. Set by `Canvas.tsx`, fail-fast (throws if no room).
+Module-level room context for imperative access. `connectRoom(roomId)` called from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-Key exports: `getActiveRoomDoc()`, `getActiveRoomId()`, `getCurrentSnapshot()`, `getCurrentPresence()`, `hasActiveRoom()`, `updatePresenceCursor()`, `clearPresenceCursor()`, `getConnectorsForShape(shapeId)`
+Key exports: `connectRoom()`, `disconnectRoom()`, `getActiveRoomDoc()`, `getActiveRoomId()`, `getCurrentSnapshot()`, `getCurrentPresence()`, `hasActiveRoom()`, `updatePresenceCursor()`, `clearPresenceCursor()`, `getConnectorsForShape(shapeId)`
 
 ---
 

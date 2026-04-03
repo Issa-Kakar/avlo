@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
@@ -23,7 +24,16 @@ const proxyConfig = {
 };
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    tanstackRouter({
+      target: 'react',
+      autoCodeSplitting: true,
+      routesDirectory: './src/routes',
+      generatedRouteTree: './src/routeTree.gen.ts',
+    }) as any,
+    react(),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -45,8 +55,7 @@ export default defineConfig({
         sw: path.resolve(__dirname, 'src/sw.ts'),
       },
       output: {
-        entryFileNames: (chunk) =>
-          chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js',
+        entryFileNames: (chunk) => (chunk.name === 'sw' ? 'sw.js' : 'assets/[name]-[hash].js'),
       },
     },
   },

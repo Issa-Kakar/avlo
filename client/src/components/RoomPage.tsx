@@ -3,7 +3,9 @@
  * fixed top toolbar at 48px with Inspector extension, and zoom controls.
  */
 
-import { useParams } from 'react-router-dom';
+import { useEffect } from 'react';
+import { getRouteApi } from '@tanstack/react-router';
+import { disconnectRoom } from '../canvas/room-runtime';
 import { ErrorBoundary } from './ErrorBoundary';
 
 // Components
@@ -17,11 +19,9 @@ import { ToastProvider, useToast } from './Toast';
 // CSS
 import './RoomPage.css';
 
-interface RoomCanvasProps {
-  roomId: string;
-}
+const route = getRouteApi('/room/$roomId');
 
-function RoomCanvas({ roomId }: RoomCanvasProps) {
+function RoomCanvas() {
   const { showToast } = useToast();
 
   const handleInvite = async () => {
@@ -44,7 +44,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           <div className="canvas-grid" />
 
           {/* Main Canvas */}
-          <Canvas roomId={roomId} className="canvas" />
+          <Canvas className="canvas" />
 
           {/* Top-left panel — logo, sidebar toggle, board name, settings */}
           <TopBar />
@@ -52,7 +52,7 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
           {/* Top-right micro cluster */}
           <div className="micro-cluster-right">
             {/* Users avatars cluster */}
-            <UserAvatarCluster roomId={roomId} />
+            <UserAvatarCluster />
 
             {/* Invite button */}
             <button className="micro micro-invite" onClick={handleInvite} title="Copy invite link">
@@ -70,32 +70,16 @@ function RoomCanvas({ roomId }: RoomCanvasProps) {
 }
 
 export default function RoomPage() {
-  const { roomId } = useParams<{ roomId: string }>();
+  const { roomId } = route.useParams();
 
-  if (!roomId) {
-    return (
-      <div className="app-container" style={{ alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ textAlign: 'center' }}>
-          <h1
-            style={{
-              fontSize: '2rem',
-              fontWeight: '600',
-              color: 'var(--text-primary)',
-              marginBottom: '1rem',
-            }}
-          >
-            Invalid Room
-          </h1>
-          <p style={{ color: 'var(--text-secondary)' }}>No room ID provided</p>
-        </div>
-      </div>
-    );
-  }
+  useEffect(() => {
+    return () => disconnectRoom(roomId);
+  }, [roomId]);
 
   return (
     <ErrorBoundary>
       <ToastProvider>
-        <RoomCanvas roomId={roomId} />
+        <RoomCanvas key={roomId} />
       </ToastProvider>
     </ErrorBoundary>
   );

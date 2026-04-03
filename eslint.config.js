@@ -15,6 +15,7 @@ export default [
       '.husky/**',
       'playwright-report/**',
       'test-results/**',
+      'client/src/routeTree.gen.ts',
     ],
   },
 

@@ -1,24 +1,21 @@
 import { useEffect, useState } from 'react';
-import type { RoomId } from '@avlo/shared';
 import type { PresenceView } from '@/types/awareness';
-import { useRoomDoc } from './use-room-doc';
+import { getActiveRoomDoc } from '@/canvas/room-runtime';
 
 /**
- * Hook to subscribe to presence updates
- * Returns the current presence view
+ * Hook to subscribe to presence updates.
+ * Returns the current presence view.
+ * Parent must remount via key={roomId} on room switch.
  */
-export function usePresence(roomId: RoomId): PresenceView {
-  const roomDoc = useRoomDoc(roomId);
-  const [presence, setPresence] = useState<PresenceView>(roomDoc.currentPresence);
+export function usePresence(): PresenceView {
+  const [presence, setPresence] = useState<PresenceView>(() => getActiveRoomDoc().currentPresence);
 
   useEffect(() => {
-    // Subscribe to presence updates
-    const unsub = roomDoc.subscribePresence((newPresence) => {
+    const unsub = getActiveRoomDoc().subscribePresence((newPresence) => {
       setPresence(newPresence);
     });
-
     return unsub;
-  }, [roomDoc]);
+  }, []);
 
   return presence;
 }

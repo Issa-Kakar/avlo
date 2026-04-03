@@ -16,16 +16,8 @@
     "dev:p:client": "VITE_PORT=3001 WORKER_PORT=8788 npm run dev -w client",
     "dev:old": "npm run dev -w client",
     "build": "npm run build -w client",
+    "preview": "concurrently \"npm run dev:worker\" \"npm run preview -w client\"",
     "deploy": "wrangler deploy",
-    "test": "vitest run --config vitest.config.memory-safe.ts",
-    "test:watch": "vitest",
-    "test:client": "vitest run --config vitest.config.memory-safe.ts",
-    "test:client:watch": "vitest",
-    "test:all": "npm run test:client",
-    "test:memory": "node --expose-gc test-memory-diagnostic.ts",
-    "test:ui": "vitest --ui",
-    "test:coverage": "vitest run --coverage",
-    "test:e2e": "playwright test",
     "typecheck": "npm run -w packages/shared build:types && npm run -w client typecheck && npm run -w worker typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -44,25 +36,19 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251106.1",
-    "@playwright/test": "^1.49.0",
     "@rollup/rollup-linux-x64-gnu": "^4.46.3",
     "@types/node": "^22.13.4",
     "@typescript-eslint/eslint-plugin": "^8.39.1",
     "@typescript-eslint/parser": "^8.39.1",
-    "@vitest/ui": "^4.0.0",
     "concurrently": "^8.2.2",
     "eslint": "^9.33.0",
     "eslint-plugin-react-hooks": "^5.1.0",
-    "fake-indexeddb": "^6.1.0",
     "globals": "^16.3.0",
     "husky": "^9.1.7",
-    "jsdom": "^26.0.0",
     "lint-staged": "^16.1.5",
     "prettier": "^3.6.2",
-    "puppeteer": "^24.17.0",
     "tsx": "^4.19.2",
     "typescript": "^5.9.2",
-    "vitest": "^4.0.0",
     "wrangler": "^4.46.0"
   },
   "dependencies": {
@@ -73,7 +59,6 @@
   },
   "overrides": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "zod": "^4.3.6"
+    "react-dom": "^19.0.0"
   }
 }

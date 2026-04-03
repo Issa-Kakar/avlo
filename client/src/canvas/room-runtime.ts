@@ -7,7 +7,7 @@
  * Key principles:
  * - Single active room at a time (one Canvas mounted)
  * - Fail-fast on missing room (throws, not returns null)
- * - Matches camera-store.ts pattern (module-level state + pure getters)
+ * - connectRoom() / disconnectRoom() controlled by route lifecycle
  *
  * @module canvas/room-runtime
  */
@@ -16,6 +16,7 @@ import type { RoomId } from '@avlo/shared';
 import type { Snapshot } from '@/types/snapshot';
 import type { PresenceView } from '@/types/awareness';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
+import { RoomDocManagerImpl } from '@/lib/room-doc-manager';
 
 interface RoomContext {
   roomId: RoomId;
@@ -25,11 +26,28 @@ interface RoomContext {
 let activeRoom: RoomContext | null = null;
 
 /**
- * Set the active room context. Called by Canvas.tsx in useLayoutEffect.
- * @param context - Room context or null when unmounting
+ * Connect to a room. Idempotent — same roomId is a no-op.
+ * Different roomId auto-disconnects the previous room first.
+ * Called from route beforeLoad.
  */
-export function setActiveRoom(context: RoomContext | null): void {
-  activeRoom = context;
+export function connectRoom(roomId: RoomId): void {
+  if (activeRoom?.roomId === roomId) return;
+  if (activeRoom) {
+    activeRoom.roomDoc.destroy();
+  }
+  const roomDoc = new RoomDocManagerImpl(roomId);
+  activeRoom = { roomId, roomDoc };
+}
+
+/**
+ * Disconnect the active room. Optional roomId guard prevents stale cleanup.
+ * Called from RoomPage cleanup effect.
+ */
+export function disconnectRoom(roomId?: RoomId): void {
+  if (!activeRoom) return;
+  if (roomId !== undefined && activeRoom.roomId !== roomId) return;
+  activeRoom.roomDoc.destroy();
+  activeRoom = null;
 }
 
 /**
@@ -39,7 +57,7 @@ export function setActiveRoom(context: RoomContext | null): void {
 export function getActiveRoom(): RoomContext {
   if (!activeRoom) {
     throw new Error(
-      'getActiveRoom(): no active room - ensure Canvas mounted and setActiveRoom called',
+      'getActiveRoom(): no active room - ensure connectRoom() was called from route beforeLoad',
     );
   }
   return activeRoom;

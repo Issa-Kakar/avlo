@@ -1,14 +1,10 @@
 import React, { useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import type { RoomId } from '@avlo/shared';
-import { useRoomDoc } from '../hooks/use-room-doc';
 import { CanvasRuntime } from './CanvasRuntime';
-import { setActiveRoom } from './room-runtime';
 import { contextMenuController } from './ContextMenuController';
 import { ContextMenu } from '@/components/context-menu/ContextMenu';
 
 export interface CanvasProps {
-  roomId: RoomId;
   className?: string;
 }
 
@@ -17,31 +13,19 @@ export interface CanvasProps {
  *
  * Responsibilities:
  * - Mount DOM elements (canvases + editor host)
- * - Set room context (tools need getActiveRoomDoc())
- * - Set editor host (TextTool needs DOM mounting)
  * - Create/destroy CanvasRuntime on mount/unmount
  *
+ * Room context is set by route beforeLoad via connectRoom().
  * All rendering, event handling, tool dispatch, snapshot subscription,
  * and cursor management is delegated to CanvasRuntime.
  */
-export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
+export const Canvas: React.FC<CanvasProps> = ({ className }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const editorHostRef = useRef<HTMLDivElement>(null);
-  const runtimeRef = useRef<CanvasRuntime | null>(null);
 
-  // Get roomDoc from hook (must be at top level)
-  const roomDoc = useRoomDoc(roomId);
-
-  // 1. Set active room context for imperative access
-  // Tools and render loops use getActiveRoomDoc() to access Y.Doc
-  useLayoutEffect(() => {
-    setActiveRoom({ roomId, roomDoc });
-    return () => setActiveRoom(null);
-  }, [roomId, roomDoc]);
-
-  // 2. Create and start CanvasRuntime
+  // 1. Create and start CanvasRuntime
   // Runtime handles: render loops, input, snapshot subscription, cursor updates, editor host
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -51,16 +35,14 @@ export const Canvas: React.FC<CanvasProps> = ({ roomId, className }) => {
     if (!container || !baseCanvas || !overlayCanvas || !editorHost) return;
 
     const runtime = new CanvasRuntime();
-    runtimeRef.current = runtime;
     runtime.start({ container, baseCanvas, overlayCanvas, editorHost });
 
     return () => {
       runtime.stop();
-      runtimeRef.current = null;
     };
   }, []);
 
-  // 3. Context menu controller — binds portal div for positioning
+  // 2. Context menu controller — binds portal div for positioning
   useLayoutEffect(() => {
     const el = document.getElementById('context-menu-portal');
     if (el) contextMenuController.init(el);
