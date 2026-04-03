@@ -322,8 +322,6 @@ export function manageImageViewport(): void {
   } catch {
     return;
   }
-  if (!snapshot?.spatialIndex) return;
-
   const vb = getVisibleWorldBounds();
   const padded = padViewport(vb);
   const visible = snapshot.spatialIndex.query(padded);

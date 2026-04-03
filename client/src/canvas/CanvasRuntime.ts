@@ -25,6 +25,8 @@ import {
   setWorldInvalidator,
   setOverlayInvalidator,
   setHoldPreviewFn,
+  setWorldBBoxInvalidator,
+  setFullClearFn,
 } from './invalidation-helpers';
 import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
@@ -42,10 +44,8 @@ import {
   capturePointer,
   releasePointer,
   useCameraStore,
-  getVisibleWorldBounds,
 } from '@/stores/camera-store';
 import { calculateZoomTransform } from './animation/ZoomAnimator';
-import { boundsIntersect } from '@/lib/geometry/bounds';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './edge-scroll';
 import { clear as clearImageManager } from '@/lib/image/image-manager';
@@ -98,6 +98,8 @@ export class CanvasRuntime {
     this.renderLoop = new RenderLoop();
     this.renderLoop.start();
     setWorldInvalidator((bounds) => this.renderLoop?.invalidateWorld(bounds));
+    setWorldBBoxInvalidator((bbox) => this.renderLoop?.invalidateWorldBBox(bbox));
+    setFullClearFn(() => this.renderLoop?.invalidateAll());
 
     this.overlayLoop = new OverlayRenderLoop();
     this.overlayLoop.start();
@@ -124,34 +126,11 @@ export class CanvasRuntime {
     this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
     this.renderLoop?.invalidateAll();
     this.overlayLoop?.invalidateAll();
-    console.log('subscribeSnapshot');
+
     this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
-      // Doc content changed - event-driven, no presence polling
       if (snap.docVersion !== this.lastDocVersion) {
         this.lastDocVersion = snap.docVersion;
-        // Hold preview for one frame to prevent flash on commit
         holdPreviewForOneFrame();
-        if (this.lastDocVersion < 2) {
-          this.renderLoop?.invalidateAll();
-        }
-        // Process dirty patch from manager
-        else if (snap.dirtyPatch) {
-          const { rects, evictIds } = snap.dirtyPatch;
-
-          // Evict from cache
-          const cache = getObjectCacheInstance();
-          cache.evictMany(evictIds);
-
-          // Only invalidate visible dirty regions
-          const viewport = getVisibleWorldBounds();
-          for (const bounds of rects) {
-            if (boundsIntersect(bounds, viewport)) {
-              this.renderLoop?.invalidateWorld(bounds);
-            }
-          }
-        }
-
-        // Update overlay for new doc content
         this.overlayLoop?.invalidateAll();
       }
     });
@@ -179,6 +158,8 @@ export class CanvasRuntime {
     stopEdgeScroll();
 
     setWorldInvalidator(null);
+    setWorldBBoxInvalidator(null);
+    setFullClearFn(null);
     this.renderLoop?.stop();
     this.renderLoop?.destroy();
 

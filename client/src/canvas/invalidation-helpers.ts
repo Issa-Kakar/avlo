@@ -7,7 +7,7 @@
  * @module canvas/invalidation-helpers
  */
 
-import type { WorldBounds } from '@/types/geometry';
+import type { WorldBounds, BBoxTuple } from '@/types/geometry';
 
 /**
  * Module-level references to render loop functions.
@@ -64,4 +64,22 @@ export function invalidateOverlay(): void {
  */
 export function holdPreviewForOneFrame(): void {
   holdPreviewFn?.();
+}
+
+// BBoxTuple-native dirty rect invalidation (avoids WorldBounds allocation)
+let worldBBoxInvalidator: ((bbox: BBoxTuple) => void) | null = null;
+export function setWorldBBoxInvalidator(fn: ((bbox: BBoxTuple) => void) | null): void {
+  worldBBoxInvalidator = fn;
+}
+export function invalidateWorldBBox(bbox: BBoxTuple): void {
+  worldBBoxInvalidator?.(bbox);
+}
+
+// Full base-canvas clear (for post-hydration rebuild)
+let fullClearFn: (() => void) | null = null;
+export function setFullClearFn(fn: (() => void) | null): void {
+  fullClearFn = fn;
+}
+export function invalidateWorldAll(): void {
+  fullClearFn?.();
 }

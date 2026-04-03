@@ -4,6 +4,181 @@ Incremental cleanup and architectural improvements. Architectural direction trac
 
 ---
 
+## Phase 6: RoomDocManager — Spatial Index, Dirty Rects, Lifecycle
+
+Eliminated gate system, DirtyPatch indirection, lazy-null spatialIndex, and deferred cache eviction. RoomDocManager now constructs spatialIndex non-null from the start, evicts caches and invalidates dirty rects directly in the observer, and uses a simple async init flow with two-phase spatial index loading (IDB bulk load + WS repack).
+
+### Type changes
+
+- **Deleted:** `DirtyPatch` interface from `types/objects.ts`
+- **`Snapshot`:** removed `dirtyPatch`, `createdAt`, `spatialIndex` is now non-null (`ObjectSpatialIndex`, not `| null`)
+- `createEmptySnapshot()` constructs a real `ObjectSpatialIndex` instance
+
+### New invalidation helpers (`canvas/invalidation-helpers.ts`)
+
+| Export                                               | Purpose                                                     |
+| ---------------------------------------------------- | ----------------------------------------------------------- |
+| `invalidateWorldBBox(bbox: BBoxTuple)`               | BBoxTuple-native dirty rect — avoids WorldBounds allocation |
+| `invalidateWorldAll()`                               | Full base-canvas clear — used after hydration rebuild       |
+| `setWorldBBoxInvalidator(fn)` / `setFullClearFn(fn)` | Registered by CanvasRuntime                                 |
+
+### RenderLoop (`renderer/RenderLoop.ts`)
+
+Added `invalidateWorldBBox(bbox: BBoxTuple)` — reads tuple indices directly, same coalesce/promote logic as `invalidateWorld`.
+
+### CanvasRuntime simplified
+
+- Wires `setWorldBBoxInvalidator` + `setFullClearFn` in `start()`/`stop()`
+- Snapshot subscription reduced to: `holdPreviewForOneFrame()` + `overlayLoop.invalidateAll()` — no dirtyPatch processing
+- Removed imports: `boundsIntersect`, `getVisibleWorldBounds` (moved to RoomDocManager)
+
+### RoomDocManager rewritten
+
+**Deleted infrastructure:**
+
+- 4-gate system (`gates`, `gateTimeouts`, `gateCallbacks`) → replaced by `wsConnected: boolean`
+- `openGate()`, `closeGate()`, `whenGateOpen()`, `handleIDBReady()` methods
+- `dirtyRects: WorldBounds[]`, `cacheEvictIds: Set<string>` — replaced by direct eviction in observer
+- `needsSpatialRebuild: boolean` — observer attached after hydrate, no guard needed
+- `sawAnyDocUpdate: boolean`, `firstSnapshot` gate logic
+
+**New lifecycle:**
+
+```
+constructor() → synchronous, fire-and-forget void this.init()
+init():
+  1. await IDB (1s timeout via Promise.race)
+  2. initConnectorLookup + hydrateObjectsFromY + publishSnapshotNow
+  3. setupObjectsObserver (AFTER hydrate)
+  4. attachUndoManager
+  5. initializeWebSocketProvider
+```
+
+**New methods:**
+
+- `repackSpatialIndex()` — `clear()` + `bulkLoad()` from objectsById, called once per WS connection on `'synced'`
+- `flushDirtyBBoxes(bboxes)` — viewport intersection check on BBoxTuples, calls `invalidateWorldBBox` directly
+
+**Observer changes (applyObjectChanges):**
+
+- Direct `cache.evict(id)` replaces `cacheEvictIds.add(id)`
+- Local `dirtyBBoxes: BBoxTuple[]` replaces `this.dirtyRects.push(bboxToBounds(...))`
+- `flushDirtyBBoxes()` at end — inline AABB viewport check, zero WorldBounds allocation
+- Removed `if (this.spatialIndex)` null guards
+
+**Hydration changes:**
+
+- Added `getObjectCacheInstance().clear()` alongside text/code/bookmark cache clears
+- Added `invalidateWorldAll()` at end — signals full base-canvas clear
+
+**publishSnapshotNow simplified:** 10 lines (was 50). No lazy spatialIndex creation, no DirtyPatch construction, no gate logic.
+
+### Consumer null-guard removals (7 files)
+
+Removed `spatialIndex` null checks from all consumers — spatialIndex is always non-null:
+
+- `lib/geometry/hit-testing.ts` (3 functions)
+- `renderer/layers/objects.ts`
+- `lib/connectors/snap.ts`
+- `lib/tools/EraserTool.ts`
+- `lib/tools/SelectTool.ts` (2 locations)
+- `lib/image/image-manager.ts`
+- `lib/clipboard/clipboard-actions.ts`
+
+### Files changed
+
+| File                                 | Action                                                     | Delta |
+| ------------------------------------ | ---------------------------------------------------------- | ----- |
+| `types/objects.ts`                   | Deleted `DirtyPatch`, removed `WorldBounds` import         | −6    |
+| `types/snapshot.ts`                  | Non-null spatialIndex, removed createdAt/dirtyPatch        | ±0    |
+| `canvas/invalidation-helpers.ts`     | Added BBox invalidator + full clear                        | +15   |
+| `renderer/RenderLoop.ts`             | Added `invalidateWorldBBox` method                         | +20   |
+| `canvas/CanvasRuntime.ts`            | Simplified snapshot subscription, new invalidator wiring   | −15   |
+| `lib/room-doc-manager.ts`            | Core rewrite: gates → boolean, async init, direct eviction | −120  |
+| `lib/geometry/hit-testing.ts`        | Removed 3 null guards                                      | −6    |
+| `renderer/layers/objects.ts`         | Removed null guard                                         | −1    |
+| `lib/connectors/snap.ts`             | Removed null guard                                         | −2    |
+| `lib/tools/EraserTool.ts`            | Removed null guard                                         | −4    |
+| `lib/tools/SelectTool.ts`            | Removed 2 null guards                                      | −6    |
+| `lib/image/image-manager.ts`         | Removed null guard                                         | −1    |
+| `lib/clipboard/clipboard-actions.ts` | Removed null guard                                         | −1    |
+
+---
+
+## Phase 5: TanStack Router Migration & Route-Driven Room Lifecycle
+
+Replaced react-router-dom with TanStack Router. Room connection moved from React component tree to route `beforeLoad`. Registry/provider/ref-counting pattern eliminated in favor of `connectRoom()`/`disconnectRoom()` in `room-runtime.ts`.
+
+### New files
+
+| File                      | Purpose                                                  |
+| ------------------------- | -------------------------------------------------------- |
+| `routes/__root.tsx`       | Root layout — `<Outlet />`                               |
+| `routes/index.tsx`        | `/` → redirect to `/room/dev`                            |
+| `routes/room.$roomId.tsx` | `beforeLoad: connectRoom(roomId)`, component: `RoomPage` |
+| `router.ts`               | `createRouter({ routeTree })` + type registration        |
+| `routeTree.gen.ts`        | Auto-generated by TanStackRouterVite plugin (committed)  |
+
+### Deleted files
+
+| File                                | Reason                                                        |
+| ----------------------------------- | ------------------------------------------------------------- |
+| `App.tsx`                           | Routes moved to `routes/`, no registry provider needed        |
+| `lib/room-doc-registry.ts`          | Registry class replaced by `connectRoom()`/`disconnectRoom()` |
+| `lib/room-doc-registry-context.tsx` | React context provider no longer needed                       |
+| `hooks/use-room-doc.ts`             | Registry-based hook no longer needed                          |
+| `hooks/use-snapshot.ts`             | Zero consumers                                                |
+
+### `room-runtime.ts` rewritten
+
+- `setActiveRoom()` removed — replaced by `connectRoom(roomId)` / `disconnectRoom(roomId?)`
+- `connectRoom()` is idempotent (same roomId = no-op), auto-disconnects previous room
+- `disconnectRoom()` takes optional roomId guard for safe stale cleanup from useEffect
+- Constructs `RoomDocManagerImpl` directly (no registry indirection)
+
+### `main.tsx` rewritten
+
+`BrowserRouter` + `App` → `RouterProvider(router)`. Font loading preserved in async `init()`.
+
+### `RoomPage.tsx` rewritten
+
+- `getRouteApi('/room/$roomId').useParams()` for type-safe params
+- `key={roomId}` on `RoomCanvas` forces full remount on room switch
+- `useEffect` cleanup: `disconnectRoom(roomId)` with guard
+- No `roomId` validation needed — TanStack Router guarantees param
+
+### `Canvas.tsx` simplified
+
+- Removed `roomId` prop, `useRoomDoc()` call, `setActiveRoom()` useLayoutEffect
+- Zero room knowledge — pure DOM + CanvasRuntime lifecycle
+
+### `use-presence.ts` simplified
+
+- Removed `roomId` param — reads from `getActiveRoomDoc()` singleton
+- Empty deps `[]` — safe because parent remounts via `key={roomId}`
+
+### `UserAvatarCluster.tsx` simplified
+
+- Removed `roomId` prop — `usePresence()` called without args
+
+### `vite.config.ts` updated
+
+`tanstackRouter()` plugin added (before `react()`) with `autoCodeSplitting: true`. Room chunk (Y.js + CodeMirror + Tiptap + Canvas + tools) lazy-loads on room navigation.
+
+### Dependency changes
+
+```bash
+npm uninstall react-router-dom
+npm install @tanstack/react-router
+npm install -D @tanstack/router-plugin
+```
+
+### Test config cleanup
+
+Removed orphaned `vitest.config.ts` and `playwright.config.ts` from root (no test suites currently active).
+
+---
+
 ## Phase 4: Clean Up `packages/shared`
 
 Gutted `packages/shared` from 19 files to 5. Types, accessors, spatial index, and bbox utils moved to client — shared now only exports identifiers + 3 utility modules used by the worker.

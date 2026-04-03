@@ -1,5 +1,5 @@
 import type * as Y from 'yjs';
-import type { BBoxTuple, WorldBounds } from './geometry';
+import type { BBoxTuple } from './geometry';
 
 // Object types - STRICT SEMANTIC SEPARATION
 // stroke = pen/highlighter (ALWAYS Perfect Freehand polygon)
@@ -33,10 +33,4 @@ export interface IndexEntry {
   id: string;
   kind: ObjectKind;
   // NO data field - lookup via objectsById
-}
-
-// Dirty tracking
-export interface DirtyPatch {
-  rects: WorldBounds[];
-  evictIds: string[];
 }

@@ -158,14 +158,8 @@ export class EraserTool implements PointerTool {
 
     this.state.hitNow.clear();
 
-    const index = snapshot.spatialIndex;
-    if (!index) {
-      invalidateOverlay();
-      return;
-    }
-
     // Query spatial index with bounding box
-    const results = index.query({
+    const results = snapshot.spatialIndex.query({
       minX: worldX - radiusWorld,
       minY: worldY - radiusWorld,
       maxX: worldX + radiusWorld,

@@ -540,7 +540,6 @@ export { pasteImage };
 
 function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [number, number] {
   const { spatialIndex } = getCurrentSnapshot();
-  if (!spatialIndex) return [40, 40];
   const w = bounds.maxX - bounds.minX;
   const h = bounds.maxY - bounds.minY;
   const gap = 20;

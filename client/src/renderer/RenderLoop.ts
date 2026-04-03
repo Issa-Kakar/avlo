@@ -3,7 +3,7 @@ import { FRAME_CONFIG } from './types';
 import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import type { WorldBounds } from '@/types/geometry';
+import type { WorldBounds, BBoxTuple } from '@/types/geometry';
 import type { ViewTransform } from '@/types/snapshot';
 import { manageImageViewport } from '@/lib/image/image-manager';
 
@@ -157,6 +157,28 @@ export class RenderLoop {
       this.checkAreaPromotion();
     }
 
+    this.markDirty();
+  }
+
+  /** Add a world-space dirty rect from BBoxTuple. Avoids WorldBounds allocation. */
+  invalidateWorldBBox(bbox: BBoxTuple): void {
+    if (!this.started || this.fullClear) return;
+    const { scale, pan, dpr } = useCameraStore.getState();
+    const i = this.dirtyCount * 4;
+    this.dirtyBuf[i] = Math.floor((bbox[0] - pan.x) * scale * dpr - AA_MARGIN);
+    this.dirtyBuf[i + 1] = Math.floor((bbox[1] - pan.y) * scale * dpr - AA_MARGIN);
+    this.dirtyBuf[i + 2] = Math.ceil((bbox[2] - pan.x) * scale * dpr + AA_MARGIN);
+    this.dirtyBuf[i + 3] = Math.ceil((bbox[3] - pan.y) * scale * dpr + AA_MARGIN);
+    this.dirtyCount++;
+    if (this.dirtyCount >= MAX_RECTS) {
+      this.coalesce();
+      if (this.dirtyCount >= MAX_RECTS) {
+        this.fullClear = true;
+        this.dirtyCount = 0;
+      }
+    } else {
+      this.checkAreaPromotion();
+    }
     this.markDirty();
   }
 

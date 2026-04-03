@@ -70,7 +70,6 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const edgeRadius = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
 
   const snapshot = getCurrentSnapshot();
-  if (!snapshot.spatialIndex) return null;
 
   const results = snapshot.spatialIndex.query({
     minX: cx - edgeRadius,

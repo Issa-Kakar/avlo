@@ -6,8 +6,6 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { Awareness as YAwareness } from 'y-protocols/awareness';
-import { createEmptySnapshot } from '@/types/snapshot';
-
 const AWARENESS_HZ_BASE = 15;
 const AWARENESS_HZ_DEGRADED = 8;
 const WS_BUFFER_HIGH = 64 * 1024;
@@ -18,9 +16,12 @@ import type { RoomId } from '@avlo/shared';
 import type { Snapshot } from '@/types/snapshot';
 import type { PresenceView } from '@/types/awareness';
 import { ObjectSpatialIndex } from '@/lib/spatial';
-import type { ObjectHandle, ObjectKind, DirtyPatch } from '@/types/objects';
-import type { WorldBounds } from '@/types/geometry';
-import { computeBBoxFor, bboxEquals, bboxToBounds } from '@/lib/geometry/bbox';
+import type { ObjectHandle, ObjectKind } from '@/types/objects';
+import type { BBoxTuple } from '@/types/geometry';
+import { computeBBoxFor, bboxEquals } from '@/lib/geometry/bbox';
+import { getObjectCacheInstance } from '@/renderer/object-cache';
+import { invalidateWorldBBox, invalidateWorldAll } from '@/canvas/invalidation-helpers';
+import { getVisibleWorldBounds } from '@/stores/camera-store';
 import {
   initConnectorLookup,
   hydrateConnectorLookup,
@@ -135,7 +136,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   // Document version tracking
   private docVersion = 0; // Increments on every Y.Doc update
-  private sawAnyDocUpdate = false; // Tracks if we've seen any doc updates
 
   // Awareness state tracking
   private awarenessIsDirty = false;
@@ -156,15 +156,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private peerSmoothers = new Map<number, PeerSmoothing>(); // Keyed by clientId for proper cleanup
   private presenceAnimDeadlineMs = 0;
 
-  // Gate tracking
-  private gates = {
-    idbReady: false,
-    wsConnected: false,
-    wsSynced: false,
-    firstSnapshot: false,
-  };
-  private gateTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private gateCallbacks: Map<string, Set<() => void>> = new Map();
+  // Connection tracking
+  private wsConnected = false;
+  private wsRepacked = false;
 
   // Awareness event handler storage for cleanup
   private _onAwarenessUpdate: ((event: any) => void) | null = null;
@@ -176,58 +170,55 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   //  Y.Map-based object storage
   private objectsById = new Map<string, ObjectHandle>();
-  private spatialIndex: ObjectSpatialIndex | null = null; // Created ONCE in buildSnapshot
-  private dirtyRects: WorldBounds[] = [];
-  private cacheEvictIds = new Set<string>();
+  private readonly spatialIndex = new ObjectSpatialIndex();
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
-  private needsSpatialRebuild = true; // Start true, goes false after first hydration
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
 
-    // Get stable identity from singleton
     const identity = userProfileManager.getIdentity();
     this.userId = identity.userId;
-    this.userProfile = {
-      name: identity.name,
-      color: identity.color,
-    };
+    this.userProfile = { name: identity.name, color: identity.color };
 
-    // Initialize Y.Doc with room GUID
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
-
-    // Create awareness instance bound to this doc
     this.yAwareness = new YAwareness(this.ydoc);
+    if (this.yAwareness) this.awarenessIsDirty = true;
 
-    // Mark awareness as dirty to trigger initial send when WS connects
-    if (this.yAwareness) {
-      this.awarenessIsDirty = true;
-    }
+    this.publishState = { presenceDirty: false, rafId: -1 };
 
-    // Initialize presence animation state
-    this.publishState = {
-      presenceDirty: false,
-      rafId: -1,
+    // Initial snapshot references our live (empty) instances
+    this._currentSnapshot = {
+      docVersion: 0,
+      objectsById: this.objectsById,
+      spatialIndex: this.spatialIndex,
     };
 
-    // Start with empty snapshot
-    this._currentSnapshot = createEmptySnapshot();
-
-    // Setup observers (must be before IDB to catch updates)
+    // Y.Doc-level update observer (before IDB to catch updates)
     this.setupObservers();
 
-    // Attach IDB FIRST before creating any structures
-    this.initializeIndexedDBProvider();
-    this.whenGateOpen('idbReady').then(() => {
-      this.setupObjectsObserver();
-      this.attachUndoManager();
-    });
-    // Initialize WebSocket provider
-    this.initializeWebSocketProvider();
+    // Async init: IDB → hydrate → observer → UndoManager → WS
+    void this.init();
+  }
 
-    // - Doc changes: event-driven via handleYDocUpdate → publishSnapshotNow()
-    // - Presence changes: triggered by awareness updates → triggerPresenceAnimation()
+  private async init(): Promise<void> {
+    // 1. IDB sync with 1s timeout
+    await this.initializeIndexedDBProvider();
+    if (this.destroyed) return;
+
+    // 2. Init connector lookup + hydrate from IDB data (first STR bulk load)
+    initConnectorLookup();
+    this.hydrateObjectsFromY();
+    this.publishSnapshotNow();
+
+    // 3. Attach deep observer AFTER hydrate (critical ordering)
+    this.setupObjectsObserver();
+
+    // 4. UndoManager
+    this.attachUndoManager();
+
+    // 5. WS provider (sync listener handles repack)
+    if (!this.destroyed) this.initializeWebSocketProvider();
   }
 
   // Public getters
@@ -392,7 +383,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private sendAwareness(): void {
     // Check if gate is closed (offline) - remain dirty and retry
-    if (!this.gates.wsConnected) {
+    if (!this.wsConnected) {
       // Keep dirty flag and reschedule to try again when online
       this.scheduleAwarenessSend();
       return;
@@ -510,7 +501,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       // Only schedule send if gate is open
       // If offline, the dirty flag remains set and will trigger send on reconnect
-      if (this.gates.wsConnected) {
+      if (this.wsConnected) {
         this.scheduleAwarenessSend();
       }
     }
@@ -589,10 +580,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       cancelAnimationFrame(this.publishState.rafId);
       this.publishState.rafId = -1;
     }
-
-    // Clear gate timeouts
-    this.gateTimeouts.forEach((timeout) => clearTimeout(timeout));
-    this.gateTimeouts.clear();
 
     // Clear awareness timer and dirty flag
     if (this.awarenessSendTimer !== null) {
@@ -677,10 +664,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     // Clean up spatial index
-    if (this.spatialIndex) {
-      this.spatialIndex.clear();
-      this.spatialIndex = null;
-    }
+    this.spatialIndex.clear();
 
     // Clear connector lookup
     clearConnectorLookup();
@@ -783,9 +767,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.objectsObserver) return; // idempotent
 
     this.objectsObserver = (events, _tx) => {
-      // CRITICAL: Ignore during rebuild epoch
-      if (this.needsSpatialRebuild) return;
-
       const touchedIds = new Set<string>();
       const deletedIds = new Set<string>();
 
@@ -832,25 +813,20 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     };
 
     this.objects.observeDeep(this.objectsObserver);
-    // needsSpatialRebuild is already true from initialization
   }
 
   private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
+    const dirtyBBoxes: BBoxTuple[] = [];
+    const cache = getObjectCacheInstance();
+
     // Process deletions
     for (const id of deletedIds) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
 
-      // Update spatial index
-      if (this.spatialIndex) {
-        this.spatialIndex.remove(id, handle.bbox);
-      }
-
-      // Track for cache eviction
-      this.cacheEvictIds.add(id);
-
-      // Mark dirty
-      this.dirtyRects.push(bboxToBounds(handle.bbox));
+      this.spatialIndex.remove(id, handle.bbox);
+      cache.evict(id);
+      dirtyBBoxes.push(handle.bbox);
 
       // Remove from registry
       this.objectsById.delete(id);
@@ -930,13 +906,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       this.objectsById.set(id, handle);
 
-      // Update spatial index (already exists from buildSnapshot)
-      if (this.spatialIndex) {
-        if (oldBBox) {
-          this.spatialIndex.update(id, oldBBox, newBBox, kind);
-        } else {
-          this.spatialIndex.insert(id, newBBox, kind);
-        }
+      // Update spatial index
+      if (oldBBox) {
+        this.spatialIndex.update(id, oldBBox, newBBox, kind);
+      } else {
+        this.spatialIndex.insert(id, newBBox, kind);
       }
 
       // Update connector lookup for connector objects
@@ -951,19 +925,19 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Handle cache and dirty rects
       if (!oldBBox) {
         // New object
-        this.dirtyRects.push(bboxToBounds(newBBox));
+        dirtyBBoxes.push(newBBox);
       } else {
         const bboxChanged = !bboxEquals(oldBBox, newBBox);
 
         if (bboxChanged) {
           // Geometry changed (INCLUDING width changes since bbox includes width!)
-          this.cacheEvictIds.add(id);
-          this.dirtyRects.push(bboxToBounds(oldBBox));
-          this.dirtyRects.push(bboxToBounds(newBBox));
+          cache.evict(id);
+          dirtyBBoxes.push(oldBBox);
+          dirtyBBoxes.push(newBBox);
         } else {
           // BBox unchanged — still push dirty rect for style-only mutations (color, fill, opacity)
-          if (kind === 'shape') this.cacheEvictIds.add(id);
-          this.dirtyRects.push(bboxToBounds(newBBox));
+          if (kind === 'shape') cache.evict(id);
+          dirtyBBoxes.push(newBBox);
         }
       }
 
@@ -978,6 +952,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
     if (needsReposition)
       useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+
+    this.flushDirtyBBoxes(dirtyBBoxes);
+  }
+
+  private flushDirtyBBoxes(bboxes: BBoxTuple[]): void {
+    if (bboxes.length === 0) return;
+    const vp = getVisibleWorldBounds();
+    for (const bbox of bboxes) {
+      if (bbox[2] >= vp.minX && bbox[0] <= vp.maxX && bbox[3] >= vp.minY && bbox[1] <= vp.maxY) {
+        invalidateWorldBBox(bbox);
+      }
+    }
   }
 
   // ============================================================
@@ -985,15 +971,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   private hydrateObjectsFromY(): void {
-    // Reset everything EXCEPT spatial index (already created in buildSnapshot)
     this.objectsById.clear();
-    if (this.spatialIndex) {
-      this.spatialIndex.clear();
-    }
-    // Clear dirty tracking - this is a full rebuild
-    this.dirtyRects.length = 0;
-    this.cacheEvictIds.clear();
-    // Clear layout caches on full rebuild
+    this.spatialIndex.clear();
+    // Clear all caches on full rebuild
+    getObjectCacheInstance().clear();
     textLayoutCache.clear();
     codeSystem.clear();
     clearBookmarkLayouts();
@@ -1023,8 +1004,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       handles.push(handle);
     });
 
-    // Bulk load spatial index
-    if (this.spatialIndex && handles.length > 0) {
+    // Bulk load spatial index (STR packing)
+    if (handles.length > 0) {
       this.spatialIndex.bulkLoad(handles);
     }
 
@@ -1036,66 +1017,31 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // v2: bookmark unfurls are drained by image worker IDB queue on init (no main-thread scan needed)
 
-    // Publishing happens via handleYDocUpdate → publishSnapshotNow()
+    // Signal full base-canvas clear after rebuild
+    invalidateWorldAll();
   }
 
   // Arrow function property ensures stable reference for event listener cleanup
   private handleYDocUpdate = (_update: Uint8Array, _origin: unknown): void => {
     // Increment docVersion on ANY Y.Doc change
     this.docVersion = (this.docVersion + 1) >>> 0; // Use unsigned 32-bit int
-    this.sawAnyDocUpdate = true; // We've now seen real doc data
 
     // EVENT-DRIVEN: Publish immediately instead of setting dirty flag
     // The objectsObserver has already updated objectsById and spatialIndex
     this.publishSnapshotNow();
   };
 
-  private initializeIndexedDBProvider(): void {
+  private async initializeIndexedDBProvider(): Promise<void> {
     try {
-      // Create room-scoped IDB provider
       const dbName = `avlo.v1.rooms.${this.roomId}`;
-      // Creating IndexedDB provider
       this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
-
-      // Set up IDB gate with 2s timeout
-      const timeoutId = setTimeout(() => {
-        // IDB timeout reached, proceeding with empty doc
-        this.handleIDBReady(); // Use unified handler
-      }, 2000);
-      this.gateTimeouts.set('idbReady', timeoutId);
-
-      // Listen for IDB sync completion for gate control
-      this.indexeddbProvider.whenSynced
-        .then(() => {
-          // IndexedDB whenSynced resolved
-          this.handleIDBReady(); // Use unified handler
-        })
-        .catch((err: unknown) => {
-          console.error('[RoomDocManager] IDB sync error (non-critical):', err);
-          // Still open gate on error - fallback to empty doc
-          this.handleIDBReady(); // Use unified handler
-        });
-
-      // Note: No need to listen for 'synced' event to mark dirty
-      // Y.Doc updates from IDB will trigger the existing doc update handler
-    } catch (err: unknown) {
+      await Promise.race([
+        this.indexeddbProvider.whenSynced,
+        new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+      ]).catch(() => {});
+    } catch (err) {
       console.error('[RoomDocManager] IDB initialization failed (non-critical):', err);
-      // Mark as failed but continue
-      this.handleIDBReady(); // Use unified handler
     }
-  }
-
-  // Centralized handler for IDB ready state - ensures consistent behavior
-  private handleIDBReady(): void {
-    // Clear any pending timeout
-    const timeout = this.gateTimeouts.get('idbReady');
-    if (timeout) {
-      clearTimeout(timeout);
-      this.gateTimeouts.delete('idbReady');
-    }
-    // Open the gate - structure initialization is handled in constructor
-    // via whenGateOpen('idbReady').then(...)
-    this.openGate('idbReady');
   }
 
   private initializeWebSocketProvider(): void {
@@ -1116,22 +1062,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
           resyncInterval: -1,
         },
       );
-      // Set up G_WS_CONNECTED gate with 5s timeout
-      const wsConnectedTimeout = setTimeout(() => {
-        if (!this.gates.wsConnected && this.gates.idbReady) {
-          // Proceed offline if IDB ready
-          // WS connection timeout, proceeding offline
-        }
-      }, 5000);
-      this.gateTimeouts.set('wsConnected', wsConnectedTimeout);
-      // Set up G_WS_SYNCED gate with 10s timeout
-      const wsSyncedTimeout = setTimeout(() => {
-        if (!this.gates.wsSynced) {
-          // Keep rendering from IDB, continue trying to sync
-          // WS sync timeout, continuing with local state
-        }
-      }, 10000);
-      this.gateTimeouts.set('wsSynced', wsSyncedTimeout);
 
       // Store bound handlers for cleanup
       this._onAwarenessUpdate = (event: any) => {
@@ -1183,14 +1113,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       this._onWebSocketStatus = (event: { status: string }) => {
         if (event.status === 'connected') {
-          if (!this.gates.wsConnected) {
-            // Clear connection timeout
-            const timeout = this.gateTimeouts.get('wsConnected');
-            if (timeout) {
-              clearTimeout(timeout);
-              this.gateTimeouts.delete('wsConnected');
-            }
-            this.openGate('wsConnected');
+          if (!this.wsConnected) {
+            this.wsConnected = true;
 
             // Trigger initial awareness send on connect/reconnect
             if (this.yAwareness) {
@@ -1200,8 +1124,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             this.publishState.presenceDirty = true;
           }
         } else if (event.status === 'disconnected') {
-          if (this.gates.wsConnected) {
-            this.closeGate('wsConnected');
+          if (this.wsConnected) {
+            this.wsConnected = false;
+            this.wsRepacked = false;
             // Mark presence dirty to trigger immediate UI update
             this.publishState.presenceDirty = true;
 
@@ -1216,9 +1141,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
               }
             }
           }
-          if (this.gates.wsSynced) {
-            this.closeGate('wsSynced');
-          }
         }
       };
 
@@ -1230,18 +1152,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       // Set up connection gates with new handler
       this.websocketProvider.on('status', this._onWebSocketStatus);
 
-      // Listen for sync status (v3 uses 'sync' event, not 'synced')
+      // Listen for sync status — repack spatial index on first sync per connection
       this.websocketProvider.on('sync', (isSynced: boolean) => {
-        if (isSynced) {
-          // Clear sync timeout
-          const timeout = this.gateTimeouts.get('wsSynced');
-          if (timeout) {
-            clearTimeout(timeout);
-            this.gateTimeouts.delete('wsSynced');
-          }
-          this.openGate('wsSynced');
-        } else {
-          this.closeGate('wsSynced');
+        if (isSynced && !this.wsRepacked) {
+          this.repackSpatialIndex();
+          this.wsRepacked = true;
         }
       });
 
@@ -1254,52 +1169,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
   }
 
-  // Gate management
-  private openGate(gateName: keyof typeof this.gates): void {
-    const wasOpen = this.gates[gateName];
-    if (wasOpen) return; // Already open
-
-    this.gates[gateName] = true;
-
-    // Force presence publish when both gates are open for the first time
-    if (!wasOpen && gateName === 'firstSnapshot' && this.gates.wsConnected) {
-      this.publishState.presenceDirty = true;
-    }
-    if (!wasOpen && gateName === 'wsConnected' && this.gates.firstSnapshot) {
-      this.publishState.presenceDirty = true;
-    }
-
-    // Notify internal waiters (whenGateOpen promises)
-    const callbacks = this.gateCallbacks.get(gateName);
-    if (callbacks) {
-      callbacks.forEach((cb) => cb());
-      callbacks.clear();
-    }
-
-    // Note: G_FIRST_SNAPSHOT opens in buildSnapshot() when first doc-derived snapshot publishes
-    // Do NOT open it here based on other gates
-  }
-
-  private closeGate(gateName: keyof typeof this.gates): void {
-    if (!this.gates[gateName]) return; // Already closed
-    this.gates[gateName] = false;
-  }
-
-  private whenGateOpen(gateName: keyof typeof this.gates): Promise<void> {
-    if (this.gates[gateName]) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      if (!this.gateCallbacks.has(gateName)) {
-        this.gateCallbacks.set(gateName, new Set());
-      }
-      this.gateCallbacks.get(gateName)!.add(resolve);
-    });
+  private repackSpatialIndex(): void {
+    this.spatialIndex.clear();
+    const handles = Array.from(this.objectsById.values());
+    if (handles.length > 0) this.spatialIndex.bulkLoad(handles);
   }
 
   public isConnected(): boolean {
-    return this.gates.wsConnected;
+    return this.wsConnected;
   }
 
   // ============================================================
@@ -1313,52 +1190,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
    * Called directly from handleYDocUpdate for immediate publishing.
    */
   private publishSnapshotNow(): void {
-    // Create spatial index ONCE (first time only)
-    if (!this.spatialIndex) {
-      this.spatialIndex = new ObjectSpatialIndex();
-      initConnectorLookup(); // Initialize connector lookup alongside spatial index
-    }
-
-    // Two-epoch model: rebuild on first run or when flagged
-    if (this.needsSpatialRebuild) {
-      this.hydrateObjectsFromY();
-      this.needsSpatialRebuild = false;
-    }
-
-    // Build dirty patch from accumulated changes
-    let dirtyPatch: DirtyPatch | null = null;
-    if (this.dirtyRects.length > 0 || this.cacheEvictIds.size > 0) {
-      dirtyPatch = {
-        rects: this.dirtyRects.splice(0),
-        evictIds: Array.from(this.cacheEvictIds),
-      };
-      this.cacheEvictIds.clear();
-    }
-
-    // Create Snapshot (no presence, no view - those are handled separately)
     const snap: Snapshot = {
       docVersion: this.docVersion,
       objectsById: this.objectsById,
       spatialIndex: this.spatialIndex,
-      createdAt: Date.now(),
-      dirtyPatch,
     };
-
-    // Update current snapshot
     this._currentSnapshot = snap;
-
-    // Notify snapshot subscribers (event-driven path)
     this.snapshotSubscribers.forEach((cb) => {
       try {
         cb(snap);
-      } catch (error) {
-        console.error('[Snapshot] Subscriber error:', error);
+      } catch (e) {
+        console.error('[Snapshot] Subscriber error:', e);
       }
     });
-
-    // Open first snapshot gate if applicable
-    if (!this.gates.firstSnapshot && this.sawAnyDocUpdate) {
-      this.openGate('firstSnapshot');
-    }
   }
 }

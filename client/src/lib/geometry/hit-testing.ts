@@ -844,10 +844,7 @@ export function hitTestVisibleText(
 ): string | null {
   const radiusWorld = 8 / scale;
 
-  const index = snapshot.spatialIndex;
-  if (!index) return null;
-
-  const results = index.query({
+  const results = snapshot.spatialIndex.query({
     minX: worldX - radiusWorld,
     minY: worldY - radiusWorld,
     maxX: worldX + radiusWorld,
@@ -893,10 +890,7 @@ export function hitTestVisibleNote(
 ): string | null {
   const radiusWorld = 8 / scale;
 
-  const index = snapshot.spatialIndex;
-  if (!index) return null;
-
-  const results = index.query({
+  const results = snapshot.spatialIndex.query({
     minX: worldX - radiusWorld,
     minY: worldY - radiusWorld,
     maxX: worldX + radiusWorld,
@@ -946,10 +940,7 @@ export function hitTestVisibleCode(
 ): string | null {
   const radiusWorld = 8 / scale;
 
-  const index = snapshot.spatialIndex;
-  if (!index) return null;
-
-  const results = index.query({
+  const results = snapshot.spatialIndex.query({
     minX: worldX - radiusWorld,
     minY: worldY - radiusWorld,
     maxX: worldX + radiusWorld,

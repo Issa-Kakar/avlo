@@ -89,18 +89,30 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 | `stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
 
 ### Geometry (`lib/geometry/`)
-`bounds.ts` (WorldBounds ops), `transform.ts` (scale math, frame transforms), `hit-testing.ts` (shared SelectTool + EraserTool, marquee intersection), `recognize-open-stroke.ts` (shape recognition), `geometry-helpers.ts` (corner/edge detection)
+`bbox.ts` (per-kind BBox computation), `bounds.ts` (WorldBounds ops), `transform.ts` (scale math, frame transforms), `hit-testing.ts` (shared SelectTool + EraserTool, marquee intersection). Shape recognition in `shape-recognition/` subdirectory: `recognize-open-stroke.ts`, `pdollar-recognizer.ts`, `geometry-helpers.ts`, `HoldDetector.ts`.
 
-### Shared Package (`packages/shared/src/`)
+### Client Types (`types/`)
 | File | Responsibility |
 |------|----------------|
-| `types/geometry.ts` | BBoxTuple, FrameTuple, WorldBounds, Frame + converters |
-| `types/objects.ts` | ObjectKind, ObjectHandle, IndexEntry, DirtyPatch |
-| `accessors/object-accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
-| `spatial/object-spatial-index.ts` | RBush R-tree wrapper |
-| `utils/bbox.ts` | BBox computation with stroke width inflation |
+| `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
+| `types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` |
+| `types/snapshot.ts` | `Snapshot`, `ViewTransform`, `createEmptySnapshot` |
+| `types/awareness.ts` | `Awareness`, `PresenceView` |
+
+### Client Core Library
+| File | Responsibility |
+|------|----------------|
+| `lib/object-accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
+| `lib/geometry/bbox.ts` | BBox computation with stroke width inflation (`computeBBoxFor`, `bboxEquals`, `bboxToBounds`) |
+| `lib/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
+
+### Shared Package (`packages/shared/src/`) — minimal, 4 files
+| File | Responsibility |
+|------|----------------|
+| `types/identifiers.ts` | `RoomId`, `UserId`, `StrokeId`, `TextId` |
+| `utils/ulid.ts` | `ulid()` |
 | `utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()` |
-| `utils/image-validation.ts` | Magic byte validation (PNG/JPEG/WebP/GIF/ICO), `parseImageDimensions()`, `isSvg()` |
+| `utils/image-validation.ts` | `validateImage()`, `isSvg()`, `parseImageDimensions()` |
 
 ### Service Worker & Image Pipeline
 | File | Responsibility |
@@ -117,8 +129,11 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 | `assets.ts` | `PUT /api/assets/:key` (validate + R2 store), `GET /api/assets/:key` (edge-cached R2 proxy) |
 | `unfurl.ts` | `GET /api/unfurl?url=` — HTMLRewriter OG extraction, image→R2, SSRF guard, edge cache 7d |
 
+### Routes (`routes/`)
+`__root.tsx` (root layout, `<Outlet />`), `index.tsx` (redirect → `/room/dev`), `room.$roomId.tsx` (room route, `beforeLoad: connectRoom`)
+
 ### UI (`components/`)
-`RoomPage.tsx` (main view, layout), `ToolPanel.tsx` (toolbar + inspector), `ZoomControls.tsx`, `Toast.tsx`, `UsersModal.tsx`, `UserAvatarCluster.tsx`, `icons/index.tsx`
+`RoomPage.tsx` (main view, layout), `ToolPanel.tsx` (toolbar + inspector), `ZoomControls.tsx`, `Toast.tsx`, `ErrorBoundary.tsx`, `UserAvatarCluster.tsx`, `icons/index.tsx`
 
 ---
 
@@ -151,7 +166,7 @@ Canvas.tsx (~95 lines) - THIN REACT WRAPPER
 │
 ├── Subscriptions:
 │   ├── camera-store      → tool.onViewChange() on pan/zoom (guarded by isEdgeScrolling)
-│   └── snapshot          → dirty rect invalidation, cache eviction
+│   └── snapshot          → overlay invalidation
 │
 └── Event Handlers:
     ├── handlePointerDown → storePointerModifiers → spacebar pan check → tool dispatch / MMB pan
@@ -178,19 +193,18 @@ Module Registries - IMPERATIVE ACCESS
 ├── camera-store.ts           → worldToCanvas/screenToWorld, getVisibleWorldBounds()
 ├── device-ui-store.ts        → activeTool, drawingSettings, cursor management
 ├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
-└── invalidation-helpers.ts   → invalidateWorld(bounds), invalidateOverlay()
+└── invalidation-helpers.ts   → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll(), invalidateOverlay()
 ```
 
 ### Data Flow
 ```
 Y.Doc (source of truth)
    ↓ observers
-RoomDocManager (objectsById, spatialIndex, dirtyPatch)
+RoomDocManager
+   ├─ applyObjectChanges() → cache.evict(id) + invalidateWorldBBox(bbox)   [base canvas]
    ↓ subscribeSnapshot()
 CanvasRuntime
-   ├─ cache.evictMany(dirtyPatch.evictIds)
-   ├─ renderLoop.invalidateWorld(bounds)
-   └─ overlayLoop.invalidateAll()
+   └─ overlayLoop.invalidateAll()                                           [overlay canvas]
          ↓
    RenderLoop (base canvas, dirty-rect optimized)
    OverlayRenderLoop (preview + presence, full clear)
@@ -203,20 +217,18 @@ CanvasRuntime
 interface Snapshot {
   docVersion: number;
   objectsById: ReadonlyMap<string, ObjectHandle>;  // Live Y.Map references
-  spatialIndex: ObjectSpatialIndex | null;          // R-tree for viewport queries + hit testing
-  dirtyPatch?: DirtyPatch | null;                   // { rects: WorldBounds[], evictIds: string[] }
-  createdAt: number;
+  spatialIndex: ObjectSpatialIndex;                // R-tree for viewport queries + hit testing
 }
 ```
-Published by RoomDocManager on every Y.Doc change. Read by: RenderLoop (draw visible objects), OverlayRenderLoop (presence), CanvasRuntime (cache eviction + dirty rect invalidation), tools via `getCurrentSnapshot()`. `spatialIndex` is the same live R-tree instance — queries return `IndexEntry[]` sorted by ULID for Z-order.
+Published by RoomDocManager on every Y.Doc change. Read by: RenderLoop (draw visible objects), OverlayRenderLoop (presence), CanvasRuntime (overlay invalidation), tools via `getCurrentSnapshot()`. `spatialIndex` is non-null from construction — the same live R-tree instance, queries return `IndexEntry[]` sorted by ULID for Z-order.
 
 ### Write Path
 ```
 Tool.begin/move/end() → user gesture
    → tool.commit() → roomDoc.mutate(() => { roomDoc.objects.set(...) })
    → ydoc.transact() → Y.Map.set()
-   → Observer fires → applyObjectChanges() → dirtyPatch computed
-   → Snapshot published → CanvasRuntime invalidates dirty rects
+   → Deep observer → applyObjectChanges() → direct cache.evict() + invalidateWorldBBox()
+   → handleYDocUpdate → publishSnapshotNow() → CanvasRuntime invalidates overlay
 ```
 
 ### Event Flow
@@ -232,6 +244,35 @@ Tool updates internal state
    ├─ invalidateOverlay() → preview changed
    └─ invalidateWorld(bounds) → geometry changed
 ```
+
+---
+
+## Routing (TanStack Router)
+
+File-based routing with auto code splitting. Three route files in `routes/`, auto-generated `routeTree.gen.ts`.
+
+### Route Structure
+```
+routes/
+  __root.tsx          → <Outlet /> (minimal root layout)
+  index.tsx           → redirect to /room/dev
+  room.$roomId.tsx    → beforeLoad: connectRoom(roomId), component: RoomPage
+```
+
+### Room Lifecycle via Route
+- `beforeLoad` calls `connectRoom(roomId)` — creates Y.Doc, starts IDB + WS providers, sets module singleton
+- `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount
+- `key={roomId}` on `RoomCanvas` forces full remount on room switch — eliminates stale subscriptions
+- `beforeLoad` is NOT code-split (stays in main bundle) — room connects while component chunk downloads in parallel
+
+### Configuration (`vite.config.ts`)
+`tanstackRouter()` plugin listed before `react()` in plugins array:
+- `autoCodeSplitting: true` — room chunk (Y.js + CodeMirror + Tiptap + Canvas) lazy-loads on room navigation
+- `routeTree.gen.ts` — auto-generated, committed to git (required at runtime)
+- Components access `roomId` via `getRouteApi('/room/$roomId').useParams()`, not props
+
+### What Was Deleted
+`App.tsx`, `room-doc-registry.ts`, `room-doc-registry-context.tsx`, `use-room-doc.ts`, `use-snapshot.ts` — registry/provider/ref-counting pattern replaced by `connectRoom()`/`disconnectRoom()`.
 
 ---
 
@@ -272,6 +313,8 @@ Key exports: `connectRoom()`, `disconnectRoom()`, `getActiveRoomDoc()`, `getActi
 Setter/getter pattern breaks circular dependencies between CanvasRuntime and tools:
 - `setWorldInvalidator(fn)` / `setOverlayInvalidator(fn)` — registered by CanvasRuntime.start()
 - `invalidateWorld(bounds)` / `invalidateOverlay()` — called by tools, safe no-ops if unregistered
+- `invalidateWorldBBox(bbox)` — BBoxTuple-native dirty rect (avoids WorldBounds allocation), called by RoomDocManager observer
+- `invalidateWorldAll()` — full base-canvas clear, called after hydration rebuild
 - `holdPreviewForOneFrame()` — prevents flash on commit
 
 ---
@@ -286,7 +329,7 @@ start(config):
   4. InputManager — DOM event forwarding
   5. keyboard-manager.attach() — keybindings (keydown, keyup, window blur)
   6. Camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
-  7. Snapshot subscription → cache eviction + dirty rect invalidation
+  7. Snapshot subscription → overlay invalidation (base canvas dirty rects handled by RoomDocManager observer)
 
 stop():
   Teardown all: keyboard-manager.detach(), stopEdgeScroll(), unsubscribe everything
@@ -406,9 +449,9 @@ interface ObjectHandle {
 
 ---
 
-## Shared Package Types & Accessors
+## Types & Accessors
 
-### Geometry Types (`types/geometry.ts`)
+### Geometry Types (`@/types/geometry`)
 ```typescript
 type BBoxTuple = [minX, minY, maxX, maxY];      // ObjectHandle storage
 type FrameTuple = [x, y, w, h];                   // Y.Map storage for shapes
@@ -418,8 +461,8 @@ interface Frame { x, y, w, h }                     // Logic operations
 ```
 Converters: `tupleToFrame()`, `frameToTuple()`, `frameToWorldBounds()`, `bboxTupleToWorldBounds()`, `worldBoundsToBBoxTuple()`, `worldBoundsToFrame()`
 
-### Typed Y.Map Accessors (`object-accessors.ts`)
-Prefer typed accessors from `@avlo/shared` over raw `.get()`:
+### Typed Y.Map Accessors (`@/lib/object-accessors`)
+Prefer typed accessors over raw `.get()`:
 ```typescript
 // Common
 getColor(y, fallback?), getOpacity(y, fallback?), getWidth(y, fallback?)
@@ -468,9 +511,21 @@ interface StoredAnchor { id: string; side: Dir; anchor: [number, number] }
 
 ## RoomDocManager
 
-### Two-Epoch Model
-1. **Rebuild:** `hydrateObjectsFromY()` → walk Y.Map → build handles → `bulkLoad()` spatial index + connector lookup
-2. **Steady-State:** Deep observer → incremental `objectsById` + `spatialIndex` + connector lookup → `dirtyPatch` → snapshot
+### Lifecycle (async init)
+Constructor is synchronous (fire-and-forget `void this.init()`). `spatialIndex` and `objectsById` are non-null from construction.
+```
+init():
+  1. await IDB sync (1s timeout via Promise.race)
+  2. initConnectorLookup() + hydrateObjectsFromY() + publishSnapshotNow()
+  3. setupObjectsObserver() — AFTER hydrate (critical ordering)
+  4. attachUndoManager()
+  5. initializeWebSocketProvider() — sync listener triggers repackSpatialIndex()
+```
+
+### Two-Phase Spatial Index
+1. **IDB:** `hydrateObjectsFromY()` → `spatialIndex.bulkLoad()` — optimal STR packing from IDB data
+2. **WS sync:** `repackSpatialIndex()` on first `'synced'` event per connection — `clear()` + `bulkLoad()` from objectsById
+Between phases, WS updates go through the deep observer incrementally (correct but not STR-packed). `wsRepacked` resets on disconnect.
 
 ### Key Methods
 ```typescript
@@ -482,6 +537,8 @@ subscribePresence(cb)       // Presence changes
 
 ### Deep Observer
 - `observeDeep()` on objects Y.Map for incremental updates
+- Direct `cache.evict(id)` + `invalidateWorldBBox(bbox)` — no DirtyPatch indirection
+- Viewport intersection check on BBoxTuples before invalidating (avoids off-screen dirty rects)
 - **Text/Note:** `field === 'content'` → `textLayoutCache.invalidateContent(id)`, fontSize/scale → invalidateLayout
 - **Code:** `Y.YTextEvent` → `codeSystem.handleContentChange(id, ev, lang)`
 - **Bookmark:** `invalidateBookmarkLayout(id)` on deletion, `clearBookmarkLayouts()` on rebuild

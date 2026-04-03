@@ -1,16 +1,28 @@
 # Architecture Redesign — Ground Up
 
-Reasoning and direction for decoupling the system. Not a task list — each section captures the _why_ and the target patterns. Implementation requires fresh sessions with focused scope.
+Reasoning and direction for decoupling the system. Not a task list — each section captures the _why_ and the target state. Implementation planned per-session with focused scope.
 
 **Core philosophy:** Module-level singletons for read access, room-scoped lifecycle for write/ownership, direct access over indirection. Y.Doc IS the shared mutable state container — don't wrap it in another stateful container.
 
 ---
 
-## Completed: Flat Y.Doc (Phase 3)
+## Completed
+
+### Flat Y.Doc (Phase 3)
 
 `ydoc.getMap('root').get('objects')` → `ydoc.getMap('objects')`. Top-level, always exists, no seeding.
 
-Eliminated: `initializeYjsStructures()`, meta guard in `mutate()`, 5-second WS grace delay, `getRoot()`/`getMeta()`/`getObjects()` private methods, deferred observer attachment. `mutate()` is now 3 lines. See `docs/REFACTOR_CHANGELOG.md` Phase 3 for details.
+Eliminated: `initializeYjsStructures()`, meta guard in `mutate()`, 5-second WS grace delay, `getRoot()`/`getMeta()`/`getObjects()` private methods, deferred observer attachment. `mutate()` is now 3 lines. See `docs/REFACTOR_CHANGELOG.md` Phase 3.
+
+### Clean Up `packages/shared` (Phase 4)
+
+Gutted from 19 files to 4. Types, accessors, spatial index, bbox utils all moved to client. Shared now only exports identifiers (`RoomId`, `UserId`, `StrokeId`, `TextId`) + 3 utility modules (`ulid`, `url-utils`, `image-validation`). ~47 client files rewritten with new import paths. See `docs/REFACTOR_CHANGELOG.md` Phase 4.
+
+### TanStack Router Migration (Phase 5)
+
+Replaced react-router-dom with TanStack Router. File-based routing with auto code splitting. Room connection moved from React component tree to route `beforeLoad`. Registry/provider/ref-counting pattern eliminated — `connectRoom()`/`disconnectRoom()` in `room-runtime.ts` is the entire room lifecycle API.
+
+Deleted: `App.tsx`, `room-doc-registry.ts`, `room-doc-registry-context.tsx`, `use-room-doc.ts`, `use-snapshot.ts`. See `docs/REFACTOR_CHANGELOG.md` Phase 5.
 
 ---
 
@@ -18,230 +30,186 @@ Eliminated: `initializeYjsStructures()`, meta guard in `mutate()`, 5-second WS g
 
 ### The problem
 
-The Snapshot bundles five things so it can travel through one subscription:
+The Snapshot bundles multiple concerns so they can travel through one subscription:
 
 ```typescript
+// Current — types/snapshot.ts
 interface Snapshot {
-  docVersion: number;           // Only used by... nothing meaningful
-  objectsById: Map<...>;       // Used by tools, renderer, hit testing
-  spatialIndex: ObjectSpatialIndex;  // Used by tools, renderer, viewport queries
-  dirtyPatch?: DirtyPatch;     // Used only by CanvasRuntime
-  createdAt: number;           // Unused
+  docVersion: number;
+  objectsById: ReadonlyMap<string, ObjectHandle>;
+  spatialIndex: ObjectSpatialIndex | null;
+  dirtyPatch?: DirtyPatch | null; // { rects: WorldBounds[], evictIds: string[] }
+  createdAt: number;
 }
 ```
 
-Every consumer does `getCurrentSnapshot().spatialIndex?.query(bounds)` — three levels of indirection plus a null guard. Tools access `getCurrentSnapshot().objectsById.get(id)` dozens of times per gesture. The Snapshot is an unnecessary allocation that creates coupling between unrelated consumers.
+Every consumer does `getCurrentSnapshot().spatialIndex?.query(bounds)` — three levels of indirection plus a null guard. Tools access `getCurrentSnapshot().objectsById.get(id)` dozens of times per gesture. The Snapshot is an unnecessary indirection layer that couples unrelated consumers.
 
-### Spatial index as module-level singleton
+Only one consumer actually needs the full Snapshot object: CanvasRuntime (for dirty rect invalidation). Tools, renderers, and hit testing only need `objectsById` and `spatialIndex` — they don't care about versions or dirty patches.
 
-The spatial index is app infrastructure, not room-owned state. There's one room at a time, one index.
+### Spatial index and objectsById — direct access, always non-null
+
+Currently `spatialIndex` is created lazily (first `publishSnapshotNow()` call) and exposed only via Snapshot. `objectsById` is a private Map exposed the same way. Both should be non-null from construction and directly accessible — the question is whether they live as module-level singletons or as RoomDocManager fields exported via getters from `room-runtime.ts`.
+
+Module-level singleton pattern:
 
 ```
-// lib/spatial-index.ts (move from packages/shared — workers don't use it)
 const index = new ObjectSpatialIndex();
 export function getSpatialIndex(): ObjectSpatialIndex { return index; }
 ```
 
-Always exists. Between rooms, it's empty — queries return `[]`. That's the correct answer. No null checks anywhere. Room observer calls `bulkLoad()` on connect, `clear()` on disconnect.
-
-Tools go from `getCurrentSnapshot().spatialIndex?.query(bounds)` to `getSpatialIndex().query(bounds)`.
-
-### objectsById as module-level singleton
-
-Same pattern:
+Room-owned but directly exported pattern:
 
 ```
-// lib/objects-registry.ts
-const objectsById = new Map<string, ObjectHandle>();
-export function getObject(id: string): ObjectHandle | undefined { return objectsById.get(id); }
-export function getObjectsById(): ReadonlyMap<string, ObjectHandle> { return objectsById; }
+// RoomDocManager creates in constructor, room-runtime re-exports
+export function getSpatialIndex() { return getActiveRoomDoc().spatialIndex; }
 ```
 
-Tools go from `getCurrentSnapshot().objectsById.get(id)` to `getObject(id)`.
+The RBush tree is technically room-scoped state (it's rebuilt from room data, cleared on disconnect). Whether the instance itself is room-owned or app-lifetime with room-driven clear/rebuild is an open decision. Either way, the access pattern for consumers is the same: `getSpatialIndex().query(bounds)` — no null checks, no snapshot indirection.
 
-### Kill the Snapshot -> dirty bus
+Same applies to `objectsById`. Either pattern eliminates the current `getCurrentSnapshot().objectsById.get(id)` indirection.
 
-With objectsById and spatialIndex as singletons, the Snapshot collapses to a notification channel:
+### Snapshot simplification
+
+Only one consumer needs the full Snapshot subscription: CanvasRuntime (for dirty rect invalidation). The Snapshot can simplify to a dirty notification channel:
 
 ```
 type DirtyListener = (patch: { rects: WorldBounds[] }) => void;
-export function subscribeDirty(cb: DirtyListener): () => void;
-export function emitDirty(patch): void;
 ```
 
-CanvasRuntime subscribes to dirty patches. The observer emits them. No Snapshot object, no version counter, no `getCurrentSnapshot()` calls.
+No `evictIds` in the patch — cache eviction happens at the source (see below). `objectsById` and `spatialIndex` accessed directly, not bundled into the snapshot. `docVersion` and `createdAt` are unused.
 
-### Evictions at the source
+### Cache eviction at the source
 
-Cache eviction is a side effect of object deletion. Handle it in the observer, not in a downstream consumer reading evictIds from a patch:
+Cache eviction is a side effect of object deletion/modification. Handle it in the RoomDocManager observer when the change is detected, not downstream in CanvasRuntime reading `evictIds` from a dirty patch:
 
 ```
-// In observer, on deletion:
+// In RoomDocManager observer, on deletion:
 objectCache.evict(id);
+textLayoutCache.remove(id);
+codeSystem.remove(id);
+invalidateBookmarkLayout(id);
 objectsById.delete(id);
 spatialIndex.remove(id);
 dirtyRects.push(bboxToBounds(handle.bbox));
 ```
 
-DirtyPatch shrinks to just `{ rects: WorldBounds[] }`. No `evictIds` field.
-
-### Move types out of shared
-
-`packages/shared` should contain only what's genuinely shared between client and worker:
-
-**Keep in shared:** geometry types, object kind types, Y.Map accessors, bbox computation, url-utils, image-validation
-
-**Move to client:** ObjectSpatialIndex, ObjectHandle, IndexEntry, connector lookup — anything that builds derived state for the canvas rendering pipeline. Workers don't do spatial queries or hold ObjectHandles.
+Currently CanvasRuntime does this in its snapshot subscription (line ~143 of CanvasRuntime.ts). Moving it to the source eliminates the `evictIds` field from DirtyPatch entirely.
 
 ---
 
-## Direction: Room Connection
+## Direction: RoomDocManager Simplification
 
-### Composition root, not god class
+### Keep the class, reduce encapsulation
 
-RoomDocManager conflates things with different lifetimes and different consumers. IDB provider is fire-and-forget (nothing references it after setup). UndoManager is user-session scoped. Spatial index is a consumer of the doc, not a peer of it.
+RoomDocManager stays as a class — it genuinely owns the Y.Doc, providers, and observer lifecycle. But it currently over-encapsulates: `objectsById` and `spatialIndex` are private fields exposed only through Snapshot subscriptions. They should be directly accessible (whether room-owned or module-level) and non-null from construction.
 
-The better pattern is a setup function that returns a lean handle:
+### Current gate system (4 gates)
 
-```
-connectRoom(roomId) -> RoomHandle {
-  objects,     // for mutations (the Y.Map)
-  undo,        // for Cmd+Z
-  mutate(fn),  // convenience: ydoc.transact(fn, userId)
-  close(),     // tears down everything
-}
-```
-
-What's NOT on the handle: `doc`, `idb`, `ws`, `spatialIndex`, `objectsById`. IDB/WS are fire-and-forget inside the closure. Spatial index and objectsById are module-level singletons — tools import them directly. The return surface is tiny.
-
-All fields non-null from construction. No `if (this.websocketProvider)`, no `if (this.indexeddbProvider)`, no `if (this.spatialIndex)`. The handle is either alive or closed. Binary state.
-
-### No two-step init
-
-`connectRoom()` wires everything and returns. No `open()` to call later. The function returns, the system is running. IDB syncs async, WS connects async, but the wiring is synchronous. The observer fires when data arrives, whenever that is.
-
-### IDB + WS timing: idempotent rebuild
-
-IDB is fast (~30-50ms). Worth waiting for so the first render has local data. WS sync brings the authoritative state and should trigger a rebuild for optimal RBush tree structure.
-
-```
-let indexBuilt = false;
-
-function rebuildIndex() {
-  hydrateAll(objects);  // walk Y.Map -> objectsById + spatialIndex.bulkLoad()
-  indexBuilt = true;
-  emitDirty({ rects: [FULL_WORLD] });
-}
-
-// Observer: incremental after first build
-objects.observeDeep((events) => {
-  if (!indexBuilt) return;
-  applyIncrementalChanges(events);
-});
-
-// IDB -> first bulk load
-Promise.race([idb.whenSynced, timeout(2_000)]).then(() => rebuildIndex());
-
-// WS synced -> rebuild with complete state
-ws.on('synced', () => rebuildIndex());
+```typescript
+// Current — room-doc-manager.ts
+private gates = {
+  idbReady: false,        // IndexedDB provider synced
+  wsConnected: false,     // WebSocket connected
+  wsSynced: false,        // WebSocket synced (unused beyond setting it)
+  firstSnapshot: false,   // First snapshot published (unused beyond setting it)
+};
 ```
 
-Scenarios:
+`wsSynced` and `firstSnapshot` are set but never read as guards. `idbReady` gates the objects observer + UndoManager attachment. `wsConnected` gates awareness sending.
 
-- **Returning user:** IDB loads fast -> first render with local data. WS syncs small delta -> observer handles incrementally. `synced` fires -> rebuild for clean tree.
-- **First-time user:** IDB loads instantly (empty) -> empty canvas. WS syncs full state -> observer processes incrementally until `synced` fires -> rebuild with everything, optimal tree.
-- **Reconnect after disconnect:** Index already built. WS re-syncs delta -> observer handles incrementally. `synced` fires -> rebuild catches missed changes.
+Target: reduce to the gates that are actually load-bearing. The awareness system (being extracted) will own its own connection-aware sending logic, so `wsConnected` may leave with it.
 
-`rebuildIndex()` is idempotent and cheap (<10ms for typical rooms). Calling it twice is fine. The "wasted" IDB-only build costs ~10ms and gives the user something to see while WS catches up.
+### What stays in RoomDocManager
 
-### WS 'synced' behavior
+- Y.Doc, IDB provider, WS provider ownership and lifecycle
+- Objects deep observer (two-epoch: rebuild + incremental)
+- UndoManager
+- `mutate()` convenience wrapper
+- `objects` field (the Y.Map)
 
-`synced` fires once per successful sync handshake (sync step 2 completes — server sends diff based on client's state vector). On reconnect (network drop, DO hibernation wakeup), the provider re-syncs and fires `synced` again. Each re-sync is a chance to reconcile — the rebuild catches any delta from the disconnect period.
+### What gets extracted or exported
 
-PartyServer DOs hibernate when idle (no connections). Wakeup triggers a normal sync handshake. No missed changes during hibernation — the DO was idle.
+- `objectsById` → directly accessible, non-null from construction (ownership TBD — room-owned field or module singleton)
+- `spatialIndex` → directly accessible, non-null from construction (ownership TBD — same question)
+- Awareness/presence system → separate module (see below)
+- Cache eviction → called directly from observer, not piped through dirty patch
+- Connector lookup → stays (it's observer-driven), but reverse map could become module-level
 
 ---
 
 ## Direction: Presence Redesign
 
-Two data paths, completely separated. The module decomposition above is prerequisite infrastructure.
+### Current state
 
-### Four concerns, different characteristics
+All awareness logic lives inside RoomDocManager (~300 lines): sending, receiving, interpolation, presence view building, animation timing. This conflates room document concerns with presence rendering concerns.
 
-| Concern  | Frequency                       | Consumer                     | Allocation budget      |
-| -------- | ------------------------------- | ---------------------------- | ---------------------- |
-| Send     | ~20hz while moving, 0 when idle | Network (awareness protocol) | N/A                    |
-| Receive  | ~20hz per peer                  | Mutable state                | Zero — mutate in place |
-| Render   | 60fps during animation          | Canvas overlay               | Zero — reuse objects   |
-| React UI | On join/leave only              | Components                   | New array ref (rare)   |
+Current awareness sending: timer-based scheduling at 15Hz with backpressure, sends full state every tick even if only cursor moved. Current interpolation: linear lerp with `PeerSmoothing` structs inside RoomDocManager. Current cursor rendering: immediate-mode path commands + `measureText` each frame (~95 lines in `presence-cursors.ts`).
 
-### Principle: Two data paths, completely separated
+### Extract to separate module
 
-React needs a stable peer list that only changes on join/leave/name/color. It must NOT re-render when cursors move.
+Awareness becomes its own module (`lib/presence.ts` or similar), not part of RoomDocManager. It receives the Y.Awareness instance from the room connection and manages its own lifecycle.
 
-The renderer needs mutable cursor positions it reads imperatively every frame. Zero allocation.
+### Event-driven sending
 
-These cannot be the same data structure. The current `PresenceView` conflates them — every cursor update creates a new Map, which triggers React subscriptions. `UserAvatarCluster` re-renders on every cursor move because `useMemo([presence.users])` always triggers (Map identity changes).
+Current approach schedules sends on a timer (15Hz base, 8Hz degraded). New approach: mark dirty on cursor change, send via throttle (leading+trailing). No regular interval — if nothing changed, nothing sends. Awareness already broadcasts full state diffs, so we don't need to re-send unchanged fields like user profile info on every tick.
 
-### Ownership
+### Flatter awareness type
 
-**`presence.ts` — module-level, no class:**
+Current `Awareness` interface sends `userId`, `name`, `color`, `cursor`, `seq` on every state update. Profile fields (`name`, `color`) rarely change — they only need to be sent once (on connect) and when actually modified. The wire format should separate identity from cursor position.
 
-- Throttled local cursor sending (20hz, 50ms, leading+trailing)
-- `peerCursors: Map<clientId, {x, y}>` — mutated in place, read by renderer
-- `peerInfo: Map<clientId, {userId, name, color}>` — stable refs, read by Zustand selector
-- Zustand store with `peerList` for React (same pattern as selection-store)
-- Awareness 'change' wiring + disconnect cleanup
-- Receives the YProvider via `init(provider)` — provider owns awareness internally
-- Does NOT own: interpolation state (renderer's job), connection state (YAGNI)
+### Listen to 'change' events
 
-**`presence-cursors.ts` — renderer layer:**
+Switch from the current 'update' event to 'change' events on awareness. Both fire at the same times in our setup (check interval disabled on client and server), but 'change' is semantically correct — it filters clock-only renewals.
 
-- Display positions: `Map<clientId, Float64Array(2)>` — interpolation state
-- Cursor bitmap cache: `Map<key, OffscreenCanvas>` — pre-rendered arrow+label
-- `drawCursors(ctx, dt): boolean` — returns true if still animating (self-sustaining invalidation)
+### Two data paths (unchanged from original)
 
-**Room connection (`connectRoom`):**
+React needs a stable peer list that changes on join/leave/name/color. The renderer needs mutable cursor positions read imperatively every frame.
 
-- Does NOT own awareness (YProvider creates it, presence.ts wires it)
-- Does NOT own presence state or sending
-- Does NOT own presence rendering
+### Animation controller pattern for cursor interpolation
 
-### Sending: 20hz throttle + 0.5 quantization
+Cursor interpolation becomes an `AnimationJob` registered with the existing `AnimationController` singleton. The animation controller already has the infrastructure: `frame(ctx, now, dt)` returns boolean for self-sustaining invalidation, push-based via `setInvalidator()`.
 
-Custom 15-line throttle (leading+trailing, no dependency). Pre-dedup: if quantized position matches last pending position, skip. No RAF — timeout-based throttle gives precise control over network rate independent of display rate.
+This means interpolation state lives in the renderer layer (the animation job), not in RoomDocManager. The presence module writes target positions to mutable maps; the animation job reads them and smooths toward targets each frame.
 
-### Receiving: mutable maps + fine-grained React notification
+### Exponential smoothing (not linear lerp)
+
+Replace the current linear lerp window (`INTERP_WINDOW_MS = 66ms`, start/end times, `displayStart`/`last` positions) with exponential smoothing:
 
 ```
-function handleChange({ added, updated, removed }) {
-  // HOT PATH: cursor positions mutated in place (zero allocation)
-  // WARM PATH: peer info checked for actual changes before replacing
-  // COLD PATH: usePresenceStore.setState({ peerList }) only on structural changes
-  // Always: invalidateOverlay()
-}
-```
-
-`usePresenceStore.setState()` only fires on join/leave/name/color. Cursor-only updates: zero React re-renders.
-
-### Rendering: exponential smoothing + bitmap cache
-
-Each frame, exponential lerp toward target position (tau=25ms, ~99% convergence in 100ms):
-
-```
-alpha = 1 - exp(-dt / 25)
+alpha = 1 - exp(-dt / tau)
 display += (target - display) * alpha
 ```
 
-Pre-rendered cursor bitmaps (arrow + name label on OffscreenCanvas). One `ctx.drawImage()` per visible cursor per frame. No path commands, no measureText, no state saves.
+Tau needs careful tuning. The overlay loop runs on native RAF (~16.6ms at 60fps, ~8.3ms at 120fps, variable under load). Exponential smoothing is frame-rate independent by design (`dt` absorbs timing), but the visual feel changes with frame rate — fast frames mean smaller alpha per step, more visible smoothing. Tau ~25ms is a starting point; actual value needs tuning on real hardware at real frame rates. If a peer jumps (gap in sequence), the exponential will converge quickly enough that explicit snap logic may be unnecessary.
 
-Self-sustaining animation: `drawCursors()` returns boolean -> overlay self-invalidates while cursors are moving. When all converge, rendering stops. Next awareness update -> `invalidateOverlay()` -> cycle restarts.
+### Bitmap cursor cache
 
-No external RAF loop. No animation deadline. No `presenceAnimDeadlineMs`. The render loop's own invalidation mechanism IS the animation driver.
+Pre-render cursor arrow + name label onto `OffscreenCanvas`, keyed by `(name, color)`. One `ctx.drawImage()` per visible cursor per frame instead of path commands + `measureText` + `roundRect`. Cache invalidates on name/color change (rare). This replaces the current `drawCursorPointer()` + `drawNameLabel()` in `presence-cursors.ts`.
 
-### Connection state
+### Zustand store for peer list
 
-Nobody needs it reactively right now. No UI shows "connected." Add `connected: boolean` to the presence store when needed. One line. Don't build it until needed.
+React components (`UserAvatarCluster`) subscribe to a Zustand store for the peer list. Store only updates on join/leave/name/color — cursor-only updates produce zero React re-renders. Potentially partialized with the device-ui store as a non-persisted partition to avoid proliferating stores (currently 3 stores + user-profile-manager singleton).
+
+---
+
+## Direction: Store Consolidation & Room-Scoped State
+
+### Camera store: per-room persistence
+
+Scale and pan should persist per roomId, keyed in localStorage. When navigating to a room, restore the last viewport. localStorage reads are synchronous — no async needed, no loader, fits naturally into `connectRoom()` or a camera-store side effect.
+
+### Selection store: clear on room changes
+
+Currently nothing clears selection state when switching rooms. The `key={roomId}` remount handles React component state, but the Zustand selection store is global and survives remounts. `connectRoom()` or `disconnectRoom()` should clear selection (selectedIds, transform, marquee, topology, editing IDs).
+
+### UserId migration to Zustand
+
+`userProfileManager` is a hand-rolled singleton with localStorage persistence and pub/sub. localStorage is synchronous, so this can become a Zustand store (or a partition of an existing store) with `persist` middleware. Simplifies the access pattern — components and imperative code both use `useProfileStore.getState()`.
+
+### Potential store partitioning
+
+Four separate state containers (camera, selection, device-ui, profile) may be reducible. Non-persisted ephemeral state (selection, presence peer list, cursor override) could share a store. Persisted per-device state (tool settings, text defaults, profile) could share another. Per-room persisted state (camera viewport) is its own concern. Explore whether partializing stores with Zustand `persist` middleware's `partialize` option is cleaner than 4+ independent stores.
 
 ---
 
@@ -249,58 +217,18 @@ Nobody needs it reactively right now. No UI shows "connected." Add `connected: b
 
 ### Pre-constructed render loops
 
-RenderLoop and OverlayRenderLoop are app infrastructure, not room-scoped. Pre-construct as module-level singletons, start/stop when Canvas mounts:
+RenderLoop and OverlayRenderLoop are currently constructed fresh in every `CanvasRuntime.start()` and destroyed in `stop()`. They should be module-level singletons with `start()`/`stop()` lifecycle:
 
 ```
 // renderer/render-loop.ts
 const renderLoop = new RenderLoop();
 export { renderLoop };
 
-// CanvasRuntime.start() -> renderLoop.start(baseCtx)
-// CanvasRuntime.stop()  -> renderLoop.stop()
+// CanvasRuntime.start() → renderLoop.start()
+// CanvasRuntime.stop()  → renderLoop.stop()
 ```
 
-The render loop doesn't hold room state — it reads from spatial index, objectsById, camera store each frame. When the room changes, the data changes, the loop picks it up. No reconstruction, no null checks.
-
-### Code splitting
-
-Vite splits at `import()` boundaries. Three concrete wins:
-
-**Editor overlays (biggest win):** CodeMirror and Tiptap are ~200KB+ combined. Lazy-load on first double-click:
-
-```
-// CodeTool.ts
-const { createCodeEditor } = await import('./code-editor-setup');
-```
-
-Vite creates a separate chunk. First use loads it, subsequent uses are cached.
-
-**Route splitting (TanStack Router native):** Landing page, auth page, room page — each gets its own chunk via `lazy` route definitions. Canvas code doesn't load until room navigation.
-
-**Tool splitting:** Not worth it. Entire tool system is ~40KB. Async overhead outweighs savings.
-
-### TanStack Router
-
-Room lifecycle maps to route lifecycle. Room connection is not a DOM concern:
-
-```
-Route('/room/$roomId', {
-  beforeLoad: ({ params }) => {
-    const handle = connectRoom(params.roomId);
-    setActiveRoom(handle);
-    return { handle };
-  },
-  onLeave: () => {
-    getActiveRoom()?.close();
-    setActiveRoom(null);
-  },
-  component: RoomPage,
-});
-```
-
-Canvas still uses `useLayoutEffect` for DOM refs (canvas elements, editorHost). Clean separation: **route owns data lifecycle, component owns DOM lifecycle.**
-
-If you want the first paint to have IDB data, `beforeLoad` can be async — await the IDB promise race. TanStack Router shows a pending state while it runs. By the time Canvas mounts, local data is loaded.
+The render loop doesn't hold room state — it reads from spatial index, objectsById, camera store each frame. When the room changes, the data changes, the loop picks it up. No reconstruction, no null checks. The AnimationController is already a module-level singleton — render loops should match.
 
 ---
 
@@ -311,126 +239,100 @@ If you want the first paint to have IDB data, `beforeLoad` can be async — awai
 ```
 APP LIFETIME (module-level singletons, exist forever):
   camera-store, device-ui-store, selection-store, tool-registry, object-cache
-  spatial-index         <- always exists, sometimes empty
-  objects-registry      <- always exists, sometimes empty
-  render-loop           <- pre-constructed, start/stop
-  overlay-loop          <- pre-constructed, start/stop
-  dirty bus             <- pub/sub for invalidation
+  render-loop           ← pre-constructed, start/stop
+  overlay-loop          ← pre-constructed, start/stop
+  animation-controller  ← already singleton
+  dirty bus             ← pub/sub for invalidation
 
 ROOM LIFETIME (created per connectRoom, destroyed on close):
   Y.Doc, IDB provider, WS provider, UndoManager
-  Objects observer (writes to spatial index + objects registry + emits dirty)
-  Presence system (module-level init/destroy per room)
+  objectsById, spatialIndex  ← non-null, directly accessible (ownership TBD)
+  Objects observer (populates objectsById + spatialIndex, evicts caches)
+  Presence system (init/destroy per room, owns awareness wiring)
 
 REQUEST LIFETIME (ephemeral):
-  DirtyPatch (per observer batch, consumed immediately)
-  Tool gesture state (begin -> move -> end)
+  Dirty rects (per observer batch, consumed immediately by CanvasRuntime)
+  Tool gesture state (begin → move → end)
+  Animation job frames (cursor interpolation, eraser trail)
 ```
 
 ### Direct access over indirection
 
-| Before                                                                | After                                                |
-| --------------------------------------------------------------------- | ---------------------------------------------------- |
-| `getCurrentSnapshot().spatialIndex?.query(bounds)`                    | `getSpatialIndex().query(bounds)`                    |
-| `getCurrentSnapshot().objectsById.get(id)`                            | `getObject(id)`                                      |
-| `roomDoc.mutate((ydoc) => { ydoc.getMap('root').get('objects')... })` | `roomDoc.mutate(() => { roomDoc.objects.set(...) })` |
-| `subscribe(snap => { snap.dirtyPatch?.rects... })`                    | `subscribeDirty(patch => { patch.rects... })`        |
+| Before                                               | After                                             |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| `getCurrentSnapshot().spatialIndex?.query(bounds)`   | `getSpatialIndex().query(bounds)` (no null check) |
+| `getCurrentSnapshot().objectsById.get(id)`           | `getObject(id)` (direct, no snapshot)             |
+| `roomDoc.mutate(() => { roomDoc.objects.set(...) })` | unchanged (still clean)                           |
+| `subscribe(snap => { snap.dirtyPatch?.rects... })`   | `subscribeDirty(patch => { patch.rects... })`     |
 
 ### No null fields, no deferred init
 
-Everything needed by the room is created in `connectRoom()`. No "if provider exists" guards. No "if spatial index is initialized" checks. Singletons always exist (empty between rooms). Handle fields are all non-null.
+Singletons always exist (empty between rooms). Handle fields are all non-null from construction. No `if (this.websocketProvider)`, no `if (this.spatialIndex)`. Binary state: alive or closed.
 
 ### Side effects at the source
 
 Cache eviction, layout cache invalidation, connector lookup updates — these happen in the observer when the change is detected, not downstream in a consumer reading a patch.
 
-### Module-level singletons for shared read access
-
-Anything read by multiple subsystems (tools, renderer, hit testing) lives at module scope with a getter. Room lifecycle populates/clears it. No threading state through subscriptions or snapshots.
-
 ---
 
-## Ownership: Who Owns What
+## Current State Reference
 
-### `presence.ts` — module-level, no class
+Snapshot of the codebase as of Phase 5 completion, for future session context.
 
-```
-Owns:
-  - Throttled local cursor sending
-  - peerCursors: mutable Map<clientId, {x, y}> (mutated in place)
-  - peerInfo: mutable Map<clientId, {userId, name, color}> (stable object refs)
-  - Zustand store with peerList for React (selector pattern, same as selection-store)
-  - Awareness 'change' wiring + disconnect cleanup
+### RoomDocManager (`lib/room-doc-manager.ts`, ~1365 lines)
 
-Receives:
-  - The YProvider via init(provider) — provider owns the awareness instance
-  - Access provider.awareness for read/write, provider.ws if ever needed for backpressure
-```
+- **Gates:** 4 gates (`idbReady`, `wsConnected`, `wsSynced`, `firstSnapshot`). Only `idbReady` and `wsConnected` are load-bearing.
+- **Awareness:** ~300 lines of sending, receiving, interpolation, presence view building. Timer-based 15Hz send. Linear lerp interpolation with `PeerSmoothing` structs. Backpressure detection on WS buffer.
+- **Snapshot:** Published synchronously on every Y.Doc `updateV2` event. Contains live references to `objectsById` Map and `spatialIndex` (both private fields). `DirtyPatch` carries `rects: WorldBounds[]` and `evictIds: string[]`.
+- **Cache eviction:** `evictIds` piped through DirtyPatch to CanvasRuntime, which calls `objectCache.evictMany()`. Text/code/bookmark caches evicted in observer directly.
+- **Observer:** Two-epoch (rebuild via `hydrateObjectsFromY` + incremental via `applyObjectChanges`). `needsSpatialRebuild` flag. Connector lookup updated in observer.
 
-Why module-level, not a class:
+### Render Loops
 
-- One room per tab. No multi-instance need.
-- Matches camera-store, room-runtime, tool-registry pattern.
-- Simpler than constructing/destroying class instances.
+- **RenderLoop** and **OverlayRenderLoop**: constructed fresh each `CanvasRuntime.start()`, destroyed on `stop()`. No constructor params.
+- **AnimationController**: already a module-level singleton (`getAnimationController()`). Lazy-initialized. Only job registered: `EraserTrailAnimation`.
+- **Overlay frame order:** full clear → world-space tool preview → screen-space cursors → animation jobs.
 
-## Receiving: Mutable Maps, Fine-Grained React Notification
+### Presence Cursors (`renderer/layers/presence-cursors.ts`, ~95 lines)
 
-### Listen on 'change' events
+- Immediate-mode: `drawCursorPointer()` draws arrow via path commands, `drawNameLabel()` draws rounded rect + `measureText` + `fillText`.
+- Reads `getCurrentPresence()` imperatively, converts world→canvas per cursor.
+- Exported functions for future animation job reuse.
 
-The provider sends on 'change'. We receive on 'change'. Both filter clock-only renewals. The check interval is disabled on both client and server, so 'change' and 'update' fire at the same times anyway. 'change' is semantically correct.
+### Stores
 
-### Two separate data structures
+| Store                | Persisted              | Room-scoped | Clears on room change    |
+| -------------------- | ---------------------- | ----------- | ------------------------ |
+| camera-store         | No                     | No          | No                       |
+| selection-store      | No                     | No          | No (only on tool switch) |
+| device-ui-store      | Yes (localStorage, v4) | No          | No                       |
+| user-profile-manager | Yes (localStorage, v1) | No          | N/A (global identity)    |
 
-```typescript
-// ---- HOT PATH: cursor positions, mutated in place, read by renderer ----
-// The {x,y} objects are created once per peer and REUSED. Never recreated.
-const peerCursors = new Map<number, { x: number; y: number }>();
-
-// ---- WARM PATH: peer identity, stable refs, read by React via Zustand ----
-const peerInfo = new Map<number, { userId: string; name: string; color: string }>();
-```
-
-### Zustand store for React (same pattern as selection-store)
+### Awareness Wire Format
 
 ```typescript
-import { create } from 'zustand';
-
-interface PeerEntry {
-  clientId: number;
-  userId: string;
-  name: string;
-  color: string;
-}
-
-export const usePresenceStore = create<{ peerList: PeerEntry[] }>(() => ({
-  peerList: [],
-}));
+// Sent via yAwareness.setLocalState() on every tick:
+{ userId, name, color, cursor?: { x, y }, seq }
 ```
 
-Components use selectors — same pattern as `useSelectionStore`:
+All fields re-sent every time. `seq` is monotonically incrementing. Mobile skips cursor. Quantized to 0.5 world units.
 
-```typescript
-// UserAvatarCluster — only re-renders when peer list changes
-const peers = usePresenceStore((s) => s.peerList);
-
-// Could select just count if that's all you need
-const peerCount = usePresenceStore((s) => s.peerList.length);
-```
-
-`peerList` array reference only changes on join/leave/name/color. Cursor moves: zero React re-renders. Zero. No `useSyncExternalStore`, no manual subscription plumbing. Just Zustand with selectors, consistent with every other store.
+---
 
 ## Open Questions
 
 1. **Smoothing tau value:** 25ms is snappy. Tune by feel — 15ms for snappier, 40ms for smoother.
 
-2. **Provider destruction cascade:** Verify `provider.destroy()` cleans up awareness + WS. If not, destroy explicitly.
+2. **Store partitioning:** Is partialized device-ui + presence store cleaner than separate stores? Need to weigh persistence middleware complexity vs cognitive overhead of 4+ stores.
 
-3. **UndoManager scope:** With `ydoc.getMap('objects')` (done) and eventual presence extraction, verify Tiptap's ySyncPluginKey origin still works.
+3. **Camera persistence granularity:** localStorage per roomId could accumulate stale entries. LRU eviction? Max entries? Or just let it grow (room count is practically bounded).
 
-4. **Cursor bitmap shape:** The exact arrow + label design needs work. Bitmap approach makes iteration easy.
+4. **Selection clear timing:** Should selection clear in `connectRoom()` (before component mounts) or in `disconnectRoom()` (during cleanup)? Former is safer — guarantees clean state for the new room.
 
-5. **RBush rebuild frequency:** `synced` fires on each reconnect. Verify rebuild cost stays <10ms for large rooms (1000+ objects). If not, gate on delta size.
+5. **Awareness identity separation:** How to avoid re-sending `name`/`color` every tick while staying compatible with Yjs awareness protocol (which broadcasts full state). May need to split into awareness state (cursor+seq) vs a one-time identity handshake, or accept the bandwidth and just reduce send frequency.
 
-6. **TanStack Router prefetch:** Does prefetching a room route trigger `beforeLoad`? If so, does that prematurely connect to a room? May need to defer connection to the component.
+6. **Provider destruction cascade:** Verify `provider.destroy()` cleans up awareness + WS. If not, destroy explicitly.
 
-7. **Code splitting measurement:** Profile actual bundle sizes before splitting. CodeMirror+Tiptap are the obvious targets. Measure first, split second.
+7. **objectsById/spatialIndex ownership:** Room-owned fields (created in constructor, exported via room-runtime getters) vs module-level singletons (always exist, populated/cleared by room). Both give the same consumer API. Room-owned is more truthful (they ARE room data). Module-level avoids the "no active room" throw path. Decision impacts whether room-runtime re-exports them or a separate module holds them.
+
+8. **Cursor bitmap invalidation:** OffscreenCanvas keyed by `(name, color)` — should the cache be bounded? Peers come and go. Weak references or explicit cleanup on peer departure.

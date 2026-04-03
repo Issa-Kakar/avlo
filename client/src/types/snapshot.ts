@@ -1,7 +1,8 @@
-import { ObjectHandle, DirtyPatch } from './objects';
+import { ObjectHandle } from './objects';
+import { ObjectSpatialIndex } from '@/lib/spatial';
 
 // Forward declare the ObjectSpatialIndex interface
-export interface ObjectSpatialIndex {
+export interface ObjectSpatialIndexShape {
   insert(id: string, bbox: [number, number, number, number], kind: string): void;
   update(
     id: string,
@@ -20,9 +21,7 @@ export interface ObjectSpatialIndex {
 export interface Snapshot {
   docVersion: number;
   objectsById: ReadonlyMap<string, ObjectHandle>; // Live references
-  spatialIndex: ObjectSpatialIndex | null;
-  createdAt: number;
-  dirtyPatch?: DirtyPatch | null;
+  spatialIndex: ObjectSpatialIndexShape;
 }
 
 // View transform for coordinate conversion
@@ -38,8 +37,6 @@ export function createEmptySnapshot(): Snapshot {
   return {
     docVersion: 0,
     objectsById: new Map<string, ObjectHandle>(),
-    spatialIndex: null,
-    createdAt: Date.now(),
-    dirtyPatch: null,
+    spatialIndex: new ObjectSpatialIndex(),
   };
 }

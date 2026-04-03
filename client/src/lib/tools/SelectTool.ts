@@ -1722,10 +1722,8 @@ export class SelectTool implements PointerTool {
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
     const snapshot = getCurrentSnapshot();
-    const index = snapshot.spatialIndex;
-    if (!index) return;
 
-    const results = index.query(marqueeRect);
+    const results = snapshot.spatialIndex.query(marqueeRect);
 
     // Geometry-aware intersection test for each candidate
     // Select objects whose actual geometry intersects marquee (industry standard)
@@ -1759,11 +1757,8 @@ export class SelectTool implements PointerTool {
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
 
-    const index = snapshot.spatialIndex;
-    if (!index) return null;
-
     // Query spatial index with bounding box
-    const results = index.query({
+    const results = snapshot.spatialIndex.query({
       minX: worldX - radiusWorld,
       minY: worldY - radiusWorld,
       maxX: worldX + radiusWorld,

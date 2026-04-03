@@ -77,7 +77,6 @@ export function drawObjects(
   viewport: ViewportInfo,
 ): void {
   const { spatialIndex, objectsById } = snapshot;
-  if (!spatialIndex) return;
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
   const selectionState = useSelectionStore.getState();
   const selectedSet = new Set(selectionState.selectedIds);
