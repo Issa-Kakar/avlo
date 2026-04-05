@@ -290,17 +290,6 @@ Awareness state sent via y-protocols:
 
 ---
 
-## WebSocket Protocol (ws vs wss)
-
-YProvider auto-selects the protocol based on the host:
-
-- `ws` for localhost, 127.0.0.1, private IPs (192.168.x, 10.x, 172.16-31.x) — local dev
-- `wss` for all other hosts — production
-
-The host is `window.location.host`. No explicit `protocol` option is passed — the auto-detection handles dev and production correctly.
-
----
-
 ## Color Palette
 
 `lib/user-identity.ts` defines 16 high-contrast colors:
