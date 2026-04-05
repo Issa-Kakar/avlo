@@ -20,13 +20,12 @@ import Highlight from '@tiptap/extension-highlight';
 import { getObjectsById, getSpatialIndex, transact, getObjects } from '@/canvas/room-runtime';
 import { getCurrentTool } from '@/canvas/tool-registry';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getLastCursorWorld } from '@/canvas/cursor-tracking';
 import { getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
 import { animateToFit } from '@/canvas/animation/ZoomAnimator';
 import { deleteSelected } from '@/lib/utils/selection-actions';
-import { userProfileManager } from '@/lib/user-profile-manager';
 import type { WorldBounds } from '@/types/geometry';
 import { normalizeUrl } from '@avlo/shared';
 import {
@@ -163,7 +162,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
     dy = target[1] - cy;
   }
 
-  const userId = userProfileManager.getIdentity().userId;
+  const userId = getUserId();
   const now = Date.now();
 
   transact(() => {
@@ -398,7 +397,7 @@ function createPastedTextObject(
 
   const [worldX, worldY] = position ?? getPasteTarget();
   const objectId = existingId ?? ulid();
-  const userId = userProfileManager.getIdentity().userId;
+  const userId = getUserId();
   const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
   transact(() => {

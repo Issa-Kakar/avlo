@@ -18,7 +18,7 @@ import {
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import {
   getCodeProps,
   getLineNumbers,
@@ -52,7 +52,6 @@ import {
 } from '@/lib/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/lib/code/code-theme';
 import { hitTestVisibleCode } from '@/lib/geometry/hit-testing';
-import { userProfileManager } from '@/lib/user-profile-manager';
 import type { PointerTool, PreviewData } from './types';
 
 export class CodeTool implements PointerTool {
@@ -310,7 +309,7 @@ export class CodeTool implements PointerTool {
     // Per-session UndoManager scoped to Y.Text + Y.Map (captures content + property changes)
     const yText = props.content;
     const yMap = handle.y;
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
     this.sessionUM = new Y.UndoManager([yText, yMap], {
       trackedOrigins: new Set([userId]),
       captureTimeout: 500,

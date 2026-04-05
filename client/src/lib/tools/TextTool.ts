@@ -21,7 +21,7 @@ import { TextCollaboration } from '@/lib/text/extensions';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData } from './types';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import {
   getCanvasElement,
   getVisibleWorldBounds,
@@ -68,7 +68,6 @@ import {
   textLayoutCache,
 } from '@/lib/text/text-system';
 import { hitTestVisibleText, hitTestVisibleNote } from '@/lib/geometry/hit-testing';
-import { userProfileManager } from '@/lib/user-profile-manager';
 import { ulid } from 'ulid';
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
@@ -239,7 +238,7 @@ export class TextTool implements PointerTool {
 
   private createTextObject(worldX: number, worldY: number): string {
     const objectId = ulid();
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
     const store = useDeviceUIStore.getState();
     const isNoteMode = store.activeTool === 'note';
 
@@ -449,7 +448,7 @@ export class TextTool implements PointerTool {
       TextCollaboration.configure({
         fragment,
         yObj: handle.y,
-        userId: userProfileManager.getIdentity().userId,
+        userId: getUserId(),
         mainUndoManager: getActiveRoomDoc().getUndoManager(),
         onPropsSync: (keys) => this.syncProps(keys),
       }),

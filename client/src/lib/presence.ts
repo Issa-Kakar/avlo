@@ -10,7 +10,7 @@
 import type { Awareness as YAwareness } from 'y-protocols/awareness';
 import type YProvider from 'y-partyserver/provider';
 import { usePresenceStore, type PeerIdentity } from '@/stores/presence-store';
-import { userProfileManager } from '@/lib/user-profile-manager';
+import { getUserProfile } from '@/stores/device-ui-store';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { isMobile } from '@/stores/camera-store';
 import { clearBitmapCache } from '@/canvas/animation/cursor-bitmap';
@@ -54,15 +54,6 @@ const BACKPRESSURE_CRITICAL = 512 * 1024;
 const peerCursors = new Map<number, PeerCursorState>();
 
 // ─── Lifecycle ───────────────────────────────────────────────────────
-
-/**
- * Set localUserId in presence store. Called early (RoomDocManager constructor)
- * before the provider exists — no awareness object involved.
- */
-export function initPresenceIdentity(): void {
-  const identity = userProfileManager.getIdentity();
-  usePresenceStore.getState().setLocalUserId(identity.userId);
-}
 
 /**
  * Attach to the provider's awareness. Wires update handler + WS status handler.
@@ -259,7 +250,7 @@ function getBackpressureDelay(): number {
 
 function sendFullState(): void {
   if (!currentAwareness) return;
-  const identity = userProfileManager.getIdentity();
+  const identity = getUserProfile();
   currentAwareness.setLocalState({
     userId: identity.userId,
     name: identity.name,

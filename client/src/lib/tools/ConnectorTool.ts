@@ -17,10 +17,9 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData, ConnectorPreview } from './types';
 import { useCameraStore } from '@/stores/camera-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getHandle, transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
-import { userProfileManager } from '@/lib/user-profile-manager';
 import { getShapeType, getFrame } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
@@ -328,7 +327,7 @@ export class ConnectorTool implements PointerTool {
     if (!this.fromPosition || !this.toPosition || this.routedPoints.length < 2) return;
 
     const id = ulid();
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
     transact(() => {
       const connectorMap = new Y.Map<unknown>();
 

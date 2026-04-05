@@ -12,11 +12,10 @@ import { extractDomain } from '@avlo/shared';
 import { hasActiveRoom, getHandle, transact, getObjects } from '@/canvas/room-runtime';
 import { pasteUrlAsText } from '@/lib/clipboard/clipboard-actions';
 import { postToPrimary } from '@/lib/image/image-manager';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getCurrentTool } from '@/canvas/tool-registry';
-import { userProfileManager } from '@/lib/user-profile-manager';
 import { computeBookmarkHeight, BOOKMARK_WIDTH } from './bookmark-render';
 import {
   createPlaceholder,
@@ -125,7 +124,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       BOOKMARK_WIDTH,
       height,
     ];
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
 
     transact(() => {
       const yObj = new Y.Map<unknown>();

@@ -10,18 +10,18 @@
 | File                                     | Lines | Purpose                                                                                                                    |
 | ---------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------- |
 | `lib/presence.ts`                        | ~355  | All awareness logic: lifecycle (`attach`/`detach`), send (50ms throttle + backpressure), receive (mutable Map), store sync |
-| `stores/presence-store.ts`               | ~50   | Zustand store: `peerIdentities`, `peerCount`, `localUserId`                                                                |
+| `stores/presence-store.ts`               | ~40   | Zustand store: `peerIdentities`, `peerCount` (reads `getUserId()` on-demand from device-ui-store)                          |
 | `canvas/animation/CursorAnimationJob.ts` | ~98   | AnimationJob: exponential smoothing + viewport cull + `drawImage`                                                          |
 | `canvas/animation/cursor-bitmap.ts`      | ~115  | `OffscreenCanvas` → `ImageBitmap` per `color:name`                                                                         |
 
 ### Integration Points (other files)
 
-| File                               | What it does                                                                                                                                    |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lib/room-doc-manager.ts`          | Calls `initPresenceIdentity()` in constructor, calls `attach(provider, cb)` in `initializeWebSocketProvider()`, calls `detach()` in `destroy()` |
-| `canvas/CanvasRuntime.ts`          | Calls `updateCursor(worldX, worldY)` on pointer move, `clearCursor()` on pointer leave                                                          |
-| `renderer/OverlayRenderLoop.ts`    | Registers `CursorAnimationJob` as an animation job in `start()`                                                                                 |
-| `components/UserAvatarCluster.tsx` | Reads `usePresenceStore` directly for peer avatars, always renders "ME"                                                                         |
+| File                               | What it does                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `lib/room-doc-manager.ts`          | Calls `attach(provider, cb)` in `initializeWebSocketProvider()`, calls `detach()` in `destroy()` |
+| `canvas/CanvasRuntime.ts`          | Calls `updateCursor(worldX, worldY)` on pointer move, `clearCursor()` on pointer leave           |
+| `renderer/OverlayRenderLoop.ts`    | Registers `CursorAnimationJob` as an animation job in `start()`                                  |
+| `components/UserAvatarCluster.tsx` | Reads `usePresenceStore` directly for peer avatars, always renders "ME"                          |
 
 ---
 
@@ -76,7 +76,6 @@ RENDER:
 ```
                      ┌────────────────────────┐
                      │   lib/presence.ts       │
-                     │ initPresenceIdentity()  │  ← called in RoomDocManager constructor
                      │ attach(provider, cb)    │  ← called in initializeWebSocketProvider()
                      │ detach()                │  ← called in RoomDocManager.destroy()
                      │ updateCursor()          │  ← called by CanvasRuntime.handlePointerMove
@@ -92,8 +91,7 @@ RENDER:
   │ isMobile()      │   │ (Zustand)        │  │ getCursorBitmap(color,  │
   └─────────────────┘   │ peerIdentities   │  │   name) → ImageBitmap   │
                          │ peerCount        │  └─────────────────────────┘
-                         │ localUserId      │          ▲ reads
-                         └────────┬─────────┘          │
+                         └────────┬─────────┘          ▲ reads
                                   │            ┌──────┴──────────────────┐
                                   │ reads      │ CursorAnimationJob.ts   │
                                   ▼            │ frame(ctx, now, dt)     │
@@ -116,15 +114,15 @@ RENDER:
 
 **Zustand Store** (`usePresenceStore`):
 
-- Contains: `peerIdentities: Map<userId, {name, color}>`, `peerCount`, `localUserId`
+- Contains: `peerIdentities: Map<userId, {name, color}>`, `peerCount`
 - Updated via `setPeers()` only when identities change (peer add/remove/name change — rare)
-- **`setPeers()` filters out localUserId:** entries where `userId === localUserId` are excluded before storing
+- **`setPeers()` filters out local user:** reads `getUserId()` from device-ui-store, excludes self before storing
 - `peerCount` computed from the **filtered** map (unique userIds, excluding self)
 - Read by React components (UserAvatarCluster)
 
 ### ClientId vs UserId — Two Separate Concepts
 
-- **userId:** Stable per-user (stored in localStorage via `userProfileManager`). Same across tabs for the same browser profile.
+- **userId:** Stable per-user (persisted in `device-ui-store` via zustand persist, accessed via `getUserId()`). Same across tabs for the same browser profile.
 - **clientId:** `Y.Doc.clientID` — unique per Y.Doc instance, meaning unique per tab. Two tabs of the same user have different clientIds but the same userId.
 - `cachedLocalClientId` is set once in `attach()` from `provider.awareness.clientID`. Used to filter self in `processBatch()`.
 
@@ -188,7 +186,7 @@ TAU = 60ms
 
 - **`processBatch(added, updated, removed, getState)`:** Called from the `'update'` event handler. Filters `cachedLocalClientId` (self).
 - **`processUpsert(clientId, state)`:** Upserts into `peerCursors` map. On first cursor sample after having none, snaps display to target (no smoothing). Returns `true` if identity (name/color/userId) changed.
-- **`rebuildStore()`:** Builds `Map<userId, PeerIdentity>` from all peerCursors entries. Passes to `usePresenceStore.setPeers()` which filters out `localUserId`.
+- **`rebuildStore()`:** Builds `Map<userId, PeerIdentity>` from all peerCursors entries. Passes to `usePresenceStore.setPeers()` which filters out the local user via `getUserId()`.
 - **Stale cursor clear:** On WS `'connected'` status, clears `peerCursors` and rebuilds store before `sendFullState()`. Awareness sync from DO repopulates current peers.
 - **Overlay invalidation guard:** Only calls `invalidateOverlay()` if there are (or were) remote cursors. The `hadPeers` check ensures one final frame when the last peer disconnects (to clear their cursor visual).
 
@@ -214,7 +212,7 @@ Single `provider.on('status', statusHandler)` in `attach()` handles both:
 
 ```
 RoomDocManagerImpl constructor
-  → initPresenceIdentity()                       // sets localUserId in store, no awareness
+  → this.userId = getUserId()                     // reads from device-ui-store (persisted)
   → ... async init() ...
   → initializeWebSocketProvider()
     → new YProvider(host, room, ydoc, opts)       // provider auto-creates awareness (no awareness option passed)
@@ -292,7 +290,7 @@ Awareness state sent via y-protocols:
 
 ## Color Palette
 
-`lib/user-identity.ts` defines 16 high-contrast colors:
+`lib/utils/generate-user-profile.ts` defines 16 high-contrast colors:
 
 ```
 #E8915A warm orange     #5B8DEF blue          #E05D6F rose          #4CAF7D green

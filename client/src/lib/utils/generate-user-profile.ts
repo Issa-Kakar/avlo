@@ -1,4 +1,3 @@
-// Random adjective-animal name lists
 const ADJECTIVES = [
   'Swift',
   'Bright',
@@ -35,7 +34,7 @@ const ANIMALS = [
   'Deer',
 ];
 
-const COLORS = [
+export const COLORS = [
   '#E8915A', // warm orange
   '#5B8DEF', // blue
   '#E05D6F', // rose
@@ -60,16 +59,13 @@ export interface UserProfile {
 }
 
 export function generateUserProfile(): UserProfile {
-  // Generate random indices using crypto.getRandomValues
   const randomValues = new Uint32Array(3);
   crypto.getRandomValues(randomValues);
 
-  // Random name from lists
   const adjIndex = randomValues[0] % ADJECTIVES.length;
   const animalIndex = randomValues[1] % ANIMALS.length;
   const name = `${ADJECTIVES[adjIndex]} ${ANIMALS[animalIndex]}`;
 
-  // Random color from palette
   const colorIndex = randomValues[2] % COLORS.length;
   const color = COLORS[colorIndex];
 

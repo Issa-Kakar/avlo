@@ -5,7 +5,7 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
-import { userProfileManager } from './user-profile-manager';
+import { getUserId } from '@/stores/device-ui-store';
 import type { RoomId } from '@avlo/shared';
 import type { Snapshot } from '@/types/snapshot';
 import { ObjectSpatialIndex } from '@/lib/spatial';
@@ -33,7 +33,7 @@ import { getCodeProps } from '@/lib/object-accessors';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
 import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
-import { initPresenceIdentity, attach, detach } from './presence';
+import { attach, detach } from './presence';
 
 type Unsub = () => void;
 
@@ -101,12 +101,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
 
-    const identity = userProfileManager.getIdentity();
-    this.userId = identity.userId;
+    this.userId = getUserId();
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
-    initPresenceIdentity();
 
     // Initial snapshot references our live (empty) instances
     this._currentSnapshot = {

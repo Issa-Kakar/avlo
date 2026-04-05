@@ -189,7 +189,7 @@ Pre-render cursor arrow + name label onto `OffscreenCanvas`, keyed by `(name, co
 
 ### Zustand store for peer list
 
-React components (`UserAvatarCluster`) subscribe to a Zustand store for the peer list. Store only updates on join/leave/name/color — cursor-only updates produce zero React re-renders. Potentially partialized with the device-ui store as a non-persisted partition to avoid proliferating stores (currently 3 stores + user-profile-manager singleton).
+React components (`UserAvatarCluster`) subscribe to a Zustand store for the peer list. Store only updates on join/leave/name/color — cursor-only updates produce zero React re-renders.
 
 ---
 
@@ -203,13 +203,9 @@ Scale and pan should persist per roomId, keyed in localStorage. When navigating 
 
 Currently nothing clears selection state when switching rooms. The `key={roomId}` remount handles React component state, but the Zustand selection store is global and survives remounts. `connectRoom()` or `disconnectRoom()` should clear selection (selectedIds, transform, marquee, topology, editing IDs).
 
-### UserId migration to Zustand
+### ~~UserId migration to Zustand~~ ✅ Done
 
-`userProfileManager` is a hand-rolled singleton with localStorage persistence and pub/sub. localStorage is synchronous, so this can become a Zustand store (or a partition of an existing store) with `persist` middleware. Simplifies the access pattern — components and imperative code both use `useProfileStore.getState()`.
-
-### Potential store partitioning
-
-Four separate state containers (camera, selection, device-ui, profile) may be reducible. Non-persisted ephemeral state (selection, presence peer list, cursor override) could share a store. Persisted per-device state (tool settings, text defaults, profile) could share another. Per-room persisted state (camera viewport) is its own concern. Explore whether partializing stores with Zustand `persist` middleware's `partialize` option is cleaner than 4+ independent stores.
+User identity (`userId`, `userName`, `userColor`) moved into `device-ui-store` with zustand persist. `getUserId()` and `getUserProfile()` exported as imperative getters. `userProfileManager` singleton and `user-identity.ts` deleted. `presence-store` reads `getUserId()` on-demand instead of storing `localUserId`.
 
 ---
 
@@ -301,12 +297,11 @@ Snapshot of the codebase as of Phase 5 completion, for future session context.
 
 ### Stores
 
-| Store                | Persisted              | Room-scoped | Clears on room change    |
-| -------------------- | ---------------------- | ----------- | ------------------------ |
-| camera-store         | No                     | No          | No                       |
-| selection-store      | No                     | No          | No (only on tool switch) |
-| device-ui-store      | Yes (localStorage, v4) | No          | No                       |
-| user-profile-manager | Yes (localStorage, v1) | No          | N/A (global identity)    |
+| Store           | Persisted              | Room-scoped | Clears on room change                   |
+| --------------- | ---------------------- | ----------- | --------------------------------------- |
+| camera-store    | No                     | No          | No                                      |
+| selection-store | No                     | No          | No (only on tool switch)                |
+| device-ui-store | Yes (localStorage, v4) | No          | No (includes userId/userName/userColor) |
 
 ### Awareness Wire Format
 

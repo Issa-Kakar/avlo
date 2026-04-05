@@ -7,6 +7,7 @@
  */
 
 import { create } from 'zustand';
+import { getUserId } from '@/stores/device-ui-store';
 
 export interface PeerIdentity {
   name: string;
@@ -14,36 +15,27 @@ export interface PeerIdentity {
 }
 
 interface PresenceState {
-  localUserId: string;
   peerIdentities: Map<string, PeerIdentity>;
   peerCount: number;
 }
 
 interface PresenceActions {
-  setLocalUserId(id: string): void;
   setPeers(peers: Map<string, PeerIdentity>): void;
 }
 
 export const usePresenceStore = create<PresenceState & PresenceActions>((set) => ({
-  localUserId: '',
   peerIdentities: new Map(),
   peerCount: 0,
 
-  setLocalUserId(id: string) {
-    set({ localUserId: id });
-  },
-
   setPeers(peers: Map<string, PeerIdentity>) {
-    set((state) => {
-      // Filter out local user's own identity (same user, different tab)
-      const filtered = new Map<string, PeerIdentity>();
-      for (const [userId, identity] of peers) {
-        if (userId !== state.localUserId) filtered.set(userId, identity);
-      }
-      return {
-        peerIdentities: filtered,
-        peerCount: filtered.size,
-      };
+    const localId = getUserId();
+    const filtered = new Map<string, PeerIdentity>();
+    for (const [userId, identity] of peers) {
+      if (userId !== localId) filtered.set(userId, identity);
+    }
+    set({
+      peerIdentities: filtered,
+      peerCount: filtered.size,
     });
   },
 }));

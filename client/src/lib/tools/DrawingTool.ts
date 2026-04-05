@@ -1,7 +1,12 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { DrawingState, PreviewData, PointerTool } from './types';
-import { useDeviceUIStore, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
+import {
+  useDeviceUIStore,
+  getUserId,
+  type Tool,
+  type ShapeVariant,
+} from '@/stores/device-ui-store';
 import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
 import { HoldDetector } from '../geometry/shape-recognition/HoldDetector';
 import {
@@ -12,7 +17,6 @@ import {
 import { createFillFromStroke } from '@/lib/utils/color';
 import { transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
-import { userProfileManager } from '@/lib/user-profile-manager';
 
 type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond';
 
@@ -63,7 +67,7 @@ function getToolTypeFromActiveTool(activeTool: Tool): 'pen' | 'highlighter' {
  * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
  * All dependencies are read at runtime from module-level stores:
  * - transact() / getObjects() for Y.Doc mutations
- * - userProfileManager.getIdentity().userId for ownerId
+ * - getUserId() for ownerId
  * - useDeviceUIStore.getState() for tool type, settings, shape variant
  * - invalidateOverlay() for render loop updates
  *
@@ -525,7 +529,7 @@ export class DrawingTool implements PointerTool {
     }
 
     // 3) Get runtime dependencies (bbox no longer needed - overlay uses full clear)
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
 
     // 4) Commit to Y.Doc with tuple points directly
     const strokeId = ulid();
@@ -562,7 +566,7 @@ export class DrawingTool implements PointerTool {
     const shapeType = getShapeTypeFromSnapKind(this.snap.kind);
 
     // Get runtime dependencies
-    const userId = userProfileManager.getIdentity().userId;
+    const userId = getUserId();
 
     if (this.snap.kind === 'line') {
       // Commit as a 2-point stroke

@@ -11,8 +11,7 @@ import { ingest, enqueue } from './image-manager';
 import { transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { userProfileManager } from '@/lib/user-profile-manager';
+import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 
 const MAX_SVG_INPUT = 10 * 1024 * 1024; // 10 MB
@@ -130,7 +129,7 @@ export async function createImageFromBlob(
   const y = worldY - height / 2;
 
   const objectId = ulid();
-  const userId = userProfileManager.getIdentity().userId;
+  const userId = getUserId();
 
   transact(() => {
     const yObj = new Y.Map<unknown>();

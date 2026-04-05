@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { ulid } from 'ulid';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
 import type { FontFamily, TextAlignV } from '@/lib/object-accessors';
 import type { ConnectorCap, ConnectorType } from '@/lib/connectors';
+import { generateUserProfile } from '@/lib/utils/generate-user-profile';
 
 export type Tool =
   | 'pen'
@@ -74,6 +76,11 @@ export interface DrawingSettings {
 }
 
 interface DeviceUIState {
+  // User identity (persisted)
+  userId: string;
+  userName: string;
+  userColor: string;
+
   // Tool state
   activeTool: Tool;
 
@@ -163,6 +170,10 @@ interface DeviceUIState {
 export const useDeviceUIStore = create<DeviceUIState>()(
   persist(
     (set, get) => ({
+      userId: '',
+      userName: '',
+      userColor: '',
+
       activeTool: 'pen',
 
       drawingSettings: {
@@ -303,6 +314,32 @@ export const useDeviceUIStore = create<DeviceUIState>()(
     },
   ),
 );
+
+// ============================================
+// USER IDENTITY INITIALIZATION
+// ============================================
+
+{
+  if (!useDeviceUIStore.getState().userId) {
+    const profile = generateUserProfile();
+    useDeviceUIStore.setState({
+      userId: ulid(),
+      userName: profile.name,
+      userColor: profile.color,
+    });
+  }
+}
+
+/** Imperative getter — returns the stable user ID string. */
+export function getUserId(): string {
+  return useDeviceUIStore.getState().userId;
+}
+
+/** Imperative getter — returns the full user profile for presence. */
+export function getUserProfile(): { userId: string; name: string; color: string } {
+  const s = useDeviceUIStore.getState();
+  return { userId: s.userId, name: s.userName, color: s.userColor };
+}
 
 // ============================================
 // CURSOR MANAGEMENT

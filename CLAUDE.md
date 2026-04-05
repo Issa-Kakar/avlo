@@ -85,7 +85,7 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 | File | Responsibility |
 |------|----------------|
 | `stores/camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture, per-room persistence |
-| `stores/device-ui-store.ts` | Toolbar state, drawing settings, cursor management (persisted) |
+| `stores/device-ui-store.ts` | Toolbar state, drawing settings, user identity, cursor management (persisted) |
 | `stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
 
 ### Geometry (`lib/geometry/`)
@@ -191,7 +191,7 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
 Module Registries - IMPERATIVE ACCESS
 ├── room-runtime.ts           → getHandle(id), getObjectsById(), getSpatialIndex(), transact(fn), undo/redo
 ├── camera-store.ts           → worldToCanvas/screenToWorld, getVisibleWorldBounds(), setRoom(roomId)
-├── device-ui-store.ts        → activeTool, drawingSettings, cursor management
+├── device-ui-store.ts        → activeTool, drawingSettings, getUserId(), getUserProfile(), cursor management
 ├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
 └── invalidation-helpers.ts   → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll(), invalidateOverlay()
 ```
@@ -641,6 +641,10 @@ const scale = useCameraStore(selectScale);
 
 ```typescript
 interface DeviceUIState {
+  // User identity (persisted, generated on first visit)
+  userId: string;                      // ULID, stable per browser profile
+  userName: string;                    // Random "Adjective Animal"
+  userColor: string;                   // Random hex from 16-color palette
   activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'code'|'note';
   drawingSettings: { size: 4|7|10|13; color: string; opacity: number; fill: boolean };
   textSize: number;                    // Default 24
@@ -657,6 +661,13 @@ interface DeviceUIState {
   codeLineNumbers: boolean;
   cursorOverride: string | null;
 }
+
+// Imperative getters (not hooks — for use in tools, presence, room-doc-manager)
+getUserId(): string
+getUserProfile(): { userId, name, color }
+```
+
+Identity is generated at module load if not already persisted. `getUserId()` is the primary accessor — used by all tools for `ownerId`, by `room-doc-manager` for undo tracking, and by `presence-store.setPeers()` for self-filtering. `getUserProfile()` is used by `presence.ts` for awareness wire format.
 ```
 
 ---
