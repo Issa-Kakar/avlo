@@ -14,7 +14,6 @@
 
 import type { RoomId } from '@avlo/shared';
 import type { Snapshot } from '@/types/snapshot';
-import type { PresenceView } from '@/types/awareness';
 import type { ObjectHandle, ObjectKind } from '@/types/objects';
 import type { BBoxTuple } from '@/types/geometry';
 import type { ObjectSpatialIndex } from '@/lib/spatial';
@@ -98,35 +97,6 @@ export function hasActiveRoom(): boolean {
  */
 export function getCurrentSnapshot(): Snapshot {
   return getActiveRoomDoc().currentSnapshot;
-}
-
-/**
- * Get the current presence view from the active room.
- * Convenience wrapper for getActiveRoomDoc().currentPresence
- * Use this in overlay rendering for cursor positions.
- */
-export function getCurrentPresence(): PresenceView {
-  return getActiveRoomDoc().currentPresence;
-}
-
-// ============================================
-// PRESENCE CURSOR HELPERS
-// ============================================
-
-/**
- * Update the presence cursor position.
- * Called from CanvasRuntime on pointer move.
- */
-export function updatePresenceCursor(worldX: number, worldY: number): void {
-  getActiveRoomDoc().updateCursor(worldX, worldY);
-}
-
-/**
- * Clear the presence cursor (pointer left canvas).
- * Called from CanvasRuntime on pointer leave.
- */
-export function clearPresenceCursor(): void {
-  getActiveRoomDoc().updateCursor(undefined, undefined);
 }
 
 // ============================================

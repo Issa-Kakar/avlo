@@ -22,7 +22,8 @@ import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
 import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
-import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
+import { getActiveRoomDoc } from './room-runtime';
+import { updateCursor, clearCursor } from '@/lib/presence';
 import {
   attach as attachKeyboard,
   detach as detachKeyboard,
@@ -65,7 +66,6 @@ export class CanvasRuntime {
   private surfaceManager: SurfaceManager | null = null;
   private cameraUnsub: (() => void) | null = null;
   private snapshotUnsub: (() => void) | null = null;
-  private presenceUnsub: (() => void) | null = null;
   private lastDocVersion = -1;
   private wheelTimestamps: number[] = [];
 
@@ -118,11 +118,6 @@ export class CanvasRuntime {
       }
     });
 
-    // 8. Presence subscription for overlay updates (separate from doc)
-    this.presenceUnsub = roomDoc.subscribePresence(() => {
-      // Presence changed - only update overlay (cursors, etc.)
-      overlayLoop.invalidateAll();
-    });
   }
 
   /**
@@ -132,7 +127,6 @@ export class CanvasRuntime {
   stop(): void {
     // Unsubscribe from stores first
     this.snapshotUnsub?.();
-    this.presenceUnsub?.();
     this.cameraUnsub?.();
 
     this.inputManager?.detach();
@@ -158,7 +152,6 @@ export class CanvasRuntime {
     this.surfaceManager = null;
     this.cameraUnsub = null;
     this.snapshotUnsub = null;
-    this.presenceUnsub = null;
     this.lastDocVersion = -1;
   }
 
@@ -209,7 +202,7 @@ export class CanvasRuntime {
     const world = screenToWorld(e.clientX, e.clientY);
     if (world) {
       setLastCursorWorld(world);
-      updatePresenceCursor(world[0], world[1]);
+      updateCursor(world[0], world[1]);
     }
 
     // Pan active? (from MMB or pan tool mode)
@@ -268,7 +261,7 @@ export class CanvasRuntime {
   }
 
   handlePointerLeave(_e: PointerEvent): void {
-    clearPresenceCursor();
+    clearCursor();
     getCurrentTool()?.onPointerLeave();
   }
 

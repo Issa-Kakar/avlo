@@ -36,18 +36,22 @@ const ANIMALS = [
 ];
 
 const COLORS = [
-  '#FF6B6B',
-  '#4ECDC4',
-  '#45B7D1',
-  '#96CEB4',
-  '#FFEAA7',
-  '#DDA0DD',
-  '#98D8C8',
-  '#F7DC6F',
-  '#85C1E2',
-  '#F8B739',
-  '#52B788',
-  '#E76F51',
+  '#E8915A', // warm orange
+  '#5B8DEF', // blue
+  '#E05D6F', // rose
+  '#4CAF7D', // green
+  '#C77DDB', // purple
+  '#D4A843', // gold
+  '#47B5B5', // teal
+  '#E57BA1', // pink
+  '#7E8CE0', // indigo
+  '#6BBF6B', // lime
+  '#C96B4F', // terra cotta
+  '#5DADE2', // sky blue
+  '#B5854E', // bronze
+  '#8FBC5A', // olive
+  '#DB7093', // hot pink
+  '#7DAFCB', // steel blue
 ];
 
 export interface UserProfile {

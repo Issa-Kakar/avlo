@@ -1,5 +1,4 @@
 import { drawToolPreview, clearPreviewCache, holdPreviewForOneFrame } from './layers/tool-preview';
-import { drawCursors } from './layers/presence-cursors';
 import { useCameraStore } from '@/stores/camera-store';
 import { getOverlayContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -7,6 +6,7 @@ import {
   getAnimationController,
   destroyAnimationController,
   EraserTrailAnimation,
+  CursorAnimationJob,
 } from '@/canvas/animation';
 import { setOverlayInvalidator, setHoldPreviewFn } from '@/canvas/invalidation-helpers';
 
@@ -31,6 +31,7 @@ export class OverlayRenderLoop {
     // Register animation jobs + wire push-based invalidation
     const controller = getAnimationController();
     controller.register(new EraserTrailAnimation());
+    controller.register(new CursorAnimationJob());
     controller.setInvalidator(() => this.invalidateAll());
 
     // Subscribe to camera store — any change invalidates overlay
@@ -136,7 +137,6 @@ export class OverlayRenderLoop {
     ctx.restore();
 
     // Screen-space layers (each handles own DPR transform)
-    drawCursors(ctx);
     getAnimationController().run(ctx, now);
   }
 }
