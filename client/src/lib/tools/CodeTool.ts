@@ -8,7 +8,7 @@
 
 import * as Y from 'yjs';
 import { ulid } from 'ulid';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getActiveRoomDoc, getHandle, transact, getObjects } from '@/canvas/room-runtime';
 import {
   getCanvasElement,
   getVisibleWorldBounds,
@@ -92,10 +92,8 @@ export class CodeTool implements PointerTool {
     this.downWorld = [worldX, worldY];
 
     // Hit test for existing code blocks
-    const roomDoc = getActiveRoomDoc();
-    const snapshot = roomDoc.currentSnapshot;
     const scale = useCameraStore.getState().scale;
-    this.hitCodeId = hitTestVisibleCode(worldX, worldY, snapshot, scale);
+    this.hitCodeId = hitTestVisibleCode(worldX, worldY, getActiveRoomDoc().currentSnapshot, scale);
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -172,7 +170,6 @@ export class CodeTool implements PointerTool {
   // =========================================================================
 
   private createCodeObject(worldX: number, worldY: number): void {
-    const roomDoc = getActiveRoomDoc();
     const uiState = useDeviceUIStore.getState();
     const fontSize = uiState.textSize;
     const lineNumbers = uiState.codeLineNumbers;
@@ -186,7 +183,7 @@ export class CodeTool implements PointerTool {
 
     let createdId: string | null = null;
 
-    roomDoc.mutate(() => {
+    transact(() => {
       const id = ulid();
       const yObj = new Y.Map<unknown>();
 
@@ -203,7 +200,7 @@ export class CodeTool implements PointerTool {
       yObj.set('ownerId', '');
       yObj.set('createdAt', Date.now());
 
-      roomDoc.objects.set(id, yObj);
+      getObjects().set(id, yObj);
       createdId = id;
     });
 
@@ -251,8 +248,7 @@ export class CodeTool implements PointerTool {
     const host = getEditorHost();
     if (!host) return;
 
-    const snapshot = getCurrentSnapshot();
-    const handle = snapshot.objectsById.get(objectId);
+    const handle = getHandle(objectId);
     if (!handle || handle.kind !== 'code') return;
 
     const props = getCodeProps(handle.y);
@@ -561,7 +557,7 @@ export class CodeTool implements PointerTool {
 
   private positionEditor(): void {
     if (!this.container || !this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
 
     const props = getCodeProps(handle.y);
@@ -825,7 +821,7 @@ export class CodeTool implements PointerTool {
 
   private saveTitle(): void {
     if (!this.titleInput || !this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
 
     const trimmed = this.titleInput.value.trim();
@@ -834,12 +830,12 @@ export class CodeTool implements PointerTool {
     if (trimmed === '') {
       // Deliberate clear — store empty string (distinct from undefined = show fallback)
       if (raw !== '') {
-        getActiveRoomDoc().mutate(() => {
+        transact(() => {
           handle.y.set('title', '');
         });
       }
     } else if (trimmed !== raw) {
-      getActiveRoomDoc().mutate(() => {
+      transact(() => {
         handle.y.set('title', trimmed);
       });
     }
@@ -847,20 +843,20 @@ export class CodeTool implements PointerTool {
 
   toggleHeader(): void {
     if (!this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
     const current = getHeaderVisible(handle.y);
-    getActiveRoomDoc().mutate(() => {
+    transact(() => {
       handle.y.set('headerVisible', !current);
     });
   }
 
   toggleOutput(): void {
     if (!this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
     const current = getOutputVisible(handle.y);
-    getActiveRoomDoc().mutate(() => {
+    transact(() => {
       handle.y.set('outputVisible', !current);
     });
   }

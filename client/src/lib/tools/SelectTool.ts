@@ -63,7 +63,13 @@ import {
   getNoteProps,
   getConnectorType,
 } from '@/lib/object-accessors';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import {
+  getCurrentSnapshot,
+  getSpatialIndex,
+  getHandle,
+  transact,
+  getObjects,
+} from '@/canvas/room-runtime';
 import { isShiftPointer, isCtrlOrMetaPointer } from '@/canvas/cursor-tracking';
 import { invalidateWorld, invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
@@ -114,7 +120,7 @@ type DownTarget =
  * SelectTool - Object selection, translation, and scaling tool
  *
  * Zero-arg constructor: reads all dependencies from module-level singletons.
- * - Room: getActiveRoomDoc()
+ * - Room: room-runtime helpers (transact, getHandle, etc.)
  * - Invalidation: invalidation-helpers.ts
  * - Cursor: useDeviceUIStore (applyCursor, setCursorOverride)
  * - Camera/Selection: Zustand stores
@@ -195,9 +201,14 @@ export class SelectTool implements PointerTool {
       }
     } else if (mode === 'connector') {
       // Connector mode: check endpoint dots first
-      const snapshot = getCurrentSnapshot();
       const { scale } = useCameraStore.getState();
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, snapshot, scale);
+      const endpointHit = hitTestEndpointDots(
+        worldX,
+        worldY,
+        selectedIds,
+        getCurrentSnapshot(),
+        scale,
+      );
       if (endpointHit) {
         this.endpointHitAtDown = endpointHit;
         this.downTarget = 'connectorEndpoint';
@@ -324,8 +335,7 @@ export class SelectTool implements PointerTool {
             this.phase = 'endpointDrag';
 
             // Begin endpoint drag transform
-            const snapshot = getCurrentSnapshot();
-            const connHandle = snapshot.objectsById.get(this.endpointHitAtDown!.connectorId);
+            const connHandle = getHandle(this.endpointHitAtDown!.connectorId);
             if (connHandle) {
               const originBbox = bboxTupleToWorldBounds(connHandle.bbox);
               useSelectionStore
@@ -346,8 +356,7 @@ export class SelectTool implements PointerTool {
 
             // Connectors: check anchor state to decide drag behavior
             if (this.hitAtDown?.kind === 'connector') {
-              const snapshot = getCurrentSnapshot();
-              const connHandle = snapshot.objectsById.get(this.hitAtDown.id);
+              const connHandle = getHandle(this.hitAtDown.id);
               if (connHandle) {
                 const sa = getStartAnchor(connHandle.y);
                 const ea = getEndAnchor(connHandle.y);
@@ -380,8 +389,7 @@ export class SelectTool implements PointerTool {
             // Connector mode (1 connector): check anchor state
             const inSelStore = useSelectionStore.getState();
             if (inSelStore.mode === 'connector') {
-              const snapshot = getCurrentSnapshot();
-              const connHandle = snapshot.objectsById.get(inSelStore.selectedIds[0]);
+              const connHandle = getHandle(inSelStore.selectedIds[0]);
               if (connHandle?.kind === 'connector') {
                 const sa = getStartAnchor(connHandle.y);
                 const ea = getEndAnchor(connHandle.y);
@@ -468,8 +476,7 @@ export class SelectTool implements PointerTool {
         const { connectorId, endpoint } = epTransform;
 
         // Read connector type for snap context
-        const epSnapshot = getCurrentSnapshot();
-        const connHandle = epSnapshot.objectsById.get(connectorId);
+        const connHandle = getHandle(connectorId);
         const epConnectorType = connHandle ? getConnectorType(connHandle.y) : 'elbow';
 
         // 1. Find snap target (Ctrl suppresses snapping)
@@ -856,8 +863,13 @@ export class SelectTool implements PointerTool {
         }
       }
     } else if (mode === 'connector') {
-      const snapshot = getCurrentSnapshot();
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, snapshot, scale);
+      const endpointHit = hitTestEndpointDots(
+        worldX,
+        worldY,
+        selectedIds,
+        getCurrentSnapshot(),
+        scale,
+      );
       if (endpointHit) {
         setCursorOverride('grab');
         applyCursor();
@@ -896,12 +908,10 @@ export class SelectTool implements PointerTool {
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    const snapshot = getCurrentSnapshot();
-
     // Collect handles for selected objects
     const handles: ObjectHandle[] = [];
     for (const id of selectedIds) {
-      const handle = snapshot.objectsById.get(id);
+      const handle = getHandle(id);
       if (handle) handles.push(handle);
     }
 
@@ -928,7 +938,6 @@ export class SelectTool implements PointerTool {
     const codeReflow = store.codeReflow;
 
     // --- 1. CONNECTOR TOPOLOGY ---
-    const snapshot = getCurrentSnapshot();
     if (topology) {
       // Reroute entries: compute new routes + expand envelope
       for (const entry of topology.entries) {
@@ -939,7 +948,7 @@ export class SelectTool implements PointerTool {
         if (typeof entry.startSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.startSpec);
           if (origFrame) {
-            const startHandle = snapshot.objectsById.get(entry.startSpec);
+            const startHandle = getHandle(entry.startSpec);
             overrides.start = {
               frame: transformFrameForTopology(
                 origFrame,
@@ -958,7 +967,7 @@ export class SelectTool implements PointerTool {
         if (typeof entry.endSpec === 'string') {
           const origFrame = topology.originalFrames.get(entry.endSpec);
           if (origFrame) {
-            const endHandle = snapshot.objectsById.get(entry.endSpec);
+            const endHandle = getHandle(entry.endSpec);
             overrides.end = {
               frame: transformFrameForTopology(
                 origFrame,
@@ -1022,7 +1031,7 @@ export class SelectTool implements PointerTool {
       let combinedBounds: WorldRect | null = null;
 
       for (const id of store.selectedIds) {
-        const handle = snapshot.objectsById.get(id);
+        const handle = getHandle(id);
         if (!handle) continue;
 
         // Connectors handled via topology above
@@ -1279,18 +1288,16 @@ export class SelectTool implements PointerTool {
     dy: number,
     topology: ConnectorTopology | null,
   ): void {
-    const snapshot = getCurrentSnapshot();
-    const roomDoc = getActiveRoomDoc();
-
-    roomDoc.mutate(() => {
+    transact(() => {
+      const objects = getObjects();
       for (const id of selectedIds) {
-        const handle = snapshot.objectsById.get(id);
+        const handle = getHandle(id);
         if (!handle) continue;
 
         // Connectors: handled entirely by topology below
         if (handle.kind === 'connector') continue;
 
-        const yMap = roomDoc.objects.get(id);
+        const yMap = objects.get(id);
         if (!yMap) continue;
 
         if (handle.kind === 'stroke') {
@@ -1314,7 +1321,7 @@ export class SelectTool implements PointerTool {
       // Topology-managed connectors
       if (topology) {
         for (const entry of topology.entries) {
-          const yMap = roomDoc.objects.get(entry.connectorId);
+          const yMap = objects.get(entry.connectorId);
           if (!yMap) continue;
 
           if (entry.strategy === 'translate') {
@@ -1350,18 +1357,16 @@ export class SelectTool implements PointerTool {
     textReflow: TextReflowState | null,
     codeReflow: CodeReflowState | null,
   ): void {
-    const snapshot = getCurrentSnapshot();
-    const roomDoc = getActiveRoomDoc();
-
-    roomDoc.mutate(() => {
+    transact(() => {
+      const objects = getObjects();
       for (const id of selectedIds) {
-        const handle = snapshot.objectsById.get(id);
+        const handle = getHandle(id);
         if (!handle) continue;
 
         // Connectors: handled entirely by topology below
         if (handle.kind === 'connector') continue;
 
-        const yMap = roomDoc.objects.get(id);
+        const yMap = objects.get(id);
         if (!yMap) continue;
 
         const isStroke = handle.kind === 'stroke';
@@ -1668,7 +1673,7 @@ export class SelectTool implements PointerTool {
           if (entry.strategy !== 'reroute') continue;
           const points = topology.reroutes.get(entry.connectorId);
           if (!points || points.length < 2) continue;
-          const yMap = roomDoc.objects.get(entry.connectorId);
+          const yMap = objects.get(entry.connectorId);
           if (!yMap) continue;
           yMap.set('points', points);
           yMap.set('start', points[0]);
@@ -1688,9 +1693,8 @@ export class SelectTool implements PointerTool {
     routedPoints: [number, number][],
     currentSnap: SnapTarget | null,
   ): void {
-    const roomDoc = getActiveRoomDoc();
-    roomDoc.mutate(() => {
-      const yMap = roomDoc.objects.get(connectorId);
+    transact(() => {
+      const yMap = getObjects().get(connectorId);
       if (!yMap) return;
 
       // Update routed path
@@ -1721,15 +1725,13 @@ export class SelectTool implements PointerTool {
     const marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
-    const snapshot = getCurrentSnapshot();
-
-    const results = snapshot.spatialIndex.query(marqueeRect);
+    const results = getSpatialIndex().query(marqueeRect);
 
     // Geometry-aware intersection test for each candidate
     // Select objects whose actual geometry intersects marquee (industry standard)
     const selectedIds: string[] = [];
     for (const entry of results) {
-      const handle = snapshot.objectsById.get(entry.id) as ObjectHandle | undefined;
+      const handle = getHandle(entry.id);
       if (!handle) continue;
 
       // Use precise geometry intersection test
@@ -1753,12 +1755,11 @@ export class SelectTool implements PointerTool {
   // --- Hit Testing ---
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
-    const snapshot = getCurrentSnapshot();
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
 
     // Query spatial index with bounding box
-    const results = snapshot.spatialIndex.query({
+    const results = getSpatialIndex().query({
       minX: worldX - radiusWorld,
       minY: worldY - radiusWorld,
       maxX: worldX + radiusWorld,
@@ -1768,7 +1769,7 @@ export class SelectTool implements PointerTool {
     const candidates: HitCandidate[] = [];
 
     for (const entry of results) {
-      const handle = snapshot.objectsById.get(entry.id) as ObjectHandle | undefined;
+      const handle = getHandle(entry.id);
       if (!handle) continue;
 
       const candidate = testObjectHit(worldX, worldY, radiusWorld, handle);

@@ -6,6 +6,11 @@ import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { WorldBounds, BBoxTuple } from '@/types/geometry';
 import type { ViewTransform } from '@/types/snapshot';
 import { manageImageViewport } from '@/lib/image/image-manager';
+import {
+  setWorldInvalidator,
+  setWorldBBoxInvalidator,
+  setFullClearFn,
+} from '@/canvas/invalidation-helpers';
 
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
 
@@ -42,16 +47,20 @@ export class RenderLoop {
   private isHidden = false;
   private hiddenIntervalId: number | null = null;
 
-  constructor() {
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', this.handleVisibilityChange);
-    }
-  }
-
   start(): void {
     if (this.started) return;
     this.started = true;
     this.lastFrameTime = performance.now();
+
+    // Wire invalidation helpers
+    setWorldInvalidator((bounds) => this.invalidateWorld(bounds));
+    setWorldBBoxInvalidator((bbox) => this.invalidateWorldBBox(bbox));
+    setFullClearFn(() => this.invalidateAll());
+
+    // Visibility listener
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
 
     // Initialize canvas dimensions
     const { cssWidth, cssHeight, dpr } = useCameraStore.getState();
@@ -92,6 +101,16 @@ export class RenderLoop {
   }
 
   stop(): void {
+    // Clear invalidation helpers
+    setWorldInvalidator(null);
+    setWorldBBoxInvalidator(null);
+    setFullClearFn(null);
+
+    // Remove visibility listener
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
 
@@ -117,15 +136,6 @@ export class RenderLoop {
     this.nativeRafUntil = 0;
     this.lastCanvasW = 0;
     this.lastCanvasH = 0;
-  }
-
-  destroy(): void {
-    this.cameraUnsubscribe?.();
-    this.cameraUnsubscribe = null;
-    this.stop();
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-    }
   }
 
   // =============================================
@@ -450,3 +460,6 @@ export class RenderLoop {
     }, 1000 / FRAME_CONFIG.HIDDEN_FPS);
   }
 }
+
+/** Module-level singleton — started/stopped by CanvasRuntime */
+export const renderLoop = new RenderLoop();

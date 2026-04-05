@@ -4,6 +4,74 @@ Incremental cleanup and architectural improvements. Architectural direction trac
 
 ---
 
+## Phase 7: Direct Exports, Singleton Render Loops, Per-Room Camera Persistence
+
+Three independent changes reducing verbosity across 20+ files, making render loops self-managing, and persisting camera state per room.
+
+### Part 1: Direct exports from room-runtime
+
+Eliminated the verbose `getCurrentSnapshot().objectsById.get(id)` pattern (40+ sites across 16 files) and `getActiveRoomDoc().mutate(fn)` pattern (~15 sites across 10 files).
+
+**IRoomDocManager interface** — added `readonly objectsById` and `readonly spatialIndex` (were private on impl).
+
+**New room-runtime exports:**
+
+| Export              | Replaces                                         |
+| ------------------- | ------------------------------------------------ |
+| `getHandle(id)`     | `getCurrentSnapshot().objectsById.get(id)`       |
+| `getHandleKind(id)` | `getCurrentSnapshot().objectsById.get(id)?.kind` |
+| `getBbox(id)`       | `getCurrentSnapshot().objectsById.get(id)?.bbox` |
+| `getObjectsById()`  | `getCurrentSnapshot().objectsById`               |
+| `getSpatialIndex()` | `getCurrentSnapshot().spatialIndex`              |
+| `transact(fn)`      | `getActiveRoomDoc().mutate(fn)`                  |
+| `undo()` / `redo()` | `getActiveRoomDoc().undo()` / `.redo()`          |
+
+**Files updated (16):** SelectTool, EraserTool, ConnectorTool, DrawingTool, TextTool, CodeTool, selection-store, snap, reroute-connector, image-manager, image-actions, bookmark-unfurl, clipboard-actions, selection-actions, keyboard-manager, ToolPanel, ContextMenu, connector-preview.
+
+**Not changed:** Files that receive `Snapshot` as a function parameter (hit-testing, objects.ts, selection-overlay, RenderLoop) — Snapshot interface retains `objectsById`/`spatialIndex` fields.
+
+### Part 2: Render loops as self-constructing singletons
+
+**RenderLoop** — moved `visibilitychange` listener from constructor → `start()`/`stop()`. Wires `setWorldInvalidator`, `setWorldBBoxInvalidator`, `setFullClearFn` in `start()`, clears in `stop()`. Merged `destroy()` into `stop()`. Exported as `export const renderLoop = new RenderLoop()`.
+
+**OverlayRenderLoop** — wires `setOverlayInvalidator`, `setHoldPreviewFn` in `start()`, clears in `stop()`. Merged `destroy()` (including `destroyAnimationController()`) into `stop()`. Exported as `export const overlayLoop = new OverlayRenderLoop()`.
+
+**CanvasRuntime simplified** — removed `RenderLoop`/`OverlayRenderLoop` class fields and construction. `start()` calls `renderLoop.start(); overlayLoop.start()`. `stop()` calls `renderLoop.stop(); overlayLoop.stop()`. Removed all `setWorldInvalidator`/`setOverlayInvalidator`/`setHoldPreviewFn` import and wiring (render loops own this now).
+
+### Part 3: Per-room camera persistence
+
+All logic in `camera-store.ts` — no separate module.
+
+**New state:** `roomCameras: Record<string, { scale, pan }>` (persisted), `currentRoomId: string | null` (ephemeral).
+
+**New action:** `setRoom(roomId)` — saves outgoing camera to `roomCameras`, restores incoming. Called by `connectRoom()` in `room-runtime.ts`.
+
+**Persistence:** `zustand/middleware/persist` with `partialize` — only `roomCameras` hits localStorage (`avlo.camera.v1`). Scale, pan, viewport dimensions, DPR, and currentRoomId are all ephemeral.
+
+**Debounced sync:** `useCameraStore.subscribe()` writes camera to `roomCameras` at most once per second after last pan/zoom. `setRoom()` flushes immediately on room switch.
+
+### ESLint + gitignore
+
+- Added `.wrangler/**`, `**/.wrangler/**`, `**/.tanstack/**` to ESLint ignores
+- Added `.tanstack/` / `*/.tanstack/` to `.gitignore`
+
+### Files changed
+
+| File                             | Action                                                   | Delta |
+| -------------------------------- | -------------------------------------------------------- | ----- |
+| `lib/room-doc-manager.ts`        | Added fields to interface, private→readonly              | +3    |
+| `canvas/room-runtime.ts`         | Added 8 convenience exports + setRoom call               | +40   |
+| `renderer/RenderLoop.ts`         | Singleton, self-wiring, merged destroy                   | +10   |
+| `renderer/OverlayRenderLoop.ts`  | Singleton, self-wiring, merged destroy                   | +5    |
+| `canvas/CanvasRuntime.ts`        | Removed render loop fields + wiring                      | −25   |
+| `stores/camera-store.ts`         | persist middleware, roomCameras, setRoom, debounced sync | +55   |
+| `canvas/invalidation-helpers.ts` | No change (setters already existed)                      | ±0    |
+| 16 consumer files                | Pattern replacements                                     | −50   |
+| `eslint.config.js`               | Added .wrangler/.tanstack ignores                        | +3    |
+| `.gitignore`                     | Added .tanstack                                          | +3    |
+
+---
+
 ## Phase 6: RoomDocManager — Spatial Index, Dirty Rects, Lifecycle
 
 Eliminated gate system, DirtyPatch indirection, lazy-null spatialIndex, and deferred cache eviction. RoomDocManager now constructs spatialIndex non-null from the start, evicts caches and invalidates dirty rects directly in the observer, and uses a simple async init flow with two-phase spatial index loading (IDB bulk load + WS repack).

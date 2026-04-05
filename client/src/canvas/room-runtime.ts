@@ -15,8 +15,12 @@
 import type { RoomId } from '@avlo/shared';
 import type { Snapshot } from '@/types/snapshot';
 import type { PresenceView } from '@/types/awareness';
+import type { ObjectHandle, ObjectKind } from '@/types/objects';
+import type { BBoxTuple } from '@/types/geometry';
+import type { ObjectSpatialIndex } from '@/lib/spatial';
 import type { IRoomDocManager } from '@/lib/room-doc-manager';
 import { RoomDocManagerImpl } from '@/lib/room-doc-manager';
+import { useCameraStore } from '@/stores/camera-store';
 
 interface RoomContext {
   roomId: RoomId;
@@ -37,6 +41,7 @@ export function connectRoom(roomId: RoomId): void {
   }
   const roomDoc = new RoomDocManagerImpl(roomId);
   activeRoom = { roomId, roomDoc };
+  useCameraStore.getState().setRoom(roomId);
 }
 
 /**
@@ -134,6 +139,46 @@ export function clearPresenceCursor(): void {
  */
 export function getObjects(): ReturnType<typeof getActiveRoomDoc>['objects'] {
   return getActiveRoomDoc().objects;
+}
+
+// ============================================
+// DIRECT DATA ACCESS HELPERS
+// ============================================
+
+export function getObjectsById(): ReadonlyMap<string, ObjectHandle> {
+  return getActiveRoomDoc().objectsById;
+}
+
+export function getSpatialIndex(): ObjectSpatialIndex {
+  return getActiveRoomDoc().spatialIndex;
+}
+
+export function getHandle(id: string): ObjectHandle | undefined {
+  return getActiveRoomDoc().objectsById.get(id);
+}
+
+export function getHandleKind(id: string): ObjectKind | undefined {
+  return getActiveRoomDoc().objectsById.get(id)?.kind;
+}
+
+export function getBbox(id: string): BBoxTuple | undefined {
+  return getActiveRoomDoc().objectsById.get(id)?.bbox;
+}
+
+// ============================================
+// MUTATION HELPERS
+// ============================================
+
+export function transact(fn: () => void): void {
+  getActiveRoomDoc().mutate(fn);
+}
+
+export function undo(): void {
+  getActiveRoomDoc().undo();
+}
+
+export function redo(): void {
+  getActiveRoomDoc().redo();
 }
 
 // ============================================

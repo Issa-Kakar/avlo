@@ -12,7 +12,7 @@
  * @module lib/connectors/reroute-connector
  */
 
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getHandle } from '@/canvas/room-runtime';
 import type { FrameTuple, WorldBounds } from '@/types/geometry';
 import {
   getStart,
@@ -74,8 +74,7 @@ export function rerouteConnector(
     end?: EndpointOverrideValue;
   },
 ): RerouteResult | null {
-  const snapshot = getCurrentSnapshot();
-  const handle = snapshot.objectsById.get(connectorId);
+  const handle = getHandle(connectorId);
 
   if (!handle || handle.kind !== 'connector') {
     return null;
@@ -97,7 +96,6 @@ export function rerouteConnector(
     startAnchor,
     endpointOverrides?.start,
     strokeWidth,
-    snapshot,
   );
 
   // Resolve end endpoint
@@ -107,7 +105,6 @@ export function rerouteConnector(
     endAnchor,
     endpointOverrides?.end,
     strokeWidth,
-    snapshot,
   );
 
   // Branch: straight vs elbow
@@ -167,7 +164,6 @@ function resolveEndpoint(
   anchor: StoredAnchor | undefined,
   override: EndpointOverrideValue | undefined,
   _strokeWidth: number,
-  snapshot: ReturnType<typeof getCurrentSnapshot>,
 ): ResolvedEndpoint {
   // 1. Override wins
   if (override !== undefined) {
@@ -192,7 +188,7 @@ function resolveEndpoint(
           isAnchored: false,
         };
       }
-      const shapeHandle = snapshot.objectsById.get(anchor.id);
+      const shapeHandle = getHandle(anchor.id);
       const sType = shapeHandle?.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
       const pos = applyAnchorToFrame(anchor.anchor, override.frame, anchor.side);
       return {
@@ -214,7 +210,7 @@ function resolveEndpoint(
 
     // SnapTarget (has shapeId property)
     const snap = override as SnapTarget;
-    const handle = snapshot.objectsById.get(snap.shapeId);
+    const handle = getHandle(snap.shapeId);
     const frame =
       handle &&
       (handle.kind === 'shape' ||
@@ -245,24 +241,24 @@ function resolveEndpoint(
 
   // 2. No override — use stored anchor/position data
   if (anchor) {
-    const handle = snapshot.objectsById.get(anchor.id);
+    const anchorHandle = getHandle(anchor.id);
     const frame =
-      handle &&
-      (handle.kind === 'shape' ||
-        handle.kind === 'text' ||
-        handle.kind === 'code' ||
-        handle.kind === 'image' ||
-        handle.kind === 'note' ||
-        handle.kind === 'bookmark')
-        ? handle.kind === 'text' || handle.kind === 'note'
-          ? getTextFrame(handle.id)
-          : handle.kind === 'code'
-            ? getCodeFrame(handle.id)
-            : getFrame(handle.y)
+      anchorHandle &&
+      (anchorHandle.kind === 'shape' ||
+        anchorHandle.kind === 'text' ||
+        anchorHandle.kind === 'code' ||
+        anchorHandle.kind === 'image' ||
+        anchorHandle.kind === 'note' ||
+        anchorHandle.kind === 'bookmark')
+        ? anchorHandle.kind === 'text' || anchorHandle.kind === 'note'
+          ? getTextFrame(anchorHandle.id)
+          : anchorHandle.kind === 'code'
+            ? getCodeFrame(anchorHandle.id)
+            : getFrame(anchorHandle.y)
         : null;
 
     if (frame) {
-      const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
+      const sType = anchorHandle?.kind === 'shape' ? getShapeType(anchorHandle.y) : 'rect';
       const position = applyAnchorToFrame(anchor.anchor, frame, anchor.side);
       return {
         position,
@@ -358,10 +354,8 @@ export function routeNewConnector(
   connectorType: ConnectorType = 'elbow',
   dragDir?: Dir | null,
 ): NewRouteResult {
-  const snapshot = getCurrentSnapshot();
-
-  const startResolved = resolveNewEndpoint(start, snapshot);
-  const endResolved = resolveNewEndpoint(end, snapshot);
+  const startResolved = resolveNewEndpoint(start);
+  const endResolved = resolveNewEndpoint(end);
 
   if (connectorType === 'straight') {
     const result = computeStraightRoute(startResolved, endResolved);
@@ -391,15 +385,12 @@ export function routeNewConnector(
 }
 
 /** Resolve a snap-or-position endpoint for new connector routing. */
-function resolveNewEndpoint(
-  value: SnapTarget | [number, number],
-  snapshot: ReturnType<typeof getCurrentSnapshot>,
-): ResolvedEndpoint {
+function resolveNewEndpoint(value: SnapTarget | [number, number]): ResolvedEndpoint {
   if (Array.isArray(value)) {
     return { position: value, dir: null, shapeBounds: null, isAnchored: false };
   }
   const snap = value;
-  const handle = snapshot.objectsById.get(snap.shapeId);
+  const handle = getHandle(snap.shapeId);
   const frame =
     handle &&
     (handle.kind === 'shape' ||

@@ -84,7 +84,7 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 ### Stores
 | File | Responsibility |
 |------|----------------|
-| `stores/camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture |
+| `stores/camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture, per-room persistence |
 | `stores/device-ui-store.ts` | Toolbar state, drawing settings, cursor management (persisted) |
 | `stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
 
@@ -158,8 +158,8 @@ Canvas.tsx (~95 lines) - THIN REACT WRAPPER
 │   ├── editorHost (module-level getter)
 │   └── setCanvasElement() → camera-store
 │
-├── RenderLoop            - base canvas 60fps, inline dirty rect optimization
-├── OverlayRenderLoop     - preview + presence, full clear each frame
+├── renderLoop (singleton) - base canvas 60fps, inline dirty rect optimization
+├── overlayLoop (singleton) - preview + presence, full clear each frame
 ├── ZoomAnimator          - smooth zoom (step, pinch, zoom-to-fit)
 ├── InputManager          - dumb DOM event forwarder
 ├── keyboard-manager      - attach/detach lifecycle (keydown, keyup, blur)
@@ -189,8 +189,8 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
                 │
                 ▼
 Module Registries - IMPERATIVE ACCESS
-├── room-runtime.ts           → getActiveRoomDoc(), getActiveRoomId(), getCurrentSnapshot()
-├── camera-store.ts           → worldToCanvas/screenToWorld, getVisibleWorldBounds()
+├── room-runtime.ts           → getHandle(id), getObjectsById(), getSpatialIndex(), transact(fn), undo/redo
+├── camera-store.ts           → worldToCanvas/screenToWorld, getVisibleWorldBounds(), setRoom(roomId)
 ├── device-ui-store.ts        → activeTool, drawingSettings, cursor management
 ├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
 └── invalidation-helpers.ts   → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll(), invalidateOverlay()
@@ -225,7 +225,7 @@ Published by RoomDocManager on every Y.Doc change. Read by: RenderLoop (draw vis
 ### Write Path
 ```
 Tool.begin/move/end() → user gesture
-   → tool.commit() → roomDoc.mutate(() => { roomDoc.objects.set(...) })
+   → tool.commit() → transact(() => { getObjects().set(...) })
    → ydoc.transact() → Y.Map.set()
    → Deep observer → applyObjectChanges() → direct cache.evict() + invalidateWorldBBox()
    → handleYDocUpdate → publishSnapshotNow() → CanvasRuntime invalidates overlay
@@ -302,16 +302,24 @@ interface PointerTool {
 
 ## Room Runtime (`room-runtime.ts`)
 
-Module-level room context for imperative access. `connectRoom(roomId)` called from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
+Module-level room context for imperative access. `connectRoom(roomId)` called from route `beforeLoad` (also calls `useCameraStore.setRoom(roomId)` for camera persistence), `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-Key exports: `connectRoom()`, `disconnectRoom()`, `getActiveRoomDoc()`, `getActiveRoomId()`, `getCurrentSnapshot()`, `getCurrentPresence()`, `hasActiveRoom()`, `updatePresenceCursor()`, `clearPresenceCursor()`, `getConnectorsForShape(shapeId)`
+Key exports:
+- **Lifecycle:** `connectRoom()`, `disconnectRoom()`, `hasActiveRoom()`
+- **Data access:** `getHandle(id)`, `getHandleKind(id)`, `getBbox(id)`, `getObjectsById()`, `getSpatialIndex()`, `getObjects()`
+- **Mutations:** `transact(fn)`, `undo()`, `redo()`
+- **Low-level:** `getActiveRoomDoc()`, `getActiveRoomId()`, `getCurrentSnapshot()`, `getCurrentPresence()`
+- **Presence:** `updatePresenceCursor()`, `clearPresenceCursor()`
+- **Connectors:** `getConnectorsForShape(shapeId)`
+
+Prefer `getHandle(id)` over `getCurrentSnapshot().objectsById.get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`.
 
 ---
 
 ## Invalidation Helpers
 
-Setter/getter pattern breaks circular dependencies between CanvasRuntime and tools:
-- `setWorldInvalidator(fn)` / `setOverlayInvalidator(fn)` — registered by CanvasRuntime.start()
+Setter/getter pattern breaks circular dependencies between render loops and tools:
+- `setWorldInvalidator(fn)` / `setOverlayInvalidator(fn)` — registered by render loop singletons in their `start()`
 - `invalidateWorld(bounds)` / `invalidateOverlay()` — called by tools, safe no-ops if unregistered
 - `invalidateWorldBBox(bbox)` — BBoxTuple-native dirty rect (avoids WorldBounds allocation), called by RoomDocManager observer
 - `invalidateWorldAll()` — full base-canvas clear, called after hydration rebuild
@@ -324,15 +332,15 @@ Setter/getter pattern breaks circular dependencies between CanvasRuntime and too
 ```
 start(config):
   1. SurfaceManager — DOM refs, contexts, resize observer (deferred canvas resize)
-  2. RenderLoop + OverlayRenderLoop — self-subscribing, register invalidation helpers
-  3. ZoomAnimator
-  4. InputManager — DOM event forwarding
-  5. keyboard-manager.attach() — keybindings (keydown, keyup, window blur)
-  6. Camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
-  7. Snapshot subscription → overlay invalidation (base canvas dirty rects handled by RoomDocManager observer)
+  2. renderLoop.start() + overlayLoop.start() — singletons wire their own invalidation helpers
+  3. InputManager — DOM event forwarding
+  4. keyboard-manager.attach() — keybindings (keydown, keyup, window blur)
+  5. Camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
+  6. Snapshot subscription → overlay invalidation (base canvas dirty rects handled by RoomDocManager observer)
 
 stop():
-  Teardown all: keyboard-manager.detach(), stopEdgeScroll(), unsubscribe everything
+  renderLoop.stop() + overlayLoop.stop() (clear invalidation helpers + teardown)
+  keyboard-manager.detach(), stopEdgeScroll(), unsubscribe everything
 ```
 
 Edge scroll: `updateEdgeScroll()` on pointermove, `stopEdgeScroll()` on pointerup/cancel/lost-capture. Only active during select/connector/shape tool drags.
@@ -512,7 +520,7 @@ interface StoredAnchor { id: string; side: Dir; anchor: [number, number] }
 ## RoomDocManager
 
 ### Lifecycle (async init)
-Constructor is synchronous (fire-and-forget `void this.init()`). `spatialIndex` and `objectsById` are non-null from construction.
+Constructor is synchronous (fire-and-forget `void this.init()`). `objectsById` and `spatialIndex` are `readonly` public fields on both `IRoomDocManager` interface and impl — non-null from construction. Exposed via room-runtime helpers: `getObjectsById()`, `getSpatialIndex()`, `getHandle(id)`.
 ```
 init():
   1. await IDB sync (1s timeout via Promise.race)
@@ -529,8 +537,8 @@ Between phases, WS updates go through the deep observer incrementally (correct b
 
 ### Key Methods
 ```typescript
-mutate(fn: () => void)      // Transact with userId origin — access roomDoc.objects directly
-undo() / redo()             // Y.UndoManager (500ms capture)
+mutate(fn: () => void)      // Transact with userId origin — prefer transact() from room-runtime
+undo() / redo()             // Y.UndoManager (500ms capture) — prefer undo()/redo() from room-runtime
 subscribeSnapshot(cb)       // Doc changes
 subscribePresence(cb)       // Presence changes
 ```
@@ -554,8 +562,8 @@ subscribePresence(cb)       // Presence changes
 - **Overlay Canvas:** Full clear each frame — preview, presence, selection UI
 - SelectTool renders transformed objects on base canvas for correct Z-order
 
-### RenderLoop
-Dirty rect tracking inlined via `Float64Array` buffer (max 10 rects, zero allocation). Coalesces overlapping rects in-place. Promotes to full clear when: dirty area > 33% of canvas, translucent objects visible, or canvas resized. Deferred canvas resize applied at frame start via `SurfaceManager.applyPendingResize()`.
+### RenderLoop (singleton: `renderLoop`)
+Module-level singleton, started/stopped by CanvasRuntime. Wires own invalidation helpers (`setWorldInvalidator`, `setWorldBBoxInvalidator`, `setFullClearFn`) in `start()`, clears in `stop()`. Dirty rect tracking inlined via `Float64Array` buffer (max 16 rects, zero allocation). Coalesces overlapping rects in-place. Promotes to full clear when: dirty area > 33% of canvas, translucent objects visible, or canvas resized. Deferred canvas resize applied at frame start via `SurfaceManager.applyPendingResize()`.
 
 ### Object Rendering Dispatch (`objects.ts`)
 ```typescript
@@ -586,7 +594,7 @@ canvasToWorld: [x / scale + pan.x, y / scale + pan.y]
 
 ## Camera Store (`camera-store.ts`)
 
-Centralized Zustand store for camera/viewport state.
+Centralized Zustand store for camera/viewport state with per-room persistence.
 
 ### State & Actions
 ```typescript
@@ -594,10 +602,18 @@ interface CameraState {
   scale: number;                    // Zoom level (1.0 = 100%)
   pan: { x: number; y: number };    // World offset
   cssWidth: number; cssHeight: number; dpr: number;
+  roomCameras: Record<string, { scale: number; pan: { x: number; y: number } }>;  // Persisted
+  currentRoomId: string | null;     // Ephemeral
 }
-// Actions: setScale, setPan, setScaleAndPan, setViewport, resetView
-// Automatic clamping: MIN_ZOOM/MAX_ZOOM, MAX_PAN_DISTANCE
+// Actions: setScale, setPan, setScaleAndPan, setViewport, resetView, setRoom
+// Automatic clamping: MIN_ZOOM/MAX_ZOOM
 ```
+
+### Per-Room Camera Persistence
+- `setRoom(roomId)` saves outgoing camera to `roomCameras`, restores incoming — called by `connectRoom()`
+- Only `roomCameras` is persisted to localStorage via `persist` middleware + `partialize`
+- Debounced sync (1s) writes current camera to `roomCameras` on pan/zoom changes
+- `setRoom()` flushes pending debounce immediately on room switch
 
 ### Module-Level Functions
 ```typescript

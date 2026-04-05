@@ -10,7 +10,7 @@ import {
   computeBboxCenterExtents,
 } from '../geometry/shape-recognition/pdollar-recognizer';
 import { createFillFromStroke } from '@/lib/utils/color';
-import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
 
@@ -62,7 +62,7 @@ function getToolTypeFromActiveTool(activeTool: Tool): 'pen' | 'highlighter' {
  *
  * PHASE 1.5 REFACTOR: Zero-arg constructor pattern.
  * All dependencies are read at runtime from module-level stores:
- * - getActiveRoomDoc() for Y.Doc mutations
+ * - transact() / getObjects() for Y.Doc mutations
  * - userProfileManager.getIdentity().userId for ownerId
  * - useDeviceUIStore.getState() for tool type, settings, shape variant
  * - invalidateOverlay() for render loop updates
@@ -402,7 +402,9 @@ export class DrawingTool implements PointerTool {
 
     // Log recognition result
     console.log(`Best: ${result.best.kind} (${result.best.templateId})`);
-    console.log(`Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`);
+    console.log(
+      `Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`,
+    );
 
     // Handle ambiguous result - don't snap, continue freehand
     if (result.ambiguous) {
@@ -523,14 +525,13 @@ export class DrawingTool implements PointerTool {
     }
 
     // 3) Get runtime dependencies (bbox no longer needed - overlay uses full clear)
-    const roomDoc = getActiveRoomDoc();
     const userId = userProfileManager.getIdentity().userId;
 
     // 4) Commit to Y.Doc with tuple points directly
     const strokeId = ulid();
 
     try {
-      roomDoc.mutate(() => {
+      transact(() => {
         const strokeMap = new Y.Map();
         strokeMap.set('id', strokeId);
         strokeMap.set('kind', 'stroke');
@@ -542,7 +543,7 @@ export class DrawingTool implements PointerTool {
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
 
-        roomDoc.objects.set(strokeId, strokeMap);
+        getObjects().set(strokeId, strokeMap);
       });
     } catch (err) {
       console.error('Failed to commit stroke:', err);
@@ -561,14 +562,13 @@ export class DrawingTool implements PointerTool {
     const shapeType = getShapeTypeFromSnapKind(this.snap.kind);
 
     // Get runtime dependencies
-    const roomDoc = getActiveRoomDoc();
     const userId = userProfileManager.getIdentity().userId;
 
     if (this.snap.kind === 'line') {
       // Commit as a 2-point stroke
       const { A } = this.snap.anchors;
       const strokeId = ulid();
-      roomDoc.mutate(() => {
+      transact(() => {
         const strokeMap = new Y.Map();
         strokeMap.set('id', strokeId);
         strokeMap.set('kind', 'stroke');
@@ -579,7 +579,7 @@ export class DrawingTool implements PointerTool {
         strokeMap.set('points', [A, finalCursor]);
         strokeMap.set('ownerId', userId);
         strokeMap.set('createdAt', Date.now());
-        roomDoc.objects.set(strokeId, strokeMap);
+        getObjects().set(strokeId, strokeMap);
       });
       invalidateOverlay();
       this.resetState();
@@ -652,7 +652,7 @@ export class DrawingTool implements PointerTool {
     }
     // Commit as shape object
     const shapeId = ulid();
-    roomDoc.mutate(() => {
+    transact(() => {
       const shapeMap = new Y.Map();
       shapeMap.set('id', shapeId);
       shapeMap.set('kind', 'shape');
@@ -671,7 +671,7 @@ export class DrawingTool implements PointerTool {
       shapeMap.set('ownerId', userId);
       shapeMap.set('createdAt', Date.now());
 
-      roomDoc.objects.set(shapeId, shapeMap);
+      getObjects().set(shapeId, shapeMap);
     });
 
     // Invalidate overlay to clear preview

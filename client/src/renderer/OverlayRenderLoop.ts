@@ -1,4 +1,4 @@
-import { drawToolPreview, clearPreviewCache } from './layers/tool-preview';
+import { drawToolPreview, clearPreviewCache, holdPreviewForOneFrame } from './layers/tool-preview';
 import { drawCursors } from './layers/presence-cursors';
 import { useCameraStore } from '@/stores/camera-store';
 import { getOverlayContext, applyPendingResize } from '@/canvas/SurfaceManager';
@@ -8,6 +8,7 @@ import {
   destroyAnimationController,
   EraserTrailAnimation,
 } from '@/canvas/animation';
+import { setOverlayInvalidator, setHoldPreviewFn } from '@/canvas/invalidation-helpers';
 
 export class OverlayRenderLoop {
   private started = false;
@@ -22,6 +23,10 @@ export class OverlayRenderLoop {
 
   start(): void {
     this.started = true;
+
+    // Wire invalidation helpers
+    setOverlayInvalidator(() => this.invalidateAll());
+    setHoldPreviewFn(holdPreviewForOneFrame);
 
     // Register animation jobs + wire push-based invalidation
     const controller = getAnimationController();
@@ -62,15 +67,23 @@ export class OverlayRenderLoop {
   }
 
   stop(): void {
+    // Clear invalidation helpers
+    setOverlayInvalidator(null);
+    setHoldPreviewFn(null);
+
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
     this.toolUnsubscribe?.();
     this.toolUnsubscribe = null;
 
+    destroyAnimationController();
+
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
     this.needsFrame = false;
     this.started = false;
+    this.lastCanvasW = 0;
+    this.lastCanvasH = 0;
   }
 
   invalidateAll() {
@@ -126,14 +139,7 @@ export class OverlayRenderLoop {
     drawCursors(ctx);
     getAnimationController().run(ctx, now);
   }
-
-  destroy() {
-    this.cameraUnsubscribe?.();
-    this.cameraUnsubscribe = null;
-    this.toolUnsubscribe?.();
-    this.toolUnsubscribe = null;
-
-    destroyAnimationController();
-    this.stop();
-  }
 }
+
+/** Module-level singleton — started/stopped by CanvasRuntime */
+export const overlayLoop = new OverlayRenderLoop();

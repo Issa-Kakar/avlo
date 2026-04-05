@@ -17,7 +17,7 @@
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
 import { getShapeTypeMidpoints, directionVector } from './connector-utils';
 import { pointInsideShape } from '@/lib/geometry/hit-testing';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getSpatialIndex, getHandle } from '@/canvas/room-runtime';
 import type { ObjectHandle } from '@/types/objects';
 import type { FrameTuple } from '@/types/geometry';
 import { getShapeType, getFillColor, getFrame } from '@/lib/object-accessors';
@@ -69,9 +69,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   // We only return a snap target if we'd actually snap, not just hover
   const edgeRadius = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
 
-  const snapshot = getCurrentSnapshot();
-
-  const results = snapshot.spatialIndex.query({
+  const results = getSpatialIndex().query({
     minX: cx - edgeRadius,
     minY: cy - edgeRadius,
     maxX: cx + edgeRadius,
@@ -81,7 +79,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   // Filter to shapes and text only (connectable)
   const handles: ObjectHandle[] = [];
   for (const entry of results) {
-    const h = snapshot.objectsById.get(entry.id);
+    const h = getHandle(entry.id);
     if (
       h &&
       (h.kind === 'shape' ||

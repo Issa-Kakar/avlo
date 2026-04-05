@@ -5,7 +5,13 @@ import {
   pointInDiamond,
 } from '@/lib/geometry/hit-testing';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
+import {
+  getSpatialIndex,
+  getHandle,
+  transact,
+  getObjects,
+  getConnectorsForShape,
+} from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { getAnimationController } from '@/canvas/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/canvas/animation/EraserTrailAnimation';
@@ -150,7 +156,6 @@ export class EraserTool implements PointerTool {
   }
 
   private updateHitTest(worldX: number, worldY: number): void {
-    const snapshot = getCurrentSnapshot();
     const { scale } = useCameraStore.getState();
 
     // Convert fixed screen radius to world units (with slack for forgiving feel)
@@ -159,7 +164,7 @@ export class EraserTool implements PointerTool {
     this.state.hitNow.clear();
 
     // Query spatial index with bounding box
-    const results = snapshot.spatialIndex.query({
+    const results = getSpatialIndex().query({
       minX: worldX - radiusWorld,
       minY: worldY - radiusWorld,
       maxX: worldX + radiusWorld,
@@ -168,7 +173,7 @@ export class EraserTool implements PointerTool {
 
     // Test each object by kind
     for (const entry of results) {
-      const handle = snapshot.objectsById.get(entry.id);
+      const handle = getHandle(entry.id);
       if (!handle) continue;
 
       switch (handle.kind) {
@@ -425,9 +430,7 @@ export class EraserTool implements PointerTool {
       return;
     }
 
-    const roomDoc = getActiveRoomDoc();
     const idsToDelete = this.state.hitAccum;
-    const snapshot = getCurrentSnapshot();
 
     // Collect connector anchor cleanups needed
     // Map: connectorId → { clearStart: boolean, clearEnd: boolean }
@@ -435,7 +438,7 @@ export class EraserTool implements PointerTool {
 
     for (const id of idsToDelete) {
       // Skip connectors - they don't have shapes anchored to them
-      const handle = snapshot.objectsById.get(id);
+      const handle = getHandle(id);
       if (!handle || handle.kind === 'connector') continue;
 
       // Find connectors anchored to this shape
@@ -446,7 +449,7 @@ export class EraserTool implements PointerTool {
         // Skip if connector is also being deleted
         if (idsToDelete.has(connectorId)) continue;
 
-        const connectorHandle = snapshot.objectsById.get(connectorId);
+        const connectorHandle = getHandle(connectorId);
         if (!connectorHandle) continue;
 
         // Check which anchor(s) point to this shape
@@ -469,10 +472,10 @@ export class EraserTool implements PointerTool {
     }
 
     // Single transaction: clear dead anchors + delete objects
-    roomDoc.mutate(() => {
+    transact(() => {
       // Step 1: Clear dead anchors from affected connectors
       for (const [connectorId, { clearStart, clearEnd }] of anchorCleanups) {
-        const connectorYMap = roomDoc.objects.get(connectorId);
+        const connectorYMap = getObjects().get(connectorId);
         if (!connectorYMap) continue;
 
         if (clearStart) {
@@ -485,7 +488,7 @@ export class EraserTool implements PointerTool {
 
       // Step 2: Delete the objects
       for (const id of idsToDelete) {
-        roomDoc.objects.delete(id);
+        getObjects().delete(id);
       }
     });
 

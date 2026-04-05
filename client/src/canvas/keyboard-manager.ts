@@ -15,7 +15,7 @@
  */
 
 import { getCurrentTool, panTool, textTool, codeTool } from './tool-registry';
-import { getActiveRoomDoc, getCurrentSnapshot, hasActiveRoom } from './room-runtime';
+import { undo, redo, getObjectsById, getHandle, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
 import {
   useDeviceUIStore,
@@ -175,16 +175,16 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       e.preventDefault();
       if (gestureActive) tool!.cancel();
       if (e.shiftKey) {
-        getActiveRoomDoc().redo();
+        redo();
       } else {
-        getActiveRoomDoc().undo();
+        undo();
       }
       return;
 
     case 'y':
       e.preventDefault();
       if (gestureActive) tool!.cancel();
-      getActiveRoomDoc().redo();
+      redo();
       return;
 
     case 'b':
@@ -201,7 +201,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       e.preventDefault();
       if (!gestureActive) {
         const { selectedIds } = useSelectionStore.getState();
-        const { objectsById } = getCurrentSnapshot();
+        const objectsById = getObjectsById();
         const { highlightColor } = computeUniformInlineStyles(selectedIds, objectsById);
         if (highlightColor) {
           setSelectedHighlight(null);
@@ -288,8 +288,7 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
   // Enter — edit single text or shape
   if (key === 'enter' && useDeviceUIStore.getState().activeTool === 'select') {
     if (selectedIds.length !== 1) return;
-    const { objectsById } = getCurrentSnapshot();
-    const handle = objectsById.get(selectedIds[0]);
+    const handle = getHandle(selectedIds[0]);
     if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note'))
       return;
 

@@ -9,7 +9,7 @@ import * as Y from 'yjs';
 import { ulid } from 'ulid';
 import type { FrameTuple } from '@/types/geometry';
 import { extractDomain } from '@avlo/shared';
-import { hasActiveRoom, getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { hasActiveRoom, getHandle, transact, getObjects } from '@/canvas/room-runtime';
 import { pasteUrlAsText } from '@/lib/clipboard/clipboard-actions';
 import { postToPrimary } from '@/lib/image/image-manager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -127,8 +127,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
     ];
     const userId = userProfileManager.getIdentity().userId;
 
-    const roomDoc = getActiveRoomDoc();
-    roomDoc.mutate(() => {
+    transact(() => {
       const yObj = new Y.Map<unknown>();
       yObj.set('id', objectId);
       yObj.set('kind', 'bookmark');
@@ -143,7 +142,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       if (data.faviconAssetId) yObj.set('faviconAssetId', data.faviconAssetId);
       yObj.set('ownerId', userId);
       yObj.set('createdAt', Date.now());
-      roomDoc.objects.set(objectId, yObj);
+      getObjects().set(objectId, yObj);
     });
 
     removePlaceholder(objectId);
@@ -153,15 +152,12 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
 
   // Case C: page refresh recovery — no pending map entry
   try {
-    const snapshot = getCurrentSnapshot();
-    if (!snapshot) return;
-    const handle = snapshot.objectsById.get(objectId);
+    const handle = getHandle(objectId);
     if (!handle || handle.kind !== 'bookmark') return;
 
     // Upgrade existing bookmark with metadata
-    const roomDoc2 = getActiveRoomDoc();
-    roomDoc2.mutate(() => {
-      const yObj = roomDoc2.objects.get(objectId);
+    transact(() => {
+      const yObj = getObjects().get(objectId);
       if (!yObj || yObj.get('kind') !== 'bookmark') return;
 
       if (data.title != null) yObj.set('title', data.title);
@@ -176,7 +172,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       yObj.set('frame', [oldFrame[0], oldFrame[1], oldFrame[2], newH]);
     });
   } catch {
-    // No active room or snapshot — discard
+    // No active room — discard
   }
 }
 

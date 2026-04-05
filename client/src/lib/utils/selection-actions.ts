@@ -1,4 +1,4 @@
-import { getActiveRoomDoc, getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
+import { getObjectsById, transact, getConnectorsForShape, getObjects } from '@/canvas/room-runtime';
 import {
   getStartAnchor,
   getEndAnchor,
@@ -29,7 +29,7 @@ import * as Y from 'yjs';
 function getSelectedHandles() {
   const { selectedIds } = useSelectionStore.getState();
   if (selectedIds.length === 0) return null;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   return { selectedIds, objectsById };
 }
 
@@ -45,7 +45,7 @@ export function setSelectedColor(color: string): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ctx.selectedIds) {
       ctx.objectsById.get(id)?.y.set('color', color);
     }
@@ -64,8 +64,8 @@ export function setSelectedFillColor(fillColor: string | null): void {
   const ids = isText || isNote ? getTextIds() : selectedIds;
   if (ids.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note'))
@@ -98,7 +98,7 @@ export function setSelectedWidth(width: number): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ctx.selectedIds) {
       ctx.objectsById.get(id)?.y.set('width', width);
     }
@@ -119,7 +119,7 @@ export function setSelectedShapeType(shapeType: string): void {
   const ctx = getSelectedHandles();
   if (!ctx) return;
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ctx.selectedIds) {
       const handle = ctx.objectsById.get(id);
       if (handle?.kind !== 'shape') continue;
@@ -136,7 +136,7 @@ export function deleteSelected(): void {
   const { selectedIds } = useSelectionStore.getState();
   if (selectedIds.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const idsToDelete = new Set(selectedIds);
 
   // Collect connector anchor cleanups for surviving connectors
@@ -175,8 +175,7 @@ export function deleteSelected(): void {
     }
   }
 
-  const roomDoc = getActiveRoomDoc();
-  roomDoc.mutate(() => {
+  transact(() => {
     // Clear dead anchors via live handle references
     for (const { y, clearStart, clearEnd } of anchorCleanups.values()) {
       if (clearStart) y.delete('startAnchor');
@@ -184,7 +183,8 @@ export function deleteSelected(): void {
     }
 
     // Delete objects
-    for (const id of idsToDelete) roomDoc.objects.delete(id);
+    const objects = getObjects();
+    for (const id of idsToDelete) objects.delete(id);
   });
 
   useSelectionStore.getState().clearSelection();
@@ -196,8 +196,8 @@ export function setSelectedTextColor(color: string): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
@@ -220,8 +220,8 @@ export function setSelectedFontSize(size: number): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
@@ -269,8 +269,8 @@ export function decrementFontSize(): void {
 export function setSelectedFontFamily(family: FontFamily): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
@@ -298,8 +298,8 @@ export function setSelectedTextAlign(align: TextAlign): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
@@ -347,8 +347,8 @@ export function setSelectedTextAlignV(alignV: TextAlignV): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
 
-  const { objectsById } = getCurrentSnapshot();
-  getActiveRoomDoc().mutate(() => {
+  const objectsById = getObjectsById();
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle || (handle.kind !== 'note' && handle.kind !== 'shape')) continue;
@@ -387,10 +387,10 @@ export function toggleSelectedBold(): void {
 
   const ids = getTextIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const { bold: allBold } = computeUniformInlineStyles(ids, objectsById);
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
@@ -409,10 +409,10 @@ export function toggleSelectedItalic(): void {
 
   const ids = getTextIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const { italic: allItalic } = computeUniformInlineStyles(ids, objectsById);
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
@@ -432,9 +432,9 @@ export function setSelectedHighlight(color: string | null): void {
 
   const ids = getTextIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'text' && handle?.kind !== 'shape' && handle?.kind !== 'note') continue;
@@ -455,9 +455,9 @@ function getCodeIds(): string[] {
 export function setSelectedCodeLanguage(language: CodeLanguage): void {
   const ids = getCodeIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
@@ -498,9 +498,9 @@ export function setSelectedCodeFontSize(size: number): void {
   const clamped = Math.max(1, Math.min(999, Math.round(size)));
   const ids = getCodeIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
@@ -517,7 +517,7 @@ export function setSelectedCodeFontSize(size: number): void {
 export function toggleCodeLineNumbers(): void {
   const ids = getCodeIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
   // Read current value from first code object
   let current = true;
@@ -530,7 +530,7 @@ export function toggleCodeLineNumbers(): void {
   }
   const newValue = !current;
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
@@ -545,7 +545,7 @@ export function toggleCodeLineNumbers(): void {
 export function toggleCodeHeader(): void {
   const ids = getCodeIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
   let current = true;
   for (const id of ids) {
@@ -556,7 +556,7 @@ export function toggleCodeHeader(): void {
     }
   }
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;
@@ -570,7 +570,7 @@ export function toggleCodeHeader(): void {
 export function toggleCodeOutput(): void {
   const ids = getCodeIds();
   if (ids.length === 0) return;
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
 
   let current = false;
   for (const id of ids) {
@@ -581,7 +581,7 @@ export function toggleCodeOutput(): void {
     }
   }
 
-  getActiveRoomDoc().mutate(() => {
+  transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (handle?.kind !== 'code') continue;

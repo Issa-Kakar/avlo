@@ -50,6 +50,8 @@ type YObjects = Y.Map<Y.Map<unknown>>;
 export interface IRoomDocManager {
   // Top-level objects map — always exists, no seeding needed
   readonly objects: YObjects;
+  readonly objectsById: ReadonlyMap<string, ObjectHandle>;
+  readonly spatialIndex: ObjectSpatialIndex;
 
   // Snapshot - immutable view of Y.Doc state (no presence)
   readonly currentSnapshot: Snapshot;
@@ -169,8 +171,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // ============================================================
 
   //  Y.Map-based object storage
-  private objectsById = new Map<string, ObjectHandle>();
-  private readonly spatialIndex = new ObjectSpatialIndex();
+  readonly objectsById = new Map<string, ObjectHandle>();
+  readonly spatialIndex = new ObjectSpatialIndex();
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {

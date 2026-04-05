@@ -6,7 +6,7 @@ import {
   TEXT_COLOR_PALETTE,
   useDeviceUIStore,
 } from '../stores/device-ui-store';
-import { getActiveRoomDoc, hasActiveRoom } from '../canvas/room-runtime';
+import { undo, redo, hasActiveRoom } from '../canvas/room-runtime';
 import { openImageFilePicker } from '@/lib/image/image-actions';
 
 import './ToolPanel.css';
@@ -62,7 +62,9 @@ export function ToolPanel() {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(activeTool);
+  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(
+    activeTool,
+  );
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle =
@@ -271,18 +273,10 @@ export function ToolPanel() {
 
         {/* Compact Undo/Redo container - moved inside toolbar */}
         <div className="undo-redo-compact">
-          <button
-            className="undo-btn"
-            aria-label="Undo"
-            onClick={() => hasActiveRoom() && getActiveRoomDoc().undo()}
-          >
+          <button className="undo-btn" aria-label="Undo" onClick={() => hasActiveRoom() && undo()}>
             <IconUndo className="undo-icon" />
           </button>
-          <button
-            className="redo-btn"
-            aria-label="Redo"
-            onClick={() => hasActiveRoom() && getActiveRoomDoc().redo()}
-          >
+          <button className="redo-btn" aria-label="Redo" onClick={() => hasActiveRoom() && redo()}>
             <IconRedo className="redo-icon" />
           </button>
         </div>

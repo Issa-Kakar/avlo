@@ -17,7 +17,7 @@ import Text from '@tiptap/extension-text';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
 import Highlight from '@tiptap/extension-highlight';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getObjectsById, getSpatialIndex, transact, getObjects } from '@/canvas/room-runtime';
 import { getCurrentTool } from '@/canvas/tool-registry';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -166,8 +166,8 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
   const userId = userProfileManager.getIdentity().userId;
   const now = Date.now();
 
-  const roomDoc = getActiveRoomDoc();
-  roomDoc.mutate(() => {
+  transact(() => {
+    const objects = getObjects();
     for (const obj of payload.objects) {
       const oldId = obj.props.id as string;
       const newId = idMap.get(oldId)!;
@@ -235,7 +235,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
         yObj.set('content', yText);
       }
 
-      roomDoc.objects.set(newId, yObj);
+      objects.set(newId, yObj);
     }
   });
 
@@ -401,8 +401,7 @@ function createPastedTextObject(
   const userId = userProfileManager.getIdentity().userId;
   const pasteWidth: number | 'auto' = charCount < 65 ? 'auto' : Math.max(300, fontSize * 34);
 
-  const roomDoc = getActiveRoomDoc();
-  roomDoc.mutate(() => {
+  transact(() => {
     const yObj = new Y.Map<unknown>();
     yObj.set('id', objectId);
     yObj.set('kind', 'text');
@@ -418,7 +417,7 @@ function createPastedTextObject(
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
 
-    roomDoc.objects.set(objectId, yObj);
+    getObjects().set(objectId, yObj);
   });
 
   if (!getCurrentTool()?.isActive()) {
@@ -515,7 +514,7 @@ export function duplicateSelected(): void {
 // === Select All ===
 
 export function selectAll(): void {
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const ids = Array.from(objectsById.keys());
   if (ids.length === 0) return;
 
@@ -539,7 +538,7 @@ export { pasteImage };
 // === Smart Duplicate Offset ===
 
 function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [number, number] {
-  const { spatialIndex } = getCurrentSnapshot();
+  const spatialIndex = getSpatialIndex();
   const w = bounds.maxX - bounds.minX;
   const h = bounds.maxY - bounds.minY;
   const gap = 20;

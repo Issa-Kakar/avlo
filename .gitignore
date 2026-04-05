@@ -136,6 +136,10 @@ completed_tasks
 # Wrangler/Miniflare development artifacts
 .wrangler/
 */.wrangler/
+
+# TanStack Router codegen cache
+.tanstack/
+*/.tanstack/
 # Client test results (specific path)
 client/test-results/
 

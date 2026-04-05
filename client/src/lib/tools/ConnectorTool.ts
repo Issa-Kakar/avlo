@@ -18,7 +18,7 @@ import * as Y from 'yjs';
 import type { PointerTool, PreviewData, ConnectorPreview } from './types';
 import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getHandle, transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/canvas/invalidation-helpers';
 import { userProfileManager } from '@/lib/user-profile-manager';
 import { getShapeType, getFrame } from '@/lib/object-accessors';
@@ -208,7 +208,6 @@ export class ConnectorTool implements PointerTool {
 
   getPreview(): PreviewData | null {
     // Build ConnectorPreview for overlay rendering
-    const snapshot = getCurrentSnapshot();
 
     // Snap state (ONLY set when actually snapped - dots appear when snapped)
     let snapShapeId: string | null = null;
@@ -216,7 +215,7 @@ export class ConnectorTool implements PointerTool {
     let snapShapeType: string | null = null;
 
     if (this.hoverSnap) {
-      const handle = snapshot.objectsById.get(this.hoverSnap.shapeId);
+      const handle = getHandle(this.hoverSnap.shapeId);
       if (
         handle &&
         (handle.kind === 'shape' ||
@@ -330,9 +329,7 @@ export class ConnectorTool implements PointerTool {
 
     const id = ulid();
     const userId = userProfileManager.getIdentity().userId;
-    const roomDoc = getActiveRoomDoc();
-
-    roomDoc.mutate(() => {
+    transact(() => {
       const connectorMap = new Y.Map<unknown>();
 
       connectorMap.set('id', id);
@@ -378,7 +375,7 @@ export class ConnectorTool implements PointerTool {
       connectorMap.set('ownerId', userId);
       connectorMap.set('createdAt', Date.now());
 
-      roomDoc.objects.set(id, connectorMap);
+      getObjects().set(id, connectorMap);
     });
   }
 }

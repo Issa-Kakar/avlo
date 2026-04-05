@@ -8,7 +8,7 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { isSvg } from '@avlo/shared';
 import { ingest, enqueue } from './image-manager';
-import { getActiveRoomDoc } from '@/canvas/room-runtime';
+import { transact, getObjects } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -31,10 +31,14 @@ async function rasterizeSvg(blob: Blob): Promise<Blob> {
   const text = await blob.text();
 
   // Parse intrinsic dimensions (viewBox > width/height > SVG spec default 300×150)
-  let w = 300, h = 150;
+  let w = 300,
+    h = 150;
   const vbMatch = text.match(/viewBox=["']([^"']+)["']/);
   if (vbMatch) {
-    const parts = vbMatch[1].trim().split(/[\s,]+/).map(Number);
+    const parts = vbMatch[1]
+      .trim()
+      .split(/[\s,]+/)
+      .map(Number);
     if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) {
       w = parts[2];
       h = parts[3];
@@ -128,8 +132,7 @@ export async function createImageFromBlob(
   const objectId = ulid();
   const userId = userProfileManager.getIdentity().userId;
 
-  const roomDoc = getActiveRoomDoc();
-  roomDoc.mutate(() => {
+  transact(() => {
     const yObj = new Y.Map<unknown>();
     yObj.set('id', objectId);
     yObj.set('kind', 'image');
@@ -140,7 +143,7 @@ export async function createImageFromBlob(
     yObj.set('mimeType', result.mimeType);
     yObj.set('ownerId', userId);
     yObj.set('createdAt', Date.now());
-    roomDoc.objects.set(objectId, yObj);
+    getObjects().set(objectId, yObj);
   });
 
   if (opts?.selectAfter !== false) {

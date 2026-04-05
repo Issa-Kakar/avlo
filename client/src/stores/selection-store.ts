@@ -3,7 +3,7 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/lib/tools/types';
 import type { WorldBounds, FrameTuple } from '@/types/geometry';
 import type { SnapTarget } from '@/lib/connectors/types';
-import { getCurrentSnapshot, getConnectorsForShape } from '@/canvas/room-runtime';
+import { getObjectsById, getHandle, getConnectorsForShape } from '@/canvas/room-runtime';
 import { invalidateOverlay } from '@/canvas/invalidation-helpers';
 import {
   getFrame,
@@ -289,7 +289,6 @@ function computeConnectorTopology(
   transformKind: 'translate' | 'scale',
   selectedIds: string[],
 ): ConnectorTopology | null {
-  const snapshot = getCurrentSnapshot();
   const selectedSet = new Set(selectedIds);
 
   const entries: ConnectorTopologyEntry[] = [];
@@ -302,7 +301,7 @@ function computeConnectorTopology(
     if (visited.has(connId)) return;
     visited.add(connId);
 
-    const connHandle = snapshot.objectsById.get(connId);
+    const connHandle = getHandle(connId);
     if (!connHandle || connHandle.kind !== 'connector') return;
 
     const startAnchor = getStartAnchor(connHandle.y);
@@ -366,7 +365,7 @@ function computeConnectorTopology(
 
   // Pass 1: Selected connectors
   for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (handle?.kind === 'connector') {
       processConnector(id, true);
     }
@@ -374,7 +373,7 @@ function computeConnectorTopology(
 
   // Pass 2: Non-selected connectors anchored to selected shapes
   for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (
       !handle ||
       (handle.kind !== 'shape' &&
@@ -396,7 +395,7 @@ function computeConnectorTopology(
 
   // Collect original frames for all selected shapes (for frame overrides)
   for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (
       !handle ||
       (handle.kind !== 'shape' &&
@@ -672,13 +671,12 @@ export const useSelectionStore = create<SelectionStore>()(
         codeEditingId,
         selectedStyles: current,
       } = get();
-      const snapshot = getCurrentSnapshot();
       let ids = selectedIds as string[];
       let kind = selectionKind as SelectionKind;
       if (selectedIds.length === 0) {
         if (textEditingId !== null) {
           ids = [textEditingId];
-          const handle = snapshot.objectsById.get(textEditingId);
+          const handle = getHandle(textEditingId);
           kind = handle?.kind === 'note' ? 'notesOnly' : 'textOnly';
         } else if (codeEditingId !== null) {
           ids = [codeEditingId];
@@ -688,7 +686,7 @@ export const useSelectionStore = create<SelectionStore>()(
 
       const patch: Partial<SelectionState> = {};
 
-      const next = computeStyles(ids, kind, snapshot.objectsById);
+      const next = computeStyles(ids, kind, getObjectsById());
       if (!stylesEqual(current, next)) patch.selectedStyles = next;
 
       // Inline text styles — only when editor is NOT mounted
@@ -697,7 +695,7 @@ export const useSelectionStore = create<SelectionStore>()(
         (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') &&
         ids.length > 0
       ) {
-        const inline = computeUniformInlineStyles(ids, snapshot.objectsById);
+        const inline = computeUniformInlineStyles(ids, getObjectsById());
         if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
       }
 
@@ -716,7 +714,6 @@ export function filterSelectionByKind(
   kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images',
 ): void {
   const { selectedIds } = useSelectionStore.getState();
-  const snapshot = getCurrentSnapshot();
   const targetKind =
     kind === 'strokes'
       ? 'stroke'
@@ -731,7 +728,7 @@ export function filterSelectionByKind(
               : kind === 'images'
                 ? 'image'
                 : 'text';
-  const filtered = selectedIds.filter((id) => snapshot.objectsById.get(id)?.kind === targetKind);
+  const filtered = selectedIds.filter((id) => getHandle(id)?.kind === targetKind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);
     invalidateOverlay();

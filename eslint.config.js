@@ -16,6 +16,9 @@ export default [
       'playwright-report/**',
       'test-results/**',
       'client/src/routeTree.gen.ts',
+      '.wrangler/**',
+      '**/.wrangler/**',
+      '**/.tanstack/**',
     ],
   },
 

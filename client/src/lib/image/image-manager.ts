@@ -24,7 +24,7 @@ import { getAssetId, getFrame, getNaturalDimensions } from '@/lib/object-accesso
 import { bboxToBounds } from '@/lib/geometry/bbox';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorld } from '@/canvas/invalidation-helpers';
-import { hasActiveRoom, getCurrentSnapshot } from '@/canvas/room-runtime';
+import { hasActiveRoom, getObjectsById, getSpatialIndex, getHandle } from '@/canvas/room-runtime';
 import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type * as Y from 'yjs';
@@ -230,10 +230,8 @@ function invalidateBitmapRegion(assetId: string): void {
   // simple bounds intersection, no spatial query
   if (!hasActiveRoom()) return;
   try {
-    const snapshot = getCurrentSnapshot();
-    if (!snapshot) return;
     const vb = getVisibleWorldBounds();
-    for (const handle of snapshot.objectsById.values()) {
+    for (const handle of getObjectsById().values()) {
       if (handle.kind !== 'image' && handle.kind !== 'bookmark') continue;
       const handleAssetId =
         handle.kind === 'image'
@@ -316,15 +314,15 @@ function registerAssetInfo(
 export function manageImageViewport(): void {
   if (!hasActiveRoom()) return;
 
-  let snapshot;
+  let spatialIndex;
   try {
-    snapshot = getCurrentSnapshot();
+    spatialIndex = getSpatialIndex();
   } catch {
     return;
   }
   const vb = getVisibleWorldBounds();
   const padded = padViewport(vb);
-  const visible = snapshot.spatialIndex.query(padded);
+  const visible = spatialIndex.query(padded);
 
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;
@@ -333,7 +331,7 @@ export function manageImageViewport(): void {
 
   for (const entry of visible) {
     if (entry.kind === 'bookmark') {
-      const handle = snapshot.objectsById.get(entry.id);
+      const handle = getHandle(entry.id);
       if (!handle) continue;
       const ogId = handle.y.get('ogImageAssetId') as string | undefined;
       const favId = handle.y.get('faviconAssetId') as string | undefined;
@@ -348,7 +346,7 @@ export function manageImageViewport(): void {
       continue;
     }
     if (entry.kind !== 'image') continue;
-    const handle = snapshot.objectsById.get(entry.id);
+    const handle = getHandle(entry.id);
     if (!handle) continue;
     const assetId = getAssetId(handle.y);
     if (!assetId) continue;
@@ -368,7 +366,7 @@ export function manageImageViewport(): void {
   const { transform: selTransform, kindCounts, selectedIdSet } = useSelectionStore.getState();
   if (selTransform.kind === 'scale' && kindCounts.images > 0) {
     for (const id of selectedIdSet) {
-      const handle = snapshot.objectsById.get(id);
+      const handle = getHandle(id);
       if (!handle || handle.kind !== 'image') continue;
       const aid = getAssetId(handle.y);
       if (!aid) continue;

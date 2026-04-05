@@ -14,7 +14,7 @@
  */
 
 import { create } from 'zustand';
-import { subscribeWithSelector } from 'zustand/middleware';
+import { subscribeWithSelector, persist } from 'zustand/middleware';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
 import type { ViewTransform } from '@/types/snapshot';
@@ -34,6 +34,10 @@ export interface CameraState {
   cssHeight: number;
   /** Device pixel ratio */
   dpr: number;
+  /** Per-room persisted camera positions */
+  roomCameras: Record<string, { scale: number; pan: { x: number; y: number } }>;
+  /** Current room ID (ephemeral) */
+  currentRoomId: string | null;
 }
 
 export interface CameraActions {
@@ -47,6 +51,8 @@ export interface CameraActions {
   setViewport: (cssWidth: number, cssHeight: number, dpr: number) => void;
   /** Reset view to initial state (scale=1, pan={0,0}) */
   resetView: () => void;
+  /** Switch room — saves outgoing camera, restores incoming */
+  setRoom: (roomId: string) => void;
 }
 
 export type CameraStore = CameraState & CameraActions;
@@ -135,46 +141,100 @@ const INITIAL_STATE: CameraState = {
   cssWidth: 1, // Safe non-zero default
   cssHeight: 1,
   dpr: typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+  roomCameras: {},
+  currentRoomId: null,
 };
 
+/** Debounced sync timer for persisting camera to roomCameras */
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
+
 /**
- * Camera store with subscribeWithSelector middleware for granular subscriptions.
+ * Camera store with subscribeWithSelector + persist middleware.
+ * Only roomCameras is persisted to localStorage (via partialize).
  */
 export const useCameraStore = create<CameraStore>()(
-  subscribeWithSelector((set, get) => ({
-    // Initial state
-    ...INITIAL_STATE,
+  subscribeWithSelector(
+    persist(
+      (set, get) => ({
+        // Initial state
+        ...INITIAL_STATE,
 
-    // Actions (all with equality guards to skip no-op updates)
-    setScale: (scale: number) => {
-      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
-      if (clamped === get().scale) return;
-      set({ scale: clamped });
-    },
+        // Actions (all with equality guards to skip no-op updates)
+        setScale: (scale: number) => {
+          const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+          if (clamped === get().scale) return;
+          set({ scale: clamped });
+        },
 
-    setPan: (pan: { x: number; y: number }) => {
-      const curr = get().pan;
-      if (pan.x === curr.x && pan.y === curr.y) return;
-      set({ pan });
-    },
+        setPan: (pan: { x: number; y: number }) => {
+          const curr = get().pan;
+          if (pan.x === curr.x && pan.y === curr.y) return;
+          set({ pan });
+        },
 
-    setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
-      const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
-      const state = get();
-      if (clamped === state.scale && pan.x === state.pan.x && pan.y === state.pan.y) return;
-      set({ scale: clamped, pan });
-    },
+        setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
+          const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+          const state = get();
+          if (clamped === state.scale && pan.x === state.pan.x && pan.y === state.pan.y) return;
+          set({ scale: clamped, pan });
+        },
 
-    setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
-      const state = get();
-      if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr) return;
-      set({ cssWidth, cssHeight, dpr });
-    },
+        setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
+          const state = get();
+          if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr)
+            return;
+          set({ cssWidth, cssHeight, dpr });
+        },
 
-    resetView: () => {
-      set({ scale: 1, pan: { x: 0, y: 0 } });
-    },
-  })),
+        resetView: () => {
+          set({ scale: 1, pan: { x: 0, y: 0 } });
+        },
+
+        setRoom: (roomId: string) => {
+          // Flush pending debounced sync
+          if (syncTimer) {
+            clearTimeout(syncTimer);
+            syncTimer = null;
+          }
+          const { scale, pan, currentRoomId, roomCameras } = get();
+          const updated = { ...roomCameras };
+          // Save outgoing room
+          if (currentRoomId) updated[currentRoomId] = { scale, pan };
+          // Restore incoming room
+          const saved = updated[roomId];
+          set({
+            roomCameras: updated,
+            currentRoomId: roomId,
+            scale: saved?.scale ?? 1,
+            pan: saved?.pan ?? { x: 0, y: 0 },
+          });
+        },
+      }),
+      {
+        name: 'avlo.camera.v1',
+        partialize: (state) => ({ roomCameras: state.roomCameras }),
+      },
+    ),
+  ),
+);
+
+// Debounced sync: write current camera to roomCameras at most once per second
+useCameraStore.subscribe(
+  (s) => ({ scale: s.scale, px: s.pan.x, py: s.pan.y }),
+  () => {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      syncTimer = null;
+      const { scale, pan, currentRoomId, roomCameras } = useCameraStore.getState();
+      if (!currentRoomId) return;
+      const prev = roomCameras[currentRoomId];
+      if (prev && prev.scale === scale && prev.pan.x === pan.x && prev.pan.y === pan.y) return;
+      useCameraStore.setState({
+        roomCameras: { ...roomCameras, [currentRoomId]: { scale, pan } },
+      });
+    }, 1000);
+  },
+  { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
 );
 
 // ============================================

@@ -15,19 +15,12 @@
  * @module canvas/CanvasRuntime
  */
 
-import { RenderLoop } from '@/renderer/RenderLoop';
-import { OverlayRenderLoop } from '@/renderer/OverlayRenderLoop';
+import { renderLoop } from '@/renderer/RenderLoop';
+import { overlayLoop } from '@/renderer/OverlayRenderLoop';
 import { cancelZoom } from './animation/ZoomAnimator';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import {
-  setWorldInvalidator,
-  setOverlayInvalidator,
-  setHoldPreviewFn,
-  setWorldBBoxInvalidator,
-  setFullClearFn,
-} from './invalidation-helpers';
 import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
 import { getActiveRoomDoc, updatePresenceCursor, clearPresenceCursor } from './room-runtime';
 import {
@@ -70,8 +63,6 @@ const PINCH_SENSITIVITY = 0.01; // Trackpad pinch scaling
 export class CanvasRuntime {
   private inputManager: InputManager | null = null;
   private surfaceManager: SurfaceManager | null = null;
-  private renderLoop: RenderLoop | null = null;
-  private overlayLoop: OverlayRenderLoop | null = null;
   private cameraUnsub: (() => void) | null = null;
   private snapshotUnsub: (() => void) | null = null;
   private presenceUnsub: (() => void) | null = null;
@@ -94,17 +85,9 @@ export class CanvasRuntime {
     this.surfaceManager = new SurfaceManager(container, baseCanvas, overlayCanvas, editorHost);
     this.surfaceManager.start();
 
-    // 3. Render loops
-    this.renderLoop = new RenderLoop();
-    this.renderLoop.start();
-    setWorldInvalidator((bounds) => this.renderLoop?.invalidateWorld(bounds));
-    setWorldBBoxInvalidator((bbox) => this.renderLoop?.invalidateWorldBBox(bbox));
-    setFullClearFn(() => this.renderLoop?.invalidateAll());
-
-    this.overlayLoop = new OverlayRenderLoop();
-    this.overlayLoop.start();
-    setOverlayInvalidator(() => this.overlayLoop?.invalidateAll());
-    setHoldPreviewFn(holdPreviewForOneFrame);
+    // 3. Render loops (singletons — wire invalidation in their own start())
+    renderLoop.start();
+    overlayLoop.start();
 
     // 4. Input manager + keyboard
     this.inputManager = new InputManager(this, container);
@@ -124,21 +107,21 @@ export class CanvasRuntime {
     // 7. Snapshot subscription for dirty rect invalidation (event-driven)
     const roomDoc = getActiveRoomDoc();
     this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
-    this.renderLoop?.invalidateAll();
-    this.overlayLoop?.invalidateAll();
+    renderLoop.invalidateAll();
+    overlayLoop.invalidateAll();
 
     this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
       if (snap.docVersion !== this.lastDocVersion) {
         this.lastDocVersion = snap.docVersion;
         holdPreviewForOneFrame();
-        this.overlayLoop?.invalidateAll();
+        overlayLoop.invalidateAll();
       }
     });
 
     // 8. Presence subscription for overlay updates (separate from doc)
     this.presenceUnsub = roomDoc.subscribePresence(() => {
       // Presence changed - only update overlay (cursors, etc.)
-      this.overlayLoop?.invalidateAll();
+      overlayLoop.invalidateAll();
     });
   }
 
@@ -157,16 +140,8 @@ export class CanvasRuntime {
     cancelZoom();
     stopEdgeScroll();
 
-    setWorldInvalidator(null);
-    setWorldBBoxInvalidator(null);
-    setFullClearFn(null);
-    this.renderLoop?.stop();
-    this.renderLoop?.destroy();
-
-    setOverlayInvalidator(null);
-    setHoldPreviewFn(null);
-    this.overlayLoop?.stop();
-    this.overlayLoop?.destroy();
+    renderLoop.stop();
+    overlayLoop.stop();
 
     // SurfaceManager.stop() handles all DOM ref cleanup:
     // - Clearing contexts
@@ -181,8 +156,6 @@ export class CanvasRuntime {
 
     this.inputManager = null;
     this.surfaceManager = null;
-    this.renderLoop = null;
-    this.overlayLoop = null;
     this.cameraUnsub = null;
     this.snapshotUnsub = null;
     this.presenceUnsub = null;

@@ -29,7 +29,14 @@ import {
   worldToClient,
 } from '@/stores/camera-store';
 import { invalidateOverlay, invalidateWorld } from '@/canvas/invalidation-helpers';
-import { getActiveRoomDoc, getCurrentSnapshot } from '@/canvas/room-runtime';
+import {
+  getActiveRoomDoc,
+  getCurrentSnapshot,
+  getHandle,
+  getHandleKind,
+  transact,
+  getObjects,
+} from '@/canvas/room-runtime';
 import { getEditorHost } from '@/canvas/SurfaceManager';
 import {
   getTextProps,
@@ -184,7 +191,7 @@ export class TextTool implements PointerTool {
    * Called by SelectTool (double-click on text) with the click position for cursor placement.
    */
   startEditing(objectId: string, entryPoint: [number, number]): void {
-    const handle = getCurrentSnapshot().objectsById.get(objectId);
+    const handle = getHandle(objectId);
     if (!handle) return;
 
     // Create label fields if shape without label
@@ -192,7 +199,7 @@ export class TextTool implements PointerTool {
     if (isNewLabel) {
       const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } =
         useDeviceUIStore.getState();
-      getActiveRoomDoc().mutate(() => {
+      transact(() => {
         handle.y.set('content', new Y.XmlFragment());
         handle.y.set('fontSize', textSize);
         handle.y.set('fontFamily', textFontFamily);
@@ -214,7 +221,7 @@ export class TextTool implements PointerTool {
 
   isEditingLabel(): boolean {
     if (!this.objectId) return false;
-    const kind = getCurrentSnapshot().objectsById.get(this.objectId)?.kind;
+    const kind = getHandleKind(this.objectId);
     return kind === 'shape' || kind === 'note' || false;
   }
 
@@ -231,13 +238,12 @@ export class TextTool implements PointerTool {
   // =========================================================================
 
   private createTextObject(worldX: number, worldY: number): string {
-    const roomDoc = getActiveRoomDoc();
     const objectId = ulid();
     const userId = userProfileManager.getIdentity().userId;
     const store = useDeviceUIStore.getState();
     const isNoteMode = store.activeTool === 'note';
 
-    roomDoc.mutate(() => {
+    transact(() => {
       const yObj = new Y.Map<unknown>();
       yObj.set('id', objectId);
       yObj.set('origin', [worldX, worldY]);
@@ -262,7 +268,7 @@ export class TextTool implements PointerTool {
         if (store.textFillColor) yObj.set('fillColor', store.textFillColor);
       }
 
-      roomDoc.objects.set(objectId, yObj);
+      getObjects().set(objectId, yObj);
     });
 
     return objectId;
@@ -279,9 +285,7 @@ export class TextTool implements PointerTool {
       return;
     }
 
-    const roomDoc = getActiveRoomDoc();
-    const snapshot = roomDoc.currentSnapshot;
-    const handle = snapshot.objectsById.get(objectId);
+    const handle = getHandle(objectId);
     if (!handle) {
       console.error('[TextTool] Object not found:', objectId);
       return;
@@ -446,7 +450,7 @@ export class TextTool implements PointerTool {
         fragment,
         yObj: handle.y,
         userId: userProfileManager.getIdentity().userId,
-        mainUndoManager: roomDoc.getUndoManager(),
+        mainUndoManager: getActiveRoomDoc().getUndoManager(),
         onPropsSync: (keys) => this.syncProps(keys),
       }),
     ];
@@ -544,7 +548,7 @@ export class TextTool implements PointerTool {
 
   private positionEditor(): void {
     if (!this.container || !this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
 
     const scale = useCameraStore.getState().scale;
@@ -653,13 +657,13 @@ export class TextTool implements PointerTool {
 
   private commitAndClose(): void {
     if (!this.editor || !this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
 
     // Delete empty content on close (sticky notes kept — empty note is valid)
     if (this.editor.isEmpty) {
       if (handle?.kind === 'shape') {
         // Shape label: remove label fields, keep shape
-        getActiveRoomDoc().mutate(() => {
+        transact(() => {
           handle.y.delete('content');
           handle.y.delete('fontSize');
           handle.y.delete('fontFamily');
@@ -669,9 +673,8 @@ export class TextTool implements PointerTool {
         });
       } else if (!handle || handle.kind !== 'note') {
         // Regular text object: delete entirely
-        const roomDoc = getActiveRoomDoc();
-        roomDoc.mutate(() => {
-          roomDoc.objects.delete(this.objectId!);
+        transact(() => {
+          getObjects().delete(this.objectId!);
         });
       }
     }
@@ -707,7 +710,7 @@ export class TextTool implements PointerTool {
   private syncProps(keys: Set<string>): void {
     if (!this.container || !this.objectId) return;
 
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
 
     if (handle.kind === 'shape') {
@@ -763,7 +766,7 @@ export class TextTool implements PointerTool {
 
   private updateNoteAutoSize(): void {
     if (!this.container || !this.objectId) return;
-    const handle = getCurrentSnapshot().objectsById.get(this.objectId);
+    const handle = getHandle(this.objectId);
     if (!handle) return;
     const props = getNoteProps(handle.y);
     if (!props) return;

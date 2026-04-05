@@ -41,10 +41,18 @@ import { TextColorPopover } from './TextColorPopover';
 import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
-import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines, IconCodeHeader, IconCodeOutput } from './icons';
+import {
+  IconBold,
+  IconItalic,
+  IconMoreDots,
+  IconTrash,
+  IconCodeLines,
+  IconCodeHeader,
+  IconCodeOutput,
+} from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
 import { NoteAlignDropdown } from './NoteAlignDropdown';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getHandleKind } from '@/canvas/room-runtime';
 
 // === Selectors (stable module-level references) ===
 
@@ -222,7 +230,9 @@ const selectCodeStyles = (s: SelectionStore) => ({
 });
 
 const CodeStyleGroup = memo(function CodeStyleGroup() {
-  const { fontSize, headerVisible, outputVisible } = useSelectionStore(useShallow(selectCodeStyles));
+  const { fontSize, headerVisible, outputVisible } = useSelectionStore(
+    useShallow(selectCodeStyles),
+  );
   const effectiveFontSize = fontSize ?? 14;
   return (
     <ButtonGroup>
@@ -238,10 +248,18 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
       <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
         <IconCodeLines style={{ width: 22, height: 16 }} />
       </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
+      <MenuButton
+        className="ctx-btn-sq"
+        active={headerVisible === true}
+        onMouseDown={toggleCodeHeader}
+      >
         <IconCodeHeader style={{ width: 16, height: 16 }} />
       </MenuButton>
-      <MenuButton className="ctx-btn-sq" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
+      <MenuButton
+        className="ctx-btn-sq"
+        active={outputVisible === true}
+        onMouseDown={toggleCodeOutput}
+      >
         <IconCodeOutput style={{ width: 16, height: 16 }} />
       </MenuButton>
     </ButtonGroup>
@@ -318,7 +336,9 @@ function ContextMenuBar() {
   const codeEditing = useSelectionStore(selectCodeEditing);
   const effectiveKind: SelectionKind =
     editing !== null && kind === 'none'
-      ? (getCurrentSnapshot().objectsById.get(editing)?.kind === 'note' ? 'notesOnly' : 'textOnly')
+      ? getHandleKind(editing) === 'note'
+        ? 'notesOnly'
+        : 'textOnly'
       : codeEditing !== null && kind === 'none'
         ? 'codeOnly'
         : kind;

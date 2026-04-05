@@ -26,7 +26,7 @@ import {
   computeEndTrimInfo,
   ARROW_ROUNDING_LINE_WIDTH,
 } from '@/lib/connectors/connector-paths';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { getHandle } from '@/canvas/room-runtime';
 import { getObjectCacheInstance } from '../object-cache';
 import { getWidth } from '@/lib/object-accessors';
 
@@ -125,7 +125,7 @@ export function drawConnectorPreview(
 
   if (shouldShowDots) {
     // Draw snap target highlight — cached geometry for shapes, strokeRect for others
-    const snapHandle = getCurrentSnapshot().objectsById.get(preview.snapShapeId ?? '');
+    const snapHandle = getHandle(preview.snapShapeId ?? '');
     ctx.save();
     ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
     ctx.lineWidth = 2 / scale;
