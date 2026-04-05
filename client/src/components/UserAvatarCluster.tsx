@@ -3,7 +3,6 @@ import { usePresenceStore } from '@/stores/presence-store';
 
 export function UserAvatarCluster() {
   const peerIdentities = usePresenceStore((s) => s.peerIdentities);
-  const isAlone = usePresenceStore((s) => s.isAlone);
 
   const usersWithIds = useMemo(() => {
     return Array.from(peerIdentities.entries()).map(([userId, identity]) => ({
@@ -11,8 +10,6 @@ export function UserAvatarCluster() {
       ...identity,
     }));
   }, [peerIdentities]);
-
-  if (isAlone) return null;
 
   const totalCount = usersWithIds.length + 1; // +1 for self
   const displayCount = Math.min(4, usersWithIds.length);

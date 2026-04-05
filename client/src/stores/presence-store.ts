@@ -17,7 +17,6 @@ interface PresenceState {
   localUserId: string;
   peerIdentities: Map<string, PeerIdentity>;
   peerCount: number;
-  isAlone: boolean;
 }
 
 interface PresenceActions {
@@ -29,7 +28,6 @@ export const usePresenceStore = create<PresenceState & PresenceActions>((set) =>
   localUserId: '',
   peerIdentities: new Map(),
   peerCount: 0,
-  isAlone: true,
 
   setLocalUserId(id: string) {
     set({ localUserId: id });
@@ -45,7 +43,6 @@ export const usePresenceStore = create<PresenceState & PresenceActions>((set) =>
       return {
         peerIdentities: filtered,
         peerCount: filtered.size,
-        isAlone: filtered.size === 0,
       };
     });
   },

@@ -10,7 +10,6 @@
 
 import type { AnimationJob } from './AnimationController';
 import { getPeerCursors } from '@/lib/presence';
-import { usePresenceStore } from '@/stores/presence-store';
 import {
   getCursorBitmap,
   CURSOR_BITMAP_OFFSET_X,
@@ -27,8 +26,6 @@ export class CursorAnimationJob implements AnimationJob {
   readonly id = 'cursor-animation';
 
   frame(ctx: CanvasRenderingContext2D, _now: number, dt: number): boolean {
-    if (usePresenceStore.getState().isAlone) return false;
-
     const peers = getPeerCursors();
     if (peers.size === 0) return false;
 
@@ -56,7 +53,10 @@ export class CursorAnimationJob implements AnimationJob {
         // Settle check in canvas space
         const [dcx, dcy] = worldToCanvas(peer.display[0], peer.display[1]);
         const [tcx, tcy] = worldToCanvas(peer.target[0], peer.target[1]);
-        if (Math.abs(dcx - tcx) < SETTLE_THRESHOLD_PX && Math.abs(dcy - tcy) < SETTLE_THRESHOLD_PX) {
+        if (
+          Math.abs(dcx - tcx) < SETTLE_THRESHOLD_PX &&
+          Math.abs(dcy - tcy) < SETTLE_THRESHOLD_PX
+        ) {
           peer.display[0] = peer.target[0];
           peer.display[1] = peer.target[1];
           peer.isSettled = true;

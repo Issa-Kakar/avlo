@@ -33,8 +33,7 @@ import { getCodeProps } from '@/lib/object-accessors';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
 import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
-import { createAwareness, attachListeners, detachAndDestroy } from './presence';
-import type { Awareness as YAwareness } from 'y-protocols/awareness';
+import { initPresenceIdentity, attach, detach } from './presence';
 
 type Unsub = () => void;
 
@@ -75,9 +74,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private indexeddbProvider: IndexeddbPersistence | null = null;
   private websocketProvider: YProvider | null = null;
 
-  // Awareness (owned by presence modules, stored here for provider lifecycle)
-  private yAwareness: YAwareness | null = null;
-
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
 
@@ -110,7 +106,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
-    this.yAwareness = createAwareness(this.ydoc);
+    initPresenceIdentity();
 
     // Initial snapshot references our live (empty) instances
     this._currentSnapshot = {
@@ -219,19 +215,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.indexeddbProvider = null;
     }
 
-    if (this.websocketProvider) {
-      // Detach awareness listeners and destroy awareness
-      if (this.yAwareness) {
-        detachAndDestroy(this.yAwareness, this.websocketProvider);
-        this.yAwareness = null;
-      }
+    // Detach presence listeners (signals departure while WS still open)
+    detach();
 
+    if (this.websocketProvider) {
       this.websocketProvider.disconnect();
       this.websocketProvider.destroy();
       this.websocketProvider = null;
-    } else if (this.yAwareness) {
-      detachAndDestroy(this.yAwareness, null);
-      this.yAwareness = null;
     }
 
     // Destroy UndoManager
@@ -530,26 +520,18 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     try {
       const host = window.location.host;
 
-      this.websocketProvider = new YProvider(
-        host,
-        this.roomId,
-        this.ydoc,
-        {
-          connect: true,
-          party: 'rooms',
-          awareness: this.yAwareness ?? undefined,
-          maxBackoffTime: 10_000,
-          resyncInterval: -1,
-        },
-      );
+      this.websocketProvider = new YProvider(host, this.roomId, this.ydoc, {
+        connect: true,
+        party: 'rooms',
+        maxBackoffTime: 10_000,
+        resyncInterval: -1,
+      });
 
-      // Attach awareness listeners via presence module (includes WS status tracking)
-      if (this.yAwareness) {
-        attachListeners(this.yAwareness, this.websocketProvider, (wsConnected) => {
-          this.wsConnected = wsConnected;
-          if (!wsConnected) this.wsRepacked = false;
-        });
-      }
+      // Attach presence module to provider's awareness
+      attach(this.websocketProvider, (wsConnected) => {
+        this.wsConnected = wsConnected;
+        if (!wsConnected) this.wsRepacked = false;
+      });
 
       // Listen for sync status — repack spatial index on first sync per connection
       this.websocketProvider.on('sync', (isSynced: boolean) => {

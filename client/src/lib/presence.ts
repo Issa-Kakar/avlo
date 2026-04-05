@@ -1,13 +1,13 @@
 /**
  * Presence — awareness lifecycle, cursor send/receive.
  *
- * Consolidates awareness init, send, and receive into a single module.
+ * Provider-owned awareness: YProvider creates the Awareness instance,
+ * we attach to it via `attach(provider)` and detach via `detach()`.
  * All module-level state lives here. CursorAnimationJob reads
  * `getPeerCursors()` directly — zero Zustand overhead per frame.
  */
 
-import { Awareness as YAwareness } from 'y-protocols/awareness';
-import type * as Y from 'yjs';
+import type { Awareness as YAwareness } from 'y-protocols/awareness';
 import type YProvider from 'y-partyserver/provider';
 import { usePresenceStore, type PeerIdentity } from '@/stores/presence-store';
 import { userProfileManager } from '@/lib/user-profile-manager';
@@ -33,7 +33,9 @@ export interface PeerCursorState {
 let currentAwareness: YAwareness | null = null;
 let currentProvider: YProvider | null = null;
 let cachedLocalClientId = -1;
-let changeHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }) => void) | null = null;
+let updateHandler:
+  | ((changes: { added: number[]; updated: number[]; removed: number[] }) => void)
+  | null = null;
 let statusHandler: ((event: { status: string }) => void) | null = null;
 
 // Send
@@ -53,46 +55,40 @@ const peerCursors = new Map<number, PeerCursorState>();
 
 // ─── Lifecycle ───────────────────────────────────────────────────────
 
-export function createAwareness(ydoc: Y.Doc): YAwareness {
-  const awareness = new YAwareness(ydoc);
-  currentAwareness = awareness;
-
+/**
+ * Set localUserId in presence store. Called early (RoomDocManager constructor)
+ * before the provider exists — no awareness object involved.
+ */
+export function initPresenceIdentity(): void {
   const identity = userProfileManager.getIdentity();
   usePresenceStore.getState().setLocalUserId(identity.userId);
-
-  return awareness;
-}
-
-export function getAwareness(): YAwareness | null {
-  return currentAwareness;
 }
 
 /**
- * Attach awareness change listener + WS status handler.
- * Called after WS provider is created.
- *
- * Optional `onStatusChange` callback replaces the duplicate
- * `provider.on('status', ...)` in room-doc-manager.
+ * Attach to the provider's awareness. Wires update handler + WS status handler.
+ * Called after YProvider is created — awareness is owned by the provider.
  */
-export function attachListeners(
-  awareness: YAwareness,
-  provider: YProvider,
-  onStatusChange?: (connected: boolean) => void,
-): void {
+export function attach(provider: YProvider, onStatusChange?: (connected: boolean) => void): void {
   currentProvider = provider;
+  const awareness = provider.awareness;
+  currentAwareness = awareness;
   cachedLocalClientId = awareness.clientID;
 
-  changeHandler = (changes: { added: number[]; updated: number[]; removed: number[] }) => {
+  updateHandler = (changes: { added: number[]; updated: number[]; removed: number[] }) => {
+    const hadPeers = peerCursors.size > 0;
     processBatch(
       changes.added || [],
       changes.updated || [],
       changes.removed || [],
       (clientId) => awareness.getStates().get(clientId) as Record<string, unknown> | undefined,
     );
-    invalidateOverlay();
+    // Only invalidate overlay if there are (or were) remote cursors to draw
+    if (peerCursors.size > 0 || hadPeers) {
+      invalidateOverlay();
+    }
   };
 
-  awareness.on('change', changeHandler);
+  awareness.on('update', updateHandler);
 
   statusHandler = (event: { status: string }) => {
     if (event.status === 'connected') {
@@ -116,6 +112,10 @@ export function attachListeners(
       }
       dirty = false;
 
+      // Clear peer state immediately on disconnect
+      peerCursors.clear();
+      rebuildStore();
+
       try {
         awareness.setLocalState(null);
       } catch {
@@ -130,52 +130,49 @@ export function attachListeners(
 }
 
 /**
- * Detach listeners, signal departure, destroy awareness.
+ * Detach from provider's awareness. Signals departure, removes listeners,
+ * resets all module state. Does NOT destroy awareness — provider owns it,
+ * and y-protocols auto-destroys awareness on doc.destroy().
  */
-export function detachAndDestroy(awareness: YAwareness, provider: YProvider | null): void {
-  // Signal departure
-  try {
-    awareness.setLocalState(null);
-  } catch {
-    // Ignore
-  }
-
-  // Unregister listeners
-  if (changeHandler) {
-    awareness.off('change', changeHandler);
-    changeHandler = null;
-  }
-
-  if (provider && statusHandler) {
-    try {
-      (provider as any).off?.('status', statusHandler);
-    } catch {
-      // Ignore
-    }
-    statusHandler = null;
-  }
-
-  // Destroy awareness
-  try {
-    if (typeof (awareness as any).destroy === 'function') {
-      (awareness as any).destroy();
-    }
-  } catch {
-    // Ignore
-  }
-
-  // Reset send state
+export function detach(): void {
+  // 1. Stop sending first (prevent flush() during teardown)
   if (timer !== null) {
     clearTimeout(timer);
     timer = null;
   }
   dirty = false;
   connected = false;
+
+  // 2. Signal departure (while WS may still be open)
+  const awareness = currentAwareness;
+  if (awareness) {
+    try {
+      awareness.setLocalState(null);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 3. Unregister listeners
+  if (awareness && updateHandler) {
+    awareness.off('update', updateHandler);
+    updateHandler = null;
+  }
+  if (currentProvider && statusHandler) {
+    try {
+      (currentProvider as any).off?.('status', statusHandler);
+    } catch {
+      /* ignore */
+    }
+    statusHandler = null;
+  }
+
+  // 4. Reset send state
   identitySent = false;
   localCursor = undefined;
   lastSentCursor = undefined;
 
-  // Reset receive state
+  // 5. Reset receive state
   peerCursors.clear();
   rebuildStore();
   clearBitmapCache();
@@ -196,7 +193,7 @@ export function updateCursor(worldX: number, worldY: number): void {
   if (localCursor && localCursor[0] === x && localCursor[1] === y) return;
   localCursor = [x, y];
 
-  if (usePresenceStore.getState().isAlone) return;
+  if (peerCursors.size === 0) return;
 
   dirty = true;
   scheduleSend();
@@ -236,7 +233,11 @@ function flush(): void {
     return;
   }
 
-  const cursor = isMobile() ? undefined : localCursor ? { x: localCursor[0], y: localCursor[1] } : undefined;
+  const cursor = isMobile()
+    ? undefined
+    : localCursor
+      ? { x: localCursor[0], y: localCursor[1] }
+      : undefined;
 
   currentAwareness.setLocalStateField('cursor', cursor);
   lastSentCursor = localCursor ? [localCursor[0], localCursor[1]] : undefined;
@@ -304,10 +305,7 @@ function processBatch(
   if (identityDirty) rebuildStore();
 }
 
-function processUpsert(
-  clientId: number,
-  state: Record<string, unknown> | undefined,
-): boolean {
+function processUpsert(clientId: number, state: Record<string, unknown> | undefined): boolean {
   if (!state || !state.userId) return false;
 
   const userId = state.userId as string;
