@@ -316,26 +316,6 @@ export function getVisibleWorldBounds(): {
   };
 }
 
-/**
- * Get viewport information including device pixel dimensions.
- */
-export function getViewportInfo(): {
-  pixelWidth: number;
-  pixelHeight: number;
-  cssWidth: number;
-  cssHeight: number;
-  dpr: number;
-} {
-  const { cssWidth, cssHeight, dpr } = useCameraStore.getState();
-  return {
-    pixelWidth: Math.round(cssWidth * dpr),
-    pixelHeight: Math.round(cssHeight * dpr),
-    cssWidth,
-    cssHeight,
-    dpr,
-  };
-}
-
 // ============================================
 // SELECTORS FOR REACT COMPONENTS
 // ============================================

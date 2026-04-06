@@ -1,19 +1,3 @@
-import type { WorldBounds } from '@/types/geometry';
-
-// Viewport information
-export interface ViewportInfo {
-  pixelWidth: number; // Device pixels
-  pixelHeight: number; // Device pixels
-  cssWidth: number; // CSS pixels
-  cssHeight: number; // CSS pixels
-  dpr: number;
-  visibleWorldBounds?: { minX: number; minY: number; maxX: number; maxY: number };
-  clipWorldRects?: WorldBounds[];
-}
-
-// Re-export for convenience
-export type { WorldBounds };
-
 export const FRAME_CONFIG = {
   TARGET_FPS: 60,
   TARGET_MS: 16.6,

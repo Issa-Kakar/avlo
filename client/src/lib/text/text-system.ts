@@ -1203,8 +1203,8 @@ class TextLayoutCache {
     }
   }
 
-  /** Remove entry entirely (object deletion). */
-  remove(objectId: string): void {
+  /** Evict entry entirely (object deletion). */
+  evict(objectId: string): void {
     this.cache.delete(objectId);
   }
 

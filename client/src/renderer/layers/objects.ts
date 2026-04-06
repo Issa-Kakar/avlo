@@ -1,6 +1,6 @@
-import type { Snapshot, ViewTransform } from '@/types/snapshot';
-import type { ObjectHandle, IndexEntry } from '@/types/objects';
-import type { FrameTuple } from '@/types/geometry';
+import type { Snapshot } from '@/types/snapshot';
+import type { ObjectHandle } from '@/types/objects';
+import type { FrameTuple, WorldBounds } from '@/types/geometry';
 import {
   getColor,
   getOpacity,
@@ -17,9 +17,10 @@ import {
   getContent,
   getFontSize,
   getFontFamily,
+  getStrokeProps,
+  getShapeProps,
 } from '@/lib/object-accessors';
-import type { ViewportInfo } from '../types';
-import { getObjectCacheInstance } from '../object-cache';
+import { getPath, getConnectorPaths } from '../geometry-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import {
@@ -73,13 +74,13 @@ import { drawBookmark } from '@/lib/bookmark/bookmark-render';
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
   snapshot: Snapshot,
-  viewTransform: ViewTransform,
-  viewport: ViewportInfo,
+  clipWorldRects?: WorldBounds[],
 ): void {
   const { spatialIndex, objectsById } = snapshot;
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
   const selectionState = useSelectionStore.getState();
-  const selectedSet = new Set(selectionState.selectedIds);
+  const selectedSet = selectionState.selectedIdSet;
+  const selectedIds = selectionState.selectedIds;
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
@@ -91,31 +92,24 @@ export function drawObjects(
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
 
-  // Use spatial index for efficient querying
-  let candidateEntries: IndexEntry[];
+  // Collect candidate IDs via spatial index
+  const seen = new Set<string>();
+  const candidateIds: string[] = [];
 
-  if (viewport.clipWorldRects) {
-    // OPTIMIZATION: Query each dirty rect and union results
-    const entrySet = new Map<string, IndexEntry>();
-
-    for (const rect of viewport.clipWorldRects) {
-      const results = spatialIndex.query({
-        minX: rect.minX,
-        minY: rect.minY,
-        maxX: rect.maxX,
-        maxY: rect.maxY,
-      });
-
-      for (const entry of results) {
-        // Use Map to avoid duplicates by ID
-        entrySet.set(entry.id, entry);
+  if (clipWorldRects) {
+    for (const rect of clipWorldRects) {
+      for (const entry of spatialIndex.query(rect)) {
+        if (!seen.has(entry.id)) {
+          seen.add(entry.id);
+          candidateIds.push(entry.id);
+        }
       }
     }
-
-    candidateEntries = Array.from(entrySet.values());
   } else {
-    // Full viewport query
-    candidateEntries = spatialIndex.query(visibleBounds);
+    for (const entry of spatialIndex.query(visibleBounds)) {
+      seen.add(entry.id);
+      candidateIds.push(entry.id);
+    }
   }
 
   // During active transforms, spatial index stores ORIGINAL positions. If the camera
@@ -123,48 +117,29 @@ export function drawObjects(
   // while rendered positions (original + offset) are still on screen. Inject all
   // selected + topology objects so they're never culled mid-transform.
   if (isTransforming) {
-    const candidateSet = new Set(candidateEntries.map((e) => e.id));
     const inject = (id: string) => {
-      if (candidateSet.has(id)) return;
-      const h = objectsById.get(id);
-      if (!h) return;
-      candidateEntries.push({
-        id,
-        kind: h.kind,
-        minX: h.bbox[0],
-        minY: h.bbox[1],
-        maxX: h.bbox[2],
-        maxY: h.bbox[3],
-      });
-      candidateSet.add(id);
+      if (seen.has(id)) return;
+      if (!objectsById.has(id)) return;
+      seen.add(id);
+      candidateIds.push(id);
     };
-    for (const id of selectionState.selectedIds) inject(id);
+    for (const id of selectedIds) inject(id);
     if (connTopology) {
       for (const id of connTopology.translateIdSet) inject(id);
       for (const id of connTopology.reroutes.keys()) inject(id);
     }
   }
 
-  // ========== CRITICAL FIX: Sort by ULID for deterministic draw order ==========
-  // WHY: RBush query order is non-deterministic
-  // SOLUTION: ULID (object.id) provides globally consistent ordering
+  // Sort by ULID for deterministic draw order (oldest first -> newest on top)
+  candidateIds.sort();
 
-  const sortedCandidates = [...candidateEntries].sort((a, b) => {
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
-
-  // Draw in ULID order (oldest first -> newest on top)
-  for (const entry of sortedCandidates) {
-    const handle = objectsById.get(entry.id);
+  // Draw in ULID order
+  for (const id of candidateIds) {
+    const handle = objectsById.get(id);
     if (!handle) continue;
 
-    // LOD check still needed (spatial query is coarse)
-    if (shouldSkipLOD(handle.bbox, viewTransform)) {
-      continue;
-    }
-
     // === TRANSFORM SELECTED OBJECTS DURING ACTIVE TRANSFORM ===
-    const isSelected = selectedSet.has(entry.id);
+    const isSelected = selectedSet.has(id);
     const needsTransform = isTransforming && isSelected;
 
     if (needsTransform) {
@@ -218,13 +193,13 @@ export function drawObjects(
     } else {
       // Non-selected: check topology for connector overrides
       if (handle.kind === 'connector' && connTopology) {
-        if (transform.kind === 'translate' && connTopology.translateIdSet.has(entry.id)) {
+        if (transform.kind === 'translate' && connTopology.translateIdSet.has(id)) {
           ctx.save();
           ctx.translate(transform.dx, transform.dy);
           drawObject(ctx, handle);
           ctx.restore();
         } else {
-          const points = connTopology.reroutes.get(entry.id);
+          const points = connTopology.reroutes.get(id);
           if (points) {
             drawConnectorFromPoints(ctx, handle, points);
           } else {
@@ -268,13 +243,11 @@ function drawObject(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawStroke(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const { id, y } = handle;
-  const color = getColor(y);
-  const opacity = getOpacity(y);
-  const tool = getStrokeTool(y);
+  const props = getStrokeProps(handle.y);
+  if (!props) return;
+  const { color, opacity, tool } = props;
 
-  const cache = getObjectCacheInstance();
-  const path = cache.getPath(id, handle);
+  const path = getPath(handle.id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -290,15 +263,11 @@ function drawStroke(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const { id, y } = handle;
+  const props = getShapeProps(handle.y);
+  if (!props) return;
+  const { fillColor, color, width, opacity } = props;
 
-  const fillColor = getFillColor(y);
-  const color = getColor(y);
-  const width = getWidth(y, 1);
-  const opacity = getOpacity(y);
-
-  const cache = getObjectCacheInstance();
-  const path = cache.getPath(id, handle);
+  const path = getPath(handle.id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -316,7 +285,7 @@ function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     ctx.stroke(path);
   }
 
-  if (hasLabel(y)) drawShapeLabel(ctx, handle);
+  if (hasLabel(handle.y)) drawShapeLabel(ctx, handle);
 
   ctx.restore();
 }
@@ -528,8 +497,7 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
   const width = getWidth(y);
   const opacity = getOpacity(y);
 
-  const cache = getObjectCacheInstance();
-  const paths = cache.getConnectorPaths(id, handle);
+  const paths = getConnectorPaths(id, handle);
 
   ctx.save();
   ctx.globalAlpha = opacity;
@@ -608,13 +576,6 @@ function drawConnectorFromPoints(
   }
 
   ctx.restore();
-}
-
-function shouldSkipLOD(bbox: [number, number, number, number], view: ViewTransform): boolean {
-  const [minX, minY, maxX, maxY] = bbox;
-  const diagonal = Math.sqrt((maxX - minX) ** 2 + (maxY - minY) ** 2);
-  const screenDiagonal = diagonal * view.scale;
-  return screenDiagonal < 2;
 }
 
 // Note: applySelectionTransform and computeUniformScale removed - replaced by

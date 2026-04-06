@@ -204,10 +204,23 @@ export function computeBookmarkHeight(data: {
 // Cache management
 // ---------------------------------------------------------------------------
 
+export const bookmarkCache = {
+  /** Remove layout for a single bookmark (deletion or invalidation) */
+  evict(id: string) {
+    layoutCache.delete(id);
+  },
+  /** Clear all bookmark layouts (room teardown) */
+  clear() {
+    layoutCache.clear();
+  },
+};
+
+/** @deprecated Use bookmarkCache.evict(id) */
 export function invalidateBookmarkLayout(id: string): void {
   layoutCache.delete(id);
 }
 
+/** @deprecated Use bookmarkCache.clear() */
 export function clearBookmarkLayouts(): void {
   layoutCache.clear();
 }

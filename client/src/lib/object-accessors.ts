@@ -456,3 +456,45 @@ export function getStrokeTool(y: Y.Map<unknown>): 'pen' | 'highlighter' {
   const tool = y.get('tool') as string | undefined;
   return tool === 'highlighter' ? 'highlighter' : 'pen';
 }
+
+export interface StrokeProps {
+  points: [number, number][];
+  color: string;
+  width: number;
+  opacity: number;
+  tool: 'pen' | 'highlighter';
+}
+
+export function getStrokeProps(y: Y.Map<unknown>): StrokeProps | null {
+  const points = getPoints(y);
+  if (points.length === 0) return null;
+  return {
+    points,
+    color: getColor(y),
+    width: getWidth(y),
+    opacity: getOpacity(y),
+    tool: getStrokeTool(y),
+  };
+}
+
+export interface ShapeProps {
+  shapeType: string;
+  frame: FrameTuple;
+  color: string;
+  width: number;
+  opacity: number;
+  fillColor: string | undefined;
+}
+
+export function getShapeProps(y: Y.Map<unknown>): ShapeProps | null {
+  const frame = getFrame(y);
+  if (!frame) return null;
+  return {
+    shapeType: getShapeType(y),
+    frame,
+    color: getColor(y),
+    width: getWidth(y, 1),
+    opacity: getOpacity(y),
+    fillColor: getFillColor(y),
+  };
+}

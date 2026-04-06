@@ -31,7 +31,6 @@ import {
 } from './keyboard-manager';
 import { setLastCursorWorld, storePointerModifiers, updateLiveCtrl } from './cursor-tracking';
 import { setCursorOverride } from '@/stores/device-ui-store';
-import { getObjectCacheInstance } from '@/renderer/object-cache';
 import {
   screenToWorld,
   screenToCanvas,
@@ -117,7 +116,6 @@ export class CanvasRuntime {
         overlayLoop.invalidateAll();
       }
     });
-
   }
 
   /**
@@ -143,8 +141,7 @@ export class CanvasRuntime {
     // - Clearing canvas element
     this.surfaceManager?.stop();
 
-    // Clear object cache + image manager + bookmark placeholders
-    getObjectCacheInstance().clear();
+    // Clear image manager + bookmark placeholders
     clearImageManager();
     cleanupOnRoomTeardown();
 

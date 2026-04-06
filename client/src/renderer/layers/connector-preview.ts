@@ -27,7 +27,7 @@ import {
   ARROW_ROUNDING_LINE_WIDTH,
 } from '@/lib/connectors/connector-paths';
 import { getHandle } from '@/canvas/room-runtime';
-import { getObjectCacheInstance } from '../object-cache';
+import { getPath } from '../geometry-cache';
 import { getWidth } from '@/lib/object-accessors';
 
 /**
@@ -131,8 +131,7 @@ export function drawConnectorPreview(
     ctx.lineWidth = 2 / scale;
     ctx.lineJoin = 'round';
     if (snapHandle?.kind === 'shape') {
-      const cache = getObjectCacheInstance();
-      const path = cache.getPath(snapHandle.id, snapHandle);
+      const path = getPath(snapHandle.id, snapHandle);
       const sw = getWidth(snapHandle.y, 2);
       const cx = snapShapeFrame[0] + snapShapeFrame[2] / 2;
       const cy = snapShapeFrame[1] + snapShapeFrame[3] / 2;

@@ -1,9 +1,20 @@
 import type * as Y from 'yjs';
 import type { ObjectKind } from '@/types/objects';
 import type { WorldBounds } from '@/types/geometry';
-import { getPoints, getFrame, getWidth, getStartCap, getEndCap } from '@/lib/object-accessors';
+import {
+  getPoints,
+  getFrame,
+  getWidth,
+  getStartCap,
+  getEndCap,
+  getTextProps,
+  getNoteProps,
+} from '@/lib/object-accessors';
+import { computeTextBBox, computeNoteBBox } from '@/lib/text/text-system';
+import { computeCodeBBox } from '@/lib/code/code-system';
 
 export function computeBBoxFor(
+  id: string,
   kind: ObjectKind,
   yMap: Y.Map<unknown>,
 ): [number, number, number, number] {
@@ -46,8 +57,29 @@ export function computeBBoxFor(
       ];
     }
 
-    case 'text':
+    case 'text': {
+      const props = getTextProps(yMap);
+      if (!props) {
+        const frame = getFrame(yMap) ?? [0, 0, 0, 0];
+        return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
+      }
+      return computeTextBBox(id, props);
+    }
+
+    case 'note': {
+      const props = getNoteProps(yMap);
+      if (!props) {
+        const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
+        const scale = (yMap.get('scale') as number) ?? 1;
+        const w = 280 * scale;
+        return [origin[0], origin[1], origin[0] + w, origin[1] + w];
+      }
+      return computeNoteBBox(id, props);
+    }
+
     case 'code':
+      return computeCodeBBox(id, yMap);
+
     case 'image': {
       const frame = getFrame(yMap) ?? [0, 0, 0, 0];
       return [frame[0], frame[1], frame[0] + frame[2], frame[1] + frame[3]];
@@ -62,13 +94,6 @@ export function computeBBoxFor(
         frame[0] + frame[2] + shadowPad,
         frame[1] + frame[3] + shadowPad,
       ];
-    }
-
-    case 'note': {
-      // Fallback only — room-doc-manager uses computeNoteBBox from text-system
-      const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
-      const w = (yMap.get('width') as number) ?? 280;
-      return [origin[0], origin[1], origin[0] + w, origin[1] + w];
     }
 
     case 'connector': {

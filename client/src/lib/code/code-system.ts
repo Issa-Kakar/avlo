@@ -542,7 +542,7 @@ class CodeSystemCache {
     return this.entries.get(id)?.frame ?? null;
   }
 
-  remove(id: string): void {
+  evict(id: string): void {
     this.entries.delete(id);
     requestRemove(id);
   }

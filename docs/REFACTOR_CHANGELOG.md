@@ -4,6 +4,93 @@ Incremental cleanup and architectural improvements. Architectural direction trac
 
 ---
 
+## Phase 8: BBox Consolidation, Renderer Optimization, Cache Unification
+
+Three concerns cleaned up: `computeBBoxFor` now owns all bbox dispatch (text/note/code no longer special-cased at call sites), the renderer drops legacy indirection (`ViewTransform`, `ViewportInfo`, LOD, per-frame `new Set`), and the object cache system is split into geometry cache + unified dispatcher with shapeType-aware staleness detection.
+
+### `computeBBoxFor` consolidation
+
+Signature changed from `(kind, yMap)` to `(id, kind, yMap)`. Text, note, and code cases now call `computeTextBBox`/`computeNoteBBox`/`computeCodeBBox` internally — callers no longer need to branch on kind before calling bbox computation.
+
+**RoomDocManager simplified:** Both `applyObjectChanges()` and `hydrateObjectsFromY()` had 10-line if/else chains dispatching to kind-specific bbox functions with fallbacks. Replaced by single `computeBBoxFor(id, kind, yObj)` calls. Removed 5 bbox-related imports.
+
+### `drawObjects` signature + render loop optimization
+
+**New signature:** `drawObjects(ctx, snapshot, clipWorldRects?)` — removed `viewTransform: ViewTransform` and `viewport: ViewportInfo` params. `drawObjects` reads camera state internally via `getVisibleWorldBounds()`.
+
+**Deleted:**
+
+- `shouldSkipLOD()` function — 2px diagonal threshold was unreachable in practice
+- `ViewportInfo` interface from `renderer/types.ts`
+- `getViewportInfo()` from `camera-store.ts` (zero consumers)
+- `ViewTransform` construction in `RenderLoop.tick()` (8 lines)
+
+**Render loop optimization:**
+
+- `selectedIdSet` read directly from store (was `new Set(selectionState.selectedIds)` per frame)
+- Candidate collection uses `string[]` + `Set<string>` instead of `IndexEntry[]` + `Map<string, IndexEntry>`
+- `candidateIds.sort()` — default string sort is correct for ULIDs (same as `a.id < b.id` comparator)
+- Handle lookup via `objectsById.get(id)` in render loop (was redundant: `IndexEntry` carried same data)
+
+### Bulk accessor helpers
+
+Added `StrokeProps`/`getStrokeProps()` and `ShapeProps`/`getShapeProps()` to `object-accessors.ts`. `drawStroke` and `drawShape` in `objects.ts` use destructured props.
+
+### Cache system — shapeType-aware geometry + unified dispatcher
+
+**Problem:** Shape objects required brute-force `cache.evict(id)` on every property change (even color/opacity) because the geometry cache couldn't detect shapeType changes (rect→diamond). The cache system was split across files with inconsistent naming (`remove` vs `evict` vs `invalidate`).
+
+**New `renderer/geometry-cache.ts`:** Extracted from `ObjectRenderCache` class. Standalone functions (`getPath`, `getConnectorPaths`, `evictGeometry`, `clearGeometry`). Key change: stores `shapeType` alongside geometry — `getOrBuild` auto-detects shapeType mismatches and rebuilds, eliminating the `if (kind === 'shape') cache.evict(id)` hack in the observer. Removed dead `case 'text': case 'image': return new Path2D()`.
+
+**Naming standardization:**
+
+- `textLayoutCache.remove(id)` → `evict(id)`
+- `codeSystem.remove(id)` → `evict(id)`
+- Bookmark: bare functions wrapped into `bookmarkCache` object with `evict(id)` / `clear()`
+
+**New `renderer/object-cache.ts`** (rewritten): Two exported functions:
+
+- `removeObjectCaches(id, kind)` — object deleted → evict geometry + kind-specific layout cache
+- `clearAllObjectCaches()` — room teardown → clear everything (geometry + text + code + bookmark + connector lookup)
+
+**RoomDocManager simplified:**
+
+- Deletion: 5-line cache dispatch → `removeObjectCaches(id, handle.kind)`
+- Update: `cache.evict(id)` → `evictGeometry(id)`, removed shape hack
+- Hydration: 4 clear calls → `clearAllObjectCaches()`
+- Destroy: 5 cache clears → `clearAllObjectCaches()`
+
+**CanvasRuntime:** Removed `getObjectCacheInstance().clear()` from `stop()` — geometry cache cleared by `clearAllObjectCaches()` in `RoomDocManager.destroy()`.
+
+**Renderer layers** (`eraser-dim.ts`, `selection-overlay.ts`, `connector-preview.ts`): `getObjectCacheInstance()` → direct `getPath`/`getConnectorPaths` imports from `geometry-cache.ts`.
+
+### Files changed
+
+| File                                   | Action                                      | Delta |
+| -------------------------------------- | ------------------------------------------- | ----- |
+| `renderer/geometry-cache.ts`           | **Created**                                 | +140  |
+| `renderer/object-cache.ts`             | Rewritten (unified dispatcher)              | −180  |
+| `lib/geometry/bbox.ts`                 | Signature change + text/note/code dispatch  | +30   |
+| `lib/object-accessors.ts`              | Added StrokeProps, ShapeProps               | +29   |
+| `renderer/layers/objects.ts`           | Signature, optimization, prop destructuring | −55   |
+| `renderer/RenderLoop.ts`               | Removed ViewTransform/viewport construction | −20   |
+| `renderer/types.ts`                    | Deleted ViewportInfo                        | −16   |
+| `stores/camera-store.ts`               | Deleted getViewportInfo()                   | −20   |
+| `lib/room-doc-manager.ts`              | Simplified bbox + cache dispatch + teardown | −40   |
+| `canvas/CanvasRuntime.ts`              | Removed geometry cache clear                | −3    |
+| `lib/text/text-system.ts`              | remove() → evict()                          | ±0    |
+| `lib/code/code-system.ts`              | remove() → evict()                          | ±0    |
+| `lib/bookmark/bookmark-render.ts`      | Added bookmarkCache object                  | +9    |
+| `renderer/layers/eraser-dim.ts`        | Direct geometry-cache imports               | −3    |
+| `renderer/layers/selection-overlay.ts` | Direct geometry-cache imports               | −3    |
+| `renderer/layers/connector-preview.ts` | Direct geometry-cache imports               | −2    |
+| `renderer/layers/index.ts`             | **Deleted** — single re-export barrel       | −2    |
+| `renderer/RenderLoop.ts`               | Import directly from `./layers/objects`     | ±0    |
+
+**Net: −136 lines** (excluding new geometry-cache.ts)
+
+---
+
 ## Phase 7: Direct Exports, Singleton Render Loops, Per-Room Camera Persistence
 
 Three independent changes reducing verbosity across 20+ files, making render loops self-managing, and persisting camera state per room.

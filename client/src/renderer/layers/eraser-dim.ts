@@ -2,7 +2,7 @@ import type { Snapshot } from '@/types/snapshot';
 import { getWidth, getFillColor } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
-import { getObjectCacheInstance } from '../object-cache';
+import { getPath, getConnectorPaths } from '../geometry-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
 
 /**
@@ -19,7 +19,6 @@ export function drawDimmedStrokes(
 
   const hitSet = new Set(hitIds);
   const alpha = Math.max(0, Math.min(1, baseOpacity));
-  const cache = getObjectCacheInstance();
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
@@ -38,11 +37,11 @@ export function drawDimmedStrokes(
 
       if (kind === 'stroke') {
         // Strokes are filled polygons - dim the fill
-        const path = cache.getPath(id, handle);
+        const path = getPath(id, handle);
         ctx.fill(path);
       } else if (kind === 'shape') {
         // For shapes: dim both fill (if present) and stroke
-        const path = cache.getPath(id, handle);
+        const path = getPath(id, handle);
         const width = getWidth(handle.y, 0);
         const fillColor = getFillColor(handle.y);
 
@@ -58,7 +57,7 @@ export function drawDimmedStrokes(
         }
       } else if (kind === 'connector') {
         // Connectors use multi-path
-        const paths = cache.getConnectorPaths(id, handle);
+        const paths = getConnectorPaths(id, handle);
         const width = getWidth(handle.y);
 
         ctx.lineJoin = 'round';

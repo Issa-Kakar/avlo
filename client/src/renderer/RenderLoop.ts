@@ -1,10 +1,9 @@
-import { drawObjects } from './layers';
+import { drawObjects } from './layers/objects';
 import { FRAME_CONFIG } from './types';
-import { useCameraStore, getVisibleWorldBounds, isMobile } from '@/stores/camera-store';
+import { useCameraStore, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
 import { getCurrentSnapshot } from '@/canvas/room-runtime';
 import type { WorldBounds, BBoxTuple } from '@/types/geometry';
-import type { ViewTransform } from '@/types/snapshot';
 import { manageImageViewport } from '@/lib/image/image-manager';
 import {
   setWorldInvalidator,
@@ -306,8 +305,6 @@ export class RenderLoop {
     const s = dpr * scale;
     ctx.setTransform(s, 0, 0, s, -pan.x * s, -pan.y * s);
 
-    const visibleBounds = getVisibleWorldBounds();
-
     // Build clip region from dirty rects (device px → world coords)
     let clipWorldRects: WorldBounds[] | undefined;
     if (!this.fullClear && hasDirty) {
@@ -329,28 +326,7 @@ export class RenderLoop {
       ctx.clip();
     }
 
-    // Construct view transform inline (avoids second getState call)
-    const view: ViewTransform = {
-      worldToCanvas: (x, y) => [(x - pan.x) * scale, (y - pan.y) * scale],
-      canvasToWorld: (x, y) => {
-        const safeS = Math.max(1e-6, scale);
-        return [x / safeS + pan.x, y / safeS + pan.y];
-      },
-      scale,
-      pan,
-    };
-
-    const viewport = {
-      pixelWidth: pixelW,
-      pixelHeight: pixelH,
-      cssWidth,
-      cssHeight,
-      dpr,
-      visibleWorldBounds: visibleBounds,
-      clipWorldRects,
-    };
-
-    drawObjects(ctx, snapshot, view, viewport);
+    drawObjects(ctx, snapshot, clipWorldRects);
 
     if (clipWorldRects) ctx.restore();
     ctx.restore();

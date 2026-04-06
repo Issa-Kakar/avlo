@@ -28,7 +28,7 @@ import {
 } from '@/lib/object-accessors';
 import { getTextFrame } from '@/lib/text/text-system';
 import { getCodeFrame } from '@/lib/code/code-system';
-import { getObjectCacheInstance } from '../object-cache';
+import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
 import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
@@ -145,8 +145,6 @@ function drawObjectHighlights(
   scale: number,
   suppressConnectors: boolean,
 ): void {
-  const cache = getObjectCacheInstance();
-
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
   ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
   ctx.lineJoin = 'round';
@@ -210,7 +208,7 @@ function drawObjectHighlights(
     // Shapes: stroke cached Path2D scaled to visual outer edge
     // Scale the context around the shape center so the path expands outward
     // by half the stroke width — aligning the highlight with the painted edge.
-    const path = cache.getPath(id, handle);
+    const path = getPath(id, handle);
     const frame = getFrame(handle.y);
     if (frame) {
       const sw = getWidth(handle.y, 2);
@@ -481,8 +479,7 @@ function drawSnapMidpointDots(
   ctx.lineWidth = 2 / scale;
   ctx.lineJoin = 'round';
   if (shapeHandle.kind === 'shape') {
-    const cache = getObjectCacheInstance();
-    const path = cache.getPath(shapeHandle.id, shapeHandle);
+    const path = getPath(shapeHandle.id, shapeHandle);
     const sw = getWidth(shapeHandle.y, 2);
     const [fx, fy, fw, fh] = shapeFrame;
     const cx = fx + fw / 2;

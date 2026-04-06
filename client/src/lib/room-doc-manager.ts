@@ -12,27 +12,24 @@ import { ObjectSpatialIndex } from '@/lib/spatial';
 import type { ObjectHandle, ObjectKind } from '@/types/objects';
 import type { BBoxTuple } from '@/types/geometry';
 import { computeBBoxFor, bboxEquals } from '@/lib/geometry/bbox';
-import { getObjectCacheInstance } from '@/renderer/object-cache';
+import { removeObjectCaches, clearAllObjectCaches } from '@/renderer/object-cache';
+import { evictGeometry } from '@/renderer/geometry-cache';
 import { invalidateWorldBBox, invalidateWorldAll } from '@/canvas/invalidation-helpers';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import {
   initConnectorLookup,
   hydrateConnectorLookup,
-  clearConnectorLookup,
   processConnectorAdded,
   processConnectorUpdated,
   processConnectorDeleted,
   processShapeDeleted,
 } from './connectors';
-import { getTextProps } from '@/lib/object-accessors';
-import { ySyncPluginKey } from '@tiptap/y-tiptap';
-import { textLayoutCache, computeTextBBox, computeNoteBBox } from './text/text-system';
-import { getNoteProps } from '@/lib/object-accessors';
-import { codeSystem, computeCodeBBox } from './code/code-system';
 import { getCodeProps } from '@/lib/object-accessors';
+import { ySyncPluginKey } from '@tiptap/y-tiptap';
+import { textLayoutCache } from './text/text-system';
+import { codeSystem } from './code/code-system';
 import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/lib/image/image-manager';
-import { invalidateBookmarkLayout, clearBookmarkLayouts } from '@/lib/bookmark/bookmark-render';
 import { attach, detach } from './presence';
 
 type Unsub = () => void;
@@ -244,13 +241,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clean up spatial index
     this.spatialIndex.clear();
 
-    // Clear connector lookup
-    clearConnectorLookup();
-
-    // Clear layout caches
-    textLayoutCache.clear();
-    codeSystem.clear();
-    clearBookmarkLayouts();
+    // Clear all object caches (geometry + layout + connector lookup)
+    clearAllObjectCaches();
 
     // Clear object maps
     this.objectsById.clear();
@@ -323,7 +315,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
     const dirtyBBoxes: BBoxTuple[] = [];
-    const cache = getObjectCacheInstance();
 
     // Process deletions
     for (const id of deletedIds) {
@@ -331,7 +322,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (!handle) continue;
 
       this.spatialIndex.remove(id, handle.bbox);
-      cache.evict(id);
+      removeObjectCaches(id, handle.kind);
       dirtyBBoxes.push(handle.bbox);
 
       this.objectsById.delete(id);
@@ -340,16 +331,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         processConnectorDeleted(id);
       } else {
         processShapeDeleted(id);
-      }
-
-      if (handle.kind === 'text' || handle.kind === 'shape' || handle.kind === 'note') {
-        textLayoutCache.remove(id);
-      }
-      if (handle.kind === 'code') {
-        codeSystem.remove(id);
-      }
-      if (handle.kind === 'bookmark') {
-        invalidateBookmarkLayout(id);
       }
     }
 
@@ -384,18 +365,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const prev = this.objectsById.get(id);
       const oldBBox = prev?.bbox ?? null;
 
-      let newBBox: [number, number, number, number];
-      if (kind === 'note') {
-        const props = getNoteProps(yObj);
-        newBBox = props ? computeNoteBBox(id, props) : computeBBoxFor(kind, yObj);
-      } else if (kind === 'text') {
-        const props = getTextProps(yObj);
-        newBBox = props ? computeTextBBox(id, props) : computeBBoxFor(kind, yObj);
-      } else if (kind === 'code') {
-        newBBox = computeCodeBBox(id, yObj);
-      } else {
-        newBBox = computeBBoxFor(kind, yObj);
-      }
+      const newBBox = computeBBoxFor(id, kind, yObj);
 
       const handle: ObjectHandle = { id, kind, y: yObj, bbox: newBBox };
       this.objectsById.set(id, handle);
@@ -419,11 +389,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       } else {
         const bboxChanged = !bboxEquals(oldBBox, newBBox);
         if (bboxChanged) {
-          cache.evict(id);
+          evictGeometry(id);
           dirtyBBoxes.push(oldBBox);
           dirtyBBoxes.push(newBBox);
         } else {
-          if (kind === 'shape') cache.evict(id);
           dirtyBBoxes.push(newBBox);
         }
       }
@@ -458,28 +427,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private hydrateObjectsFromY(): void {
     this.objectsById.clear();
     this.spatialIndex.clear();
-    getObjectCacheInstance().clear();
-    textLayoutCache.clear();
-    codeSystem.clear();
-    clearBookmarkLayouts();
+    clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
-
-      let bbox: [number, number, number, number];
-      if (kind === 'note') {
-        const props = getNoteProps(yObj);
-        bbox = props ? computeNoteBBox(id, props) : computeBBoxFor(kind, yObj);
-      } else if (kind === 'text') {
-        const props = getTextProps(yObj);
-        bbox = props ? computeTextBBox(id, props) : computeBBoxFor(kind, yObj);
-      } else if (kind === 'code') {
-        bbox = computeCodeBBox(id, yObj);
-      } else {
-        bbox = computeBBoxFor(kind, yObj);
-      }
+      const bbox = computeBBoxFor(id, kind, yObj);
 
       const handle: ObjectHandle = { id, kind, y: yObj, bbox };
       this.objectsById.set(id, handle);
