@@ -22,64 +22,74 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 
 All paths relative to `client/src/` unless noted.
 
-### Canvas System
+### Runtime System (`runtime/`)
 | File | Responsibility |
 |------|----------------|
-| `canvas/Canvas.tsx` | Thin React wrapper — mounts DOM, creates runtime |
-| `canvas/CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch, edge scroll |
-| `canvas/SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
-| `canvas/InputManager.ts` | DOM event forwarder (pointer events → canvas, wheel → container for overlay passthrough) |
-| `canvas/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
-| `canvas/room-runtime.ts` | Module-level room context — `connectRoom()` / `disconnectRoom()` + imperative getters |
-| `canvas/invalidation-helpers.ts` | Setter/getter pattern for render loop invalidation |
-| `canvas/ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide lifecycle |
-| `canvas/keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
-| `canvas/cursor-tracking.ts` | Last cursor world position + pointer modifier state (shift/ctrl) |
-| `canvas/edge-scroll.ts` | Auto-pan near viewport edges during select/connector/shape drags |
-| `canvas/arrow-key-pan.ts` | Continuous arrow key panning with easeInQuad acceleration |
+| `runtime/CanvasRuntime.ts` | Central orchestrator — events, subscriptions, tool dispatch |
+| `runtime/SurfaceManager.ts` | DOM refs (contexts, editorHost) + resize/DPR + deferred canvas resize |
+| `runtime/InputManager.ts` | DOM event forwarder + modifier state tracking (shift/ctrl/meta) |
+| `runtime/tool-registry.ts` | Self-constructing tool singletons + lookup helpers |
+| `runtime/room-runtime.ts` | Module-level room context — `connectRoom()` / `disconnectRoom()` + imperative getters |
+| `runtime/room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, snapshot publishing, presence wiring |
+| `runtime/ContextMenuController.ts` | Imperative singleton: floating-ui positioning, show/hide lifecycle |
+| `runtime/keyboard-manager.ts` | All keybindings: tool switches, Cmd modifiers, spacebar pan, zoom, arrow pan |
+| `runtime/cursor-tracking.ts` | Last cursor world position (for paste placement) |
+| `runtime/presence/presence.ts` | Awareness lifecycle, cursor send/receive, peer state (mutable Map) |
+| `runtime/viewport/zoom.ts` | Smooth zoom animations (step, pinch, zoom-to-fit, reset) |
+| `runtime/viewport/edge-scroll.ts` | Auto-pan near viewport edges during drags |
+| `runtime/viewport/arrow-key-pan.ts` | Continuous arrow key panning with easeInQuad acceleration |
 
-### Core Files
+### Renderer (`renderer/`)
 | File | Responsibility |
 |------|----------------|
-| `lib/room-doc-manager.ts` | Y.Doc lifecycle, providers, spatial index, snapshot publishing |
-| `renderer/RenderLoop.ts` | Base canvas 60 FPS, inline dirty rect tracking (Float64Array buffer), FPS throttling |
-| `renderer/OverlayRenderLoop.ts` | Preview + presence rendering, full clear each frame |
+| `renderer/RenderLoop.ts` | Base canvas singleton, dirty rect tracking (Float64Array), exports `invalidateWorld/BBox/All` |
+| `renderer/OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
 | `renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
 | `renderer/layers/selection-overlay.ts` | Selection overlay: highlights, marquee, box, circular handles |
-| `renderer/object-cache.ts` | Geometry cache (Path2D or ConnectorPaths) by object ID |
-| `lib/utils/shape-path.ts` | Build Path2D from frame tuple (rect, ellipse, diamond, roundedRect) |
-| `lib/utils/selection-utils.ts` | Selection composition, bounds, style computation |
-| `lib/utils/selection-actions.ts` | Selection mutations (color, fill, width, shape, text formatting, code language/fontSize) |
+| `renderer/geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache, shapeType-aware staleness |
+| `renderer/object-cache.ts` | Unified cache dispatcher: `removeObjectCaches(id, kind)`, `clearAllObjectCaches()` |
 
-### Tools (zero-arg singletons via `tool-registry.ts`)
+### Tools (`tools/` — zero-arg singletons via `tool-registry.ts`)
 | File | Notes |
 |------|-------|
-| `lib/tools/types.ts` | PointerTool interface + PreviewData types |
-| `lib/tools/SelectTool.ts` | Selection, translate, scale, connector endpoints, code/text editing entry |
-| `lib/tools/DrawingTool.ts` | Pen, highlighter, AND shape drawing |
-| `lib/tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
-| `lib/tools/TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay. **Docs:** `lib/text/CLAUDE.md` |
-| `lib/tools/PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
-| `lib/tools/ConnectorTool.ts` | Elbow + straight connectors + snapping |
-| `lib/tools/CodeTool.ts` | Code blocks, CodeMirror overlay. **Docs:** `lib/code/CLAUDE.md` |
+| `tools/types.ts` | PointerTool interface + PreviewData types |
+| `tools/selection/SelectTool.ts` | Selection, translate, scale, connector endpoints, code/text editing entry |
+| `tools/selection/selection-utils.ts` | Selection composition, bounds, style computation |
+| `tools/selection/selection-actions.ts` | Selection mutations (color, fill, width, shape, text formatting, code language/fontSize) |
+| `tools/DrawingTool.ts` | Pen, highlighter, AND shape drawing |
+| `tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
+| `tools/TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay. **Docs:** `core/text/CLAUDE.md` |
+| `tools/PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
+| `tools/ConnectorTool.ts` | Elbow + straight connectors + snapping |
+| `tools/CodeTool.ts` | Code blocks, CodeMirror overlay. **Docs:** `core/code/CLAUDE.md` |
+
+### Core (`core/`)
+| File | Responsibility |
+|------|----------------|
+| `core/accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
+| `core/types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
+| `core/types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` + all prop types |
+| `core/types/snapshot.ts` | `Snapshot`, `createEmptySnapshot` |
+| `core/index.ts` | Type re-exports for convenience |
+| `core/geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch |
+| `core/geometry/bounds.ts` | WorldBounds operations |
+| `core/geometry/transform.ts` | Scale math, frame transforms |
+| `core/geometry/hit-testing.ts` | Shared SelectTool + EraserTool, marquee intersection |
+| `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
+| `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
 | Folder | Coverage |
 |--------|----------|
-| `lib/connectors/` | Elbow A* + straight routing, snap, topology, reroute API |
-| `lib/code/` | RunSpans model, two-tier tokenization, CodeMirror, canvas renderer |
-| `lib/text/` | Layout engine, three-tier cache, TextCollaboration, shape labels, sticky notes |
-| `lib/image/` | Offline-first image pipeline, mip levels, two web workers, viewport management |
-| `lib/bookmark/` | URL bookmarks: unfurl pipeline, OG metadata, placeholder lifecycle |
+| `core/connectors/` | Elbow A* + straight routing, snap, topology, reroute API |
+| `core/code/` | RunSpans model, two-tier tokenization, CodeMirror, canvas renderer |
+| `core/text/` | Layout engine, three-tier cache, TextCollaboration, shape labels, sticky notes |
+| `core/image/` | Offline-first image pipeline, mip levels, two web workers, viewport management |
+| `core/bookmark/` | URL bookmarks: unfurl pipeline, OG metadata, placeholder lifecycle |
+| `core/clipboard/` | Nonce-based clipboard, serialization, internal/external paste, smart duplicate |
+| `runtime/input/` | Keyboard shortcuts, InputManager, modifier state, zoom, edge scroll, arrow pan |
+| `tools/selection/` | SelectTool state machine, transforms per-kind, hit testing, connector topology, overlay |
 | `components/context-menu/` | Selection-aware toolbar: bars by kind, mutation dispatch |
-
-### Clipboard
-| File | Responsibility |
-|------|----------------|
-| `lib/clipboard/clipboard-serializer.ts` | Serialize/deserialize Y.Map objects + Y.XmlFragment to JSON |
-| `lib/clipboard/clipboard-actions.ts` | Copy, paste (internal/external + rich text + images + URL→bookmark), cut, duplicate, selectAll |
-
-Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 
 ### Stores
 | File | Responsibility |
@@ -87,24 +97,7 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 | `stores/camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture, per-room persistence |
 | `stores/device-ui-store.ts` | Toolbar state, drawing settings, user identity, cursor management (persisted) |
 | `stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
-
-### Geometry (`lib/geometry/`)
-`bbox.ts` (per-kind BBox computation), `bounds.ts` (WorldBounds ops), `transform.ts` (scale math, frame transforms), `hit-testing.ts` (shared SelectTool + EraserTool, marquee intersection). Shape recognition in `shape-recognition/` subdirectory: `recognize-open-stroke.ts`, `pdollar-recognizer.ts`, `geometry-helpers.ts`, `HoldDetector.ts`.
-
-### Client Types (`types/`)
-| File | Responsibility |
-|------|----------------|
-| `types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
-| `types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` |
-| `types/snapshot.ts` | `Snapshot`, `ViewTransform`, `createEmptySnapshot` |
-| `types/awareness.ts` | `Awareness`, `PresenceView` |
-
-### Client Core Library
-| File | Responsibility |
-|------|----------------|
-| `lib/object-accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
-| `lib/geometry/bbox.ts` | BBox computation with stroke width inflation (`computeBBoxFor`, `bboxEquals`, `bboxToBounds`) |
-| `lib/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
+| `stores/presence-store.ts` | Peer identities + count (Zustand, for React components only) |
 
 ### Shared Package (`packages/shared/src/`) — minimal, 4 files
 | File | Responsibility |
@@ -118,9 +111,9 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 | File | Responsibility |
 |------|----------------|
 | `sw.ts` | Service Worker: cache-first `/api/assets/*`, app shell caching, network-first HTML |
-| `lib/image/image-manager.ts` | Main-thread bitmap cache, viewport-driven decode, two-worker routing |
-| `lib/image/image-worker.ts` | Web Worker (2 instances): decode, ingest, upload queue, bookmark unfurl |
-| `lib/image/image-actions.ts` | `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
+| `core/image/image-manager.ts` | Main-thread bitmap cache, viewport-driven decode, two-worker routing |
+| `core/image/image-worker.ts` | Web Worker (2 instances): decode, ingest, upload queue, bookmark unfurl |
+| `core/image/image-actions.ts` | `createImageFromBlob()`, `openImageFilePicker()`, SVG rasterization |
 
 ### Server (`worker/src/`)
 | File | Responsibility |
@@ -133,7 +126,7 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 `__root.tsx` (root layout, `<Outlet />`), `index.tsx` (redirect → `/room/dev`), `room.$roomId.tsx` (room route, `beforeLoad: connectRoom`)
 
 ### UI (`components/`)
-`RoomPage.tsx` (main view, layout), `ToolPanel.tsx` (toolbar + inspector), `ZoomControls.tsx`, `Toast.tsx`, `ErrorBoundary.tsx`, `UserAvatarCluster.tsx`, `icons/index.tsx`
+`Canvas.tsx` (thin React wrapper — mounts DOM, creates runtime), `RoomPage.tsx` (main view, layout), `TopBar.tsx` (logo, board name, settings), `ToolPanel.tsx` (toolbar + inspector), `ZoomControls.tsx`, `UserAvatarCluster.tsx` (presence avatars), `Toast.tsx`, `ErrorBoundary.tsx`, `icons/index.tsx`
 
 ---
 
@@ -144,7 +137,7 @@ Full keyboard/clipboard changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`
 Route beforeLoad           → connectRoom(roomId) → room-runtime.ts
 RoomPage cleanup effect    → disconnectRoom(roomId)
 
-Canvas.tsx (~95 lines) - THIN REACT WRAPPER
+Canvas.tsx (~100 lines) - THIN REACT WRAPPER
 │   Only does: mount DOM, create runtime
 │
 └── new CanvasRuntime().start({ container, baseCanvas, overlayCanvas, editorHost })
@@ -160,19 +153,17 @@ Canvas.tsx (~95 lines) - THIN REACT WRAPPER
 │
 ├── renderLoop (singleton) - base canvas 60fps, inline dirty rect optimization
 ├── overlayLoop (singleton) - preview + presence, full clear each frame
-├── ZoomAnimator          - smooth zoom (step, pinch, zoom-to-fit)
-├── InputManager          - dumb DOM event forwarder
-├── keyboard-manager      - attach/detach lifecycle (keydown, keyup, blur)
+├── InputManager          - DOM event + keyboard forwarder + modifier state
 │
 ├── Subscriptions:
 │   ├── camera-store      → tool.onViewChange() on pan/zoom (guarded by isEdgeScrolling)
 │   └── snapshot          → overlay invalidation
 │
 └── Event Handlers:
-    ├── handlePointerDown → storePointerModifiers → spacebar pan check → tool dispatch / MMB pan
+    ├── handlePointerDown → spacebar pan check → tool dispatch / MMB pan
     ├── handlePointerMove → cursor tracking + edge scroll update + tool.move()
     ├── handlePointerUp   → tool.end() + stop edge scroll
-    ├── handleWheel       → zoom via ZoomAnimator (with velocity boost + Ctrl pinch)
+    ├── handleWheel       → zoom (with velocity boost + Ctrl pinch)
     └── handlePointerLeave → clear presence, tool.onPointerLeave()
 
                 │
@@ -189,11 +180,12 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
                 │
                 ▼
 Module Registries - IMPERATIVE ACCESS
-├── room-runtime.ts           → getHandle(id), getObjectsById(), getSpatialIndex(), transact(fn), undo/redo
-├── camera-store.ts           → worldToCanvas/screenToWorld, getVisibleWorldBounds(), setRoom(roomId)
-├── device-ui-store.ts        → activeTool, drawingSettings, getUserId(), getUserProfile(), cursor management
-├── SurfaceManager.ts         → getBaseContext(), getOverlayContext(), getEditorHost()
-└── invalidation-helpers.ts   → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll(), invalidateOverlay()
+├── room-runtime.ts       → getHandle(id), getObjectsById(), getSpatialIndex(), transact(fn), undo/redo
+├── camera-store.ts       → worldToCanvas/screenToWorld, getVisibleWorldBounds(), setRoom(roomId)
+├── device-ui-store.ts    → activeTool, drawingSettings, getUserId(), getUserProfile(), cursor management
+├── SurfaceManager.ts     → getBaseContext(), getOverlayContext(), getEditorHost()
+├── RenderLoop.ts         → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll()
+└── OverlayRenderLoop.ts  → invalidateOverlay(), holdPreviewForOneFrame()
 ```
 
 ### Data Flow
@@ -201,10 +193,10 @@ Module Registries - IMPERATIVE ACCESS
 Y.Doc (source of truth)
    ↓ observers
 RoomDocManager
-   ├─ applyObjectChanges() → cache.evict(id) + invalidateWorldBBox(bbox)   [base canvas]
+   ├─ applyObjectChanges() → evictGeometry(id) + invalidateWorldBBox(bbox)  [base canvas]
    ↓ subscribeSnapshot()
 CanvasRuntime
-   └─ overlayLoop.invalidateAll()                                           [overlay canvas]
+   └─ overlayLoop.invalidateAll()                                            [overlay canvas]
          ↓
    RenderLoop (base canvas, dirty-rect optimized)
    OverlayRenderLoop (preview + presence, full clear)
@@ -212,22 +204,22 @@ CanvasRuntime
    Camera Store (scale, pan, viewport) - self-subscribed
 ```
 
-### Snapshot (the immutable view)
+### Snapshot
 ```typescript
 interface Snapshot {
   docVersion: number;
-  objectsById: ReadonlyMap<string, ObjectHandle>;  // Live Y.Map references
-  spatialIndex: ObjectSpatialIndex;                // R-tree for viewport queries + hit testing
+  objectsById: ReadonlyMap<string, ObjectHandle>;
+  spatialIndex: ObjectSpatialIndex;
 }
 ```
-Published by RoomDocManager on every Y.Doc change. Read by: RenderLoop (draw visible objects), OverlayRenderLoop (presence), CanvasRuntime (overlay invalidation), tools via `getCurrentSnapshot()`. `spatialIndex` is non-null from construction — the same live R-tree instance, queries return `IndexEntry[]` sorted by ULID for Z-order.
+Published by RoomDocManager on every Y.Doc change. Most consumers use `getObjectsById()`, `getSpatialIndex()`, `getHandle(id)` from room-runtime directly. Snapshot is passed to render functions.
 
 ### Write Path
 ```
 Tool.begin/move/end() → user gesture
    → tool.commit() → transact(() => { getObjects().set(...) })
    → ydoc.transact() → Y.Map.set()
-   → Deep observer → applyObjectChanges() → direct cache.evict() + invalidateWorldBBox()
+   → Deep observer → applyObjectChanges() → evictGeometry(id) + invalidateWorldBBox()
    → handleYDocUpdate → publishSnapshotNow() → CanvasRuntime invalidates overlay
 ```
 
@@ -235,8 +227,7 @@ Tool.begin/move/end() → user gesture
 ```
 User pointer event → InputManager → CanvasRuntime
    ├─ screenToWorld(clientX, clientY) → world coords
-   ├─ storePointerModifiers(e) → cursor-tracking (shift/ctrl state)
-   ├─ updatePresenceCursor() → room-runtime
+   ├─ updatePresenceCursor() → presence module
    ├─ updateEdgeScroll() → auto-pan near viewport edges
    └─ getCurrentTool().begin/move/end(worldX, worldY)
          ↓
@@ -250,102 +241,34 @@ Tool updates internal state
 ## Routing (TanStack Router)
 
 File-based routing with auto code splitting. Three route files in `routes/`, auto-generated `routeTree.gen.ts`.
-
-### Route Structure
-```
-routes/
-  __root.tsx          → <Outlet /> (minimal root layout)
-  index.tsx           → redirect to /room/dev
-  room.$roomId.tsx    → beforeLoad: connectRoom(roomId), component: RoomPage
-```
-
-### Room Lifecycle via Route
-- `beforeLoad` calls `connectRoom(roomId)` — creates Y.Doc, starts IDB + WS providers, sets module singleton
+- `beforeLoad` calls `connectRoom(roomId)` — creates Y.Doc, starts providers, restores camera (not code-split — runs while component chunk downloads)
 - `RoomPage` cleanup effect calls `disconnectRoom(roomId)` on unmount
-- `key={roomId}` on `RoomCanvas` forces full remount on room switch — eliminates stale subscriptions
-- `beforeLoad` is NOT code-split (stays in main bundle) — room connects while component chunk downloads in parallel
-
-### Configuration (`vite.config.ts`)
-`tanstackRouter()` plugin listed before `react()` in plugins array:
-- `autoCodeSplitting: true` — room chunk (Y.js + CodeMirror + Tiptap + Canvas) lazy-loads on room navigation
-- `routeTree.gen.ts` — auto-generated, committed to git (required at runtime)
-- Components access `roomId` via `getRouteApi('/room/$roomId').useParams()`, not props
-
-### What Was Deleted
-`App.tsx`, `room-doc-registry.ts`, `room-doc-registry-context.tsx`, `use-room-doc.ts`, `use-snapshot.ts` — registry/provider/ref-counting pattern replaced by `connectRoom()`/`disconnectRoom()`.
+- `key={roomId}` on Canvas forces full remount on room switch
+- Components access `roomId` via `getRouteApi('/room/$roomId').useParams()`
 
 ---
 
 ## PointerTool Interface
 
-All tools implement `PointerTool` (defined in `lib/tools/types.ts`):
-
-```typescript
-interface PointerTool {
-  canBegin(): boolean;
-  begin(pointerId, worldX, worldY): void;
-  move(worldX, worldY): void;         // Also hover when idle
-  end(worldX?, worldY?): void;
-  cancel(): void;
-  isActive(): boolean;
-  getPointerId(): number | null;
-  getPreview(): PreviewData | null;    // For overlay rendering
-  onPointerLeave(): void;
-  onViewChange(): void;                // React to pan/zoom
-  destroy(): void;
-}
-```
-
-**Key design:** All tools receive **world coordinates**. Zero-arg constructors — dependencies read from stores at runtime (settings frozen at `begin()`, roomDoc read at `commit()`).
+All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointerId, worldX, worldY)`, `move` (also hover), `end`, `cancel`, `isActive`, `getPointerId`, `getPreview` → overlay rendering, `onPointerLeave`, `onViewChange`, `destroy`. Zero-arg constructors — dependencies read from stores at runtime (settings frozen at `begin()`).
 
 ---
 
-## Room Runtime (`room-runtime.ts`)
+## Room Runtime (`runtime/room-runtime.ts`)
 
-Module-level room context for imperative access. `connectRoom(roomId)` called from route `beforeLoad` (also calls `useCameraStore.setRoom(roomId)` for camera persistence), `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
+Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-Key exports:
-- **Lifecycle:** `connectRoom()`, `disconnectRoom()`, `hasActiveRoom()`
-- **Data access:** `getHandle(id)`, `getHandleKind(id)`, `getBbox(id)`, `getObjectsById()`, `getSpatialIndex()`, `getObjects()`
-- **Mutations:** `transact(fn)`, `undo()`, `redo()`
-- **Low-level:** `getActiveRoomDoc()`, `getActiveRoomId()`, `getCurrentSnapshot()`, `getCurrentPresence()`
-- **Presence:** `updatePresenceCursor()`, `clearPresenceCursor()`
-- **Connectors:** `getConnectorsForShape(shapeId)`
+Key exports: `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`, `transact(fn)`/`undo()`/`redo()`, `getConnectorsForShape(shapeId)`.
 
 Prefer `getHandle(id)` over `getCurrentSnapshot().objectsById.get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`.
 
 ---
 
-## Invalidation Helpers
+## Invalidation — Singleton Render Loops
 
-Setter/getter pattern breaks circular dependencies between render loops and tools:
-- `setWorldInvalidator(fn)` / `setOverlayInvalidator(fn)` — registered by render loop singletons in their `start()`
-- `invalidateWorld(bounds)` / `invalidateOverlay()` — called by tools, safe no-ops if unregistered
-- `invalidateWorldBBox(bbox)` — BBoxTuple-native dirty rect (avoids WorldBounds allocation), called by RoomDocManager observer
-- `invalidateWorldAll()` — full base-canvas clear, called after hydration rebuild
-- `holdPreviewForOneFrame()` — prevents flash on commit
-
----
-
-## Canvas Runtime Initialization
-
-```
-start(config):
-  1. SurfaceManager — DOM refs, contexts, resize observer (deferred canvas resize)
-  2. renderLoop.start() + overlayLoop.start() — singletons wire their own invalidation helpers
-  3. InputManager — DOM event forwarding
-  4. keyboard-manager.attach() — keybindings (keydown, keyup, window blur)
-  5. Camera subscription → tool.onViewChange() (guarded by isEdgeScrolling)
-  6. Snapshot subscription → overlay invalidation (base canvas dirty rects handled by RoomDocManager observer)
-
-stop():
-  renderLoop.stop() + overlayLoop.stop() (clear invalidation helpers + teardown)
-  keyboard-manager.detach(), stopEdgeScroll(), unsubscribe everything
-```
-
-Edge scroll: `updateEdgeScroll()` on pointermove, `stopEdgeScroll()` on pointerup/cancel/lost-capture. Only active during select/connector/shape tool drags.
-
-Spacebar pan: `isSpacebarPanMode()` routes left-click to panTool and suppresses tool hover during hold.
+Module-level singletons, safe no-ops before `start()`. Tools and observers import directly.
+- **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldAll()`
+- **OverlayRenderLoop:** `invalidateOverlay()`, `holdPreviewForOneFrame()`
 
 ---
 
@@ -410,7 +333,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
   startCap, endCap: 'none'|'arrow',
   color, width, opacity, ownerId, createdAt }
 ```
-Detailed connector docs in `lib/connectors/CLAUDE.md`.
+Detailed connector docs in `core/connectors/CLAUDE.md`.
 
 **Note** (sticky note, auto-sizing text via TextTool):
 ```typescript
@@ -421,7 +344,7 @@ Detailed connector docs in `lib/connectors/CLAUDE.md`.
 // No fontSize (auto-derived from content + scale), no width (= NOTE_WIDTH × scale).
 // No color (hardcoded '#1a1a1a'). Origin always top-left (not shifted by alignment).
 ```
-Detailed note docs in `lib/text/CLAUDE.md`.
+Detailed note docs in `core/text/CLAUDE.md`.
 
 **Image** (content-addressed, offline-first):
 ```typescript
@@ -431,7 +354,7 @@ Detailed note docs in `lib/text/CLAUDE.md`.
   opacity?: number, ownerId, createdAt }
 // Default 400wu wide, aspect-ratio-preserving height. Content-addressed: same file = same assetId.
 ```
-Detailed image docs in `lib/image/CLAUDE.md`.
+Detailed image docs in `core/image/CLAUDE.md`.
 
 **Bookmark** (URL card with OG metadata):
 ```typescript
@@ -443,7 +366,7 @@ Detailed image docs in `lib/image/CLAUDE.md`.
 // No unfurlStatus field — state determined by which optional fields are present.
 // Offline/failed unfurls create text objects instead (never enter bookmark pipeline).
 ```
-Detailed bookmark docs in `lib/bookmark/CLAUDE.md`.
+Detailed bookmark docs in `core/bookmark/CLAUDE.md`.
 
 ### ObjectHandle (Live Reference)
 ```typescript
@@ -459,281 +382,78 @@ interface ObjectHandle {
 
 ## Types & Accessors
 
-### Geometry Types (`@/types/geometry`)
-```typescript
-type BBoxTuple = [minX, minY, maxX, maxY];      // ObjectHandle storage
-type FrameTuple = [x, y, w, h];                   // Y.Map storage for shapes
+### Geometry Types (`@/core/types/geometry`)
+Tuple forms for storage: `BBoxTuple = [minX, minY, maxX, maxY]`, `FrameTuple = [x, y, w, h]`. Object forms for logic: `WorldBounds { minX, minY, maxX, maxY }`, `Frame { x, y, w, h }`. Converters: `tupleToFrame`, `frameToTuple`, `frameToWorldBounds`, `bboxTupleToWorldBounds`, `worldBoundsToBBoxTuple`, `worldBoundsToFrame`.
 
-interface WorldBounds { minX, minY, maxX, maxY }   // Logic operations
-interface Frame { x, y, w, h }                     // Logic operations
-```
-Converters: `tupleToFrame()`, `frameToTuple()`, `frameToWorldBounds()`, `bboxTupleToWorldBounds()`, `worldBoundsToBBoxTuple()`, `worldBoundsToFrame()`
-
-### Typed Y.Map Accessors (`@/lib/object-accessors`)
-Prefer typed accessors over raw `.get()`:
-```typescript
-// Common
-getColor(y, fallback?), getOpacity(y, fallback?), getWidth(y, fallback?)
-
-// Geometry
-getFrame(y) → FrameTuple | null
-getFrameObject(y) → Frame | null
-getPoints(y) → [number, number][]
-
-// Shape-specific
-getShapeType(y), getFillColor(y)
-
-// Connector-specific
-getStart(y), getEnd(y), getStartAnchor(y), getEndAnchor(y)
-getStartCap(y), getEndCap(y), getConnectorType(y)
-
-// Text-specific — bulk accessor preferred
-getTextProps(y) → TextProps | null  // { content, origin, fontSize, fontFamily, align, width }
-getFontSize(y), getFontFamily(y), getOrigin(y), getAlign(y), getTextWidth(y), getContent(y)
-
-// Code-specific — bulk accessor preferred
-getCodeProps(y) → CodeProps | null  // { content: Y.Text, origin, fontSize, width, language }
-getLanguage(y), getCodeText(y)
-
-// Note-specific — bulk accessor preferred
-getNoteProps(y) → NoteProps | null  // { content, origin, scale, fontFamily, align, alignV, fillColor }
-
-// Image-specific — bulk accessor preferred
-getImageProps(y) → ImageProps | null  // { assetId, frame, naturalWidth, naturalHeight, mimeType }
-getAssetId(y), getNaturalDimensions(y)
-
-// Bookmark-specific — bulk accessor preferred
-getBookmarkProps(y) → BookmarkProps | null  // { url, domain, frame, title?, description?, ogImageAssetId?, ... }
-getBookmarkUrl(y)
-
-// Exported types
-type TextAlign = 'left' | 'center' | 'right'
-type TextAlignV = 'top' | 'center' | 'bottom'
-type TextWidth = 'auto' | number
-type FontFamily = 'Grandstander' | 'Inter' | 'Lora' | 'JetBrains Mono'
-type CodeLanguage = 'javascript' | 'typescript' | 'python'
-interface StoredAnchor { id: string; side: Dir; anchor: [number, number] }
-```
+### Typed Y.Map Accessors (`@/core/accessors`)
+Prefer typed accessors over raw `.get()`. Pattern: `getXxxProps(y) → XxxProps | null` bulk accessor per kind, plus individual field accessors.
+- **Common:** `getColor`, `getOpacity`, `getWidth`, `getFrame`, `getFrameObject`, `getPoints`
+- **Per-kind bulk (preferred):** `getStrokeProps`, `getShapeProps`, `getTextProps`, `getCodeProps`, `getNoteProps`, `getImageProps`, `getBookmarkProps`
+- **Connector:** `getStart`, `getEnd`, `getStartAnchor`, `getEndAnchor`, `getStartCap`, `getEndCap`, `getConnectorType`
+- **Key types:** `TextAlign`, `TextAlignV`, `TextWidth`, `FontFamily` (4 fonts), `CodeLanguage` (js/ts/python), `StoredAnchor`
 
 ---
 
 ## RoomDocManager
 
-### Lifecycle (async init)
-Constructor is synchronous (fire-and-forget `void this.init()`). `objectsById` and `spatialIndex` are `readonly` public fields on both `IRoomDocManager` interface and impl — non-null from construction. Exposed via room-runtime helpers: `getObjectsById()`, `getSpatialIndex()`, `getHandle(id)`.
-```
-init():
-  1. await IDB sync (1s timeout via Promise.race)
-  2. initConnectorLookup() + hydrateObjectsFromY() + publishSnapshotNow()
-  3. setupObjectsObserver() — AFTER hydrate (critical ordering)
-  4. attachUndoManager()
-  5. initializeWebSocketProvider() — sync listener triggers repackSpatialIndex()
-```
+Synchronous constructor, async init (fire-and-forget). `objectsById` and `spatialIndex` are public fields, non-null from construction.
 
-### Two-Phase Spatial Index
-1. **IDB:** `hydrateObjectsFromY()` → `spatialIndex.bulkLoad()` — optimal STR packing from IDB data
-2. **WS sync:** `repackSpatialIndex()` on first `'synced'` event per connection — `clear()` + `bulkLoad()` from objectsById
-Between phases, WS updates go through the deep observer incrementally (correct but not STR-packed). `wsRepacked` resets on disconnect.
+**Init:** IDB sync (1s timeout) → hydrate objects + `bulkLoad` spatial index → setup deep observer (AFTER hydrate) → attach UndoManager → init WS provider + presence. WS first sync triggers `repackSpatialIndex()` for optimal packing.
 
-### Key Methods
-```typescript
-mutate(fn: () => void)      // Transact with userId origin — prefer transact() from room-runtime
-undo() / redo()             // Y.UndoManager (500ms capture) — prefer undo()/redo() from room-runtime
-subscribeSnapshot(cb)       // Doc changes
-subscribePresence(cb)       // Presence changes
-```
+**Key methods:** `mutate(fn)` (prefer `transact()` from room-runtime), `undo()`/`redo()`, `subscribeSnapshot(cb)`.
 
-### Deep Observer
-- `observeDeep()` on objects Y.Map for incremental updates
-- Direct `cache.evict(id)` + `invalidateWorldBBox(bbox)` — no DirtyPatch indirection
-- Viewport intersection check on BBoxTuples before invalidating (avoids off-screen dirty rects)
-- **Text/Note:** `field === 'content'` → `textLayoutCache.invalidateContent(id)`, fontSize/scale → invalidateLayout
-- **Code:** `Y.YTextEvent` → `codeSystem.handleContentChange(id, ev, lang)`
-- **Bookmark:** `invalidateBookmarkLayout(id)` on deletion, `clearBookmarkLayouts()` on rebuild
-- **Connectors:** updates connector lookup reverse map (shapeId → Set<connectorId>)
-- **BBox:** per-kind computation (`computeTextBBox`, `computeNoteBBox`, `computeCodeBBox`, `computeBookmarkHeight`, or from frame/points)
+**Deep observer:** `observeDeep()` on objects Y.Map → `computeBBoxFor(id, kind, yMap)` + `evictGeometry(id)` + kind-specific cache invalidation (text layout, code tokens, bookmark layout) + `invalidateWorldBBox(bbox)`. Connector lookup updated on topology changes. Deletions → `removeObjectCaches(id, kind)`.
+
+---
+
+## Cache Architecture
+
+- **Geometry:** `renderer/geometry-cache.ts` — Path2D (strokes/shapes) + ConnectorPaths. Auto-detects shapeType changes.
+- **Layout:** `textLayoutCache` (three-tier), `codeSystem` (two-tier tokenization + layout), `bookmarkCache` (text wrapping)
+- **Unified eviction:** `removeObjectCaches(id, kind)` on delete, `clearAllObjectCaches()` on room teardown
 
 ---
 
 ## Rendering Pipeline
 
 ### Two-Canvas Architecture
-- **Base Canvas:** World content, dirty-rect optimized, 60 FPS (30 on mobile)
-- **Overlay Canvas:** Full clear each frame — preview, presence, selection UI
+- **Base Canvas:** World content, dirty-rect optimized, (NATIVE RAF NOW)
+- **Overlay Canvas:** Full clear each frame invalidation — preview, presence, selection UI
 - SelectTool renders transformed objects on base canvas for correct Z-order
 
 ### RenderLoop (singleton: `renderLoop`)
-Module-level singleton, started/stopped by CanvasRuntime. Wires own invalidation helpers (`setWorldInvalidator`, `setWorldBBoxInvalidator`, `setFullClearFn`) in `start()`, clears in `stop()`. Dirty rect tracking inlined via `Float64Array` buffer (max 16 rects, zero allocation). Coalesces overlapping rects in-place. Promotes to full clear when: dirty area > 33% of canvas, translucent objects visible, or canvas resized. Deferred canvas resize applied at frame start via `SurfaceManager.applyPendingResize()`.
+Module-level singleton, started/stopped by CanvasRuntime. Dirty-rect optimized with automatic full-clear promotion.
 
 ### Object Rendering Dispatch (`objects.ts`)
-```typescript
-switch (handle.kind) {
-  case 'stroke':    // Path2D from cache
-  case 'shape':     // buildShapePathFromFrame() + optional label via drawText()
-  case 'text':      // getTextProps() → textLayoutCache.getLayout() → renderTextLayout()
-  case 'note':      // getNoteProps() → getNoteLayout() → renderNoteBody() + renderTextLayout()
-  case 'code':      // getCodeProps() → codeSystem.getLayout() → renderCodeLayout()
-  case 'connector': // ConnectorPaths from cache
-  case 'image':     // getBitmap(assetId) → ctx.drawImage() or gray placeholder
-  case 'bookmark':  // drawBookmark() — two layouts (full card with OG image, text-only card)
-}
-```
-During scale transforms: code/text/note get `drawScaledPreview()` (uniform) or `drawReflowedPreview()` (E/W). Images uniform-scale only. Bookmarks fixed-size (translate only).
+Switch on `handle.kind`: stroke/shape/connector use geometry cache (Path2D/ConnectorPaths), text/note/code use layout caches, image uses `getBitmap()`, bookmark uses `drawBookmark()`. During scale transforms: code/text/note get scaled/reflowed previews, images uniform-scale only, bookmarks translate only.
 
 ### Coordinate Spaces
-- **World:** Logical document coords
-- **CSS pixels:** Browser coords
-- **Device pixels:** Physical pixels (CSS × DPR)
-
-```typescript
-worldToCanvas: [(x - pan.x) * scale, (y - pan.y) * scale]
-canvasToWorld: [x / scale + pan.x, y / scale + pan.y]
-```
+World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transforms: `worldToCanvas: (x - pan.x) * scale`, `canvasToWorld: x / scale + pan.x`.
 
 ---
 
 ## Camera Store (`camera-store.ts`)
 
-Centralized Zustand store for camera/viewport state with per-room persistence.
+Zustand store: `scale`, `pan`, `cssWidth`, `cssHeight`, `dpr`. Per-room camera persistence via `setRoom(roomId)` (saves outgoing → restores incoming, localStorage-backed).
 
-### State & Actions
-```typescript
-interface CameraState {
-  scale: number;                    // Zoom level (1.0 = 100%)
-  pan: { x: number; y: number };    // World offset
-  cssWidth: number; cssHeight: number; dpr: number;
-  roomCameras: Record<string, { scale: number; pan: { x: number; y: number } }>;  // Persisted
-  currentRoomId: string | null;     // Ephemeral
-}
-// Actions: setScale, setPan, setScaleAndPan, setViewport, resetView, setRoom
-// Automatic clamping: MIN_ZOOM/MAX_ZOOM
-```
-
-### Per-Room Camera Persistence
-- `setRoom(roomId)` saves outgoing camera to `roomCameras`, restores incoming — called by `connectRoom()`
-- Only `roomCameras` is persisted to localStorage via `persist` middleware + `partialize`
-- Debounced sync (1s) writes current camera to `roomCameras` on pan/zoom changes
-- `setRoom()` flushes pending debounce immediately on room switch
-
-### Module-Level Functions
-```typescript
-setCanvasElement(el) / getCanvasElement() / getCanvasRect()
-capturePointer(id) / releasePointer(id)
-
-// Coordinate transforms
-worldToCanvas(wx, wy), canvasToWorld(cx, cy)
-screenToCanvas(clientX, clientY), screenToWorld(clientX, clientY)
-worldToClient(wx, wy)
-getVisibleWorldBounds(), getViewportInfo()
-```
-
-### Usage
-```typescript
-// Imperative (tools, render loops):
-const { scale, pan } = useCameraStore.getState();
-// Reactive (React):
-const scale = useCameraStore(selectScale);
-```
+Module-level functions: `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds`, `setCanvasElement`, `capturePointer`, `releasePointer`. Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`.
 
 ---
 
 ## Device UI Store
 
-```typescript
-interface DeviceUIState {
-  // User identity (persisted, generated on first visit)
-  userId: string;                      // ULID, stable per browser profile
-  userName: string;                    // Random "Adjective Animal"
-  userColor: string;                   // Random hex from 16-color palette
-  activeTool: 'pen'|'highlighter'|'eraser'|'text'|'pan'|'select'|'shape'|'connector'|'code'|'note';
-  drawingSettings: { size: 4|7|10|13; color: string; opacity: number; fill: boolean };
-  textSize: number;                    // Default 24
-  connectorSize: 2|4|6|8;
-  connectorStartCap, connectorEndCap, connectorType;
-  shapeVariant: 'diamond'|'rectangle'|'ellipse';
-  fillColor: string;                   // Shape fill
-  // Text defaults (persisted)
-  textColor, textAlign, textFontFamily, highlightColor, textFillColor;
-  // Note defaults (persisted)
-  noteAlign, noteAlignV, noteFontFamily;
-  // Shape label defaults (persisted)
-  shapeAlign, shapeAlignV;
-  codeLineNumbers: boolean;
-  cursorOverride: string | null;
-}
+Persisted Zustand store: `activeTool`, `drawingSettings` (size/color/opacity/fill), user identity (`userId`/`userName`/`userColor` — generated on first visit), per-tool defaults (text, note, shape, connector, code settings), `cursorOverride`.
 
-// Imperative getters (not hooks — for use in tools, presence, room-doc-manager)
-getUserId(): string
-getUserProfile(): { userId, name, color }
-```
+Imperative getters: `getUserId()` (used by tools for `ownerId`, undo tracking, presence self-filter), `getUserProfile()` → `{ userId, name, color }` (awareness wire format).
 
-Identity is generated at module load if not already persisted. `getUserId()` is the primary accessor — used by all tools for `ownerId`, by `room-doc-manager` for undo tracking, and by `presence-store.setPeers()` for self-filtering. `getUserProfile()` is used by `presence.ts` for awareness wire format.
-```
 
 ---
 
-## Selection Store
+## Selection System
 
-```typescript
-interface SelectionState {
-  selectedIds: string[];
-  mode: 'none' | 'standard' | 'connector';     // 1 connector → 'connector', else 'standard'
-  selectionKind: 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'codeOnly' | 'notesOnly' | 'connectorsOnly' | 'imagesOnly' | 'bookmarksOnly' | 'mixed';
-  transform: TransformState;        // 'none' | TranslateTransform | ScaleTransform | EndpointDragTransform
-  marquee: MarqueeState;
-  connectorTopology: ConnectorTopology | null;
-  textReflow: TextReflowState | null;    // E/W text reflow during scale
-  codeReflow: CodeReflowState | null;    // E/W code reflow during scale
-  codeEditingId: string | null;          // Code object being edited via CodeMirror
-}
-```
+Detailed docs in `tools/selection/CLAUDE.md`. Covers state machine, per-kind transform behavior, connector topology, hit testing (Z-order, handles, endpoints), text/code reflow, dirty rect optimization, and commit paths.
 
-### ConnectorTopology
-Computed atomically in `beginTranslate`/`beginScale` via `computeConnectorTopology()`. Per-connector strategy: `'translate'` (both endpoints move, ctx.translate on cached Path2D) or `'reroute'` (A* each frame). `objects.ts` reads `topology.reroutes` for preview; commit writes final points.
-
-```typescript
-interface ConnectorTopology {
-  entries: ConnectorTopologyEntry[];     // strategy + per-endpoint specs
-  translateIdSet: Set<string>;           // O(1) skip A* check
-  originalFrames: Map<string, FrameTuple>;
-  reroutes: Map<string, [number, number][] | null>;  // Mutable per-frame cache
-  prevBboxes: Map<string, WorldBounds>;  // Dirty rect tracking
-}
-```
-
----
-
-## SelectTool
-
-**File:** `lib/tools/SelectTool.ts` — all object kinds: shapes, strokes, text, notes, code, images, bookmarks, connectors with endpoint editing.
-
-### State Machine
-```typescript
-type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
-```
-- **Standard mode:** handles → scale, objects → translate, background → marquee
-- **Connector mode (1 connector):** endpoint dots → `endpointDrag` with live A* + snapping
-- **Shift/Ctrl+click:** Additive/subtractive multi-select
-
-### Transform Behavior
-| Kind | Corner / N·S (kind-only) | E / W | Mixed N·S |
-|------|--------------------------|-------|-----------|
-| **Strokes** | Uniform scale (width scales WYSIWYG) | — | Edge-pin translate |
-| **Shapes** | Non-uniform scale (stroke unchanged) | Non-uniform scale | Non-uniform scale |
-| **Text** | Uniform (fontSize + origin + width) | Reflow (width change, auto→fixed) | Edge-pin translate |
-| **Notes** | Uniform (scale + origin) | Reflow (scale change) | Edge-pin translate |
-| **Code** | Uniform (fontSize + width + origin) | Reflow (width + layout recompute) | Edge-pin translate |
-| **Connectors** | Via topology (translate or reroute) | Via topology | Via topology |
-| **Images** | Uniform scale (aspect ratio preserved) | Uniform scale | Edge-pin translate |
-| **Bookmarks** | Fixed size, position-only translate | Fixed size, edge-pin translate | Edge-pin translate |
-
-### Code/Text/Note Editing Entry
-- Double-click text/note/shape label → `textTool.startEditing(id)` or `textTool.startLabelEditing(id)`
-- Double-click code block → `codeTool.startEditing(id)` (with `justClosedCodeId` guard)
-- `codeEditingId` blocks handle hit testing, hover cursors, hides resize handles
-
-### Hit Testing (`geometry/hit-testing.ts`)
-Fill-aware Z-order (unfilled interiors transparent), endpoint dots for connector mode, marquee geometry intersection.
+**Key files:** `SelectTool.ts` (state machine + commits), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/geometry/hit-testing.ts` (shared with EraserTool), `core/geometry/transform.ts` (scale math), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
 
 ---
 
@@ -746,36 +466,37 @@ Handles pen, highlighter, AND shape drawing. HoldDetector (600ms) for shape reco
 Geometry-aware hit testing, deletes all object kinds.
 
 ### TextTool
-WYSIWYG rich text with Tiptap DOM overlay + canvas rendering. Origin-based positioning, auto/fixed width, three-tier layout cache. Shape labels and sticky notes supported (note tool maps to TextTool). **Details:** `lib/text/CLAUDE.md`
+WYSIWYG rich text with Tiptap DOM overlay + canvas rendering. Origin-based positioning, auto/fixed width, three-tier layout cache. Shape labels and sticky notes supported (note tool maps to TextTool). **Details:** `core/text/CLAUDE.md`
 
 ### CodeTool
-Code blocks with CodeMirror DOM overlay. Screen-space rendering (world × scale in px). Two-tier tokenization (sync regex + Lezer workers). Per-session UndoManager. **Details:** `lib/code/CLAUDE.md`
+Code blocks with CodeMirror DOM overlay. Screen-space rendering (world × scale in px). Two-tier tokenization (sync regex + Lezer workers). Per-session UndoManager. **Details:** `core/code/CLAUDE.md`
 
 ### PanTool
 Viewport panning. Also used for MMB pan and spacebar ephemeral pan.
 
 ### ConnectorTool
-Elbow A* + straight connectors with shape snapping. Ctrl suppresses snapping. **Details:** `lib/connectors/CLAUDE.md`
+Elbow A* + straight connectors with shape snapping. Ctrl suppresses snapping. **Details:** `core/connectors/CLAUDE.md`
 
 ---
 
-## Keyboard, Clipboard & Edge Scroll
+## Keyboard, Clipboard & Viewport
 
-Standalone imperative modules. Full changelog: `docs/CLIPBOARD_KEYBOARD_CHANGELOG.md`.
-
-- **keyboard-manager:** Tool switches (`v`/`p`/`e`/`t`/`n`/`h`/`a`), `i` opens image file picker (one-shot). Cmd+C/V/X/D/A/Z, Cmd+B/I/H formatting, spacebar ephemeral pan, Ctrl+±/0 zoom, arrow key pan, Enter to edit, Delete/Backspace. Guard hierarchy: input focus > modifiers > gesture-active > bare keys.
-- **clipboard-actions:** Internal paste (full-fidelity duplication with ID remap + connector anchor remap), external paste (plain + rich text + images + URL→bookmark), smart duplicate placement (tries 4 directions via spatial index), zoom-to-fit for out-of-view content.
-- **edge-scroll:** Auto-pan during select/connector/shape drags. 40px edge zone, proximity² speed, 120ms delay + 300ms easeInQuad ramp. Tool re-dispatch after each pan. Stopped on pointerup/cancel.
-- **cursor-tracking:** `getLastCursorWorld()` for paste placement. `isShiftPointer()`/`isCtrlOrMetaPointer()` for multi-select. `isCtrlHeld()` for connector snap suppression.
+Detailed docs: `runtime/input/CLAUDE.md`, `core/clipboard/CLAUDE.md`.
 
 ---
 
-## Image & Bookmark Systems (Summary)
+## Presence System
 
-Detailed docs in `lib/image/CLAUDE.md` and `lib/bookmark/CLAUDE.md`.
+Detailed docs in `runtime/presence/CLAUDE.md`. Three-layer split: network (`presence.ts`), identity store (`presence-store.ts`), rendering (`CursorAnimationJob`). Wired via `RoomDocManager` → `attach(provider)`/`detach()`, cursor updates from `CanvasRuntime`.
 
-**Images:** Offline-first with content-addressed R2 storage. Two web workers (hash-routed decode parallelism), generation-based mip superseding (3 levels), Service Worker cache-first asset serving. Viewport-driven: only decode visible images, evict off-screen bitmaps. Entry points: drag-drop, paste, `i` key file picker. All network I/O in workers.
+---
 
-**Bookmarks:** Paste URL → HTML placeholder (local-only) → worker unfurl → atomic Y.Doc write. Unfurl extracts OG/Twitter metadata via HTMLRewriter, stores images to R2 (content-addressed). Offline/failed → text object fallback. Two card layouts: full (OG image + metadata) and text-only. No re-unfurl, no editing — failures are final.
+## Image & Bookmark Systems
 
-**Service Worker (`sw.ts`):** Cache-first for `/api/assets/*` (immutable, content-addressed) and app shell (`/assets/*`, `/fonts/*`). Network-first for HTML navigation. Workers self-sufficient via Cache API (works without SW in dev). `skipWaiting()` + `clients.claim()` for instant activation.
+Detailed docs in `core/image/CLAUDE.md` and `core/bookmark/CLAUDE.md`.
+
+**Images:** Offline-first, content-addressed R2 storage, two web workers, viewport-driven decode/eviction. All network I/O in workers.
+
+**Bookmarks:** Paste URL → placeholder → worker unfurl → Y.Doc write. Offline/failed → text fallback.
+
+**Service Worker (`sw.ts`):** Cache-first `/api/assets/*` + app shell. Network-first HTML.

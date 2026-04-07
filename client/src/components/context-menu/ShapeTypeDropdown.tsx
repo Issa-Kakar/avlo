@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
-import { setSelectedShapeType } from '@/lib/utils/selection-actions';
+import { setSelectedShapeType } from '@/tools/selection/selection-actions';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { IconShapes, IconTextType } from './icons/FilterIcons';
@@ -53,11 +53,7 @@ export function ShapeTypeDropdown({ mode }: ShapeTypeDropdownProps) {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton
-        className="ctx-btn-type"
-        onMouseDown={toggle}
-        aria-expanded={open}
-      >
+      <MenuButton className="ctx-btn-type" onMouseDown={toggle} aria-expanded={open}>
         <TriggerIcon width={20} height={20} />
         <IconChevronDown className="ctx-dd-arrow" />
       </MenuButton>

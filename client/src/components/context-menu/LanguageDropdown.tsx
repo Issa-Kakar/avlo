@@ -1,7 +1,7 @@
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
-import { setSelectedCodeLanguage } from '@/lib/utils/selection-actions';
-import type { CodeLanguage } from '@/lib/object-accessors';
+import { setSelectedCodeLanguage } from '@/tools/selection/selection-actions';
+import type { CodeLanguage } from '@/core/accessors';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown, IconCheck } from './icons';
 import { useDropdown } from './useDropdown';

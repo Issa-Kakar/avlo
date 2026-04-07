@@ -6,8 +6,8 @@ import {
   TEXT_COLOR_PALETTE,
   useDeviceUIStore,
 } from '../stores/device-ui-store';
-import { undo, redo, hasActiveRoom } from '../canvas/room-runtime';
-import { openImageFilePicker } from '@/lib/image/image-actions';
+import { undo, redo, hasActiveRoom } from '@/runtime/room-runtime';
+import { openImageFilePicker } from '@/core/image/image-actions';
 
 import './ToolPanel.css';
 

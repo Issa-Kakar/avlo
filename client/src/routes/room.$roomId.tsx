@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { connectRoom } from '@/canvas/room-runtime';
+import { connectRoom } from '@/runtime/room-runtime';
 import RoomPage from '@/components/RoomPage';
 
 export const Route = createFileRoute('/room/$roomId')({

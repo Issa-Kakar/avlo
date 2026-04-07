@@ -17,7 +17,7 @@ import { create } from 'zustand';
 import { subscribeWithSelector, persist } from 'zustand/middleware';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
-import type { ViewTransform } from '@/types/snapshot';
+import type { ViewTransform } from '@/core/types/snapshot';
 
 // ============================================
 // TYPES

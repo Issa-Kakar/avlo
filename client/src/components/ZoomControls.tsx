@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useCameraStore, selectScale, MIN_ZOOM, MAX_ZOOM } from '@/stores/camera-store';
-import { zoomIn, zoomOut, zoomTo, animateToFit } from '@/canvas/animation';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
+import { zoomIn, zoomOut, zoomTo, animateToFit } from '@/runtime/viewport/zoom';
+import { getCurrentSnapshot } from '@/runtime/room-runtime';
 import { IconZoomPlus, IconZoomMinus, IconZoomToFit, IconHelp, IconMouseSettings } from './icons';
 
 import './ZoomControls.css';

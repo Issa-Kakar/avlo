@@ -3,9 +3,9 @@ import { persist } from 'zustand/middleware';
 import { ulid } from 'ulid';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
-import type { FontFamily, TextAlignV } from '@/lib/object-accessors';
-import type { ConnectorCap, ConnectorType } from '@/lib/connectors';
-import { generateUserProfile } from '@/lib/utils/generate-user-profile';
+import type { FontFamily, TextAlignV } from '@/core/accessors';
+import type { ConnectorCap, ConnectorType } from '@/core/connectors';
+import { generateUserProfile } from '@/utils/generate-user-profile';
 
 export type Tool =
   | 'pen'
@@ -32,7 +32,7 @@ export const TEXT_FONT_SIZE_PRESETS: readonly number[] = [10, 12, 14, 18, 24, 36
 export type TextAlign = 'left' | 'center' | 'right';
 
 // Font family options
-export type { FontFamily } from '@/lib/object-accessors';
+export type { FontFamily } from '@/core/accessors';
 export const TEXT_FONT_FAMILIES: readonly FontFamily[] = [
   'Grandstander',
   'Inter',

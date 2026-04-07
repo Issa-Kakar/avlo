@@ -1,6 +1,6 @@
-import type { Snapshot } from '@/types/snapshot';
-import type { ObjectHandle } from '@/types/objects';
-import type { FrameTuple, WorldBounds } from '@/types/geometry';
+import type { Snapshot } from '@/core/types/snapshot';
+import type { ObjectHandle } from '@/core/types/objects';
+import type { FrameTuple, WorldBounds } from '@/core/types/geometry';
 import {
   getColor,
   getOpacity,
@@ -19,9 +19,9 @@ import {
   getFontFamily,
   getStrokeProps,
   getShapeProps,
-} from '@/lib/object-accessors';
+} from '@/core/accessors';
 import { getPath, getConnectorPaths } from '../geometry-cache';
-import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
+import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import {
   useSelectionStore,
@@ -37,10 +37,10 @@ import {
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
-} from '@/lib/geometry/transform';
+} from '@/core/geometry/transform';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
-import { buildShapePathFromFrame } from '@/lib/utils/shape-path';
+import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import {
   textLayoutCache,
   renderTextLayout,
@@ -57,19 +57,16 @@ import {
   getNoteContentWidth,
   getNoteDerivedFontSize,
   NOTE_WIDTH,
-} from '@/lib/text/text-system';
+} from '@/core/text/text-system';
+import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@/core/accessors';
 import {
-  getTextProps,
-  getAlign,
-  getAlignV,
-  getCodeProps,
-  getNoteProps,
-} from '@/lib/object-accessors';
-import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/lib/geometry/transform';
-import { codeSystem, renderCodeLayout, getCodeFrame } from '@/lib/code/code-system';
-import { CODE_EXTENSIONS, getAssetId } from '@/lib/object-accessors';
-import { getBitmap } from '@/lib/image/image-manager';
-import { drawBookmark } from '@/lib/bookmark/bookmark-render';
+  computeUniformScaleNoThreshold,
+  computePreservedPosition,
+} from '@/core/geometry/transform';
+import { codeSystem, renderCodeLayout, getCodeFrame } from '@/core/code/code-system';
+import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
+import { getBitmap } from '@/core/image/image-manager';
+import { drawBookmark } from '@/core/bookmark/bookmark-render';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,

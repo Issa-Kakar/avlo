@@ -1,15 +1,10 @@
 import { drawObjects } from './layers/objects';
 import { FRAME_CONFIG } from './types';
 import { useCameraStore, isMobile } from '@/stores/camera-store';
-import { getBaseContext, applyPendingResize } from '@/canvas/SurfaceManager';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import type { WorldBounds, BBoxTuple } from '@/types/geometry';
-import { manageImageViewport } from '@/lib/image/image-manager';
-import {
-  setWorldInvalidator,
-  setWorldBBoxInvalidator,
-  setFullClearFn,
-} from '@/canvas/invalidation-helpers';
+import { getBaseContext, applyPendingResize } from '@/runtime/SurfaceManager';
+import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import type { WorldBounds, BBoxTuple } from '@/core/types/geometry';
+import { manageImageViewport } from '@/core/image/image-manager';
 
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
 
@@ -50,11 +45,6 @@ export class RenderLoop {
     if (this.started) return;
     this.started = true;
     this.lastFrameTime = performance.now();
-
-    // Wire invalidation helpers
-    setWorldInvalidator((bounds) => this.invalidateWorld(bounds));
-    setWorldBBoxInvalidator((bbox) => this.invalidateWorldBBox(bbox));
-    setFullClearFn(() => this.invalidateAll());
 
     // Visibility listener
     if (typeof document !== 'undefined') {
@@ -100,11 +90,6 @@ export class RenderLoop {
   }
 
   stop(): void {
-    // Clear invalidation helpers
-    setWorldInvalidator(null);
-    setWorldBBoxInvalidator(null);
-    setFullClearFn(null);
-
     // Remove visibility listener
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
@@ -439,3 +424,22 @@ export class RenderLoop {
 
 /** Module-level singleton — started/stopped by CanvasRuntime */
 export const renderLoop = new RenderLoop();
+
+// =============================================
+// MODULE-LEVEL INVALIDATION WRAPPERS
+// =============================================
+
+/** Invalidate a world-space dirty rect. Safe no-op before start(). */
+export function invalidateWorld(bounds: WorldBounds): void {
+  renderLoop.invalidateWorld(bounds);
+}
+
+/** Invalidate a world-space dirty rect from BBoxTuple. Safe no-op before start(). */
+export function invalidateWorldBBox(bbox: BBoxTuple): void {
+  renderLoop.invalidateWorldBBox(bbox);
+}
+
+/** Force full base-canvas clear on next frame. Safe no-op before start(). */
+export function invalidateWorldAll(): void {
+  renderLoop.invalidateAll();
+}

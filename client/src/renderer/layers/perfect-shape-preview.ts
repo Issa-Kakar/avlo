@@ -1,4 +1,4 @@
-import type { PerfectShapePreview } from '@/lib/tools/types';
+import type { PerfectShapePreview } from '@/tools/types';
 
 // Inline helper for color tinting (to avoid client utils import)
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -225,10 +225,10 @@ export function drawPerfectShapePreview(
     ctx.beginPath();
     // Start at midpoint of top→right edge (matches shape-path.ts moveTo)
     ctx.moveTo(cx + hx / 2, cy - hy / 2);
-    ctx.arcTo(cx + hx, cy, cx, cy + hy, radius);       // right corner
-    ctx.arcTo(cx, cy + hy, cx - hx, cy, radius);        // bottom corner
-    ctx.arcTo(cx - hx, cy, cx, cy - hy, radius);        // left corner
-    ctx.arcTo(cx, cy - hy, cx + hx, cy, radius);        // top corner
+    ctx.arcTo(cx + hx, cy, cx, cy + hy, radius); // right corner
+    ctx.arcTo(cx, cy + hy, cx - hx, cy, radius); // bottom corner
+    ctx.arcTo(cx - hx, cy, cx, cy - hy, radius); // left corner
+    ctx.arcTo(cx, cy - hy, cx + hx, cy, radius); // top corner
     ctx.closePath();
     if (fillEnabled) ctx.fill();
     ctx.stroke();

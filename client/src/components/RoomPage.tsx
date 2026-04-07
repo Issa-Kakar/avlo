@@ -5,11 +5,11 @@
 
 import { useEffect } from 'react';
 import { getRouteApi } from '@tanstack/react-router';
-import { disconnectRoom } from '../canvas/room-runtime';
+import { disconnectRoom } from '@/runtime/room-runtime';
 import { ErrorBoundary } from './ErrorBoundary';
 
 // Components
-import { Canvas } from '../canvas/Canvas';
+import { Canvas } from './Canvas';
 import { TopBar } from './TopBar';
 import { ToolPanel } from './ToolPanel';
 import { ZoomControls } from './ZoomControls';

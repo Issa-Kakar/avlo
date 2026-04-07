@@ -17,18 +17,18 @@
  * @module renderer/layers/connector-preview
  */
 
-import type { ConnectorPreview } from '@/lib/tools/types';
-import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
-import { getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
+import type { ConnectorPreview } from '@/tools/types';
+import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
+import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
 import {
   buildRoundedPolylinePath,
   buildArrowPath,
   computeEndTrimInfo,
   ARROW_ROUNDING_LINE_WIDTH,
-} from '@/lib/connectors/connector-paths';
-import { getHandle } from '@/canvas/room-runtime';
+} from '@/core/connectors/connector-paths';
+import { getHandle } from '@/runtime/room-runtime';
 import { getPath } from '../geometry-cache';
-import { getWidth } from '@/lib/object-accessors';
+import { getWidth } from '@/core/accessors';
 
 /**
  * Draw connector preview on overlay canvas.

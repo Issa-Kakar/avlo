@@ -14,9 +14,9 @@
  * @module renderer/layers/selection-overlay
  */
 
-import type { SelectionPreview, HandleId } from '@/lib/tools/types';
-import type { Snapshot } from '@/types/snapshot';
-import type { ObjectHandle } from '@/types/objects';
+import type { SelectionPreview, HandleId } from '@/tools/types';
+import type { Snapshot } from '@/core/types/snapshot';
+import type { ObjectHandle } from '@/core/types/objects';
 import {
   getFrame,
   getShapeType,
@@ -25,15 +25,15 @@ import {
   getStartAnchor,
   getEndAnchor,
   getPoints,
-} from '@/lib/object-accessors';
-import { getTextFrame } from '@/lib/text/text-system';
-import { getCodeFrame } from '@/lib/code/code-system';
+} from '@/core/accessors';
+import { getTextFrame } from '@/core/text/text-system';
+import { getCodeFrame } from '@/core/code/code-system';
 import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
-import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/lib/connectors/connector-utils';
-import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/lib/connectors/constants';
-import type { SnapTarget } from '@/lib/connectors/types';
-import { isAnchorInterior } from '@/lib/connectors/types';
+import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
+import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
+import type { SnapTarget } from '@/core/connectors/types';
+import { isAnchorInterior } from '@/core/connectors/types';
 
 // =============================================================================
 // STYLING CONSTANTS

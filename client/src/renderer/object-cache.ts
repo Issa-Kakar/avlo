@@ -15,12 +15,12 @@
  *   image                   → no per-id cache (managed by image-manager)
  */
 
-import type { ObjectKind } from '@/types/objects';
+import type { ObjectKind } from '@/core/types/objects';
 import { evictGeometry, clearGeometry } from './geometry-cache';
-import { textLayoutCache } from '@/lib/text/text-system';
-import { codeSystem } from '@/lib/code/code-system';
-import { bookmarkCache } from '@/lib/bookmark/bookmark-render';
-import { clearConnectorLookup } from '@/lib/connectors';
+import { textLayoutCache } from '@/core/text/text-system';
+import { codeSystem } from '@/core/code/code-system';
+import { bookmarkCache } from '@/core/bookmark/bookmark-render';
+import { clearConnectorLookup } from '@/core/connectors';
 
 /** Object deleted — remove from all relevant caches */
 export function removeObjectCaches(id: string, kind: ObjectKind): void {

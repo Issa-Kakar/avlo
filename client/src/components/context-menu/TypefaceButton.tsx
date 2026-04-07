@@ -1,9 +1,9 @@
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { setSelectedFontFamily } from '@/lib/utils/selection-actions';
-import type { FontFamily } from '@/lib/object-accessors';
-import { FONT_FAMILIES } from '@/lib/text/text-system';
+import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
+import type { FontFamily } from '@/core/accessors';
+import { FONT_FAMILIES } from '@/core/text/text-system';
 import { MenuButton } from './MenuButton';
 import { IconCheck } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';

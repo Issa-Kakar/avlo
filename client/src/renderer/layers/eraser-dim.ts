@@ -1,9 +1,9 @@
-import type { Snapshot } from '@/types/snapshot';
-import { getWidth, getFillColor } from '@/lib/object-accessors';
-import { getTextFrame } from '@/lib/text/text-system';
-import { getCodeFrame } from '@/lib/code/code-system';
+import type { Snapshot } from '@/core/types/snapshot';
+import { getWidth, getFillColor } from '@/core/accessors';
+import { getTextFrame } from '@/core/text/text-system';
+import { getCodeFrame } from '@/core/code/code-system';
 import { getPath, getConnectorPaths } from '../geometry-cache';
-import { ARROW_ROUNDING_LINE_WIDTH } from '@/lib/connectors/connector-paths';
+import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 
 /**
  * Draw dimmed objects with a uniform white lighten effect.

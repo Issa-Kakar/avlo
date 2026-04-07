@@ -26,7 +26,7 @@ import {
   toggleCodeLineNumbers,
   toggleCodeHeader,
   toggleCodeOutput,
-} from '@/lib/utils/selection-actions';
+} from '@/tools/selection/selection-actions';
 import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
 import { NO_FILL } from './color-palette';
 
@@ -52,7 +52,7 @@ import {
 } from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
 import { NoteAlignDropdown } from './NoteAlignDropdown';
-import { getHandleKind } from '@/canvas/room-runtime';
+import { getHandleKind } from '@/runtime/room-runtime';
 
 // === Selectors (stable module-level references) ===
 

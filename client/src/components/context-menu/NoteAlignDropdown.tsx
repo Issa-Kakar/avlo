@@ -1,7 +1,7 @@
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
-import { setSelectedTextAlign, setSelectedTextAlignV } from '@/lib/utils/selection-actions';
-import type { TextAlign, TextAlignV } from '@/lib/object-accessors';
+import { setSelectedTextAlign, setSelectedTextAlignV } from '@/tools/selection/selection-actions';
+import type { TextAlign, TextAlignV } from '@/core/accessors';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown } from './icons/UtilityIcons';
 import { IconAlignTextLeft, IconAlignTextCenter, IconAlignTextRight } from './icons/AlignIcons';

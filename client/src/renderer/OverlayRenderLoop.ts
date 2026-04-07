@@ -1,14 +1,13 @@
-import { drawToolPreview, clearPreviewCache, holdPreviewForOneFrame } from './layers/tool-preview';
+import { drawToolPreview, clearPreviewCache } from './layers/tool-preview';
 import { useCameraStore } from '@/stores/camera-store';
-import { getOverlayContext, applyPendingResize } from '@/canvas/SurfaceManager';
+import { getOverlayContext, applyPendingResize } from '@/runtime/SurfaceManager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import {
   getAnimationController,
   destroyAnimationController,
   EraserTrailAnimation,
   CursorAnimationJob,
-} from '@/canvas/animation';
-import { setOverlayInvalidator, setHoldPreviewFn } from '@/canvas/invalidation-helpers';
+} from './animation';
 
 export class OverlayRenderLoop {
   private started = false;
@@ -23,10 +22,6 @@ export class OverlayRenderLoop {
 
   start(): void {
     this.started = true;
-
-    // Wire invalidation helpers
-    setOverlayInvalidator(() => this.invalidateAll());
-    setHoldPreviewFn(holdPreviewForOneFrame);
 
     // Register animation jobs + wire push-based invalidation
     const controller = getAnimationController();
@@ -68,10 +63,6 @@ export class OverlayRenderLoop {
   }
 
   stop(): void {
-    // Clear invalidation helpers
-    setOverlayInvalidator(null);
-    setHoldPreviewFn(null);
-
     this.cameraUnsubscribe?.();
     this.cameraUnsubscribe = null;
     this.toolUnsubscribe?.();
@@ -143,3 +134,15 @@ export class OverlayRenderLoop {
 
 /** Module-level singleton — started/stopped by CanvasRuntime */
 export const overlayLoop = new OverlayRenderLoop();
+
+// =============================================
+// MODULE-LEVEL INVALIDATION WRAPPERS
+// =============================================
+
+/** Invalidate the entire overlay canvas. Safe no-op before start(). */
+export function invalidateOverlay(): void {
+  overlayLoop.invalidateAll();
+}
+
+/** Hold preview for one frame during snapshot transitions. */
+export { holdPreviewForOneFrame } from './layers/tool-preview';

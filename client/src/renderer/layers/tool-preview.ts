@@ -5,16 +5,16 @@
  * @module renderer/layers/tool-preview
  */
 
-import type { PreviewData } from '@/lib/tools/types';
+import type { PreviewData } from '@/tools/types';
 import { drawStrokePreview } from './stroke-preview';
 import { drawDimmedStrokes } from './eraser-dim';
 import { drawPerfectShapePreview } from './perfect-shape-preview';
 import { drawSelectionOverlay } from './selection-overlay';
 import { drawConnectorPreview } from './connector-preview';
-import { getActivePreview } from '@/canvas/tool-registry';
+import { getActivePreview } from '@/runtime/tool-registry';
 import { useCameraStore } from '@/stores/camera-store';
-import { getCurrentSnapshot } from '@/canvas/room-runtime';
-import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import { invalidateOverlay } from '../OverlayRenderLoop';
 
 // Preview hold state — prevents single-frame flash on commit
 let cached: PreviewData | null = null;

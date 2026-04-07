@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import type { HandleId } from '@/lib/tools/types';
-import type { WorldBounds, FrameTuple } from '@/types/geometry';
-import type { SnapTarget } from '@/lib/connectors/types';
-import { getObjectsById, getHandle, getConnectorsForShape } from '@/canvas/room-runtime';
-import { invalidateOverlay } from '@/canvas/invalidation-helpers';
+import type { HandleId } from '@/tools/types';
+import type { WorldBounds, FrameTuple } from '@/core/types/geometry';
+import type { SnapTarget } from '@/core/connectors/types';
+import { getObjectsById, getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import {
   getFrame,
   getPoints,
@@ -12,10 +12,10 @@ import {
   getEnd,
   getStartAnchor,
   getEndAnchor,
-} from '@/lib/object-accessors';
-import { bboxTupleToWorldBounds } from '@/types/geometry';
-import { getTextFrame, type TextLayout } from '@/lib/text/text-system';
-import { getCodeFrame, type CodeLayout } from '@/lib/code/code-system';
+} from '@/core/accessors';
+import { bboxTupleToWorldBounds } from '@/core/types/geometry';
+import { getTextFrame, type TextLayout } from '@/core/text/text-system';
+import { getCodeFrame, type CodeLayout } from '@/core/code/code-system';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -29,11 +29,11 @@ import {
   type KindCounts,
   type SelectedStyles,
   type InlineStyles,
-} from '@/lib/utils/selection-utils';
+} from '@/tools/selection/selection-utils';
 
 // Re-export for backward compat (SelectTool, ContextMenuController, etc.)
-export { computeSelectionBounds } from '@/lib/utils/selection-utils';
-export type { KindCounts, SelectedStyles, InlineStyles } from '@/lib/utils/selection-utils';
+export { computeSelectionBounds } from '@/tools/selection/selection-utils';
+export type { KindCounts, SelectedStyles, InlineStyles } from '@/tools/selection/selection-utils';
 
 // === Types ===
 

@@ -1,4 +1,4 @@
-import type { StrokePreview} from '@/lib/tools/types';
+import type { StrokePreview } from '@/tools/types';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 
@@ -19,7 +19,6 @@ export function drawStrokePreview(ctx: CanvasRenderingContext2D, preview: Stroke
     ...PF_OPTIONS_BASE,
     size: preview.size,
     last: false, // live preview
-    
   });
 
   if (outline.length > 1) {
@@ -34,4 +33,3 @@ export function drawStrokePreview(ctx: CanvasRenderingContext2D, preview: Stroke
 
   ctx.restore();
 }
-

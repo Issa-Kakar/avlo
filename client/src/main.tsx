@@ -2,8 +2,8 @@ import ReactDOM from 'react-dom/client';
 import { RouterProvider } from '@tanstack/react-router';
 import { router } from './router';
 import './index.css';
-import { ensureFontsLoaded } from './lib/text/font-loader';
-import { resetFontMetrics } from './lib/text/text-system';
+import { ensureFontsLoaded } from './core/text/font-loader';
+import { resetFontMetrics } from './core/text/text-system';
 
 async function init() {
   try {
