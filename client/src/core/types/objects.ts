@@ -144,7 +144,9 @@ export interface ImageProps {
 export interface BookmarkProps {
   url: string;
   domain: string;
-  frame: FrameTuple;
+  origin: [number, number];
+  scale: number;
+  height: number;
   title?: string;
   description?: string;
   ogImageAssetId?: string;

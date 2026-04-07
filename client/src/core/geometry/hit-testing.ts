@@ -15,10 +15,11 @@ import type { Snapshot } from '../types/snapshot';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '../accessors';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
+import { getBookmarkFrame } from '../bookmark/bookmark-render';
 import { getEndpointEdgePosition } from '../connectors/connector-utils';
 import { frameTupleToWorldBounds } from './bounds';
 import type { HandleId } from '@/tools/types';
-import { computeHandles, type SelectionKind } from '@/stores/selection-store';
+import { computeHandles } from '@/stores/selection-store';
 
 // Alias for backwards compatibility
 export type WorldRect = WorldBounds;
@@ -515,13 +516,8 @@ export function hitTestHandle(
   worldY: number,
   bounds: WorldRect,
   scale: number,
-  selectionKind?: SelectionKind,
-  selectionCount?: number,
 ): HandleId | null {
   const handleRadius = HANDLE_HIT_PX / scale;
-
-  // Bookmarks: single = no handles at all; multiple = all handles
-  if (selectionKind === 'bookmarksOnly' && (selectionCount ?? 1) <= 1) return null;
 
   // Test corners first (they take priority)
   const corners = computeHandles(bounds);
@@ -633,9 +629,14 @@ export function objectIntersectsRect(handle: ObjectHandle, rect: WorldRect): boo
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
 
-    case 'image':
-    case 'bookmark': {
+    case 'image': {
       const frame = getFrame(y);
+      if (!frame) return false;
+      return rectsIntersect(frameTupleToWorldBounds(frame), rect);
+    }
+
+    case 'bookmark': {
+      const frame = getBookmarkFrame(handle.id);
       if (!frame) return false;
       return rectsIntersect(frameTupleToWorldBounds(frame), rect);
     }
@@ -805,8 +806,7 @@ export function testObjectHit(
       return null;
     }
 
-    case 'image':
-    case 'bookmark': {
+    case 'image': {
       const frame = getFrame(y);
       if (!frame) return null;
       const [x, yPos, w, h] = frame;
@@ -814,11 +814,29 @@ export function testObjectHit(
       if (worldX >= x && worldX <= x + w && worldY >= yPos && worldY <= yPos + h) {
         return {
           id: handle.id,
-          kind: handle.kind,
+          kind: 'image',
           distance: 0,
           insideInterior: true,
           area: w * h,
-          isFilled: true, // Always opaque for hit testing
+          isFilled: true,
+        };
+      }
+      return null;
+    }
+
+    case 'bookmark': {
+      const frame = getBookmarkFrame(handle.id);
+      if (!frame) return null;
+      const [x, yPos, w, h] = frame;
+
+      if (worldX >= x && worldX <= x + w && worldY >= yPos && worldY <= yPos + h) {
+        return {
+          id: handle.id,
+          kind: 'bookmark',
+          distance: 0,
+          insideInterior: true,
+          area: w * h,
+          isFilled: true,
         };
       }
       return null;

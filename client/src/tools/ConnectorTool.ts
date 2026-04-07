@@ -23,6 +23,7 @@ import { invalidateOverlay, holdPreviewForOneFrame } from '@/renderer/OverlayRen
 import { getShapeType, getFrame } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
+import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import {
   type Dir,
   type SnapTarget,
@@ -229,7 +230,9 @@ export class ConnectorTool implements PointerTool {
             ? getTextFrame(handle.id)
             : handle.kind === 'code'
               ? getCodeFrame(handle.id)
-              : getFrame(handle.y);
+              : handle.kind === 'bookmark'
+                ? getBookmarkFrame(handle.id)
+                : getFrame(handle.y);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
           snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];

@@ -18,7 +18,6 @@ import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import {
   computeEdgePinTranslation,
   computeStrokeTranslation,
-  computeBookmarkCornerTranslation,
   applyTransformToBounds,
   computeScaleFactors,
   applyUniformScaleToFrame,
@@ -183,14 +182,7 @@ export class SelectTool implements PointerTool {
       const selectionBounds = computeSelectionBounds();
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds
-        ? hitTestHandle(
-            worldX,
-            worldY,
-            selectionBounds,
-            scale,
-            store.selectionKind,
-            selectedIds.length,
-          )
+        ? hitTestHandle(worldX, worldY, selectionBounds, scale)
         : null;
       if (handleHit) {
         this.activeHandle = handleHit;
@@ -791,7 +783,6 @@ export class SelectTool implements PointerTool {
       marqueeRect,
       handles:
         isTransforming ||
-        (store.selectionKind === 'bookmarksOnly' && selectedIds.length <= 1) ||
         (store.textEditingId && !textTool.isEditingLabel()) ||
         store.codeEditingId
           ? null
@@ -848,14 +839,7 @@ export class SelectTool implements PointerTool {
     ) {
       const bounds = computeSelectionBounds();
       if (bounds) {
-        const handle = hitTestHandle(
-          worldX,
-          worldY,
-          bounds,
-          scale,
-          store.selectionKind,
-          selectedIds.length,
-        );
+        const handle = hitTestHandle(worldX, worldY, bounds, scale);
         if (handle) {
           setCursorOverride(getHandleCursor(handle));
           applyCursor();
@@ -1232,30 +1216,22 @@ export class SelectTool implements PointerTool {
             objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           }
         } else if (handle.kind === 'bookmark') {
-          const frame = getFrame(handle.y);
-          if (!frame) continue;
-          if (handleKind === 'side') {
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
             const { dx, dy } = computeEdgePinTranslation(
-              frame[0],
-              frame[0] + frame[2],
-              frame[1],
-              frame[1] + frame[3],
+              bMinX,
+              bMaxX,
+              bMinY,
+              bMaxY,
               originBounds,
               scaleX,
               scaleY,
               origin,
               handleId,
             );
-            objBounds = translateBounds(bboxTupleToWorldBounds(handle.bbox), dx, dy);
+            objBounds = translateBounds(bbox, dx, dy);
           } else {
-            const { dx, dy } = computeBookmarkCornerTranslation(
-              frame,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-            );
-            objBounds = translateBounds(bboxTupleToWorldBounds(handle.bbox), dx, dy);
+            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
           }
         } else {
           if (selectionKind === 'mixed' && handleKind === 'corner') {
@@ -1305,8 +1281,13 @@ export class SelectTool implements PointerTool {
           if (points.length === 0) continue;
           const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
           yMap.set('points', newPoints);
-        } else if (handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'note') {
-          // Text/code/note store position as origin, not frame.
+        } else if (
+          handle.kind === 'text' ||
+          handle.kind === 'code' ||
+          handle.kind === 'note' ||
+          handle.kind === 'bookmark'
+        ) {
+          // Text/code/note/bookmark store position as origin, not frame.
           const origin = getOrigin(yMap);
           if (!origin) continue;
           yMap.set('origin', [origin[0] + dx, origin[1] + dy]);
@@ -1624,32 +1605,55 @@ export class SelectTool implements PointerTool {
           continue;
         }
 
-        // Bookmark scaling: fixed size — side = edge-pin, corner = preserved-position
+        // Bookmark scaling: uniform, except mixed+side = edge-pin translate
         if (handle.kind === 'bookmark') {
-          const frame = getFrame(yMap);
-          if (!frame) continue;
-          if (handleKind === 'side') {
+          const bkOrigin = getOrigin(yMap);
+          if (!bkOrigin) continue;
+          const bkScale = (yMap.get('scale') as number) ?? 1;
+          if (selectionKind === 'mixed' && handleKind === 'side') {
+            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
             const { dx, dy } = computeEdgePinTranslation(
-              frame[0],
-              frame[0] + frame[2],
-              frame[1],
-              frame[1] + frame[3],
+              bMinX,
+              bMaxX,
+              bMinY,
+              bMaxY,
               originBounds,
               scaleX,
               scaleY,
               origin,
               handleId,
             );
-            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
+            yMap.set('origin', [bkOrigin[0] + dx, bkOrigin[1] + dy]);
           } else {
-            const { dx, dy } = computeBookmarkCornerTranslation(
-              frame,
+            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+            const rawAbsScale = Math.abs(uniformScale);
+            const roundedScale = Math.round(bkScale * rawAbsScale * 1000) / 1000;
+            const effectiveAbsScale = roundedScale / bkScale;
+
+            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+            const bcx = (bMinX + bMaxX) / 2;
+            const bcy = (bMinY + bMaxY) / 2;
+            const [newBcx, newBcy] = computePreservedPosition(
+              bcx,
+              bcy,
               originBounds,
-              scaleX,
-              scaleY,
               origin,
+              uniformScale,
             );
-            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
+
+            const bboxW = bMaxX - bMinX;
+            const bboxH = bMaxY - bMinY;
+            const newBboxW = bboxW * effectiveAbsScale;
+            const newBboxH = bboxH * effectiveAbsScale;
+            const newBMinX = newBcx - newBboxW / 2;
+            const newBMinY = newBcy - newBboxH / 2;
+            const oxOff = bkOrigin[0] - bMinX;
+            const oyOff = bkOrigin[1] - bMinY;
+            const newOriginX = newBMinX + oxOff * effectiveAbsScale;
+            const newOriginY = newBMinY + oyOff * effectiveAbsScale;
+
+            yMap.set('origin', [newOriginX, newOriginY]);
+            yMap.set('scale', roundedScale);
           }
           continue;
         }

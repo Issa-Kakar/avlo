@@ -213,8 +213,6 @@ Scans from topmost (highest ULID) to bottommost with occlusion model:
 
 Screen-space radius: `HANDLE_HIT_PX = 10` / scale. Tests corners first (nw/ne/se/sw), then side edges (n/s/e/w). Side edges only hit if cursor is between corners (excludes corner zones).
 
-**Special case:** `bookmarksOnly` with single selection → no handles at all (fixed size, no scaling).
-
 ### Endpoint Dot Hit Testing (`hitTestEndpointDots`)
 
 Screen-space radius: `ENDPOINT_DOT_HIT_PX = 10` / scale. Iterates selected connectors, tests both start/end positions derived from `getEndpointEdgePosition()`.
@@ -284,7 +282,7 @@ Uses `initialDelta` (distance from scale origin to initial click), NOT selection
 | **Code** | Uniform scale | Same pattern as text: fontSize rounded, width scaled, origin from center |
 | **Note** | Uniform scale | `scale` property (not fontSize) rounded to 3dp. Position preserved via bbox center |
 | **Image** | Uniform scale | `applyUniformScaleToFrame()`: aspect ratio preserved always |
-| **Bookmark** | Position-only | Fixed size. `computeBookmarkCornerTranslation()`: center translates using preserved-position logic |
+| **Bookmark** | Uniform scale | `scale` property rounded to 3dp. Position preserved via bbox center. Same pattern as notes |
 | **Connector** | Reroute | Always A* reroute during scale (never translate strategy) |
 
 **Side Handles (n/s/e/w):**
@@ -300,7 +298,7 @@ Uses `initialDelta` (distance from scale origin to initial click), NOT selection
 | **Code** (mixed) | Edge-pin translate | — | Edge-pin translate |
 | **Note** | Uniform scale | Uniform scale | Edge-pin translate (uses bbox) |
 | **Image** | Uniform scale | Uniform scale | Edge-pin translate |
-| **Bookmark** | Edge-pin translate | Edge-pin translate | Edge-pin translate |
+| **Bookmark** | Uniform scale | Uniform scale | Edge-pin translate (mixed only, uses bbox) |
 | **Connector** | Reroute | Reroute | Reroute |
 
 #### Uniform Scale Math
@@ -443,8 +441,8 @@ Dispatches frame transform based on object kind:
 | Note (else) | `drawScaledNotePreview()` | Nested ctx.scale around note's origin |
 | Image (mixed+side) | `drawImage()` with `ctx.translate(dx, dy)` | Cached + edge-pin |
 | Image (else) | `drawImage()` with uniform-scaled frame | `applyUniformScaleToFrame` |
-| Bookmark (side) | `drawBookmark()` with `ctx.translate(dx, dy)` | Edge-pin translate |
-| Bookmark (corner) | `drawBookmark()` with `ctx.translate(dx, dy)` | Preserved-position translate |
+| Bookmark (mixed+side) | `drawBookmark()` with `ctx.translate(dx, dy)` | Cached + edge-pin (bbox) |
+| Bookmark (else) | `drawScaledBookmarkPreview()` | Nested ctx.scale around bookmark's origin |
 | Connector | `drawConnectorFromPoints()` or `drawObject()` | Via topology reroutes |
 
 **Endpoint drag:** Connector with matching id + routedPoints → `drawConnectorFromPoints()`. Others → normal `drawObject()`.
@@ -463,7 +461,7 @@ Four phases, all in world-transform scope:
 
 4. **Connector endpoint dots** (connector mode, single connector): Start/end dots at edge positions. During drag: dragged endpoint shows snap state (blue glow when snapped), plus midpoint indicator dots on target shape.
 
-**Handle suppression:** Handles hidden when: transforming, bookmarksOnly with single selection, text editing (non-label), or code editing.
+**Handle suppression:** Handles hidden when: transforming, text editing (non-label), or code editing.
 
 ---
 
@@ -614,8 +612,8 @@ Dispatches per-kind inside `transact()`:
 | Note (else) | Scale property rounded 3dp, origin from bbox-center preservation |
 | Image (mixed+side) | Edge-pin: offset frame |
 | Image (else) | `applyUniformScaleToFrame()` |
-| Bookmark (side) | Edge-pin: offset frame |
-| Bookmark (corner) | `computeBookmarkCornerTranslation()` → offset frame |
+| Bookmark (mixed+side) | Edge-pin: offset origin using bbox bounds |
+| Bookmark (else) | Scale property rounded 3dp, origin from bbox-center preservation |
 | Shape (mixed+corner) | `applyUniformScaleToFrame()` |
 | Shape (else) | `applyTransformToFrame()` (non-uniform) |
 | Connectors | Via topology reroute entries → write rerouted points |

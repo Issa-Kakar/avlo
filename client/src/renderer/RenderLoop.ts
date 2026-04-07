@@ -9,9 +9,9 @@ import { manageImageViewport } from '@/core/image/image-manager';
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
 
 // Dirty rect constants
-const MAX_RECTS = 16;
+const MAX_RECTS = 50;
 const AA_MARGIN = 2; // device pixels
-const AREA_RATIO = 0.33;
+const AREA_RATIO = 0.75;
 const COALESCE_SNAP = 2; // device pixels
 
 export class RenderLoop {

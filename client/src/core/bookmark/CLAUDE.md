@@ -2,7 +2,7 @@
 
 URL bookmarks — paste a URL, get a card with OG image, title, description, domain, and "Open" button. Offline paste creates a plain text object (never enters bookmark pipeline). Online failures also fall back to text objects. Loading state is local-only via HTML placeholder; Y.Doc receives a single atomic transaction once unfurl completes. No `unfurlStatus` field — other clients never see pending/loading states.
 
-## Y.Doc Schema (v2)
+## Y.Doc Schema (v3 — origin+scale)
 
 ```typescript
 {
@@ -10,7 +10,12 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
   kind: 'bookmark';
   url: string;                        // Normalized (http/https only, no fragment, no trailing /)
   domain: string;                     // Hostname minus www. (stored, not derived in render path)
-  frame: [x, y, w, h];               // Fixed width 300wu, variable height
+  origin: [x, y];                    // Top-left position
+  height: number;                    // Card height at base scale (data-driven)
+  scale?: number;                    // Uniform scale factor (default 1)
+
+  // Width is always BOOKMARK_WIDTH (300). Frame derived: [origin[0], origin[1], 300*scale, height*scale].
+  // No stored frame — frame is computed via computeBookmarkBBox() and cached in bookmarkFrameCache.
 
   // Set by worker on successful unfurl (all optional — absent on minimal/failed bookmarks):
   title?: string;
@@ -31,6 +36,8 @@ URL bookmarks — paste a URL, get a card with OG image, title, description, dom
 - No minimal card — offline/failed unfurls create text objects instead of bookmarks
 
 **Height is data-driven** — computed from `computeBookmarkHeight(data)` using OG image aspect ratio, title line count, and description line count.
+
+**Rendering uses ctx.translate + ctx.scale** — same pattern as sticky notes. `drawBookmark()` translates to origin, scales by `scale`, then renders at local coordinates `(0, 0, BOOKMARK_WIDTH, height)`.
 
 ---
 
@@ -437,50 +444,50 @@ Bookmarks serialize as plain Y.Map props (url, domain, title, description, asset
 - Returns `EMPTY_STYLES` (no controls — same as images)
 
 ### Hit Testing (`hit-testing.ts`)
-- Marquee: frame-based `rectsIntersect(frameTupleToWorldBounds(frame), rect)`
-- Point: simple rect containment, `isFilled: true` (always opaque)
-- Handle hit-test: single bookmark → no handles; multiple bookmarksOnly → all handles (corner + side)
+- Marquee: `getBookmarkFrame(id)` → `rectsIntersect(frameTupleToWorldBounds(frame), rect)`
+- Point: `getBookmarkFrame(id)` → simple rect containment, `isFilled: true` (always opaque)
+- No special handle suppression — all handles (corner + side) active for any bookmark selection count
 
 ### Selection Overlay (`selection-overlay.ts`)
 - Highlight: bbox-based `strokeRect` (includes shadow padding), not frame
 
 ### Transform (`transform.ts`, `SelectTool.ts`, `objects.ts`)
-Bookmarks have fixed dimensions — never resize. Only position changes.
+Bookmarks use uniform scaling via `scale` property — same pattern as sticky notes.
 
 | Scenario | Corner Handles | Side Handles | Bookmark Behavior |
 |----------|---------------|--------------|-------------------|
-| bookmarksOnly, single | Hidden | Hidden | N/A (no handles) |
-| bookmarksOnly, multiple | Visible | Visible | Corner: preserved-position translate, Side: edge-pin translate |
-| mixed, corner drag | Visible | — | Preserved-position translate (fixed size) |
-| mixed, side drag | — | Visible | Edge-pin translate (fixed size) |
+| bookmarksOnly | Visible | Visible | All handles: uniform scale |
+| mixed, corner | Visible | — | Uniform scale |
+| mixed, side | — | Visible | Edge-pin translate (bbox bounds) |
 
-- `computeBookmarkCornerTranslation()` — uniform scale on center position, dimensions unchanged
-- Side handles always use `computeEdgePinTranslation()` regardless of `selectionKind`
+- Uniform scale: `roundedScale = round(scale * absScale, 3dp)`, origin from bbox-center preservation
+- Edge-pin (mixed+side only): uses bbox bounds (includes shadow padding) since handles are at bbox positions
 - `transformFrameForTopology()` / `transformPositionForTopology()` — bookmark cases for connector rerouting
+- `drawScaledBookmarkPreview()` — ctx.scale-based preview rendering (matches `drawScaledNotePreview` pattern)
 
 ### Connector Integration (`snap.ts`, `reroute-connector.ts`, `selection-store.ts`, `ConnectorTool.ts`)
 Bookmarks are connectable objects — rect frame, always treated as filled.
 
 - **Snap:** included in `findBestSnapTarget()` connectable kind filter + always-filled check
-- **Reroute:** `resolveEndpoint()` and `resolveNewEndpoint()` include bookmark in kind checks; falls through to `getFrame(handle.y)` for frame lookup
-- **Topology:** `computeConnectorTopology()` includes bookmarks in both passes (anchored connector discovery + original frame collection)
+- **Reroute:** `resolveEndpoint()` and `resolveNewEndpoint()` include bookmark in kind checks; uses `getBookmarkFrame(handle.id)` for frame lookup
+- **Topology:** `computeConnectorTopology()` includes bookmarks in both passes (anchored connector discovery + original frame collection); uses `getBookmarkFrame(handle.id)`
 - **ConnectorTool preview:** bookmark included in snap shape frame lookup for snap dot rendering
 
 ### Eraser (`EraserTool.ts`)
-- `case 'bookmark':` alongside `case 'image':` — `circleRectIntersect(wx, wy, radius, x, y, w, h)`
+- `case 'bookmark':` — `getBookmarkFrame(id)` → `circleRectIntersect(wx, wy, radius, x, y, w, h)`
 
 ### Bounds (`bounds.ts`)
-- `computeRawGeometryBounds`: bookmark included in frame-based branch
+- `computeRawGeometryBounds`: bookmark in bbox-based branch (alongside notes) — handles are at bbox positions
 
-### BBox (`bbox.ts` in shared)
-- Separate `case 'bookmark':` with shadow padding `frame[2] * 0.15` on all sides
+### BBox (`bbox.ts`)
+- `computeBookmarkBBox(id, props)` called from `computeBBoxFor()`. Frame derived from `origin + scale + height`, shadow padding `BOOKMARK_WIDTH * scale * 0.15`.
 
 ### Object Cache (`object-cache.ts`)
 - No bookmark-specific case — bookmarks have no Path2D or ConnectorPaths geometry cache
 
 ### Renderer (`objects.ts`)
 - `case 'bookmark': drawBookmark(ctx, handle)` in `drawObject` switch
-- Scale preview: `ctx.translate(dx, dy)` + `drawBookmark()` (fixed size, position only)
+- Scale preview: `drawScaledBookmarkPreview()` — ctx.scale-based uniform scale (matches note pattern). Mixed+side: edge-pin translate.
 
 ### Room Doc Manager (`room-doc-manager.ts`)
 - Hydration: standard `computeBBoxFor()` (frame-based with shadow padding)

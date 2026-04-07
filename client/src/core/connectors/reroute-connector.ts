@@ -26,6 +26,7 @@ import {
 import { computeConnectorBBoxFromPoints, bboxToBounds } from '../geometry/bbox';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
+import { getBookmarkFrame } from '../bookmark/bookmark-render';
 import { computeAStarRoute } from './routing-astar';
 import {
   applyAnchorToFrame,
@@ -223,7 +224,9 @@ function resolveEndpoint(
           ? getTextFrame(handle.id)
           : handle.kind === 'code'
             ? getCodeFrame(handle.id)
-            : getFrame(handle.y)
+            : handle.kind === 'bookmark'
+              ? getBookmarkFrame(handle.id)
+              : getFrame(handle.y)
         : null;
     const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
 
@@ -254,7 +257,9 @@ function resolveEndpoint(
           ? getTextFrame(anchorHandle.id)
           : anchorHandle.kind === 'code'
             ? getCodeFrame(anchorHandle.id)
-            : getFrame(anchorHandle.y)
+            : anchorHandle.kind === 'bookmark'
+              ? getBookmarkFrame(anchorHandle.id)
+              : getFrame(anchorHandle.y)
         : null;
 
     if (frame) {
@@ -403,7 +408,9 @@ function resolveNewEndpoint(value: SnapTarget | [number, number]): ResolvedEndpo
         ? getTextFrame(handle.id)
         : handle.kind === 'code'
           ? getCodeFrame(handle.id)
-          : getFrame(handle.y)
+          : handle.kind === 'bookmark'
+            ? getBookmarkFrame(handle.id)
+            : getFrame(handle.y)
       : null;
   const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
   return {

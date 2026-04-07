@@ -23,6 +23,7 @@ import type { FrameTuple } from '../types/geometry';
 import { getShapeType, getFillColor, getFrame } from '../accessors';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
+import { getBookmarkFrame } from '../bookmark/bookmark-render';
 import type { Dir, SnapTarget, SnapContext } from './types';
 import { isAnchorInterior } from './types';
 
@@ -111,7 +112,9 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
         ? getTextFrame(handle.id)
         : handle.kind === 'code'
           ? getCodeFrame(handle.id)
-          : getFrame(handle.y);
+          : handle.kind === 'bookmark'
+            ? getBookmarkFrame(handle.id)
+            : getFrame(handle.y);
     if (!frame) continue;
     const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
     const isFilled =

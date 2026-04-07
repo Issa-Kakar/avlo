@@ -33,7 +33,6 @@ import {
 import {
   computeEdgePinTranslation,
   computeStrokeTranslation,
-  computeBookmarkCornerTranslation,
   applyTransformToFrame,
   applyUniformScaleToPoints,
   applyUniformScaleToFrame,
@@ -67,6 +66,7 @@ import { codeSystem, renderCodeLayout, getCodeFrame } from '@/core/code/code-sys
 import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
 import { getBitmap } from '@/core/image/image-manager';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
+import { getBookmarkProps } from '@/core/accessors';
 
 export function drawObjects(
   ctx: CanvasRenderingContext2D,
@@ -895,6 +895,55 @@ function drawScaledCodePreview(
 }
 
 /**
+ * Draw bookmark with uniform scale preview using ctx.scale.
+ * Uses bbox center for position preservation (handles are at bbox positions).
+ * drawBookmark internally applies ctx.scale(bookmarkScale) — nested scales compose.
+ */
+function drawScaledBookmarkPreview(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  transform: ScaleTransform,
+): void {
+  const props = getBookmarkProps(handle.y);
+  if (!props) {
+    drawBookmark(ctx, handle);
+    return;
+  }
+
+  const { scaleX, scaleY, originBounds, origin } = transform;
+
+  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
+  const absScale = Math.abs(uniformScale);
+  if (absScale < 0.001) return;
+
+  const roundedScale = Math.round(props.scale * absScale * 1000) / 1000;
+  const effectiveAbsScale = roundedScale / props.scale;
+
+  const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
+  const bcx = (bMinX + bMaxX) / 2;
+  const bcy = (bMinY + bMaxY) / 2;
+  const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
+
+  const bboxW = bMaxX - bMinX;
+  const bboxH = bMaxY - bMinY;
+  const newBboxW = bboxW * effectiveAbsScale;
+  const newBboxH = bboxH * effectiveAbsScale;
+  const newBMinX = newBcx - newBboxW / 2;
+  const newBMinY = newBcy - newBboxH / 2;
+  const oxOff = props.origin[0] - bMinX;
+  const oyOff = props.origin[1] - bMinY;
+  const newOriginX = newBMinX + oxOff * effectiveAbsScale;
+  const newOriginY = newBMinY + oyOff * effectiveAbsScale;
+
+  ctx.save();
+  ctx.translate(newOriginX, newOriginY);
+  ctx.scale(effectiveAbsScale, effectiveAbsScale);
+  ctx.translate(-props.origin[0], -props.origin[1]);
+  drawBookmark(ctx, handle);
+  ctx.restore();
+}
+
+/**
  * Draw sticky note with uniform scale preview using ctx.scale.
  * Uses bbox center for position preservation (handles are at bbox positions).
  * drawStickyNote internally applies ctx.scale(noteScale) — nested scales compose.
@@ -1034,20 +1083,15 @@ function renderSelectedObjectWithScaleTransform(
     return;
   }
 
-  // Bookmarks: fixed size — side = edge-pin, corner = preserved-position
+  // Bookmarks: uniform scale, except mixed+side = edge-pin translate
   if (handle.kind === 'bookmark') {
-    const frame = getFrame(handle.y);
-    if (!frame) {
-      drawBookmark(ctx, handle);
-      return;
-    }
-
-    if (handleKind === 'side') {
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0],
-        frame[0] + frame[2],
-        frame[1],
-        frame[1] + frame[3],
+        bMinX,
+        bMaxX,
+        bMinY,
+        bMaxY,
         originBounds,
         scaleX,
         scaleY,
@@ -1059,17 +1103,7 @@ function renderSelectedObjectWithScaleTransform(
       drawBookmark(ctx, handle);
       ctx.restore();
     } else {
-      const { dx, dy } = computeBookmarkCornerTranslation(
-        frame,
-        originBounds,
-        scaleX,
-        scaleY,
-        origin,
-      );
-      ctx.save();
-      ctx.translate(dx, dy);
-      drawBookmark(ctx, handle);
-      ctx.restore();
+      drawScaledBookmarkPreview(ctx, handle, transform);
     }
     return;
   }

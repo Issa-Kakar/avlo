@@ -9,9 +9,11 @@ import {
   getEndCap,
   getTextProps,
   getNoteProps,
+  getBookmarkProps,
 } from '../accessors';
 import { computeTextBBox, computeNoteBBox } from '../text/text-system';
 import { computeCodeBBox } from '../code/code-system';
+import { computeBookmarkBBox, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
 
 export function computeBBoxFor(
   id: string,
@@ -86,14 +88,16 @@ export function computeBBoxFor(
     }
 
     case 'bookmark': {
-      const frame = getFrame(yMap) ?? [0, 0, 0, 0];
-      const shadowPad = frame[2] * 0.15;
-      return [
-        frame[0] - shadowPad,
-        frame[1] - shadowPad,
-        frame[0] + frame[2] + shadowPad,
-        frame[1] + frame[3] + shadowPad,
-      ];
+      const props = getBookmarkProps(yMap);
+      if (props) return computeBookmarkBBox(id, props);
+      // Inline fallback when props incomplete
+      const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
+      const scale = (yMap.get('scale') as number) ?? 1;
+      const height = (yMap.get('height') as number) ?? 60;
+      const w = BOOKMARK_WIDTH * scale;
+      const h = height * scale;
+      const sp = w * 0.15;
+      return [origin[0] - sp, origin[1] - sp, origin[0] + w + sp, origin[1] + h + sp];
     }
 
     case 'connector': {

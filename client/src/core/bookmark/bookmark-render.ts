@@ -1,5 +1,6 @@
-import type { ObjectHandle } from '../types/objects';
-import { getBookmarkProps, getFrame } from '../accessors';
+import type { ObjectHandle, BookmarkProps } from '../types/objects';
+import type { BBoxTuple, FrameTuple } from '../types/geometry';
+import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
 import { renderNoteBody } from '../text/text-system';
 
@@ -53,6 +54,7 @@ interface BookmarkLayout {
 }
 
 const layoutCache = new Map<string, BookmarkLayout>();
+const bookmarkFrameCache = new Map<string, FrameTuple>();
 
 /** Singleton measurement canvas — never rendered, used for ctx.measureText. */
 const measureCtx = (() => {
@@ -201,6 +203,34 @@ export function computeBookmarkHeight(data: {
 }
 
 // ---------------------------------------------------------------------------
+// BBox + Frame computation
+// ---------------------------------------------------------------------------
+
+export function getBookmarkShadowPad(scale: number): number {
+  return BOOKMARK_WIDTH * scale * 0.15;
+}
+
+/**
+ * Compute bbox for a bookmark from its props.
+ * Populates both layout cache and frame cache as side effects.
+ */
+export function computeBookmarkBBox(id: string, props: BookmarkProps): BBoxTuple {
+  getLayout(id, props); // Populate layout cache
+  const s = props.scale;
+  const w = BOOKMARK_WIDTH * s;
+  const h = props.height * s;
+  const frame: FrameTuple = [props.origin[0], props.origin[1], w, h];
+  bookmarkFrameCache.set(id, frame);
+  const sp = getBookmarkShadowPad(s);
+  return [frame[0] - sp, frame[1] - sp, frame[0] + w + sp, frame[1] + h + sp];
+}
+
+/** Read cached frame for a bookmark. Populated by computeBookmarkBBox. */
+export function getBookmarkFrame(id: string): FrameTuple | null {
+  return bookmarkFrameCache.get(id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Cache management
 // ---------------------------------------------------------------------------
 
@@ -208,10 +238,12 @@ export const bookmarkCache = {
   /** Remove layout for a single bookmark (deletion or invalidation) */
   evict(id: string) {
     layoutCache.delete(id);
+    bookmarkFrameCache.delete(id);
   },
   /** Clear all bookmark layouts (room teardown) */
   clear() {
     layoutCache.clear();
+    bookmarkFrameCache.clear();
   },
 };
 
@@ -276,27 +308,30 @@ function drawOpenButton(
 
 export function drawBookmark(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const props = getBookmarkProps(handle.y);
-  if (!props) return;
-
-  const frame = getFrame(handle.y);
-  if (!frame) return;
-
-  const [x, y, w, h] = frame;
-  const layout = getLayout(handle.id, props, w);
-
-  // 1. Shadow + body
-  renderNoteBody(ctx, x, y, w, h, CARD_FILL);
-
-  // --- Full card (has OG image) ---
-  if (layout.hasOgImage) {
-    drawFullCard(ctx, x, y, w, layout, props);
+  if (!props) {
+    console.error('Bookmark props are null');
     return;
   }
 
-  // --- Text card (has title, no OG image) ---
-  if (layout.titleLines.length > 0) {
-    drawTextCard(ctx, x, y, w, layout, props);
+  const layout = getLayout(handle.id, props);
+  const s = props.scale;
+
+  ctx.save();
+  ctx.translate(props.origin[0], props.origin[1]);
+  ctx.scale(s, s);
+
+  // 1. Shadow + body at local origin
+  renderNoteBody(ctx, 0, 0, BOOKMARK_WIDTH, props.height, CARD_FILL);
+
+  // --- Full card (has OG image) ---
+  if (layout.hasOgImage) {
+    drawFullCard(ctx, 0, 0, BOOKMARK_WIDTH, layout, props);
+  } else if (layout.titleLines.length > 0) {
+    // --- Text card (has title, no OG image) ---
+    drawTextCard(ctx, 0, 0, BOOKMARK_WIDTH, layout, props);
   }
+
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------------------

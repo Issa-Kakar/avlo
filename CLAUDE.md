@@ -359,10 +359,13 @@ Detailed image docs in `core/image/CLAUDE.md`.
 **Bookmark** (URL card with OG metadata):
 ```typescript
 { id, kind: 'bookmark', url: string, domain: string,
-  frame: [x, y, w, h],                   // Fixed width 300wu, variable height
+  origin: [x, y],                        // Top-left position
+  height: number,                        // Card height at base scale
+  scale?: number,                        // Uniform scale (default 1)
   title?: string, description?: string,   // Set by unfurl worker
   ogImageAssetId?: string, ogImageWidth?: number, ogImageHeight?: number,
   faviconAssetId?: string, ownerId, createdAt }
+// No stored frame. Derived: [origin[0], origin[1], 300*scale, height*scale].
 // No unfurlStatus field — state determined by which optional fields are present.
 // Offline/failed unfurls create text objects instead (never enter bookmark pipeline).
 ```

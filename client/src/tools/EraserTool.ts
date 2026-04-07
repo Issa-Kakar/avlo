@@ -26,6 +26,7 @@ import {
 } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
+import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import type { PointerTool } from './types';
 
 // Fixed radius configuration
@@ -242,13 +243,20 @@ export class EraserTool implements PointerTool {
           break;
         }
 
-        case 'image':
-        case 'bookmark': {
+        case 'image': {
           const frame = getFrame(handle.y);
           if (!frame) break;
-
           const [x, y, w, h] = frame;
-          // Always filled — circle-rect intersection
+          if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
+            this.state.hitNow.add(handle.id);
+          }
+          break;
+        }
+
+        case 'bookmark': {
+          const frame = getBookmarkFrame(handle.id);
+          if (!frame) break;
+          const [x, y, w, h] = frame;
           if (circleRectIntersect(worldX, worldY, radiusWorld, x, y, w, h)) {
             this.state.hitNow.add(handle.id);
           }

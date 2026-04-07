@@ -31,6 +31,7 @@ import type * as Y from 'yjs';
 import type { ObjectKind } from '../types/objects';
 import { handleUnfurlResult, handleUnfurlFailed } from '../bookmark/bookmark-unfurl';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
+import { getBookmarkFrame, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
 
 // ============================================================
 // Workers
@@ -335,7 +336,7 @@ export function manageImageViewport(): void {
       if (!handle) continue;
       const ogId = handle.y.get('ogImageAssetId') as string | undefined;
       const favId = handle.y.get('faviconAssetId') as string | undefined;
-      const frame = getFrame(handle.y);
+      const frame = getBookmarkFrame(handle.id);
       if (!frame) continue;
       const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
       // OG image + favicon: always level 0, no mip levels needed
@@ -457,11 +458,16 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
     if (kind === 'bookmark') {
       const ogId = yObj.get('ogImageAssetId') as string | undefined;
       const favId = yObj.get('faviconAssetId') as string | undefined;
-      const frame = yObj.get('frame') as FrameTuple | undefined;
-      if (!frame) return;
+      const origin = yObj.get('origin') as [number, number] | undefined;
+      if (!origin) return;
+      const bkScale = (yObj.get('scale') as number) ?? 1;
+      const bkHeight = (yObj.get('height') as number) ?? 60;
+      const w = BOOKMARK_WIDTH * bkScale;
+      const h = bkHeight * bkScale;
+      const frame: FrameTuple = [origin[0], origin[1], w, h];
       for (const aid of [ogId, favId]) {
         if (!aid) continue;
-        assetMap.set(aid, { frame, level: 0, nw: frame[2], nh: frame[3] });
+        assetMap.set(aid, { frame, level: 0, nw: w, nh: h });
       }
       return;
     }

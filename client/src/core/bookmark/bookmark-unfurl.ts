@@ -7,7 +7,6 @@
 
 import * as Y from 'yjs';
 import { ulid } from 'ulid';
-import type { FrameTuple } from '../types/geometry';
 import { extractDomain } from '@avlo/shared';
 import { hasActiveRoom, getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { pasteUrlAsText } from '../clipboard/clipboard-actions';
@@ -83,13 +82,6 @@ export function beginUnfurl(url: string, worldX: number, worldY: number): string
   // Send unfurl command to worker
   postToPrimary({ type: 'unfurl', objectId, url });
 
-  // Switch to select tool and pre-select the objectId
-  if (!getCurrentTool()?.isActive()) {
-    useDeviceUIStore.getState().setActiveTool('select');
-    useSelectionStore.getState().setSelection([objectId]);
-    invalidateOverlay();
-  }
-
   return objectId;
 }
 
@@ -118,11 +110,9 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       ogImage: !!data.ogImageAssetId,
     });
     const height = computeBookmarkHeight(data);
-    const frame: FrameTuple = [
+    const origin: [number, number] = [
       pending.worldX - BOOKMARK_WIDTH / 2,
       pending.worldY - height / 2,
-      BOOKMARK_WIDTH,
-      height,
     ];
     const userId = getUserId();
 
@@ -132,7 +122,8 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       yObj.set('kind', 'bookmark');
       yObj.set('url', pending.url);
       yObj.set('domain', pending.domain);
-      yObj.set('frame', frame);
+      yObj.set('origin', origin);
+      yObj.set('height', height);
       if (data.title != null) yObj.set('title', data.title);
       if (data.description != null) yObj.set('description', data.description);
       if (data.ogImageAssetId) yObj.set('ogImageAssetId', data.ogImageAssetId);
@@ -146,6 +137,13 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
 
     removePlaceholder(objectId);
     pendingBookmarks.delete(objectId);
+
+    // Select the newly created bookmark (object now exists in Y.Doc)
+    if (!getCurrentTool()?.isActive()) {
+      useDeviceUIStore.getState().setActiveTool('select');
+      useSelectionStore.getState().setSelection([objectId]);
+      invalidateOverlay();
+    }
     return;
   }
 
@@ -166,9 +164,8 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       if (data.ogImageHeight != null) yObj.set('ogImageHeight', data.ogImageHeight);
       if (data.faviconAssetId) yObj.set('faviconAssetId', data.faviconAssetId);
 
-      const oldFrame = yObj.get('frame') as FrameTuple;
       const newH = computeBookmarkHeight(data);
-      yObj.set('frame', [oldFrame[0], oldFrame[1], oldFrame[2], newH]);
+      yObj.set('height', newH);
     });
   } catch {
     // No active room — discard

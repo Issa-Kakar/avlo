@@ -16,6 +16,7 @@ import {
 import { bboxTupleToWorldBounds } from '@/core/types/geometry';
 import { getTextFrame, type TextLayout } from '@/core/text/text-system';
 import { getCodeFrame, type CodeLayout } from '@/core/code/code-system';
+import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -411,7 +412,9 @@ function computeConnectorTopology(
         ? getTextFrame(handle.id)
         : handle.kind === 'code'
           ? getCodeFrame(handle.id)
-          : getFrame(handle.y);
+          : handle.kind === 'bookmark'
+            ? getBookmarkFrame(handle.id)
+            : getFrame(handle.y);
     if (frame) originalFrames.set(id, frame);
   }
 

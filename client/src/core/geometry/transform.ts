@@ -178,24 +178,6 @@ export function computeEdgePinTranslation(
 }
 
 /**
- * Compute translation for a bookmark during corner/bookmarksOnly scale.
- * Bookmark dimensions stay fixed — only the center translates using preserved position logic.
- */
-export function computeBookmarkCornerTranslation(
-  frame: FrameTuple,
-  originBounds: WorldRect,
-  scaleX: number,
-  scaleY: number,
-  origin: [number, number],
-): { dx: number; dy: number } {
-  const cx = frame[0] + frame[2] / 2;
-  const cy = frame[1] + frame[3] / 2;
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-  return { dx: newCx - cx, dy: newCy - cy };
-}
-
-/**
  * Compute translation for a stroke in mixed + side handle scenario.
  * Reads points from handle, computes geometry bounds, delegates to computeEdgePinTranslation.
  */
@@ -507,14 +489,15 @@ export function transformFrameForTopology(
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
-  // Bookmarks: fixed size — side = edge-pin translate, corner = preserved-position translate
+  // Bookmarks: same as notes — uniform scale, except mixed+side = edge-pin with shadow pad
   if (kind === 'bookmark') {
-    if (handleKind === 'side') {
+    if (selectionKind === 'mixed' && handleKind === 'side') {
+      const sp = frame[2] * 0.15; // Shadow pad ratio — matches bookmark-render.ts
       const { dx, dy } = computeEdgePinTranslation(
-        frame[0],
-        frame[0] + frame[2],
-        frame[1],
-        frame[1] + frame[3],
+        frame[0] - sp,
+        frame[0] + frame[2] + sp,
+        frame[1] - sp,
+        frame[1] + frame[3] + sp,
         originBounds,
         scaleX,
         scaleY,
@@ -523,14 +506,7 @@ export function transformFrameForTopology(
       );
       return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
     }
-    const { dx, dy } = computeBookmarkCornerTranslation(
-      frame,
-      originBounds,
-      scaleX,
-      scaleY,
-      origin,
-    );
-    return [frame[0] + dx, frame[1] + dy, frame[2], frame[3]];
+    return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
   if (
