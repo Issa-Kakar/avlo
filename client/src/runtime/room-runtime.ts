@@ -60,9 +60,7 @@ export function disconnectRoom(roomId?: RoomId): void {
  */
 export function getActiveRoom(): RoomContext {
   if (!activeRoom) {
-    throw new Error(
-      'getActiveRoom(): no active room - ensure connectRoom() was called from route beforeLoad',
-    );
+    throw new Error('getActiveRoom(): no active room - ensure connectRoom() was called from route beforeLoad');
   }
   return activeRoom;
 }

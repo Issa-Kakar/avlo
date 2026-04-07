@@ -47,8 +47,7 @@ export function drawToolPreview(ctx: CanvasRenderingContext2D): void {
       drawStrokePreview(ctx, preview);
       break;
     case 'eraser':
-      if (preview.hitIds.length > 0)
-        drawDimmedStrokes(ctx, preview.hitIds, getCurrentSnapshot(), preview.dimOpacity);
+      if (preview.hitIds.length > 0) drawDimmedStrokes(ctx, preview.hitIds, getCurrentSnapshot(), preview.dimOpacity);
       break;
     case 'perfectShape':
       drawPerfectShapePreview(ctx, preview);

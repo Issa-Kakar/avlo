@@ -4,12 +4,7 @@ import { ObjectSpatialIndex } from '../spatial';
 // Forward declare the ObjectSpatialIndex interface
 export interface ObjectSpatialIndexShape {
   insert(id: string, bbox: [number, number, number, number], kind: string): void;
-  update(
-    id: string,
-    oldBBox: [number, number, number, number],
-    newBBox: [number, number, number, number],
-    kind: string,
-  ): void;
+  update(id: string, oldBBox: [number, number, number, number], newBBox: [number, number, number, number], kind: string): void;
   remove(id: string, bbox: [number, number, number, number]): void;
   query(bounds: { minX: number; minY: number; maxX: number; maxY: number }): any[];
   bulkLoad(handles: ObjectHandle[]): void;

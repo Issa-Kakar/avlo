@@ -140,9 +140,7 @@ export function extractPlainText(objects: SerializedObject[]): string {
     if (obj.textContent) {
       parts.push(obj.textContent);
     } else if (obj.content) {
-      const text = obj.content.paragraphs
-        .map((p) => p.delta.map((d) => d.insert).join(''))
-        .join('\n');
+      const text = obj.content.paragraphs.map((p) => p.delta.map((d) => d.insert).join('')).join('\n');
       if (text) parts.push(text);
     }
   }

@@ -17,18 +17,8 @@
 import { getCurrentTool, panTool, textTool, codeTool } from './tool-registry';
 import { undo, redo, getObjectsById, getHandle, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
-import {
-  useDeviceUIStore,
-  setCursorOverride,
-  type Tool,
-  type ShapeVariant,
-} from '@/stores/device-ui-store';
-import {
-  deleteSelected,
-  toggleSelectedBold,
-  toggleSelectedItalic,
-  setSelectedHighlight,
-} from '@/tools/selection/selection-actions';
+import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
+import { deleteSelected, toggleSelectedBold, toggleSelectedItalic, setSelectedHighlight } from '@/tools/selection/selection-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getTextFrame } from '@/core/text/text-system';
 import { getFrame } from '@/core/accessors';
@@ -273,14 +263,10 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
   if (key === 'enter' && useDeviceUIStore.getState().activeTool === 'select') {
     if (selectedIds.length !== 1) return;
     const handle = getHandle(selectedIds[0]);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note'))
-      return;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) return;
 
     // Compute center
-    const frame =
-      handle.kind === 'text' || handle.kind === 'note'
-        ? getTextFrame(handle.id)
-        : getFrame(handle.y);
+    const frame = handle.kind === 'text' || handle.kind === 'note' ? getTextFrame(handle.id) : getFrame(handle.y);
     if (!frame) return;
 
     const centerX = frame[0] + frame[2] / 2;

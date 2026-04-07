@@ -166,12 +166,7 @@ export interface ConnectorPreview {
  * PreviewData is the union type for all preview types
  * Discriminated by 'kind' field
  */
-export type PreviewData =
-  | StrokePreview
-  | EraserPreview
-  | PerfectShapePreview
-  | SelectionPreview
-  | ConnectorPreview;
+export type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | SelectionPreview | ConnectorPreview;
 
 /**
  * PointerTool - Interface for tools that handle pointer gestures.

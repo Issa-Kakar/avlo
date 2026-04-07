@@ -20,13 +20,7 @@ import { updateCursor, clearCursor } from './presence/presence';
 import { isSpacebarPanMode } from './keyboard-manager';
 import { setLastCursorWorld } from './cursor-tracking';
 import { setCursorOverride } from '@/stores/device-ui-store';
-import {
-  screenToWorld,
-  screenToCanvas,
-  capturePointer,
-  releasePointer,
-  useCameraStore,
-} from '@/stores/camera-store';
+import { screenToWorld, screenToCanvas, capturePointer, releasePointer, useCameraStore } from '@/stores/camera-store';
 import { contextMenuController } from './ContextMenuController';
 import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './viewport/edge-scroll';
 import { clear as clearImageManager } from '@/core/image/image-manager';
@@ -233,9 +227,7 @@ export class CanvasRuntime {
     e.preventDefault();
     if (!e.dataTransfer) return;
 
-    const files = Array.from(e.dataTransfer.files).filter(
-      (f) => f.type.startsWith('image/') || f.name.endsWith('.svg'),
-    );
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/') || f.name.endsWith('.svg'));
     if (files.length === 0) return;
 
     const world = screenToWorld(e.clientX, e.clientY);

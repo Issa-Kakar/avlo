@@ -13,10 +13,7 @@ export function TextColorPopover({ color, onSelect }: TextColorPopoverProps) {
 
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
-      <MenuButton
-        className="ctx-btn-color"
-        onMouseDown={toggle}
-      >
+      <MenuButton className="ctx-btn-color" onMouseDown={toggle}>
         <TextColorIcon barColor={color} width={20} height={20} />
       </MenuButton>
       {open && (

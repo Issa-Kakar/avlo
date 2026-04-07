@@ -21,12 +21,7 @@ export type ConnectorType = 'elbow' | 'straight';
 const INTERIOR_EPS = 1e-6;
 /** True if anchor is strictly inside the shape (not on any edge). */
 export function isAnchorInterior(anchor: [number, number]): boolean {
-  return (
-    anchor[0] > INTERIOR_EPS &&
-    anchor[0] < 1 - INTERIOR_EPS &&
-    anchor[1] > INTERIOR_EPS &&
-    anchor[1] < 1 - INTERIOR_EPS
-  );
+  return anchor[0] > INTERIOR_EPS && anchor[0] < 1 - INTERIOR_EPS && anchor[1] > INTERIOR_EPS && anchor[1] < 1 - INTERIOR_EPS;
 }
 
 /** Connector endpoint cap style */

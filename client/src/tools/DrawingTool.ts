@@ -1,12 +1,7 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { PreviewData, PointerTool } from './types';
-import {
-  useDeviceUIStore,
-  getUserId,
-  type Tool,
-  type ShapeVariant,
-} from '@/stores/device-ui-store';
+import { useDeviceUIStore, getUserId, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
 import { HoldDetector } from '@/core/geometry/shape-recognition/HoldDetector';
 import {
@@ -20,9 +15,7 @@ import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 
 type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond';
 
-function getShapeTypeFromSnapKind(
-  snapKind: string,
-): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
+function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
   const mapping: Record<string, 'rect' | 'ellipse' | 'diamond' | 'roundedRect'> = {
     box: 'rect',
     circle: 'ellipse',
@@ -123,8 +116,7 @@ export class DrawingTool implements PointerTool {
     const settings = uiState.drawingSettings;
     this.color = settings.color;
     this.size = settings.size;
-    this.opacity =
-      this.toolType === 'highlighter' ? uiState.highlighterOpacity : (settings.opacity ?? 1);
+    this.opacity = this.toolType === 'highlighter' ? uiState.highlighterOpacity : (settings.opacity ?? 1);
 
     // Start drawing
     this.drawing = true;
@@ -193,10 +185,7 @@ export class DrawingTool implements PointerTool {
       const isClick = timeDelta < 200;
 
       if (this.clickToPlaceStartPos && worldX !== undefined && worldY !== undefined) {
-        const distMoved = Math.hypot(
-          worldX - this.clickToPlaceStartPos[0],
-          worldY - this.clickToPlaceStartPos[1],
-        );
+        const distMoved = Math.hypot(worldX - this.clickToPlaceStartPos[0], worldY - this.clickToPlaceStartPos[1]);
         const isStationary = distMoved < 5;
 
         if (isClick && isStationary && this.forceSnapKind) {
@@ -204,24 +193,11 @@ export class DrawingTool implements PointerTool {
 
           let fixedCursor: [number, number];
 
-          if (
-            this.snap.kind === 'rect' ||
-            this.snap.kind === 'ellipseRect' ||
-            this.snap.kind === 'diamond'
-          ) {
-            fixedCursor = [
-              this.clickToPlaceStartPos[0] + fixedSize,
-              this.clickToPlaceStartPos[1] + fixedSize,
-            ];
-            this.snap.anchors.A = [
-              this.clickToPlaceStartPos[0] - fixedSize / 2,
-              this.clickToPlaceStartPos[1] - fixedSize / 2,
-            ];
+          if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
+            fixedCursor = [this.clickToPlaceStartPos[0] + fixedSize, this.clickToPlaceStartPos[1] + fixedSize];
+            this.snap.anchors.A = [this.clickToPlaceStartPos[0] - fixedSize / 2, this.clickToPlaceStartPos[1] - fixedSize / 2];
           } else {
-            fixedCursor = [
-              this.clickToPlaceStartPos[0] + fixedSize / 2,
-              this.clickToPlaceStartPos[1] + fixedSize / 2,
-            ];
+            fixedCursor = [this.clickToPlaceStartPos[0] + fixedSize / 2, this.clickToPlaceStartPos[1] + fixedSize / 2];
           }
 
           this.liveCursorWU = fixedCursor;
@@ -337,9 +313,7 @@ export class DrawingTool implements PointerTool {
     }
 
     console.log(`Best: ${result.best.kind} (${result.best.templateId})`);
-    console.log(
-      `Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`,
-    );
+    console.log(`Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`);
 
     if (result.ambiguous) {
       console.log('Ambiguous - NO SNAP, continuing freehand');
@@ -403,8 +377,7 @@ export class DrawingTool implements PointerTool {
     if (!this.drawing) return;
 
     const len = this.points.length;
-    const needsFinal =
-      len < 1 || this.points[len - 1][0] !== finalX || this.points[len - 1][1] !== finalY;
+    const needsFinal = len < 1 || this.points[len - 1][0] !== finalX || this.points[len - 1][1] !== finalY;
     if (needsFinal) {
       this.points.push([finalX, finalY]);
     }
@@ -480,11 +453,7 @@ export class DrawingTool implements PointerTool {
       const hx = hx0 * sx;
       const hy = hy0 * sy;
       frame = [cx - hx, cy - hy, hx * 2, hy * 2];
-    } else if (
-      this.snap.kind === 'rect' ||
-      this.snap.kind === 'ellipseRect' ||
-      this.snap.kind === 'diamond'
-    ) {
+    } else if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
       const { A } = this.snap.anchors;
       const C = finalCursor;
       const minX = Math.min(A[0], C[0]);

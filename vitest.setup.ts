@@ -6,7 +6,7 @@ process.env.NODE_ENV = 'test';
 // Polyfill IndexedDB for Node.js test environment
 import 'fake-indexeddb/auto';
 
-// Polyfill requestAnimationFrame for jsdom environment  
+// Polyfill requestAnimationFrame for jsdom environment
 // Note: Tests using RoomDocManager should use TestFrameScheduler for control
 // This polyfill is just for other components that may use RAF directly
 if (typeof window !== 'undefined' && !window.requestAnimationFrame) {
@@ -45,10 +45,10 @@ if (typeof window !== 'undefined' && !window.requestAnimationFrame) {
 if (typeof navigator === 'undefined') {
   Object.defineProperty(globalThis, 'navigator', {
     value: {
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     },
     writable: true,
-    configurable: true
+    configurable: true,
   });
 }
 

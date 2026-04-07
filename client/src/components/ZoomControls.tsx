@@ -58,29 +58,15 @@ export function ZoomControls() {
 
       <div className="zoom-bar-divider" />
 
-      <button
-        className="zoom-bar-btn"
-        onClick={zoomOut}
-        disabled={scale <= MIN_ZOOM}
-        title="Zoom out"
-      >
+      <button className="zoom-bar-btn" onClick={zoomOut} disabled={scale <= MIN_ZOOM} title="Zoom out">
         <IconZoomMinus />
       </button>
 
-      <button
-        className={`zoom-bar-pct${menuOpen ? ' active' : ''}`}
-        onClick={() => setMenuOpen((prev) => !prev)}
-        title="Zoom presets"
-      >
+      <button className={`zoom-bar-pct${menuOpen ? ' active' : ''}`} onClick={() => setMenuOpen((prev) => !prev)} title="Zoom presets">
         {zoomPercentage}%
       </button>
 
-      <button
-        className="zoom-bar-btn"
-        onClick={zoomIn}
-        disabled={scale >= MAX_ZOOM}
-        title="Zoom in"
-      >
+      <button className="zoom-bar-btn" onClick={zoomIn} disabled={scale >= MAX_ZOOM} title="Zoom in">
         <IconZoomPlus />
       </button>
 

@@ -124,12 +124,7 @@ function manhattan(a: GridCell, b: GridCell): number {
  * @param moveDir - Direction we're moving to target
  * @returns Movement cost
  */
-function computeMoveCost(
-  from: GridCell,
-  to: GridCell,
-  arrivalDir: Dir | null,
-  moveDir: Dir,
-): number {
+function computeMoveCost(from: GridCell, to: GridCell, arrivalDir: Dir | null, moveDir: Dir): number {
   // Base cost: Manhattan distance of this segment
   let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
 
@@ -186,13 +181,7 @@ function cellKey(cell: GridCell): string {
  * @param aabb - Axis-aligned bounding box (raw shape bounds)
  * @returns true if segment passes through AABB interior
  */
-function segmentIntersectsAABB(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  aabb: AABB,
-): boolean {
+function segmentIntersectsAABB(x1: number, y1: number, x2: number, y2: number, aabb: AABB): boolean {
   const { x, y, w, h } = aabb;
   const minX = x;
   const maxX = x + w;
@@ -256,13 +245,7 @@ function segmentIntersectsAABB(
  * @param obstacles - Array of AABBs to check segment intersection against
  * @returns Array of cells forming the path
  */
-function astar(
-  grid: Grid,
-  start: GridCell,
-  goal: GridCell,
-  startDir: Dir,
-  obstacles: AABB[],
-): GridCell[] {
+function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obstacles: AABB[]): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
@@ -302,9 +285,7 @@ function astar(
 
       // Check if segment crosses any obstacle interior (full segment check)
       if (obstacles.length > 0) {
-        const segmentBlocked = obstacles.some((obs) =>
-          segmentIntersectsAABB(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obs),
-        );
+        const segmentBlocked = obstacles.some((obs) => segmentIntersectsAABB(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obs));
         if (segmentBlocked) continue;
       }
 
@@ -388,15 +369,7 @@ export function computeAStarRoute(
   // - Builds dynamic AABBs with centerline/padding baked in
   // - Computes stub positions on AABB boundaries
   // - Collects obstacles (raw shape bounds)
-  const ctx = createRoutingContext(
-    startPos,
-    startDir,
-    endPos,
-    endDir,
-    startShapeBounds,
-    endShapeBounds,
-    strokeWidth,
-  );
+  const ctx = createRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);
 
   // 2. Build simple grid from context (trivial - just AABB boundaries)
   const grid = buildSimpleGrid(ctx);

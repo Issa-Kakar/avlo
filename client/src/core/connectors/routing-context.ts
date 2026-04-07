@@ -69,20 +69,8 @@ export function createRoutingContext(
 
   // 4. Build dynamic routing bounds with centerline/padding
   // Each call determines its own facing sides based on where the OTHER shape is
-  const routingStartBounds = buildRoutingBounds(
-    startRaw,
-    endRaw,
-    centerlines,
-    offset,
-    isAnchoredToFree,
-  );
-  const routingEndBounds = buildRoutingBounds(
-    endRaw,
-    startRaw,
-    centerlines,
-    offset,
-    isAnchoredToFree,
-  );
+  const routingStartBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset, isAnchoredToFree);
+  const routingEndBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset, isAnchoredToFree);
 
   // 5. Compute stubs from bounds + direction
   const startStub = computeStub(routingStartBounds, startPos, startDir);
@@ -129,12 +117,7 @@ export function createRoutingContext(
  * @param offset - Approach offset for minimum clearance check
  * @returns Centerlines (null if doesn't exist on that axis)
  */
-function computeCenterlines(
-  startRaw: Bounds,
-  endRaw: Bounds,
-  isFreeToAnchored: boolean,
-  offset: number,
-): Centerlines {
+function computeCenterlines(startRaw: Bounds, endRaw: Bounds, isFreeToAnchored: boolean, offset: number): Centerlines {
   let centerX: number | null = null;
   let centerY: number | null = null;
 
@@ -230,13 +213,7 @@ function computeCenterlines(
  * @param isAnchoredToFree - True if this is the END point in anchored→free
  * @returns Dynamic routing bounds
  */
-function buildRoutingBounds(
-  raw: Bounds,
-  other: Bounds,
-  centerlines: Centerlines,
-  offset: number,
-  isAnchoredToFree: boolean,
-): Bounds {
+function buildRoutingBounds(raw: Bounds, other: Bounds, centerlines: Centerlines, offset: number, isAnchoredToFree: boolean): Bounds {
   const isPoint = isPointBounds(raw);
 
   // Case 1: Anchored→free endpoint - full centerline merging
@@ -260,24 +237,13 @@ function buildRoutingBounds(
 
   return {
     // Facing side → centerline; non-facing → raw (point) or raw±offset (shape)
-    left:
-      facesLeft && centerlines.x !== null ? centerlines.x : isPoint ? raw.left : raw.left - offset,
+    left: facesLeft && centerlines.x !== null ? centerlines.x : isPoint ? raw.left : raw.left - offset,
 
-    right:
-      facesRight && centerlines.x !== null
-        ? centerlines.x
-        : isPoint
-          ? raw.right
-          : raw.right + offset,
+    right: facesRight && centerlines.x !== null ? centerlines.x : isPoint ? raw.right : raw.right + offset,
 
     top: facesTop && centerlines.y !== null ? centerlines.y : isPoint ? raw.top : raw.top - offset,
 
-    bottom:
-      facesBottom && centerlines.y !== null
-        ? centerlines.y
-        : isPoint
-          ? raw.bottom
-          : raw.bottom + offset,
+    bottom: facesBottom && centerlines.y !== null ? centerlines.y : isPoint ? raw.bottom : raw.bottom + offset,
   };
 }
 

@@ -15,12 +15,7 @@ function isPrivateHost(hostname: string): boolean {
   const lower = hostname.toLowerCase();
 
   // Named private hosts
-  if (
-    lower === 'localhost' ||
-    lower === '[::1]' ||
-    lower.endsWith('.local') ||
-    lower.endsWith('.internal')
-  ) {
+  if (lower === 'localhost' || lower === '[::1]' || lower.endsWith('.local') || lower.endsWith('.internal')) {
     return true;
   }
 
@@ -193,11 +188,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   }
 
   // --- Non-HTML content ---
-  if (
-    !ct.includes('text/html') &&
-    !ct.includes('application/xhtml+xml') &&
-    !ct.includes('application/xml')
-  ) {
+  if (!ct.includes('text/html') && !ct.includes('application/xhtml+xml') && !ct.includes('application/xml')) {
     console.warn('[unfurl] non-HTML content type:', url, ct);
     return c.body(null, 204);
   }
@@ -267,9 +258,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   // --- Fetch + store images in parallel ---
   const [ogImageResult, faviconAssetId] = await Promise.all([
     rawOgImage ? fetchAndStoreImage(c.env.ASSETS, rawOgImage, OG_IMAGE_MAX) : null,
-    rawFavicon
-      ? fetchAndStoreImage(c.env.ASSETS, rawFavicon, FAVICON_MAX).then((r) => r?.assetId ?? null)
-      : null,
+    rawFavicon ? fetchAndStoreImage(c.env.ASSETS, rawFavicon, FAVICON_MAX).then((r) => r?.assetId ?? null) : null,
   ]);
 
   // --- Check for useful metadata ---
@@ -297,12 +286,7 @@ export const handleUnfurl = async (c: Context<{ Bindings: Env }>, url: string) =
   return jsonCached(c, cache, cacheKey, data);
 };
 
-function jsonCached(
-  c: Context<{ Bindings: Env }>,
-  cache: Cache,
-  cacheKey: string,
-  data: Record<string, string | number>,
-): Response {
+function jsonCached(c: Context<{ Bindings: Env }>, cache: Cache, cacheKey: string, data: Record<string, string | number>): Response {
   const body = JSON.stringify(data);
   const headers = new Headers({
     'Content-Type': 'application/json',

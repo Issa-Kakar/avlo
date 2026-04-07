@@ -124,8 +124,7 @@ let mobileDetected: boolean | null = null;
  */
 export function isMobile(): boolean {
   if (mobileDetected === null) {
-    mobileDetected =
-      /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
+    mobileDetected = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 1;
   }
   return mobileDetected;
 }
@@ -181,8 +180,7 @@ export const useCameraStore = create<CameraStore>()(
 
         setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
           const state = get();
-          if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr)
-            return;
+          if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr) return;
           set({ cssWidth, cssHeight, dpr });
         },
 
@@ -330,9 +328,7 @@ export const selectPan = (s: CameraStore): { x: number; y: number } => s.pan;
 export const selectDpr = (s: CameraStore): number => s.dpr;
 
 /** Selector for viewport dimensions */
-export const selectViewport = (
-  s: CameraStore,
-): { cssWidth: number; cssHeight: number; dpr: number } => ({
+export const selectViewport = (s: CameraStore): { cssWidth: number; cssHeight: number; dpr: number } => ({
   cssWidth: s.cssWidth,
   cssHeight: s.cssHeight,
   dpr: s.dpr,

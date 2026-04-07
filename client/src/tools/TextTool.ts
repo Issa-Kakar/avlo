@@ -22,22 +22,10 @@ import * as Y from 'yjs';
 import type { PointerTool, PreviewData } from './types';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import {
-  getCanvasElement,
-  getVisibleWorldBounds,
-  useCameraStore,
-  worldToClient,
-} from '@/stores/camera-store';
+import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorld } from '@/renderer/RenderLoop';
-import {
-  getActiveRoomDoc,
-  getCurrentSnapshot,
-  getHandle,
-  getHandleKind,
-  transact,
-  getObjects,
-} from '@/runtime/room-runtime';
+import { getActiveRoomDoc, getCurrentSnapshot, getHandle, getHandleKind, transact, getObjects } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import {
   getTextProps,
@@ -76,9 +64,7 @@ function syncInlineStylesToStore(editor: Editor): void {
   useSelectionStore.getState().setInlineStyles({
     bold: editor.isActive('bold'),
     italic: editor.isActive('italic'),
-    highlightColor: editor.isActive('highlight')
-      ? ((editor.getAttributes('highlight').color as string | undefined) ?? '#ffd43b')
-      : null,
+    highlightColor: editor.isActive('highlight') ? ((editor.getAttributes('highlight').color as string | undefined) ?? '#ffd43b') : null,
   });
 }
 
@@ -120,9 +106,7 @@ export class TextTool implements PointerTool {
     this.downWorld = [worldX, worldY];
     const tool = useDeviceUIStore.getState().activeTool;
     this.hitTextId =
-      tool === 'note'
-        ? hitTestVisibleNote(worldX, worldY, snapshot, scale)
-        : hitTestVisibleText(worldX, worldY, snapshot, scale);
+      tool === 'note' ? hitTestVisibleNote(worldX, worldY, snapshot, scale) : hitTestVisibleText(worldX, worldY, snapshot, scale);
   }
 
   move(_worldX: number, _worldY: number): void {
@@ -197,8 +181,7 @@ export class TextTool implements PointerTool {
     // Create label fields if shape without label
     const isNewLabel = handle.kind === 'shape' && !hasLabel(handle.y);
     if (isNewLabel) {
-      const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } =
-        useDeviceUIStore.getState();
+      const { textSize, textFontFamily, textColor, shapeAlign, shapeAlignV } = useDeviceUIStore.getState();
       transact(() => {
         handle.y.set('content', new Y.XmlFragment());
         handle.y.set('fontSize', textSize);
@@ -339,10 +322,7 @@ export class TextTool implements PointerTool {
     container.style.fontSize = `${scaledFontSize}px`;
     container.style.lineHeight = `${scaledFontSize * familyConfig.lineHeightMultiplier}px`;
     container.style.fontFamily = familyConfig.fallback;
-    container.style.setProperty(
-      '--hl-pad',
-      `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
-    );
+    container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
 
     const isNoteObj = !isLabel && handle.kind === 'note';
 
@@ -356,20 +336,14 @@ export class TextTool implements PointerTool {
 
       // Horizontal anchor
       const anchorX = tbx + anchorFactor(align) * tbw;
-      container.style.setProperty(
-        '--text-anchor-tx',
-        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
-      );
+      container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
       container.style.setProperty('--text-align', align);
 
       // Vertical anchor + clamp
       const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
       const anchorY = tby + vFactor * tbh;
       const maxTy = vFactor * tbh * scale;
-      container.style.setProperty(
-        '--text-anchor-ty',
-        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
-      );
+      container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
 
       const [sx, sy] = worldToClient(anchorX, anchorY);
       container.style.left = `${sx}px`;
@@ -389,20 +363,14 @@ export class TextTool implements PointerTool {
 
       // Horizontal: position at alignment anchor within content area
       const anchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
-      container.style.setProperty(
-        '--text-anchor-tx',
-        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
-      );
+      container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
       container.style.setProperty('--text-align', align);
 
       // Vertical: position at vFactor anchor, clamp translateY
       const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
       const topWorldY = origin[1] + padding + vFactor * maxContentH;
       const maxTy = vFactor * maxContentH * scale;
-      container.style.setProperty(
-        '--text-anchor-ty',
-        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
-      );
+      container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
 
       const [sx, sy] = worldToClient(anchorX, topWorldY);
       container.style.left = `${sx}px`;
@@ -565,20 +533,14 @@ export class TextTool implements PointerTool {
 
       // Horizontal anchor
       const anchorX = tbx + anchorFactor(align) * tbw;
-      this.container.style.setProperty(
-        '--text-anchor-tx',
-        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
-      );
+      this.container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
       this.container.style.setProperty('--text-align', align);
 
       // Vertical anchor + clamp
       const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
       const anchorY = tby + vFactor * tbh;
       const maxTy = vFactor * tbh * scale;
-      this.container.style.setProperty(
-        '--text-anchor-ty',
-        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
-      );
+      this.container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
 
       const [sx, sy] = worldToClient(anchorX, anchorY);
       const sf = fontSize * scale;
@@ -589,10 +551,7 @@ export class TextTool implements PointerTool {
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
-      this.container.style.setProperty(
-        '--hl-pad',
-        `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
-      );
+      this.container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
     } else if (handle.kind === 'note') {
       const props = getNoteProps(handle.y);
       if (!props) return;
@@ -605,20 +564,14 @@ export class TextTool implements PointerTool {
 
       // Horizontal anchor
       const anchorX = origin[0] + padding + anchorFactor(align) * contentWidth;
-      this.container.style.setProperty(
-        '--text-anchor-tx',
-        align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
-      );
+      this.container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
       this.container.style.setProperty('--text-align', align);
 
       // Vertical anchor + clamp
       const vFactor = alignV === 'top' ? 0 : alignV === 'middle' ? 0.5 : 1;
       const topWorldY = origin[1] + padding + vFactor * maxContentH;
       const maxTy = vFactor * maxContentH * scale;
-      this.container.style.setProperty(
-        '--text-anchor-ty',
-        alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`,
-      );
+      this.container.style.setProperty('--text-anchor-ty', alignV === 'top' ? '0%' : `clamp(${-maxTy}px, ${-vFactor * 100}%, 0px)`);
 
       const [sx, sy] = worldToClient(anchorX, topWorldY);
       this.container.style.left = `${sx}px`;
@@ -628,10 +581,7 @@ export class TextTool implements PointerTool {
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
-      this.container.style.setProperty(
-        '--hl-pad',
-        `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
-      );
+      this.container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
     } else {
       const props = getTextProps(handle.y);
       if (!props) return;
@@ -643,10 +593,7 @@ export class TextTool implements PointerTool {
       this.container.style.fontSize = `${sf}px`;
       this.container.style.lineHeight = `${sf * FONT_FAMILIES[fontFamily].lineHeightMultiplier}px`;
       this.container.style.fontFamily = FONT_FAMILIES[fontFamily].fallback;
-      this.container.style.setProperty(
-        '--hl-pad',
-        `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`,
-      );
+      this.container.style.setProperty('--hl-pad', `${getBaselineToTopRatio(fontFamily) - getMeasuredAscentRatio(fontFamily)}em`);
       if (typeof width === 'number') this.container.style.width = `${width * scale}px`;
     }
   }
@@ -714,8 +661,7 @@ export class TextTool implements PointerTool {
     if (!handle) return;
 
     if (handle.kind === 'shape') {
-      if (keys.has('labelColor'))
-        this.container.style.setProperty('--text-color', getLabelColor(handle.y));
+      if (keys.has('labelColor')) this.container.style.setProperty('--text-color', getLabelColor(handle.y));
       if (
         keys.has('frame') ||
         keys.has('shapeType') ||
@@ -727,8 +673,7 @@ export class TextTool implements PointerTool {
         this.positionEditor();
     } else {
       if (keys.has('color')) this.container.style.setProperty('--text-color', getColor(handle.y));
-      if (keys.has('fillColor') && handle.kind !== 'note')
-        this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
+      if (keys.has('fillColor') && handle.kind !== 'note') this.container.style.backgroundColor = getFillColor(handle.y) ?? '';
 
       if (handle.kind === 'note') {
         // fontFamily change: repopulate cache before positionEditor reads it
@@ -738,24 +683,11 @@ export class TextTool implements PointerTool {
           const ff = getFontFamily(handle.y);
           if (content) textLayoutCache.getNoteLayout(this.objectId!, content, ff);
         }
-        if (
-          keys.has('align') ||
-          keys.has('alignV') ||
-          keys.has('origin') ||
-          keys.has('scale') ||
-          keys.has('fontFamily')
-        )
+        if (keys.has('align') || keys.has('alignV') || keys.has('origin') || keys.has('scale') || keys.has('fontFamily'))
           this.positionEditor();
       } else {
-        if (keys.has('align'))
-          applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
-        if (
-          keys.has('origin') ||
-          keys.has('fontSize') ||
-          keys.has('fontFamily') ||
-          keys.has('width')
-        )
-          this.positionEditor();
+        if (keys.has('align')) applyAlignCSS(this.container, (handle.y.get('align') as TextAlign) ?? 'left');
+        if (keys.has('origin') || keys.has('fontSize') || keys.has('fontFamily') || keys.has('width')) this.positionEditor();
       }
     }
   }
@@ -796,8 +728,5 @@ export class TextTool implements PointerTool {
 /** Set CSS custom properties for transform-based anchor positioning. */
 function applyAlignCSS(container: HTMLDivElement, align: TextAlign): void {
   container.style.setProperty('--text-align', align);
-  container.style.setProperty(
-    '--text-anchor-tx',
-    align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%',
-  );
+  container.style.setProperty('--text-anchor-tx', align === 'left' ? '0%' : align === 'center' ? '-50%' : '-100%');
 }

@@ -27,12 +27,7 @@ export function UserAvatarCluster() {
   return (
     <div className="user-avatar-cluster">
       {usersWithIds.slice(0, displayCount).map((user) => (
-        <div
-          key={user.userId}
-          className="micro-avatar"
-          style={{ backgroundColor: user.color }}
-          title={user.name}
-        >
+        <div key={user.userId} className="micro-avatar" style={{ backgroundColor: user.color }} title={user.name}>
           <span className="micro-avatar-initials">{getInitials(user.name)}</span>
         </div>
       ))}

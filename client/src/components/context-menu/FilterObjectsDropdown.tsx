@@ -32,14 +32,7 @@ export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObje
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-filter" onMouseDown={toggle} aria-expanded={open}>
-        <svg
-          width={74}
-          height={26}
-          viewBox="0 0 74 26"
-          fill="none"
-          aria-hidden="true"
-          style={{ flexShrink: 0 }}
-        >
+        <svg width={74} height={26} viewBox="0 0 74 26" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
           <text
             x="0"
             y="9"

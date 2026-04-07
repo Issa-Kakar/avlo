@@ -51,10 +51,7 @@ export class PanTool implements PointerTool {
     // Track screen position for velocity calculation
     const now = performance.now();
     this.samples.push({ x: currentScreen[0], y: currentScreen[1], t: now });
-    while (
-      this.samples.length > MAX_SAMPLES ||
-      (this.samples.length > 1 && now - this.samples[0].t > SAMPLE_WINDOW_MS)
-    ) {
+    while (this.samples.length > MAX_SAMPLES || (this.samples.length > 1 && now - this.samples[0].t > SAMPLE_WINDOW_MS)) {
       this.samples.shift();
     }
 

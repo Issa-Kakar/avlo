@@ -26,14 +26,7 @@ import type {
 } from './types/objects';
 
 // Re-export types for backwards compatibility
-export type {
-  Dir,
-  StoredAnchor,
-  TextAlign,
-  TextAlignV,
-  TextWidth,
-  FontFamily,
-} from './types/objects';
+export type { Dir, StoredAnchor, TextAlign, TextAlignV, TextWidth, FontFamily } from './types/objects';
 export type { CodeLanguage, CodeProps, TextProps, StrokeProps, ShapeProps } from './types/objects';
 export type { NoteProps, ImageProps, BookmarkProps } from './types/objects';
 
@@ -140,10 +133,7 @@ export function getOrigin(y: Y.Map<unknown>): [number, number] | null {
   return (y.get('origin') as [number, number] | undefined) ?? null;
 }
 
-export function getFontFamily(
-  y: Y.Map<unknown>,
-  fallback: FontFamily = 'Grandstander',
-): FontFamily {
+export function getFontFamily(y: Y.Map<unknown>, fallback: FontFamily = 'Grandstander'): FontFamily {
   return (y.get('fontFamily') as FontFamily | undefined) ?? fallback;
 }
 
@@ -183,10 +173,7 @@ export function getContent(y: Y.Map<unknown>): Y.XmlFragment | null {
 // CODE-SPECIFIC ACCESSORS
 // ============================================================================
 
-export function getLanguage(
-  y: Y.Map<unknown>,
-  fallback: CodeLanguage = 'javascript',
-): CodeLanguage {
+export function getLanguage(y: Y.Map<unknown>, fallback: CodeLanguage = 'javascript'): CodeLanguage {
   return (y.get('language') as CodeLanguage | undefined) ?? fallback;
 }
 

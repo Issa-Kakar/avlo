@@ -222,14 +222,7 @@ export function computeSelectionComposition(ids: string[]) {
  */
 export function computeSelectionBounds(): WorldBounds | null {
   const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
-  const ids =
-    selectedIds.length > 0
-      ? selectedIds
-      : textEditingId
-        ? [textEditingId]
-        : codeEditingId
-          ? [codeEditingId]
-          : [];
+  const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : codeEditingId ? [codeEditingId] : [];
   if (ids.length === 0) return null;
 
   const snapshot = getCurrentSnapshot();
@@ -261,19 +254,8 @@ export function computeSelectionBounds(): WorldBounds | null {
  * Mixed selections → EMPTY_STYLES immediately (zero parsing).
  * Single-pass with early break once all fields are resolved.
  */
-export function computeStyles(
-  ids: string[],
-  kind: SelectionKind,
-  objectsById: ReadonlyMap<string, ObjectHandle>,
-): SelectedStyles {
-  if (
-    kind === 'none' ||
-    kind === 'mixed' ||
-    kind === 'imagesOnly' ||
-    kind === 'bookmarksOnly' ||
-    ids.length === 0
-  )
-    return EMPTY_STYLES;
+export function computeStyles(ids: string[], kind: SelectionKind, objectsById: ReadonlyMap<string, ObjectHandle>): SelectedStyles {
+  if (kind === 'none' || kind === 'mixed' || kind === 'imagesOnly' || kind === 'bookmarksOnly' || ids.length === 0) return EMPTY_STYLES;
 
   // Code blocks: track fontSize + language + chrome visibility
   if (kind === 'codeOnly') {
@@ -372,8 +354,7 @@ export function computeStyles(
         fillMixed = true;
         fillSecond = getFillColor(handle.y) ?? null;
       }
-      if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType)
-        shapeTypeMixed = true;
+      if (trackShapeType && !shapeTypeMixed && getShapeType(handle.y) !== firstShapeType) shapeTypeMixed = true;
       if (trackTextAlign && !alignMixed && getAlign(handle.y) !== firstAlign) alignMixed = true;
     }
 
@@ -419,13 +400,7 @@ export function computeStyles(
     fillColor: trackFill ? (firstFill ?? null) : null,
     fillColorMixed: trackFill && fillMixed,
     fillColorSecond: trackFill && fillMixed ? fillSecond : null,
-    shapeType: trackShapeType
-      ? shapeTypeMixed
-        ? null
-        : firstShapeType
-      : kind === 'textOnly'
-        ? 'text'
-        : null,
+    shapeType: trackShapeType ? (shapeTypeMixed ? null : firstShapeType) : kind === 'textOnly' ? 'text' : null,
     fontSize: needsTextFields ? firstFontSize : null,
     textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
     textAlignV: kind === 'shapesOnly' ? (alignVMixed ? null : firstAlignV) : null,
@@ -467,10 +442,7 @@ export function inlineStylesEqual(a: InlineStyles, b: InlineStyles): boolean {
  * All must be bold for bold:true, same for italic.
  * Highlight must be identical non-null across all for highlightColor to be non-null.
  */
-export function computeUniformInlineStyles(
-  ids: string[],
-  objectsById: ReadonlyMap<string, ObjectHandle>,
-): InlineStyles {
+export function computeUniformInlineStyles(ids: string[], objectsById: ReadonlyMap<string, ObjectHandle>): InlineStyles {
   let bold = true,
     italic = true;
   let firstHighlight: string | null = null;
@@ -479,8 +451,7 @@ export function computeUniformInlineStyles(
 
   for (const id of ids) {
     const handle = objectsById.get(id);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note'))
-      continue;
+    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) continue;
     if (handle.kind === 'shape' && !hasLabel(handle.y)) continue;
     const u = getInlineStyles(id);
     if (!u) continue;

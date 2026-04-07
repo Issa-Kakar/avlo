@@ -16,23 +16,7 @@ const ADJECTIVES = [
   'Zesty',
 ];
 
-const ANIMALS = [
-  'Fox',
-  'Bear',
-  'Wolf',
-  'Eagle',
-  'Owl',
-  'Hawk',
-  'Lion',
-  'Tiger',
-  'Lynx',
-  'Otter',
-  'Seal',
-  'Whale',
-  'Raven',
-  'Swan',
-  'Deer',
-];
+const ANIMALS = ['Fox', 'Bear', 'Wolf', 'Eagle', 'Owl', 'Hawk', 'Lion', 'Tiger', 'Lynx', 'Otter', 'Seal', 'Whale', 'Raven', 'Swan', 'Deer'];
 
 export const COLORS = [
   '#E8915A', // warm orange

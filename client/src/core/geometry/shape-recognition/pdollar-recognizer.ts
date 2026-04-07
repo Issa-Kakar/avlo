@@ -377,12 +377,7 @@ function normalize(points: Point2[], n: number): Point2[] {
  * - O(1) removal from unmatched list
  * - Early abandoning
  */
-function cloudDistanceQ(
-  points: Point2[],
-  template: Point2[],
-  start: number,
-  minSoFar: number,
-): number {
+function cloudDistanceQ(points: Point2[], template: Point2[], start: number, minSoFar: number): number {
   const n = points.length;
   const unmatched: number[] = Array.from({ length: n }, (_, i) => i);
 
@@ -421,12 +416,7 @@ function cloudDistanceQ(
 /**
  * Greedy cloud match: try multiple starting points and both directions.
  */
-function greedyCloudMatchQ(
-  points: Point2[],
-  template: Point2[],
-  n: number,
-  epsilon: number,
-): number {
+function greedyCloudMatchQ(points: Point2[], template: Point2[], n: number, epsilon: number): number {
   const step = Math.max(1, Math.floor(Math.pow(n, 1 - epsilon)));
   let min = Infinity;
 
@@ -602,10 +592,7 @@ function getTemplates(): Template[] {
  * @param opts - Recognition options (thresholds, etc.)
  * @returns Recognition result or null if not enough points
  */
-export function recognizePerfectShapePointCloud(
-  rawPointsWU: Point2[],
-  opts: RecognizerOpts = {},
-): PerfectShapeRecognition | null {
+export function recognizePerfectShapePointCloud(rawPointsWU: Point2[], opts: RecognizerOpts = {}): PerfectShapeRecognition | null {
   const n = opts.n ?? PDOLLAR_CONFIG.NUM_POINTS;
   const epsilon = opts.epsilon ?? PDOLLAR_CONFIG.EPSILON;
   const minMargin = opts.minMargin ?? PDOLLAR_CONFIG.MIN_MARGIN;
@@ -625,14 +612,8 @@ export function recognizePerfectShapePointCloud(
   // These checks reject scribbles that cross or nearly touch themselves
   // =========================================================================
   const flatPoints = rawPointsWU.flatMap(([x, y]) => [x, y]);
-  const selfIntersectEps = Math.max(
-    PDOLLAR_CONFIG.MIN_EPS_WU,
-    PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag,
-  );
-  const nearTouchEps = Math.max(
-    PDOLLAR_CONFIG.MIN_EPS_WU,
-    PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag,
-  );
+  const selfIntersectEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag);
+  const nearTouchEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag);
 
   // Check for self-intersection (stroke crosses itself)
   if (hasSelfIntersection(flatPoints, selfIntersectEps)) {
@@ -662,8 +643,7 @@ export function recognizePerfectShapePointCloud(
   const last = rawPointsWU[rawPointsWU.length - 1];
   const gap = dist(first, last);
 
-  const pointsForMatch =
-    gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
+  const pointsForMatch = gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
 
   // Normalize candidate (aspect ratio is PRESERVED, not matched to templates)
   const candidate = normalize(pointsForMatch, n);
@@ -801,9 +781,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   const h = bb.maxY - bb.minY;
   const diag = Math.hypot(w, h);
   const aspect = w / Math.max(1e-6, h);
-  console.log(
-    `Input: ${rawPointsWU.length} points, aspect: ${aspect.toFixed(2)}, diag: ${diag.toFixed(1)}`,
-  );
+  console.log(`Input: ${rawPointsWU.length} points, aspect: ${aspect.toFixed(2)}, diag: ${diag.toFixed(1)}`);
   console.log(`Templates: ${getTemplates().length} (closed only)`);
   console.log(
     `Shape thresholds: box<${PDOLLAR_CONFIG.MAX_DISTANCE_BOX}, diamond<${PDOLLAR_CONFIG.MAX_DISTANCE_DIAMOND}, circle<${PDOLLAR_CONFIG.MAX_DISTANCE_CIRCLE}`,
@@ -813,24 +791,14 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   console.group('🚧 Pre-Normalization Gates (RAW points)');
 
   const flatPoints = rawPointsWU.flatMap(([x, y]) => [x, y]);
-  const selfIntersectEps = Math.max(
-    PDOLLAR_CONFIG.MIN_EPS_WU,
-    PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag,
-  );
-  const nearTouchEps = Math.max(
-    PDOLLAR_CONFIG.MIN_EPS_WU,
-    PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag,
-  );
+  const selfIntersectEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag);
+  const nearTouchEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag);
 
   const hasSelfInt = hasSelfIntersection(flatPoints, selfIntersectEps);
   const hasNearTch = hasNearTouch(flatPoints, nearTouchEps);
 
-  console.log(
-    `Gate 1 - Self-intersection (eps=${selfIntersectEps.toFixed(1)}): ${hasSelfInt ? '❌ BLOCKED' : '✅ PASS'}`,
-  );
-  console.log(
-    `Gate 2 - Near-touch (eps=${nearTouchEps.toFixed(1)}): ${hasNearTch ? '❌ BLOCKED' : '✅ PASS'}`,
-  );
+  console.log(`Gate 1 - Self-intersection (eps=${selfIntersectEps.toFixed(1)}): ${hasSelfInt ? '❌ BLOCKED' : '✅ PASS'}`);
+  console.log(`Gate 2 - Near-touch (eps=${nearTouchEps.toFixed(1)}): ${hasNearTch ? '❌ BLOCKED' : '✅ PASS'}`);
   console.groupEnd();
 
   // Run recognition
@@ -853,8 +821,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   console.log('Template scores (top 10, lower distance = better):');
   const top10 = result.all.slice(0, 10);
   for (const match of top10) {
-    const marker =
-      match === result.best ? '✅ BEST' : match === result.secondBest ? '🥈 2nd ' : '     ';
+    const marker = match === result.best ? '✅ BEST' : match === result.secondBest ? '🥈 2nd ' : '     ';
     console.log(`  ${marker} ${match.templateId}: ${match.distance.toFixed(3)}`);
   }
 
@@ -866,8 +833,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
     const first = rawPointsWU[0];
     const last = rawPointsWU[rawPointsWU.length - 1];
     const gap = dist(first, last);
-    const pointsForMatch =
-      gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
+    const pointsForMatch = gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
     const candidate = normalize(pointsForMatch, n);
 
     const turnCount = countSignificantTurns(candidate, PDOLLAR_CONFIG.MIN_TURN_ANGLE_DEG);
@@ -892,8 +858,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
           : PDOLLAR_CONFIG.MIN_TURNS_BOX;
     }
 
-    const turnPass =
-      turnSkipped || (turnCount >= minTurns && turnCount <= PDOLLAR_CONFIG.MAX_TURNS);
+    const turnPass = turnSkipped || (turnCount >= minTurns && turnCount <= PDOLLAR_CONFIG.MAX_TURNS);
     const quadrantPass = quadrantScore >= PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION;
 
     if (turnSkipped) {
@@ -915,9 +880,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   console.log('---');
   console.log(`Best: ${result.best.templateId} (${result.best.distance.toFixed(3)})`);
   if (result.secondBest) {
-    console.log(
-      `Second: ${result.secondBest.templateId} (${result.secondBest.distance.toFixed(3)})`,
-    );
+    console.log(`Second: ${result.secondBest.templateId} (${result.secondBest.distance.toFixed(3)})`);
   }
   console.log(`Margin: ${(result.margin * 100).toFixed(1)}%`);
   console.log(`Ambiguous: ${result.ambiguous}`);
@@ -937,22 +900,17 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
       shapeMaxDist = PDOLLAR_CONFIG.MAX_DISTANCE_CIRCLE;
     }
     if (result.best.distance > shapeMaxDist) {
-      reasons.push(
-        `distance ${result.best.distance.toFixed(2)} > max ${shapeMaxDist} for ${result.best.kind}`,
-      );
+      reasons.push(`distance ${result.best.distance.toFixed(2)} > max ${shapeMaxDist} for ${result.best.kind}`);
     }
     if (result.margin < minMargin) {
-      reasons.push(
-        `margin ${(result.margin * 100).toFixed(1)}% < min ${(minMargin * 100).toFixed(1)}%`,
-      );
+      reasons.push(`margin ${(result.margin * 100).toFixed(1)}% < min ${(minMargin * 100).toFixed(1)}%`);
     }
     // Check gate failures
     if (result.best.kind === 'box' || result.best.kind === 'diamond') {
       const first = rawPointsWU[0];
       const last = rawPointsWU[rawPointsWU.length - 1];
       const gap = dist(first, last);
-      const pointsForMatch =
-        gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
+      const pointsForMatch = gap <= closeEpsRatio * diag ? [...rawPointsWU, first] : rawPointsWU.slice();
       const candidate = normalize(pointsForMatch, n);
       const turnCount = countSignificantTurns(candidate, PDOLLAR_CONFIG.MIN_TURN_ANGLE_DEG);
       const quadrantScore = quadrantOccupation(candidate);
@@ -980,9 +938,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
         reasons.push(`turn count ${turnCount} > max ${PDOLLAR_CONFIG.MAX_TURNS}`);
       }
       if (quadrantScore < PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION) {
-        reasons.push(
-          `quadrant ${(quadrantScore * 100).toFixed(0)}% < min ${(PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION * 100).toFixed(0)}%`,
-        );
+        reasons.push(`quadrant ${(quadrantScore * 100).toFixed(0)}% < min ${(PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION * 100).toFixed(0)}%`);
       }
     }
     console.log(`Reason: ${reasons.join(', ')}`);

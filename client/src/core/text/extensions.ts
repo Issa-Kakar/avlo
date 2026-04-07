@@ -29,14 +29,7 @@
  * which is after _typeChanged already dispatched the PM transaction with the wrong selection.)
  */
 import { Extension } from '@tiptap/core';
-import {
-  ySyncPlugin,
-  ySyncPluginKey,
-  yUndoPlugin,
-  yUndoPluginKey,
-  undo,
-  redo,
-} from '@tiptap/y-tiptap';
+import { ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey, undo, redo } from '@tiptap/y-tiptap';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import * as Y from 'yjs';
 import type { XmlFragment } from 'yjs';
@@ -73,11 +66,7 @@ function applyPendingSelection(view: import('@tiptap/pm/view').EditorView): void
   const anchor = Math.max(0, Math.min(pos.anchor, doc.content.size));
   const head = Math.max(0, Math.min(pos.head, doc.content.size));
   try {
-    view.dispatch(
-      view.state.tr
-        .setSelection(TextSelection.between(doc.resolve(anchor), doc.resolve(head)))
-        .setMeta('addToHistory', false),
-    );
+    view.dispatch(view.state.tr.setSelection(TextSelection.between(doc.resolve(anchor), doc.resolve(head))).setMeta('addToHistory', false));
   } catch {
     // Position out of range — let the buggy selection stand
   }
@@ -173,8 +162,7 @@ export const TextCollaboration = Extension.create<TextCollaborationOptions>({
         };
 
         const onPopped = ({ stackItem }: { stackItem: { meta: Map<unknown, unknown> } }) => {
-          pendingSelection =
-            (stackItem.meta.get(selectionFixKey) as typeof pendingSelection) ?? null;
+          pendingSelection = (stackItem.meta.get(selectionFixKey) as typeof pendingSelection) ?? null;
         };
 
         um.on('stack-item-added', onAdded);

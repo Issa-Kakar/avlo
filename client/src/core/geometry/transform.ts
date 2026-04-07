@@ -203,17 +203,7 @@ export function computeStrokeTranslation(
     if (py > maxY) maxY = py;
   }
 
-  return computeEdgePinTranslation(
-    minX,
-    maxX,
-    minY,
-    maxY,
-    originBounds,
-    scaleX,
-    scaleY,
-    origin,
-    handleId,
-  );
+  return computeEdgePinTranslation(minX, maxX, minY, maxY, originBounds, scaleX, scaleY, origin, handleId);
 }
 
 // === Transform Application Helpers ===
@@ -234,20 +224,12 @@ export interface TransformForBounds {
  * Apply a transform (translate or scale) to bounds.
  * Returns new bounds with transform applied.
  */
-export function applyTransformToBounds(
-  bounds: WorldRect,
-  transform: TransformForBounds,
-): WorldRect {
+export function applyTransformToBounds(bounds: WorldRect, transform: TransformForBounds): WorldRect {
   if (transform.kind === 'translate' && transform.dx !== undefined && transform.dy !== undefined) {
     return translateBounds(bounds, transform.dx, transform.dy);
   }
 
-  if (
-    transform.kind === 'scale' &&
-    transform.origin &&
-    transform.scaleX !== undefined &&
-    transform.scaleY !== undefined
-  ) {
+  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
     // CRITICAL: scaleBoundsAround normalizes for negative scale (flip) - ensures minX < maxX, minY < maxY
     return scaleBoundsAround(bounds, transform.origin, transform.scaleX, transform.scaleY);
   }
@@ -271,11 +253,7 @@ export interface ScaleTransformState {
  * @param worldY - Current cursor Y in world coordinates
  * @param transform - Scale transform state with origin, initialDelta, and handleId
  */
-export function computeScaleFactors(
-  worldX: number,
-  worldY: number,
-  transform: ScaleTransformState,
-): { scaleX: number; scaleY: number } {
+export function computeScaleFactors(worldX: number, worldY: number, transform: ScaleTransformState): { scaleX: number; scaleY: number } {
   const { origin, initialDelta, handleId } = transform;
   const [ox, oy] = origin;
   const [initDx, initDy] = initialDelta;
@@ -335,12 +313,7 @@ export function applyTransformToFrame(
     return [x + transform.dx, y + transform.dy, w, h];
   }
 
-  if (
-    transform.kind === 'scale' &&
-    transform.origin &&
-    transform.scaleX !== undefined &&
-    transform.scaleY !== undefined
-  ) {
+  if (transform.kind === 'scale' && transform.origin && transform.scaleX !== undefined && transform.scaleY !== undefined) {
     const [ox, oy] = transform.origin;
     const { scaleX, scaleY } = transform;
 
@@ -349,12 +322,7 @@ export function applyTransformToFrame(
     const newX2 = ox + (x + w - ox) * scaleX;
     const newY2 = oy + (y + h - oy) * scaleY;
 
-    return [
-      Math.min(newX1, newX2),
-      Math.min(newY1, newY2),
-      Math.abs(newX2 - newX1),
-      Math.abs(newY2 - newY1),
-    ];
+    return [Math.min(newX1, newX2), Math.min(newY1, newY2), Math.abs(newX2 - newX1), Math.abs(newY2 - newY1)];
   }
 
   return frame;
@@ -392,10 +360,7 @@ export function applyUniformScaleToPoints(
 
   const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
 
-  const scaledPoints: [number, number][] = points.map(([x, y]) => [
-    newCx + (x - cx) * absScale,
-    newCy + (y - cy) * absScale,
-  ]);
+  const scaledPoints: [number, number][] = points.map(([x, y]) => [newCx + (x - cx) * absScale, newCy + (y - cy) * absScale]);
 
   return { points: scaledPoints, absScale };
 }
@@ -509,10 +474,7 @@ export function transformFrameForTopology(
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
 
-  if (
-    (selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') &&
-    handleKind === 'corner'
-  ) {
+  if ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner') {
     return applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
   }
   return applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
@@ -522,10 +484,7 @@ export function transformFrameForTopology(
  * Transform a free endpoint position for connector topology rerouting.
  * Uses position preservation for uniform-scaling selection kinds, raw scale otherwise.
  */
-export function transformPositionForTopology(
-  position: [number, number],
-  transform: TranslateTransform | ScaleTransform,
-): [number, number] {
+export function transformPositionForTopology(position: [number, number], transform: TranslateTransform | ScaleTransform): [number, number] {
   if (transform.kind === 'translate') {
     return [position[0] + transform.dx, position[1] + transform.dy];
   }
@@ -534,8 +493,7 @@ export function transformPositionForTopology(
     selectionKind === 'imagesOnly' ||
     selectionKind === 'notesOnly' ||
     selectionKind === 'bookmarksOnly' ||
-    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') &&
-      handleKind === 'corner')
+    ((selectionKind === 'mixed' || selectionKind === 'textOnly' || selectionKind === 'codeOnly') && handleKind === 'corner')
   ) {
     const u = computeUniformScaleNoThreshold(scaleX, scaleY);
     return computePreservedPosition(position[0], position[1], originBounds, origin, u);

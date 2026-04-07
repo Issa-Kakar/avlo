@@ -75,12 +75,7 @@ export type { RerouteResult, NewRouteResult } from './reroute-connector';
 export { rerouteConnector, routeNewConnector } from './reroute-connector';
 
 // Path building (for cache and preview)
-export type {
-  ConnectorPaths,
-  ConnectorPathParams,
-  EndTrimInfo,
-  ArrowGeometry,
-} from './connector-paths';
+export type { ConnectorPaths, ConnectorPathParams, EndTrimInfo, ArrowGeometry } from './connector-paths';
 export {
   buildConnectorPaths,
   buildRoundedPolylinePath,

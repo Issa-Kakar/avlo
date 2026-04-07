@@ -10,12 +10,7 @@
 
 import type { AnimationJob } from './AnimationController';
 import { getPeerCursors } from '@/runtime/presence/presence';
-import {
-  getCursorBitmap,
-  CURSOR_BITMAP_OFFSET_X,
-  CURSOR_BITMAP_OFFSET_Y,
-  CURSOR_BITMAP_SCALE,
-} from './cursor-bitmap';
+import { getCursorBitmap, CURSOR_BITMAP_OFFSET_X, CURSOR_BITMAP_OFFSET_Y, CURSOR_BITMAP_SCALE } from './cursor-bitmap';
 import { useCameraStore, getViewTransform, getVisibleWorldBounds } from '@/stores/camera-store';
 
 const TAU = 60; // ms — responsive at 20Hz send rate
@@ -53,10 +48,7 @@ export class CursorAnimationJob implements AnimationJob {
         // Settle check in canvas space
         const [dcx, dcy] = worldToCanvas(peer.display[0], peer.display[1]);
         const [tcx, tcy] = worldToCanvas(peer.target[0], peer.target[1]);
-        if (
-          Math.abs(dcx - tcx) < SETTLE_THRESHOLD_PX &&
-          Math.abs(dcy - tcy) < SETTLE_THRESHOLD_PX
-        ) {
+        if (Math.abs(dcx - tcx) < SETTLE_THRESHOLD_PX && Math.abs(dcy - tcy) < SETTLE_THRESHOLD_PX) {
           peer.display[0] = peer.target[0];
           peer.display[1] = peer.target[1];
           peer.isSettled = true;
@@ -78,13 +70,7 @@ export class CursorAnimationJob implements AnimationJob {
       const [cx, cy] = worldToCanvas(peer.display[0], peer.display[1]);
 
       const bmp = getCursorBitmap(peer.color, peer.name);
-      ctx.drawImage(
-        bmp,
-        cx - CURSOR_BITMAP_OFFSET_X,
-        cy - CURSOR_BITMAP_OFFSET_Y,
-        bmp.width * bitmapInvScale,
-        bmp.height * bitmapInvScale,
-      );
+      ctx.drawImage(bmp, cx - CURSOR_BITMAP_OFFSET_X, cy - CURSOR_BITMAP_OFFSET_Y, bmp.width * bitmapInvScale, bmp.height * bitmapInvScale);
 
       if (!peer.isSettled) anyActive = true;
     }

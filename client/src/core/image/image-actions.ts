@@ -62,9 +62,7 @@ async function rasterizeSvg(blob: Blob): Promise<Blob> {
   // Modify SVG: strip width/height, ensure viewBox, inject target dims.
   // This makes <img> rasterize the vector art at target resolution, not tiny intrinsic size.
   const modified = text.replace(/<svg([^>]*)>/, (_match, attrs: string) => {
-    let clean = attrs
-      .replace(/\bwidth\s*=\s*["'][^"']*["']/g, '')
-      .replace(/\bheight\s*=\s*["'][^"']*["']/g, '');
+    let clean = attrs.replace(/\bwidth\s*=\s*["'][^"']*["']/g, '').replace(/\bheight\s*=\s*["'][^"']*["']/g, '');
     if (!/viewBox/.test(clean)) {
       clean += ` viewBox="0 0 ${w} ${h}"`;
     }
@@ -81,9 +79,7 @@ async function rasterizeSvg(blob: Blob): Promise<Blob> {
         img.onerror = () => reject(new Error('SVG decode failed'));
         img.src = url;
       }),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('SVG rasterization timed out')), SVG_TIMEOUT),
-      ),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('SVG rasterization timed out')), SVG_TIMEOUT)),
     ]);
 
     const canvas = document.createElement('canvas');
@@ -104,12 +100,7 @@ async function rasterizeSvg(blob: Blob): Promise<Blob> {
 }
 
 /** Create an image object from a blob at a world position. */
-export async function createImageFromBlob(
-  blob: Blob,
-  worldX: number,
-  worldY: number,
-  opts?: { selectAfter?: boolean },
-): Promise<string> {
+export async function createImageFromBlob(blob: Blob, worldX: number, worldY: number, opts?: { selectAfter?: boolean }): Promise<string> {
   // SVG → rasterize to PNG before ingesting
   let finalBlob = blob;
   if (blob.type === 'image/svg+xml') {

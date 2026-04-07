@@ -2,10 +2,7 @@
  * Build shape path from explicit frame (not from cache).
  * Used by object rendering, object-cache, and transform previews.
  */
-export function buildShapePathFromFrame(
-  shapeType: string,
-  frame: [number, number, number, number],
-): Path2D {
+export function buildShapePathFromFrame(shapeType: string, frame: [number, number, number, number]): Path2D {
   const [x, y0, w, h] = frame;
   const path = new Path2D();
 

@@ -22,13 +22,7 @@ import { computeUniformScaleNoThreshold, computePreservedPosition } from './tran
 // ============================================================================
 
 /** Expand bbox in-place to include the given extents. */
-export function expandBBox(
-  b: BBoxTuple,
-  minX: number,
-  minY: number,
-  maxX: number,
-  maxY: number,
-): void {
+export function expandBBox(b: BBoxTuple, minX: number, minY: number, maxX: number, maxY: number): void {
   b[0] = Math.min(b[0], minX);
   b[1] = Math.min(b[1], minY);
   b[2] = Math.max(b[2], maxX);
@@ -78,12 +72,7 @@ export function translateBounds(bounds: WorldBounds, dx: number, dy: number): Wo
 /**
  * Scale bounds around origin with automatic normalization for negative scales.
  */
-export function scaleBoundsAround(
-  bounds: WorldBounds,
-  origin: [number, number],
-  scaleX: number,
-  scaleY: number,
-): WorldBounds {
+export function scaleBoundsAround(bounds: WorldBounds, origin: [number, number], scaleX: number, scaleY: number): WorldBounds {
   const [ox, oy] = origin;
   const x1 = ox + (bounds.minX - ox) * scaleX;
   const y1 = oy + (bounds.minY - oy) * scaleY;
@@ -231,18 +220,9 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): World
       maxY = Math.max(maxY, maxY_);
       continue;
     }
-    if (
-      handle.kind === 'shape' ||
-      handle.kind === 'image' ||
-      handle.kind === 'text' ||
-      handle.kind === 'code'
-    ) {
+    if (handle.kind === 'shape' || handle.kind === 'image' || handle.kind === 'text' || handle.kind === 'code') {
       const frame =
-        handle.kind === 'text'
-          ? getTextFrame(handle.id)
-          : handle.kind === 'code'
-            ? getCodeFrame(handle.id)
-            : getFrame(handle.y);
+        handle.kind === 'text' ? getTextFrame(handle.id) : handle.kind === 'code' ? getCodeFrame(handle.id) : getFrame(handle.y);
       if (!frame) continue;
       const [x, y, w, h] = frame;
       minX = Math.min(minX, x);

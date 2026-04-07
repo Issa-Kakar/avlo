@@ -24,10 +24,7 @@ export async function ensureFontsLoaded(): Promise<void> {
     const loads: Promise<FontFace[]>[] = [];
     for (const family of Object.keys(FONT_FAMILIES)) {
       const q = `"${family}"`;
-      if (
-        !document.fonts.check(`${FONT_WEIGHTS.normal} 16px ${q}`) ||
-        !document.fonts.check(`${FONT_WEIGHTS.bold} 16px ${q}`)
-      ) {
+      if (!document.fonts.check(`${FONT_WEIGHTS.normal} 16px ${q}`) || !document.fonts.check(`${FONT_WEIGHTS.bold} 16px ${q}`)) {
         loads.push(
           document.fonts.load(`${FONT_WEIGHTS.normal} 16px ${q}`),
           document.fonts.load(`${FONT_WEIGHTS.bold} 16px ${q}`),

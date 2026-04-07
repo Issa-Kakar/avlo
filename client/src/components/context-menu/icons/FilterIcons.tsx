@@ -29,50 +29,25 @@ export const IconPenStroke = (props: SvgProps) => (
 export const IconConnectorLine = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
     <circle cx="3" cy="12" r="1.5" fill="currentColor" />
-    <path
-      d="M3 10.5V6.5C3 5.4 3.9 4.5 5 4.5H11"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-    />
-    <path
-      d="M10 2L13 4.5L10 7"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <path d="M3 10.5V6.5C3 5.4 3.9 4.5 5 4.5H11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <path d="M10 2L13 4.5L10 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
 /** Angle brackets < > (kind: code) */
 export const IconCodeBlock = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
-    <path
-      d="M5.5 3.5L2 8L5.5 12.5"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M10.5 3.5L14 8L10.5 12.5"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <path d="M5.5 3.5L2 8L5.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M10.5 3.5L14 8L10.5 12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
 /** Mountain landscape (kind: images) */
 export const IconImages = (props: SvgProps) => (
   <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" {...props}>
-    <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"
-      stroke="currentColor" strokeWidth="1.5" />
+    <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
     <circle cx="5" cy="6" r="1.25" fill="currentColor" />
-    <path d="M2 12L5.5 8L8 10.5L10.5 7.5L14 12"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M2 12L5.5 8L8 10.5L10.5 7.5L14 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 

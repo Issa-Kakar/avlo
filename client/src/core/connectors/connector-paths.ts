@@ -123,11 +123,7 @@ export function buildConnectorPaths(params: ConnectorPathParams): ConnectorPaths
  * @param endTrim - Trim info for end arrow (or null)
  * @returns Path2D for the polyline
  */
-export function buildRoundedPolylinePath(
-  points: [number, number][],
-  startTrim: EndTrimInfo | null,
-  endTrim: EndTrimInfo | null,
-): Path2D {
+export function buildRoundedPolylinePath(points: [number, number][], startTrim: EndTrimInfo | null, endTrim: EndTrimInfo | null): Path2D {
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
   const path = new Path2D();
 
@@ -190,11 +186,7 @@ export function buildRoundedPolylinePath(
  * @param position - Which end ('start' or 'end')
  * @returns Path2D for the arrow triangle
  */
-export function buildArrowPath(
-  points: [number, number][],
-  strokeWidth: number,
-  position: 'start' | 'end',
-): Path2D {
+export function buildArrowPath(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): Path2D {
   const geom = computeArrowGeometry(points, strokeWidth, position);
   if (!geom) return new Path2D();
 
@@ -218,11 +210,7 @@ export function buildArrowPath(
  * @param position - Which end ('start' or 'end')
  * @returns Arrow geometry or null if not enough points
  */
-export function computeArrowGeometry(
-  points: [number, number][],
-  strokeWidth: number,
-  position: 'start' | 'end',
-): ArrowGeometry | null {
+export function computeArrowGeometry(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): ArrowGeometry | null {
   if (points.length < 2) return null;
 
   let tip: [number, number];
@@ -258,14 +246,8 @@ export function computeArrowGeometry(
 
   return {
     tip: [tipX, tipY],
-    left: [
-      tipX - ux * scaledLength + px * scaledHalfWidth,
-      tipY - uy * scaledLength + py * scaledHalfWidth,
-    ],
-    right: [
-      tipX - ux * scaledLength - px * scaledHalfWidth,
-      tipY - uy * scaledLength - py * scaledHalfWidth,
-    ],
+    left: [tipX - ux * scaledLength + px * scaledHalfWidth, tipY - uy * scaledLength + py * scaledHalfWidth],
+    right: [tipX - ux * scaledLength - px * scaledHalfWidth, tipY - uy * scaledLength - py * scaledHalfWidth],
     length: scaledLength,
   };
 }
@@ -287,10 +269,7 @@ export function computeArrowGeometry(
  * @param strokeWidth - Connector stroke width
  * @returns Scaled arrow dimensions
  */
-export function computeScaledArrowDimensions(
-  segmentLength: number,
-  strokeWidth: number,
-): ScaledArrowDimensions {
+export function computeScaledArrowDimensions(segmentLength: number, strokeWidth: number): ScaledArrowDimensions {
   const fullLength = computeArrowLength(strokeWidth);
 
   // Arrow never exceeds half the segment (Excalidraw approach)
@@ -322,11 +301,7 @@ export function computeScaledArrowDimensions(
  * @param position - Which end to trim ('start' or 'end')
  * @returns Trim info or null if not enough points
  */
-export function computeEndTrimInfo(
-  points: [number, number][],
-  strokeWidth: number,
-  position: 'start' | 'end',
-): EndTrimInfo | null {
+export function computeEndTrimInfo(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): EndTrimInfo | null {
   if (points.length < 2) return null;
 
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;

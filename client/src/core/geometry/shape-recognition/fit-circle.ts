@@ -19,8 +19,7 @@ export function fitCircle(points: Vec2[]): {
   if (n < 3) {
     const cx = points.reduce((sum, p) => sum + p[0], 0) / n;
     const cy = points.reduce((sum, p) => sum + p[1], 0) / n;
-    const r =
-      n === 2 ? Math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1]) / 2 : 10;
+    const r = n === 2 ? Math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1]) / 2 : 10;
     return { cx, cy, r, residualRMS: 0 };
   }
 
@@ -69,8 +68,7 @@ export function fitCircle(points: Vec2[]): {
   const A3 = 4 * Mz;
   const A2 = -3 * Mz * Mz - Mzz;
   const A1 = Mzz * Mz + 4 * Cov_xy * Mz - Mxz * Mxz - Myz * Myz - Mz * Mz * Mz;
-  const A0 =
-    Mxz * Mxz * Myy + Myz * Myz * Mxx - Mzz * Cov_xy - 2 * Mxz * Myz * Mxy + Mz * Mz * Cov_xy;
+  const A0 = Mxz * Mxz * Myy + Myz * Myz * Mxx - Mzz * Cov_xy - 2 * Mxz * Myz * Mxy + Mz * Mz * Cov_xy;
 
   // Step 4: Find the root using Newton's method
   let x = 0; // initial guess
@@ -106,8 +104,7 @@ export function fitCircle(points: Vec2[]): {
 
   // Calculate radius
   // OLD (BUGGY): Extra /2 incorrectly halves the variance term
-  const r2_OLD =
-    (Mxx + Myy - 2 * x) / 2 + (cx - meanX) * (cx - meanX) + (cy - meanY) * (cy - meanY);
+  const r2_OLD = (Mxx + Myy - 2 * x) / 2 + (cx - meanX) * (cx - meanX) + (cy - meanY) * (cy - meanY);
   const r_OLD = Math.sqrt(Math.max(0, r2_OLD));
 
   // NEW (CORRECTED): Moments already normalized by n, so no /2 needed

@@ -38,14 +38,7 @@ export function SizeLabel({ value, kind, onSelect }: SizeLabelProps) {
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <button className="ctx-size-label-btn" onMouseDown={toggle}>
-        <svg
-          width={svgW}
-          height={16}
-          viewBox={`0 0 ${svgW} 16`}
-          fill="none"
-          aria-hidden="true"
-          style={{ flexShrink: 0 }}
-        >
+        <svg width={svgW} height={16} viewBox={`0 0 ${svgW} 16`} fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
           <text
             x="0"
             y="12"

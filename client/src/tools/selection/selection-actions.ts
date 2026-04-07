@@ -1,9 +1,4 @@
-import {
-  getObjectsById,
-  transact,
-  getConnectorsForShape,
-  getObjects,
-} from '@/runtime/room-runtime';
+import { getObjectsById, transact, getConnectorsForShape, getObjects } from '@/runtime/room-runtime';
 import {
   getStartAnchor,
   getEndAnchor,
@@ -18,12 +13,7 @@ import {
 } from '@/core/accessors';
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
 import { useSelectionStore } from '@/stores/selection-store';
-import {
-  useDeviceUIStore,
-  TEXT_FONT_SIZE_PRESETS,
-  type SizePreset,
-  type ConnectorSizePreset,
-} from '@/stores/device-ui-store';
+import { useDeviceUIStore, TEXT_FONT_SIZE_PRESETS, type SizePreset, type ConnectorSizePreset } from '@/stores/device-ui-store';
 import { textTool } from '@/runtime/tool-registry';
 import { getTextFrame, anchorFactor } from '@/core/text/text-system';
 import { computeUniformInlineStyles } from './selection-utils';
@@ -73,8 +63,7 @@ export function setSelectedFillColor(fillColor: string | null): void {
   transact(() => {
     for (const id of ids) {
       const handle = objectsById.get(id);
-      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note'))
-        continue;
+      if (!handle || (handle.kind !== 'shape' && handle.kind !== 'text' && handle.kind !== 'note')) continue;
       if (fillColor === null) handle.y.delete('fillColor');
       else handle.y.set('fillColor', fillColor);
     }
@@ -145,10 +134,7 @@ export function deleteSelected(): void {
   const idsToDelete = new Set(selectedIds);
 
   // Collect connector anchor cleanups for surviving connectors
-  const anchorCleanups = new Map<
-    string,
-    { y: Y.Map<unknown>; clearStart: boolean; clearEnd: boolean }
-  >();
+  const anchorCleanups = new Map<string, { y: Y.Map<unknown>; clearStart: boolean; clearEnd: boolean }>();
 
   for (const id of idsToDelete) {
     const handle = objectsById.get(id);
@@ -242,8 +228,7 @@ export function setSelectedFontSize(size: number): void {
 }
 
 export function incrementFontSize(): void {
-  const fontSize =
-    useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
   const current = Math.round(fontSize);
   if (current < 10) {
     setSelectedFontSize(10);
@@ -254,8 +239,7 @@ export function incrementFontSize(): void {
 }
 
 export function decrementFontSize(): void {
-  const fontSize =
-    useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
+  const fontSize = useSelectionStore.getState().selectedStyles.fontSize ?? useDeviceUIStore.getState().textSize;
   const current = Math.round(fontSize);
   if (current > 144) {
     setSelectedFontSize(144);
@@ -279,11 +263,7 @@ export function setSelectedFontFamily(family: FontFamily): void {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle) continue;
-      if (
-        handle.kind === 'text' ||
-        handle.kind === 'note' ||
-        (handle.kind === 'shape' && hasLabel(handle.y))
-      ) {
+      if (handle.kind === 'text' || handle.kind === 'note' || (handle.kind === 'shape' && hasLabel(handle.y))) {
         handle.y.set('fontFamily', family);
       }
     }

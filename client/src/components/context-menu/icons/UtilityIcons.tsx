@@ -4,13 +4,7 @@ type SvgProps = React.SVGProps<SVGSVGElement>;
 
 export const IconChevronDown = (props: SvgProps) => (
   <svg viewBox="0 0 10 10" fill="none" aria-hidden="true" {...props}>
-    <path
-      d="M2 3.5L5 6.5L8 3.5"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
@@ -42,25 +36,13 @@ export const IconCheck = (props: SvgProps) => (
 
 export const IconStepUp = (props: SvgProps) => (
   <svg viewBox="0 0 10 6" fill="none" aria-hidden="true" {...props}>
-    <path
-      d="M1 5L5 1L9 5"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 
 export const IconStepDown = (props: SvgProps) => (
   <svg viewBox="0 0 10 6" fill="none" aria-hidden="true" {...props}>
-    <path
-      d="M1 1L5 5L9 1"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
+    <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
 

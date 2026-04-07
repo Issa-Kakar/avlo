@@ -131,9 +131,7 @@ function getLayout(
   if (cached) return cached;
 
   const hasOgImage = !!props.ogImageAssetId;
-  const ogH = hasOgImage
-    ? ogDisplayHeight(props.ogImageWidth ?? 0, props.ogImageHeight ?? 0, cardWidth)
-    : 0;
+  const ogH = hasOgImage ? ogDisplayHeight(props.ogImageWidth ?? 0, props.ogImageHeight ?? 0, cardWidth) : 0;
   const textWidth = cardWidth - CARD_PADDING * 2;
 
   measureCtx.font = `bold ${TITLE_FONT_SIZE}px Inter, sans-serif`;
@@ -159,12 +157,7 @@ function getLayout(
   return layout;
 }
 
-function computeLayoutHeight(
-  hasOgImage: boolean,
-  ogH: number,
-  titleLines: string[],
-  descLines: string[],
-): number {
+function computeLayoutHeight(hasOgImage: boolean, ogH: number, titleLines: string[], descLines: string[]): number {
   const titleH = titleLines.length * TITLE_LINE_H;
   const descH = descLines.length * DESC_LINE_H;
   const domainLineH = FAVICON_SIZE;
@@ -188,9 +181,7 @@ export function computeBookmarkHeight(data: {
   ogImageHeight?: number;
 }): number {
   const hasOgImage = !!data.ogImageAssetId;
-  const ogH = hasOgImage
-    ? ogDisplayHeight(data.ogImageWidth ?? 0, data.ogImageHeight ?? 0, BOOKMARK_WIDTH)
-    : 0;
+  const ogH = hasOgImage ? ogDisplayHeight(data.ogImageWidth ?? 0, data.ogImageHeight ?? 0, BOOKMARK_WIDTH) : 0;
   const textWidth = BOOKMARK_WIDTH - CARD_PADDING * 2;
 
   measureCtx.font = `bold ${TITLE_FONT_SIZE}px Inter, sans-serif`;
@@ -267,12 +258,7 @@ const boxArrowPath = new Path2D('M1 11H11V7.5 M1 11V1H4.5 M5 7L11 1 M7.5 1H11V4'
 // "Open" button drawing
 // ---------------------------------------------------------------------------
 
-function drawOpenButton(
-  ctx: CanvasRenderingContext2D,
-  bx: number,
-  by: number,
-  hovered = false,
-): void {
+function drawOpenButton(ctx: CanvasRenderingContext2D, bx: number, by: number, hovered = false): void {
   // Background rounded rect — white pill with border
   ctx.fillStyle = hovered ? '#e8e8e8' : '#FFFFFF';
   ctx.beginPath();
@@ -379,11 +365,7 @@ function drawFullCard(
     }
 
     // "Open" button overlaid on image bottom-right
-    drawOpenButton(
-      ctx,
-      x + w - OPEN_BTN_W - OPEN_BTN_MARGIN,
-      y + displayH - OPEN_BTN_H - OPEN_BTN_MARGIN,
-    );
+    drawOpenButton(ctx, x + w - OPEN_BTN_W - OPEN_BTN_MARGIN, y + displayH - OPEN_BTN_H - OPEN_BTN_MARGIN);
 
     cursorY += displayH;
   }
@@ -435,12 +417,7 @@ function drawTextCard(
 // Shared drawing helpers
 // ---------------------------------------------------------------------------
 
-function drawTitleLines(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  lines: string[],
-): void {
+function drawTitleLines(ctx: CanvasRenderingContext2D, x: number, y: number, lines: string[]): void {
   if (lines.length === 0) return;
   ctx.font = `bold ${TITLE_FONT_SIZE}px Inter, sans-serif`;
   ctx.fillStyle = '#1a1a1a';
@@ -491,12 +468,7 @@ function drawBottomRow(
 
   // "Open" button on the right (when no OG image)
   if (showOpenButton) {
-    drawOpenButton(
-      ctx,
-      textX + textWidth - OPEN_BTN_W,
-      domainY + (FAVICON_SIZE - OPEN_BTN_H) / 2,
-      buttonHovered,
-    );
+    drawOpenButton(ctx, textX + textWidth - OPEN_BTN_W, domainY + (FAVICON_SIZE - OPEN_BTN_H) / 2, buttonHovered);
   }
 }
 
@@ -504,11 +476,7 @@ function drawBottomRow(
 // Public layout accessor (for external hit testing)
 // ---------------------------------------------------------------------------
 
-export function getBookmarkLayout(
-  id: string,
-  props: NonNullable<ReturnType<typeof getBookmarkProps>>,
-  cardWidth?: number,
-): BookmarkLayout {
+export function getBookmarkLayout(id: string, props: NonNullable<ReturnType<typeof getBookmarkProps>>, cardWidth?: number): BookmarkLayout {
   return getLayout(id, props, cardWidth);
 }
 
@@ -545,16 +513,10 @@ export function getOpenButtonLocalBounds(layout: BookmarkLayout, cardWidth: numb
  * Returns the domain text rect in frame-local coordinates.
  * Uses cached domainTextWidth from layout — no re-measurement.
  */
-export function getDomainLinkLocalBounds(
-  layout: BookmarkLayout,
-  _cardWidth: number,
-  hasFavicon: boolean,
-): LocalRect {
+export function getDomainLinkLocalBounds(layout: BookmarkLayout, _cardWidth: number, hasFavicon: boolean): LocalRect {
   const titleH = layout.titleLines.length * TITLE_LINE_H;
   const descH = layout.descLines.length * DESC_LINE_H;
-  const domainY = layout.hasOgImage
-    ? layout.ogDisplayH + CARD_PADDING + titleH + descH + 4
-    : CARD_PADDING + titleH + descH + 4;
+  const domainY = layout.hasOgImage ? layout.ogDisplayH + CARD_PADDING + titleH + descH + 4 : CARD_PADDING + titleH + descH + 4;
   const faviconOffset = hasFavicon ? FAVICON_SIZE + 6 : 0;
   return {
     lx: CARD_PADDING + faviconOffset,

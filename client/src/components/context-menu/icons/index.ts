@@ -9,28 +9,8 @@ export {
 export { TextColorIcon } from './TextColorIcon';
 export { HighlightIcon } from './HighlightIcon';
 export { IconBold, IconItalic } from './FormatIcons';
-export {
-  IconChevronDown,
-  IconMinus,
-  IconPlus,
-  IconMoreDots,
-  IconNoFill,
-  IconCheck,
-} from './UtilityIcons';
-export {
-  IconShapes,
-  IconPenStroke,
-  IconConnectorLine,
-  IconTextType,
-  IconCodeBlock,
-  IconImages,
-} from './FilterIcons';
+export { IconChevronDown, IconMinus, IconPlus, IconMoreDots, IconNoFill, IconCheck } from './UtilityIcons';
+export { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages } from './FilterIcons';
 export { IconTrash } from './TrashIcon';
 export { IconCodeLines, IconCodeHeader, IconCodeOutput } from './CodeIcons';
-export {
-  IconRectType,
-  IconCircleType,
-  IconDiamondType,
-  IconRoundedRectType,
-  IconStickySquareFold,
-} from './ShapeTypeIcons';
+export { IconRectType, IconCircleType, IconDiamondType, IconRoundedRectType, IconStickySquareFold } from './ShapeTypeIcons';

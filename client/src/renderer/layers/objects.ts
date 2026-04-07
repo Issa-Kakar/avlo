@@ -58,21 +58,14 @@ import {
   NOTE_WIDTH,
 } from '@/core/text/text-system';
 import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@/core/accessors';
-import {
-  computeUniformScaleNoThreshold,
-  computePreservedPosition,
-} from '@/core/geometry/transform';
+import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/core/geometry/transform';
 import { codeSystem, renderCodeLayout, getCodeFrame } from '@/core/code/code-system';
 import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
 import { getBitmap } from '@/core/image/image-manager';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { getBookmarkProps } from '@/core/accessors';
 
-export function drawObjects(
-  ctx: CanvasRenderingContext2D,
-  snapshot: Snapshot,
-  clipWorldRects?: WorldBounds[],
-): void {
+export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, clipWorldRects?: WorldBounds[]): void {
   const { spatialIndex, objectsById } = snapshot;
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
   const selectionState = useSelectionStore.getState();
@@ -165,21 +158,10 @@ export function drawObjects(
         }
       } else if (transform.kind === 'scale') {
         // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(
-          ctx,
-          handle,
-          transform,
-          connTopology,
-          textReflow,
-          codeReflow,
-        );
+        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology, textReflow, codeReflow);
       } else if (transform.kind === 'endpointDrag') {
         // Endpoint drag: draw from rerouted points if available
-        if (
-          handle.kind === 'connector' &&
-          handle.id === transform.connectorId &&
-          transform.routedPoints
-        ) {
+        if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
           drawConnectorFromPoints(ctx, handle, transform.routedPoints);
         } else {
           drawObject(ctx, handle);
@@ -302,11 +284,7 @@ function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
   renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
 }
 
-function drawShapeLabelWithFrame(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  frame: FrameTuple,
-): void {
+function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frame: FrameTuple): void {
   if (useSelectionStore.getState().textEditingId === handle.id) return;
   const measured = textLayoutCache.getMeasuredContent(handle.id);
   if (!measured) return;
@@ -333,13 +311,7 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 
   const color = getColor(y);
   const fillColor = getFillColor(y);
-  const layout = textLayoutCache.getLayout(
-    id,
-    props.content,
-    props.fontSize,
-    props.fontFamily,
-    props.width,
-  );
+  const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.fontFamily, props.width);
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
 }
 
@@ -434,31 +406,12 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const props = getCodeProps(y);
   if (!props) return;
 
-  const layout = codeSystem.getLayout(
-    id,
-    props.content,
-    props.fontSize,
-    props.width,
-    props.language,
-    props.lineNumbers,
-  );
+  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(id);
   const lines = codeSystem.getSourceLines(id);
-  const title = props.headerVisible
-    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
-    : undefined;
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(
-    ctx,
-    layout,
-    props.origin[0],
-    props.origin[1],
-    props.fontSize,
-    spans,
-    lines,
-    title,
-    output,
-  );
+  renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
 }
 
 function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
@@ -530,11 +483,7 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
  * Draw a connector from explicit points (for rerouted connectors during transforms).
  * Reads styles from handle.y, builds fresh paths from the given points.
  */
-function drawConnectorFromPoints(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  points: [number, number][],
-): void {
+function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: [number, number][]): void {
   if (points.length < 2) return;
 
   const { y } = handle;
@@ -647,11 +596,7 @@ function drawShapeWithTransform(
  * - Geometry uses absolute magnitude (NEVER inverted/mirrored)
  * - No threshold - immediate flip when dominant axis < 0
  */
-function drawScaledStrokePreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawScaledStrokePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const { y } = handle;
   const points = getPoints(y);
   const originalWidth = getWidth(y);
@@ -664,14 +609,7 @@ function drawScaledStrokePreview(
   const { origin, scaleX, scaleY, originBounds } = transform;
 
   // Apply uniform scale with position preservation (copy-paste flip behavior)
-  const { points: scaledPoints, absScale } = applyUniformScaleToPoints(
-    points,
-    handle.bbox,
-    originBounds,
-    origin,
-    scaleX,
-    scaleY,
-  );
+  const { points: scaledPoints, absScale } = applyUniformScaleToPoints(points, handle.bbox, originBounds, origin, scaleX, scaleY);
 
   // Scale width for WYSIWYG
   const scaledWidth = originalWidth * absScale;
@@ -699,11 +637,7 @@ function drawScaledStrokePreview(
  * Draw shape with uniform scale and position preservation (for mixed + corner selection).
  * Uses center-based scaling with absScale (no geometry inversion) and preserved positions.
  */
-function drawShapeWithUniformScale(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawShapeWithUniformScale(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const { y } = handle;
   const frame = getFrame(y);
   if (!frame) return;
@@ -752,11 +686,7 @@ function drawShapeWithUniformScale(
  * Draw text with uniform scale preview using ctx.scale on cached layout.
  * Font size is rounded to 3dp for WYSIWYG match with commit.
  */
-function drawScaledTextPreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawScaledTextPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const textFrame = getTextFrame(handle.id);
   if (!textFrame) {
     drawText(ctx, handle);
@@ -795,13 +725,7 @@ function drawScaledTextPreview(
   // Reuse cached layout — ctx.scale does the visual scaling
   const color = getColor(handle.y);
   const fillColor = getFillColor(handle.y);
-  const layout = textLayoutCache.getLayout(
-    handle.id,
-    props.content,
-    props.fontSize,
-    props.fontFamily,
-    props.width,
-  );
+  const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
 
   ctx.save();
   ctx.translate(newOriginX, newOriginY);
@@ -813,37 +737,21 @@ function drawScaledTextPreview(
 /**
  * Draw text with reflow preview from pre-computed layout/origin.
  */
-function drawReflowedTextPreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  textReflow: TextReflowState,
-): void {
+function drawReflowedTextPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, textReflow: TextReflowState): void {
   const layout = textReflow.layouts.get(handle.id);
   const reflowOrigin = textReflow.origins.get(handle.id);
   if (!layout || !reflowOrigin) {
     drawText(ctx, handle);
     return;
   }
-  renderTextLayout(
-    ctx,
-    layout,
-    reflowOrigin[0],
-    reflowOrigin[1],
-    getColor(handle.y),
-    getAlign(handle.y),
-    getFillColor(handle.y),
-  );
+  renderTextLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], getColor(handle.y), getAlign(handle.y), getFillColor(handle.y));
 }
 
 /**
  * Draw code block with uniform scale preview using ctx.scale on cached layout.
  * Font size is rounded to 3dp for WYSIWYG match with commit.
  */
-function drawScaledCodePreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawScaledCodePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const codeFrame = getCodeFrame(handle.id);
   if (!codeFrame) {
     drawCode(ctx, handle);
@@ -872,19 +780,10 @@ function drawScaledCodePreview(
   const nfy = newCy - (fh * effectiveAbsScale) / 2;
 
   // Reuse cached layout — ctx.scale does the visual scaling
-  const layout = codeSystem.getLayout(
-    handle.id,
-    props.content,
-    props.fontSize,
-    props.width,
-    props.language,
-    props.lineNumbers,
-  );
+  const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible
-    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
-    : undefined;
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
 
   ctx.save();
@@ -899,11 +798,7 @@ function drawScaledCodePreview(
  * Uses bbox center for position preservation (handles are at bbox positions).
  * drawBookmark internally applies ctx.scale(bookmarkScale) — nested scales compose.
  */
-function drawScaledBookmarkPreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawScaledBookmarkPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const props = getBookmarkProps(handle.y);
   if (!props) {
     drawBookmark(ctx, handle);
@@ -948,11 +843,7 @@ function drawScaledBookmarkPreview(
  * Uses bbox center for position preservation (handles are at bbox positions).
  * drawStickyNote internally applies ctx.scale(noteScale) — nested scales compose.
  */
-function drawScaledNotePreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-): void {
+function drawScaledNotePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
   const props = getNoteProps(handle.y);
   if (!props) {
     drawStickyNote(ctx, handle);
@@ -999,11 +890,7 @@ function drawScaledNotePreview(
 /**
  * Draw code block with reflow preview from pre-computed layout/origin.
  */
-function drawReflowedCodePreview(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  codeReflow: CodeReflowState,
-): void {
+function drawReflowedCodePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, codeReflow: CodeReflowState): void {
   const layout = codeReflow.layouts.get(handle.id);
   const reflowOrigin = codeReflow.origins.get(handle.id);
   if (!layout || !reflowOrigin) {
@@ -1016,21 +903,9 @@ function drawReflowedCodePreview(
 
   const spans = codeSystem.getSpans(handle.id);
   const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible
-    ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`)
-    : undefined;
+  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
   const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(
-    ctx,
-    layout,
-    reflowOrigin[0],
-    reflowOrigin[1],
-    props.fontSize,
-    spans,
-    lines,
-    title,
-    output,
-  );
+  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines, title, output);
 }
 
 /**
@@ -1062,14 +937,7 @@ function renderSelectedObjectWithScaleTransform(
 
   // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
   if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-    const { dx, dy } = computeStrokeTranslation(
-      handle,
-      originBounds,
-      scaleX,
-      scaleY,
-      origin,
-      handleId,
-    );
+    const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
     ctx.save();
     ctx.translate(dx, dy);
     drawObject(ctx, handle); // Use cached Path2D
@@ -1087,17 +955,7 @@ function renderSelectedObjectWithScaleTransform(
   if (handle.kind === 'bookmark') {
     if (selectionKind === 'mixed' && handleKind === 'side') {
       const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-      const { dx, dy } = computeEdgePinTranslation(
-        bMinX,
-        bMaxX,
-        bMinY,
-        bMaxY,
-        originBounds,
-        scaleX,
-        scaleY,
-        origin,
-        handleId,
-      );
+      const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
       ctx.save();
       ctx.translate(dx, dy);
       drawBookmark(ctx, handle);
@@ -1135,13 +993,7 @@ function renderSelectedObjectWithScaleTransform(
       ctx.restore();
     } else {
       // Uniform scale for all other cases
-      const transformedFrame = applyUniformScaleToFrame(
-        frame,
-        originBounds,
-        origin,
-        scaleX,
-        scaleY,
-      );
+      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
       const [, , tw, th] = transformedFrame;
       if (tw < 0.001 || th < 0.001) return;
       const assetId = getAssetId(handle.y);
@@ -1168,17 +1020,7 @@ function renderSelectedObjectWithScaleTransform(
     if (selectionKind === 'mixed' && handleKind === 'side') {
       // Edge-pin: use bbox bounds (matches computeRawGeometryBounds)
       const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-      const { dx, dy } = computeEdgePinTranslation(
-        bMinX,
-        bMaxX,
-        bMinY,
-        bMaxY,
-        originBounds,
-        scaleX,
-        scaleY,
-        origin,
-        handleId,
-      );
+      const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
       ctx.save();
       ctx.translate(dx, dy);
       drawStickyNote(ctx, handle);
@@ -1203,10 +1045,7 @@ function renderSelectedObjectWithScaleTransform(
 
   // CASE 5: Text — corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'text') {
-    if (
-      handleKind === 'corner' ||
-      ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')
-    ) {
+    if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')) {
       drawScaledTextPreview(ctx, handle, transform);
     } else if ((handleId === 'e' || handleId === 'w') && textReflow?.layouts.has(handle.id)) {
       drawReflowedTextPreview(ctx, handle, textReflow);
@@ -1241,10 +1080,7 @@ function renderSelectedObjectWithScaleTransform(
 
   // CASE 6: Code — corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
   if (handle.kind === 'code') {
-    if (
-      handleKind === 'corner' ||
-      ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')
-    ) {
+    if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')) {
       drawScaledCodePreview(ctx, handle, transform);
     } else if ((handleId === 'e' || handleId === 'w') && codeReflow?.layouts.has(handle.id)) {
       drawReflowedCodePreview(ctx, handle, codeReflow);

@@ -30,12 +30,7 @@ import {
 } from './shape-params';
 import { fitCircle } from './fit-circle';
 import { fitAABB } from './fit-aabb';
-import {
-  detectCorners,
-  reconstructRectangleEdges,
-  hasSelfIntersection,
-  hasNearTouch,
-} from './geometry-helpers';
+import { detectCorners, reconstructRectangleEdges, hasSelfIntersection, hasNearTouch } from './geometry-helpers';
 import { scoreCircle, scoreRectangleAABB } from './score';
 import { simplifyStroke } from './simplification';
 
@@ -86,17 +81,9 @@ export interface RecognitionResult {
  * @param pointerNowWU - Current pointer position in world units
  * @returns Recognition result with shape type and parameters
  */
-export function recognizeOpenStroke({
-  pointsWU,
-  pointerNowWU,
-}: {
-  pointsWU: number[];
-  pointerNowWU: [number, number];
-}): RecognitionResult {
+export function recognizeOpenStroke({ pointsWU, pointerNowWU }: { pointsWU: number[]; pointerNowWU: [number, number] }): RecognitionResult {
   console.group('🎨 Shape Recognition Pipeline');
-  console.log(
-    `Stroke points: ${pointsWU.length / 2}, Pointer at: [${pointerNowWU[0].toFixed(1)}, ${pointerNowWU[1].toFixed(1)}]`,
-  );
+  console.log(`Stroke points: ${pointsWU.length / 2}, Pointer at: [${pointerNowWU[0].toFixed(1)}, ${pointerNowWU[1].toFixed(1)}]`);
 
   // =========================================================================
   // Step 1: Convert flat array to Vec2 array for processing
@@ -246,12 +233,8 @@ export function recognizeOpenStroke({
   console.log(`Rectangle (AABB) score: ${boxScore.toFixed(3)}`);
 
   // Count right-angle corners for tie-breaker
-  const rightAngleCorners = corners.filter(
-    (c) => Math.abs(c.angle - 90) <= RECT_CORNER_TIE_TOLERANCE_DEG,
-  );
-  console.log(
-    `Right-angle corners (within ±${RECT_CORNER_TIE_TOLERANCE_DEG}°): ${rightAngleCorners.length}`,
-  );
+  const rightAngleCorners = corners.filter((c) => Math.abs(c.angle - 90) <= RECT_CORNER_TIE_TOLERANCE_DEG);
+  console.log(`Right-angle corners (within ±${RECT_CORNER_TIE_TOLERANCE_DEG}°): ${rightAngleCorners.length}`);
 
   // =========================================================================
   // Step 5: Apply confidence logic with enhanced right-angle rules
@@ -264,9 +247,7 @@ export function recognizeOpenStroke({
 
   // Check for too many right angles (>4) - always ambiguous
   if (rightAngleCount > RECT_MAX_RIGHT_ANGLES) {
-    console.log(
-      `⚠️ TOO MANY right angles (${rightAngleCount} > 4) - AMBIGUOUS to prevent line snap`,
-    );
+    console.log(`⚠️ TOO MANY right angles (${rightAngleCount} > 4) - AMBIGUOUS to prevent line snap`);
     console.groupEnd();
     console.groupEnd();
 
@@ -282,9 +263,7 @@ export function recognizeOpenStroke({
   // Case 1: Rectangle tie-breaker - both pass confidence + ≥2 right angles
   if (circleScore >= SHAPE_CONFIDENCE_MIN && boxScore >= SHAPE_CONFIDENCE_MIN) {
     if (rightAngleCount >= 2) {
-      console.log(
-        `🎯 TIE-BREAKER: Rectangle wins (both pass confidence + ${rightAngleCount} right angles)`,
-      );
+      console.log(`🎯 TIE-BREAKER: Rectangle wins (both pass confidence + ${rightAngleCount} right angles)`);
       console.groupEnd();
       console.groupEnd();
 
@@ -315,11 +294,7 @@ export function recognizeOpenStroke({
 
   // Case 3: Check for ambiguity based on right angles
   // If rectangle wins with <2 right angles, make ambiguous
-  if (
-    winner.kind === 'box' &&
-    winner.score >= SHAPE_CONFIDENCE_MIN &&
-    rightAngleCount < RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE
-  ) {
+  if (winner.kind === 'box' && winner.score >= SHAPE_CONFIDENCE_MIN && rightAngleCount < RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE) {
     console.log(`⚠️ Rectangle wins but has <2 right angles (${rightAngleCount}) - AMBIGUOUS`);
     console.groupEnd();
     console.groupEnd();
@@ -350,9 +325,7 @@ export function recognizeOpenStroke({
 
   // Case 4: Winner passes confidence threshold (and passed ambiguity checks above)
   if (winner.score >= SHAPE_CONFIDENCE_MIN) {
-    console.log(
-      `✅ RECOGNIZED: ${winner.kind.toUpperCase()} (score ${winner.score.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN})`,
-    );
+    console.log(`✅ RECOGNIZED: ${winner.kind.toUpperCase()} (score ${winner.score.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN})`);
     console.groupEnd();
     console.groupEnd();
 
@@ -382,9 +355,7 @@ export function recognizeOpenStroke({
   const nearMissThreshold = SHAPE_CONFIDENCE_MIN - SHAPE_AMBIGUITY_DELTA;
 
   if (maxScore >= nearMissThreshold) {
-    console.log(
-      `🤷 NEAR-MISS: Best score ${maxScore.toFixed(3)} is within ${SHAPE_AMBIGUITY_DELTA} of threshold`,
-    );
+    console.log(`🤷 NEAR-MISS: Best score ${maxScore.toFixed(3)} is within ${SHAPE_AMBIGUITY_DELTA} of threshold`);
     console.log(`📝 NO SNAP - User likely intended a shape, continue freehand`);
     console.groupEnd();
     console.groupEnd();
@@ -402,10 +373,7 @@ export function recognizeOpenStroke({
   // Case 6: Self-intersection check - prevent line snap for self-intersecting strokes
   if (LINE_SELF_INTERSECT_AMBIGUOUS) {
     // Calculate epsilon tolerance based on diagonal
-    const epsWU = Math.max(
-      LINE_SELF_INTERSECT_MIN_EPSILON,
-      LINE_SELF_INTERSECT_EPSILON_FACTOR * diag,
-    );
+    const epsWU = Math.max(LINE_SELF_INTERSECT_MIN_EPSILON, LINE_SELF_INTERSECT_EPSILON_FACTOR * diag);
 
     // Use the already decimated points from Track-B (jitter-free, minimum segment length)
     // This is the same array we used for corner detection
@@ -456,10 +424,7 @@ export function recognizeOpenStroke({
   if (LINE_NEAR_TOUCH_AMBIGUOUS) {
     // Calculate epsilon tolerance based on diagonal
     // Note: We don't have stroke size here, so we use a conservative estimate
-    const nearTouchEpsWU = Math.max(
-      LINE_NEAR_TOUCH_MIN_EPSILON,
-      LINE_NEAR_TOUCH_EPSILON_FACTOR * diag,
-    );
+    const nearTouchEpsWU = Math.max(LINE_NEAR_TOUCH_MIN_EPSILON, LINE_NEAR_TOUCH_EPSILON_FACTOR * diag);
 
     // Use the already decimated points from Track-B
     if (hasNearTouch(decimated, nearTouchEpsWU)) {

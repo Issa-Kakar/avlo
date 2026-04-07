@@ -40,11 +40,7 @@ const styleHighlighter = tagHighlighter([
   },
   { tag: [tags.lineComment, tags.blockComment, tags.docComment], class: 'comment' },
   {
-    tag: [
-      tags.function(tags.variableName),
-      tags.function(tags.propertyName),
-      tags.function(tags.definition(tags.variableName)),
-    ],
+    tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))],
     class: 'function',
   },
   {

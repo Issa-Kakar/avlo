@@ -28,12 +28,7 @@ import { animateToFit } from '@/runtime/viewport/zoom';
 import { deleteSelected } from '@/tools/selection/selection-actions';
 import type { WorldBounds } from '../types/geometry';
 import { normalizeUrl } from '@avlo/shared';
-import {
-  serializeObjects,
-  deserializeFragment,
-  extractPlainText,
-  type ClipboardPayload,
-} from './clipboard-serializer';
+import { serializeObjects, deserializeFragment, extractPlainText, type ClipboardPayload } from './clipboard-serializer';
 import { createImageFromBlob } from '../image/image-actions';
 import { enqueue } from '../image/image-manager';
 import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
@@ -41,14 +36,7 @@ import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
 // === Constants ===
 
 const PASTE_CHAR_LIMIT = 50_000;
-const PASTE_EXTENSIONS = [
-  Document,
-  Paragraph,
-  Text,
-  Bold,
-  Italic,
-  Highlight.configure({ multicolor: true }),
-];
+const PASTE_EXTENSIONS = [Document, Paragraph, Text, Bold, Italic, Highlight.configure({ multicolor: true })];
 
 // === Nonce State ===
 
@@ -346,11 +334,7 @@ function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | nu
           }
         }
 
-        xmlText.insert(
-          xmlText.length,
-          inline.text,
-          Object.keys(attrs).length > 0 ? attrs : undefined,
-        );
+        xmlText.insert(xmlText.length, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
         if (inline.text) hasContent = true;
       }
     }
@@ -364,12 +348,7 @@ function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | nu
 
 // === Paste URL as Text ===
 
-export function pasteUrlAsText(
-  url: string,
-  worldX: number,
-  worldY: number,
-  objectId?: string,
-): void {
+export function pasteUrlAsText(url: string, worldX: number, worldY: number, objectId?: string): void {
   const fragment = new Y.XmlFragment();
   const para = new Y.XmlElement('paragraph');
   const xmlText = new Y.XmlText();
@@ -381,19 +360,8 @@ export function pasteUrlAsText(
 
 // === Shared Text Object Creation ===
 
-function createPastedTextObject(
-  fragment: Y.XmlFragment,
-  charCount: number,
-  position?: [number, number],
-  existingId?: string,
-): void {
-  const {
-    textSize: fontSize,
-    textFontFamily: fontFamily,
-    textColor: color,
-    textAlign: align,
-    textFillColor,
-  } = useDeviceUIStore.getState();
+function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, position?: [number, number], existingId?: string): void {
+  const { textSize: fontSize, textFontFamily: fontFamily, textColor: color, textAlign: align, textFillColor } = useDeviceUIStore.getState();
 
   const [worldX, worldY] = position ?? getPasteTarget();
   const objectId = existingId ?? ulid();
@@ -602,13 +570,7 @@ function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [numb
 function ensureVisible(bounds: WorldBounds): void {
   const vp = getVisibleWorldBounds();
   // Already fully contained — nothing to do
-  if (
-    bounds.minX >= vp.minX &&
-    bounds.maxX <= vp.maxX &&
-    bounds.minY >= vp.minY &&
-    bounds.maxY <= vp.maxY
-  )
-    return;
+  if (bounds.minX >= vp.minX && bounds.maxX <= vp.maxX && bounds.minY >= vp.minY && bounds.maxY <= vp.maxY) return;
   const { scale } = useCameraStore.getState();
   // Only zoom out (cap at current scale), floor at 25% to avoid extreme zoom-out
   animateToFit(bounds, 80, scale, 0.25);

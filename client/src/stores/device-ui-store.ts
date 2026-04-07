@@ -7,18 +7,7 @@ import type { FontFamily, TextAlignV } from '@/core/accessors';
 import type { ConnectorCap, ConnectorType } from '@/core/connectors';
 import { generateUserProfile } from '@/utils/generate-user-profile';
 
-export type Tool =
-  | 'pen'
-  | 'highlighter'
-  | 'eraser'
-  | 'text'
-  | 'pan'
-  | 'select'
-  | 'shape'
-  | 'image'
-  | 'code'
-  | 'connector'
-  | 'note';
+export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code' | 'connector' | 'note';
 export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
 
 // Size types
@@ -33,12 +22,7 @@ export type TextAlign = 'left' | 'center' | 'right';
 
 // Font family options
 export type { FontFamily } from '@/core/accessors';
-export const TEXT_FONT_FAMILIES: readonly FontFamily[] = [
-  'Grandstander',
-  'Inter',
-  'Lora',
-  'JetBrains Mono',
-];
+export const TEXT_FONT_FAMILIES: readonly FontFamily[] = ['Grandstander', 'Inter', 'Lora', 'JetBrains Mono'];
 
 // Color palettes (module-level constants, not persisted)
 export const TEXT_COLOR_PALETTE: readonly string[] = [

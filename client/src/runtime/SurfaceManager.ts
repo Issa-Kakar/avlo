@@ -82,12 +82,7 @@ export class SurfaceManager {
   private dprCleanup: (() => void) | null = null;
   private currentDpr = window.devicePixelRatio || 1;
 
-  constructor(
-    container: HTMLElement,
-    baseCanvas: HTMLCanvasElement,
-    overlayCanvas: HTMLCanvasElement,
-    editorHostEl: HTMLDivElement,
-  ) {
+  constructor(container: HTMLElement, baseCanvas: HTMLCanvasElement, overlayCanvas: HTMLCanvasElement, editorHostEl: HTMLDivElement) {
     this.container = container;
     this.baseCanvas = baseCanvas;
     this.overlayCanvas = overlayCanvas;

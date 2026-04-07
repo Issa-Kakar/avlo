@@ -9,12 +9,7 @@ interface FontSizeStepperProps {
   onSelectSize?: (size: number) => void;
 }
 
-export const FontSizeStepper = ({
-  value,
-  onDecrement,
-  onIncrement,
-  onSelectSize,
-}: FontSizeStepperProps) => {
+export const FontSizeStepper = ({ value, onDecrement, onIncrement, onSelectSize }: FontSizeStepperProps) => {
   const { open, containerRef, toggle, close } = useDropdown();
   const display = Math.min(999, Math.max(1, Math.round(value)));
 
@@ -22,14 +17,7 @@ export const FontSizeStepper = ({
     <div className="ctx-fontsize-group">
       <div ref={containerRef} style={{ position: 'relative' }}>
         <button className="ctx-fontsize-value" onMouseDown={toggle}>
-          <svg
-            width={30}
-            height={16}
-            viewBox="0 0 30 16"
-            fill="none"
-            aria-hidden
-            style={{ flexShrink: 0 }}
-          >
+          <svg width={30} height={16} viewBox="0 0 30 16" fill="none" aria-hidden style={{ flexShrink: 0 }}>
             <text
               x="15"
               y="12"

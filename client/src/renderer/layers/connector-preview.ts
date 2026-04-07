@@ -20,12 +20,7 @@
 import type { ConnectorPreview } from '@/tools/types';
 import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
 import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
-import {
-  buildRoundedPolylinePath,
-  buildArrowPath,
-  computeEndTrimInfo,
-  ARROW_ROUNDING_LINE_WIDTH,
-} from '@/core/connectors/connector-paths';
+import { buildRoundedPolylinePath, buildArrowPath, computeEndTrimInfo, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getHandle } from '@/runtime/room-runtime';
 import { getPath } from '../geometry-cache';
 import { getWidth } from '@/core/accessors';
@@ -40,11 +35,7 @@ import { getWidth } from '@/core/accessors';
  * @param preview - ConnectorPreview data from tool
  * @param scale - Current zoom scale (for pxToWorld conversions)
  */
-export function drawConnectorPreview(
-  ctx: CanvasRenderingContext2D,
-  preview: ConnectorPreview,
-  scale: number,
-): void {
+export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: ConnectorPreview, scale: number): void {
   const {
     points,
     color,
@@ -99,15 +90,7 @@ export function drawConnectorPreview(
       drawDashedGuide(ctx, points[0], preview.startDashTo, color, width, scale, opacity);
     }
     if (preview.endDashTo && points.length >= 2) {
-      drawDashedGuide(
-        ctx,
-        points[points.length - 1],
-        preview.endDashTo,
-        color,
-        width,
-        scale,
-        opacity,
-      );
+      drawDashedGuide(ctx, points[points.length - 1], preview.endDashTo, color, width, scale, opacity);
     }
   }
 
@@ -117,11 +100,7 @@ export function drawConnectorPreview(
   // - Creating with end snapped (toIsAttached): show dots for end shape
   // Don't show dots after pointer down until end is snapped (prevents showing dots on start shape)
   const shouldShowDots =
-    (!fromIsAttached || toIsAttached) &&
-    snapShapeFrame !== null &&
-    snapSide !== null &&
-    snapPosition !== null &&
-    snapShapeType !== null;
+    (!fromIsAttached || toIsAttached) && snapShapeFrame !== null && snapSide !== null && snapPosition !== null && snapShapeType !== null;
 
   if (shouldShowDots) {
     // Draw snap target highlight — cached geometry for shapes, strokeRect for others
@@ -177,11 +156,7 @@ export function drawConnectorPreview(
  * Render an arrow path with fill + stroke for rounded corners.
  * Fixed roundingLineWidth of 5 gives ~2.5 unit corner radius at all sizes.
  */
-function drawArrowWithRoundedCorners(
-  ctx: CanvasRenderingContext2D,
-  arrowPath: Path2D,
-  color: string,
-): void {
+function drawArrowWithRoundedCorners(ctx: CanvasRenderingContext2D, arrowPath: Path2D, color: string): void {
   ctx.fillStyle = color;
   ctx.strokeStyle = color;
   ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;

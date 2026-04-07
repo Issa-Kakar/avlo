@@ -117,10 +117,5 @@ export function worldBoundsToFrame(b: WorldBounds): Frame {
  * AABB intersection test: FrameTuple [x, y, w, h] vs WorldBounds.
  */
 export function frameTupleIntersectsBounds(frame: FrameTuple, bounds: WorldBounds): boolean {
-  return (
-    frame[0] < bounds.maxX &&
-    frame[0] + frame[2] > bounds.minX &&
-    frame[1] < bounds.maxY &&
-    frame[1] + frame[3] > bounds.minY
-  );
+  return frame[0] < bounds.maxX && frame[0] + frame[2] > bounds.minX && frame[1] < bounds.maxY && frame[1] + frame[3] > bounds.minY;
 }

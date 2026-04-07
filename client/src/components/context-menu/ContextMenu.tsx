@@ -3,11 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
-import {
-  filterSelectionByKind,
-  selectInlineBold,
-  selectInlineItalic,
-} from '@/stores/selection-store';
+import { filterSelectionByKind, selectInlineBold, selectInlineItalic } from '@/stores/selection-store';
 import {
   setSelectedWidth,
   setSelectedColor,
@@ -41,15 +37,7 @@ import { TextColorPopover } from './TextColorPopover';
 import { HighlightPickerPopover } from './HighlightPickerPopover';
 import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
-import {
-  IconBold,
-  IconItalic,
-  IconMoreDots,
-  IconTrash,
-  IconCodeLines,
-  IconCodeHeader,
-  IconCodeOutput,
-} from './icons';
+import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines, IconCodeHeader, IconCodeOutput } from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
 import { NoteAlignDropdown } from './NoteAlignDropdown';
 import { getHandleKind } from '@/runtime/room-runtime';
@@ -101,9 +89,7 @@ const MixedFilterGroup = memo(function MixedFilterGroup() {
 });
 
 const StrokeStyleGroup = memo(function StrokeStyleGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(
-    useShallow(selectStrokeStyles),
-  );
+  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectStrokeStyles));
   return (
     <ButtonGroup>
       <SizeLabel value={width ?? 0} kind="stroke" onSelect={setSelectedWidth} />
@@ -121,8 +107,9 @@ const StrokeStyleGroup = memo(function StrokeStyleGroup() {
 });
 
 const ShapeStyleGroup = memo(function ShapeStyleGroup() {
-  const { color, width, fillColor, fillColorMixed, fillColorSecond, fontSize, labelColor } =
-    useSelectionStore(useShallow(selectShapeStyles));
+  const { color, width, fillColor, fillColorMixed, fillColorSecond, fontSize, labelColor } = useSelectionStore(
+    useShallow(selectShapeStyles),
+  );
   const deviceTextColor = useDeviceUIStore(selectTextColor);
   const deviceTextSize = useDeviceUIStore(selectTextSize);
   const effectiveLabelColor = labelColor ?? deviceTextColor;
@@ -146,13 +133,7 @@ const ShapeStyleGroup = memo(function ShapeStyleGroup() {
       <TextColorPopover color={effectiveLabelColor} onSelect={setSelectedTextColor} />
       <HighlightPickerPopover onSelect={setSelectedHighlight} />
       <div className="ctx-divider" />
-      <ColorPickerPopover
-        color={color}
-        variant="hollow"
-        mode="stroke"
-        selectedColor={color}
-        onSelect={setSelectedColor}
-      />
+      <ColorPickerPopover color={color} variant="hollow" mode="stroke" selectedColor={color} onSelect={setSelectedColor} />
       <ColorPickerPopover
         color={fillColor ?? '#fff'}
         variant={fillColor === null && !fillColorMixed ? 'none' : 'filled'}
@@ -186,9 +167,7 @@ const ItalicButton = memo(function ItalicButton() {
 });
 
 const TextStyleGroup = memo(function TextStyleGroup() {
-  const { fontSize, labelColor, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(
-    useShallow(selectTextStyles),
-  );
+  const { fontSize, labelColor, fillColor, fillColorMixed, fillColorSecond } = useSelectionStore(useShallow(selectTextStyles));
   const effectiveColor = labelColor ?? '#262626';
   return (
     <ButtonGroup>
@@ -230,9 +209,7 @@ const selectCodeStyles = (s: SelectionStore) => ({
 });
 
 const CodeStyleGroup = memo(function CodeStyleGroup() {
-  const { fontSize, headerVisible, outputVisible } = useSelectionStore(
-    useShallow(selectCodeStyles),
-  );
+  const { fontSize, headerVisible, outputVisible } = useSelectionStore(useShallow(selectCodeStyles));
   const effectiveFontSize = fontSize ?? 14;
   return (
     <ButtonGroup>
@@ -248,18 +225,10 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
       <MenuButton className="ctx-btn-sq" onMouseDown={toggleCodeLineNumbers}>
         <IconCodeLines style={{ width: 22, height: 16 }} />
       </MenuButton>
-      <MenuButton
-        className="ctx-btn-sq"
-        active={headerVisible === true}
-        onMouseDown={toggleCodeHeader}
-      >
+      <MenuButton className="ctx-btn-sq" active={headerVisible === true} onMouseDown={toggleCodeHeader}>
         <IconCodeHeader style={{ width: 16, height: 16 }} />
       </MenuButton>
-      <MenuButton
-        className="ctx-btn-sq"
-        active={outputVisible === true}
-        onMouseDown={toggleCodeOutput}
-      >
+      <MenuButton className="ctx-btn-sq" active={outputVisible === true} onMouseDown={toggleCodeOutput}>
         <IconCodeOutput style={{ width: 16, height: 16 }} />
       </MenuButton>
     </ButtonGroup>
@@ -267,9 +236,7 @@ const CodeStyleGroup = memo(function CodeStyleGroup() {
 });
 
 const ConnectorGroup = memo(function ConnectorGroup() {
-  const { color, colorMixed, colorSecond, width } = useSelectionStore(
-    useShallow(selectConnectorStyles),
-  );
+  const { color, colorMixed, colorSecond, width } = useSelectionStore(useShallow(selectConnectorStyles));
   return (
     <ButtonGroup>
       <SizeLabel value={width ?? 0} kind="connector" onSelect={setSelectedWidth} />

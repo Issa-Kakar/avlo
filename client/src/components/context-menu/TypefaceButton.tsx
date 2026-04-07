@@ -30,23 +30,8 @@ export function TypefaceButton() {
   return (
     <div ref={containerRef} style={{ position: 'relative' }}>
       <MenuButton className="ctx-btn-font" onMouseDown={toggle} aria-expanded={open}>
-        <svg
-          width={40}
-          height={16}
-          viewBox="0 0 40 16"
-          fill="none"
-          aria-hidden="true"
-          style={{ flexShrink: 0 }}
-        >
-          <text
-            x="0"
-            y="13"
-            fill="#374151"
-            fontSize="16"
-            fontWeight="500"
-            fontFamily={cssFallback}
-            textRendering="geometricPrecision"
-          >
+        <svg width={40} height={16} viewBox="0 0 40 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+          <text x="0" y="13" fill="#374151" fontSize="16" fontWeight="500" fontFamily={cssFallback} textRendering="geometricPrecision">
             {current.display}
           </text>
         </svg>

@@ -16,11 +16,7 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getCurrentTool } from '@/runtime/tool-registry';
 import { computeBookmarkHeight, BOOKMARK_WIDTH } from './bookmark-render';
-import {
-  createPlaceholder,
-  removePlaceholder,
-  removeAllPlaceholders,
-} from './bookmark-placeholder';
+import { createPlaceholder, removePlaceholder, removeAllPlaceholders } from './bookmark-placeholder';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,10 +106,7 @@ export function handleUnfurlResult(objectId: string, data: UnfurlResultData): vo
       ogImage: !!data.ogImageAssetId,
     });
     const height = computeBookmarkHeight(data);
-    const origin: [number, number] = [
-      pending.worldX - BOOKMARK_WIDTH / 2,
-      pending.worldY - height / 2,
-    ];
+    const origin: [number, number] = [pending.worldX - BOOKMARK_WIDTH / 2, pending.worldY - height / 2];
     const userId = getUserId();
 
     transact(() => {

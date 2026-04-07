@@ -46,14 +46,7 @@ export function getDiamondVertices(frame: FrameTuple): {
 /**
  * Calculate distance from a point to a line segment.
  */
-export function pointToSegmentDistance(
-  px: number,
-  py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-): number {
+export function pointToSegmentDistance(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1;
   const dy = y2 - y1;
 
@@ -71,14 +64,7 @@ export function pointToSegmentDistance(
 /**
  * Check if point is inside a rectangle (x, y, w, h format).
  */
-export function pointInRect(
-  px: number,
-  py: number,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): boolean {
+export function pointInRect(px: number, py: number, x: number, y: number, w: number, h: number): boolean {
   return px >= x && px <= x + w && py >= y && py <= y + h;
 }
 
@@ -124,12 +110,7 @@ export function pointInDiamond(
 /**
  * Test if a point is within radius of a stroke (polyline).
  */
-export function strokeHitTest(
-  px: number,
-  py: number,
-  points: [number, number][],
-  radius: number,
-): boolean {
+export function strokeHitTest(px: number, py: number, points: [number, number][], radius: number): boolean {
   // Handle single-point stroke
   if (points.length === 1) {
     const [x, y] = points[0];
@@ -153,15 +134,7 @@ export function strokeHitTest(
 /**
  * Check if a circle intersects a rectangle (used by EraserTool).
  */
-export function circleRectIntersect(
-  cx: number,
-  cy: number,
-  r: number,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): boolean {
+export function circleRectIntersect(cx: number, cy: number, r: number, x: number, y: number, w: number, h: number): boolean {
   const closestX = Math.max(x, Math.min(cx, x + w));
   const closestY = Math.max(y, Math.min(cy, y + h));
   const dx = cx - closestX;
@@ -179,37 +152,19 @@ export function rectsIntersect(a: WorldRect, b: WorldRect): boolean {
 /**
  * Check if two line segments intersect using CCW orientation test.
  */
-export function segmentsIntersect(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  x3: number,
-  y3: number,
-  x4: number,
-  y4: number,
-): boolean {
+export function segmentsIntersect(x1: number, y1: number, x2: number, y2: number, x3: number, y3: number, x4: number, y4: number): boolean {
   // CCW orientation test
   const ccw = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => {
     return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
   };
 
-  return (
-    ccw(x1, y1, x3, y3, x4, y4) !== ccw(x2, y2, x3, y3, x4, y4) &&
-    ccw(x1, y1, x2, y2, x3, y3) !== ccw(x1, y1, x2, y2, x4, y4)
-  );
+  return ccw(x1, y1, x3, y3, x4, y4) !== ccw(x2, y2, x3, y3, x4, y4) && ccw(x1, y1, x2, y2, x3, y3) !== ccw(x1, y1, x2, y2, x4, y4);
 }
 
 /**
  * Check if a line segment intersects a WorldRect.
  */
-export function segmentIntersectsRect(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  rect: WorldRect,
-): boolean {
+export function segmentIntersectsRect(x1: number, y1: number, x2: number, y2: number, rect: WorldRect): boolean {
   // Check if either endpoint is inside rect
   if (pointInWorldRect(x1, y1, rect) || pointInWorldRect(x2, y2, rect)) {
     return true;
@@ -255,9 +210,7 @@ export function polylineIntersectsRect(points: [number, number][], rect: WorldRe
 
   // Check if any segment intersects rect
   for (let i = 0; i < points.length - 1; i++) {
-    if (
-      segmentIntersectsRect(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], rect)
-    ) {
+    if (segmentIntersectsRect(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1], rect)) {
       return true;
     }
   }
@@ -268,13 +221,7 @@ export function polylineIntersectsRect(points: [number, number][], rect: WorldRe
 /**
  * Check if an ellipse intersects a WorldRect.
  */
-export function ellipseIntersectsRect(
-  ecx: number,
-  ecy: number,
-  rx: number,
-  ry: number,
-  rect: WorldRect,
-): boolean {
+export function ellipseIntersectsRect(ecx: number, ecy: number, rx: number, ry: number, rect: WorldRect): boolean {
   // Quick bounds check first
   const ellipseBounds: WorldRect = {
     minX: ecx - rx,
@@ -379,12 +326,7 @@ export function computePolylineArea(points: [number, number][]): number {
  * Check if a point is inside a shape's interior.
  * Works for diamond, ellipse, rect, and roundedRect shapes.
  */
-export function pointInsideShape(
-  cx: number,
-  cy: number,
-  frame: FrameTuple,
-  shapeType: string,
-): boolean {
+export function pointInsideShape(cx: number, cy: number, frame: FrameTuple, shapeType: string): boolean {
   const [x, y, w, h] = frame;
 
   switch (shapeType) {
@@ -419,13 +361,7 @@ export function pointInsideShape(
  * Hit test a shape's edge/stroke.
  * Returns distance if within tolerance, null otherwise.
  */
-export function shapeEdgeHitTest(
-  cx: number,
-  cy: number,
-  tolerance: number,
-  frame: FrameTuple,
-  shapeType: string,
-): number | null {
+export function shapeEdgeHitTest(cx: number, cy: number, tolerance: number, frame: FrameTuple, shapeType: string): number | null {
   const [x, y, w, h] = frame;
 
   switch (shapeType) {
@@ -511,12 +447,7 @@ export const HANDLE_HIT_PX = 10;
  * @param bounds - Selection bounds in world coordinates
  * @param scale - Camera scale for converting screen-space tolerance to world
  */
-export function hitTestHandle(
-  worldX: number,
-  worldY: number,
-  bounds: WorldRect,
-  scale: number,
-): HandleId | null {
+export function hitTestHandle(worldX: number, worldY: number, bounds: WorldRect, scale: number): HandleId | null {
   const handleRadius = HANDLE_HIT_PX / scale;
 
   // Test corners first (they take priority)
@@ -535,35 +466,19 @@ export function hitTestHandle(
   const edgeTolerance = handleRadius;
 
   // North edge (top)
-  if (
-    Math.abs(worldY - bounds.minY) <= edgeTolerance &&
-    worldX > bounds.minX + handleRadius &&
-    worldX < bounds.maxX - handleRadius
-  ) {
+  if (Math.abs(worldY - bounds.minY) <= edgeTolerance && worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
     return 'n';
   }
   // South edge (bottom)
-  if (
-    Math.abs(worldY - bounds.maxY) <= edgeTolerance &&
-    worldX > bounds.minX + handleRadius &&
-    worldX < bounds.maxX - handleRadius
-  ) {
+  if (Math.abs(worldY - bounds.maxY) <= edgeTolerance && worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
     return 's';
   }
   // West edge (left)
-  if (
-    Math.abs(worldX - bounds.minX) <= edgeTolerance &&
-    worldY > bounds.minY + handleRadius &&
-    worldY < bounds.maxY - handleRadius
-  ) {
+  if (Math.abs(worldX - bounds.minX) <= edgeTolerance && worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
     return 'w';
   }
   // East edge (right)
-  if (
-    Math.abs(worldX - bounds.maxX) <= edgeTolerance &&
-    worldY > bounds.minY + handleRadius &&
-    worldY < bounds.maxY - handleRadius
-  ) {
+  if (Math.abs(worldX - bounds.maxX) <= edgeTolerance && worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
     return 'e';
   }
 
@@ -698,12 +613,7 @@ export function shapeHitTest(
  * @param radiusWorld - Hit tolerance in world units
  * @param handle - Object to test
  */
-export function testObjectHit(
-  worldX: number,
-  worldY: number,
-  radiusWorld: number,
-  handle: ObjectHandle,
-): HitCandidate | null {
+export function testObjectHit(worldX: number, worldY: number, radiusWorld: number, handle: ObjectHandle): HitCandidate | null {
   const y = handle.y;
 
   switch (handle.kind) {
@@ -854,12 +764,7 @@ export function testObjectHit(
  * - Unfilled shape interiors are transparent (scan through)
  * - Everything else (stroke/connector/filled shape/shape border) occludes
  */
-export function hitTestVisibleText(
-  worldX: number,
-  worldY: number,
-  snapshot: Snapshot,
-  scale: number,
-): string | null {
+export function hitTestVisibleText(worldX: number, worldY: number, snapshot: Snapshot, scale: number): string | null {
   const radiusWorld = 8 / scale;
 
   const results = snapshot.spatialIndex.query({
@@ -900,12 +805,7 @@ export function hitTestVisibleText(
  * Hit test for visible note at a point, respecting Z-order occlusion.
  * Returns the ID of the topmost visible note object, or null.
  */
-export function hitTestVisibleNote(
-  worldX: number,
-  worldY: number,
-  snapshot: Snapshot,
-  scale: number,
-): string | null {
+export function hitTestVisibleNote(worldX: number, worldY: number, snapshot: Snapshot, scale: number): string | null {
   const radiusWorld = 8 / scale;
 
   const results = snapshot.spatialIndex.query({
@@ -950,12 +850,7 @@ export function hitTestVisibleNote(
  * - Unfilled shape interiors are transparent (scan through)
  * - Everything else (stroke/connector/filled shape/shape border) occludes
  */
-export function hitTestVisibleCode(
-  worldX: number,
-  worldY: number,
-  snapshot: Snapshot,
-  scale: number,
-): string | null {
+export function hitTestVisibleCode(worldX: number, worldY: number, snapshot: Snapshot, scale: number): string | null {
   const radiusWorld = 8 / scale;
 
   const results = snapshot.spatialIndex.query({

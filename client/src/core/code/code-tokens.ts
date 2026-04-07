@@ -340,17 +340,7 @@ const pyDefKwSet = new Set(['def', 'class', 'lambda']);
 
 // Modifier / module keywords → S.MODIFIER (cyan)
 const jsModifierSet = new Set(['export', 'import', 'from', 'default', 'async', 'static']);
-const tsModifierExtras = new Set([
-  'declare',
-  'abstract',
-  'readonly',
-  'override',
-  'private',
-  'protected',
-  'public',
-  'namespace',
-  'module',
-]);
+const tsModifierExtras = new Set(['declare', 'abstract', 'readonly', 'override', 'private', 'protected', 'public', 'namespace', 'module']);
 const pyModifierSet = new Set(['global', 'nonlocal', 'from', 'import', 'async']);
 
 function keywordStyle(word: string, lang: CodeLanguage): number {
@@ -549,14 +539,7 @@ export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[
       }
 
       // --- Hashbang on line 0 ---
-      if (
-        lineIdx === 0 &&
-        i === 0 &&
-        ch === '#' &&
-        i + 1 < line.length &&
-        line[i + 1] === '!' &&
-        !isPython
-      ) {
+      if (lineIdx === 0 && i === 0 && ch === '#' && i + 1 < line.length && line[i + 1] === '!' && !isPython) {
         pushTriple(i, line.length, S.COMMENT);
         i = line.length;
         continue;
@@ -631,10 +614,7 @@ export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[
       }
 
       // --- Numbers (hex, binary, octal, scientific, separators, BigInt) ---
-      if (
-        (ch >= '0' && ch <= '9') ||
-        (ch === '.' && i + 1 < line.length && line[i + 1] >= '0' && line[i + 1] <= '9')
-      ) {
+      if ((ch >= '0' && ch <= '9') || (ch === '.' && i + 1 < line.length && line[i + 1] >= '0' && line[i + 1] <= '9')) {
         const start = i;
         if (ch === '0' && i + 1 < line.length) {
           const next = line[i + 1];
@@ -662,10 +642,7 @@ export function syncTokenize(lines: string[], language: CodeLanguage): RunSpans[
       }
 
       // --- Python string prefixes (f/r/b) ---
-      if (
-        isPython &&
-        (ch === 'f' || ch === 'r' || ch === 'b' || ch === 'F' || ch === 'R' || ch === 'B')
-      ) {
+      if (isPython && (ch === 'f' || ch === 'r' || ch === 'b' || ch === 'F' || ch === 'R' || ch === 'B')) {
         const nextCh = i + 1 < line.length ? line[i + 1] : '';
         if (nextCh === '"' || nextCh === "'") {
           const start = i;

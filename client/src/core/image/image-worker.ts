@@ -114,9 +114,7 @@ async function tx(store: string, mode: IDBTransactionMode): Promise<IDBObjectSto
   return db.transaction(store, mode).objectStore(store);
 }
 
-function idbOp<T>(
-  fn: (store: IDBObjectStore) => IDBRequest,
-): (store: IDBObjectStore) => Promise<T> {
+function idbOp<T>(fn: (store: IDBObjectStore) => IDBRequest): (store: IDBObjectStore) => Promise<T> {
   return (store) =>
     new Promise((resolve, reject) => {
       const req = fn(store);
@@ -242,13 +240,7 @@ async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
  * Level 0: full-res decode. Level 1/2: createImageBitmap with resizeWidth/resizeHeight.
  * Three staleness checks (before fetch, after fetch, after decode) to discard superseded requests.
  */
-async function decodeAndSend(
-  assetId: string,
-  level: 0 | 1 | 2,
-  width: number,
-  height: number,
-  gen: number,
-): Promise<void> {
+async function decodeAndSend(assetId: string, level: 0 | 1 | 2, width: number, height: number, gen: number): Promise<void> {
   latestGen.set(assetId, Math.max(gen, latestGen.get(assetId) ?? -1));
   if (latestGen.get(assetId) !== gen) return;
 
@@ -445,9 +437,7 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
           }),
         );
 
-        post({ type: 'ingested', id, assetId, w, h, mime, bitmap: fullBitmap, level: 0 }, [
-          fullBitmap,
-        ]);
+        post({ type: 'ingested', id, assetId, w, h, mime, bitmap: fullBitmap, level: 0 }, [fullBitmap]);
       } catch (err) {
         errorMsg(err instanceof Error ? err.message : 'ingest failed', id);
       }
@@ -471,12 +461,7 @@ self.onmessage = async (e: MessageEvent<WorkerInbound>) => {
 
     case 'decode': {
       decodeAndSend(msg.assetId, msg.level, msg.width, msg.height, msg.gen).catch((err) =>
-        errorMsg(
-          err instanceof Error ? err.message : 'decode failed',
-          undefined,
-          msg.assetId,
-          msg.gen,
-        ),
+        errorMsg(err instanceof Error ? err.message : 'decode failed', undefined, msg.assetId, msg.gen),
       );
       break;
     }

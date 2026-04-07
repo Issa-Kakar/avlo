@@ -44,10 +44,7 @@ function computeAnchorAndPosition(
 ): { normalizedAnchor: [number, number]; position: [number, number] } {
   const [x, y, w, h] = frame;
   // Clamp to [0,1] to guard against floating-point errors
-  const normalizedAnchor: [number, number] = [
-    Math.max(0, Math.min(1, (edgeX - x) / w)),
-    Math.max(0, Math.min(1, (edgeY - y) / h)),
-  ];
+  const normalizedAnchor: [number, number] = [Math.max(0, Math.min(1, (edgeX - x) / w)), Math.max(0, Math.min(1, (edgeY - y) / h))];
   const [dx, dy] = directionVector(side);
   const position: [number, number] = [edgeX + dx * EDGE_CLEARANCE_W, edgeY + dy * EDGE_CLEARANCE_W];
   return { normalizedAnchor, position };
@@ -83,12 +80,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
     const h = getHandle(entry.id);
     if (
       h &&
-      (h.kind === 'shape' ||
-        h.kind === 'text' ||
-        h.kind === 'code' ||
-        h.kind === 'image' ||
-        h.kind === 'note' ||
-        h.kind === 'bookmark')
+      (h.kind === 'shape' || h.kind === 'text' || h.kind === 'code' || h.kind === 'image' || h.kind === 'note' || h.kind === 'bookmark')
     ) {
       handles.push(h);
     }
@@ -177,12 +169,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
  * @param ctx - Snap context
  * @returns Snap target or null if no valid snap
  */
-export function computeSnapForShape(
-  shapeId: string,
-  frame: FrameTuple,
-  shapeType: string,
-  ctx: SnapContext,
-): SnapTarget | null {
+export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
   const { cursorWorld, scale, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
 
@@ -251,21 +238,13 @@ export function computeSnapForShape(
     }
 
     // Midpoint stickiness check (same as edge case below)
-    const wasPreviouslyMidpoint =
-      prevAttach?.shapeId === shapeId &&
-      prevAttach?.isMidpoint &&
-      prevAttach?.side === nearestMidSide;
+    const wasPreviouslyMidpoint = prevAttach?.shapeId === shapeId && prevAttach?.isMidpoint && prevAttach?.side === nearestMidSide;
     const shouldStayMid = wasPreviouslyMidpoint && nearestMidDist <= midOutW;
     const shouldEnterMid = nearestMidDist <= midInW;
 
     if (shouldStayMid || shouldEnterMid) {
       const midpoint = midpoints[nearestMidSide];
-      const { normalizedAnchor, position } = computeAnchorAndPosition(
-        midpoint[0],
-        midpoint[1],
-        frame,
-        nearestMidSide,
-      );
+      const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint[0], midpoint[1], frame, nearestMidSide);
       return {
         shapeId,
         side: nearestMidSide,
@@ -296,12 +275,7 @@ export function computeSnapForShape(
   // CASE 1b (elbow): Deep inside - only snap to midpoints
   if (forceMidpointsOnly) {
     const midpoint = midpoints[nearestMidSide];
-    const { normalizedAnchor, position } = computeAnchorAndPosition(
-      midpoint[0],
-      midpoint[1],
-      frame,
-      nearestMidSide,
-    );
+    const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint[0], midpoint[1], frame, nearestMidSide);
     return {
       shapeId,
       side: nearestMidSide,
@@ -341,22 +315,14 @@ export function computeSnapForShape(
   }
 
   // Check midpoint stickiness (hysteresis)
-  const wasPreviouslyMidpoint =
-    prevAttach?.shapeId === shapeId &&
-    prevAttach?.isMidpoint &&
-    prevAttach?.side === effectiveMidSide;
+  const wasPreviouslyMidpoint = prevAttach?.shapeId === shapeId && prevAttach?.isMidpoint && prevAttach?.side === effectiveMidSide;
 
   const shouldStayMidpoint = wasPreviouslyMidpoint && effectiveMidDist <= midOutW;
   const shouldEnterMidpoint = effectiveMidDist <= midInW;
 
   if (shouldStayMidpoint || shouldEnterMidpoint) {
     const midpoint = midpoints[effectiveMidSide];
-    const { normalizedAnchor, position } = computeAnchorAndPosition(
-      midpoint[0],
-      midpoint[1],
-      frame,
-      effectiveMidSide,
-    );
+    const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint[0], midpoint[1], frame, effectiveMidSide);
     return {
       shapeId,
       side: effectiveMidSide,
@@ -369,12 +335,7 @@ export function computeSnapForShape(
   }
 
   // Snap to edge point (not midpoint)
-  const { normalizedAnchor, position } = computeAnchorAndPosition(
-    edgeSnap.x,
-    edgeSnap.y,
-    frame,
-    edgeSnap.side,
-  );
+  const { normalizedAnchor, position } = computeAnchorAndPosition(edgeSnap.x, edgeSnap.y, frame, edgeSnap.side);
   return {
     shapeId,
     side: edgeSnap.side,

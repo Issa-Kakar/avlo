@@ -129,12 +129,7 @@ export default [
 
   // Test-specific rules
   {
-    files: [
-      '**/__tests__/**/*.{ts,tsx,js,jsx}',
-      '**/*.test.{ts,tsx,js,jsx}',
-      '**/*.spec.{ts,tsx,js,jsx}',
-      '**/test-*.{ts,tsx,js,jsx}',
-    ],
+    files: ['**/__tests__/**/*.{ts,tsx,js,jsx}', '**/*.test.{ts,tsx,js,jsx}', '**/*.spec.{ts,tsx,js,jsx}', '**/test-*.{ts,tsx,js,jsx}'],
     rules: {
       // Allow 'any' types in tests for accessing private implementation details
       // CRITICAL: These are intentional for testing the RoomDocManager's internal state

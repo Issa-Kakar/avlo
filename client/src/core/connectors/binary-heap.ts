@@ -70,16 +70,10 @@ export class MinHeap<T> {
       const rightIdx = 2 * idx + 2;
       let smallest = idx;
 
-      if (
-        leftIdx < this.items.length &&
-        this.compareFn(this.items[leftIdx], this.items[smallest]) < 0
-      ) {
+      if (leftIdx < this.items.length && this.compareFn(this.items[leftIdx], this.items[smallest]) < 0) {
         smallest = leftIdx;
       }
-      if (
-        rightIdx < this.items.length &&
-        this.compareFn(this.items[rightIdx], this.items[smallest]) < 0
-      ) {
+      if (rightIdx < this.items.length && this.compareFn(this.items[rightIdx], this.items[smallest]) < 0) {
         smallest = rightIdx;
       }
 

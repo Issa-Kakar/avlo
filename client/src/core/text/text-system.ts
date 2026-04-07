@@ -22,14 +22,7 @@
 
 import * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type {
-  NoteProps,
-  TextProps,
-  TextAlign,
-  TextAlignV,
-  TextWidth,
-  FontFamily,
-} from '../accessors';
+import type { NoteProps, TextProps, TextAlign, TextAlignV, TextWidth, FontFamily } from '../accessors';
 
 import { areFontsLoaded } from './font-loader';
 import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
@@ -61,11 +54,7 @@ export function getNoteContentWidth(scale: number): number {
 }
 
 /** Vertical offset for note content alignment (matches CSS clamp behavior). */
-export function getNoteContentOffsetY(
-  alignV: TextAlignV,
-  maxContentH: number,
-  contentH: number,
-): number {
+export function getNoteContentOffsetY(alignV: TextAlignV, maxContentH: number, contentH: number): number {
   if (alignV === 'top') return 0;
   const space = Math.max(0, maxContentH - contentH);
   return alignV === 'middle' ? space / 2 : space;
@@ -73,9 +62,7 @@ export function getNoteContentOffsetY(
 
 // --- Auto font size ---
 
-export const NOTE_FONT_STEPS: number[] = [
-  72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8,
-];
+export const NOTE_FONT_STEPS: number[] = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8];
 const NOTE_PHASE1_FLOOR = 18;
 
 // =============================================================================
@@ -211,12 +198,7 @@ function getMeasureContext(): CanvasRenderingContext2D {
 
 // --- Font string builder ---
 
-export function buildFontString(
-  bold: boolean,
-  italic: boolean,
-  fontSize: number,
-  fontFamily: FontFamily = 'Grandstander',
-): string {
+export function buildFontString(bold: boolean, italic: boolean, fontSize: number, fontFamily: FontFamily = 'Grandstander'): string {
   const weight = bold ? FONT_WEIGHTS.bold : FONT_WEIGHTS.normal;
   const style = italic ? 'italic' : 'normal';
   return `${style} ${weight} ${fontSize}px ${FONT_FAMILIES[fontFamily].fallback}`;
@@ -243,9 +225,7 @@ export function getMeasuredAscentRatio(fontFamily: FontFamily = 'Grandstander'):
   if (cached !== undefined) return cached;
 
   if (!areFontsLoaded()) {
-    console.warn(
-      '[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.',
-    );
+    console.warn('[text-system] getMeasuredAscentRatio called before fonts loaded! Using fallback.');
     return FALLBACK_ASCENT_RATIO;
   }
 
@@ -386,24 +366,12 @@ function getGraphemes(text: string): string[] {
 // §3  STAGE 1: TOKENIZE — Y.XmlFragment → TokenizedContent
 // =============================================================================
 
-function pushSegment(
-  tokens: Token[],
-  kind: TokenKind,
-  text: string,
-  bold: boolean,
-  italic: boolean,
-  highlight: string | null,
-): void {
+function pushSegment(tokens: Token[], kind: TokenKind, text: string, bold: boolean, italic: boolean, highlight: string | null): void {
   if (!text) return;
   const last = tokens[tokens.length - 1];
   if (last && last.kind === kind) {
     const lastSeg = last.segments[last.segments.length - 1];
-    if (
-      lastSeg &&
-      lastSeg.bold === bold &&
-      lastSeg.italic === italic &&
-      lastSeg.highlight === highlight
-    ) {
+    if (lastSeg && lastSeg.bold === bold && lastSeg.italic === italic && lastSeg.highlight === highlight) {
       lastSeg.text += text; // string concat, no object allocated
       return;
     }
@@ -459,14 +427,7 @@ function parseAndTokenize(fragment: Y.XmlFragment): TokenizedContent {
           const re = /(\s+|\S+)/g;
           let m: RegExpExecArray | null;
           while ((m = re.exec(op.insert)) !== null) {
-            pushSegment(
-              tokens,
-              /^\s+$/.test(m[0]) ? 'space' : 'word',
-              m[0],
-              bold,
-              italic,
-              highlight,
-            );
+            pushSegment(tokens, /^\s+$/.test(m[0]) ? 'space' : 'word', m[0], bold, italic, highlight);
           }
         }
       }
@@ -496,11 +457,7 @@ function measureSeg(font: string, text: string, isWs: boolean): number {
   return measureTextCached(font, text);
 }
 
-function measureTokenizedContent(
-  content: TokenizedContent,
-  fontSize: number,
-  fontFamily: FontFamily = 'Grandstander',
-): MeasuredContent {
+function measureTokenizedContent(content: TokenizedContent, fontSize: number, fontFamily: FontFamily = 'Grandstander'): MeasuredContent {
   const lineHeight = fontSize * FONT_FAMILIES[fontFamily].lineHeightMultiplier;
   const paragraphs: MeasuredParagraph[] = content.paragraphs.map((p) => {
     if (p.tokens.length === 0) return { tokens: [] };
@@ -548,11 +505,7 @@ function nextSoftBreak(text: string): number {
 }
 
 /** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme. */
-function sliceTextToFit(
-  font: string,
-  text: string,
-  maxW: number,
-): { head: string; tail: string; headW: number } {
+function sliceTextToFit(font: string, text: string, maxW: number): { head: string; tail: string; headW: number } {
   if (!text) return { head: '', tail: '', headW: 0 };
   const fullW = measureTextCached(font, text);
   if (fullW <= maxW) return { head: text, tail: '', headW: fullW };
@@ -610,11 +563,7 @@ function appendRun(b: LineBuilder, seg: MeasuredSegment, text: string, w: number
   b.advanceX += w;
 }
 
-export function layoutMeasuredContent(
-  content: MeasuredContent,
-  width: TextWidth,
-  fontSize: number,
-): TextLayout {
+export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth, fontSize: number): TextLayout {
   const { lineHeight } = content;
   const isFixed = typeof width === 'number';
   const maxWidth = isFixed ? Math.max(0.01, width) : Infinity;
@@ -841,13 +790,7 @@ function findStepForWord(wordW100: number, contentWidth: number): number {
  */
 type NoteFlowResult = 'fits' | 'heightOverflow' | number; // number = jumpToStepIdx
 
-function noteFlowCheck(
-  measured: MeasuredContent,
-  maxW: number,
-  maxLines: number,
-  phase2: boolean,
-  contentWidth: number,
-): NoteFlowResult {
+function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number, phase2: boolean, contentWidth: number): NoteFlowResult {
   let lineCount = 0;
 
   for (const para of measured.paragraphs) {
@@ -969,10 +912,7 @@ function noteFlowCheck(
  * Phase A: Find optimal font step (two-phase search with lazy per-word stepping).
  * Phase B: Mutate MeasuredContent to derived font size and build layout.
  */
-function layoutNoteContent(
-  measured: MeasuredContent,
-  fontFamily: FontFamily,
-): { layout: TextLayout; derivedFontSize: number } {
+function layoutNoteContent(measured: MeasuredContent, fontFamily: FontFamily): { layout: TextLayout; derivedFontSize: number } {
   const contentWidth = BASE_CONTENT_WIDTH; // 256
   const contentHeight = contentWidth; // square
   const lhMult = FONT_FAMILIES[fontFamily].lineHeightMultiplier;
@@ -1109,12 +1049,7 @@ class TextLayoutCache {
     }
 
     // Width changed only — re-flow
-    if (
-      entry &&
-      entry.tokenized !== null &&
-      entry.measuredFontSize === fontSize &&
-      entry.measuredFontFamily === fontFamily
-    ) {
+    if (entry && entry.tokenized !== null && entry.measuredFontSize === fontSize && entry.measuredFontFamily === fontFamily) {
       const layout = layoutMeasuredContent(entry.measured, width, fontSize);
       entry.layout = layout;
       entry.layoutWidth = width;
@@ -1241,12 +1176,7 @@ class TextLayoutCache {
     const entry = this.cache.get(objectId);
 
     // Cache hit — same content + fontFamily + derived font size computed
-    if (
-      entry &&
-      entry.tokenized !== null &&
-      entry.measuredFontFamily === fontFamily &&
-      entry.noteDerivedFontSize !== null
-    ) {
+    if (entry && entry.tokenized !== null && entry.measuredFontFamily === fontFamily && entry.noteDerivedFontSize !== null) {
       return entry.layout;
     }
 
@@ -1326,12 +1256,7 @@ function getBoxLeftX(originX: number, boxWidth: number, align: TextAlign): numbe
 }
 
 /** Line start X within container */
-export function getLineStartX(
-  originX: number,
-  boxWidth: number,
-  lineVisualWidth: number,
-  align: TextAlign,
-): number {
+export function getLineStartX(originX: number, boxWidth: number, lineVisualWidth: number, align: TextAlign): number {
   const left = getBoxLeftX(originX, boxWidth, align);
   if (align === 'left') return left;
   if (align === 'center') return left + (boxWidth - lineVisualWidth) / 2;
@@ -1352,24 +1277,14 @@ export function computeLabelTextBox(shapeType: string, frame: FrameTuple): Frame
         ih = fh * SQRT2_OVER_2;
       const cx = fx + fw / 2,
         cy = fy + fh / 2;
-      return [
-        cx - iw / 2 + pad,
-        cy - ih / 2 + pad,
-        Math.max(0, iw - 2 * pad),
-        Math.max(0, ih - 2 * pad),
-      ];
+      return [cx - iw / 2 + pad, cy - ih / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
     }
     case 'diamond': {
       const iw = fw / 2,
         ih = fh / 2;
       const cx = fx + fw / 2,
         cy = fy + fh / 2;
-      return [
-        cx - iw / 2 + pad,
-        cy - ih / 2 + pad,
-        Math.max(0, iw - 2 * pad),
-        Math.max(0, ih - 2 * pad),
-      ];
+      return [cx - iw / 2 + pad, cy - ih / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
     }
     default:
       return [fx + pad, fy + pad, Math.max(0, fw - 2 * pad), Math.max(0, fh - 2 * pad)];
@@ -1594,13 +1509,7 @@ function ensureShadowCache(): ShadowCache {
   return _shadowCache;
 }
 
-function drawNoteShadow(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): void {
+function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
   const sc = ensureShadowCache();
   const d = sc.dpr;
   const sp = sc.padPx * d;
@@ -1623,14 +1532,7 @@ function drawNoteShadow(
 
 // --- Note body renderer ---
 
-export function renderNoteBody(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  fillColor: string,
-): void {
+export function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, fillColor: string): void {
   const radius = w * NOTE_CORNER_RADIUS_RATIO;
 
   drawNoteShadow(ctx, x, y, w, h);

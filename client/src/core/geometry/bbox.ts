@@ -1,25 +1,12 @@
 import type * as Y from 'yjs';
 import type { ObjectKind } from '../types/objects';
 import type { WorldBounds } from '../types/geometry';
-import {
-  getPoints,
-  getFrame,
-  getWidth,
-  getStartCap,
-  getEndCap,
-  getTextProps,
-  getNoteProps,
-  getBookmarkProps,
-} from '../accessors';
+import { getPoints, getFrame, getWidth, getStartCap, getEndCap, getTextProps, getNoteProps, getBookmarkProps } from '../accessors';
 import { computeTextBBox, computeNoteBBox } from '../text/text-system';
 import { computeCodeBBox } from '../code/code-system';
 import { computeBookmarkBBox, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
 
-export function computeBBoxFor(
-  id: string,
-  kind: ObjectKind,
-  yMap: Y.Map<unknown>,
-): [number, number, number, number] {
+export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): [number, number, number, number] {
   switch (kind) {
     case 'stroke': {
       const points = getPoints(yMap);
@@ -51,12 +38,7 @@ export function computeBBoxFor(
       const strokeWidth = getWidth(yMap, 1);
       const padding = strokeWidth * 0.5 + 1;
 
-      return [
-        frame[0] - padding,
-        frame[1] - padding,
-        frame[0] + frame[2] + padding,
-        frame[1] + frame[3] + padding,
-      ];
+      return [frame[0] - padding, frame[1] - padding, frame[0] + frame[2] + padding, frame[1] + frame[3] + padding];
     }
 
     case 'text': {
@@ -153,10 +135,7 @@ export function computeBBoxFor(
  * Reads width and cap info from the Y.Map (which is never stale for style props).
  * Use this when you have rerouted points that haven't been committed yet.
  */
-export function computeConnectorBBoxFromPoints(
-  points: [number, number][],
-  yMap: Y.Map<unknown>,
-): [number, number, number, number] {
+export function computeConnectorBBoxFromPoints(points: [number, number][], yMap: Y.Map<unknown>): [number, number, number, number] {
   if (points.length < 2) return [0, 0, 0, 0];
 
   let minX = points[0][0],
@@ -192,10 +171,7 @@ export function computeConnectorBBoxFromPoints(
   return [minX - padding, minY - padding, maxX + padding, maxY + padding];
 }
 
-export function bboxEquals(
-  a: [number, number, number, number],
-  b: [number, number, number, number],
-): boolean {
+export function bboxEquals(a: [number, number, number, number], b: [number, number, number, number]): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
 }
 

@@ -33,9 +33,7 @@ export interface PeerCursorState {
 let currentAwareness: YAwareness | null = null;
 let currentProvider: YProvider | null = null;
 let cachedLocalClientId = -1;
-let updateHandler:
-  | ((changes: { added: number[]; updated: number[]; removed: number[] }) => void)
-  | null = null;
+let updateHandler: ((changes: { added: number[]; updated: number[]; removed: number[] }) => void) | null = null;
 let statusHandler: ((event: { status: string }) => void) | null = null;
 
 // Send
@@ -208,10 +206,7 @@ function flush(): void {
 
   const cursorSame =
     (!localCursor && !lastSentCursor) ||
-    (localCursor &&
-      lastSentCursor &&
-      localCursor[0] === lastSentCursor[0] &&
-      localCursor[1] === lastSentCursor[1]);
+    (localCursor && lastSentCursor && localCursor[0] === lastSentCursor[0] && localCursor[1] === lastSentCursor[1]);
 
   if (cursorSame && identitySent) {
     dirty = false;
@@ -224,11 +219,7 @@ function flush(): void {
     return;
   }
 
-  const cursor = isMobile()
-    ? undefined
-    : localCursor
-      ? { x: localCursor[0], y: localCursor[1] }
-      : undefined;
+  const cursor = isMobile() ? undefined : localCursor ? { x: localCursor[0], y: localCursor[1] } : undefined;
 
   currentAwareness.setLocalStateField('cursor', cursor);
   lastSentCursor = localCursor ? [localCursor[0], localCursor[1]] : undefined;

@@ -17,15 +17,7 @@
 import type { SelectionPreview, HandleId } from '@/tools/types';
 import type { Snapshot } from '@/core/types/snapshot';
 import type { ObjectHandle } from '@/core/types/objects';
-import {
-  getFrame,
-  getShapeType,
-  getWidth,
-  getConnectorType,
-  getStartAnchor,
-  getEndAnchor,
-  getPoints,
-} from '@/core/accessors';
+import { getFrame, getShapeType, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { getPath } from '../geometry-cache';
@@ -93,12 +85,7 @@ const SELECTION_STYLE = {
  * @param scale - Current zoom scale (for consistent visual sizing)
  * @param snapshot - Current snapshot for object lookups
  */
-export function drawSelectionOverlay(
-  ctx: CanvasRenderingContext2D,
-  preview: SelectionPreview,
-  scale: number,
-  snapshot: Snapshot,
-): void {
+export function drawSelectionOverlay(ctx: CanvasRenderingContext2D, preview: SelectionPreview, scale: number, snapshot: Snapshot): void {
   // Read store for connector mode state
   const { mode, transform } = useSelectionStore.getState();
   const isConnectorMode = mode === 'connector';
@@ -423,18 +410,15 @@ function drawConnectorEndpointDots(
         // Dragged endpoint: draw dashed guide if current snap is interior
         if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
           const draggedPos = currentSnap.edgePosition;
-          const lineEnd =
-            endpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
+          const lineEnd = endpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
           drawDashedGuideLine(ctx, draggedPos, lineEnd, scale);
         }
         // Non-dragged endpoint: use stored anchor + routedPoints
         const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
-        const otherAnchor =
-          otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
+        const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
         if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
           const otherPos = getEndpointEdgePosition(handle, otherEndpoint, snapshot);
-          const otherLineEnd =
-            otherEndpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
+          const otherLineEnd = otherEndpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
           drawDashedGuideLine(ctx, otherPos, otherLineEnd, scale);
         }
       }
@@ -603,12 +587,7 @@ function drawStraightConnectorGuides(
 }
 
 /** Draw a dashed guide line between two points. */
-function drawDashedGuideLine(
-  ctx: CanvasRenderingContext2D,
-  from: [number, number],
-  to: [number, number],
-  scale: number,
-): void {
+function drawDashedGuideLine(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number], scale: number): void {
   const dashLen = pxToWorld(6, scale);
   const gapLen = pxToWorld(4, scale);
   ctx.save();

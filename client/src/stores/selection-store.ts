@@ -5,14 +5,7 @@ import type { WorldBounds, FrameTuple } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
 import { getObjectsById, getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import {
-  getFrame,
-  getPoints,
-  getStart,
-  getEnd,
-  getStartAnchor,
-  getEndAnchor,
-} from '@/core/accessors';
+import { getFrame, getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
 import { bboxTupleToWorldBounds } from '@/core/types/geometry';
 import { getTextFrame, type TextLayout } from '@/core/text/text-system';
 import { getCodeFrame, type CodeLayout } from '@/core/code/code-system';
@@ -159,11 +152,7 @@ export interface EndpointDragTransform {
   prevBbox: WorldBounds;
 }
 
-export type TransformState =
-  | { kind: 'none' }
-  | TranslateTransform
-  | ScaleTransform
-  | EndpointDragTransform;
+export type TransformState = { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform;
 
 export interface MarqueeState {
   active: boolean;
@@ -233,11 +222,7 @@ export interface SelectionActions {
   cancelTransform: () => void;
 
   // Endpoint drag lifecycle
-  beginEndpointDrag: (
-    connectorId: string,
-    endpoint: 'start' | 'end',
-    originBbox: WorldBounds,
-  ) => void;
+  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: WorldBounds) => void;
   updateEndpointDrag: (
     currentPosition: [number, number],
     currentSnap: SnapTarget | null,
@@ -286,10 +271,7 @@ export type SelectionStore = SelectionState & SelectionActions;
  *   Free + connector selected → true
  *   Otherwise → null (canonical)
  */
-function computeConnectorTopology(
-  transformKind: 'translate' | 'scale',
-  selectedIds: string[],
-): ConnectorTopology | null {
+function computeConnectorTopology(transformKind: 'translate' | 'scale', selectedIds: string[]): ConnectorTopology | null {
   const selectedSet = new Set(selectedIds);
 
   const entries: ConnectorTopologyEntry[] = [];
@@ -309,12 +291,8 @@ function computeConnectorTopology(
     const endAnchor = getEndAnchor(connHandle.y);
 
     // Determine if each endpoint moves
-    const startMoves = isSelected
-      ? !startAnchor || selectedSet.has(startAnchor.id)
-      : !!startAnchor && selectedSet.has(startAnchor.id);
-    const endMoves = isSelected
-      ? !endAnchor || selectedSet.has(endAnchor.id)
-      : !!endAnchor && selectedSet.has(endAnchor.id);
+    const startMoves = isSelected ? !startAnchor || selectedSet.has(startAnchor.id) : !!startAnchor && selectedSet.has(startAnchor.id);
+    const endMoves = isSelected ? !endAnchor || selectedSet.has(endAnchor.id) : !!endAnchor && selectedSet.has(endAnchor.id);
 
     if (!startMoves && !endMoves) return;
 
@@ -322,10 +300,7 @@ function computeConnectorTopology(
     const originalPoints: [number, number][] =
       points.length > 0
         ? (points as [number, number][])
-        : [
-            (getStart(connHandle.y) ?? [0, 0]) as [number, number],
-            (getEnd(connHandle.y) ?? [0, 0]) as [number, number],
-          ];
+        : [(getStart(connHandle.y) ?? [0, 0]) as [number, number], (getEnd(connHandle.y) ?? [0, 0]) as [number, number]];
     const originalBbox = bboxTupleToWorldBounds(connHandle.bbox);
 
     // Determine strategy
@@ -341,17 +316,8 @@ function computeConnectorTopology(
       translateIdSet.add(connId);
     } else {
       const startSpec: EndpointSpec =
-        startAnchor && selectedSet.has(startAnchor.id)
-          ? startAnchor.id
-          : !startAnchor && isSelected
-            ? true
-            : null;
-      const endSpec: EndpointSpec =
-        endAnchor && selectedSet.has(endAnchor.id)
-          ? endAnchor.id
-          : !endAnchor && isSelected
-            ? true
-            : null;
+        startAnchor && selectedSet.has(startAnchor.id) ? startAnchor.id : !startAnchor && isSelected ? true : null;
+      const endSpec: EndpointSpec = endAnchor && selectedSet.has(endAnchor.id) ? endAnchor.id : !endAnchor && isSelected ? true : null;
 
       entries.push({
         connectorId: connId,
@@ -526,10 +492,8 @@ export const useSelectionStore = create<SelectionStore>()(
       const topology = computeConnectorTopology('scale', selectedIds);
 
       const isEW = handleId === 'e' || handleId === 'w';
-      const textReflow: TextReflowState | null =
-        isEW && kindCounts.text > 0 ? { layouts: new Map(), origins: new Map() } : null;
-      const codeReflow: CodeReflowState | null =
-        isEW && kindCounts.code > 0 ? { layouts: new Map(), origins: new Map() } : null;
+      const textReflow: TextReflowState | null = isEW && kindCounts.text > 0 ? { layouts: new Map(), origins: new Map() } : null;
+      const codeReflow: CodeReflowState | null = isEW && kindCounts.code > 0 ? { layouts: new Map(), origins: new Map() } : null;
 
       set({
         transform: {
@@ -667,13 +631,7 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Context Menu Actions ===
 
     refreshStyles: () => {
-      const {
-        selectedIds,
-        selectionKind,
-        textEditingId,
-        codeEditingId,
-        selectedStyles: current,
-      } = get();
+      const { selectedIds, selectionKind, textEditingId, codeEditingId, selectedStyles: current } = get();
       let ids = selectedIds as string[];
       let kind = selectionKind as SelectionKind;
       if (selectedIds.length === 0) {
@@ -693,11 +651,7 @@ export const useSelectionStore = create<SelectionStore>()(
       if (!stylesEqual(current, next)) patch.selectedStyles = next;
 
       // Inline text styles — only when editor is NOT mounted
-      if (
-        textEditingId === null &&
-        (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') &&
-        ids.length > 0
-      ) {
+      if (textEditingId === null && (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') && ids.length > 0) {
         const inline = computeUniformInlineStyles(ids, getObjectsById());
         if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
       }
@@ -713,9 +667,7 @@ export const useSelectionStore = create<SelectionStore>()(
  * Filter current selection to only objects of the given kind.
  * No-op if no objects of that kind are selected.
  */
-export function filterSelectionByKind(
-  kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images',
-): void {
+export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images'): void {
   const { selectedIds } = useSelectionStore.getState();
   const targetKind =
     kind === 'strokes'
@@ -819,5 +771,4 @@ export const selectTextEditingIsNew = (state: SelectionStore) => state.textEditi
 
 export const selectInlineBold = (state: SelectionStore) => state.inlineStyles.bold;
 export const selectInlineItalic = (state: SelectionStore) => state.inlineStyles.italic;
-export const selectInlineHighlightColor = (state: SelectionStore) =>
-  state.inlineStyles.highlightColor;
+export const selectInlineHighlightColor = (state: SelectionStore) => state.inlineStyles.highlightColor;

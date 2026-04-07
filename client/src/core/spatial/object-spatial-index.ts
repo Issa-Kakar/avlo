@@ -9,12 +9,7 @@ export class ObjectSpatialIndex {
     this.tree.insert({ minX, minY, maxX, maxY, id, kind });
   }
 
-  update(
-    id: string,
-    oldBBox: [number, number, number, number],
-    newBBox: [number, number, number, number],
-    kind: ObjectKind,
-  ): void {
+  update(id: string, oldBBox: [number, number, number, number], newBBox: [number, number, number, number], kind: ObjectKind): void {
     // Remove old entry
     const [minX, minY, maxX, maxY] = oldBBox;
     this.tree.remove({ minX, minY, maxX, maxY, id, kind } as IndexEntry, (a, b) => a.id === b.id);

@@ -14,26 +14,13 @@
 
 import { getHandle } from '@/runtime/room-runtime';
 import type { FrameTuple, WorldBounds } from '../types/geometry';
-import {
-  getStart,
-  getEnd,
-  getStartAnchor,
-  getEndAnchor,
-  getWidth,
-  getFrame,
-  type StoredAnchor,
-} from '../accessors';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, type StoredAnchor } from '../accessors';
 import { computeConnectorBBoxFromPoints, bboxToBounds } from '../geometry/bbox';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
 import { getBookmarkFrame } from '../bookmark/bookmark-render';
 import { computeAStarRoute } from './routing-astar';
-import {
-  applyAnchorToFrame,
-  resolveFreeStartDir,
-  computeFreeEndDir,
-  computeShapeEdgeIntersection,
-} from './connector-utils';
+import { applyAnchorToFrame, resolveFreeStartDir, computeFreeEndDir, computeShapeEdgeIntersection } from './connector-utils';
 import type { Dir, AABB, SnapTarget, ConnectorType } from './types';
 import { isAnchorInterior } from './types';
 import { getConnectorType, getShapeType } from '../accessors';
@@ -91,22 +78,10 @@ export function rerouteConnector(
   const strokeWidth = getWidth(yMap, 2);
 
   // Resolve start endpoint
-  const startResolved = resolveEndpoint(
-    'start',
-    storedStart,
-    startAnchor,
-    endpointOverrides?.start,
-    strokeWidth,
-  );
+  const startResolved = resolveEndpoint('start', storedStart, startAnchor, endpointOverrides?.start, strokeWidth);
 
   // Resolve end endpoint
-  const endResolved = resolveEndpoint(
-    'end',
-    storedEnd,
-    endAnchor,
-    endpointOverrides?.end,
-    strokeWidth,
-  );
+  const endResolved = resolveEndpoint('end', storedEnd, endAnchor, endpointOverrides?.end, strokeWidth);
 
   // Branch: straight vs elbow
   const connectorType = getConnectorType(yMap);
@@ -301,11 +276,7 @@ function resolveEndpoint(
  * - Anchored endpoints use their anchor side as direction
  * - Free endpoints compute direction from spatial relationship
  */
-function resolveDirections(
-  start: ResolvedEndpoint,
-  end: ResolvedEndpoint,
-  strokeWidth: number,
-): { startDir: Dir; endDir: Dir } {
+function resolveDirections(start: ResolvedEndpoint, end: ResolvedEndpoint, strokeWidth: number): { startDir: Dir; endDir: Dir } {
   let startDir = start.dir;
   let endDir = end.dir;
 
@@ -469,12 +440,8 @@ function computeStraightRoute(
   let endDashTo: [number, number] | null = null;
 
   // Compute raw positions for anchored endpoints (needed for offset direction)
-  const startRaw =
-    start.isAnchored && start.normalizedAnchor && start.frame
-      ? getRawAnchorPosition(start)
-      : start.position;
-  const endRaw =
-    end.isAnchored && end.normalizedAnchor && end.frame ? getRawAnchorPosition(end) : end.position;
+  const startRaw = start.isAnchored && start.normalizedAnchor && start.frame ? getRawAnchorPosition(start) : start.position;
+  const endRaw = end.isAnchored && end.normalizedAnchor && end.frame ? getRawAnchorPosition(end) : end.position;
 
   const sameShape = !!(start.shapeId && end.shapeId && start.shapeId === end.shapeId);
   const startIsInterior = !!(start.normalizedAnchor && isAnchorInterior(start.normalizedAnchor));
@@ -487,12 +454,7 @@ function computeStraightRoute(
         // Same shape interior → direct, no dash
         startPt = startRaw;
       } else if (start.shapeType) {
-        const intersection = computeShapeEdgeIntersection(
-          start.shapeType,
-          start.frame,
-          startRaw,
-          endRaw,
-        );
+        const intersection = computeShapeEdgeIntersection(start.shapeType, start.frame, startRaw, endRaw);
         if (intersection) {
           startPt = applyPullBack(intersection.point, endRaw);
           startDashTo = startRaw;
@@ -512,12 +474,7 @@ function computeStraightRoute(
       if (sameShape) {
         endPt = endRaw;
       } else if (end.shapeType) {
-        const intersection = computeShapeEdgeIntersection(
-          end.shapeType,
-          end.frame,
-          endRaw,
-          startRaw,
-        );
+        const intersection = computeShapeEdgeIntersection(end.shapeType, end.frame, endRaw, startRaw);
         if (intersection) {
           endPt = applyPullBack(intersection.point, startRaw);
           endDashTo = endRaw;

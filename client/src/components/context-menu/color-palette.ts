@@ -5,9 +5,25 @@
  */
 export const CONTEXT_MENU_COLORS: readonly string[] = [
   // Row 1: Solids
-  '#262626', '#6B7280', '#EF4444', '#F97316', '#FACC15', '#22C55E', '#3B82F6', '#8B5CF6', '#EC4899',
+  '#262626',
+  '#6B7280',
+  '#EF4444',
+  '#F97316',
+  '#FACC15',
+  '#22C55E',
+  '#3B82F6',
+  '#8B5CF6',
+  '#EC4899',
   // Row 2: Pastels (matched below solids)
-  '#D1D5DB', '#FFFFFF', '#FEE2E2', '#FFEDD5', '#FEF9C3', '#DCFCE7', '#DBEAFE', '#EDE9FE', '#FCE7F3',
+  '#D1D5DB',
+  '#FFFFFF',
+  '#FEE2E2',
+  '#FFEDD5',
+  '#FEF9C3',
+  '#DCFCE7',
+  '#DBEAFE',
+  '#EDE9FE',
+  '#FCE7F3',
 ];
 
 /** Sentinel for "no fill" option in fill mode color picker */

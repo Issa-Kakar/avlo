@@ -5,13 +5,7 @@ import { setSelectedShapeType } from '@/tools/selection/selection-actions';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { IconShapes, IconTextType } from './icons/FilterIcons';
-import {
-  IconRectType,
-  IconCircleType,
-  IconDiamondType,
-  IconRoundedRectType,
-  IconStickySquareFold,
-} from './icons/ShapeTypeIcons';
+import { IconRectType, IconCircleType, IconDiamondType, IconRoundedRectType, IconStickySquareFold } from './icons/ShapeTypeIcons';
 import { useDropdown } from './useDropdown';
 
 const selectShapeType = (s: SelectionStore) => s.selectedStyles.shapeType;
@@ -23,15 +17,14 @@ const SHAPE_ICON: Record<string, React.FC<React.SVGProps<SVGSVGElement>>> = {
   roundedRect: IconRoundedRectType,
 };
 
-const TYPE_ITEMS: { key: string; label: string; Icon: React.FC<React.SVGProps<SVGSVGElement>> }[] =
-  [
-    { key: 'rect', label: 'Rectangle', Icon: IconRectType },
-    { key: 'ellipse', label: 'Circle', Icon: IconCircleType },
-    { key: 'diamond', label: 'Diamond', Icon: IconDiamondType },
-    { key: 'roundedRect', label: 'Rounded', Icon: IconRoundedRectType },
-    { key: 'text', label: 'Text', Icon: IconTextType },
-    { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
-  ];
+const TYPE_ITEMS: { key: string; label: string; Icon: React.FC<React.SVGProps<SVGSVGElement>> }[] = [
+  { key: 'rect', label: 'Rectangle', Icon: IconRectType },
+  { key: 'ellipse', label: 'Circle', Icon: IconCircleType },
+  { key: 'diamond', label: 'Diamond', Icon: IconDiamondType },
+  { key: 'roundedRect', label: 'Rounded', Icon: IconRoundedRectType },
+  { key: 'text', label: 'Text', Icon: IconTextType },
+  { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
+];
 
 interface ShapeTypeDropdownProps {
   mode: 'shapes' | 'text' | 'note';

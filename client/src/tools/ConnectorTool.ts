@@ -158,13 +158,7 @@ export class ConnectorTool implements PointerTool {
 
     const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition!;
     const end: SnapTarget | [number, number] = snap ?? [worldX, worldY];
-    const routeResult = routeNewConnector(
-      start,
-      end,
-      this.frozenWidth,
-      this.frozenConnectorType ?? 'elbow',
-      this.dragDir,
-    );
+    const routeResult = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir);
     this.routedPoints = routeResult.points;
     this.startDashTo = routeResult.startDashTo;
     this.endDashTo = routeResult.endDashTo;
@@ -291,13 +285,7 @@ export class ConnectorTool implements PointerTool {
     if (this.phase === 'creating' && this.fromPosition && this.toPosition) {
       const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition;
       const end: SnapTarget | [number, number] = this.toSnap ?? this.toPosition;
-      const routeResult = routeNewConnector(
-        start,
-        end,
-        this.frozenWidth,
-        this.frozenConnectorType ?? 'elbow',
-        this.dragDir,
-      );
+      const routeResult = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir);
       this.routedPoints = routeResult.points;
       this.startDashTo = routeResult.startDashTo;
       this.endDashTo = routeResult.endDashTo;

@@ -35,10 +35,7 @@ import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
  * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
  * @returns Record mapping each direction to its midpoint [x, y]
  */
-export function getShapeTypeMidpoints(
-  frame: FrameTuple,
-  shapeType: string,
-): Record<Dir, [number, number]> {
+export function getShapeTypeMidpoints(frame: FrameTuple, shapeType: string): Record<Dir, [number, number]> {
   if (shapeType === 'diamond') {
     return getDiamondApexMidpoints(frame);
   }
@@ -345,15 +342,9 @@ export function resolveFreeStartDir(
 
   // Spatial relationship
   const sameSide =
-    (anchorDir === 'N' && above) ||
-    (anchorDir === 'S' && below) ||
-    (anchorDir === 'E' && rightOf) ||
-    (anchorDir === 'W' && leftOf);
+    (anchorDir === 'N' && above) || (anchorDir === 'S' && below) || (anchorDir === 'E' && rightOf) || (anchorDir === 'W' && leftOf);
   const oppSide =
-    (anchorDir === 'N' && below) ||
-    (anchorDir === 'S' && above) ||
-    (anchorDir === 'E' && leftOf) ||
-    (anchorDir === 'W' && rightOf);
+    (anchorDir === 'N' && below) || (anchorDir === 'S' && above) || (anchorDir === 'E' && leftOf) || (anchorDir === 'W' && rightOf);
 
   // Compute sliver escape ONCE (anchor axis determines check priority)
   let sliverDir: Dir | null = null;
@@ -480,11 +471,7 @@ export function inferDragDirection(
  * @param side - Edge direction (determines offset direction)
  * @returns World position with edge clearance applied
  */
-export function applyAnchorToFrame(
-  anchor: [number, number],
-  frame: FrameTuple,
-  side: Dir,
-): [number, number] {
+export function applyAnchorToFrame(anchor: [number, number], frame: FrameTuple, side: Dir): [number, number] {
   const [nx, ny] = anchor;
   const [x, y, w, h] = frame;
   const posX = x + nx * w;
@@ -514,11 +501,7 @@ export function applyAnchorToFrame(
  * @param endpoint - Which endpoint ('start' or 'end')
  * @param snapshot - Current snapshot for shape frame lookup
  */
-export function getEndpointEdgePosition(
-  handle: ObjectHandle,
-  endpoint: 'start' | 'end',
-  snapshot: Snapshot,
-): [number, number] {
+export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end', snapshot: Snapshot): [number, number] {
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
   const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);

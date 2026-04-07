@@ -47,12 +47,7 @@ export class RoomDurableObject extends YServer<Env> {
    * This complements the debounced persistence and prevents "lost last edits"
    * when users close their tabs right after a change.
    */
-  async onClose(
-    connection: Connection<unknown>,
-    code: number,
-    reason: string,
-    wasClean: boolean,
-  ): Promise<void> {
+  async onClose(connection: Connection<unknown>, code: number, reason: string, wasClean: boolean): Promise<void> {
     // First let YServer prune the connection and awareness state.
     await super.onClose(connection, code, reason, wasClean);
 

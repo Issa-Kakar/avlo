@@ -95,9 +95,7 @@ export function scoreRectangleAABB(
   // Component 2: Side Coverage (20% weight) - NOW WITH EVENNESS
   // =========================================================================
   const S_sideCov = aabbCoverageAcrossDistinctSides(points, aabb);
-  console.log(
-    `2. Side Coverage with Evenness (${RECT_WEIGHT_SIDECOV * 100}%): ${S_sideCov.toFixed(3)}`,
-  );
+  console.log(`2. Side Coverage with Evenness (${RECT_WEIGHT_SIDECOV * 100}%): ${S_sideCov.toFixed(3)}`);
   console.log(`   Coverage accounts for both sides visited and distribution evenness`);
 
   // =========================================================================
@@ -135,9 +133,7 @@ export function scoreRectangleAABB(
     S_orthogonal = Math.max(0, 1 - orthogonalError / RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG);
 
     console.log(`4. Parallel Edges (${RECT_WEIGHT_PARALLEL * 100}%): ${S_parallel.toFixed(3)}`);
-    console.log(
-      `5. Orthogonal Edges (${RECT_WEIGHT_ORTHOGONAL * 100}%): ${S_orthogonal.toFixed(3)}`,
-    );
+    console.log(`5. Orthogonal Edges (${RECT_WEIGHT_ORTHOGONAL * 100}%): ${S_orthogonal.toFixed(3)}`);
   } else {
     console.log(`4-5. Edge metrics: neutral (insufficient edges)`);
   }
@@ -153,9 +149,7 @@ export function scoreRectangleAABB(
     RECT_WEIGHT_ORTHOGONAL * S_orthogonal;
 
   // Count right-angle corners (within stricter tolerance for validity checks)
-  const rightAngleCorners = corners.filter(
-    (c) => Math.abs(c.angle - 90) <= RECT_CORNER_TIE_TOLERANCE_DEG,
-  );
+  const rightAngleCorners = corners.filter((c) => Math.abs(c.angle - 90) <= RECT_CORNER_TIE_TOLERANCE_DEG);
   const rightAngleCount = rightAngleCorners.length;
 
   // Apply right-angle corner penalties/multipliers
@@ -163,17 +157,13 @@ export function scoreRectangleAABB(
 
   // Severe penalty if no right angles
   if (rightAngleCount < RECT_MIN_RIGHT_ANGLES_FOR_VALIDITY) {
-    console.log(
-      `⚠️ NO right-angle corners detected - applying ${RECT_NO_RIGHT_ANGLE_MULTIPLIER}x multiplier`,
-    );
+    console.log(`⚠️ NO right-angle corners detected - applying ${RECT_NO_RIGHT_ANGLE_MULTIPLIER}x multiplier`);
     finalScore *= RECT_NO_RIGHT_ANGLE_MULTIPLIER;
   }
 
   // Additional penalty for exactly 2 right angles
   if (rightAngleCount === 2) {
-    console.log(
-      `📉 Exactly 2 right angles - subtracting ${RECT_TWO_RIGHT_ANGLES_PENALTY} from score`,
-    );
+    console.log(`📉 Exactly 2 right angles - subtracting ${RECT_TWO_RIGHT_ANGLES_PENALTY} from score`);
     finalScore -= RECT_TWO_RIGHT_ANGLES_PENALTY;
   }
 
@@ -199,10 +189,7 @@ export function scoreRectangleAABB(
  * @param fit - The fitted circle parameters with residual
  * @returns Score in [0, 1], or 0 if hard gates not met
  */
-export function scoreCircle(
-  points: Vec2[],
-  fit: { cx: number; cy: number; r: number; residualRMS: number },
-): number {
+export function scoreCircle(points: Vec2[], fit: { cx: number; cy: number; r: number; residualRMS: number }): number {
   console.group('⭕ Circle Scoring Analysis');
   console.log('Input:', {
     pointCount: points.length,
@@ -220,9 +207,7 @@ export function scoreCircle(
   const axisRatio = pcaAxisRatio(points);
   console.log(`1. PCA Axis Ratio (Roundness):`);
   console.log(`   Value: ${axisRatio.toFixed(3)} (threshold: ${CIRCLE_MAX_AXIS_RATIO})`);
-  console.log(
-    `   Interpretation: ${axisRatio < 1.2 ? 'Very round' : axisRatio < 1.5 ? 'Somewhat elliptical' : 'Very elongated'}`,
-  );
+  console.log(`   Interpretation: ${axisRatio < 1.2 ? 'Very round' : axisRatio < 1.5 ? 'Somewhat elliptical' : 'Very elongated'}`);
 
   if (axisRatio > CIRCLE_MAX_AXIS_RATIO) {
     console.log(`   ❌ FAILED: ${axisRatio.toFixed(3)} > ${CIRCLE_MAX_AXIS_RATIO} (too elongated)`);
@@ -261,9 +246,7 @@ export function scoreCircle(
   );
 
   if (rmsNorm > CIRCLE_MAX_RMS_RATIO) {
-    console.log(
-      `   ❌ FAILED: ${rmsNorm.toFixed(3)} > ${CIRCLE_MAX_RMS_RATIO} (points deviate too much)`,
-    );
+    console.log(`   ❌ FAILED: ${rmsNorm.toFixed(3)} > ${CIRCLE_MAX_RMS_RATIO} (points deviate too much)`);
     console.groupEnd(); // Close Hard Gates
     console.groupEnd(); // Close Circle Scoring
     return 0;
@@ -301,27 +284,18 @@ export function scoreCircle(
   // =========================================================================
   // Final Weighted Score
   // =========================================================================
-  const S_circle =
-    CIRCLE_WEIGHT_COVERAGE * S_coverage + CIRCLE_WEIGHT_FIT * S_fit + CIRCLE_WEIGHT_ROUND * S_round;
+  const S_circle = CIRCLE_WEIGHT_COVERAGE * S_coverage + CIRCLE_WEIGHT_FIT * S_fit + CIRCLE_WEIGHT_ROUND * S_round;
 
   console.group('🎯 Final Circle Score');
   console.log('Breakdown:');
-  console.log(
-    `   Coverage:  ${CIRCLE_WEIGHT_COVERAGE} × ${S_coverage.toFixed(3)} = ${(CIRCLE_WEIGHT_COVERAGE * S_coverage).toFixed(3)}`,
-  );
-  console.log(
-    `   Fit:       ${CIRCLE_WEIGHT_FIT} × ${S_fit.toFixed(3)} = ${(CIRCLE_WEIGHT_FIT * S_fit).toFixed(3)}`,
-  );
-  console.log(
-    `   Roundness: ${CIRCLE_WEIGHT_ROUND} × ${S_round.toFixed(3)} = ${(CIRCLE_WEIGHT_ROUND * S_round).toFixed(3)}`,
-  );
+  console.log(`   Coverage:  ${CIRCLE_WEIGHT_COVERAGE} × ${S_coverage.toFixed(3)} = ${(CIRCLE_WEIGHT_COVERAGE * S_coverage).toFixed(3)}`);
+  console.log(`   Fit:       ${CIRCLE_WEIGHT_FIT} × ${S_fit.toFixed(3)} = ${(CIRCLE_WEIGHT_FIT * S_fit).toFixed(3)}`);
+  console.log(`   Roundness: ${CIRCLE_WEIGHT_ROUND} × ${S_round.toFixed(3)} = ${(CIRCLE_WEIGHT_ROUND * S_round).toFixed(3)}`);
   console.log(`Total: ${S_circle.toFixed(3)}`);
   console.log(`Confidence threshold: ${SHAPE_CONFIDENCE_MIN}`);
 
   if (S_circle < SHAPE_CONFIDENCE_MIN) {
-    console.log(
-      `⚠️ Score ${S_circle.toFixed(3)} < ${SHAPE_CONFIDENCE_MIN} (may lose to rectangle or trigger line)`,
-    );
+    console.log(`⚠️ Score ${S_circle.toFixed(3)} < ${SHAPE_CONFIDENCE_MIN} (may lose to rectangle or trigger line)`);
   } else {
     console.log(`✅ Score ${S_circle.toFixed(3)} >= ${SHAPE_CONFIDENCE_MIN} (competitive)`);
   }

@@ -357,11 +357,7 @@ function detectCorners(
 ### Edge Reconstruction
 
 ```typescript
-function reconstructRectangleEdges(
-  points: Vec2[],
-  corners: Corner[],
-  minEdgeLengthWU: number = 8,
-): Edge[];
+function reconstructRectangleEdges(points: Vec2[], corners: Corner[], minEdgeLengthWU: number = 8): Edge[];
 ```
 
 - Takes best 4 corners by strength
@@ -386,14 +382,7 @@ function aabbCoverageAcrossDistinctSides(points: Vec2[], aabb: { minX; minY; max
 ```typescript
 // Types in lib/tools/types.ts
 
-type ForcedSnapKind =
-  | 'line'
-  | 'circle'
-  | 'box'
-  | 'diamondHold'
-  | 'rect'
-  | 'ellipseRect'
-  | 'diamond';
+type ForcedSnapKind = 'line' | 'circle' | 'box' | 'diamondHold' | 'rect' | 'ellipseRect' | 'diamond';
 
 // Hold-detected shapes use:
 // - 'circle': { anchors: { center: [x, y] } }

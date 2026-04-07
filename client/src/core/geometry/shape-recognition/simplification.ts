@@ -11,10 +11,7 @@ export interface SimplificationResult {
   retries: number;
 }
 
-export function calculateBBox(
-  points: number[] | [number, number][],
-  strokeSize: number = 0,
-): [number, number, number, number] | null {
+export function calculateBBox(points: number[] | [number, number][], strokeSize: number = 0): [number, number, number, number] | null {
   // Handle both flat arrays and tuple arrays
   if (Array.isArray(points) && points.length === 0) return null;
 
@@ -75,17 +72,13 @@ export function estimateEncodedSize(points: number[]): number {
   return pointsOverhead + strokeMetadata + updateEnvelope;
 }
 
-export function simplifyStroke(
-  points: number[],
-  tool: 'pen' | 'highlighter',
-): SimplificationResult {
+export function simplifyStroke(points: number[], tool: 'pen' | 'highlighter'): SimplificationResult {
   // Minimum 2 points (4 values) required
   if (points.length < 4) {
     return { points, simplified: false, retries: 0 };
   }
 
-  const baseTol =
-    tool === 'pen' ? PEN_SIMPLIFICATION_TOLERANCE : HIGHLIGHTER_SIMPLIFICATION_TOLERANCE;
+  const baseTol = tool === 'pen' ? PEN_SIMPLIFICATION_TOLERANCE : HIGHLIGHTER_SIMPLIFICATION_TOLERANCE;
 
   let tolerance = baseTol;
   let simplified = douglasPeucker(points, tolerance);
@@ -116,9 +109,7 @@ export function simplifyStroke(
     const finalSize = estimateEncodedSize(simplified);
     if (finalSize > MAX_STROKE_UPDATE_BYTES) {
       // Still exceeds budget even after downsample - stroke is too complex
-      console.error(
-        `Stroke still too large after downsample: ${finalSize} bytes (max: ${MAX_STROKE_UPDATE_BYTES})`,
-      );
+      console.error(`Stroke still too large after downsample: ${finalSize} bytes (max: ${MAX_STROKE_UPDATE_BYTES})`);
       return { points: [], simplified: false, retries }; // Return empty to signal rejection
     }
   }
@@ -182,14 +173,7 @@ function douglasPeucker(points: number[], tolerance: number): number[] {
   return result;
 }
 
-function perpendicularDistance(
-  px: number,
-  py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-): number {
+function perpendicularDistance(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const norm = Math.sqrt(dx * dx + dy * dy);

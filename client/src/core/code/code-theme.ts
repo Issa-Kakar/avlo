@@ -128,14 +128,7 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       { tag: [tags.moduleKeyword, tags.modifier], color: MODIFIER, fontWeight: 'bold' },
       // Strings
       {
-        tag: [
-          tags.string,
-          tags.special(tags.string),
-          tags.special(tags.brace),
-          tags.escape,
-          tags.regexp,
-          tags.character,
-        ],
+        tag: [tags.string, tags.special(tags.string), tags.special(tags.brace), tags.escape, tags.regexp, tags.character],
         color: STRING,
       },
       // Numbers / atoms
@@ -147,11 +140,7 @@ export async function getCodeMirrorExtensions(): Promise<unknown[]> {
       { tag: [tags.lineComment, tags.blockComment, tags.docComment], color: COMMENT },
       // Functions / class names / definitions
       {
-        tag: [
-          tags.function(tags.variableName),
-          tags.function(tags.propertyName),
-          tags.function(tags.definition(tags.variableName)),
-        ],
+        tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.definition(tags.variableName))],
         color: FUNCTION,
       },
       {

@@ -12,11 +12,7 @@ import { getCodeProps } from '../accessors';
 import * as Y from 'yjs';
 import { invalidateWorld } from '@/renderer/RenderLoop';
 import { frameTupleToWorldBounds } from '../geometry/bounds';
-import {
-  getMeasuredAscentRatio,
-  getMeasuredDescentRatio,
-  getMinCharWidthRatio,
-} from '../text/text-system';
+import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-system';
 
 import {
   type RunSpans,
@@ -167,36 +163,19 @@ export function contentLeft(maxDigits: number, fontSize: number, lineNumbers = t
 
 export function getMinWidth(fontSize: number): number {
   const cw = charWidth(fontSize);
-  return (
-    MIN_CHARS * cw +
-    padLeft(fontSize) +
-    padRight(fontSize) +
-    gutterWidth(2, fontSize) +
-    gutterPad(fontSize)
-  );
+  return MIN_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
 }
 
 export function getDefaultWidth(fontSize: number): number {
   const cw = charWidth(fontSize);
-  return (
-    DEFAULT_CHARS * cw +
-    padLeft(fontSize) +
-    padRight(fontSize) +
-    gutterWidth(2, fontSize) +
-    gutterPad(fontSize)
-  );
+  return DEFAULT_CHARS * cw + padLeft(fontSize) + padRight(fontSize) + gutterWidth(2, fontSize) + gutterPad(fontSize);
 }
 
 // ============================================================================
 // §4 LAYOUT
 // ============================================================================
 
-export function computeLayout(
-  sourceLines: string[],
-  fontSize: number,
-  width: number,
-  lineNumbers = true,
-): CodeLayout {
+export function computeLayout(sourceLines: string[], fontSize: number, width: number, lineNumbers = true): CodeLayout {
   const sourceLineCount = sourceLines.length;
   const digits = Math.max(2, String(sourceLineCount).length);
   const cl = contentLeft(digits, fontSize, lineNumbers);
@@ -318,13 +297,7 @@ function handleWorkerMessage(e: MessageEvent<WorkerResponse>): void {
   codeSystem.applyWorkerSpans(id, spans, version);
 }
 
-function requestParse(
-  id: string,
-  text: string,
-  language: CodeLanguage,
-  version: number,
-  changes?: ChangedRange[],
-): void {
+function requestParse(id: string, text: string, language: CodeLanguage, version: number, changes?: ChangedRange[]): void {
   dispatch({ type: 'parse', id, text, language, version, changes });
 }
 
@@ -345,9 +318,7 @@ function requestClearAll(): void {
 /**
  * Convert Y.Text delta to ChangedRange[] for incremental Lezer parsing.
  */
-export function deltaToChangedRanges(
-  delta: { insert?: string | object; delete?: number; retain?: number }[],
-): ChangedRange[] {
+export function deltaToChangedRanges(delta: { insert?: string | object; delete?: number; retain?: number }[]): ChangedRange[] {
   const ranges: ChangedRange[] = [];
   let posOld = 0;
   let posNew = 0;
@@ -371,11 +342,7 @@ export function deltaToChangedRanges(
   // Merge adjacent ranges (select+type/paste → delete+insert at same position)
   let wi = 0;
   for (let i = 0; i < ranges.length; i++) {
-    if (
-      wi > 0 &&
-      ranges[wi - 1].toA === ranges[i].fromA &&
-      ranges[wi - 1].toB === ranges[i].fromB
-    ) {
+    if (wi > 0 && ranges[wi - 1].toA === ranges[i].fromA && ranges[wi - 1].toB === ranges[i].fromB) {
       ranges[wi - 1].toA = ranges[i].toA;
       ranges[wi - 1].toB = ranges[i].toB;
     } else {
@@ -394,14 +361,7 @@ export function deltaToChangedRanges(
 class CodeSystemCache {
   private entries = new Map<string, CacheEntry>();
 
-  getLayout(
-    id: string,
-    yText: Y.Text,
-    fontSize: number,
-    width: number,
-    language: CodeLanguage,
-    lineNumbers = true,
-  ): CodeLayout {
+  getLayout(id: string, yText: Y.Text, fontSize: number, width: number, language: CodeLanguage, lineNumbers = true): CodeLayout {
     let e = this.entries.get(id);
 
     // COLD MISS — build full entry from Y.Text
@@ -433,12 +393,7 @@ class CodeSystemCache {
       e.version++;
       requestParse(id, e.sourceLines.join('\n'), language, e.version);
       // Only recompute layout if fontSize/width/lineNumbers also changed
-      if (
-        !e.layout ||
-        e.layoutFontSize !== fontSize ||
-        e.layoutWidth !== width ||
-        e.layoutLineNumbers !== lineNumbers
-      ) {
+      if (!e.layout || e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
         e.layoutFontSize = fontSize;
         e.layoutWidth = width;
         e.layoutLineNumbers = lineNumbers;
@@ -449,21 +404,12 @@ class CodeSystemCache {
     }
 
     // Cached layout still valid?
-    if (
-      e.layout &&
-      e.layoutFontSize === fontSize &&
-      e.layoutWidth === width &&
-      e.layoutLineNumbers === lineNumbers
-    ) {
+    if (e.layout && e.layoutFontSize === fontSize && e.layoutWidth === width && e.layoutLineNumbers === lineNumbers) {
       return e.layout;
     }
 
     // Relayout needed (fontSize, width, or lineNumbers changed)
-    if (
-      e.layoutFontSize !== fontSize ||
-      e.layoutWidth !== width ||
-      e.layoutLineNumbers !== lineNumbers
-    ) {
+    if (e.layoutFontSize !== fontSize || e.layoutWidth !== width || e.layoutLineNumbers !== lineNumbers) {
       e.layoutFontSize = fontSize;
       e.layoutWidth = width;
       e.layoutLineNumbers = lineNumbers;
@@ -505,9 +451,7 @@ class CodeSystemCache {
       this.entries.set(id, e);
     }
 
-    const changes = deltaToChangedRanges(
-      ev.delta as { insert?: string | object; delete?: number; retain?: number }[],
-    );
+    const changes = deltaToChangedRanges(ev.delta as { insert?: string | object; delete?: number; retain?: number }[]);
     requestParse(id, text, language, e.version, changes.length > 0 ? changes : undefined);
   }
 
@@ -572,22 +516,9 @@ export function computeCodeBBox(id: string, yObj: Y.Map<unknown>): BBoxTuple {
     const origin = (yObj.get('origin') as [number, number]) ?? [0, 0];
     return [origin[0], origin[1], origin[0] + 1, origin[1] + 1];
   }
-  const layout = codeSystem.getLayout(
-    id,
-    props.content,
-    props.fontSize,
-    props.width,
-    props.language,
-    props.lineNumbers,
-  );
+  const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
   const [ox, oy] = props.origin;
-  const bh = blockHeight(
-    layout,
-    props.fontSize,
-    props.headerVisible,
-    props.outputVisible,
-    props.output,
-  );
+  const bh = blockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
   const frame: FrameTuple = [ox, oy, layout.totalWidth, bh];
   codeSystem.setFrame(id, frame);
   return [ox, oy, ox + layout.totalWidth, oy + bh];

@@ -404,8 +404,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
-    if (needsReposition)
-      useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+    if (needsReposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
 
     this.flushDirtyBBoxes(dirtyBBoxes);
   }
@@ -459,10 +458,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     try {
       const dbName = `avlo.v1.rooms.${this.roomId}`;
       this.indexeddbProvider = new IndexeddbPersistence(dbName, this.ydoc);
-      await Promise.race([
-        this.indexeddbProvider.whenSynced,
-        new Promise<void>((resolve) => setTimeout(resolve, 1000)),
-      ]).catch(() => {});
+      await Promise.race([this.indexeddbProvider.whenSynced, new Promise<void>((resolve) => setTimeout(resolve, 1000))]).catch(() => {});
     } catch (err) {
       console.error('[RoomDocManager] IDB initialization failed (non-critical):', err);
     }

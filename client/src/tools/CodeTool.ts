@@ -9,12 +9,7 @@
 import * as Y from 'yjs';
 import { ulid } from 'ulid';
 import { getActiveRoomDoc, getHandle, transact, getObjects } from '@/runtime/room-runtime';
-import {
-  getCanvasElement,
-  getVisibleWorldBounds,
-  useCameraStore,
-  worldToClient,
-} from '@/stores/camera-store';
+import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorld } from '@/renderer/RenderLoop';
 import { getEditorHost } from '@/runtime/SurfaceManager';
@@ -216,12 +211,7 @@ export class CodeTool implements PointerTool {
   /** Set all --c-* CSS custom properties as exact px on the container.
    *  CM theme references these instead of em units, eliminating browser
    *  em→px conversion rounding that causes sub-pixel mismatches vs canvas. */
-  private setCSSVars(
-    container: HTMLDivElement,
-    fontSize: number,
-    scale: number,
-    lineNumbers = true,
-  ): void {
+  private setCSSVars(container: HTMLDivElement, fontSize: number, scale: number, lineNumbers = true): void {
     const s = container.style;
     s.setProperty('--c-pt', `${padTop(fontSize) * scale}px`);
     s.setProperty('--c-pb', `${padBottom(fontSize) * scale}px`);
@@ -285,17 +275,7 @@ export class CodeTool implements PointerTool {
     host.appendChild(container);
 
     // Load CodeMirror modules lazily (parallel)
-    const [
-      cmState,
-      cmView,
-      cmCommands,
-      cmLang,
-      cmJS,
-      cmPython,
-      cmYCollab,
-      cmAutocomplete,
-      themeExts,
-    ] = await Promise.all([
+    const [cmState, cmView, cmCommands, cmLang, cmJS, cmPython, cmYCollab, cmAutocomplete, themeExts] = await Promise.all([
       import('@codemirror/state'),
       import('@codemirror/view'),
       import('@codemirror/commands'),
@@ -321,20 +301,12 @@ export class CodeTool implements PointerTool {
     const tabNormalizer = cmState.EditorState.transactionFilter.of((tr: any) => {
       if (!tr.docChanged) return tr;
       const edits: { from: number; to: number; insert: string }[] = [];
-      tr.changes.iterChanges(
-        (
-          _fA: number,
-          _tA: number,
-          fromB: number,
-          toB: number,
-          inserted: { toString(): string },
-        ) => {
-          const t = inserted.toString();
-          if (t.includes('\t')) {
-            edits.push({ from: fromB, to: toB, insert: t.replace(/\t/g, '    ') });
-          }
-        },
-      );
+      tr.changes.iterChanges((_fA: number, _tA: number, fromB: number, toB: number, inserted: { toString(): string }) => {
+        const t = inserted.toString();
+        if (t.includes('\t')) {
+          edits.push({ from: fromB, to: toB, insert: t.replace(/\t/g, '    ') });
+        }
+      });
       if (edits.length === 0) return tr;
       return [tr, { changes: edits }];
     });
@@ -360,10 +332,7 @@ export class CodeTool implements PointerTool {
     // Language extension in compartment for dynamic reconfiguration
     const langCompartment = new cmState.Compartment();
     this.langCompartment = langCompartment;
-    const langExt =
-      props.language === 'python'
-        ? cmPython.python()
-        : cmJS.javascript({ typescript: true, jsx: true });
+    const langExt = props.language === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
 
     // Line numbers in compartment for dynamic toggle
     const lineNumbersCompartment = new cmState.Compartment();
@@ -411,8 +380,7 @@ export class CodeTool implements PointerTool {
     // Focus routing: title input if click landed in header region, else CM
     const entryWorld = this.pendingEntryWorld;
     this.pendingEntryWorld = null;
-    const clickedHeader =
-      entryWorld && props.headerVisible && entryWorld[1] < origin[1] + headerBarHeight(fontSize);
+    const clickedHeader = entryWorld && props.headerVisible && entryWorld[1] < origin[1] + headerBarHeight(fontSize);
 
     if (clickedHeader && this.titleInput) {
       this.titleInput.focus();
@@ -597,8 +565,7 @@ export class CodeTool implements PointerTool {
       // Update separator margins
       const sep = this.outputDiv.firstElementChild;
       if (sep && (sep as HTMLElement).style.height === '1px') {
-        (sep as HTMLElement).style.margin =
-          `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
+        (sep as HTMLElement).style.margin = `0 ${-padRight(props.fontSize) * scale}px 0 ${-padLeft(props.fontSize) * scale}px`;
       }
       // Update label height
       const label = this.outputDiv.querySelector('.code-output-label') as HTMLElement | null;
@@ -650,13 +617,9 @@ export class CodeTool implements PointerTool {
   private async switchLanguage(yMap: Y.Map<unknown>): Promise<void> {
     if (!this.editorView || !this.langCompartment) return;
     const lang = yMap.get('language') as string;
-    const [cmJS, cmPython] = await Promise.all([
-      import('@codemirror/lang-javascript'),
-      import('@codemirror/lang-python'),
-    ]);
+    const [cmJS, cmPython] = await Promise.all([import('@codemirror/lang-javascript'), import('@codemirror/lang-python')]);
     if (!this.editorView || !this.langCompartment) return;
-    const ext =
-      lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
+    const ext = lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this.editorView as any).dispatch({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -727,12 +690,7 @@ export class CodeTool implements PointerTool {
   // Private: Header / Output DOM Helpers
   // =========================================================================
 
-  private createHeaderDiv(
-    container: HTMLDivElement,
-    y: Y.Map<unknown>,
-    fs: number,
-    scale: number,
-  ): void {
+  private createHeaderDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
     const hh = headerBarHeight(fs) * scale;
     const cfs = chromeFontSize(fs) * scale;
     const lang = getLanguage(y) as CodeLanguage;
@@ -775,12 +733,7 @@ export class CodeTool implements PointerTool {
     this.titleInput = input;
   }
 
-  private createOutputDiv(
-    container: HTMLDivElement,
-    y: Y.Map<unknown>,
-    fs: number,
-    scale: number,
-  ): void {
+  private createOutputDiv(container: HTMLDivElement, y: Y.Map<unknown>, fs: number, scale: number): void {
     const cfs = chromeFontSize(fs) * scale;
     const outputLH = cfs * OUTPUT_LINE_H_MULT;
     const maxH = MAX_OUTPUT_CANVAS_LINES * outputLH;

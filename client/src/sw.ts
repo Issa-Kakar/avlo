@@ -29,13 +29,7 @@ sw.addEventListener('activate', (e) => {
       .then(() =>
         caches
           .keys()
-          .then((names) =>
-            Promise.all(
-              names
-                .filter((n) => n.startsWith('avlo-shell-') && n !== SHELL_CACHE)
-                .map((n) => caches.delete(n)),
-            ),
-          ),
+          .then((names) => Promise.all(names.filter((n) => n.startsWith('avlo-shell-') && n !== SHELL_CACHE).map((n) => caches.delete(n)))),
       ),
   );
 });
@@ -97,11 +91,7 @@ sw.addEventListener('fetch', (event) => {
           }
           return resp;
         } catch {
-          return (
-            (await caches.match(request)) ??
-            (await caches.match('/')) ??
-            new Response('Offline', { status: 503 })
-          );
+          return (await caches.match(request)) ?? (await caches.match('/')) ?? new Response('Offline', { status: 503 });
         }
       })(),
     );

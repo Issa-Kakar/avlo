@@ -17,10 +17,7 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
  * The preview shows the shape based on frozen anchors and live cursor position
  * All coordinates are in world space - the canvas context should already have world transforms applied
  */
-export function drawPerfectShapePreview(
-  ctx: CanvasRenderingContext2D,
-  preview: PerfectShapePreview,
-): void {
+export function drawPerfectShapePreview(ctx: CanvasRenderingContext2D, preview: PerfectShapePreview): void {
   // Apply tool styling
   ctx.globalAlpha = preview.opacity;
   ctx.strokeStyle = preview.color;

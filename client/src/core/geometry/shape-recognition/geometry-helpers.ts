@@ -174,16 +174,12 @@ export function detectCorners(
   }
 
   console.log('   📐 Corner Detection Summary:');
-  console.log(
-    `      Points analyzed: ${iEnd - iStart} potential corners ${closed ? '(closed)' : '(open)'}`,
-  );
+  console.log(`      Points analyzed: ${iEnd - iStart} potential corners ${closed ? '(closed)' : '(open)'}`);
   console.log(`      Corners found: ${corners.length}`);
   console.log(`      Skipped (short segments): ${skippedShortSegments}`);
   console.log(`      Skipped (angle < ${minTurnAngleDeg}°): ${skippedSmallAngles}`);
   if (corners.length > 0) {
-    const angles = corners
-      .map((c) => `${c.angle.toFixed(1)}° (s=${c.strength.toFixed(2)})`)
-      .join(', ');
+    const angles = corners.map((c) => `${c.angle.toFixed(1)}° (s=${c.strength.toFixed(2)})`).join(', ');
     console.log(`      Corner angles (with strength): [${angles}]`);
   }
 
@@ -330,11 +326,7 @@ function robustSegmentAngle(points: Vec2[], i0: number, i1: number): number {
  * 5. Filter edges by world-unit length (not index delta)
  * 6. Compute edge angles using PCA over all segment points (not just endpoints)
  */
-export function reconstructRectangleEdges(
-  points: Vec2[],
-  corners: Corner[],
-  minEdgeLengthWU: number = 8,
-): Edge[] {
+export function reconstructRectangleEdges(points: Vec2[], corners: Corner[], minEdgeLengthWU: number = 8): Edge[] {
   console.group('   🔧 Rectangle Edge Reconstruction');
 
   if (corners.length < 3) {
@@ -369,9 +361,7 @@ export function reconstructRectangleEdges(
 
     // Use world-unit length check (not index delta)
     if (length < minEdgeLengthWU) {
-      console.log(
-        `      Edge ${i} (corner ${startIdx}→${endIdx}): SKIPPED (length ${length.toFixed(1)} < ${minEdgeLengthWU} WU)`,
-      );
+      console.log(`      Edge ${i} (corner ${startIdx}→${endIdx}): SKIPPED (length ${length.toFixed(1)} < ${minEdgeLengthWU} WU)`);
       continue;
     }
 
@@ -391,9 +381,7 @@ export function reconstructRectangleEdges(
     );
   }
 
-  console.log(
-    `   ✅ Reconstructed ${edges.length} edges forming ${edges.length === 4 ? 'a proper 4-edge loop' : 'an incomplete cycle'}`,
-  );
+  console.log(`   ✅ Reconstructed ${edges.length} edges forming ${edges.length === 4 ? 'a proper 4-edge loop' : 'an incomplete cycle'}`);
   console.groupEnd();
 
   return edges;
@@ -440,9 +428,7 @@ export function avgParallelError(edges: Edge[]): number {
     // This makes opposite-facing parallel edges register as 0° error
     const parallelError = Math.min(diff, 180 - diff);
 
-    console.log(
-      `      Edge ${i} (${angle_i.toFixed(1)}°) vs Edge ${j} (${angle_j.toFixed(1)}°): error = ${parallelError.toFixed(1)}°`,
-    );
+    console.log(`      Edge ${i} (${angle_i.toFixed(1)}°) vs Edge ${j} (${angle_j.toFixed(1)}°): error = ${parallelError.toFixed(1)}°`);
 
     totalError += parallelError;
     count++;
@@ -566,11 +552,7 @@ export function coverageAcrossDistinctSides(
   }
 
   // Calculate coverage score (how many sides have points)
-  const sidesWithPoints =
-    (topCount > 0 ? 1 : 0) +
-    (bottomCount > 0 ? 1 : 0) +
-    (leftCount > 0 ? 1 : 0) +
-    (rightCount > 0 ? 1 : 0);
+  const sidesWithPoints = (topCount > 0 ? 1 : 0) + (bottomCount > 0 ? 1 : 0) + (leftCount > 0 ? 1 : 0) + (rightCount > 0 ? 1 : 0);
 
   // Also consider distribution evenness
   const total = topCount + bottomCount + leftCount + rightCount;
@@ -600,14 +582,7 @@ export function top3Avg(values: number[]): number {
  * Distance from a point to the nearest AABB edge.
  * Used for scoring how well points follow rectangle sides.
  */
-export function aabbSideDist(
-  x: number,
-  y: number,
-  minX: number,
-  minY: number,
-  maxX: number,
-  maxY: number,
-): number {
+export function aabbSideDist(x: number, y: number, minX: number, minY: number, maxX: number, maxY: number): number {
   // Distance to each side
   const dx = Math.min(Math.abs(x - minX), Math.abs(x - maxX));
   const dy = Math.min(Math.abs(y - minY), Math.abs(y - maxY));
@@ -671,8 +646,7 @@ export function aabbSideCoverage(
     if (Math.abs(y - aabb.maxY) <= epsilonWU) sides.bottom = true;
   }
 
-  const count =
-    (sides.left ? 1 : 0) + (sides.right ? 1 : 0) + (sides.top ? 1 : 0) + (sides.bottom ? 1 : 0);
+  const count = (sides.left ? 1 : 0) + (sides.right ? 1 : 0) + (sides.top ? 1 : 0) + (sides.bottom ? 1 : 0);
   return count / 4;
 }
 
@@ -681,18 +655,12 @@ export function aabbSideCoverage(
  * This mirrors the OBB implementation exactly but for axis-aligned boxes.
  * Returns a combined score of side coverage and evenness of distribution.
  */
-export function aabbCoverageAcrossDistinctSides(
-  points: Vec2[],
-  aabb: { minX: number; minY: number; maxX: number; maxY: number },
-): number {
+export function aabbCoverageAcrossDistinctSides(points: Vec2[], aabb: { minX: number; minY: number; maxX: number; maxY: number }): number {
   if (points.length < 4) return 0;
 
   const width = Math.max(1, aabb.maxX - aabb.minX);
   const height = Math.max(1, aabb.maxY - aabb.minY);
-  const tol = Math.max(
-    RECT_AABB_COVERAGE_MIN_TOL,
-    RECT_AABB_COVERAGE_TOLERANCE_FACTOR * Math.min(width, height),
-  );
+  const tol = Math.max(RECT_AABB_COVERAGE_MIN_TOL, RECT_AABB_COVERAGE_TOLERANCE_FACTOR * Math.min(width, height));
 
   let top = 0,
     bottom = 0,
@@ -702,11 +670,9 @@ export function aabbCoverageAcrossDistinctSides(
   for (const [x, y] of points) {
     // Check proximity to each side with tolerance
     const nearTop = Math.abs(y - aabb.minY) <= tol && x >= aabb.minX - tol && x <= aabb.maxX + tol;
-    const nearBottom =
-      Math.abs(y - aabb.maxY) <= tol && x >= aabb.minX - tol && x <= aabb.maxX + tol;
+    const nearBottom = Math.abs(y - aabb.maxY) <= tol && x >= aabb.minX - tol && x <= aabb.maxX + tol;
     const nearLeft = Math.abs(x - aabb.minX) <= tol && y >= aabb.minY - tol && y <= aabb.maxY + tol;
-    const nearRight =
-      Math.abs(x - aabb.maxX) <= tol && y >= aabb.minY - tol && y <= aabb.maxY + tol;
+    const nearRight = Math.abs(x - aabb.maxX) <= tol && y >= aabb.minY - tol && y <= aabb.maxY + tol;
 
     if (nearTop) top++;
     if (nearBottom) bottom++;
@@ -714,8 +680,7 @@ export function aabbCoverageAcrossDistinctSides(
     if (nearRight) right++;
   }
 
-  const sidesWithPoints =
-    (top > 0 ? 1 : 0) + (bottom > 0 ? 1 : 0) + (left > 0 ? 1 : 0) + (right > 0 ? 1 : 0);
+  const sidesWithPoints = (top > 0 ? 1 : 0) + (bottom > 0 ? 1 : 0) + (left > 0 ? 1 : 0) + (right > 0 ? 1 : 0);
   const total = top + bottom + left + right;
   if (total === 0) return 0;
 
@@ -783,14 +748,7 @@ export function hasSelfIntersection(pointsFlat: number[], epsWU: number): boolea
 
   // Helper: Compute orientation of ordered triplet (a,b,c)
   // Returns: 0 if collinear, 1 if CW, -1 if CCW
-  const orient = (
-    ax: number,
-    ay: number,
-    bx: number,
-    by: number,
-    cx: number,
-    cy: number,
-  ): number => {
+  const orient = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number => {
     const val = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
     if (Math.abs(val) < epsWU * epsWU) return 0; // Near-collinear
     return Math.sign(val);
@@ -850,14 +808,7 @@ export function hasSelfIntersection(pointsFlat: number[], epsWU: number): boolea
  * @param y2 - Segment end Y
  * @returns Distance from point to segment
  */
-function pointToSegmentDistance(
-  px: number,
-  py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-): number {
+function pointToSegmentDistance(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
   const dx = x2 - x1;
   const dy = y2 - y1;
 

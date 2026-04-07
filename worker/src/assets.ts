@@ -74,7 +74,9 @@ export const handleGetAsset = async (c: Context<{ Bindings: Env }>) => {
       cache = caches.default;
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
-    } catch { cache = null; }
+    } catch {
+      cache = null;
+    }
 
     // R2 handles range + conditional parsing from raw headers
     const object = await c.env.ASSETS.get(key, {
@@ -117,9 +119,7 @@ export const handleGetAsset = async (c: Context<{ Bindings: Env }>) => {
     // Edge cache population on full 200
     if (status === 200 && cache) {
       const [cacheBody, responseBody] = object.body.tee();
-      c.executionCtx.waitUntil(
-        cache.put(cacheKey, new Response(cacheBody, { headers: new Headers(headers), status }))
-      );
+      c.executionCtx.waitUntil(cache.put(cacheKey, new Response(cacheBody, { headers: new Headers(headers), status })));
       return new Response(responseBody, { headers, status });
     }
 

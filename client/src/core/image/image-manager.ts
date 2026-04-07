@@ -83,10 +83,7 @@ const ERROR_COOLDOWN_MS = 15_000;
 
 /** Ingest promise tracking — maps worker request ID to promise handlers. */
 let ingestIdCounter = 0;
-const inflightIngests = new Map<
-  string,
-  { resolve: (result: IngestResult) => void; reject: (err: Error) => void }
->();
+const inflightIngests = new Map<string, { resolve: (result: IngestResult) => void; reject: (err: Error) => void }>();
 
 // ============================================================
 // Helpers
@@ -237,8 +234,7 @@ function invalidateBitmapRegion(assetId: string): void {
       const handleAssetId =
         handle.kind === 'image'
           ? getAssetId(handle.y)
-          : ((handle.y.get('ogImageAssetId') as string | undefined) ??
-            (handle.y.get('faviconAssetId') as string | undefined));
+          : ((handle.y.get('ogImageAssetId') as string | undefined) ?? (handle.y.get('faviconAssetId') as string | undefined));
       if (handleAssetId !== assetId) continue;
       const [minX, minY, maxX, maxY] = handle.bbox;
       if (maxX >= vb.minX && minX <= vb.maxX && maxY >= vb.minY && minY <= vb.maxY) {
@@ -448,10 +444,7 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
   const vb = getVisibleWorldBounds();
 
   // Collect per-assetId: best level (min level = highest quality) + natural dims + representative frame
-  const assetMap = new Map<
-    string,
-    { frame: FrameTuple; level: 0 | 1 | 2; nw: number; nh: number }
-  >();
+  const assetMap = new Map<string, { frame: FrameTuple; level: 0 | 1 | 2; nw: number; nh: number }>();
 
   objects.forEach((yObj) => {
     const kind = yObj.get('kind') as ObjectKind;

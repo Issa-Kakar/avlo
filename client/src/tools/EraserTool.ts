@@ -1,29 +1,10 @@
-import {
-  pointToSegmentDistance,
-  strokeHitTest,
-  circleRectIntersect,
-  pointInDiamond,
-} from '@/core/geometry/hit-testing';
+import { pointToSegmentDistance, strokeHitTest, circleRectIntersect, pointInDiamond } from '@/core/geometry/hit-testing';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import {
-  getSpatialIndex,
-  getHandle,
-  transact,
-  getObjects,
-  getConnectorsForShape,
-} from '@/runtime/room-runtime';
+import { getSpatialIndex, getHandle, transact, getObjects, getConnectorsForShape } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
-import {
-  getFrame,
-  getPoints,
-  getWidth,
-  getShapeType,
-  getFillColor,
-  getStartAnchor,
-  getEndAnchor,
-} from '@/core/accessors';
+import { getFrame, getPoints, getWidth, getShapeType, getFillColor, getStartAnchor, getEndAnchor } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';

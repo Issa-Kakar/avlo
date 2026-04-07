@@ -217,14 +217,16 @@ html {
   background: transparent;
   border: none;
   outline: none;
-  color: #AEAEAE;
+  color: #aeaeae;
   font-family: 'JetBrains Mono', monospace;
   flex: 1;
   min-width: 0;
   padding: 0;
-  caret-color: #FFFFFFA6;
+  caret-color: #ffffffa6;
 }
-.code-title::placeholder { color: #E0E0E060; }
+.code-title::placeholder {
+  color: #e0e0e060;
+}
 .code-run-btn {
   flex-shrink: 0;
   border: none;
@@ -242,11 +244,11 @@ html {
   box-sizing: border-box;
 }
 .code-output-label {
-  color: #E0E0E090;
+  color: #e0e0e090;
   font-weight: 450;
 }
 .code-output-text {
-  color: #AEAEAE;
+  color: #aeaeae;
   white-space: pre-wrap;
   word-break: break-all;
   overflow-y: auto;

@@ -1,11 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  DrawingSettings,
-  SizePreset,
-  ConnectorSizePreset,
-  TEXT_COLOR_PALETTE,
-  useDeviceUIStore,
-} from '../stores/device-ui-store';
+import { DrawingSettings, SizePreset, ConnectorSizePreset, TEXT_COLOR_PALETTE, useDeviceUIStore } from '../stores/device-ui-store';
 import { undo, redo, hasActiveRoom } from '@/runtime/room-runtime';
 import { openImageFilePicker } from '@/core/image/image-actions';
 
@@ -62,16 +56,10 @@ export function ToolPanel() {
   };
 
   // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(
-    activeTool,
-  );
+  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(activeTool);
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
-  const showFillToggle =
-    activeTool === 'shape' ||
-    activeTool === 'pen' ||
-    activeTool === 'highlighter' ||
-    activeTool === 'select';
+  const showFillToggle = activeTool === 'shape' || activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'select';
 
   // Get current settings based on active tool with proper tool-specific overrides
   const getCurrentSettings = () => {
@@ -119,42 +107,22 @@ export function ToolPanel() {
       {/* Main toolbar */}
       <div className="tool-dock">
         {/* Navigation */}
-        <ToolButton
-          tool="select"
-          isActive={activeTool === 'select'}
-          onClick={() => setActiveTool('select')}
-          tooltip="Select (V)"
-        >
+        <ToolButton tool="select" isActive={activeTool === 'select'} onClick={() => setActiveTool('select')} tooltip="Select (V)">
           <IconSelect className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="pan"
-          isActive={activeTool === 'pan'}
-          onClick={() => setActiveTool('pan')}
-          tooltip="Pan (Space)"
-        >
+        <ToolButton tool="pan" isActive={activeTool === 'pan'} onClick={() => setActiveTool('pan')} tooltip="Pan (Space)">
           <IconPan className="icon" />
         </ToolButton>
 
         <div className="tool-divider" />
 
-        <ToolButton
-          tool="note"
-          isActive={activeTool === 'note'}
-          onClick={() => setActiveTool('note')}
-          tooltip="Sticky Note (N)"
-        >
+        <ToolButton tool="note" isActive={activeTool === 'note'} onClick={() => setActiveTool('note')} tooltip="Sticky Note (N)">
           <IconStickyNote className="icon" />
         </ToolButton>
 
         {/* Drawing — no divider, matches Mural compact style */}
-        <ToolButton
-          tool="pen"
-          isActive={activeTool === 'pen'}
-          onClick={() => setActiveTool('pen')}
-          tooltip="Pen (P)"
-        >
+        <ToolButton tool="pen" isActive={activeTool === 'pen'} onClick={() => setActiveTool('pen')} tooltip="Pen (P)">
           <IconPen className="icon" />
         </ToolButton>
 
@@ -167,30 +135,15 @@ export function ToolPanel() {
           <IconHighlighter className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="eraser"
-          isActive={activeTool === 'eraser'}
-          onClick={() => setActiveTool('eraser')}
-          tooltip="Eraser (E)"
-        >
+        <ToolButton tool="eraser" isActive={activeTool === 'eraser'} onClick={() => setActiveTool('eraser')} tooltip="Eraser (E)">
           <IconEraser className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="text"
-          isActive={activeTool === 'text'}
-          onClick={() => setActiveTool('text')}
-          tooltip="Text (T)"
-        >
+        <ToolButton tool="text" isActive={activeTool === 'text'} onClick={() => setActiveTool('text')} tooltip="Text (T)">
           <IconText className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="connector"
-          isActive={activeTool === 'connector'}
-          onClick={() => setActiveTool('connector')}
-          tooltip="Connector"
-        >
+        <ToolButton tool="connector" isActive={activeTool === 'connector'} onClick={() => setActiveTool('connector')} tooltip="Connector">
           <IconArrow className="icon" />
         </ToolButton>
 
@@ -230,21 +183,11 @@ export function ToolPanel() {
           <IconEllipse className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="code"
-          isActive={activeTool === 'code'}
-          onClick={() => setActiveTool('code')}
-          tooltip="Code"
-        >
+        <ToolButton tool="code" isActive={activeTool === 'code'} onClick={() => setActiveTool('code')} tooltip="Code">
           <IconCode className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="image"
-          isActive={false}
-          onClick={() => openImageFilePicker()}
-          tooltip="Image (I)"
-        >
+        <ToolButton tool="image" isActive={false} onClick={() => openImageFilePicker()} tooltip="Image (I)">
           <IconImage className="icon" />
         </ToolButton>
 
@@ -296,12 +239,7 @@ interface ToolButtonProps {
 
 function ToolButton({ isActive, onClick, tooltip, children }: ToolButtonProps) {
   return (
-    <button
-      className={`tool-btn ${isActive ? 'active' : ''}`}
-      data-tooltip={tooltip}
-      onClick={onClick}
-      aria-label={tooltip}
-    >
+    <button className={`tool-btn ${isActive ? 'active' : ''}`} data-tooltip={tooltip} onClick={onClick} aria-label={tooltip}>
       {children}
     </button>
   );
@@ -406,12 +344,7 @@ function Inspector({
 
       {/* Fill toggle button - between sizes and colors */}
       {showFillToggle && (
-        <button
-          className={`icon-btn ${fillEnabled ? 'on' : ''}`}
-          onClick={onFillToggle}
-          aria-label="Fill"
-          title="Fill"
-        >
+        <button className={`icon-btn ${fillEnabled ? 'on' : ''}`} onClick={onFillToggle} aria-label="Fill" title="Fill">
           <IconFill className="icon" />
         </button>
       )}
@@ -428,9 +361,7 @@ function Inspector({
               aria-label="More colors"
             >
               {/* Show custom color dot overlay when custom color is selected */}
-              {isCustomColor(currentColor) && (
-                <div className="custom-color-dot" style={{ backgroundColor: currentColor }} />
-              )}
+              {isCustomColor(currentColor) && <div className="custom-color-dot" style={{ backgroundColor: currentColor }} />}
             </button>
 
             {/* Fixed 8 colors - REVERSED ORDER (right to left becomes left to right) */}

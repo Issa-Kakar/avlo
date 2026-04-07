@@ -7,13 +7,7 @@ interface ColorCircleProps {
   className?: string;
 }
 
-export const ColorCircle = ({
-  color,
-  size = 18,
-  variant = 'filled',
-  secondColor,
-  className,
-}: ColorCircleProps) => {
+export const ColorCircle = ({ color, size = 18, variant = 'filled', secondColor, className }: ColorCircleProps) => {
   if (secondColor) {
     // SVG split: pixel-perfect diagonal, no gradient aliasing
     return (

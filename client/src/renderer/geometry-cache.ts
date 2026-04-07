@@ -15,14 +15,7 @@
  */
 
 import type { ObjectHandle } from '@/core/types/objects';
-import {
-  getPoints,
-  getFrame,
-  getWidth,
-  getShapeType,
-  getStartCap,
-  getEndCap,
-} from '@/core/accessors';
+import { getPoints, getFrame, getWidth, getShapeType, getStartCap, getEndCap } from '@/core/accessors';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
 import { buildConnectorPaths, type ConnectorPaths } from '@/core/connectors/connector-paths';

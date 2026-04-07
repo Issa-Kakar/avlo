@@ -43,10 +43,7 @@ export function validateImage(bytes: Uint8Array): { valid: boolean; mimeType: st
  * Parse image dimensions from binary headers.
  * Returns { width: 0, height: 0 } for unrecognized or too-short data.
  */
-export function parseImageDimensions(
-  bytes: Uint8Array,
-  mimeType: string,
-): { width: number; height: number } {
+export function parseImageDimensions(bytes: Uint8Array, mimeType: string): { width: number; height: number } {
   const none = { width: 0, height: 0 };
 
   switch (mimeType) {

@@ -2,12 +2,7 @@ import { drawToolPreview, clearPreviewCache } from './layers/tool-preview';
 import { useCameraStore } from '@/stores/camera-store';
 import { getOverlayContext, applyPendingResize } from '@/runtime/SurfaceManager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import {
-  getAnimationController,
-  destroyAnimationController,
-  EraserTrailAnimation,
-  CursorAnimationJob,
-} from './animation';
+import { getAnimationController, destroyAnimationController, EraserTrailAnimation, CursorAnimationJob } from './animation';
 
 export class OverlayRenderLoop {
   private started = false;

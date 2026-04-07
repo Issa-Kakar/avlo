@@ -9,12 +9,7 @@ import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
  * Draw dimmed objects with a uniform white lighten effect.
  * Uses 'screen' blend mode for consistent lightening.
  */
-export function drawDimmedStrokes(
-  ctx: CanvasRenderingContext2D,
-  hitIds: string[],
-  snapshot: Snapshot,
-  baseOpacity: number,
-): void {
+export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[], snapshot: Snapshot, baseOpacity: number): void {
   if (!hitIds.length) return;
 
   const hitSet = new Set(hitIds);

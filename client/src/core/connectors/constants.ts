@@ -107,10 +107,7 @@ export function pxToWorld(px: number, scale: number): number {
 
 /** Compute arrow length: max(MIN, strokeWidth * FACTOR). */
 export function computeArrowLength(strokeWidth: number): number {
-  return Math.max(
-    ROUTING_CONFIG.ARROW_MIN_LENGTH_W,
-    strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR,
-  );
+  return Math.max(ROUTING_CONFIG.ARROW_MIN_LENGTH_W, strokeWidth * ROUTING_CONFIG.ARROW_LENGTH_FACTOR);
 }
 
 /** Compute arrow width: length * ASPECT_RATIO (proportional at all sizes). */
