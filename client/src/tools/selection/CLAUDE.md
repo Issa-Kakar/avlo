@@ -677,3 +677,24 @@ SELECTION_STYLE = {
 | `core/geometry/transform.ts` | `computeScaleFactors`, uniform scale, edge-pin, position preservation, topology frame transforms |
 | `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderSelectedObjectWithScaleTransform`, per-kind preview renderers |
 | `renderer/layers/selection-overlay.ts` | `drawSelectionOverlay`: highlights, marquee, box+handles, endpoint dots |
+
+## Scale System Refactor
+
+### Phase 1: Foundation (complete)
+
+New files — no existing code touched:
+- `core/types/handles.ts` — Handle taxonomy (`CornerHandle`, `SideHandle`, `HandleId`), type guards, `oppositeHandle` (mapped type), `handlePosition`, `scaleOrigin`, `handleCursor`
+- `core/geometry/scale-system.ts` — Composable scale atoms
+
+**scale-system.ts layers:**
+- `scaleAround` primitive → composes into uniform, non-uniform, edge-pin, position preservation
+- Structural constraints via intersection types (`WithFrame`, `WithOriginBBox & { scale }`, `WithFontFrame & { width, align, fontFamily }`)
+- Output hierarchy: `BaseOut` → `OriginOut` → `OriginScaleOut` / `TextScaleOut` / `ReflowOut`
+- `ApplyFn<F, O>` / `CommitFn<O>` type aliases, `ScaleEntry<TFrozen, TOut>`, `ScaleCtx`
+- Two generic factories: `makeUniformApply(getCx, getCy, derive)` and `makeEdgePinApply(getMinX, getMaxX, getMinY, getMaxY, writeOffset)`
+- Shared extractors via contravariance (base type `(f: WithFrame) => number` works for all subtypes)
+- 8 composed apply constants (one-liners), 8 commit functions, `KindCounts` helpers
+
+### Phase 2: Wiring (not started)
+
+Wire into SelectTool/objects.ts. `resolveEntry()` runs once at `beginScale`, apply loop is 5 lines, commit loop is 3 lines. Target: ~800 → ~140 lines.
