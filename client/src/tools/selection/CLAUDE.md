@@ -311,7 +311,9 @@ Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) =>
 **Kind-specific (read many kind-specific fields):**
 - `scaleTextUniform`, `scaleCodeUniform` — fontSize rounding, origin from frame center
 - `edgePinText`, `edgePinCode` — compose `edgePinOriginBbox` + copy fontSize/width
-- `reflowText`, `reflowCode` — `computeReflowWidth` + re-layout content
+- `reflowText`, `reflowCode` — `computeReflowWidth` + re-layout at new width (see below)
+
+**Reflow layout integration:** `reflowText` calls `layoutMeasuredContent(frozen.measured, targetWidth, fontSize)` from `text-system.ts` — re-wraps pre-measured content at the new width. `reflowCode` calls `computeCodeLayout(frozen.sourceLines, fontSize, targetWidth, lineNumbers)` from `code-system.ts`. Both use `frozen.minW` (captured at `beginScale` via `getMinCharWidth`/`getCodeMinWidth`) as the minimum width passed to `computeReflowWidth`. `anchorFactor(align)` converts text alignment to origin offset (0/0.5/1 for left/center/right).
 
 ### Commit Functions
 

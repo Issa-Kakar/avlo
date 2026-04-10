@@ -72,8 +72,9 @@ All paths relative to `client/src/` unless noted.
 | `core/types/snapshot.ts` | `Snapshot`, `createEmptySnapshot` |
 | `core/index.ts` | Type re-exports for convenience |
 | `core/geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch |
-| `core/geometry/bounds.ts` | WorldBounds operations |
-| `core/geometry/transform.ts` | Scale math, frame transforms |
+| `core/geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds operations, `computeRawGeometryBounds` |
+| `core/geometry/scale-system.ts` | Pure math atoms: `uniformFactor`, `preservePosition`, `edgePinDelta`, `computeReflowWidth` (no state) |
+| `core/types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `core/geometry/hit-testing.ts` | Shared SelectTool + EraserTool, marquee intersection |
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
 | `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
@@ -381,6 +382,19 @@ interface ObjectHandle {
 }
 ```
 
+### Stored vs Derived Geometry
+
+Shape, image, stroke, connector store geometry directly in Y.Doc (`frame`, `points`). Text, code, note, bookmark derive frames from layout/origin/scale — not stored. Each subsystem caches its computed frame and exposes a getter:
+
+| Kind | Frame Getter | Source Module |
+|------|-------------|---------------|
+| text | `getTextFrame(id)` | `core/text/text-system.ts` |
+| code | `getCodeFrame(id)` | `core/code/code-system.ts` |
+| note | `getTextFrame(id)` (shared with text) | `core/text/text-system.ts` |
+| bookmark | `getBookmarkFrame(id)` | `core/bookmark/bookmark-render.ts` |
+
+All return `FrameTuple | null` (`null` before first layout). `computeBBoxFor(id, kind, yMap)` dispatches to the correct subsystem's `computeXxxBBox()` — called by RoomDocManager on hydration and Y.Doc changes. Frame getters are used by hit testing, selection bounds, connectors, and overlay rendering.
+
 ---
 
 ## Types & Accessors
@@ -390,8 +404,9 @@ Tuple forms for storage: `BBoxTuple = [minX, minY, maxX, maxY]`, `FrameTuple = [
 
 ### Typed Y.Map Accessors (`@/core/accessors`)
 Prefer typed accessors over raw `.get()`. Pattern: `getXxxProps(y) → XxxProps | null` bulk accessor per kind, plus individual field accessors.
-- **Common:** `getColor`, `getOpacity`, `getWidth`, `getFrame`, `getFrameObject`, `getPoints`
+- **Common:** `getColor`, `getOpacity`, `getWidth`, `getFrame` (shape/image — stored), `getOrigin` (text/code/note/bookmark), `getPoints`
 - **Per-kind bulk (preferred):** `getStrokeProps`, `getShapeProps`, `getTextProps`, `getCodeProps`, `getNoteProps`, `getImageProps`, `getBookmarkProps`
+- **Text/code fields:** `getFontSize`, `getFontFamily`, `getAlign`, `getContent` (Y.XmlFragment), `getCodeText` (Y.Text), `getTextWidth` (`'auto' | number`)
 - **Connector:** `getStart`, `getEnd`, `getStartAnchor`, `getEndAnchor`, `getStartCap`, `getEndCap`, `getConnectorType`
 - **Key types:** `TextAlign`, `TextAlignV`, `TextWidth`, `FontFamily` (4 fonts), `CodeLanguage` (js/ts/python), `StoredAnchor`
 
@@ -456,7 +471,7 @@ Imperative getters: `getUserId()` (used by tools for `ownerId`, undo tracking, p
 
 Detailed docs in `tools/selection/CLAUDE.md`. Covers state machine, per-kind transform behavior, connector topology, hit testing (Z-order, handles, endpoints), text/code reflow, dirty rect optimization, and commit paths.
 
-**Key files:** `SelectTool.ts` (state machine + commits), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/geometry/hit-testing.ts` (shared with EraserTool), `core/geometry/transform.ts` (scale math), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
+**Key files:** `SelectTool.ts` (state machine + commits), `tools/selection/transform.ts` (TransformController, entry system, dispatch tables), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/geometry/hit-testing.ts` (shared with EraserTool), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
 
 ---
 
