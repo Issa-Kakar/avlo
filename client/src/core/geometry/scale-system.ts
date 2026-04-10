@@ -117,17 +117,8 @@ export function edgePinDelta1D(
 }
 
 /** 2D edge-pin: compose 1D per axis based on handle. */
-export function edgePinDelta(
-  minX: number,
-  maxX: number,
-  minY: number,
-  maxY: number,
-  sel: BBoxTuple,
-  origin: Point,
-  sx: number,
-  sy: number,
-  handleId: HandleId,
-): Point {
+export function edgePinDelta(bbox: BBoxTuple, sel: BBoxTuple, origin: Point, sx: number, sy: number, handleId: HandleId): Point {
+  const [minX, minY, maxX, maxY] = bbox;
   if (isHorzSide(handleId)) {
     const anchor = handleId === 'e' ? sel[0] : sel[2];
     const sign = handleId === 'e' ? 1 : -1;

@@ -52,6 +52,7 @@ core/geometry/scale-system.ts (pure math atoms — NO STATE)
 core/geometry/bounds.ts (bbox/frame helpers)
 ├── frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize
 ├── scaleBBoxAround, translateBBox, expandBBoxEnvelope
+├── offsetPoint, offsetBBox, offsetFrame, offsetPoints, setBBoxXYWH — mutating transform primitives
 └── computeRawGeometryBounds() — frames/points/bbox by kind for scale origin
 
 core/types/handles.ts (handle taxonomy)
@@ -306,7 +307,7 @@ Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) =>
 - `edgePinOriginBbox(f: HasOrigin & HasBBox, ctx, o)` — note, bookmark (directly), text/code (composed)
 - `scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
 - `edgePinPoints(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
-- `offsetFrame`, `offsetOrigin`, `offsetPoints` — translate variants
+- `applyTranslateFrame`, `applyTranslateOrigin`, `applyTranslatePoints` — translate variants (compose bounds.ts offset helpers)
 
 **Kind-specific (read many kind-specific fields):**
 - `scaleTextUniform`, `scaleCodeUniform` — fontSize rounding, origin from frame center
@@ -407,7 +408,7 @@ Pure math atoms. No types, no factories, no state.
 - `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Ensures scale=1.0 when cursor returns to start.
 - `uniformFactor(sx, sy)` — collapse 2 axes to 1 signed magnitude. No dead zone, immediate flip. Min 0.001.
 - `preservePosition(cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box.
-- `edgePinDelta(minX, maxX, minY, maxY, selBounds, origin, sx, sy, handleId)` — 2D edge-pin for objects that can't scale.
+- `edgePinDelta(bbox, selBounds, origin, sx, sy, handleId)` — 2D edge-pin for objects that can't scale.
 - `applyNonUniformFrame(f, ctx, out)` — each corner scaled independently (shapes only).
 - `computeReflowWidth(fx, fw, originX, sx, minW)` — edge-scaling + min-width clamping for text/code reflow.
 

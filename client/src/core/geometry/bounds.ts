@@ -254,6 +254,52 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): BBoxT
 // INTERSECTION TEST
 // ============================================================================
 
+// ============================================================================
+// MUTATING OFFSET HELPERS (hot-path transform primitives)
+// ============================================================================
+
+/** Offset point in-place: dst = src + (dx, dy). */
+export function offsetPoint(dst: Point, src: Point, dx: number, dy: number): void {
+  dst[0] = src[0] + dx;
+  dst[1] = src[1] + dy;
+}
+
+/** Offset bbox in-place: dst[i] = src[i] + dx/dy. */
+export function offsetBBox(dst: BBoxTuple, src: BBoxTuple, dx: number, dy: number): void {
+  dst[0] = src[0] + dx;
+  dst[1] = src[1] + dy;
+  dst[2] = src[2] + dx;
+  dst[3] = src[3] + dy;
+}
+
+/** Offset frame position in-place (dimensions copied). */
+export function offsetFrame(dst: FrameTuple, src: FrameTuple, dx: number, dy: number): void {
+  dst[0] = src[0] + dx;
+  dst[1] = src[1] + dy;
+  dst[2] = src[2];
+  dst[3] = src[3];
+}
+
+/** Offset every point in array in-place: dst[i] = src[i] + (dx, dy). */
+export function offsetPoints(dst: Point[], src: Point[], dx: number, dy: number): void {
+  for (let i = 0; i < src.length; i++) {
+    dst[i][0] = src[i][0] + dx;
+    dst[i][1] = src[i][1] + dy;
+  }
+}
+
+/** Set bbox from position + dimensions. */
+export function setBBoxXYWH(out: BBoxTuple, x: number, y: number, w: number, h: number): void {
+  out[0] = x;
+  out[1] = y;
+  out[2] = x + w;
+  out[3] = y + h;
+}
+
+// ============================================================================
+// INTERSECTION TEST
+// ============================================================================
+
 export function boundsIntersect(
   a: { minX: number; minY: number; maxX: number; maxY: number },
   b: { minX: number; minY: number; maxX: number; maxY: number },

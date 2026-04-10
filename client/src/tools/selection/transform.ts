@@ -24,7 +24,16 @@ import {
   computeReflowWidth,
   applyNonUniformFrame,
 } from '@/core/geometry/scale-system';
-import { frameToBbox, frameToBboxMut, copyBbox } from '@/core/geometry/bounds';
+import {
+  frameToBbox,
+  frameToBboxMut,
+  copyBbox,
+  offsetPoint,
+  offsetBBox,
+  offsetFrame as offsetFrameMut,
+  offsetPoints as offsetPointsMut,
+  setBBoxXYWH,
+} from '@/core/geometry/bounds';
 import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { getFrame, getPoints, getWidth, getOrigin, getTextProps, getCodeProps } from '@/core/accessors';
 import {
@@ -210,6 +219,8 @@ function uniformMath(cx: number, cy: number, ctx: ScaleCtx): [ncx: number, ncy: 
   return [ncx, ncy, Math.abs(uf)];
 }
 
+const edgePinCtx = (bbox: BBoxTuple, ctx: ScaleCtx): Point => edgePinDelta(bbox, ctx.selBounds, ctx.origin, ctx.sx, ctx.sy, ctx.handleId);
+
 // ============================================================================
 // Scale Apply Functions — Direct Field Access, No Factories
 // ============================================================================
@@ -232,12 +243,8 @@ function scaleFrameNonUniform(f: HasFrame, ctx: ScaleCtx, o: HasFrame & HasBBox)
 }
 
 function edgePinFrame(f: HasFrame, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  const [x, y, w, h] = f.frame;
-  const [dx, dy] = edgePinDelta(x, x + w, y, y + h, ctx.selBounds, ctx.origin, ctx.sx, ctx.sy, ctx.handleId);
-  o.frame[0] = x + dx;
-  o.frame[1] = y + dy;
-  o.frame[2] = w;
-  o.frame[3] = h;
+  const [dx, dy] = edgePinCtx(frameToBbox(f.frame), ctx);
+  offsetFrameMut(o.frame, f.frame, dx, dy);
   frameToBboxMut(o.frame, o.bbox);
 }
 
@@ -252,21 +259,14 @@ function scaleOriginScale(f: HasOrigin & HasScale & HasBBox, ctx: ScaleCtx, o: H
     nby = ncy - bh / 2;
   o.origin[0] = nbx + (f.origin[0] - bx0) * ef;
   o.origin[1] = nby + (f.origin[1] - by0) * ef;
-  o.bbox[0] = nbx;
-  o.bbox[1] = nby;
-  o.bbox[2] = nbx + bw;
-  o.bbox[3] = nby + bh;
+  setBBoxXYWH(o.bbox, nbx, nby, bw, bh);
 }
 
 /** Edge-pin core: offset origin + bbox. Used directly for note/bookmark, composed by text/code. */
 function edgePinOriginBbox(f: HasOrigin & HasBBox, ctx: ScaleCtx, o: HasOrigin & HasBBox): void {
-  const [dx, dy] = edgePinDelta(f.bbox[0], f.bbox[2], f.bbox[1], f.bbox[3], ctx.selBounds, ctx.origin, ctx.sx, ctx.sy, ctx.handleId);
-  o.origin[0] = f.origin[0] + dx;
-  o.origin[1] = f.origin[1] + dy;
-  o.bbox[0] = f.bbox[0] + dx;
-  o.bbox[1] = f.bbox[1] + dy;
-  o.bbox[2] = f.bbox[2] + dx;
-  o.bbox[3] = f.bbox[3] + dy;
+  const [dx, dy] = edgePinCtx(f.bbox, ctx);
+  offsetPoint(o.origin, f.origin, dx, dy);
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
 function scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx: ScaleCtx, o: HasPoints & HasWidth & HasBBox): void {
@@ -278,25 +278,16 @@ function scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx: ScaleCtx, o:
     o.points[i][1] = ncy + (f.points[i][1] - cy) * af;
   }
   o.width = f.width * af;
-  const hw = ((f.bbox[2] - f.bbox[0]) * af) / 2,
-    hh = ((f.bbox[3] - f.bbox[1]) * af) / 2;
-  o.bbox[0] = ncx - hw;
-  o.bbox[1] = ncy - hh;
-  o.bbox[2] = ncx + hw;
-  o.bbox[3] = ncy + hh;
+  const bw = (f.bbox[2] - f.bbox[0]) * af,
+    bh = (f.bbox[3] - f.bbox[1]) * af;
+  setBBoxXYWH(o.bbox, ncx - bw / 2, ncy - bh / 2, bw, bh);
 }
 
 function edgePinPoints(f: HasPoints & HasWidth & HasBBox, ctx: ScaleCtx, o: HasPoints & HasWidth & HasBBox): void {
-  const [dx, dy] = edgePinDelta(f.bbox[0], f.bbox[2], f.bbox[1], f.bbox[3], ctx.selBounds, ctx.origin, ctx.sx, ctx.sy, ctx.handleId);
-  for (let i = 0; i < f.points.length; i++) {
-    o.points[i][0] = f.points[i][0] + dx;
-    o.points[i][1] = f.points[i][1] + dy;
-  }
+  const [dx, dy] = edgePinCtx(f.bbox, ctx);
+  offsetPointsMut(o.points, f.points, dx, dy);
   o.width = f.width;
-  o.bbox[0] = f.bbox[0] + dx;
-  o.bbox[1] = f.bbox[1] + dy;
-  o.bbox[2] = f.bbox[2] + dx;
-  o.bbox[3] = f.bbox[3] + dy;
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
 function scaleTextUniform(f: GeoOf<'text'>, ctx: ScaleCtx, o: OutOf<'text'>): void {
@@ -311,10 +302,7 @@ function scaleTextUniform(f: GeoOf<'text'>, ctx: ScaleCtx, o: OutOf<'text'>): vo
   o.origin[0] = nfx + anchorFactor(f.align) * nw;
   o.origin[1] = nfy + rounded * getBaselineToTopRatio(f.fontFamily);
   o.width = typeof f.width === 'number' ? f.width * ef : NaN;
-  o.bbox[0] = nfx;
-  o.bbox[1] = nfy;
-  o.bbox[2] = nfx + nw;
-  o.bbox[3] = nfy + nh;
+  setBBoxXYWH(o.bbox, nfx, nfy, nw, nh);
   o.layout = null;
 }
 
@@ -328,10 +316,7 @@ function scaleCodeUniform(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): vo
   o.origin[0] = ncx - nw / 2;
   o.origin[1] = ncy - nh / 2;
   o.width = f.width * ef;
-  o.bbox[0] = o.origin[0];
-  o.bbox[1] = o.origin[1];
-  o.bbox[2] = o.origin[0] + nw;
-  o.bbox[3] = o.origin[1] + nh;
+  setBBoxXYWH(o.bbox, o.origin[0], o.origin[1], nw, nh);
   o.layout = null;
 }
 
@@ -358,10 +343,7 @@ function reflowText(f: GeoOf<'text'>, ctx: ScaleCtx, o: OutOf<'text'>): void {
   o.layout = layout;
   o.fontSize = f.fontSize;
   const nh = layout.lines.length * layout.lineHeight;
-  o.bbox[0] = newLeft;
-  o.bbox[1] = f.frame[1];
-  o.bbox[2] = newLeft + targetWidth;
-  o.bbox[3] = f.frame[1] + nh;
+  setBBoxXYWH(o.bbox, newLeft, f.frame[1], targetWidth, nh);
 }
 
 function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
@@ -373,43 +355,27 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
   o.layout = layout;
   o.fontSize = f.fontSize;
   const nh = codeBlockHeight(layout, f.fontSize, f.headerVisible, f.outputVisible, f.output);
-  o.bbox[0] = newLeft;
-  o.bbox[1] = f.frame[1];
-  o.bbox[2] = newLeft + targetWidth;
-  o.bbox[3] = f.frame[1] + nh;
+  setBBoxXYWH(o.bbox, newLeft, f.frame[1], targetWidth, nh);
 }
 
 // ============================================================================
 // Translate Apply Functions
 // ============================================================================
 
-function offsetFrame(f: HasFrame, dx: number, dy: number, o: HasFrame & HasBBox): void {
-  o.frame[0] = f.frame[0] + dx;
-  o.frame[1] = f.frame[1] + dy;
-  o.frame[2] = f.frame[2];
-  o.frame[3] = f.frame[3];
+function applyTranslateFrame(f: HasFrame, dx: number, dy: number, o: HasFrame & HasBBox): void {
+  offsetFrameMut(o.frame, f.frame, dx, dy);
   frameToBboxMut(o.frame, o.bbox);
 }
 
-function offsetOrigin(f: HasOrigin & HasBBox, dx: number, dy: number, o: HasOrigin & HasBBox): void {
-  o.origin[0] = f.origin[0] + dx;
-  o.origin[1] = f.origin[1] + dy;
-  o.bbox[0] = f.bbox[0] + dx;
-  o.bbox[1] = f.bbox[1] + dy;
-  o.bbox[2] = f.bbox[2] + dx;
-  o.bbox[3] = f.bbox[3] + dy;
+function applyTranslateOrigin(f: HasOrigin & HasBBox, dx: number, dy: number, o: HasOrigin & HasBBox): void {
+  offsetPoint(o.origin, f.origin, dx, dy);
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
-function offsetPoints(f: HasPoints & HasWidth & HasBBox, dx: number, dy: number, o: HasPoints & HasWidth & HasBBox): void {
-  for (let i = 0; i < f.points.length; i++) {
-    o.points[i][0] = f.points[i][0] + dx;
-    o.points[i][1] = f.points[i][1] + dy;
-  }
+function applyTranslatePoints(f: HasPoints & HasWidth & HasBBox, dx: number, dy: number, o: HasPoints & HasWidth & HasBBox): void {
+  offsetPointsMut(o.points, f.points, dx, dy);
   o.width = f.width;
-  o.bbox[0] = f.bbox[0] + dx;
-  o.bbox[1] = f.bbox[1] + dy;
-  o.bbox[2] = f.bbox[2] + dx;
-  o.bbox[3] = f.bbox[3] + dy;
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
 // ============================================================================
@@ -484,13 +450,13 @@ const COMMIT_SCALE: ScaleCommitTable = {
 };
 
 const TRANSLATE_APPLY: TranslateApplyTable = {
-  shape: offsetFrame,
-  image: offsetFrame,
-  stroke: offsetPoints,
-  text: offsetOrigin,
-  code: offsetOrigin,
-  note: offsetOrigin,
-  bookmark: offsetOrigin,
+  shape: applyTranslateFrame,
+  image: applyTranslateFrame,
+  stroke: applyTranslatePoints,
+  text: applyTranslateOrigin,
+  code: applyTranslateOrigin,
+  note: applyTranslateOrigin,
+  bookmark: applyTranslateOrigin,
 };
 
 const TRANSLATE_COMMIT: TranslateCommitTable = {
@@ -856,10 +822,7 @@ export class TransformController {
       if (entry.strategy === 'translate') {
         const dx = this.dx,
           dy = this.dy;
-        for (let i = 0; i < entry.originalPoints.length; i++) {
-          entry.translatedPoints[i][0] = entry.originalPoints[i][0] + dx;
-          entry.translatedPoints[i][1] = entry.originalPoints[i][1] + dy;
-        }
+        offsetPointsMut(entry.translatedPoints, entry.originalPoints, dx, dy);
         topology.reroutes.set(entry.connectorId, entry.translatedPoints);
 
         const prev = topology.prevBboxes.get(entry.connectorId);
