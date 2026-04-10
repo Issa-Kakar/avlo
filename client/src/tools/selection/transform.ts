@@ -16,17 +16,9 @@ import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind, TextAlign, FontFamily, TextWidth } from '@/core/types/objects';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
-import {
-  uniformFactor,
-  preservePosition,
-  edgePinDelta,
-  roundProp,
-  computeReflowWidth,
-  applyNonUniformFrame,
-} from '@/core/geometry/scale-system';
+import { scaleAround, uniformFactor, preservePosition, edgePinDelta, roundProp, computeReflowWidth } from '@/core/geometry/scale-system';
 import {
   frameToBbox,
-  frameToBboxMut,
   copyBbox,
   offsetPoint,
   offsetBBox,
@@ -80,8 +72,8 @@ type ScalableKind = Exclude<ObjectKind, 'connector'>;
 type MeasuredContent = ReturnType<typeof textLayoutCache.getMeasuredContent>;
 
 type GeoMap = {
-  shape: HasFrame;
-  image: HasFrame;
+  shape: HasFrame & HasBBox;
+  image: HasFrame & HasBBox;
   stroke: HasPoints & HasWidth & HasBBox;
   text: HasFrame &
     HasOrigin &
@@ -113,7 +105,7 @@ type GeoMap = {
 type OutMap = {
   shape: HasFrame & HasBBox;
   image: HasFrame & HasBBox;
-  stroke: HasPoints & HasWidth & HasBBox;
+  stroke: HasPoints & HasWidth & HasBBox & { factor: number; fcx: number; fcy: number };
   text: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: TextLayout | null };
   code: HasOrigin & HasFontSize & HasWidth & HasBBox & { layout: CodeLayout | null };
   note: HasOrigin & HasScale & HasBBox;
@@ -214,7 +206,7 @@ function countKinds(c: KindCounts): number {
 // ============================================================================
 
 function uniformMath(cx: number, cy: number, ctx: ScaleCtx): [ncx: number, ncy: number, af: number] {
-  const uf = uniformFactor(ctx.sx, ctx.sy);
+  const uf = uniformFactor(ctx.sx, ctx.sy, ctx.handleId);
   const [ncx, ncy] = preservePosition(cx, cy, ctx.selBounds, ctx.origin, uf);
   return [ncx, ncy, Math.abs(uf)];
 }
@@ -225,27 +217,68 @@ const edgePinCtx = (bbox: BBoxTuple, ctx: ScaleCtx): Point => edgePinDelta(bbox,
 // Scale Apply Functions — Direct Field Access, No Factories
 // ============================================================================
 
-function scaleFrameUniform(f: HasFrame, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  const [x, y, w, h] = f.frame;
-  const [ncx, ncy, af] = uniformMath(x + w / 2, y + h / 2, ctx);
-  const nw = w * af,
-    nh = h * af;
-  o.frame[0] = ncx - nw / 2;
-  o.frame[1] = ncy - nh / 2;
-  o.frame[2] = nw;
-  o.frame[3] = nh;
-  frameToBboxMut(o.frame, o.bbox);
+function scaleFrameUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
+  // Padding is constant (strokeWidth/2 + 1 per side for shapes; 0 for images)
+  const padL = f.frame[0] - f.bbox[0];
+  const padT = f.frame[1] - f.bbox[1];
+
+  // Scale using bbox center (= frame center for symmetric padding)
+  const bcx = (f.bbox[0] + f.bbox[2]) / 2;
+  const bcy = (f.bbox[1] + f.bbox[3]) / 2;
+  const [ncx, ncy, af] = uniformMath(bcx, bcy, ctx);
+
+  // Scale bbox dimensions to derive position + frame
+  const bw = (f.bbox[2] - f.bbox[0]) * af;
+  const bh = (f.bbox[3] - f.bbox[1]) * af;
+  const bx = ncx - bw / 2;
+  const by = ncy - bh / 2;
+
+  // Derive frame from scaled bbox (constant padding inset, clamp at 0)
+  o.frame[2] = Math.max(0, bw - 2 * padL);
+  o.frame[3] = Math.max(0, bh - 2 * padT);
+  o.frame[0] = bx + padL;
+  o.frame[1] = by + padT;
+
+  // Output bbox = frame + constant padding (stroke width doesn't scale)
+  o.bbox[0] = o.frame[0] - padL;
+  o.bbox[1] = o.frame[1] - padT;
+  o.bbox[2] = o.frame[0] + o.frame[2] + padL;
+  o.bbox[3] = o.frame[1] + o.frame[3] + padT;
 }
 
-// Shape non-uniform delegates to scale-system (each corner scaled independently)
-function scaleFrameNonUniform(f: HasFrame, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  applyNonUniformFrame(f, ctx, o);
+// Shape non-uniform: scale bbox edges around origin, derive frame
+function scaleFrameNonUniform(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
+  const padL = f.frame[0] - f.bbox[0];
+  const padT = f.frame[1] - f.bbox[1];
+
+  // Scale bbox edges around origin (origin IS a bbox corner → stays fixed)
+  const bx1 = scaleAround(f.bbox[0], ctx.origin[0], ctx.sx);
+  const by1 = scaleAround(f.bbox[1], ctx.origin[1], ctx.sy);
+  const bx2 = scaleAround(f.bbox[2], ctx.origin[0], ctx.sx);
+  const by2 = scaleAround(f.bbox[3], ctx.origin[1], ctx.sy);
+
+  const sMinX = Math.min(bx1, bx2);
+  const sMinY = Math.min(by1, by2);
+  const sBw = Math.abs(bx2 - bx1);
+  const sBh = Math.abs(by2 - by1);
+
+  // Derive frame (constant padding inset, clamp at 0)
+  o.frame[2] = Math.max(0, sBw - 2 * padL);
+  o.frame[3] = Math.max(0, sBh - 2 * padT);
+  o.frame[0] = sMinX + padL;
+  o.frame[1] = sMinY + padT;
+
+  // Output bbox = frame + constant padding (stroke width doesn't scale)
+  o.bbox[0] = o.frame[0] - padL;
+  o.bbox[1] = o.frame[1] - padT;
+  o.bbox[2] = o.frame[0] + o.frame[2] + padL;
+  o.bbox[3] = o.frame[1] + o.frame[3] + padT;
 }
 
-function edgePinFrame(f: HasFrame, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
-  const [dx, dy] = edgePinCtx(frameToBbox(f.frame), ctx);
+function edgePinFrame(f: HasFrame & HasBBox, ctx: ScaleCtx, o: HasFrame & HasBBox): void {
+  const [dx, dy] = edgePinCtx(f.bbox, ctx);
   offsetFrameMut(o.frame, f.frame, dx, dy);
-  frameToBboxMut(o.frame, o.bbox);
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
 function scaleOriginScale(f: HasOrigin & HasScale & HasBBox, ctx: ScaleCtx, o: HasOrigin & HasScale & HasBBox): void {
@@ -269,15 +302,14 @@ function edgePinOriginBbox(f: HasOrigin & HasBBox, ctx: ScaleCtx, o: HasOrigin &
   offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
-function scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx: ScaleCtx, o: HasPoints & HasWidth & HasBBox): void {
+/** BBox-based uniform scale for strokes: no per-frame point mutation, ctx.scale rendering. */
+function scaleStrokeBBox(f: GeoOf<'stroke'>, ctx: ScaleCtx, o: OutOf<'stroke'>): void {
   const cx = (f.bbox[0] + f.bbox[2]) / 2,
     cy = (f.bbox[1] + f.bbox[3]) / 2;
   const [ncx, ncy, af] = uniformMath(cx, cy, ctx);
-  for (let i = 0; i < f.points.length; i++) {
-    o.points[i][0] = ncx + (f.points[i][0] - cx) * af;
-    o.points[i][1] = ncy + (f.points[i][1] - cy) * af;
-  }
-  o.width = f.width * af;
+  o.factor = af;
+  o.fcx = cx;
+  o.fcy = cy;
   const bw = (f.bbox[2] - f.bbox[0]) * af,
     bh = (f.bbox[3] - f.bbox[1]) * af;
   setBBoxXYWH(o.bbox, ncx - bw / 2, ncy - bh / 2, bw, bh);
@@ -362,9 +394,9 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
 // Translate Apply Functions
 // ============================================================================
 
-function applyTranslateFrame(f: HasFrame, dx: number, dy: number, o: HasFrame & HasBBox): void {
+function applyTranslateFrame(f: HasFrame & HasBBox, dx: number, dy: number, o: HasFrame & HasBBox): void {
   offsetFrameMut(o.frame, f.frame, dx, dy);
-  frameToBboxMut(o.frame, o.bbox);
+  offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
 function applyTranslateOrigin(f: HasOrigin & HasBBox, dx: number, dy: number, o: HasOrigin & HasBBox): void {
@@ -383,14 +415,16 @@ function applyTranslatePoints(f: HasPoints & HasWidth & HasBBox, dx: number, dy:
 // ============================================================================
 
 type ScaleApplyTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (f: GeoOf<K>, ctx: ScaleCtx, o: OutOf<K>) => void>> };
-type ScaleCommitTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>) => void>> };
+type ScaleCommitTable = {
+  [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>, f: Readonly<GeoOf<K>>) => void>>;
+};
 type TranslateApplyTable = { [K in ScalableKind]: (f: GeoOf<K>, dx: number, dy: number, o: OutOf<K>) => void };
 type TranslateCommitTable = { [K in ScalableKind]: (y: Y.Map<unknown>, o: OutOf<K>) => void };
 
 const APPLY_SCALE: ScaleApplyTable = {
   shape: { uniform: scaleFrameUniform, nonUniform: scaleFrameNonUniform },
   image: { uniform: scaleFrameUniform, edgePin: edgePinFrame },
-  stroke: { uniform: scalePointsUniform, edgePin: edgePinPoints },
+  stroke: { uniform: scaleStrokeBBox, edgePin: edgePinPoints },
   text: { uniform: scaleTextUniform, edgePin: edgePinText, reflow: reflowText },
   code: { uniform: scaleCodeUniform, edgePin: edgePinCode, reflow: reflowCode },
   note: { uniform: scaleOriginScale, edgePin: edgePinOriginBbox },
@@ -425,12 +459,16 @@ function commitReflow(y: Y.Map<unknown>, o: HasOrigin & HasWidth): void {
   y.set('origin', [...o.origin]);
   y.set('width', o.width);
 }
-function commitPointsWidth(y: Y.Map<unknown>, o: HasPoints & HasWidth): void {
+/** Stroke uniform commit: compute scaled points from frozen geometry + factor at commit time. */
+function commitStrokeUniform(y: Y.Map<unknown>, o: OutOf<'stroke'>, f: Readonly<GeoOf<'stroke'>>): void {
+  const ncx = (o.bbox[0] + o.bbox[2]) / 2,
+    ncy = (o.bbox[1] + o.bbox[3]) / 2;
+  const af = o.factor;
   y.set(
     'points',
-    o.points.map((p) => [...p]),
+    f.points.map(([px, py]) => [ncx + (px - o.fcx) * af, ncy + (py - o.fcy) * af]),
   );
-  y.set('width', o.width);
+  y.set('width', f.width * af);
 }
 function commitPoints(y: Y.Map<unknown>, o: HasPoints): void {
   y.set(
@@ -442,7 +480,7 @@ function commitPoints(y: Y.Map<unknown>, o: HasPoints): void {
 const COMMIT_SCALE: ScaleCommitTable = {
   shape: { uniform: commitFrame, nonUniform: commitFrame },
   image: { uniform: commitFrame, edgePin: commitFrame },
-  stroke: { uniform: commitPointsWidth, edgePin: commitPoints },
+  stroke: { uniform: commitStrokeUniform, edgePin: commitPoints },
   text: { uniform: commitTextScale, edgePin: commitOrigin, reflow: commitReflow },
   code: { uniform: commitCodeScale, edgePin: commitOrigin, reflow: commitReflow },
   note: { uniform: commitOriginScale, edgePin: commitOrigin },
@@ -482,6 +520,9 @@ function createOutFor(kind: ObjectKind, frozen: any): any {
       return {
         points: (frozen as GeoOf<'stroke'>).points.map(() => [0, 0] as Point),
         width: 0,
+        factor: 1,
+        fcx: 0,
+        fcy: 0,
         bbox: [0, 0, 0, 0] as BBoxTuple,
       };
     case 'text':
@@ -504,7 +545,7 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
     case 'shape':
     case 'image': {
       const frame = getFrame(y);
-      return frame ? { frame: [...frame] as FrameTuple } : null;
+      return frame ? { frame: [...frame] as FrameTuple, bbox: [...bbox] as BBoxTuple } : null;
     }
     case 'stroke': {
       const pts = getPoints(y) as Point[];
@@ -563,7 +604,7 @@ function freezeTranslateEntry(kind: ObjectKind, id: string, y: Y.Map<unknown>, b
     case 'shape':
     case 'image': {
       const frame = getFrame(y);
-      return frame ? { frame: [...frame] as FrameTuple } : null;
+      return frame ? { frame: [...frame] as FrameTuple, bbox: [...bbox] as BBoxTuple } : null;
     }
     case 'stroke': {
       const pts = getPoints(y) as Point[];
@@ -749,10 +790,10 @@ export class TransformController {
           const behavior = behaviors[k];
           // SAFETY: ScaleCommitTable mapped type enforces kind→function compatibility at definition.
           const commitFn = behavior
-            ? (COMMIT_SCALE[k][behavior] as ((y: Y.Map<unknown>, o: any) => void) | undefined) // eslint-disable-line @typescript-eslint/no-explicit-any
+            ? (COMMIT_SCALE[k][behavior] as ((y: Y.Map<unknown>, o: any, f: any) => void) | undefined) // eslint-disable-line @typescript-eslint/no-explicit-any
             : undefined;
           if (!commitFn) continue;
-          for (const [, e] of map) commitFn(e.y, e.out);
+          for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
         } else {
           // SAFETY: TranslateCommitTable mapped type enforces kind→function compatibility at definition.
           const commitFn = TRANSLATE_COMMIT[k] as (y: Y.Map<unknown>, o: any) => void; // eslint-disable-line @typescript-eslint/no-explicit-any

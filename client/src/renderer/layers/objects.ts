@@ -23,8 +23,6 @@ import { getPath, getConnectorPaths } from '../geometry-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import {
   textLayoutCache,
@@ -549,9 +547,8 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _
     case 'shape': {
       const entry = getScaleEntry('shape', handle.id);
       if (!entry) break;
-      const { frame } = entry.out;
-      const [, , w, h] = frame;
-      if (w < 0.001 || h < 0.001) return;
+      const { frame, bbox } = entry.out;
+      if (bbox[2] - bbox[0] < 0.001 || bbox[3] - bbox[1] < 0.001) return;
 
       const shapeType = getShapeType(handle.y);
       const fillColor = getFillColor(handle.y);
@@ -606,26 +603,28 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _
     case 'stroke': {
       const entry = getScaleEntry('stroke', handle.id);
       if (!entry) break;
-      const { points: scaledPoints, width: scaledWidth } = entry.out;
-      const color = getColor(handle.y);
-      const opacity = getOpacity(handle.y);
-      const tool = getStrokeTool(handle.y);
-
-      const outline = getStroke(scaledPoints, {
-        ...PF_OPTIONS_BASE,
-        size: scaledWidth,
-        last: true,
-      });
-      const path = new Path2D(getSvgPathFromStroke(outline, false));
-
-      ctx.save();
-      ctx.globalAlpha = opacity;
-      ctx.fillStyle = color;
-      if (tool === 'highlighter') {
-        ctx.globalCompositeOperation = 'source-over';
+      const behavior = getScaleBehavior('stroke');
+      if (behavior === 'uniform') {
+        // BBox-based ctx.scale: reuse cached Path2D, no per-frame point mutation
+        const { factor, fcx, fcy } = entry.out;
+        const ncx = (entry.out.bbox[0] + entry.out.bbox[2]) / 2,
+          ncy = (entry.out.bbox[1] + entry.out.bbox[3]) / 2;
+        const path = getPath(handle.id, handle);
+        const color = getColor(handle.y);
+        const opacity = getOpacity(handle.y);
+        const tool = getStrokeTool(handle.y);
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        ctx.fillStyle = color;
+        if (tool === 'highlighter') ctx.globalCompositeOperation = 'source-over';
+        ctx.translate(ncx, ncy);
+        ctx.scale(factor, factor);
+        ctx.translate(-fcx, -fcy);
+        ctx.fill(path);
+        ctx.restore();
+      } else {
+        renderTranslatedEntry(ctx, handle, entry);
       }
-      ctx.fill(path);
-      ctx.restore();
       break;
     }
 

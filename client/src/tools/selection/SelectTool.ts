@@ -2,7 +2,7 @@ import type { HandleId, PointerTool, PreviewData } from '../types';
 import { textTool, codeTool } from '@/runtime/tool-registry';
 import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { scaleBBoxAround, pointsToBBox, translateBBox, computeRawGeometryBounds } from '@/core/geometry/bounds';
+import { scaleBBoxAround, pointsToBBox, translateBBox, frameToBbox } from '@/core/geometry/bounds';
 import {
   pointInBBox,
   hitTestHandle,
@@ -12,7 +12,6 @@ import {
   type HitCandidate,
   type EndpointHit,
 } from '@/core/geometry/hit-testing';
-import type { ObjectHandle } from '@/core/types/objects';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
 import { getCurrentSnapshot, getSpatialIndex, getHandle, transact, getObjects } from '@/runtime/room-runtime';
@@ -25,6 +24,7 @@ import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
 import { scaleOrigin, handleCursor } from '@/core/types/handles';
+import { getTextFrame } from '@/core/text/text-system';
 import { getController, getTransformScaleCtx, rawScaleFactors } from './transform';
 
 // === Constants ===
@@ -702,17 +702,24 @@ export class SelectTool implements PointerTool {
   }
 
   private computeTransformBoundsForScale(): BBoxTuple | null {
-    const store = useSelectionStore.getState();
-    const { selectedIds } = store;
+    const { selectedIds } = useSelectionStore.getState();
     if (selectedIds.length === 0) return null;
-
-    const handles: ObjectHandle[] = [];
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
     for (const id of selectedIds) {
       const handle = getHandle(id);
-      if (handle) handles.push(handle);
+      if (!handle) continue;
+      // Text: use layout frame (italic overhangs make bbox differ from visual frame)
+      const b = handle.kind === 'text' ? frameToBbox(getTextFrame(id) ?? [0, 0, 0, 0]) : handle.bbox;
+      minX = Math.min(minX, b[0]);
+      minY = Math.min(minY, b[1]);
+      maxX = Math.max(maxX, b[2]);
+      maxY = Math.max(maxY, b[3]);
     }
-
-    return computeRawGeometryBounds(handles);
+    if (!isFinite(minX)) return null;
+    return [minX, minY, maxX, maxY];
   }
 
   private beginTranslateState(): void {

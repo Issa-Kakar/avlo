@@ -7,14 +7,9 @@
  * - Construction (from points, frames)
  * - Accessors (center, width, height)
  * - Uniform scale bounds computation
- * - Raw geometry bounds extraction from ObjectHandle
  */
 
 import type { WorldBounds, FrameTuple, BBoxTuple, Point } from '../types/geometry';
-import type { ObjectHandle } from '../types/objects';
-import { getFrame, getPoints } from '../accessors';
-import { getTextFrame } from '../text/text-system';
-import { getCodeFrame } from '../code/code-system';
 
 // ============================================================================
 // BBOX TUPLE HELPERS
@@ -201,54 +196,6 @@ export function expandBounds(bounds: WorldBounds, padding: number): WorldBounds 
 // ============================================================================
 // RAW GEOMETRY BOUNDS
 // ============================================================================
-
-/**
- * Compute geometry-based bounds for a set of objects.
- * Unlike bbox (which includes stroke padding), this extracts raw geometry:
- * - Shapes/text: raw frame [x, y, w, h]
- * - Strokes/connectors: raw points min/max (no width inflation)
- *
- * Used for scale origin computation to prevent anchor sliding.
- */
-export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): BBoxTuple | null {
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-
-  for (const handle of handles) {
-    // Notes + bookmarks: use bbox (includes shadow) — handles are at bbox positions
-    if (handle.kind === 'note' || handle.kind === 'bookmark') {
-      const [minX_, minY_, maxX_, maxY_] = handle.bbox;
-      minX = Math.min(minX, minX_);
-      minY = Math.min(minY, minY_);
-      maxX = Math.max(maxX, maxX_);
-      maxY = Math.max(maxY, maxY_);
-      continue;
-    }
-    if (handle.kind === 'shape' || handle.kind === 'image' || handle.kind === 'text' || handle.kind === 'code') {
-      const frame =
-        handle.kind === 'text' ? getTextFrame(handle.id) : handle.kind === 'code' ? getCodeFrame(handle.id) : getFrame(handle.y);
-      if (!frame) continue;
-      const [x, y, w, h] = frame;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x + w);
-      maxY = Math.max(maxY, y + h);
-    } else {
-      const points = getPoints(handle.y);
-      for (const [px, py] of points) {
-        minX = Math.min(minX, px);
-        minY = Math.min(minY, py);
-        maxX = Math.max(maxX, px);
-        maxY = Math.max(maxY, py);
-      }
-    }
-  }
-
-  if (!isFinite(minX)) return null;
-  return [minX, minY, maxX, maxY];
-}
 
 // ============================================================================
 // INTERSECTION TEST

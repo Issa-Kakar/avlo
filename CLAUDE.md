@@ -72,8 +72,8 @@ All paths relative to `client/src/` unless noted.
 | `core/types/snapshot.ts` | `Snapshot`, `createEmptySnapshot` |
 | `core/index.ts` | Type re-exports for convenience |
 | `core/geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch |
-| `core/geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds operations, `computeRawGeometryBounds` |
-| `core/geometry/scale-system.ts` | Pure math atoms: `uniformFactor`, `preservePosition`, `edgePinDelta`, `computeReflowWidth` (no state) |
+| `core/geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds operations, mutating offset primitives |
+| `core/geometry/scale-system.ts` | Pure math atoms: `uniformFactor` (handle-aware), `preservePosition`, `edgePinDelta`, `computeReflowWidth` (no state) |
 | `core/types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `core/geometry/hit-testing.ts` | Shared SelectTool + EraserTool, marquee intersection |
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |

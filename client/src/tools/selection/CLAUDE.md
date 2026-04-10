@@ -43,17 +43,15 @@ selection-actions.ts (mutation functions — documented in context-menu/CLAUDE.m
 core/geometry/scale-system.ts (pure math atoms — NO STATE)
 ├── scaleAround(), round3(), roundProp() — number primitives
 ├── rawScaleFactors() — cursor→factors from initialDelta
-├── uniformFactor() — collapse 2 axes to 1 signed magnitude
+├── uniformFactor(sx, sy, handleId) — handle-aware collapse to 1 signed magnitude
 ├── preservePosition() — relative 0-1 position maintained in scaled/flipped box
 ├── edgePinDelta1D/edgePinDelta() — 1D/2D edge-pin translation
-├── applyNonUniformFrame() — per-corner independent scale
 └── computeReflowWidth() — edge-scaling + min-width clamping for text/code
 
 core/geometry/bounds.ts (bbox/frame helpers)
 ├── frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize
 ├── scaleBBoxAround, translateBBox, expandBBoxEnvelope
-├── offsetPoint, offsetBBox, offsetFrame, offsetPoints, setBBoxXYWH — mutating transform primitives
-└── computeRawGeometryBounds() — frames/points/bbox by kind for scale origin
+└── offsetPoint, offsetBBox, offsetFrame, offsetPoints, setBBoxXYWH — mutating transform primitives
 
 core/types/handles.ts (handle taxonomy)
 ├── HandleId = CornerHandle | SideHandle
@@ -207,9 +205,9 @@ Functions typed with traits accept any kind whose Geo/Out extends the trait via 
 
 ```
 GeoMap / OutMap composed from traits:
-  shape:    GeoOf = HasFrame                    OutOf = HasFrame & HasBBox
-  image:    GeoOf = HasFrame                    OutOf = HasFrame & HasBBox
-  stroke:   GeoOf = HasPoints & HasWidth & HasBBox   OutOf = same
+  shape:    GeoOf = HasFrame & HasBBox               OutOf = HasFrame & HasBBox
+  image:    GeoOf = HasFrame & HasBBox               OutOf = HasFrame & HasBBox
+  stroke:   GeoOf = HasPoints & HasWidth & HasBBox   OutOf = same + { factor, fcx, fcy }
   text:     GeoOf = HasFrame & HasOrigin & HasFontSize & HasBBox + kind-specific
             OutOf = HasOrigin & HasFontSize & HasWidth & HasBBox & { layout }
   code:     GeoOf/OutOf similar to text with code-specific fields
@@ -217,6 +215,9 @@ GeoMap / OutMap composed from traits:
   bookmark: GeoOf = HasOrigin & HasScale & HasBBox   OutOf = same
   connector: never (handled by topology)
 ```
+
+Shape/image frozen geometry includes bbox (for stroke-width-aware scaling).
+Stroke output includes `factor` (absolute uniform scale), `fcx`/`fcy` (frozen bbox center) for ctx.scale rendering and deferred point commit.
 
 #### Entry<K> + EntryStore
 
@@ -276,10 +277,12 @@ Four mapped-type tables enforce kind→function compatibility at compile time:
 
 ```typescript
 type ScaleApplyTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (f: GeoOf<K>, ctx: ScaleCtx, o: OutOf<K>) => void>> };
-type ScaleCommitTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>) => void>> };
+type ScaleCommitTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>, f: Readonly<GeoOf<K>>) => void>> };
 type TranslateApplyTable = { [K in ScalableKind]: (f: GeoOf<K>, dx: number, dy: number, o: OutOf<K>) => void };
 type TranslateCommitTable = { [K in ScalableKind]: (y: Y.Map<unknown>, o: OutOf<K>) => void };
 ```
+
+ScaleCommitTable includes frozen geometry as third param (used by stroke to defer point computation to commit time). Functions with fewer params are assignable via TS arity rule.
 
 Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) => void` is assignable to `(f: GeoOf<'shape'>) => void` because `GeoOf<'shape'>` extends `HasFrame`.
 
@@ -289,7 +292,7 @@ Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) =>
 |------|---------|------------|---------|--------|
 | shape | scaleFrameUniform | scaleFrameNonUniform | — | — |
 | image | scaleFrameUniform | — | edgePinFrame | — |
-| stroke | scalePointsUniform | — | edgePinPoints | — |
+| stroke | scaleStrokeBBox | — | edgePinPoints | — |
 | text | scaleTextUniform | — | edgePinText | reflowText |
 | code | scaleCodeUniform | — | edgePinCode | reflowCode |
 | note | scaleOriginScale | — | edgePinOriginBbox | — |
@@ -299,15 +302,19 @@ Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) =>
 
 ### Apply Functions
 
-**Trait-typed (reusable across kinds):**
-- `scaleFrameUniform(f: HasFrame, ctx, o: HasFrame & HasBBox)` — shape, image
-- `scaleFrameNonUniform(f: HasFrame, ctx, o: HasFrame & HasBBox)` — shape only
-- `edgePinFrame(f: HasFrame, ctx, o: HasFrame & HasBBox)` — image
+**BBox-based (shape/image — scale bbox, derive frame with constant padding):**
+- `scaleFrameUniform(f: HasFrame & HasBBox, ctx, o)` — scales bbox by uniform factor, derives frame by subtracting constant stroke padding (padding = 0 for images). Output bbox = frame + constant padding (stroke width doesn't scale with the transform).
+- `scaleFrameNonUniform(f: HasFrame & HasBBox, ctx, o)` — scales bbox edges around origin via `scaleAround()`, normalizes for flip, derives frame. Shape only.
+- `edgePinFrame(f: HasFrame & HasBBox, ctx, o)` — offsets both frame and bbox by edge-pin delta. Image only.
+
+**Stroke (bbox-based, no per-frame point mutation):**
+- `scaleStrokeBBox(f: GeoOf<'stroke'>, ctx, o)` — computes bbox center + uniform factor, stores `factor`/`fcx`/`fcy` on output for ctx.scale rendering. No point loop.
+- `edgePinPoints(f: HasPoints & HasWidth & HasBBox, ctx, o)` — offsets all points by edge-pin delta.
+
+**Other trait-typed:**
 - `scaleOriginScale(f: HasOrigin & HasScale & HasBBox, ctx, o)` — note, bookmark
 - `edgePinOriginBbox(f: HasOrigin & HasBBox, ctx, o)` — note, bookmark (directly), text/code (composed)
-- `scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
-- `edgePinPoints(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
-- `applyTranslateFrame`, `applyTranslateOrigin`, `applyTranslatePoints` — translate variants (compose bounds.ts offset helpers)
+- `applyTranslateFrame`, `applyTranslateOrigin`, `applyTranslatePoints` — translate variants (compose bounds.ts offset helpers). `applyTranslateFrame` offsets both frame and bbox from frozen (preserves stroke padding).
 
 **Kind-specific (read many kind-specific fields):**
 - `scaleTextUniform`, `scaleCodeUniform` — fontSize rounding, origin from frame center
@@ -326,7 +333,7 @@ Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) =>
 | `commitTextScale` | origin, fontSize, width | text uniform |
 | `commitCodeScale` | origin, fontSize, width | code uniform |
 | `commitReflow` | origin, width | text/code reflow |
-| `commitPointsWidth` | points, width | stroke uniform |
+| `commitStrokeUniform` | points, width | stroke uniform (reads frozen.points/width, applies factor at commit) |
 | `commitPoints` | points | stroke edgePin |
 
 ### TransformController
@@ -406,11 +413,20 @@ getController(): TransformController              // Lazy singleton
 Pure math atoms. No types, no factories, no state.
 
 - `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Ensures scale=1.0 when cursor returns to start.
-- `uniformFactor(sx, sy)` — collapse 2 axes to 1 signed magnitude. No dead zone, immediate flip. Min 0.001.
+- `uniformFactor(sx, sy, handleId)` — handle-aware collapse of 2 axes to 1 signed magnitude. Uses `isHorzSide`/`isVertSide` type guards (not value equality) to detect side handles, preventing corner-handle flicker when one axis passes through 1.0. Min 0.001.
 - `preservePosition(cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box.
 - `edgePinDelta(bbox, selBounds, origin, sx, sy, handleId)` — 2D edge-pin for objects that can't scale.
-- `applyNonUniformFrame(f, ctx, out)` — each corner scaled independently (shapes only).
 - `computeReflowWidth(fx, fw, originX, sx, minW)` — edge-scaling + min-width clamping for text/code reflow.
+
+### BBox-Based Scale Origins
+
+Scale origins and bounds are derived from `handle.bbox` (includes stroke width padding), not raw frame geometry. This ensures the visual selection overlay (handles drawn at bbox corners) matches the scale anchor point.
+
+**`computeTransformBoundsForScale()`** (SelectTool): union of `handle.bbox` for all selected objects. Exception: text uses `getTextFrame() → frameToBbox()` (italic overhangs make bbox differ from visual frame).
+
+**Shape/image scaling — constant padding invariant:** Shapes have stroke-width padding between frame and bbox (`padding = strokeWidth/2 + 1`). During scale, the **bbox** is scaled for position computation, then the **frame** is derived by subtracting constant padding. The output bbox = frame + constant padding (not the scaled bbox), because stroke width doesn't scale with the transform. This prevents dirty rect artifacts at small scales where scaled padding would be smaller than the actual stroke extent.
+
+**Stroke scaling — ctx.scale rendering:** Strokes use cached Path2D with `ctx.translate/ctx.scale/ctx.translate` during scale preview instead of per-frame point mutation. Output stores `factor`/`fcx`/`fcy` (absolute scale factor and frozen bbox center). Points are only computed at commit time from frozen geometry.
 
 ---
 
@@ -524,9 +540,9 @@ Reads `getScaleEntry(kind, id)` and `getScaleBehavior(kind)` from transform modu
 
 | Kind | uniform | reflow | edgePin (fallback) |
 |------|---------|--------|--------------------|
-| shape | Build fresh Path2D from `entry.out.frame` | — | — |
+| shape | Build fresh Path2D from `entry.out.frame`, guard on bbox (not frame) size | — | — |
 | image | Draw bitmap at `entry.out.frame` | — | — |
-| stroke | PerfectFreehand outline from `entry.out.points` | — | — |
+| stroke | `ctx.scale(factor)` on cached Path2D — no per-frame point mutation | — | `renderTranslatedEntry()` |
 | text | Cached layout + `ctx.scale(ratio)` around out.origin | Render `entry.out.layout` at out.origin | `renderTranslatedEntry()` |
 | code | Cached layout + `ctx.scale(ratio)` around out.bbox corner | Render `entry.out.layout` at out.origin | `renderTranslatedEntry()` |
 | note/bookmark | `ctx.scale(ratio)` around out.origin, then `drawObject()` | — | `renderTranslatedEntry()` |
@@ -646,8 +662,8 @@ Store fields consumed by context menu are documented in `components/context-menu
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeSelectionBounds`, `computeStyles`, `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | 21 mutation functions for context menu buttons (documented in context-menu CLAUDE.md) |
 | `stores/selection-store.ts` | Zustand store, transform types (thin discriminants), connector topology builder, handle helpers |
-| `core/geometry/scale-system.ts` | Pure math atoms: scaleAround, uniformFactor, preservePosition, edgePinDelta, applyNonUniformFrame, computeReflowWidth |
-| `core/geometry/bounds.ts` | Bbox/frame helpers, computeRawGeometryBounds |
+| `core/geometry/scale-system.ts` | Pure math atoms: scaleAround, uniformFactor (handle-aware), preservePosition, edgePinDelta, computeReflowWidth |
+| `core/geometry/bounds.ts` | Bbox/frame tuple helpers, WorldBounds operations, mutating offset primitives |
 | `core/types/handles.ts` | HandleId taxonomy, type guards, scaleOrigin, handleCursor |
 | `core/geometry/hit-testing.ts` | `testObjectHit`, `hitTestHandle`, `hitTestEndpointDots`, `objectIntersectsRect` |
 | `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |

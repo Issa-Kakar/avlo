@@ -5,13 +5,12 @@
  * Transform orchestration lives in tools/selection/transform.ts.
  */
 
-import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
+import type { BBoxTuple, Point } from '../types/geometry';
 import type { HandleId } from '../types/handles';
 import { isHorzSide, isVertSide } from '../types/handles';
 
 // Re-export tuple helpers from bounds.ts (canonical location for geometry primitives)
 export { frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize, frameCenter } from './bounds';
-import { frameToBboxMut } from './bounds';
 
 // ============================================================================
 // Number Primitives
@@ -45,23 +44,25 @@ export function rawScaleFactors(wx: number, wy: number, origin: Point, delta: Po
   return [dx / safeDx, dy / safeDy];
 }
 
-/** Collapse 2 axes to 1 signed magnitude */
-export function uniformFactor(sx: number, sy: number): number {
+/** Collapse 2 axes to 1 signed magnitude. Handle-aware to avoid corner flicker. */
+export function uniformFactor(sx: number, sy: number, h: HandleId): number {
   const ax = Math.abs(sx),
     ay = Math.abs(sy);
   const MIN = 0.001;
 
   if (sx < 0 && sy < 0) return -Math.max(ax, ay, MIN);
 
-  if (sy === 1 && sx !== 1) {
+  // Side handles: extract the single active axis (the other is hardcoded 1 by rawScaleFactors)
+  if (isHorzSide(h)) {
     const m = Math.max(ax, MIN);
     return sx < 0 ? -m : m;
   }
-  if (sx === 1 && sy !== 1) {
+  if (isVertSide(h)) {
     const m = Math.max(ay, MIN);
     return sy < 0 ? -m : m;
   }
 
+  // Corner handles: always use both axes — never short-circuit on value equality
   const m = Math.max(ax, ay, MIN);
   const dom = ax >= ay ? sx : sy;
   return dom < 0 ? -m : m;
@@ -135,24 +136,6 @@ export function edgePinDelta(bbox: BBoxTuple, sel: BBoxTuple, origin: Point, sx:
 // ============================================================================
 // Non-Uniform Scale
 // ============================================================================
-
-/** Non-uniform frame scale: each corner scaled independently. Shapes only. */
-export function applyNonUniformFrame(
-  f: { frame: FrameTuple },
-  ctx: { sx: number; sy: number; origin: Point },
-  out: { frame: FrameTuple; bbox: BBoxTuple },
-): void {
-  const [x, y, w, h] = f.frame;
-  const x1 = scaleAround(x, ctx.origin[0], ctx.sx);
-  const y1 = scaleAround(y, ctx.origin[1], ctx.sy);
-  const x2 = scaleAround(x + w, ctx.origin[0], ctx.sx);
-  const y2 = scaleAround(y + h, ctx.origin[1], ctx.sy);
-  out.frame[0] = Math.min(x1, x2);
-  out.frame[1] = Math.min(y1, y2);
-  out.frame[2] = Math.abs(x2 - x1);
-  out.frame[3] = Math.abs(y2 - y1);
-  frameToBboxMut(out.frame, out.bbox);
-}
 
 // ============================================================================
 // Reflow Atom
