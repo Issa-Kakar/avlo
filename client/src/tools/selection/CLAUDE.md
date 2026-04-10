@@ -1,6 +1,6 @@
 # Selection System
 
-SelectTool + selection store + hit testing + transform rendering. The most complex tool in the codebase: handles translate, scale (per-kind-aware), connector endpoint drag, marquee, multi-select, text/code editing entry, and Z-order-aware hit testing.
+SelectTool + transform system + selection store + hit testing + transform rendering. The most complex tool in the codebase: handles translate, scale (per-kind-aware), connector endpoint drag, marquee, multi-select, text/code editing entry, and Z-order-aware hit testing.
 
 ## Architecture
 
@@ -8,58 +8,73 @@ SelectTool + selection store + hit testing + transform rendering. The most compl
 SelectTool.ts (PointerTool singleton via tool-registry)
 ├── State machine: idle → pendingClick → marquee | translate | scale | endpointDrag
 ├── Hit testing via core/geometry/hit-testing.ts
-├── Transform commits via room-runtime.transact()
+├── Delegates to TransformController for scale/translate lifecycle
+├── Commits endpoint drags directly via transact()
 └── Preview data → overlay + base canvas rendering
+
+transform.ts (entry-based transform engine)
+├── TransformController class — encapsulates all mutable transform state
+├── Structural trait types (HasOrigin, HasFrame, etc.) for function reuse
+├── GeoOf<K> / OutOf<K> mapped types — per-kind frozen/output geometry
+├── Entry<K> + EntryStore — generics survive through indexed access
+├── Behavior table: defaults + 9 overrides (replaces prior 42-entry flat table)
+├── 4 mapped dispatch tables: APPLY_SCALE, COMMIT_SCALE, TRANSLATE_APPLY, TRANSLATE_COMMIT
+├── Apply functions (13): trait-typed for reuse, kind-specific where needed
+├── Commit functions (8): write OutOf<K> fields to Y.Map
+├── Freeze/factory functions: snapshot Y.Map → frozen geometry, pre-allocate output
+├── Topology integration: reroutes connectors per-frame
+└── Module singleton + renderer getters (getScaleEntry, getScaleBehavior, etc.)
 
 selection-store.ts (Zustand + subscribeWithSelector)
 ├── selectedIds, mode, selectionKind, kindCounts
-├── transform: TranslateTransform | ScaleTransform | EndpointDragTransform
-├── marquee, connectorTopology, textReflow, codeReflow
-├── textEditingId, codeEditingId
-└── selectedStyles, inlineStyles, boundsVersion (context menu support)
+├── transform: { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform
+├── marquee, textEditingId, codeEditingId
+├── selectedStyles, inlineStyles, boundsVersion (context menu support)
+└── computeConnectorTopology() — pure function, builds ConnectorTopology
 
 selection-utils.ts (pure functions)
 ├── computeSelectionComposition(ids) → kind, mode, counts
-├── computeSelectionBounds() → WorldBounds (zero-arg, reads store)
+├── computeSelectionBounds() → BBoxTuple (zero-arg, reads store)
 ├── computeStyles(ids, kind, objectsById) → SelectedStyles
 └── computeUniformInlineStyles(ids, objectsById) → InlineStyles
 
 selection-actions.ts (mutation functions — documented in context-menu/CLAUDE.md)
 
+core/geometry/scale-system.ts (pure math atoms — NO STATE)
+├── scaleAround(), round3(), roundProp() — number primitives
+├── rawScaleFactors() — cursor→factors from initialDelta
+├── uniformFactor() — collapse 2 axes to 1 signed magnitude
+├── preservePosition() — relative 0-1 position maintained in scaled/flipped box
+├── edgePinDelta1D/edgePinDelta() — 1D/2D edge-pin translation
+├── applyNonUniformFrame() — per-corner independent scale
+└── computeReflowWidth() — edge-scaling + min-width clamping for text/code
+
+core/geometry/bounds.ts (bbox/frame helpers)
+├── frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize
+├── scaleBBoxAround, translateBBox, expandBBoxEnvelope
+└── computeRawGeometryBounds() — frames/points/bbox by kind for scale origin
+
+core/types/handles.ts (handle taxonomy)
+├── HandleId = CornerHandle | SideHandle
+├── isCorner(), isHorzSide(), isVertSide() — type guards
+├── scaleOrigin() — opposite handle position
+└── handleCursor() — CSS cursor string
+
 core/geometry/hit-testing.ts (shared with EraserTool)
 ├── testObjectHit() → HitCandidate (per-kind dispatch)
 ├── hitTestHandle() → HandleId (resize handles)
 ├── hitTestEndpointDots() → EndpointHit (connector mode)
-├── objectIntersectsRect() (marquee geometry)
-└── hitTestVisibleText/Note/Code() (tool click-to-edit)
+└── objectIntersectsRect() (marquee geometry)
 
-core/geometry/transform.ts (pure math)
-├── computeScaleFactors() → {scaleX, scaleY}
-├── computeUniformScaleNoThreshold() → uniform scale with flip
-├── computePreservedPosition() → [x, y] (position preservation in flipped box)
-├── computeEdgePinTranslation() → {dx, dy} (mixed+side pinning)
-├── applyUniformScaleToPoints/Frame() (stroke/shape uniform scale)
-├── transformFrameForTopology() (connector topology dispatch)
-└── applyTransformToFrame/Bounds() (generic transforms)
-
-renderer/layers/objects.ts (base canvas)
+renderer/layers/objects.ts (base canvas — consumer of transform getters)
 ├── drawObjects() — main dispatch, reads selectionStore for transform preview
-├── renderSelectedObjectWithScaleTransform() — per-kind scale dispatch
-└── Per-kind preview: drawScaledStrokePreview, drawScaledTextPreview,
-    drawReflowedTextPreview, drawScaledCodePreview, drawReflowedCodePreview,
-    drawScaledNotePreview, drawShapeWithTransform, drawShapeWithUniformScale
-
-renderer/layers/selection-overlay.ts (overlay canvas)
-├── drawSelectionOverlay() — main entry
-├── Phase 1: Object highlights (blue outlines, per-kind rendering)
-├── Phase 2: Marquee rectangle
-├── Phase 3: Selection box + circular handles (standard mode only)
-└── Phase 4: Connector endpoint dots + snap midpoint dots (connector mode)
+├── renderScaleEntry() — per-kind scale dispatch using getScaleEntry/getScaleBehavior
+└── renderTranslatedEntry() — edge-pin fallback via bbox delta
 ```
 
 ---
 
-## State Machine
+## State Machine (SelectTool.ts)
 
 ### Phases
 
@@ -104,12 +119,12 @@ CLICK_WINDOW_MS = 180   // Time threshold for gap click disambiguation
 4. Common object hit test:
    → hitTestObjects() → 'objectInSelection' or 'objectOutsideSelection'
 5. No object hit:
-   Standard mode → check pointInWorldRect(selectionBounds) → 'selectionGap'
+   Standard mode → check pointInBBox(selectionBounds) → 'selectionGap'
    Otherwise → 'background' (clearSelection if had selection)
-6. phase = 'pendingClick' for all except background-with-no-selection
+6. phase = 'pendingClick' for all targets
 ```
 
-**Single text/code re-click exception:** When clicking a single-selected text/code/note object, `cancelHide()` is called immediately after `hide()` to prevent context menu flash. The synchronous class add+remove in the same frame means no paint. If user drags instead, `move()` calls `hide()` when drag threshold passes.
+**Single text/code re-click exception:** When clicking a single-selected text/code/note object, `cancelHide()` is called immediately after `hide()` to prevent context menu flash.
 
 ### pendingClick → Phase Transition (in move())
 
@@ -117,12 +132,26 @@ Each target type requires `passMove` (dist > MOVE_THRESHOLD_PX) before transitio
 
 | DownTarget | Transition | Notes |
 |------------|------------|-------|
-| `handle` | → `scale` | Compute geometry bounds for origin, then `beginScale()` |
-| `connectorEndpoint` | → `endpointDrag` | Drill to single connector if multi-selected, then `beginEndpointDrag()` |
-| `objectOutsideSelection` | → `translate` | First selects the object, then begins translate. Anchored connectors → `marquee` instead |
-| `objectInSelection` | → `translate` | In connector mode, anchored connectors → `marquee` instead |
+| `handle` | → `scale` | `computeTransformBoundsForScale()` → `scaleOrigin()` → `getController().beginScale()` |
+| `connectorEndpoint` | → `endpointDrag` | Drill to single connector if multi-selected |
+| `objectOutsideSelection` | → `translate` | First selects object. Anchored connectors → `marquee` instead |
+| `objectInSelection` | → `translate` | Anchored connectors in connector mode → `marquee` instead |
 | `selectionGap` | → `translate` | Gap drag = translate entire selection |
 | `background` | → `marquee` | Empty area drag = marquee select |
+
+### Scale Phase (move)
+
+```
+1. ctrl = getController(), scaleCtx = ctrl.getScaleCtx()
+2. rawScaleFactors(worldX, worldY, scaleCtx.origin, initialDelta, handleId) → [sx, sy]
+3. ctrl.updateScale(sx, sy) — applies to all entries + topology
+```
+
+### Translate Phase (move)
+
+```
+getController().updateTranslate(worldX - downWorld[0], worldY - downWorld[1])
+```
 
 ### end() — Click Finalization (pendingClick)
 
@@ -131,45 +160,292 @@ Each target type requires `passMove` (dist > MOVE_THRESHOLD_PX) before transitio
 | `handle` | No-op (didn't drag) |
 | `connectorEndpoint` | Drill to single connector |
 | `objectOutsideSelection` | Shift/Ctrl: additive select. Else: replace selection |
-| `objectInSelection` | Shift/Ctrl: subtractive remove. Multi-selected: drill to single. Single text/note/shape: enter text editing. Single code: enter code editing |
-| `selectionGap` | Quick tap (< 180ms, < 4px): deselect. Longer: keep selection |
+| `objectInSelection` | Shift/Ctrl: subtractive remove. Multi: drill to single. Single text/note/shape: enter text editing. Single code: enter code editing |
+| `selectionGap` | Quick tap (< 180ms, < 4px): deselect. Longer: keep |
 | `background` | Deselect |
 
-**Text/Code editing entry guards:**
-- Text/note/shape: only if `!textTool.isEditorMounted()`. `justClosedLabelId` prevents immediate re-open after closing.
-- Code: only if `!codeTool.isEditorMounted()`. `justClosedCodeId` same guard.
+### end() — Transform Commit (translate/scale)
+
+```
+if ctrl.hasChange() → ctrl.commit()
+else → ctrl.clear()
+store.endTransform()
+```
 
 ### Modifier Keys
 
-- **Shift or Ctrl/Cmd held** (`hasAddModifier()`): additive/subtractive multi-select on click
-- **Ctrl held** during endpoint drag: suppresses connector snapping
-- Modifier check: `isShiftHeld() || isCtrlOrMetaHeld()` from InputManager
+- **Shift or Ctrl/Cmd** (`hasAddModifier()`): additive/subtractive multi-select on click
+- **Ctrl** during endpoint drag: suppresses connector snapping
 
 ---
 
-## Selection Modes
+## Transform System (transform.ts)
+
+The entry-based transform engine. SelectTool delegates lifecycle, renderer reads via module getters. All transform state lives in `TransformController`.
+
+### Type System
+
+#### Structural Traits
 
 ```typescript
-type SelectionMode = 'none' | 'standard' | 'connector';
+type HasOrigin = { origin: Point };
+type HasBBox = { bbox: BBoxTuple };
+type HasFrame = { frame: FrameTuple };
+type HasScale = { scale: number };
+type HasFontSize = { fontSize: number };
+type HasWidth = { width: number };
+type HasPoints = { points: Point[] };
 ```
 
-- **`none`**: No objects selected
-- **`standard`**: 1+ objects selected (any mix). Shows selection box + resize handles. Handles → scale, objects → translate
-- **`connector`**: Exactly 1 connector selected. Shows endpoint dots instead of handles. Dots → endpoint drag
+Functions typed with traits accept any kind whose Geo/Out extends the trait via structural subtyping. Example: `edgePinOriginBbox(f: HasOrigin & HasBBox, ...)` accepts `GeoOf<'note'>`, `GeoOf<'text'>`, `GeoOf<'bookmark'>` — anything with those fields.
 
-Mode is derived in `computeSelectionComposition()`:
-- `connector` when `selectedIdSet.size === 1 && selectionKind === 'connectorsOnly'`
-- `standard` when `selectedIdSet.size > 0`
-- `none` otherwise
+#### GeoOf<K> / OutOf<K> (Mapped Types)
 
-### SelectionKind
+`GeoOf<K>` = frozen geometry snapshot from Y.Map at transform begin.
+`OutOf<K>` = mutable output written per-frame by apply functions, read by renderer.
+
+```
+GeoMap / OutMap composed from traits:
+  shape:    GeoOf = HasFrame                    OutOf = HasFrame & HasBBox
+  image:    GeoOf = HasFrame                    OutOf = HasFrame & HasBBox
+  stroke:   GeoOf = HasPoints & HasWidth & HasBBox   OutOf = same
+  text:     GeoOf = HasFrame & HasOrigin & HasFontSize & HasBBox + kind-specific
+            OutOf = HasOrigin & HasFontSize & HasWidth & HasBBox & { layout }
+  code:     GeoOf/OutOf similar to text with code-specific fields
+  note:     GeoOf = HasOrigin & HasScale & HasBBox   OutOf = same
+  bookmark: GeoOf = HasOrigin & HasScale & HasBBox   OutOf = same
+  connector: never (handled by topology)
+```
+
+#### Entry<K> + EntryStore
 
 ```typescript
-type SelectionKind = 'none' | 'strokesOnly' | 'shapesOnly' | 'textOnly' | 'codeOnly'
-  | 'notesOnly' | 'connectorsOnly' | 'imagesOnly' | 'bookmarksOnly' | 'mixed';
+interface Entry<K extends ObjectKind = ObjectKind> {
+  readonly id: string;
+  readonly y: Y.Map<unknown>;
+  readonly frozen: Readonly<GeoOf<K>>;  // Immutable snapshot
+  out: OutOf<K>;                         // Mutated per-frame
+  prevBbox: BBoxTuple;                   // Dirty rect tracking
+}
+
+type EntryStore = { [K in ObjectKind]?: Map<string, Entry<K>> };
 ```
 
-Computed by counting non-zero kind buckets. If exactly 1 bucket > 0 → that kind. If > 1 → `'mixed'`. Determines transform behavior, handle visibility, and context menu bar.
+Generics survive through indexed access: `EntryStore[K]` → `Map<string, Entry<K>> | undefined`.
+
+#### ScalableKind
+
+```typescript
+type ScalableKind = Exclude<ObjectKind, 'connector'>;
+```
+
+Connectors are handled by topology, never enter the entry system.
+
+### Behavior Resolution
+
+Scale behavior depends on three factors: **object kind**, **handle category** (corner/hSide/vSide), and **composition** (only/mixed).
+
+```typescript
+type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
+```
+
+**Default behavior** (applies to most kinds):
+
+| Handle | kind-only | mixed |
+|--------|-----------|-------|
+| corner | uniform | uniform |
+| hSide | uniform | edgePin |
+| vSide | uniform | edgePin |
+
+**9 overrides** (only the exceptions):
+
+| Key | Behavior | Why |
+|-----|----------|-----|
+| `shape_corner_only` | nonUniform | Shapes scale independently per-axis |
+| `shape_hSide_only/mixed` | nonUniform | Shapes always non-uniform |
+| `shape_vSide_only/mixed` | nonUniform | Shapes always non-uniform |
+| `text_hSide_only/mixed` | reflow | E/W handles re-layout text at new width |
+| `code_hSide_only/mixed` | reflow | E/W handles re-layout code at new width |
+
+`resolveBehavior(kind, handleId, mixed)` → returns `ScaleBehavior` (never undefined — defaults always provide a value).
+
+### Dispatch Tables
+
+Four mapped-type tables enforce kind→function compatibility at compile time:
+
+```typescript
+type ScaleApplyTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (f: GeoOf<K>, ctx: ScaleCtx, o: OutOf<K>) => void>> };
+type ScaleCommitTable = { [K in ScalableKind]: Partial<Record<ScaleBehavior, (y: Y.Map<unknown>, o: OutOf<K>) => void>> };
+type TranslateApplyTable = { [K in ScalableKind]: (f: GeoOf<K>, dx: number, dy: number, o: OutOf<K>) => void };
+type TranslateCommitTable = { [K in ScalableKind]: (y: Y.Map<unknown>, o: OutOf<K>) => void };
+```
+
+Trait-typed functions satisfy mapped slots via contravariance: `(f: HasFrame) => void` is assignable to `(f: GeoOf<'shape'>) => void` because `GeoOf<'shape'>` extends `HasFrame`.
+
+**APPLY_SCALE table:**
+
+| Kind | uniform | nonUniform | edgePin | reflow |
+|------|---------|------------|---------|--------|
+| shape | scaleFrameUniform | scaleFrameNonUniform | — | — |
+| image | scaleFrameUniform | — | edgePinFrame | — |
+| stroke | scalePointsUniform | — | edgePinPoints | — |
+| text | scaleTextUniform | — | edgePinText | reflowText |
+| code | scaleCodeUniform | — | edgePinCode | reflowCode |
+| note | scaleOriginScale | — | edgePinOriginBbox | — |
+| bookmark | scaleOriginScale | — | edgePinOriginBbox | — |
+
+**COMMIT_SCALE, TRANSLATE_APPLY, TRANSLATE_COMMIT** follow same pattern with commit/translate functions.
+
+### Apply Functions
+
+**Trait-typed (reusable across kinds):**
+- `scaleFrameUniform(f: HasFrame, ctx, o: HasFrame & HasBBox)` — shape, image
+- `scaleFrameNonUniform(f: HasFrame, ctx, o: HasFrame & HasBBox)` — shape only
+- `edgePinFrame(f: HasFrame, ctx, o: HasFrame & HasBBox)` — image
+- `scaleOriginScale(f: HasOrigin & HasScale & HasBBox, ctx, o)` — note, bookmark
+- `edgePinOriginBbox(f: HasOrigin & HasBBox, ctx, o)` — note, bookmark (directly), text/code (composed)
+- `scalePointsUniform(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
+- `edgePinPoints(f: HasPoints & HasWidth & HasBBox, ctx, o)` — stroke
+- `offsetFrame`, `offsetOrigin`, `offsetPoints` — translate variants
+
+**Kind-specific (read many kind-specific fields):**
+- `scaleTextUniform`, `scaleCodeUniform` — fontSize rounding, origin from frame center
+- `edgePinText`, `edgePinCode` — compose `edgePinOriginBbox` + copy fontSize/width
+- `reflowText`, `reflowCode` — `computeReflowWidth` + re-layout content
+
+### Commit Functions
+
+| Function | Writes | Used by |
+|----------|--------|---------|
+| `commitFrame` | frame | shape, image |
+| `commitOrigin` | origin | text/code edgePin, note/bookmark edgePin |
+| `commitOriginScale` | origin, scale | note/bookmark uniform |
+| `commitTextScale` | origin, fontSize, width | text uniform |
+| `commitCodeScale` | origin, fontSize, width | code uniform |
+| `commitReflow` | origin, width | text/code reflow |
+| `commitPointsWidth` | points, width | stroke uniform |
+| `commitPoints` | points | stroke edgePin |
+
+### TransformController
+
+Encapsulates all mutable transform state. Module singleton via `getController()`.
+
+**State:**
+```
+store: EntryStore              — per-kind maps of Entry<K>
+activeKinds: ScalableKind[]    — kinds present in current transform
+behaviors: Partial<Record<ScalableKind, ScaleBehavior>>
+scaleCtx: ScaleCtx | null      — { sx, sy, origin, selBounds, handleId }
+dx, dy: number                 — translate delta
+mode: 'none' | 'scale' | 'translate'
+topology: ConnectorTopology | null
+```
+
+**Lifecycle:**
+
+```
+beginScale(selectedIds, kindCounts, handleId, origin, selBounds):
+  1. clear() — reset all state
+  2. For each selected non-connector:
+     a. resolveBehavior(kind, handleId, mixed) → ScaleBehavior
+     b. freezeScaleEntry(kind, behavior, id, y, bbox) → frozen geometry snapshot
+     c. createOutFor(kind, frozen) → pre-allocated output
+     d. Store as Entry in store[kind]
+  3. computeConnectorTopology('scale', selectedIds) → topology
+
+updateScale(sx, sy):
+  1. Update scaleCtx.sx, scaleCtx.sy
+  2. For each activeKind: lookup apply function from APPLY_SCALE[kind][behavior]
+  3. Apply to all entries, invalidate dirty rects
+  4. updateTopologyReroutes()
+
+beginTranslate(selectedIds):
+  1. clear(), freeze translate entries (simpler: no behavior resolution)
+  2. computeConnectorTopology('translate', selectedIds)
+
+updateTranslate(dx, dy):
+  1. Store dx, dy
+  2. For each activeKind: TRANSLATE_APPLY[kind] on all entries
+  3. updateTopologyReroutes()
+
+commit():
+  1. Capture store/behaviors/topology refs
+  2. clear() — prevents double-transform glitch
+  3. transact(() => { dispatch COMMIT_SCALE or TRANSLATE_COMMIT per kind })
+  4. commitTopologyEntries()
+
+cancel(): invalidate all dirty rects, clear()
+clear(): reset store, activeKinds, behaviors, scaleCtx, dx/dy, mode, topology
+```
+
+**Correlated union casts:** When iterating `activeKinds`, TS can't prove `APPLY_SCALE[kind]` and `store[kind]` share the same K. ONE cast per loop with inline comment explaining safety — the mapped table type already proved correctness at definition.
+
+**Public accessors:**
+- `getMap<K>(kind)` — returns `Map<string, Entry<K>> | undefined` (generic preserved)
+- `getBehavior(kind)` — returns `ScaleBehavior | undefined`
+- `getScaleCtx()`, `getTopology()`, `getMode()`, `hasChange()`
+- `getEntryFrame(id)` — searches all kinds for entry's output frame (topology use)
+
+### Module Getters (for renderer)
+
+```typescript
+getScaleEntry<K>(kind, id): Entry<K> | undefined  // Generic flows through
+getScaleBehavior(kind): ScaleBehavior | undefined
+getTransformMode(): 'none' | 'scale' | 'translate'
+getTranslateDelta(): [number, number] | null
+getTransformTopology(): ConnectorTopology | null
+getTransformScaleCtx(): ScaleCtx | null
+getController(): TransformController              // Lazy singleton
+```
+
+### Scale Math (scale-system.ts)
+
+Pure math atoms. No types, no factories, no state.
+
+- `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Ensures scale=1.0 when cursor returns to start.
+- `uniformFactor(sx, sy)` — collapse 2 axes to 1 signed magnitude. No dead zone, immediate flip. Min 0.001.
+- `preservePosition(cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box.
+- `edgePinDelta(minX, maxX, minY, maxY, selBounds, origin, sx, sy, handleId)` — 2D edge-pin for objects that can't scale.
+- `applyNonUniformFrame(f, ctx, out)` — each corner scaled independently (shapes only).
+- `computeReflowWidth(fx, fw, originX, sx, minW)` — edge-scaling + min-width clamping for text/code reflow.
+
+---
+
+## Connector Topology
+
+Computed once at transform `begin()` via `computeConnectorTopology(transformKind, selectedIds)` in selection-store.ts. Determines how each connector behaves during the transform.
+
+### Strategy Determination
+
+Two passes:
+1. **Selected connectors:** Check if both endpoints move (free endpoints always move if connector is selected; anchored endpoints move if anchored shape is selected).
+2. **Non-selected connectors:** Anchored to selected shapes. Only the anchored endpoint moves.
+
+```
+Translate + both endpoints move → strategy: 'translate'
+Otherwise → strategy: 'reroute' (A* each frame via rerouteConnector)
+Scale → always 'reroute'
+```
+
+### EndpointSpec (for reroute)
+
+```typescript
+type EndpointSpec = string | true | null;
+// string = shapeId — frame override (transform shape's frame, use as anchor)
+// true   = free position override (apply transform to original endpoint position)
+// null   = canonical (no override — endpoint stays at stored value)
+```
+
+### Per-Frame Rerouting (TransformController.updateTopologyReroutes)
+
+For translate entries: offset `translatedPoints` by `(dx, dy)`.
+For reroute entries:
+1. `resolveTopologySpec()` builds endpoint overrides:
+   - `string` spec → `{ frame: getEntryFrame(shapeId) }` (reads transformed frame from entry store)
+   - `true` spec → translate or scale the original position
+2. `rerouteConnector(id, overrides)` → new points
+3. Store in `topology.reroutes` map (mutable per-frame cache)
+4. Track bbox in `topology.prevBboxes` for dirty rect accumulation
 
 ---
 
@@ -199,23 +475,19 @@ interface HitCandidate {
 | `note` | `getTextFrame()` → rect hit test. Always filled |
 | `image` / `bookmark` | `getFrame()` → simple rect containment. Always filled |
 
-**Spatial index pre-filter:** Query R-tree with `[worldX ± radiusWorld, worldY ± radiusWorld]`, then test each candidate.
+**Spatial index pre-filter:** Query R-tree with `[worldX +- radiusWorld, worldY +- radiusWorld]`, then test each candidate.
 
 ### Z-Order Selection (`pickBestCandidate`)
 
 Scans from topmost (highest ULID) to bottommost with occlusion model:
 
-1. **Unfilled shape interiors** = transparent. Remembered (smallest area tracked), but scanning continues.
+1. **Unfilled shape interiors** = transparent. Remembered (smallest area tracked), scanning continues.
 2. **Everything else that paints** (stroke, connector, filled shape, text edge, code) = opaque. Stops scan.
 3. Resolution: ink always beats frames. Between fill and frame: smaller area wins. Tie: higher Z wins.
 
 ### Handle Hit Testing (`hitTestHandle`)
 
-Screen-space radius: `HANDLE_HIT_PX = 10` / scale. Tests corners first (nw/ne/se/sw), then side edges (n/s/e/w). Side edges only hit if cursor is between corners (excludes corner zones).
-
-### Endpoint Dot Hit Testing (`hitTestEndpointDots`)
-
-Screen-space radius: `ENDPOINT_DOT_HIT_PX = 10` / scale. Iterates selected connectors, tests both start/end positions derived from `getEndpointEdgePosition()`.
+Screen-space radius: `HANDLE_HIT_PX = 10` / scale. Tests corners first, then side edges. Side edges only hit if cursor is between corners.
 
 ### Marquee Intersection (`objectIntersectsRect`)
 
@@ -227,257 +499,48 @@ Per-kind geometry intersection (not just bbox):
 
 ---
 
-## Transform System
+## Rendering During Transforms (objects.ts)
 
-### Transform Types
+### drawObjects() Dispatch
 
+Reads `useSelectionStore` for transform state. For each object in ULID order:
+
+**Not transforming or not selected:** `drawObject(ctx, handle)` (per-kind switch).
+
+**Translate:** `ctx.translate(dx, dy)` + `drawObject()`. Connectors use topology: translateOnly → ctx.translate, rerouted → `drawConnectorFromPoints()`.
+
+**Scale:** `renderScaleEntry(ctx, handle, snapshot)` — per-kind dispatch using entry system.
+
+**Endpoint drag:** Connector with matching id + routedPoints → `drawConnectorFromPoints()`.
+
+**Culling guard:** During transforms, all selected + topology connector IDs are injected into candidate list regardless of spatial index viewport query. Prevents disappearing during edge-scroll panning.
+
+### renderScaleEntry()
+
+Reads `getScaleEntry(kind, id)` and `getScaleBehavior(kind)` from transform module. Per-kind rendering:
+
+| Kind | uniform | reflow | edgePin (fallback) |
+|------|---------|--------|--------------------|
+| shape | Build fresh Path2D from `entry.out.frame` | — | — |
+| image | Draw bitmap at `entry.out.frame` | — | — |
+| stroke | PerfectFreehand outline from `entry.out.points` | — | — |
+| text | Cached layout + `ctx.scale(ratio)` around out.origin | Render `entry.out.layout` at out.origin | `renderTranslatedEntry()` |
+| code | Cached layout + `ctx.scale(ratio)` around out.bbox corner | Render `entry.out.layout` at out.origin | `renderTranslatedEntry()` |
+| note/bookmark | `ctx.scale(ratio)` around out.origin, then `drawObject()` | — | `renderTranslatedEntry()` |
+
+### renderTranslatedEntry()
+
+Generic edge-pin fallback. Typed as `Entry<KindWithBBoxGeo>` where:
 ```typescript
-type TransformState =
-  | { kind: 'none' }
-  | TranslateTransform    // { kind: 'translate', dx, dy, originBounds }
-  | ScaleTransform         // { kind: 'scale', origin, scaleX, scaleY, originBounds, bboxBounds, handleId, selectionKind, handleKind, initialDelta }
-  | EndpointDragTransform; // { kind: 'endpointDrag', connectorId, endpoint, currentPosition, currentSnap, routedPoints, routedBbox, prevBbox }
+type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
+// Resolves to: 'stroke' | 'text' | 'code' | 'note' | 'bookmark'
 ```
 
-### Translate
-
-Simple: all objects move by `(dx, dy)`. Connectors with both endpoints moving use `ctx.translate()` on cached Path2D. Connectors with one endpoint anchored to non-selected shape use A* reroute.
-
-**Commit:** Strokes → offset points. Text/code/note → offset origin. Shape/image/bookmark → offset frame. Connectors handled by topology.
-
-### Scale — The Complex One
-
-Scale behavior depends on three factors: **selectionKind**, **handleKind** (corner vs side), and **object kind**.
-
-#### Scale Factor Computation
-
-```typescript
-computeScaleFactors(worldX, worldY, transform):
-  // Vector from origin to cursor / vector from origin to initial click
-  Corner: scaleX = dx/initDx, scaleY = dy/initDy  (free both axes)
-  Side H (e/w): scaleX = dx/initDx, scaleY = 1
-  Side V (n/s): scaleY = dy/initDy, scaleX = 1
-```
-
-Uses `initialDelta` (distance from scale origin to initial click), NOT selection bounds width. This ensures `scale=1.0` exactly when cursor returns to start position. Negative scales pass through raw (no dead zone).
-
-#### Geometry Bounds vs BBox Bounds
-
-`beginScale()` uses two bounds:
-- **`originBounds`** (geometry-based): Raw frames/points without stroke padding. Used for scale origin computation. Prevents anchor sliding.
-- **`bboxBounds`** (padded): Used for dirty rect invalidation (visual coverage).
-
-`computeTransformBoundsForScale()` calls `computeRawGeometryBounds()` which uses frame rects for shapes/text/code/image/bookmark, points min/max for strokes, and bbox for notes/connectors.
-
-#### Transform Behavior Matrix
-
-**Corner Handles (nw/ne/se/sw):**
-
-| Object Kind | Behavior | Details |
-|------------|----------|---------|
-| **Stroke** | Uniform scale | `applyUniformScaleToPoints()`: center-based, width scales with geometry. "Copy-paste" flip: position preserved in box, geometry uses `abs(scale)` |
-| **Shape** (shapesOnly) | Non-uniform scale | `applyTransformToFrame()`: frame corners scale around origin independently. Stroke width NOT scaled |
-| **Shape** (mixed) | Uniform scale | `applyUniformScaleToFrame()`: same as strokes — center-based, position preserved |
-| **Text** | Uniform scale | fontSize rounded to 3dp, width scaled proportionally, origin recomputed from new frame center |
-| **Code** | Uniform scale | Same pattern as text: fontSize rounded, width scaled, origin from center |
-| **Note** | Uniform scale | `scale` property (not fontSize) rounded to 3dp. Position preserved via bbox center |
-| **Image** | Uniform scale | `applyUniformScaleToFrame()`: aspect ratio preserved always |
-| **Bookmark** | Uniform scale | `scale` property rounded to 3dp. Position preserved via bbox center. Same pattern as notes |
-| **Connector** | Reroute | Always A* reroute during scale (never translate strategy) |
-
-**Side Handles (n/s/e/w):**
-
-| Object Kind | E/W Handle | N/S Handle (kind-only) | N/S Handle (mixed) |
-|------------|------------|----------------------|-------------------|
-| **Stroke** (strokesOnly) | Uniform scale (active axis only) | Uniform scale (active axis only) | Edge-pin translate |
-| **Stroke** (mixed) | Edge-pin translate | — | Edge-pin translate |
-| **Shape** | Non-uniform scale | Non-uniform scale | Non-uniform scale |
-| **Text** (textOnly) | **Reflow** (width change, re-layout) | Uniform scale | — |
-| **Text** (mixed) | Edge-pin translate | — | Edge-pin translate |
-| **Code** (codeOnly) | **Reflow** (width change, re-layout) | Uniform scale | — |
-| **Code** (mixed) | Edge-pin translate | — | Edge-pin translate |
-| **Note** | Uniform scale | Uniform scale | Edge-pin translate (uses bbox) |
-| **Image** | Uniform scale | Uniform scale | Edge-pin translate |
-| **Bookmark** | Uniform scale | Uniform scale | Edge-pin translate (mixed only, uses bbox) |
-| **Connector** | Reroute | Reroute | Reroute |
-
-#### Uniform Scale Math
-
-```typescript
-computeUniformScaleNoThreshold(scaleX, scaleY):
-  // No dead zone — immediate flip when dominant < 0
-  Both negative → -(max(|scaleX|, |scaleY|))
-  Side handle → use ONLY the active axis magnitude
-  Corner → max(|scaleX|, |scaleY|), sign from dominant axis
-  Minimum: 0.001
-
-computePreservedPosition(cx, cy, originBounds, origin, uniformScale):
-  // When flipping, objects maintain relative position (0-1) in box
-  // instead of inverting (close-to-origin → far-from-origin)
-  tx = (cx - minX) / boxWidth  // relative position 0-1
-  newMinX = min(origin + (minX - ox) * scale, origin + (maxX - ox) * scale)
-  result = newMinX + tx * newBoxWidth
-```
-
-#### Edge-Pin Translation
-
-Used when objects can't scale but need to stay pinned to the selection edge:
-
-```typescript
-computeEdgePinTranslation(minX, maxX, minY, maxY, originBounds, scaleX, scaleY, origin, handleId):
-  // Horizontal handles: pin object to anchor edge (opposite edge of dragged handle)
-  // Vertical handles: pin object to anchor edge
-  // Objects touching the anchor edge stay pinned
-  // Objects not touching: center follows scale, with flip compensation
-```
-
-**Note bbox for edge-pin:** Notes use bbox bounds (body + shadow padding) for edge-pin, because `computeRawGeometryBounds()` uses bbox for notes and the handles are positioned at bbox. Shadow pad ratio = `frame[2] * 0.15`.
-
-#### Text/Code Reflow (E/W handles)
-
-When `selectionKind === 'textOnly'` or `'codeOnly'` and handle is `e` or `w`:
-
-```
-1. Scale both frame edges around origin
-2. Normalize (left = min, right = max)
-3. Clamp to minimum width (minCharWidth for text, minCodeWidth for code)
-4. If clamped: pin edge closest to scale origin
-5. Re-layout content at new width
-6. Store layout + new origin in TextReflowState / CodeReflowState
-```
-
-Text: `layoutMeasuredContent(measured, targetWidth, fontSize)` with new origin computed from anchor factor.
-Code: `computeCodeLayout(sourceLines, fontSize, targetWidth, lineNumbers)`.
-
-These pre-computed layouts are used by both the render preview (`drawReflowedTextPreview`/`drawReflowedCodePreview`) and the dirty rect computation, then committed as `width` + `origin` to Y.Map.
-
-### Endpoint Drag
-
-Only in connector mode (single connector selected). Dragging start or end endpoint:
-
-```
-1. Find snap target (findBestSnapTarget) — Ctrl suppresses
-2. Build endpoint override (SnapTarget or [worldX, worldY])
-3. Reroute connector (rerouteConnector with override)
-4. Update store with position, snap, routedPoints, routedBbox
-5. Invalidate prev + current dirty rects
-```
-
-**Commit:** Sets `points`, `start`, `end` on Y.Map. Updates or deletes anchor key based on snap state.
+Computes delta from `entry.out.bbox - entry.frozen.bbox`, applies `ctx.translate(dx, dy)`.
 
 ---
 
-## Connector Topology
-
-Computed once at transform `begin()` via `computeConnectorTopology(transformKind, selectedIds)`. Determines how each connector behaves during the transform.
-
-### Strategy Determination
-
-Two passes:
-1. **Selected connectors:** For each, check if both endpoints move (free endpoints always move if connector is selected; anchored endpoints move if anchored shape is selected).
-2. **Non-selected connectors:** Anchored to selected shapes. Only the anchored endpoint moves.
-
-```
-Translate + both endpoints move → strategy: 'translate' (ctx.translate on cached Path2D)
-Otherwise → strategy: 'reroute' (A* each frame via rerouteConnector)
-Scale → always 'reroute' (never translate)
-```
-
-### EndpointSpec (for reroute)
-
-Per-endpoint override specification:
-
-```typescript
-type EndpointSpec = string | true | null;
-// string = shapeId — frame override (transform shape's frame, use as anchor)
-// true   = free position override (apply transform to original endpoint position)
-// null   = canonical (no override — endpoint stays at stored value)
-```
-
-### Per-Frame Rerouting (`invalidateTransformPreview`)
-
-For each reroute entry:
-1. Build endpoint overrides from specs:
-   - `string` spec → `{ frame: transformFrameForTopology(originalFrame, transform, kind) }`
-   - `true` spec → `transformPositionForTopology(originalPoint, transform)`
-2. Call `rerouteConnector(id, overrides)` → new points
-3. Store in `topology.reroutes` map (mutable, zero allocation)
-4. Track bbox in `topology.prevBboxes` for dirty rect accumulation
-
-### Topology Frame Transform (`transformFrameForTopology`)
-
-Dispatches frame transform based on object kind:
-- Images: uniform scale, except mixed+side = edge-pin translate
-- Notes: uniform scale, except mixed+side = edge-pin translate (uses bbox with shadow pad)
-- Bookmarks: fixed size — side = edge-pin, corner = preserved-position
-- Text/code (mixed/textOnly/codeOnly + corner): uniform scale
-- Shapes: non-uniform scale via `applyTransformToFrame`
-
----
-
-## Rendering During Transforms
-
-### Base Canvas (`objects.ts`)
-
-`drawObjects()` reads selection store. For selected objects during active transforms:
-
-**Translate:** `ctx.save() → ctx.translate(dx, dy) → drawObject() → ctx.restore()`. Connectors use topology: translateOnly → ctx.translate, rerouted → `drawConnectorFromPoints()`.
-
-**Scale:** `renderSelectedObjectWithScaleTransform()` dispatches per-kind:
-
-| Kind | Renderer | Method |
-|------|----------|--------|
-| Stroke (mixed+side) | `drawObject()` with `ctx.translate(dx, dy)` | Cached Path2D + edge-pin |
-| Stroke (else) | `drawScaledStrokePreview()` | Fresh PerfectFreehand outline per frame |
-| Shape (mixed+corner) | `drawShapeWithUniformScale()` | Fresh Path2D from uniform-scaled frame |
-| Shape (else) | `drawShapeWithTransform()` | Fresh Path2D from `applyTransformToFrame` |
-| Text (corner / textOnly-N/S) | `drawScaledTextPreview()` | Cached layout + `ctx.scale(effectiveAbsScale)` |
-| Text (E/W reflow) | `drawReflowedTextPreview()` | Pre-computed layout from `textReflow` |
-| Text (mixed N/S) | `drawText()` with `ctx.translate(dx, dy)` | Cached + edge-pin |
-| Code (corner / codeOnly-N/S) | `drawScaledCodePreview()` | Cached layout + `ctx.scale(effectiveAbsScale)` |
-| Code (E/W reflow) | `drawReflowedCodePreview()` | Pre-computed layout from `codeReflow` |
-| Code (mixed N/S) | `drawCode()` with `ctx.translate(dx, dy)` | Cached + edge-pin |
-| Note (mixed+side) | `drawStickyNote()` with `ctx.translate(dx, dy)` | Cached + edge-pin (bbox) |
-| Note (else) | `drawScaledNotePreview()` | Nested ctx.scale around note's origin |
-| Image (mixed+side) | `drawImage()` with `ctx.translate(dx, dy)` | Cached + edge-pin |
-| Image (else) | `drawImage()` with uniform-scaled frame | `applyUniformScaleToFrame` |
-| Bookmark (mixed+side) | `drawBookmark()` with `ctx.translate(dx, dy)` | Cached + edge-pin (bbox) |
-| Bookmark (else) | `drawScaledBookmarkPreview()` | Nested ctx.scale around bookmark's origin |
-| Connector | `drawConnectorFromPoints()` or `drawObject()` | Via topology reroutes |
-
-**Endpoint drag:** Connector with matching id + routedPoints → `drawConnectorFromPoints()`. Others → normal `drawObject()`.
-
-**Culling guard:** During transforms, all selected IDs + topology connector IDs are injected into the candidate list regardless of spatial index viewport query results. This prevents objects from disappearing during edge-scroll panning.
-
-### Overlay Canvas (`selection-overlay.ts`)
-
-Four phases, all in world-transform scope:
-
-1. **Object highlights** (when not transforming, selected count > 0): Blue outlines per kind. Shapes use cached Path2D scaled to visual outer edge. Text/code/image use frame rect. Stroke/connector use bbox rect. Notes/bookmarks use bbox rect. Connector bbox suppressed in connector mode.
-
-2. **Marquee** (when active): Blue-filled rect with solid stroke.
-
-3. **Selection box + handles** (standard mode, not transforming, not in connector mode): Solid blue box at selection bounds. Four circular handles (off-white fill, dark outline, drop shadow). During scale, `originBounds` is used instead of live bbox bounds so handles align with transform.
-
-4. **Connector endpoint dots** (connector mode, single connector): Start/end dots at edge positions. During drag: dragged endpoint shows snap state (blue glow when snapped), plus midpoint indicator dots on target shape.
-
-**Handle suppression:** Handles hidden when: transforming, text editing (non-label), or code editing.
-
----
-
-## Dirty Rect Optimization
-
-`invalidateTransformPreview()` accumulates a single expanding envelope:
-
-1. **Connector topology:** reroute bboxes + translateOnly translated bboxes
-2. **Object bounds:** Per-kind dispatch matching the scale behavior matrix
-3. **Single `invalidateWorld()` call** with the full envelope
-
-The envelope (`transformEnvelope`) is a class field that persists across frames — it only expands, never shrinks. This ensures all previous positions are covered when the object moves.
-
----
-
-## Selection Store
+## Selection Store (selection-store.ts)
 
 ### State
 
@@ -492,59 +555,37 @@ interface SelectionState {
   selectedStyles: SelectedStyles;   // Style snapshot (equality-gated)
   inlineStyles: InlineStyles;       // Bold/italic/highlight (equality-gated)
   boundsVersion: number;            // Bumped on bbox changes → controller repositions
-  transform: TransformState;
+  transform: TransformState;        // { kind: 'none' | 'translate' | 'scale' | 'endpointDrag' }
   marquee: MarqueeState;
-  connectorTopology: ConnectorTopology | null;
-  textReflow: TextReflowState | null;
-  codeReflow: CodeReflowState | null;
   textEditingId: string | null;
   textEditingIsNew: boolean;
   codeEditingId: string | null;
 }
 ```
 
+Transform state in the store is now a **thin discriminant** (`{ kind: 'translate' }`, `{ kind: 'scale' }`). All transform data (entries, scale factors, delta, topology) lives in `TransformController`. The store only signals which transform mode is active for UI/renderer branching.
+
+Exception: `EndpointDragTransform` still carries full state in the store (connectorId, endpoint, routedPoints, currentSnap, prevBbox) — it's not entry-based.
+
 ### Key Actions
 
 | Action | Effect |
 |--------|--------|
-| `setSelection(ids)` | Compute composition, reset transform/marquee/topology/reflow, bump boundsVersion, refreshStyles |
-| `clearSelection()` | Reset everything to defaults, menuOpen=false |
-| `beginTranslate(originBounds)` | Compute connector topology ('translate'), set transform |
-| `beginScale(bbox, transform, origin, handle, delta)` | Compute connector topology ('scale'), init textReflow/codeReflow if E/W + text/code, set transform |
+| `setSelection(ids)` | Compute composition, reset transform/marquee, bump boundsVersion, refreshStyles |
+| `clearSelection()` | Reset everything to defaults |
+| `beginTranslate()` | Set `{ kind: 'translate' }` |
+| `beginScale()` | Set `{ kind: 'scale' }` |
+| `endTransform()` / `cancelTransform()` | Set `{ kind: 'none' }` |
 | `beginEndpointDrag(connId, endpoint, bbox)` | Set endpointDrag transform |
-| `endTransform()` / `cancelTransform()` | Clear transform, topology, reflow |
 | `beginTextEditing(id, isNew)` | Set textEditingId, menuOpen=true, refreshStyles |
-| `endTextEditing()` | Clear textEditingId, menuOpen=conditional on selectedIds, refreshStyles |
+| `endTextEditing()` | Clear textEditingId, menuOpen=conditional, refreshStyles |
 | `beginCodeEditing(id)` | Set codeEditingId, menuOpen=true, refreshStyles |
 | `endCodeEditing()` | Clear codeEditingId, menuOpen=conditional |
 | `refreshStyles()` | Recompute selectedStyles + inlineStyles from current state |
 
-### refreshStyles Resolution
-
-When `selectedIds` is empty but editing:
-- `textEditingId` set → `ids = [textEditingId]`, kind resolved from handle (note → `'notesOnly'`, else `'textOnly'`)
-- `codeEditingId` set → `ids = [codeEditingId]`, kind = `'codeOnly'`
-
-Inline styles computed when editor is NOT mounted AND kind is `'textOnly'`, `'shapesOnly'`, or `'notesOnly'`.
-
-### Selectors
-
-```typescript
-selectTextEditingId, selectIsTextEditing, selectTextEditingIsNew
-selectInlineBold, selectInlineItalic, selectInlineHighlightColor
-```
-
-### Free Functions
-
-- `filterSelectionByKind(kind)` — Filter selectedIds to single kind, call setSelection. Used by FilterObjectsDropdown.
-- `computeHandles(bounds)` — Four corner positions from WorldBounds.
-- `getScaleOrigin(handleId, bounds)` — Opposite corner/edge midpoint.
-- `getHandleCursor(handleId)` — CSS cursor string.
-- `isCornerHandle(handleId)` — Boolean.
-
 ---
 
-## Selection Utils
+## Selection Utils (selection-utils.ts)
 
 ### computeSelectionComposition(ids)
 
@@ -553,82 +594,32 @@ Single-pass bucket count. Returns `{ selectionKind, kindCounts, selectedIdSet, m
 ### computeSelectionBounds()
 
 Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain.
-- Text/note: `getTextFrame(id)` (layout-derived, WYSIWYG-accurate)
-- Code: `getCodeFrame(id)` (layout-derived)
+- Text/code: `getTextFrame(id)` / `getCodeFrame(id)` (layout-derived, WYSIWYG-accurate)
 - All others: `handle.bbox`
 
 ### computeStyles(ids, kind, objectsById)
 
 Returns `EMPTY_STYLES` immediately for `none`, `mixed`, `imagesOnly`, `bookmarksOnly`.
 
-Per-kind field tracking:
-
-| Kind | Fields Tracked |
-|------|---------------|
-| `strokesOnly` | color, colorMixed, width |
-| `shapesOnly` | color, colorMixed, width, fillColor, fillColorMixed, shapeType, fontSize, fontFamily, labelColor, textAlign, textAlignV |
-| `connectorsOnly` | color, colorMixed, width |
-| `textOnly` | color, fontSize, textAlign, fontFamily, labelColor, fillColor, fillColorMixed, shapeType='text' |
-| `notesOnly` | fillColor, fontFamily, textAlign (mismatch→null), textAlignV (mismatch→null) |
-| `codeOnly` | fontSize, codeLanguage, codeHeaderVisible, codeOutputVisible |
-
-Text field resolution: first object with text data wins. Text objects use `getColor()` as labelColor. Shapes use `getLabelColor()` (only if `hasLabel()`).
-
 ### computeUniformInlineStyles(ids, objectsById)
 
-Aggregates bold/italic/highlight across text/shape(labeled)/note objects. All must be bold for `bold:true`. Highlight must be identical non-null across all.
+Aggregates bold/italic/highlight across text/shape(labeled)/note objects.
 
 ---
 
-## Commit Path
+## Endpoint Drag
 
-### commitTranslate
-
-```
-transact(() => {
-  stroke → offset points
-  text/code/note → offset origin
-  shape/image/bookmark → offset frame
-  topology translate entries → offset originalPoints, set start/end
-  topology reroute entries → write rerouted points, set start/end
-})
-```
-
-### commitScale
-
-Dispatches per-kind inside `transact()`:
-
-| Kind | Commit Logic |
-|------|-------------|
-| Stroke (mixed+side) | `computeStrokeTranslation()` → offset points |
-| Stroke (else) | `applyUniformScaleToPoints()` → new points + scaled width |
-| Text (corner / textOnly-N/S) | fontSize rounded 3dp, new origin from center preservation, width scaled |
-| Text (E/W reflow) | Write `layout.boxWidth` + reflowOrigin from textReflow state |
-| Text (mixed N/S) | Edge-pin: offset origin Y only |
-| Code (corner / codeOnly-N/S) | fontSize rounded 3dp, new origin from center preservation, width scaled |
-| Code (E/W reflow) | Write `layout.totalWidth` + reflowOrigin from codeReflow state |
-| Code (mixed N/S) | Edge-pin: offset origin Y only |
-| Note (mixed+side) | Edge-pin: offset origin using bbox bounds |
-| Note (else) | Scale property rounded 3dp, origin from bbox-center preservation |
-| Image (mixed+side) | Edge-pin: offset frame |
-| Image (else) | `applyUniformScaleToFrame()` |
-| Bookmark (mixed+side) | Edge-pin: offset origin using bbox bounds |
-| Bookmark (else) | Scale property rounded 3dp, origin from bbox-center preservation |
-| Shape (mixed+corner) | `applyUniformScaleToFrame()` |
-| Shape (else) | `applyTransformToFrame()` (non-uniform) |
-| Connectors | Via topology reroute entries → write rerouted points |
-
-### commitEndpointDrag
+Only in connector mode (single connector selected). Dragging start or end endpoint. Managed by SelectTool directly (not TransformController).
 
 ```
-transact(() => {
-  yMap.set('points', routedPoints)
-  yMap.set('start', routedPoints[0])
-  yMap.set('end', routedPoints[last])
-  if (snap) yMap.set(anchorKey, { id, side, anchor })
-  else yMap.delete(anchorKey)
-})
+1. Find snap target (findBestSnapTarget) — Ctrl suppresses
+2. Build endpoint override (SnapTarget or [worldX, worldY])
+3. Reroute connector (rerouteConnector with override)
+4. Update store with position, snap, routedPoints, routedBbox
+5. Invalidate prev + current dirty rects
 ```
+
+**Commit:** Sets `points`, `start`, `end` on Y.Map. Updates or deletes anchor key based on snap state.
 
 ---
 
@@ -643,58 +634,18 @@ Store fields consumed by context menu are documented in `components/context-menu
 
 ---
 
-## Overlay Styling Constants
-
-```typescript
-SELECTION_STYLE = {
-  PRIMARY: 'rgba(29, 78, 216, 1)',       // Blue-700
-  PRIMARY_FILL: 'rgba(29, 78, 216, 0.15)', // Marquee fill
-  PRIMARY_MUTED: 'rgba(29, 78, 216, 0.7)', // Marquee stroke
-  HIGHLIGHT_WIDTH: 2,                      // Object outline (screen px)
-  BOX_WIDTH: 2,                            // Selection box (screen px)
-  MARQUEE_WIDTH: 1.5,                      // Marquee stroke (screen px)
-  HANDLE_RADIUS_PX: 6,                     // Handle circle radius
-  HANDLE_FILL: 'rgb(250, 250, 250)',       // Off-white
-  HANDLE_STROKE: 'rgba(0, 0, 0, 0.25)',   // Subtle outline
-  HANDLE_STROKE_WIDTH_PX: 2.5,
-  HANDLE_SHADOW_COLOR: 'rgba(0, 0, 0, 0.25)',
-  HANDLE_SHADOW_BLUR_PX: 4,
-  HANDLE_SHADOW_OFFSET_Y_PX: 1,
-}
-```
-
----
-
 ## File Map
 
 | File | Responsibility |
 |------|----------------|
-| `tools/selection/SelectTool.ts` | State machine, hit testing dispatch, transform lifecycle, commit to Y.Doc |
+| `tools/selection/SelectTool.ts` | State machine, hit testing dispatch, delegates to TransformController, endpoint drag commit |
+| `tools/selection/transform.ts` | TransformController, structural traits, mapped types, dispatch tables, apply/commit/freeze functions, module getters |
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeSelectionBounds`, `computeStyles`, `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | 21 mutation functions for context menu buttons (documented in context-menu CLAUDE.md) |
-| `stores/selection-store.ts` | Zustand store, transform types, connector topology builder, handle helpers |
-| `core/geometry/hit-testing.ts` | `testObjectHit`, `hitTestHandle`, `hitTestEndpointDots`, `objectIntersectsRect`, shape geometry tests |
-| `core/geometry/transform.ts` | `computeScaleFactors`, uniform scale, edge-pin, position preservation, topology frame transforms |
-| `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderSelectedObjectWithScaleTransform`, per-kind preview renderers |
+| `stores/selection-store.ts` | Zustand store, transform types (thin discriminants), connector topology builder, handle helpers |
+| `core/geometry/scale-system.ts` | Pure math atoms: scaleAround, uniformFactor, preservePosition, edgePinDelta, applyNonUniformFrame, computeReflowWidth |
+| `core/geometry/bounds.ts` | Bbox/frame helpers, computeRawGeometryBounds |
+| `core/types/handles.ts` | HandleId taxonomy, type guards, scaleOrigin, handleCursor |
+| `core/geometry/hit-testing.ts` | `testObjectHit`, `hitTestHandle`, `hitTestEndpointDots`, `objectIntersectsRect` |
+| `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |
 | `renderer/layers/selection-overlay.ts` | `drawSelectionOverlay`: highlights, marquee, box+handles, endpoint dots |
-
-## Scale System Refactor
-
-### Phase 1: Foundation (complete)
-
-New files — no existing code touched:
-- `core/types/handles.ts` — Handle taxonomy (`CornerHandle`, `SideHandle`, `HandleId`), type guards, `oppositeHandle` (mapped type), `handlePosition`, `scaleOrigin`, `handleCursor`
-- `core/geometry/scale-system.ts` — Composable scale atoms
-
-**scale-system.ts layers:**
-- `scaleAround` primitive → composes into uniform, non-uniform, edge-pin, position preservation
-- Structural constraints via intersection types (`WithFrame`, `WithOriginBBox & { scale }`, `WithFontFrame & { width, align, fontFamily }`)
-- Output hierarchy: `BaseOut` → `OriginOut` → `OriginScaleOut` / `TextScaleOut` / `ReflowOut`
-- `ApplyFn<F, O>` / `CommitFn<O>` type aliases, `ScaleEntry<TFrozen, TOut>`, `ScaleCtx`
-- Two generic factories: `makeUniformApply(getCx, getCy, derive)` and `makeEdgePinApply(getMinX, getMaxX, getMinY, getMaxY, writeOffset)`
-- Shared extractors via contravariance (base type `(f: WithFrame) => number` works for all subtypes)
-- 8 composed apply constants (one-liners), 8 commit functions, `KindCounts` helpers
-
-### Phase 2: Wiring (not started)
-
-Wire into SelectTool/objects.ts. `resolveEntry()` runs once at `beginScale`, apply loop is 5 lines, commit loop is 3 lines. Target: ~800 → ~140 lines.

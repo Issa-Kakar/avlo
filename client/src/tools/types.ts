@@ -1,13 +1,6 @@
 // Phase 5: Drawing Tool Types
 
-import type { WorldBounds } from '@/core/types/geometry';
-
-/**
- * WorldRect is an alias for WorldBounds from the shared package.
- * Used for selection bounds, dirty rects, and spatial queries.
- * @deprecated Prefer using WorldBounds directly from @avlo/shared
- */
-export type WorldRect = WorldBounds;
+import type { BBoxTuple } from '@/core/types/geometry';
 
 /**
  * HandleId identifies resize handles at selection corners and sides
@@ -88,9 +81,9 @@ export interface PerfectShapePreview {
 export interface SelectionPreview {
   kind: 'selection';
   /** Selection bounds in world coords (with transform applied for preview) */
-  selectionBounds: WorldRect | null;
+  selectionBounds: BBoxTuple | null;
   /** Marquee rect in world coords (anchor to current point) */
-  marqueeRect: WorldRect | null;
+  marqueeRect: BBoxTuple | null;
   /** Handle positions for resize (world coords) */
   handles: { id: HandleId; x: number; y: number }[] | null;
   /** Whether currently transforming (to hide handles during drag) */

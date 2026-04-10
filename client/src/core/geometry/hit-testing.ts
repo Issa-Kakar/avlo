@@ -9,7 +9,7 @@
  * and object-aware dispatch that reads from ObjectHandle.
  */
 
-import type { WorldBounds, FrameTuple } from '../types/geometry';
+import type { WorldBounds, FrameTuple, BBoxTuple } from '../types/geometry';
 import type { ObjectHandle, ObjectKind } from '../types/objects';
 import type { Snapshot } from '../types/snapshot';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '../accessors';
@@ -73,6 +73,13 @@ export function pointInRect(px: number, py: number, x: number, y: number, w: num
  */
 export function pointInWorldRect(px: number, py: number, rect: WorldRect): boolean {
   return px >= rect.minX && px <= rect.maxX && py >= rect.minY && py <= rect.maxY;
+}
+
+/**
+ * Check if point is inside a BBoxTuple [minX, minY, maxX, maxY].
+ */
+export function pointInBBox(px: number, py: number, bbox: BBoxTuple): boolean {
+  return px >= bbox[0] && px <= bbox[2] && py >= bbox[1] && py <= bbox[3];
 }
 
 /**
@@ -447,11 +454,11 @@ export const HANDLE_HIT_PX = 10;
  * @param bounds - Selection bounds in world coordinates
  * @param scale - Camera scale for converting screen-space tolerance to world
  */
-export function hitTestHandle(worldX: number, worldY: number, bounds: WorldRect, scale: number): HandleId | null {
+export function hitTestHandle(worldX: number, worldY: number, bbox: BBoxTuple, scale: number): HandleId | null {
   const handleRadius = HANDLE_HIT_PX / scale;
 
   // Test corners first (they take priority)
-  const corners = computeHandles(bounds);
+  const corners = computeHandles(bbox);
 
   for (const h of corners) {
     const dx = worldX - h.x;
@@ -466,19 +473,19 @@ export function hitTestHandle(worldX: number, worldY: number, bounds: WorldRect,
   const edgeTolerance = handleRadius;
 
   // North edge (top)
-  if (Math.abs(worldY - bounds.minY) <= edgeTolerance && worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+  if (Math.abs(worldY - bbox[1]) <= edgeTolerance && worldX > bbox[0] + handleRadius && worldX < bbox[2] - handleRadius) {
     return 'n';
   }
   // South edge (bottom)
-  if (Math.abs(worldY - bounds.maxY) <= edgeTolerance && worldX > bounds.minX + handleRadius && worldX < bounds.maxX - handleRadius) {
+  if (Math.abs(worldY - bbox[3]) <= edgeTolerance && worldX > bbox[0] + handleRadius && worldX < bbox[2] - handleRadius) {
     return 's';
   }
   // West edge (left)
-  if (Math.abs(worldX - bounds.minX) <= edgeTolerance && worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+  if (Math.abs(worldX - bbox[0]) <= edgeTolerance && worldY > bbox[1] + handleRadius && worldY < bbox[3] - handleRadius) {
     return 'w';
   }
   // East edge (right)
-  if (Math.abs(worldX - bounds.maxX) <= edgeTolerance && worldY > bounds.minY + handleRadius && worldY < bounds.maxY - handleRadius) {
+  if (Math.abs(worldX - bbox[2]) <= edgeTolerance && worldY > bbox[1] + handleRadius && worldY < bbox[3] - handleRadius) {
     return 'e';
   }
 

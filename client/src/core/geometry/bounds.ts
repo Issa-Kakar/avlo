@@ -10,12 +10,11 @@
  * - Raw geometry bounds extraction from ObjectHandle
  */
 
-import type { WorldBounds, FrameTuple, BBoxTuple } from '../types/geometry';
+import type { WorldBounds, FrameTuple, BBoxTuple, Point } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { getFrame, getPoints } from '../accessors';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
-import { computeUniformScaleNoThreshold, computePreservedPosition } from './transform';
 
 // ============================================================================
 // BBOX TUPLE HELPERS
@@ -28,6 +27,53 @@ export function expandBBox(b: BBoxTuple, minX: number, minY: number, maxX: numbe
   b[2] = Math.max(b[2], maxX);
   b[3] = Math.max(b[3], maxY);
 }
+
+export const unionBBox = (a: BBoxTuple, b: BBoxTuple): BBoxTuple => [
+  Math.min(a[0], b[0]),
+  Math.min(a[1], b[1]),
+  Math.max(a[2], b[2]),
+  Math.max(a[3], b[3]),
+];
+
+export const expandBBoxEnvelope = (env: BBoxTuple | null, b: BBoxTuple): BBoxTuple => (env ? unionBBox(env, b) : b);
+
+export const scaleBBoxAround = (b: BBoxTuple, o: Point, sx: number, sy: number): BBoxTuple => {
+  const x1 = o[0] + (b[0] - o[0]) * sx,
+    y1 = o[1] + (b[1] - o[1]) * sy;
+  const x2 = o[0] + (b[2] - o[0]) * sx,
+    y2 = o[1] + (b[3] - o[1]) * sy;
+  return [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+};
+
+export const pointsToBBox = (p1: Point, p2: Point): BBoxTuple => [
+  Math.min(p1[0], p2[0]),
+  Math.min(p1[1], p2[1]),
+  Math.max(p1[0], p2[0]),
+  Math.max(p1[1], p2[1]),
+];
+
+export const translateBBox = (b: BBoxTuple, dx: number, dy: number): BBoxTuple => [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+
+// Tuple helpers moved from scale-system.ts (geometry primitives, not scale-specific)
+export const frameToBbox = (f: FrameTuple): BBoxTuple => [f[0], f[1], f[0] + f[2], f[1] + f[3]];
+
+export function frameToBboxMut(f: FrameTuple, out: BBoxTuple): void {
+  out[0] = f[0];
+  out[1] = f[1];
+  out[2] = f[0] + f[2];
+  out[3] = f[1] + f[3];
+}
+
+export function copyBbox(src: BBoxTuple, dst: BBoxTuple): void {
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+}
+
+export const bboxCenter = (b: BBoxTuple): Point => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+export const bboxSize = (b: BBoxTuple): [number, number] => [b[2] - b[0], b[3] - b[1]];
+export const frameCenter = (f: FrameTuple): Point => [f[0] + f[2] / 2, f[1] + f[3] / 2];
 
 // ============================================================================
 // UNION HELPERS
@@ -153,46 +199,6 @@ export function expandBounds(bounds: WorldBounds, padding: number): WorldBounds 
 }
 
 // ============================================================================
-// UNIFORM SCALE BOUNDS (moved from scale-transform.ts)
-// ============================================================================
-
-/**
- * Compute bounds after uniform scale with position preservation.
- * Used for dirty rect invalidation during scale transforms.
- *
- * @param bbox - Object bbox as WorldBounds
- * @param originBounds - Selection bounds before transform
- * @param origin - Scale origin point
- * @param scaleX - Raw X scale factor
- * @param scaleY - Raw Y scale factor
- * @returns Transformed bounds
- */
-export function computeUniformScaleBounds(
-  bbox: WorldBounds,
-  originBounds: WorldBounds,
-  origin: [number, number],
-  scaleX: number,
-  scaleY: number,
-): WorldBounds {
-  const cx = (bbox.minX + bbox.maxX) / 2;
-  const cy = (bbox.minY + bbox.maxY) / 2;
-  const halfW = (bbox.maxX - bbox.minX) / 2;
-  const halfH = (bbox.maxY - bbox.minY) / 2;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  return {
-    minX: newCx - halfW * absScale,
-    minY: newCy - halfH * absScale,
-    maxX: newCx + halfW * absScale,
-    maxY: newCy + halfH * absScale,
-  };
-}
-
-// ============================================================================
 // RAW GEOMETRY BOUNDS
 // ============================================================================
 
@@ -204,7 +210,7 @@ export function computeUniformScaleBounds(
  *
  * Used for scale origin computation to prevent anchor sliding.
  */
-export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): WorldBounds | null {
+export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): BBoxTuple | null {
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,
@@ -241,7 +247,7 @@ export function computeRawGeometryBounds(handles: Iterable<ObjectHandle>): World
   }
 
   if (!isFinite(minX)) return null;
-  return { minX, minY, maxX, maxY };
+  return [minX, minY, maxX, maxY];
 }
 
 // ============================================================================

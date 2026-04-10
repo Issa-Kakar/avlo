@@ -503,3 +503,6 @@ Detailed docs in `core/image/CLAUDE.md` and `core/bookmark/CLAUDE.md`.
 **Bookmarks:** Paste URL → placeholder → worker unfurl → Y.Doc write. Offline/failed → text fallback.
 
 **Service Worker (`sw.ts`):** Cache-first `/api/assets/*` + app shell. Network-first HTML.
+
+---
+

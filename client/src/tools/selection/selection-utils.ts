@@ -1,6 +1,5 @@
 import type { ObjectHandle } from '@/core/types/objects';
-import type { WorldBounds } from '@/core/types/geometry';
-import { bboxTupleToWorldBounds } from '@/core/types/geometry';
+import type { BBoxTuple } from '@/core/types/geometry';
 import {
   getColor,
   getWidth,
@@ -19,7 +18,7 @@ import {
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
 import { getTextFrame, getInlineStyles } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
-import { expandEnvelope, frameTupleToWorldBounds } from '@/core/geometry/bounds';
+import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import { getCurrentSnapshot } from '@/runtime/room-runtime';
 import type { SelectionKind } from '@/stores/selection-store';
 // Runtime-only import — circular dep is safe (only accessed inside function bodies, not at module eval)
@@ -220,28 +219,28 @@ export function computeSelectionComposition(ids: string[]) {
  * Zero-arg: reads selectedIds (+ textEditingId fallback) from selection store.
  * Text uses derived frame (WYSIWYG-accurate), others use bbox.
  */
-export function computeSelectionBounds(): WorldBounds | null {
+export function computeSelectionBounds(): BBoxTuple | null {
   const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
   const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : codeEditingId ? [codeEditingId] : [];
   if (ids.length === 0) return null;
 
   const snapshot = getCurrentSnapshot();
-  let result: WorldBounds | null = null;
+  let result: BBoxTuple | null = null;
 
   for (const id of ids) {
     const handle = snapshot.objectsById.get(id);
     if (!handle) continue;
     if (handle.kind === 'text') {
       const frame = getTextFrame(id);
-      if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
+      if (frame) result = expandBBoxEnvelope(result, frameToBbox(frame));
       continue;
     }
     if (handle.kind === 'code') {
       const frame = getCodeFrame(id);
-      if (frame) result = expandEnvelope(result, frameTupleToWorldBounds(frame));
+      if (frame) result = expandBBoxEnvelope(result, frameToBbox(frame));
       continue;
     }
-    result = expandEnvelope(result, bboxTupleToWorldBounds(handle.bbox));
+    result = expandBBoxEnvelope(result, handle.bbox);
   }
 
   return result;

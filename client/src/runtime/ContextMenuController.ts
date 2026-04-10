@@ -3,7 +3,7 @@ import type { VirtualElement } from '@floating-ui/dom';
 import { useSelectionStore } from '@/stores/selection-store';
 import { computeSelectionBounds } from '@/tools/selection/selection-utils';
 import { worldToClient } from '@/stores/camera-store';
-import type { WorldBounds } from '@/core/types/geometry';
+import type { BBoxTuple } from '@/core/types/geometry';
 
 const SETTLE_MS = 150;
 
@@ -162,12 +162,12 @@ class ContextMenuController {
   }
 }
 
-/** Build a floating-ui VirtualElement from selection world bounds. */
-function createVirtualElement(worldBounds: WorldBounds): VirtualElement {
+/** Build a floating-ui VirtualElement from selection bbox. */
+function createVirtualElement(bbox: BBoxTuple): VirtualElement {
   return {
     getBoundingClientRect() {
-      const [left, top] = worldToClient(worldBounds.minX, worldBounds.minY);
-      const [right, bottom] = worldToClient(worldBounds.maxX, worldBounds.maxY);
+      const [left, top] = worldToClient(bbox[0], bbox[1]);
+      const [right, bottom] = worldToClient(bbox[2], bbox[3]);
       return {
         x: left,
         y: top,

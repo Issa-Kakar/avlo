@@ -1,14 +1,13 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/tools/types';
-import type { WorldBounds, FrameTuple } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
 import { getObjectsById, getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getFrame, getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
-import { bboxTupleToWorldBounds } from '@/core/types/geometry';
-import { getTextFrame, type TextLayout } from '@/core/text/text-system';
-import { getCodeFrame, type CodeLayout } from '@/core/code/code-system';
+import { getTextFrame } from '@/core/text/text-system';
+import { getCodeFrame } from '@/core/code/code-system';
 import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import {
   computeSelectionComposition,
@@ -29,14 +28,6 @@ import {
 export { computeSelectionBounds } from '@/tools/selection/selection-utils';
 export type { KindCounts, SelectedStyles, InlineStyles } from '@/tools/selection/selection-utils';
 
-// === Types ===
-
-/**
- * WorldRect is an alias for WorldBounds from the shared package.
- * @deprecated Prefer using WorldBounds directly from @avlo/shared
- */
-export type WorldRect = WorldBounds;
-
 // Selection composition types for context-aware transforms
 export type SelectionKind =
   | 'none'
@@ -49,8 +40,6 @@ export type SelectionKind =
   | 'imagesOnly'
   | 'bookmarksOnly'
   | 'mixed';
-
-export type HandleKind = 'corner' | 'side';
 
 // Interaction mode: determines what UI affordances are shown
 export type SelectionMode = 'none' | 'standard' | 'connector';
@@ -69,7 +58,8 @@ export interface ConnectorTopologyEntry {
   connectorId: string;
   strategy: 'translate' | 'reroute';
   originalPoints: [number, number][];
-  originalBbox: WorldBounds;
+  originalBbox: BBoxTuple;
+  translatedPoints: [number, number][]; // pre-allocated, mutated per-frame (translate only)
   startSpec: EndpointSpec; // only meaningful for 'reroute'
   endSpec: EndpointSpec; // only meaningful for 'reroute'
 }
@@ -90,43 +80,17 @@ export interface ConnectorTopology {
   /** connectorId → rerouted points (mutable per-frame cache) */
   reroutes: Map<string, [number, number][] | null>;
   /** connectorId → previous frame bbox (mutable per-frame cache) */
-  prevBboxes: Map<string, WorldBounds>;
-}
-
-// === Text Reflow State ===
-
-export interface TextReflowState {
-  layouts: Map<string, TextLayout>;
-  origins: Map<string, [number, number]>;
-}
-
-// === Code Reflow State ===
-
-export interface CodeReflowState {
-  layouts: Map<string, CodeLayout>;
-  origins: Map<string, [number, number]>;
+  prevBboxes: Map<string, BBoxTuple>;
 }
 
 // === Transform Types ===
 
 export interface TranslateTransform {
   kind: 'translate';
-  dx: number;
-  dy: number;
-  originBounds: WorldRect; // Bounds before transform started
 }
 
 export interface ScaleTransform {
   kind: 'scale';
-  origin: [number, number]; // Fixed point during scale
-  scaleX: number;
-  scaleY: number;
-  originBounds: WorldRect; // Geometry-based bounds (for position math - no stroke padding)
-  bboxBounds: WorldRect; // Padded bounds (for dirty rect invalidation)
-  handleId: HandleId; // Track which handle for uniform vs directional scaling
-  selectionKind: SelectionKind; // Selection composition for context-aware behavior
-  handleKind: HandleKind; // Corner vs side handle
-  initialDelta: [number, number]; // Distance from origin to initial click (for scale=1.0 at start)
 }
 
 /**
@@ -146,10 +110,10 @@ export interface EndpointDragTransform {
   /** Rerouted path (updated on each move via rerouteConnector) */
   routedPoints: [number, number][] | null;
   /** Bbox of routedPoints (for dirty rect) */
-  routedBbox: WorldBounds | null;
+  routedBbox: BBoxTuple | null;
 
   /** Previous frame's bbox for dirty rect invalidation (seeded from original bbox) */
-  prevBbox: WorldBounds;
+  prevBbox: BBoxTuple;
 }
 
 export type TransformState = { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform;
@@ -182,12 +146,6 @@ export interface SelectionState {
   boundsVersion: number;
   transform: TransformState;
   marquee: MarqueeState;
-  /** Connector topology during translate/scale transforms */
-  connectorTopology: ConnectorTopology | null;
-  /** Text reflow state during E/W side handle scale transforms */
-  textReflow: TextReflowState | null;
-  /** Code reflow state during E/W side handle scale transforms */
-  codeReflow: CodeReflowState | null;
 
   // Text editing - primitives only
   /** Object ID being edited, null if not editing */
@@ -208,26 +166,18 @@ export interface SelectionActions {
   clearSelection: () => void;
 
   // Transform lifecycle
-  beginTranslate: (originBounds: WorldRect) => void;
-  updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (
-    bboxBounds: WorldRect,
-    transformBounds: WorldRect,
-    origin: [number, number],
-    handleId: HandleId,
-    initialDelta: [number, number],
-  ) => void;
-  updateScale: (scaleX: number, scaleY: number) => void;
+  beginTranslate: () => void;
+  beginScale: () => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
   // Endpoint drag lifecycle
-  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: WorldBounds) => void;
+  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: BBoxTuple) => void;
   updateEndpointDrag: (
     currentPosition: [number, number],
     currentSnap: SnapTarget | null,
     routedPoints: [number, number][] | null,
-    routedBbox: WorldBounds | null,
+    routedBbox: BBoxTuple | null,
   ) => void;
 
   // Marquee lifecycle
@@ -271,7 +221,7 @@ export type SelectionStore = SelectionState & SelectionActions;
  *   Free + connector selected → true
  *   Otherwise → null (canonical)
  */
-function computeConnectorTopology(transformKind: 'translate' | 'scale', selectedIds: string[]): ConnectorTopology | null {
+export function computeConnectorTopology(transformKind: 'translate' | 'scale', selectedIds: string[]): ConnectorTopology | null {
   const selectedSet = new Set(selectedIds);
 
   const entries: ConnectorTopologyEntry[] = [];
@@ -301,7 +251,7 @@ function computeConnectorTopology(transformKind: 'translate' | 'scale', selected
       points.length > 0
         ? (points as [number, number][])
         : [(getStart(connHandle.y) ?? [0, 0]) as [number, number], (getEnd(connHandle.y) ?? [0, 0]) as [number, number]];
-    const originalBbox = bboxTupleToWorldBounds(connHandle.bbox);
+    const originalBbox = [...connHandle.bbox] as BBoxTuple;
 
     // Determine strategy
     if (transformKind === 'translate' && startMoves && endMoves) {
@@ -310,6 +260,7 @@ function computeConnectorTopology(transformKind: 'translate' | 'scale', selected
         strategy: 'translate',
         originalPoints,
         originalBbox,
+        translatedPoints: originalPoints.map((p) => [...p] as [number, number]),
         startSpec: null,
         endSpec: null,
       });
@@ -324,6 +275,7 @@ function computeConnectorTopology(transformKind: 'translate' | 'scale', selected
         strategy: 'reroute',
         originalPoints,
         originalBbox,
+        translatedPoints: [],
         startSpec,
         endSpec,
       });
@@ -386,11 +338,11 @@ function computeConnectorTopology(transformKind: 'translate' | 'scale', selected
 
   // Pre-allocate mutable caches
   const reroutes = new Map<string, [number, number][] | null>();
-  const prevBboxes = new Map<string, WorldBounds>();
+  const prevBboxes = new Map<string, BBoxTuple>();
   for (const entry of entries) {
     if (entry.strategy === 'reroute') {
       reroutes.set(entry.connectorId, null);
-      prevBboxes.set(entry.connectorId, entry.originalBbox);
+      prevBboxes.set(entry.connectorId, [...entry.originalBbox] as BBoxTuple);
     }
   }
 
@@ -419,9 +371,6 @@ export const useSelectionStore = create<SelectionStore>()(
     boundsVersion: 0,
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
-    connectorTopology: null,
-    textReflow: null,
-    codeReflow: null,
     textEditingId: null,
     textEditingIsNew: false,
     codeEditingId: null,
@@ -442,9 +391,6 @@ export const useSelectionStore = create<SelectionStore>()(
         kindCounts: comp.kindCounts,
         transform: { kind: 'none' },
         marquee: { active: false, anchor: null, current: null },
-        connectorTopology: null,
-        textReflow: null,
-        codeReflow: null,
         boundsVersion: get().boundsVersion + 1,
       });
       get().refreshStyles();
@@ -463,78 +409,17 @@ export const useSelectionStore = create<SelectionStore>()(
         boundsVersion: 0,
         transform: { kind: 'none' },
         marquee: { active: false, anchor: null, current: null },
-        connectorTopology: null,
-        textReflow: null,
-        codeReflow: null,
       }),
 
     // === Transform Actions ===
 
-    beginTranslate: (originBounds) => {
-      const { selectedIds } = get();
-      const topology = computeConnectorTopology('translate', selectedIds);
-      set({
-        transform: { kind: 'translate', dx: 0, dy: 0, originBounds },
-        connectorTopology: topology,
-      });
-    },
+    beginTranslate: () => set({ transform: { kind: 'translate' } }),
 
-    updateTranslate: (dx, dy) =>
-      set((state) => {
-        if (state.transform.kind !== 'translate') return state;
-        return { transform: { ...state.transform, dx, dy } };
-      }),
+    beginScale: () => set({ transform: { kind: 'scale' } }),
 
-    beginScale: (bboxBounds, transformBounds, origin, handleId, initialDelta) => {
-      const isCorner = ['nw', 'ne', 'se', 'sw'].includes(handleId);
-      const handleKind: HandleKind = isCorner ? 'corner' : 'side';
-      const { selectedIds, selectionKind, kindCounts } = get();
-      const topology = computeConnectorTopology('scale', selectedIds);
+    endTransform: () => set({ transform: { kind: 'none' } }),
 
-      const isEW = handleId === 'e' || handleId === 'w';
-      const textReflow: TextReflowState | null = isEW && kindCounts.text > 0 ? { layouts: new Map(), origins: new Map() } : null;
-      const codeReflow: CodeReflowState | null = isEW && kindCounts.code > 0 ? { layouts: new Map(), origins: new Map() } : null;
-
-      set({
-        transform: {
-          kind: 'scale',
-          origin,
-          scaleX: 1,
-          scaleY: 1,
-          originBounds: transformBounds,
-          bboxBounds,
-          handleId,
-          selectionKind,
-          handleKind,
-          initialDelta,
-        },
-        connectorTopology: topology,
-        textReflow,
-        codeReflow,
-      });
-    },
-
-    updateScale: (scaleX, scaleY) =>
-      set((state) => {
-        if (state.transform.kind !== 'scale') return state;
-        return { transform: { ...state.transform, scaleX, scaleY } };
-      }),
-
-    endTransform: () =>
-      set({
-        transform: { kind: 'none' },
-        connectorTopology: null,
-        textReflow: null,
-        codeReflow: null,
-      }),
-
-    cancelTransform: () =>
-      set({
-        transform: { kind: 'none' },
-        connectorTopology: null,
-        textReflow: null,
-        codeReflow: null,
-      }),
+    cancelTransform: () => set({ transform: { kind: 'none' } }),
 
     // === Endpoint Drag Actions ===
 
@@ -693,72 +578,15 @@ export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'con
 // === Handle Helpers ===
 
 /**
- * Check if a handle is a corner handle (vs side handle).
- */
-export function isCornerHandle(handleId: HandleId): boolean {
-  return handleId === 'nw' || handleId === 'ne' || handleId === 'se' || handleId === 'sw';
-}
-
-/**
  * Compute handle positions for the four corners of a selection bounds.
  */
-export function computeHandles(bounds: WorldBounds): { id: HandleId; x: number; y: number }[] {
+export function computeHandles(bbox: BBoxTuple): { id: HandleId; x: number; y: number }[] {
   return [
-    { id: 'nw', x: bounds.minX, y: bounds.minY },
-    { id: 'ne', x: bounds.maxX, y: bounds.minY },
-    { id: 'se', x: bounds.maxX, y: bounds.maxY },
-    { id: 'sw', x: bounds.minX, y: bounds.maxY },
+    { id: 'nw', x: bbox[0], y: bbox[1] },
+    { id: 'ne', x: bbox[2], y: bbox[1] },
+    { id: 'se', x: bbox[2], y: bbox[3] },
+    { id: 'sw', x: bbox[0], y: bbox[3] },
   ];
-}
-
-/**
- * Get the scale origin (fixed point) for a handle.
- * Scale origin is the opposite edge/corner from the dragged handle.
- */
-export function getScaleOrigin(handleId: HandleId, bounds: WorldBounds): [number, number] {
-  const midX = (bounds.minX + bounds.maxX) / 2;
-  const midY = (bounds.minY + bounds.maxY) / 2;
-
-  switch (handleId) {
-    // Corners - opposite corner
-    case 'nw':
-      return [bounds.maxX, bounds.maxY];
-    case 'ne':
-      return [bounds.minX, bounds.maxY];
-    case 'se':
-      return [bounds.minX, bounds.minY];
-    case 'sw':
-      return [bounds.maxX, bounds.minY];
-    // Sides - opposite edge midpoint
-    case 'n':
-      return [midX, bounds.maxY];
-    case 's':
-      return [midX, bounds.minY];
-    case 'e':
-      return [bounds.minX, midY];
-    case 'w':
-      return [bounds.maxX, midY];
-  }
-}
-
-/**
- * Get the appropriate cursor CSS value for a resize handle.
- */
-export function getHandleCursor(handleId: HandleId): string {
-  switch (handleId) {
-    case 'nw':
-    case 'se':
-      return 'nwse-resize';
-    case 'ne':
-    case 'sw':
-      return 'nesw-resize';
-    case 'n':
-    case 's':
-      return 'ns-resize';
-    case 'e':
-    case 'w':
-      return 'ew-resize';
-  }
 }
 
 // === Text Editing Selectors ===

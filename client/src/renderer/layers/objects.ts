@@ -1,11 +1,10 @@
 import type { Snapshot } from '@/core/types/snapshot';
-import type { ObjectHandle } from '@/core/types/objects';
-import type { FrameTuple, WorldBounds } from '@/core/types/geometry';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { BBoxTuple, FrameTuple, WorldBounds } from '@/core/types/geometry';
 import {
   getColor,
   getOpacity,
   getWidth,
-  getPoints,
   getFrame,
   getShapeType,
   getFillColor,
@@ -23,20 +22,7 @@ import {
 import { getPath, getConnectorPaths } from '../geometry-cache';
 import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
-import {
-  useSelectionStore,
-  type ScaleTransform,
-  type ConnectorTopology,
-  type TextReflowState,
-  type CodeReflowState,
-} from '@/stores/selection-store';
-import {
-  computeEdgePinTranslation,
-  computeStrokeTranslation,
-  applyTransformToFrame,
-  applyUniformScaleToPoints,
-  applyUniformScaleToFrame,
-} from '@/core/geometry/transform';
+import { useSelectionStore } from '@/stores/selection-store';
 import { getStroke } from 'perfect-freehand';
 import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
@@ -48,7 +34,6 @@ import {
   layoutMeasuredContent,
   anchorFactor,
   getBaselineToTopRatio,
-  getTextFrame,
   getLineStartX,
   getNoteContentOffsetY,
   renderNoteBody,
@@ -58,12 +43,36 @@ import {
   NOTE_WIDTH,
 } from '@/core/text/text-system';
 import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@/core/accessors';
-import { computeUniformScaleNoThreshold, computePreservedPosition } from '@/core/geometry/transform';
-import { codeSystem, renderCodeLayout, getCodeFrame } from '@/core/code/code-system';
+import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
 import { getBitmap } from '@/core/image/image-manager';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
-import { getBookmarkProps } from '@/core/accessors';
+import {
+  getScaleEntry,
+  getScaleBehavior,
+  getTranslateDelta,
+  getTransformTopology,
+  type Entry,
+  type GeoOf,
+} from '@/tools/selection/transform';
+import type { CodeProps } from '@/core/accessors';
+
+function getCodeRenderData(id: string, props: CodeProps) {
+  return {
+    spans: codeSystem.getSpans(id),
+    lines: codeSystem.getSourceLines(id),
+    title: props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined,
+    output: props.outputVisible ? (props.output ?? '') : undefined,
+  };
+}
+
+function withTransform(ctx: CanvasRenderingContext2D, tx: number, ty: number, sx: number, sy: number, draw: () => void): void {
+  ctx.save();
+  ctx.translate(tx, ty);
+  ctx.scale(sx, sy);
+  draw();
+  ctx.restore();
+}
 
 export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, clipWorldRects?: WorldBounds[]): void {
   const { spatialIndex, objectsById } = snapshot;
@@ -74,10 +83,8 @@ export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, c
   const transform = selectionState.transform;
   const isTransforming = transform.kind !== 'none';
 
-  // Read connector topology and text/code reflow state
-  const connTopology = selectionState.connectorTopology;
-  const textReflow = selectionState.textReflow;
-  const codeReflow = selectionState.codeReflow;
+  // Read topology from transform-state module (not from Zustand)
+  const connTopology = getTransformTopology();
 
   // Calculate visible world bounds for culling (reads from camera store)
   const visibleBounds = getVisibleWorldBounds();
@@ -134,33 +141,42 @@ export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, c
 
     if (needsTransform) {
       if (transform.kind === 'translate') {
-        if (handle.kind === 'connector') {
-          // Connector during translate: translateOnly or rerouted
-          if (connTopology?.translateIdSet.has(handle.id)) {
+        const delta = getTranslateDelta();
+        if (!delta) {
+          drawObject(ctx, handle);
+        } else if (handle.kind === 'connector') {
+          // Connector during translate: check topology reroutes
+          const points = connTopology?.reroutes.get(handle.id);
+          if (points) {
+            drawConnectorFromPoints(ctx, handle, points);
+          } else if (connTopology?.translateIdSet.has(handle.id)) {
             ctx.save();
-            ctx.translate(transform.dx, transform.dy);
+            ctx.translate(delta[0], delta[1]);
             drawObject(ctx, handle);
             ctx.restore();
           } else {
-            const points = connTopology?.reroutes.get(handle.id);
-            if (points) {
-              drawConnectorFromPoints(ctx, handle, points);
-            } else {
-              drawObject(ctx, handle);
-            }
+            drawObject(ctx, handle);
           }
         } else {
-          // Non-connector: use ctx.translate with cached Path2D
+          // Non-connector: use ctx.translate with cached Path2D (efficient)
           ctx.save();
-          ctx.translate(transform.dx, transform.dy);
+          ctx.translate(delta[0], delta[1]);
           drawObject(ctx, handle);
           ctx.restore();
         }
       } else if (transform.kind === 'scale') {
-        // Scale: context-aware rendering based on selectionKind and handleKind
-        renderSelectedObjectWithScaleTransform(ctx, handle, transform, connTopology, textReflow, codeReflow);
+        // Scale: entry-based rendering (typed by kind)
+        if (handle.kind !== 'connector') {
+          renderScaleEntry(ctx, handle, snapshot);
+        } else {
+          const points = connTopology?.reroutes.get(handle.id);
+          if (points) {
+            drawConnectorFromPoints(ctx, handle, points);
+          } else {
+            drawObject(ctx, handle);
+          }
+        }
       } else if (transform.kind === 'endpointDrag') {
-        // Endpoint drag: draw from rerouted points if available
         if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
           drawConnectorFromPoints(ctx, handle, transform.routedPoints);
         } else {
@@ -172,18 +188,21 @@ export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, c
     } else {
       // Non-selected: check topology for connector overrides
       if (handle.kind === 'connector' && connTopology) {
-        if (transform.kind === 'translate' && connTopology.translateIdSet.has(id)) {
-          ctx.save();
-          ctx.translate(transform.dx, transform.dy);
-          drawObject(ctx, handle);
-          ctx.restore();
-        } else {
-          const points = connTopology.reroutes.get(id);
-          if (points) {
-            drawConnectorFromPoints(ctx, handle, points);
+        const points = connTopology.reroutes.get(id);
+        if (points) {
+          drawConnectorFromPoints(ctx, handle, points);
+        } else if (connTopology.translateIdSet.has(id)) {
+          const delta = getTranslateDelta();
+          if (delta) {
+            ctx.save();
+            ctx.translate(delta[0], delta[1]);
+            drawObject(ctx, handle);
+            ctx.restore();
           } else {
             drawObject(ctx, handle);
           }
+        } else {
+          drawObject(ctx, handle);
         }
       } else {
         drawObject(ctx, handle);
@@ -407,10 +426,7 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   if (!props) return;
 
   const layout = codeSystem.getLayout(id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-  const spans = codeSystem.getSpans(id);
-  const lines = codeSystem.getSourceLines(id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
-  const output = props.outputVisible ? (props.output ?? '') : undefined;
+  const { spans, lines, title, output } = getCodeRenderData(id, props);
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
 }
 
@@ -524,477 +540,50 @@ function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHa
   ctx.restore();
 }
 
-// Note: applySelectionTransform and computeUniformScale removed - replaced by
-// context-aware rendering dispatch via renderSelectedObjectWithScaleTransform
+// ============================================================================
+// Entry-Based Scale Transform Rendering
+// ============================================================================
+
+function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _snapshot: Snapshot): void {
+  switch (handle.kind) {
+    case 'shape': {
+      const entry = getScaleEntry('shape', handle.id);
+      if (!entry) break;
+      const { frame } = entry.out;
+      const [, , w, h] = frame;
+      if (w < 0.001 || h < 0.001) return;
+
+      const shapeType = getShapeType(handle.y);
+      const fillColor = getFillColor(handle.y);
+      const color = getColor(handle.y);
+      const width = getWidth(handle.y, 1);
+      const opacity = getOpacity(handle.y);
+
+      const path = buildShapePathFromFrame(shapeType, frame);
 
-/**
- * Draw shape with transform applied to frame (WYSIWYG - stroke width NOT scaled)
- */
-function drawShapeWithTransform(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: {
-    kind: string;
-    dx?: number;
-    dy?: number;
-    origin?: [number, number];
-    scaleX?: number;
-    scaleY?: number;
-  },
-): void {
-  const { y } = handle;
-
-  // Get original frame and compute transformed frame
-  const frame = getFrame(y);
-  if (!frame) return;
-
-  const transformedFrame = applyTransformToFrame(frame, transform);
-
-  // Skip render if dimensions collapsed to near-zero
-  const [, , w, h] = transformedFrame;
-  if (w < 0.001 || h < 0.001) return;
-
-  // Get styling
-  const shapeType = getShapeType(y);
-  const fillColor = getFillColor(y);
-  const color = getColor(y);
-  const width = getWidth(y, 1);
-  const opacity = getOpacity(y);
-
-  // Build path from TRANSFORMED frame (not cached)
-  const path = buildShapePathFromFrame(shapeType, transformedFrame);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  if (fillColor) {
-    ctx.fillStyle = fillColor;
-    ctx.fill(path);
-  }
-
-  if (color && width > 0) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width; // ORIGINAL width - NOT scaled!
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke(path);
-  }
-
-  if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, transformedFrame);
-
-  ctx.restore();
-}
-
-// === Scale Transform Rendering Functions ===
-
-/**
- * Draw stroke with scaled geometry and width using fresh PF outline.
- * This is the WYSIWYG preview - generates new Path2D each frame.
- *
- * Uses "copy-paste" flip behavior with position preservation:
- * - Position preserves relative arrangement in selection box
- * - Geometry uses absolute magnitude (NEVER inverted/mirrored)
- * - No threshold - immediate flip when dominant axis < 0
- */
-function drawScaledStrokePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const { y } = handle;
-  const points = getPoints(y);
-  const originalWidth = getWidth(y);
-  const color = getColor(y);
-  const opacity = getOpacity(y);
-  const tool = getStrokeTool(y);
-
-  if (!points?.length) return;
-
-  const { origin, scaleX, scaleY, originBounds } = transform;
-
-  // Apply uniform scale with position preservation (copy-paste flip behavior)
-  const { points: scaledPoints, absScale } = applyUniformScaleToPoints(points, handle.bbox, originBounds, origin, scaleX, scaleY);
-
-  // Scale width for WYSIWYG
-  const scaledWidth = originalWidth * absScale;
-
-  // Generate FRESH PF outline (not cached)
-  const outline = getStroke(scaledPoints, {
-    ...PF_OPTIONS_BASE,
-    size: scaledWidth,
-    last: true,
-  });
-
-  const path = new Path2D(getSvgPathFromStroke(outline, false));
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-  ctx.fillStyle = color;
-  if (tool === 'highlighter') {
-    ctx.globalCompositeOperation = 'source-over';
-  }
-  ctx.fill(path);
-  ctx.restore();
-}
-
-/**
- * Draw shape with uniform scale and position preservation (for mixed + corner selection).
- * Uses center-based scaling with absScale (no geometry inversion) and preserved positions.
- */
-function drawShapeWithUniformScale(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const { y } = handle;
-  const frame = getFrame(y);
-  if (!frame) return;
-
-  const { scaleX, scaleY, origin, originBounds } = transform;
-
-  // Apply uniform scale with position preservation (matches stroke behavior)
-  const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
-
-  // Skip render if dimensions collapsed to near-zero
-  const [, , newW, newH] = transformedFrame;
-  if (newW < 0.001 || newH < 0.001) return;
-
-  // Get styling
-  const shapeType = getShapeType(y);
-  const fillColor = getFillColor(y);
-  const color = getColor(y);
-  const width = getWidth(y, 1);
-  const opacity = getOpacity(y);
-
-  // Build path from TRANSFORMED frame (not cached)
-  const path = buildShapePathFromFrame(shapeType, transformedFrame);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  if (fillColor) {
-    ctx.fillStyle = fillColor;
-    ctx.fill(path);
-  }
-
-  if (color && width > 0) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width; // ORIGINAL width - NOT scaled!
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke(path);
-  }
-
-  if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, transformedFrame);
-
-  ctx.restore();
-}
-
-/**
- * Draw text with uniform scale preview using ctx.scale on cached layout.
- * Font size is rounded to 3dp for WYSIWYG match with commit.
- */
-function drawScaledTextPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const textFrame = getTextFrame(handle.id);
-  if (!textFrame) {
-    drawText(ctx, handle);
-    return;
-  }
-
-  const props = getTextProps(handle.y);
-  if (!props) return;
-
-  const { scaleX, scaleY, originBounds, origin } = transform;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const rawAbsScale = Math.abs(uniformScale);
-  if (rawAbsScale < 0.001) return;
-
-  // Round fontSize → derive effective scale (mirrors commit exactly)
-  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-  const effectiveAbsScale = roundedFontSize / props.fontSize;
-
-  // New center via position preservation (raw scale for continuous cursor tracking)
-  const [fx, fy, fw, fh] = textFrame;
-  const cx = fx + fw / 2;
-  const cy = fy + fh / 2;
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  // New frame with effective (rounded) dimensions
-  const nfw = fw * effectiveAbsScale;
-  const nfh = fh * effectiveAbsScale;
-  const nfx = newCx - nfw / 2;
-  const nfy = newCy - nfh / 2;
-
-  // Derive virtual origin in new frame
-  const newOriginX = nfx + anchorFactor(props.align) * nfw;
-  const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio(props.fontFamily);
-
-  // Reuse cached layout — ctx.scale does the visual scaling
-  const color = getColor(handle.y);
-  const fillColor = getFillColor(handle.y);
-  const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
-
-  ctx.save();
-  ctx.translate(newOriginX, newOriginY);
-  ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor);
-  ctx.restore();
-}
-
-/**
- * Draw text with reflow preview from pre-computed layout/origin.
- */
-function drawReflowedTextPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, textReflow: TextReflowState): void {
-  const layout = textReflow.layouts.get(handle.id);
-  const reflowOrigin = textReflow.origins.get(handle.id);
-  if (!layout || !reflowOrigin) {
-    drawText(ctx, handle);
-    return;
-  }
-  renderTextLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], getColor(handle.y), getAlign(handle.y), getFillColor(handle.y));
-}
-
-/**
- * Draw code block with uniform scale preview using ctx.scale on cached layout.
- * Font size is rounded to 3dp for WYSIWYG match with commit.
- */
-function drawScaledCodePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const codeFrame = getCodeFrame(handle.id);
-  if (!codeFrame) {
-    drawCode(ctx, handle);
-    return;
-  }
-
-  const props = getCodeProps(handle.y);
-  if (!props) return;
-
-  const { scaleX, scaleY, originBounds, origin } = transform;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const rawAbsScale = Math.abs(uniformScale);
-  if (rawAbsScale < 0.001) return;
-
-  const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-  const effectiveAbsScale = roundedFontSize / props.fontSize;
-
-  const [fx, fy, fw, fh] = codeFrame;
-  const cx = fx + fw / 2;
-  const cy = fy + fh / 2;
-  const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-  const nfw = fw * effectiveAbsScale;
-  const nfx = newCx - nfw / 2;
-  const nfy = newCy - (fh * effectiveAbsScale) / 2;
-
-  // Reuse cached layout — ctx.scale does the visual scaling
-  const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
-  const spans = codeSystem.getSpans(handle.id);
-  const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
-  const output = props.outputVisible ? (props.output ?? '') : undefined;
-
-  ctx.save();
-  ctx.translate(nfx, nfy);
-  ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output);
-  ctx.restore();
-}
-
-/**
- * Draw bookmark with uniform scale preview using ctx.scale.
- * Uses bbox center for position preservation (handles are at bbox positions).
- * drawBookmark internally applies ctx.scale(bookmarkScale) — nested scales compose.
- */
-function drawScaledBookmarkPreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const props = getBookmarkProps(handle.y);
-  if (!props) {
-    drawBookmark(ctx, handle);
-    return;
-  }
-
-  const { scaleX, scaleY, originBounds, origin } = transform;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-  if (absScale < 0.001) return;
-
-  const roundedScale = Math.round(props.scale * absScale * 1000) / 1000;
-  const effectiveAbsScale = roundedScale / props.scale;
-
-  const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-  const bcx = (bMinX + bMaxX) / 2;
-  const bcy = (bMinY + bMaxY) / 2;
-  const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
-
-  const bboxW = bMaxX - bMinX;
-  const bboxH = bMaxY - bMinY;
-  const newBboxW = bboxW * effectiveAbsScale;
-  const newBboxH = bboxH * effectiveAbsScale;
-  const newBMinX = newBcx - newBboxW / 2;
-  const newBMinY = newBcy - newBboxH / 2;
-  const oxOff = props.origin[0] - bMinX;
-  const oyOff = props.origin[1] - bMinY;
-  const newOriginX = newBMinX + oxOff * effectiveAbsScale;
-  const newOriginY = newBMinY + oyOff * effectiveAbsScale;
-
-  ctx.save();
-  ctx.translate(newOriginX, newOriginY);
-  ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  ctx.translate(-props.origin[0], -props.origin[1]);
-  drawBookmark(ctx, handle);
-  ctx.restore();
-}
-
-/**
- * Draw sticky note with uniform scale preview using ctx.scale.
- * Uses bbox center for position preservation (handles are at bbox positions).
- * drawStickyNote internally applies ctx.scale(noteScale) — nested scales compose.
- */
-function drawScaledNotePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, transform: ScaleTransform): void {
-  const props = getNoteProps(handle.y);
-  if (!props) {
-    drawStickyNote(ctx, handle);
-    return;
-  }
-
-  const { scaleX, scaleY, originBounds, origin } = transform;
-
-  const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-  const absScale = Math.abs(uniformScale);
-  if (absScale < 0.001) return;
-
-  // Quantize to 3dp for consistency with commit
-  const roundedScale = Math.round(props.scale * absScale * 1000) / 1000;
-  const effectiveAbsScale = roundedScale / props.scale;
-
-  // Use bbox center for position preservation
-  const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-  const bcx = (bMinX + bMaxX) / 2;
-  const bcy = (bMinY + bMaxY) / 2;
-  const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
-
-  const bboxW = bMaxX - bMinX;
-  const bboxH = bMaxY - bMinY;
-  const newBboxW = bboxW * effectiveAbsScale;
-  const newBboxH = bboxH * effectiveAbsScale;
-  const newBMinX = newBcx - newBboxW / 2;
-  const newBMinY = newBcy - newBboxH / 2;
-  const oxOff = props.origin[0] - bMinX;
-  const oyOff = props.origin[1] - bMinY;
-  const newOriginX = newBMinX + oxOff * effectiveAbsScale;
-  const newOriginY = newBMinY + oyOff * effectiveAbsScale;
-
-  // drawStickyNote does ctx.translate(origin)+ctx.scale(noteScale), so we
-  // wrap it with the transform's uniform scale around the note's origin.
-  ctx.save();
-  ctx.translate(newOriginX, newOriginY);
-  ctx.scale(effectiveAbsScale, effectiveAbsScale);
-  ctx.translate(-props.origin[0], -props.origin[1]);
-  drawStickyNote(ctx, handle);
-  ctx.restore();
-}
-
-/**
- * Draw code block with reflow preview from pre-computed layout/origin.
- */
-function drawReflowedCodePreview(ctx: CanvasRenderingContext2D, handle: ObjectHandle, codeReflow: CodeReflowState): void {
-  const layout = codeReflow.layouts.get(handle.id);
-  const reflowOrigin = codeReflow.origins.get(handle.id);
-  if (!layout || !reflowOrigin) {
-    drawCode(ctx, handle);
-    return;
-  }
-
-  const props = getCodeProps(handle.y);
-  if (!props) return;
-
-  const spans = codeSystem.getSpans(handle.id);
-  const lines = codeSystem.getSourceLines(handle.id);
-  const title = props.headerVisible ? (props.title ?? `Untitled.${CODE_EXTENSIONS[props.language]}`) : undefined;
-  const output = props.outputVisible ? (props.output ?? '') : undefined;
-  renderCodeLayout(ctx, layout, reflowOrigin[0], reflowOrigin[1], props.fontSize, spans, lines, title, output);
-}
-
-/**
- * Context-aware scale transform rendering for selected objects.
- * Dispatches to correct rendering strategy based on selectionKind + handleKind.
- */
-function renderSelectedObjectWithScaleTransform(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  transform: ScaleTransform,
-  connTopology: ConnectorTopology | null,
-  textReflow: TextReflowState | null,
-  codeReflow: CodeReflowState | null,
-): void {
-  const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds } = transform;
-
-  // Connectors: draw from rerouted points (never stroke-scale)
-  if (handle.kind === 'connector') {
-    const points = connTopology?.reroutes.get(handle.id);
-    if (points) {
-      drawConnectorFromPoints(ctx, handle, points);
-    } else {
-      drawObject(ctx, handle); // Not in topology = static
-    }
-    return;
-  }
-
-  const isStroke = handle.kind === 'stroke';
-
-  // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
-  if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-    const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
-    ctx.save();
-    ctx.translate(dx, dy);
-    drawObject(ctx, handle); // Use cached Path2D
-    ctx.restore();
-    return;
-  }
-
-  // CASE 2: Stroke scaling (strokesOnly OR mixed+corner) = PF-per-frame
-  if (isStroke) {
-    drawScaledStrokePreview(ctx, handle, transform);
-    return;
-  }
-
-  // Bookmarks: uniform scale, except mixed+side = edge-pin translate
-  if (handle.kind === 'bookmark') {
-    if (selectionKind === 'mixed' && handleKind === 'side') {
-      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-      const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
       ctx.save();
-      ctx.translate(dx, dy);
-      drawBookmark(ctx, handle);
+      ctx.globalAlpha = opacity;
+      if (fillColor) {
+        ctx.fillStyle = fillColor;
+        ctx.fill(path);
+      }
+      if (color && width > 0) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke(path);
+      }
+      if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, frame);
       ctx.restore();
-    } else {
-      drawScaledBookmarkPreview(ctx, handle, transform);
-    }
-    return;
-  }
-
-  // CASE 3: Image scaling — always uniform, except mixed+side = edge-pin translate
-  if (handle.kind === 'image') {
-    const frame = getFrame(handle.y);
-    if (!frame) {
-      drawObject(ctx, handle);
-      return;
+      break;
     }
 
-    if (selectionKind === 'mixed' && handleKind === 'side') {
-      // Edge-pin translate (no dimension change)
-      const { dx, dy } = computeEdgePinTranslation(
-        frame[0],
-        frame[0] + frame[2],
-        frame[1],
-        frame[1] + frame[3],
-        originBounds,
-        scaleX,
-        scaleY,
-        origin,
-        handleId,
-      );
-      ctx.save();
-      ctx.translate(dx, dy);
-      drawImage(ctx, handle);
-      ctx.restore();
-    } else {
-      // Uniform scale for all other cases
-      const transformedFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
-      const [, , tw, th] = transformedFrame;
+    case 'image': {
+      const entry = getScaleEntry('image', handle.id);
+      if (!entry) break;
+      const { frame } = entry.out;
+      const [, , tw, th] = frame;
       if (tw < 0.001 || th < 0.001) return;
       const assetId = getAssetId(handle.y);
       if (!assetId) return;
@@ -1005,113 +594,123 @@ function renderSelectedObjectWithScaleTransform(
       if (bitmap) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(bitmap, transformedFrame[0], transformedFrame[1], tw, th);
+        ctx.drawImage(bitmap, frame[0], frame[1], tw, th);
       } else {
         ctx.fillStyle = '#f0f0f0';
-        ctx.fillRect(transformedFrame[0], transformedFrame[1], tw, th);
+        ctx.fillRect(frame[0], frame[1], tw, th);
       }
       ctx.restore();
+      break;
     }
-    return;
-  }
 
-  // CASE 4: Note scaling — always uniform, except mixed+side = edge-pin translate
-  if (handle.kind === 'note') {
-    if (selectionKind === 'mixed' && handleKind === 'side') {
-      // Edge-pin: use bbox bounds (matches computeRawGeometryBounds)
-      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-      const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
+    case 'stroke': {
+      const entry = getScaleEntry('stroke', handle.id);
+      if (!entry) break;
+      const { points: scaledPoints, width: scaledWidth } = entry.out;
+      const color = getColor(handle.y);
+      const opacity = getOpacity(handle.y);
+      const tool = getStrokeTool(handle.y);
+
+      const outline = getStroke(scaledPoints, {
+        ...PF_OPTIONS_BASE,
+        size: scaledWidth,
+        last: true,
+      });
+      const path = new Path2D(getSvgPathFromStroke(outline, false));
+
       ctx.save();
-      ctx.translate(dx, dy);
-      drawStickyNote(ctx, handle);
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = color;
+      if (tool === 'highlighter') {
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      ctx.fill(path);
       ctx.restore();
-    } else {
-      drawScaledNotePreview(ctx, handle, transform);
+      break;
     }
-    return;
-  }
 
-  // CASE 5: Shape scaling
-  // Mixed + corner: uniform scale
-  // Shapes-only or mixed+side: non-uniform scale (existing behavior)
-  if (handle.kind === 'shape') {
-    if (selectionKind === 'mixed' && handleKind === 'corner') {
-      drawShapeWithUniformScale(ctx, handle, transform);
-    } else {
-      drawShapeWithTransform(ctx, handle, transform);
-    }
-    return;
-  }
-
-  // CASE 5: Text — corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
-  if (handle.kind === 'text') {
-    if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')) {
-      drawScaledTextPreview(ctx, handle, transform);
-    } else if ((handleId === 'e' || handleId === 'w') && textReflow?.layouts.has(handle.id)) {
-      drawReflowedTextPreview(ctx, handle, textReflow);
-    } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-      // Mixed + N/S: edge-pin translate
-      const textFrame = getTextFrame(handle.id);
-      if (textFrame) {
-        const [fx, , fw, fh] = textFrame;
-        const { dx, dy } = computeEdgePinTranslation(
-          fx,
-          fx + fw,
-          textFrame[1],
-          textFrame[1] + fh,
-          originBounds,
-          scaleX,
-          scaleY,
-          origin,
-          handleId,
+    case 'text': {
+      const entry = getScaleEntry('text', handle.id);
+      if (!entry) break;
+      const behavior = getScaleBehavior('text');
+      if (behavior === 'reflow' && entry.out.layout) {
+        renderTextLayout(
+          ctx,
+          entry.out.layout,
+          entry.out.origin[0],
+          entry.out.origin[1],
+          getColor(handle.y),
+          getAlign(handle.y),
+          getFillColor(handle.y),
         );
-        ctx.save();
-        ctx.translate(dx, dy);
-        drawText(ctx, handle);
-        ctx.restore();
-      } else {
-        drawText(ctx, handle);
-      }
-    } else {
-      drawText(ctx, handle);
-    }
-    return;
-  }
-
-  // CASE 6: Code — corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
-  if (handle.kind === 'code') {
-    if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')) {
-      drawScaledCodePreview(ctx, handle, transform);
-    } else if ((handleId === 'e' || handleId === 'w') && codeReflow?.layouts.has(handle.id)) {
-      drawReflowedCodePreview(ctx, handle, codeReflow);
-    } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-      const codeFrame = getCodeFrame(handle.id);
-      if (codeFrame) {
-        const [fx, , fw, fh] = codeFrame;
-        const { dx, dy } = computeEdgePinTranslation(
-          fx,
-          fx + fw,
-          codeFrame[1],
-          codeFrame[1] + fh,
-          originBounds,
-          scaleX,
-          scaleY,
-          origin,
-          handleId,
+      } else if (behavior === 'uniform') {
+        const ratio = entry.out.fontSize / entry.frozen.fontSize;
+        const props = getTextProps(handle.y);
+        if (!props) break;
+        const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
+        const color = getColor(handle.y);
+        const fillColor = getFillColor(handle.y);
+        withTransform(ctx, entry.out.origin[0], entry.out.origin[1], ratio, ratio, () =>
+          renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor),
         );
-        ctx.save();
-        ctx.translate(dx, dy);
-        drawCode(ctx, handle);
-        ctx.restore();
       } else {
-        drawCode(ctx, handle);
+        renderTranslatedEntry(ctx, handle, entry);
       }
-    } else {
-      drawCode(ctx, handle);
+      break;
     }
-    return;
-  }
 
-  // Fallback
+    case 'code': {
+      const entry = getScaleEntry('code', handle.id);
+      if (!entry) break;
+      const behavior = getScaleBehavior('code');
+      if (behavior === 'reflow' && entry.out.layout) {
+        const props = getCodeProps(handle.y);
+        if (!props) break;
+        const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
+        renderCodeLayout(ctx, entry.out.layout, entry.out.origin[0], entry.out.origin[1], props.fontSize, spans, lines, title, output);
+      } else if (behavior === 'uniform') {
+        const ratio = entry.out.fontSize / entry.frozen.fontSize;
+        const props = getCodeProps(handle.y);
+        if (!props) break;
+        const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
+        const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
+        const b = entry.out.bbox;
+        withTransform(ctx, b[0], b[1], ratio, ratio, () =>
+          renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output),
+        );
+      } else {
+        renderTranslatedEntry(ctx, handle, entry);
+      }
+      break;
+    }
+
+    case 'note':
+    case 'bookmark': {
+      const entry = getScaleEntry(handle.kind, handle.id);
+      if (!entry) break;
+      const behavior = getScaleBehavior(handle.kind);
+      if (behavior === 'uniform') {
+        const ratio = entry.out.scale / entry.frozen.scale;
+        withTransform(ctx, entry.out.origin[0], entry.out.origin[1], ratio, ratio, () => {
+          ctx.translate(-entry.frozen.origin[0], -entry.frozen.origin[1]);
+          drawObject(ctx, handle);
+        });
+      } else {
+        renderTranslatedEntry(ctx, handle, entry);
+      }
+      break;
+    }
+  }
+}
+
+/** Kinds whose GeoOf has bbox — safe for entry.frozen.bbox access */
+type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
+
+function renderTranslatedEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, entry: Entry<KindWithBBoxGeo>): void {
+  const dx = entry.out.bbox[0] - entry.frozen.bbox[0];
+  const dy = entry.out.bbox[1] - entry.frozen.bbox[1];
+  ctx.save();
+  ctx.translate(dx, dy);
   drawObject(ctx, handle);
+  ctx.restore();
 }

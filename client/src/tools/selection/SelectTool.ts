@@ -1,45 +1,10 @@
-import type { WorldRect, HandleId, PointerTool, PreviewData } from '../types';
+import type { HandleId, PointerTool, PreviewData } from '../types';
 import { textTool, codeTool } from '@/runtime/tool-registry';
-import {
-  useSelectionStore,
-  type SelectionKind,
-  type HandleKind,
-  type TranslateTransform,
-  type ScaleTransform,
-  type ConnectorTopology,
-  type TextReflowState,
-  type CodeReflowState,
-  computeHandles,
-  computeSelectionBounds,
-  getScaleOrigin,
-  getHandleCursor,
-} from '@/stores/selection-store';
+import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
+import { scaleBBoxAround, pointsToBBox, translateBBox, computeRawGeometryBounds } from '@/core/geometry/bounds';
 import {
-  computeEdgePinTranslation,
-  computeStrokeTranslation,
-  applyTransformToBounds,
-  computeScaleFactors,
-  applyUniformScaleToFrame,
-  applyUniformScaleToPoints,
-  applyTransformToFrame,
-  transformFrameForTopology,
-  transformPositionForTopology,
-  computeUniformScaleNoThreshold,
-  computePreservedPosition,
-} from '@/core/geometry/transform';
-import {
-  unionBounds,
-  expandEnvelope,
-  translateBounds,
-  scaleBoundsAround,
-  pointsToWorldBounds,
-  expandBounds,
-  computeUniformScaleBounds,
-  computeRawGeometryBounds,
-} from '@/core/geometry/bounds';
-import {
-  pointInWorldRect,
+  pointInBBox,
   hitTestHandle,
   hitTestEndpointDots,
   objectIntersectsRect,
@@ -48,45 +13,19 @@ import {
   type EndpointHit,
 } from '@/core/geometry/hit-testing';
 import type { ObjectHandle } from '@/core/types/objects';
-import type { WorldBounds } from '@/core/types/geometry';
-import { bboxTupleToWorldBounds } from '@/core/types/geometry';
-import {
-  getFrame,
-  getPoints,
-  getWidth,
-  getStartAnchor,
-  getEndAnchor,
-  getOrigin,
-  getTextProps,
-  getCodeProps,
-  getNoteProps,
-  getConnectorType,
-} from '@/core/accessors';
+import type { BBoxTuple } from '@/core/types/geometry';
+import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
 import { getCurrentSnapshot, getSpatialIndex, getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { isShiftHeld, isCtrlOrMetaHeld, isCtrlHeld } from '@/runtime/InputManager';
-import { invalidateWorld } from '@/renderer/RenderLoop';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from '@/runtime/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import {
-  anchorFactor,
-  getBaselineToTopRatio,
-  getTextFrame,
-  textLayoutCache,
-  layoutMeasuredContent,
-  getMinCharWidth,
-} from '@/core/text/text-system';
-import { frameTupleToWorldBounds } from '@/core/geometry/bounds';
-import {
-  getCodeFrame,
-  computeLayout as computeCodeLayout,
-  blockHeight as codeBlockHeight,
-  getMinWidth as getCodeMinWidth,
-  codeSystem,
-} from '@/core/code/code-system';
+import { scaleOrigin, handleCursor } from '@/core/types/handles';
+import { getController, getTransformScaleCtx, rawScaleFactors } from './transform';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -134,8 +73,7 @@ export class SelectTool implements PointerTool {
   private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
 
-  // Track accumulating envelope for dirty rect optimization (expands, never shrinks)
-  private transformEnvelope: WorldRect | null = null;
+  private initialDelta: [number, number] | null = null;
 
   constructor() {}
 
@@ -218,7 +156,7 @@ export class SelectTool implements PointerTool {
     if (mode === 'standard') {
       // Standard mode has selection bounds - can have gap clicks
       const selectionBounds = computeSelectionBounds();
-      if (selectionBounds && pointInWorldRect(worldX, worldY, selectionBounds)) {
+      if (selectionBounds && pointInBBox(worldX, worldY, selectionBounds)) {
         this.downTarget = 'selectionGap';
         this.phase = 'pendingClick';
         invalidateOverlay();
@@ -259,26 +197,20 @@ export class SelectTool implements PointerTool {
         switch (this.downTarget) {
           case 'handle': {
             if (!passMove) break;
-            // Dragging a resize handle
             this.phase = 'scale';
 
             const store = useSelectionStore.getState();
+            const geoBbox = this.computeTransformBoundsForScale();
+            if (!geoBbox) break;
 
-            // Geometry-based bounds for transform origin (fixes anchor sliding)
-            const transformBounds = this.computeTransformBoundsForScale();
-            // Padded bounds for dirty rects (visual coverage)
-            const bboxBounds = computeSelectionBounds();
+            const origin = scaleOrigin(this.activeHandle!, geoBbox);
+            this.initialDelta = [this.downWorld![0] - origin[0], this.downWorld![1] - origin[1]];
 
-            if (transformBounds && bboxBounds) {
-              // CRITICAL: Use geometry bounds for origin
-              const origin = getScaleOrigin(this.activeHandle!, transformBounds);
-              // Compute initial delta: distance from origin to click position
-              // This ensures scale=1.0 exactly when cursor is at starting position
-              const initialDelta: [number, number] = [this.downWorld![0] - origin[0], this.downWorld![1] - origin[1]];
-              store.beginScale(bboxBounds, transformBounds, origin, this.activeHandle!, initialDelta);
-            }
-            const cursor = getHandleCursor(this.activeHandle!);
-            setCursorOverride(cursor);
+            const ctrl = getController();
+            ctrl.beginScale(store.selectedIdSet, store.kindCounts, this.activeHandle!, origin, geoBbox);
+            store.beginScale();
+
+            setCursorOverride(handleCursor(this.activeHandle!));
             applyCursor();
             break;
           }
@@ -298,10 +230,11 @@ export class SelectTool implements PointerTool {
             // Begin endpoint drag transform
             const connHandle = getHandle(this.endpointHitAtDown!.connectorId);
             if (connHandle) {
-              const originBbox = bboxTupleToWorldBounds(connHandle.bbox);
               useSelectionStore
                 .getState()
-                .beginEndpointDrag(this.endpointHitAtDown!.connectorId, this.endpointHitAtDown!.endpoint, originBbox);
+                .beginEndpointDrag(this.endpointHitAtDown!.connectorId, this.endpointHitAtDown!.endpoint, [
+                  ...connHandle.bbox,
+                ] as BBoxTuple);
             }
             setCursorOverride('grabbing');
             applyCursor();
@@ -332,10 +265,7 @@ export class SelectTool implements PointerTool {
             const store = useSelectionStore.getState();
             store.setSelection([this.hitAtDown!.id]);
             this.phase = 'translate';
-            const bounds = computeSelectionBounds();
-            if (bounds) {
-              useSelectionStore.getState().beginTranslate(bounds);
-            }
+            this.beginTranslateState();
             break;
           }
 
@@ -363,10 +293,7 @@ export class SelectTool implements PointerTool {
 
             // Standard mode or free connector: translate group
             this.phase = 'translate';
-            const bounds = computeSelectionBounds();
-            if (bounds) {
-              useSelectionStore.getState().beginTranslate(bounds);
-            }
+            this.beginTranslateState();
             break;
           }
 
@@ -375,10 +302,7 @@ export class SelectTool implements PointerTool {
             if (!passMove && !passTime) break;
             // Drag intent → translate selection
             this.phase = 'translate';
-            const bounds = computeSelectionBounds();
-            if (bounds) {
-              useSelectionStore.getState().beginTranslate(bounds);
-            }
+            this.beginTranslateState();
             break;
           }
 
@@ -406,21 +330,19 @@ export class SelectTool implements PointerTool {
 
       case 'translate': {
         if (this.downWorld) {
-          const dx = worldX - this.downWorld[0];
-          const dy = worldY - this.downWorld[1];
-          useSelectionStore.getState().updateTranslate(dx, dy);
-          this.invalidateTransformPreview();
+          getController().updateTranslate(worldX - this.downWorld[0], worldY - this.downWorld[1]);
         }
         break;
       }
 
       case 'scale': {
-        if (this.downWorld && this.activeHandle) {
-          const transform = useSelectionStore.getState().transform;
-          if (transform.kind !== 'scale') break;
-          const { scaleX, scaleY } = computeScaleFactors(worldX, worldY, transform);
-          useSelectionStore.getState().updateScale(scaleX, scaleY);
-          this.invalidateTransformPreview();
+        if (this.downWorld && this.activeHandle && this.initialDelta) {
+          const ctrl = getController();
+          const scaleCtx = ctrl.getScaleCtx();
+          if (scaleCtx) {
+            const [sx, sy] = rawScaleFactors(worldX, worldY, scaleCtx.origin, this.initialDelta, scaleCtx.handleId);
+            ctrl.updateScale(sx, sy);
+          }
         }
         break;
       }
@@ -455,8 +377,8 @@ export class SelectTool implements PointerTool {
         const result = rerouteConnector(connectorId, endpointOverride);
 
         // 4. Invalidate prev + current dirty rects
-        invalidateWorld(epTransform.prevBbox);
-        if (result) invalidateWorld(result.bbox);
+        invalidateWorldBBox(epTransform.prevBbox);
+        if (result) invalidateWorldBBox(result.bbox);
 
         // 5. Update store
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
@@ -564,55 +486,15 @@ export class SelectTool implements PointerTool {
         break;
       }
 
-      case 'translate': {
-        const store = useSelectionStore.getState();
-        if (store.transform.kind !== 'translate') {
-          store.endTransform();
-          break;
-        }
-
-        const { dx, dy } = store.transform;
-        const { selectedIds, connectorTopology } = store;
-
-        // Clear transform BEFORE mutate to prevent double-transform visual glitch
-        store.endTransform();
-
-        // Only commit if there was actual movement
-        if (dx !== 0 || dy !== 0) {
-          this.commitTranslate(selectedIds, dx, dy, connectorTopology);
-        }
-        break;
-      }
-
+      case 'translate':
       case 'scale': {
-        const store = useSelectionStore.getState();
-        if (store.transform.kind !== 'scale') {
-          store.endTransform();
-          break;
+        const ctrl = getController();
+        if (ctrl.hasChange()) {
+          ctrl.commit();
+        } else {
+          ctrl.clear();
         }
-
-        const { origin, scaleX, scaleY, handleId, selectionKind, handleKind, originBounds } = store.transform;
-        const { selectedIds, connectorTopology, textReflow, codeReflow } = store;
-
-        // Clear transform BEFORE mutate
-        store.endTransform();
-
-        // Only commit if there was actual scaling
-        if (scaleX !== 1 || scaleY !== 1) {
-          this.commitScale(
-            selectedIds,
-            origin,
-            scaleX,
-            scaleY,
-            handleId,
-            selectionKind,
-            handleKind,
-            originBounds,
-            connectorTopology,
-            textReflow,
-            codeReflow,
-          );
-        }
+        useSelectionStore.getState().endTransform();
         break;
       }
 
@@ -626,8 +508,8 @@ export class SelectTool implements PointerTool {
         const { connectorId, endpoint, routedPoints, currentSnap, prevBbox, routedBbox } = epStore.transform;
 
         // Invalidate the connector region
-        invalidateWorld(prevBbox);
-        if (routedBbox) invalidateWorld(routedBbox);
+        invalidateWorldBBox(prevBbox);
+        if (routedBbox) invalidateWorldBBox(routedBbox);
 
         epStore.endTransform();
 
@@ -658,22 +540,18 @@ export class SelectTool implements PointerTool {
   cancel(): void {
     // Invalidate dirty rect before clearing transform state
     if (this.phase === 'translate' || this.phase === 'scale') {
-      const bounds = computeSelectionBounds();
-      if (bounds) {
-        const store = useSelectionStore.getState();
-        const transformedBounds = applyTransformToBounds(bounds, store.transform);
-        // Union original + transformed bounds to clear any ghosting
-        invalidateWorld(unionBounds(bounds, transformedBounds));
-      }
+      getController().cancel();
+      useSelectionStore.getState().endTransform();
     } else if (this.phase === 'endpointDrag') {
       const store = useSelectionStore.getState();
       if (store.transform.kind === 'endpointDrag') {
-        // Invalidate connector's original bbox to clear any preview
-        invalidateWorld(store.transform.prevBbox);
+        invalidateWorldBBox(store.transform.prevBbox);
       }
+      useSelectionStore.getState().cancelTransform();
+    } else {
+      useSelectionStore.getState().cancelTransform();
     }
 
-    useSelectionStore.getState().cancelTransform();
     useSelectionStore.getState().cancelMarquee();
     // Clear any cursor override on cancel
     setCursorOverride(null);
@@ -703,28 +581,34 @@ export class SelectTool implements PointerTool {
     const { selectedIds, mode, transform, marquee } = store;
 
     // Compute marquee rect if active
-    let marqueeRect: WorldRect | null = null;
+    let marqueeRect: BBoxTuple | null = null;
     if (marquee.active && marquee.anchor && marquee.current) {
-      marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
+      marqueeRect = pointsToBBox(marquee.anchor, marquee.current);
     }
 
     // Connector mode: no selection bounds, no handles
     // Standard mode: compute bounds and handles as usual
-    let selectionBounds: WorldRect | null = null;
+    let selectionBounds: BBoxTuple | null = null;
     let handles: { id: HandleId; x: number; y: number }[] | null = null;
 
     if (mode === 'standard' && selectedIds.length > 0) {
-      // During scale, use originBounds (geometry-based) so selection rect aligns with transform
+      // During scale, use geometry bounds (selBounds) so selection rect aligns with transform
       // During idle/translate, use bbox-based bounds for visual stroke coverage
-      let baseBounds: WorldRect | null = null;
       if (transform.kind === 'scale') {
-        baseBounds = transform.originBounds;
+        const sCtx = getTransformScaleCtx();
+        if (sCtx) {
+          selectionBounds = scaleBBoxAround(sCtx.selBounds, sCtx.origin as [number, number], sCtx.sx, sCtx.sy);
+        }
+      } else if (transform.kind === 'translate') {
+        const baseBounds = computeSelectionBounds();
+        const ctrl = getController();
+        if (baseBounds) {
+          selectionBounds = translateBBox(baseBounds, ctrl.dx, ctrl.dy);
+        }
       } else {
-        baseBounds = computeSelectionBounds();
+        selectionBounds = computeSelectionBounds();
       }
-
-      if (baseBounds) {
-        selectionBounds = applyTransformToBounds(baseBounds, transform);
+      if (selectionBounds) {
         handles = computeHandles(selectionBounds);
       }
     }
@@ -786,7 +670,7 @@ export class SelectTool implements PointerTool {
       if (bounds) {
         const handle = hitTestHandle(worldX, worldY, bounds, scale);
         if (handle) {
-          setCursorOverride(getHandleCursor(handle));
+          setCursorOverride(handleCursor(handle));
           applyCursor();
           return;
         }
@@ -814,24 +698,14 @@ export class SelectTool implements PointerTool {
     this.endpointHitAtDown = null;
     this.downTarget = 'none';
     this.downTimeMs = 0;
-    this.transformEnvelope = null;
+    this.initialDelta = null;
   }
 
-  /**
-   * Compute geometry-based bounds for scale transforms.
-   * Unlike computeSelectionBounds() which uses padded bboxes,
-   * this extracts raw geometry bounds:
-   * - Shapes/text: raw frame [x, y, w, h]
-   * - Strokes/connectors: raw points min/max (no width inflation)
-   *
-   * Used for scale origin computation to prevent anchor sliding.
-   */
-  private computeTransformBoundsForScale(): WorldRect | null {
+  private computeTransformBoundsForScale(): BBoxTuple | null {
     const store = useSelectionStore.getState();
     const { selectedIds } = store;
     if (selectedIds.length === 0) return null;
 
-    // Collect handles for selected objects
     const handles: ObjectHandle[] = [];
     for (const id of selectedIds) {
       const handle = getHandle(id);
@@ -841,662 +715,10 @@ export class SelectTool implements PointerTool {
     return computeRawGeometryBounds(handles);
   }
 
-  // --- Transform Preview ---
-
-  /**
-   * Expand the transform envelope and issue a single dirty-rect invalidation.
-   * Three-section structure:
-   *   1. CONNECTOR TOPOLOGY — reroute connectors, track their bboxes
-   *   2. COMPUTE ENVELOPE — accumulate bounds from shapes + strokes
-   *   3. SINGLE INVALIDATION — one invalidateWorld() call with the full envelope
-   */
-  private invalidateTransformPreview(): void {
+  private beginTranslateState(): void {
     const store = useSelectionStore.getState();
-    const bounds = computeSelectionBounds();
-    if (!bounds) return;
-
-    const transform = store.transform;
-    const topology = store.connectorTopology;
-    const textReflow = store.textReflow;
-    const codeReflow = store.codeReflow;
-
-    // --- 1. CONNECTOR TOPOLOGY ---
-    if (topology) {
-      // Reroute entries: compute new routes + expand envelope
-      for (const entry of topology.entries) {
-        if (entry.strategy !== 'reroute') continue;
-
-        const overrides: { start?: EndpointOverrideValue; end?: EndpointOverrideValue } = {};
-
-        if (typeof entry.startSpec === 'string') {
-          const origFrame = topology.originalFrames.get(entry.startSpec);
-          if (origFrame) {
-            const startHandle = getHandle(entry.startSpec);
-            overrides.start = {
-              frame: transformFrameForTopology(origFrame, transform as TranslateTransform | ScaleTransform, startHandle?.kind),
-            };
-          }
-        } else if (entry.startSpec === true) {
-          overrides.start = transformPositionForTopology(entry.originalPoints[0], transform as TranslateTransform | ScaleTransform);
-        }
-
-        if (typeof entry.endSpec === 'string') {
-          const origFrame = topology.originalFrames.get(entry.endSpec);
-          if (origFrame) {
-            const endHandle = getHandle(entry.endSpec);
-            overrides.end = {
-              frame: transformFrameForTopology(origFrame, transform as TranslateTransform | ScaleTransform, endHandle?.kind),
-            };
-          }
-        } else if (entry.endSpec === true) {
-          overrides.end = transformPositionForTopology(
-            entry.originalPoints[entry.originalPoints.length - 1],
-            transform as TranslateTransform | ScaleTransform,
-          );
-        }
-
-        const hasOverrides = overrides.start !== undefined || overrides.end !== undefined;
-        const result = rerouteConnector(entry.connectorId, hasOverrides ? overrides : undefined);
-        topology.reroutes.set(entry.connectorId, result?.points ?? null);
-
-        // Track bbox for envelope
-        const prev = topology.prevBboxes.get(entry.connectorId);
-        if (prev) this.transformEnvelope = expandEnvelope(this.transformEnvelope, prev);
-        if (result) {
-          this.transformEnvelope = expandEnvelope(this.transformEnvelope, result.bbox);
-          topology.prevBboxes.set(entry.connectorId, result.bbox);
-        }
-      }
-
-      // TranslateOnly envelope (translate only)
-      if (transform.kind === 'translate') {
-        for (const entry of topology.entries) {
-          if (entry.strategy !== 'translate') continue;
-          const translated = translateBounds(entry.originalBbox, transform.dx, transform.dy);
-          this.transformEnvelope = expandEnvelope(this.transformEnvelope, entry.originalBbox);
-          this.transformEnvelope = expandEnvelope(this.transformEnvelope, translated);
-        }
-      }
-    }
-
-    // --- 2. COMPUTE ENVELOPE (shapes + strokes) ---
-    if (transform.kind === 'translate') {
-      const transformedBounds = applyTransformToBounds(bounds, transform);
-
-      if (!this.transformEnvelope) {
-        this.transformEnvelope = unionBounds(bounds, transformedBounds);
-      } else {
-        this.transformEnvelope = expandEnvelope(this.transformEnvelope, transformedBounds);
-      }
-    } else if (transform.kind === 'scale') {
-      const { selectionKind, handleKind, handleId, origin, scaleX, scaleY, originBounds, bboxBounds } = transform;
-
-      let combinedBounds: WorldRect | null = null;
-
-      for (const id of store.selectedIds) {
-        const handle = getHandle(id);
-        if (!handle) continue;
-
-        // Connectors handled via topology above
-        if (handle.kind === 'connector') continue;
-
-        const bbox = bboxTupleToWorldBounds(handle.bbox);
-        const isStroke = handle.kind === 'stroke';
-        let objBounds: WorldRect;
-
-        if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
-          objBounds = translateBounds(bbox, dx, dy);
-        } else if (isStroke) {
-          objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-          const origWidth = getWidth(handle.y);
-          const uniformScaleAbs = Math.abs(Math.max(Math.abs(scaleX), Math.abs(scaleY)));
-          const scaledWidth = origWidth * uniformScaleAbs;
-          const delta = (scaledWidth - origWidth) * 0.5;
-          if (delta > 0) {
-            objBounds = expandBounds(objBounds, delta);
-          }
-        } else if (handle.kind === 'text') {
-          const textFrame = getTextFrame(handle.id);
-          if (!textFrame) continue;
-
-          if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')) {
-            // Uniform scale: corner always, textOnly N/S
-            const textBounds = frameTupleToWorldBounds(textFrame);
-            objBounds = computeUniformScaleBounds(textBounds, originBounds, origin, scaleX, scaleY);
-          } else if ((handleId === 'e' || handleId === 'w') && textReflow) {
-            const props = getTextProps(handle.y);
-            if (!props) continue;
-            const measured = textLayoutCache.getMeasuredContent(handle.id);
-            if (!measured) continue;
-
-            const [fx, fy, fw] = textFrame;
-            const ox = origin[0];
-
-            // Scale both edges, normalize
-            const scaledLeft = ox + (fx - ox) * scaleX;
-            const scaledRight = ox + (fx + fw - ox) * scaleX;
-            const left = Math.min(scaledLeft, scaledRight);
-            const right = Math.max(scaledLeft, scaledRight);
-            const rawWidth = right - left;
-            const minW = getMinCharWidth(props.fontSize, props.fontFamily);
-            const targetWidth = Math.max(minW, rawWidth);
-
-            // Anchor clamping: pin edge closest to scale origin
-            let newLeft: number;
-            if (targetWidth > rawWidth) {
-              newLeft = Math.abs(left - ox) <= Math.abs(right - ox) ? left : right - targetWidth;
-            } else {
-              newLeft = left;
-            }
-
-            // Layout
-            const layout = layoutMeasuredContent(measured, targetWidth, props.fontSize);
-            const newOriginX = newLeft + anchorFactor(props.align) * targetWidth;
-            const newOriginY = props.origin[1];
-
-            // Store
-            textReflow.layouts.set(handle.id, layout);
-            textReflow.origins.set(handle.id, [newOriginX, newOriginY]);
-
-            // Dirty rect
-            const newHeight = layout.lines.length * layout.lineHeight;
-            objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
-          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-            // Mixed + N/S: edge-pin translate
-            const [fx, , fw, fh] = textFrame;
-            const { dx, dy } = computeEdgePinTranslation(
-              fx,
-              fx + fw,
-              textFrame[1],
-              textFrame[1] + fh,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            objBounds = translateBounds(frameTupleToWorldBounds(textFrame), dx, dy);
-          } else {
-            continue;
-          }
-        } else if (handle.kind === 'code') {
-          const codeFrame = getCodeFrame(handle.id);
-          if (!codeFrame) continue;
-
-          if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')) {
-            const codeBounds = frameTupleToWorldBounds(codeFrame);
-            objBounds = computeUniformScaleBounds(codeBounds, originBounds, origin, scaleX, scaleY);
-          } else if ((handleId === 'e' || handleId === 'w') && codeReflow) {
-            const props = getCodeProps(handle.y);
-            if (!props) continue;
-            const sourceLines = codeSystem.getSourceLines(handle.id);
-            if (!sourceLines) continue;
-
-            const [fx, fy, fw] = codeFrame;
-            const ox = origin[0];
-            const scaledLeft = ox + (fx - ox) * scaleX;
-            const scaledRight = ox + (fx + fw - ox) * scaleX;
-            const left = Math.min(scaledLeft, scaledRight);
-            const right = Math.max(scaledLeft, scaledRight);
-            const rawWidth = right - left;
-            const minW = getCodeMinWidth(props.fontSize);
-            const targetWidth = Math.max(minW, rawWidth);
-
-            let newLeft: number;
-            if (targetWidth > rawWidth) {
-              newLeft = Math.abs(left - ox) <= Math.abs(right - ox) ? left : right - targetWidth;
-            } else {
-              newLeft = left;
-            }
-
-            const layout = computeCodeLayout(sourceLines, props.fontSize, targetWidth, props.lineNumbers);
-            codeReflow.layouts.set(handle.id, layout);
-            codeReflow.origins.set(handle.id, [newLeft, props.origin[1]]);
-
-            const newHeight = codeBlockHeight(layout, props.fontSize, props.headerVisible, props.outputVisible, props.output);
-            objBounds = frameTupleToWorldBounds([newLeft, fy, targetWidth, newHeight]);
-          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-            const [fx, , fw, fh] = codeFrame;
-            const { dx, dy } = computeEdgePinTranslation(
-              fx,
-              fx + fw,
-              codeFrame[1],
-              codeFrame[1] + fh,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            objBounds = translateBounds(frameTupleToWorldBounds(codeFrame), dx, dy);
-          } else {
-            continue;
-          }
-        } else if (handle.kind === 'note') {
-          // Notes: edge-pin uses bbox (must match computeRawGeometryBounds which uses bbox)
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            const { dx, dy } = computeEdgePinTranslation(
-              bbox.minX,
-              bbox.maxX,
-              bbox.minY,
-              bbox.maxY,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            objBounds = translateBounds(bbox, dx, dy);
-          } else {
-            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-          }
-        } else if (handle.kind === 'image') {
-          const frame = getFrame(handle.y);
-          if (!frame) continue;
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            const { dx, dy } = computeEdgePinTranslation(
-              frame[0],
-              frame[0] + frame[2],
-              frame[1],
-              frame[1] + frame[3],
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            objBounds = translateBounds(frameTupleToWorldBounds(frame), dx, dy);
-          } else {
-            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-          }
-        } else if (handle.kind === 'bookmark') {
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-            const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
-            objBounds = translateBounds(bbox, dx, dy);
-          } else {
-            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-          }
-        } else {
-          if (selectionKind === 'mixed' && handleKind === 'corner') {
-            objBounds = computeUniformScaleBounds(bbox, originBounds, origin, scaleX, scaleY);
-          } else {
-            objBounds = scaleBoundsAround(bbox, origin, scaleX, scaleY);
-          }
-        }
-
-        combinedBounds = expandEnvelope(combinedBounds, objBounds);
-      }
-
-      if (combinedBounds) {
-        combinedBounds = unionBounds(combinedBounds, bboxBounds);
-        this.transformEnvelope = expandEnvelope(this.transformEnvelope, combinedBounds);
-      }
-    }
-
-    // --- 3. SINGLE INVALIDATION ---
-    if (this.transformEnvelope) {
-      invalidateWorld(this.transformEnvelope);
-    }
-  }
-
-  // --- Commit ---
-
-  private commitTranslate(selectedIds: string[], dx: number, dy: number, topology: ConnectorTopology | null): void {
-    transact(() => {
-      const objects = getObjects();
-      for (const id of selectedIds) {
-        const handle = getHandle(id);
-        if (!handle) continue;
-
-        // Connectors: handled entirely by topology below
-        if (handle.kind === 'connector') continue;
-
-        const yMap = objects.get(id);
-        if (!yMap) continue;
-
-        if (handle.kind === 'stroke') {
-          const points = getPoints(yMap);
-          if (points.length === 0) continue;
-          const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
-          yMap.set('points', newPoints);
-        } else if (handle.kind === 'text' || handle.kind === 'code' || handle.kind === 'note' || handle.kind === 'bookmark') {
-          // Text/code/note/bookmark store position as origin, not frame.
-          const origin = getOrigin(yMap);
-          if (!origin) continue;
-          yMap.set('origin', [origin[0] + dx, origin[1] + dy]);
-        } else {
-          const frame = getFrame(yMap);
-          if (!frame) continue;
-          const [x, y, w, h] = frame;
-          yMap.set('frame', [x + dx, y + dy, w, h]);
-        }
-      }
-
-      // Topology-managed connectors
-      if (topology) {
-        for (const entry of topology.entries) {
-          const yMap = objects.get(entry.connectorId);
-          if (!yMap) continue;
-
-          if (entry.strategy === 'translate') {
-            const newPoints: [number, number][] = entry.originalPoints.map(([x, y]) => [x + dx, y + dy]);
-            yMap.set('points', newPoints);
-            yMap.set('start', newPoints[0]);
-            yMap.set('end', newPoints[newPoints.length - 1]);
-          } else {
-            const points = topology.reroutes.get(entry.connectorId);
-            if (!points || points.length < 2) continue;
-            yMap.set('points', points);
-            yMap.set('start', points[0]);
-            yMap.set('end', points[points.length - 1]);
-          }
-        }
-      }
-    });
-  }
-
-  private commitScale(
-    selectedIds: string[],
-    origin: [number, number],
-    scaleX: number,
-    scaleY: number,
-    handleId: HandleId,
-    selectionKind: SelectionKind,
-    handleKind: HandleKind,
-    originBounds: WorldBounds,
-    topology: ConnectorTopology | null,
-    textReflow: TextReflowState | null,
-    codeReflow: CodeReflowState | null,
-  ): void {
-    transact(() => {
-      const objects = getObjects();
-      for (const id of selectedIds) {
-        const handle = getHandle(id);
-        if (!handle) continue;
-
-        // Connectors: handled entirely by topology below
-        if (handle.kind === 'connector') continue;
-
-        const yMap = objects.get(id);
-        if (!yMap) continue;
-
-        const isStroke = handle.kind === 'stroke';
-
-        // CASE 1: Mixed + side + stroke = TRANSLATE ONLY
-        if (selectionKind === 'mixed' && handleKind === 'side' && isStroke) {
-          const { dx, dy } = computeStrokeTranslation(handle, originBounds, scaleX, scaleY, origin, handleId);
-          const points = getPoints(yMap);
-          if (points.length === 0) continue;
-          const newPoints: [number, number][] = points.map(([x, y]) => [x + dx, y + dy]);
-          yMap.set('points', newPoints);
-          continue;
-        }
-
-        // CASE 2: Stroke scaling (strokesOnly or mixed+corner)
-        // Uses applyUniformScaleToPoints (bbox-center based) to match render preview
-        if (isStroke) {
-          const points = getPoints(yMap);
-          if (points.length === 0) continue;
-          const { points: newPoints, absScale } = applyUniformScaleToPoints(
-            points as [number, number][],
-            handle.bbox,
-            originBounds,
-            origin,
-            scaleX,
-            scaleY,
-          );
-          yMap.set('points', newPoints);
-          yMap.set('width', getWidth(yMap) * absScale);
-          continue;
-        }
-
-        // Text: corner/textOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
-        if (handle.kind === 'text') {
-          if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'textOnly')) {
-            // Uniform scale for corner always + textOnly N/S
-            const textFrame = getTextFrame(handle.id);
-            if (!textFrame) continue;
-
-            const props = getTextProps(yMap);
-            if (!props) continue;
-
-            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-            const rawAbsScale = Math.abs(uniformScale);
-
-            const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-            const effectiveAbsScale = roundedFontSize / props.fontSize;
-
-            const [fx, fy, fw, fh] = textFrame;
-            const cx = fx + fw / 2;
-            const cy = fy + fh / 2;
-            const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-            const nfw = fw * effectiveAbsScale;
-            const nfx = newCx - nfw / 2;
-            const nfy = newCy - (fh * effectiveAbsScale) / 2;
-
-            const newOriginX = nfx + anchorFactor(props.align) * nfw;
-            const newOriginY = nfy + roundedFontSize * getBaselineToTopRatio(props.fontFamily);
-
-            yMap.set('origin', [newOriginX, newOriginY]);
-            yMap.set('fontSize', roundedFontSize);
-
-            if (typeof props.width === 'number') {
-              yMap.set('width', props.width * effectiveAbsScale);
-            }
-          } else if ((handleId === 'e' || handleId === 'w') && textReflow) {
-            const layout = textReflow.layouts.get(handle.id);
-            const reflowOrigin = textReflow.origins.get(handle.id);
-            if (layout && reflowOrigin) {
-              yMap.set('width', layout.boxWidth);
-              yMap.set('origin', reflowOrigin);
-            }
-          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-            // Mixed + N/S: edge-pin translate origin
-            const textFrame = getTextFrame(handle.id);
-            if (!textFrame) continue;
-            const [fx, , fw, fh] = textFrame;
-            const { dy } = computeEdgePinTranslation(
-              fx,
-              fx + fw,
-              textFrame[1],
-              textFrame[1] + fh,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            const curOrigin = getOrigin(yMap);
-            if (curOrigin) {
-              yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
-            }
-          }
-          continue;
-        }
-
-        // Code: corner/codeOnly-N/S = uniform scale, E/W = reflow, mixed-N/S = edge-pin
-        if (handle.kind === 'code') {
-          if (handleKind === 'corner' || ((handleId === 'n' || handleId === 's') && selectionKind === 'codeOnly')) {
-            const codeFrame = getCodeFrame(handle.id);
-            if (!codeFrame) continue;
-            const props = getCodeProps(yMap);
-            if (!props) continue;
-
-            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-            const rawAbsScale = Math.abs(uniformScale);
-            const roundedFontSize = Math.round(props.fontSize * rawAbsScale * 1000) / 1000;
-            const effectiveAbsScale = roundedFontSize / props.fontSize;
-
-            const [fx, fy, fw, fh] = codeFrame;
-            const cx = fx + fw / 2;
-            const cy = fy + fh / 2;
-            const [newCx, newCy] = computePreservedPosition(cx, cy, originBounds, origin, uniformScale);
-
-            const nfw = fw * effectiveAbsScale;
-            const nfx = newCx - nfw / 2;
-            const nfy = newCy - (fh * effectiveAbsScale) / 2;
-
-            yMap.set('origin', [nfx, nfy]);
-            yMap.set('fontSize', roundedFontSize);
-            yMap.set('width', props.width * effectiveAbsScale);
-          } else if ((handleId === 'e' || handleId === 'w') && codeReflow) {
-            const layout = codeReflow.layouts.get(handle.id);
-            const reflowOrigin = codeReflow.origins.get(handle.id);
-            if (layout && reflowOrigin) {
-              yMap.set('width', layout.totalWidth);
-              yMap.set('origin', reflowOrigin);
-            }
-          } else if ((handleId === 'n' || handleId === 's') && selectionKind === 'mixed') {
-            const codeFrame = getCodeFrame(handle.id);
-            if (!codeFrame) continue;
-            const [fx, , fw, fh] = codeFrame;
-            const { dy } = computeEdgePinTranslation(
-              fx,
-              fx + fw,
-              codeFrame[1],
-              codeFrame[1] + fh,
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            const curOrigin = getOrigin(yMap);
-            if (curOrigin) yMap.set('origin', [curOrigin[0], curOrigin[1] + dy]);
-          }
-          continue;
-        }
-
-        // Note scaling: always uniform, except mixed+side = edge-pin translate
-        if (handle.kind === 'note') {
-          const noteProps = getNoteProps(yMap);
-          if (!noteProps) continue;
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            // Edge-pin: use bbox bounds (must match computeRawGeometryBounds which uses bbox for notes)
-            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-            const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
-            yMap.set('origin', [noteProps.origin[0] + dx, noteProps.origin[1] + dy]);
-          } else {
-            // Uniform scale: scale round, origin from bbox-center preservation
-            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-            const rawAbsScale = Math.abs(uniformScale);
-            const roundedScale = Math.round(noteProps.scale * rawAbsScale * 1000) / 1000;
-            const effectiveAbsScale = roundedScale / noteProps.scale;
-
-            // Use bbox center for position preservation (handles are at bbox)
-            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-            const bcx = (bMinX + bMaxX) / 2;
-            const bcy = (bMinY + bMaxY) / 2;
-            const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
-
-            // Derive new origin: offset from bbox center to frame origin is constant ratio
-            const bboxW = bMaxX - bMinX;
-            const bboxH = bMaxY - bMinY;
-            const newBboxW = bboxW * effectiveAbsScale;
-            const newBboxH = bboxH * effectiveAbsScale;
-            const newBMinX = newBcx - newBboxW / 2;
-            const newBMinY = newBcy - newBboxH / 2;
-            const oxOff = noteProps.origin[0] - bMinX;
-            const oyOff = noteProps.origin[1] - bMinY;
-            const newOriginX = newBMinX + oxOff * effectiveAbsScale;
-            const newOriginY = newBMinY + oyOff * effectiveAbsScale;
-
-            yMap.set('origin', [newOriginX, newOriginY]);
-            yMap.set('scale', roundedScale);
-          }
-          continue;
-        }
-
-        // Image scaling: always uniform, except mixed+side = edge-pin translate
-        if (handle.kind === 'image') {
-          const frame = getFrame(yMap);
-          if (!frame) continue;
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            const { dx, dy } = computeEdgePinTranslation(
-              frame[0],
-              frame[0] + frame[2],
-              frame[1],
-              frame[1] + frame[3],
-              originBounds,
-              scaleX,
-              scaleY,
-              origin,
-              handleId,
-            );
-            yMap.set('frame', [frame[0] + dx, frame[1] + dy, frame[2], frame[3]]);
-          } else {
-            yMap.set('frame', applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY));
-          }
-          continue;
-        }
-
-        // Bookmark scaling: uniform, except mixed+side = edge-pin translate
-        if (handle.kind === 'bookmark') {
-          const bkOrigin = getOrigin(yMap);
-          if (!bkOrigin) continue;
-          const bkScale = (yMap.get('scale') as number) ?? 1;
-          if (selectionKind === 'mixed' && handleKind === 'side') {
-            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-            const { dx, dy } = computeEdgePinTranslation(bMinX, bMaxX, bMinY, bMaxY, originBounds, scaleX, scaleY, origin, handleId);
-            yMap.set('origin', [bkOrigin[0] + dx, bkOrigin[1] + dy]);
-          } else {
-            const uniformScale = computeUniformScaleNoThreshold(scaleX, scaleY);
-            const rawAbsScale = Math.abs(uniformScale);
-            const roundedScale = Math.round(bkScale * rawAbsScale * 1000) / 1000;
-            const effectiveAbsScale = roundedScale / bkScale;
-
-            const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
-            const bcx = (bMinX + bMaxX) / 2;
-            const bcy = (bMinY + bMaxY) / 2;
-            const [newBcx, newBcy] = computePreservedPosition(bcx, bcy, originBounds, origin, uniformScale);
-
-            const bboxW = bMaxX - bMinX;
-            const bboxH = bMaxY - bMinY;
-            const newBboxW = bboxW * effectiveAbsScale;
-            const newBboxH = bboxH * effectiveAbsScale;
-            const newBMinX = newBcx - newBboxW / 2;
-            const newBMinY = newBcy - newBboxH / 2;
-            const oxOff = bkOrigin[0] - bMinX;
-            const oyOff = bkOrigin[1] - bMinY;
-            const newOriginX = newBMinX + oxOff * effectiveAbsScale;
-            const newOriginY = newBMinY + oyOff * effectiveAbsScale;
-
-            yMap.set('origin', [newOriginX, newOriginY]);
-            yMap.set('scale', roundedScale);
-          }
-          continue;
-        }
-
-        // CASE 3: Shape scaling
-        const frame = getFrame(yMap);
-        if (!frame) continue;
-
-        if (selectionKind === 'mixed' && handleKind === 'corner') {
-          const newFrame = applyUniformScaleToFrame(frame, originBounds, origin, scaleX, scaleY);
-          yMap.set('frame', newFrame);
-        } else {
-          const newFrame = applyTransformToFrame(frame, { kind: 'scale', origin, scaleX, scaleY });
-          yMap.set('frame', newFrame);
-        }
-      }
-
-      // Topology-managed connectors (reroutes only — no translateEntries in scale)
-      if (topology) {
-        for (const entry of topology.entries) {
-          if (entry.strategy !== 'reroute') continue;
-          const points = topology.reroutes.get(entry.connectorId);
-          if (!points || points.length < 2) continue;
-          const yMap = objects.get(entry.connectorId);
-          if (!yMap) continue;
-          yMap.set('points', points);
-          yMap.set('start', points[0]);
-          yMap.set('end', points[points.length - 1]);
-        }
-      }
-    });
+    getController().beginTranslate(store.selectedIdSet);
+    store.beginTranslate();
   }
 
   /**
@@ -1538,7 +760,9 @@ export class SelectTool implements PointerTool {
 
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
-    const marqueeRect = pointsToWorldBounds(marquee.anchor, marquee.current);
+    const marqueeBBox = pointsToBBox(marquee.anchor, marquee.current);
+    // WorldBounds-compatible view for spatial index + objectIntersectsRect (external systems)
+    const marqueeRect = { minX: marqueeBBox[0], minY: marqueeBBox[1], maxX: marqueeBBox[2], maxY: marqueeBBox[3] };
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
     const results = getSpatialIndex().query(marqueeRect);

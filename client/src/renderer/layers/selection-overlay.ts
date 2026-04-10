@@ -221,12 +221,8 @@ function drawObjectHighlights(
  *
  * Darker blue fill with solid blue stroke.
  */
-function drawMarqueeRect(
-  ctx: CanvasRenderingContext2D,
-  marqueeRect: { minX: number; minY: number; maxX: number; maxY: number },
-  scale: number,
-): void {
-  const { minX, minY, maxX, maxY } = marqueeRect;
+function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: [number, number, number, number], scale: number): void {
+  const [minX, minY, maxX, maxY] = marqueeRect;
 
   // Darker fill - visible tint
   ctx.fillStyle = SELECTION_STYLE.PRIMARY_FILL;
@@ -246,11 +242,11 @@ function drawMarqueeRect(
  */
 function drawSelectionBoxAndHandles(
   ctx: CanvasRenderingContext2D,
-  selectionBounds: { minX: number; minY: number; maxX: number; maxY: number },
+  selectionBounds: [number, number, number, number],
   handles: { id: HandleId; x: number; y: number }[] | null,
   scale: number,
 ): void {
-  const { minX, minY, maxX, maxY } = selectionBounds;
+  const [minX, minY, maxX, maxY] = selectionBounds;
 
   // Selection box stroke
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;

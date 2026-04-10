@@ -13,9 +13,9 @@
  */
 
 import { getHandle } from '@/runtime/room-runtime';
-import type { FrameTuple, WorldBounds } from '../types/geometry';
+import type { FrameTuple, BBoxTuple } from '../types/geometry';
 import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, type StoredAnchor } from '../accessors';
-import { computeConnectorBBoxFromPoints, bboxToBounds } from '../geometry/bbox';
+import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { getTextFrame } from '../text/text-system';
 import { getCodeFrame } from '../code/code-system';
 import { getBookmarkFrame } from '../bookmark/bookmark-render';
@@ -41,7 +41,7 @@ export interface RerouteResult {
   /** Routed path points */
   points: [number, number][];
   /** Bounding box of the routed path (with arrow/stroke padding) */
-  bbox: WorldBounds;
+  bbox: BBoxTuple;
 }
 
 /**
@@ -88,7 +88,7 @@ export function rerouteConnector(
   if (connectorType === 'straight') {
     const straight = computeStraightRoute(startResolved, endResolved);
     const bboxTuple = computeConnectorBBoxFromPoints(straight.points, yMap);
-    return { points: straight.points, bbox: bboxToBounds(bboxTuple) };
+    return { points: straight.points, bbox: bboxTuple };
   }
 
   // Resolve directions based on endpoint configuration
@@ -106,8 +106,7 @@ export function rerouteConnector(
   );
 
   // Compute bbox from routed points (reads width/cap from Y.map)
-  const bboxTuple = computeConnectorBBoxFromPoints(result.points, yMap);
-  const bbox = bboxToBounds(bboxTuple);
+  const bbox = computeConnectorBBoxFromPoints(result.points, yMap);
 
   return { points: result.points, bbox };
 }
