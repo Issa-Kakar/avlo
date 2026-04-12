@@ -55,8 +55,8 @@ import {
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { translateBBox } from '@/core/geometry/bounds';
-import { computeConnectorTopology, type ConnectorTopology, type EndpointSpec } from '@/stores/selection-store';
-import type { KindCounts as SelectionKindCounts } from './selection-utils';
+import { computeConnectorTopology } from '@/stores/selection-store';
+import type { ConnectorTopology, EndpointSpec, KindCounts as SelectionKindCounts } from './types';
 
 // ============================================================================
 // Structural Traits — field-set atoms for generic function signatures

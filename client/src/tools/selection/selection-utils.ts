@@ -15,108 +15,21 @@ import {
   getOutputVisible,
   hasLabel,
 } from '@/core/accessors';
-import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
+import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
 import { getTextFrame, getInlineStyles } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import { getCurrentSnapshot } from '@/runtime/room-runtime';
-import type { SelectionKind } from '@/stores/selection-store';
+import type { SelectionKind, KindCounts, SelectedStyles, InlineStyles } from './types';
+import { EMPTY_STYLES } from './types';
 // Runtime-only import — circular dep is safe (only accessed inside function bodies, not at module eval)
 import { useSelectionStore } from '@/stores/selection-store';
 
-// === Types ===
+// Re-export for consumers that still import shared types from selection-utils.
+export type { KindCounts, SelectedStyles, InlineStyles, SelectionKind } from './types';
+export { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from './types';
 
-export interface KindCounts {
-  strokes: number;
-  shapes: number;
-  text: number;
-  connectors: number;
-  code: number;
-  notes: number;
-  images: number;
-  bookmarks: number;
-  total: number;
-}
-
-export interface SelectedStyles {
-  /** First object's stroke/border color. Used by all kinds. */
-  color: string;
-  /** Multiple different stroke colors detected. Used by strokes, shapes, connectors. */
-  colorMixed: boolean;
-  /** Second stroke color for split indicator. Only set when colorMixed. */
-  colorSecond: string | null;
-  /** Uniform stroke width, null if mixed. Used by strokes, shapes, connectors. */
-  width: number | null;
-  /** First shape's fill color, null = no fill. Used by shapesOnly. Kept even when mixed. */
-  fillColor: string | null;
-  /** Multiple different fill colors detected. Used by shapesOnly. */
-  fillColorMixed: boolean;
-  /** Second fill color for split indicator. Only set when fillColorMixed. */
-  fillColorSecond: string | null;
-  /** Uniform shape type, 'text' for textOnly, null if mixed. Used by shapesOnly, textOnly. */
-  shapeType: string | null;
-  /** First text object's fontSize (rounded). Used by textOnly. */
-  fontSize: number | null;
-  /** Uniform text alignment, null if mixed. Used by textOnly, notesOnly. */
-  textAlign: TextAlign | null;
-  /** Uniform vertical alignment, null if mixed. Used by notesOnly. */
-  textAlignV: TextAlignV | null;
-  /** First text object's font family. Used by textOnly, shapesOnly. */
-  fontFamily: FontFamily | null;
-  /** Text color for text objects or shape labels. Used by textOnly, shapesOnly. */
-  labelColor: string | null;
-  /** Code block language. Used by codeOnly. */
-  codeLanguage: CodeLanguage | null;
-  /** Code block header visibility. Used by codeOnly. */
-  codeHeaderVisible: boolean | null;
-  /** Code block output visibility. Used by codeOnly. */
-  codeOutputVisible: boolean | null;
-}
-
-// === Constants ===
-
-export const EMPTY_STYLES: SelectedStyles = {
-  color: '#262626',
-  colorMixed: false,
-  colorSecond: null,
-  width: null,
-  fillColor: null,
-  fillColorMixed: false,
-  fillColorSecond: null,
-  shapeType: null,
-  fontSize: null,
-  textAlign: null,
-  textAlignV: null,
-  fontFamily: null,
-  labelColor: null,
-  codeLanguage: null,
-  codeHeaderVisible: null,
-  codeOutputVisible: null,
-};
-export const EMPTY_KIND_COUNTS: KindCounts = {
-  strokes: 0,
-  shapes: 0,
-  text: 0,
-  connectors: 0,
-  code: 0,
-  notes: 0,
-  images: 0,
-  bookmarks: 0,
-  total: 0,
-};
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
-
-export interface InlineStyles {
-  bold: boolean;
-  italic: boolean;
-  highlightColor: string | null;
-}
-
-export const EMPTY_INLINE_STYLES: InlineStyles = {
-  bold: false,
-  italic: false,
-  highlightColor: null,
-};
 
 // === Selection Composition ===
 

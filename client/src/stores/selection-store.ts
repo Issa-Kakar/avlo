@@ -15,114 +15,36 @@ import {
   computeUniformInlineStyles,
   stylesEqual,
   inlineStylesEqual,
-  EMPTY_STYLES,
-  EMPTY_KIND_COUNTS,
   EMPTY_ID_SET,
-  EMPTY_INLINE_STYLES,
-  type KindCounts,
-  type SelectedStyles,
-  type InlineStyles,
 } from '@/tools/selection/selection-utils';
+import type {
+  SelectionKind,
+  SelectionMode,
+  KindCounts,
+  SelectedStyles,
+  InlineStyles,
+  TransformState,
+  MarqueeState,
+  ConnectorTopology,
+  ConnectorTopologyEntry,
+  EndpointSpec,
+} from '@/tools/selection/types';
+import { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from '@/tools/selection/types';
 
-// Re-export for backward compat (SelectTool, ContextMenuController, etc.)
+// Re-export for backward compat (external consumers: SelectTool, ContextMenu, selection-overlay, etc.)
 export { computeSelectionBounds } from '@/tools/selection/selection-utils';
-export type { KindCounts, SelectedStyles, InlineStyles } from '@/tools/selection/selection-utils';
-
-// Selection composition types for context-aware transforms
-export type SelectionKind =
-  | 'none'
-  | 'strokesOnly'
-  | 'shapesOnly'
-  | 'textOnly'
-  | 'codeOnly'
-  | 'notesOnly'
-  | 'connectorsOnly'
-  | 'imagesOnly'
-  | 'bookmarksOnly'
-  | 'mixed';
-
-// Interaction mode: determines what UI affordances are shown
-export type SelectionMode = 'none' | 'standard' | 'connector';
-
-// === Connector Topology ===
-
-/**
- * Per-endpoint override spec:
- *   null   = canonical (no override — endpoint stays at Y.Map stored value)
- *   string = frame override (value is the shapeId whose frame to transform)
- *   true   = free position override (apply transform to original position)
- */
-export type EndpointSpec = string | true | null;
-
-export interface ConnectorTopologyEntry {
-  connectorId: string;
-  strategy: 'translate' | 'reroute';
-  originalPoints: [number, number][];
-  originalBbox: BBoxTuple;
-  translatedPoints: [number, number][]; // pre-allocated, mutated per-frame (translate only)
-  startSpec: EndpointSpec; // only meaningful for 'reroute'
-  endSpec: EndpointSpec; // only meaningful for 'reroute'
-}
-
-/**
- * Connector topology computed once at transform begin.
- * Store-owned: entries/sets/maps are immutable after construction.
- * Mutable caches (reroutes, prevBboxes) are .set() per frame with no new allocations.
- */
-export interface ConnectorTopology {
-  /** All topology entries (translate + reroute) */
-  entries: ConnectorTopologyEntry[];
-  /** O(1) lookup: is this connector translateOnly? */
-  translateIdSet: Set<string>;
-  /** Original frames of selected shapes (for frame overrides) */
-  originalFrames: Map<string, FrameTuple>;
-
-  /** connectorId → rerouted points (mutable per-frame cache) */
-  reroutes: Map<string, [number, number][] | null>;
-  /** connectorId → previous frame bbox (mutable per-frame cache) */
-  prevBboxes: Map<string, BBoxTuple>;
-}
-
-// === Transform Types ===
-
-export interface TranslateTransform {
-  kind: 'translate';
-}
-
-export interface ScaleTransform {
-  kind: 'scale';
-}
-
-/**
- * Endpoint drag transform: dragging a single connector endpoint.
- * Fundamentally different from translate/scale - operates on ONE connector, ONE endpoint.
- */
-export interface EndpointDragTransform {
-  kind: 'endpointDrag';
-  connectorId: string;
-  endpoint: 'start' | 'end';
-
-  /** Current world position (snapped or free cursor) */
-  currentPosition: [number, number];
-  /** Current snap target (for commit and overlay rendering) */
-  currentSnap: SnapTarget | null;
-
-  /** Rerouted path (updated on each move via rerouteConnector) */
-  routedPoints: [number, number][] | null;
-  /** Bbox of routedPoints (for dirty rect) */
-  routedBbox: BBoxTuple | null;
-
-  /** Previous frame's bbox for dirty rect invalidation (seeded from original bbox) */
-  prevBbox: BBoxTuple;
-}
-
-export type TransformState = { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform;
-
-export interface MarqueeState {
-  active: boolean;
-  anchor: [number, number] | null; // World coords
-  current: [number, number] | null; // World coords
-}
+export type {
+  SelectionKind,
+  SelectionMode,
+  KindCounts,
+  SelectedStyles,
+  InlineStyles,
+  TransformState,
+  MarqueeState,
+  ConnectorTopology,
+  ConnectorTopologyEntry,
+  EndpointSpec,
+} from '@/tools/selection/types';
 
 // === State Interface ===
 
