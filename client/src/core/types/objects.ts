@@ -6,7 +6,8 @@ import type { BBoxTuple, FrameTuple } from './geometry';
 // shape = geometric shapes (ALWAYS polyline: rect/ellipse/line)
 // text = text blocks (frame-based positioning)
 // connector = connection lines/arrows (ALWAYS polyline)
-export type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' | 'note' | 'bookmark';
+export const OBJECT_KINDS = ['stroke', 'shape', 'text', 'connector', 'code', 'image', 'note', 'bookmark'] as const;
+export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
 // Lightweight handle pointing to Y.Map
 export interface ObjectHandle {

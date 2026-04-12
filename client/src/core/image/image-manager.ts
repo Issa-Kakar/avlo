@@ -361,7 +361,7 @@ export function manageImageViewport(): void {
 
   // During scale transforms, force full-res for selected images (crisp preview)
   const { transform: selTransform, kindCounts, selectedIdSet } = useSelectionStore.getState();
-  if (selTransform.kind === 'scale' && kindCounts.images > 0) {
+  if (selTransform.kind === 'scale' && kindCounts.image > 0) {
     for (const id of selectedIdSet) {
       const handle = getHandle(id);
       if (!handle || handle.kind !== 'image') continue;

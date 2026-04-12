@@ -304,10 +304,10 @@ function ContextMenuBar() {
   const effectiveKind: SelectionKind =
     editing !== null && kind === 'none'
       ? getHandleKind(editing) === 'note'
-        ? 'notesOnly'
-        : 'textOnly'
+        ? 'note'
+        : 'text'
       : codeEditing !== null && kind === 'none'
-        ? 'codeOnly'
+        ? 'code'
         : kind;
 
   return (
@@ -319,13 +319,13 @@ function ContextMenuBar() {
         </>
       ) : (
         <>
-          {effectiveKind === 'strokesOnly' && (
+          {effectiveKind === 'stroke' && (
             <>
               <StrokeStyleGroup />
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'shapesOnly' && (
+          {effectiveKind === 'shape' && (
             <>
               <ShapeTypeDropdown mode="shapes" />
               <div className="ctx-divider" />
@@ -333,7 +333,7 @@ function ContextMenuBar() {
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'textOnly' && (
+          {effectiveKind === 'text' && (
             <>
               <ShapeTypeDropdown mode="text" />
               <div className="ctx-divider" />
@@ -341,7 +341,7 @@ function ContextMenuBar() {
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'notesOnly' && (
+          {effectiveKind === 'note' && (
             <>
               <ShapeTypeDropdown mode="note" />
               <div className="ctx-divider" />
@@ -349,19 +349,19 @@ function ContextMenuBar() {
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'codeOnly' && (
+          {effectiveKind === 'code' && (
             <>
               <CodeStyleGroup />
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'connectorsOnly' && (
+          {effectiveKind === 'connector' && (
             <>
               <ConnectorGroup />
               <div className="ctx-divider" />
             </>
           )}
-          {effectiveKind === 'imagesOnly' && (
+          {effectiveKind === 'image' && (
             // Images: no style controls, just the common actions (delete)
             <></>
           )}

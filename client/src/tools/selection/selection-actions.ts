@@ -54,8 +54,8 @@ export function setSelectedColor(color: string): void {
 
 export function setSelectedFillColor(fillColor: string | null): void {
   const { selectedIds, selectionKind, textEditingId } = useSelectionStore.getState();
-  const isNote = selectionKind === 'notesOnly';
-  const isText = !isNote && (textEditingId !== null || selectionKind === 'textOnly');
+  const isNote = selectionKind === 'note';
+  const isText = !isNote && (textEditingId !== null || selectionKind === 'text');
   const ids = isText || isNote ? getTextIds() : selectedIds;
   if (ids.length === 0) return;
 
@@ -99,7 +99,7 @@ export function setSelectedWidth(width: number): void {
   });
 
   const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'connectorsOnly') {
+  if (selectionKind === 'connector') {
     useDeviceUIStore.getState().setConnectorSize(width as ConnectorSizePreset);
   } else {
     useDeviceUIStore.getState().setDrawingSize(width as SizePreset);
@@ -269,7 +269,7 @@ export function setSelectedFontFamily(family: FontFamily): void {
     }
   });
   const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'notesOnly') {
+  if (selectionKind === 'note') {
     useDeviceUIStore.getState().setNoteFontFamily(family);
   } else {
     useDeviceUIStore.getState().setFontFamily(family);
@@ -318,9 +318,9 @@ export function setSelectedTextAlign(align: TextAlign): void {
   });
 
   const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'notesOnly') {
+  if (selectionKind === 'note') {
     useDeviceUIStore.getState().setNoteAlign(align);
-  } else if (selectionKind === 'shapesOnly') {
+  } else if (selectionKind === 'shape') {
     useDeviceUIStore.getState().setShapeAlign(align);
   } else {
     useDeviceUIStore.getState().setTextAlign(align);
@@ -342,9 +342,9 @@ export function setSelectedTextAlignV(alignV: TextAlignV): void {
   });
 
   const { selectionKind } = useSelectionStore.getState();
-  if (selectionKind === 'notesOnly') {
+  if (selectionKind === 'note') {
     useDeviceUIStore.getState().setNoteAlignV(alignV);
-  } else if (selectionKind === 'shapesOnly') {
+  } else if (selectionKind === 'shape') {
     useDeviceUIStore.getState().setShapeAlignV(alignV);
   }
   useSelectionStore.getState().refreshStyles();

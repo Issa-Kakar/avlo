@@ -1,4 +1,5 @@
-import type { ObjectHandle } from '@/core/types/objects';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { OBJECT_KINDS } from '@/core/types/objects';
 import type { BBoxTuple } from '@/core/types/geometry';
 import {
   getColor,
@@ -19,7 +20,7 @@ import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
 import { getTextFrame, getInlineStyles } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
-import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import { getCurrentSnapshot, getHandle } from '@/runtime/room-runtime';
 import type { SelectionKind, KindCounts, SelectedStyles, InlineStyles } from './types';
 import { EMPTY_STYLES } from './types';
 // Runtime-only import — circular dep is safe (only accessed inside function bodies, not at module eval)
@@ -39,84 +40,40 @@ export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
  */
 export function computeSelectionComposition(ids: string[]) {
   const snapshot = getCurrentSnapshot();
-  let strokes = 0,
-    shapes = 0,
-    text = 0,
-    connectors = 0,
-    code = 0,
-    notes = 0,
-    images = 0,
-    bookmarks = 0;
+  const counts: Record<ObjectKind, number> = {
+    stroke: 0,
+    shape: 0,
+    text: 0,
+    connector: 0,
+    code: 0,
+    image: 0,
+    note: 0,
+    bookmark: 0,
+  };
   const selectedIdSet = new Set<string>();
 
   for (const id of ids) {
     const handle = snapshot.objectsById.get(id);
     if (!handle) continue;
     selectedIdSet.add(id);
-    switch (handle.kind) {
-      case 'stroke':
-        strokes++;
-        break;
-      case 'shape':
-        shapes++;
-        break;
-      case 'text':
-        text++;
-        break;
-      case 'connector':
-        connectors++;
-        break;
-      case 'code':
-        code++;
-        break;
-      case 'note':
-        notes++;
-        break;
-      case 'image':
-        images++;
-        break;
-      case 'bookmark':
-        bookmarks++;
-        break;
+    counts[handle.kind]++;
+  }
+
+  let nonZero = 0;
+  let firstNonZero: ObjectKind | null = null;
+  for (const k of OBJECT_KINDS) {
+    if (counts[k] > 0) {
+      nonZero++;
+      if (!firstNonZero) firstNonZero = k;
     }
   }
 
-  const kindCounts: KindCounts = {
-    strokes,
-    shapes,
-    text,
-    connectors,
-    code,
-    notes,
-    images,
-    bookmarks,
-    total: selectedIdSet.size,
-  };
+  const selectionKind: SelectionKind = nonZero === 0 ? 'none' : nonZero > 1 ? 'mixed' : firstNonZero!;
 
-  const nonZero =
-    (strokes > 0 ? 1 : 0) +
-    (shapes > 0 ? 1 : 0) +
-    (text > 0 ? 1 : 0) +
-    (connectors > 0 ? 1 : 0) +
-    (code > 0 ? 1 : 0) +
-    (notes > 0 ? 1 : 0) +
-    (images > 0 ? 1 : 0) +
-    (bookmarks > 0 ? 1 : 0);
-
-  let selectionKind: SelectionKind;
-  if (nonZero === 0) selectionKind = 'none';
-  else if (nonZero > 1) selectionKind = 'mixed';
-  else if (strokes > 0) selectionKind = 'strokesOnly';
-  else if (shapes > 0) selectionKind = 'shapesOnly';
-  else if (text > 0) selectionKind = 'textOnly';
-  else if (code > 0) selectionKind = 'codeOnly';
-  else if (notes > 0) selectionKind = 'notesOnly';
-  else if (images > 0) selectionKind = 'imagesOnly';
-  else if (bookmarks > 0) selectionKind = 'bookmarksOnly';
-  else selectionKind = 'connectorsOnly';
+  const kindCounts: KindCounts = { ...counts, total: selectedIdSet.size };
 
   const mode =
-    selectedIdSet.size === 1 && selectionKind === 'connectorsOnly'
+    selectedIdSet.size === 1 && selectionKind === 'connector'
       ? ('connector' as const)
       : selectedIdSet.size > 0
         ? ('standard' as const)
@@ -159,6 +116,31 @@ export function computeSelectionBounds(): BBoxTuple | null {
   return result;
 }
 
+/**
+ * Union of scale-source bboxes for the current selection.
+ * Text uses layout frame (italic overhangs make bbox differ from visual frame).
+ * Zero-arg: reads selectedIds from the selection store.
+ */
+export function computeTransformBoundsForScale(): BBoxTuple | null {
+  const { selectedIds } = useSelectionStore.getState();
+  if (selectedIds.length === 0) return null;
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const id of selectedIds) {
+    const handle = getHandle(id);
+    if (!handle) continue;
+    const b = handle.kind === 'text' ? frameToBbox(getTextFrame(id) ?? [0, 0, 0, 0]) : handle.bbox;
+    if (b[0] < minX) minX = b[0];
+    if (b[1] < minY) minY = b[1];
+    if (b[2] > maxX) maxX = b[2];
+    if (b[3] > maxY) maxY = b[3];
+  }
+  if (!isFinite(minX)) return null;
+  return [minX, minY, maxX, maxY];
+}
+
 // === Style Computation ===
 
 /**
@@ -167,10 +149,10 @@ export function computeSelectionBounds(): BBoxTuple | null {
  * Single-pass with early break once all fields are resolved.
  */
 export function computeStyles(ids: string[], kind: SelectionKind, objectsById: ReadonlyMap<string, ObjectHandle>): SelectedStyles {
-  if (kind === 'none' || kind === 'mixed' || kind === 'imagesOnly' || kind === 'bookmarksOnly' || ids.length === 0) return EMPTY_STYLES;
+  if (kind === 'none' || kind === 'mixed' || kind === 'image' || kind === 'bookmark' || ids.length === 0) return EMPTY_STYLES;
 
   // Code blocks: track fontSize + language + chrome visibility
-  if (kind === 'codeOnly') {
+  if (kind === 'code') {
     for (const id of ids) {
       const handle = objectsById.get(id);
       if (!handle || handle.kind !== 'code') continue;
@@ -186,7 +168,7 @@ export function computeStyles(ids: string[], kind: SelectionKind, objectsById: R
   }
 
   // Notes: track fillColor, fontFamily, textAlign, textAlignV (fontSize is derived, not stored)
-  if (kind === 'notesOnly') {
+  if (kind === 'note') {
     let firstFill: string | null = null;
     let firstFontFamily: FontFamily | null = null;
     let firstAlign: TextAlign | null = null;
@@ -220,11 +202,11 @@ export function computeStyles(ids: string[], kind: SelectionKind, objectsById: R
     };
   }
 
-  const trackWidth = kind !== 'textOnly';
-  const trackFill = kind === 'shapesOnly' || kind === 'textOnly';
-  const trackShapeType = kind === 'shapesOnly';
-  const trackTextAlign = kind === 'textOnly' || kind === 'shapesOnly';
-  const needsTextFields = kind === 'textOnly' || kind === 'shapesOnly';
+  const trackWidth = kind !== 'text';
+  const trackFill = kind === 'shape' || kind === 'text';
+  const trackShapeType = kind === 'shape';
+  const trackTextAlign = kind === 'text' || kind === 'shape';
+  const needsTextFields = kind === 'text' || kind === 'shape';
 
   let firstColor: string | null = null;
   let colorMixed = false;
@@ -288,7 +270,7 @@ export function computeStyles(ids: string[], kind: SelectionKind, objectsById: R
         }
         textFieldsSet = true;
       }
-    } else if (kind === 'shapesOnly' && handle.kind === 'shape' && hasLabel(handle.y)) {
+    } else if (kind === 'shape' && handle.kind === 'shape' && hasLabel(handle.y)) {
       // Track alignment mismatch across labeled shapes
       if (!alignMixed && getAlign(handle.y, 'center') !== firstAlign) alignMixed = true;
       if (!alignVMixed && getAlignV(handle.y) !== firstAlignV) alignVMixed = true;
@@ -312,10 +294,10 @@ export function computeStyles(ids: string[], kind: SelectionKind, objectsById: R
     fillColor: trackFill ? (firstFill ?? null) : null,
     fillColorMixed: trackFill && fillMixed,
     fillColorSecond: trackFill && fillMixed ? fillSecond : null,
-    shapeType: trackShapeType ? (shapeTypeMixed ? null : firstShapeType) : kind === 'textOnly' ? 'text' : null,
+    shapeType: trackShapeType ? (shapeTypeMixed ? null : firstShapeType) : kind === 'text' ? 'text' : null,
     fontSize: needsTextFields ? firstFontSize : null,
     textAlign: trackTextAlign ? (alignMixed ? null : firstAlign) : null,
-    textAlignV: kind === 'shapesOnly' ? (alignVMixed ? null : firstAlignV) : null,
+    textAlignV: kind === 'shape' ? (alignVMixed ? null : firstAlignV) : null,
     fontFamily: needsTextFields ? firstFontFamily : null,
     labelColor: needsTextFields ? firstLabelColor : null,
     codeLanguage: null,

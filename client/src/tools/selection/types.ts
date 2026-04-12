@@ -3,7 +3,9 @@
  * Single home for SelectionKind, TransformState, ConnectorTopology, SelectedStyles, etc.
  */
 
-import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { ObjectKind } from '@/core/types/objects';
+import type { HandleId } from '@/core/types/handles';
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
 import type { SnapTarget } from '@/core/connectors/types';
 
@@ -11,42 +13,30 @@ import type { SnapTarget } from '@/core/connectors/types';
 // Selection Composition
 // ============================================================================
 
-export type SelectionKind =
-  | 'none'
-  | 'strokesOnly'
-  | 'shapesOnly'
-  | 'textOnly'
-  | 'codeOnly'
-  | 'notesOnly'
-  | 'connectorsOnly'
-  | 'imagesOnly'
-  | 'bookmarksOnly'
-  | 'mixed';
+/**
+ * Selection kind: the ObjectKind of a homogeneous selection, or 'none' / 'mixed'.
+ * Replaces the previous `'strokesOnly' | 'shapesOnly' | ...` encoding.
+ */
+export type SelectionKind = ObjectKind | 'none' | 'mixed';
 
 /** Interaction paradigm: determines UI affordances. */
 export type SelectionMode = 'none' | 'standard' | 'connector';
 
-export interface KindCounts {
-  strokes: number;
-  shapes: number;
-  text: number;
-  connectors: number;
-  code: number;
-  notes: number;
-  images: number;
-  bookmarks: number;
-  total: number;
-}
+/**
+ * Per-kind selection counts, keyed by `ObjectKind`.
+ * Matches the selectionKind taxonomy exactly — no plural aliases.
+ */
+export type KindCounts = Record<ObjectKind, number> & { total: number };
 
 export const EMPTY_KIND_COUNTS: KindCounts = {
-  strokes: 0,
-  shapes: 0,
+  stroke: 0,
+  shape: 0,
   text: 0,
-  connectors: 0,
+  connector: 0,
   code: 0,
-  notes: 0,
-  images: 0,
-  bookmarks: 0,
+  image: 0,
+  note: 0,
+  bookmark: 0,
   total: 0,
 };
 
@@ -130,6 +120,9 @@ export interface TranslateTransform {
 
 export interface ScaleTransform {
   kind: 'scale';
+  handleId: HandleId;
+  selBounds: BBoxTuple;
+  origin: Point;
 }
 
 /**

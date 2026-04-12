@@ -1,22 +1,22 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/tools/types';
-import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
+import type { ObjectKind } from '@/core/types/objects';
+import type { BBoxTuple } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
-import { getObjectsById, getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
+import { getObjectsById, getHandle } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getFrame, getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
-import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import {
   computeSelectionComposition,
   computeStyles,
   computeUniformInlineStyles,
+  computeTransformBoundsForScale,
   stylesEqual,
   inlineStylesEqual,
   EMPTY_ID_SET,
 } from '@/tools/selection/selection-utils';
+import { getController } from '@/tools/selection/transform';
+import { scaleOrigin } from '@/core/types/handles';
 import type {
   SelectionKind,
   SelectionMode,
@@ -25,9 +25,6 @@ import type {
   InlineStyles,
   TransformState,
   MarqueeState,
-  ConnectorTopology,
-  ConnectorTopologyEntry,
-  EndpointSpec,
 } from '@/tools/selection/types';
 import { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from '@/tools/selection/types';
 
@@ -89,7 +86,9 @@ export interface SelectionActions {
 
   // Transform lifecycle
   beginTranslate: () => void;
-  beginScale: () => void;
+  updateTranslate: (dx: number, dy: number) => void;
+  beginScale: (handleId: HandleId) => void;
+  updateScale: (sx: number, sy: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
@@ -127,155 +126,8 @@ export interface SelectionActions {
 
 export type SelectionStore = SelectionState & SelectionActions;
 
-// === Connector Topology Builder ===
-
-/**
- * Compute connector topology at transform begin.
- * Pure function: determines which connectors need rerouting vs translate,
- * computes per-endpoint specs, and returns ConnectorTopology.
- *
- * Strategy:
- *   Translate: both endpoints move → translate; else → reroute
- *   Scale: always → reroute
- *
- * EndpointSpec per endpoint:
- *   Anchored + shape selected → shapeId (string)
- *   Free + connector selected → true
- *   Otherwise → null (canonical)
- */
-export function computeConnectorTopology(transformKind: 'translate' | 'scale', selectedIds: string[]): ConnectorTopology | null {
-  const selectedSet = new Set(selectedIds);
-
-  const entries: ConnectorTopologyEntry[] = [];
-  const translateIdSet = new Set<string>();
-  const originalFrames = new Map<string, FrameTuple>();
-
-  const visited = new Set<string>();
-
-  const processConnector = (connId: string, isSelected: boolean) => {
-    if (visited.has(connId)) return;
-    visited.add(connId);
-
-    const connHandle = getHandle(connId);
-    if (!connHandle || connHandle.kind !== 'connector') return;
-
-    const startAnchor = getStartAnchor(connHandle.y);
-    const endAnchor = getEndAnchor(connHandle.y);
-
-    // Determine if each endpoint moves
-    const startMoves = isSelected ? !startAnchor || selectedSet.has(startAnchor.id) : !!startAnchor && selectedSet.has(startAnchor.id);
-    const endMoves = isSelected ? !endAnchor || selectedSet.has(endAnchor.id) : !!endAnchor && selectedSet.has(endAnchor.id);
-
-    if (!startMoves && !endMoves) return;
-
-    const points = getPoints(connHandle.y);
-    const originalPoints: [number, number][] =
-      points.length > 0
-        ? (points as [number, number][])
-        : [(getStart(connHandle.y) ?? [0, 0]) as [number, number], (getEnd(connHandle.y) ?? [0, 0]) as [number, number]];
-    const originalBbox = [...connHandle.bbox] as BBoxTuple;
-
-    // Determine strategy
-    if (transformKind === 'translate' && startMoves && endMoves) {
-      entries.push({
-        connectorId: connId,
-        strategy: 'translate',
-        originalPoints,
-        originalBbox,
-        translatedPoints: originalPoints.map((p) => [...p] as [number, number]),
-        startSpec: null,
-        endSpec: null,
-      });
-      translateIdSet.add(connId);
-    } else {
-      const startSpec: EndpointSpec =
-        startAnchor && selectedSet.has(startAnchor.id) ? startAnchor.id : !startAnchor && isSelected ? true : null;
-      const endSpec: EndpointSpec = endAnchor && selectedSet.has(endAnchor.id) ? endAnchor.id : !endAnchor && isSelected ? true : null;
-
-      entries.push({
-        connectorId: connId,
-        strategy: 'reroute',
-        originalPoints,
-        originalBbox,
-        translatedPoints: [],
-        startSpec,
-        endSpec,
-      });
-    }
-  };
-
-  // Pass 1: Selected connectors
-  for (const id of selectedIds) {
-    const handle = getHandle(id);
-    if (handle?.kind === 'connector') {
-      processConnector(id, true);
-    }
-  }
-
-  // Pass 2: Non-selected connectors anchored to selected shapes
-  for (const id of selectedIds) {
-    const handle = getHandle(id);
-    if (
-      !handle ||
-      (handle.kind !== 'shape' &&
-        handle.kind !== 'text' &&
-        handle.kind !== 'code' &&
-        handle.kind !== 'image' &&
-        handle.kind !== 'note' &&
-        handle.kind !== 'bookmark')
-    )
-      continue;
-    const connectors = getConnectorsForShape(id);
-    if (!connectors) continue;
-    for (const connId of connectors) {
-      processConnector(connId, selectedSet.has(connId));
-    }
-  }
-
-  if (entries.length === 0) return null;
-
-  // Collect original frames for all selected shapes (for frame overrides)
-  for (const id of selectedIds) {
-    const handle = getHandle(id);
-    if (
-      !handle ||
-      (handle.kind !== 'shape' &&
-        handle.kind !== 'text' &&
-        handle.kind !== 'code' &&
-        handle.kind !== 'image' &&
-        handle.kind !== 'note' &&
-        handle.kind !== 'bookmark')
-    )
-      continue;
-    const frame =
-      handle.kind === 'text' || handle.kind === 'note'
-        ? getTextFrame(handle.id)
-        : handle.kind === 'code'
-          ? getCodeFrame(handle.id)
-          : handle.kind === 'bookmark'
-            ? getBookmarkFrame(handle.id)
-            : getFrame(handle.y);
-    if (frame) originalFrames.set(id, frame);
-  }
-
-  // Pre-allocate mutable caches
-  const reroutes = new Map<string, [number, number][] | null>();
-  const prevBboxes = new Map<string, BBoxTuple>();
-  for (const entry of entries) {
-    if (entry.strategy === 'reroute') {
-      reroutes.set(entry.connectorId, null);
-      prevBboxes.set(entry.connectorId, [...entry.originalBbox] as BBoxTuple);
-    }
-  }
-
-  return {
-    entries,
-    translateIdSet,
-    originalFrames,
-    reroutes,
-    prevBboxes,
-  };
-}
+// Re-export for backward compat — topology builder lives in connector-topology.ts
+export { computeConnectorTopology } from '@/tools/selection/connector-topology';
 
 // === Store Implementation ===
 
@@ -335,13 +187,39 @@ export const useSelectionStore = create<SelectionStore>()(
 
     // === Transform Actions ===
 
-    beginTranslate: () => set({ transform: { kind: 'translate' } }),
+    beginTranslate: () => {
+      getController().beginTranslate(get().selectedIdSet);
+      set({ transform: { kind: 'translate' } });
+    },
 
-    beginScale: () => set({ transform: { kind: 'scale' } }),
+    updateTranslate: (dx, dy) => {
+      getController().updateTranslate(dx, dy);
+    },
 
-    endTransform: () => set({ transform: { kind: 'none' } }),
+    beginScale: (handleId) => {
+      const selBounds = computeTransformBoundsForScale();
+      if (!selBounds) return;
+      const origin = scaleOrigin(handleId, selBounds);
+      const { selectedIdSet, kindCounts } = get();
+      getController().beginScale(selectedIdSet, kindCounts, handleId, origin, selBounds);
+      set({ transform: { kind: 'scale', handleId, selBounds, origin } });
+    },
 
-    cancelTransform: () => set({ transform: { kind: 'none' } }),
+    updateScale: (sx, sy) => {
+      getController().updateScale(sx, sy);
+    },
+
+    endTransform: () => {
+      const ctrl = getController();
+      if (ctrl.hasChange()) ctrl.commit();
+      else ctrl.clear();
+      set({ transform: { kind: 'none' } });
+    },
+
+    cancelTransform: () => {
+      getController().cancel();
+      set({ transform: { kind: 'none' } });
+    },
 
     // === Endpoint Drag Actions ===
 
@@ -445,10 +323,10 @@ export const useSelectionStore = create<SelectionStore>()(
         if (textEditingId !== null) {
           ids = [textEditingId];
           const handle = getHandle(textEditingId);
-          kind = handle?.kind === 'note' ? 'notesOnly' : 'textOnly';
+          kind = handle?.kind === 'note' ? 'note' : 'text';
         } else if (codeEditingId !== null) {
           ids = [codeEditingId];
-          kind = 'codeOnly';
+          kind = 'code';
         }
       }
 
@@ -458,7 +336,7 @@ export const useSelectionStore = create<SelectionStore>()(
       if (!stylesEqual(current, next)) patch.selectedStyles = next;
 
       // Inline text styles — only when editor is NOT mounted
-      if (textEditingId === null && (kind === 'textOnly' || kind === 'shapesOnly' || kind === 'notesOnly') && ids.length > 0) {
+      if (textEditingId === null && (kind === 'text' || kind === 'shape' || kind === 'note') && ids.length > 0) {
         const inline = computeUniformInlineStyles(ids, getObjectsById());
         if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
       }
@@ -474,23 +352,9 @@ export const useSelectionStore = create<SelectionStore>()(
  * Filter current selection to only objects of the given kind.
  * No-op if no objects of that kind are selected.
  */
-export function filterSelectionByKind(kind: 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images'): void {
+export function filterSelectionByKind(kind: ObjectKind): void {
   const { selectedIds } = useSelectionStore.getState();
-  const targetKind =
-    kind === 'strokes'
-      ? 'stroke'
-      : kind === 'shapes'
-        ? 'shape'
-        : kind === 'connectors'
-          ? 'connector'
-          : kind === 'code'
-            ? 'code'
-            : kind === 'notes'
-              ? 'note'
-              : kind === 'images'
-                ? 'image'
-                : 'text';
-  const filtered = selectedIds.filter((id) => getHandle(id)?.kind === targetKind);
+  const filtered = selectedIds.filter((id) => getHandle(id)?.kind === kind);
   if (filtered.length > 0) {
     useSelectionStore.getState().setSelection(filtered);
     invalidateOverlay();

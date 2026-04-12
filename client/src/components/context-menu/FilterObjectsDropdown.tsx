@@ -1,29 +1,30 @@
 import type React from 'react';
 import type { KindCounts } from '@/stores/selection-store';
+import type { ObjectKind } from '@/core/types/objects';
 import { MenuButton } from './MenuButton';
 import { IconChevronDown } from './icons';
 import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages, IconStickySquareFold } from './icons';
 import { useDropdown } from './useDropdown';
 
-type FilterKind = 'strokes' | 'shapes' | 'text' | 'connectors' | 'code' | 'notes' | 'images';
-
+// Keys are ObjectKind (singular), matching KindCounts / SelectionKind exactly.
+// 'bookmark' is intentionally omitted — no UI yet.
 const KIND_CONFIG: {
-  key: FilterKind;
+  key: ObjectKind;
   label: string;
   Icon: React.FC<React.SVGProps<SVGSVGElement>>;
 }[] = [
-  { key: 'strokes', label: 'Strokes', Icon: IconPenStroke },
-  { key: 'shapes', label: 'Shapes', Icon: IconShapes },
+  { key: 'stroke', label: 'Strokes', Icon: IconPenStroke },
+  { key: 'shape', label: 'Shapes', Icon: IconShapes },
   { key: 'text', label: 'Text', Icon: IconTextType },
-  { key: 'connectors', label: 'Connectors', Icon: IconConnectorLine },
+  { key: 'connector', label: 'Connectors', Icon: IconConnectorLine },
   { key: 'code', label: 'Code Block', Icon: IconCodeBlock },
-  { key: 'notes', label: 'Sticky Note', Icon: IconStickySquareFold },
-  { key: 'images', label: 'Images', Icon: IconImages },
+  { key: 'note', label: 'Sticky Note', Icon: IconStickySquareFold },
+  { key: 'image', label: 'Images', Icon: IconImages },
 ];
 
 interface FilterObjectsDropdownProps {
   kindCounts: KindCounts;
-  onFilterByKind: (kind: FilterKind) => void;
+  onFilterByKind: (kind: ObjectKind) => void;
 }
 
 export function FilterObjectsDropdown({ kindCounts, onFilterByKind }: FilterObjectsDropdownProps) {

@@ -2,7 +2,7 @@ import type { HandleId, PointerTool, PreviewData } from '../types';
 import { textTool, codeTool } from '@/runtime/tool-registry';
 import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { scaleBBoxAround, pointsToBBox, translateBBox, frameToBbox } from '@/core/geometry/bounds';
+import { scaleBBoxAround, pointsToBBox, translateBBox } from '@/core/geometry/bounds';
 import {
   pointInBBox,
   hitTestHandle,
@@ -23,8 +23,7 @@ import { contextMenuController } from '@/runtime/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { scaleOrigin, handlePosition, handleCursor } from '@/core/types/handles';
-import { getTextFrame } from '@/core/text/text-system';
+import { handlePosition, handleCursor } from '@/core/types/handles';
 import { getController, getTransformScaleCtx, rawScaleFactors } from './transform';
 
 // === Constants ===
@@ -66,7 +65,7 @@ export class SelectTool implements PointerTool {
 
   // Hit testing results at pointer down
   private hitAtDown: HitCandidate | null = null;
-  private activeHandle: HandleId | null = null;
+  private pendingHandleId: HandleId | null = null;
   private endpointHitAtDown: EndpointHit | null = null;
 
   // Target classification for pointer down
@@ -111,7 +110,7 @@ export class SelectTool implements PointerTool {
       const { scale } = useCameraStore.getState();
       const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds, scale) : null;
       if (handleHit) {
-        this.activeHandle = handleHit;
+        this.pendingHandleId = handleHit;
         this.downTarget = 'handle';
         this.phase = 'pendingClick';
         invalidateOverlay();
@@ -200,20 +199,17 @@ export class SelectTool implements PointerTool {
             if (!passMove) break;
             this.phase = 'scale';
 
-            const store = useSelectionStore.getState();
-            const geoBbox = this.computeTransformBoundsForScale();
-            if (!geoBbox) break;
-
-            const origin = scaleOrigin(this.activeHandle!, geoBbox);
-            const handlePos = handlePosition(this.activeHandle!, geoBbox);
-            this.initialDelta = [handlePos[0] - origin[0], handlePos[1] - origin[1]];
+            useSelectionStore.getState().beginScale(this.pendingHandleId!);
+            const t = useSelectionStore.getState().transform;
+            if (t.kind !== 'scale') {
+              this.phase = 'idle';
+              break;
+            }
+            const handlePos = handlePosition(t.handleId, t.selBounds);
+            this.initialDelta = [handlePos[0] - t.origin[0], handlePos[1] - t.origin[1]];
             this.clickOffset = [this.downWorld![0] - handlePos[0], this.downWorld![1] - handlePos[1]];
 
-            const ctrl = getController();
-            ctrl.beginScale(store.selectedIdSet, store.kindCounts, this.activeHandle!, origin, geoBbox);
-            store.beginScale();
-
-            setCursorOverride(handleCursor(this.activeHandle!));
+            setCursorOverride(handleCursor(t.handleId));
             applyCursor();
             break;
           }
@@ -268,7 +264,7 @@ export class SelectTool implements PointerTool {
             const store = useSelectionStore.getState();
             store.setSelection([this.hitAtDown!.id]);
             this.phase = 'translate';
-            this.beginTranslateState();
+            useSelectionStore.getState().beginTranslate();
             break;
           }
 
@@ -296,7 +292,7 @@ export class SelectTool implements PointerTool {
 
             // Standard mode or free connector: translate group
             this.phase = 'translate';
-            this.beginTranslateState();
+            useSelectionStore.getState().beginTranslate();
             break;
           }
 
@@ -305,7 +301,7 @@ export class SelectTool implements PointerTool {
             if (!passMove && !passTime) break;
             // Drag intent → translate selection
             this.phase = 'translate';
-            this.beginTranslateState();
+            useSelectionStore.getState().beginTranslate();
             break;
           }
 
@@ -333,26 +329,22 @@ export class SelectTool implements PointerTool {
 
       case 'translate': {
         if (this.downWorld) {
-          getController().updateTranslate(worldX - this.downWorld[0], worldY - this.downWorld[1]);
+          useSelectionStore.getState().updateTranslate(worldX - this.downWorld[0], worldY - this.downWorld[1]);
         }
         break;
       }
 
       case 'scale': {
-        if (this.downWorld && this.activeHandle && this.initialDelta && this.clickOffset) {
-          const ctrl = getController();
-          const scaleCtx = ctrl.getScaleCtx();
-          if (scaleCtx) {
-            const [sx, sy] = rawScaleFactors(
-              worldX - this.clickOffset[0],
-              worldY - this.clickOffset[1],
-              scaleCtx.origin,
-              this.initialDelta,
-              scaleCtx.handleId,
-            );
-            ctrl.updateScale(sx, sy);
-          }
-        }
+        const t = useSelectionStore.getState().transform;
+        if (t.kind !== 'scale' || !this.downWorld || !this.initialDelta || !this.clickOffset) break;
+        const [sx, sy] = rawScaleFactors(
+          worldX - this.clickOffset[0],
+          worldY - this.clickOffset[1],
+          t.origin,
+          this.initialDelta,
+          t.handleId,
+        );
+        useSelectionStore.getState().updateScale(sx, sy);
         break;
       }
 
@@ -497,12 +489,6 @@ export class SelectTool implements PointerTool {
 
       case 'translate':
       case 'scale': {
-        const ctrl = getController();
-        if (ctrl.hasChange()) {
-          ctrl.commit();
-        } else {
-          ctrl.clear();
-        }
         useSelectionStore.getState().endTransform();
         break;
       }
@@ -548,18 +534,13 @@ export class SelectTool implements PointerTool {
 
   cancel(): void {
     // Invalidate dirty rect before clearing transform state
-    if (this.phase === 'translate' || this.phase === 'scale') {
-      getController().cancel();
-      useSelectionStore.getState().endTransform();
-    } else if (this.phase === 'endpointDrag') {
+    if (this.phase === 'endpointDrag') {
       const store = useSelectionStore.getState();
       if (store.transform.kind === 'endpointDrag') {
         invalidateWorldBBox(store.transform.prevBbox);
       }
-      useSelectionStore.getState().cancelTransform();
-    } else {
-      useSelectionStore.getState().cancelTransform();
     }
+    useSelectionStore.getState().cancelTransform();
 
     useSelectionStore.getState().cancelMarquee();
     // Clear any cursor override on cancel
@@ -703,39 +684,12 @@ export class SelectTool implements PointerTool {
     this.downWorld = null;
     this.downScreen = null;
     this.hitAtDown = null;
-    this.activeHandle = null;
+    this.pendingHandleId = null;
     this.endpointHitAtDown = null;
     this.downTarget = 'none';
     this.downTimeMs = 0;
     this.initialDelta = null;
     this.clickOffset = null;
-  }
-
-  private computeTransformBoundsForScale(): BBoxTuple | null {
-    const { selectedIds } = useSelectionStore.getState();
-    if (selectedIds.length === 0) return null;
-    let minX = Infinity,
-      minY = Infinity,
-      maxX = -Infinity,
-      maxY = -Infinity;
-    for (const id of selectedIds) {
-      const handle = getHandle(id);
-      if (!handle) continue;
-      // Text: use layout frame (italic overhangs make bbox differ from visual frame)
-      const b = handle.kind === 'text' ? frameToBbox(getTextFrame(id) ?? [0, 0, 0, 0]) : handle.bbox;
-      minX = Math.min(minX, b[0]);
-      minY = Math.min(minY, b[1]);
-      maxX = Math.max(maxX, b[2]);
-      maxY = Math.max(maxY, b[3]);
-    }
-    if (!isFinite(minX)) return null;
-    return [minX, minY, maxX, maxY];
-  }
-
-  private beginTranslateState(): void {
-    const store = useSelectionStore.getState();
-    getController().beginTranslate(store.selectedIdSet);
-    store.beginTranslate();
   }
 
   /**

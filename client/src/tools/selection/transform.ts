@@ -14,6 +14,7 @@
 import type * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind, TextAlign, FontFamily, TextWidth } from '@/core/types/objects';
+import { OBJECT_KINDS } from '@/core/types/objects';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
 import {
@@ -55,7 +56,7 @@ import {
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { translateBBox } from '@/core/geometry/bounds';
-import { computeConnectorTopology } from '@/stores/selection-store';
+import { computeConnectorTopology } from './connector-topology';
 import type { ConnectorTopology, EndpointSpec, KindCounts as SelectionKindCounts } from './types';
 
 // ============================================================================
@@ -184,27 +185,12 @@ function resolveBehavior(kind: ScalableKind, handleId: HandleId, mixed: boolean)
 }
 
 // ============================================================================
-// KindCounts adapter
+// KindCounts helpers
 // ============================================================================
 
-type KindCounts = Record<ObjectKind, number>;
-
-function toKindCounts(c: SelectionKindCounts): KindCounts {
-  return {
-    stroke: c.strokes,
-    shape: c.shapes,
-    text: c.text,
-    connector: c.connectors,
-    code: c.code,
-    note: c.notes,
-    image: c.images,
-    bookmark: c.bookmarks,
-  };
-}
-
-function countKinds(c: KindCounts): number {
+function countKinds(c: SelectionKindCounts): number {
   let n = 0;
-  for (const k in c) if (c[k as ObjectKind] > 0) n++;
+  for (const k of OBJECT_KINDS) if (c[k] > 0) n++;
   return n;
 }
 
@@ -673,8 +659,7 @@ export class TransformController {
   ): void {
     this.clear();
     this.mode = 'scale';
-    const counts = toKindCounts(kindCounts);
-    const mixed = countKinds(counts) > 1;
+    const mixed = countKinds(kindCounts) > 1;
 
     this.scaleCtx = { sx: 1, sy: 1, origin, selBounds, handleId };
 
