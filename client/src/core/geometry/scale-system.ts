@@ -5,9 +5,11 @@
  * Transform orchestration lives in tools/selection/transform.ts.
  */
 
-import type { BBoxTuple, Point } from '../types/geometry';
+import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 import type { HandleId } from '../types/handles';
 import { isHorzSide, isVertSide } from '../types/handles';
+import { bboxCenter, setBBoxXYWH } from './bounds';
+import type { ScaleCtx } from '@/tools/selection/types';
 
 // Re-export tuple helpers from bounds.ts (canonical location for geometry primitives)
 export { frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize, frameCenter } from './bounds';
@@ -125,4 +127,55 @@ export function computeReflowWidth(
   const target = Math.max(minW, raw);
   if (target <= raw) return [left, target];
   return [Math.abs(left - originX) <= Math.abs(right - originX) ? left : right - target, target];
+}
+
+// ============================================================================
+// BBox-Aware Scale Atoms (compose primitives above; consumed by transform.ts)
+// ============================================================================
+
+/** Uniform scale a bbox around ctx origin. Writes out. Returns abs factor (for prop rounding). */
+export function scaleBBoxUniform(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx): number {
+  const [cx, cy] = bboxCenter(src);
+  const uf = uniformFactor(ctx.sx, ctx.sy, ctx.handleId);
+  const [ncx, ncy] = preservePosition(cx, cy, ctx.selBounds, ctx.origin, uf);
+  const af = Math.abs(uf);
+  const w = (src[2] - src[0]) * af;
+  const h = (src[3] - src[1]) * af;
+  setBBoxXYWH(out, ncx - w / 2, ncy - h / 2, w, h);
+  return af;
+}
+
+/** Non-uniform scale a bbox: scale each edge independently around ctx origin, normalize for flip. */
+export function scaleBBoxEdges(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx): void {
+  const x1 = scaleAround(src[0], ctx.origin[0], ctx.sx);
+  const y1 = scaleAround(src[1], ctx.origin[1], ctx.sy);
+  const x2 = scaleAround(src[2], ctx.origin[0], ctx.sx);
+  const y2 = scaleAround(src[3], ctx.origin[1], ctx.sy);
+  setBBoxXYWH(out, Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+}
+
+/** Edge-pin [dx, dy] delta for a bbox under ctx. */
+export function edgePinDelta(src: BBoxTuple, ctx: ScaleCtx): Point {
+  return [
+    edgePinPosition1D(src[0], src[2], ctx.origin[0], ctx.sx) - src[0],
+    edgePinPosition1D(src[1], src[3], ctx.origin[1], ctx.sy) - src[1],
+  ];
+}
+
+/**
+ * Derive shape/image frame from a scaled bbox with constant stroke-width padding.
+ * Overwrites outBbox at the end so outBbox = outFrame + constant pad — stroke width
+ * doesn't scale with the transform.
+ */
+export function derivePaddedFrame(outFrame: FrameTuple, outBbox: BBoxTuple, srcFrame: FrameTuple, srcBbox: BBoxTuple): void {
+  const padL = srcFrame[0] - srcBbox[0];
+  const padT = srcFrame[1] - srcBbox[1];
+  outFrame[0] = outBbox[0] + padL;
+  outFrame[1] = outBbox[1] + padT;
+  outFrame[2] = Math.max(0, outBbox[2] - outBbox[0] - 2 * padL);
+  outFrame[3] = Math.max(0, outBbox[3] - outBbox[1] - 2 * padT);
+  outBbox[0] = outFrame[0] - padL;
+  outBbox[1] = outFrame[1] - padT;
+  outBbox[2] = outFrame[0] + outFrame[2] + padL;
+  outBbox[3] = outFrame[1] + outFrame[3] + padT;
 }

@@ -643,7 +643,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _
           getFillColor(handle.y),
         );
       } else if (behavior === 'uniform') {
-        const ratio = entry.out.fontSize / entry.frozen.fontSize;
+        const ratio = entry.out.fontSize / entry.frozen.fontSize!;
         const props = getTextProps(handle.y);
         if (!props) break;
         const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
@@ -668,7 +668,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _
         const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
         renderCodeLayout(ctx, entry.out.layout, entry.out.origin[0], entry.out.origin[1], props.fontSize, spans, lines, title, output);
       } else if (behavior === 'uniform') {
-        const ratio = entry.out.fontSize / entry.frozen.fontSize;
+        const ratio = entry.out.fontSize / entry.frozen.fontSize!;
         const props = getCodeProps(handle.y);
         if (!props) break;
         const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
@@ -689,7 +689,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _
       if (!entry) break;
       const behavior = getScaleBehavior(handle.kind);
       if (behavior === 'uniform') {
-        const ratio = entry.out.scale / entry.frozen.scale;
+        const ratio = entry.out.scale / entry.frozen.scale!;
         withTransform(ctx, entry.out.origin[0], entry.out.origin[1], ratio, ratio, () => {
           ctx.translate(-entry.frozen.origin[0], -entry.frozen.origin[1]);
           drawObject(ctx, handle);

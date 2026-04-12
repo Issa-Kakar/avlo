@@ -5,6 +5,7 @@
 
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind } from '@/core/types/objects';
+import type { HandleId } from '@/core/types/handles';
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
 import type { SnapTarget } from '@/core/connectors/types';
 
@@ -149,6 +150,23 @@ export interface EndpointDragTransform {
 }
 
 export type TransformState = { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform;
+
+// ============================================================================
+// Scale Context (consumed by both transform.ts dispatch and scale-system atoms)
+// ============================================================================
+
+/**
+ * Per-gesture scale context: cursor factors + handle/origin/bounds.
+ * Lives here (selection layer) so pure-geometry atoms in `core/geometry/scale-system.ts`
+ * can take it as a parameter without re-bundling its fields.
+ */
+export interface ScaleCtx {
+  sx: number;
+  sy: number;
+  origin: Point;
+  selBounds: BBoxTuple;
+  handleId: HandleId;
+}
 
 // ============================================================================
 // Marquee State

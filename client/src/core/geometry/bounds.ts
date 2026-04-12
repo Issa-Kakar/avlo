@@ -51,6 +51,7 @@ export const translateBBox = (b: BBoxTuple, dx: number, dy: number): BBoxTuple =
 
 // Tuple helpers moved from scale-system.ts (geometry primitives, not scale-specific)
 export const frameToBbox = (f: FrameTuple): BBoxTuple => [f[0], f[1], f[0] + f[2], f[1] + f[3]];
+export const bboxToFrame = (b: BBoxTuple): FrameTuple => [b[0], b[1], b[2] - b[0], b[3] - b[1]];
 
 export function frameToBboxMut(f: FrameTuple, out: BBoxTuple): void {
   out[0] = f[0];
