@@ -44,10 +44,10 @@ tools/selection/connector-topology.ts
 
 selection-utils.ts (pure functions — zero-arg where possible)
 ├── computeSelectionComposition(ids) → kind, mode, counts (buckets via counts[kind]++)
-├── computeSelectionBounds() → BBoxTuple (reads selectedIds/editing from store)
-├── computeTransformBoundsForScale() → BBoxTuple (reads selectedIds from store)
 ├── computeStyles(ids, kind, objectsById) → SelectedStyles
 └── computeUniformInlineStyles(ids, objectsById) → InlineStyles
+
+(computeSelectionBounds lives in selection-store.ts — reads store state directly, no circular import)
 
 selection-actions.ts (mutation functions — documented in context-menu/CLAUDE.md)
 
@@ -142,7 +142,7 @@ Each target type requires `passMove` (dist > MOVE_THRESHOLD_PX) before transitio
 
 | DownTarget | Transition | Notes |
 |------------|------------|-------|
-| `handle` | → `scale` | `store.beginScale(handleId)` — store orchestrates bounds + origin + controller |
+| `handle` | → `scale` | `store.beginScale(handleId, downWorld)` — store owns the whole gesture (bounds, origin, initialDelta, clickOffset, controller) |
 | `connectorEndpoint` | → `endpointDrag` | Drill to single connector if multi-selected |
 | `objectOutsideSelection` | → `translate` | First selects object. Anchored connectors → `marquee` instead |
 | `objectInSelection` | → `translate` | Anchored connectors in connector mode → `marquee` instead |
@@ -151,13 +151,22 @@ Each target type requires `passMove` (dist > MOVE_THRESHOLD_PX) before transitio
 
 ### Scale Phase (begin + move)
 
-At begin: SelectTool reads `handleId`, `selBounds`, `origin` from `store.transform` (populated by `store.beginScale`), then computes `initialDelta = handlePosition - origin` (handle-to-origin vector) and `clickOffset = downWorld - handlePosition` (cursor-to-handle gap, stays constant throughout drag). These two vectors are SelectTool-local gesture state, not store state.
+SelectTool hands the store raw cursor coords and nothing else. Gesture math lives entirely in the store.
 
-```
-1. t = store.transform (narrowed to kind === 'scale')
-2. rawScaleFactors(worldX - clickOffset[0], worldY - clickOffset[1], t.origin, initialDelta, t.handleId) → [sx, sy]
-3. store.updateScale(sx, sy) — store routes to controller, applies to all entries + topology
-```
+**Begin** — `store.beginScale(handleId, downWorld)`:
+1. `computeSelectionBounds()` → selBounds
+2. `scaleOrigin(handleId, selBounds)` → origin; `handlePosition(handleId, selBounds)` → handlePos
+3. `initialDelta = handlePos - origin` (handle-to-origin vector)
+4. `clickOffset = downWorld - handlePos` (cursor-to-handle gap, stays constant throughout drag so the grabbed pixel tracks the cursor)
+5. `ctrl.beginScale(selectedIdSet, kindCounts, handleId, origin, selBounds)`
+6. Set `transform = { kind: 'scale', initialDelta, clickOffset }`
+
+The controller owns `handleId`/`origin`/`selBounds` (needed per-apply via `scaleCtx`). The store owns `initialDelta`/`clickOffset` (gesture math for `rawScaleFactors`). No duplication.
+
+**Move** — `store.updateScale(worldX, worldY)`:
+1. Narrow `transform` to `kind === 'scale'`, read `scaleCtx` from controller for `handleId`/`origin`
+2. `rawScaleFactors(worldX - clickOffset[0], worldY - clickOffset[1], origin, initialDelta, handleId)` → [sx, sy]
+3. `ctrl.updateScale(sx, sy)` — applies to all entries + topology
 
 ### Translate Phase (move)
 
@@ -435,7 +444,7 @@ Pure math atoms. No types, no factories, no state.
 
 Scale origins and bounds are derived from `handle.bbox` (includes stroke width padding), not raw frame geometry. This ensures the visual selection overlay (handles drawn at bbox corners) matches the scale anchor point.
 
-**`computeTransformBoundsForScale()`** (selection-utils.ts, zero-arg — reads `selectedIds` from store): union of `handle.bbox` for all selected objects. Exception: text uses `getTextFrame() → frameToBbox()` (italic overhangs make bbox differ from visual frame). Called by `store.beginScale` before setting the discriminant.
+**`computeSelectionBounds()`** (selection-store.ts, zero-arg) serves both roles: selection overlay bounds and scale gesture bounds. Union of `handle.bbox` for all selected objects. Exception: text uses `getTextFrame() → frameToBbox()` (italic overhangs make bbox differ from visual frame). Called by `store.beginScale`. The editing fallback (reads `textEditingId`/`codeEditingId` when `selectedIds` is empty) is unreachable during scale because handle hit-test gates on not-editing.
 
 **Shape/image scaling — constant padding invariant:** Shapes have stroke-width padding between frame and bbox (`padding = strokeWidth/2 + 1`). During scale, the **bbox** is scaled for position computation, then the **frame** is derived by subtracting constant padding. The output bbox = frame + constant padding (not the scaled bbox), because stroke width doesn't scale with the transform. This prevents dirty rect artifacts at small scales where scaled padding would be smaller than the actual stroke extent.
 
@@ -595,9 +604,13 @@ interface SelectionState {
 }
 ```
 
-`TranslateTransform` is a thin `{ kind: 'translate' }` marker. `ScaleTransform` carries the **immutable gesture-frame** data: `{ kind: 'scale', handleId, selBounds, origin }`. These are set once at `beginScale` and read by SelectTool (move/getPreview) and renderer. Per-frame `sx`/`sy` stay on `TransformController` — mutating the Zustand discriminant every pointermove would fire subscribers wastefully.
+`TranslateTransform` is a thin `{ kind: 'translate' }` marker. `ScaleTransform` carries the gesture math: `{ kind: 'scale', initialDelta, clickOffset }`. The split is deliberate:
+- **Controller** (`scaleCtx`) owns `handleId`/`origin`/`selBounds` — needed per-apply, updated with `sx`/`sy` each frame.
+- **Store** (`ScaleTransform`) owns `initialDelta`/`clickOffset` — gesture-frame constants feeding `rawScaleFactors` on each move. No duplication between the two.
 
-All entry state (frozen geometry, output, topology, dx/dy, sx/sy) lives in `TransformController`. The store orchestrates: `beginScale`/`beginTranslate`/`updateScale`/`updateTranslate`/`endTransform`/`cancelTransform` all call `getController()` internally, so SelectTool imports `getController` only for `getPreview()` scale reads.
+Per-frame `sx`/`sy` stay on `TransformController` — mutating the Zustand discriminant every pointermove would fire subscribers wastefully.
+
+All entry state (frozen geometry, output, topology, dx/dy, sx/sy) lives in `TransformController`. The store orchestrates the whole scale gesture end-to-end: SelectTool calls `store.beginScale(handleId, downWorld)` once and `store.updateScale(worldX, worldY)` on each move — it never reads scale state back or touches `rawScaleFactors`. `beginScale`/`beginTranslate`/`updateScale`/`updateTranslate`/`endTransform`/`cancelTransform` all call `getController()` internally; SelectTool imports `getController` only for `getPreview()` scale reads.
 
 Exception: `EndpointDragTransform` still carries full state in the store (connectorId, endpoint, routedPoints, currentSnap, prevBbox) — it's not entry-based and doesn't go through the controller.
 
@@ -609,8 +622,8 @@ Exception: `EndpointDragTransform` still carries full state in the store (connec
 | `clearSelection()` | Reset everything to defaults |
 | `beginTranslate()` | `ctrl.beginTranslate(selectedIdSet)` + set `{ kind: 'translate' }` |
 | `updateTranslate(dx, dy)` | `ctrl.updateTranslate(dx, dy)` |
-| `beginScale(handleId)` | `computeTransformBoundsForScale()` → `scaleOrigin()` → `ctrl.beginScale(...)` + set `{ kind: 'scale', handleId, selBounds, origin }` |
-| `updateScale(sx, sy)` | `ctrl.updateScale(sx, sy)` |
+| `beginScale(handleId, downWorld)` | `computeSelectionBounds()` → `scaleOrigin`/`handlePosition` → gesture math → `ctrl.beginScale(...)` + set `{ kind: 'scale', initialDelta, clickOffset }` |
+| `updateScale(worldX, worldY)` | Narrow `transform` + read `scaleCtx` → `rawScaleFactors(...)` → `ctrl.updateScale(sx, sy)` |
 | `endTransform()` | `ctrl.hasChange() ? ctrl.commit() : ctrl.clear()` + set `{ kind: 'none' }` |
 | `cancelTransform()` | `ctrl.cancel()` + set `{ kind: 'none' }` |
 | `beginEndpointDrag(connId, endpoint, bbox)` | Set endpointDrag transform |
@@ -630,13 +643,11 @@ Single-pass bucket count: `counts[handle.kind]++` into a `Record<ObjectKind, num
 
 ### computeSelectionBounds()
 
-Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain.
-- Text/code: `getTextFrame(id)` / `getCodeFrame(id)` (layout-derived, WYSIWYG-accurate)
-- All others: `handle.bbox`
+Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain. Serves double duty — selection overlay bounds AND scale gesture bounds.
+- Text: `frameToBbox(getTextFrame(id))` (italic overhangs differ from bbox)
+- All others (including code): `handle.bbox` (code's `computeCodeBBox` already writes the derived layout frame into `handle.bbox` — no stroke padding to account for)
 
-### computeTransformBoundsForScale()
-
-Zero-arg: reads `selectedIds` from store. Union of `handle.bbox` for selected objects, with text using `frameToBbox(getTextFrame(id))` to account for italic overhangs. Returns `null` on empty selection (causes `store.beginScale` to bail early).
+Returns `null` on empty selection (causes `store.beginScale` to bail early).
 
 ### computeStyles(ids, kind, objectsById)
 
@@ -681,11 +692,11 @@ Store fields consumed by context menu are documented in `components/context-menu
 |------|----------------|
 | `tools/selection/SelectTool.ts` | State machine, hit testing dispatch, routes transform lifecycle through store, endpoint drag commit |
 | `tools/selection/transform.ts` | TransformController, structural traits, mapped types, dispatch tables, apply/commit/freeze functions, module getters |
-| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState` (incl. `ScaleTransform` gesture-frame fields), `SelectedStyles`, `InlineStyles`, `ConnectorTopology`, empty constants |
+| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState` (incl. `ScaleTransform` = `{ kind, initialDelta, clickOffset }`), `SelectedStyles`, `InlineStyles`, `ConnectorTopology`, empty constants |
 | `tools/selection/connector-topology.ts` | `computeConnectorTopology(transformKind, selectedIds)` — pure builder, lives outside store to break circular import |
-| `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeSelectionBounds`, `computeTransformBoundsForScale`, `computeStyles`, `computeUniformInlineStyles` |
+| `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles`, `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | 21 mutation functions for context menu buttons (documented in context-menu CLAUDE.md) |
-| `stores/selection-store.ts` | Zustand store, orchestrates `TransformController` (begin/update/end/cancel), `filterSelectionByKind(kind: ObjectKind)`, handle helpers. Re-exports shared types for backward compat. |
+| `stores/selection-store.ts` | Zustand store, orchestrates `TransformController` (begin/update/end/cancel), `computeSelectionBounds()`, `filterSelectionByKind(kind: ObjectKind)`, handle helpers. Re-exports shared types for backward compat. |
 | `core/geometry/scale-system.ts` | Pure math atoms: scaleAround, uniformFactor (handle-aware), preservePosition, edgePinDelta, computeReflowWidth |
 | `core/geometry/bounds.ts` | Bbox/frame tuple helpers, WorldBounds operations, mutating offset primitives |
 | `core/types/handles.ts` | HandleId taxonomy, type guards, scaleOrigin, handleCursor |

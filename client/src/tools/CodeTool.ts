@@ -142,6 +142,7 @@ export class CodeTool implements PointerTool {
   // Public API for SelectTool double-click-to-edit
   startEditing(objectId: string, entryWorld?: [number, number]): void {
     this.pendingEntryWorld = entryWorld ?? null;
+    useSelectionStore.getState().beginCodeEditing(objectId);
     this.mountEditor(objectId);
   }
 
@@ -200,6 +201,7 @@ export class CodeTool implements PointerTool {
     });
 
     if (createdId) {
+      useSelectionStore.getState().beginCodeEditing(createdId);
       this.mountEditor(createdId);
     }
   }
@@ -457,10 +459,6 @@ export class CodeTool implements PointerTool {
     this.container = container;
     this.objectId = objectId;
 
-    const selState = useSelectionStore.getState();
-    if (selState.codeEditingId !== objectId) {
-      selState.beginCodeEditing(objectId);
-    }
     invalidateWorld(getVisibleWorldBounds());
 
     this.setupEditorHandlers();

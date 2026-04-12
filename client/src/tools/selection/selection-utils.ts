@@ -1,6 +1,5 @@
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { OBJECT_KINDS } from '@/core/types/objects';
-import type { BBoxTuple } from '@/core/types/geometry';
 import {
   getColor,
   getWidth,
@@ -17,14 +16,10 @@ import {
   hasLabel,
 } from '@/core/accessors';
 import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
-import { getTextFrame, getInlineStyles } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
-import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
-import { getCurrentSnapshot, getHandle } from '@/runtime/room-runtime';
+import { getInlineStyles } from '@/core/text/text-system';
+import { getCurrentSnapshot } from '@/runtime/room-runtime';
 import type { SelectionKind, KindCounts, SelectedStyles, InlineStyles } from './types';
 import { EMPTY_STYLES } from './types';
-// Runtime-only import — circular dep is safe (only accessed inside function bodies, not at module eval)
-import { useSelectionStore } from '@/stores/selection-store';
 
 // Re-export for consumers that still import shared types from selection-utils.
 export type { KindCounts, SelectedStyles, InlineStyles, SelectionKind } from './types';
@@ -80,65 +75,6 @@ export function computeSelectionComposition(ids: string[]) {
         : ('none' as const);
 
   return { selectionKind, kindCounts, selectedIdSet, mode };
-}
-
-// === Selection Bounds ===
-
-/**
- * Compute padded selection bounds from selected IDs.
- * Zero-arg: reads selectedIds (+ textEditingId fallback) from selection store.
- * Text uses derived frame (WYSIWYG-accurate), others use bbox.
- */
-export function computeSelectionBounds(): BBoxTuple | null {
-  const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
-  const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : codeEditingId ? [codeEditingId] : [];
-  if (ids.length === 0) return null;
-
-  const snapshot = getCurrentSnapshot();
-  let result: BBoxTuple | null = null;
-
-  for (const id of ids) {
-    const handle = snapshot.objectsById.get(id);
-    if (!handle) continue;
-    if (handle.kind === 'text') {
-      const frame = getTextFrame(id);
-      if (frame) result = expandBBoxEnvelope(result, frameToBbox(frame));
-      continue;
-    }
-    if (handle.kind === 'code') {
-      const frame = getCodeFrame(id);
-      if (frame) result = expandBBoxEnvelope(result, frameToBbox(frame));
-      continue;
-    }
-    result = expandBBoxEnvelope(result, handle.bbox);
-  }
-
-  return result;
-}
-
-/**
- * Union of scale-source bboxes for the current selection.
- * Text uses layout frame (italic overhangs make bbox differ from visual frame).
- * Zero-arg: reads selectedIds from the selection store.
- */
-export function computeTransformBoundsForScale(): BBoxTuple | null {
-  const { selectedIds } = useSelectionStore.getState();
-  if (selectedIds.length === 0) return null;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const id of selectedIds) {
-    const handle = getHandle(id);
-    if (!handle) continue;
-    const b = handle.kind === 'text' ? frameToBbox(getTextFrame(id) ?? [0, 0, 0, 0]) : handle.bbox;
-    if (b[0] < minX) minX = b[0];
-    if (b[1] < minY) minY = b[1];
-    if (b[2] > maxX) maxX = b[2];
-    if (b[3] > maxY) maxY = b[3];
-  }
-  if (!isFinite(minX)) return null;
-  return [minX, minY, maxX, maxY];
 }
 
 // === Style Computation ===

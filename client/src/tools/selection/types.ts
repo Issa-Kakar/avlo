@@ -5,7 +5,6 @@
 
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind } from '@/core/types/objects';
-import type { HandleId } from '@/core/types/handles';
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
 import type { SnapTarget } from '@/core/connectors/types';
 
@@ -120,9 +119,10 @@ export interface TranslateTransform {
 
 export interface ScaleTransform {
   kind: 'scale';
-  handleId: HandleId;
-  selBounds: BBoxTuple;
-  origin: Point;
+  /** handle-to-origin vector; feeds rawScaleFactors each move */
+  initialDelta: Point;
+  /** cursor-to-handle offset at gesture start; stays constant so the grabbed pixel tracks the cursor */
+  clickOffset: Point;
 }
 
 /**

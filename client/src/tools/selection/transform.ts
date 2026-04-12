@@ -991,5 +991,3 @@ export function getTransformTopology(): ConnectorTopology | null {
 export function getTransformScaleCtx(): ScaleCtx | null {
   return ctrl?.getScaleCtx() ?? null;
 }
-
-export { rawScaleFactors } from '@/core/geometry/scale-system';

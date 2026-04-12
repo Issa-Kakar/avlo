@@ -124,9 +124,9 @@ Tool switches, shape variants, delete, enter-to-edit, image picker.
 | `Cmd+V` | Paste | Handled via DOM paste event, not here |
 | `Cmd+D` | Duplicate selected | Blocked during active gesture |
 | `Cmd+A` | Select all | Cancels non-select tool gesture first |
-| `Cmd+Z` | Undo | Cancels gesture first |
-| `Cmd+Shift+Z` | Redo | Cancels gesture first |
-| `Cmd+Y` | Redo | Cancels gesture first |
+| `Cmd+Z` | Undo | Mid-gesture: cancels the gesture *instead of* undoing (the cancel is the undo). No history pop. |
+| `Cmd+Shift+Z` | Redo | Ignored during gesture — gesture continues, no redo |
+| `Cmd+Y` | Redo | Ignored during gesture — gesture continues, no redo |
 | `Cmd+B` | Toggle bold | Blocked during gesture |
 | `Cmd+I` | Toggle italic | Blocked during gesture |
 | `Cmd+H` | Toggle highlight | Blocked during gesture; uses `computeUniformInlineStyles()` for toggle detection |

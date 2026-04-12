@@ -431,8 +431,8 @@ All property mutations (including style-only changes like color, fill, opacity) 
 | `SelectTool.ts` | `begin()` -> `hide()`, `end()`/`cancel()` -> `show()` (guarded) |
 | `TextTool.ts` | `onCreate` -> `syncInlineStylesToStore` + boundsVersion bump. `onTransaction` -> `syncInlineStylesToStore`. Click-outside handler excludes `.ctx-menu`. |
 | `room-doc-manager.ts` | Observer bridge: refreshStyles + boundsVersion for selected/editing objects |
-| `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts` |
-| `selection-utils.ts` | Pure functions: `computeStyles`, `computeSelectionBounds`, `computeUniformInlineStyles` |
+| `selection-store.ts` | `menuOpen`, `selectedStyles`, `inlineStyles`, `boundsVersion`, `selectionKind`, `kindCounts`, `computeSelectionBounds()` |
+| `selection-utils.ts` | Pure functions: `computeStyles`, `computeUniformInlineStyles` |
 | `selection-actions.ts` | 21 mutation functions called by menu buttons |
 
 ---

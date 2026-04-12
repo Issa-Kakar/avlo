@@ -23,8 +23,8 @@ import { contextMenuController } from '@/runtime/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { handlePosition, handleCursor } from '@/core/types/handles';
-import { getController, getTransformScaleCtx, rawScaleFactors } from './transform';
+import { handleCursor } from '@/core/types/handles';
+import { getController, getTransformScaleCtx } from './transform';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -71,9 +71,6 @@ export class SelectTool implements PointerTool {
   // Target classification for pointer down
   private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
-
-  private initialDelta: [number, number] | null = null;
-  private clickOffset: [number, number] | null = null;
 
   constructor() {}
 
@@ -198,18 +195,12 @@ export class SelectTool implements PointerTool {
           case 'handle': {
             if (!passMove) break;
             this.phase = 'scale';
-
-            useSelectionStore.getState().beginScale(this.pendingHandleId!);
-            const t = useSelectionStore.getState().transform;
-            if (t.kind !== 'scale') {
+            useSelectionStore.getState().beginScale(this.pendingHandleId!, this.downWorld!);
+            if (useSelectionStore.getState().transform.kind !== 'scale') {
               this.phase = 'idle';
               break;
             }
-            const handlePos = handlePosition(t.handleId, t.selBounds);
-            this.initialDelta = [handlePos[0] - t.origin[0], handlePos[1] - t.origin[1]];
-            this.clickOffset = [this.downWorld![0] - handlePos[0], this.downWorld![1] - handlePos[1]];
-
-            setCursorOverride(handleCursor(t.handleId));
+            setCursorOverride(handleCursor(this.pendingHandleId!));
             applyCursor();
             break;
           }
@@ -335,16 +326,8 @@ export class SelectTool implements PointerTool {
       }
 
       case 'scale': {
-        const t = useSelectionStore.getState().transform;
-        if (t.kind !== 'scale' || !this.downWorld || !this.initialDelta || !this.clickOffset) break;
-        const [sx, sy] = rawScaleFactors(
-          worldX - this.clickOffset[0],
-          worldY - this.clickOffset[1],
-          t.origin,
-          this.initialDelta,
-          t.handleId,
-        );
-        useSelectionStore.getState().updateScale(sx, sy);
+        if (useSelectionStore.getState().transform.kind !== 'scale') break;
+        useSelectionStore.getState().updateScale(worldX, worldY);
         break;
       }
 
@@ -688,8 +671,6 @@ export class SelectTool implements PointerTool {
     this.endpointHitAtDown = null;
     this.downTarget = 'none';
     this.downTimeMs = 0;
-    this.initialDelta = null;
-    this.clickOffset = null;
   }
 
   /**

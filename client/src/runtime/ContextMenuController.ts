@@ -1,7 +1,6 @@
 import { computePosition, offset, flip, shift, hide } from '@floating-ui/dom';
 import type { VirtualElement } from '@floating-ui/dom';
-import { useSelectionStore } from '@/stores/selection-store';
-import { computeSelectionBounds } from '@/tools/selection/selection-utils';
+import { useSelectionStore, computeSelectionBounds } from '@/stores/selection-store';
 import { worldToClient } from '@/stores/camera-store';
 import type { BBoxTuple } from '@/core/types/geometry';
 

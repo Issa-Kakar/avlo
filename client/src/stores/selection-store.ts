@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
 import type { HandleId } from '@/tools/types';
 import type { ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple } from '@/core/types/geometry';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
 import { getObjectsById, getHandle } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -10,13 +10,15 @@ import {
   computeSelectionComposition,
   computeStyles,
   computeUniformInlineStyles,
-  computeTransformBoundsForScale,
   stylesEqual,
   inlineStylesEqual,
   EMPTY_ID_SET,
 } from '@/tools/selection/selection-utils';
 import { getController } from '@/tools/selection/transform';
-import { scaleOrigin } from '@/core/types/handles';
+import { scaleOrigin, handlePosition } from '@/core/types/handles';
+import { rawScaleFactors } from '@/core/geometry/scale-system';
+import { getTextFrame } from '@/core/text/text-system';
+import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import type {
   SelectionKind,
   SelectionMode,
@@ -28,8 +30,6 @@ import type {
 } from '@/tools/selection/types';
 import { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from '@/tools/selection/types';
 
-// Re-export for backward compat (external consumers: SelectTool, ContextMenu, selection-overlay, etc.)
-export { computeSelectionBounds } from '@/tools/selection/selection-utils';
 export type {
   SelectionKind,
   SelectionMode,
@@ -87,8 +87,8 @@ export interface SelectionActions {
   // Transform lifecycle
   beginTranslate: () => void;
   updateTranslate: (dx: number, dy: number) => void;
-  beginScale: (handleId: HandleId) => void;
-  updateScale: (sx: number, sy: number) => void;
+  beginScale: (handleId: HandleId, downWorld: Point) => void;
+  updateScale: (worldX: number, worldY: number) => void;
   endTransform: () => void;
   cancelTransform: () => void;
 
@@ -196,16 +196,24 @@ export const useSelectionStore = create<SelectionStore>()(
       getController().updateTranslate(dx, dy);
     },
 
-    beginScale: (handleId) => {
-      const selBounds = computeTransformBoundsForScale();
+    beginScale: (handleId, downWorld) => {
+      const selBounds = computeSelectionBounds();
       if (!selBounds) return;
       const origin = scaleOrigin(handleId, selBounds);
+      const handlePos = handlePosition(handleId, selBounds);
+      const initialDelta: Point = [handlePos[0] - origin[0], handlePos[1] - origin[1]];
+      const clickOffset: Point = [downWorld[0] - handlePos[0], downWorld[1] - handlePos[1]];
       const { selectedIdSet, kindCounts } = get();
       getController().beginScale(selectedIdSet, kindCounts, handleId, origin, selBounds);
-      set({ transform: { kind: 'scale', handleId, selBounds, origin } });
+      set({ transform: { kind: 'scale', initialDelta, clickOffset } });
     },
 
-    updateScale: (sx, sy) => {
+    updateScale: (worldX, worldY) => {
+      const t = get().transform;
+      if (t.kind !== 'scale') return;
+      const sCtx = getController().getScaleCtx();
+      if (!sCtx) return;
+      const [sx, sy] = rawScaleFactors(worldX - t.clickOffset[0], worldY - t.clickOffset[1], sCtx.origin, t.initialDelta, sCtx.handleId);
       getController().updateScale(sx, sy);
     },
 
@@ -347,6 +355,33 @@ export const useSelectionStore = create<SelectionStore>()(
 );
 
 // === Free Functions ===
+
+/**
+ * Compute padded selection bounds from selected IDs.
+ * Zero-arg: reads selectedIds (+ textEditingId/codeEditingId fallback) from this store.
+ * Text uses derived frame (italic overhangs differ from bbox); others use handle.bbox.
+ */
+export function computeSelectionBounds(): BBoxTuple | null {
+  const { selectedIds, textEditingId, codeEditingId } = useSelectionStore.getState();
+  const ids = selectedIds.length > 0 ? selectedIds : textEditingId ? [textEditingId] : codeEditingId ? [codeEditingId] : [];
+  if (ids.length === 0) return null;
+
+  const objectsById = getObjectsById();
+  let result: BBoxTuple | null = null;
+
+  for (const id of ids) {
+    const handle = objectsById.get(id);
+    if (!handle) continue;
+    if (handle.kind === 'text') {
+      const frame = getTextFrame(id);
+      if (frame) result = expandBBoxEnvelope(result, frameToBbox(frame));
+      continue;
+    }
+    result = expandBBoxEnvelope(result, handle.bbox);
+  }
+
+  return result;
+}
 
 /**
  * Filter current selection to only objects of the given kind.
