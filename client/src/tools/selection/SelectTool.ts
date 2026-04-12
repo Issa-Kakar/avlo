@@ -23,7 +23,7 @@ import { contextMenuController } from '@/runtime/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { scaleOrigin, handleCursor } from '@/core/types/handles';
+import { scaleOrigin, handlePosition, handleCursor } from '@/core/types/handles';
 import { getTextFrame } from '@/core/text/text-system';
 import { getController, getTransformScaleCtx, rawScaleFactors } from './transform';
 
@@ -74,6 +74,7 @@ export class SelectTool implements PointerTool {
   private downTimeMs: number = 0;
 
   private initialDelta: [number, number] | null = null;
+  private clickOffset: [number, number] | null = null;
 
   constructor() {}
 
@@ -204,7 +205,9 @@ export class SelectTool implements PointerTool {
             if (!geoBbox) break;
 
             const origin = scaleOrigin(this.activeHandle!, geoBbox);
-            this.initialDelta = [this.downWorld![0] - origin[0], this.downWorld![1] - origin[1]];
+            const handlePos = handlePosition(this.activeHandle!, geoBbox);
+            this.initialDelta = [handlePos[0] - origin[0], handlePos[1] - origin[1]];
+            this.clickOffset = [this.downWorld![0] - handlePos[0], this.downWorld![1] - handlePos[1]];
 
             const ctrl = getController();
             ctrl.beginScale(store.selectedIdSet, store.kindCounts, this.activeHandle!, origin, geoBbox);
@@ -336,11 +339,17 @@ export class SelectTool implements PointerTool {
       }
 
       case 'scale': {
-        if (this.downWorld && this.activeHandle && this.initialDelta) {
+        if (this.downWorld && this.activeHandle && this.initialDelta && this.clickOffset) {
           const ctrl = getController();
           const scaleCtx = ctrl.getScaleCtx();
           if (scaleCtx) {
-            const [sx, sy] = rawScaleFactors(worldX, worldY, scaleCtx.origin, this.initialDelta, scaleCtx.handleId);
+            const [sx, sy] = rawScaleFactors(
+              worldX - this.clickOffset[0],
+              worldY - this.clickOffset[1],
+              scaleCtx.origin,
+              this.initialDelta,
+              scaleCtx.handleId,
+            );
             ctrl.updateScale(sx, sy);
           }
         }
@@ -699,6 +708,7 @@ export class SelectTool implements PointerTool {
     this.downTarget = 'none';
     this.downTimeMs = 0;
     this.initialDelta = null;
+    this.clickOffset = null;
   }
 
   private computeTransformBoundsForScale(): BBoxTuple | null {

@@ -45,7 +45,7 @@ core/geometry/scale-system.ts (pure math atoms — NO STATE)
 ├── rawScaleFactors() — cursor→factors from initialDelta
 ├── uniformFactor(sx, sy, handleId) — handle-aware collapse to 1 signed magnitude
 ├── preservePosition() — relative 0-1 position maintained in scaled/flipped box
-├── edgePinDelta1D/edgePinDelta() — 1D/2D edge-pin translation
+├── edgePinPosition1D() — straddle-aware 1D edge-pin position (origin objects pin near, others pin far)
 └── computeReflowWidth() — edge-scaling + min-width clamping for text/code
 
 core/geometry/bounds.ts (bbox/frame helpers)
@@ -138,11 +138,13 @@ Each target type requires `passMove` (dist > MOVE_THRESHOLD_PX) before transitio
 | `selectionGap` | → `translate` | Gap drag = translate entire selection |
 | `background` | → `marquee` | Empty area drag = marquee select |
 
-### Scale Phase (move)
+### Scale Phase (begin + move)
+
+At begin: `initialDelta = handlePosition - origin` (handle-to-origin vector), `clickOffset = downWorld - handlePosition` (cursor-to-handle gap, stays constant throughout drag).
 
 ```
 1. ctrl = getController(), scaleCtx = ctrl.getScaleCtx()
-2. rawScaleFactors(worldX, worldY, scaleCtx.origin, initialDelta, handleId) → [sx, sy]
+2. rawScaleFactors(worldX - clickOffset[0], worldY - clickOffset[1], scaleCtx.origin, initialDelta, handleId) → [sx, sy]
 3. ctrl.updateScale(sx, sy) — applies to all entries + topology
 ```
 
@@ -412,10 +414,10 @@ getController(): TransformController              // Lazy singleton
 
 Pure math atoms. No types, no factories, no state.
 
-- `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Ensures scale=1.0 when cursor returns to start.
+- `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Cursor position should have clickOffset subtracted before passing.
 - `uniformFactor(sx, sy, handleId)` — handle-aware collapse of 2 axes to 1 signed magnitude. Uses `isHorzSide`/`isVertSide` type guards (not value equality) to detect side handles, preventing corner-handle flicker when one axis passes through 1.0. Min 0.001.
 - `preservePosition(cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box.
-- `edgePinDelta(bbox, selBounds, origin, sx, sy, handleId)` — 2D edge-pin for objects that can't scale.
+- `edgePinPosition1D(objMin, objMax, originV, scale)` — 1D edge-pin position. Straddle-aware: objects whose bbox contains origin pin the nearer edge (stay fixed), all others pin the farther edge (track the dragged handle). Produces discrete flip when crossing origin. `edgePinCtx` in transform.ts composes two 1D calls into a `[dx, dy]` delta.
 - `computeReflowWidth(fx, fw, originX, sx, minW)` — edge-scaling + min-width clamping for text/code reflow.
 
 ### BBox-Based Scale Origins

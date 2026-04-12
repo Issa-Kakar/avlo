@@ -16,7 +16,14 @@ import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind, TextAlign, FontFamily, TextWidth } from '@/core/types/objects';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
-import { scaleAround, uniformFactor, preservePosition, edgePinDelta, roundProp, computeReflowWidth } from '@/core/geometry/scale-system';
+import {
+  scaleAround,
+  uniformFactor,
+  preservePosition,
+  edgePinPosition1D,
+  roundProp,
+  computeReflowWidth,
+} from '@/core/geometry/scale-system';
 import {
   frameToBbox,
   copyBbox,
@@ -211,7 +218,12 @@ function uniformMath(cx: number, cy: number, ctx: ScaleCtx): [ncx: number, ncy: 
   return [ncx, ncy, Math.abs(uf)];
 }
 
-const edgePinCtx = (bbox: BBoxTuple, ctx: ScaleCtx): Point => edgePinDelta(bbox, ctx.selBounds, ctx.origin, ctx.sx, ctx.sy, ctx.handleId);
+function edgePinCtx(bbox: BBoxTuple, ctx: ScaleCtx): Point {
+  return [
+    edgePinPosition1D(bbox[0], bbox[2], ctx.origin[0], ctx.sx) - bbox[0],
+    edgePinPosition1D(bbox[1], bbox[3], ctx.origin[1], ctx.sy) - bbox[1],
+  ];
+}
 
 // ============================================================================
 // Scale Apply Functions — Direct Field Access, No Factories

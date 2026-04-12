@@ -88,49 +88,17 @@ export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin:
   return [nMinX + tx * nW, nMinY + ty * nH];
 }
 
-// ============================================================================
-// Edge-Pin Atoms
-// ============================================================================
-
-/** 1D edge-pin: compute delta to pin object to anchor edge on one axis. */
-export function edgePinDelta1D(
-  objMin: number,
-  objMax: number,
-  anchorV: number,
-  originV: number,
-  scale: number,
-  handleSign: number,
-): number {
-  const EPS = 1e-3;
-  const touchesMin = Math.abs(objMin - anchorV) < EPS;
-  const touchesMax = Math.abs(objMax - anchorV) < EPS;
-  if (touchesMin || touchesMax) {
-    const edge = scale >= 0 ? (touchesMin ? objMin : objMax) : touchesMin ? objMax : objMin;
-    return anchorV - edge;
-  }
-  const cv = (objMin + objMax) / 2;
-  let dv = scaleAround(cv, originV, scale) - cv;
-  if (scale < 0) {
-    const half = (objMax - objMin) / 2;
-    dv += handleSign * half;
-  }
-  return dv;
-}
-
-/** 2D edge-pin: compose 1D per axis based on handle. */
-export function edgePinDelta(bbox: BBoxTuple, sel: BBoxTuple, origin: Point, sx: number, sy: number, handleId: HandleId): Point {
-  const [minX, minY, maxX, maxY] = bbox;
-  if (isHorzSide(handleId)) {
-    const anchor = handleId === 'e' ? sel[0] : sel[2];
-    const sign = handleId === 'e' ? 1 : -1;
-    return [edgePinDelta1D(minX, maxX, anchor, origin[0], sx, sign), 0];
-  }
-  if (isVertSide(handleId)) {
-    const anchor = handleId === 's' ? sel[1] : sel[3];
-    const sign = handleId === 's' ? 1 : -1;
-    return [0, edgePinDelta1D(minY, maxY, anchor, origin[1], sy, sign)];
-  }
-  return [0, 0];
+/** Scale both edges around origin, normalize for flip, pin based on origin relationship. */
+export function edgePinPosition1D(objMin: number, objMax: number, originV: number, scale: number): number {
+  const l = scaleAround(objMin, originV, scale);
+  const r = scaleAround(objMax, originV, scale);
+  const left = Math.min(l, r),
+    right = Math.max(l, r);
+  const size = objMax - objMin;
+  // Objects straddling origin: pin nearer edge (keeps origin-defining objects fixed)
+  if (objMin <= originV && originV <= objMax) return Math.abs(left - originV) <= Math.abs(right - originV) ? left : right - size;
+  // All others: pin farther edge (tracks the dragged handle)
+  return Math.abs(left - originV) >= Math.abs(right - originV) ? left : right - size;
 }
 
 // ============================================================================
