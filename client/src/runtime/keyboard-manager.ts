@@ -147,17 +147,21 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'z':
       e.preventDefault();
-      if (gestureActive) tool!.cancel();
       if (e.shiftKey) {
+        if (gestureActive) return;
         redo();
       } else {
+        if (gestureActive) {
+          tool!.cancel();
+          return;
+        }
         undo();
       }
       return;
 
     case 'y':
       e.preventDefault();
-      if (gestureActive) tool!.cancel();
+      if (gestureActive) return;
       redo();
       return;
 
