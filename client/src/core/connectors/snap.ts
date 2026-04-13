@@ -16,14 +16,13 @@
 
 import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
 import { getShapeTypeMidpoints, directionVector } from './connector-utils';
-import { pointInsideShape } from '../geometry/hit-testing';
-import { getSpatialIndex, getHandle } from '@/runtime/room-runtime';
-import type { ObjectHandle } from '../types/objects';
+import { pointInsideShape } from '../geometry/hit-primitives';
+import { frameOf } from '../geometry/frame-of';
+import { scanTopmost, type HitCandidate } from '../geometry/object-pick';
+import { queryHitCandidates } from '../spatial/object-query';
+import { BINDABLE_KINDS, type BindableKind } from '../types/objects';
 import type { FrameTuple } from '../types/geometry';
-import { getShapeType, getFillColor, getFrame } from '../accessors';
-import { getTextFrame } from '../text/text-system';
-import { getCodeFrame } from '../code/code-system';
-import { getBookmarkFrame } from '../bookmark/bookmark-render';
+import { getHandleShapeType } from '../accessors';
 import type { Dir, SnapTarget, SnapContext } from './types';
 import { isAnchorInterior } from './types';
 
@@ -53,8 +52,13 @@ function computeAnchorAndPosition(
 /**
  * Find the best snap target among all shapes near the cursor.
  *
- * Uses spatial index for efficiency, then sorts by area (smallest first)
- * to handle nested shapes correctly.
+ * Uses `queryHitCandidates` + `scanTopmost` to walk candidates in Z-order with
+ * fill-aware occlusion: filled/text/code/image/note/bookmark candidates block
+ * the scan; unfilled shape interiors are see-through and we memoize the smallest
+ * area as the fallback.
+ *
+ * The `isBindableHandle` pre-filter means the scanner never sees strokes/
+ * connectors, so snap preserves its historical binary filled/unfilled semantics.
  *
  * @param ctx - Snap context with cursor position and scale
  * @returns Best snap target or null if no valid snap
@@ -62,98 +66,21 @@ function computeAnchorAndPosition(
 export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const { cursorWorld, scale } = ctx;
   const [cx, cy] = cursorWorld;
-
-  // Query spatial index using edge snap radius
-  // We only return a snap target if we'd actually snap, not just hover
   const edgeRadius = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
 
-  const results = getSpatialIndex().query({
-    minX: cx - edgeRadius,
-    minY: cy - edgeRadius,
-    maxX: cx + edgeRadius,
-    maxY: cy + edgeRadius,
+  const candidates = queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS);
+  if (candidates.length === 0) return null;
+
+  const trySnap = (c: HitCandidate<BindableKind>): SnapTarget | null => {
+    const frame = frameOf(c.handle);
+    if (!frame) return null;
+    return computeSnapForShape(c.handle.id, frame, getHandleShapeType(c.handle), ctx);
+  };
+
+  return scanTopmost(candidates, {
+    accept: trySnap,
+    onSeeThrough: trySnap,
   });
-
-  // Filter to shapes and text only (connectable)
-  const handles: ObjectHandle[] = [];
-  for (const entry of results) {
-    const h = getHandle(entry.id);
-    if (
-      h &&
-      (h.kind === 'shape' || h.kind === 'text' || h.kind === 'code' || h.kind === 'image' || h.kind === 'note' || h.kind === 'bookmark')
-    ) {
-      handles.push(h);
-    }
-  }
-
-  if (handles.length === 0) return null;
-
-  // Build candidates with area for sorting
-  interface Candidate {
-    handle: ObjectHandle;
-    frame: FrameTuple;
-    area: number;
-    shapeType: string;
-    isFilled: boolean;
-  }
-  const candidates: Candidate[] = [];
-
-  for (const handle of handles) {
-    const frame =
-      handle.kind === 'text' || handle.kind === 'note'
-        ? getTextFrame(handle.id)
-        : handle.kind === 'code'
-          ? getCodeFrame(handle.id)
-          : handle.kind === 'bookmark'
-            ? getBookmarkFrame(handle.id)
-            : getFrame(handle.y);
-    if (!frame) continue;
-    const shapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
-    const isFilled =
-      handle.kind === 'text' ||
-      handle.kind === 'code' ||
-      handle.kind === 'image' ||
-      handle.kind === 'note' ||
-      handle.kind === 'bookmark' ||
-      !!getFillColor(handle.y);
-    candidates.push({ handle, frame, area: frame[2] * frame[3], shapeType, isFilled });
-  }
-
-  // Sort by Z-order: ULID descending (topmost first)
-  candidates.sort((a, b) => (a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0));
-
-  // Fill-aware visual ordering: scan from top, stop at filled occlusion
-  let bestUnfilled: { candidate: Candidate; snap: SnapTarget } | null = null;
-
-  for (const candidate of candidates) {
-    const { handle, frame, shapeType, isFilled, area } = candidate;
-
-    // Check if cursor inside this shape's interior (frame is FrameTuple, matches pointInsideShape signature)
-    const isInsideInterior = pointInsideShape(cx, cy, frame, shapeType);
-
-    if (isInsideInterior && isFilled) {
-      // Filled interior occludes everything below - try snap then stop
-      const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
-      if (snap) return snap;
-      break; // Stop scanning even if no snap
-    }
-
-    if (isInsideInterior && !isFilled) {
-      // Unfilled interior is transparent - track smallest, keep scanning
-      const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
-      if (snap && (!bestUnfilled || area < bestUnfilled.candidate.area)) {
-        bestUnfilled = { candidate, snap };
-      }
-      continue;
-    }
-
-    // Not inside interior - edge snap always visible
-    const snap = computeSnapForShape(handle.id, frame, shapeType, ctx);
-    if (snap) return snap;
-  }
-
-  // Return smallest unfilled frame if no paint found
-  return bestUnfilled?.snap ?? null;
 }
 
 /**
@@ -180,7 +107,7 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
   const forceMidpointDepthW = pxToWorld(SNAP_CONFIG.FORCE_MIDPOINT_DEPTH_PX, scale);
 
   // Check if inside shape (shape-type aware)
-  const isInside = pointInsideShape(cx, cy, frame, shapeType);
+  const isInside = pointInsideShape([cx, cy], frame, shapeType);
 
   // Compute depth inside (approximate - use distance to nearest edge)
   let insideDepth = 0;

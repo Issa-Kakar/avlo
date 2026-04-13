@@ -14,17 +14,21 @@
 
 import { getHandle } from '@/runtime/room-runtime';
 import type { FrameTuple, BBoxTuple } from '../types/geometry';
-import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, getFrame, type StoredAnchor } from '../accessors';
+import { tupleToFrame } from '../types/geometry';
+import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAnchor } from '../accessors';
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
-import { getTextFrame } from '../text/text-system';
-import { getCodeFrame } from '../code/code-system';
-import { getBookmarkFrame } from '../bookmark/bookmark-render';
+import { frameOf } from '../geometry/frame-of';
 import { computeAStarRoute } from './routing-astar';
 import { applyAnchorToFrame, resolveFreeStartDir, computeFreeEndDir, computeShapeEdgeIntersection } from './connector-utils';
 import type { Dir, AABB, SnapTarget, ConnectorType } from './types';
 import { isAnchorInterior } from './types';
-import { getConnectorType, getShapeType } from '../accessors';
+import { getConnectorType, getHandleShapeType } from '../accessors';
 import { EDGE_CLEARANCE_W } from './constants';
+
+/** AABB == Frame, so a FrameTuple converts via tupleToFrame. Null-safe wrapper for resolve sites. */
+function frameToAABB(frame: FrameTuple | null | undefined): AABB | null {
+  return frame ? tupleToFrame(frame) : null;
+}
 
 /**
  * Endpoint override value for rerouteConnector.
@@ -163,21 +167,14 @@ function resolveEndpoint(
           isAnchored: false,
         };
       }
-      const shapeHandle = getHandle(anchor.id);
-      const sType = shapeHandle?.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
       const pos = applyAnchorToFrame(anchor.anchor, override.frame, anchor.side);
       return {
         position: pos,
         dir: anchor.side,
-        shapeBounds: {
-          x: override.frame[0],
-          y: override.frame[1],
-          w: override.frame[2],
-          h: override.frame[3],
-        },
+        shapeBounds: tupleToFrame(override.frame),
         isAnchored: true,
         normalizedAnchor: anchor.anchor,
-        shapeType: sType,
+        shapeType: getHandleShapeType(getHandle(anchor.id)),
         frame: override.frame,
         shapeId: anchor.id,
       };
@@ -186,31 +183,15 @@ function resolveEndpoint(
     // SnapTarget (has shapeId property)
     const snap = override as SnapTarget;
     const handle = getHandle(snap.shapeId);
-    const frame =
-      handle &&
-      (handle.kind === 'shape' ||
-        handle.kind === 'text' ||
-        handle.kind === 'code' ||
-        handle.kind === 'image' ||
-        handle.kind === 'note' ||
-        handle.kind === 'bookmark')
-        ? handle.kind === 'text' || handle.kind === 'note'
-          ? getTextFrame(handle.id)
-          : handle.kind === 'code'
-            ? getCodeFrame(handle.id)
-            : handle.kind === 'bookmark'
-              ? getBookmarkFrame(handle.id)
-              : getFrame(handle.y)
-        : null;
-    const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
+    const frame = frameOf(handle);
 
     return {
       position: snap.position,
       dir: snap.side,
-      shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
+      shapeBounds: frameToAABB(frame),
       isAnchored: true,
       normalizedAnchor: snap.normalizedAnchor,
-      shapeType: sType,
+      shapeType: getHandleShapeType(handle),
       frame: frame ?? undefined,
       shapeId: snap.shapeId,
     };
@@ -219,33 +200,17 @@ function resolveEndpoint(
   // 2. No override — use stored anchor/position data
   if (anchor) {
     const anchorHandle = getHandle(anchor.id);
-    const frame =
-      anchorHandle &&
-      (anchorHandle.kind === 'shape' ||
-        anchorHandle.kind === 'text' ||
-        anchorHandle.kind === 'code' ||
-        anchorHandle.kind === 'image' ||
-        anchorHandle.kind === 'note' ||
-        anchorHandle.kind === 'bookmark')
-        ? anchorHandle.kind === 'text' || anchorHandle.kind === 'note'
-          ? getTextFrame(anchorHandle.id)
-          : anchorHandle.kind === 'code'
-            ? getCodeFrame(anchorHandle.id)
-            : anchorHandle.kind === 'bookmark'
-              ? getBookmarkFrame(anchorHandle.id)
-              : getFrame(anchorHandle.y)
-        : null;
+    const frame = frameOf(anchorHandle);
 
     if (frame) {
-      const sType = anchorHandle?.kind === 'shape' ? getShapeType(anchorHandle.y) : 'rect';
       const position = applyAnchorToFrame(anchor.anchor, frame, anchor.side);
       return {
         position,
         dir: anchor.side,
-        shapeBounds: { x: frame[0], y: frame[1], w: frame[2], h: frame[3] },
+        shapeBounds: tupleToFrame(frame),
         isAnchored: true,
         normalizedAnchor: anchor.anchor,
-        shapeType: sType,
+        shapeType: getHandleShapeType(anchorHandle),
         frame,
         shapeId: anchor.id,
       };
@@ -366,30 +331,14 @@ function resolveNewEndpoint(value: SnapTarget | [number, number]): ResolvedEndpo
   }
   const snap = value;
   const handle = getHandle(snap.shapeId);
-  const frame =
-    handle &&
-    (handle.kind === 'shape' ||
-      handle.kind === 'text' ||
-      handle.kind === 'code' ||
-      handle.kind === 'image' ||
-      handle.kind === 'note' ||
-      handle.kind === 'bookmark')
-      ? handle.kind === 'text' || handle.kind === 'note'
-        ? getTextFrame(handle.id)
-        : handle.kind === 'code'
-          ? getCodeFrame(handle.id)
-          : handle.kind === 'bookmark'
-            ? getBookmarkFrame(handle.id)
-            : getFrame(handle.y)
-      : null;
-  const sType = handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
+  const frame = frameOf(handle);
   return {
     position: snap.position,
     dir: snap.side,
-    shapeBounds: frame ? { x: frame[0], y: frame[1], w: frame[2], h: frame[3] } : null,
+    shapeBounds: frameToAABB(frame),
     isAnchored: true,
     normalizedAnchor: snap.normalizedAnchor,
-    shapeType: sType,
+    shapeType: getHandleShapeType(handle),
     frame: frame ?? undefined,
     shapeId: snap.shapeId,
   };

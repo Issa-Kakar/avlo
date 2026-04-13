@@ -51,6 +51,10 @@ export default [
       // which can't resolve ambient types (e.g. IDBTransactionMode, R2GetOptions)
       'no-undef': 'off',
 
+      // Base no-redeclare flags TS function overloads; swap in the TS-aware version.
+      'no-redeclare': 'off',
+      '@typescript-eslint/no-redeclare': 'error',
+
       // Keep these light for fast pre-commit
       '@typescript-eslint/no-unused-vars': [
         'error',

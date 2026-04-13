@@ -11,10 +11,9 @@
 
 import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
 import { getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
-import { getFrame, getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
-import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
+import { getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
+import { isBindableHandle } from '@/core/types/objects';
+import { frameOf } from '@/core/geometry/frame-of';
 import type { ConnectorTopology, ConnectorTopologyEntry, EndpointSpec } from './types';
 
 /**
@@ -100,19 +99,10 @@ export function computeConnectorTopology(transformKind: 'translate' | 'scale', s
     }
   }
 
-  // Pass 2: Non-selected connectors anchored to selected shapes
+  // Pass 2: Non-selected connectors anchored to selected bindable objects
   for (const id of selectedIds) {
     const handle = getHandle(id);
-    if (
-      !handle ||
-      (handle.kind !== 'shape' &&
-        handle.kind !== 'text' &&
-        handle.kind !== 'code' &&
-        handle.kind !== 'image' &&
-        handle.kind !== 'note' &&
-        handle.kind !== 'bookmark')
-    )
-      continue;
+    if (!isBindableHandle(handle)) continue;
     const connectors = getConnectorsForShape(id);
     if (!connectors) continue;
     for (const connId of connectors) {
@@ -122,27 +112,11 @@ export function computeConnectorTopology(transformKind: 'translate' | 'scale', s
 
   if (entries.length === 0) return null;
 
-  // Collect original frames for all selected shapes (for frame overrides)
+  // Collect original frames for all selected bindable objects (for frame overrides)
   for (const id of selectedIds) {
     const handle = getHandle(id);
-    if (
-      !handle ||
-      (handle.kind !== 'shape' &&
-        handle.kind !== 'text' &&
-        handle.kind !== 'code' &&
-        handle.kind !== 'image' &&
-        handle.kind !== 'note' &&
-        handle.kind !== 'bookmark')
-    )
-      continue;
-    const frame =
-      handle.kind === 'text' || handle.kind === 'note'
-        ? getTextFrame(handle.id)
-        : handle.kind === 'code'
-          ? getCodeFrame(handle.id)
-          : handle.kind === 'bookmark'
-            ? getBookmarkFrame(handle.id)
-            : getFrame(handle.y);
+    if (!isBindableHandle(handle)) continue;
+    const frame = frameOf(handle);
     if (frame) originalFrames.set(id, frame);
   }
 

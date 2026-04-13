@@ -20,8 +20,7 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { deleteSelected, toggleSelectedBold, toggleSelectedItalic, setSelectedHighlight } from '@/tools/selection/selection-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getTextFrame } from '@/core/text/text-system';
-import { getFrame } from '@/core/accessors';
+import { frameOf } from '@/core/geometry/frame-of';
 import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
 import {
   copySelected,
@@ -270,7 +269,7 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) return;
 
     // Compute center
-    const frame = handle.kind === 'text' || handle.kind === 'note' ? getTextFrame(handle.id) : getFrame(handle.y);
+    const frame = frameOf(handle);
     if (!frame) return;
 
     const centerX = frame[0] + frame[2] / 2;

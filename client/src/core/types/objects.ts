@@ -17,6 +17,41 @@ export interface ObjectHandle {
   bbox: BBoxTuple; // Computed locally, NOT stored in Y.Map
 }
 
+// ============================================================================
+// BINDABLE KINDS — connectable targets (everything except stroke/connector)
+// ============================================================================
+
+export type BindableKind = Extract<ObjectKind, 'shape' | 'text' | 'code' | 'image' | 'note' | 'bookmark'>;
+export type UnbindableKind = Exclude<ObjectKind, BindableKind>;
+
+export const BINDABLE_KINDS: readonly BindableKind[] = ['shape', 'text', 'code', 'image', 'note', 'bookmark'] as const;
+
+const BINDABLE_SET: ReadonlySet<ObjectKind> = new Set(BINDABLE_KINDS);
+export const isBindableKind = (k: ObjectKind): k is BindableKind => BINDABLE_SET.has(k);
+
+export type BindableHandle = ObjectHandle & { kind: BindableKind };
+export const isBindableHandle = (h: ObjectHandle | null | undefined): h is BindableHandle => !!h && isBindableKind(h.kind);
+
+/**
+ * Does this kind have paint throughout its interior (blocks a Z-scan)?
+ *
+ * Text is technically transparent outside glyphs, but character-tight hit
+ * testing is out of scope — we treat it as opaque throughout its bbox.
+ * Shape is the only kind whose interior can be see-through (unfilled shapes
+ * — decided per-instance via getFillColor).
+ *
+ * Record<BindableKind, boolean> forces exhaustiveness: adding a bindable kind
+ * is a compile error until it's added here.
+ */
+export const INTERIOR_PAINT: Record<BindableKind, boolean> = {
+  shape: false,
+  image: true,
+  text: true,
+  code: true,
+  note: true,
+  bookmark: true,
+};
+
 // Spatial index entry (minimal)
 export interface IndexEntry {
   minX: number;

@@ -1,7 +1,6 @@
 import type { Snapshot } from '@/core/types/snapshot';
 import { getWidth, getFillColor } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
+import { frameOf } from '@/core/geometry/frame-of';
 import { getPath, getConnectorPaths } from '../geometry-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 
@@ -74,22 +73,11 @@ export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[
       }
 
       ctx.restore();
-    } else if (kind === 'text') {
-      // Text: dim the bounding box
-      const frame = getTextFrame(handle.id);
+    } else if (kind === 'text' || kind === 'code' || kind === 'note') {
+      // Framed kinds: dim the derived frame rect.
+      const frame = frameOf(handle);
       if (!frame) continue;
-      const [x, y, w, h] = frame;
-      ctx.fillRect(x, y, w, h);
-    } else if (kind === 'code') {
-      const frame = getCodeFrame(handle.id);
-      if (!frame) continue;
-      const [x, y, w, h] = frame;
-      ctx.fillRect(x, y, w, h);
-    } else if (kind === 'note') {
-      const frame = getTextFrame(handle.id);
-      if (!frame) continue;
-      const [x, y, w, h] = frame;
-      ctx.fillRect(x, y, w, h);
+      ctx.fillRect(frame[0], frame[1], frame[2], frame[3]);
     }
   }
 

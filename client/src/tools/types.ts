@@ -1,6 +1,6 @@
 // Phase 5: Drawing Tool Types
 
-import type { BBoxTuple } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
 
 /**
  * HandleId identifies resize handles at selection corners and sides
@@ -121,7 +121,7 @@ export interface ConnectorPreview {
   /** Shape we're snapped to (null = not snapped, dots won't show) */
   snapShapeId: string | null;
   /** Frame of snapped shape [x, y, w, h] for dot placement */
-  snapShapeFrame: [number, number, number, number] | null;
+  snapShapeFrame: FrameTuple | null;
   /** Shape type for proper dot placement ('rect' | 'ellipse' | 'diamond') */
   snapShapeType: string | null;
   /** Which midpoint is active (snapped to t=0.5) */

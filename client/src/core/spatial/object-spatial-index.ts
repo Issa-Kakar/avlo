@@ -1,5 +1,6 @@
 import RBush from 'rbush';
 import type { ObjectKind, IndexEntry, ObjectHandle } from '../types/objects';
+import type { BBoxTuple } from '../types/geometry';
 
 export class ObjectSpatialIndex {
   private tree = new RBush<IndexEntry>(9);
@@ -24,8 +25,22 @@ export class ObjectSpatialIndex {
     this.tree.remove({ minX, minY, maxX, maxY, id } as IndexEntry, (a, b) => a.id === b.id);
   }
 
+  /**
+   * @deprecated Use queryBBox (tuple-first) instead. rbush `{minX,...}` shape is
+   * an implementation detail of this class.
+   */
   query(bounds: { minX: number; minY: number; maxX: number; maxY: number }): IndexEntry[] {
     return this.tree.search(bounds);
+  }
+
+  /** Tuple-first bbox query. */
+  queryBBox(bbox: BBoxTuple): IndexEntry[] {
+    return this.tree.search({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3] });
+  }
+
+  /** Radius query around (x, y). */
+  queryRadius(x: number, y: number, r: number): IndexEntry[] {
+    return this.tree.search({ minX: x - r, minY: y - r, maxX: x + r, maxY: y + r });
   }
 
   bulkLoad(handles: ObjectHandle[]): void {

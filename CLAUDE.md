@@ -53,9 +53,12 @@ All paths relative to `client/src/` unless noted.
 | File | Notes |
 |------|-------|
 | `tools/types.ts` | PointerTool interface + PreviewData types |
-| `tools/selection/SelectTool.ts` | Selection, translate, scale, connector endpoints, code/text editing entry |
+| `tools/selection/SelectTool.ts` | Selection state machine, translate, scale, connector endpoints, code/text editing entry |
+| `tools/selection/transform.ts` | TransformController, entry system, mapped per-kind dispatch tables |
+| `tools/selection/types.ts` | Shared selection types (TransformState, entry/dispatch helpers) |
 | `tools/selection/selection-utils.ts` | Selection composition, bounds, style computation |
 | `tools/selection/selection-actions.ts` | Selection mutations (color, fill, width, shape, text formatting, code language/fontSize) |
+| `tools/selection/connector-topology.ts` | Builds the connector topology graph (attached connectors per selected shape) |
 | `tools/DrawingTool.ts` | Pen, highlighter, AND shape drawing |
 | `tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
 | `tools/TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay. **Docs:** `core/text/CLAUDE.md` |
@@ -68,16 +71,20 @@ All paths relative to `client/src/` unless noted.
 |------|----------------|
 | `core/accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
 | `core/types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
-| `core/types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` + all prop types |
+| `core/types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` + all prop types + `BindableKind`/`BINDABLE_KINDS`/`isBindableHandle`/`INTERIOR_PAINT` |
 | `core/types/snapshot.ts` | `Snapshot`, `createEmptySnapshot` |
 | `core/index.ts` | Type re-exports for convenience |
 | `core/geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch |
 | `core/geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds operations, mutating offset primitives |
 | `core/geometry/scale-system.ts` | Pure math atoms: `uniformFactor` (handle-aware), `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` (no state) |
 | `core/types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
-| `core/geometry/hit-testing.ts` | Shared SelectTool + EraserTool, marquee intersection |
+| `core/geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms (no handles, no Y.Map) |
+| `core/geometry/hit-testing.ts` | Object-aware layer: `HitCandidate`, `testObjectHit` mapped dispatch, `objectIntersectsRect`, `hitTestHandle`, `hitTestVisibleText/Code/Note` |
+| `core/geometry/object-pick.ts` | Z-order scanner + paint classifier: `classifyPaint`, `isSeeThrough`, `sortZTopFirst`, `scanTopmost`, `pickFrameAware` |
+| `core/geometry/frame-of.ts` | `frameOf(handle)` — mapped dispatch to the right frame getter for any bindable kind |
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
-| `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper |
+| `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` |
+| `core/spatial/object-query.ts` | Query facade bridging spatial index → handles → hit-test: `queryHitCandidates(x,y,r,kinds?)`, `queryHandlesInBBox(bbox,kinds?)`. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
 | Folder | Coverage |
@@ -394,6 +401,11 @@ Shape, image, stroke, connector store geometry directly in Y.Doc (`frame`, `poin
 | bookmark | `getBookmarkFrame(id)` | `core/bookmark/bookmark-render.ts` |
 
 All return `FrameTuple | null` (`null` before first layout). `computeBBoxFor(id, kind, yMap)` dispatches to the correct subsystem's `computeXxxBBox()` — called by RoomDocManager on hydration and Y.Doc changes. Frame getters are used by hit testing, selection bounds, connectors, and overlay rendering.
+
+**Global helpers** (prefer over inline dispatch):
+- `frameOf(handle)` from `@/core/geometry/frame-of` — resolves the frame of any bindable handle via mapped dispatch. Returns `null` for unbindable kinds or unhydrated frames.
+- `getHandleShapeType(handle)` from `@/core/accessors` — returns `shapeType` for shape handles, `'rect'` for every other bindable kind.
+- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` / `INTERIOR_PAINT` from `@/core/types/objects` — the canonical set of connectable kinds and their interior-paint flags (used by snap pre-filter and `classifyPaint`).
 
 ---
 

@@ -20,10 +20,10 @@ import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay, holdPreviewForOneFrame } from '@/renderer/OverlayRenderLoop';
-import { getShapeType, getFrame } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
-import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
+import { getHandleShapeType } from '@/core/accessors';
+import type { FrameTuple } from '@/core/types/geometry';
+import { frameOf } from '@/core/geometry/frame-of';
+import { isBindableHandle } from '@/core/types/objects';
 import {
   type Dir,
   type SnapTarget,
@@ -205,32 +205,17 @@ export class ConnectorTool implements PointerTool {
 
     // Snap state (ONLY set when actually snapped - dots appear when snapped)
     let snapShapeId: string | null = null;
-    let snapShapeFrame: [number, number, number, number] | null = null;
+    let snapShapeFrame: FrameTuple | null = null;
     let snapShapeType: string | null = null;
 
     if (this.hoverSnap) {
       const handle = getHandle(this.hoverSnap.shapeId);
-      if (
-        handle &&
-        (handle.kind === 'shape' ||
-          handle.kind === 'text' ||
-          handle.kind === 'code' ||
-          handle.kind === 'image' ||
-          handle.kind === 'note' ||
-          handle.kind === 'bookmark')
-      ) {
-        const frame =
-          handle.kind === 'text' || handle.kind === 'note'
-            ? getTextFrame(handle.id)
-            : handle.kind === 'code'
-              ? getCodeFrame(handle.id)
-              : handle.kind === 'bookmark'
-                ? getBookmarkFrame(handle.id)
-                : getFrame(handle.y);
+      if (isBindableHandle(handle)) {
+        const frame = frameOf(handle);
         if (frame) {
           snapShapeId = this.hoverSnap.shapeId;
-          snapShapeFrame = [frame[0], frame[1], frame[2], frame[3]];
-          snapShapeType = handle.kind === 'shape' ? getShapeType(handle.y) : 'rect';
+          snapShapeFrame = frame;
+          snapShapeType = getHandleShapeType(handle);
         }
       }
     }

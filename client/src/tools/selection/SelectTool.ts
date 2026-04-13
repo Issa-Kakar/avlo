@@ -3,18 +3,13 @@ import { textTool, codeTool } from '@/runtime/tool-registry';
 import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/stores/selection-store';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { scaleBBoxAround, pointsToBBox, translateBBox } from '@/core/geometry/bounds';
-import {
-  pointInBBox,
-  hitTestHandle,
-  hitTestEndpointDots,
-  objectIntersectsRect,
-  testObjectHit,
-  type HitCandidate,
-  type EndpointHit,
-} from '@/core/geometry/hit-testing';
+import { pointInBBox } from '@/core/geometry/hit-primitives';
+import { hitTestHandle, hitTestEndpointDots, objectIntersectsRect, type HitCandidate, type EndpointHit } from '@/core/geometry/hit-testing';
+import { pickFrameAware } from '@/core/geometry/object-pick';
+import { queryHitCandidates, queryHandlesInBBox } from '@/core/spatial/object-query';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
-import { getCurrentSnapshot, getSpatialIndex, getHandle, transact, getObjects } from '@/runtime/room-runtime';
+import { getCurrentSnapshot, getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { isShiftHeld, isCtrlOrMetaHeld, isCtrlHeld } from '@/runtime/InputManager';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -133,7 +128,9 @@ export class SelectTool implements PointerTool {
     this.hitAtDown = hit;
 
     if (hit) {
-      const isSelected = selectedIds.includes(hit.id);
+      const hitId = hit.handle.id;
+      const hitKind = hit.handle.kind;
+      const isSelected = selectedIds.includes(hitId);
       //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
@@ -141,7 +138,7 @@ export class SelectTool implements PointerTool {
       if (
         isSelected &&
         selectedIds.length === 1 &&
-        (hit.kind === 'text' || hit.kind === 'code' || hit.kind === 'note' || textTool.justClosedLabelId === hit.id)
+        (hitKind === 'text' || hitKind === 'code' || hitKind === 'note' || textTool.justClosedLabelId === hitId)
       ) {
         contextMenuController.cancelHide();
       }
@@ -153,7 +150,7 @@ export class SelectTool implements PointerTool {
     if (mode === 'standard') {
       // Standard mode has selection bounds - can have gap clicks
       const selectionBounds = computeSelectionBounds();
-      if (selectionBounds && pointInBBox(worldX, worldY, selectionBounds)) {
+      if (selectionBounds && pointInBBox([worldX, worldY], selectionBounds)) {
         this.downTarget = 'selectionGap';
         this.phase = 'pendingClick';
         invalidateOverlay();
@@ -234,26 +231,25 @@ export class SelectTool implements PointerTool {
           case 'objectOutsideSelection': {
             if (!passMove) break;
 
+            const hitHandle = this.hitAtDown!.handle;
+
             // Connectors: check anchor state to decide drag behavior
-            if (this.hitAtDown?.kind === 'connector') {
-              const connHandle = getHandle(this.hitAtDown.id);
-              if (connHandle) {
-                const sa = getStartAnchor(connHandle.y);
-                const ea = getEndAnchor(connHandle.y);
-                if (sa || ea) {
-                  // Anchored → marquee (can't translate anchored connector)
-                  this.phase = 'marquee';
-                  useSelectionStore.getState().beginMarquee(this.downWorld!);
-                  useSelectionStore.getState().updateMarquee([worldX, worldY]);
-                  this.updateMarqueeSelection();
-                  break;
-                }
+            if (hitHandle.kind === 'connector') {
+              const sa = getStartAnchor(hitHandle.y);
+              const ea = getEndAnchor(hitHandle.y);
+              if (sa || ea) {
+                // Anchored → marquee (can't translate anchored connector)
+                this.phase = 'marquee';
+                useSelectionStore.getState().beginMarquee(this.downWorld!);
+                useSelectionStore.getState().updateMarquee([worldX, worldY]);
+                this.updateMarqueeSelection();
+                break;
               }
             }
 
             // Non-connector or free connector: select + translate
             const store = useSelectionStore.getState();
-            store.setSelection([this.hitAtDown!.id]);
+            store.setSelection([hitHandle.id]);
             this.phase = 'translate';
             useSelectionStore.getState().beginTranslate();
             break;
@@ -402,23 +398,27 @@ export class SelectTool implements PointerTool {
             }
             break;
 
-          case 'objectOutsideSelection':
+          case 'objectOutsideSelection': {
+            const hitId = this.hitAtDown!.handle.id;
             if (this.hasAddModifier()) {
               // Additive: add to current selection
               const current = store.selectedIds;
-              if (!current.includes(this.hitAtDown!.id)) {
-                store.setSelection([...current, this.hitAtDown!.id]);
+              if (!current.includes(hitId)) {
+                store.setSelection([...current, hitId]);
               }
             } else {
               // Replace selection
-              store.setSelection([this.hitAtDown!.id]);
+              store.setSelection([hitId]);
             }
             break;
+          }
 
-          case 'objectInSelection':
+          case 'objectInSelection': {
+            const hitHandle = this.hitAtDown!.handle;
+            const hitId = hitHandle.id;
             if (this.hasAddModifier()) {
               // Subtractive: remove from selection
-              const remaining = store.selectedIds.filter((id) => id !== this.hitAtDown!.id);
+              const remaining = store.selectedIds.filter((id) => id !== hitId);
               if (remaining.length > 0) {
                 store.setSelection(remaining);
               } else {
@@ -426,24 +426,25 @@ export class SelectTool implements PointerTool {
               }
             } else if (store.selectedIds.length > 1) {
               // Drill down to single object
-              store.setSelection([this.hitAtDown!.id]);
+              store.setSelection([hitId]);
             } else if (
-              (this.hitAtDown!.kind === 'text' || this.hitAtDown!.kind === 'shape' || this.hitAtDown!.kind === 'note') &&
+              (hitHandle.kind === 'text' || hitHandle.kind === 'shape' || hitHandle.kind === 'note') &&
               !textTool.isEditorMounted()
             ) {
-              if (textTool.justClosedLabelId === this.hitAtDown!.id) {
+              if (textTool.justClosedLabelId === hitId) {
                 textTool.justClosedLabelId = null;
               } else {
-                textTool.startEditing(this.hitAtDown!.id, this.downWorld!);
+                textTool.startEditing(hitId, this.downWorld!);
               }
-            } else if (this.hitAtDown!.kind === 'code' && !codeTool.isEditorMounted()) {
-              if (codeTool.justClosedCodeId === this.hitAtDown!.id) {
+            } else if (hitHandle.kind === 'code' && !codeTool.isEditorMounted()) {
+              if (codeTool.justClosedCodeId === hitId) {
                 codeTool.justClosedCodeId = null;
               } else {
-                codeTool.startEditing(this.hitAtDown!.id, this.downWorld!);
+                codeTool.startEditing(hitId, this.downWorld!);
               }
             }
             break;
+          }
 
           case 'selectionGap':
             // Quick tap in gap → deselect
@@ -713,22 +714,15 @@ export class SelectTool implements PointerTool {
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
     const marqueeBBox = pointsToBBox(marquee.anchor, marquee.current);
-    // WorldBounds-compatible view for spatial index + objectIntersectsRect (external systems)
-    const marqueeRect = { minX: marqueeBBox[0], minY: marqueeBBox[1], maxX: marqueeBBox[2], maxY: marqueeBBox[3] };
 
     // Query spatial index for objects with bbox intersecting marquee (fast filter)
-    const results = getSpatialIndex().query(marqueeRect);
+    const handles = queryHandlesInBBox(marqueeBBox);
 
     // Geometry-aware intersection test for each candidate
-    // Select objects whose actual geometry intersects marquee (industry standard)
     const selectedIds: string[] = [];
-    for (const entry of results) {
-      const handle = getHandle(entry.id);
-      if (!handle) continue;
-
-      // Use precise geometry intersection test
-      if (objectIntersectsRect(handle, marqueeRect)) {
-        selectedIds.push(entry.id);
+    for (const handle of handles) {
+      if (objectIntersectsRect(handle, marqueeBBox)) {
+        selectedIds.push(handle.id);
       }
     }
 
@@ -749,125 +743,6 @@ export class SelectTool implements PointerTool {
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
-
-    // Query spatial index with bounding box
-    const results = getSpatialIndex().query({
-      minX: worldX - radiusWorld,
-      minY: worldY - radiusWorld,
-      maxX: worldX + radiusWorld,
-      maxY: worldY + radiusWorld,
-    });
-
-    const candidates: HitCandidate[] = [];
-
-    for (const entry of results) {
-      const handle = getHandle(entry.id);
-      if (!handle) continue;
-
-      const candidate = testObjectHit(worldX, worldY, radiusWorld, handle);
-      if (candidate) candidates.push(candidate);
-    }
-
-    if (candidates.length === 0) return null;
-    if (candidates.length === 1) return candidates[0];
-
-    return this.pickBestCandidate(candidates);
-  }
-
-  /**
-   * Z-order aware candidate selection.
-   * Scans from topmost (highest ULID) to bottommost, respecting visual occlusion.
-   *
-   * Key insight: Unfilled shape interiors are "transparent" for selection -
-   * we keep scanning for paint underneath. But they ARE selectable if nothing
-   * else is found.
-   */
-  private pickBestCandidate(candidates: HitCandidate[]): HitCandidate {
-    if (candidates.length === 1) return candidates[0];
-
-    // Sort by Z: ULID descending = newest/topmost first
-    const sorted = [...candidates].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-
-    type PaintClass = 'ink' | 'fill';
-
-    // Unfilled shape interior = transparent logical region (not paint)
-    const isFrameInterior = (c: HitCandidate): boolean => c.kind === 'shape' && !c.isFilled && c.insideInterior;
-
-    // Everything else that actually paints pixels at this point
-    const classifyPaint = (c: HitCandidate): PaintClass | null => {
-      if (c.kind === 'stroke' || c.kind === 'connector') return 'ink';
-
-      if (c.kind === 'text') {
-        if (c.isFilled && c.insideInterior) return 'fill';
-        return 'ink';
-      }
-
-      if (c.kind === 'code') {
-        if (c.insideInterior) return 'fill';
-        return 'ink';
-      }
-
-      if (c.kind === 'shape') {
-        if (c.isFilled) return 'fill';
-        if (!c.insideInterior) return 'ink';
-        return null; // Unfilled shape interior = transparent
-      }
-
-      return 'ink';
-    };
-
-    let bestFrame: HitCandidate | null = null; // Smallest unfilled interior
-    let firstPaint: HitCandidate | null = null; // First visible paint in Z
-    let firstPaintClass: PaintClass | null = null;
-
-    // Scan from topmost to bottommost, respecting occlusion
-    for (const c of sorted) {
-      if (isFrameInterior(c)) {
-        // Transparent frame region: remember smallest, keep scanning
-        if (!bestFrame || c.area < bestFrame.area) {
-          bestFrame = c;
-        }
-        continue; // Don't stop - look for paint underneath
-      }
-
-      const paintClass = classifyPaint(c);
-      if (paintClass !== null) {
-        // Found first painted thing - this occludes everything below
-        firstPaint = c;
-        firstPaintClass = paintClass;
-        break; // Stop scanning
-      }
-    }
-
-    // Case 1: Only frame interiors, no paint at this pixel
-    if (!firstPaint && bestFrame) {
-      return bestFrame; // Return smallest frame (most nested)
-    }
-
-    // Case 2: No paint and no frames (shouldn't happen)
-    if (!firstPaint) {
-      return sorted[0]; // Fallback to topmost
-    }
-
-    // Case 3: First painted thing is ink (stroke/text/connector/border)
-    // Ink ALWAYS beats frames
-    if (firstPaintClass === 'ink') {
-      return firstPaint;
-    }
-
-    // Case 4: First painted thing is a filled shape interior
-    if (!bestFrame) {
-      return firstPaint; // No frames to compare with
-    }
-
-    // Case 5: Both filled shape and frame(s) contain the cursor
-    // "More enclosed" = smaller region wins
-    if (bestFrame.area < firstPaint.area) return bestFrame;
-    if (firstPaint.area < bestFrame.area) return firstPaint;
-
-    // Equal areas: tie-break by Z (sorted is topmost-first)
-    const idxPaint = sorted.indexOf(firstPaint);
-    const idxFrame = sorted.indexOf(bestFrame);
-    return idxPaint <= idxFrame ? firstPaint : bestFrame;
+    return pickFrameAware(queryHitCandidates(worldX, worldY, radiusWorld));
   }
 }

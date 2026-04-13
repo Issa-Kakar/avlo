@@ -25,7 +25,7 @@ import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorld } from '@/renderer/RenderLoop';
-import { getActiveRoomDoc, getCurrentSnapshot, getHandle, getHandleKind, transact, getObjects } from '@/runtime/room-runtime';
+import { getActiveRoomDoc, getHandle, getHandleKind, transact, getObjects } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
 import {
   getTextProps,
@@ -98,15 +98,11 @@ export class TextTool implements PointerTool {
   begin(pointerId: number, worldX: number, worldY: number): void {
     if (this.gestureActive) return;
 
-    const snapshot = getCurrentSnapshot();
-    const { scale } = useCameraStore.getState();
-
     this.gestureActive = true;
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
     const tool = useDeviceUIStore.getState().activeTool;
-    this.hitTextId =
-      tool === 'note' ? hitTestVisibleNote(worldX, worldY, snapshot, scale) : hitTestVisibleText(worldX, worldY, snapshot, scale);
+    this.hitTextId = tool === 'note' ? hitTestVisibleNote(worldX, worldY) : hitTestVisibleText(worldX, worldY);
   }
 
   move(_worldX: number, _worldY: number): void {

@@ -10,6 +10,7 @@
 import * as Y from 'yjs';
 import type { FrameTuple, Frame } from './types/geometry';
 import type {
+  ObjectHandle,
   StoredAnchor,
   TextAlign,
   TextAlignV,
@@ -72,6 +73,11 @@ export function getFrameObject(y: Y.Map<unknown>): Frame | null {
 
 export function getShapeType(y: Y.Map<unknown>): string {
   return (y.get('shapeType') as string | undefined) ?? 'rect';
+}
+
+/** Read shape type from a handle; non-shape bindables (text/code/etc.) always route as rect. */
+export function getHandleShapeType(handle: ObjectHandle | null | undefined): string {
+  return handle?.kind === 'shape' ? getShapeType(handle.y) : 'rect';
 }
 
 export function getFillColor(y: Y.Map<unknown>): string | undefined {

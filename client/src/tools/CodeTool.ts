@@ -87,8 +87,7 @@ export class CodeTool implements PointerTool {
     this.downWorld = [worldX, worldY];
 
     // Hit test for existing code blocks
-    const scale = useCameraStore.getState().scale;
-    this.hitCodeId = hitTestVisibleCode(worldX, worldY, getActiveRoomDoc().currentSnapshot, scale);
+    this.hitCodeId = hitTestVisibleCode(worldX, worldY);
   }
 
   move(_worldX: number, _worldY: number): void {

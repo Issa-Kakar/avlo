@@ -17,9 +17,10 @@
 import type { SelectionPreview, HandleId } from '@/tools/types';
 import type { Snapshot } from '@/core/types/snapshot';
 import type { ObjectHandle } from '@/core/types/objects';
-import { getFrame, getShapeType, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
+import { getFrame, getHandleShapeType, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
+import { frameOf } from '@/core/geometry/frame-of';
 import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
@@ -443,15 +444,10 @@ function drawSnapMidpointDots(
   const shapeHandle = snapshot.objectsById.get(snap.shapeId);
   if (!shapeHandle) return;
 
-  const shapeFrame =
-    shapeHandle.kind === 'text' || shapeHandle.kind === 'note'
-      ? getTextFrame(shapeHandle.id)
-      : shapeHandle.kind === 'code'
-        ? getCodeFrame(shapeHandle.id)
-        : getFrame(shapeHandle.y);
+  const shapeFrame = frameOf(shapeHandle);
   if (!shapeFrame) return;
 
-  const shapeType = shapeHandle.kind === 'shape' ? getShapeType(shapeHandle.y) : 'rect';
+  const shapeType = getHandleShapeType(shapeHandle);
 
   // Draw snap target highlight — cached geometry for shapes, strokeRect for others
   ctx.save();
