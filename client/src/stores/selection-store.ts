@@ -164,7 +164,6 @@ export const useSelectionStore = create<SelectionStore>()(
         selectedIdSet: comp.selectedIdSet,
         kindCounts: comp.kindCounts,
         transform: { kind: 'none' },
-        marquee: { active: false, anchor: null, current: null },
         boundsVersion: get().boundsVersion + 1,
       });
       get().refreshStyles();

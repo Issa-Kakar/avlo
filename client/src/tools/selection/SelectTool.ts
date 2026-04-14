@@ -4,9 +4,10 @@ import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/sto
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { scaleBBoxAround, pointsToBBox, translateBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
-import { hitTestHandle, hitTestEndpointDots, objectIntersectsRect, type HitCandidate, type EndpointHit } from '@/core/geometry/hit-testing';
-import { pickFrameAware } from '@/core/geometry/object-pick';
-import { queryHitCandidates, queryHandlesInBBox } from '@/core/spatial/object-query';
+import { hitTestHandle, hitTestEndpointDots, type HitCandidate, type EndpointHit } from '@/core/geometry/hit-testing';
+import { queryHits, queryHandles } from '@/core/spatial/object-query';
+import { pickFrameAware } from '@/core/spatial/pickers';
+import { inBBox } from '@/core/spatial/region';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
 import { getCurrentSnapshot, getHandle, transact, getObjects } from '@/runtime/room-runtime';
@@ -715,26 +716,16 @@ export class SelectTool implements PointerTool {
 
     const marqueeBBox = pointsToBBox(marquee.anchor, marquee.current);
 
-    // Query spatial index for objects with bbox intersecting marquee (fast filter)
-    const handles = queryHandlesInBBox(marqueeBBox);
+    // Spatial pre-filter + geometry-tight rect intersection in one pass.
+    const overlapping = queryHandles({ region: inBBox(marqueeBBox), precise: 'rect' });
+    const selectedIds = overlapping.map((h) => h.id).sort();
+    const current = store.selectedIds.slice().sort();
 
-    // Geometry-aware intersection test for each candidate
-    const selectedIds: string[] = [];
-    for (const handle of handles) {
-      if (objectIntersectsRect(handle, marqueeBBox)) {
-        selectedIds.push(handle.id);
-      }
-    }
-
-    // Update selection (preserving marquee state)
-    if (JSON.stringify(selectedIds.sort()) !== JSON.stringify(store.selectedIds.sort())) {
-      // Only update if changed to avoid thrashing
-      store.setSelection(selectedIds);
-      // Re-enable marquee since setSelection clears it
-      store.beginMarquee(marquee.anchor);
-      if (marquee.current) {
-        store.updateMarquee(marquee.current);
-      }
+    // Cheap diff: lengths first, then element-wise. Avoids JSON.stringify churn.
+    const changed =
+      selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i]);
+    if (changed) {
+      store.setSelection(selectedIds); // marquee state owned by gesture, no longer clobbered
     }
   }
 
@@ -743,6 +734,6 @@ export class SelectTool implements PointerTool {
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
     const { scale } = useCameraStore.getState();
     const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
-    return pickFrameAware(queryHitCandidates(worldX, worldY, radiusWorld));
+    return pickFrameAware(queryHits({ at: [worldX, worldY], radius: radiusWorld }));
   }
 }

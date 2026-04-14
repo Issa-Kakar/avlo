@@ -1,11 +1,11 @@
-import { strokeHitTest, circleRectIntersect, circleHitsShape } from '@/core/geometry/hit-primitives';
-import { frameOf } from '@/core/geometry/frame-of';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
-import { getSpatialIndex, getHandle, transact, getObjects, getConnectorsForShape } from '@/runtime/room-runtime';
+import { getHandle, transact, getObjects, getConnectorsForShape } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
-import { getFrame, getPoints, getWidth, getShapeType, getFillColor, getStartAnchor, getEndAnchor } from '@/core/accessors';
+import { getStartAnchor, getEndAnchor } from '@/core/accessors';
+import { queryHandles } from '@/core/spatial/object-query';
+import { atPoint } from '@/core/spatial/region';
 import type { PointerTool } from './types';
 
 // Fixed radius configuration
@@ -137,52 +137,14 @@ export class EraserTool implements PointerTool {
 
   private updateHitTest(worldX: number, worldY: number): void {
     const { scale } = useCameraStore.getState();
-
-    // Convert fixed screen radius to world units (with slack for forgiving feel)
     const radiusWorld = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / scale;
 
     this.state.hitNow.clear();
 
-    // Query spatial index with bounding box
-    const results = getSpatialIndex().queryRadius(worldX, worldY, radiusWorld);
+    // Per-kind fill-aware circle dispatch lives in the capability table now.
+    const inCircle = queryHandles({ region: atPoint([worldX, worldY], radiusWorld), precise: 'circle' });
+    for (const h of inCircle) this.state.hitNow.add(h.id);
 
-    for (const entry of results) {
-      const handle = getHandle(entry.id);
-      if (!handle) continue;
-
-      const cursor: [number, number] = [worldX, worldY];
-
-      if (handle.kind === 'stroke' || handle.kind === 'connector') {
-        const points = getPoints(handle.y);
-        if (points.length === 0) continue;
-        if (strokeHitTest(cursor, points, radiusWorld)) {
-          this.state.hitNow.add(handle.id);
-        }
-        continue;
-      }
-
-      if (handle.kind === 'shape') {
-        const frame = getFrame(handle.y);
-        if (!frame) continue;
-        const shapeType = getShapeType(handle.y);
-        const strokeWidth = getWidth(handle.y, 1);
-        const isFilled = !!getFillColor(handle.y);
-        if (circleHitsShape(cursor, radiusWorld, frame, shapeType, strokeWidth, isFilled)) {
-          this.state.hitNow.add(handle.id);
-        }
-        continue;
-      }
-
-      // All remaining bindable kinds (text/note/code/image/bookmark) are
-      // rect-framed and always opaque throughout their bbox.
-      const frame = frameOf(handle);
-      if (!frame) continue;
-      if (circleRectIntersect(cursor, radiusWorld, frame)) {
-        this.state.hitNow.add(handle.id);
-      }
-    }
-
-    // Add to accumulator when erasing
     if (this.state.isErasing) {
       for (const id of this.state.hitNow) {
         this.state.hitAccum.add(id);
