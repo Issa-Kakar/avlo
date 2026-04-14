@@ -72,7 +72,6 @@ All paths relative to `client/src/` unless noted.
 | `core/accessors.ts` | Typed Y.Map accessors (getColor, getFrame, getTextProps, getCodeProps, getImageProps, getNoteProps, getBookmarkProps, etc.) |
 | `core/types/geometry.ts` | `BBoxTuple`, `FrameTuple`, `WorldBounds`, `Frame` + converters |
 | `core/types/objects.ts` | `ObjectKind`, `ObjectHandle`, `IndexEntry` + all prop types + `BindableKind`/`BINDABLE_KINDS`/`isBindableHandle`/`INTERIOR_PAINT` |
-| `core/types/snapshot.ts` | `Snapshot`, `createEmptySnapshot` |
 | `core/index.ts` | Type re-exports for convenience |
 | `core/geometry/bbox.ts` | `computeBBoxFor(id, kind, yMap)` — unified per-kind dispatch |
 | `core/geometry/bounds.ts` | BBox/frame tuple helpers, WorldBounds operations, mutating offset primitives |
@@ -209,15 +208,8 @@ RoomDocManager
    Camera Store (scale, pan, viewport) - self-subscribed
 ```
 
-### Snapshot
-```typescript
-interface Snapshot {
-  docVersion: number;
-  objectsById: ReadonlyMap<string, ObjectHandle>;
-  spatialIndex: ObjectSpatialIndex;
-}
-```
-Published by RoomDocManager on every Y.Doc change. Most consumers use `getObjectsById()`, `getSpatialIndex()`, `getHandle(id)` from room-runtime directly. Snapshot is passed to render functions.
+### Data Access
+Canonical imperative getters live in `runtime/room-runtime.ts`: `getObjectsById()`, `getSpatialIndex()`, `getHandle(id)`, `getBbox(id)`. RoomDocManager's deep observer publishes per-object geometry changes directly via `evictGeometry` + `invalidateWorldBBox` — there is no top-level snapshot object or `subscribeSnapshot` channel.
 
 ### Write Path
 ```
@@ -225,7 +217,6 @@ Tool.begin/move/end() → user gesture
    → tool.commit() → transact(() => { getObjects().set(...) })
    → ydoc.transact() → Y.Map.set()
    → Deep observer → applyObjectChanges() → evictGeometry(id) + invalidateWorldBBox()
-   → handleYDocUpdate → publishSnapshotNow() → CanvasRuntime invalidates overlay
 ```
 
 ### Event Flow
@@ -265,7 +256,7 @@ Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disco
 
 Key exports: `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`, `transact(fn)`/`undo()`/`redo()`, `getConnectorsForShape(shapeId)`.
 
-Prefer `getHandle(id)` over `getCurrentSnapshot().objectsById.get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`.
+Prefer `getHandle(id)` over `getObjectsById().get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`.
 
 ---
 
@@ -427,7 +418,7 @@ Synchronous constructor, async init (fire-and-forget). `objectsById` and `spatia
 
 **Init:** IDB sync (1s timeout) → hydrate objects + `bulkLoad` spatial index → setup deep observer (AFTER hydrate) → attach UndoManager → init WS provider + presence. WS first sync triggers `repackSpatialIndex()` for optimal packing.
 
-**Key methods:** `mutate(fn)` (prefer `transact()` from room-runtime), `undo()`/`redo()`, `subscribeSnapshot(cb)`.
+**Key methods:** `mutate(fn)` (prefer `transact()` from room-runtime), `undo()`/`redo()`.
 
 **Deep observer:** `observeDeep()` on objects Y.Map → `computeBBoxFor(id, kind, yMap)` + `evictGeometry(id)` + kind-specific cache invalidation (text layout, code tokens, bookmark layout) + `invalidateWorldBBox(bbox)`. Connector lookup updated on topology changes. Deletions → `removeObjectCaches(id, kind)`.
 

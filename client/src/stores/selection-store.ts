@@ -339,12 +339,12 @@ export const useSelectionStore = create<SelectionStore>()(
 
       const patch: Partial<SelectionState> = {};
 
-      const next = computeStyles(ids, kind, getObjectsById());
+      const next = computeStyles(ids, kind);
       if (!stylesEqual(current, next)) patch.selectedStyles = next;
 
       // Inline text styles — only when editor is NOT mounted
       if (textEditingId === null && (kind === 'text' || kind === 'shape' || kind === 'note') && ids.length > 0) {
-        const inline = computeUniformInlineStyles(ids, getObjectsById());
+        const inline = computeUniformInlineStyles(ids);
         if (!inlineStylesEqual(get().inlineStyles, inline)) patch.inlineStyles = inline;
       }
 

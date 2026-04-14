@@ -22,4 +22,3 @@ export type {
   BindableHandle,
 } from './types/objects';
 export { isBindableKind, isBindableHandle, INTERIOR_PAINT, BINDABLE_KINDS } from './types/objects';
-export type { Snapshot, ObjectSpatialIndexShape } from './types/snapshot';

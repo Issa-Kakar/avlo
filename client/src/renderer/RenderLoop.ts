@@ -2,7 +2,6 @@ import { drawObjects } from './layers/objects';
 import { FRAME_CONFIG } from './types';
 import { useCameraStore, isMobile } from '@/stores/camera-store';
 import { getBaseContext, applyPendingResize } from '@/runtime/SurfaceManager';
-import { getCurrentSnapshot } from '@/runtime/room-runtime';
 import type { WorldBounds, BBoxTuple } from '@/core/types/geometry';
 import { manageImageViewport } from '@/core/image/image-manager';
 
@@ -258,10 +257,7 @@ export class RenderLoop {
     this.canvasW = pixelW;
     this.canvasH = pixelH;
 
-    // 4. Read snapshot
-    const snapshot = getCurrentSnapshot();
-
-    // 5. Viewport-driven image management (decode visible, evict off-viewport, mip selection)
+    // 4. Viewport-driven image management (decode visible, evict off-viewport, mip selection)
     manageImageViewport();
 
     // 6. Coalesce overlapping dirty rects
@@ -311,7 +307,7 @@ export class RenderLoop {
       ctx.clip();
     }
 
-    drawObjects(ctx, snapshot, clipWorldRects);
+    drawObjects(ctx, clipWorldRects);
 
     if (clipWorldRects) ctx.restore();
     ctx.restore();

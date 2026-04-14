@@ -1,6 +1,6 @@
-import type { Snapshot } from '@/core/types/snapshot';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import type { BBoxTuple, FrameTuple, WorldBounds } from '@/core/types/geometry';
+import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import {
   getColor,
   getOpacity,
@@ -72,8 +72,9 @@ function withTransform(ctx: CanvasRenderingContext2D, tx: number, ty: number, sx
   ctx.restore();
 }
 
-export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, clipWorldRects?: WorldBounds[]): void {
-  const { spatialIndex, objectsById } = snapshot;
+export function drawObjects(ctx: CanvasRenderingContext2D, clipWorldRects?: WorldBounds[]): void {
+  const spatialIndex = getSpatialIndex();
+  const objectsById = getObjectsById();
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
   const selectionState = useSelectionStore.getState();
   const selectedSet = selectionState.selectedIdSet;
@@ -165,7 +166,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, snapshot: Snapshot, c
       } else if (transform.kind === 'scale') {
         // Scale: entry-based rendering (typed by kind)
         if (handle.kind !== 'connector') {
-          renderScaleEntry(ctx, handle, snapshot);
+          renderScaleEntry(ctx, handle);
         } else {
           const points = connTopology?.reroutes.get(handle.id);
           if (points) {
@@ -542,7 +543,7 @@ function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHa
 // Entry-Based Scale Transform Rendering
 // ============================================================================
 
-function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, _snapshot: Snapshot): void {
+function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   switch (handle.kind) {
     case 'shape': {
       const entry = getScaleEntry('shape', handle.id);

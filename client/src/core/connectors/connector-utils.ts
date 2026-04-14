@@ -13,9 +13,9 @@
 
 import type { FrameTuple } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
-import type { Snapshot } from '../types/snapshot';
 import { getStart, getEnd, getStartAnchor, getEndAnchor } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
+import { getHandle } from '@/runtime/room-runtime';
 import type { Dir, AABB, Bounds } from './types';
 import { isAnchorInterior } from './types';
 import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
@@ -498,9 +498,8 @@ export function applyAnchorToFrame(anchor: [number, number], frame: FrameTuple, 
  *
  * @param handle - The connector's ObjectHandle
  * @param endpoint - Which endpoint ('start' or 'end')
- * @param snapshot - Current snapshot for shape frame lookup
  */
-export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end', snapshot: Snapshot): [number, number] {
+export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): [number, number] {
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
   const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
@@ -511,7 +510,7 @@ export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' 
   }
 
   // Anchored: look up shape frame and interpolate normalized anchor
-  const shapeHandle = snapshot.objectsById.get(anchor.id);
+  const shapeHandle = getHandle(anchor.id);
   const frame = frameOf(shapeHandle);
   if (!frame) return storedPos ?? [0, 0];
 

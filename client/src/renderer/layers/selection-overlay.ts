@@ -15,7 +15,6 @@
  */
 
 import type { SelectionPreview, HandleId } from '@/tools/types';
-import type { Snapshot } from '@/core/types/snapshot';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getFrame, getHandleShapeType, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
@@ -27,6 +26,8 @@ import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/core/connector
 import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
 import type { SnapTarget } from '@/core/connectors/types';
 import { isAnchorInterior } from '@/core/connectors/types';
+import { getHandle } from '@/runtime/room-runtime';
+import { useCameraStore } from '@/stores/camera-store';
 
 // =============================================================================
 // STYLING CONSTANTS
@@ -83,32 +84,31 @@ const SELECTION_STYLE = {
  *
  * @param ctx - Canvas 2D context with world transform applied
  * @param preview - SelectionPreview data from SelectTool
- * @param scale - Current zoom scale (for consistent visual sizing)
- * @param snapshot - Current snapshot for object lookups
  */
-export function drawSelectionOverlay(ctx: CanvasRenderingContext2D, preview: SelectionPreview, scale: number, snapshot: Snapshot): void {
+export function drawSelectionOverlay(ctx: CanvasRenderingContext2D, preview: SelectionPreview): void {
+  const scale = useCameraStore.getState().scale;
   // Read store for connector mode state
   const { mode, transform } = useSelectionStore.getState();
   const isConnectorMode = mode === 'connector';
 
   // Phase 1: Object highlights (skip connector bbox in connector mode)
   if (!preview.isTransforming && preview.selectedIds.length > 0) {
-    drawObjectHighlights(ctx, preview.selectedIds, snapshot, scale, isConnectorMode);
+    drawObjectHighlights(ctx, preview.selectedIds, scale, isConnectorMode);
   }
 
   // Phase 2: Marquee rectangle
   if (preview.marqueeRect) {
-    drawMarqueeRect(ctx, preview.marqueeRect, scale);
+    drawMarqueeRect(ctx, preview.marqueeRect);
   }
 
   // Phase 3: Selection box + handles (only when not transforming, never in connector mode)
   if (preview.selectionBounds && !preview.isTransforming && !isConnectorMode) {
-    drawSelectionBoxAndHandles(ctx, preview.selectionBounds, preview.handles, scale);
+    drawSelectionBoxAndHandles(ctx, preview.selectionBounds, preview.handles);
   }
 
   // Phase 4: Connector endpoint dots (connector mode only, single connector)
   if (isConnectorMode && preview.selectedIds.length === 1) {
-    drawConnectorEndpointDots(ctx, preview.selectedIds[0], transform, snapshot, scale);
+    drawConnectorEndpointDots(ctx, preview.selectedIds[0], transform);
   }
 }
 
@@ -126,20 +126,14 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D, preview: Sel
  *
  * @param suppressConnectors - When true, skip connector bbox highlights (connector mode)
  */
-function drawObjectHighlights(
-  ctx: CanvasRenderingContext2D,
-  selectedIds: string[],
-  snapshot: Snapshot,
-  scale: number,
-  suppressConnectors: boolean,
-): void {
+function drawObjectHighlights(ctx: CanvasRenderingContext2D, selectedIds: string[], scale: number, suppressConnectors: boolean): void {
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
   ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
   for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (!handle) continue;
 
     // Skip connector bbox highlight in connector mode
@@ -222,7 +216,8 @@ function drawObjectHighlights(
  *
  * Darker blue fill with solid blue stroke.
  */
-function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: [number, number, number, number], scale: number): void {
+function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: [number, number, number, number]): void {
+  const scale = useCameraStore.getState().scale;
   const [minX, minY, maxX, maxY] = marqueeRect;
 
   // Darker fill - visible tint
@@ -245,8 +240,8 @@ function drawSelectionBoxAndHandles(
   ctx: CanvasRenderingContext2D,
   selectionBounds: [number, number, number, number],
   handles: { id: HandleId; x: number; y: number }[] | null,
-  scale: number,
 ): void {
+  const scale = useCameraStore.getState().scale;
   const [minX, minY, maxX, maxY] = selectionBounds;
 
   // Selection box stroke
@@ -301,14 +296,9 @@ function drawSelectionBoxAndHandles(
  * the dragged endpoint shows snap state (active=blue with glow, inactive=white+blue).
  * Also renders midpoint dots on the snap target shape during drag.
  */
-function drawConnectorEndpointDots(
-  ctx: CanvasRenderingContext2D,
-  connectorId: string,
-  transform: TransformState,
-  snapshot: Snapshot,
-  scale: number,
-): void {
-  const handle = snapshot.objectsById.get(connectorId);
+function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
+  const scale = useCameraStore.getState().scale;
+  const handle = getHandle(connectorId);
   if (!handle || handle.kind !== 'connector') return;
 
   const radius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
@@ -328,7 +318,7 @@ function drawConnectorEndpointDots(
 
     // Non-dragged endpoint: canonical position, always inactive
     const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
-    const otherPos = getEndpointEdgePosition(handle, otherEndpoint, snapshot);
+    const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
 
     if (endpoint === 'start') {
       startPos = draggedPos;
@@ -348,12 +338,12 @@ function drawConnectorEndpointDots(
         isAnchorInterior(currentSnap.normalizedAnchor) &&
         currentSnap.normalizedAnchor[0] === 0.5 &&
         currentSnap.normalizedAnchor[1] === 0.5;
-      drawSnapMidpointDots(ctx, currentSnap, snapshot, scale, isStraight, isCenterSnap);
+      drawSnapMidpointDots(ctx, currentSnap, isStraight, isCenterSnap);
     }
   } else {
     // Idle: both at canonical positions, both inactive
-    startPos = getEndpointEdgePosition(handle, 'start', snapshot);
-    endPos = getEndpointEdgePosition(handle, 'end', snapshot);
+    startPos = getEndpointEdgePosition(handle, 'start');
+    endPos = getEndpointEdgePosition(handle, 'end');
   }
 
   // Draw dots (inactive first so active renders on top)
@@ -408,20 +398,20 @@ function drawConnectorEndpointDots(
         if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
           const draggedPos = currentSnap.edgePosition;
           const lineEnd = endpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
-          drawDashedGuideLine(ctx, draggedPos, lineEnd, scale);
+          drawDashedGuideLine(ctx, draggedPos, lineEnd);
         }
         // Non-dragged endpoint: use stored anchor + routedPoints
         const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
         const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
         if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
-          const otherPos = getEndpointEdgePosition(handle, otherEndpoint, snapshot);
+          const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
           const otherLineEnd = otherEndpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
-          drawDashedGuideLine(ctx, otherPos, otherLineEnd, scale);
+          drawDashedGuideLine(ctx, otherPos, otherLineEnd);
         }
       }
     } else {
       // Idle: use stored points
-      drawStraightConnectorGuides(ctx, handle, startPos, endPos, snapshot, scale);
+      drawStraightConnectorGuides(ctx, handle, startPos, endPos);
     }
   }
 }
@@ -436,12 +426,11 @@ function drawConnectorEndpointDots(
 function drawSnapMidpointDots(
   ctx: CanvasRenderingContext2D,
   snap: SnapTarget,
-  snapshot: Snapshot,
-  scale: number,
   isStraight: boolean = false,
   isCenterSnap: boolean = false,
 ): void {
-  const shapeHandle = snapshot.objectsById.get(snap.shapeId);
+  const scale = useCameraStore.getState().scale;
+  const shapeHandle = getHandle(snap.shapeId);
   if (!shapeHandle) return;
 
   const shapeFrame = frameOf(shapeHandle);
@@ -558,8 +547,6 @@ function drawStraightConnectorGuides(
   handle: ObjectHandle,
   startPos: [number, number],
   endPos: [number, number],
-  _snapshot: Snapshot,
-  scale: number,
 ): void {
   const points = getPoints(handle.y);
   if (points.length < 2) return;
@@ -569,17 +556,18 @@ function drawStraightConnectorGuides(
 
   // Dashed guide from interior dot position to line start (edge intersection)
   if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
-    drawDashedGuideLine(ctx, startPos, points[0], scale);
+    drawDashedGuideLine(ctx, startPos, points[0]);
   }
 
   // Dashed guide from interior dot position to line end (edge intersection)
   if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
-    drawDashedGuideLine(ctx, endPos, points[points.length - 1], scale);
+    drawDashedGuideLine(ctx, endPos, points[points.length - 1]);
   }
 }
 
 /** Draw a dashed guide line between two points. */
-function drawDashedGuideLine(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number], scale: number): void {
+function drawDashedGuideLine(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number]): void {
+  const scale = useCameraStore.getState().scale;
   const dashLen = pxToWorld(6, scale);
   const gapLen = pxToWorld(4, scale);
   ctx.save();

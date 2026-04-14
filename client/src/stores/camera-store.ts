@@ -17,11 +17,18 @@ import { create } from 'zustand';
 import { subscribeWithSelector, persist } from 'zustand/middleware';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
-import type { ViewTransform } from '@/core/types/snapshot';
 
 // ============================================
 // TYPES
 // ============================================
+
+// View transform for coordinate conversion
+export interface ViewTransform {
+  worldToCanvas: (x: number, y: number) => [number, number];
+  canvasToWorld: (x: number, y: number) => [number, number];
+  scale: number; // world px → canvas px
+  pan: { x: number; y: number }; // world offset
+}
 
 export interface CameraState {
   /** Zoom level (1.0 = 100%) */

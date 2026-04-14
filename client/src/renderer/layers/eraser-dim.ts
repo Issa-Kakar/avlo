@@ -1,14 +1,14 @@
-import type { Snapshot } from '@/core/types/snapshot';
 import { getWidth, getFillColor } from '@/core/accessors';
 import { frameOf } from '@/core/geometry/frame-of';
 import { getPath, getConnectorPaths } from '../geometry-cache';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
+import { getHandle } from '@/runtime/room-runtime';
 
 /**
  * Draw dimmed objects with a uniform white lighten effect.
  * Uses 'screen' blend mode for consistent lightening.
  */
-export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[], snapshot: Snapshot, baseOpacity: number): void {
+export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[], baseOpacity: number): void {
   if (!hitIds.length) return;
 
   const hitSet = new Set(hitIds);
@@ -21,7 +21,7 @@ export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[
   ctx.strokeStyle = '#ffffff';
 
   for (const id of hitSet) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (!handle) continue;
 
     const { kind } = handle;

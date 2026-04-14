@@ -22,6 +22,7 @@ import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
 import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
 import { buildRoundedPolylinePath, buildArrowPath, computeEndTrimInfo, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getHandle } from '@/runtime/room-runtime';
+import { useCameraStore } from '@/stores/camera-store';
 import { getPath } from '../geometry-cache';
 import { getWidth } from '@/core/accessors';
 
@@ -33,9 +34,9 @@ import { getWidth } from '@/core/accessors';
  *
  * @param ctx - Canvas 2D context with world transform applied
  * @param preview - ConnectorPreview data from tool
- * @param scale - Current zoom scale (for pxToWorld conversions)
  */
-export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: ConnectorPreview, scale: number): void {
+export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: ConnectorPreview): void {
+  const scale = useCameraStore.getState().scale;
   const {
     points,
     color,

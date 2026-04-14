@@ -7,7 +7,6 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
 import { getUserId } from '@/stores/device-ui-store';
 import type { RoomId } from '@avlo/shared';
-import type { Snapshot } from '@/core/types/snapshot';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import type { BBoxTuple } from '@/core/types/geometry';
@@ -33,8 +32,6 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { hydrateImages } from '@/core/image/image-manager';
 import { attach, detach } from './presence/presence';
 
-type Unsub = () => void;
-
 // Type alias for Y structures
 type YObjects = Y.Map<Y.Map<unknown>>;
 
@@ -43,9 +40,6 @@ export interface IRoomDocManager {
   readonly objects: YObjects;
   readonly objectsById: ReadonlyMap<string, ObjectHandle>;
   readonly spatialIndex: ObjectSpatialIndex;
-
-  readonly currentSnapshot: Snapshot;
-  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub;
 
   mutate(fn: () => void): void;
   destroy(): void;
@@ -75,17 +69,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Undo/Redo manager
   private undoManager: Y.UndoManager | null = null;
 
-  // Current state
-  private _currentSnapshot: Snapshot;
-
-  // Subscription management
-  private snapshotSubscribers = new Set<(snap: Snapshot) => void>();
-
   // Track if destroyed for cleanup
   private destroyed = false;
-
-  // Document version tracking
-  private docVersion = 0;
 
   // Connection tracking
   private wsConnected = false;
@@ -104,16 +89,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
 
-    // Initial snapshot references our live (empty) instances
-    this._currentSnapshot = {
-      docVersion: 0,
-      objectsById: this.objectsById,
-      spatialIndex: this.spatialIndex,
-    };
-
-    // Y.Doc-level update observer (before IDB to catch updates)
-    this.setupObservers();
-
     // Async init: IDB → hydrate → observer → UndoManager → WS
     void this.init();
   }
@@ -126,7 +101,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // 2. Init connector lookup + hydrate from IDB data (first STR bulk load)
     initConnectorLookup();
     this.hydrateObjectsFromY();
-    this.publishSnapshotNow();
 
     // 3. Attach deep observer AFTER hydrate (critical ordering)
     this.setupObjectsObserver();
@@ -136,11 +110,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     // 5. WS provider (sync listener handles repack)
     if (!this.destroyed) this.initializeWebSocketProvider();
-  }
-
-  // Public getters
-  get currentSnapshot(): Snapshot {
-    return this._currentSnapshot;
   }
 
   /**
@@ -157,20 +126,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       trackedOrigins: new Set([this.userId, ySyncPluginKey]),
       captureTimeout: 500,
     });
-  }
-
-  // Subscription methods
-  subscribeSnapshot(cb: (snap: Snapshot) => void): Unsub {
-    if (this.destroyed) {
-      return () => {};
-    }
-
-    this.snapshotSubscribers.add(cb);
-    cb(this._currentSnapshot);
-
-    return () => {
-      this.snapshotSubscribers.delete(cb);
-    };
   }
 
   mutate(fn: () => void): void {
@@ -226,9 +181,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       this.undoManager = null;
     }
 
-    // Remove Y.Doc observers
-    this.ydoc.off('updateV2', this.handleYDocUpdate);
-
     // Remove objects observer
     if (this.objectsObserver) {
       try {
@@ -248,16 +200,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clear object maps
     this.objectsById.clear();
 
-    // Clear subscriptions
-    this.snapshotSubscribers.clear();
-
     // Destroy Y.Doc
     this.ydoc.destroy();
-  }
-
-  // Phase 2.4 Component B: Y.Doc Observer Setup
-  private setupObservers(): void {
-    this.ydoc.on('updateV2', this.handleYDocUpdate);
   }
 
   // ============================================================
@@ -453,12 +397,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     invalidateWorldAll();
   }
 
-  // Arrow function property ensures stable reference for event listener cleanup
-  private handleYDocUpdate = (_update: Uint8Array, _origin: unknown): void => {
-    this.docVersion = (this.docVersion + 1) >>> 0;
-    this.publishSnapshotNow();
-  };
-
   private async initializeIndexedDBProvider(): Promise<void> {
     try {
       const dbName = `avlo.v1.rooms.${this.roomId}`;
@@ -506,25 +444,5 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   public isConnected(): boolean {
     return this.wsConnected;
-  }
-
-  // ============================================================
-  // PART 5: Event-Driven Snapshot Publishing
-  // ============================================================
-
-  private publishSnapshotNow(): void {
-    const snap: Snapshot = {
-      docVersion: this.docVersion,
-      objectsById: this.objectsById,
-      spatialIndex: this.spatialIndex,
-    };
-    this._currentSnapshot = snap;
-    this.snapshotSubscribers.forEach((cb) => {
-      try {
-        cb(snap);
-      } catch (e) {
-        console.error('[Snapshot] Subscriber error:', e);
-      }
-    });
   }
 }

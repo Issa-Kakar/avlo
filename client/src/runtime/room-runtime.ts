@@ -13,7 +13,6 @@
  */
 
 import type { RoomId } from '@avlo/shared';
-import type { Snapshot } from '@/core/types/snapshot';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import type { BBoxTuple } from '@/core/types/geometry';
 import type { ObjectSpatialIndex } from '@/core/spatial';
@@ -86,15 +85,6 @@ export function getActiveRoomId(): RoomId {
  */
 export function hasActiveRoom(): boolean {
   return activeRoom !== null;
-}
-
-/**
- * Get the current snapshot from the active room.
- * Convenience wrapper for getActiveRoomDoc().currentSnapshot
- * Use this in render loops and tools to avoid prop drilling.
- */
-export function getCurrentSnapshot(): Snapshot {
-  return getActiveRoomDoc().currentSnapshot;
 }
 
 // ============================================

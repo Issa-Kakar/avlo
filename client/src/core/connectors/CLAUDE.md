@@ -398,7 +398,6 @@ function findBestSnapTarget(ctx: SnapContext): SnapTarget | null;
 
 interface SnapContext {
   cursorWorld: [number, number];  // Cursor in world coords
-  scale: number;                   // Viewport scale (for px→world)
   prevAttach: SnapTarget | null;   // Previous snap (for hysteresis)
   connectorType?: ConnectorType;   // Defaults to 'elbow' behavior
 }

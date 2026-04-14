@@ -1,4 +1,4 @@
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { ObjectKind } from '@/core/types/objects';
 import { OBJECT_KINDS } from '@/core/types/objects';
 import {
   getColor,
@@ -17,7 +17,7 @@ import {
 } from '@/core/accessors';
 import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
 import { getInlineStyles } from '@/core/text/text-system';
-import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import { getObjectsById } from '@/runtime/room-runtime';
 import type { SelectionKind, KindCounts, SelectedStyles, InlineStyles } from './types';
 import { EMPTY_STYLES } from './types';
 
@@ -34,7 +34,7 @@ export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
  * Buckets IDs by kind, builds selectedIdSet, derives selectionKind and mode.
  */
 export function computeSelectionComposition(ids: string[]) {
-  const snapshot = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const counts: Record<ObjectKind, number> = {
     stroke: 0,
     shape: 0,
@@ -48,7 +48,7 @@ export function computeSelectionComposition(ids: string[]) {
   const selectedIdSet = new Set<string>();
 
   for (const id of ids) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = objectsById.get(id);
     if (!handle) continue;
     selectedIdSet.add(id);
     counts[handle.kind]++;
@@ -84,8 +84,9 @@ export function computeSelectionComposition(ids: string[]) {
  * Mixed selections → EMPTY_STYLES immediately (zero parsing).
  * Single-pass with early break once all fields are resolved.
  */
-export function computeStyles(ids: string[], kind: SelectionKind, objectsById: ReadonlyMap<string, ObjectHandle>): SelectedStyles {
+export function computeStyles(ids: string[], kind: SelectionKind): SelectedStyles {
   if (kind === 'none' || kind === 'mixed' || kind === 'image' || kind === 'bookmark' || ids.length === 0) return EMPTY_STYLES;
+  const objectsById = getObjectsById();
 
   // Code blocks: track fontSize + language + chrome visibility
   if (kind === 'code') {
@@ -272,7 +273,8 @@ export function inlineStylesEqual(a: InlineStyles, b: InlineStyles): boolean {
  * All must be bold for bold:true, same for italic.
  * Highlight must be identical non-null across all for highlightColor to be non-null.
  */
-export function computeUniformInlineStyles(ids: string[], objectsById: ReadonlyMap<string, ObjectHandle>): InlineStyles {
+export function computeUniformInlineStyles(ids: string[]): InlineStyles {
+  const objectsById = getObjectsById();
   let bold = true,
     italic = true;
   let firstHighlight: string | null = null;

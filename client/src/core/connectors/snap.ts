@@ -23,6 +23,7 @@ import { queryHitCandidates } from '../spatial/object-query';
 import { BINDABLE_KINDS, type BindableKind } from '../types/objects';
 import type { FrameTuple } from '../types/geometry';
 import { getHandleShapeType } from '../accessors';
+import { useCameraStore } from '@/stores/camera-store';
 import type { Dir, SnapTarget, SnapContext } from './types';
 import { isAnchorInterior } from './types';
 
@@ -64,8 +65,9 @@ function computeAnchorAndPosition(
  * @returns Best snap target or null if no valid snap
  */
 export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
-  const { cursorWorld, scale } = ctx;
+  const { cursorWorld } = ctx;
   const [cx, cy] = cursorWorld;
+  const scale = useCameraStore.getState().scale;
   const edgeRadius = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
 
   const candidates = queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS);
@@ -97,8 +99,9 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
  * @returns Snap target or null if no valid snap
  */
 export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
-  const { cursorWorld, scale, prevAttach } = ctx;
+  const { cursorWorld, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
+  const scale = useCameraStore.getState().scale;
 
   // Convert thresholds to world units
   const edgeSnapW = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);

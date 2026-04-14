@@ -158,8 +158,6 @@ export interface SnapTarget {
 export interface SnapContext {
   /** Cursor position in world coordinates */
   cursorWorld: [number, number];
-  /** Current zoom scale */
-  scale: number;
   /** Previous snap target (for hysteresis) */
   prevAttach: SnapTarget | null;
   /** Connector type — straight connectors allow interior/center anchors */

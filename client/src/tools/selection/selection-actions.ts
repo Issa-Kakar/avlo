@@ -373,7 +373,7 @@ export function toggleSelectedBold(): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
   const objectsById = getObjectsById();
-  const { bold: allBold } = computeUniformInlineStyles(ids, objectsById);
+  const { bold: allBold } = computeUniformInlineStyles(ids);
 
   transact(() => {
     for (const id of ids) {
@@ -395,7 +395,7 @@ export function toggleSelectedItalic(): void {
   const ids = getTextIds();
   if (ids.length === 0) return;
   const objectsById = getObjectsById();
-  const { italic: allItalic } = computeUniformInlineStyles(ids, objectsById);
+  const { italic: allItalic } = computeUniformInlineStyles(ids);
 
   transact(() => {
     for (const id of ids) {

@@ -10,7 +10,7 @@ import { pickFrameAware } from '@/core/spatial/pickers';
 import { inBBox } from '@/core/spatial/region';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
-import { getCurrentSnapshot, getHandle, transact, getObjects } from '@/runtime/room-runtime';
+import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { isShiftHeld, isCtrlOrMetaHeld, isCtrlHeld } from '@/runtime/InputManager';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -100,8 +100,7 @@ export class SelectTool implements PointerTool {
     if (mode === 'standard' && selectedIds.length > 0 && (!textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
-      const { scale } = useCameraStore.getState();
-      const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds, scale) : null;
+      const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds) : null;
       if (handleHit) {
         this.pendingHandleId = handleHit;
         this.downTarget = 'handle';
@@ -111,8 +110,7 @@ export class SelectTool implements PointerTool {
       }
     } else if (mode === 'connector') {
       // Connector mode: check endpoint dots first
-      const { scale } = useCameraStore.getState();
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, getCurrentSnapshot(), scale);
+      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds);
       if (endpointHit) {
         this.endpointHitAtDown = endpointHit;
         this.downTarget = 'connectorEndpoint';
@@ -332,7 +330,6 @@ export class SelectTool implements PointerTool {
         const epTransform = useSelectionStore.getState().transform;
         if (epTransform.kind !== 'endpointDrag') break;
 
-        const { scale } = useCameraStore.getState();
         const { connectorId, endpoint } = epTransform;
 
         // Read connector type for snap context
@@ -344,7 +341,6 @@ export class SelectTool implements PointerTool {
           ? null
           : findBestSnapTarget({
               cursorWorld: [worldX, worldY],
-              scale,
               prevAttach: epTransform.currentSnap,
               connectorType: epConnectorType,
             });
@@ -638,12 +634,10 @@ export class SelectTool implements PointerTool {
       return;
     }
 
-    const { scale } = useCameraStore.getState();
-
     if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
-        const handle = hitTestHandle(worldX, worldY, bounds, scale);
+        const handle = hitTestHandle(worldX, worldY, bounds);
         if (handle) {
           setCursorOverride(handleCursor(handle));
           applyCursor();
@@ -651,7 +645,7 @@ export class SelectTool implements PointerTool {
         }
       }
     } else if (mode === 'connector') {
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds, getCurrentSnapshot(), scale);
+      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds);
       if (endpointHit) {
         setCursorOverride('grab');
         applyCursor();
@@ -722,8 +716,7 @@ export class SelectTool implements PointerTool {
     const current = store.selectedIds.slice().sort();
 
     // Cheap diff: lengths first, then element-wise. Avoids JSON.stringify churn.
-    const changed =
-      selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i]);
+    const changed = selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i]);
     if (changed) {
       store.setSelection(selectedIds); // marquee state owned by gesture, no longer clobbered
     }

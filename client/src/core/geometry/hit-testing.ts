@@ -8,16 +8,16 @@
  * - testObjectHit: HitCandidate dispatch for point-based picking
  * - objectIntersectsRect: geometry-vs-bbox for marquee
  * - hitTestHandle: resize-handle hit test
- * - hitTestEndpointDots: connector endpoint dots (keeps Snapshot — downstream needs it)
+ * - hitTestEndpointDots: connector endpoint dots
  * - hitTestVisibleText/Code/Note: one-liners via scanTopmost
  */
 
 import type { BBoxTuple } from '../types/geometry';
 import type { ObjectHandle, ObjectKind, BindableKind } from '../types/objects';
-import type { Snapshot } from '../types/snapshot';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '../accessors';
 import { INTERIOR_PAINT } from '../types/objects';
 import { useCameraStore } from '@/stores/camera-store';
+import { getHandle } from '@/runtime/room-runtime';
 import { queryHitCandidates } from '../spatial/object-query';
 import { scanTopmost } from './object-pick';
 import {
@@ -198,7 +198,8 @@ export function objectIntersectsRect(handle: ObjectHandle, bbox: BBoxTuple): boo
 /** Screen-space hit radius for resize handles */
 export const HANDLE_HIT_PX = 10;
 
-export function hitTestHandle(worldX: number, worldY: number, bbox: BBoxTuple, scale: number): HandleId | null {
+export function hitTestHandle(worldX: number, worldY: number, bbox: BBoxTuple): HandleId | null {
+  const { scale } = useCameraStore.getState();
   const handleRadius = HANDLE_HIT_PX / scale;
 
   const corners = computeHandles(bbox);
@@ -253,7 +254,7 @@ export function hitTestVisibleCode(worldX: number, worldY: number): string | nul
 }
 
 // ============================================================================
-// Endpoint dot hit testing (keeps Snapshot — downstream anchor resolution needs it)
+// Endpoint dot hit testing
 // ============================================================================
 
 /** Screen-space hit radius for connector endpoint dots */
@@ -264,22 +265,17 @@ export interface EndpointHit {
   endpoint: 'start' | 'end';
 }
 
-export function hitTestEndpointDots(
-  worldX: number,
-  worldY: number,
-  selectedIds: string[],
-  snapshot: Snapshot,
-  scale: number,
-): EndpointHit | null {
+export function hitTestEndpointDots(worldX: number, worldY: number, selectedIds: string[]): EndpointHit | null {
+  const { scale } = useCameraStore.getState();
   const radiusWorld = ENDPOINT_DOT_HIT_PX / scale;
   const radiusSq = radiusWorld * radiusWorld;
 
   for (const id of selectedIds) {
-    const handle = snapshot.objectsById.get(id);
+    const handle = getHandle(id);
     if (!handle || handle.kind !== 'connector') continue;
 
-    const startEdge = getEndpointEdgePosition(handle, 'start', snapshot);
-    const endEdge = getEndpointEdgePosition(handle, 'end', snapshot);
+    const startEdge = getEndpointEdgePosition(handle, 'start');
+    const endEdge = getEndpointEdgePosition(handle, 'end');
 
     const dxStart = worldX - startEdge[0];
     const dyStart = worldY - startEdge[1];

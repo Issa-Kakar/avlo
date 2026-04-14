@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useCameraStore, selectScale, MIN_ZOOM, MAX_ZOOM } from '@/stores/camera-store';
 import { zoomIn, zoomOut, zoomTo, animateToFit } from '@/runtime/viewport/zoom';
-import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import { getObjectsById } from '@/runtime/room-runtime';
 import { IconZoomPlus, IconZoomMinus, IconZoomToFit, IconHelp, IconMouseSettings } from './icons';
 
 import './ZoomControls.css';
@@ -25,8 +25,8 @@ export function ZoomControls() {
   }, [menuOpen]);
 
   function handleZoomToFit() {
-    const snapshot = getCurrentSnapshot();
-    if (!snapshot.objectsById.size) {
+    const objectsById = getObjectsById();
+    if (!objectsById.size) {
       setMenuOpen(false);
       return;
     }
@@ -34,7 +34,7 @@ export function ZoomControls() {
       minY = Infinity,
       maxX = -Infinity,
       maxY = -Infinity;
-    for (const handle of snapshot.objectsById.values()) {
+    for (const handle of objectsById.values()) {
       const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
       if (bMinX < minX) minX = bMinX;
       if (bMinY < minY) minY = bMinY;

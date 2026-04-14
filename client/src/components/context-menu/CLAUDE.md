@@ -121,12 +121,12 @@ Adding `ctx-hidden` = instant hide (no transition). Removing it = spring reveal 
 
 ### effectiveKind Logic
 
-Text editing does **not** unconditionally override to `textOnly`. The bar preserves `selectionKind` from the store, so shape label editing shows `shapesOnly` (with text controls embedded). When `textEditingId !== null` AND `kind === 'none'` (standalone editing with no selection), the kind is resolved by looking up the editing object's actual kind from the snapshot:
+Text editing does **not** unconditionally override to `textOnly`. The bar preserves `selectionKind` from the store, so shape label editing shows `shapesOnly` (with text controls embedded). When `textEditingId !== null` AND `kind === 'none'` (standalone editing with no selection), the kind is resolved by looking up the editing object's actual kind via `getHandle()`:
 
 ```typescript
 const effectiveKind =
   editing !== null && kind === 'none'
-    ? (getCurrentSnapshot().objectsById.get(editing)?.kind === 'note' ? 'notesOnly' : 'textOnly')
+    ? (getHandle(editing)?.kind === 'note' ? 'notesOnly' : 'textOnly')
   : codeEditing !== null && kind === 'none' ? 'codeOnly'
   : kind;
 ```

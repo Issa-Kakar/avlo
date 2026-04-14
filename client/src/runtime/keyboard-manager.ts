@@ -15,7 +15,7 @@
  */
 
 import { getCurrentTool, panTool, textTool, codeTool } from './tool-registry';
-import { undo, redo, getObjectsById, getHandle, hasActiveRoom } from './room-runtime';
+import { undo, redo, getHandle, hasActiveRoom } from './room-runtime';
 import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
 import { deleteSelected, toggleSelectedBold, toggleSelectedItalic, setSelectedHighlight } from '@/tools/selection/selection-actions';
@@ -178,8 +178,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
       e.preventDefault();
       if (!gestureActive) {
         const { selectedIds } = useSelectionStore.getState();
-        const objectsById = getObjectsById();
-        const { highlightColor } = computeUniformInlineStyles(selectedIds, objectsById);
+        const { highlightColor } = computeUniformInlineStyles(selectedIds);
         if (highlightColor) {
           setSelectedHighlight(null);
         } else {

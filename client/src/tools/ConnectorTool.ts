@@ -16,7 +16,6 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData, ConnectorPreview } from './types';
-import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -91,14 +90,11 @@ export class ConnectorTool implements PointerTool {
     this.frozenEndCap = state.connectorEndCap;
     this.frozenConnectorType = state.connectorType;
 
-    const scale = useCameraStore.getState().scale;
-
     // Check if starting on a shape (Ctrl suppresses snapping)
     const snap = isCtrlHeld()
       ? null
       : findBestSnapTarget({
           cursorWorld: [worldX, worldY],
-          scale,
           prevAttach: null,
           connectorType: this.frozenConnectorType,
         });
@@ -116,15 +112,12 @@ export class ConnectorTool implements PointerTool {
   }
 
   move(worldX: number, worldY: number): void {
-    const scale = useCameraStore.getState().scale;
-
     if (this.phase === 'idle') {
       // Hover mode - show anchor dots on nearby shapes (Ctrl suppresses)
       const snap = isCtrlHeld()
         ? null
         : findBestSnapTarget({
             cursorWorld: [worldX, worldY],
-            scale,
             prevAttach: this.prevSnap,
             connectorType: useDeviceUIStore.getState().connectorType,
           });
@@ -140,7 +133,6 @@ export class ConnectorTool implements PointerTool {
       ? null
       : findBestSnapTarget({
           cursorWorld: [worldX, worldY],
-          scale,
           prevAttach: this.prevSnap,
           connectorType: this.frozenConnectorType ?? 'elbow',
         });

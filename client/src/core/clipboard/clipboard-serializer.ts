@@ -10,7 +10,7 @@
 import * as Y from 'yjs';
 import type { ObjectKind, ObjectHandle } from '../types/objects';
 import type { WorldBounds } from '../types/geometry';
-import { getCurrentSnapshot } from '@/runtime/room-runtime';
+import { getObjectsById } from '@/runtime/room-runtime';
 
 // === Types ===
 
@@ -38,7 +38,7 @@ export interface SerializedParagraph {
 // === Serialize ===
 
 export function serializeObjects(ids: string[]): ClipboardPayload | null {
-  const { objectsById } = getCurrentSnapshot();
+  const objectsById = getObjectsById();
   const objects: SerializedObject[] = [];
   let minX = Infinity,
     minY = Infinity,

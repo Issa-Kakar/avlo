@@ -44,8 +44,8 @@ tools/selection/connector-topology.ts
 
 selection-utils.ts (pure functions — zero-arg where possible)
 ├── computeSelectionComposition(ids) → kind, mode, counts (buckets via counts[kind]++)
-├── computeStyles(ids, kind, objectsById) → SelectedStyles
-└── computeUniformInlineStyles(ids, objectsById) → InlineStyles
+├── computeStyles(ids, kind) → SelectedStyles
+└── computeUniformInlineStyles(ids) → InlineStyles
 
 (computeSelectionBounds lives in selection-store.ts — reads store state directly, no circular import)
 
@@ -703,11 +703,11 @@ Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback c
 
 Returns `null` on empty selection (causes `store.beginScale` to bail early).
 
-### computeStyles(ids, kind, objectsById)
+### computeStyles(ids, kind)
 
 Returns `EMPTY_STYLES` immediately for `none`, `mixed`, `image`, `bookmark`.
 
-### computeUniformInlineStyles(ids, objectsById)
+### computeUniformInlineStyles(ids)
 
 Aggregates bold/italic/highlight across text/shape(labeled)/note objects.
 
