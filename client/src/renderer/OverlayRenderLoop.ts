@@ -1,4 +1,4 @@
-import { drawToolPreview, clearPreviewCache } from './layers/tool-preview';
+import { drawToolPreview } from './layers/tool-preview';
 import { useCameraStore } from '@/stores/camera-store';
 import { getOverlayContext, applyPendingResize } from '@/runtime/SurfaceManager';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
@@ -46,12 +46,11 @@ export class OverlayRenderLoop {
       },
     );
 
-    // Clear cached preview when tool switches
+    // Evict any live preview when tool switches
     let lastTool = useDeviceUIStore.getState().activeTool;
     this.toolUnsubscribe = useDeviceUIStore.subscribe((state) => {
       if (state.activeTool !== lastTool) {
         lastTool = state.activeTool;
-        clearPreviewCache();
         this.invalidateAll();
       }
     });
@@ -138,6 +137,3 @@ export const overlayLoop = new OverlayRenderLoop();
 export function invalidateOverlay(): void {
   overlayLoop.invalidateAll();
 }
-
-/** Hold preview for one frame during snapshot transitions. */
-export { holdPreviewForOneFrame } from './layers/tool-preview';

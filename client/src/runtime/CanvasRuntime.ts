@@ -2,7 +2,7 @@
  * CanvasRuntime - The Central Orchestrator
  *
  * Owns: SurfaceManager (DOM refs + resize), InputManager (events + modifiers),
- * render loop lifecycle, camera/snapshot subscriptions.
+ * render loop lifecycle, camera subscription.
  * Handles all pointer event logic (coordinate conversion, tool dispatch).
  *
  * @module runtime/CanvasRuntime
@@ -14,8 +14,6 @@ import { cancelZoom, calculateZoomTransform } from './viewport/zoom';
 import { SurfaceManager } from './SurfaceManager';
 import { InputManager } from './InputManager';
 import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import { holdPreviewForOneFrame } from '@/renderer/layers/tool-preview';
-import { getActiveRoomDoc } from './room-runtime';
 import { updateCursor, clearCursor } from './presence/presence';
 import { isSpacebarPanMode } from './keyboard-manager';
 import { setLastCursorWorld } from './cursor-tracking';
@@ -46,8 +44,6 @@ export class CanvasRuntime {
   private surfaceManager: SurfaceManager | null = null;
   private inputManager: InputManager | null = null;
   private cameraUnsub: (() => void) | null = null;
-  private snapshotUnsub: (() => void) | null = null;
-  private lastDocVersion = -1;
   private wheelTimestamps: number[] = [];
 
   start(config: RuntimeConfig): void {
@@ -75,23 +71,12 @@ export class CanvasRuntime {
       { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
     );
 
-    // 5. Snapshot subscription
-    const roomDoc = getActiveRoomDoc();
-    this.lastDocVersion = roomDoc.currentSnapshot.docVersion;
+    // 5. First-frame bootstrap
     renderLoop.invalidateAll();
     overlayLoop.invalidateAll();
-
-    this.snapshotUnsub = roomDoc.subscribeSnapshot((snap) => {
-      if (snap.docVersion !== this.lastDocVersion) {
-        this.lastDocVersion = snap.docVersion;
-        holdPreviewForOneFrame();
-        overlayLoop.invalidateAll();
-      }
-    });
   }
 
   stop(): void {
-    this.snapshotUnsub?.();
     this.cameraUnsub?.();
 
     this.inputManager?.detach();
@@ -109,8 +94,6 @@ export class CanvasRuntime {
     this.inputManager = null;
     this.surfaceManager = null;
     this.cameraUnsub = null;
-    this.snapshotUnsub = null;
-    this.lastDocVersion = -1;
   }
 
   // === Event Handlers (called by InputManager — modifiers already updated) ===

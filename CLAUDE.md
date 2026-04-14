@@ -193,7 +193,7 @@ Module Registries - IMPERATIVE ACCESS
 ├── device-ui-store.ts    → activeTool, drawingSettings, getUserId(), getUserProfile(), cursor management
 ├── SurfaceManager.ts     → getBaseContext(), getOverlayContext(), getEditorHost()
 ├── RenderLoop.ts         → invalidateWorld(bounds), invalidateWorldBBox(bbox), invalidateWorldAll()
-└── OverlayRenderLoop.ts  → invalidateOverlay(), holdPreviewForOneFrame()
+└── OverlayRenderLoop.ts  → invalidateOverlay()
 ```
 
 ### Data Flow
@@ -201,10 +201,7 @@ Module Registries - IMPERATIVE ACCESS
 Y.Doc (source of truth)
    ↓ observers
 RoomDocManager
-   ├─ applyObjectChanges() → evictGeometry(id) + invalidateWorldBBox(bbox)  [base canvas]
-   ↓ subscribeSnapshot()
-CanvasRuntime
-   └─ overlayLoop.invalidateAll()                                            [overlay canvas]
+   └─ applyObjectChanges() → evictGeometry(id) + invalidateWorldBBox(bbox)  [base canvas]
          ↓
    RenderLoop (base canvas, dirty-rect optimized)
    OverlayRenderLoop (preview + presence, full clear)
@@ -276,7 +273,7 @@ Prefer `getHandle(id)` over `getCurrentSnapshot().objectsById.get(id)` and `tran
 
 Module-level singletons, safe no-ops before `start()`. Tools and observers import directly.
 - **RenderLoop:** `invalidateWorld(bounds)`, `invalidateWorldBBox(bbox)`, `invalidateWorldAll()`
-- **OverlayRenderLoop:** `invalidateOverlay()`, `holdPreviewForOneFrame()`
+- **OverlayRenderLoop:** `invalidateOverlay()`
 
 ---
 

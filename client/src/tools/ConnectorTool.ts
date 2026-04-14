@@ -19,7 +19,7 @@ import type { PointerTool, PreviewData, ConnectorPreview } from './types';
 import { useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
-import { invalidateOverlay, holdPreviewForOneFrame } from '@/renderer/OverlayRenderLoop';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getHandleShapeType } from '@/core/accessors';
 import type { FrameTuple } from '@/core/types/geometry';
 import { frameOf } from '@/core/geometry/frame-of';
@@ -182,7 +182,6 @@ export class ConnectorTool implements PointerTool {
       }
     }
 
-    holdPreviewForOneFrame();
     this.resetState();
     invalidateOverlay();
   }

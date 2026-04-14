@@ -15,6 +15,7 @@ import { computeBBoxFor, bboxEquals } from '@/core/geometry/bbox';
 import { removeObjectCaches, clearAllObjectCaches } from '@/renderer/object-cache';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { invalidateWorldBBox, invalidateWorldAll } from '@/renderer/RenderLoop';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import {
   initConnectorLookup,
@@ -404,7 +405,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
-    if (needsReposition) useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+    if (needsReposition) {
+      useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+      // Selection handles follow remote moves/undos of the currently selected object
+      invalidateOverlay();
+    }
 
     this.flushDirtyBBoxes(dirtyBBoxes);
   }
