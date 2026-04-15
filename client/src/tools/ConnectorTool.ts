@@ -17,12 +17,8 @@ import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData, ConnectorPreview } from './types';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
+import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getHandleShapeType } from '@/core/accessors';
-import type { FrameTuple } from '@/core/types/geometry';
-import { frameOf } from '@/core/geometry/frame-of';
-import { isBindableHandle } from '@/core/types/objects';
 import {
   type Dir,
   type SnapTarget,
@@ -32,7 +28,6 @@ import {
   routeNewConnector,
   inferDragDirection,
 } from '@/core/connectors';
-import { isAnchorInterior } from '@/core/connectors/types';
 import { isCtrlHeld } from '@/runtime/InputManager';
 
 type Phase = 'idle' | 'creating';
@@ -64,10 +59,6 @@ export class ConnectorTool implements PointerTool {
   private frozenStartCap: ConnectorCap = 'none';
   private frozenEndCap: ConnectorCap = 'arrow';
   private frozenConnectorType: ConnectorType | null = null;
-
-  // Straight connector dash info
-  private startDashTo: [number, number] | null = null;
-  private endDashTo: [number, number] | null = null;
 
   constructor() {}
 
@@ -150,10 +141,7 @@ export class ConnectorTool implements PointerTool {
 
     const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition!;
     const end: SnapTarget | [number, number] = snap ?? [worldX, worldY];
-    const routeResult = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir);
-    this.routedPoints = routeResult.points;
-    this.startDashTo = routeResult.startDashTo;
-    this.endDashTo = routeResult.endDashTo;
+    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
 
     invalidateOverlay();
   }
@@ -192,62 +180,12 @@ export class ConnectorTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
-    // Build ConnectorPreview for overlay rendering
-
-    // Snap state (ONLY set when actually snapped - dots appear when snapped)
-    let snapShapeId: string | null = null;
-    let snapShapeFrame: FrameTuple | null = null;
-    let snapShapeType: string | null = null;
-
-    if (this.hoverSnap) {
-      const handle = getHandle(this.hoverSnap.shapeId);
-      if (isBindableHandle(handle)) {
-        const frame = frameOf(handle);
-        if (frame) {
-          snapShapeId = this.hoverSnap.shapeId;
-          snapShapeFrame = frame;
-          snapShapeType = getHandleShapeType(handle);
-        }
-      }
-    }
-
     const preview: ConnectorPreview = {
       kind: 'connector',
       points: this.routedPoints,
-      color: this.frozenColor,
-      width: this.frozenWidth,
-      opacity: this.frozenOpacity,
-      startCap: this.frozenStartCap,
-      endCap: this.frozenEndCap,
-
-      // Snap state (only set when actually snapped - dots appear when snapped)
-      snapShapeId,
-      snapShapeFrame,
-      snapShapeType,
-      activeMidpointSide: this.hoverSnap?.isMidpoint ? this.hoverSnap.side : null,
-      snapSide: this.hoverSnap?.side ?? null,
-      snapPosition: this.hoverSnap?.edgePosition ?? null,
-
-      // Endpoint states
-      fromIsAttached: this.fromSnap !== null,
-      fromPosition: this.fromPosition,
-      toIsAttached: this.toSnap !== null,
-      toPosition: this.toPosition,
-
-      // Straight connector fields
-      connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType,
-      startDashTo: this.startDashTo,
-      endDashTo: this.endDashTo,
-      isCenterSnap: !!(
-        this.hoverSnap &&
-        this.hoverSnap.normalizedAnchor[0] === 0.5 &&
-        this.hoverSnap.normalizedAnchor[1] === 0.5 &&
-        isAnchorInterior(this.hoverSnap.normalizedAnchor)
-      ),
-
-      bbox: null,
+      fromSnap: this.fromSnap,
+      hoverSnap: this.hoverSnap,
     };
-
     return preview;
   }
 
@@ -261,10 +199,7 @@ export class ConnectorTool implements PointerTool {
     if (this.phase === 'creating' && this.fromPosition && this.toPosition) {
       const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition;
       const end: SnapTarget | [number, number] = this.toSnap ?? this.toPosition;
-      const routeResult = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir);
-      this.routedPoints = routeResult.points;
-      this.startDashTo = routeResult.startDashTo;
-      this.endDashTo = routeResult.endDashTo;
+      this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
     }
     invalidateOverlay();
   }
@@ -284,8 +219,6 @@ export class ConnectorTool implements PointerTool {
     this.toPosition = null;
     this.routedPoints = [];
     this.dragDir = null;
-    this.startDashTo = null;
-    this.endDashTo = null;
     this.frozenConnectorType = null;
     // Keep hoverSnap/prevSnap for continued hover behavior
   }

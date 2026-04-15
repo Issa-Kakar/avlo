@@ -22,10 +22,11 @@ The connector routing system implements two routing modes: **orthogonal (elbow)*
 ## File Structure
 
 ```
-client/src/lib/connectors/
-├── types.ts               # Dir, Bounds, AABB, Terminal, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap, isAnchorInterior
+client/src/core/connectors/
+├── types.ts               # Dir, Bounds, AABB, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap, isAnchorInterior
 ├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas, CENTER_SNAP_RADIUS_PX, STRAIGHT_INTERIOR_DEPTH_PX
-├── connector-utils.ts     # Anchor application, direction resolution, bounds conversion, computeShapeEdgeIntersection
+├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, anchorOffsetPoint, sideFromAnchor, isSameShape
+├── connector-utils.ts     # Shape midpoints, direction helpers, bounds conversion, direction resolution, getEndpointEdgePosition, computeShapeEdgeIntersection
 ├── snap.ts                # Shape snapping with fill-aware visual ordering, straight interior/center snap
 ├── routing-context.ts     # Centerlines, dynamic AABBs, stubs, grid construction
 ├── routing-astar.ts       # A* pathfinding with segment intersection checking
@@ -93,7 +94,7 @@ function isAnchorInterior(anchor: [number, number]): boolean {
 
 **Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Renders a center dot on the shape in snap UI.
 
-**Used by:** `applyAnchorToFrame` (skip edge offset), `computeStraightRoute` (edge intersection vs pull-back), `computeSnapForShape` (depth gate), snap dot rendering (center dot), preview/overlay dashed guides.
+**Used by:** `anchorOffsetPoint` (skip edge offset), `computeStraightRoute` (edge intersection vs pull-back), `computeSnapForShape` (depth gate), snap dot rendering (center dot), preview/overlay dashed guides.
 
 ### Bounds vs AABB
 
@@ -363,29 +364,31 @@ normalizedAnchor = [
 // Clamped to [0, 1]
 ```
 
-### Applying Anchor to Frame
+### Anchor ↔ Point Atoms (`anchor-atoms.ts`)
 
-When rerouting, `applyAnchorToFrame()` reconstructs world position:
+Anchor-to-point math lives in one small module so that a future `StoredAnchor.side`
+removal is a zero-touch change at every call site:
 
 ```typescript
-function applyAnchorToFrame(
-  anchor: [number, number],
-  frame: FrameTuple,
-  side: Dir
-): [number, number] {
-  const posX = frame[0] + anchor[0] * frame[2];
-  const posY = frame[1] + anchor[1] * frame[3];
+// Raw frame point for a normalized anchor — no offset, sits on the shape edge/interior.
+anchorFramePoint(anchor: [number, number], frame: FrameTuple): [number, number];
 
-  // Interior anchors: return position directly (no edge offset)
-  if (isAnchorInterior(anchor)) return [posX, posY];
+// Same raw frame point + EDGE_CLEARANCE_W (11) pushed outward for edge anchors.
+// Interior anchors return the raw point untouched — `computeStraightRoute` handles
+// its own pull-back for the line endpoint.
+anchorOffsetPoint(anchor: [number, number], frame: FrameTuple, shapeType: string): [number, number];
 
-  // Edge anchors: apply EDGE_CLEARANCE_W in outward direction
-  const [dx, dy] = directionVector(side);
-  return [posX + dx * EDGE_CLEARANCE_W, posY + dy * EDGE_CLEARANCE_W];
-}
+// Derive the outward Dir from a normalized anchor + frame + shape type.
+// Edge anchors read the coordinate; interior anchors resolve via nearest midpoint.
+sideFromAnchor(anchor: [number, number], frame: FrameTuple, shapeType: string): Dir;
+
+// True when two resolved endpoints point at the same shape (by shapeId).
+isSameShape(a, b): boolean;
 ```
 
-**Key insight:** Only `EDGE_CLEARANCE_W` (11 units) is applied for edge anchors — not the full approach offset. Interior anchors (straight connectors) skip the offset entirely; `computeStraightRoute` computes its own pull-back offsets from raw positions via `getRawAnchorPosition()` + `applyPullBack()`.
+**Key insight:** Only `EDGE_CLEARANCE_W` (11 units) is applied for edge anchors — not the full approach offset. Interior anchors (straight connectors) skip the offset entirely; `computeStraightRoute` computes its own pull-back offsets via `applyPullBack`.
+
+**`getEndpointEdgePosition`** (in `connector-utils.ts`) uses `anchorFramePoint` and is the canonical "where does this endpoint's dot sit on the frame" accessor — always returns a point on the shape frame, never offset outward.
 
 ---
 
@@ -560,58 +563,65 @@ if (connectorIds) {
 ## The Rerouting APIs
 
 Three functions:
-- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies overrides, branches on `connectorType` (SelectTool)
+- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies per-endpoint overrides, branches on `connectorType` (SelectTool)
 - **`routeNewConnector(start, end, strokeWidth, connectorType, dragDir?)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
 - **`computeStraightRoute(start, end)`** — Pure straight routing from two `ResolvedEndpoint`s (called by both above)
 
 ### Signature
 
 ```typescript
+type EndpointOverrideValue =
+  | SnapTarget               // Snap to shape edge (has shapeId)
+  | [number, number]          // Free position override
+  | { frame: FrameTuple };    // Reapply the stored anchor against a transformed frame
+
 function rerouteConnector(
   connectorId: string,
-  frameOverrides?: Map<string, FrameTuple>,
-  endpointOverrides?: {
-    start?: SnapTarget | [number, number];
-    end?: SnapTarget | [number, number];
-  }
-): [number, number][] | null
+  endpointOverrides?: { start?: EndpointOverrideValue; end?: EndpointOverrideValue },
+): RerouteResult | null;
 ```
 
-### Two Orthogonal Override Mechanisms
+Each endpoint is resolved independently by `resolveEndpoint()` which dispatches
+to one of three branches on the override's shape:
 
-**1. `frameOverrides`** — Temporary shape frames during transform
+1. `[x, y]`                 → free position
+2. `{ frame: FrameTuple }`  → re-anchor against a transformed frame (shape drag/resize)
+3. `SnapTarget`             → snap-driven override (endpoint drag / new connector)
 
-When a shape is being dragged/resized, pass its temporary frame:
+With no override, the endpoint falls back to the stored Y.map anchor (or the
+stored raw position for free endpoints).
+
+### Usage Patterns
+
+**Shape Transform (translate/resize):**
 
 ```typescript
-const frameOverrides = new Map([
-  [selectedShapeId, [newX, newY, newW, newH]]
-]);
-const points = rerouteConnector(connectorId, frameOverrides);
+// User dragging selected shapes — pass the transformed frame per affected endpoint.
+const newFrame = computeNewFrame(anchorShapeId, transform);
+for (const connectorId of getAffectedConnectors(selectedIds)) {
+  const points = rerouteConnector(connectorId, {
+    start: { frame: newFrame },  // Only if connector's start is on the selected shape
+    end: { frame: newFrame },    // Only if connector's end is on the selected shape
+  });
+}
 ```
 
-**2. `endpointOverrides`** — Direct endpoint replacement
-
-When dragging a connector endpoint or explicitly repositioning:
+**Endpoint Drag (reconnection):**
 
 ```typescript
-// Snapped endpoint
-const points = rerouteConnector(connectorId, undefined, {
-  end: snapTarget  // SnapTarget object
-});
-
-// Free endpoint (no snap)
-const points = rerouteConnector(connectorId, undefined, {
-  end: [worldX, worldY]  // Position tuple
-});
+// User dragging a connector endpoint to reconnect
+const snap = findBestSnapTarget(snapCtx);
+const points = rerouteConnector(connectorId, { end: snap ?? [worldX, worldY] });
 ```
 
-### Resolution Priority (Per Endpoint)
+**Free Endpoint Translation:**
 
-```
-1. endpointOverrides.start/end (if provided) → direct override wins
-2. frameOverrides.get(anchor.id) (if anchored) → shape is transforming
-3. Y.map stored data → default
+```typescript
+// Moving an unanchored endpoint
+const currentEnd = getEnd(yMap);
+const points = rerouteConnector(connectorId, {
+  end: [currentEnd[0] + dx, currentEnd[1] + dy],
+});
 ```
 
 ### Mental Model: Canonical vs Dynamic Data
@@ -621,54 +631,7 @@ Think of connector endpoints as having two possible states:
 - **Canonical (stored):** The Y.map data is trustworthy and stable
 - **Dynamic (overridden):** The endpoint is actively being transformed
 
-The override pattern exploits this: when dragging one endpoint, the **other endpoint is canonical**. When transforming a shape, only **anchors to that shape are dynamic**.
-
-### Usage Patterns
-
-**Shape Transform (translate/resize):**
-
-```typescript
-// User dragging selected shapes
-const frameOverrides = new Map(
-  selectedIds.map(id => [id, computeNewFrame(id, transform)])
-);
-
-for (const connectorId of getAffectedConnectors(selectedIds)) {
-  const points = rerouteConnector(connectorId, frameOverrides);
-  if (points) previewRoutes.set(connectorId, points);
-}
-```
-
-**Endpoint Drag (reconnection):**
-
-```typescript
-// User dragging connector endpoint to reconnect
-const snap = findBestSnapTarget(snapCtx);
-const points = rerouteConnector(connectorId, undefined, {
-  end: snap ?? [worldX, worldY]  // SnapTarget or free position
-});
-```
-
-**Free Endpoint Translation:**
-
-```typescript
-// Moving an unanchored endpoint
-const currentEnd = getEnd(yMap);
-const points = rerouteConnector(connectorId, undefined, {
-  end: [currentEnd[0] + dx, currentEnd[1] + dy]
-});
-```
-
-**Mixed (Shape + Endpoint Override):**
-
-```typescript
-// One end attached to moving shape, other end being dragged
-const points = rerouteConnector(
-  connectorId,
-  new Map([[shapeId, newFrame]]),
-  { end: [dragX, dragY] }
-);
-```
+The override pattern exploits this: when dragging one endpoint, the **other endpoint is canonical**. When transforming a shape, only **endpoints anchored to that shape are dynamic** — the caller passes the transformed frame for each affected side.
 
 ### ResolvedEndpoint
 
@@ -690,24 +653,24 @@ interface ResolvedEndpoint {
 
 ### NewRouteResult
 
-Returned by `routeNewConnector()` — includes dash guide targets for preview rendering:
+Returned by `routeNewConnector()`:
 
 ```typescript
 interface NewRouteResult {
   points: [number, number][];
-  startDashTo: [number, number] | null;  // Interior anchor position (dashed guide)
-  endDashTo: [number, number] | null;
+  startDashTo: [number, number] | null;  // Legacy: interior anchor frame point
+  endDashTo: [number, number] | null;    // Legacy: interior anchor frame point
 }
 ```
 
-For elbow connectors, `startDashTo` and `endDashTo` are always `null`.
+For elbow connectors, `startDashTo`/`endDashTo` are always `null`. For straight connectors, `computeStraightRoute` still populates them, but **the preview no longer consumes these fields** — `ConnectorPreview` carries `fromSnap`/`hoverSnap`, and `connector-preview.ts` derives dashed guides from `snap.edgePosition` + `isAnchorInterior`. The dash fields remain only for compat during the refactor and are slated for removal.
 
 ### Internal Flow
 
 ```typescript
-function rerouteConnector(connectorId, frameOverrides, endpointOverrides) {
+function rerouteConnector(connectorId, endpointOverrides) {
   // 1. Read connector data from Y.map
-  // 2. Resolve each endpoint → ResolvedEndpoint
+  // 2. Resolve each endpoint → ResolvedEndpoint via resolveEndpoint()
   //    (straight fields: normalizedAnchor, shapeType, frame, shapeId)
 
   // 3. Branch on connector type
@@ -719,7 +682,7 @@ function rerouteConnector(connectorId, frameOverrides, endpointOverrides) {
 
   // 4. Elbow: resolve directions + A* routing
   const { startDir, endDir } = resolveDirections(...);
-  return computeAStarRoute(...).points;
+  return { points: computeAStarRoute(...).points, bbox };
 }
 ```
 
@@ -748,7 +711,7 @@ function buildConnectorPaths(params: {
 }): ConnectorPaths
 ```
 
-Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts` (preview).
+Used by `object-cache.ts` (committed connectors) and `connector-preview.ts` (preview). The resulting `ConnectorPaths` is handed to `paintConnector()` in `renderer/layers/connector-render-atoms.ts` for the actual stroke/fill — see the Rendering Atoms section below.
 
 ### Key Features
 
@@ -756,6 +719,33 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 - **Arrow scaling:** Length ≤ `segmentLength / 2` (Excalidraw approach)
 - **Trim compensation:** Polyline trimmed to prevent overlap with arrow caps
 - **Stroke offset:** Arrow tip pulled back by `roundingLineWidth / 2` for visual accuracy
+
+---
+
+## Rendering Atoms (`renderer/layers/connector-render-atoms.ts`)
+
+Canvas drawing for connectors lives in one module so the committed-render path,
+the in-flight preview, and the selection overlay stay visually identical.
+
+- **`paintConnector(ctx, paths, color, width, opacity)`** — Strokes the polyline
+  + fills/strokes the arrow caps at the fixed `ARROW_ROUNDING_LINE_WIDTH`.
+  Shared by `objects.ts` (both `drawConnector` from cache and
+  `drawConnectorFromPoints` for rerouted paths) and `connector-preview.ts`
+  (via `buildConnectorPaths` at draw time).
+- **`drawSnapFeedback(ctx, snap, isStraight)`** — Full target feedback in one
+  call: shape highlight + midpoint dots + straight-center dot + active edge
+  anchor dot. When snap is the straight center, the center dot doubles as the
+  active indicator and the edge-position dot is skipped. Shared by
+  `connector-preview.ts` (hover snap during creation) and `selection-overlay.ts`
+  (endpoint drag).
+- **Constant-styled decoration atoms** — `drawAnchorDot`,
+  `drawConnectorDashGuide`, `drawSnapTargetHighlight`, `drawShapeMidpoints`,
+  `drawStraightCenterDot`. No color/width/opacity params leak through; they
+  pull sizing from `getAnchorDotMetricsWorld()` / `getGuideMetricsWorld()` so
+  visual weight is scale-stable.
+- **Helpers:** `isCenterSnap(snap)` and `resolveSnapContext(snap)` — the
+  second resolves a snap to `{ handle, frame, shapeType }` via the bindable
+  kinds set and `frameOf`.
 
 ---
 
@@ -792,10 +782,11 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 5. **Directions resolved before routing** — RoutingContext receives final directions
 6. **Normalized anchors are shape-agnostic** — `[0-1, 0-1]` + linear interpolation
 7. **EDGE_CLEARANCE_W for endpoints** — 11 units, NOT the full approach offset
-8. **Override patterns are orthogonal** — Frame and endpoint overrides compose cleanly
+8. **Per-endpoint override** — `EndpointOverrideValue` covers free position, transformed frame, or live `SnapTarget` in one union
 9. **Straight routing skips A*** — `computeStraightRoute` bypasses RoutingContext, grid, and direction resolution
-10. **Interior anchors bypass edge offset** — `applyAnchorToFrame` returns raw position; `computeStraightRoute` handles its own pull-back
+10. **Interior anchors bypass edge offset** — `anchorOffsetPoint` returns the raw frame point for interior anchors; `computeStraightRoute` handles its own pull-back
 11. **Same-shape interior goes direct** — No edge intersection when both endpoints share a shape
+12. **Single paint atom** — Every connector stroke goes through `paintConnector` so committed render, transform preview, and in-flight preview share exactly one draw pass
 
 ---
 
@@ -804,13 +795,16 @@ Used by both `object-cache.ts` (committed connectors) and `connector-preview.ts`
 | Task | API | Notes |
 |------|-----|-------|
 | Create new connector | `routeNewConnector()` | SnapTarget or [x,y] per endpoint |
-| Reroute existing connector | `rerouteConnector()` | Reads Y.map, applies overrides |
+| Reroute existing connector | `rerouteConnector()` | Reads Y.map, applies `EndpointOverrideValue` per side |
 | Find snap target | `findBestSnapTarget()` | Fill-aware, returns SnapTarget |
 | Get connectors for shape | `getConnectorsForShape()` | O(1) reverse lookup |
 | Build render paths | `buildConnectorPaths()` | Returns polyline + arrows |
-| Apply anchor to new frame | `applyAnchorToFrame()` | For transforms |
+| Paint connector | `paintConnector()` | Shared draw atom (committed + preview) |
+| Anchor → frame point | `anchorFramePoint()` | Raw point (no outward offset) |
+| Anchor → offset point | `anchorOffsetPoint()` | Adds EDGE_CLEARANCE_W for edge anchors; raw for interior |
+| Anchor → side | `sideFromAnchor()` | Edge anchors read coord; interior uses nearest midpoint |
 | Resolve free→anchored direction | `resolveFreeStartDir()` | Complex spatial logic (elbow only) |
 | Resolve anchored→free direction | `computeFreeEndDir()` | Primary axis + sign (elbow only) |
-| Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + dash guides |
+| Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + overlap safety |
 | Check interior anchor | `isAnchorInterior()` | Gates snap, routing, and rendering behavior |
 | Find shape edge exit | `computeShapeEdgeIntersection()` | Ray cast for interior anchors (rect/ellipse/diamond) |

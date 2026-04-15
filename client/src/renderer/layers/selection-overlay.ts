@@ -15,19 +15,17 @@
  */
 
 import type { SelectionPreview, HandleId } from '@/tools/types';
-import type { ObjectHandle } from '@/core/types/objects';
-import { getFrame, getHandleShapeType, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
+import { getFrame, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
-import { frameOf } from '@/core/geometry/frame-of';
 import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
-import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
-import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
+import { getEndpointEdgePosition } from '@/core/connectors/connector-utils';
 import type { SnapTarget } from '@/core/connectors/types';
 import { isAnchorInterior } from '@/core/connectors/types';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
+import { drawConnectorDashGuide, drawAnchorDot, drawSnapFeedback } from './connector-render-atoms';
 
 // =============================================================================
 // STYLING CONSTANTS
@@ -292,31 +290,38 @@ function drawSelectionBoxAndHandles(
 /**
  * Draw connector endpoint dots when in connector mode.
  *
- * Shows start/end endpoint positions as circles. During endpoint drag,
- * the dragged endpoint shows snap state (active=blue with glow, inactive=white+blue).
- * Also renders midpoint dots on the snap target shape during drag.
+ * Composes the shared atoms in `connector-render-atoms.ts`. Endpoint positions
+ * come from `getEndpointEdgePosition` (which is anchor-frame-point backed, so
+ * dots always sit on the shape frame — never offset outward). `drawSnapFeedback`
+ * handles the full drag-side visual (highlight + midpoints + center dot + active
+ * dot); this function only layers the inactive dot on the non-snapped side and
+ * the dashed guides for interior anchors on straight connectors.
  */
 function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
   const handle = getHandle(connectorId);
   if (!handle || handle.kind !== 'connector') return;
 
-  const { largeRadius: radius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
+  const isStraight = getConnectorType(handle.y) === 'straight';
+  const isDragging = transform.kind === 'endpointDrag' && transform.connectorId === connectorId;
 
+  // === Endpoint positions ===
   let startPos: [number, number];
   let endPos: [number, number];
   let startActive = false;
   let endActive = false;
+  let currentSnap: SnapTarget | null = null;
+  let draggedEndpoint: 'start' | 'end' | null = null;
+  let dragRoute: [number, number][] | null = null;
 
-  if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {
-    const { endpoint, currentPosition, currentSnap } = transform;
+  if (isDragging) {
+    const { endpoint, currentPosition, currentSnap: snap, routedPoints } = transform;
+    draggedEndpoint = endpoint;
+    currentSnap = snap;
+    dragRoute = routedPoints ?? null;
 
-    // Dragged endpoint: snap edge position (active) or cursor (inactive)
-    const draggedPos = currentSnap ? currentSnap.edgePosition : currentPosition;
-    const draggedActive = currentSnap !== null;
-
-    // Non-dragged endpoint: canonical position, always inactive
-    const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
-    const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
+    const draggedPos: [number, number] = snap ? snap.edgePosition : currentPosition;
+    const draggedActive = snap !== null;
+    const otherPos = getEndpointEdgePosition(handle, endpoint === 'start' ? 'end' : 'start');
 
     if (endpoint === 'start') {
       startPos = draggedPos;
@@ -327,253 +332,45 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
       endActive = draggedActive;
       startPos = otherPos;
     }
-
-    // Draw snap midpoint dots on target shape
-    if (currentSnap) {
-      const isStraight = getConnectorType(handle.y) === 'straight';
-      const isCenterSnap =
-        isStraight &&
-        isAnchorInterior(currentSnap.normalizedAnchor) &&
-        currentSnap.normalizedAnchor[0] === 0.5 &&
-        currentSnap.normalizedAnchor[1] === 0.5;
-      drawSnapMidpointDots(ctx, currentSnap, isStraight, isCenterSnap);
-    }
   } else {
-    // Idle: both at canonical positions, both inactive
     startPos = getEndpointEdgePosition(handle, 'start');
     endPos = getEndpointEdgePosition(handle, 'end');
   }
 
-  // Draw dots (inactive first so active renders on top)
-  ctx.lineWidth = strokeWidth;
+  // Snap-target feedback: highlight + midpoints + center dot + active edge dot (all in one).
+  drawSnapFeedback(ctx, currentSnap, isStraight);
 
-  // Inactive dots
-  for (const [pos, active] of [
-    [startPos, startActive],
-    [endPos, endActive],
-  ] as const) {
-    if (active) continue;
-    ctx.beginPath();
-    ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
-    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
-    ctx.fill();
-    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-    ctx.stroke();
-  }
+  // Inactive dots on sides that aren't actively snapped (the snapped side was drawn above).
+  if (!startActive) drawAnchorDot(ctx, startPos, false);
+  if (!endActive) drawAnchorDot(ctx, endPos, false);
 
-  // Active dots (with glow)
-  for (const [pos, active] of [
-    [startPos, startActive],
-    [endPos, endActive],
-  ] as const) {
-    if (!active) continue;
-    ctx.save();
-    ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-    ctx.shadowBlur = glowBlur;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 0;
+  // === Dashed guides for straight connectors with interior anchors ===
+  if (!isStraight) return;
 
-    ctx.beginPath();
-    ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
-    ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
-    ctx.fill();
-
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
-    ctx.lineWidth = strokeWidth;
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // Dashed guides for straight connectors with interior anchors
-  if (getConnectorType(handle.y) === 'straight') {
-    if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {
-      // During drag: use routedPoints for live dashed guides
-      const { endpoint, currentSnap, routedPoints } = transform;
-      if (routedPoints && routedPoints.length >= 2) {
-        // Dragged endpoint: draw dashed guide if current snap is interior
-        if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
-          const draggedPos = currentSnap.edgePosition;
-          const lineEnd = endpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
-          drawDashedGuideLine(ctx, draggedPos, lineEnd);
-        }
-        // Non-dragged endpoint: use stored anchor + routedPoints
-        const otherEndpoint = endpoint === 'start' ? 'end' : 'start';
-        const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
-        if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
-          const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
-          const otherLineEnd = otherEndpoint === 'start' ? routedPoints[0] : routedPoints[routedPoints.length - 1];
-          drawDashedGuideLine(ctx, otherPos, otherLineEnd);
-        }
-      }
-    } else {
-      // Idle: use stored points
-      drawStraightConnectorGuides(ctx, handle, startPos, endPos);
+  if (isDragging && dragRoute && dragRoute.length >= 2) {
+    if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
+      const lineEnd = draggedEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
+      drawConnectorDashGuide(ctx, currentSnap.edgePosition, lineEnd);
     }
-  }
-}
-
-/**
- * Draw midpoint indicator dots on the snap target shape.
- *
- * Shows 4 midpoints (N/E/S/W) on the target shape. When snapped to a midpoint,
- * all dots grow to large radius. The active side dot renders with blue fill and glow.
- * For straight connectors, also draws center dot when applicable.
- */
-function drawSnapMidpointDots(
-  ctx: CanvasRenderingContext2D,
-  snap: SnapTarget,
-  isStraight: boolean = false,
-  isCenterSnap: boolean = false,
-): void {
-  const scale = useCameraStore.getState().scale;
-  const shapeHandle = getHandle(snap.shapeId);
-  if (!shapeHandle) return;
-
-  const shapeFrame = frameOf(shapeHandle);
-  if (!shapeFrame) return;
-
-  const shapeType = getHandleShapeType(shapeHandle);
-
-  // Draw snap target highlight — cached geometry for shapes, strokeRect for others
-  ctx.save();
-  ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-  ctx.lineWidth = 2 / scale;
-  ctx.lineJoin = 'round';
-  if (shapeHandle.kind === 'shape') {
-    const path = getPath(shapeHandle.id, shapeHandle);
-    const sw = getWidth(shapeHandle.y, 2);
-    const [fx, fy, fw, fh] = shapeFrame;
-    const cx = fx + fw / 2;
-    const cy = fy + fh / 2;
-    const sx = fw > 0 ? (fw + sw) / fw : 1;
-    const sy = fh > 0 ? (fh + sw) / fh : 1;
-    ctx.translate(cx, cy);
-    ctx.scale(sx, sy);
-    ctx.translate(-cx, -cy);
-    ctx.stroke(path);
-  } else {
-    ctx.strokeRect(shapeFrame[0], shapeFrame[1], shapeFrame[2], shapeFrame[3]);
-  }
-  ctx.restore();
-
-  const { smallRadius, largeRadius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
-
-  // When at midpoint, all dots grow large; otherwise stay small
-  const midpointRadius = snap.isMidpoint ? largeRadius : smallRadius;
-
-  const midpoints = getShapeTypeMidpoints(shapeFrame, shapeType);
-
-  ctx.lineWidth = strokeWidth;
-
-  // Inactive midpoint dots (skip the active side if at midpoint)
-  for (const [s, pos] of Object.entries(midpoints) as ['N' | 'E' | 'S' | 'W', [number, number]][]) {
-    if (snap.isMidpoint && s === snap.side) continue;
-
-    ctx.beginPath();
-    ctx.arc(pos[0], pos[1], midpointRadius, 0, Math.PI * 2);
-    ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
-    ctx.fill();
-    ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-    ctx.stroke();
-  }
-
-  // Center dot for straight connectors
-  if (isStraight) {
-    const centerX = shapeFrame[0] + shapeFrame[2] / 2;
-    const centerY = shapeFrame[1] + shapeFrame[3] / 2;
-    if (isCenterSnap) {
-      ctx.save();
-      ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-      ctx.shadowBlur = glowBlur;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, largeRadius, 0, Math.PI * 2);
-      ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
-      ctx.fill();
-      ctx.shadowColor = 'transparent';
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
-      ctx.lineWidth = strokeWidth;
-      ctx.stroke();
-      ctx.restore();
-      return; // Center snap is the active dot — skip normal active dot
-    } else {
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, smallRadius, 0, Math.PI * 2);
-      ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
-      ctx.fill();
-      ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-      ctx.stroke();
+    const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
+    const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
+    if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
+      const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
+      const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
+      drawConnectorDashGuide(ctx, otherPos, otherLineEnd);
     }
+    return;
   }
 
-  // Active dot at edge position with glow
-  ctx.save();
-  ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-  ctx.shadowBlur = glowBlur;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 0;
-
-  ctx.beginPath();
-  ctx.arc(snap.edgePosition[0], snap.edgePosition[1], largeRadius, 0, Math.PI * 2);
-  ctx.fillStyle = ANCHOR_DOT_CONFIG.ACTIVE_FILL;
-  ctx.fill();
-
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = ANCHOR_DOT_CONFIG.ACTIVE_STROKE;
-  ctx.lineWidth = strokeWidth;
-  ctx.stroke();
-  ctx.restore();
-}
-
-// =============================================================================
-// STRAIGHT CONNECTOR DASHED GUIDES
-// =============================================================================
-
-/**
- * Draw dashed guide lines for a selected straight connector with interior anchors.
- * Draws from the interior anchor dot position to the stored line endpoint on the shape edge.
- */
-function drawStraightConnectorGuides(
-  ctx: CanvasRenderingContext2D,
-  handle: ObjectHandle,
-  startPos: [number, number],
-  endPos: [number, number],
-): void {
-  const points = getPoints(handle.y);
-  if (points.length < 2) return;
-
+  // Idle: dashed guide from stored anchor frame point to stored line endpoint
+  const storedPoints = getPoints(handle.y);
+  if (storedPoints.length < 2) return;
   const startAnchor = getStartAnchor(handle.y);
   const endAnchor = getEndAnchor(handle.y);
-
-  // Dashed guide from interior dot position to line start (edge intersection)
   if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
-    drawDashedGuideLine(ctx, startPos, points[0]);
+    drawConnectorDashGuide(ctx, startPos, storedPoints[0]);
   }
-
-  // Dashed guide from interior dot position to line end (edge intersection)
   if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
-    drawDashedGuideLine(ctx, endPos, points[points.length - 1]);
+    drawConnectorDashGuide(ctx, endPos, storedPoints[storedPoints.length - 1]);
   }
-}
-
-/** Draw a dashed guide line between two points. */
-function drawDashedGuideLine(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number]): void {
-  const scale = useCameraStore.getState().scale;
-  const { dashLength, gapLength } = getGuideMetricsWorld();
-  ctx.save();
-  ctx.setLineDash([dashLength, gapLength]);
-  ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = 1.5 / scale;
-  ctx.globalAlpha = 0.5;
-  ctx.beginPath();
-  ctx.moveTo(from[0], from[1]);
-  ctx.lineTo(to[0], to[1]);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.restore();
 }

@@ -17,8 +17,8 @@ import { getStart, getEnd, getStartAnchor, getEndAnchor } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
 import { getHandle } from '@/runtime/room-runtime';
 import type { Dir, AABB, Bounds } from './types';
-import { isAnchorInterior } from './types';
-import { EDGE_CLEARANCE_W, computeApproachOffset } from './constants';
+import { computeApproachOffset } from './constants';
+import { anchorFramePoint } from './anchor-atoms';
 
 /**
  * Get midpoints for shape type (handles rounded diamond geometry).
@@ -283,24 +283,45 @@ export function computeSignature(points: [number, number][]): string {
 // ============================================================================
 
 /**
- * Resolve start direction for FREE→ANCHORED cases.
+ * Pick a "sliver escape" direction when a free start point lies inside the
+ * padded corridor of the target shape but outside the shape itself.
  *
- * Computes direction from spatial relationship between free start point
- * and target shape anchor. All values computed ONCE for efficiency.
+ * Priority flips with anchor axis: horizontal anchors check side corridors
+ * first, vertical anchors check top/bottom first. Returns null when no
+ * axis-aligned escape is available.
+ */
+export function computeSliverEscape(from: [number, number], bounds: AABB, anchorIsHorizontal: boolean, strokeWidth: number): Dir | null {
+  const { x, y, w, h } = bounds;
+  const [fx, fy] = from;
+  const offset = computeApproachOffset(strokeWidth);
+  const leftOf = fx < x;
+  const rightOf = fx > x + w;
+  const above = fy < y;
+  const below = fy > y + h;
+  const nearX = fx >= x - offset && fx <= x + w + offset;
+  const nearY = fy >= y - offset && fy <= y + h + offset;
+  if (anchorIsHorizontal) {
+    if (leftOf && nearY) return 'W';
+    if (rightOf && nearY) return 'E';
+    if (above && nearX) return 'N';
+    if (below && nearX) return 'S';
+  } else {
+    if (above && nearX) return 'N';
+    if (below && nearX) return 'S';
+    if (leftOf && nearY) return 'W';
+    if (rightOf && nearY) return 'E';
+  }
+  return null;
+}
+
+/**
+ * Resolve start direction for FREE→ANCHORED (elbow) cases.
  *
- * Decision tree:
- * 1. Inside full padding: opposite wraps toward target, else escape (anchorDir)
- * 2. Same side: L-route checks sliver first, then Z/L both go toward shape
- * 3. Opposite + contained: wrap around via shape center
- * 4. Adjacent / opposite-clear: sliver escape, then anchorDir
- *
- * Key insight: Z-route and L-route return identical directions (toward shape
- * on primary axis). The only difference is L-route checks sliver escape first.
- *
- * @param fromPos - Start position (free endpoint)
- * @param toTerminal - Target info with position, outwardDir, and shapeBounds
- * @param strokeWidth - Connector stroke width
- * @returns Direction for from.outwardDir
+ * Labelled sections:
+ *   1. Inside full padding → opposite wraps toward target, else escape (anchorDir)
+ *   2. Same side            → L-route checks sliver first, then both Z/L go toward shape
+ *   3. Opposite + contained → wrap around via shape center
+ *   4. Adjacent / clear     → sliver escape (via atom), else anchorDir
  */
 export function resolveFreeStartDir(
   fromPos: [number, number],
@@ -313,78 +334,50 @@ export function resolveFreeStartDir(
   const anchorDir = toTerminal.outwardDir;
   const offset = computeApproachOffset(strokeWidth);
 
-  // Padded bounds
-  const padLeft = x - offset;
-  const padRight = x + w + offset;
-  const padTop = y - offset;
-  const padBottom = y + h + offset;
-
-  // Position flags
   const leftOf = fx < x;
   const rightOf = fx > x + w;
   const above = fy < y;
   const below = fy > y + h;
 
-  // Containment (strict for full padding, non-strict for sliver)
-  const inPadX = fx > padLeft && fx < padRight;
-  const inPadY = fy > padTop && fy < padBottom;
   const inShape = !leftOf && !rightOf && !above && !below;
-  const inFullPad = inPadX && inPadY && !inShape;
-  const nearX = fx >= padLeft && fx <= padRight;
-  const nearY = fy >= padTop && fy <= padBottom;
+  const inFullPad = fx > x - offset && fx < x + w + offset && fy > y - offset && fy < y + h + offset && !inShape;
+  const nearX = fx >= x - offset && fx <= x + w + offset;
+  const nearY = fy >= y - offset && fy <= y + h + offset;
 
-  // Deltas and dominant axis
   const dx = tx - fx;
   const dy = ty - fy;
   const hDominant = Math.abs(dx) >= Math.abs(dy);
   const anchorIsH = anchorDir === 'E' || anchorDir === 'W';
 
-  // Spatial relationship
   const sameSide =
     (anchorDir === 'N' && above) || (anchorDir === 'S' && below) || (anchorDir === 'E' && rightOf) || (anchorDir === 'W' && leftOf);
   const oppSide =
     (anchorDir === 'N' && below) || (anchorDir === 'S' && above) || (anchorDir === 'E' && leftOf) || (anchorDir === 'W' && rightOf);
 
-  // Compute sliver escape ONCE (anchor axis determines check priority)
-  let sliverDir: Dir | null = null;
-  if (nearX || nearY) {
-    if (anchorIsH) {
-      if (leftOf && nearY) sliverDir = 'W';
-      else if (rightOf && nearY) sliverDir = 'E';
-      else if (above && nearX) sliverDir = 'N';
-      else if (below && nearX) sliverDir = 'S';
-    } else {
-      if (above && nearX) sliverDir = 'N';
-      else if (below && nearX) sliverDir = 'S';
-      else if (leftOf && nearY) sliverDir = 'W';
-      else if (rightOf && nearY) sliverDir = 'E';
-    }
-  }
-
-  // === INSIDE FULL PADDING ===
+  // 1. Inside full padding
   if (inFullPad) {
     if (oppSide) {
-      // Wrap toward target position on perpendicular axis
       return !anchorIsH ? (fx < tx ? 'E' : 'W') : fy < ty ? 'S' : 'N';
     }
-    return anchorDir; // same side or adjacent: escape outward
+    return anchorDir;
   }
 
-  // === OUTSIDE FULL PADDING ===
-
-  // Same side: L-route (axis mismatch) checks sliver, then both Z/L go toward shape
+  // 2. Same side: L-route (axis mismatch) checks sliver, both variants then go toward shape
   if (sameSide) {
-    if (anchorIsH !== hDominant && sliverDir) return sliverDir;
+    if (anchorIsH !== hDominant) {
+      const sliver = computeSliverEscape(fromPos, toTerminal.shapeBounds, anchorIsH, strokeWidth);
+      if (sliver) return sliver;
+    }
     return hDominant ? (dx >= 0 ? 'E' : 'W') : dy >= 0 ? 'S' : 'N';
   }
 
-  // Opposite + contained: wrap around via shape center
+  // 3. Opposite + contained: wrap around via shape center
   if (oppSide && nearX && nearY) {
     return anchorIsH ? (fy < y + h / 2 ? 'N' : 'S') : fx < x + w / 2 ? 'W' : 'E';
   }
 
-  // Adjacent or opposite-not-contained: sliver escape, else anchorDir
-  return sliverDir ?? anchorDir;
+  // 4. Adjacent / opposite-not-contained: sliver escape, else anchorDir
+  return computeSliverEscape(fromPos, toTerminal.shapeBounds, anchorIsH, strokeWidth) ?? anchorDir;
 }
 
 /**
@@ -456,67 +449,20 @@ export function inferDragDirection(
 // ============================================================================
 
 /**
- * Apply normalized anchor to frame, returning endpoint position with edge clearance.
+ * Get the ON-EDGE (or interior) position for a connector endpoint — no clearance offset.
  *
- * Normalized anchor [nx, ny] is in [0-1, 0-1] space relative to frame.
- * The edge position is computed, then offset outward by EDGE_CLEARANCE_W.
- *
- * Note: Uses EDGE_CLEARANCE_W only (not computeApproachOffset) because:
- * - The approach offset (CORNER_RADIUS + arrowLength + EDGE_CLEARANCE) is for A* grid
- * - Here we just need visual clearance from the shape edge
- *
- * @param anchor - Normalized anchor position [0-1, 0-1]
- * @param frame - Frame tuple [x, y, w, h]
- * @param side - Edge direction (determines offset direction)
- * @returns World position with edge clearance applied
- */
-export function applyAnchorToFrame(anchor: [number, number], frame: FrameTuple, side: Dir): [number, number] {
-  const [nx, ny] = anchor;
-  const [x, y, w, h] = frame;
-  const posX = x + nx * w;
-  const posY = y + ny * h;
-
-  // Interior anchors: return position directly (no edge offset)
-  if (isAnchorInterior(anchor)) return [posX, posY];
-
-  // Edge anchors: apply edge clearance offset in outward direction
-  const [dx, dy] = directionVector(side);
-  return [posX + dx * EDGE_CLEARANCE_W, posY + dy * EDGE_CLEARANCE_W];
-}
-
-/**
- * Get the ON-EDGE position for a connector endpoint (no clearance offset).
- *
- * For anchored endpoints: interpolates normalized anchor within the current shape frame.
- * For free endpoints: returns the stored position directly.
- *
- * This is used for:
- * - Endpoint dot rendering (dots appear ON the shape edge)
- * - Endpoint dot hit testing
- *
- * Unlike `applyAnchorToFrame`, this does NOT apply EDGE_CLEARANCE_W offset.
- *
- * @param handle - The connector's ObjectHandle
- * @param endpoint - Which endpoint ('start' or 'end')
+ * Anchored: interpolates the stored normalized anchor against the current shape frame
+ * (via `anchorFramePoint`). Free: returns the stored position as-is. Used by hit testing
+ * and endpoint-dot rendering — the dot always sits on the frame point.
  */
 export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): [number, number] {
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
   const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
-
-  if (!anchor) {
-    // Free endpoint: stored position IS the edge position
-    return storedPos ?? [0, 0];
-  }
-
-  // Anchored: look up shape frame and interpolate normalized anchor
-  const shapeHandle = getHandle(anchor.id);
-  const frame = frameOf(shapeHandle);
+  if (!anchor) return storedPos ?? [0, 0];
+  const frame = frameOf(getHandle(anchor.id));
   if (!frame) return storedPos ?? [0, 0];
-
-  const [nx, ny] = anchor.anchor;
-  const [x, y, w, h] = frame;
-  return [x + nx * w, y + ny * h];
+  return anchorFramePoint(anchor.anchor, frame);
 }
 
 // ============================================================================

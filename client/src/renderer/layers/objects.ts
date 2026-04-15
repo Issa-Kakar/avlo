@@ -20,7 +20,8 @@ import {
   getShapeProps,
 } from '@/core/accessors';
 import { getPath, getConnectorPaths } from '../geometry-cache';
-import { buildConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
+import { buildConnectorPaths } from '@/core/connectors/connector-paths';
+import { paintConnector } from './connector-render-atoms';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
@@ -429,9 +430,9 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   renderCodeLayout(ctx, layout, props.origin[0], props.origin[1], props.fontSize, spans, lines, title, output);
 }
 
-function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const frame = getFrame(handle.y);
-  if (!frame) return;
+function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOverride?: FrameTuple): void {
+  const frame = frameOverride ?? getFrame(handle.y);
+  if (!frame || frame[2] < 0.001 || frame[3] < 0.001) return;
   const assetId = getAssetId(handle.y);
   if (!assetId) return;
 
@@ -445,7 +446,7 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(bitmap, frame[0], frame[1], frame[2], frame[3]);
   } else {
-    // Placeholder: light gray rect
+    // Placeholder: light gray rect with subtle border
     ctx.fillStyle = '#f0f0f0';
     ctx.fillRect(frame[0], frame[1], frame[2], frame[3]);
     ctx.strokeStyle = '#d1d5db';
@@ -457,41 +458,7 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-
-  const color = getColor(y);
-  const width = getWidth(y);
-  const opacity = getOpacity(y);
-
-  const paths = getConnectorPaths(id, handle);
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  // Pass 1: Stroke polyline with rounded caps/joins
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke(paths.polyline);
-
-  // Pass 2: Render arrows (fill + stroke for rounded corners)
-  // Fixed lineWidth for consistent ~2.5 unit corner radius at all sizes
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  if (paths.startArrow) {
-    ctx.fill(paths.startArrow);
-    ctx.stroke(paths.startArrow);
-  }
-  if (paths.endArrow) {
-    ctx.fill(paths.endArrow);
-    ctx.stroke(paths.endArrow);
-  }
-
-  ctx.restore();
+  paintConnector(ctx, getConnectorPaths(id, handle), getColor(y), getWidth(y), getOpacity(y));
 }
 
 /**
@@ -500,43 +467,10 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
  */
 function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: [number, number][]): void {
   if (points.length < 2) return;
-
   const { y } = handle;
-  const color = getColor(y);
   const width = getWidth(y);
-  const opacity = getOpacity(y);
-  const startCap = getStartCap(y);
-  const endCap = getEndCap(y);
-
-  const paths = buildConnectorPaths({ points, strokeWidth: width, startCap, endCap });
-
-  ctx.save();
-  ctx.globalAlpha = opacity;
-
-  // Pass 1: Stroke polyline
-  ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke(paths.polyline);
-
-  // Pass 2: Arrows
-  ctx.fillStyle = color;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  if (paths.startArrow) {
-    ctx.fill(paths.startArrow);
-    ctx.stroke(paths.startArrow);
-  }
-  if (paths.endArrow) {
-    ctx.fill(paths.endArrow);
-    ctx.stroke(paths.endArrow);
-  }
-
-  ctx.restore();
+  const paths = buildConnectorPaths({ points, strokeWidth: width, startCap: getStartCap(y), endCap: getEndCap(y) });
+  paintConnector(ctx, paths, getColor(y), width, getOpacity(y));
 }
 
 // ============================================================================
@@ -580,24 +514,7 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     case 'image': {
       const entry = getScaleEntry('image', handle.id);
       if (!entry) break;
-      const { frame } = entry.out;
-      const [, , tw, th] = frame;
-      if (tw < 0.001 || th < 0.001) return;
-      const assetId = getAssetId(handle.y);
-      if (!assetId) return;
-      const bitmap = getBitmap(assetId);
-      const opacity = getOpacity(handle.y);
-      ctx.save();
-      ctx.globalAlpha = opacity;
-      if (bitmap) {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(bitmap, frame[0], frame[1], tw, th);
-      } else {
-        ctx.fillStyle = '#f0f0f0';
-        ctx.fillRect(frame[0], frame[1], tw, th);
-      }
-      ctx.restore();
+      drawImage(ctx, handle, entry.out.frame);
       break;
     }
 

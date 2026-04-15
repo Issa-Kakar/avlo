@@ -61,12 +61,15 @@ export {
   resolveFreeStartDir,
   computeFreeEndDir,
   inferDragDirection,
+  computeSliverEscape,
   // Anchor helpers
-  applyAnchorToFrame,
   getEndpointEdgePosition,
   // Straight connector edge intersection
   computeShapeEdgeIntersection,
 } from './connector-utils';
+
+// Anchor math atoms (single home for anchor <-> point math)
+export { anchorFramePoint, anchorOffsetPoint, sideFromAnchor, isSameShape } from './anchor-atoms';
 
 // Snapping
 export { findBestSnapTarget, computeSnapForShape, findNearestEdgePoint } from './snap';

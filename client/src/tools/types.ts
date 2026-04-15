@@ -1,4 +1,5 @@
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { SnapTarget } from '@/core/connectors/types';
 
 /**
  * HandleId identifies resize handles at selection corners and sides.
@@ -81,60 +82,20 @@ export type SelectionPreview = {
 };
 
 /**
- * ConnectorPreview is the preview data for connector tool.
- * Anchor dots ONLY appear when snapping would occur.
+ * ConnectorPreview — the bare minimum the renderer can't derive.
+ *
+ * Style (color/width/opacity/caps/type) is pulled live from `device-ui-store`
+ * at draw time. Snap target shape/frame/type and dashed-guide endpoints are
+ * derived in the renderer from `hoverSnap` / `fromSnap` via anchor-atoms.
  */
 export type ConnectorPreview = {
   kind: 'connector';
-
-  // === Main connector path (world coords) ===
-  /** Full routed path including endpoints and waypoints */
+  /** Full routed path (the one thing the renderer can't derive). */
   points: [number, number][];
-
-  // === Styling ===
-  color: string;
-  width: number;
-  opacity: number;
-  startCap: 'arrow' | 'none';
-  endCap: 'arrow' | 'none';
-
-  // === Anchor visualization — only set when actually snapped ===
-
-  /** Shape we're snapped to (null = not snapped, dots won't show) */
-  snapShapeId: string | null;
-  /** Frame of snapped shape [x, y, w, h] for dot placement */
-  snapShapeFrame: FrameTuple | null;
-  /** Shape type for proper dot placement ('rect' | 'ellipse' | 'diamond') */
-  snapShapeType: string | null;
-  /** Which midpoint is active (snapped to t=0.5) */
-  activeMidpointSide: 'N' | 'E' | 'S' | 'W' | null;
-  /** Which edge we're snapped to (N/E/S/W, null = not snapped) */
-  snapSide: 'N' | 'E' | 'S' | 'W' | null;
-  /** Pre-offset snap position on shape edge - actual dot location (null = not snapped) */
-  snapPosition: [number, number] | null;
-
-  // === Endpoint states ===
-  /** True if 'from' endpoint is attached to a shape */
-  fromIsAttached: boolean;
-  /** Position of 'from' endpoint in world coords */
-  fromPosition: [number, number] | null;
-  /** True if 'to' endpoint is attached to a shape */
-  toIsAttached: boolean;
-  /** Position of 'to' endpoint in world coords */
-  toPosition: [number, number] | null;
-
-  // === Straight connector fields ===
-  /** Connector routing type */
-  connectorType: 'elbow' | 'straight';
-  /** Interior anchor position for dashed start guide (straight only) */
-  startDashTo: [number, number] | null;
-  /** Interior anchor position for dashed end guide (straight only) */
-  endDashTo: [number, number] | null;
-  /** True when snapped to shape center (straight only) */
-  isCenterSnap: boolean;
-
-  /** Always null for overlay previews */
-  bbox: null;
+  /** Start-side attachment — drives start dashed guide. No anchor dot is drawn on this side. */
+  fromSnap: SnapTarget | null;
+  /** Current hover/target snap — drives target highlight, midpoint dots, and end dashed guide. */
+  hoverSnap: SnapTarget | null;
 };
 
 /** Discriminated union of all preview variants. */
