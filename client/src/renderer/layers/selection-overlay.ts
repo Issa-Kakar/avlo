@@ -15,6 +15,7 @@
  */
 
 import type { SelectionPreview, HandleId } from '@/tools/types';
+import type { Point } from '@/core/types/geometry';
 import { getFrame, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
@@ -305,13 +306,13 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   const isDragging = transform.kind === 'endpointDrag' && transform.connectorId === connectorId;
 
   // === Endpoint positions ===
-  let startPos: [number, number];
-  let endPos: [number, number];
+  let startPos: Point;
+  let endPos: Point;
   let startActive = false;
   let endActive = false;
   let currentSnap: SnapTarget | null = null;
   let draggedEndpoint: 'start' | 'end' | null = null;
-  let dragRoute: [number, number][] | null = null;
+  let dragRoute: Point[] | null = null;
 
   if (isDragging) {
     const { endpoint, currentPosition, currentSnap: snap, routedPoints } = transform;
@@ -319,7 +320,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     currentSnap = snap;
     dragRoute = routedPoints ?? null;
 
-    const draggedPos: [number, number] = snap ? snap.edgePosition : currentPosition;
+    const draggedPos: Point = snap ? snap.edgePosition : currentPosition;
     const draggedActive = snap !== null;
     const otherPos = getEndpointEdgePosition(handle, endpoint === 'start' ? 'end' : 'start');
 

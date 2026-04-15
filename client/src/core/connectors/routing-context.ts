@@ -11,6 +11,7 @@
  * @module lib/connectors/routing-context
  */
 
+import type { Point } from '../types/geometry';
 import { computeApproachOffset, EDGE_CLEARANCE_W } from './constants';
 import { toBounds, pointBounds, isPointBounds, isHorizontal } from './connector-utils';
 import type { Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Centerlines } from './types';
@@ -43,9 +44,9 @@ import type { Dir, AABB, Bounds, RoutingContext, Grid, GridCell, Centerlines } f
  * @returns Complete routing context
  */
 export function createRoutingContext(
-  startPos: [number, number],
+  startPos: Point,
   startDir: Dir,
-  endPos: [number, number],
+  endPos: Point,
   endDir: Dir,
   startShapeBounds: AABB | null,
   endShapeBounds: AABB | null,
@@ -262,11 +263,11 @@ function buildRoutingBounds(raw: Bounds, other: Bounds, centerlines: Centerlines
  * This means stubs are ON the centerline when one exists!
  *
  * @param bounds - Dynamic routing bounds (with centerline/padding baked in)
- * @param anchorPos - Actual anchor position [x, y]
+ * @param anchorPos - Actual anchor position
  * @param dir - Outward direction (determines which bounds edge to use)
- * @returns Stub position [x, y]
+ * @returns Stub position
  */
-function computeStub(bounds: Bounds, anchorPos: [number, number], dir: Dir): [number, number] {
+function computeStub(bounds: Bounds, anchorPos: Point, dir: Dir): Point {
   const [ax, ay] = anchorPos;
 
   switch (dir) {

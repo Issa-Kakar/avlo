@@ -91,7 +91,7 @@ export type SelectionPreview = {
 export type ConnectorPreview = {
   kind: 'connector';
   /** Full routed path (the one thing the renderer can't derive). */
-  points: [number, number][];
+  points: Point[];
   /** Start-side attachment — drives start dashed guide. No anchor dot is drawn on this side. */
   fromSnap: SnapTarget | null;
   /** Current hover/target snap — drives target highlight, midpoint dots, and end dashed guide. */

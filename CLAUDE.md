@@ -327,7 +327,8 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
   endAnchor?: { id, side: Dir, anchor: [0-1, 0-1] },
   connectorType?: 'straight',  // Only stored when not 'elbow' (default)
   startCap, endCap: 'none'|'arrow',
-  color, width, opacity, ownerId, createdAt }
+  color, width, ownerId, createdAt }
+// Connectors always render at opacity 1 — no opacity field stored.
 ```
 Detailed connector docs in `core/connectors/CLAUDE.md`.
 

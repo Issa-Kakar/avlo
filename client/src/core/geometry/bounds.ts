@@ -121,7 +121,7 @@ export function translateBounds(bounds: WorldBounds, dx: number, dy: number): Wo
 /**
  * Scale bounds around origin with automatic normalization for negative scales.
  */
-export function scaleBoundsAround(bounds: WorldBounds, origin: [number, number], scaleX: number, scaleY: number): WorldBounds {
+export function scaleBoundsAround(bounds: WorldBounds, origin: Point, scaleX: number, scaleY: number): WorldBounds {
   const [ox, oy] = origin;
   const x1 = ox + (bounds.minX - ox) * scaleX;
   const y1 = oy + (bounds.minY - oy) * scaleY;
@@ -143,7 +143,7 @@ export function scaleBoundsAround(bounds: WorldBounds, origin: [number, number],
 /**
  * Create bounds from two corner points (for marquee rectangles).
  */
-export function pointsToWorldBounds(p1: [number, number], p2: [number, number]): WorldBounds {
+export function pointsToWorldBounds(p1: Point, p2: Point): WorldBounds {
   return {
     minX: Math.min(p1[0], p2[0]),
     minY: Math.min(p1[1], p2[1]),
@@ -171,7 +171,7 @@ export function frameTupleToWorldBounds(frame: FrameTuple): WorldBounds {
 /**
  * Get center point of bounds.
  */
-export function boundsCenter(bounds: WorldBounds): [number, number] {
+export function boundsCenter(bounds: WorldBounds): Point {
   return [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2];
 }
 

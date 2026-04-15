@@ -4,8 +4,9 @@
  * Single home for the pixel-level draw primitives any connector layer needs:
  *
  *  - `paintConnector` — strokes a connector's polyline + arrow caps using the
- *    user-supplied color/width/opacity. Shared by `objects.ts` (committed /
- *    transform-preview connectors) and `connector-preview.ts` (in-flight).
+ *    user-supplied color/width. Connectors are always opacity 1, so no alpha
+ *    param leaks through. Shared by `objects.ts` (committed / transform-preview
+ *    connectors) and `connector-preview.ts` (in-flight).
  *  - Selection/preview decoration atoms (`drawAnchorDot`, `drawConnectorDashGuide`,
  *    `drawSnapTargetHighlight`, `drawShapeMidpoints`, `drawStraightCenterDot`,
  *    `drawSnapFeedback`) — constant blue/black styling for the UI overlays in
@@ -16,7 +17,7 @@
  * @module renderer/layers/connector-render-atoms
  */
 
-import type { FrameTuple } from '@/core/types/geometry';
+import type { FrameTuple, Point } from '@/core/types/geometry';
 import { type ObjectHandle, isBindableHandle } from '@/core/types/objects';
 import { type Dir, type SnapTarget, isAnchorInterior } from '@/core/connectors/types';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
@@ -35,11 +36,10 @@ import { frameOf } from '@/core/geometry/frame-of';
  * connectors via `drawConnector`, rerouted connectors via `drawConnectorFromPoints`)
  * and one in `connector-preview.ts` (in-flight connector during creation) — so
  * the context setup and Path2D drawing live here to keep them in lock-step.
- * Callers provide the already-built `ConnectorPaths` and the user style.
+ * Connectors render at full opacity; callers only supply color and width.
  */
-export function paintConnector(ctx: CanvasRenderingContext2D, paths: ConnectorPaths, color: string, width: number, opacity: number): void {
+export function paintConnector(ctx: CanvasRenderingContext2D, paths: ConnectorPaths, color: string, width: number): void {
   ctx.save();
-  ctx.globalAlpha = opacity;
 
   // Pass 1: polyline stroke with rounded caps/joins
   ctx.strokeStyle = color;
@@ -70,7 +70,7 @@ export function paintConnector(ctx: CanvasRenderingContext2D, paths: ConnectorPa
  * Constant 1.5/scale width, solid black with 0.5 alpha. Used for interior
  * anchor guides on straight connectors in both preview and selection states.
  */
-export function drawConnectorDashGuide(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number]): void {
+export function drawConnectorDashGuide(ctx: CanvasRenderingContext2D, from: Point, to: Point): void {
   const scale = useCameraStore.getState().scale;
   const { dashLength, gapLength } = getGuideMetricsWorld();
   ctx.save();
@@ -92,7 +92,7 @@ export function drawConnectorDashGuide(ctx: CanvasRenderingContext2D, from: [num
  * `active=true` → large radius, blue fill, white stroke, subtle glow.
  * `active=false` → small radius, white fill, blue stroke.
  */
-export function drawAnchorDot(ctx: CanvasRenderingContext2D, position: [number, number], active: boolean): void {
+export function drawAnchorDot(ctx: CanvasRenderingContext2D, position: Point, active: boolean): void {
   const { smallRadius, largeRadius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
   const radius = active ? largeRadius : smallRadius;
   ctx.save();
@@ -164,7 +164,7 @@ export function drawShapeMidpoints(
   ctx.lineWidth = strokeWidth;
   ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
   ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-  for (const [s, pos] of Object.entries(midpoints) as [Dir, [number, number]][]) {
+  for (const [s, pos] of Object.entries(midpoints) as [Dir, Point][]) {
     if (isMidpointActive && s === activeSide) continue;
     ctx.beginPath();
     ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);

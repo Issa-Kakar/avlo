@@ -13,7 +13,7 @@
  */
 
 import { getHandle } from '@/runtime/room-runtime';
-import type { FrameTuple, BBoxTuple } from '../types/geometry';
+import type { FrameTuple, BBoxTuple, Point } from '../types/geometry';
 import { tupleToFrame } from '../types/geometry';
 import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAnchor } from '../accessors';
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
@@ -34,17 +34,17 @@ function frameToAABB(frame: FrameTuple | null | undefined): AABB | null {
 /**
  * Endpoint override value for rerouteConnector.
  * - SnapTarget: snap to shape edge (has shapeId property)
- * - [x, y]: free position override
+ * - Point: free position override
  * - { frame: FrameTuple }: apply anchor to a transformed frame
  */
-export type EndpointOverrideValue = SnapTarget | [number, number] | { frame: FrameTuple };
+export type EndpointOverrideValue = SnapTarget | Point | { frame: FrameTuple };
 
 /**
  * Result of a connector reroute operation.
  */
 export interface RerouteResult {
   /** Routed path points */
-  points: [number, number][];
+  points: Point[];
   /** Bounding box of the routed path (with arrow/stroke padding) */
   bbox: BBoxTuple;
 }
@@ -94,18 +94,18 @@ export function rerouteConnector(
  * Resolved endpoint with position, direction, and bounds.
  */
 interface ResolvedEndpoint {
-  position: [number, number];
+  position: Point;
   dir: Dir | null;
   shapeBounds: AABB | null;
   isAnchored: boolean;
   // Straight connector fields (populated when anchored)
-  normalizedAnchor?: [number, number];
+  normalizedAnchor?: Point;
   shapeType?: string;
   frame?: FrameTuple;
   shapeId?: string;
 }
 
-const FREE_ENDPOINT = (position: [number, number]): ResolvedEndpoint => ({
+const FREE_ENDPOINT = (position: Point): ResolvedEndpoint => ({
   position,
   dir: null,
   shapeBounds: null,
@@ -114,7 +114,7 @@ const FREE_ENDPOINT = (position: [number, number]): ResolvedEndpoint => ({
 
 /** Resolve a single endpoint, picking the right override branch first. */
 function resolveEndpoint(
-  storedPosition: [number, number],
+  storedPosition: Point,
   anchor: StoredAnchor | undefined,
   override: EndpointOverrideValue | undefined,
 ): ResolvedEndpoint {
@@ -143,12 +143,12 @@ function resolveEndpoint(
 }
 
 /** Override: caller provided a free world position. */
-function resolveFreePositionOverride(position: [number, number]): ResolvedEndpoint {
+function resolveFreePositionOverride(position: Point): ResolvedEndpoint {
   return FREE_ENDPOINT(position);
 }
 
 /** Override: caller provided a transformed frame — reapply the stored anchor against it. */
-function resolveFrameOverride(frame: FrameTuple, anchor: StoredAnchor | undefined, storedPosition: [number, number]): ResolvedEndpoint {
+function resolveFrameOverride(frame: FrameTuple, anchor: StoredAnchor | undefined, storedPosition: Point): ResolvedEndpoint {
   if (!anchor) return FREE_ENDPOINT(storedPosition);
   const shapeType = getHandleShapeType(getHandle(anchor.id));
   return {
@@ -216,9 +216,9 @@ function resolveDirections(start: ResolvedEndpoint, end: ResolvedEndpoint, strok
 
 /** Result from routeNewConnector — dash info kept for compatibility during refactor. */
 export interface NewRouteResult {
-  points: [number, number][];
-  startDashTo: [number, number] | null;
-  endDashTo: [number, number] | null;
+  points: Point[];
+  startDashTo: Point | null;
+  endDashTo: Point | null;
 }
 
 /**
@@ -226,8 +226,8 @@ export interface NewRouteResult {
  * Companion to rerouteConnector — same pipeline, no Y.map data needed.
  */
 export function routeNewConnector(
-  start: SnapTarget | [number, number],
-  end: SnapTarget | [number, number],
+  start: SnapTarget | Point,
+  end: SnapTarget | Point,
   strokeWidth: number,
   connectorType: ConnectorType = 'elbow',
   dragDir?: Dir | null,
@@ -260,7 +260,7 @@ export function routeNewConnector(
 }
 
 /** Resolve a snap-or-position endpoint for new connector routing. */
-function resolveNewEndpoint(value: SnapTarget | [number, number]): ResolvedEndpoint {
+function resolveNewEndpoint(value: SnapTarget | Point): ResolvedEndpoint {
   if (Array.isArray(value)) return FREE_ENDPOINT(value);
   return resolveSnapOverride(value);
 }
@@ -270,7 +270,7 @@ function resolveNewEndpoint(value: SnapTarget | [number, number]): ResolvedEndpo
 // ============================================================================
 
 /** Apply EDGE_CLEARANCE_W pull-back along the line from `point` toward `toward`. */
-function applyPullBack(point: [number, number], toward: [number, number]): [number, number] {
+function applyPullBack(point: Point, toward: Point): Point {
   const dx = toward[0] - point[0];
   const dy = toward[1] - point[1];
   const len = Math.hypot(dx, dy);
@@ -279,7 +279,7 @@ function applyPullBack(point: [number, number], toward: [number, number]): [numb
 }
 
 /** Raw (un-offset) position of an endpoint — frame point for anchored, position for free. */
-function rawAnchorPos(ep: ResolvedEndpoint): [number, number] {
+function rawAnchorPos(ep: ResolvedEndpoint): Point {
   if (ep.isAnchored && ep.normalizedAnchor && ep.frame) {
     return anchorFramePoint(ep.normalizedAnchor, ep.frame);
   }
@@ -296,10 +296,10 @@ function rawAnchorPos(ep: ResolvedEndpoint): [number, number] {
  */
 function resolveStraightEndpoint(
   me: ResolvedEndpoint,
-  myRaw: [number, number],
-  otherRaw: [number, number],
+  myRaw: Point,
+  otherRaw: Point,
   sameShape: boolean,
-): { point: [number, number]; dashTo: [number, number] | null } {
+): { point: Point; dashTo: Point | null } {
   if (!me.isAnchored || !me.normalizedAnchor || !me.frame) {
     return { point: me.position, dashTo: null };
   }

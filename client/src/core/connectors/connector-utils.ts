@@ -11,7 +11,7 @@
  * @module lib/connectors/connector-utils
  */
 
-import type { FrameTuple } from '../types/geometry';
+import type { FrameTuple, Point } from '../types/geometry';
 import type { ObjectHandle } from '../types/objects';
 import { getStart, getEnd, getStartAnchor, getEndAnchor } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
@@ -34,7 +34,7 @@ import { anchorFramePoint } from './anchor-atoms';
  * @param shapeType - Shape type ('rect', 'ellipse', 'diamond', etc.)
  * @returns Record mapping each direction to its midpoint [x, y]
  */
-export function getShapeTypeMidpoints(frame: FrameTuple, shapeType: string): Record<Dir, [number, number]> {
+export function getShapeTypeMidpoints(frame: FrameTuple, shapeType: string): Record<Dir, Point> {
   if (shapeType === 'diamond') {
     return getDiamondApexMidpoints(frame);
   }
@@ -61,7 +61,7 @@ export function getShapeTypeMidpoints(frame: FrameTuple, shapeType: string): Rec
  * @param frame - Frame tuple [x, y, w, h]
  * @returns Midpoint positions at the visual apex of each rounded corner
  */
-function getDiamondApexMidpoints(frame: FrameTuple): Record<Dir, [number, number]> {
+function getDiamondApexMidpoints(frame: FrameTuple): Record<Dir, Point> {
   const [x, y, w, h] = frame;
 
   // Corner radius matches rendering in object-cache.ts
@@ -157,9 +157,9 @@ export function isVertical(dir: Dir): boolean {
  * Get unit vector for a cardinal direction.
  *
  * @param dir - Cardinal direction
- * @returns Unit vector [dx, dy] pointing in that direction
+ * @returns Unit vector pointing in that direction
  */
-export function directionVector(dir: Dir): [number, number] {
+export function directionVector(dir: Dir): Point {
   switch (dir) {
     case 'N':
       return [0, -1];
@@ -195,10 +195,10 @@ export function toBounds(aabb: AABB): Bounds {
  * Create point-bounds where all edges converge to a single point.
  * Used for free (non-anchored) endpoints in routing context.
  *
- * @param pos - World position [x, y]
+ * @param pos - World position
  * @returns Bounds collapsed to a point
  */
-export function pointBounds(pos: [number, number]): Bounds {
+export function pointBounds(pos: Point): Bounds {
   return {
     left: pos[0],
     top: pos[1],
@@ -231,10 +231,10 @@ export function isPointBounds(b: Bounds): boolean {
  * @param points - Input path
  * @returns Simplified path without collinear intermediate points
  */
-export function simplifyOrthogonal(points: [number, number][]): [number, number][] {
+export function simplifyOrthogonal(points: Point[]): Point[] {
   if (points.length < 3) return points;
 
-  const result: [number, number][] = [points[0]];
+  const result: Point[] = [points[0]];
 
   for (let i = 1; i < points.length - 1; i++) {
     const prev = result[result.length - 1];
@@ -254,30 +254,6 @@ export function simplifyOrthogonal(points: [number, number][]): [number, number]
   return result;
 }
 
-/**
- * Compute route signature from simplified path.
- *
- * Encodes path as sequence of H (horizontal) and V (vertical) segments,
- * with consecutive duplicates removed. E.g., "HVH", "VHV", "HV".
- *
- * @param points - Simplified path points
- * @returns Signature string
- */
-export function computeSignature(points: [number, number][]): string {
-  let sig = '';
-  for (let i = 0; i < points.length - 1; i++) {
-    const dx = points[i + 1][0] - points[i][0];
-    const dy = points[i + 1][1] - points[i][1];
-    if (Math.abs(dx) > Math.abs(dy)) {
-      sig += 'H';
-    } else if (Math.abs(dy) > Math.abs(dx)) {
-      sig += 'V';
-    }
-  }
-  // Deduplicate consecutive same chars
-  return sig.replace(/(.)(\1)+/g, '$1');
-}
-
 // ============================================================================
 // DIRECTION RESOLUTION FOR FREE ENDPOINTS
 // ============================================================================
@@ -290,7 +266,7 @@ export function computeSignature(points: [number, number][]): string {
  * first, vertical anchors check top/bottom first. Returns null when no
  * axis-aligned escape is available.
  */
-export function computeSliverEscape(from: [number, number], bounds: AABB, anchorIsHorizontal: boolean, strokeWidth: number): Dir | null {
+export function computeSliverEscape(from: Point, bounds: AABB, anchorIsHorizontal: boolean, strokeWidth: number): Dir | null {
   const { x, y, w, h } = bounds;
   const [fx, fy] = from;
   const offset = computeApproachOffset(strokeWidth);
@@ -324,8 +300,8 @@ export function computeSliverEscape(from: [number, number], bounds: AABB, anchor
  *   4. Adjacent / clear     → sliver escape (via atom), else anchorDir
  */
 export function resolveFreeStartDir(
-  fromPos: [number, number],
-  toTerminal: { position: [number, number]; outwardDir: Dir; shapeBounds: AABB },
+  fromPos: Point,
+  toTerminal: { position: Point; outwardDir: Dir; shapeBounds: AABB },
   strokeWidth: number,
 ): Dir {
   const { x, y, w, h } = toTerminal.shapeBounds;
@@ -390,7 +366,7 @@ export function resolveFreeStartDir(
  * @param toPos - Free cursor position
  * @returns Direction for to.outwardDir
  */
-export function computeFreeEndDir(fromPos: [number, number], toPos: [number, number]): Dir {
+export function computeFreeEndDir(fromPos: Point, toPos: Point): Dir {
   const dx = toPos[0] - fromPos[0];
   const dy = toPos[1] - fromPos[1];
   const ax = Math.abs(dx);
@@ -409,12 +385,7 @@ export function computeFreeEndDir(fromPos: [number, number], toPos: [number, num
  * @param hysteresisRatio - Ratio required to switch axis (default 1.04)
  * @returns Inferred direction
  */
-export function inferDragDirection(
-  from: [number, number],
-  cursor: [number, number],
-  prevDir: Dir | null,
-  hysteresisRatio: number = 1.04,
-): Dir {
+export function inferDragDirection(from: Point, cursor: Point, prevDir: Dir | null, hysteresisRatio: number = 1.04): Dir {
   const dx = cursor[0] - from[0];
   const dy = cursor[1] - from[1];
   const ax = Math.abs(dx);
@@ -455,7 +426,7 @@ export function inferDragDirection(
  * (via `anchorFramePoint`). Free: returns the stored position as-is. Used by hit testing
  * and endpoint-dot rendering — the dot always sits on the frame point.
  */
-export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): [number, number] {
+export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): Point {
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
   const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
@@ -480,38 +451,29 @@ export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' 
 export function computeShapeEdgeIntersection(
   shapeType: string,
   frame: FrameTuple,
-  interiorPoint: [number, number],
-  target: [number, number],
-): { point: [number, number]; side: Dir } | null {
-  const [x, y, w, h] = frame;
-  if (w < 0.001 || h < 0.001) return null;
+  interiorPoint: Point,
+  target: Point,
+): { point: Point; side: Dir } | null {
+  if (frame[2] < 0.001 || frame[3] < 0.001) return null;
 
-  const [ix, iy] = interiorPoint;
-  const dx = target[0] - ix;
-  const dy = target[1] - iy;
-  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return null;
+  const dir: Point = [target[0] - interiorPoint[0], target[1] - interiorPoint[1]];
+  if (Math.abs(dir[0]) < 1e-9 && Math.abs(dir[1]) < 1e-9) return null;
 
   switch (shapeType) {
     case 'ellipse':
-      return rayEllipseIntersection(x, y, w, h, ix, iy, dx, dy);
+      return rayEllipseIntersection(frame, interiorPoint, dir);
     case 'diamond':
-      return rayDiamondIntersection(x, y, w, h, ix, iy, dx, dy);
+      return rayDiamondIntersection(frame, interiorPoint, dir);
     default: // rect, roundedRect
-      return rayRectIntersection(x, y, w, h, ix, iy, dx, dy);
+      return rayRectIntersection(frame, interiorPoint, dir);
   }
 }
 
 /** Ray vs axis-aligned rectangle. Take smallest positive t. */
-function rayRectIntersection(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-): { point: [number, number]; side: Dir } | null {
+function rayRectIntersection(frame: FrameTuple, origin: Point, dir: Point): { point: Point; side: Dir } | null {
+  const [x, y, w, h] = frame;
+  const [ox, oy] = origin;
+  const [dx, dy] = dir;
   let bestT = Infinity;
   let bestSide: Dir = 'N';
 
@@ -543,16 +505,10 @@ function rayRectIntersection(
 }
 
 /** Ray vs ellipse. Solve quadratic in parameter t. */
-function rayEllipseIntersection(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-): { point: [number, number]; side: Dir } | null {
+function rayEllipseIntersection(frame: FrameTuple, origin: Point, dir: Point): { point: Point; side: Dir } | null {
+  const [x, y, w, h] = frame;
+  const [ox, oy] = origin;
+  const [dx, dy] = dir;
   const cx = x + w / 2;
   const cy = y + h / 2;
   const rx = w / 2;
@@ -592,22 +548,16 @@ function rayEllipseIntersection(
 }
 
 /** Ray vs diamond (4 diagonal segments). */
-function rayDiamondIntersection(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  ox: number,
-  oy: number,
-  dx: number,
-  dy: number,
-): { point: [number, number]; side: Dir } | null {
-  const top: [number, number] = [x + w / 2, y];
-  const right: [number, number] = [x + w, y + h / 2];
-  const bottom: [number, number] = [x + w / 2, y + h];
-  const left: [number, number] = [x, y + h / 2];
+function rayDiamondIntersection(frame: FrameTuple, origin: Point, dir: Point): { point: Point; side: Dir } | null {
+  const [x, y, w, h] = frame;
+  const [ox, oy] = origin;
+  const [dx, dy] = dir;
+  const top: Point = [x + w / 2, y];
+  const right: Point = [x + w, y + h / 2];
+  const bottom: Point = [x + w / 2, y + h];
+  const left: Point = [x, y + h / 2];
 
-  const segments: { p1: [number, number]; p2: [number, number]; side: Dir }[] = [
+  const segments: { p1: Point; p2: Point; side: Dir }[] = [
     { p1: top, p2: right, side: 'E' },
     { p1: right, p2: bottom, side: 'S' },
     { p1: bottom, p2: left, side: 'W' },

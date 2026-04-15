@@ -1,5 +1,5 @@
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple, FrameTuple, WorldBounds } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple, Point, WorldBounds } from '@/core/types/geometry';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import {
   getColor,
@@ -458,19 +458,19 @@ function drawImage(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frameOve
 
 function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-  paintConnector(ctx, getConnectorPaths(id, handle), getColor(y), getWidth(y), getOpacity(y));
+  paintConnector(ctx, getConnectorPaths(id, handle), getColor(y), getWidth(y));
 }
 
 /**
  * Draw a connector from explicit points (for rerouted connectors during transforms).
  * Reads styles from handle.y, builds fresh paths from the given points.
  */
-function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: [number, number][]): void {
+function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[]): void {
   if (points.length < 2) return;
   const { y } = handle;
   const width = getWidth(y);
   const paths = buildConnectorPaths({ points, strokeWidth: width, startCap: getStartCap(y), endCap: getEndCap(y) });
-  paintConnector(ctx, paths, getColor(y), width, getOpacity(y));
+  paintConnector(ctx, paths, getColor(y), width);
 }
 
 // ============================================================================

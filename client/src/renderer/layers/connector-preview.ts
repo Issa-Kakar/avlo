@@ -31,7 +31,6 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
   const uiState = useDeviceUIStore.getState();
   const color = uiState.drawingSettings.color;
   const width = uiState.connectorSize;
-  const opacity = uiState.drawingSettings.opacity;
   const startCap = uiState.connectorStartCap;
   const endCap = uiState.connectorEndCap;
   const isStraight = uiState.connectorType === 'straight';
@@ -39,7 +38,7 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
   // 1. Polyline + arrow caps — shared paint atom with objects.ts.
   if (hasRoute) {
     const paths = buildConnectorPaths({ points, strokeWidth: width, startCap, endCap });
-    paintConnector(ctx, paths, color, width, opacity);
+    paintConnector(ctx, paths, color, width);
   }
 
   // 2. Dashed guides for straight connectors with interior anchors.

@@ -9,14 +9,14 @@
  * @module core/connectors/anchor-atoms
  */
 
-import type { FrameTuple } from '../types/geometry';
+import type { FrameTuple, Point } from '../types/geometry';
 import type { Dir } from './types';
 import { isAnchorInterior } from './types';
 import { EDGE_CLEARANCE_W } from './constants';
 import { directionVector, getShapeTypeMidpoints } from './connector-utils';
 
 /** Raw interpolation of a normalized anchor against a frame — no offset. */
-export function anchorFramePoint(anchor: [number, number], frame: FrameTuple): [number, number] {
+export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
   return [frame[0] + anchor[0] * frame[2], frame[1] + anchor[1] * frame[3]];
 }
 
@@ -27,7 +27,7 @@ export function anchorFramePoint(anchor: [number, number], frame: FrameTuple): [
  * - Interior anchors map to the nearest visual midpoint — shape-type aware
  *   so diamond / ellipse frames resolve correctly via `getShapeTypeMidpoints`.
  */
-export function sideFromAnchor(anchor: [number, number], frame: FrameTuple, shapeType: string): Dir {
+export function sideFromAnchor(anchor: Point, frame: FrameTuple, shapeType: string): Dir {
   const [nx, ny] = anchor;
   if (!isAnchorInterior(anchor)) {
     if (nx <= 1e-6) return 'W';
@@ -60,7 +60,7 @@ export function sideFromAnchor(anchor: [number, number], frame: FrameTuple, shap
  * future `StoredAnchor.side` removal becomes a zero-touch change at call sites.
  * Interior anchors skip the offset (used by straight connector routing).
  */
-export function anchorOffsetPoint(anchor: [number, number], frame: FrameTuple, shapeType: string): [number, number] {
+export function anchorOffsetPoint(anchor: Point, frame: FrameTuple, shapeType: string): Point {
   const posX = frame[0] + anchor[0] * frame[2];
   const posY = frame[1] + anchor[1] * frame[3];
   if (isAnchorInterior(anchor)) return [posX, posY];

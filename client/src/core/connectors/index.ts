@@ -56,7 +56,6 @@ export {
   isPointBounds,
   // Path utilities
   simplifyOrthogonal,
-  computeSignature,
   // Direction resolution for free endpoints
   resolveFreeStartDir,
   computeFreeEndDir,

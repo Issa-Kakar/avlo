@@ -16,6 +16,7 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import type { PointerTool, PreviewData, ConnectorPreview } from './types';
+import type { Point } from '@/core/types/geometry';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
@@ -42,10 +43,10 @@ export class ConnectorTool implements PointerTool {
 
   // Gesture state — just snap targets and positions
   private fromSnap: SnapTarget | null = null;
-  private fromPosition: [number, number] | null = null;
+  private fromPosition: Point | null = null;
   private toSnap: SnapTarget | null = null;
-  private toPosition: [number, number] | null = null;
-  private routedPoints: [number, number][] = [];
+  private toPosition: Point | null = null;
+  private routedPoints: Point[] = [];
 
   // Hover/snap (both phases)
   private hoverSnap: SnapTarget | null = null;
@@ -55,7 +56,6 @@ export class ConnectorTool implements PointerTool {
   // Frozen settings (captured at begin)
   private frozenColor = '#000000';
   private frozenWidth = 2;
-  private frozenOpacity = 1;
   private frozenStartCap: ConnectorCap = 'none';
   private frozenEndCap: ConnectorCap = 'arrow';
   private frozenConnectorType: ConnectorType | null = null;
@@ -76,7 +76,6 @@ export class ConnectorTool implements PointerTool {
     const state = useDeviceUIStore.getState();
     this.frozenColor = state.drawingSettings.color;
     this.frozenWidth = state.connectorSize;
-    this.frozenOpacity = state.drawingSettings.opacity;
     this.frozenStartCap = state.connectorStartCap;
     this.frozenEndCap = state.connectorEndCap;
     this.frozenConnectorType = state.connectorType;
@@ -139,8 +138,8 @@ export class ConnectorTool implements PointerTool {
       this.dragDir = null;
     }
 
-    const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition!;
-    const end: SnapTarget | [number, number] = snap ?? [worldX, worldY];
+    const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition!;
+    const end: SnapTarget | Point = snap ?? [worldX, worldY];
     this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
 
     invalidateOverlay();
@@ -197,8 +196,8 @@ export class ConnectorTool implements PointerTool {
 
   onViewChange(): void {
     if (this.phase === 'creating' && this.fromPosition && this.toPosition) {
-      const start: SnapTarget | [number, number] = this.fromSnap ?? this.fromPosition;
-      const end: SnapTarget | [number, number] = this.toSnap ?? this.toPosition;
+      const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition;
+      const end: SnapTarget | Point = this.toSnap ?? this.toPosition;
       this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
     }
     invalidateOverlay();
@@ -265,10 +264,9 @@ export class ConnectorTool implements PointerTool {
         connectorMap.set('connectorType', this.frozenConnectorType);
       }
 
-      // Styling
+      // Styling (connectors are always opacity 1 — not stored)
       connectorMap.set('color', this.frozenColor);
       connectorMap.set('width', this.frozenWidth);
-      connectorMap.set('opacity', this.frozenOpacity);
 
       // Metadata
       connectorMap.set('ownerId', userId);

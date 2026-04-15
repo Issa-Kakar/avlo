@@ -301,7 +301,7 @@ function computeMoveCost(from, to, arrivalDir, moveDir): number {
 
 ```typescript
 const fullPath = [ctx.startPos, ...astarPath.map(c => [c.x, c.y]), ctx.endPos];
-return { points: simplifyOrthogonal(fullPath), signature };
+return { points: simplifyOrthogonal(fullPath) };
 ```
 
 ### Straight Routing (`computeStraightRoute`)
@@ -727,8 +727,9 @@ Used by `object-cache.ts` (committed connectors) and `connector-preview.ts` (pre
 Canvas drawing for connectors lives in one module so the committed-render path,
 the in-flight preview, and the selection overlay stay visually identical.
 
-- **`paintConnector(ctx, paths, color, width, opacity)`** — Strokes the polyline
+- **`paintConnector(ctx, paths, color, width)`** — Strokes the polyline
   + fills/strokes the arrow caps at the fixed `ARROW_ROUNDING_LINE_WIDTH`.
+  Connectors always render at opacity 1, so no alpha param is threaded through.
   Shared by `objects.ts` (both `drawConnector` from cache and
   `drawConnectorFromPoints` for rerouted paths) and `connector-preview.ts`
   (via `buildConnectorPaths` at draw time).
@@ -767,9 +768,10 @@ the in-flight preview, and the selection overlay stay visually identical.
   connectorType?: 'straight';       // Only stored when not 'elbow' (default)
   startCap: 'none' | 'arrow';
   endCap: 'none' | 'arrow';
-  color, width, opacity, ownerId, createdAt
+  color, width, ownerId, createdAt
 }
 ```
+Connectors always render at opacity 1 — no `opacity` field is stored.
 
 ---
 

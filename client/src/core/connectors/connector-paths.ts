@@ -10,6 +10,7 @@
  * @module lib/connectors/connector-paths
  */
 
+import type { Point } from '../types/geometry';
 import { ROUTING_CONFIG, computeArrowLength } from './constants';
 
 // ============================================================================
@@ -36,7 +37,7 @@ export interface ConnectorPaths {
  * Extracted from Y.Map at cache build time.
  */
 export interface ConnectorPathParams {
-  points: [number, number][];
+  points: Point[];
   strokeWidth: number;
   startCap: 'arrow' | 'none';
   endCap: 'arrow' | 'none';
@@ -47,9 +48,9 @@ export interface ConnectorPathParams {
  */
 export interface EndTrimInfo {
   /** The point where the polyline should end (arrow base) */
-  trimmedPoint: [number, number];
+  trimmedPoint: Point;
   /** Unit direction vector of the final segment */
-  direction: [number, number];
+  direction: Point;
 }
 
 /**
@@ -67,11 +68,11 @@ export interface ScaledArrowDimensions {
  */
 export interface ArrowGeometry {
   /** Tip position (pulled back for stroke offset) */
-  tip: [number, number];
+  tip: Point;
   /** Left wing vertex */
-  left: [number, number];
+  left: Point;
   /** Right wing vertex */
-  right: [number, number];
+  right: Point;
   /** Arrow length (for reference) */
   length: number;
 }
@@ -123,7 +124,7 @@ export function buildConnectorPaths(params: ConnectorPathParams): ConnectorPaths
  * @param endTrim - Trim info for end arrow (or null)
  * @returns Path2D for the polyline
  */
-export function buildRoundedPolylinePath(points: [number, number][], startTrim: EndTrimInfo | null, endTrim: EndTrimInfo | null): Path2D {
+export function buildRoundedPolylinePath(points: Point[], startTrim: EndTrimInfo | null, endTrim: EndTrimInfo | null): Path2D {
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
   const path = new Path2D();
 
@@ -186,7 +187,7 @@ export function buildRoundedPolylinePath(points: [number, number][], startTrim: 
  * @param position - Which end ('start' or 'end')
  * @returns Path2D for the arrow triangle
  */
-export function buildArrowPath(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): Path2D {
+export function buildArrowPath(points: Point[], strokeWidth: number, position: 'start' | 'end'): Path2D {
   const geom = computeArrowGeometry(points, strokeWidth, position);
   if (!geom) return new Path2D();
 
@@ -210,11 +211,11 @@ export function buildArrowPath(points: [number, number][], strokeWidth: number, 
  * @param position - Which end ('start' or 'end')
  * @returns Arrow geometry or null if not enough points
  */
-export function computeArrowGeometry(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): ArrowGeometry | null {
+export function computeArrowGeometry(points: Point[], strokeWidth: number, position: 'start' | 'end'): ArrowGeometry | null {
   if (points.length < 2) return null;
 
-  let tip: [number, number];
-  let prev: [number, number];
+  let tip: Point;
+  let prev: Point;
 
   if (position === 'end') {
     tip = points[points.length - 1];
@@ -301,14 +302,14 @@ export function computeScaledArrowDimensions(segmentLength: number, strokeWidth:
  * @param position - Which end to trim ('start' or 'end')
  * @returns Trim info or null if not enough points
  */
-export function computeEndTrimInfo(points: [number, number][], strokeWidth: number, position: 'start' | 'end'): EndTrimInfo | null {
+export function computeEndTrimInfo(points: Point[], strokeWidth: number, position: 'start' | 'end'): EndTrimInfo | null {
   if (points.length < 2) return null;
 
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
-  let tip: [number, number];
-  let prev: [number, number];
-  let cornerPrev: [number, number] | null = null; // The point before the corner
+  let tip: Point;
+  let prev: Point;
+  let cornerPrev: Point | null = null; // The point before the corner
 
   if (position === 'end') {
     tip = points[points.length - 1];
@@ -356,7 +357,7 @@ export function computeEndTrimInfo(points: [number, number][], strokeWidth: numb
   const neededTrim = scaledLength + strokeWidth / 2;
   const actualTrim = Math.min(neededTrim, availableForTrim);
 
-  const trimmedPoint: [number, number] = [tip[0] - ux * actualTrim, tip[1] - uy * actualTrim];
+  const trimmedPoint: Point = [tip[0] - ux * actualTrim, tip[1] - uy * actualTrim];
 
   return {
     trimmedPoint,

@@ -15,8 +15,9 @@
  * @module lib/connectors/routing-astar
  */
 
+import type { Point } from '../types/geometry';
 import { COST_CONFIG } from './constants';
-import { oppositeDir, simplifyOrthogonal, computeSignature } from './connector-utils';
+import { oppositeDir, simplifyOrthogonal } from './connector-utils';
 import { createRoutingContext, buildSimpleGrid } from './routing-context';
 import { MinHeap } from './binary-heap';
 import type { RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types';
@@ -34,7 +35,7 @@ import type { RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types'
  * @param pos - World position
  * @returns Nearest grid cell
  */
-function findNearestCell(grid: Grid, pos: [number, number]): GridCell {
+function findNearestCell(grid: Grid, pos: Point): GridCell {
   let xi = 0,
     yi = 0;
   let bestXDist = Infinity,
@@ -176,12 +177,14 @@ function cellKey(cell: GridCell): string {
  * - Any segment orientation (though we use H/V only)
  * - Works correctly with raw shape bounds (no stroke inflation needed)
  *
- * @param x1, y1 - Segment start
- * @param x2, y2 - Segment end
+ * @param a - Segment start
+ * @param b - Segment end
  * @param aabb - Axis-aligned bounding box (raw shape bounds)
  * @returns true if segment passes through AABB interior
  */
-function segmentIntersectsAABB(x1: number, y1: number, x2: number, y2: number, aabb: AABB): boolean {
+function segmentIntersectsAABB(a: Point, b: Point, aabb: AABB): boolean {
+  const [x1, y1] = a;
+  const [x2, y2] = b;
   const { x, y, w, h } = aabb;
   const minX = x;
   const maxX = x + w;
@@ -285,7 +288,9 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
 
       // Check if segment crosses any obstacle interior (full segment check)
       if (obstacles.length > 0) {
-        const segmentBlocked = obstacles.some((obs) => segmentIntersectsAABB(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obs));
+        const from: Point = [current.cell.x, current.cell.y];
+        const to: Point = [neighbor.x, neighbor.y];
+        const segmentBlocked = obstacles.some((obs) => segmentIntersectsAABB(from, to, obs));
         if (segmentBlocked) continue;
       }
 
@@ -345,12 +350,12 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
  * @param startShapeBounds - Shape bounds if start is anchored, null if free
  * @param endShapeBounds - Shape bounds if end is anchored, null if free
  * @param strokeWidth - Connector stroke width (affects offsets)
- * @returns Route result with path and signature
+ * @returns Route result with simplified path
  */
 export function computeAStarRoute(
-  startPos: [number, number],
+  startPos: Point,
   startDir: Dir,
-  endPos: [number, number],
+  endPos: Point,
   endDir: Dir,
   startShapeBounds: AABB | null,
   endShapeBounds: AABB | null,
@@ -358,10 +363,7 @@ export function computeAStarRoute(
 ): RouteResult {
   // If start and end are exactly the same position
   if (startPos[0] === endPos[0] && startPos[1] === endPos[1]) {
-    return {
-      points: [endPos],
-      signature: '',
-    };
+    return { points: [endPos] };
   }
 
   // 1. Build routing context (ALL spatial intelligence happens here)
@@ -383,17 +385,12 @@ export function computeAStarRoute(
 
   // 5. Assemble full path: actual_start → A* path → actual_end
   // This is key for dynamic offset - stubs may be on centerline, not padded boundary
-  const fullPath: [number, number][] = [startPos];
+  const fullPath: Point[] = [startPos];
   for (const cell of path) {
     fullPath.push([cell.x, cell.y]);
   }
   fullPath.push(endPos);
 
   // 6. Simplify collinear points
-  const simplified = simplifyOrthogonal(fullPath);
-
-  return {
-    points: simplified,
-    signature: computeSignature(simplified),
-  };
+  return { points: simplifyOrthogonal(fullPath) };
 }

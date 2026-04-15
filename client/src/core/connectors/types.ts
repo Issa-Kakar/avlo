@@ -8,11 +8,11 @@
  * @module lib/connectors/types
  */
 
-import type { Frame } from '../types/geometry';
+import type { Frame, Point } from '../types/geometry';
 import type { Dir as SharedDir } from '../accessors';
 
 // Re-export for convenience
-export type { Frame, FrameTuple } from '../types/geometry';
+export type { Frame, FrameTuple, Point } from '../types/geometry';
 export type { StoredAnchor } from '../accessors';
 
 /** Connector routing style */
@@ -20,7 +20,7 @@ export type ConnectorType = 'elbow' | 'straight';
 
 const INTERIOR_EPS = 1e-6;
 /** True if anchor is strictly inside the shape (not on any edge). */
-export function isAnchorInterior(anchor: [number, number]): boolean {
+export function isAnchorInterior(anchor: Point): boolean {
   return anchor[0] > INTERIOR_EPS && anchor[0] < 1 - INTERIOR_EPS && anchor[1] > INTERIOR_EPS && anchor[1] < 1 - INTERIOR_EPS;
 }
 
@@ -67,7 +67,7 @@ export interface Bounds {
  * Use `isAnchored` instead of `kind: 'world'|'shape'`.
  */
 export interface Terminal {
-  position: [number, number];
+  position: Point;
   /**
    * Direction the jetty extends from this point.
    * For shape-attached: same as the side we're on (away from shape).
@@ -84,15 +84,14 @@ export interface Terminal {
    * Normalized anchor position within shape frame [0-1, 0-1].
    * Shape-agnostic: newPos = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
    */
-  normalizedAnchor?: [number, number];
+  normalizedAnchor?: Point;
 }
 
 /**
- * Route result with full path and signature.
+ * Route result with full simplified path.
  */
 export interface RouteResult {
-  points: [number, number][];
-  signature: string;
+  points: Point[];
 }
 
 /**
@@ -105,8 +104,8 @@ export interface RouteResult {
  */
 export interface RoutingContext {
   // Endpoint positions (for final path assembly)
-  startPos: [number, number];
-  endPos: [number, number];
+  startPos: Point;
+  endPos: Point;
 
   // Dynamic routing bounds (centerline/padding baked in)
   // These are NOT raw shape bounds - they're the routing AABBs
@@ -114,8 +113,8 @@ export interface RoutingContext {
   endBounds: Bounds;
 
   // Stub positions - WHERE A* actually starts/ends (ON bounds boundary)
-  startStub: [number, number];
-  endStub: [number, number];
+  startStub: Point;
+  endStub: Point;
 
   // Resolved directions
   startDir: Dir;
@@ -141,13 +140,13 @@ export interface SnapTarget {
    * Normalized anchor position within shape frame [0-1, 0-1].
    * Shape-agnostic: position = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
    */
-  normalizedAnchor: [number, number];
+  normalizedAnchor: Point;
   /** True if snapped to exact midpoint */
   isMidpoint: boolean;
   /** World coordinates of snap point WITH offset applied (for routing) */
-  position: [number, number];
+  position: Point;
   /** World coordinates of snap point on shape edge (for dot rendering) */
-  edgePosition: [number, number];
+  edgePosition: Point;
   /** True if cursor is inside the shape */
   isInside: boolean;
 }
@@ -157,7 +156,7 @@ export interface SnapTarget {
  */
 export interface SnapContext {
   /** Cursor position in world coordinates */
-  cursorWorld: [number, number];
+  cursorWorld: Point;
   /** Previous snap target (for hysteresis) */
   prevAttach: SnapTarget | null;
   /** Connector type — straight connectors allow interior/center anchors */

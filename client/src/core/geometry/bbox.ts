@@ -1,12 +1,12 @@
 import type * as Y from 'yjs';
 import type { ObjectKind } from '../types/objects';
-import type { WorldBounds } from '../types/geometry';
+import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
 import { getPoints, getFrame, getWidth, getStartCap, getEndCap, getTextProps, getNoteProps, getBookmarkProps } from '../accessors';
 import { computeTextBBox, computeNoteBBox } from '../text/text-system';
 import { computeCodeBBox } from '../code/code-system';
 import { computeBookmarkBBox, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
 
-export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): [number, number, number, number] {
+export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): BBoxTuple {
   switch (kind) {
     case 'stroke': {
       const points = getPoints(yMap);
@@ -53,7 +53,7 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
     case 'note': {
       const props = getNoteProps(yMap);
       if (!props) {
-        const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
+        const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
         const scale = (yMap.get('scale') as number) ?? 1;
         const w = 280 * scale;
         return [origin[0], origin[1], origin[0] + w, origin[1] + w];
@@ -73,7 +73,7 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       const props = getBookmarkProps(yMap);
       if (props) return computeBookmarkBBox(id, props);
       // Inline fallback when props incomplete
-      const origin = (yMap.get('origin') as [number, number] | undefined) ?? [0, 0];
+      const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
       const scale = (yMap.get('scale') as number) ?? 1;
       const height = (yMap.get('height') as number) ?? 60;
       const w = BOOKMARK_WIDTH * scale;
@@ -135,7 +135,7 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
  * Reads width and cap info from the Y.Map (which is never stale for style props).
  * Use this when you have rerouted points that haven't been committed yet.
  */
-export function computeConnectorBBoxFromPoints(points: [number, number][], yMap: Y.Map<unknown>): [number, number, number, number] {
+export function computeConnectorBBoxFromPoints(points: Point[], yMap: Y.Map<unknown>): BBoxTuple {
   if (points.length < 2) return [0, 0, 0, 0];
 
   let minX = points[0][0],
@@ -171,11 +171,11 @@ export function computeConnectorBBoxFromPoints(points: [number, number][], yMap:
   return [minX - padding, minY - padding, maxX + padding, maxY + padding];
 }
 
-export function bboxEquals(a: [number, number, number, number], b: [number, number, number, number]): boolean {
+export function bboxEquals(a: BBoxTuple, b: BBoxTuple): boolean {
   return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
 }
 
-export function bboxToBounds(bbox: [number, number, number, number]): WorldBounds {
+export function bboxToBounds(bbox: BBoxTuple): WorldBounds {
   return {
     minX: bbox[0],
     minY: bbox[1],
