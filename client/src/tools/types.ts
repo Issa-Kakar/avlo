@@ -1,84 +1,70 @@
-// Phase 5: Drawing Tool Types
-
-import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 
 /**
- * HandleId identifies resize handles at selection corners and sides
- * Corners: nw = northwest (top-left), ne = northeast (top-right), etc.
- * Sides: n = north (top), e = east (right), s = south (bottom), w = west (left)
+ * HandleId identifies resize handles at selection corners and sides.
+ * Corners: nw/ne/se/sw. Sides: n/e/s/w.
  */
 export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 
 /**
- * StrokePreview is the preview data for drawing strokes
- * Used by DrawingTool and RenderLoop
- * IMPORTANT: Points are PF-native tuples to avoid per-frame conversions in overlay
+ * Shape types the DrawingTool previews and commits.
+ *
+ * - `'rect' | 'ellipse' | 'diamond' | 'roundedRect'` are stored as shape objects
+ *   on the Y.Doc (frame-based).
+ * - `'line'` is tool-layer only: previewed as a clean 2-point segment via direct
+ *   `ctx.stroke` and committed as a 2-point stroke — the data model has no line kind.
  */
-export interface StrokePreview {
-  kind: 'stroke'; // Discriminant for union type
-  points: [number, number][]; // PF-native tuples: [[x,y], [x,y], ...] in world coordinates
-  tool: 'pen' | 'highlighter';
-  color: string;
-  size: number; // World units
-  opacity: number;
-  bbox: [number, number, number, number] | null; // Used for dirty rect tracking
-}
+export type ShapeType = 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | 'line';
 
-/**
- * EraserPreview is the preview data for eraser tool
- * Used by EraserTool and overlay rendering
- */
-export interface EraserPreview {
+/** Freehand pen/highlighter preview. */
+export type StrokePreview = {
+  kind: 'stroke';
+  tool: 'pen' | 'highlighter';
+  points: Point[];
+  color: string;
+  size: number;
+  opacity: number;
+};
+
+/** Eraser dim preview. */
+export type EraserPreview = {
   kind: 'eraser';
   /** Center in world coords; overlay does worldToCanvas() */
   circle: { cx: number; cy: number; r_px: number };
   hitIds: string[];
   dimOpacity: number;
-}
+};
 
 /**
- * PerfectShapeAnchors defines anchor points for each shape type
+ * Shape preview — discriminated on `shapeType`. The tool owns all geometry:
+ *   - For framed shapes, the final `frame` is computed by DrawingTool (corner-drag
+ *     via `cornerFrame`, hold-snap via `scaleBBoxAround` of the stroke bbox).
+ *     The renderer just paints it via `buildShapePathFromFrame`.
+ *   - For line, the tool passes endpoints `a` (fixed first stroke point) and
+ *     `b` (live cursor); the renderer draws `ctx.moveTo/lineTo/stroke`.
  */
-export type PerfectShapeAnchors =
-  | { kind: 'line'; A: [number, number] } // line: fixed A
-  | { kind: 'circle'; center: [number, number] } // circle: fixed center (hold detector)
-  | { kind: 'box'; cx: number; cy: number; angle: number; hx0: number; hy0: number } // box: frozen AABB seed (hold detector)
-  | { kind: 'rect'; A: [number, number] } // corner-anchored AABB
-  | { kind: 'ellipseRect'; A: [number, number] } // corner-anchored ellipse
-  | { kind: 'diamond'; A: [number, number] } // corner-anchored diamond (toolbar)
-  | { kind: 'diamondHold'; cx: number; cy: number; hx0: number; hy0: number }; // center-anchored diamond (hold detector)
+export type ShapePreview =
+  | {
+      kind: 'shape';
+      shapeType: 'line';
+      a: Point;
+      b: Point;
+      color: string;
+      width: number;
+      opacity: number;
+    }
+  | {
+      kind: 'shape';
+      shapeType: 'rect' | 'ellipse' | 'diamond' | 'roundedRect';
+      frame: FrameTuple;
+      color: string;
+      width: number;
+      opacity: number;
+      fill: boolean;
+    };
 
-/**
- * PerfectShapePreview is the preview data for perfect shapes (line, circle, box)
- * Used by DrawingTool and overlay rendering
- * NEW: Perfect Shape preview is inputs (anchors + live cursor),
- * not final geometry. The renderer computes geometry.
- */
-export interface PerfectShapePreview {
-  kind: 'perfectShape';
-  shape: 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond' | 'diamondHold';
-  fill?: boolean; // Optional fill flag for shapes
-
-  // Tool styling frozen at pointer-down
-  color: string;
-  size: number;
-  opacity: number;
-
-  // Inputs in WORLD space:
-  // - anchors: frozen the moment we snap (shape-specific)
-  // - cursor: live pointer in world units
-  anchors: PerfectShapeAnchors;
-  cursor: [number, number];
-
-  // Overlay previews never carry a bbox (base canvas ignores them)
-  bbox: null;
-}
-
-/**
- * SelectionPreview is the preview data for selection tool
- * Used by SelectTool and overlay rendering
- */
-export interface SelectionPreview {
+/** Selection overlay preview. */
+export type SelectionPreview = {
   kind: 'selection';
   /** Selection bounds in world coords (with transform applied for preview) */
   selectionBounds: BBoxTuple | null;
@@ -92,16 +78,13 @@ export interface SelectionPreview {
   selectedIds: string[];
   /** Always null for overlay previews */
   bbox: null;
-}
+};
 
 /**
- * ConnectorPreview is the preview data for connector tool
- * Used by ConnectorTool and overlay rendering
- *
- * DESIGN: Anchor dots ONLY appear when snapping would occur.
- * If snapShapeId is set, the user WILL connect to this shape on release.
+ * ConnectorPreview is the preview data for connector tool.
+ * Anchor dots ONLY appear when snapping would occur.
  */
-export interface ConnectorPreview {
+export type ConnectorPreview = {
   kind: 'connector';
 
   // === Main connector path (world coords) ===
@@ -115,8 +98,7 @@ export interface ConnectorPreview {
   startCap: 'arrow' | 'none';
   endCap: 'arrow' | 'none';
 
-  // === Anchor visualization ===
-  // ONLY set when actually snapped - dots appear when snapped
+  // === Anchor visualization — only set when actually snapped ===
 
   /** Shape we're snapped to (null = not snapped, dots won't show) */
   snapShapeId: string | null;
@@ -153,21 +135,14 @@ export interface ConnectorPreview {
 
   /** Always null for overlay previews */
   bbox: null;
-}
+};
+
+/** Discriminated union of all preview variants. */
+export type PreviewData = StrokePreview | EraserPreview | ShapePreview | SelectionPreview | ConnectorPreview;
 
 /**
- * PreviewData is the union type for all preview types
- * Discriminated by 'kind' field
- */
-export type PreviewData = StrokePreview | EraserPreview | PerfectShapePreview | SelectionPreview | ConnectorPreview;
-
-/**
- * PointerTool - Interface for tools that handle pointer gestures.
- * All methods required. Use no-ops where not applicable.
- *
+ * PointerTool — interface for tools that handle pointer gestures.
  * All tools receive world coordinates from CanvasRuntime.
- * Tools that need screen coordinates (like PanTool for delta calculation)
- * convert internally using worldToCanvas().
  */
 export interface PointerTool {
   /** Returns true if the tool can begin a new gesture */

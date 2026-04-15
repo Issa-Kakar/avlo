@@ -7,7 +7,7 @@
 
 import { drawStrokePreview } from './stroke-preview';
 import { drawDimmedStrokes } from './eraser-dim';
-import { drawPerfectShapePreview } from './perfect-shape-preview';
+import { drawShapePreview } from './shape-preview';
 import { drawSelectionOverlay } from './selection-overlay';
 import { drawConnectorPreview } from './connector-preview';
 import { getActivePreview } from '@/runtime/tool-registry';
@@ -27,8 +27,8 @@ export function drawToolPreview(ctx: CanvasRenderingContext2D): void {
     case 'eraser':
       if (preview.hitIds.length > 0) drawDimmedStrokes(ctx, preview.hitIds, preview.dimOpacity);
       break;
-    case 'perfectShape':
-      drawPerfectShapePreview(ctx, preview);
+    case 'shape':
+      drawShapePreview(ctx, preview);
       break;
     case 'selection':
       drawSelectionOverlay(ctx, preview);

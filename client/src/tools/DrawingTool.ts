@@ -1,7 +1,7 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { PreviewData, PointerTool } from './types';
-import { useDeviceUIStore, getUserId, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
+import type { PreviewData, PointerTool, ShapeType } from './types';
+import { useDeviceUIStore, getUserId, type ShapeVariant } from '@/stores/device-ui-store';
 import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
 import { HoldDetector } from '@/core/geometry/shape-recognition/HoldDetector';
 import {
@@ -12,213 +12,163 @@ import {
 import { createFillFromStroke } from '@/utils/color';
 import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { cornerFrame, frameToBbox, bboxToFrame, scaleBBoxAround } from '@/core/geometry/bounds';
+import type { Point, FrameTuple } from '@/core/types/geometry';
 
-type ForcedSnapKind = 'line' | 'circle' | 'box' | 'rect' | 'ellipseRect' | 'diamond';
+/** Toolbar shape variant → stored shapeType. */
+const SHAPE_VARIANT_TO_TYPE: Record<ShapeVariant, Exclude<ShapeType, 'line'>> = {
+  rectangle: 'roundedRect',
+  ellipse: 'ellipse',
+  diamond: 'diamond',
+};
 
-function getShapeTypeFromSnapKind(snapKind: string): 'rect' | 'ellipse' | 'diamond' | 'roundedRect' {
-  const mapping: Record<string, 'rect' | 'ellipse' | 'diamond' | 'roundedRect'> = {
-    box: 'rect',
-    circle: 'ellipse',
-    rect: 'roundedRect',
-    ellipseRect: 'ellipse',
-    diamond: 'diamond',
-    diamondHold: 'diamond',
-  };
-  return mapping[snapKind] ?? 'rect';
-}
+/** Click-to-place (single-click with shape tool) produces a 180wu fixed shape. */
+const CLICK_TO_PLACE_SIZE = 180;
+const CLICK_TO_PLACE_MAX_MS = 200;
+const CLICK_TO_PLACE_MAX_DIST = 5;
 
-function getForceSnapKindFromVariant(variant: ShapeVariant): ForcedSnapKind {
-  switch (variant) {
-    case 'rectangle':
-      return 'rect';
-    case 'ellipse':
-      return 'ellipseRect';
-    case 'diamond':
-      return 'diamond';
-    default:
-      return 'rect';
-  }
-}
+/** Minimum refDist below which snap-scale freezes at s=1 (WYSIWYG locked). */
+const SNAP_MIN_REF_DIST = 0.5;
 
-function getToolTypeFromActiveTool(activeTool: Tool): 'pen' | 'highlighter' {
-  if (activeTool === 'highlighter') return 'highlighter';
-  return 'pen';
-}
+type DrawingMode = 'stroke' | 'shape' | 'line';
 
 /**
- * DrawingTool - Handles pen, highlighter, and shape drawing.
+ * DrawingTool — pen, highlighter, and shape drawing.
  *
- * Zero-arg constructor. All store reads happen at begin() time.
- * Singleton — constructed once in tool-registry, reused across gestures.
+ * Zero-arg singleton. All store reads happen at begin() time and are frozen
+ * for the duration of the gesture.
+ *
+ * Three modes:
+ *   - `'stroke'` — freehand pen/highlighter. Growing point list. May transition
+ *                  to `'shape'` or `'line'` when HoldDetector + $P recognizer fire.
+ *   - `'shape'`  — rect/ellipse/diamond/roundedRect. Two sub-paths:
+ *                  * corner-drag (from toolbar): `anchor`=pointerdown, `cursor`=live;
+ *                    frame = `cornerFrame(anchor, cursor)`.
+ *                  * hold-snap (from recognizer): `snapOriginFrame` = stroke bbox at
+ *                    snap time, `snapOrigin` = frame center, `snapRefDist` =
+ *                    `hypot(lastPoint − origin)`. Frame = uniform scale of the origin
+ *                    frame around the origin by `|cursor − origin| / refDist` — WYSIWYG
+ *                    at snap time, grows/shrinks as cursor moves outward/inward.
+ *   - `'line'`   — hold-recognized straight line. `anchor` pinned to the first stroke
+ *                  point, `cursor` tracks live. Previewed via direct `ctx.moveTo/lineTo`,
+ *                  committed as a 2-point stroke (no `line` kind in Y.Doc).
  */
 export class DrawingTool implements PointerTool {
   // Gesture state
   private drawing = false;
   private pointerId: number | null = null;
-  private points: [number, number][] = [];
+  private mode: DrawingMode | null = null;
+  private anchor: Point | null = null;
+  private cursor: Point | null = null;
+  private points: Point[] = [];
+
+  // Shape-mode metadata
+  private shapeType: ShapeType | null = null;
+
+  // Hold-snap scale state. Non-null iff we're in scale-from-origin shape mode.
+  private snapOriginFrame: FrameTuple | null = null;
+  private snapOrigin: Point | null = null;
+  private snapRefDist = 0;
 
   // Frozen settings (captured at begin())
   private toolType: 'pen' | 'highlighter' = 'pen';
   private color = '#000';
   private size = 4;
   private opacity = 1;
-  private forceSnapKind: ForcedSnapKind | null = null;
+  private fill = false;
 
-  // Perfect shapes
+  // Hold + click-to-place
   private hold = new HoldDetector(() => this.onHoldFire());
-  private snap:
-    | null
-    | (
-        | { kind: 'line'; anchors: { A: [number, number] } }
-        | { kind: 'circle'; anchors: { center: [number, number] } }
-        | {
-            kind: 'box';
-            anchors: { cx: number; cy: number; angle: number; hx0: number; hy0: number };
-          }
-        | { kind: 'rect'; anchors: { A: [number, number] } }
-        | { kind: 'ellipseRect'; anchors: { A: [number, number] } }
-        | { kind: 'diamond'; anchors: { A: [number, number] } }
-        | { kind: 'diamondHold'; anchors: { cx: number; cy: number; hx0: number; hy0: number } }
-      ) = null;
-  private liveCursorWU: [number, number] | null = null;
+  private gestureStartTime = 0;
 
-  // Click-to-place for shape tool
-  private clickToPlaceStartTime = 0;
-  private clickToPlaceStartPos: [number, number] | null = null;
-
-  constructor() {}
-
-  private getFillEnabled(): boolean {
-    return useDeviceUIStore.getState().drawingSettings.fill;
-  }
-
-  private resetGesture(): void {
-    this.drawing = false;
-    this.pointerId = null;
-    this.points = [];
-    this.snap = null;
-    this.liveCursorWU = null;
-    this.forceSnapKind = null;
-  }
-
-  // PointerTool interface
+  // PointerTool interface ---------------------------------------------------
 
   canBegin(): boolean {
     return !this.drawing;
   }
 
   begin(pointerId: number, worldX: number, worldY: number): void {
-    // Freeze all settings from store
-    const uiState = useDeviceUIStore.getState();
-    const activeTool = uiState.activeTool;
-    this.toolType = getToolTypeFromActiveTool(activeTool);
+    const ui = useDeviceUIStore.getState();
+    const settings = ui.drawingSettings;
+    const activeTool = ui.activeTool;
 
-    const settings = uiState.drawingSettings;
+    this.toolType = activeTool === 'highlighter' ? 'highlighter' : 'pen';
     this.color = settings.color;
     this.size = settings.size;
-    this.opacity = this.toolType === 'highlighter' ? uiState.highlighterOpacity : (settings.opacity ?? 1);
+    this.opacity = this.toolType === 'highlighter' ? ui.highlighterOpacity : (settings.opacity ?? 1);
+    this.fill = settings.fill;
 
-    // Start drawing
     this.drawing = true;
     this.pointerId = pointerId;
-    this.points = [[worldX, worldY]];
+    this.gestureStartTime = Date.now();
 
-    // Shape mode
+    const p: Point = [worldX, worldY];
+    this.anchor = p;
+    this.cursor = p;
+
     if (activeTool === 'shape') {
-      this.forceSnapKind = getForceSnapKindFromVariant(uiState.shapeVariant);
+      this.mode = 'shape';
+      this.shapeType = SHAPE_VARIANT_TO_TYPE[ui.shapeVariant];
+      this.points = [];
     } else {
-      this.forceSnapKind = null;
+      this.mode = 'stroke';
+      this.shapeType = null;
+      this.points = [p];
+      const [sx, sy] = worldToCanvas(worldX, worldY);
+      this.hold.start({ x: sx, y: sy });
     }
 
-    if (this.forceSnapKind) {
-      this.clickToPlaceStartTime = Date.now();
-      this.clickToPlaceStartPos = [worldX, worldY];
-
-      const k = this.forceSnapKind;
-      this.snap =
-        k === 'line'
-          ? { kind: 'line', anchors: { A: [worldX, worldY] } }
-          : k === 'circle'
-            ? { kind: 'circle', anchors: { center: [worldX, worldY] } }
-            : k === 'box'
-              ? { kind: 'box', anchors: { cx: worldX, cy: worldY, angle: 0, hx0: 0.5, hy0: 0.5 } }
-              : k === 'rect'
-                ? { kind: 'rect', anchors: { A: [worldX, worldY] } }
-                : k === 'ellipseRect'
-                  ? { kind: 'ellipseRect', anchors: { A: [worldX, worldY] } }
-                  : /* diamond */ { kind: 'diamond', anchors: { A: [worldX, worldY] } };
-
-      this.liveCursorWU = [worldX, worldY];
-      invalidateOverlay();
-      return;
-    }
-
-    // Freehand flow with HoldDetector
-    const [sx, sy] = worldToCanvas(worldX, worldY);
-    this.hold.start({ x: sx, y: sy });
-    this.snap = null;
-    this.liveCursorWU = [worldX, worldY];
     invalidateOverlay();
   }
 
   move(worldX: number, worldY: number): void {
-    this.liveCursorWU = [worldX, worldY];
+    if (!this.drawing) return;
+    const c: Point = [worldX, worldY];
+    this.cursor = c;
 
-    if (!this.snap) {
+    if (this.mode === 'stroke') {
       const [sx, sy] = worldToCanvas(worldX, worldY);
       this.hold.move({ x: sx, y: sy });
-    }
-
-    if (this.snap) {
-      invalidateOverlay();
+      this.addPoint(c);
       return;
     }
 
-    this.addPoint(worldX, worldY);
+    invalidateOverlay();
   }
 
   end(worldX?: number, worldY?: number): void {
     this.hold.cancel();
-
-    if (this.snap && this.liveCursorWU) {
-      const timeDelta = Date.now() - this.clickToPlaceStartTime;
-      const isClick = timeDelta < 200;
-
-      if (this.clickToPlaceStartPos && worldX !== undefined && worldY !== undefined) {
-        const distMoved = Math.hypot(worldX - this.clickToPlaceStartPos[0], worldY - this.clickToPlaceStartPos[1]);
-        const isStationary = distMoved < 5;
-
-        if (isClick && isStationary && this.forceSnapKind) {
-          const fixedSize = 180;
-
-          let fixedCursor: [number, number];
-
-          if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
-            fixedCursor = [this.clickToPlaceStartPos[0] + fixedSize, this.clickToPlaceStartPos[1] + fixedSize];
-            this.snap.anchors.A = [this.clickToPlaceStartPos[0] - fixedSize / 2, this.clickToPlaceStartPos[1] - fixedSize / 2];
-          } else {
-            fixedCursor = [this.clickToPlaceStartPos[0] + fixedSize / 2, this.clickToPlaceStartPos[1] + fixedSize / 2];
-          }
-
-          this.liveCursorWU = fixedCursor;
-        }
-      }
-
-      this.commitPerfectShapeFromPreview();
+    if (!this.drawing || !this.anchor || !this.cursor) {
+      this.cancelDrawing();
       return;
     }
 
     if (worldX !== undefined && worldY !== undefined) {
-      this.commitStroke(worldX, worldY);
-    } else {
-      const len = this.points.length;
-      if (len >= 1) {
-        const lastPoint = this.points[len - 1];
-        this.commitStroke(lastPoint[0], lastPoint[1]);
-      } else {
-        this.cancelDrawing();
-      }
+      this.cursor = [worldX, worldY];
     }
+
+    if (this.mode === 'stroke') {
+      const len = this.points.length;
+      const last = len >= 1 ? this.points[len - 1] : null;
+      if (!last || last[0] !== this.cursor[0] || last[1] !== this.cursor[1]) {
+        this.points.push(this.cursor);
+      }
+      this.commitStroke(this.points);
+      return;
+    }
+
+    if (this.mode === 'line') {
+      this.commitStroke([this.anchor, this.cursor]);
+      return;
+    }
+
+    if (this.mode === 'shape') {
+      if (!this.snapOriginFrame) this.maybeClickToPlace();
+      this.commitShape();
+      return;
+    }
+
+    this.cancelDrawing();
   }
 
   cancel(): void {
@@ -235,32 +185,46 @@ export class DrawingTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
-    if (!this.drawing) return null;
+    if (!this.drawing || !this.cursor) return null;
 
-    if (this.snap && this.liveCursorWU) {
+    if (this.mode === 'line' && this.anchor) {
       return {
-        kind: 'perfectShape',
-        shape: this.snap.kind,
+        kind: 'shape',
+        shapeType: 'line',
+        a: this.anchor,
+        b: this.cursor,
         color: this.color,
-        size: this.size,
+        width: this.size,
         opacity: this.opacity,
-        fill: this.getFillEnabled(),
-        anchors: { kind: this.snap.kind, ...this.snap.anchors } as any,
-        cursor: this.liveCursorWU,
-        bbox: null,
       };
     }
 
-    if (this.points.length < 1) return null;
-    return {
-      kind: 'stroke',
-      points: this.points,
-      tool: this.toolType,
-      color: this.color,
-      size: this.size,
-      opacity: this.opacity,
-      bbox: null,
-    };
+    if (this.mode === 'shape' && this.shapeType && this.shapeType !== 'line') {
+      const frame = this.computeShapeFrame();
+      if (!frame || frame[2] < 1 || frame[3] < 1) return null;
+      return {
+        kind: 'shape',
+        shapeType: this.shapeType,
+        frame,
+        color: this.color,
+        width: this.size,
+        opacity: this.opacity,
+        fill: this.fill,
+      };
+    }
+
+    if (this.mode === 'stroke' && this.points.length >= 1) {
+      return {
+        kind: 'stroke',
+        tool: this.toolType,
+        points: this.points,
+        color: this.color,
+        size: this.size,
+        opacity: this.opacity,
+      };
+    }
+
+    return null;
   }
 
   onPointerLeave(): void {}
@@ -268,37 +232,84 @@ export class DrawingTool implements PointerTool {
   onViewChange(): void {}
 
   destroy(): void {
-    this.resetGesture();
     this.hold.cancel();
+    this.resetGesture();
   }
 
-  // --- Private ---
+  // Private -----------------------------------------------------------------
 
-  private addPoint(worldX: number, worldY: number): void {
-    if (!this.drawing) return;
+  private resetGesture(): void {
+    this.drawing = false;
+    this.pointerId = null;
+    this.mode = null;
+    this.anchor = null;
+    this.cursor = null;
+    this.points = [];
+    this.shapeType = null;
+    this.snapOriginFrame = null;
+    this.snapOrigin = null;
+    this.snapRefDist = 0;
+  }
 
+  private cancelDrawing(): void {
+    invalidateOverlay();
+    this.resetGesture();
+  }
+
+  private addPoint(p: Point): void {
     const pts = this.points;
     const L = pts.length;
     if (L >= 1) {
       const last = pts[L - 1];
       const scale = useCameraStore.getState().scale;
-      const dx = (worldX - last[0]) * scale;
-      const dy = (worldY - last[1]) * scale;
+      const dx = (p[0] - last[0]) * scale;
+      const dy = (p[1] - last[1]) * scale;
       if (dx * dx + dy * dy < 1.0) return;
     }
-
-    this.points.push([worldX, worldY]);
+    pts.push(p);
     invalidateOverlay();
+  }
+
+  private maybeClickToPlace(): void {
+    if (!this.anchor || !this.cursor) return;
+    const dt = Date.now() - this.gestureStartTime;
+    if (dt >= CLICK_TO_PLACE_MAX_MS) return;
+    const dist = Math.hypot(this.cursor[0] - this.anchor[0], this.cursor[1] - this.anchor[1]);
+    if (dist >= CLICK_TO_PLACE_MAX_DIST) return;
+
+    const half = CLICK_TO_PLACE_SIZE / 2;
+    const click = this.anchor;
+    this.anchor = [click[0] - half, click[1] - half];
+    this.cursor = [click[0] + half, click[1] + half];
+  }
+
+  /**
+   * Frame for the current shape gesture:
+   *   - hold-snap: scale `snapOriginFrame` around `snapOrigin` by
+   *     `|cursor − origin| / snapRefDist` (uniform hypot ratio). At snap time the
+   *     ratio is exactly 1 so the preview matches the stroke bbox verbatim
+   *     (WYSIWYG). Inward motion shrinks, outward grows — like a uniform
+   *     scale-transform around frame center.
+   *   - corner-drag: `cornerFrame(anchor, cursor)` — toolbar shape path.
+   */
+  private computeShapeFrame(): FrameTuple | null {
+    if (this.snapOriginFrame && this.snapOrigin) {
+      if (!this.cursor) return this.snapOriginFrame;
+      const dx = this.cursor[0] - this.snapOrigin[0];
+      const dy = this.cursor[1] - this.snapOrigin[1];
+      const curDist = Math.hypot(dx, dy);
+      const s = this.snapRefDist > SNAP_MIN_REF_DIST ? curDist / this.snapRefDist : 1;
+      const scaled = scaleBBoxAround(frameToBbox(this.snapOriginFrame), this.snapOrigin, s, s);
+      return bboxToFrame(scaled);
+    }
+    if (!this.anchor || !this.cursor) return null;
+    return cornerFrame(this.anchor, this.cursor);
   }
 
   /* eslint-disable no-console */
   private onHoldFire(): void {
-    if (this.snap) return;
-
-    const len = this.points.length;
-    if (len < 1) return;
-    const pointerNowWU: [number, number] = this.points[len - 1];
-    this.liveCursorWU = pointerNowWU;
+    if (this.mode !== 'stroke') return;
+    if (this.points.length < 1) return;
 
     console.group('Hold Detector Fired - $P Shape Recognition');
     console.log(`Stroke has ${this.points.length} points after 600ms dwell`);
@@ -321,84 +332,62 @@ export class DrawingTool implements PointerTool {
       return;
     }
 
-    const bbox = computeBboxCenterExtents(this.points);
+    const bb = computeBboxCenterExtents(this.points);
+    const originFrame: FrameTuple = [bb.cx - bb.hx, bb.cy - bb.hy, bb.hx * 2, bb.hy * 2];
+    const origin: Point = [bb.cx, bb.cy];
+    const lastPt = this.points[this.points.length - 1];
+    const refDist = Math.hypot(lastPt[0] - origin[0], lastPt[1] - origin[1]);
 
     switch (result.best.kind) {
       case 'line':
-        this.snap = {
-          kind: 'line',
-          anchors: { A: this.points[0] },
-        };
+        this.mode = 'line';
+        this.shapeType = 'line';
+        this.anchor = this.points[0];
+        this.points = [];
         break;
       case 'circle':
-        this.snap = {
-          kind: 'circle',
-          anchors: { center: [bbox.cx, bbox.cy] },
-        };
+        this.enterSnapShape('ellipse', originFrame, origin, refDist);
         break;
       case 'box':
-        this.snap = {
-          kind: 'box',
-          anchors: {
-            cx: bbox.cx,
-            cy: bbox.cy,
-            angle: 0,
-            hx0: bbox.hx,
-            hy0: bbox.hy,
-          },
-        };
+        this.enterSnapShape('rect', originFrame, origin, refDist);
         break;
       case 'diamond':
-        this.snap = {
-          kind: 'diamondHold',
-          anchors: {
-            cx: bbox.cx,
-            cy: bbox.cy,
-            hx0: bbox.hx,
-            hy0: bbox.hy,
-          },
-        };
+        this.enterSnapShape('diamond', originFrame, origin, refDist);
         break;
     }
 
     console.log(`SNAP: ${result.best.kind.toUpperCase()}`);
     console.groupEnd();
-    invalidateOverlay();
     this.hold.cancel();
+    invalidateOverlay();
   }
   /* eslint-enable no-console */
 
-  private cancelDrawing(): void {
-    invalidateOverlay();
-    this.resetGesture();
+  private enterSnapShape(shapeType: Exclude<ShapeType, 'line'>, originFrame: FrameTuple, origin: Point, refDist: number): void {
+    this.mode = 'shape';
+    this.shapeType = shapeType;
+    this.snapOriginFrame = originFrame;
+    this.snapOrigin = origin;
+    this.snapRefDist = refDist;
+    this.points = [];
   }
 
-  private commitStroke(finalX: number, finalY: number): void {
-    if (!this.drawing) return;
-
-    const len = this.points.length;
-    const needsFinal = len < 1 || this.points[len - 1][0] !== finalX || this.points[len - 1][1] !== finalY;
-    if (needsFinal) {
-      this.points.push([finalX, finalY]);
-    }
-
-    const userId = getUserId();
+  private commitStroke(points: Point[]): void {
     const strokeId = ulid();
-
+    const userId = getUserId();
     try {
       transact(() => {
-        const strokeMap = new Y.Map();
-        strokeMap.set('id', strokeId);
-        strokeMap.set('kind', 'stroke');
-        strokeMap.set('tool', this.toolType);
-        strokeMap.set('color', this.color);
-        strokeMap.set('width', this.size);
-        strokeMap.set('opacity', this.opacity);
-        strokeMap.set('points', this.points);
-        strokeMap.set('ownerId', userId);
-        strokeMap.set('createdAt', Date.now());
-
-        getObjects().set(strokeId, strokeMap);
+        const m = new Y.Map();
+        m.set('id', strokeId);
+        m.set('kind', 'stroke');
+        m.set('tool', this.toolType);
+        m.set('color', this.color);
+        m.set('width', this.size);
+        m.set('opacity', this.opacity);
+        m.set('points', points);
+        m.set('ownerId', userId);
+        m.set('createdAt', Date.now());
+        getObjects().set(strokeId, m);
       });
     } catch (err) {
       console.error('Failed to commit stroke:', err);
@@ -408,98 +397,41 @@ export class DrawingTool implements PointerTool {
     }
   }
 
-  private commitPerfectShapeFromPreview(): void {
-    if (!this.snap || !this.liveCursorWU) return;
-
-    const finalCursor = this.liveCursorWU!;
-    let frame: [number, number, number, number];
-    const shapeType = getShapeTypeFromSnapKind(this.snap.kind);
-
-    const userId = getUserId();
-
-    if (this.snap.kind === 'line') {
-      const { A } = this.snap.anchors;
-      const strokeId = ulid();
-      transact(() => {
-        const strokeMap = new Y.Map();
-        strokeMap.set('id', strokeId);
-        strokeMap.set('kind', 'stroke');
-        strokeMap.set('tool', this.toolType);
-        strokeMap.set('color', this.color);
-        strokeMap.set('width', this.size);
-        strokeMap.set('opacity', this.opacity);
-        strokeMap.set('points', [A, finalCursor]);
-        strokeMap.set('ownerId', userId);
-        strokeMap.set('createdAt', Date.now());
-        getObjects().set(strokeId, strokeMap);
-      });
-      invalidateOverlay();
-      this.resetGesture();
+  private commitShape(): void {
+    if (!this.shapeType || this.shapeType === 'line') {
+      this.cancelDrawing();
       return;
-    } else if (this.snap.kind === 'circle') {
-      const { center } = this.snap.anchors;
-      const r = Math.hypot(finalCursor[0] - center[0], finalCursor[1] - center[1]);
-      frame = [center[0] - r, center[1] - r, r * 2, r * 2];
-    } else if (this.snap.kind === 'box') {
-      const { cx, cy, angle, hx0, hy0 } = this.snap.anchors;
-      const dx = finalCursor[0] - cx;
-      const dy = finalCursor[1] - cy;
-      const cos = Math.cos(angle),
-        sin = Math.sin(angle);
-      const localX = dx * cos + dy * sin;
-      const localY = -dx * sin + dy * cos;
-      const sx = Math.max(0.0001, Math.abs(localX) / Math.max(1e-6, hx0));
-      const sy = Math.max(0.0001, Math.abs(localY) / Math.max(1e-6, hy0));
-      const hx = hx0 * sx;
-      const hy = hy0 * sy;
-      frame = [cx - hx, cy - hy, hx * 2, hy * 2];
-    } else if (this.snap.kind === 'rect' || this.snap.kind === 'ellipseRect' || this.snap.kind === 'diamond') {
-      const { A } = this.snap.anchors;
-      const C = finalCursor;
-      const minX = Math.min(A[0], C[0]);
-      const minY = Math.min(A[1], C[1]);
-      const maxX = Math.max(A[0], C[0]);
-      const maxY = Math.max(A[1], C[1]);
-      frame = [minX, minY, maxX - minX, maxY - minY];
-    } else if (this.snap.kind === 'diamondHold') {
-      const { cx, cy, hx0, hy0 } = this.snap.anchors;
-      const dx = Math.abs(finalCursor[0] - cx);
-      const dy = Math.abs(finalCursor[1] - cy);
-      const sx = Math.max(0.0001, dx / Math.max(1e-6, hx0));
-      const sy = Math.max(0.0001, dy / Math.max(1e-6, hy0));
-      const hx = hx0 * sx;
-      const hy = hy0 * sy;
-      frame = [cx - hx, cy - hy, hx * 2, hy * 2];
-    } else {
-      const _exhaustive: never = this.snap;
-      console.error('Unknown snap kind:', _exhaustive);
+    }
+
+    const frame = this.computeShapeFrame();
+    if (!frame || frame[2] < 1 || frame[3] < 1) {
       this.cancelDrawing();
       return;
     }
 
     const shapeId = ulid();
-    transact(() => {
-      const shapeMap = new Y.Map();
-      shapeMap.set('id', shapeId);
-      shapeMap.set('kind', 'shape');
-      shapeMap.set('shapeType', shapeType);
-      shapeMap.set('color', this.color);
-      shapeMap.set('width', this.size);
-
-      if (this.getFillEnabled()) {
-        const fillColor = createFillFromStroke(this.color);
-        shapeMap.set('fillColor', fillColor);
-      }
-
-      shapeMap.set('opacity', this.opacity);
-      shapeMap.set('frame', frame);
-      shapeMap.set('ownerId', userId);
-      shapeMap.set('createdAt', Date.now());
-
-      getObjects().set(shapeId, shapeMap);
-    });
-
-    invalidateOverlay();
-    this.resetGesture();
+    const userId = getUserId();
+    const shapeType = this.shapeType;
+    try {
+      transact(() => {
+        const m = new Y.Map();
+        m.set('id', shapeId);
+        m.set('kind', 'shape');
+        m.set('shapeType', shapeType);
+        m.set('color', this.color);
+        m.set('width', this.size);
+        if (this.fill) m.set('fillColor', createFillFromStroke(this.color));
+        m.set('opacity', this.opacity);
+        m.set('frame', frame);
+        m.set('ownerId', userId);
+        m.set('createdAt', Date.now());
+        getObjects().set(shapeId, m);
+      });
+    } catch (err) {
+      console.error('Failed to commit shape:', err);
+    } finally {
+      invalidateOverlay();
+      this.resetGesture();
+    }
   }
 }
