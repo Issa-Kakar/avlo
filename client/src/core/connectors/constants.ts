@@ -1,16 +1,24 @@
 /**
  * Connector Tool Constants
  *
- * 1. SNAP_CONFIG - Screen-space snap thresholds (CSS pixels, converted via pxToWorld)
+ * 1. SNAP_CONFIG - Screen-space snap thresholds (CSS pixels)
  * 2. ANCHOR_DOT_CONFIG - Overlay styling for snap indicator dots
- * 3. ROUTING_CONFIG - World-space geometry (permanent, stored in Y.Doc)
+ * 3. GUIDE_CONFIG - Dashed guide line styling for straight connectors
+ * 4. ROUTING_CONFIG - World-space geometry (permanent, stored in Y.Doc)
+ *
+ * Screen-space constants are materialized into world units via the bundle
+ * getters at the bottom of this file: `getSnapRadiiWorld`,
+ * `getAnchorDotMetricsWorld`, `getGuideMetricsWorld`. Call sites read the
+ * bundle once per function rather than threading `scale` and dividing per use.
  *
  * @module lib/connectors/constants
  */
 
+import { useCameraStore } from '@/stores/camera-store';
+
 /**
  * Screen-space snap thresholds (in CSS pixels).
- * Converted to world units at runtime via pxToWorld().
+ * Materialized into world units via `getSnapRadiiWorld()`.
  */
 export const SNAP_CONFIG = {
   /** Distance to snap to edge - dots appear within this radius */
@@ -69,6 +77,15 @@ export const ANCHOR_DOT_CONFIG = {
 } as const;
 
 /**
+ * Dashed guide line styling for straight connectors with interior anchors.
+ * Materialized via `getGuideMetricsWorld()`.
+ */
+export const GUIDE_CONFIG = {
+  DASH_LENGTH_PX: 6,
+  GAP_LENGTH_PX: 4,
+} as const;
+
+/**
  * Orthogonal routing configuration (WORLD-SPACE, not screen pixels).
  * Routing geometry is permanent (stored in Y.Doc) - must not vary with zoom.
  */
@@ -97,12 +114,66 @@ export const COST_CONFIG = {
   BEND_PENALTY: 1000,
 } as const;
 
-/**
- * Convert screen-space distance to world units (for sizes, not positions).
- * Use camera-store's screenToWorld for position conversions.
- */
-export function pxToWorld(px: number, scale: number): number {
-  return px / scale;
+// ============================================================================
+// World-metric bundle getters
+// ----------------------------------------------------------------------------
+// Each getter reads camera scale once and returns every relevant PX constant
+// pre-divided into world units. Call sites fetch the bundle once per function
+// and read fields by name — no parameter threading, no per-use `px / scale`.
+// ============================================================================
+
+/** Snap radii & thresholds in world units at current zoom. */
+export interface SnapRadiiWorld {
+  edgeSnap: number;
+  midIn: number;
+  midOut: number;
+  forceMidpointDepth: number;
+  straightInteriorDepth: number;
+  centerSnap: number;
+}
+
+export function getSnapRadiiWorld(): SnapRadiiWorld {
+  const scale = useCameraStore.getState().scale;
+  return {
+    edgeSnap: SNAP_CONFIG.EDGE_SNAP_RADIUS_PX / scale,
+    midIn: SNAP_CONFIG.MIDPOINT_SNAP_IN_PX / scale,
+    midOut: SNAP_CONFIG.MIDPOINT_SNAP_OUT_PX / scale,
+    forceMidpointDepth: SNAP_CONFIG.FORCE_MIDPOINT_DEPTH_PX / scale,
+    straightInteriorDepth: SNAP_CONFIG.STRAIGHT_INTERIOR_DEPTH_PX / scale,
+    centerSnap: SNAP_CONFIG.CENTER_SNAP_RADIUS_PX / scale,
+  };
+}
+
+/** Anchor-dot visual sizes in world units at current zoom. */
+export interface AnchorDotMetricsWorld {
+  smallRadius: number;
+  largeRadius: number;
+  strokeWidth: number;
+  glowBlur: number;
+}
+
+export function getAnchorDotMetricsWorld(): AnchorDotMetricsWorld {
+  const scale = useCameraStore.getState().scale;
+  return {
+    smallRadius: ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX / scale,
+    largeRadius: ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX / scale,
+    strokeWidth: ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX / scale,
+    glowBlur: ANCHOR_DOT_CONFIG.GLOW_BLUR_PX / scale,
+  };
+}
+
+/** Dashed guide line metrics in world units at current zoom. */
+export interface GuideMetricsWorld {
+  dashLength: number;
+  gapLength: number;
+}
+
+export function getGuideMetricsWorld(): GuideMetricsWorld {
+  const scale = useCameraStore.getState().scale;
+  return {
+    dashLength: GUIDE_CONFIG.DASH_LENGTH_PX / scale,
+    gapLength: GUIDE_CONFIG.GAP_LENGTH_PX / scale,
+  };
 }
 
 /** Compute arrow length: max(MIN, strokeWidth * FACTOR). */

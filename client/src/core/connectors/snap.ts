@@ -14,7 +14,7 @@
  * @module lib/connectors/snap
  */
 
-import { SNAP_CONFIG, EDGE_CLEARANCE_W, pxToWorld } from './constants';
+import { EDGE_CLEARANCE_W, getSnapRadiiWorld } from './constants';
 import { getShapeTypeMidpoints, directionVector } from './connector-utils';
 import { pointInsideShape } from '../geometry/hit-primitives';
 import { frameOf } from '../geometry/frame-of';
@@ -23,7 +23,6 @@ import { queryHitCandidates } from '../spatial/object-query';
 import { BINDABLE_KINDS, type BindableKind } from '../types/objects';
 import type { FrameTuple } from '../types/geometry';
 import { getHandleShapeType } from '../accessors';
-import { useCameraStore } from '@/stores/camera-store';
 import type { Dir, SnapTarget, SnapContext } from './types';
 import { isAnchorInterior } from './types';
 
@@ -67,8 +66,7 @@ function computeAnchorAndPosition(
 export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const { cursorWorld } = ctx;
   const [cx, cy] = cursorWorld;
-  const scale = useCameraStore.getState().scale;
-  const edgeRadius = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
+  const { edgeSnap: edgeRadius } = getSnapRadiiWorld();
 
   const candidates = queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS);
   if (candidates.length === 0) return null;
@@ -101,13 +99,8 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
 export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
   const { cursorWorld, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
-  const scale = useCameraStore.getState().scale;
 
-  // Convert thresholds to world units
-  const edgeSnapW = pxToWorld(SNAP_CONFIG.EDGE_SNAP_RADIUS_PX, scale);
-  const midInW = pxToWorld(SNAP_CONFIG.MIDPOINT_SNAP_IN_PX, scale);
-  const midOutW = pxToWorld(SNAP_CONFIG.MIDPOINT_SNAP_OUT_PX, scale);
-  const forceMidpointDepthW = pxToWorld(SNAP_CONFIG.FORCE_MIDPOINT_DEPTH_PX, scale);
+  const radii = getSnapRadiiWorld();
 
   // Check if inside shape (shape-type aware)
   const isInside = pointInsideShape([cx, cy], frame, shapeType);
@@ -120,7 +113,7 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
   }
 
   const isStraight = ctx.connectorType === 'straight';
-  const forceMidpointsOnly = !isStraight && isInside && insideDepth > forceMidpointDepthW;
+  const forceMidpointsOnly = !isStraight && isInside && insideDepth > radii.forceMidpointDepth;
 
   // Get midpoints (on actual shape perimeter)
   const midpoints = getShapeTypeMidpoints(frame, shapeType);
@@ -138,13 +131,11 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
 
   // CASE 1a (straight, deep inside shape): center snap → midpoint stickiness → interior anchor
   // Shallow inside (< threshold) falls through to CASE 2 for edge sliding
-  const straightInteriorDepthW = pxToWorld(SNAP_CONFIG.STRAIGHT_INTERIOR_DEPTH_PX, scale);
-  if (isStraight && isInside && insideDepth > straightInteriorDepthW) {
+  if (isStraight && isInside && insideDepth > radii.straightInteriorDepth) {
     const [fx, fy, fw, fh] = frame;
     const centerX = fx + fw / 2;
     const centerY = fy + fh / 2;
     const centerDist = Math.hypot(cx - centerX, cy - centerY);
-    const centerSnapW = pxToWorld(SNAP_CONFIG.CENTER_SNAP_RADIUS_PX, scale);
 
     // Hysteresis: was previously center-snapped on this shape?
     const wasCenter =
@@ -153,7 +144,7 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
       prevAttach.normalizedAnchor[1] === 0.5 &&
       isAnchorInterior(prevAttach.normalizedAnchor);
 
-    const centerThreshold = wasCenter ? centerSnapW * 1.3 : centerSnapW;
+    const centerThreshold = wasCenter ? radii.centerSnap * 1.3 : radii.centerSnap;
 
     if (centerDist <= centerThreshold) {
       return {
@@ -169,8 +160,8 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
 
     // Midpoint stickiness check (same as edge case below)
     const wasPreviouslyMidpoint = prevAttach?.shapeId === shapeId && prevAttach?.isMidpoint && prevAttach?.side === nearestMidSide;
-    const shouldStayMid = wasPreviouslyMidpoint && nearestMidDist <= midOutW;
-    const shouldEnterMid = nearestMidDist <= midInW;
+    const shouldStayMid = wasPreviouslyMidpoint && nearestMidDist <= radii.midOut;
+    const shouldEnterMid = nearestMidDist <= radii.midIn;
 
     if (shouldStayMid || shouldEnterMid) {
       const midpoint = midpoints[nearestMidSide];
@@ -224,7 +215,7 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
   }
   // When outside shape, respect the edge snap radius
   // When inside shape (but not deep), always allow edge snap for sliding
-  if (!isInside && edgeSnap.dist > edgeSnapW) {
+  if (!isInside && edgeSnap.dist > radii.edgeSnap) {
     return null;
   }
 
@@ -247,8 +238,8 @@ export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeTyp
   // Check midpoint stickiness (hysteresis)
   const wasPreviouslyMidpoint = prevAttach?.shapeId === shapeId && prevAttach?.isMidpoint && prevAttach?.side === effectiveMidSide;
 
-  const shouldStayMidpoint = wasPreviouslyMidpoint && effectiveMidDist <= midOutW;
-  const shouldEnterMidpoint = effectiveMidDist <= midInW;
+  const shouldStayMidpoint = wasPreviouslyMidpoint && effectiveMidDist <= radii.midOut;
+  const shouldEnterMidpoint = effectiveMidDist <= radii.midIn;
 
   if (shouldStayMidpoint || shouldEnterMidpoint) {
     const midpoint = midpoints[effectiveMidSide];

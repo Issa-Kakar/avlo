@@ -23,7 +23,7 @@ import { frameOf } from '@/core/geometry/frame-of';
 import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition, getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
-import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
+import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import type { SnapTarget } from '@/core/connectors/types';
 import { isAnchorInterior } from '@/core/connectors/types';
 import { getHandle } from '@/runtime/room-runtime';
@@ -297,12 +297,10 @@ function drawSelectionBoxAndHandles(
  * Also renders midpoint dots on the snap target shape during drag.
  */
 function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
-  const scale = useCameraStore.getState().scale;
   const handle = getHandle(connectorId);
   if (!handle || handle.kind !== 'connector') return;
 
-  const radius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
-  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+  const { largeRadius: radius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
 
   let startPos: [number, number];
   let endPos: [number, number];
@@ -371,7 +369,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     if (!active) continue;
     ctx.save();
     ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-    ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+    ctx.shadowBlur = glowBlur;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
 
@@ -460,9 +458,7 @@ function drawSnapMidpointDots(
   }
   ctx.restore();
 
-  const smallRadius = pxToWorld(ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX, scale);
-  const largeRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
-  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+  const { smallRadius, largeRadius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
 
   // When at midpoint, all dots grow large; otherwise stay small
   const midpointRadius = snap.isMidpoint ? largeRadius : smallRadius;
@@ -490,7 +486,7 @@ function drawSnapMidpointDots(
     if (isCenterSnap) {
       ctx.save();
       ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-      ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+      ctx.shadowBlur = glowBlur;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
       ctx.beginPath();
@@ -517,7 +513,7 @@ function drawSnapMidpointDots(
   // Active dot at edge position with glow
   ctx.save();
   ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-  ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+  ctx.shadowBlur = glowBlur;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 0;
 
@@ -568,10 +564,9 @@ function drawStraightConnectorGuides(
 /** Draw a dashed guide line between two points. */
 function drawDashedGuideLine(ctx: CanvasRenderingContext2D, from: [number, number], to: [number, number]): void {
   const scale = useCameraStore.getState().scale;
-  const dashLen = pxToWorld(6, scale);
-  const gapLen = pxToWorld(4, scale);
+  const { dashLength, gapLength } = getGuideMetricsWorld();
   ctx.save();
-  ctx.setLineDash([dashLen, gapLen]);
+  ctx.setLineDash([dashLength, gapLength]);
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
   ctx.lineWidth = 1.5 / scale;
   ctx.globalAlpha = 0.5;

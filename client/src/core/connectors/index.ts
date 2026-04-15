@@ -33,7 +33,10 @@ export {
   ROUTING_CONFIG,
   COST_CONFIG,
   EDGE_CLEARANCE_W,
-  pxToWorld,
+  GUIDE_CONFIG,
+  getSnapRadiiWorld,
+  getAnchorDotMetricsWorld,
+  getGuideMetricsWorld,
   computeApproachOffset,
   computeArrowLength,
 } from './constants';

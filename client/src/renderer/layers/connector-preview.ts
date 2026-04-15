@@ -18,7 +18,7 @@
  */
 
 import type { ConnectorPreview } from '@/tools/types';
-import { ANCHOR_DOT_CONFIG, pxToWorld } from '@/core/connectors/constants';
+import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
 import { buildRoundedPolylinePath, buildArrowPath, computeEndTrimInfo, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getHandle } from '@/runtime/room-runtime';
@@ -88,10 +88,10 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
   // 1b. Draw dashed guide lines (straight connectors with interior anchors)
   if (preview.connectorType === 'straight' && hasRoute) {
     if (preview.startDashTo && points.length >= 2) {
-      drawDashedGuide(ctx, points[0], preview.startDashTo, color, width, scale, opacity);
+      drawDashedGuide(ctx, points[0], preview.startDashTo, color, width, opacity);
     }
     if (preview.endDashTo && points.length >= 2) {
-      drawDashedGuide(ctx, points[points.length - 1], preview.endDashTo, color, width, scale, opacity);
+      drawDashedGuide(ctx, points[points.length - 1], preview.endDashTo, color, width, opacity);
     }
   }
 
@@ -132,7 +132,6 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
       snapShapeType,
       snapSide,
       activeMidpointSide !== null, // isMidpoint
-      scale,
       snapPosition,
       preview.connectorType === 'straight',
       preview.isCenterSnap,
@@ -141,11 +140,10 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
 
   // Draw start endpoint dot when attached (during creation)
   if (fromIsAttached && preview.fromPosition && hasRoute) {
-    const dotRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
-    const sw = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
-    ctx.lineWidth = sw;
+    const dots = getAnchorDotMetricsWorld();
+    ctx.lineWidth = dots.strokeWidth;
     ctx.beginPath();
-    ctx.arc(preview.fromPosition[0], preview.fromPosition[1], dotRadius, 0, Math.PI * 2);
+    ctx.arc(preview.fromPosition[0], preview.fromPosition[1], dots.largeRadius, 0, Math.PI * 2);
     ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
     ctx.fill();
     ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
@@ -192,7 +190,6 @@ function drawSnapDots(
   shapeType: string,
   side: Dir,
   isMidpoint: boolean,
-  scale: number,
   snapPosition: [number, number],
   isStraight: boolean = false,
   isCenterSnap: boolean = false,
@@ -200,9 +197,7 @@ function drawSnapDots(
   const [x, y, w, h] = frame;
 
   // Sizing based on snap state
-  const smallRadius = pxToWorld(ANCHOR_DOT_CONFIG.SMALL_RADIUS_PX, scale);
-  const largeRadius = pxToWorld(ANCHOR_DOT_CONFIG.LARGE_RADIUS_PX, scale);
-  const strokeWidth = pxToWorld(ANCHOR_DOT_CONFIG.STROKE_WIDTH_PX, scale);
+  const { smallRadius, largeRadius, strokeWidth, glowBlur } = getAnchorDotMetricsWorld();
 
   // When at midpoint, all dots are large; otherwise midpoints are small
   const midpointRadius = isMidpoint ? largeRadius : smallRadius;
@@ -241,7 +236,7 @@ function drawSnapDots(
       // Active center dot with glow
       ctx.save();
       ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-      ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+      ctx.shadowBlur = glowBlur;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
       ctx.beginPath();
@@ -271,7 +266,7 @@ function drawSnapDots(
 
   // Glow effect via shadow blur
   ctx.shadowColor = ANCHOR_DOT_CONFIG.GLOW_COLOR;
-  ctx.shadowBlur = pxToWorld(ANCHOR_DOT_CONFIG.GLOW_BLUR_PX, scale);
+  ctx.shadowBlur = glowBlur;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 0;
 
@@ -301,13 +296,12 @@ function drawDashedGuide(
   to: [number, number],
   color: string,
   width: number,
-  scale: number,
   opacity: number,
 ): void {
-  const dashLen = pxToWorld(6, scale);
-  const gapLen = pxToWorld(4, scale);
+  const { dashLength, gapLength } = getGuideMetricsWorld();
+  const scale = useCameraStore.getState().scale;
   ctx.save();
-  ctx.setLineDash([dashLen, gapLen]);
+  ctx.setLineDash([dashLength, gapLength]);
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(1 / scale, width * 0.6);
   ctx.globalAlpha = opacity * 0.5;
