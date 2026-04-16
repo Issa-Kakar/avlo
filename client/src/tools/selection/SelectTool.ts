@@ -709,17 +709,20 @@ export class SelectTool implements PointerTool {
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
     const marqueeBBox = pointsToBBox(marquee.anchor, marquee.current);
-
-    // Spatial pre-filter + geometry-tight rect intersection in one pass.
     const overlapping = queryHandles({ region: inBBox(marqueeBBox), precise: 'rect' });
-    const selectedIds = overlapping.map((h) => h.id).sort();
-    const current = store.selectedIds.slice().sort();
+    const currentSet = store.selectedIdSet;
 
-    // Cheap diff: lengths first, then element-wise. Avoids JSON.stringify churn.
-    const changed = selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i]);
-    if (changed) {
-      store.setSelection(selectedIds); // marquee state owned by gesture, no longer clobbered
+    if (overlapping.length === currentSet.size) {
+      let same = true;
+      for (const h of overlapping) {
+        if (!currentSet.has(h.id)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
     }
+    store.setSelection(overlapping.map((h) => h.id));
   }
 
   // --- Hit Testing ---

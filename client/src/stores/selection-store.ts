@@ -181,7 +181,6 @@ export const useSelectionStore = create<SelectionStore>()(
         inlineStyles: EMPTY_INLINE_STYLES,
         boundsVersion: 0,
         transform: { kind: 'none' },
-        marquee: { active: false, anchor: null, current: null },
       }),
 
     // === Transform Actions ===
