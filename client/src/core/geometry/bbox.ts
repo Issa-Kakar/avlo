@@ -2,7 +2,8 @@ import type * as Y from 'yjs';
 import type { ObjectKind } from '../types/objects';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
 import { getPoints, getFrame, getWidth, getStartCap, getEndCap, getTextProps, getNoteProps, getBookmarkProps } from '../accessors';
-import { computeTextBBox, computeNoteBBox } from '../text/text-system';
+import { computeTextBBox } from '../text/text-system';
+import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
 import { computeCodeBBox } from '../code/code-system';
 import { computeBookmarkBBox, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
 
@@ -55,7 +56,7 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
       if (!props) {
         const origin = (yMap.get('origin') as Point | undefined) ?? [0, 0];
         const scale = (yMap.get('scale') as number) ?? 1;
-        const w = 280 * scale;
+        const w = NOTE_WIDTH * scale;
         return [origin[0], origin[1], origin[0] + w, origin[1] + w];
       }
       return computeNoteBBox(id, props);

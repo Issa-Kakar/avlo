@@ -18,7 +18,8 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-system.ts` | Layout engine, cache, renderers, BBox, note auto-sizing, shadow |
+| `core/text/text-system.ts` | Layout engine, cache (incl. note auto-sizing), text/label renderers, text BBox |
+| `core/text/sticky-note.ts` | Note constants/geometry, 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |

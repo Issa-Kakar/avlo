@@ -241,7 +241,7 @@ No pending/failed visual states — layout determined purely by which metadata f
 
 ### Shadow + Body
 
-Shared with sticky notes via `renderNoteBody(ctx, x, y, w, h, CARD_FILL)` from `text-system.ts`. Draws 9-slice cached dual-layer Gaussian shadow + white rounded rect fill (`#FFFFFF`, corner radius via `getNoteCornerRadius(w)`).
+Shared with sticky notes via `renderNoteBody(ctx, x, y, w, h, CARD_FILL)` from `core/text/sticky-note.ts`. Draws 9-slice cached dual-layer Gaussian shadow + white rounded rect fill (`#FFFFFF`, corner radius computed from `w * 0.011`).
 
 ### OG Image Drawing
 

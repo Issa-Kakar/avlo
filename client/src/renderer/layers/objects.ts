@@ -25,23 +25,9 @@ import { paintConnector } from './connector-render-atoms';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
-import {
-  textLayoutCache,
-  renderTextLayout,
-  renderShapeLabel,
-  computeLabelTextBox,
-  layoutMeasuredContent,
-  anchorFactor,
-  getBaselineToTopRatio,
-  getLineStartX,
-  getNoteContentOffsetY,
-  renderNoteBody,
-  getNotePadding,
-  getNoteContentWidth,
-  getNoteDerivedFontSize,
-  NOTE_WIDTH,
-} from '@/core/text/text-system';
-import { getTextProps, getAlign, getAlignV, getCodeProps, getNoteProps } from '@/core/accessors';
+import { textLayoutCache, renderTextLayout, renderShapeLabel, computeLabelTextBox, layoutMeasuredContent } from '@/core/text/text-system';
+import { drawStickyNote } from '@/core/text/sticky-note';
+import { getTextProps, getAlign, getAlignV, getCodeProps } from '@/core/accessors';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
 import { getBitmap } from '@/core/image/image-manager';
@@ -332,87 +318,6 @@ function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const fillColor = getFillColor(y);
   const layout = textLayoutCache.getLayout(id, props.content, props.fontSize, props.fontFamily, props.width);
   renderTextLayout(ctx, layout, props.origin[0], props.origin[1], color, props.align, fillColor);
-}
-
-function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  const { id, y } = handle;
-  const props = getNoteProps(y);
-  if (!props) return;
-
-  const { origin, scale: noteScale, fontFamily, fillColor, content, align, alignV } = props;
-
-  const layout = textLayoutCache.getNoteLayout(id, content, fontFamily);
-  const derivedFontSize = getNoteDerivedFontSize(id);
-
-  ctx.save();
-  ctx.translate(origin[0], origin[1]);
-  ctx.scale(noteScale, noteScale);
-
-  // Body at base dimensions (shadow + fill rect) — always drawn, even during editing
-  renderNoteBody(ctx, 0, 0, NOTE_WIDTH, NOTE_WIDTH, fillColor);
-
-  if (useSelectionStore.getState().textEditingId === id) {
-    ctx.restore();
-    return;
-  }
-
-  // Text rendering at base dimensions
-  const padding = getNotePadding(1);
-  const contentWidth = getNoteContentWidth(1);
-  const maxContentH = contentWidth;
-  const { lineHeight } = layout;
-  const baselineToTop = getBaselineToTopRatio(fontFamily) * derivedFontSize;
-  const contentH = layout.lines.length * lineHeight;
-  const vOffset = getNoteContentOffsetY(alignV, maxContentH, contentH);
-  const textY = padding + vOffset + baselineToTop;
-  const noteAnchorX = padding + anchorFactor(align) * contentWidth;
-  const containerLeft = padding;
-  const containerRight = padding + contentWidth;
-  const hlR = derivedFontSize * 0.25;
-
-  // Clip overflow (at min step + content overflows)
-  const needsClip = contentH > maxContentH;
-  if (needsClip) {
-    ctx.beginPath();
-    ctx.rect(padding, padding, contentWidth, maxContentH);
-    ctx.clip();
-  }
-
-  ctx.textBaseline = 'alphabetic';
-
-  for (const line of layout.lines) {
-    if (line.runs.length === 0) continue;
-    const lineY = textY + line.baselineY;
-    const lineW = line.alignmentWidth;
-    const startX = getLineStartX(noteAnchorX, contentWidth, lineW, align);
-
-    // Pass 1: highlight rects
-    for (const run of line.runs) {
-      if (!run.highlight) continue;
-      ctx.fillStyle = run.highlight;
-      const hlX = startX + run.advanceX;
-      const hlY = lineY - baselineToTop;
-      const hlEnd = hlX + run.advanceWidth;
-      const clL = Math.max(hlX, containerLeft);
-      const clR = Math.min(hlEnd, containerRight);
-      if (clR > clL) {
-        const rL = clL > hlX ? 0 : hlR;
-        const rR = clR < hlEnd ? 0 : hlR;
-        ctx.beginPath();
-        ctx.roundRect(clL, hlY, clR - clL, lineHeight, [rL, rR, rR, rL]);
-        ctx.fill();
-      }
-    }
-
-    // Pass 2: text
-    ctx.fillStyle = '#1a1a1a';
-    for (const run of line.runs) {
-      ctx.font = run.font;
-      ctx.fillText(run.text, startX + run.advanceX, lineY);
-    }
-  }
-
-  ctx.restore();
 }
 
 function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {

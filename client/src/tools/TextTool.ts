@@ -49,13 +49,9 @@ import {
   getMeasuredAscentRatio,
   computeLabelTextBox,
   anchorFactor,
-  NOTE_WIDTH,
-  NOTE_FILL_COLOR,
-  getNotePadding,
-  getNoteContentWidth,
-  getNoteDerivedFontSize,
   textLayoutCache,
 } from '@/core/text/text-system';
+import { NOTE_WIDTH, NOTE_FILL_COLOR, getNotePadding, getNoteContentWidth, getNoteDerivedFontSize } from '@/core/text/sticky-note';
 import { hitTestVisibleText, hitTestVisibleNote } from '@/core/geometry/hit-testing';
 import { ulid } from 'ulid';
 

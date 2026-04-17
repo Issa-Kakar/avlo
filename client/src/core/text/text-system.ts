@@ -22,7 +22,7 @@
 
 import * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type { NoteProps, TextProps, TextAlign, TextAlignV, TextWidth, FontFamily } from '../accessors';
+import type { TextProps, TextAlign, TextAlignV, TextWidth, FontFamily } from '../accessors';
 
 import { areFontsLoaded } from './font-loader';
 import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
@@ -31,38 +31,16 @@ export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 export type { FontFamilyConfig } from './font-config';
 export type { TextAlign, TextAlignV, TextWidth, TextProps, FontFamily } from '../accessors';
 
-// =============================================================================
-// STICKY NOTE CONSTANTS & HELPERS
-// =============================================================================
-
-export const NOTE_WIDTH = 280;
-export const NOTE_FILL_COLOR = '#FEF3AC';
-const NOTE_PADDING_RATIO = 12 / 280;
-const NOTE_CORNER_RADIUS_RATIO = 0.011;
-const NOTE_SHADOW_PAD_RATIO = 0.15;
-
-export function getNotePadding(scale: number): number {
-  return NOTE_WIDTH * scale * NOTE_PADDING_RATIO;
-}
-
-export function getNoteCornerRadius(scale: number): number {
-  return NOTE_WIDTH * scale * NOTE_CORNER_RADIUS_RATIO;
-}
-
-export function getNoteContentWidth(scale: number): number {
-  return NOTE_WIDTH * scale * (1 - 2 * NOTE_PADDING_RATIO);
-}
-
-/** Vertical offset for note content alignment (matches CSS clamp behavior). */
+/** Vertical offset for constrained-box content alignment (matches CSS clamp behavior).
+ *  Shared by sticky-note rendering and shape-label rendering. */
 export function getNoteContentOffsetY(alignV: TextAlignV, maxContentH: number, contentH: number): number {
   if (alignV === 'top') return 0;
   const space = Math.max(0, maxContentH - contentH);
   return alignV === 'middle' ? space / 2 : space;
 }
 
-// --- Auto font size ---
-
-export const NOTE_FONT_STEPS: number[] = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8];
+// Auto font size steps for sticky notes — consumed only by the cache's getNoteLayout path.
+const NOTE_FONT_STEPS: number[] = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8];
 const NOTE_PHASE1_FLOOR = 18;
 
 // =============================================================================
@@ -769,8 +747,8 @@ export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth
 // §5b AUTO FONT SIZE — layoutNoteContent (replaces flowCheck + computeNoteAutoSize)
 // =============================================================================
 
-/** Base content width at scale=1 (NOTE_WIDTH=280, padding ratio 12/280 each side). */
-const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO); // 256
+/** Base content width at scale=1: NOTE_WIDTH (280) * (1 - 2 * 12/280). */
+const BASE_CONTENT_WIDTH = 256;
 
 /** Find first step index where the word (at 100px) fits on one line. */
 function findStepForWord(wordW100: number, contentWidth: number): number {
@@ -1437,113 +1415,8 @@ export function renderShapeLabel(
 }
 
 // =============================================================================
-// STICKY NOTE — Shadow, Body Renderer, BBox
+// §8  SPATIAL INDEX — Derived frame / BBox for text objects
 // =============================================================================
-
-function getNoteShadowPad(scale: number): number {
-  return NOTE_WIDTH * scale * NOTE_SHADOW_PAD_RATIO;
-}
-
-// --- 9-Slice Shadow Cache ---
-
-interface ShadowCache {
-  canvas: OffscreenCanvas;
-  padPx: number;
-  rectPx: number;
-  dpr: number;
-}
-
-let _shadowCache: ShadowCache | null = null;
-
-function ensureShadowCache(): ShadowCache {
-  const dpr = window.devicePixelRatio || 1;
-  if (_shadowCache && _shadowCache.dpr === dpr) return _shadowCache;
-
-  const padPx = 100,
-    rectPx = 80;
-  const total = rectPx + 2 * padPx; // 280
-  const radius = 5;
-
-  const canvas = new OffscreenCanvas(total * dpr, total * dpr);
-  const ctx = canvas.getContext('2d')!;
-  ctx.scale(dpr, dpr);
-  ctx.fillStyle = '#000';
-
-  // Layer 1: Floor shadow — wide soft Gaussian with large Y offset.
-  // The large offset pushes the shadow almost entirely below the body:
-  //   bottom: full opacity at edge (shadow rect overlaps body bottom by offsetY)
-  //   sides: α/2 at edge, drops with σ=17 → moderate
-  //   top: nearly invisible (offset >> σ cancels blur)
-  ctx.shadowColor = 'rgba(0,0,0,0.10)';
-  ctx.shadowBlur = 34;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 28;
-  ctx.beginPath();
-  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
-  ctx.fill();
-
-  // Layer 2: Contact shadow — tight edge definition.
-  // Small blur + small offset → adds ~3% to all edges, fades within ~10px.
-  // Combines with floor shadow for correct edge opacity without hard lines.
-  ctx.shadowColor = 'rgba(0,0,0,0.06)';
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 3;
-  ctx.beginPath();
-  ctx.roundRect(padPx, padPx, rectPx, rectPx, radius);
-  ctx.fill();
-
-  // Punch out body rect — expanded 1px to eliminate anti-aliased fringe
-  // between shadow edge and body fill
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 0;
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.beginPath();
-  ctx.roundRect(padPx - 1, padPx - 1, rectPx + 2, rectPx + 2, radius);
-  ctx.fill();
-  ctx.globalCompositeOperation = 'source-over';
-
-  _shadowCache = { canvas, padPx, rectPx, dpr };
-  return _shadowCache;
-}
-
-function drawNoteShadow(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
-  const sc = ensureShadowCache();
-  const d = sc.dpr;
-  const sp = sc.padPx * d;
-  const sm = sc.rectPx * d;
-  const dp = w * NOTE_SHADOW_PAD_RATIO;
-  const src = sc.canvas;
-
-  // TL, TC, TR
-  ctx.drawImage(src, 0, 0, sp, sp, x - dp, y - dp, dp, dp);
-  ctx.drawImage(src, sp, 0, sm, sp, x, y - dp, w, dp);
-  ctx.drawImage(src, sp + sm, 0, sp, sp, x + w, y - dp, dp, dp);
-  // ML, MR
-  ctx.drawImage(src, 0, sp, sp, sm, x - dp, y, dp, h);
-  ctx.drawImage(src, sp + sm, sp, sp, sm, x + w, y, dp, h);
-  // BL, BC, BR
-  ctx.drawImage(src, 0, sp + sm, sp, sp, x - dp, y + h, dp, dp);
-  ctx.drawImage(src, sp, sp + sm, sm, sp, x, y + h, w, dp);
-  ctx.drawImage(src, sp + sm, sp + sm, sp, sp, x + w, y + h, dp, dp);
-}
-
-// --- Note body renderer ---
-
-export function renderNoteBody(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, fillColor: string): void {
-  const radius = w * NOTE_CORNER_RADIUS_RATIO;
-
-  drawNoteShadow(ctx, x, y, w, h);
-
-  ctx.fillStyle = fillColor;
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, radius);
-  ctx.fill();
-}
-
-// --- Spatial index + derived frame ---
 
 /**
  * Compute bounding box for a text object.
@@ -1562,30 +1435,12 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   return [fx - padding, fy - padding, fx + layout.boxWidth + padding, fy + fh + padding];
 }
 
-export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
-  const { content, origin, scale, fontFamily } = props;
-  const noteW = NOTE_WIDTH * scale;
-  // Always square — no height auto-grow
-  const frame: FrameTuple = [origin[0], origin[1], noteW, noteW];
-  // Populate cache (ensures derivedFontSize available later)
-  textLayoutCache.getNoteLayout(objectId, content, fontFamily);
-  textLayoutCache.setFrame(objectId, frame);
-
-  const sp = getNoteShadowPad(scale);
-  return [frame[0] - sp, frame[1] - sp, frame[0] + noteW + sp, frame[1] + noteW + sp];
-}
-
 /**
  * Get the derived frame for a text object from the layout cache.
  * Returns null if the object hasn't been through computeTextBBox yet.
  */
 export function getTextFrame(objectId: string): FrameTuple | null {
   return textLayoutCache.getFrame(objectId);
-}
-
-/** Get the auto-derived font size for a note from the layout cache. */
-export function getNoteDerivedFontSize(objectId: string): number {
-  return textLayoutCache.getNoteDerivedFontSize(objectId);
 }
 
 /**
