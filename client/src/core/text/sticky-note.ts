@@ -35,19 +35,22 @@ import type { MeasuredContent, TextLayout } from './text-system';
 // CONSTANTS
 // =============================================================================
 
-export const NOTE_WIDTH = 280;
+export const NOTE_WIDTH = 125;
 export const NOTE_FILL_COLOR = '#FEF3AC';
 
-const NOTE_PADDING_RATIO = 12 / 280;
+const NOTE_PADDING_RATIO = 20 / 280;
 const NOTE_CORNER_RADIUS_RATIO = 0.011;
 const NOTE_SHADOW_PAD_RATIO = 0.15;
 
-/** Base content width at scale=1: NOTE_WIDTH (280) * (1 - 2 * 12/280). */
-const BASE_CONTENT_WIDTH = 256;
+/** Base content width at scale=1, derived from NOTE_WIDTH and NOTE_PADDING_RATIO. */
+const BASE_CONTENT_WIDTH = NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO);
 /** Descending font steps tried during auto-sizing. */
-const NOTE_FONT_STEPS: number[] = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8];
+const NOTE_FONT_STEPS: number[] = [
+  54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12,
+  11, 10, 9, 8,
+];
 /** Below this step, phase-2 character breaking activates. */
-const NOTE_PHASE1_FLOOR = 18;
+const NOTE_PHASE1_FLOOR = 11;
 
 // =============================================================================
 // GEOMETRY HELPERS
@@ -208,13 +211,13 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
 
 /**
  * Auto-size note content and produce a TextLayout at base dimensions.
- * Takes MeasuredContent at 100px (ratio strategy). Always works at BASE_CONTENT_WIDTH (256).
+ * Takes MeasuredContent at 100px (ratio strategy). Always works at BASE_CONTENT_WIDTH.
  *
  * Phase A: Find optimal font step (two-phase search with lazy per-word stepping).
  * Phase B: Mutate MeasuredContent to derived font size and build layout.
  */
 function layoutNoteContent(measured: MeasuredContent, fontFamily: FontFamily): { layout: TextLayout; derivedFontSize: number } {
-  const contentWidth = BASE_CONTENT_WIDTH; // 256
+  const contentWidth = BASE_CONTENT_WIDTH;
   const contentHeight = contentWidth; // square
   const lhMult = FONT_FAMILIES[fontFamily].lineHeightMultiplier;
   const lineH100 = 100 * lhMult;

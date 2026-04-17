@@ -698,7 +698,6 @@ export class TextTool implements PointerTool {
     // Deep observer already invalidated cache → force repopulation
     getNoteLayout(this.objectId, props.content, props.fontFamily);
     const derivedFS = getNoteDerivedFontSize(this.objectId);
-
     const cameraScale = useCameraStore.getState().scale;
     const sf = derivedFS * props.scale * cameraScale;
     this.container.style.fontSize = `${sf}px`;
