@@ -18,8 +18,8 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 
 | File | Purpose |
 |------|---------|
-| `core/text/text-system.ts` | Layout engine, cache (incl. note auto-sizing), text/label renderers, text BBox |
-| `core/text/sticky-note.ts` | Note constants/geometry, 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
+| `core/text/text-system.ts` | Layout engine, cache, text/label renderers, text BBox |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox` |
 | `core/text/extensions.ts` | TextCollaboration: per-session UndoManager, Y.Map observer, session merging |
 | `core/text/font-config.ts` | `FONT_WEIGHTS` (450/700), `FONT_FAMILIES` (4 families, all 1.3x line-height) |
 | `core/text/font-loader.ts` | `ensureFontsLoaded()` / `areFontsLoaded()` |
@@ -190,10 +190,13 @@ textLayoutCache.getFrame(id)             // Read derived frame
 textLayoutCache.getMeasuredContent(id)   // For E/W reflow (skips tokenize + measure)
 textLayoutCache.getInlineStyles(id)      // UniformStyles from cached tokenized content
 
-// Note-specific (see Sticky Notes):
-textLayoutCache.getNoteLayout(id, fragment, fontFamily)
-textLayoutCache.getNoteDerivedFontSize(id)               // fallback 72
+// Note bridge — narrow read/write surface for sticky-note.ts orchestration.
+// `noteDerivedFontSize` still lives on CacheEntry so `invalidateContent` nulls it.
+textLayoutCache.getNoteCache(id)         // → NoteCacheSnapshot | null
+textLayoutCache.setNoteCache(id, snap)   // upsert; always nulls frame
 ```
+
+Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` — it reads/writes via the bridge above.
 
 ---
 
@@ -489,11 +492,11 @@ Safe — mutated content never reused for 100px work. Fresh measurement on next 
 
 ### Cache — `getNoteLayout`
 
-Separate from `getLayout`. No fontSize/width params — always at base dimensions.
+Lives in `sticky-note.ts` as a module function (not on `TextLayoutCache`). No fontSize/width params — always at base dimensions. Reads/writes the shared cache via `textLayoutCache.getNoteCache(id)` / `setNoteCache(id, snap)`.
 
 ```typescript
-getNoteLayout(id, fragment, fontFamily): TextLayout
-getNoteDerivedFontSize(id): number  // fallback 72
+getNoteLayout(id, fragment, fontFamily): TextLayout   // sticky-note.ts
+getNoteDerivedFontSize(id): number                    // sticky-note.ts, fallback 72
 ```
 
 **Two-tier:**
@@ -501,7 +504,7 @@ getNoteDerivedFontSize(id): number  // fallback 72
 2. **Stale:** Re-measure at 100px + `layoutNoteContent` (reuses tokenized if content unchanged)
 3. **Full miss:** `parseAndTokenize` -> measure at 100px -> `layoutNoteContent`
 
-**Invalidation:** `invalidateContent(id)` nulls tokenized + noteDerivedFontSize. Scale changes don't invalidate. FontFamily detected by comparison.
+**Invalidation:** `invalidateContent(id)` on `TextLayoutCache` nulls tokenized + `noteDerivedFontSize` (field still on `CacheEntry`, so no extra coordination needed). Scale changes don't invalidate. FontFamily detected by comparison.
 
 ### Canvas Rendering — `drawStickyNote`
 

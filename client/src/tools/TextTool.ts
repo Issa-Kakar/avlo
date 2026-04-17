@@ -43,15 +43,15 @@ import {
   getNoteProps,
 } from '@/core/accessors';
 import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
+import { FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio, computeLabelTextBox, anchorFactor } from '@/core/text/text-system';
 import {
-  FONT_FAMILIES,
-  getBaselineToTopRatio,
-  getMeasuredAscentRatio,
-  computeLabelTextBox,
-  anchorFactor,
-  textLayoutCache,
-} from '@/core/text/text-system';
-import { NOTE_WIDTH, NOTE_FILL_COLOR, getNotePadding, getNoteContentWidth, getNoteDerivedFontSize } from '@/core/text/sticky-note';
+  NOTE_WIDTH,
+  NOTE_FILL_COLOR,
+  getNotePadding,
+  getNoteContentWidth,
+  getNoteLayout,
+  getNoteDerivedFontSize,
+} from '@/core/text/sticky-note';
 import { hitTestVisibleText, hitTestVisibleNote } from '@/core/geometry/hit-testing';
 import { ulid } from 'ulid';
 
@@ -285,7 +285,7 @@ export class TextTool implements PointerTool {
       }
       fragment = np.content;
       fontFamily = np.fontFamily;
-      textLayoutCache.getNoteLayout(objectId, np.content, np.fontFamily);
+      getNoteLayout(objectId, np.content, np.fontFamily);
       fontSize = getNoteDerivedFontSize(objectId) * np.scale;
     } else {
       const props = getTextProps(handle.y);
@@ -673,7 +673,7 @@ export class TextTool implements PointerTool {
         if (keys.has('fontFamily')) {
           const content = getContent(handle.y);
           const ff = getFontFamily(handle.y);
-          if (content) textLayoutCache.getNoteLayout(this.objectId!, content, ff);
+          if (content) getNoteLayout(this.objectId!, content, ff);
         }
         if (keys.has('align') || keys.has('alignV') || keys.has('origin') || keys.has('scale') || keys.has('fontFamily'))
           this.positionEditor();
@@ -696,7 +696,7 @@ export class TextTool implements PointerTool {
     if (!props) return;
 
     // Deep observer already invalidated cache → force repopulation
-    textLayoutCache.getNoteLayout(this.objectId, props.content, props.fontFamily);
+    getNoteLayout(this.objectId, props.content, props.fontFamily);
     const derivedFS = getNoteDerivedFontSize(this.objectId);
 
     const cameraScale = useCameraStore.getState().scale;

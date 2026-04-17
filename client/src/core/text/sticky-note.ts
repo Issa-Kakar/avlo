@@ -8,12 +8,28 @@
  * Dependency direction is one-way: sticky-note → text-system.
  */
 
+import * as Y from 'yjs';
 import type { ObjectHandle } from '../types/objects';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type { NoteProps } from '../accessors';
+import type { NoteProps, FontFamily } from '../accessors';
 import { getNoteProps } from '../accessors';
 import { useSelectionStore } from '@/stores/selection-store';
-import { textLayoutCache, anchorFactor, getBaselineToTopRatio, getLineStartX, getNoteContentOffsetY } from './text-system';
+import {
+  textLayoutCache,
+  parseAndTokenize,
+  measureTokenizedContent,
+  measureTextCached,
+  sliceTextToFit,
+  nextSoftBreak,
+  buildFontString,
+  layoutMeasuredContent,
+  anchorFactor,
+  getBaselineToTopRatio,
+  getLineStartX,
+  getNoteContentOffsetY,
+} from './text-system';
+import { FONT_FAMILIES } from './font-config';
+import type { MeasuredContent, TextLayout } from './text-system';
 
 // =============================================================================
 // CONSTANTS
@@ -25,6 +41,13 @@ export const NOTE_FILL_COLOR = '#FEF3AC';
 const NOTE_PADDING_RATIO = 12 / 280;
 const NOTE_CORNER_RADIUS_RATIO = 0.011;
 const NOTE_SHADOW_PAD_RATIO = 0.15;
+
+/** Base content width at scale=1: NOTE_WIDTH (280) * (1 - 2 * 12/280). */
+const BASE_CONTENT_WIDTH = 256;
+/** Descending font steps tried during auto-sizing. */
+const NOTE_FONT_STEPS: number[] = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8];
+/** Below this step, phase-2 character breaking activates. */
+const NOTE_PHASE1_FLOOR = 18;
 
 // =============================================================================
 // GEOMETRY HELPERS
@@ -44,6 +67,297 @@ function getNoteCornerRadius(w: number): number {
 
 function getNoteShadowPad(scale: number): number {
   return NOTE_WIDTH * scale * NOTE_SHADOW_PAD_RATIO;
+}
+
+// =============================================================================
+// AUTO FONT SIZE — layoutNoteContent (100px ratio strategy, two-phase search)
+// =============================================================================
+
+/** Find first step index where the word (at 100px) fits on one line. */
+function findStepForWord(wordW100: number, contentWidth: number): number {
+  const maxStep = (contentWidth * 100) / wordW100;
+  for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
+    if (NOTE_FONT_STEPS[i] <= maxStep) return i;
+  }
+  return NOTE_FONT_STEPS.length; // no step fits
+}
+
+/**
+ * Inline flow simulation for note auto-sizing.
+ * Mirrors layoutMeasuredContent's pending whitespace state machine.
+ * Phase 1: words atomic, returns step index of oversized word.
+ * Phase 2: char-breaks oversized words via sliceTextToFit.
+ * Returns 'fits' | 'heightOverflow' | step index to jump to (phase 1 only).
+ */
+type NoteFlowResult = 'fits' | 'heightOverflow' | number; // number = jumpToStepIdx
+
+function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number, phase2: boolean, contentWidth: number): NoteFlowResult {
+  let lineCount = 0;
+
+  for (const para of measured.paragraphs) {
+    if (para.tokens.length === 0) {
+      lineCount++;
+      if (lineCount > maxLines) return 'heightOverflow';
+      continue;
+    }
+
+    let curW = 0;
+    let hasInk = false;
+    let pendingW = 0;
+
+    for (const tok of para.tokens) {
+      if (tok.kind === 'space') {
+        if (!hasInk) curW += tok.advanceWidth;
+        else pendingW += tok.advanceWidth;
+        continue;
+      }
+
+      const wordW = tok.advanceWidth;
+
+      if (wordW > maxW) {
+        if (!phase2) return findStepForWord(wordW, contentWidth);
+
+        // Phase 2: char-break — push to new line first if line has ink (matches browser)
+        if (hasInk) {
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = 0;
+          pendingW = 0;
+        }
+        for (const seg of tok.segments) {
+          let text = seg.text;
+          while (text.length > 0) {
+            let remaining = maxW - curW;
+            if (remaining <= 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              remaining = maxW;
+            }
+            // Try soft segments before char-level (mirrors placeWord)
+            const segEnd = nextSoftBreak(text);
+            if (segEnd < text.length) {
+              const chunkW = measureTextCached(seg.font, text.slice(0, segEnd));
+              if (chunkW <= remaining) {
+                curW += chunkW;
+                text = text.slice(segEnd);
+                continue;
+              }
+              if (chunkW <= maxW) {
+                if (curW > 0) {
+                  lineCount++;
+                  if (lineCount > maxLines) return 'heightOverflow';
+                  curW = 0;
+                }
+                curW += chunkW;
+                text = text.slice(segEnd);
+                continue;
+              }
+            }
+            const { tail, headW } = sliceTextToFit(seg.font, text, remaining);
+            if (headW > remaining && curW > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+              continue;
+            }
+            curW += headW;
+            text = tail;
+            if (text.length > 0) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
+            }
+          }
+        }
+        hasInk = true;
+        pendingW = 0;
+        continue;
+      }
+
+      if (hasInk) {
+        const testW = curW + pendingW + wordW;
+        if (testW <= maxW) {
+          curW = testW;
+          pendingW = 0;
+        } else {
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = wordW;
+          pendingW = 0;
+        }
+      } else {
+        if (curW > 0 && curW + wordW > maxW) {
+          lineCount++;
+          if (lineCount > maxLines) return 'heightOverflow';
+          curW = wordW;
+        } else {
+          curW += wordW;
+        }
+        hasInk = true;
+        pendingW = 0;
+      }
+    }
+
+    lineCount++;
+    if (lineCount > maxLines) return 'heightOverflow';
+  }
+
+  return 'fits';
+}
+
+/**
+ * Auto-size note content and produce a TextLayout at base dimensions.
+ * Takes MeasuredContent at 100px (ratio strategy). Always works at BASE_CONTENT_WIDTH (256).
+ *
+ * Phase A: Find optimal font step (two-phase search with lazy per-word stepping).
+ * Phase B: Mutate MeasuredContent to derived font size and build layout.
+ */
+function layoutNoteContent(measured: MeasuredContent, fontFamily: FontFamily): { layout: TextLayout; derivedFontSize: number } {
+  const contentWidth = BASE_CONTENT_WIDTH; // 256
+  const contentHeight = contentWidth; // square
+  const lhMult = FONT_FAMILIES[fontFamily].lineHeightMultiplier;
+  const lineH100 = 100 * lhMult;
+  const paraCount = Math.max(1, measured.paragraphs.length);
+
+  // ── Phase A: find font step ──
+
+  // Educated starting index
+  let startIdx = 0;
+  let maxWordW100 = 0;
+  for (const p of measured.paragraphs) {
+    for (const tok of p.tokens) {
+      if (tok.kind === 'word' && tok.advanceWidth > maxWordW100) maxWordW100 = tok.advanceWidth;
+    }
+  }
+  if (maxWordW100 > 0) {
+    const widthMax = (contentWidth * 100) / maxWordW100;
+    const heightMax = contentHeight / (paraCount * lhMult);
+    const maxSize = Math.min(widthMax, heightMax);
+    for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
+      if (NOTE_FONT_STEPS[i] <= maxSize) {
+        startIdx = i;
+        break;
+      }
+    }
+  }
+
+  let derivedFontSize = NOTE_FONT_STEPS[NOTE_FONT_STEPS.length - 1]; // fallback: 8
+
+  // Phase 1: no character breaking
+  let enterPhase2 = false;
+  search: for (let i = startIdx; i < NOTE_FONT_STEPS.length; i++) {
+    const step = NOTE_FONT_STEPS[i];
+    if (step < NOTE_PHASE1_FLOOR) {
+      enterPhase2 = true;
+      break;
+    }
+
+    const scale = step / 100;
+    const maxLines = Math.floor(contentHeight / (lineH100 * scale));
+    if (maxLines < 1 || paraCount > maxLines) continue;
+
+    const maxW100 = contentWidth / scale;
+    const result = noteFlowCheck(measured, maxW100, maxLines, false, contentWidth);
+
+    if (result === 'fits') {
+      derivedFontSize = step;
+      break search;
+    }
+    if (result === 'heightOverflow') continue;
+
+    // result is a step index (from findStepForWord)
+    const jumpIdx = result as number;
+    if (jumpIdx >= NOTE_FONT_STEPS.length || NOTE_FONT_STEPS[jumpIdx] < NOTE_PHASE1_FLOOR) {
+      enterPhase2 = true;
+      break;
+    }
+    i = jumpIdx - 1; // loop will i++ to reach jumpIdx
+  }
+
+  // Phase 2: character breaking from top
+  if (enterPhase2) {
+    for (const step of NOTE_FONT_STEPS) {
+      const scale = step / 100;
+      const maxLines = Math.floor(contentHeight / (lineH100 * scale));
+      if (maxLines < 1 || paraCount > maxLines) continue;
+      const maxW100 = contentWidth / scale;
+      if (noteFlowCheck(measured, maxW100, maxLines, true, contentWidth) === 'fits') {
+        derivedFontSize = step;
+        break;
+      }
+    }
+  }
+
+  // ── Phase B: mutate MeasuredContent to derived font size, build layout ──
+
+  const ratio = derivedFontSize / 100;
+  for (const para of measured.paragraphs) {
+    for (const tok of para.tokens) {
+      tok.advanceWidth *= ratio;
+      for (const seg of tok.segments) {
+        seg.font = buildFontString(seg.bold, seg.italic, derivedFontSize, fontFamily);
+        seg.advanceWidth *= ratio;
+      }
+    }
+  }
+  measured.lineHeight = derivedFontSize * lhMult;
+
+  const layout = layoutMeasuredContent(measured, contentWidth, derivedFontSize);
+  return { layout, derivedFontSize };
+}
+
+/**
+ * Get or compute layout for a note object. Always works at base dimensions.
+ * No fontSize/width params — layout is scale-independent.
+ * Two-tier: content valid → re-measure + auto-size; content stale → full pipeline.
+ * Reads/writes shared cache via `textLayoutCache.getNoteCache` / `setNoteCache`.
+ */
+export function getNoteLayout(objectId: string, fragment: Y.XmlFragment, fontFamily: FontFamily): TextLayout {
+  const snap = textLayoutCache.getNoteCache(objectId);
+
+  // Tier 1 hit — same content + fontFamily + derived font size computed
+  if (
+    snap &&
+    snap.tokenized !== null &&
+    snap.measuredFontFamily === fontFamily &&
+    snap.noteDerivedFontSize !== null &&
+    snap.layout !== null
+  ) {
+    return snap.layout;
+  }
+
+  // Tier 2 — content valid, fontFamily or derivedFontSize stale → re-measure + auto-size
+  if (snap && snap.tokenized !== null) {
+    const measured = measureTokenizedContent(snap.tokenized, 100, fontFamily);
+    const { layout, derivedFontSize } = layoutNoteContent(measured, fontFamily);
+    textLayoutCache.setNoteCache(objectId, {
+      tokenized: snap.tokenized,
+      measured,
+      measuredFontFamily: fontFamily,
+      noteDerivedFontSize: derivedFontSize,
+      layout,
+    });
+    return layout;
+  }
+
+  // Tier 3 — full pipeline (no entry or content stale)
+  const tokenized = parseAndTokenize(fragment);
+  const measured = measureTokenizedContent(tokenized, 100, fontFamily);
+  const { layout, derivedFontSize } = layoutNoteContent(measured, fontFamily);
+  textLayoutCache.setNoteCache(objectId, {
+    tokenized,
+    measured,
+    measuredFontFamily: fontFamily,
+    noteDerivedFontSize: derivedFontSize,
+    layout,
+  });
+  return layout;
+}
+
+/** Auto-derived font size for a note. Falls back to largest step when absent. */
+export function getNoteDerivedFontSize(objectId: string): number {
+  return textLayoutCache.getNoteCache(objectId)?.noteDerivedFontSize ?? NOTE_FONT_STEPS[0];
 }
 
 // =============================================================================
@@ -159,7 +473,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
 
   const { origin, scale: noteScale, fontFamily, fillColor, content, align, alignV } = props;
 
-  const layout = textLayoutCache.getNoteLayout(id, content, fontFamily);
+  const layout = getNoteLayout(id, content, fontFamily);
   const derivedFontSize = getNoteDerivedFontSize(id);
 
   ctx.save();
@@ -243,14 +557,9 @@ export function computeNoteBBox(objectId: string, props: NoteProps): BBoxTuple {
   // Always square — no height auto-grow
   const frame: FrameTuple = [origin[0], origin[1], noteW, noteW];
   // Populate cache (ensures derivedFontSize available later)
-  textLayoutCache.getNoteLayout(objectId, content, fontFamily);
+  getNoteLayout(objectId, content, fontFamily);
   textLayoutCache.setFrame(objectId, frame);
 
   const sp = getNoteShadowPad(scale);
   return [frame[0] - sp, frame[1] - sp, frame[0] + noteW + sp, frame[1] + noteW + sp];
-}
-
-/** Auto-derived font size for a note from the shared layout cache. */
-export function getNoteDerivedFontSize(objectId: string): number {
-  return textLayoutCache.getNoteDerivedFontSize(objectId);
 }
