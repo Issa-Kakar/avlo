@@ -1,36 +1,36 @@
 /**
  * Picker atoms for HitCandidate lists.
  *
- * - `classifyPaint` is the canonical paint classifier — a thin shim over
- *   `KIND[k].classify` so per-kind rules live in exactly one place.
+ * - `classifyPaint` / `isSeeThrough` are thin shims over the precomputed
+ *   `c.paint` field set by `KIND[k].hitPoint`. Kept for call-site legibility.
+ * - `areaOf` is the lazy per-handle area dispatch; pickers only pay the cost
+ *   when the tournament actually compares.
  * - `firstCandidate` / `pickBestBy` are generic single-line pickers.
  * - `scanTopmostWithMemo` walks Z-sorted candidates with occlusion semantics
  *   (see-through fallback memoization).
- * - `pickFrameAware` is the legacy two-phase tournament — kept as a swappable
- *   `Picker<HitCandidate>` because its bestFrame / firstPaint reconciliation
- *   doesn't fit a single-pass scanner cleanly.
+ * - `pickFrameAware` is the two-phase frame tournament — bestFrame vs firstPaint
+ *   reconciliation with area-smaller-wins and ink short-circuit.
  *
  * Input to all multi-candidate pickers MUST be Z-sorted top-first
  * (`queryHits` produces this by default).
  */
 
 import type { HitCandidate } from '@/core/geometry/hit-testing';
-import type { ObjectKind } from '@/core/types/objects';
+import type { ObjectHandle } from '@/core/types/objects';
 import type { Comparator, Paint, Picker, Scorer } from './atoms';
-import { KIND } from './kind-capability';
+import { KIND, type AnyCapability } from './kind-capability';
 
-/** Canonical paint classifier — sourced from the per-kind capability table. */
-export function classifyPaint<K extends ObjectKind>(c: HitCandidate<K>): Paint {
-  // Per-kind table proves correctness; one cast bridges the indexed type.
-  return (KIND[c.handle.kind] as { classify: (c: HitCandidate<ObjectKind>) => Paint }).classify(c as HitCandidate<ObjectKind>);
-}
+/** Thin shim — the paint class is now precomputed in `hitPoint`. */
+export const classifyPaint = (c: HitCandidate): Paint => c.paint;
 
 /** Unfilled shape interior is the only see-through candidate class. */
-export const isSeeThrough = (c: HitCandidate): boolean => classifyPaint(c) === null;
+export const isSeeThrough = (c: HitCandidate): boolean => c.paint === null;
+
+/** Lazy per-handle area — only called when the tournament needs it. */
+export const areaOf = (h: ObjectHandle): number => (KIND[h.kind] as AnyCapability).area(h);
 
 /** Z-order comparator (top first). Stable for ULIDs. */
-export const byZOrderTopFirst: Comparator<HitCandidate> = (a, b) =>
-  a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0;
+export const byZOrderTopFirst: Comparator<HitCandidate> = (a, b) => (a.handle.id < b.handle.id ? 1 : a.handle.id > b.handle.id ? -1 : 0);
 
 /** Mutates in place: sorts Z top-first (ULID descending). */
 export function sortZTopFirst<C extends HitCandidate>(cands: C[]): C[] {
@@ -42,19 +42,21 @@ export function sortZTopFirst<C extends HitCandidate>(cands: C[]): C[] {
 export const firstCandidate: Picker<HitCandidate> = <C extends HitCandidate>(cs: readonly C[]): C | null => cs[0] ?? null;
 
 /** Pick by max score. */
-export const pickBestBy = <C>(scorer: Scorer<C>): Picker<C> => (cs) => {
-  if (cs.length === 0) return null;
-  let best = cs[0];
-  let bestScore = scorer(best);
-  for (let i = 1; i < cs.length; i++) {
-    const s = scorer(cs[i]);
-    if (s > bestScore) {
-      best = cs[i];
-      bestScore = s;
+export const pickBestBy =
+  <C>(scorer: Scorer<C>): Picker<C> =>
+  (cs) => {
+    if (cs.length === 0) return null;
+    let best = cs[0];
+    let bestScore = scorer(best);
+    for (let i = 1; i < cs.length; i++) {
+      const s = scorer(cs[i]);
+      if (s > bestScore) {
+        best = cs[i];
+        bestScore = s;
+      }
     }
-  }
-  return best;
-};
+    return best;
+  };
 
 /**
  * Walk Z-sorted (top-first) candidates with occlusion semantics:
@@ -72,11 +74,14 @@ export function scanTopmostWithMemo<C extends HitCandidate, R>(
   let fallback: R | null = null;
   let fallbackArea = Infinity;
   for (const c of cands) {
-    if (isSeeThrough(c)) {
+    if (c.paint === null) {
       const r = onSeeThrough(c);
-      if (r !== null && c.area < fallbackArea) {
-        fallback = r;
-        fallbackArea = c.area;
+      if (r !== null) {
+        const a = areaOf(c.handle);
+        if (a < fallbackArea) {
+          fallback = r;
+          fallbackArea = a;
+        }
       }
       continue;
     }
@@ -100,34 +105,34 @@ export const pickFrameAware: Picker<HitCandidate> = <C extends HitCandidate>(can
   if (candidates.length === 1) return candidates[0];
 
   let bestFrame: C | null = null;
+  let bestFrameArea = Infinity;
   let firstPaint: C | null = null;
-  let firstPaintClass: Paint = null;
   let firstPaintIdx = -1;
   let bestFrameIdx = -1;
 
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
-    if (isSeeThrough(c)) {
-      if (!bestFrame || c.area < bestFrame.area) {
+    if (c.paint === null) {
+      const a = areaOf(c.handle);
+      if (a < bestFrameArea) {
         bestFrame = c;
+        bestFrameArea = a;
         bestFrameIdx = i;
       }
       continue;
     }
-    const paintClass = classifyPaint(c);
-    if (paintClass !== null) {
-      firstPaint = c;
-      firstPaintClass = paintClass;
-      firstPaintIdx = i;
-      break;
-    }
+    firstPaint = c;
+    firstPaintIdx = i;
+    break;
   }
 
   if (!firstPaint && bestFrame) return bestFrame;
   if (!firstPaint) return candidates[0];
-  if (firstPaintClass === 'ink') return firstPaint;
+  if (firstPaint.paint === 'ink') return firstPaint;
   if (!bestFrame) return firstPaint;
-  if (bestFrame.area < firstPaint.area) return bestFrame;
-  if (firstPaint.area < bestFrame.area) return firstPaint;
+
+  const paintArea = areaOf(firstPaint.handle);
+  if (bestFrameArea < paintArea) return bestFrame;
+  if (paintArea < bestFrameArea) return firstPaint;
   return firstPaintIdx <= bestFrameIdx ? firstPaint : bestFrame;
 };

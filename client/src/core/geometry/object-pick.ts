@@ -7,48 +7,22 @@
  *   - snap.findBestSnapTarget (bindable pre-filtered)
  *   - hitTestVisibleText/Code/Note (kind-accept filter)
  *
- * The scanner and tournament resolver share `classifyPaint` so they can never
- * drift on what "opaque" means for each kind.
+ * `c.paint` is precomputed by `KIND[k].hitPoint` so the scanner/tournament
+ * never redispatch per candidate.
  */
 
 import type { HitCandidate } from './hit-testing';
+import type { Paint } from '../spatial/atoms';
+import { areaOf } from '../spatial/pickers';
 
 export type { HitCandidate };
+export type { Paint };
 
-/** Paint classification used by scanTopmost and the frame tournament. */
-export type Paint = 'ink' | 'fill' | null;
-
-/**
- * Canonical paint classifier.
- *   ink     — line/edge paint (strokes, connectors, shape borders, text on edge)
- *   fill    — area paint (filled shape interior, text/code fill interior)
- *   null    — see-through (unfilled shape interior — the only see-through class)
- */
-export function classifyPaint(c: HitCandidate): Paint {
-  const k = c.handle.kind;
-  if (k === 'stroke' || k === 'connector') return 'ink';
-
-  if (k === 'text') {
-    if (c.isFilled && c.insideInterior) return 'fill';
-    return 'ink';
-  }
-
-  if (k === 'code') {
-    if (c.insideInterior) return 'fill';
-    return 'ink';
-  }
-
-  if (k === 'shape') {
-    if (c.isFilled) return 'fill';
-    if (!c.insideInterior) return 'ink';
-    return null;
-  }
-
-  return 'ink';
-}
+/** Thin shim — the paint class is now precomputed in `hitPoint`. */
+export const classifyPaint = (c: HitCandidate): Paint => c.paint;
 
 /** Unfilled shape interior: the only "see-through" candidate class. */
-export const isSeeThrough = (c: HitCandidate): boolean => c.handle.kind === 'shape' && !c.isFilled && c.insideInterior;
+export const isSeeThrough = (c: HitCandidate): boolean => c.paint === null;
 
 /** Mutates in place: sorts Z top-first (ULID descending). */
 export function sortZTopFirst<C extends HitCandidate>(cands: C[]): C[] {
@@ -85,12 +59,15 @@ export function scanTopmost<R, C extends HitCandidate>(candidates: C[], opts: Sc
   let fallbackArea = Infinity;
 
   for (const c of candidates) {
-    if (isSeeThrough(c)) {
+    if (c.paint === null) {
       if (opts.onSeeThrough) {
         const r = opts.onSeeThrough(c);
-        if (r !== null && c.area < fallbackArea) {
-          fallback = r;
-          fallbackArea = c.area;
+        if (r !== null) {
+          const a = areaOf(c.handle);
+          if (a < fallbackArea) {
+            fallback = r;
+            fallbackArea = a;
+          }
         }
       }
       continue;
@@ -98,9 +75,8 @@ export function scanTopmost<R, C extends HitCandidate>(candidates: C[], opts: Sc
 
     const accepted = opts.accept(c);
     if (accepted !== null) return accepted;
-
     // Non-see-through candidate rejected by accept → it blocks.
-    if (classifyPaint(c) !== null) return fallback;
+    return fallback;
   }
 
   return fallback;
@@ -121,37 +97,34 @@ export function pickFrameAware<C extends HitCandidate>(candidates: C[]): C | nul
   if (candidates.length === 1) return candidates[0];
 
   let bestFrame: C | null = null; // Smallest see-through (unfilled shape interior)
+  let bestFrameArea = Infinity;
   let firstPaint: C | null = null;
-  let firstPaintClass: Paint = null;
   let firstPaintIdx = -1;
   let bestFrameIdx = -1;
 
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
-    if (isSeeThrough(c)) {
-      if (!bestFrame || c.area < bestFrame.area) {
+    if (c.paint === null) {
+      const a = areaOf(c.handle);
+      if (a < bestFrameArea) {
         bestFrame = c;
+        bestFrameArea = a;
         bestFrameIdx = i;
       }
       continue;
     }
-    const paintClass = classifyPaint(c);
-    if (paintClass !== null) {
-      firstPaint = c;
-      firstPaintClass = paintClass;
-      firstPaintIdx = i;
-      break;
-    }
+    firstPaint = c;
+    firstPaintIdx = i;
+    break;
   }
 
   if (!firstPaint && bestFrame) return bestFrame;
   if (!firstPaint) return candidates[0];
-
-  if (firstPaintClass === 'ink') return firstPaint;
+  if (firstPaint.paint === 'ink') return firstPaint;
   if (!bestFrame) return firstPaint;
 
-  if (bestFrame.area < firstPaint.area) return bestFrame;
-  if (firstPaint.area < bestFrame.area) return firstPaint;
-
+  const paintArea = areaOf(firstPaint.handle);
+  if (bestFrameArea < paintArea) return bestFrame;
+  if (paintArea < bestFrameArea) return firstPaint;
   return firstPaintIdx <= bestFrameIdx ? firstPaint : bestFrame;
 }

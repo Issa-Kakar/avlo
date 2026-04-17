@@ -19,7 +19,7 @@ The codebase had been moving toward a tuple-native spatial index and a
 mapped-dispatch hit-testing layer. The plumbing had improved (`HIT_BY_KIND`,
 `frameOf`, tuple bboxes), but the **call sites and entry points** had not.
 Hit testing had accreted **5+ distinct entry points**, each with its own
-parameter shape and its own per-kind glue. Consumers had to know *which one*
+parameter shape and its own per-kind glue. Consumers had to know _which one_
 to call, and then do their own:
 
 - kind filtering
@@ -28,16 +28,16 @@ to call, and then do their own:
 
 The user's intent (verbatim from `OVERVIEW.MD`):
 
-> *"the goal with truly maximizing generics and utility types is that the
+> _"the goal with truly maximizing generics and utility types is that the
 > external consumers barely need to know what to call, as calling their own
 > methods is used with a proper generic so we can distinguish based on input.
 > ... the purpose of generics is to update a single place when an additional
 > method is needed, and updating the call site is not verbose as the logic is
 > abstracted away by the spatial index hit testing code, the consumer just
-> calls with the method he needs."*
+> calls with the method he needs."_
 
 The reference for type-system elegance was `prompt.md` — a small example of
-generic option-bag query types where the *return shape* is inferred from the
+generic option-bag query types where the _return shape_ is inferred from the
 input. The mandate: **focus on system design, not call-site rewrites**;
 "a fully proper complete base ... integration can be partial."
 
@@ -48,15 +48,15 @@ input. The mandate: **focus on system design, not call-site rewrites**;
 1. **SelectTool marquee re-enter dance.** `setSelection(ids)` clobbered
    `marquee` on every cursor move during a marquee drag, forcing
    `SelectTool.updateMarqueeSelection` to call `beginMarquee` + `updateMarquee`
-   again to "re-enable" it (literal comment: *"Re-enable marquee since
-   setSelection clears it"*). Symptom of selection store owning state it
+   again to "re-enable" it (literal comment: _"Re-enable marquee since
+   setSelection clears it"_). Symptom of selection store owning state it
    shouldn't.
 
 2. **EraserTool's per-kind dispatch loop.** `EraserTool.updateHitTest` had its
    own switch over `stroke` / `shape` / framed kinds, calling
    `circleHitsShape` / `circleRectIntersect` / `strokeHitTest` directly —
    duplicating the semantics already encoded in `HIT_BY_KIND`. Done that way
-   because eraser wanted *"all handles within a circle"* and there was no
+   because eraser wanted _"all handles within a circle"_ and there was no
    query function for that.
 
 3. **`hitTestVisibleText` / `hitTestVisibleNote` / `hitTestVisibleCode`** —
@@ -116,15 +116,15 @@ Plan file: `~/.claude/plans/radiant-riding-micali.md`. Six-layer design.
 
 ### Layer breakdown
 
-| Layer | File | Role |
-|---|---|---|
-| 0 | `core/types/geometry.ts` (existing) | `Point`, `BBoxTuple`, `FrameTuple` |
-| 1 | `core/spatial/region.ts` | `Region` tagged union, `atPoint`, `inBBox`, `regionEnvelope` |
-| 2 | `core/spatial/atoms.ts` | `HandleOf<K>`, `Predicate`, `NarrowingPredicate`, `Picker`, `Scorer`, `Comparator`, `Paint` |
-| 3 | `core/spatial/kind-capability.ts` | `KindCapability<K>` interface + `KIND` exhaustive table |
-| 4 | `core/spatial/filters.ts` + `pickers.ts` | `byKind`, `byKinds`, `isBindable`, combinators / `firstCandidate`, `pickBestBy`, `scanTopmostWithMemo`, `pickFrameAware` |
-| 5 | `core/spatial/object-query.ts` | `queryHits`, `queryHandles` (modify) |
-| 6 | `core/spatial/handle-hit.ts` | `HandleProbe<T>`, `hitNearestHandle<T>` (sibling, non-spatial) |
+| Layer | File                                     | Role                                                                                                                     |
+| ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0     | `core/types/geometry.ts` (existing)      | `Point`, `BBoxTuple`, `FrameTuple`                                                                                       |
+| 1     | `core/spatial/region.ts`                 | `Region` tagged union, `atPoint`, `inBBox`, `regionEnvelope`                                                             |
+| 2     | `core/spatial/atoms.ts`                  | `HandleOf<K>`, `Predicate`, `NarrowingPredicate`, `Picker`, `Scorer`, `Comparator`, `Paint`                              |
+| 3     | `core/spatial/kind-capability.ts`        | `KindCapability<K>` interface + `KIND` exhaustive table                                                                  |
+| 4     | `core/spatial/filters.ts` + `pickers.ts` | `byKind`, `byKinds`, `isBindable`, combinators / `firstCandidate`, `pickBestBy`, `scanTopmostWithMemo`, `pickFrameAware` |
+| 5     | `core/spatial/object-query.ts`           | `queryHits`, `queryHandles` (modify)                                                                                     |
+| 6     | `core/spatial/handle-hit.ts`             | `HandleProbe<T>`, `hitNearestHandle<T>` (sibling, non-spatial)                                                           |
 
 ### KindCapability shape
 
@@ -146,10 +146,9 @@ const KIND: { readonly [K in ObjectKind]: KindCapability<K> } = { ... }
 ### Variadic narrowing
 
 ```typescript
-function byKinds<const K extends readonly ObjectKind[]>(...ks: K)
-  : NarrowingPredicate<ObjectHandle, HandleOf<K[number]>>
+function byKinds<const K extends readonly ObjectKind[]>(...ks: K): NarrowingPredicate<ObjectHandle, HandleOf<K[number]>>;
 
-queryHits({ at, radius, filter: byKinds('shape', 'text') })
+queryHits({ at, radius, filter: byKinds('shape', 'text') });
 //  → HitCandidate<'shape' | 'text'>[]
 //  cs[0]?.handle.kind  // 'shape' | 'text', inferred
 ```
@@ -157,7 +156,7 @@ queryHits({ at, radius, filter: byKinds('shape', 'text') })
 The kind set also flows through a hidden `__kinds` brand on the filter
 function, which `queryHits`/`queryHandles` reads at runtime to push the
 prefilter down to the spatial-index `IndexEntry` layer — skipping whole
-kinds *before* any `getHandle()` lookup. Untagged predicates work too;
+kinds _before_ any `getHandle()` lookup. Untagged predicates work too;
 they just lose that pushdown.
 
 ---
@@ -207,12 +206,14 @@ frame. Per-kind variation: the frame getter and the `isFilled` rule.
 Classify functions stay per-cap because they encode opacity semantics.
 
 **Stroke tolerance preserved exactly:**
+
 - `hitPoint` uses `r + strokeWidth / 2` (matches old `hitTestStrokeLike`).
 - `hitCircle` uses just `r` (matches old `EraserTool` behavior).
-This was important — silent tolerance regressions would be very hard to
-spot.
+  This was important — silent tolerance regressions would be very hard to
+  spot.
 
 **Classify semantics preserved verbatim** from `object-pick.ts`:
+
 - stroke / connector / image / note / bookmark → `'ink'`
 - text → `isFilled && insideInterior ? 'fill' : 'ink'`
 - code → `insideInterior ? 'fill' : 'ink'`
@@ -220,13 +221,106 @@ spot.
 
 **Spatial-index pushdown preserved.** `readKindBrand(filter)` extracts the
 `__kinds` set, scanner skips entries whose `e.kind` isn't in the set
-*before* `getHandle()`. This matches the old `queryHitCandidates(..., kinds)`
+_before_ `getHandle()`. This matches the old `queryHitCandidates(..., kinds)`
 optimization. Untagged filters lose only the pushdown, not correctness.
 
 **`queryHandles({ precise: 'rect' / 'circle' })` silently skips entries
 when the region kind doesn't match** the requested precision. So
 `{ region: inBBox(b), precise: 'circle' }` returns `[]`. Could be a
 design wart — see Open Questions.
+
+---
+
+## 4a. Paint-class correction (follow-up, landed)
+
+The foundation shipped with `HitCandidate` carrying `{ area, isFilled,
+insideInterior }` eagerly per hit, and `KindCapability.classify` dispatched
+per candidate through a 7-branch per-kind table. Review revealed most of
+that storage and most of that dispatch wasn't earning its keep:
+
+- **`area`** is only read inside `pickFrameAware`'s tournament and
+  `scanTopmost`'s see-through fallback. Computing it on every hit (polyline
+  bbox for stroke/connector, `frame[2]*frame[3]` for every framed kind) was
+  waste.
+- **`isFilled`** is only meaningful to one classify path — `SHAPE_CAP`.
+  Every other cap hardcoded a constant. Passing it per candidate paid
+  storage cost for nothing.
+- **`insideInterior`** was consumed by `TEXT_CAP.classify` /
+  `CODE_CAP.classify`, but those per-kind distinctions only matter if hit
+  testing goes to glyph level (which it doesn't). Without character-level
+  testing, a click anywhere inside a text or code frame is a paint hit
+  regardless of fill color — there's no see-through concept for them. Text
+  and code should follow the same trivial `'ink'` rule as strokes, notes,
+  images, bookmarks.
+
+The real rule is compact: **only an unfilled shape's interior is
+see-through.** Everything else is `'ink'`. A filled shape interior is
+`'fill'` (still a paint blocker, but area-comparable in the tournament
+against the tightest unfilled frame it sits under — preserves the existing
+smaller-frame-wins heuristic). A shape hit on the stroke edge is `'ink'`
+(short-circuits the tournament, like any other paint).
+
+### What changed
+
+- **`HitCandidate`** → `{ handle, distance, paint: Paint }`. Dropped `area`,
+  `isFilled`, `insideInterior`.
+- **`KindCapability.classify`** removed. The paint class is computed inline
+  by each cap's `hitPoint` and returned as part of `HitFields`. Pickers read
+  `c.paint` directly — no runtime redispatch at tournament time.
+- **`KindCapability.area(h)`** added as a lazy getter; pickers only pay the
+  cost when the tournament actually compares.
+- **`framedCap` factory** collapses to a single argument (`resolveFrame`).
+  All five framed kinds (text/note/code/image/bookmark) now return
+  `paint: 'ink'` uniformly.
+- **`SHAPE_CAP.hitPoint`** is the only non-trivial paint computation:
+  `isFilled ? 'fill' : insideInterior ? null : 'ink'`.
+- **`scanTopmost{WithMemo,}`** and **`pickFrameAware`** (both new and legacy
+  copies) read `c.paint` directly and call `areaOf(h) = KIND[h.kind].area(h)`
+  on demand, tracking `bestFrameArea` through the loop so the tournament
+  computes at most two area values per pick.
+
+### Behavior delta (intentional, narrow)
+
+- **Shape-only scenarios** (tournament, nesting, stroke-edge pick,
+  smallest-unfilled-over-filled): preserved bit-for-bit.
+- **Text / code stacked above an unfilled shape**: now short-circuit on
+  `'ink'` (text/code wins). Previously the old `TEXT_CAP.classify` /
+  `CODE_CAP.classify` could return `'fill'` when the hit was inside the
+  frame, letting a smaller-area unfilled shape below beat the text/code via
+  the area tournament. That's the only user-visible change.
+
+This aligns text/code with note/image/bookmark/strokes — every non-shape
+object is just visible paint that blocks.
+
+### Files touched
+
+- `core/geometry/hit-testing.ts` — slim `HitCandidate`;
+  `hitTestStrokeLike` / `hitTestShape` / `hitTestFramed` return precomputed
+  `paint`. Dropped `INTERIOR_PAINT` / `computePolylineArea` imports.
+- `core/spatial/kind-capability.ts` — interface change (drop `classify`,
+  add `area`); all 8 caps rewritten; `framedCap` factory simplified.
+- `core/spatial/pickers.ts` — `classifyPaint` / `isSeeThrough` are shims
+  over `c.paint`; `areaOf` helper added; `scanTopmostWithMemo` and
+  `pickFrameAware` use lazy `areaOf` with tracked `bestFrameArea`.
+- `core/geometry/object-pick.ts` — legacy scanners migrated to `c.paint` +
+  `areaOf` (imported from `core/spatial/pickers` — a small legacy→new dep
+  that evaporates when the legacy file is deleted).
+
+### What's still parallel-living (unchanged)
+
+Everything in §5. No legacy file deleted. No consumer migrated. The
+`HIT_BY_KIND` / `testObjectHit` / `hitTestVisibleKind` wrappers,
+`objectIntersectsRect`, `INTERIOR_PAINT` (now dead but exported), `frameOf`,
+and the `queryHitCandidates` / `queryHandlesInBBox` shims all remain.
+
+### Verification
+
+- `npm run typecheck` passes clean across shared + client + worker. Field
+  removals statically catch any stray reader of `c.area` / `c.isFilled` /
+  `c.insideInterior` — none existed.
+- `__type_tests__.ts` still compiles (the assertions were shape-level, not
+  field-level).
+- No unit tests written for the new cap table — §9.7 still open.
 
 ---
 
@@ -238,6 +332,7 @@ call sites are migrated." None of the legacy code has `@deprecated` tags
 yet, but it's all still present:
 
 ### Still present in `core/geometry/hit-testing.ts`
+
 - `HIT_BY_KIND` table + `hitTestStrokeLike` / `hitTestShape` / `hitTestFramed`
 - `testObjectHit`
 - `objectIntersectsRect`
@@ -247,6 +342,7 @@ yet, but it's all still present:
 - `HitCandidate<K>` type (intentionally kept — shared vocabulary)
 
 ### Still present in `core/geometry/object-pick.ts`
+
 - `classifyPaint` (four-branch switch — duplicated by the cap-routed one in `spatial/pickers.ts`)
 - `isSeeThrough` (hardcodes shape — equivalent in result to the new one but different shape)
 - `sortZTopFirst`
@@ -254,24 +350,29 @@ yet, but it's all still present:
 - `pickFrameAware` (duplicated in `spatial/pickers.ts`)
 
 ### Still present in `core/geometry/frame-of.ts`
+
 - `FRAME_BY_KIND` + `frameOf` — fully duplicated by `KIND[k].frame`
 
 ### Still present in `core/types/objects.ts`
+
 - `BINDABLE_KINDS` (used by `snap.ts`)
 - `isBindableKind` / `isBindableHandle`
 - `INTERIOR_PAINT` (used by `hit-testing.ts:hitTestFramed`)
 
 ### Still present in `core/spatial/object-query.ts`
+
 - `queryHitCandidates(x, y, r, kinds?)` — shim; now internally dispatches through `KIND[k].hitPoint`
 - `queryHandlesInBBox(bbox, kinds?)` — shim
 
 ### Call sites still on legacy
+
 - `core/connectors/snap.ts:71` — `queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS)` + `scanTopmost`
 - `tools/TextTool.ts:105` — `hitTestVisibleText` / `hitTestVisibleNote`
 - `tools/CodeTool.ts:90` — `hitTestVisibleCode`
 - `tools/selection/SelectTool.ts` — `hitTestHandle` and `hitTestEndpointDots` (call sites unchanged in shape; the wrappers themselves are still bespoke)
 
 ### Not yet built
+
 - `iterResizeHandles(bounds)` generator — promised in the plan, would feed `hitNearestHandle`
 - `iterEndpointDots(selectedIds)` generator — same
 - The thin two-line wrappers that turn `hitTestHandle` / `hitTestEndpointDots` into `hitNearestHandle(p, r, gen)` calls
@@ -332,7 +433,7 @@ Pipeline:
 ### Variadic narrowing carries through
 
 ```typescript
-const cs = queryHits({ at, radius, filter: byKinds('shape', 'text') })
+const cs = queryHits({ at, radius, filter: byKinds('shape', 'text') });
 // cs: HitCandidate<'shape' | 'text'>[]   ← inferred, no manual cast
 ```
 
@@ -366,7 +467,7 @@ hitNearestHandle<T>(p: Point, r: number, probes: Iterable<HandleProbe<T>>): T | 
 ```
 
 Squared-distance comparison, no `Math.hypot`. Designed to be fed by
-generators (`iterResizeHandles` / `iterEndpointDots` — *not yet built*).
+generators (`iterResizeHandles` / `iterEndpointDots` — _not yet built_).
 Same mental model as the spatial pipeline; honest about not touching the
 spatial index.
 
@@ -387,12 +488,11 @@ is now exclusively gesture-owned: `beginMarquee` / `updateMarquee` /
 **Result:** SelectTool's `updateMarqueeSelection` is now a clean diff:
 
 ```typescript
-const overlapping = queryHandles({ region: inBBox(marqueeBBox), precise: 'rect' })
-const selectedIds = overlapping.map((h) => h.id).sort()
-const current = store.selectedIds.slice().sort()
-const changed =
-  selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i])
-if (changed) store.setSelection(selectedIds)  // marquee survives
+const overlapping = queryHandles({ region: inBBox(marqueeBBox), precise: 'rect' });
+const selectedIds = overlapping.map((h) => h.id).sort();
+const current = store.selectedIds.slice().sort();
+const changed = selectedIds.length !== current.length || selectedIds.some((id, i) => id !== current[i]);
+if (changed) store.setSelection(selectedIds); // marquee survives
 ```
 
 No `JSON.stringify` churn, no re-enter dance, no comment justifying a
@@ -400,31 +500,30 @@ workaround.
 
 ---
 
-## 8. Future direction — what this design accommodates
+## 8. Next direction (subject to change — to be spec'd in a follow-up session)
 
-These are *not built* but the type shape was chosen so they slot in cleanly:
+Two moves on deck; both intentionally vague here because the planning happens
+in a new chat:
 
-1. **Bookmark link sub-regions** (the original motivating use case for
-   "I'll be adding hit testing for the bookmark links too soon"):
-   `BOOKMARK_CAP.hitPoint` would extend `HitCandidate<'bookmark'>` with an
-   optional `region?: BookmarkLinkRegion` field. Consumers that care read
-   `picked.region`; consumers that don't ignore it. **Zero changes** to
-   `queryHits`, filters, pickers.
+- **Make `ObjectSpatialIndex` the direct method caller.** Today there's a
+  wrapper (`core/spatial/object-query.ts`) over a wrapper
+  (`ObjectSpatialIndex`) over rbush. Plan: the index itself takes an rbush
+  `toBBox` override, stores bboxes natively, and exposes the hit-test entry
+  points directly. One less layer; one file to touch when adding a new
+  query method.
 
-2. **Multi-select rect with classification:** add `queryHitsInRect` that
-   iterates entries, calls `KIND[k].hitRect`, and synthesizes a
-   `HitCandidate` with `distance: 0, insideInterior: true`. Cap table
-   already has `hitRect`. Don't build until a real consumer needs it.
+- **Reshape the call-site surface.** Once the index owns dispatch, the method
+  names and opts shape should get easier — ideally a single entry point
+  whose return type narrows on the requested method, so consumers keep their
+  call sites lean and the spatial + hit-test logic handles the rest. Exact
+  surface TBD.
 
-3. **Capability subsets:** `ResizableKind`, `RotatableKind`, `LabelableKind`
-   derive via `{ [K in ObjectKind]: K extends ... ? K : never }[ObjectKind]`
-   mapped types. Add `KIND[k].resizable` etc. when a third capability subset
-   actually emerges. Premature today.
+Paint-class correction (§4a) was the prereq for both — fixing classification
+before the shape change keeps the follow-up mechanical.
 
-4. **Composite scorers for hover prioritization:**
-   `compositeScorer([scoreByZOrder, 1.0], [scoreByProximity, 0.3])` — typed,
-   but no consumer needs it yet. Wire to `queryHits.comparator` when one
-   does.
+Downstream ideas the foundation still accommodates (bookmark sub-regions,
+capability subsets, `queryHitsInRect`, composite scorers) are deferred until
+the direct-caller move lands; they slot in cleanly on top.
 
 ---
 
@@ -445,11 +544,13 @@ flagged that things will be tweaked.
    currently skips every entry silently → returns `[]`. Should this be a
    compile error? Could enforce via discriminated `precise` field per
    region kind:
+
    ```typescript
    QueryHandlesOpts<K> =
      | { region: PointRegion; precise?: 'bbox' | 'circle'; ... }
      | { region: RectRegion;  precise?: 'bbox' | 'rect';   ... }
    ```
+
    More type safety, slightly more verbose option type. User to decide.
 
 3. **`STROKE_CAP` / `CONNECTOR_CAP` duplication.** Identical bodies. Factor
@@ -469,8 +570,8 @@ flagged that things will be tweaked.
    `atoms.ts` or `kind-capability.ts`. Cosmetic.
 
 6. **Cap entry organization.** All 8 entries currently live in
-   `kind-capability.ts` (~250 lines, tight). Plan said: *"if they grow, a
-   `client/src/core/spatial/caps/` subfolder with one file per kind."*
+   `kind-capability.ts` (~250 lines, tight). Plan said: _"if they grow, a
+   `client/src/core/spatial/caps/` subfolder with one file per kind."_
    Threshold not yet hit. User may prefer split-now for navigability.
 
 7. **Capability table is currently hand-derived from the existing scattered
@@ -491,6 +592,7 @@ flagged that things will be tweaked.
 ## 10. Scope — what's in this refactor, what's out
 
 ### In scope (foundation phase — landed)
+
 - All 6 layers from the plan exist.
 - Type tests prove the inference paths.
 - Two integration sites (SelectTool, EraserTool) exercise the new functions
@@ -501,6 +603,7 @@ flagged that things will be tweaked.
 - Spatial-index entry-level prefilter optimization preserved.
 
 ### Out of scope for this phase (deliberate — partial integration OK)
+
 - `snap.ts` migration to `queryHits + isBindable + scanTopmostWithMemo`
 - `TextTool.ts` / `CodeTool.ts` migration to inline `firstCandidate(queryHits({ filter: byKind(...) }))`
 - `hitTestHandle` / `hitTestEndpointDots` rewrite as `hitNearestHandle` wrappers
@@ -513,38 +616,39 @@ flagged that things will be tweaked.
 - `BINDABLE_KINDS` / `INTERIOR_PAINT` derivation cleanup
 
 ### Explicitly out of scope (forever, per plan)
+
 - `core/geometry/hit-primitives.ts` — pure tuple math, correctly scoped
 - `core/spatial/object-spatial-index.ts` — pure rbush wrapper
 - Connector routing / bookmark / image / text subsystems — orthogonal
 
 ---
 
-## 11. Where to start the next session
+## 11. Handoff notes
 
-The foundation is in. Before integration sweeps, the open questions in §9
-should be resolved — particularly:
+Foundation (§3–§6) and paint-class correction (§4a) are both in. Typecheck
+clean. All consumers (SelectTool, EraserTool, TextTool, CodeTool, snap) still
+route through legacy entry points; none of them read any fields that §4a
+dropped, so the only user-visible delta from this round is the text/code
+short-circuit described in §4a.
 
-- **(2)** Discriminated `precise` per region kind, or keep silent-skip?
-- **(1)** Sibling `hitNearestHandle`, or merge into `queryHandles`?
-- **(8)** Derive `BINDABLE_KINDS` from `KIND` or keep parallel?
-- **(7)** Capability table unit tests — should land before the legacy
-  delete sweep, otherwise byte-for-byte equivalence is unverified.
+For the next session — to be planned in a new chat:
 
-Once those are settled, the integration sweep is mechanical:
+- The direct-caller refactor (§8, first bullet) is the immediate next move.
+  Hit-test classification is correct now; the layering is what's left.
+- Consumer migration and the legacy delete sweep follow the direct-caller
+  move, not before it.
 
-1. `iterResizeHandles` + `iterEndpointDots` generators in `handle-hit.ts`
-2. Rewrite `hitTestHandle` / `hitTestEndpointDots` as wrappers (in
-   `hit-testing.ts` initially, can move to `handle-hit.ts` in a follow-up)
-3. Migrate `snap.ts` (one-for-one swap)
-4. Migrate `TextTool` / `CodeTool` (one-for-one swap)
-5. Cap table unit tests
-6. Delete sweep: `HIT_BY_KIND`, `testObjectHit`, `objectIntersectsRect`,
-   `hitTestFramed/Shape/StrokeLike`, `hitTestVisibleKind` + 3 wrappers,
-   `frameOf` / `frame-of.ts`, `INTERIOR_PAINT`, `pickFrameAware` in
-   `object-pick.ts`, `classifyPaint` / `scanTopmost` / `sortZTopFirst` /
-   `isSeeThrough` in `object-pick.ts`, both legacy shims in
-   `object-query.ts`
-7. Eventually: bookmark link sub-region cap extension (the original
-   motivator)
+Open items from §9 that still matter:
 
-Each of those can be a clean single-purpose diff.
+- **(2)** `queryHandles({ precise })` silent-skip — design-wart vs compile-
+  error. Undecided.
+- **(7)** Capability-table unit tests — still not written. Byte-for-byte
+  equivalence vs legacy is narrower after §4a but still unverified by tests.
+- **(8)** Derive `BINDABLE_KINDS` from `KIND.bindable` — pending.
+
+Items resolved or partially resolved this round:
+
+- §9.4 (pickFrameAware duplication) is now partially resolved — both copies
+  read precomputed `c.paint` and share `areaOf` from `core/spatial/pickers`,
+  so they're behaviorally AND structurally identical. Two files, one logic.
+  Still waiting on the delete sweep.

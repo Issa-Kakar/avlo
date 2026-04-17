@@ -15,11 +15,11 @@
 import type { BBoxTuple } from '../types/geometry';
 import type { ObjectHandle, ObjectKind, BindableKind } from '../types/objects';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '../accessors';
-import { INTERIOR_PAINT } from '../types/objects';
 import { useCameraStore } from '@/stores/camera-store';
 import { getHandle } from '@/runtime/room-runtime';
 import { queryHitCandidates } from '../spatial/object-query';
 import { scanTopmost } from './object-pick';
+import type { Paint } from '../spatial/atoms';
 import {
   getDiamondVertices,
   strokeHitTest,
@@ -29,7 +29,6 @@ import {
   diamondIntersectsBBox,
   shapeHitTest,
   rectFrameHit,
-  computePolylineArea,
 } from './hit-primitives';
 import { frameOf } from './frame-of';
 import { getEndpointEdgePosition } from '../connectors/connector-utils';
@@ -47,17 +46,15 @@ import { computeHandles } from '@/stores/selection-store';
  * round-trip. Kind narrowing flows from `queryHitCandidates(kinds)` overload
  * through the `K` parameter into `accept`/`onSeeThrough` callbacks.
  *
- * Key behavior: An unfilled shape interior (handle.kind='shape', isFilled=false,
- * insideInterior=true) is treated as see-through — SelectTool scans through
- * to find paint underneath. Everything else with INTERIOR_PAINT[kind]=true
- * is treated as opaque throughout its bbox.
+ * `paint` is the precomputed occlusion class — only unfilled shape interiors
+ * are `null` (see-through); filled shape interiors are `'fill'`; everything
+ * else (stroke edges, strokes, connectors, text, note, code, image, bookmark)
+ * is `'ink'`. Pickers read this directly so the tournament never redispatches.
  */
 export interface HitCandidate<K extends ObjectKind = ObjectKind> {
   readonly handle: ObjectHandle & { kind: K };
   readonly distance: number; // 0 if inside/on stroke
-  readonly insideInterior: boolean; // Hit inside shape/text bounds (not edge)
-  readonly area: number; // Bounding area — smaller = more nested = higher priority
-  readonly isFilled: boolean; // Shape: !!fillColor. Others: INTERIOR_PAINT[kind].
+  readonly paint: Paint;
 }
 
 // ============================================================================
@@ -70,35 +67,19 @@ type HitFn<K extends ObjectKind> = (handle: ObjectHandle & { kind: K }, wx: numb
 const hitTestStrokeLike: HitFn<'stroke' | 'connector'> = (handle, wx, wy, r) => {
   const points = getPoints(handle.y);
   if (points.length === 0) return null;
-  const strokeWidth = getWidth(handle.y);
-  const tolerance = r + strokeWidth / 2;
+  const tolerance = r + getWidth(handle.y) / 2;
   if (!strokeHitTest([wx, wy], points, tolerance)) return null;
-  return {
-    handle,
-    distance: 0,
-    insideInterior: false,
-    area: computePolylineArea(points),
-    isFilled: true,
-  };
+  return { handle, distance: 0, paint: 'ink' };
 };
 
 const hitTestShape: HitFn<'shape'> = (handle, wx, wy, r) => {
   const frame = getFrame(handle.y);
   if (!frame) return null;
-  const shapeType = getShapeType(handle.y);
-  const strokeWidth = getWidth(handle.y, 1);
-  const isFilled = !!getFillColor(handle.y);
-
-  const result = shapeHitTest([wx, wy], r, frame, shapeType, strokeWidth);
+  const result = shapeHitTest([wx, wy], r, frame, getShapeType(handle.y), getWidth(handle.y, 1));
   if (!result) return null;
-
-  return {
-    handle,
-    distance: result.distance,
-    insideInterior: result.insideInterior,
-    area: frame[2] * frame[3],
-    isFilled,
-  };
+  const isFilled = !!getFillColor(handle.y);
+  const paint: Paint = isFilled ? 'fill' : result.insideInterior ? null : 'ink';
+  return { handle, distance: result.distance, paint };
 };
 
 /** Framed-rect hit test — text/note/code/image/bookmark. Uses frameOf. */
@@ -112,18 +93,7 @@ function hitTestFramed<K extends Exclude<BindableKind, 'shape'>>(
   if (!frame) return null;
   const result = rectFrameHit([wx, wy], r, frame);
   if (!result) return null;
-
-  // Text is the only framed kind with a conditional fill — every other bindable
-  // framed kind is always "filled" per INTERIOR_PAINT.
-  const isFilled = handle.kind === 'text' ? !!getFillColor(handle.y) : INTERIOR_PAINT[handle.kind];
-
-  return {
-    handle,
-    distance: result.distance,
-    insideInterior: result.insideInterior,
-    area: frame[2] * frame[3],
-    isFilled,
-  };
+  return { handle, distance: result.distance, paint: 'ink' };
 }
 
 const HIT_BY_KIND: { [K in ObjectKind]: HitFn<K> } = {
