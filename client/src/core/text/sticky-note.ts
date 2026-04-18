@@ -51,6 +51,13 @@ const NOTE_FONT_STEPS: number[] = [
 ];
 /** Below this step, phase-2 character breaking activates. */
 const NOTE_PHASE1_FLOOR = 11;
+/** First step index whose value is below NOTE_PHASE1_FLOOR (phase-1 search exclusive upper bound). */
+const NOTE_PHASE1_FLOOR_IDX: number = (() => {
+  for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
+    if (NOTE_FONT_STEPS[i] < NOTE_PHASE1_FLOOR) return i;
+  }
+  return NOTE_FONT_STEPS.length;
+})();
 
 // =============================================================================
 // GEOMETRY HELPERS
@@ -225,71 +232,107 @@ function layoutNoteContent(measured: MeasuredContent, fontFamily: FontFamily): {
 
   // ── Phase A: find font step ──
 
-  // Educated starting index
-  let startIdx = 0;
+  // Educated starting indices (single pass: phase 1 uses min(width,height), phase 2 uses height-only
+  // since char-breaking relaxes the word-width constraint).
   let maxWordW100 = 0;
   for (const p of measured.paragraphs) {
     for (const tok of p.tokens) {
       if (tok.kind === 'word' && tok.advanceWidth > maxWordW100) maxWordW100 = tok.advanceWidth;
     }
   }
-  if (maxWordW100 > 0) {
-    const widthMax = (contentWidth * 100) / maxWordW100;
-    const heightMax = contentHeight / (paraCount * lhMult);
-    const maxSize = Math.min(widthMax, heightMax);
+  const heightMax = contentHeight / (paraCount * lhMult);
+  const phase1Max = maxWordW100 > 0 ? Math.min((contentWidth * 100) / maxWordW100, heightMax) : heightMax;
+
+  let startIdxP1 = 0;
+  let startIdxP2 = 0;
+  {
+    let foundP2 = false;
     for (let i = 0; i < NOTE_FONT_STEPS.length; i++) {
-      if (NOTE_FONT_STEPS[i] <= maxSize) {
-        startIdx = i;
+      const s = NOTE_FONT_STEPS[i];
+      if (!foundP2 && s <= heightMax) {
+        startIdxP2 = i;
+        foundP2 = true;
+      }
+      if (s <= phase1Max) {
+        startIdxP1 = i;
         break;
       }
     }
   }
 
   let derivedFontSize = NOTE_FONT_STEPS[NOTE_FONT_STEPS.length - 1]; // fallback: 8
-
-  // Phase 1: no character breaking
   let enterPhase2 = false;
-  search: for (let i = startIdx; i < NOTE_FONT_STEPS.length; i++) {
-    const step = NOTE_FONT_STEPS[i];
-    if (step < NOTE_PHASE1_FLOOR) {
-      enterPhase2 = true;
-      break;
-    }
 
-    const scale = step / 100;
-    const maxLines = Math.floor(contentHeight / (lineH100 * scale));
-    if (maxLines < 1 || paraCount > maxLines) continue;
+  // Phase 1: binary search for smallest index where content fits with atomic words.
+  // noteFlowCheck monotonicity: smaller step ⇒ maxW and maxLines both grow, so fits is downward-closed.
+  {
+    let lo = startIdxP1;
+    let hi = NOTE_PHASE1_FLOOR_IDX;
+    let answer = -1;
 
-    const maxW100 = contentWidth / scale;
-    const result = noteFlowCheck(measured, maxW100, maxLines, false, contentWidth);
-
-    if (result === 'fits') {
-      derivedFontSize = step;
-      break search;
-    }
-    if (result === 'heightOverflow') continue;
-
-    // result is a step index (from findStepForWord)
-    const jumpIdx = result as number;
-    if (jumpIdx >= NOTE_FONT_STEPS.length || NOTE_FONT_STEPS[jumpIdx] < NOTE_PHASE1_FLOOR) {
-      enterPhase2 = true;
-      break;
-    }
-    i = jumpIdx - 1; // loop will i++ to reach jumpIdx
-  }
-
-  // Phase 2: character breaking from top
-  if (enterPhase2) {
-    for (const step of NOTE_FONT_STEPS) {
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const step = NOTE_FONT_STEPS[mid];
       const scale = step / 100;
       const maxLines = Math.floor(contentHeight / (lineH100 * scale));
-      if (maxLines < 1 || paraCount > maxLines) continue;
+
+      if (maxLines < 1 || paraCount > maxLines) {
+        lo = mid + 1;
+        continue;
+      }
+
       const maxW100 = contentWidth / scale;
-      if (noteFlowCheck(measured, maxW100, maxLines, true, contentWidth) === 'fits') {
-        derivedFontSize = step;
-        break;
+      const result = noteFlowCheck(measured, maxW100, maxLines, false, contentWidth);
+
+      if (result === 'fits') {
+        answer = mid;
+        hi = mid;
+      } else if (result === 'heightOverflow') {
+        lo = mid + 1;
+      } else {
+        const jumpIdx = result as number;
+        if (jumpIdx >= NOTE_PHASE1_FLOOR_IDX) {
+          enterPhase2 = true;
+          break;
+        }
+        lo = mid + 1 > jumpIdx ? mid + 1 : jumpIdx;
       }
     }
+
+    if (answer !== -1) {
+      derivedFontSize = NOTE_FONT_STEPS[answer];
+    } else {
+      enterPhase2 = true;
+    }
+  }
+
+  // Phase 2: binary search with character breaking. Only 'fits' / 'heightOverflow' outcomes.
+  if (enterPhase2) {
+    let lo = startIdxP2;
+    let hi = NOTE_FONT_STEPS.length;
+    let answer = -1;
+
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const step = NOTE_FONT_STEPS[mid];
+      const scale = step / 100;
+      const maxLines = Math.floor(contentHeight / (lineH100 * scale));
+
+      if (maxLines < 1 || paraCount > maxLines) {
+        lo = mid + 1;
+        continue;
+      }
+
+      const maxW100 = contentWidth / scale;
+      if (noteFlowCheck(measured, maxW100, maxLines, true, contentWidth) === 'fits') {
+        answer = mid;
+        hi = mid;
+      } else {
+        lo = mid + 1;
+      }
+    }
+
+    if (answer !== -1) derivedFontSize = NOTE_FONT_STEPS[answer];
   }
 
   // ── Phase B: mutate MeasuredContent to derived font size, build layout ──

@@ -384,7 +384,7 @@ Reuses the full text pipeline with shape-aware positioning.
 
 ## Sticky Notes
 
-First-class `kind: 'note'` with **scale-based rendering** and **auto font sizing**. Font size is never stored — fully derived from content via a two-phase search algorithm. The Y.Map stores `scale` (default 1) that uniformly scales the entire note. Canvas renders at fixed base dimensions (280x280) via `ctx.scale(noteScale)`, so scale changes never re-run auto-sizing.
+First-class `kind: 'note'` with **scale-based rendering** and **auto font sizing**. Font size is never stored — fully derived from content via a two-phase search algorithm. The Y.Map stores `scale` (default 1) that uniformly scales the entire note. Canvas renders at fixed base dimensions (125x125) via `ctx.scale(noteScale)`, so scale changes never re-run auto-sizing.
 
 Reuses text pipeline (Y.XmlFragment, Tiptap, TextLayoutCache) with dedicated cache path (`getNoteLayout`) that measures at 100px and auto-sizes via ratio scaling. Notes are always fixed squares. Overflow at min font step clips.
 
@@ -406,26 +406,28 @@ interface NoteProps {
 
 ### Dimensional Model
 
-Everything derives from `NOTE_WIDTH (280) * scale`. All helpers take `scale`:
+Everything derives from `NOTE_WIDTH (125) * scale`. All helpers take `scale`:
 
 ```typescript
-getNotePadding(scale)       -> NOTE_WIDTH * scale * (12/280)    // 12wu at scale=1
-getNoteContentWidth(scale)  -> NOTE_WIDTH * scale * (1-2*12/280) // 256wu at scale=1
-getNoteCornerRadius(scale)  -> NOTE_WIDTH * scale * 0.011       // 3.08wu at scale=1
-getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * 0.15        // 42wu at scale=1
+getNotePadding(scale)       -> NOTE_WIDTH * scale * NOTE_PADDING_RATIO       // ~8.9wu at scale=1
+getNoteContentWidth(scale)  -> NOTE_WIDTH * scale * (1 - 2*NOTE_PADDING_RATIO) // ~107wu at scale=1
+getNoteCornerRadius(scale)  -> NOTE_WIDTH * scale * 0.011                    // ~1.4wu at scale=1
+getNoteShadowPad(scale)     -> NOTE_WIDTH * scale * 0.15                     // ~18.8wu at scale=1
 ```
+
+`NOTE_PADDING_RATIO = 20/280` (kept as `/280` so future width tweaks don't drift the visual padding feel).
 
 | Property | At scale=1 |
 |----------|-----------|
-| Note width/height | 280wu (always square) |
-| Content padding | 12wu per side |
-| Content width/height | 256wu (square content box) |
-| Corner radius | 3.08wu |
-| Shadow pad | 42wu |
+| Note width/height | 125wu (always square) |
+| Content padding | ~8.9wu per side |
+| Content width/height | ~107wu (square content box) |
+| Corner radius | ~1.4wu |
+| Shadow pad | ~18.8wu |
 
-`maxContentH = contentWidth = 256` — threshold where vertical alignment transitions from centering to clamping.
+`maxContentH = contentWidth ≈ 107` — threshold where vertical alignment transitions from centering to clamping.
 
-**Key invariant:** Auto-sizing always operates at base dimensions (`BASE_CONTENT_WIDTH = 256`). Scale only affects world-space size — never the layout algorithm. Scale changes don't invalidate cache.
+**Key invariant:** Auto-sizing always operates at base dimensions (`BASE_CONTENT_WIDTH`, derived from `NOTE_WIDTH * (1 - 2 * NOTE_PADDING_RATIO)`). Scale only affects world-space size — never the layout algorithm. Scale changes don't invalidate cache.
 
 ### Auto Font Size Algorithm — `layoutNoteContent`
 
@@ -436,19 +438,32 @@ Font glyph widths scale linearly. Measure once at 100px via `measureTokenizedCon
 #### Font Size Steps
 
 ```typescript
-NOTE_FONT_STEPS = [72, 64, 56, 48, 44, 40, 36, 34, 32, 30, 28, 26, 24, 22, 20,
-                   18, 16, 15, 14, 13, 12, 11, 10, 9, 8]
-NOTE_PHASE1_FLOOR = 18   // Below this, char-breaking activates
+NOTE_FONT_STEPS = [54, 48, 44, 43, 42, 41, 40, 38, 37, 36, 35, 34, 33, 32, 31, 30,
+                   29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14,
+                   13, 12, 11, 10, 9, 8]
+NOTE_PHASE1_FLOOR = 11   // Below this, char-breaking activates
 ```
 
-#### Phase 1: Words Atomic (floor 18px)
+Dense, mostly per-1 in the mid range with strategically placed odd values so that small content edits (a single character that pushes wrap, or pressing Enter) land on a neighbor step instead of jumping a full size class. Strictly descending — both phases binary-search this array, which requires monotonicity of `noteFlowCheck` in font size (smaller step ⇒ `maxW100` and `maxLines` both grow ⇒ any layout that fits at step `s` also fits at any smaller step).
 
-**Educated start:** Scans tokens for `maxWordW100` (widest word at 100px), computes upper bound: `min(contentWidth*100/maxWordW100, contentHeight/(paraCount*lhMult))`. Starts at first step <= bound.
+`NOTE_PHASE1_FLOOR_IDX` is precomputed at module load — the exclusive upper bound for phase-1 search.
 
-Top-down search. For each step, `noteFlowCheck(measured, maxW100, maxLines, phase2=false, contentWidth)`:
-- `'fits'` -> this step is the answer
-- `'heightOverflow'` -> too large, continue
-- `number` (step index) -> word too wide, `findStepForWord` computed exact step. Jump directly. If jumped step < 18 -> Phase 2.
+#### Educated Starts (single scan)
+
+One pass over tokens finds `maxWordW100`. Then:
+- `heightMax = contentHeight / (paraCount * lhMult)` — max step allowed by paragraph count alone.
+- `phase1Max = min((contentWidth * 100) / maxWordW100, heightMax)` — phase 1 also respects widest-word-fits-on-one-line.
+
+Single descending sweep through `NOTE_FONT_STEPS` captures both `startIdxP2` (first idx where step ≤ `heightMax`) and `startIdxP1` (first idx where step ≤ `phase1Max`, always ≥ `startIdxP2`).
+
+#### Phase 1: Words Atomic (floor 11px), Binary Search
+
+Binary search `[startIdxP1, NOTE_PHASE1_FLOOR_IDX)` for smallest index where `noteFlowCheck(..., phase2=false)` returns `'fits'`:
+- `'fits'` -> record `answer = mid`, `hi = mid` (try smaller step, larger font)
+- `'heightOverflow'` -> `lo = mid + 1`
+- `number` (step index from `findStepForWord`) -> word-too-wide lower bound. `lo = max(mid + 1, jumpIdx)`. If `jumpIdx >= NOTE_PHASE1_FLOOR_IDX`, break to phase 2.
+
+~6 probes typical vs ~15–20 for the old linear scan.
 
 ```typescript
 function findStepForWord(wordW100: number, contentWidth: number): number {
@@ -457,11 +472,11 @@ function findStepForWord(wordW100: number, contentWidth: number): number {
 }
 ```
 
-#### Phase 2: Character Breaking (from top)
+#### Phase 2: Character Breaking, Binary Search
 
-Restarts from step 0 (72px). `noteFlowCheck` breaks oversized words at grapheme boundaries via `sliceTextToFit`. Font can jump **up** (e.g., 18->48) because multi-line wrapping allows larger fonts.
+Binary search `[startIdxP2, length)` — char-breaking relaxes the word-width constraint, so height is the only remaining bound. `noteFlowCheck(..., phase2=true)` returns only `'fits'` / `'heightOverflow'`. Font can jump **up** from phase 1's floor (e.g., 11→40) because multi-line wrapping allows larger fonts.
 
-**Fallback:** If no step fits, `derivedFontSize = 8`. Empty text returns 72.
+**Fallback:** If no step fits, `derivedFontSize = 8`. Empty text returns `NOTE_FONT_STEPS[0]` (54).
 
 #### `noteFlowCheck` — Inline Flow Simulation
 
@@ -496,7 +511,7 @@ Lives in `sticky-note.ts` as a module function (not on `TextLayoutCache`). No fo
 
 ```typescript
 getNoteLayout(id, fragment, fontFamily): TextLayout   // sticky-note.ts
-getNoteDerivedFontSize(id): number                    // sticky-note.ts, fallback 72
+getNoteDerivedFontSize(id): number                    // sticky-note.ts, fallback NOTE_FONT_STEPS[0]
 ```
 
 **Two-tier:**
@@ -508,7 +523,7 @@ getNoteDerivedFontSize(id): number                    // sticky-note.ts, fallbac
 
 ### Canvas Rendering — `drawStickyNote`
 
-Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (280x280). Does NOT call `renderTextLayout` — custom rendering with alignment.
+Renders inside `ctx.translate(origin) + ctx.scale(noteScale)` at **base dimensions** (125x125). Does NOT call `renderTextLayout` — custom rendering with alignment.
 
 ```
 drawStickyNote(ctx, handle):
@@ -554,7 +569,7 @@ Why opaque + punch-out: browsers skip shadow rendering for zero-alpha fill. Punc
 
 **Cache invalidation:** Auto-rebuilds on DPR change. Module-level singleton.
 
-**Destination mapping:** Source pad (100px) -> `w * NOTE_SHADOW_PAD_RATIO` (42wu at scale=1). Inside `ctx.scale(noteScale)`, draws at base dimensions.
+**Destination mapping:** Source pad (100px) -> `w * NOTE_SHADOW_PAD_RATIO` (~18.8wu at scale=1; 45wu for bookmarks at `w=300`). Source canvas is fixed-size and independent of `NOTE_WIDTH`. Inside `ctx.scale(noteScale)`, draws at base dimensions.
 
 **`renderNoteBody(ctx, x, y, w, h, fillColor)`:** `drawNoteShadow` (9-slice) + `roundRect` fill at `w * NOTE_CORNER_RADIUS_RATIO`.
 
@@ -602,7 +617,7 @@ computeNoteBBox(id, props):
   return frame +/- getNoteShadowPad(scale)
 ```
 
-Frame = body (square, no shadow). BBox = body + shadow. Alignment doesn't affect BBox. Fallback in room-doc-manager: `w = 280 * ((y.get('scale') as number) ?? 1)`.
+Frame = body (square, no shadow). BBox = body + shadow. Alignment doesn't affect BBox. Fallback in `bbox.ts`: `w = NOTE_WIDTH * ((y.get('scale') as number) ?? 1)`.
 
 ### TextTool — Note-Specific
 

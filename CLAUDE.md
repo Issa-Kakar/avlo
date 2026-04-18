@@ -84,6 +84,7 @@ All paths relative to `client/src/` unless noted.
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
 | `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` |
 | `core/spatial/object-query.ts` | Query facade bridging spatial index → handles → hit-test: `queryHitCandidates(x,y,r,kinds?)`, `queryHandlesInBBox(bbox,kinds?)`. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
+| `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
 | Folder | Coverage |
