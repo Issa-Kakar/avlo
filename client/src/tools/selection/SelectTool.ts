@@ -1,10 +1,11 @@
 import type { HandleId, PointerTool, PreviewData } from '../types';
 import { textTool, codeTool } from '@/runtime/tool-registry';
 import { useSelectionStore, computeHandles, computeSelectionBounds } from '@/stores/selection-store';
-import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
+import { worldToCanvas } from '@/stores/camera-store';
 import { scaleBBoxAround, pointsToBBox, translateBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
-import { hitTestHandle, hitTestEndpointDots, type HitCandidate, type EndpointHit } from '@/core/geometry/hit-testing';
+import { hitResizeHandle, hitEndpointDot, type EndpointHit } from '@/core/spatial/handle-hit';
+import type { HitCandidate } from '@/core/spatial/kind-capability';
 import { queryHits, queryHandles } from '@/core/spatial/object-query';
 import { pickFrameAware } from '@/core/spatial/pickers';
 import { inBBox } from '@/core/spatial/region';
@@ -100,7 +101,7 @@ export class SelectTool implements PointerTool {
     if (mode === 'standard' && selectedIds.length > 0 && (!textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       // Standard mode: check resize handles first
       const selectionBounds = computeSelectionBounds();
-      const handleHit = selectionBounds ? hitTestHandle(worldX, worldY, selectionBounds) : null;
+      const handleHit = selectionBounds ? hitResizeHandle([worldX, worldY], selectionBounds) : null;
       if (handleHit) {
         this.pendingHandleId = handleHit;
         this.downTarget = 'handle';
@@ -110,7 +111,7 @@ export class SelectTool implements PointerTool {
       }
     } else if (mode === 'connector') {
       // Connector mode: check endpoint dots first
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds);
+      const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
         this.endpointHitAtDown = endpointHit;
         this.downTarget = 'connectorEndpoint';
@@ -637,7 +638,7 @@ export class SelectTool implements PointerTool {
     if (mode === 'standard' && (!store.textEditingId || textTool.isEditingLabel()) && !store.codeEditingId) {
       const bounds = computeSelectionBounds();
       if (bounds) {
-        const handle = hitTestHandle(worldX, worldY, bounds);
+        const handle = hitResizeHandle([worldX, worldY], bounds);
         if (handle) {
           setCursorOverride(handleCursor(handle));
           applyCursor();
@@ -645,7 +646,7 @@ export class SelectTool implements PointerTool {
         }
       }
     } else if (mode === 'connector') {
-      const endpointHit = hitTestEndpointDots(worldX, worldY, selectedIds);
+      const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
         setCursorOverride('grab');
         applyCursor();
@@ -728,8 +729,6 @@ export class SelectTool implements PointerTool {
   // --- Hit Testing ---
 
   private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
-    const { scale } = useCameraStore.getState();
-    const radiusWorld = (HIT_RADIUS_PX + HIT_SLACK_PX) / scale;
-    return pickFrameAware(queryHits({ at: [worldX, worldY], radius: radiusWorld }));
+    return pickFrameAware(queryHits({ at: [worldX, worldY], radius: { px: HIT_RADIUS_PX + HIT_SLACK_PX } }));
   }
 }

@@ -13,7 +13,7 @@
  */
 
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectKind } from '@/core/types/objects';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
 import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
@@ -31,8 +31,25 @@ import {
   getDiamondVertices,
   computePolylineArea,
 } from '@/core/geometry/hit-primitives';
-import type { HitCandidate } from '@/core/geometry/hit-testing';
 import type { HandleOf, Paint } from './atoms';
+
+// ============================================================================
+// HitCandidate — the return shape of `queryHits`
+// ============================================================================
+
+/**
+ * Point-probe hit result. `paint` is the precomputed occlusion class used by
+ * pickers (`scanTopmostWithMemo` / `pickFrameAware`); only unfilled shape
+ * interiors are `null` (see-through), filled shape interiors are `'fill'`,
+ * everything else is `'ink'`.
+ *
+ * Membership queries (`queryHandles`, `queryEntries`) don't classify — they
+ * return bare handles / index entries.
+ */
+export interface HitCandidate<K extends ObjectKind = ObjectKind> {
+  readonly handle: ObjectHandle & { kind: K };
+  readonly paint: Paint;
+}
 
 // ============================================================================
 // Capability interface
@@ -76,7 +93,7 @@ const STROKE_CAP: KindCapability<'stroke'> = {
     const points = getPoints(h.y);
     if (points.length === 0) return null;
     if (!strokeHitTest(p, points, r + getWidth(h.y) / 2)) return null;
-    return { distance: 0, paint: 'ink' };
+    return { paint: 'ink' };
   },
   hitRect: (h, bbox) => {
     const points = getPoints(h.y);
@@ -96,7 +113,7 @@ const CONNECTOR_CAP: KindCapability<'connector'> = {
     const points = getPoints(h.y);
     if (points.length === 0) return null;
     if (!strokeHitTest(p, points, r + getWidth(h.y) / 2)) return null;
-    return { distance: 0, paint: 'ink' };
+    return { paint: 'ink' };
   },
   hitRect: (h, bbox) => {
     const points = getPoints(h.y);
@@ -119,7 +136,7 @@ const SHAPE_CAP: KindCapability<'shape'> = {
     if (!result) return null;
     const isFilled = !!getFillColor(h.y);
     const paint: Paint = isFilled ? 'fill' : result.insideInterior ? null : 'ink';
-    return { distance: result.distance, paint };
+    return { paint };
   },
   hitRect: (h, bbox) => {
     const frame = getFrame(h.y);
@@ -158,7 +175,7 @@ function framedCap<K extends 'text' | 'note' | 'code' | 'image' | 'bookmark'>(
       if (!frame) return null;
       const result = rectFrameHit(p, r, frame);
       if (!result) return null;
-      return { distance: result.distance, paint: 'ink' };
+      return { paint: 'ink' };
     },
     hitRect: (h, bbox) => {
       const frame = resolveFrame(h);

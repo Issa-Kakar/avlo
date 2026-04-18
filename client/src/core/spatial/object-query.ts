@@ -4,31 +4,28 @@
  * The single module that imports `getSpatialIndex`/`getHandle` from room-runtime
  * into the core query layer. Keeps `ObjectSpatialIndex` as a pure rbush wrapper.
  *
- * Two sibling entry points, intentionally separate (their return shapes differ
- * semantically — forcing them through one conditional-typed function makes
- * inference fragile):
+ * Three entry points, each with a distinct return shape so consumers pay only
+ * for what they need:
  *
- *   queryHandles(opts)   — returns raw handles, optionally narrowed
- *                          (marquee, region membership, eraser circle)
- *   queryHits(opts)      — returns classified, Z-sorted hit candidates
- *                          (clicks, snap, visible-kind lookups)
+ *   queryEntries(region, kinds?)  — raw IndexEntry[], no handle resolution.
+ *                                    Viewport culling, image decode loop.
+ *   queryHandles(opts)            — HandleOf<K>[], optional precise intersect.
+ *                                    Marquee, eraser, region membership.
+ *   queryHits(opts)               — HitCandidate<K>[] (paint-classified,
+ *                                    Z-sorted). Clicks, snap.
  *
  * Filters narrow the generic; `where` is a non-narrowing post-filter; the
  * `precise` selector picks which capability geometry to dispatch.
- *
- * The legacy `queryHitCandidates`/`queryHandlesInBBox` functions are kept as
- * thin shims to avoid a big-bang call-site rewrite.
  */
 
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple } from '@/core/types/geometry';
+import type { ObjectHandle, ObjectKind, IndexEntry } from '@/core/types/objects';
 import { getSpatialIndex, getHandle } from '@/runtime/room-runtime';
-import { type HitCandidate } from '@/core/geometry/hit-testing';
 import type { Comparator, HandleOf, NarrowingPredicate, Predicate } from './atoms';
 import type { Region } from './region';
 import { regionEnvelope } from './region';
-import { KIND, type AnyCapability } from './kind-capability';
-import { sortZTopFirst, byZOrderTopFirst } from './pickers';
+import { type Radius, resolveRadius } from './radius';
+import { KIND, type AnyCapability, type HitCandidate } from './kind-capability';
+import { sortZTopFirst } from './pickers';
 
 // ============================================================================
 // Internal helpers
@@ -48,6 +45,22 @@ function readKindBrand(filter: unknown): ReadonlySet<ObjectKind> | null {
   if (!filter || typeof filter !== 'function') return null;
   const k = (filter as KindBranded<unknown>).__kinds;
   return k ?? null;
+}
+
+// ============================================================================
+// queryEntries — raw IndexEntry list (culling, image viewport decode)
+// ============================================================================
+
+export function queryEntries(opts: { region: Region; kinds?: readonly ObjectKind[] }): IndexEntry[] {
+  const env = regionEnvelope(opts.region);
+  const entries = getSpatialIndex().queryBBox(env);
+  if (!opts.kinds || opts.kinds.length === 0) return entries;
+  const set = new Set<ObjectKind>(opts.kinds);
+  const out: IndexEntry[] = [];
+  for (const e of entries) {
+    if (set.has(e.kind)) out.push(e);
+  }
+  return out;
 }
 
 // ============================================================================
@@ -105,7 +118,8 @@ export function queryHandles<const K extends ObjectKind = ObjectKind>(opts: Quer
 
 export interface QueryHitsOpts<K extends ObjectKind> {
   at: [number, number];
-  radius: number;
+  /** Hit tolerance — `{ px }` is screen-space (divided by scale), `{ world }` is world units. */
+  radius: Radius;
   filter?: NarrowingPredicate<ObjectHandle, HandleOf<K>>;
   where?: Predicate<HitCandidate<K>>;
   /** Sort comparator. Default: Z top-first. */
@@ -116,7 +130,8 @@ export interface QueryHitsOpts<K extends ObjectKind> {
 export function queryHits<const K extends ObjectKind = ObjectKind>(opts: QueryHitsOpts<K>): HitCandidate<K>[] {
   const { at, radius, filter, where, comparator, limit } = opts;
   const [wx, wy] = at;
-  const entries = getSpatialIndex().queryRadius(wx, wy, radius);
+  const r = resolveRadius(radius);
+  const entries = getSpatialIndex().queryRadius(wx, wy, r);
   const kindSet = readKindBrand(filter);
   const out: HitCandidate<K>[] = [];
 
@@ -128,7 +143,7 @@ export function queryHits<const K extends ObjectKind = ObjectKind>(opts: QueryHi
 
     // SAFETY: KIND[h.kind] is the cap for h.kind; one cast per loop.
     const cap = KIND[h.kind] as AnyCapability;
-    const fields = cap.hitPoint(h, [wx, wy], radius);
+    const fields = cap.hitPoint(h, [wx, wy], r);
     if (!fields) continue;
 
     const cand = { handle: h, ...fields } as HitCandidate<K>;
@@ -141,43 +156,6 @@ export function queryHits<const K extends ObjectKind = ObjectKind>(opts: QueryHi
     out.sort(comparator);
   } else {
     sortZTopFirst(out);
-  }
-  return out;
-}
-
-// ============================================================================
-// Backward-compat shims — call sites can migrate incrementally.
-// ============================================================================
-
-export function queryHitCandidates(wx: number, wy: number, r: number): HitCandidate[];
-export function queryHitCandidates<K extends ObjectKind>(wx: number, wy: number, r: number, kinds: readonly K[]): HitCandidate<K>[];
-export function queryHitCandidates(wx: number, wy: number, r: number, kinds?: readonly ObjectKind[]): HitCandidate[] {
-  const entries = getSpatialIndex().queryRadius(wx, wy, r);
-  const kindSet = kinds ? new Set<ObjectKind>(kinds) : null;
-  const out: HitCandidate[] = [];
-  for (const e of entries) {
-    if (kindSet && !kindSet.has(e.kind)) continue;
-    const h = getHandle(e.id);
-    if (!h) continue;
-    const cap = KIND[h.kind] as AnyCapability;
-    const fields = cap.hitPoint(h, [wx, wy], r);
-    if (!fields) continue;
-    out.push({ handle: h, ...fields } as HitCandidate);
-  }
-  out.sort(byZOrderTopFirst);
-  return out;
-}
-
-export function queryHandlesInBBox(bbox: BBoxTuple): ObjectHandle[];
-export function queryHandlesInBBox<K extends ObjectKind>(bbox: BBoxTuple, kinds: readonly K[]): (ObjectHandle & { kind: K })[];
-export function queryHandlesInBBox(bbox: BBoxTuple, kinds?: readonly ObjectKind[]): ObjectHandle[] {
-  const entries = getSpatialIndex().queryBBox(bbox);
-  const kindSet = kinds ? new Set<ObjectKind>(kinds) : null;
-  const out: ObjectHandle[] = [];
-  for (const e of entries) {
-    if (kindSet && !kindSet.has(e.kind)) continue;
-    const h = getHandle(e.id);
-    if (h) out.push(h);
   }
   return out;
 }

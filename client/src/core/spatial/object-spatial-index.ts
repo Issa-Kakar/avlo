@@ -2,6 +2,15 @@ import RBush from 'rbush';
 import type { ObjectKind, IndexEntry, ObjectHandle } from '../types/objects';
 import type { BBoxTuple } from '../types/geometry';
 
+/**
+ * ObjectSpatialIndex — pure rbush wrapper, tuple-first.
+ *
+ * Queries mutate a single module-scoped scratch bbox object instead of
+ * allocating a fresh `{minX, minY, maxX, maxY}` per call. rbush's own
+ * internals read the fields; nobody else holds a reference.
+ */
+const _scratchBBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+
 export class ObjectSpatialIndex {
   private tree = new RBush<IndexEntry>(9);
 
@@ -25,22 +34,22 @@ export class ObjectSpatialIndex {
     this.tree.remove({ minX, minY, maxX, maxY, id } as IndexEntry, (a, b) => a.id === b.id);
   }
 
-  /**
-   * @deprecated Use queryBBox (tuple-first) instead. rbush `{minX,...}` shape is
-   * an implementation detail of this class.
-   */
-  query(bounds: { minX: number; minY: number; maxX: number; maxY: number }): IndexEntry[] {
-    return this.tree.search(bounds);
-  }
-
-  /** Tuple-first bbox query. */
+  /** Tuple-first bbox query. Reuses a module-scoped scratch envelope. */
   queryBBox(bbox: BBoxTuple): IndexEntry[] {
-    return this.tree.search({ minX: bbox[0], minY: bbox[1], maxX: bbox[2], maxY: bbox[3] });
+    _scratchBBox.minX = bbox[0];
+    _scratchBBox.minY = bbox[1];
+    _scratchBBox.maxX = bbox[2];
+    _scratchBBox.maxY = bbox[3];
+    return this.tree.search(_scratchBBox);
   }
 
-  /** Radius query around (x, y). */
+  /** Radius query around (x, y). Reuses a module-scoped scratch envelope. */
   queryRadius(x: number, y: number, r: number): IndexEntry[] {
-    return this.tree.search({ minX: x - r, minY: y - r, maxX: x + r, maxY: y + r });
+    _scratchBBox.minX = x - r;
+    _scratchBBox.minY = y - r;
+    _scratchBBox.maxX = x + r;
+    _scratchBBox.maxY = y + r;
+    return this.tree.search(_scratchBBox);
   }
 
   bulkLoad(handles: ObjectHandle[]): void {

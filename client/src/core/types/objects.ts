@@ -32,26 +32,6 @@ export const isBindableKind = (k: ObjectKind): k is BindableKind => BINDABLE_SET
 export type BindableHandle = ObjectHandle & { kind: BindableKind };
 export const isBindableHandle = (h: ObjectHandle | null | undefined): h is BindableHandle => !!h && isBindableKind(h.kind);
 
-/**
- * Does this kind have paint throughout its interior (blocks a Z-scan)?
- *
- * Text is technically transparent outside glyphs, but character-tight hit
- * testing is out of scope — we treat it as opaque throughout its bbox.
- * Shape is the only kind whose interior can be see-through (unfilled shapes
- * — decided per-instance via getFillColor).
- *
- * Record<BindableKind, boolean> forces exhaustiveness: adding a bindable kind
- * is a compile error until it's added here.
- */
-export const INTERIOR_PAINT: Record<BindableKind, boolean> = {
-  shape: false,
-  image: true,
-  text: true,
-  code: true,
-  note: true,
-  bookmark: true,
-};
-
 // Spatial index entry (minimal)
 export interface IndexEntry {
   minX: number;

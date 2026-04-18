@@ -22,7 +22,7 @@ import {
 import { getPath, getConnectorPaths } from '../geometry-cache';
 import { buildConnectorPaths } from '@/core/connectors/connector-paths';
 import { paintConnector } from './connector-render-atoms';
-import { getVisibleWorldBounds } from '@/stores/camera-store';
+import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { textLayoutCache, renderTextLayout, renderShapeLabel, computeLabelTextBox, layoutMeasuredContent } from '@/core/text/text-system';
@@ -72,16 +72,13 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipWorldRects?: Worl
   // Read topology from transform-state module (not from Zustand)
   const connTopology = getTransformTopology();
 
-  // Calculate visible world bounds for culling (reads from camera store)
-  const visibleBounds = getVisibleWorldBounds();
-
   // Collect candidate IDs via spatial index
   const seen = new Set<string>();
   const candidateIds: string[] = [];
 
   if (clipWorldRects) {
     for (const rect of clipWorldRects) {
-      for (const entry of spatialIndex.query(rect)) {
+      for (const entry of spatialIndex.queryBBox([rect.minX, rect.minY, rect.maxX, rect.maxY])) {
         if (!seen.has(entry.id)) {
           seen.add(entry.id);
           candidateIds.push(entry.id);
@@ -89,7 +86,8 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipWorldRects?: Worl
       }
     }
   } else {
-    for (const entry of spatialIndex.query(visibleBounds)) {
+    // getVisibleBoundsTuple() returns a shared module-scoped tuple (no per-frame alloc).
+    for (const entry of spatialIndex.queryBBox(getVisibleBoundsTuple() as [number, number, number, number])) {
       seen.add(entry.id);
       candidateIds.push(entry.id);
     }

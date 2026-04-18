@@ -47,7 +47,8 @@ import {
   OUTPUT_LABEL_H_RATIO,
 } from '@/core/code/code-tokens';
 import { getCodeMirrorExtensions } from '@/core/code/code-theme';
-import { hitTestVisibleCode } from '@/core/geometry/hit-testing';
+import { queryHits } from '@/core/spatial/object-query';
+import { pickTopmostByKind } from '@/core/spatial/pickers';
 import type { PointerTool, PreviewData } from './types';
 
 export class CodeTool implements PointerTool {
@@ -87,7 +88,8 @@ export class CodeTool implements PointerTool {
     this.downWorld = [worldX, worldY];
 
     // Hit test for existing code blocks
-    this.hitCodeId = hitTestVisibleCode(worldX, worldY);
+    const cands = queryHits({ at: [worldX, worldY], radius: { px: 8 } });
+    this.hitCodeId = pickTopmostByKind(cands, 'code');
   }
 
   move(_worldX: number, _worldY: number): void {

@@ -7,15 +7,20 @@
  *
  * The discriminant lets the scanner dispatch without `'in' in region` checks,
  * and is extensible (`'circle'` etc.) without breaking exhaustive switches.
+ *
+ * Point regions store world-unit `r`; `atPoint` accepts a tagged `Radius`
+ * and does the scale conversion once at construction. No caller does `/scale`
+ * inline.
  */
 
 import type { BBoxTuple, Point } from '@/core/types/geometry';
+import { type Radius, resolveRadius } from './radius';
 
 export type Region =
   | { readonly kind: 'point'; readonly p: Point; readonly r: number }
   | { readonly kind: 'rect'; readonly bbox: BBoxTuple };
 
-export const atPoint = (p: Point, r: number): Region => ({ kind: 'point', p, r });
+export const atPoint = (p: Point, radius: Radius): Region => ({ kind: 'point', p, r: resolveRadius(radius) });
 
 export const inBBox = (bbox: BBoxTuple): Region => ({ kind: 'rect', bbox });
 

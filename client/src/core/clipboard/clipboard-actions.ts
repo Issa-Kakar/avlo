@@ -556,7 +556,7 @@ function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [numb
   ];
 
   for (const [dx, dy, queryBounds] of candidates) {
-    const results = spatialIndex.query(queryBounds);
+    const results = spatialIndex.queryBBox([queryBounds.minX, queryBounds.minY, queryBounds.maxX, queryBounds.maxY]);
     const hasCollision = results.some((r) => !excludeIds.has(r.id));
     if (!hasCollision) return [dx, dy];
   }

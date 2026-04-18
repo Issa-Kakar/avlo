@@ -1,8 +1,6 @@
 /**
  * Picker atoms for HitCandidate lists.
  *
- * - `classifyPaint` / `isSeeThrough` are thin shims over the precomputed
- *   `c.paint` field set by `KIND[k].hitPoint`. Kept for call-site legibility.
  * - `areaOf` is the lazy per-handle area dispatch; pickers only pay the cost
  *   when the tournament actually compares.
  * - `firstCandidate` / `pickBestBy` are generic single-line pickers.
@@ -10,21 +8,16 @@
  *   (see-through fallback memoization).
  * - `pickFrameAware` is the two-phase frame tournament — bestFrame vs firstPaint
  *   reconciliation with area-smaller-wins and ink short-circuit.
+ * - `pickTopmostByKind` is the visible-kind helper used by TextTool/CodeTool:
+ *   topmost candidate of the target kind, respecting paint-blocker occlusion.
  *
  * Input to all multi-candidate pickers MUST be Z-sorted top-first
  * (`queryHits` produces this by default).
  */
 
-import type { HitCandidate } from '@/core/geometry/hit-testing';
-import type { ObjectHandle } from '@/core/types/objects';
-import type { Comparator, Paint, Picker, Scorer } from './atoms';
-import { KIND, type AnyCapability } from './kind-capability';
-
-/** Thin shim — the paint class is now precomputed in `hitPoint`. */
-export const classifyPaint = (c: HitCandidate): Paint => c.paint;
-
-/** Unfilled shape interior is the only see-through candidate class. */
-export const isSeeThrough = (c: HitCandidate): boolean => c.paint === null;
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { Comparator, Picker, Scorer } from './atoms';
+import { KIND, type AnyCapability, type HitCandidate } from './kind-capability';
 
 /** Lazy per-handle area — only called when the tournament needs it. */
 export const areaOf = (h: ObjectHandle): number => (KIND[h.kind] as AnyCapability).area(h);
@@ -136,3 +129,12 @@ export const pickFrameAware: Picker<HitCandidate> = <C extends HitCandidate>(can
   if (paintArea < bestFrameArea) return firstPaint;
   return firstPaintIdx <= bestFrameIdx ? firstPaint : bestFrame;
 };
+
+/**
+ * Topmost candidate whose kind matches `kind`, respecting paint-blocker
+ * occlusion. A filled shape above a text blocks the text; an unfilled shape
+ * above a text does not. Used by TextTool / CodeTool for visible click-to-edit.
+ */
+export function pickTopmostByKind<K extends ObjectKind>(cands: readonly HitCandidate[], kind: K): string | null {
+  return scanTopmostWithMemo(cands, (c) => (c.handle.kind === kind ? c.handle.id : null));
+}

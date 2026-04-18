@@ -321,6 +321,26 @@ export function getVisibleWorldBounds(): {
   };
 }
 
+/**
+ * Tuple-shaped visible world bounds. Mutates a module-scoped scratch tuple
+ * rather than allocating a fresh object per call — hot consumers (renderer
+ * culling, image viewport management) hit this every frame.
+ *
+ * Callers MUST treat the returned tuple as readonly; the same array is
+ * overwritten on the next call.
+ */
+const _scratchVisibleTuple: [number, number, number, number] = [0, 0, 0, 0];
+
+export function getVisibleBoundsTuple(): Readonly<[number, number, number, number]> {
+  const { cssWidth, cssHeight, scale, pan } = useCameraStore.getState();
+  const safeScale = Math.max(0.001, scale);
+  _scratchVisibleTuple[0] = pan.x;
+  _scratchVisibleTuple[1] = pan.y;
+  _scratchVisibleTuple[2] = cssWidth / safeScale + pan.x;
+  _scratchVisibleTuple[3] = cssHeight / safeScale + pan.y;
+  return _scratchVisibleTuple;
+}
+
 // ============================================
 // SELECTORS FOR REACT COMPONENTS
 // ============================================

@@ -22,7 +22,7 @@ import { KIND } from './kind-capability';
  */
 type KindBranded<F> = F & { __kinds: ReadonlySet<ObjectKind> };
 
-function brand<F extends Function>(fn: F, kinds: ReadonlySet<ObjectKind>): KindBranded<F> {
+function brand<F extends (...args: never[]) => unknown>(fn: F, kinds: ReadonlySet<ObjectKind>): KindBranded<F> {
   (fn as KindBranded<F>).__kinds = kinds;
   return fn as KindBranded<F>;
 }

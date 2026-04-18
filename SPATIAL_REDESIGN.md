@@ -1,9 +1,16 @@
 # Spatial Query & Hit Testing — Type System Redesign
 
-> **Status:** Foundation landed (untracked, typecheck clean). Legacy code still
-> co-exists. Integration is partial by design. **Not finalized** — open questions
-> remain on capability surface, picker shape, and the non-spatial handle-hit
-> sibling layer.
+> **Status:** Foundation (§3–§6), paint-class correction (§4a), and query
+> cleanup + call-site consolidation (§4b) all landed. Typecheck clean across
+> shared + client + worker. Most legacy deleted (`core/geometry/object-pick.ts`
+> and `core/geometry/hit-testing.ts` gone). All listed consumers migrated —
+> SelectTool click/marquee/handles/endpoints, EraserTool, TextTool, CodeTool,
+> snap, viewport culling, image viewport, clipboard smart-duplicate. Remaining
+> legacy: `core/geometry/frame-of.ts` (`frameOf` still consumed by connector
+> internals — `connector-utils.ts`, `reroute-connector.ts`, `anchor-atoms.ts`).
+> `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` still standalone.
+> Still open: capability-table unit tests, `queryHandles({ precise })`
+> silent-skip shape, cap-kind subfolder split threshold.
 
 This document captures the full scope of the in-flight refactor of AVLO's
 spatial-query and hit-testing layer: what was wrong, why it was wrong, the
@@ -107,24 +114,25 @@ Plan file: `~/.claude/plans/radiant-riding-micali.md`. Six-layer design.
   Keeps the happy-path return type predictable.
 - **Region is a tagged discriminated union** (`'point' | 'rect'`) — extensible
   to `'circle'` later without breaking exhaustive switches.
-- **Non-spatial handle hits live in a sibling layer** (`hitNearestHandle<T>`)
-  with the same vocabulary but no spatial-index involvement. Honest about
-  the architecture: resize handles aren't in the index because they're
-  derived from selection state.
+- **Non-spatial handle hits live in a sibling layer** (`hitNearest<T>`)
+  with the same vocabulary (tagged `Radius`) but no spatial-index
+  involvement. Honest about the architecture: resize handles aren't in
+  the index because they're derived from selection state.
 - **Marquee state is gesture-owned, not selection-owned.** One-line
   `selection-store.ts` fix.
 
-### Layer breakdown
+### Layer breakdown (current, post-§4b)
 
-| Layer | File                                     | Role                                                                                                                     |
-| ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 0     | `core/types/geometry.ts` (existing)      | `Point`, `BBoxTuple`, `FrameTuple`                                                                                       |
-| 1     | `core/spatial/region.ts`                 | `Region` tagged union, `atPoint`, `inBBox`, `regionEnvelope`                                                             |
-| 2     | `core/spatial/atoms.ts`                  | `HandleOf<K>`, `Predicate`, `NarrowingPredicate`, `Picker`, `Scorer`, `Comparator`, `Paint`                              |
-| 3     | `core/spatial/kind-capability.ts`        | `KindCapability<K>` interface + `KIND` exhaustive table                                                                  |
-| 4     | `core/spatial/filters.ts` + `pickers.ts` | `byKind`, `byKinds`, `isBindable`, combinators / `firstCandidate`, `pickBestBy`, `scanTopmostWithMemo`, `pickFrameAware` |
-| 5     | `core/spatial/object-query.ts`           | `queryHits`, `queryHandles` (modify)                                                                                     |
-| 6     | `core/spatial/handle-hit.ts`             | `HandleProbe<T>`, `hitNearestHandle<T>` (sibling, non-spatial)                                                           |
+| Layer | File                                     | Role                                                                                                                                                                     |
+| ----- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0     | `core/types/geometry.ts` (existing)      | `Point`, `BBoxTuple`, `FrameTuple`                                                                                                                                       |
+| 1     | `core/spatial/region.ts`                 | `Region` tagged union, `atPoint` (takes `Radius`), `inBBox`, `regionEnvelope`                                                                                            |
+| 1.5   | `core/spatial/radius.ts`                 | `Radius = { px } \| { world }` + `resolveRadius` (reads `camera-store`)                                                                                                  |
+| 2     | `core/spatial/atoms.ts`                  | `HandleOf<K>`, `Predicate`, `NarrowingPredicate`, `Picker`, `Scorer`, `Comparator`, `Paint`                                                                              |
+| 3     | `core/spatial/kind-capability.ts`        | `HitCandidate<K>` + `KindCapability<K>` interface + `KIND` exhaustive table                                                                                              |
+| 4     | `core/spatial/filters.ts` + `pickers.ts` | `byKind`, `byKinds`, `isBindable`, combinators / `firstCandidate`, `pickBestBy`, `scanTopmostWithMemo`, `pickFrameAware`, `pickTopmostByKind`, `areaOf`, `sortZTopFirst` |
+| 5     | `core/spatial/object-query.ts`           | `queryEntries`, `queryHandles`, `queryHits`                                                                                                                              |
+| 6     | `core/spatial/handle-hit.ts`             | `HandleProbe<T>`, `hitNearest<T>` (generic), `hitResizeHandle` (bespoke), `hitEndpointDot` (wraps `hitNearest`)                                                          |
 
 ### KindCapability shape
 
@@ -135,13 +143,13 @@ interface KindCapability<K extends ObjectKind> {
   readonly hitPoint:  (h: HandleOf<K>, p: Point, r: number) => HitFields<K> | null
   readonly hitRect:   (h: HandleOf<K>, bbox: BBoxTuple) => boolean
   readonly hitCircle: (h: HandleOf<K>, c: Point, r: number) => boolean
-  readonly classify:  (c: HitCandidate<K>) => Paint
+  readonly area:      (h: HandleOf<K>) => number        // lazy, called only by pickers
 }
 
 const KIND: { readonly [K in ObjectKind]: KindCapability<K> } = { ... }
 ```
 
-`hitPoint` returns just the classification fields (`HitFields<K> = Omit<HitCandidate<K>, 'handle'>`); the scanner composes `{ handle, ...fields }`. Less boilerplate per cap entry.
+`hitPoint` returns the classification fields (`HitFields<K> = Omit<HitCandidate<K>, 'handle'>` — currently `{ paint }` after §4a/§4b); the scanner composes `{ handle, ...fields }`. `classify` is gone (§4a dropped it; paint is computed inline in `hitPoint`). `area` is lazy (§4a); pickers only pay the cost when the tournament actually compares.
 
 ### Variadic narrowing
 
@@ -161,9 +169,13 @@ they just lose that pushdown.
 
 ---
 
-## 4. What's actually landed (current state)
+## 4. Foundation round — what landed
 
-### Files created (all untracked — `git status`)
+> Historical record of the first round. See §4a for the paint-class
+> correction and §4b for the query-cleanup + call-site migration that
+> completed the architecture.
+
+### Files created in the foundation round
 
 ```
 client/src/core/spatial/region.ts          — Region union + atPoint/inBBox/regionEnvelope
@@ -175,7 +187,7 @@ client/src/core/spatial/handle-hit.ts      — HandleProbe<T> + hitNearestHandle
 client/src/core/spatial/__type_tests__.ts  — Compile-time assertions (dead code at runtime)
 ```
 
-### Files modified
+### Files modified in the foundation round
 
 ```
 client/src/core/spatial/object-query.ts   — added queryHits/queryHandles, kept legacy shims
@@ -324,72 +336,238 @@ and the `queryHitCandidates` / `queryHandlesInBBox` shims all remain.
 
 ---
 
+## 4b. Query cleanup & call-site consolidation (follow-up, landed)
+
+After §4a, the foundation had a two-tier query surface (`queryHits` +
+`queryHandles`), plus a deprecated rbush `.query(WorldBounds)` passthrough
+used by viewport culling, plus a parallel `core/geometry/object-pick.ts` +
+`core/geometry/hit-testing.ts` duplicate set kept alive by the last
+consumers on legacy helpers (snap, TextTool, CodeTool, viewport culling,
+image viewport, resize handles, endpoint dots). Every hot-path consumer
+did its own `/scale` math at the call site. `HitCandidate` carried a
+`distance` field no picker read.
+
+This slice: clean up the spatial folder, collapse those into a clear
+three-tier query surface, move `/scale` math into the query layer behind
+a tagged `Radius` opt, migrate every listed consumer, delete every
+legacy duplicate that's now unreachable.
+
+### What changed
+
+**Three query tiers, each with a distinct return shape.**
+
+| Tier           | Returns             | Use case                                     | Cost per result                                  |
+| -------------- | ------------------- | -------------------------------------------- | ------------------------------------------------ |
+| `queryEntries` | `IndexEntry[]`      | viewport culling, image/bookmark decode loop | rbush search only                                |
+| `queryHandles` | `HandleOf<K>[]`     | marquee, eraser, region membership           | + `getHandle` + optional precise intersect       |
+| `queryHits`    | `HitCandidate<K>[]` | click picking, snap                          | + `cap.hitPoint` + paint classification + Z-sort |
+
+Consumers pay only for the tier they actually read.
+
+**Tagged `Radius` in `core/spatial/radius.ts`.** `{ px }` resolves to
+world units via `resolveRadius` (reads camera scale); `{ world }` passes
+through. Every call site that did `(SOME_PX + SLACK) / scale` locally is
+now `{ px: SOME_PX + SLACK }`. `radius.ts` is the single spatial module
+that imports `camera-store`.
+
+**`HitCandidate = { handle, paint }`.** `distance` dropped (no picker
+consumed it — it was dead bytes per hit). `KindCapability.hitPoint`
+returns `HitFields<K> | null` where `HitFields<K> = Omit<HitCandidate<K>,
+'handle'>`, which now collapses to `{ paint: Paint }`. Shim on the hit
+side is one less allocation per candidate.
+
+**Handle-hit sibling layer rewritten.**
+
+- `hitNearest<T>({ at, radius: Radius, probes })` — the canonical
+  point-probe nearest-lookup. Supersedes the orphan `hitNearestHandle(p,
+r, probes)` API.
+- `hitEndpointDot(at, selectedIds)` — thin wrapper over
+  `hitNearest({ at, radius: { px: ENDPOINT_DOT_HIT_PX }, probes })` with
+  an inline generator reading `getEndpointEdgePosition(h, 'start'|'end')`.
+- `hitResizeHandle(at, bbox)` — stayed bespoke. Side handles are edge
+  strips (hit anywhere along the edge), not midpoint circle probes — a
+  generator-only model would be a UX regression.
+
+**Picker cleanup.** `classifyPaint` / `isSeeThrough` shims deleted —
+callers read `c.paint` / `c.paint === null` directly. Added
+`pickTopmostByKind(cands, kind)` as the canonical visible-kind helper;
+replaces `hitTestVisibleKind`.
+
+**Memory.**
+
+- `ObjectSpatialIndex.queryBBox` / `queryRadius` reuse a module-scoped
+  scratch `{ minX, minY, maxX, maxY }` envelope mutated before each
+  `tree.search`. Zero allocation per query at the rbush boundary.
+- `camera-store.getVisibleBoundsTuple()` returns a shared module-scoped
+  tuple overwritten on each call. Hot consumers (`objects.ts` culling,
+  `image-manager.manageImageViewport`) stop allocating per frame.
+  `getVisibleWorldBounds()` (object shape) retained for cold consumers.
+
+**Shims + deprecated API deleted.** `queryHitCandidates`,
+`queryHandlesInBBox`, the deprecated `spatialIndex.query(WorldBounds)`
+method — all gone. `core/geometry/object-pick.ts` and
+`core/geometry/hit-testing.ts` deleted entirely (the last consumers
+migrated).
+
+**Lint.** `filters.ts:brand` generic changed from `F extends Function`
+to `F extends (...args: never[]) => unknown` — satisfies
+`@typescript-eslint/no-unsafe-function-type` while preserving type-
+predicate inference.
+
+### Call-site migrations
+
+| Consumer                                 | Before                                                                 | After                                                                                                 |
+| ---------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| SelectTool click                         | `(HIT_PX + SLACK) / scale` + `queryHits({ radius })`                   | `queryHits({ at, radius: { px: HIT_PX + SLACK } })`                                                   |
+| SelectTool resize handle                 | `hitTestHandle(wx, wy, bbox)`                                          | `hitResizeHandle([wx, wy], bbox)`                                                                     |
+| SelectTool endpoint dots                 | `hitTestEndpointDots(wx, wy, ids)`                                     | `hitEndpointDot([wx, wy], ids)`                                                                       |
+| EraserTool circle                        | `atPoint(p, (PX + SLACK) / scale)`                                     | `atPoint(p, { px: PX + SLACK })`                                                                      |
+| TextTool visible text/note               | `hitTestVisibleText/Note(wx, wy)`                                      | `pickTopmostByKind(queryHits({ at, radius: { px: 8 } }), 'text'\|'note')`                             |
+| CodeTool visible code                    | `hitTestVisibleCode(wx, wy)`                                           | `pickTopmostByKind(queryHits({ at, radius: { px: 8 } }), 'code')`                                     |
+| snap.ts                                  | `queryHitCandidates(cx, cy, r, BINDABLE_KINDS)` + legacy `scanTopmost` | `queryHits({ at, radius: { world: r }, filter: isBindable })` + `scanTopmostWithMemo(cands, trySnap)` |
+| Viewport cull (`objects.ts`)             | `spatialIndex.query(getVisibleWorldBounds())`                          | `spatialIndex.queryBBox(getVisibleBoundsTuple())`                                                     |
+| Image viewport (`image-manager.ts`)      | `spatialIndex.query(padded)` (WorldBounds)                             | `spatialIndex.queryBBox(padViewport(getVisibleBoundsTuple()))` (tuple)                                |
+| Smart duplicate (`clipboard-actions.ts`) | `spatialIndex.query(queryBounds)`                                      | `spatialIndex.queryBBox([queryBounds.minX, …])`                                                       |
+
+### Behavior delta (intentional, narrow)
+
+- snap.ts: preserved — `scanTopmostWithMemo` defaults `onSeeThrough` to
+  `accept`, matching the legacy `scanTopmost({ accept, onSeeThrough })`
+  pattern with both handlers pointing at `trySnap`.
+- Text/code visible-kind click: preserved — occlusion model intact (filled
+  shape above text still blocks).
+- Viewport culling + image decode: identical entry sets. Only the bbox
+  shape at the rbush boundary changed.
+- Endpoint-dot tolerance: unchanged (`ENDPOINT_DOT_HIT_PX = 10`).
+
+### Files touched
+
+- **New:** `client/src/core/spatial/radius.ts`.
+- **Rewritten:** `client/src/core/spatial/handle-hit.ts` (new API:
+  `hitNearest` / `hitResizeHandle` / `hitEndpointDot`).
+- **Modified:** `core/spatial/region.ts` (`atPoint` takes `Radius`),
+  `core/spatial/object-query.ts` (+`queryEntries`; `queryHits` takes
+  `Radius`; shims dropped), `core/spatial/kind-capability.ts` (owns
+  `HitCandidate`; `hitPoint` returns `{ paint } | null`),
+  `core/spatial/pickers.ts` (+`pickTopmostByKind`; shims dropped),
+  `core/spatial/object-spatial-index.ts` (scratch envelope; deprecated
+  `query()` dropped), `core/spatial/__type_tests__.ts` (new
+  `HitCandidate` import, `Radius` in opts), `core/spatial/filters.ts`
+  (lint fix).
+- **Modified call sites:** `tools/selection/SelectTool.ts`,
+  `tools/EraserTool.ts`, `tools/TextTool.ts`, `tools/CodeTool.ts`,
+  `core/connectors/snap.ts`, `renderer/layers/objects.ts`,
+  `core/image/image-manager.ts`,
+  `core/clipboard/clipboard-actions.ts`.
+- **Modified store:** `stores/camera-store.ts`
+  (+`getVisibleBoundsTuple`).
+- **Deleted:** `core/geometry/object-pick.ts`,
+  `core/geometry/hit-testing.ts`.
+- **Types:** dropped `INTERIOR_PAINT` from `core/types/objects.ts` (dead
+  since §4a) and its re-export in `core/index.ts`.
+
+### Verification
+
+- `npm run typecheck` passes clean across shared + client + worker.
+  Deletions statically catch any stray reader of dropped exports — none
+  existed.
+- `__type_tests__.ts` exercises the new `Radius` shape end-to-end.
+  Narrowing through `byKind` / `byKinds` / `isBindable` preserved.
+- No unit tests added for the cap table — §9.7 still open.
+- No runtime smoke test yet.
+
+---
+
 ## 5. What's still legacy (intentional parallel-living)
 
-The plan said "Old entry points can live alongside new ones during the
-transition, with `@deprecated` JSDoc, and be deleted in a follow-up once all
-call sites are migrated." None of the legacy code has `@deprecated` tags
-yet, but it's all still present:
-
-### Still present in `core/geometry/hit-testing.ts`
-
-- `HIT_BY_KIND` table + `hitTestStrokeLike` / `hitTestShape` / `hitTestFramed`
-- `testObjectHit`
-- `objectIntersectsRect`
-- `hitTestVisibleText` / `hitTestVisibleNote` / `hitTestVisibleCode` (+ shared `hitTestVisibleKind`)
-- `hitTestHandle` (NOT yet rewritten as wrapper over `hitNearestHandle`)
-- `hitTestEndpointDots` (same — still bespoke)
-- `HitCandidate<K>` type (intentionally kept — shared vocabulary)
-
-### Still present in `core/geometry/object-pick.ts`
-
-- `classifyPaint` (four-branch switch — duplicated by the cap-routed one in `spatial/pickers.ts`)
-- `isSeeThrough` (hardcodes shape — equivalent in result to the new one but different shape)
-- `sortZTopFirst`
-- `scanTopmost` (older `ScanOptions` shape — `scanTopmostWithMemo` is the new variant)
-- `pickFrameAware` (duplicated in `spatial/pickers.ts`)
+Most of what this section originally listed is gone — see §4b. What
+remains:
 
 ### Still present in `core/geometry/frame-of.ts`
 
-- `FRAME_BY_KIND` + `frameOf` — fully duplicated by `KIND[k].frame`
+- `FRAME_BY_KIND` + `frameOf(handle)` — fully duplicated by
+  `KIND[k].frame` in the capability table, but still consumed by:
+  - `core/connectors/snap.ts` (inside `trySnap`)
+  - `core/connectors/connector-utils.ts`
+  - `core/connectors/reroute-connector.ts`
+  - `core/connectors/anchor-atoms.ts`
+
+These were outside the slice's listed consumer set. Their migration +
+`frame-of.ts` deletion is a follow-up — straightforward mechanical swap
+to `KIND[h.kind].frame(h)` or a thin re-export.
 
 ### Still present in `core/types/objects.ts`
 
-- `BINDABLE_KINDS` (used by `snap.ts`)
-- `isBindableKind` / `isBindableHandle`
-- `INTERIOR_PAINT` (used by `hit-testing.ts:hitTestFramed`)
-
-### Still present in `core/spatial/object-query.ts`
-
-- `queryHitCandidates(x, y, r, kinds?)` — shim; now internally dispatches through `KIND[k].hitPoint`
-- `queryHandlesInBBox(bbox, kinds?)` — shim
-
-### Call sites still on legacy
-
-- `core/connectors/snap.ts:71` — `queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS)` + `scanTopmost`
-- `tools/TextTool.ts:105` — `hitTestVisibleText` / `hitTestVisibleNote`
-- `tools/CodeTool.ts:90` — `hitTestVisibleCode`
-- `tools/selection/SelectTool.ts` — `hitTestHandle` and `hitTestEndpointDots` (call sites unchanged in shape; the wrappers themselves are still bespoke)
+- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` — still
+  consumed by connector internals (`reroute-connector.ts`,
+  `connector-lookup.ts`). The filter-layer `isBindable` in
+  `core/spatial/filters.ts` already derives from `KIND[k].bindable` (so
+  the new path has a single source of truth); these standalone exports
+  are the legacy shape used outside the filter context. Cleanup follows
+  the same pattern as the `frame-of.ts` migration.
 
 ### Not yet built
 
-- `iterResizeHandles(bounds)` generator — promised in the plan, would feed `hitNearestHandle`
-- `iterEndpointDots(selectedIds)` generator — same
-- The thin two-line wrappers that turn `hitTestHandle` / `hitTestEndpointDots` into `hitNearestHandle(p, r, gen)` calls
-- Unit tests for the capability table
+- Unit tests for the capability table (§9.7 in the open-questions list).
+- Runtime smoke test.
+- Generators weren't needed — `hitEndpointDot` inlines its probe
+  generator in `handle-hit.ts`. No standalone `iterResizeHandleProbes` /
+  `iterEndpointDotProbes` exports; if a future consumer needs them, pull
+  them out then.
 
 ---
 
 ## 6. How the new type system actually works
 
-End-to-end for the two query functions:
+End-to-end for the three query tiers + the sibling non-spatial layer.
+
+### `queryEntries(opts)` — raw IndexEntry list
+
+```typescript
+queryEntries({
+  region: Region,                          // atPoint | inBBox
+  kinds?: readonly ObjectKind[],           // optional entry-level prefilter
+}): IndexEntry[]
+```
+
+Pipeline:
+
+1. `regionEnvelope(region)` → `getSpatialIndex().queryBBox(env)`
+2. If `kinds` given, filter `entry.kind ∈ set`
+3. Return — no `getHandle`, no cap dispatch, no classification.
+
+Cheapest tier. Used by viewport culling (`objects.ts`) and image decode
+(`image-manager.ts`), which iterate `{ id, kind }` directly.
+
+### `queryHandles<K>(opts)` — region membership → handle list
+
+```typescript
+queryHandles({
+  region: Region,                          // atPoint | inBBox
+  precise?: 'bbox' | 'rect' | 'circle',    // default 'bbox'
+  filter?: NarrowingPredicate<ObjectHandle, HandleOf<K>>,
+  where?:  Predicate<HandleOf<K>>,
+  limit?:  number,
+}): HandleOf<K>[]
+```
+
+Pipeline:
+
+1. `regionEnvelope(region)` → `getSpatialIndex().queryBBox(env)`
+2. KindSet prefilter (from `__kinds` brand on filter)
+3. `getHandle(entry.id)` + `filter` narrow
+4. **Precise phase:**
+   - `'bbox'` → always pass (envelope-only)
+   - `'rect'` → only if `region.kind === 'rect'`, then `cap.hitRect(h, region.bbox)`
+   - `'circle'` → only if `region.kind === 'point'`, then `cap.hitCircle(h, region.p, region.r)`
+5. `where?` → push → `limit?` → return
 
 ### `queryHits<K>(opts)` — point probe → classified, Z-sorted
 
 ```typescript
 queryHits({
   at: [wx, wy],
-  radius: r,
+  radius: Radius,                          // { px } | { world }
   filter?: NarrowingPredicate<ObjectHandle, HandleOf<K>>,
   where?:  Predicate<HitCandidate<K>>,
   comparator?: Comparator<HitCandidate<K>>,  // default Z top-first
@@ -399,77 +577,85 @@ queryHits({
 
 Pipeline (per `object-query.ts`):
 
-1. `getSpatialIndex().queryRadius(wx, wy, radius)` — coarse rbush envelope
-2. `readKindBrand(filter)` → kindSet → entry-level prefilter
-3. `getHandle(entry.id)` — null guard
-4. `filter(handle)` — narrows; `K` flows from filter return type
-5. `KIND[h.kind].hitPoint(h, [wx, wy], radius)` — per-kind cap dispatch (one cast per loop)
-6. Compose `{ handle: h, ...fields }` into `HitCandidate<K>`
-7. `where?(candidate)` post-filter
-8. `sortZTopFirst` (or custom comparator)
-9. `limit?` truncate
+1. `r = resolveRadius(radius)` — `{ px }` → `px / scale`, `{ world }` passthrough
+2. `getSpatialIndex().queryRadius(wx, wy, r)` — coarse rbush envelope
+3. `readKindBrand(filter)` → kindSet → entry-level prefilter
+4. `getHandle(entry.id)` — null guard
+5. `filter(handle)` — narrows; `K` flows from filter return type
+6. `KIND[h.kind].hitPoint(h, [wx, wy], r)` — per-kind cap dispatch (one cast per loop)
+7. Compose `{ handle: h, ...fields }` → `HitCandidate<K>` (`fields = { paint }`)
+8. `where?(candidate)` post-filter
+9. `sortZTopFirst` (or custom comparator)
+10. `limit?` truncate
 
-### `queryHandles<K>(opts)` — region membership → handle list
+### Radius resolution (one place)
 
 ```typescript
-queryHandles({
-  region: Region,                         // atPoint | inBBox
-  precise?: 'bbox' | 'rect' | 'circle',   // default 'bbox'
-  filter?, where?, limit?,
-}): HandleOf<K>[]
+// core/spatial/radius.ts
+export type Radius = { readonly px: number } | { readonly world: number };
+export function resolveRadius(r: Radius): number {
+  if ('world' in r) return r.world;
+  return r.px / Math.max(0.001, useCameraStore.getState().scale);
+}
 ```
 
-Pipeline:
-
-1. `regionEnvelope(region)` → `getSpatialIndex().queryBBox(env)`
-2. KindSet prefilter
-3. `getHandle(entry.id)` + `filter` narrow
-4. **Precise phase:**
-   - `'bbox'` → always pass (envelope-only)
-   - `'rect'` → only if `region.kind === 'rect'`, then `cap.hitRect(h, region.bbox)`
-   - `'circle'` → only if `region.kind === 'point'`, then `cap.hitCircle(h, region.p, region.r)`
-5. `where?` → push → `limit?` → return
+`atPoint(p: Point, radius: Radius): Region` calls `resolveRadius` once at
+construction — the stored `region.r` is always world-units. `queryHits`
+calls it at the top of its pipeline. Call sites never touch scale.
 
 ### Variadic narrowing carries through
 
 ```typescript
-const cs = queryHits({ at, radius, filter: byKinds('shape', 'text') });
+const cs = queryHits({ at, radius: { px: 8 }, filter: byKinds('shape', 'text') });
 // cs: HitCandidate<'shape' | 'text'>[]   ← inferred, no manual cast
 ```
 
 `byKinds<const K extends readonly ObjectKind[]>(...ks: K)` produces a
-`NarrowingPredicate<ObjectHandle, HandleOf<K[number]>>`, the `K` flows
-through `queryHits<K>` → `HitCandidate<K[number]>`. `__type_tests__.ts`
-asserts this with `expectType` / `assertEq`.
+`NarrowingPredicate<ObjectHandle, HandleOf<K[number]>>`; `K` flows through
+`queryHits<K>` → `HitCandidate<K[number]>`. `__type_tests__.ts` asserts
+this with `expectType` / `assertEq`.
 
 ### Picker layer
 
 ```typescript
-classifyPaint(c)        // shim → KIND[c.handle.kind].classify(c)
-isSeeThrough(c)         // === classifyPaint(c) === null
-firstCandidate(cs)      // cs[0] ?? null
-pickBestBy(scorer)(cs)  // max-by scorer
+firstCandidate(cs)          // cs[0] ?? null
+pickBestBy(scorer)(cs)      // max-by scorer
 scanTopmostWithMemo(cs, accept, onSeeThrough?)
-                        // see-through memoization + paint-blocker termination
-pickFrameAware(cs)      // bestFrame/firstPaint two-phase tournament (preserved verbatim)
+                            // see-through memoization + paint-blocker termination
+pickFrameAware(cs)          // bestFrame/firstPaint two-phase tournament
+pickTopmostByKind(cs, kind) // visible-kind helper (replaces hitTestVisibleKind)
+areaOf(handle)              // lazy per-handle area dispatch (via KIND[k].area)
+sortZTopFirst(cs)           // in-place ULID-desc sort (used by queryHits default)
+byZOrderTopFirst            // comparator (exposed for callers that pass one)
 ```
 
-All of these consume Z-sorted top-first candidates (which `queryHits`
-produces by default). They're all `Picker<HitCandidate>` shaped so consumers
-can pick by name.
+All multi-candidate pickers consume Z-sorted top-first lists (`queryHits`
+produces this by default). They read `c.paint` directly — no shim
+redispatch.
 
-### Sibling: non-spatial `hitNearestHandle`
+### Sibling: non-spatial `hitNearest`
 
 ```typescript
 interface HandleProbe<T> { center: Point; value: T }
 
-hitNearestHandle<T>(p: Point, r: number, probes: Iterable<HandleProbe<T>>): T | null
+hitNearest<T>(opts: {
+  at: Point;
+  radius: Radius;
+  probes: Iterable<HandleProbe<T>>;
+}): T | null
 ```
 
-Squared-distance comparison, no `Math.hypot`. Designed to be fed by
-generators (`iterResizeHandles` / `iterEndpointDots` — _not yet built_).
-Same mental model as the spatial pipeline; honest about not touching the
-spatial index.
+Squared-distance comparison, no `Math.hypot`. `radius` is the same tagged
+`Radius` — screen vs world semantics are consistent with the spatial
+pipeline. Uses:
+
+- `hitEndpointDot(at, selectedIds)` — connector endpoint dots. Inlines a
+  generator reading `getEndpointEdgePosition(h, 'start'|'end')` and calls
+  `hitNearest({ at, radius: { px: ENDPOINT_DOT_HIT_PX }, probes })`.
+- `hitResizeHandle(at, bbox)` — bespoke (corners + edge strips). Not
+  routed through `hitNearest` because N/S/E/W handles are edge-distance
+  probes, not center probes; reducing them to midpoint circles would
+  hurt UX.
 
 ---
 
@@ -502,48 +688,61 @@ workaround.
 
 ## 8. Next direction (subject to change — to be spec'd in a follow-up session)
 
-Two moves on deck; both intentionally vague here because the planning happens
-in a new chat:
+§4b closed the call-site-surface side of the original two-move plan: the
+three-tier API (`queryEntries` / `queryHandles` / `queryHits`) + tagged
+`Radius` gives consumers a lean shape, and every listed call site is on
+it. What's still on deck:
 
 - **Make `ObjectSpatialIndex` the direct method caller.** Today there's a
-  wrapper (`core/spatial/object-query.ts`) over a wrapper
-  (`ObjectSpatialIndex`) over rbush. Plan: the index itself takes an rbush
-  `toBBox` override, stores bboxes natively, and exposes the hit-test entry
-  points directly. One less layer; one file to touch when adding a new
-  query method.
+  facade (`core/spatial/object-query.ts`) over a wrapper
+  (`ObjectSpatialIndex`) over rbush. Plan: the index itself takes an
+  rbush `toBBox` override, stores bboxes natively as tuples, and exposes
+  the hit-test entry points directly. One less layer; one file to touch
+  when adding a new query method. **Not started** — user explicitly
+  deferred "we won't be storing `toBBox` or anything yet."
 
-- **Reshape the call-site surface.** Once the index owns dispatch, the method
-  names and opts shape should get easier — ideally a single entry point
-  whose return type narrows on the requested method, so consumers keep their
-  call sites lean and the spatial + hit-test logic handles the rest. Exact
-  surface TBD.
+- **`frame-of.ts` deletion sweep.** Migrate
+  `connector-utils.ts`/`reroute-connector.ts`/`anchor-atoms.ts` from
+  `frameOf(h)` to `KIND[h.kind].frame(h)`, then delete the file. Pure
+  mechanical swap; blocked only on touching the connector layer.
 
-Paint-class correction (§4a) was the prereq for both — fixing classification
-before the shape change keeps the follow-up mechanical.
+- **`BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` cleanup.**
+  The filter-layer `isBindable` already derives from `KIND[k].bindable`.
+  Delete the standalone constant + the type guards once the
+  connector-internal consumers migrate to `isBindable` (or to a
+  narrowing helper re-exported from the capability layer).
 
-Downstream ideas the foundation still accommodates (bookmark sub-regions,
-capability subsets, `queryHitsInRect`, composite scorers) are deferred until
-the direct-caller move lands; they slot in cleanly on top.
+Downstream ideas the foundation still accommodates (bookmark
+sub-regions, capability subsets, `queryHitsInRect`, composite scorers,
+the new "create-connector-from-selected-shape" handle kind) all slot in
+cleanly on top of what's landed — none of them block each other.
 
 ---
 
 ## 9. Open questions (things the user is still figuring out)
 
-These are not in the plan as decisions — they're open and the user has
-flagged that things will be tweaked.
+**Resolved in §4b:**
 
-1. **`hitNearestHandle` sibling layer — does it stay sibling, or does it
-   merge?** Right now it's deliberately separate: resize handles aren't in
-   the spatial index because they're derived from selection state. But the
-   call-site vocabulary should match. Question: do we want a unified
-   `hitNearest({ region, probes? })` with an optional `probes` slot, or is
-   the sibling honest? Plan said sibling; user may want to revisit.
+- ~~**(1)** `hitNearestHandle` sibling vs merge.~~ Resolved: the sibling
+  API is now `hitNearest<T>({ at, radius: Radius, probes })` — same
+  tagged `Radius` as the spatial pipeline, so call-site vocabulary
+  matches even though the implementation is non-spatial. Resize handles
+  stay bespoke (edge-strip semantics would regress under a
+  center-probe-only model); endpoint dots migrated.
+- ~~**(4)** `pickFrameAware` duplication.~~ Resolved: legacy copy in
+  `core/geometry/object-pick.ts` deleted. Only `core/spatial/pickers.ts`
+  version remains.
+- ~~**(5)** `HitCandidate<K>` home.~~ Resolved: moved to
+  `core/spatial/kind-capability.ts`. `core/spatial/` is now self-
+  contained (no geometry imports in the type-surface path).
+
+**Still open:**
 
 2. **`queryHandles({ precise })` silent-skip behavior.** When
-   `precise: 'circle'` is passed with `region.kind === 'rect'`, the scanner
-   currently skips every entry silently → returns `[]`. Should this be a
-   compile error? Could enforce via discriminated `precise` field per
-   region kind:
+   `precise: 'circle'` is passed with `region.kind === 'rect'`, the
+   scanner currently skips every entry silently → returns `[]`. Should
+   this be a compile error? Could enforce via discriminated `precise`
+   field per region kind:
 
    ```typescript
    QueryHandlesOpts<K> =
@@ -553,102 +752,108 @@ flagged that things will be tweaked.
 
    More type safety, slightly more verbose option type. User to decide.
 
-3. **`STROKE_CAP` / `CONNECTOR_CAP` duplication.** Identical bodies. Factor
-   to a shared `polylineCap()` helper, leave as-is, or wait until they
-   actually diverge?
+3. **`STROKE_CAP` / `CONNECTOR_CAP` duplication.** Identical bodies.
+   Factor to a shared `polylineCap()` helper, leave as-is, or wait until
+   they actually diverge? (Unchanged from previous round.)
 
-4. **`pickFrameAware` lives in two places.** Old in `object-pick.ts`, new
-   in `spatial/pickers.ts`. They're behaviorally identical (the new one
-   was preserved verbatim) but the new one routes through `KIND[k].classify`
-   while the old one has a hardcoded switch. Decision pending: delete old
-   when call sites migrate, or keep for transition?
+4. **Cap entry organization.** All 8 entries live in
+   `kind-capability.ts` (~230 lines after §4b). Plan said: _"if they
+   grow, a `client/src/core/spatial/caps/` subfolder with one file per
+   kind."_ Threshold not yet hit. User may prefer split-now for
+   navigability.
 
-5. **`HitCandidate<K>` lives in `core/geometry/hit-testing.ts`** and is
-   imported by `core/spatial/kind-capability.ts`. This creates a type-only
-   dependency from spatial → geometry. Works fine, but if we want
-   `core/spatial/` to be self-contained, the type should re-home to
-   `atoms.ts` or `kind-capability.ts`. Cosmetic.
-
-6. **Cap entry organization.** All 8 entries currently live in
-   `kind-capability.ts` (~250 lines, tight). Plan said: _"if they grow, a
-   `client/src/core/spatial/caps/` subfolder with one file per kind."_
-   Threshold not yet hit. User may prefer split-now for navigability.
-
-7. **Capability table is currently hand-derived from the existing scattered
-   sources. No unit tests yet** to prove byte-for-byte equivalence. The
-   plan said "for each kind, construct a dummy handle and assert..." —
-   not done. Risk: a subtle classify regression that only manifests in a
+5. **No unit tests for the capability table.** Byte-for-byte equivalence
+   vs the legacy scattered sources is narrower after §4a (classify
+   dropped, area lazy) and §4b (legacy deleted), but still unverified by
+   tests. Risk: a subtle per-kind regression surfacing only in a
    nested-frame edge case.
 
-8. **`BINDABLE_KINDS` / `INTERIOR_PAINT` derivation.** Plan said these
-   should derive from `KIND[k].bindable` / `KIND[k].classify`. Currently
-   they still live as standalone constants in `types/objects.ts`. The new
-   `isBindable` filter in `filters.ts` does derive from `KIND` — but only
-   for the filter, not for the public exports. Cleanup to do or keep
-   parallel?
+6. **`BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle`
+   derivation.** The `isBindable` filter in `filters.ts` derives from
+   `KIND[k].bindable`, but the standalone exports in
+   `core/types/objects.ts` are still maintained manually. Cleanup waits
+   on the connector-internal migration (`connector-lookup.ts`,
+   `reroute-connector.ts`) moving to the filter or to a narrowing
+   helper re-exported from the capability layer.
 
 ---
 
 ## 10. Scope — what's in this refactor, what's out
 
-### In scope (foundation phase — landed)
+### Landed (foundation + §4a + §4b)
 
-- All 6 layers from the plan exist.
-- Type tests prove the inference paths.
-- Two integration sites (SelectTool, EraserTool) exercise the new functions
-  in production code paths.
-- Marquee bug fixed.
-- Typecheck passes.
-- No geometry math moved — only the dispatch tables reorganized.
-- Spatial-index entry-level prefilter optimization preserved.
+- All 6 layers from the plan exist, plus `core/spatial/radius.ts` (new).
+- Type tests prove the inference paths (with updated `Radius` shape).
+- Marquee bug fixed (gesture-owned).
+- Paint-class correction (§4a).
+- Query cleanup & call-site consolidation (§4b) — three tiers
+  (`queryEntries` / `queryHandles` / `queryHits`), tagged `Radius`
+  replacing `/scale` boilerplate, `HitCandidate` slimmed to
+  `{ handle, paint }`, scratch-envelope on the rbush boundary, shared
+  visible-bounds tuple, `hitNearest` unifying the non-spatial layer.
+- Consumers migrated: `SelectTool` click/handles/endpoints, `EraserTool`,
+  `TextTool`, `CodeTool`, `snap.ts`, viewport culling (`objects.ts`),
+  image viewport (`image-manager.ts`), smart duplicate
+  (`clipboard-actions.ts`).
+- Legacy deleted: `core/geometry/object-pick.ts`,
+  `core/geometry/hit-testing.ts`, `INTERIOR_PAINT`, deprecated
+  `ObjectSpatialIndex.query(WorldBounds)`, `queryHitCandidates`,
+  `queryHandlesInBBox`, `hitNearestHandle` (renamed to `hitNearest`).
+- Typecheck passes across shared + client + worker.
 
-### Out of scope for this phase (deliberate — partial integration OK)
+### Still out of scope (deferred to follow-up slice)
 
-- `snap.ts` migration to `queryHits + isBindable + scanTopmostWithMemo`
-- `TextTool.ts` / `CodeTool.ts` migration to inline `firstCandidate(queryHits({ filter: byKind(...) }))`
-- `hitTestHandle` / `hitTestEndpointDots` rewrite as `hitNearestHandle` wrappers
-- `iterResizeHandles` / `iterEndpointDots` generators
-- Unit tests for the capability table
-- Runtime smoke test in dev
-- Deletion sweep of legacy code (`HIT_BY_KIND`, `frameOf`, `INTERIOR_PAINT`,
-  `objectIntersectsRect`, `hitTestVisibleKind`, `pickFrameAware` in
-  `object-pick.ts`, `frame-of.ts` itself)
-- `BINDABLE_KINDS` / `INTERIOR_PAINT` derivation cleanup
+- `core/geometry/frame-of.ts` deletion + connector-internal migrations
+  (`connector-utils.ts`, `reroute-connector.ts`, `anchor-atoms.ts`).
+- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` cleanup.
+- `ObjectSpatialIndex` becoming the direct facade (rbush `toBBox`
+  override, tuple-native entries).
+- Unit tests for the capability table.
+- Runtime smoke test.
+- `STROKE_CAP` / `CONNECTOR_CAP` factoring.
+- Cap subfolder split threshold.
+- `queryHandles({ precise })` silent-skip → compile error shape (§9.2).
 
 ### Explicitly out of scope (forever, per plan)
 
-- `core/geometry/hit-primitives.ts` — pure tuple math, correctly scoped
-- `core/spatial/object-spatial-index.ts` — pure rbush wrapper
-- Connector routing / bookmark / image / text subsystems — orthogonal
+- `core/geometry/hit-primitives.ts` — pure tuple math, correctly scoped.
+- Connector routing / bookmark / image / text subsystems — orthogonal.
 
 ---
 
 ## 11. Handoff notes
 
-Foundation (§3–§6) and paint-class correction (§4a) are both in. Typecheck
-clean. All consumers (SelectTool, EraserTool, TextTool, CodeTool, snap) still
-route through legacy entry points; none of them read any fields that §4a
-dropped, so the only user-visible delta from this round is the text/code
-short-circuit described in §4a.
+Foundation (§3–§6), paint-class correction (§4a), and query cleanup +
+call-site consolidation (§4b) all landed. Typecheck passes across shared
 
-For the next session — to be planned in a new chat:
+- client + worker. Every consumer listed in the original refactor set is
+  on the new API.
 
-- The direct-caller refactor (§8, first bullet) is the immediate next move.
-  Hit-test classification is correct now; the layering is what's left.
-- Consumer migration and the legacy delete sweep follow the direct-caller
-  move, not before it.
+Live architecture:
 
-Open items from §9 that still matter:
+- **`core/spatial/` is self-contained** (no imports from
+  `core/geometry/hit-testing` or `object-pick` — both deleted).
+  `core/spatial/radius.ts` is the single module that imports
+  `camera-store` (for `resolveRadius`).
+- **Three query tiers** (`queryEntries` / `queryHandles` / `queryHits`)
+  — consumers pick the cheapest tier that answers their question.
+- **Tagged `Radius` in opts** — `{ px }` or `{ world }`. No `/scale`
+  math at call sites.
+- **Scratch envelope at rbush boundary** + **shared visible-bounds
+  tuple** in camera-store — zero per-call allocation in hot paths.
+- **`hitNearest` sibling** with same `Radius` vocabulary for resize
+  handles + endpoint dots.
 
-- **(2)** `queryHandles({ precise })` silent-skip — design-wart vs compile-
-  error. Undecided.
-- **(7)** Capability-table unit tests — still not written. Byte-for-byte
-  equivalence vs legacy is narrower after §4a but still unverified by tests.
-- **(8)** Derive `BINDABLE_KINDS` from `KIND.bindable` — pending.
+For the next slice — items on deck:
 
-Items resolved or partially resolved this round:
+- `frame-of.ts` deletion sweep (connector-internal migrations).
+- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` cleanup.
+- `ObjectSpatialIndex` as direct facade (rbush `toBBox` + tuple-native
+  entries).
+- Capability-table unit tests (§9.7).
+- `queryHandles({ precise })` compile-time enforcement (§9.2).
+- `STROKE_CAP` / `CONNECTOR_CAP` factoring (§9.3).
+- Cap subfolder split (§9.6).
 
-- §9.4 (pickFrameAware duplication) is now partially resolved — both copies
-  read precomputed `c.paint` and share `areaOf` from `core/spatial/pickers`,
-  so they're behaviorally AND structurally identical. Two files, one logic.
-  Still waiting on the delete sweep.
+Items resolved this round (see §9): #1, #4, #5. Items still open: #2,
+#3, #6, #7, #8.

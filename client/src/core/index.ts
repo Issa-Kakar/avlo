@@ -21,4 +21,4 @@ export type {
   BindableKind,
   BindableHandle,
 } from './types/objects';
-export { isBindableKind, isBindableHandle, INTERIOR_PAINT, BINDABLE_KINDS } from './types/objects';
+export { isBindableKind, isBindableHandle, BINDABLE_KINDS } from './types/objects';

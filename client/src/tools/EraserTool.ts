@@ -1,4 +1,4 @@
-import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
+import { worldToCanvas } from '@/stores/camera-store';
 import { getHandle, transact, getObjects, getConnectorsForShape } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
@@ -136,13 +136,13 @@ export class EraserTool implements PointerTool {
   }
 
   private updateHitTest(worldX: number, worldY: number): void {
-    const { scale } = useCameraStore.getState();
-    const radiusWorld = (ERASER_RADIUS_PX + ERASER_SLACK_PX) / scale;
-
     this.state.hitNow.clear();
 
     // Per-kind fill-aware circle dispatch lives in the capability table now.
-    const inCircle = queryHandles({ region: atPoint([worldX, worldY], radiusWorld), precise: 'circle' });
+    const inCircle = queryHandles({
+      region: atPoint([worldX, worldY], { px: ERASER_RADIUS_PX + ERASER_SLACK_PX }),
+      precise: 'circle',
+    });
     for (const h of inCircle) this.state.hitNow.add(h.id);
 
     if (this.state.isErasing) {

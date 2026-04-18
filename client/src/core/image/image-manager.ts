@@ -18,14 +18,14 @@
  * No tracking maps — everything derived at query time from snapshot.
  */
 
-import type { WorldBounds, FrameTuple } from '../types/geometry';
+import type { BBoxTuple, WorldBounds, FrameTuple } from '../types/geometry';
 import { frameTupleIntersectsBounds } from '../types/geometry';
 import { getAssetId, getFrame, getNaturalDimensions } from '../accessors';
 import { bboxToBounds } from '../geometry/bbox';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorld } from '@/renderer/RenderLoop';
 import { hasActiveRoom, getObjectsById, getSpatialIndex, getHandle } from '@/runtime/room-runtime';
-import { useCameraStore, getVisibleWorldBounds } from '@/stores/camera-store';
+import { useCameraStore, getVisibleWorldBounds, getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type * as Y from 'yjs';
 import type { ObjectKind } from '../types/objects';
@@ -89,15 +89,11 @@ const inflightIngests = new Map<string, { resolve: (result: IngestResult) => voi
 // Helpers
 // ============================================================
 
-function padViewport(vb: WorldBounds): WorldBounds {
-  const vw = vb.maxX - vb.minX;
-  const vh = vb.maxY - vb.minY;
-  return {
-    minX: vb.minX - vw * 2.25,
-    minY: vb.minY - vh * 2.25,
-    maxX: vb.maxX + vw * 2.25,
-    maxY: vb.maxY + vh * 2.25,
-  };
+function padViewport(vb: Readonly<[number, number, number, number]>): BBoxTuple {
+  const [minX, minY, maxX, maxY] = vb;
+  const vw = maxX - minX;
+  const vh = maxY - minY;
+  return [minX - vw * 2.25, minY - vh * 2.25, maxX + vw * 2.25, maxY + vh * 2.25];
 }
 
 function ppspToLevel(ppsp: number): 0 | 1 | 2 {
@@ -317,9 +313,8 @@ export function manageImageViewport(): void {
   } catch {
     return;
   }
-  const vb = getVisibleWorldBounds();
-  const padded = padViewport(vb);
-  const visible = spatialIndex.query(padded);
+  const padded = padViewport(getVisibleBoundsTuple());
+  const visible = spatialIndex.queryBBox(padded);
 
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;

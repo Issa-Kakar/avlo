@@ -3,17 +3,17 @@
  *
  * This file is checked by `tsc` but produces no runtime code (the bodies are
  * unreachable). If a type assertion below fails to compile, the public type
- * surface of `queryHits` / `queryHandles` / `hitNearestHandle` regressed.
+ * surface of `queryHits` / `queryHandles` / `hitNearest` regressed.
  */
 
 import type { ObjectHandle, BindableHandle } from '@/core/types/objects';
 import type { HandleId } from '@/tools/types';
-import type { HitCandidate } from '@/core/geometry/hit-testing';
 
 import { queryHits, queryHandles } from './object-query';
 import { byKind, byKinds, isBindable } from './filters';
 import { atPoint, inBBox } from './region';
-import { hitNearestHandle, type HandleProbe } from './handle-hit';
+import { hitNearest, type HandleProbe } from './handle-hit';
+import type { HitCandidate } from './kind-capability';
 
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 function expectType<T>(_v: T): void {
@@ -26,12 +26,12 @@ function assertEq<A, B>(_proof: Eq<A, B>): void {
 // Guard against accidental execution: this entire file is dead code at runtime.
 if (false as boolean) {
   // queryHits with `byKind` narrows to a single-kind candidate array.
-  const shapes = queryHits({ at: [0, 0], radius: 5, filter: byKind('shape') });
+  const shapes = queryHits({ at: [0, 0], radius: { px: 5 }, filter: byKind('shape') });
   expectType<HitCandidate<'shape'>[]>(shapes);
   assertEq<typeof shapes, HitCandidate<'shape'>[]>(true);
 
   // queryHits with variadic `byKinds` produces a union candidate.
-  const mixed = queryHits({ at: [0, 0], radius: 5, filter: byKinds('shape', 'text') });
+  const mixed = queryHits({ at: [0, 0], radius: { world: 5 }, filter: byKinds('shape', 'text') });
   expectType<HitCandidate<'shape' | 'text'>[]>(mixed);
   assertEq<typeof mixed, HitCandidate<'shape' | 'text'>[]>(true);
   // The handle's `kind` is the inferred union — no manual cast required.
@@ -44,16 +44,16 @@ if (false as boolean) {
 
   // queryHandles with `isBindable` narrows to BindableHandle.
   const bindables = queryHandles({
-    region: atPoint([0, 0], 5),
+    region: atPoint([0, 0], { px: 5 }),
     precise: 'circle',
     filter: isBindable,
   });
   expectType<BindableHandle[]>(bindables);
   assertEq<typeof bindables, BindableHandle[]>(true);
 
-  // hitNearestHandle returns the probe value (or null), generically inferred.
+  // hitNearest returns the probe value (or null), generically inferred.
   const probes: HandleProbe<HandleId>[] = [];
-  const hit = hitNearestHandle([0, 0], 10, probes);
+  const hit = hitNearest({ at: [0, 0], radius: { px: 10 }, probes });
   expectType<HandleId | null>(hit);
   assertEq<typeof hit, HandleId | null>(true);
 }

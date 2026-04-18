@@ -18,9 +18,11 @@ import { EDGE_CLEARANCE_W, getSnapRadiiWorld, type SnapRadiiWorld } from './cons
 import { getShapeTypeMidpoints, directionVector } from './connector-utils';
 import { pointInsideShape } from '../geometry/hit-primitives';
 import { frameOf } from '../geometry/frame-of';
-import { scanTopmost, type HitCandidate } from '../geometry/object-pick';
-import { queryHitCandidates } from '../spatial/object-query';
-import { BINDABLE_KINDS, type BindableKind } from '../types/objects';
+import { scanTopmostWithMemo } from '../spatial/pickers';
+import { queryHits } from '../spatial/object-query';
+import { isBindable } from '../spatial/filters';
+import type { HitCandidate } from '../spatial/kind-capability';
+import type { BindableKind } from '../types/objects';
 import type { FrameTuple, Point } from '../types/geometry';
 import { getHandleShapeType } from '../accessors';
 import type { Dir, SnapTarget, SnapContext } from './types';
@@ -29,11 +31,7 @@ import { isAnchorInterior } from './types';
 /**
  * Compute normalized anchor and offset position from an edge point.
  */
-function computeAnchorAndPosition(
-  edge: Point,
-  frame: FrameTuple,
-  side: Dir,
-): { normalizedAnchor: Point; position: Point } {
+function computeAnchorAndPosition(edge: Point, frame: FrameTuple, side: Dir): { normalizedAnchor: Point; position: Point } {
   const [x, y, w, h] = frame;
   const normalizedAnchor: Point = [Math.max(0, Math.min(1, (edge[0] - x) / w)), Math.max(0, Math.min(1, (edge[1] - y) / h))];
   const [dx, dy] = directionVector(side);
@@ -74,7 +72,11 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const [cx, cy] = cursorWorld;
   const { edgeSnap: edgeRadius } = getSnapRadiiWorld();
 
-  const candidates = queryHitCandidates(cx, cy, edgeRadius, BINDABLE_KINDS);
+  const candidates = queryHits({
+    at: [cx, cy],
+    radius: { world: edgeRadius },
+    filter: isBindable,
+  });
   if (candidates.length === 0) return null;
 
   const trySnap = (c: HitCandidate<BindableKind>): SnapTarget | null => {
@@ -83,10 +85,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
     return computeSnapForShape(c.handle.id, frame, getHandleShapeType(c.handle), ctx);
   };
 
-  return scanTopmost(candidates, {
-    accept: trySnap,
-    onSeeThrough: trySnap,
-  });
+  return scanTopmostWithMemo(candidates, trySnap);
 }
 
 /**
@@ -163,10 +162,7 @@ function tryStraightInteriorSnap(
   }
 
   // Interior anchor at cursor position (clamped inside [0.01, 0.99])
-  const normalizedAnchor: Point = [
-    Math.max(0.01, Math.min(0.99, (cx - fx) / fw)),
-    Math.max(0.01, Math.min(0.99, (cy - fy) / fh)),
-  ];
+  const normalizedAnchor: Point = [Math.max(0.01, Math.min(0.99, (cx - fx) / fw)), Math.max(0.01, Math.min(0.99, (cy - fy) / fh))];
   return {
     shapeId,
     side: nearest.side,
@@ -181,12 +177,7 @@ function tryStraightInteriorSnap(
 /**
  * Elbow connector, deep inside shape: snap to nearest midpoint only.
  */
-function tryElbowInteriorSnap(
-  shapeId: string,
-  frame: FrameTuple,
-  midpoints: Record<Dir, Point>,
-  probe: Point,
-): SnapTarget {
+function tryElbowInteriorSnap(shapeId: string, frame: FrameTuple, midpoints: Record<Dir, Point>, probe: Point): SnapTarget {
   const nearest = nearestMidpoint(probe, midpoints);
   const midpoint = midpoints[nearest.side];
   const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint, frame, nearest.side);
