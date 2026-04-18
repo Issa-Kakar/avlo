@@ -18,20 +18,17 @@
  * No tracking maps — everything derived at query time from snapshot.
  */
 
-import type { BBoxTuple, WorldBounds, FrameTuple } from '../types/geometry';
-import { frameTupleIntersectsBounds } from '../types/geometry';
+import type { BBoxTuple } from '../types/geometry';
 import { getAssetId, getFrame, getNaturalDimensions } from '../accessors';
-import { bboxToBounds } from '../geometry/bbox';
 import type { WorkerInbound, WorkerOutbound } from './image-worker';
-import { invalidateWorld } from '@/renderer/RenderLoop';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { hasActiveRoom, getObjectsById, getSpatialIndex, getHandle } from '@/runtime/room-runtime';
-import { useCameraStore, getVisibleWorldBounds, getVisibleBoundsTuple } from '@/stores/camera-store';
+import { useCameraStore, getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import type * as Y from 'yjs';
-import type { ObjectKind } from '../types/objects';
+import type { ObjectHandle } from '../types/objects';
 import { handleUnfurlResult, handleUnfurlFailed } from '../bookmark/bookmark-unfurl';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
-import { getBookmarkFrame, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
+import { getBookmarkFrame } from '../bookmark/bookmark-render';
 
 // ============================================================
 // Workers
@@ -206,25 +203,25 @@ function handleWorkerMessage(e: MessageEvent<WorkerOutbound>): void {
 
 for (const w of workers) w.onmessage = handleWorkerMessage;
 
-/** Invalidate canvas region for decoded bitmap. O(1) via cached bounds, gated on actual viewport. */
+/** Invalidate canvas region for decoded bitmap. O(1) via cached bbox, gated on actual viewport. */
 function invalidateBitmapRegion(assetId: string): void {
-  // Fast path: pre-computed union bounds from most recent manageImageViewport tick.
+  // Fast path: pre-computed union bbox from most recent manageImageViewport tick.
   // Only invalidate if actually visible — off-viewport bitmaps sit in the map silently
   // until the user scrolls to them (the render pass will draw them naturally).
   const info = _assetInfo.get(assetId);
   if (info) {
-    const vb = getVisibleWorldBounds();
-    const b = info.bounds;
-    if (b.maxX >= vb.minX && b.minX <= vb.maxX && b.maxY >= vb.minY && b.minY <= vb.maxY) {
-      invalidateWorld(b);
+    const vb = getVisibleBoundsTuple();
+    const b = info.bbox;
+    if (b[2] >= vb[0] && b[0] <= vb[2] && b[3] >= vb[1] && b[1] <= vb[3]) {
+      invalidateWorldBBox(b);
     }
     return;
   }
   // Fallback for bitmaps arriving before first render tick (hydration):
-  // simple bounds intersection, no spatial query
+  // simple bbox intersection, no spatial query
   if (!hasActiveRoom()) return;
   try {
-    const vb = getVisibleWorldBounds();
+    const vb = getVisibleBoundsTuple();
     for (const handle of getObjectsById().values()) {
       if (handle.kind !== 'image' && handle.kind !== 'bookmark') continue;
       const handleAssetId =
@@ -232,9 +229,9 @@ function invalidateBitmapRegion(assetId: string): void {
           ? getAssetId(handle.y)
           : ((handle.y.get('ogImageAssetId') as string | undefined) ?? (handle.y.get('faviconAssetId') as string | undefined));
       if (handleAssetId !== assetId) continue;
-      const [minX, minY, maxX, maxY] = handle.bbox;
-      if (maxX >= vb.minX && minX <= vb.maxX && maxY >= vb.minY && minY <= vb.maxY) {
-        invalidateWorld(bboxToBounds(handle.bbox));
+      const b = handle.bbox;
+      if (b[2] >= vb[0] && b[0] <= vb[2] && b[3] >= vb[1] && b[1] <= vb[3]) {
+        invalidateWorldBBox(b);
       }
     }
   } catch {
@@ -251,45 +248,32 @@ export function getBitmap(assetId: string): ImageBitmap | null {
   return bitmaps.get(assetId)?.bitmap ?? null;
 }
 
-/** Per-asset info reused each frame to avoid allocations. Includes union bounds for O(1) invalidation. */
+/** Per-asset info reused each frame to avoid allocations. Includes union bbox for O(1) invalidation. */
 interface AssetInfo {
   ppsp: number;
   nw: number;
   nh: number;
-  bounds: WorldBounds;
+  bbox: BBoxTuple;
 }
 const _assetInfo = new Map<string, AssetInfo>();
 
 /** Register or merge asset info for viewport management. */
-function registerAssetInfo(
-  assetId: string,
-  ppsp: number,
-  nw: number,
-  nh: number,
-  bMinX: number,
-  bMinY: number,
-  bMaxX: number,
-  bMaxY: number,
-): void {
+function registerAssetInfo(assetId: string, ppsp: number, nw: number, nh: number, bbox: BBoxTuple): void {
   const prev = _assetInfo.get(assetId);
   if (!prev) {
-    _assetInfo.set(assetId, {
-      ppsp,
-      nw,
-      nh,
-      bounds: { minX: bMinX, minY: bMinY, maxX: bMaxX, maxY: bMaxY },
-    });
+    // COPY: handle.bbox is shared with the spatial-index R-tree — never mutate
+    _assetInfo.set(assetId, { ppsp, nw, nh, bbox: [bbox[0], bbox[1], bbox[2], bbox[3]] });
   } else {
     if (ppsp > prev.ppsp) {
       prev.ppsp = ppsp;
       prev.nw = nw;
       prev.nh = nh;
     }
-    const pb = prev.bounds;
-    if (bMinX < pb.minX) pb.minX = bMinX;
-    if (bMinY < pb.minY) pb.minY = bMinY;
-    if (bMaxX > pb.maxX) pb.maxX = bMaxX;
-    if (bMaxY > pb.maxY) pb.maxY = bMaxY;
+    const pb = prev.bbox;
+    if (bbox[0] < pb[0]) pb[0] = bbox[0];
+    if (bbox[1] < pb[1]) pb[1] = bbox[1];
+    if (bbox[2] > pb[2]) pb[2] = bbox[2];
+    if (bbox[3] > pb[3]) pb[3] = bbox[3];
   }
 }
 
@@ -329,11 +313,10 @@ export function manageImageViewport(): void {
       const favId = handle.y.get('faviconAssetId') as string | undefined;
       const frame = getBookmarkFrame(handle.id);
       if (!frame) continue;
-      const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
       // OG image + favicon: always level 0, no mip levels needed
       for (const aid of [ogId, favId]) {
         if (!aid) continue;
-        registerAssetInfo(aid, Infinity, frame[2], frame[2], bMinX, bMinY, bMaxX, bMaxY);
+        registerAssetInfo(aid, Infinity, frame[2], frame[2], handle.bbox);
       }
       continue;
     }
@@ -349,9 +332,8 @@ export function manageImageViewport(): void {
     const nw = dims ? dims[0] : frame[2];
     const nh = dims ? dims[1] : frame[3];
     const ppsp = (frame[2] * scale * dpr) / nw;
-    const [bMinX, bMinY, bMaxX, bMaxY] = handle.bbox;
 
-    registerAssetInfo(assetId, ppsp, nw, nh, bMinX, bMinY, bMaxX, bMaxY);
+    registerAssetInfo(assetId, ppsp, nw, nh, handle.bbox);
   }
 
   // During scale transforms, force full-res for selected images (crisp preview)
@@ -429,55 +411,46 @@ export function ingest(file: Blob): Promise<IngestResult> {
 
 /**
  * Hydrate images on room join.
- * Manager splits visible vs offscreen, computes decode dimensions for visible.
- * Uses exact viewport (no padding) for decode visibility.
- * Distributes items across workers by hash routing, assigns gen per visible item.
+ * Receives pre-filtered image+bookmark handles from RoomDocManager.hydrateObjectsFromY.
+ * Splits visible vs offscreen via handle.bbox, computes decode dimensions, distributes
+ * across workers by hash routing, assigns gen per visible item.
  */
-export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
+export function hydrateImages(handles: ObjectHandle[]): void {
+  if (handles.length === 0) return;
+
   const { scale } = useCameraStore.getState();
   const dpr = window.devicePixelRatio || 1;
-  const vb = getVisibleWorldBounds();
+  const vb = getVisibleBoundsTuple();
 
-  // Collect per-assetId: best level (min level = highest quality) + natural dims + representative frame
-  const assetMap = new Map<string, { frame: FrameTuple; level: 0 | 1 | 2; nw: number; nh: number }>();
+  // Per-assetId: best level (min level = highest quality) + natural dims + representative bbox
+  const assetMap = new Map<string, { bbox: BBoxTuple; level: 0 | 1 | 2; nw: number; nh: number }>();
 
-  objects.forEach((yObj) => {
-    const kind = yObj.get('kind') as ObjectKind;
-    if (kind === 'bookmark') {
-      const ogId = yObj.get('ogImageAssetId') as string | undefined;
-      const favId = yObj.get('faviconAssetId') as string | undefined;
-      const origin = yObj.get('origin') as [number, number] | undefined;
-      if (!origin) return;
-      const bkScale = (yObj.get('scale') as number) ?? 1;
-      const bkHeight = (yObj.get('height') as number) ?? 60;
-      const w = BOOKMARK_WIDTH * bkScale;
-      const h = bkHeight * bkScale;
-      const frame: FrameTuple = [origin[0], origin[1], w, h];
-      for (const aid of [ogId, favId]) {
-        if (!aid) continue;
-        assetMap.set(aid, { frame, level: 0, nw: w, nh: h });
-      }
-      return;
+  for (const handle of handles) {
+    if (handle.kind === 'bookmark') {
+      const ogId = handle.y.get('ogImageAssetId') as string | undefined;
+      const favId = handle.y.get('faviconAssetId') as string | undefined;
+      // Bookmarks always level 0 (ppsp Infinity); nw/nh unused for level 0 decode
+      if (ogId) assetMap.set(ogId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
+      if (favId) assetMap.set(favId, { bbox: handle.bbox, level: 0, nw: 0, nh: 0 });
+      continue;
     }
-    if (kind !== 'image') return;
-    const assetId = yObj.get('assetId') as string | undefined;
-    const frame = yObj.get('frame') as FrameTuple | undefined;
-    if (!assetId || !frame) return;
-
-    const nw = (yObj.get('naturalWidth') as number) ?? frame[2];
-    const nh = (yObj.get('naturalHeight') as number) ?? frame[3];
-    const ppsp = (frame[2] * scale * dpr) / nw;
+    // image — bbox === frame, so bbox width is the exact frame width
+    const assetId = getAssetId(handle.y);
+    if (!assetId) continue;
+    const dims = getNaturalDimensions(handle.y);
+    if (!dims) continue;
+    const [nw, nh] = dims;
+    const frameW = handle.bbox[2] - handle.bbox[0];
+    const ppsp = (frameW * scale * dpr) / nw;
     const level = ppspToLevel(ppsp);
-
     const existing = assetMap.get(assetId);
     if (!existing || level < existing.level) {
-      assetMap.set(assetId, { frame, level, nw, nh });
+      assetMap.set(assetId, { bbox: handle.bbox, level, nw, nh });
     }
-  });
+  }
 
   if (assetMap.size === 0) return;
 
-  // Group by worker via hash routing
   const byWorker: [
     {
       visible: { assetId: string; level: 0 | 1 | 2; width: number; height: number; gen: number }[];
@@ -492,9 +465,10 @@ export function hydrateImages(objects: Y.Map<Y.Map<unknown>>): void {
     { visible: [], prefetch: [] },
   ];
 
-  for (const [assetId, { frame, level, nw, nh }] of assetMap) {
+  for (const [assetId, { bbox, level, nw, nh }] of assetMap) {
     const idx = assetId.charCodeAt(0) & 1;
-    if (frameTupleIntersectsBounds(frame, vb)) {
+    const isVisible = bbox[2] >= vb[0] && bbox[0] <= vb[2] && bbox[3] >= vb[1] && bbox[1] <= vb[3];
+    if (isVisible) {
       const div = levelDivisor(level);
       const gen = ++genCounter;
       byWorker[idx].visible.push({

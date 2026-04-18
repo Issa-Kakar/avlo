@@ -378,6 +378,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
+    const mediaHandles: ObjectHandle[] = [];
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
@@ -386,6 +387,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const handle: ObjectHandle = { id, kind, y: yObj, bbox };
       this.objectsById.set(id, handle);
       handles.push(handle);
+      if (kind === 'image' || kind === 'bookmark') mediaHandles.push(handle);
     });
 
     if (handles.length > 0) {
@@ -393,7 +395,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     hydrateConnectorLookup(this.objectsById);
-    hydrateImages(this.objects);
+    hydrateImages(mediaHandles);
     invalidateWorldAll();
   }
 

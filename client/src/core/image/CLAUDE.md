@@ -237,7 +237,7 @@ pending: Map<assetId, { gen: number; level: number }>          // In-flight deco
 genCounter: number                                              // Monotonic generation counter
 errors:  Map<assetId, timestamp>   // Failed assets, 15s cooldown retry (cleared on success)
 inflightIngests: Map<id, { resolve, reject }>  // Ingest promise tracking
-_assetInfo: Map<assetId, { ppsp, nw, nh, bounds }>  // Reused per frame (cleared + repopulated each tick)
+_assetInfo: Map<assetId, { ppsp, nw, nh, bbox }>  // Reused per frame (cleared + repopulated each tick); bbox is BBoxTuple
 ```
 
 No `tracked` map, no `assetFrames` map. Spatial index IS the source of truth for visibility.
@@ -261,7 +261,7 @@ Main: bitmap(A, gen=2) → pending.gen=2 → accept. bitmap(A, gen=1) → gen mi
 getBitmap(assetId): ImageBitmap | null     // Synchronous render path
 manageImageViewport(): void                // Called from RenderLoop.tick() every frame
 ingest(blob): Promise<IngestResult>        // Local drop: validate → hash → decode → bitmap
-hydrateImages(objects: Y.Map): void        // Room join: distribute decode across workers + prefetch
+hydrateImages(handles: ObjectHandle[]): void  // Room join: pre-filtered image+bookmark handles from RoomDocManager
 enqueue(assetId): void                     // Queue upload to R2
 postToPrimary(msg): void                   // Forward message to primary worker (used by bookmark-unfurl)
 clear(): void                              // Room teardown: close all bitmaps, notify workers
@@ -362,28 +362,30 @@ Called every frame from `RenderLoop.tick()`. Reads camera store + snapshot inter
 
 1. Guard: `hasActiveRoom()` + snapshot + spatialIndex must exist
 2. Query spatial index with 5.5× padded viewport (2.25× padding on each side) — aggressive pre-decode
-3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bounds per assetId. During active scale transforms, selected images get `ppsp = Infinity` (forces full-res decode for crisp preview). **Bookmarks** contribute `ogImageAssetId` + `faviconAssetId` with `ppsp = Infinity` (always full-res, no mip levels).
+3. Collect visible assetIds into reusable `_assetInfo` map: max ppsp + natural dimensions + union bbox per assetId. During active scale transforms, selected images get `ppsp = Infinity` (forces full-res decode for crisp preview). **Bookmarks** contribute `ogImageAssetId` + `faviconAssetId` with `ppsp = Infinity` (always full-res, no mip levels).
 4. **Decode:** For each visible asset not in error cooldown: compute target dimensions from natural dims + level divisor. Send decode if no bitmap or worse quality (`cached.level > neededLevel` — never downgrades, higher-quality bitmaps stay until eviction), AND no pending request for that level. If pending exists but for different level (mip change during zoom), supersede with new gen.
 5. **Evict:** Close bitmaps for assetIds not in `_assetInfo`. Send `cancel` to assigned worker for in-flight decodes. `pending.delete()` for fresh request on scroll-back.
 6. **Placeholders:** `repositionAllPlaceholders()` — reposition bookmark HTML loading placeholders to follow camera.
 
 ### Hydration (hydrateImages)
 
-Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join.
+Called once from `room-doc-manager.ts:hydrateObjectsFromY()` on room join. Receives a pre-filtered `ObjectHandle[]` of just `image` + `bookmark` kinds, collected during the same forEach that builds `objectsById` — no second Y.Map traversal, no bookmark frame re-derivation (bbox already encodes it).
 
-1. Traverse Y.Map for all image and bookmark objects → collect `{ assetId, frame, nw, nh }` per asset. Bookmarks contribute `ogImageAssetId` + `faviconAssetId` at level 0.
-2. Compute ppsp per asset from current camera state → mip level, deduped by assetId (min level = highest quality)
-3. Manager splits visible (exact viewport, no padding) vs offscreen using `frameTupleIntersectsBounds`
-4. Group items by worker via hash routing (`assetId.charCodeAt(0) & 1`)
-5. Assign gen per visible item, pre-add to `pending` (prevents duplicate decode on first `manageImageViewport` tick)
-6. Send `'hydrate'` message to each worker with its assigned items
+1. Iterate handles → collect `{ bbox, level, nw, nh }` per asset. Bookmarks contribute `ogImageAssetId` + `faviconAssetId` at level 0 (nw/nh unused — level 0 decodes at natural resolution with no resize).
+2. For images: compute ppsp from `handle.bbox[2] - handle.bbox[0]` (image bbox === frame, so width is exact) + camera state → mip level, deduped by assetId (min level = highest quality).
+3. Manager splits visible vs offscreen via inline bbox-vs-`getVisibleBoundsTuple()` check.
+4. Group items by worker via hash routing (`assetId.charCodeAt(0) & 1`).
+5. Assign gen per visible item, pre-add to `pending` (prevents duplicate decode on first `manageImageViewport` tick).
+6. Send `'hydrate'` message to each worker with its assigned items.
 7. Each worker handles:
    - **Visible (fire-and-forget):** `decodeAndSend` per item — results stream as each decode completes (no batching, no concurrency limiting)
    - **Prefetch (fire-and-forget):** `getAssetBlob` — cache-warm for scroll-in
 
+Empty input AND empty assetMap both early-return: a room of bookmarks that haven't unfurled yet has handles but no asset IDs.
+
 ### Bitmap Invalidation
 
-On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bounds. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorld`. This prevents the padded decode window from causing stutter via unnecessary dirty rect cascades. Fallback (hydration, before first tick): iterate `objectsById` with inline bbox intersection — checks both `image` and `bookmark` kinds (bookmarks via `ogImageAssetId`/`faviconAssetId`).
+On `'bitmap'` message from worker: O(1) lookup via `_assetInfo` pre-computed union bbox. **Gated on actual visible viewport** — off-viewport bitmaps (decoded via aggressive padding) sit silently in `bitmaps` map, no dirty rect, no render work. Only assets intersecting the visible world bounds trigger `invalidateWorldBBox` (tuple-native, no allocation). Fallback (hydration, before first tick): iterate `objectsById` with inline bbox intersection — checks both `image` and `bookmark` kinds (bookmarks via `ogImageAssetId`/`faviconAssetId`).
 
 On `'ingested'` message: same targeted invalidation. The ingest resolve also triggers Y.Doc mutation → observer → snapshot update → render anyway, but the invalidation ensures the bitmap renders on the same frame.
 

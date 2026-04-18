@@ -147,9 +147,9 @@ manageImageViewport() (per render tick):
 
 ```
 hydrateObjectsFromY()
-  ├── Y.Map walk → ObjectHandle with kind: 'bookmark'
+  ├── Y.Map walk → ObjectHandle with kind: 'bookmark', collected into mediaHandles[]
   ├── BBox: frame-based with shadow padding (frame[2] * 0.15)
-  └── hydrateImages(): collect ogImageAssetId + faviconAssetId at level 0
+  └── hydrateImages(mediaHandles): per handle → collect ogImageAssetId + faviconAssetId at level 0 using handle.bbox
 ```
 
 No main-thread scan for pending bookmarks — unfurls are direct fetch (no IDB queue).
@@ -500,7 +500,7 @@ Bookmarks are connectable objects — rect frame, always treated as filled.
 ### Image Manager (`image-manager.ts`)
 - `handleWorkerMessage`: routes `'unfurled'` → `handleUnfurlResult()`, `'unfurl-failed'` → `handleUnfurlFailed()`
 - `manageImageViewport()`: registers bookmark OG image + favicon with `ppsp = Infinity`, calls `repositionAllPlaceholders()`
-- `hydrateImages()`: collects bookmark asset IDs at level 0
+- `hydrateImages(handles)`: receives pre-filtered image+bookmark handles from `hydrateObjectsFromY`; per bookmark handle, registers `ogImageAssetId` + `faviconAssetId` at level 0 using `handle.bbox`
 
 ### Service Worker
 No changes needed. `/api/assets/*` cache-first handles OG images and favicons. `/api/unfurl` falls through as non-asset API.
