@@ -1,15 +1,17 @@
 /**
- * Per-kind capability registry — single source of truth for object-kind rules.
+ * Per-kind capability table — single source of truth for object-kind hit rules.
  *
- * Collapses what was previously scattered across `HIT_BY_KIND` (hit-testing.ts),
- * `FRAME_BY_KIND` (frame-of.ts), `INTERIOR_PAINT` / `BINDABLE_KINDS`
- * (types/objects.ts), the `objectIntersectsRect` switch (hit-testing.ts),
- * `classifyPaint`'s inline branches (object-pick.ts), and EraserTool's ad-hoc
- * per-kind dispatch loop.
+ * Each cap owns the three hit predicates (`hitPoint`, `hitRect`, `hitCircle`)
+ * and the bindable flag (read once at import time by `object-query.ts` to seed
+ * the bindable-kind prefilter set). Frame resolution is not a capability —
+ * consumers that need a frame use `frameOf` from `core/geometry/frame-of.ts`.
+ * Area is not a capability either — only shape interiors participate in the
+ * frame-aware tournament, and the two scan loops that need it compute
+ * `frame[2] * frame[3]` inline.
  *
- * Adding a new ObjectKind = one entry here. The exhaustive mapped type
- * `{ [K in ObjectKind]: KindCapability<K> }` makes it a compile error until the
- * cap is added.
+ * `hitPoint` returns a Paint class on a hit, or `null` on a geometric miss.
+ * `'seethrough'` is the see-through class (only unfilled shape interiors
+ * produce this); `'ink'` and `'fill'` are the two paint-blocker classes.
  */
 
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
@@ -29,71 +31,32 @@ import {
   ellipseIntersectsBBox,
   diamondIntersectsBBox,
   getDiamondVertices,
-  computePolylineArea,
 } from '@/core/geometry/hit-primitives';
-import type { HandleOf, Paint } from './atoms';
 
-// ============================================================================
-// HitCandidate — the return shape of `queryHits`
-// ============================================================================
+export type Paint = 'ink' | 'fill' | 'seethrough';
 
-/**
- * Point-probe hit result. `paint` is the precomputed occlusion class used by
- * pickers (`scanTopmostWithMemo` / `pickFrameAware`); only unfilled shape
- * interiors are `null` (see-through), filled shape interiors are `'fill'`,
- * everything else is `'ink'`.
- *
- * Membership queries (`queryHandles`, `queryEntries`) don't classify — they
- * return bare handles / index entries.
- */
-export interface HitCandidate<K extends ObjectKind = ObjectKind> {
-  readonly handle: ObjectHandle & { kind: K };
-  readonly paint: Paint;
-}
-
-// ============================================================================
-// Capability interface
-// ============================================================================
-
-/**
- * `hitPoint` returns the per-kind classification fields ONLY — the scanner
- * composes the final `HitCandidate<K>` by adding the `handle`. Lets each cap
- * stay tight: no boilerplate spread of `handle` in every return.
- */
-export type HitFields<K extends ObjectKind> = Omit<HitCandidate<K>, 'handle'>;
+export type HandleOf<K extends ObjectKind> = ObjectHandle & { kind: K };
 
 export interface KindCapability<K extends ObjectKind> {
-  /** Connector endpoint target? Replaces `BINDABLE_KINDS` membership. */
+  /** Connector endpoint target? Read once at module init to seed the bindable prefilter. */
   readonly bindable: boolean;
 
-  /** Resolve the frame. Null for stroke/connector (frameless) or unhydrated. */
-  readonly frame: (h: HandleOf<K>) => FrameTuple | null;
+  /** Point-probe: returns the paint class on a hit, or `null` on miss. */
+  readonly hitPoint: (h: HandleOf<K>, p: Point, r: number) => Paint | null;
 
-  /** Point-probe hit: returns classification fields, or null on miss. */
-  readonly hitPoint: (h: HandleOf<K>, p: Point, r: number) => HitFields<K> | null;
-
-  /** Rect-vs-geometry test (marquee tight phase). */
+  /** Rect-vs-geometry intersect (marquee tight phase). */
   readonly hitRect: (h: HandleOf<K>, bbox: BBoxTuple) => boolean;
 
-  /** Fill-aware circle-vs-geometry test (eraser). */
+  /** Fill-aware circle-vs-geometry intersect (eraser). */
   readonly hitCircle: (h: HandleOf<K>, c: Point, r: number) => boolean;
-
-  /** Lazy area getter — called by pickers only when the tournament needs it. */
-  readonly area: (h: HandleOf<K>) => number;
 }
-
-// ============================================================================
-// Per-kind entries
-// ============================================================================
 
 const STROKE_CAP: KindCapability<'stroke'> = {
   bindable: false,
-  frame: () => null,
   hitPoint: (h, p, r) => {
     const points = getPoints(h.y);
     if (points.length === 0) return null;
-    if (!strokeHitTest(p, points, r + getWidth(h.y) / 2)) return null;
-    return { paint: 'ink' };
+    return strokeHitTest(p, points, r + getWidth(h.y) / 2) ? 'ink' : null;
   },
   hitRect: (h, bbox) => {
     const points = getPoints(h.y);
@@ -103,17 +66,14 @@ const STROKE_CAP: KindCapability<'stroke'> = {
     const points = getPoints(h.y);
     return points.length > 0 && strokeHitTest(c, points, r);
   },
-  area: (h) => computePolylineArea(getPoints(h.y)),
 };
 
 const CONNECTOR_CAP: KindCapability<'connector'> = {
   bindable: false,
-  frame: () => null,
   hitPoint: (h, p, r) => {
     const points = getPoints(h.y);
     if (points.length === 0) return null;
-    if (!strokeHitTest(p, points, r + getWidth(h.y) / 2)) return null;
-    return { paint: 'ink' };
+    return strokeHitTest(p, points, r + getWidth(h.y) / 2) ? 'ink' : null;
   },
   hitRect: (h, bbox) => {
     const points = getPoints(h.y);
@@ -123,20 +83,17 @@ const CONNECTOR_CAP: KindCapability<'connector'> = {
     const points = getPoints(h.y);
     return points.length > 0 && strokeHitTest(c, points, r);
   },
-  area: (h) => computePolylineArea(getPoints(h.y)),
 };
 
 const SHAPE_CAP: KindCapability<'shape'> = {
   bindable: true,
-  frame: (h) => getFrame(h.y),
   hitPoint: (h, p, r) => {
     const frame = getFrame(h.y);
     if (!frame) return null;
     const result = shapeHitTest(p, r, frame, getShapeType(h.y), getWidth(h.y, 1));
     if (!result) return null;
     const isFilled = !!getFillColor(h.y);
-    const paint: Paint = isFilled ? 'fill' : result.insideInterior ? null : 'ink';
-    return { paint };
+    return isFilled ? 'fill' : result.insideInterior ? 'seethrough' : 'ink';
   },
   hitRect: (h, bbox) => {
     const frame = getFrame(h.y);
@@ -152,30 +109,22 @@ const SHAPE_CAP: KindCapability<'shape'> = {
     if (!frame) return false;
     return circleHitsShape(c, r, frame, getShapeType(h.y), getWidth(h.y, 1), !!getFillColor(h.y));
   },
-  area: (h) => {
-    const f = getFrame(h.y);
-    return f ? f[2] * f[3] : 0;
-  },
 };
 
 /**
  * Framed-rect cap factory — text/note/code/image/bookmark all share the same
  * point/rect/circle math against a derived FrameTuple. Paint is always `'ink'`
- * (no glyph-level hit testing, so any hit inside the frame is a paint hit).
- * Only the frame getter differs per kind.
+ * (no glyph-level testing, so any hit inside the frame is a paint hit).
  */
 function framedCap<K extends 'text' | 'note' | 'code' | 'image' | 'bookmark'>(
   resolveFrame: (h: HandleOf<K>) => FrameTuple | null,
 ): KindCapability<K> {
   return {
     bindable: true,
-    frame: resolveFrame,
     hitPoint: (h, p, r) => {
       const frame = resolveFrame(h);
       if (!frame) return null;
-      const result = rectFrameHit(p, r, frame);
-      if (!result) return null;
-      return { paint: 'ink' };
+      return rectFrameHit(p, r, frame) ? 'ink' : null;
     },
     hitRect: (h, bbox) => {
       const frame = resolveFrame(h);
@@ -187,37 +136,19 @@ function framedCap<K extends 'text' | 'note' | 'code' | 'image' | 'bookmark'>(
       const frame = resolveFrame(h);
       return frame !== null && circleRectIntersect(c, r, frame);
     },
-    area: (h) => {
-      const f = resolveFrame(h);
-      return f ? f[2] * f[3] : 0;
-    },
   };
 }
 
-const TEXT_CAP = framedCap<'text'>((h) => getTextFrame(h.id));
-const NOTE_CAP = framedCap<'note'>((h) => getTextFrame(h.id));
-const CODE_CAP = framedCap<'code'>((h) => getCodeFrame(h.id));
-const IMAGE_CAP = framedCap<'image'>((h) => getFrame(h.y));
-const BOOKMARK_CAP = framedCap<'bookmark'>((h) => getBookmarkFrame(h.id));
-
-// ============================================================================
-// The exhaustive table
-// ============================================================================
-
-/**
- * Per-kind capability table — exhaustive mapped type. Adding a new
- * `ObjectKind` is a compile error until a `KindCapability<K>` is added here.
- */
 export const KIND: { readonly [K in ObjectKind]: KindCapability<K> } = {
   stroke: STROKE_CAP,
   connector: CONNECTOR_CAP,
   shape: SHAPE_CAP,
-  text: TEXT_CAP,
-  code: CODE_CAP,
-  note: NOTE_CAP,
-  image: IMAGE_CAP,
-  bookmark: BOOKMARK_CAP,
+  text: framedCap<'text'>((h) => getTextFrame(h.id)),
+  code: framedCap<'code'>((h) => getCodeFrame(h.id)),
+  note: framedCap<'note'>((h) => getTextFrame(h.id)),
+  image: framedCap<'image'>((h) => getFrame(h.y)),
+  bookmark: framedCap<'bookmark'>((h) => getBookmarkFrame(h.id)),
 };
 
-/** Convenience untyped handle — used by dispatchers that do one cast per loop. */
+/** One-cast-per-loop dispatch bridge. */
 export type AnyCapability = KindCapability<ObjectKind>;

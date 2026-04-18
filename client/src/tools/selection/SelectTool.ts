@@ -5,10 +5,8 @@ import { worldToCanvas } from '@/stores/camera-store';
 import { scaleBBoxAround, pointsToBBox, translateBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
 import { hitResizeHandle, hitEndpointDot, type EndpointHit } from '@/core/spatial/handle-hit';
-import type { HitCandidate } from '@/core/spatial/kind-capability';
-import { queryHits, queryHandles } from '@/core/spatial/object-query';
-import { pickFrameAware } from '@/core/spatial/pickers';
-import { inBBox } from '@/core/spatial/region';
+import { queryHandleIds, pickTopmostPaint, inBBox } from '@/core/spatial/object-query';
+import type { ObjectHandle } from '@/core/types/objects';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { getStartAnchor, getEndAnchor, getConnectorType } from '@/core/accessors';
 import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
@@ -61,7 +59,7 @@ export class SelectTool implements PointerTool {
   private downScreen: [number, number] | null = null;
 
   // Hit testing results at pointer down
-  private hitAtDown: HitCandidate | null = null;
+  private hitAtDown: ObjectHandle | null = null;
   private pendingHandleId: HandleId | null = null;
   private endpointHitAtDown: EndpointHit | null = null;
 
@@ -128,8 +126,8 @@ export class SelectTool implements PointerTool {
     this.hitAtDown = hit;
 
     if (hit) {
-      const hitId = hit.handle.id;
-      const hitKind = hit.handle.kind;
+      const hitId = hit.id;
+      const hitKind = hit.kind;
       const isSelected = selectedIds.includes(hitId);
       //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
@@ -231,7 +229,7 @@ export class SelectTool implements PointerTool {
           case 'objectOutsideSelection': {
             if (!passMove) break;
 
-            const hitHandle = this.hitAtDown!.handle;
+            const hitHandle = this.hitAtDown!;
 
             // Connectors: check anchor state to decide drag behavior
             if (hitHandle.kind === 'connector') {
@@ -397,7 +395,7 @@ export class SelectTool implements PointerTool {
             break;
 
           case 'objectOutsideSelection': {
-            const hitId = this.hitAtDown!.handle.id;
+            const hitId = this.hitAtDown!.id;
             if (this.hasAddModifier()) {
               // Additive: add to current selection
               const current = store.selectedIds;
@@ -412,7 +410,7 @@ export class SelectTool implements PointerTool {
           }
 
           case 'objectInSelection': {
-            const hitHandle = this.hitAtDown!.handle;
+            const hitHandle = this.hitAtDown!;
             const hitId = hitHandle.id;
             if (this.hasAddModifier()) {
               // Subtractive: remove from selection
@@ -710,25 +708,25 @@ export class SelectTool implements PointerTool {
     if (!marquee.active || !marquee.anchor || !marquee.current) return;
 
     const marqueeBBox = pointsToBBox(marquee.anchor, marquee.current);
-    const overlapping = queryHandles({ region: inBBox(marqueeBBox), precise: 'rect' });
+    const overlappingIds = queryHandleIds(inBBox(marqueeBBox));
     const currentSet = store.selectedIdSet;
 
-    if (overlapping.length === currentSet.size) {
+    if (overlappingIds.length === currentSet.size) {
       let same = true;
-      for (const h of overlapping) {
-        if (!currentSet.has(h.id)) {
+      for (const id of overlappingIds) {
+        if (!currentSet.has(id)) {
           same = false;
           break;
         }
       }
       if (same) return;
     }
-    store.setSelection(overlapping.map((h) => h.id));
+    store.setSelection(overlappingIds);
   }
 
   // --- Hit Testing ---
 
-  private hitTestObjects(worldX: number, worldY: number): HitCandidate | null {
-    return pickFrameAware(queryHits({ at: [worldX, worldY], radius: { px: HIT_RADIUS_PX + HIT_SLACK_PX } }));
+  private hitTestObjects(worldX: number, worldY: number): ObjectHandle | null {
+    return pickTopmostPaint([worldX, worldY], { px: HIT_RADIUS_PX + HIT_SLACK_PX });
   }
 }

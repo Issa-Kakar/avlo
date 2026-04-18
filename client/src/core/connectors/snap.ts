@@ -18,11 +18,7 @@ import { EDGE_CLEARANCE_W, getSnapRadiiWorld, type SnapRadiiWorld } from './cons
 import { getShapeTypeMidpoints, directionVector } from './connector-utils';
 import { pointInsideShape } from '../geometry/hit-primitives';
 import { frameOf } from '../geometry/frame-of';
-import { scanTopmostWithMemo } from '../spatial/pickers';
-import { queryHits } from '../spatial/object-query';
-import { isBindable } from '../spatial/filters';
-import type { HitCandidate } from '../spatial/kind-capability';
-import type { BindableKind } from '../types/objects';
+import { pickTopmostBindable } from '../spatial/object-query';
 import type { FrameTuple, Point } from '../types/geometry';
 import { getHandleShapeType } from '../accessors';
 import type { Dir, SnapTarget, SnapContext } from './types';
@@ -72,20 +68,11 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const [cx, cy] = cursorWorld;
   const { edgeSnap: edgeRadius } = getSnapRadiiWorld();
 
-  const candidates = queryHits({
-    at: [cx, cy],
-    radius: { world: edgeRadius },
-    filter: isBindable,
-  });
-  if (candidates.length === 0) return null;
-
-  const trySnap = (c: HitCandidate<BindableKind>): SnapTarget | null => {
-    const frame = frameOf(c.handle);
+  return pickTopmostBindable([cx, cy], { world: edgeRadius }, (h) => {
+    const frame = frameOf(h);
     if (!frame) return null;
-    return computeSnapForShape(c.handle.id, frame, getHandleShapeType(c.handle), ctx);
-  };
-
-  return scanTopmostWithMemo(candidates, trySnap);
+    return computeSnapForShape(h.id, frame, getHandleShapeType(h), ctx);
+  });
 }
 
 /**

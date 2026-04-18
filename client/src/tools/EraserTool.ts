@@ -4,8 +4,7 @@ import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
 import { getStartAnchor, getEndAnchor } from '@/core/accessors';
-import { queryHandles } from '@/core/spatial/object-query';
-import { atPoint } from '@/core/spatial/region';
+import { queryHandleIds, atPoint } from '@/core/spatial/object-query';
 import type { PointerTool } from './types';
 
 // Fixed radius configuration
@@ -138,12 +137,8 @@ export class EraserTool implements PointerTool {
   private updateHitTest(worldX: number, worldY: number): void {
     this.state.hitNow.clear();
 
-    // Per-kind fill-aware circle dispatch lives in the capability table now.
-    const inCircle = queryHandles({
-      region: atPoint([worldX, worldY], { px: ERASER_RADIUS_PX + ERASER_SLACK_PX }),
-      precise: 'circle',
-    });
-    for (const h of inCircle) this.state.hitNow.add(h.id);
+    const idsInCircle = queryHandleIds(atPoint([worldX, worldY], { px: ERASER_RADIUS_PX + ERASER_SLACK_PX }));
+    for (const id of idsInCircle) this.state.hitNow.add(id);
 
     if (this.state.isErasing) {
       for (const id of this.state.hitNow) {

@@ -333,26 +333,6 @@ export function circleHitsShape(
 }
 
 // ============================================================================
-// Polyline area (for selection priority)
-// ============================================================================
-
-/** Approximate area of a polyline using its bounding box. */
-export function computePolylineArea(points: readonly Point[]): number {
-  if (points.length === 0) return 0;
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-  for (const [x, y] of points) {
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-  }
-  return (maxX - minX) * (maxY - minY);
-}
-
-// ============================================================================
 // Marquee intersections (tuple-first)
 // ============================================================================
 

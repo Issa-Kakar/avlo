@@ -52,8 +52,7 @@ import {
   getNoteLayout,
   getNoteDerivedFontSize,
 } from '@/core/text/sticky-note';
-import { queryHits } from '@/core/spatial/object-query';
-import { pickTopmostByKind } from '@/core/spatial/pickers';
+import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { ulid } from 'ulid';
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
@@ -99,8 +98,7 @@ export class TextTool implements PointerTool {
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
     const tool = useDeviceUIStore.getState().activeTool;
-    const cands = queryHits({ at: [worldX, worldY], radius: { px: 8 } });
-    this.hitTextId = pickTopmostByKind(cands, tool === 'note' ? 'note' : 'text');
+    this.hitTextId = pickTopmostOfKind([worldX, worldY], { px: 8 }, tool === 'note' ? 'note' : 'text');
   }
 
   move(_worldX: number, _worldY: number): void {

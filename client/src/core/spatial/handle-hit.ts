@@ -16,7 +16,7 @@ import type { HandleId } from '@/tools/types';
 import { computeHandles } from '@/stores/selection-store';
 import { getHandle } from '@/runtime/room-runtime';
 import { getEndpointEdgePosition } from '@/core/connectors/connector-utils';
-import { type Radius, resolveRadius } from './radius';
+import { type Radius, resolveRadius } from './object-query';
 
 // ============================================================================
 // Generic point-probe nearest lookup
