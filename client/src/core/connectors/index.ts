@@ -21,11 +21,15 @@ export type {
   Centerlines,
   AStarNode,
   SnapTarget,
+  ElbowSnapTarget,
+  StraightSnapTarget,
   SnapContext,
   ConnectorType,
   ConnectorCap,
+  StoredAnchor,
+  StoredElbowAnchor,
+  StoredStraightAnchor,
 } from './types';
-export { isAnchorInterior } from './types';
 
 // Constants
 export {
@@ -68,7 +72,7 @@ export {
 } from './connector-utils';
 
 // Anchor math atoms (single home for anchor <-> point math)
-export { anchorFramePoint, anchorOffsetPoint, sideFromAnchor, isSameShape } from './anchor-atoms';
+export { anchorFramePoint, elbowAnchorPoint, isSameShape, anchorRecordFromSnap } from './anchor-atoms';
 
 // Snapping
 export { findBestSnapTarget, computeSnapForShape, findNearestEdgePoint } from './snap';

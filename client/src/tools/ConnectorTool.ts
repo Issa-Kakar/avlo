@@ -28,6 +28,7 @@ import {
   findBestSnapTarget,
   routeNewConnector,
   inferDragDirection,
+  anchorRecordFromSnap,
 } from '@/core/connectors';
 import { isCtrlHeld } from '@/runtime/InputManager';
 
@@ -240,29 +241,14 @@ export class ConnectorTool implements PointerTool {
       connectorMap.set('start', this.routedPoints[0]);
       connectorMap.set('end', this.routedPoints[this.routedPoints.length - 1]);
 
-      // Anchor data (only if snapped to a shape)
-      if (this.fromSnap) {
-        connectorMap.set('startAnchor', {
-          id: this.fromSnap.shapeId,
-          side: this.fromSnap.side,
-          anchor: this.fromSnap.normalizedAnchor,
-        });
-      }
+      // Anchor data (only if snapped to a shape) — shape matches connector type
+      if (this.fromSnap) connectorMap.set('startAnchor', anchorRecordFromSnap(this.fromSnap));
+      if (this.toSnap) connectorMap.set('endAnchor', anchorRecordFromSnap(this.toSnap));
 
-      if (this.toSnap) {
-        connectorMap.set('endAnchor', {
-          id: this.toSnap.shapeId,
-          side: this.toSnap.side,
-          anchor: this.toSnap.normalizedAnchor,
-        });
-      }
-
-      // Caps and type
+      // Caps and type — connectorType is ALWAYS stored now (required discriminated field)
       connectorMap.set('startCap', this.frozenStartCap);
       connectorMap.set('endCap', this.frozenEndCap);
-      if (this.frozenConnectorType && this.frozenConnectorType !== 'elbow') {
-        connectorMap.set('connectorType', this.frozenConnectorType);
-      }
+      connectorMap.set('connectorType', this.frozenConnectorType ?? 'elbow');
 
       // Styling (connectors are always opacity 1 — not stored)
       connectorMap.set('color', this.frozenColor);

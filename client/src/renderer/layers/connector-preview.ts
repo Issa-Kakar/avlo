@@ -15,7 +15,6 @@
  */
 
 import type { ConnectorPreview } from '@/tools/types';
-import { isAnchorInterior } from '@/core/connectors/types';
 import { buildConnectorPaths } from '@/core/connectors/connector-paths';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { drawConnectorDashGuide, drawSnapFeedback, paintConnector } from './connector-render-atoms';
@@ -42,17 +41,17 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
   }
 
   // 2. Dashed guides for straight connectors with interior anchors.
-  //    For interior snaps (clamped to [0.01, 0.99]), `snap.edgePosition` equals
-  //    the anchor frame point — no need to resolve the shape frame here.
+  //    `snap.position` is the anchor frame point (pre-pullback); the polyline endpoint
+  //    is the pulled-back line start/end. Guide connects them for interior-only snaps.
   if (isStraight && hasRoute) {
-    if (fromSnap && isAnchorInterior(fromSnap.normalizedAnchor)) {
-      drawConnectorDashGuide(ctx, points[0], fromSnap.edgePosition);
+    if (fromSnap?.kind === 'straight' && fromSnap.interior) {
+      drawConnectorDashGuide(ctx, points[0], fromSnap.position);
     }
-    if (hoverSnap && isAnchorInterior(hoverSnap.normalizedAnchor)) {
-      drawConnectorDashGuide(ctx, points[points.length - 1], hoverSnap.edgePosition);
+    if (hoverSnap?.kind === 'straight' && hoverSnap.interior) {
+      drawConnectorDashGuide(ctx, points[points.length - 1], hoverSnap.position);
     }
   }
 
   // 3. Target feedback — hover side only. The from-side never renders a dot after pointer-down.
-  drawSnapFeedback(ctx, hoverSnap, isStraight);
+  drawSnapFeedback(ctx, hoverSnap);
 }

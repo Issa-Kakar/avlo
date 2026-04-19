@@ -23,7 +23,6 @@ import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition } from '@/core/connectors/connector-utils';
 import type { SnapTarget } from '@/core/connectors/types';
-import { isAnchorInterior } from '@/core/connectors/types';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
 import { drawConnectorDashGuide, drawAnchorDot, drawSnapFeedback } from './connector-render-atoms';
@@ -320,7 +319,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     currentSnap = snap;
     dragRoute = routedPoints ?? null;
 
-    const draggedPos: Point = snap ? snap.edgePosition : currentPosition;
+    const draggedPos: Point = snap ? snap.position : currentPosition;
     const draggedActive = snap !== null;
     const otherPos = getEndpointEdgePosition(handle, endpoint === 'start' ? 'end' : 'start');
 
@@ -339,7 +338,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   }
 
   // Snap-target feedback: highlight + midpoints + center dot + active edge dot (all in one).
-  drawSnapFeedback(ctx, currentSnap, isStraight);
+  drawSnapFeedback(ctx, currentSnap);
 
   // Inactive dots on sides that aren't actively snapped (the snapped side was drawn above).
   if (!startActive) drawAnchorDot(ctx, startPos, false);
@@ -349,13 +348,13 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   if (!isStraight) return;
 
   if (isDragging && dragRoute && dragRoute.length >= 2) {
-    if (currentSnap && isAnchorInterior(currentSnap.normalizedAnchor)) {
+    if (currentSnap?.kind === 'straight' && currentSnap.interior) {
       const lineEnd = draggedEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
-      drawConnectorDashGuide(ctx, currentSnap.edgePosition, lineEnd);
+      drawConnectorDashGuide(ctx, currentSnap.position, lineEnd);
     }
     const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
     const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
-    if (otherAnchor && isAnchorInterior(otherAnchor.anchor)) {
+    if (otherAnchor && 'interior' in otherAnchor && otherAnchor.interior) {
       const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
       const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
       drawConnectorDashGuide(ctx, otherPos, otherLineEnd);
@@ -368,10 +367,10 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   if (storedPoints.length < 2) return;
   const startAnchor = getStartAnchor(handle.y);
   const endAnchor = getEndAnchor(handle.y);
-  if (startAnchor && isAnchorInterior(startAnchor.anchor)) {
+  if (startAnchor && 'interior' in startAnchor && startAnchor.interior) {
     drawConnectorDashGuide(ctx, startPos, storedPoints[0]);
   }
-  if (endAnchor && isAnchorInterior(endAnchor.anchor)) {
+  if (endAnchor && 'interior' in endAnchor && endAnchor.interior) {
     drawConnectorDashGuide(ctx, endPos, storedPoints[storedPoints.length - 1]);
   }
 }

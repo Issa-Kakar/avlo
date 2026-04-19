@@ -1,38 +1,47 @@
 /**
  * Connector Snapping System
  *
- * Finds the best snap target among shapes near the cursor.
- * Implements shape-type-aware edge detection and midpoint hysteresis.
+ * Top-level branches on `connectorType` into two pipelines that never alias:
  *
- * PRIORITY LOGIC (matches SelectTool pattern):
- * 1. Sort candidates by area ascending (smallest = most nested first)
- * 2. Among equal-area candidates, prefer higher z-order (ULID descending)
- * 3. Pick the first valid snap target
+ *   Elbow:     inside-shallow or outside → edge + midpoint stickiness
+ *              deep inside                → force midpoint only (no interior)
  *
- * This ensures clicking inside nested shapes snaps to the inner one.
+ *   Straight:  inside-shallow or outside → edge + midpoint stickiness
+ *              deep inside                → center snap → midpoint → clamped interior
+ *
+ * Dead-zone fix: the edge-snap radius gate applies only when the cursor is
+ * OUTSIDE the shape. Inside-shallow always allows edge sliding — no gap
+ * between the force-midpoint depth and the edge.
+ *
+ * SnapTarget is a discriminated union — each emitted target carries its `kind`
+ * so consumers branch on type explicitly rather than inferring from field shape.
+ * `position` is the visual dot + pre-offset routing endpoint; routing owns its
+ * own offset/pullback per type.
  *
  * @module lib/connectors/snap
  */
 
-import { EDGE_CLEARANCE_W, getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
-import { getShapeTypeMidpoints, directionVector } from './connector-utils';
+import { getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
+import { getShapeTypeMidpoints } from './connector-utils';
 import { pointInsideShape } from '../geometry/hit-primitives';
 import { frameOf } from '../geometry/frame-of';
 import { pickTopmostBindable } from '../spatial/object-query';
 import type { FrameTuple, Point } from '../types/geometry';
 import { getHandleShapeType } from '../accessors';
-import type { Dir, SnapTarget, SnapContext } from './types';
-import { isAnchorInterior } from './types';
+import type { Dir, SnapTarget, ElbowSnapTarget, StraightSnapTarget, SnapContext } from './types';
 
-/**
- * Compute normalized anchor and offset position from an edge point.
- */
-function computeAnchorAndPosition(edge: Point, frame: FrameTuple, side: Dir): { normalizedAnchor: Point; position: Point } {
+// =============================================================================
+// SHARED HELPERS
+// =============================================================================
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Clamped normalized anchor from an on-edge world point. */
+function normalizedFromEdge(edge: Point, frame: FrameTuple): Point {
   const [x, y, w, h] = frame;
-  const normalizedAnchor: Point = [Math.max(0, Math.min(1, (edge[0] - x) / w)), Math.max(0, Math.min(1, (edge[1] - y) / h))];
-  const [dx, dy] = directionVector(side);
-  const position: Point = [edge[0] + dx * EDGE_CLEARANCE_W, edge[1] + dy * EDGE_CLEARANCE_W];
-  return { normalizedAnchor, position };
+  return [clamp01((edge[0] - x) / w), clamp01((edge[1] - y) / h)];
 }
 
 /** Nearest midpoint side + world distance from a probe point. */
@@ -49,20 +58,24 @@ function nearestMidpoint(probe: Point, midpoints: Record<Dir, Point>): { side: D
   return { side, dist };
 }
 
-/**
- * Shared midpoint-stickiness gate used by straight and elbow paths.
- * Sticks to a midpoint we were already on until the cursor slips past `midOut`,
- * or enters a midpoint on first touch at `midIn`.
- */
-function shouldSnapToMidpoint(prevAttach: SnapTarget | null, shapeId: string, side: Dir, dist: number, radii: SnapRadiiWorld): boolean {
-  const wasPrev = prevAttach?.shapeId === shapeId && prevAttach?.isMidpoint && prevAttach?.side === side;
-  if (wasPrev && dist <= radii.midOut) return true;
+/** Midpoint hysteresis gate: sticky within `midOut`, enters on first touch at `midIn`. */
+function midpointGate(wasOnMidpoint: boolean, dist: number, radii: SnapRadiiWorld): boolean {
+  if (wasOnMidpoint && dist <= radii.midOut) return true;
   return dist <= radii.midIn;
 }
 
-/**
- * Find the best snap target among all shapes near the cursor.
- */
+function wasOnElbowMidpoint(prev: SnapTarget | null, shapeId: string, side: Dir): boolean {
+  return prev?.kind === 'elbow' && prev.shapeId === shapeId && prev.isMidpoint && prev.side === side;
+}
+
+function wasOnStraightMidpoint(prev: SnapTarget | null, shapeId: string, side: Dir): boolean {
+  return prev?.kind === 'straight' && prev.shapeId === shapeId && prev.midpointSide === side;
+}
+
+// =============================================================================
+// TOP-LEVEL ORCHESTRATOR
+// =============================================================================
+
 export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const { cursorWorld } = ctx;
   const [cx, cy] = cursorWorld;
@@ -75,117 +88,52 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   });
 }
 
-/**
- * Orchestrator: picks the right sub-mode based on cursor depth + connector type.
- * Each try* helper owns one mode; the first non-null result wins.
- */
 export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
-  const { cursorWorld } = ctx;
   const radii = getSnapRadiiWorld();
   const midpoints = getShapeTypeMidpoints(frame, shapeType);
+  const isInside = pointInsideShape(ctx.cursorWorld, frame, shapeType);
+  const insideDepth = isInside ? (findNearestEdgePoint(ctx.cursorWorld, frame, shapeType)?.dist ?? 0) : 0;
 
-  const isInside = pointInsideShape(cursorWorld, frame, shapeType);
-  const insideDepth = isInside ? (findNearestEdgePoint(cursorWorld, frame, shapeType)?.dist ?? 0) : 0;
-  const isStraight = ctx.connectorType === 'straight';
-
-  if (isStraight && isInside && insideDepth > radii.straightInteriorDepth) {
-    return tryStraightInteriorSnap(ctx, shapeId, frame, midpoints, radii);
-  }
-  if (!isStraight && isInside && insideDepth > radii.forceMidpointDepth) {
-    return tryElbowInteriorSnap(shapeId, frame, midpoints, cursorWorld);
-  }
-  return tryEdgeSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, radii);
+  return ctx.connectorType === 'straight'
+    ? computeStraightSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, insideDepth, radii)
+    : computeElbowSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, insideDepth, radii);
 }
 
-/**
- * Straight connector, deep inside shape: center snap → midpoint stickiness → interior anchor.
- */
-function tryStraightInteriorSnap(
+// =============================================================================
+// ELBOW PIPELINE — edge or midpoint; never interior
+// =============================================================================
+
+function computeElbowSnap(
   ctx: SnapContext,
   shapeId: string,
   frame: FrameTuple,
+  shapeType: string,
   midpoints: Record<Dir, Point>,
+  isInside: boolean,
+  insideDepth: number,
   radii: SnapRadiiWorld,
-): SnapTarget {
-  const { cursorWorld, prevAttach } = ctx;
-  const [cx, cy] = cursorWorld;
-  const [fx, fy, fw, fh] = frame;
-  const center: Point = [fx + fw / 2, fy + fh / 2];
-  const centerDist = Math.hypot(cx - center[0], cy - center[1]);
-
-  const wasCenter =
-    prevAttach?.shapeId === shapeId &&
-    prevAttach.normalizedAnchor[0] === 0.5 &&
-    prevAttach.normalizedAnchor[1] === 0.5 &&
-    isAnchorInterior(prevAttach.normalizedAnchor);
-  const centerThreshold = wasCenter ? radii.centerSnap * 1.3 : radii.centerSnap;
-
-  if (centerDist <= centerThreshold) {
-    const nearest = nearestMidpoint(cursorWorld, midpoints);
-    return {
-      shapeId,
-      side: nearest.side,
-      normalizedAnchor: [0.5, 0.5],
-      isMidpoint: false,
-      position: center,
-      edgePosition: center,
-      isInside: true,
-    };
+): ElbowSnapTarget | null {
+  if (isInside && insideDepth > radii.forceMidpointDepth) {
+    return forceElbowMidpoint(shapeId, frame, midpoints, ctx.cursorWorld);
   }
-
-  const nearest = nearestMidpoint(cursorWorld, midpoints);
-  if (shouldSnapToMidpoint(prevAttach, shapeId, nearest.side, nearest.dist, radii)) {
-    const midpoint = midpoints[nearest.side];
-    const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint, frame, nearest.side);
-    return {
-      shapeId,
-      side: nearest.side,
-      normalizedAnchor,
-      isMidpoint: true,
-      position,
-      edgePosition: midpoint,
-      isInside: true,
-    };
-  }
-
-  // Interior anchor at cursor position (clamped inside [0.01, 0.99])
-  const normalizedAnchor: Point = [Math.max(0.01, Math.min(0.99, (cx - fx) / fw)), Math.max(0.01, Math.min(0.99, (cy - fy) / fh))];
-  return {
-    shapeId,
-    side: nearest.side,
-    normalizedAnchor,
-    isMidpoint: false,
-    position: cursorWorld,
-    edgePosition: cursorWorld,
-    isInside: true,
-  };
+  return tryElbowEdgeSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, radii);
 }
 
-/**
- * Elbow connector, deep inside shape: snap to nearest midpoint only.
- */
-function tryElbowInteriorSnap(shapeId: string, frame: FrameTuple, midpoints: Record<Dir, Point>, probe: Point): SnapTarget {
+function forceElbowMidpoint(shapeId: string, frame: FrameTuple, midpoints: Record<Dir, Point>, probe: Point): ElbowSnapTarget {
   const nearest = nearestMidpoint(probe, midpoints);
   const midpoint = midpoints[nearest.side];
-  const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint, frame, nearest.side);
   return {
+    kind: 'elbow',
     shapeId,
     side: nearest.side,
-    normalizedAnchor,
+    normalizedAnchor: normalizedFromEdge(midpoint, frame),
     isMidpoint: true,
-    position,
-    edgePosition: midpoint,
+    position: midpoint,
     isInside: true,
   };
 }
 
-/**
- * Outside / near-edge / shallow-inside: snap to nearest edge point with midpoint hysteresis.
- *
- * Bug #6 fix: the radius gate now applies in both inside- and outside-shape cases — deep
- * interior hovers on large shapes no longer grab distant edges.
- */
-function tryEdgeSnap(
+function tryElbowEdgeSnap(
   ctx: SnapContext,
   shapeId: string,
   frame: FrameTuple,
@@ -193,43 +141,160 @@ function tryEdgeSnap(
   midpoints: Record<Dir, Point>,
   isInside: boolean,
   radii: SnapRadiiWorld,
-): SnapTarget | null {
-  const { cursorWorld, prevAttach } = ctx;
-
-  const edgeSnap = findNearestEdgePoint(cursorWorld, frame, shapeType);
+): ElbowSnapTarget | null {
+  const edgeSnap = findNearestEdgePoint(ctx.cursorWorld, frame, shapeType);
   if (!edgeSnap) return null;
-  if (edgeSnap.dist > radii.edgeSnap) return null;
+  if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
 
-  // When inside: recompute nearest midpoint from the projected edge position so stickiness
-  // feels the same as when the cursor is outside.
   const edgePos: Point = [edgeSnap.x, edgeSnap.y];
-  const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(cursorWorld, midpoints);
+  const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(ctx.cursorWorld, midpoints);
 
-  if (shouldSnapToMidpoint(prevAttach, shapeId, probe.side, probe.dist, radii)) {
+  if (midpointGate(wasOnElbowMidpoint(ctx.prevAttach, shapeId, probe.side), probe.dist, radii)) {
     const midpoint = midpoints[probe.side];
-    const { normalizedAnchor, position } = computeAnchorAndPosition(midpoint, frame, probe.side);
     return {
+      kind: 'elbow',
       shapeId,
       side: probe.side,
-      normalizedAnchor,
+      normalizedAnchor: normalizedFromEdge(midpoint, frame),
       isMidpoint: true,
-      position,
-      edgePosition: midpoint,
+      position: midpoint,
       isInside,
     };
   }
 
-  const { normalizedAnchor, position } = computeAnchorAndPosition(edgePos, frame, edgeSnap.side);
   return {
+    kind: 'elbow',
     shapeId,
     side: edgeSnap.side,
-    normalizedAnchor,
+    normalizedAnchor: normalizedFromEdge(edgePos, frame),
     isMidpoint: false,
-    position,
-    edgePosition: edgePos,
+    position: edgePos,
     isInside,
   };
 }
+
+// =============================================================================
+// STRAIGHT PIPELINE — edge, edge-midpoint, center, or clamped interior
+// =============================================================================
+
+function computeStraightSnap(
+  ctx: SnapContext,
+  shapeId: string,
+  frame: FrameTuple,
+  shapeType: string,
+  midpoints: Record<Dir, Point>,
+  isInside: boolean,
+  insideDepth: number,
+  radii: SnapRadiiWorld,
+): StraightSnapTarget | null {
+  if (isInside && insideDepth > radii.straightInteriorDepth) {
+    return computeStraightInterior(ctx, shapeId, frame, midpoints, radii);
+  }
+  return tryStraightEdgeSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, radii);
+}
+
+function computeStraightInterior(
+  ctx: SnapContext,
+  shapeId: string,
+  frame: FrameTuple,
+  midpoints: Record<Dir, Point>,
+  radii: SnapRadiiWorld,
+): StraightSnapTarget {
+  const { cursorWorld, prevAttach } = ctx;
+  const [cx, cy] = cursorWorld;
+  const [fx, fy, fw, fh] = frame;
+  const center: Point = [fx + fw / 2, fy + fh / 2];
+  const centerDist = Math.hypot(cx - center[0], cy - center[1]);
+
+  const wasCenter = prevAttach?.kind === 'straight' && prevAttach.shapeId === shapeId && prevAttach.isCenter;
+  const centerThreshold = wasCenter ? radii.centerSnap * 1.3 : radii.centerSnap;
+
+  if (centerDist <= centerThreshold) {
+    return {
+      kind: 'straight',
+      shapeId,
+      interior: true,
+      isCenter: true,
+      midpointSide: null,
+      normalizedAnchor: [0.5, 0.5],
+      position: center,
+      isInside: true,
+    };
+  }
+
+  const nearest = nearestMidpoint(cursorWorld, midpoints);
+  if (midpointGate(wasOnStraightMidpoint(prevAttach, shapeId, nearest.side), nearest.dist, radii)) {
+    const midpoint = midpoints[nearest.side];
+    return {
+      kind: 'straight',
+      shapeId,
+      interior: false,
+      isCenter: false,
+      midpointSide: nearest.side,
+      normalizedAnchor: normalizedFromEdge(midpoint, frame),
+      position: midpoint,
+      isInside: true,
+    };
+  }
+
+  const normalizedAnchor: Point = [Math.max(0.01, Math.min(0.99, (cx - fx) / fw)), Math.max(0.01, Math.min(0.99, (cy - fy) / fh))];
+  return {
+    kind: 'straight',
+    shapeId,
+    interior: true,
+    isCenter: false,
+    midpointSide: null,
+    normalizedAnchor,
+    position: cursorWorld,
+    isInside: true,
+  };
+}
+
+function tryStraightEdgeSnap(
+  ctx: SnapContext,
+  shapeId: string,
+  frame: FrameTuple,
+  shapeType: string,
+  midpoints: Record<Dir, Point>,
+  isInside: boolean,
+  radii: SnapRadiiWorld,
+): StraightSnapTarget | null {
+  const edgeSnap = findNearestEdgePoint(ctx.cursorWorld, frame, shapeType);
+  if (!edgeSnap) return null;
+  if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
+
+  const edgePos: Point = [edgeSnap.x, edgeSnap.y];
+  const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(ctx.cursorWorld, midpoints);
+
+  if (midpointGate(wasOnStraightMidpoint(ctx.prevAttach, shapeId, probe.side), probe.dist, radii)) {
+    const midpoint = midpoints[probe.side];
+    return {
+      kind: 'straight',
+      shapeId,
+      interior: false,
+      isCenter: false,
+      midpointSide: probe.side,
+      normalizedAnchor: normalizedFromEdge(midpoint, frame),
+      position: midpoint,
+      isInside,
+    };
+  }
+
+  return {
+    kind: 'straight',
+    shapeId,
+    interior: false,
+    isCenter: false,
+    midpointSide: null,
+    normalizedAnchor: normalizedFromEdge(edgePos, frame),
+    position: edgePos,
+    isInside,
+  };
+}
+
+// =============================================================================
+// EDGE GEOMETRY (shape-type-aware nearest edge point)
+// =============================================================================
 
 /**
  * Find nearest point on shape edge (shape-type aware).

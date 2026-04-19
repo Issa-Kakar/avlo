@@ -13,16 +13,10 @@ import type { Dir as SharedDir } from '../accessors';
 
 // Re-export for convenience
 export type { Frame, FrameTuple, Point } from '../types/geometry';
-export type { StoredAnchor } from '../accessors';
+export type { StoredAnchor, StoredElbowAnchor, StoredStraightAnchor } from '../types/objects';
 
 /** Connector routing style */
 export type ConnectorType = 'elbow' | 'straight';
-
-const INTERIOR_EPS = 1e-6;
-/** True if anchor is strictly inside the shape (not on any edge). */
-export function isAnchorInterior(anchor: Point): boolean {
-  return anchor[0] > INTERIOR_EPS && anchor[0] < 1 - INTERIOR_EPS && anchor[1] > INTERIOR_EPS && anchor[1] < 1 - INTERIOR_EPS;
-}
 
 /** Connector endpoint cap style */
 export type ConnectorCap = 'arrow' | 'none';
@@ -129,27 +123,48 @@ export interface RoutingContext {
 // ============================================================================
 
 /**
- * Snap target returned by the snapping system.
+ * Shared fields for all snap targets.
+ *
+ * `position` is the single visual dot + routing endpoint before any offset/pullback.
+ * Elbow routing applies `+ directionVector(side) * EDGE_CLEARANCE_W` at resolve time;
+ * straight routing applies its own pull-back in `computeStraightRoute`. The snap
+ * layer never bakes an offset into `position`.
  */
-export interface SnapTarget {
+interface SnapTargetBase {
   /** ID of the shape being snapped to */
   shapeId: string;
-  /** Which edge (N/E/S/W) */
-  side: Dir;
   /**
    * Normalized anchor position within shape frame [0-1, 0-1].
-   * Shape-agnostic: position = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
+   * Shape-agnostic: anchorPoint = [frame.x + a[0]*frame.w, frame.y + a[1]*frame.h]
    */
   normalizedAnchor: Point;
-  /** True if snapped to exact midpoint */
-  isMidpoint: boolean;
-  /** World coordinates of snap point WITH offset applied (for routing) */
+  /** World position of the visual anchor dot + pre-offset routing endpoint. */
   position: Point;
-  /** World coordinates of snap point on shape edge (for dot rendering) */
-  edgePosition: Point;
-  /** True if cursor is inside the shape */
+  /** True if cursor is inside the shape. */
   isInside: boolean;
 }
+
+/** Snap target for an elbow connector — always edge-anchored (incl. midpoint). */
+export interface ElbowSnapTarget extends SnapTargetBase {
+  kind: 'elbow';
+  /** Authoritative outward direction — from shape-aware edge classification. */
+  side: Dir;
+  /** True when snapped to the edge midpoint (for hysteresis + midpoint highlight). */
+  isMidpoint: boolean;
+}
+
+/** Snap target for a straight connector — edge, edge-midpoint, center, or interior. */
+export interface StraightSnapTarget extends SnapTargetBase {
+  kind: 'straight';
+  /** True = anchor sits inside the shape; false = anchor sits on the edge. */
+  interior: boolean;
+  /** True when anchored at shape center [0.5, 0.5] — drives the center-dot rendering. */
+  isCenter: boolean;
+  /** Edge-midpoint side when snapped to one (for midpoint highlight + hysteresis). */
+  midpointSide: Dir | null;
+}
+
+export type SnapTarget = ElbowSnapTarget | StraightSnapTarget;
 
 /**
  * Context for snap computation.
@@ -159,8 +174,8 @@ export interface SnapContext {
   cursorWorld: Point;
   /** Previous snap target (for hysteresis) */
   prevAttach: SnapTarget | null;
-  /** Connector type — straight connectors allow interior/center anchors */
-  connectorType?: ConnectorType;
+  /** Connector type — drives the per-type branch in `computeSnapForShape`. */
+  connectorType: ConnectorType;
 }
 
 // ============================================================================

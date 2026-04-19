@@ -27,7 +27,16 @@ import type {
 } from './types/objects';
 
 // Re-export types for backwards compatibility
-export type { Dir, StoredAnchor, TextAlign, TextAlignV, TextWidth, FontFamily } from './types/objects';
+export type {
+  Dir,
+  StoredAnchor,
+  StoredElbowAnchor,
+  StoredStraightAnchor,
+  TextAlign,
+  TextAlignV,
+  TextWidth,
+  FontFamily,
+} from './types/objects';
 export type { CodeLanguage, CodeProps, TextProps, StrokeProps, ShapeProps } from './types/objects';
 export type { NoteProps, ImageProps, BookmarkProps } from './types/objects';
 

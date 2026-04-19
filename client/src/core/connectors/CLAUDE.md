@@ -23,11 +23,11 @@ The connector routing system implements two routing modes: **orthogonal (elbow)*
 
 ```
 client/src/core/connectors/
-├── types.ts               # Dir, Bounds, AABB, SnapTarget, RoutingContext, Grid, ConnectorType, ConnectorCap, isAnchorInterior
+├── types.ts               # Dir, Bounds, AABB, SnapTarget (discriminated union), RoutingContext, Grid, ConnectorType, ConnectorCap
 ├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas, CENTER_SNAP_RADIUS_PX, STRAIGHT_INTERIOR_DEPTH_PX
-├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, anchorOffsetPoint, sideFromAnchor, isSameShape
+├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, elbowAnchorPoint, isSameShape, anchorRecordFromSnap
 ├── connector-utils.ts     # Shape midpoints, direction helpers, bounds conversion, direction resolution, getEndpointEdgePosition, computeShapeEdgeIntersection
-├── snap.ts                # Shape snapping with fill-aware visual ordering, straight interior/center snap
+├── snap.ts                # Shape snapping — per-type branching (elbow/straight), dead-zone-free edge gate
 ├── routing-context.ts     # Centerlines, dynamic AABBs, stubs, grid construction
 ├── routing-astar.ts       # A* pathfinding with segment intersection checking
 ├── connector-paths.ts     # Path2D builders (polyline, arrows) for cache and preview
@@ -78,23 +78,15 @@ type Dir = 'N' | 'E' | 'S' | 'W';
 type ConnectorType = 'elbow' | 'straight';
 ```
 
-Stored per-connector in Y.Map (`connectorType?: 'straight'` — absent means elbow). Read via `getConnectorType(y)` from `@avlo/shared`. Device-ui-store holds the default for new connectors.
+**Required discriminated field** on every connector Y.Map. `ConnectorTool.commitConnector` always writes it. `getConnectorType(y)` defaults to `'elbow'` on read for graceful handling of stale data — but all new writes carry the explicit value.
 
-### Interior Anchors
+### Interior vs Edge — Stored, Never Computed
 
-Straight connectors introduce a distinction: **edge anchors** (at least one normalized coordinate at 0 or 1) vs **interior anchors** (both strictly inside `(0, 1)`).
+Interior-ness (straight connectors only) is committed at snap time as `anchor.interior: boolean` on the stored anchor. The snap layer already knows — it ran `pointInsideShape(cursor, frame, shapeType)` to decide the branch. Downstream code never recomputes it from normalized coordinates (the old `isAnchorInterior(coord-only)` check was the root of a bug cluster: shape-agnostic, wrong for ellipses/diamonds).
 
-```typescript
-const INTERIOR_EPS = 1e-6;
-function isAnchorInterior(anchor: [number, number]): boolean {
-  return anchor[0] > INTERIOR_EPS && anchor[0] < 1 - INTERIOR_EPS
-      && anchor[1] > INTERIOR_EPS && anchor[1] < 1 - INTERIOR_EPS;
-}
-```
+**Consequence:** there is no `isAnchorInterior` function anymore. Consumers read `anchor.interior` (stored) or `snap.interior` / `snap.kind === 'straight'` (live). Elbow anchors have **no** `interior` field — they're always edge-anchored (incl. midpoints).
 
-**Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Renders a center dot on the shape in snap UI.
-
-**Used by:** `anchorOffsetPoint` (skip edge offset), `computeStraightRoute` (edge intersection vs pull-back), `computeSnapForShape` (depth gate), snap dot rendering (center dot), preview/overlay dashed guides.
+**Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Emitted as `StraightSnapTarget` with `isCenter: true`.
 
 ### Bounds vs AABB
 
@@ -366,29 +358,28 @@ normalizedAnchor = [
 
 ### Anchor ↔ Point Atoms (`anchor-atoms.ts`)
 
-Anchor-to-point math lives in one small module so that a future `StoredAnchor.side`
-removal is a zero-touch change at every call site:
+Four tiny functions. No classifiers, no re-derivation, no shape-type-aware math:
 
 ```typescript
-// Raw frame point for a normalized anchor — no offset, sits on the shape edge/interior.
+// Raw frame point for a normalized anchor — no offset, sits on the frame (edge or interior).
 anchorFramePoint(anchor: [number, number], frame: FrameTuple): [number, number];
 
-// Same raw frame point + EDGE_CLEARANCE_W (11) pushed outward for edge anchors.
-// Interior anchors return the raw point untouched — `computeStraightRoute` handles
-// its own pull-back for the line endpoint.
-anchorOffsetPoint(anchor: [number, number], frame: FrameTuple, shapeType: string): [number, number];
-
-// Derive the outward Dir from a normalized anchor + frame + shape type.
-// Edge anchors read the coordinate; interior anchors resolve via nearest midpoint.
-sideFromAnchor(anchor: [number, number], frame: FrameTuple, shapeType: string): Dir;
+// Elbow-only: frame point + EDGE_CLEARANCE_W along stored anchor.side.
+// Stored side is authoritative — never re-derived from coords.
+elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): [number, number];
 
 // True when two resolved endpoints point at the same shape (by shapeId).
 isSameShape(a, b): boolean;
+
+// Build the Y.Map anchor record for a snap target — shape matches connector type:
+//   elbow   → { id, side, anchor }
+//   straight→ { id, interior, anchor }
+anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
 ```
 
-**Key insight:** Only `EDGE_CLEARANCE_W` (11 units) is applied for edge anchors — not the full approach offset. Interior anchors (straight connectors) skip the offset entirely; `computeStraightRoute` computes its own pull-back offsets via `applyPullBack`.
+**Key insight:** `EDGE_CLEARANCE_W` offset lives in the elbow path exclusively. Straight connectors never need it — `computeStraightRoute` applies its own pull-back via `applyPullBack`. The snap layer always emits `position` as the visual anchor point (no offset baked in); elbow routing applies the offset at resolve time.
 
-**`getEndpointEdgePosition`** (in `connector-utils.ts`) uses `anchorFramePoint` and is the canonical "where does this endpoint's dot sit on the frame" accessor — always returns a point on the shape frame, never offset outward.
+**`getEndpointEdgePosition`** (in `connector-utils.ts`) uses `anchorFramePoint` — canonical "where does this endpoint's dot sit on the frame" accessor, always on the shape frame, never offset outward.
 
 ---
 
@@ -400,21 +391,37 @@ isSameShape(a, b): boolean;
 function findBestSnapTarget(ctx: SnapContext): SnapTarget | null;
 
 interface SnapContext {
-  cursorWorld: [number, number];  // Cursor in world coords
+  cursorWorld: [number, number];
   prevAttach: SnapTarget | null;   // Previous snap (for hysteresis)
-  connectorType?: ConnectorType;   // Defaults to 'elbow' behavior
+  connectorType: ConnectorType;    // REQUIRED — top-level branch discriminator
 }
 
-interface SnapTarget {
+// Discriminated union — callers branch on `snap.kind`.
+type SnapTarget = ElbowSnapTarget | StraightSnapTarget;
+
+interface ElbowSnapTarget {
+  kind: 'elbow';
   shapeId: string;
-  side: Dir;
+  side: Dir;                       // Authoritative (shape-aware edge classification)
   normalizedAnchor: [number, number];
   isMidpoint: boolean;
-  position: [number, number];      // World coords WITH offset
-  edgePosition: [number, number];  // Position ON shape edge (for dots)
+  position: [number, number];      // Visual dot + pre-offset routing endpoint
+  isInside: boolean;
+}
+
+interface StraightSnapTarget {
+  kind: 'straight';
+  shapeId: string;
+  interior: boolean;               // Committed at snap time; never recomputed
+  isCenter: boolean;               // Snapped to [0.5, 0.5]
+  midpointSide: Dir | null;        // Edge-midpoint snap — for highlight + hysteresis
+  normalizedAnchor: [number, number];
+  position: [number, number];      // Visual dot + pre-pullback routing endpoint
   isInside: boolean;
 }
 ```
+
+`position` is the single visual + pre-offset point for both kinds. The old `edgePosition` is gone — routing owns its own offset/pullback per type (elbow: `+ EDGE_CLEARANCE_W * directionVector(side)` at resolve; straight: `applyPullBack` in `computeStraightRoute`).
 
 ### Connectable Kinds
 
@@ -433,20 +440,24 @@ Snapping respects Z-order and fill state:
 
 **Result:** Nested shapes snap to the inner-most shape when cursor is inside.
 
-### Snap Modes
+### Snap Modes — two fully separate pipelines
 
-| Cursor Location | Elbow | Straight |
+`computeSnapForShape` branches at the top on `ctx.connectorType`. The two pipelines share nothing except the nearest-edge / nearest-midpoint helpers.
+
+| Cursor Location | Elbow (`computeElbowSnap`) | Straight (`computeStraightSnap`) |
 |---|---|---|
-| Deep inside (> 35px / > 20px) | Midpoints only | Center snap → midpoint → interior |
-| Shallow inside or near edge | Edge sliding + midpoint stickiness | Edge sliding + midpoint stickiness |
+| Deep inside (> 35px / > 20px) | `forceElbowMidpoint` (nearest midpoint only) | `computeStraightInterior`: center → midpoint → clamped interior |
+| Shallow inside or near edge | `tryElbowEdgeSnap`: edge + midpoint stickiness | `tryStraightEdgeSnap`: edge + midpoint stickiness |
 | Outside snap radius | No snap | No snap |
 
-**Straight interior mode (CASE 1a):** When cursor is deeply inside a shape (> `STRAIGHT_INTERIOR_DEPTH_PX: 20`), priority cascade:
-1. **Center snap:** Cursor within `CENTER_SNAP_RADIUS_PX: 12` of shape center → `normalizedAnchor=[0.5, 0.5]`, hysteresis 1.3×
-2. **Midpoint stickiness:** Same as edge case
-3. **Interior anchor:** Fallback — `normalizedAnchor` clamped to `[0.01, 0.99]`, position at cursor
+**Dead-zone fix:** the edge-radius gate (`edgeSnap.dist > radii.edgeSnap`) now applies **only when the cursor is outside the shape** (`!isInside`). When shallow-inside, the nearest edge is always a valid target. Previously the gate rejected shallow-inside edges between 15–35px (elbow) / 15–20px (straight) deep, producing a "dead zone" where neither edge sliding nor force-midpoint fired.
 
-The smaller depth threshold (20 vs elbow's 35) preserves edge sliding when shallowly inside, since interior anchors are a valid destination for straight connectors.
+**Straight interior mode:** when `insideDepth > STRAIGHT_INTERIOR_DEPTH_PX (20)`:
+1. Center snap within `CENTER_SNAP_RADIUS_PX (12)` of shape center (hysteresis 1.3×) → `{ kind: 'straight', isCenter: true, interior: true, normalizedAnchor: [0.5, 0.5] }`.
+2. Midpoint stickiness (hysteresis 16/16) → `{ interior: false, midpointSide: side }`.
+3. Fallback → clamped interior anchor at cursor → `{ interior: true, midpointSide: null }`.
+
+Elbow never enters interior mode — deep-inside cursors always pin to a midpoint.
 
 ### Ctrl Suppresses Snapping
 
@@ -658,12 +669,12 @@ Returned by `routeNewConnector()`:
 ```typescript
 interface NewRouteResult {
   points: [number, number][];
-  startDashTo: [number, number] | null;  // Legacy: interior anchor frame point
-  endDashTo: [number, number] | null;    // Legacy: interior anchor frame point
+  startDashTo: [number, number] | null;  // Legacy field, unused by renderers
+  endDashTo: [number, number] | null;    // Legacy field, unused by renderers
 }
 ```
 
-For elbow connectors, `startDashTo`/`endDashTo` are always `null`. For straight connectors, `computeStraightRoute` still populates them, but **the preview no longer consumes these fields** — `ConnectorPreview` carries `fromSnap`/`hoverSnap`, and `connector-preview.ts` derives dashed guides from `snap.edgePosition` + `isAnchorInterior`. The dash fields remain only for compat during the refactor and are slated for removal.
+The `*DashTo` fields are historical. Renderers derive dashed guides from the snap directly — `connector-preview.ts` and `selection-overlay.ts` branch on `snap.kind === 'straight' && snap.interior` and draw from `points[0 | -1]` to `snap.position`. The fields are slated for removal.
 
 ### Internal Flow
 
@@ -733,12 +744,13 @@ the in-flight preview, and the selection overlay stay visually identical.
   Shared by `objects.ts` (both `drawConnector` from cache and
   `drawConnectorFromPoints` for rerouted paths) and `connector-preview.ts`
   (via `buildConnectorPaths` at draw time).
-- **`drawSnapFeedback(ctx, snap, isStraight)`** — Full target feedback in one
-  call: shape highlight + midpoint dots + straight-center dot + active edge
-  anchor dot. When snap is the straight center, the center dot doubles as the
-  active indicator and the edge-position dot is skipped. Shared by
-  `connector-preview.ts` (hover snap during creation) and `selection-overlay.ts`
-  (endpoint drag).
+- **`drawSnapFeedback(ctx, snap)`** — Full target feedback in one call: shape
+  highlight + midpoint dots + straight-center dot + active anchor dot. Branches
+  internally on `snap.kind` — active midpoint highlight uses `snap.side` (elbow)
+  or `snap.midpointSide` (straight). When snap is the straight center, the
+  center dot doubles as the active indicator and the anchor-position dot is
+  skipped. Shared by `connector-preview.ts` (hover snap during creation) and
+  `selection-overlay.ts` (endpoint drag).
 - **Constant-styled decoration atoms** — `drawAnchorDot`,
   `drawConnectorDashGuide`, `drawSnapTargetHighlight`, `drawShapeMidpoints`,
   `drawStraightCenterDot`. No color/width/opacity params leak through; they
@@ -756,22 +768,34 @@ the in-flight preview, and the selection overlay stay visually identical.
 {
   id: string;
   kind: 'connector';
-  points: [number, number][];       // Full routed path
-  start: [number, number];          // Start endpoint position
-  end: [number, number];            // End endpoint position
-  startAnchor?: {                   // Only if anchored
-    id: string;                     // Target shape ID
-    side: Dir;                      // Edge direction
-    anchor: [number, number];       // Normalized [0-1, 0-1]
-  };
-  endAnchor?: { ... };              // Same structure
-  connectorType?: 'straight';       // Only stored when not 'elbow' (default)
+  connectorType: 'elbow' | 'straight';  // REQUIRED — always written on new commits
+  points: [number, number][];           // Full routed path
+  start: [number, number];              // Start endpoint position
+  end: [number, number];                // End endpoint position
+
+  // Anchor shape is discriminated by `connectorType`:
+  startAnchor?: StoredElbowAnchor | StoredStraightAnchor;
+  endAnchor?:   StoredElbowAnchor | StoredStraightAnchor;
+
   startCap: 'none' | 'arrow';
-  endCap: 'none' | 'arrow';
+  endCap:   'none' | 'arrow';
   color, width, ownerId, createdAt
 }
+
+interface StoredElbowAnchor {
+  id: string;
+  side: Dir;                // Authoritative; never re-derived at read time
+  anchor: [number, number]; // Normalized [0-1, 0-1]
+}
+
+interface StoredStraightAnchor {
+  id: string;
+  interior: boolean;        // Committed at snap time; never recomputed
+  anchor: [number, number];
+}
 ```
-Connectors always render at opacity 1 — no `opacity` field is stored.
+
+Callers that need the narrowed shape cast via `connectorType` (the parent is the discriminator). `getConnectorType(y)` still defaults to `'elbow'` on read for stale data — but every new write carries the explicit value. Connectors render at opacity 1 — no `opacity` field is stored.
 
 ---
 
@@ -783,12 +807,15 @@ Connectors always render at opacity 1 — no `opacity` field is stored.
 4. **Segment checking during A*** — No cell blocking at grid construction
 5. **Directions resolved before routing** — RoutingContext receives final directions
 6. **Normalized anchors are shape-agnostic** — `[0-1, 0-1]` + linear interpolation
-7. **EDGE_CLEARANCE_W for endpoints** — 11 units, NOT the full approach offset
+7. **EDGE_CLEARANCE_W for endpoints** — 11 units, applied ONLY by elbow routing (at resolve). Straight owns its own pull-back.
 8. **Per-endpoint override** — `EndpointOverrideValue` covers free position, transformed frame, or live `SnapTarget` in one union
 9. **Straight routing skips A*** — `computeStraightRoute` bypasses RoutingContext, grid, and direction resolution
-10. **Interior anchors bypass edge offset** — `anchorOffsetPoint` returns the raw frame point for interior anchors; `computeStraightRoute` handles its own pull-back
-11. **Same-shape interior goes direct** — No edge intersection when both endpoints share a shape
-12. **Single paint atom** — Every connector stroke goes through `paintConnector` so committed render, transform preview, and in-flight preview share exactly one draw pass
+10. **Interior-ness is stored, not computed** — Decided at snap time with shape-aware `pointInsideShape`. Never recomputed from normalized coordinates anywhere downstream.
+11. **Elbow uses stored `side` directly** — `reroute-connector.ts` reads `anchor.side` / `snap.side`; there is no re-derivation from anchor coords.
+12. **Same-shape interior goes direct** — No edge intersection when both endpoints share a shape
+13. **Single paint atom** — Every connector stroke goes through `paintConnector` so committed render, transform preview, and in-flight preview share exactly one draw pass
+14. **Edge-radius gate is outside-only** — Inside-but-shallow always allows edge snapping; no snap dead zones inside shapes.
+15. **`SnapTarget` is a discriminated union** — `snap.kind` is the source of truth; consumers branch on it, never on field shape.
 
 ---
 
@@ -798,15 +825,15 @@ Connectors always render at opacity 1 — no `opacity` field is stored.
 |------|-----|-------|
 | Create new connector | `routeNewConnector()` | SnapTarget or [x,y] per endpoint |
 | Reroute existing connector | `rerouteConnector()` | Reads Y.map, applies `EndpointOverrideValue` per side |
-| Find snap target | `findBestSnapTarget()` | Fill-aware, returns SnapTarget |
+| Find snap target | `findBestSnapTarget()` | Fill-aware, returns discriminated `SnapTarget` |
 | Get connectors for shape | `getConnectorsForShape()` | O(1) reverse lookup |
 | Build render paths | `buildConnectorPaths()` | Returns polyline + arrows |
 | Paint connector | `paintConnector()` | Shared draw atom (committed + preview) |
 | Anchor → frame point | `anchorFramePoint()` | Raw point (no outward offset) |
-| Anchor → offset point | `anchorOffsetPoint()` | Adds EDGE_CLEARANCE_W for edge anchors; raw for interior |
-| Anchor → side | `sideFromAnchor()` | Edge anchors read coord; interior uses nearest midpoint |
+| Elbow anchor → routing point | `elbowAnchorPoint()` | Raw + EDGE_CLEARANCE_W along stored `anchor.side` |
+| Write anchor record from snap | `anchorRecordFromSnap()` | Per-kind Y.Map shape (elbow: side, straight: interior) |
 | Resolve free→anchored direction | `resolveFreeStartDir()` | Complex spatial logic (elbow only) |
 | Resolve anchored→free direction | `computeFreeEndDir()` | Primary axis + sign (elbow only) |
 | Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + overlap safety |
-| Check interior anchor | `isAnchorInterior()` | Gates snap, routing, and rendering behavior |
+| Check interior anchor | read `anchor.interior` (stored) or `snap.interior` (live) | Never recomputed from coords |
 | Find shape edge exit | `computeShapeEdgeIntersection()` | Ray cast for interior anchors (rect/ellipse/diamond) |

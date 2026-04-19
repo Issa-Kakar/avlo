@@ -19,7 +19,7 @@
 
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { type ObjectHandle, isBindableHandle } from '@/core/types/objects';
-import { type Dir, type SnapTarget, isAnchorInterior } from '@/core/connectors/types';
+import { type Dir, type SnapTarget } from '@/core/connectors/types';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
 import { type ConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
@@ -189,7 +189,7 @@ export function drawStraightCenterDot(ctx: CanvasRenderingContext2D, frame: Fram
 
 /** True when a snap target is pinned to the shape's interior center `[0.5, 0.5]`. */
 export function isCenterSnap(snap: SnapTarget): boolean {
-  return isAnchorInterior(snap.normalizedAnchor) && snap.normalizedAnchor[0] === 0.5 && snap.normalizedAnchor[1] === 0.5;
+  return snap.kind === 'straight' && snap.isCenter;
 }
 
 /**
@@ -206,20 +206,28 @@ export function resolveSnapContext(snap: SnapTarget): { handle: ObjectHandle; fr
 
 /**
  * Full snap-target feedback in one call: shape outline highlight, midpoint dots,
- * straight-center dot, and the active anchor dot at `snap.edgePosition`. When the
+ * straight-center dot, and the active anchor dot at `snap.position`. When the
  * snap sits at the straight center, the center dot doubles as the active dot and
- * the edge-position dot is skipped to avoid double-stamping.
+ * the anchor-position dot is skipped to avoid double-stamping.
  *
  * Shared by `connector-preview.ts` (hover during creation) and `selection-overlay.ts`
  * (endpoint drag). Pass `null` to no-op — keeps call sites flat.
+ *
+ * The second param is ignored for discrimination — we branch on `snap.kind`. It's
+ * kept for API backwards compat with existing callers that already pass `isStraight`.
  */
-export function drawSnapFeedback(ctx: CanvasRenderingContext2D, snap: SnapTarget | null, isStraight: boolean): void {
+export function drawSnapFeedback(ctx: CanvasRenderingContext2D, snap: SnapTarget | null, _isStraight?: boolean): void {
   if (!snap) return;
   const snapCtx = resolveSnapContext(snap);
   if (!snapCtx) return;
-  const centered = isStraight && isCenterSnap(snap);
+  const isStraight = snap.kind === 'straight';
+  const centered = isStraight && snap.isCenter;
+
+  const activeSide: Dir | null = snap.kind === 'elbow' ? snap.side : snap.midpointSide;
+  const isMidpointActive = snap.kind === 'elbow' ? snap.isMidpoint : snap.midpointSide !== null;
+
   drawSnapTargetHighlight(ctx, snapCtx.handle, snapCtx.frame);
-  drawShapeMidpoints(ctx, snapCtx.frame, snapCtx.shapeType, snap.side, snap.isMidpoint);
+  drawShapeMidpoints(ctx, snapCtx.frame, snapCtx.shapeType, activeSide, isMidpointActive);
   if (isStraight) drawStraightCenterDot(ctx, snapCtx.frame, centered);
-  if (!centered) drawAnchorDot(ctx, snap.edgePosition, true);
+  if (!centered) drawAnchorDot(ctx, snap.position, true);
 }

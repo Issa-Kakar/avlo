@@ -17,6 +17,7 @@ import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from '@/runtime/ContextMenuController';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
+import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
 import { handleCursor } from '@/core/types/handles';
 import { getController, getTransformScaleCtx } from './transform';
@@ -687,14 +688,10 @@ export class SelectTool implements PointerTool {
       yMap.set('start', routedPoints[0]);
       yMap.set('end', routedPoints[routedPoints.length - 1]);
 
-      // Update anchor for the dragged endpoint
+      // Update anchor for the dragged endpoint — shape matches connector type
       const anchorKey = endpoint === 'start' ? 'startAnchor' : 'endAnchor';
       if (currentSnap) {
-        yMap.set(anchorKey, {
-          id: currentSnap.shapeId,
-          side: currentSnap.side,
-          anchor: currentSnap.normalizedAnchor,
-        });
+        yMap.set(anchorKey, anchorRecordFromSnap(currentSnap));
       } else {
         yMap.delete(anchorKey);
       }

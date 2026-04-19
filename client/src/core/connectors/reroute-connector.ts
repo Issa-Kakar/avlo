@@ -19,10 +19,9 @@ import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAn
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
 import { computeAStarRoute } from './routing-astar';
-import { resolveFreeStartDir, computeFreeEndDir, computeShapeEdgeIntersection } from './connector-utils';
-import { anchorFramePoint, anchorOffsetPoint, sideFromAnchor, isSameShape } from './anchor-atoms';
-import type { Dir, AABB, SnapTarget, ConnectorType } from './types';
-import { isAnchorInterior } from './types';
+import { resolveFreeStartDir, computeFreeEndDir, computeShapeEdgeIntersection, directionVector } from './connector-utils';
+import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
+import type { Dir, AABB, SnapTarget, ConnectorType, StoredElbowAnchor, StoredStraightAnchor } from './types';
 import { getConnectorType, getHandleShapeType } from '../accessors';
 import { EDGE_CLEARANCE_W } from './constants';
 
@@ -68,11 +67,12 @@ export function rerouteConnector(
   const startAnchor = getStartAnchor(yMap);
   const endAnchor = getEndAnchor(yMap);
   const strokeWidth = getWidth(yMap, 2);
+  const connectorType = getConnectorType(yMap);
 
-  const startResolved = resolveEndpoint(storedStart, startAnchor, endpointOverrides?.start);
-  const endResolved = resolveEndpoint(storedEnd, endAnchor, endpointOverrides?.end);
+  const startResolved = resolveEndpoint(storedStart, startAnchor, endpointOverrides?.start, connectorType);
+  const endResolved = resolveEndpoint(storedEnd, endAnchor, endpointOverrides?.end, connectorType);
 
-  if (getConnectorType(yMap) === 'straight') {
+  if (connectorType === 'straight') {
     const straight = computeStraightRoute(startResolved, endResolved);
     return { points: straight.points, bbox: computeConnectorBBoxFromPoints(straight.points, yMap) };
   }
@@ -98,11 +98,13 @@ interface ResolvedEndpoint {
   dir: Dir | null;
   shapeBounds: AABB | null;
   isAnchored: boolean;
-  // Straight connector fields (populated when anchored)
+  // Populated for anchored endpoints (both connector types).
   normalizedAnchor?: Point;
   shapeType?: string;
   frame?: FrameTuple;
   shapeId?: string;
+  /** Straight-only: true = stored/snapped as interior, false = edge. */
+  interior?: boolean;
 }
 
 const FREE_ENDPOINT = (position: Point): ResolvedEndpoint => ({
@@ -112,15 +114,22 @@ const FREE_ENDPOINT = (position: Point): ResolvedEndpoint => ({
   isAnchored: false,
 });
 
-/** Resolve a single endpoint, picking the right override branch first. */
+/**
+ * Resolve a single endpoint, picking the right override branch first.
+ *
+ * Trusts the stored anchor's shape matches its parent connector's `connectorType`
+ * (elbow stores `side`, straight stores `interior`). No runtime normalization —
+ * interior-ness was committed at snap time and is authoritative.
+ */
 function resolveEndpoint(
   storedPosition: Point,
   anchor: StoredAnchor | undefined,
   override: EndpointOverrideValue | undefined,
+  connectorType: ConnectorType,
 ): ResolvedEndpoint {
   if (override !== undefined) {
-    if (Array.isArray(override)) return resolveFreePositionOverride(override);
-    if ('frame' in override) return resolveFrameOverride(override.frame, anchor, storedPosition);
+    if (Array.isArray(override)) return FREE_ENDPOINT(override);
+    if ('frame' in override) return resolveFrameOverride(override.frame, anchor, storedPosition, connectorType);
     return resolveSnapOverride(override);
   }
   if (!anchor) return FREE_ENDPOINT(storedPosition);
@@ -130,9 +139,16 @@ function resolveEndpoint(
   if (!frame) return FREE_ENDPOINT(storedPosition);
 
   const shapeType = getHandleShapeType(anchorHandle);
+  return connectorType === 'elbow'
+    ? buildElbowResolved(anchor as StoredElbowAnchor, frame, shapeType)
+    : buildStraightResolved(anchor as StoredStraightAnchor, frame, shapeType);
+}
+
+/** Elbow: position = frame point + EDGE_CLEARANCE_W along stored side; dir = stored side. */
+function buildElbowResolved(anchor: StoredElbowAnchor, frame: FrameTuple, shapeType: string): ResolvedEndpoint {
   return {
-    position: anchorOffsetPoint(anchor.anchor, frame, shapeType),
-    dir: sideFromAnchor(anchor.anchor, frame, shapeType),
+    position: elbowAnchorPoint(anchor, frame),
+    dir: anchor.side,
     shapeBounds: tupleToFrame(frame),
     isAnchored: true,
     normalizedAnchor: anchor.anchor,
@@ -142,41 +158,70 @@ function resolveEndpoint(
   };
 }
 
-/** Override: caller provided a free world position. */
-function resolveFreePositionOverride(position: Point): ResolvedEndpoint {
-  return FREE_ENDPOINT(position);
+/** Straight: position = raw frame point (no offset); dir = null; carries stored `interior`. */
+function buildStraightResolved(anchor: StoredStraightAnchor, frame: FrameTuple, shapeType: string): ResolvedEndpoint {
+  return {
+    position: anchorFramePoint(anchor.anchor, frame),
+    dir: null,
+    shapeBounds: tupleToFrame(frame),
+    isAnchored: true,
+    normalizedAnchor: anchor.anchor,
+    shapeType,
+    frame,
+    shapeId: anchor.id,
+    interior: anchor.interior,
+  };
 }
 
 /** Override: caller provided a transformed frame — reapply the stored anchor against it. */
-function resolveFrameOverride(frame: FrameTuple, anchor: StoredAnchor | undefined, storedPosition: Point): ResolvedEndpoint {
+function resolveFrameOverride(
+  frame: FrameTuple,
+  anchor: StoredAnchor | undefined,
+  storedPosition: Point,
+  connectorType: ConnectorType,
+): ResolvedEndpoint {
   if (!anchor) return FREE_ENDPOINT(storedPosition);
   const shapeType = getHandleShapeType(getHandle(anchor.id));
-  return {
-    position: anchorOffsetPoint(anchor.anchor, frame, shapeType),
-    dir: sideFromAnchor(anchor.anchor, frame, shapeType),
-    shapeBounds: tupleToFrame(frame),
-    isAnchored: true,
-    normalizedAnchor: anchor.anchor,
-    shapeType,
-    frame,
-    shapeId: anchor.id,
-  };
+  return connectorType === 'elbow'
+    ? buildElbowResolved(anchor as StoredElbowAnchor, frame, shapeType)
+    : buildStraightResolved(anchor as StoredStraightAnchor, frame, shapeType);
 }
 
-/** Override: caller provided a live SnapTarget — used by endpoint-drag + new-connector flows. */
+/**
+ * Override: caller provided a live SnapTarget — branches on `snap.kind`.
+ * Elbow applies `EDGE_CLEARANCE_W * directionVector(side)` offset here (not in snap).
+ * Straight keeps `snap.position` as-is; pull-back lives in `computeStraightRoute`.
+ */
 function resolveSnapOverride(snap: SnapTarget): ResolvedEndpoint {
   const handle = getHandle(snap.shapeId);
   const frame = frameOf(handle);
   const shapeType = getHandleShapeType(handle);
+
+  if (snap.kind === 'elbow') {
+    const [dx, dy] = directionVector(snap.side);
+    const position: Point = [snap.position[0] + dx * EDGE_CLEARANCE_W, snap.position[1] + dy * EDGE_CLEARANCE_W];
+    return {
+      position,
+      dir: snap.side,
+      shapeBounds: frameToAABB(frame),
+      isAnchored: true,
+      normalizedAnchor: snap.normalizedAnchor,
+      shapeType,
+      frame: frame ?? undefined,
+      shapeId: snap.shapeId,
+    };
+  }
+
   return {
     position: snap.position,
-    dir: frame ? sideFromAnchor(snap.normalizedAnchor, frame, shapeType) : snap.side,
+    dir: null,
     shapeBounds: frameToAABB(frame),
     isAnchored: true,
     normalizedAnchor: snap.normalizedAnchor,
     shapeType,
     frame: frame ?? undefined,
     shapeId: snap.shapeId,
+    interior: snap.interior,
   };
 }
 
@@ -303,7 +348,7 @@ function resolveStraightEndpoint(
   if (!me.isAnchored || !me.normalizedAnchor || !me.frame) {
     return { point: me.position, dashTo: null };
   }
-  if (!isAnchorInterior(me.normalizedAnchor)) {
+  if (!me.interior) {
     return { point: applyPullBack(myRaw, otherRaw), dashTo: null };
   }
   if (sameShape || !me.shapeType) {

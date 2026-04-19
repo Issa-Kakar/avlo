@@ -50,12 +50,28 @@ export interface IndexEntry {
 /** Cardinal direction type */
 export type Dir = 'N' | 'E' | 'S' | 'W';
 
-/** Anchor data stored in Y.map for connected endpoints */
-export interface StoredAnchor {
+/**
+ * Anchor data stored in Y.map for connected endpoints.
+ *
+ * Discriminated union — the parent connector's `connectorType` picks the variant:
+ * - Elbow connectors store `side` (authoritative outward direction from shape-aware snap).
+ * - Straight connectors store `interior` (committed at snap time; edge vs interior).
+ *
+ * Narrow with `'side' in anchor` / `'interior' in anchor`, or via
+ * `normalizeStoredAnchor(raw, connectorType)` from `core/connectors/anchor-atoms.ts`
+ * when reading old data that may lack the discriminating field.
+ */
+export interface StoredElbowAnchor {
   id: string;
   side: Dir;
   anchor: [number, number];
 }
+export interface StoredStraightAnchor {
+  id: string;
+  interior: boolean;
+  anchor: [number, number];
+}
+export type StoredAnchor = StoredElbowAnchor | StoredStraightAnchor;
 
 // ============================================================================
 // TEXT TYPES

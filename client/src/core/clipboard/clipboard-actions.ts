@@ -199,7 +199,9 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           }
           case 'startAnchor':
           case 'endAnchor': {
-            const anchor = value as { id: string; side: string; anchor: [number, number] };
+            // StoredAnchor is a discriminated union (elbow: side, straight: interior);
+            // we only remap id and pass the rest through verbatim.
+            const anchor = value as { id: string; anchor: [number, number] };
             const remappedId = idMap.get(anchor.id);
             if (remappedId) {
               yObj.set(key, { ...anchor, id: remappedId });
