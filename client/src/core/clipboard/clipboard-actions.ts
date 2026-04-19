@@ -27,6 +27,7 @@ import { getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { deleteSelected } from '@/tools/selection/selection-actions';
 import type { WorldBounds } from '../types/geometry';
+import type { StoredAnchor } from '../types/objects';
 import { normalizeUrl } from '@avlo/shared';
 import { serializeObjects, deserializeFragment, extractPlainText, type ClipboardPayload } from './clipboard-serializer';
 import { createImageFromBlob } from '../image/image-actions';
@@ -199,14 +200,14 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           }
           case 'startAnchor':
           case 'endAnchor': {
-            // StoredAnchor is a discriminated union (elbow: side, straight: interior);
-            // we only remap id and pass the rest through verbatim.
-            const anchor = value as { id: string; anchor: [number, number] };
+            const anchor = value as StoredAnchor;
             const remappedId = idMap.get(anchor.id);
             if (remappedId) {
+              // Spread preserves the variant's discriminating field
+              // (`side` for elbow, `interior` for straight) — only the target id gets remapped.
               yObj.set(key, { ...anchor, id: remappedId });
             }
-            // Strip anchor if referencing object not in paste set
+            // Else: anchor target isn't in the paste set — drop it, endpoint becomes free.
             break;
           }
           default:

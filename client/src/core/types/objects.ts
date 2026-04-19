@@ -57,9 +57,8 @@ export type Dir = 'N' | 'E' | 'S' | 'W';
  * - Elbow connectors store `side` (authoritative outward direction from shape-aware snap).
  * - Straight connectors store `interior` (committed at snap time; edge vs interior).
  *
- * Narrow with `'side' in anchor` / `'interior' in anchor`, or via
- * `normalizeStoredAnchor(raw, connectorType)` from `core/connectors/anchor-atoms.ts`
- * when reading old data that may lack the discriminating field.
+ * Narrow with `'side' in anchor` / `'interior' in anchor`, or cast via the
+ * parent's `connectorType` when reading — there is no runtime normalizer by design.
  */
 export interface StoredElbowAnchor {
   id: string;

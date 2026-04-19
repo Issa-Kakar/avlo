@@ -40,6 +40,10 @@ export function ToolPanel() {
     addRecentColor,
     setColorPopoverOpen,
     setShapeVariant,
+    // TEMP: connector type lives in the same inspector slot as the fill toggle
+    // until the new vertical toolbar (in a worktree) replaces this whole file.
+    connectorType,
+    setConnectorType,
   } = useDeviceUIStore();
 
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -60,6 +64,11 @@ export function ToolPanel() {
   const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
   const showSizes = !['pan', 'image'].includes(activeTool);
   const showFillToggle = activeTool === 'shape' || activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'select';
+  // TEMP: piggy-back the fill-toggle slot to expose the connector elbow⇄straight toggle.
+  // Icon is intentionally reused (not semantic) — this whole panel is being replaced by
+  // the vertical toolbar in a worktree. Delete both the flag and the button below when
+  // the new toolbar lands.
+  const showConnectorTypeToggle = activeTool === 'connector';
 
   // Get current settings based on active tool with proper tool-specific overrides
   const getCurrentSettings = () => {
@@ -199,6 +208,8 @@ export function ToolPanel() {
             showColors={showColors}
             showSizes={showSizes}
             showFillToggle={showFillToggle}
+            showConnectorTypeToggle={showConnectorTypeToggle}
+            connectorType={connectorType}
             recentColors={recentColors}
             sizePresets={sizePresets}
             sizeLabels={sizeLabels}
@@ -210,6 +221,7 @@ export function ToolPanel() {
             onSizeChange={handleSizeChange}
             onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
             onFillToggle={() => setFillEnabled(!drawingSettings.fill)}
+            onConnectorTypeToggle={() => setConnectorType(connectorType === 'elbow' ? 'straight' : 'elbow')}
             addRecentColor={(color: string) => addRecentColor(color)}
           />
         )}
@@ -250,6 +262,10 @@ interface InspectorProps {
   showColors: boolean;
   showSizes: boolean;
   showFillToggle: boolean;
+  // TEMP (remove with rest of this panel): reuses the fill-toggle slot as a connector
+  // elbow⇄straight toggle. See showConnectorTypeToggle comment in ToolPanel.
+  showConnectorTypeToggle: boolean;
+  connectorType: 'elbow' | 'straight';
   fillEnabled: DrawingSettings['fill'];
   recentColors: string[];
   sizePresets: number[];
@@ -262,6 +278,7 @@ interface InspectorProps {
   onSizeChange: (size: number) => void;
   onColorPopoverToggle: () => void;
   onFillToggle: () => void;
+  onConnectorTypeToggle: () => void;
   addRecentColor: (color: string) => void;
   popoverRef: React.RefObject<HTMLDivElement | null>;
 }
@@ -270,6 +287,8 @@ function Inspector({
   showColors,
   showSizes,
   showFillToggle,
+  showConnectorTypeToggle,
+  connectorType,
   fillEnabled,
   recentColors,
   sizePresets,
@@ -281,6 +300,7 @@ function Inspector({
   onSizeChange,
   onColorPopoverToggle,
   onFillToggle,
+  onConnectorTypeToggle,
   addRecentColor,
   popoverRef,
 }: InspectorProps) {
@@ -345,6 +365,24 @@ function Inspector({
       {/* Fill toggle button - between sizes and colors */}
       {showFillToggle && (
         <button className={`icon-btn ${fillEnabled ? 'on' : ''}`} onClick={onFillToggle} aria-label="Fill" title="Fill">
+          <IconFill className="icon" />
+        </button>
+      )}
+
+      {/*
+        TEMP: connector elbow⇄straight toggle squatting in the fill-toggle slot.
+        Same <IconFill> + `.icon-btn` styling as the fill button — purely to give
+        the toggle *somewhere* to live until the new vertical toolbar ships.
+        "on" state = elbow (so the straight default reads as "off"); pick is arbitrary.
+        Mutually exclusive with showFillToggle (connector tool isn't in that list).
+      */}
+      {showConnectorTypeToggle && (
+        <button
+          className={`icon-btn ${connectorType === 'elbow' ? 'on' : ''}`}
+          onClick={onConnectorTypeToggle}
+          aria-label="Connector type"
+          title={`Connector: ${connectorType} (click to toggle)`}
+        >
           <IconFill className="icon" />
         </button>
       )}
