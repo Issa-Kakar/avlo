@@ -7,10 +7,10 @@ export const FRAME_CONFIG = {
 
 // Perfect Freehand configuration
 export const PF_OPTIONS_BASE = {
-  thinning: 0.5,
+  thinning: 0.0,
   smoothing: 0.5,
-  streamline: 0.6,
-  simulatePressure: true,
+  streamline: 0.5,
+  simulatePressure: false,
   start: {
     cap: true,
     taper: 0,

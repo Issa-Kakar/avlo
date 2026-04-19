@@ -78,12 +78,12 @@ All paths relative to `client/src/` unless noted.
 | `core/geometry/scale-system.ts` | Pure math atoms: `uniformFactor` (handle-aware), `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` (no state) |
 | `core/types/handles.ts` | `HandleId` taxonomy (corner/side), type guards, `scaleOrigin`, `handleCursor` |
 | `core/geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms (no handles, no Y.Map) |
-| `core/geometry/hit-testing.ts` | Object-aware layer: `HitCandidate`, `testObjectHit` mapped dispatch, `objectIntersectsRect`, `hitTestHandle`, `hitTestVisibleText/Code/Note` |
-| `core/geometry/object-pick.ts` | Z-order scanner + paint classifier: `classifyPaint`, `isSeeThrough`, `sortZTopFirst`, `scanTopmost`, `pickFrameAware` |
 | `core/geometry/frame-of.ts` | `frameOf(handle)` — mapped dispatch to the right frame getter for any bindable kind |
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
-| `core/spatial/object-spatial-index.ts` | RBush R-tree wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` |
-| `core/spatial/object-query.ts` | Query facade bridging spatial index → handles → hit-test: `queryHitCandidates(x,y,r,kinds?)`, `queryHandlesInBBox(bbox,kinds?)`. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
+| `core/spatial/object-spatial-index.ts` | Pure RBush wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` with scratch-bbox reuse |
+| `core/spatial/kind-capability.ts` | Per-kind capability table: `hitPoint` (returns `Paint` class), `hitRect`, `hitCircle` + bindable flag |
+| `core/spatial/object-query.ts` | Picker facade — 3 point-pickers + region-membership. Owns `Radius`, `Region`, envelope/prefilter/sort pipeline. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
+| `core/spatial/handle-hit.ts` | Non-spatial sibling: nearest resize-handle / connector-endpoint-dot probes (not in rbush) |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
@@ -95,6 +95,7 @@ All paths relative to `client/src/` unless noted.
 | `core/image/` | Offline-first image pipeline, mip levels, two web workers, viewport management |
 | `core/bookmark/` | URL bookmarks: unfurl pipeline, OG metadata, placeholder lifecycle |
 | `core/clipboard/` | Nonce-based clipboard, serialization, internal/external paste, smart duplicate |
+| `core/spatial/` | Hit testing + region queries: pipeline, kind capabilities, picker facade, non-facade consumers |
 | `runtime/input/` | Keyboard shortcuts, InputManager, modifier state, zoom, edge scroll, arrow pan |
 | `tools/selection/` | SelectTool state machine, transforms per-kind, hit testing, connector topology, overlay |
 | `components/context-menu/` | Selection-aware toolbar: bars by kind, mutation dispatch |
@@ -395,7 +396,7 @@ All return `FrameTuple | null` (`null` before first layout). `computeBBoxFor(id,
 **Global helpers** (prefer over inline dispatch):
 - `frameOf(handle)` from `@/core/geometry/frame-of` — resolves the frame of any bindable handle via mapped dispatch. Returns `null` for unbindable kinds or unhydrated frames.
 - `getHandleShapeType(handle)` from `@/core/accessors` — returns `shapeType` for shape handles, `'rect'` for every other bindable kind.
-- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` / `INTERIOR_PAINT` from `@/core/types/objects` — the canonical set of connectable kinds and their interior-paint flags (used by snap pre-filter and `classifyPaint`).
+- `BINDABLE_KINDS` / `isBindableKind` / `isBindableHandle` / `INTERIOR_PAINT` from `@/core/types/objects` — the canonical set of connectable kinds and their interior-paint flags (used by snap pre-filter and the per-kind `hitPoint` cap).
 
 ---
 
@@ -456,7 +457,7 @@ World (logical) → CSS pixels (browser) → Device pixels (CSS × DPR). Transfo
 
 Zustand store: `scale`, `pan`, `cssWidth`, `cssHeight`, `dpr`. Per-room camera persistence via `setRoom(roomId)` (saves outgoing → restores incoming, localStorage-backed).
 
-Module-level functions: `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds`, `setCanvasElement`, `capturePointer`, `releasePointer`. Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`.
+Module-level functions: `worldToCanvas`, `canvasToWorld`, `screenToWorld`, `screenToCanvas`, `worldToClient`, `getVisibleWorldBounds` (object form), `getVisibleBoundsTuple` (scratch-tuple form — readonly, hot path), `setCanvasElement`, `capturePointer`, `releasePointer`. Imperative: `useCameraStore.getState()`. Reactive: `useCameraStore(selector)`.
 
 ---
 
@@ -473,7 +474,7 @@ Imperative getters: `getUserId()` (used by tools for `ownerId`, undo tracking, p
 
 Detailed docs in `tools/selection/CLAUDE.md`. Covers state machine, per-kind transform behavior, connector topology, hit testing (Z-order, handles, endpoints), text/code reflow, dirty rect optimization, and commit paths.
 
-**Key files:** `SelectTool.ts` (state machine + commits), `tools/selection/transform.ts` (TransformController, entry system, dispatch tables), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/geometry/hit-testing.ts` (shared with EraserTool), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
+**Key files:** `SelectTool.ts` (state machine + commits), `tools/selection/transform.ts` (TransformController, entry system, dispatch tables), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/spatial/object-query.ts` (picker facade shared with EraserTool/TextTool/CodeTool/snap), `core/spatial/handle-hit.ts` (resize handles + endpoint dots), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
 
 ---
 
