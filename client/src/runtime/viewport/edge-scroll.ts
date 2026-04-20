@@ -13,9 +13,9 @@ import { getCurrentTool } from '../tool-registry';
 import { setLastCursorWorld } from '../cursor-tracking';
 
 const EDGE_ZONE = 40; // CSS px from each viewport edge
-const DELAY_MS = 120; // Wait before scrolling starts
-const EASE_MS = 300; // Acceleration ramp after delay
-const BASE_SPEED = 9; // CSS px per 16ms tick at proximity=1 (~540 px/s max)
+const DELAY_MS = 50; // Wait before scrolling starts
+const EASE_MS = 100; // Acceleration ramp after delay
+const BASE_SPEED = 9.5; // CSS px per 16ms tick at proximity=1 (~540 px/s max)
 const SMALL_SCREEN = 1000; // Viewport dimension below which speed reduces
 const SMALL_FACTOR = 0.65; // Speed multiplier for small viewport dimension
 
