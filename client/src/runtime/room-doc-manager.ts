@@ -81,6 +81,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   readonly spatialIndex = new ObjectSpatialIndex();
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
 
+  // Reused observer scratch — cleared at top of each fire. Safe because observer
+  // is not reentrant (Y.Doc dispatches at end of transaction; applyObjectChanges
+  // does not trigger a new transaction).
+  private readonly _touchedIds = new Set<string>();
+  private readonly _deletedIds = new Set<string>();
+  private readonly _dirtyBBoxes: BBoxTuple[] = [];
+
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
     this.roomId = roomId;
 
@@ -211,8 +218,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.objectsObserver) return; // idempotent
 
     this.objectsObserver = (events, _tx) => {
-      const touchedIds = new Set<string>();
-      const deletedIds = new Set<string>();
+      const touchedIds = this._touchedIds;
+      const deletedIds = this._deletedIds;
+      touchedIds.clear();
+      deletedIds.clear();
 
       for (const ev of events) {
         // Top-level object adds/deletes
@@ -252,14 +261,17 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
       if (touchedIds.size === 0 && deletedIds.size === 0) return;
 
-      this.applyObjectChanges(touchedIds, deletedIds);
+      this.applyObjectChanges();
     };
 
     this.objects.observeDeep(this.objectsObserver);
   }
 
-  private applyObjectChanges(touchedIds: Set<string>, deletedIds: Set<string>): void {
-    const dirtyBBoxes: BBoxTuple[] = [];
+  private applyObjectChanges(): void {
+    const touchedIds = this._touchedIds;
+    const deletedIds = this._deletedIds;
+    const dirtyBBoxes = this._dirtyBBoxes;
+    dirtyBBoxes.length = 0;
 
     // Process deletions
     for (const id of deletedIds) {

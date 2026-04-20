@@ -1,5 +1,5 @@
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple, FrameTuple, Point, WorldBounds } from '@/core/types/geometry';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import {
   getColor,
@@ -25,6 +25,7 @@ import { paintConnector } from './connector-render-atoms';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
+import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { textLayoutCache, renderTextLayout, renderShapeLabel, computeLabelTextBox, layoutMeasuredContent } from '@/core/text/text-system';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { getTextProps, getAlign, getAlignV, getCodeProps } from '@/core/accessors';
@@ -59,7 +60,52 @@ function withTransform(ctx: CanvasRenderingContext2D, tx: number, ty: number, sx
   ctx.restore();
 }
 
-export function drawObjects(ctx: CanvasRenderingContext2D, clipWorldRects?: WorldBounds[]): void {
+// Module-scope scratches. Reused across frames — zero allocation on the hot path.
+const _candidateIds: string[] = [];
+const _previewScratch: BBoxTuple = [0, 0, 0, 0];
+// Dedupes inject candidates across the three sources (selectedIds / topology.translateIdSet /
+// topology.reroutes). A selected connector is typically present in both selectedIds and one
+// of the topology maps — without this we'd pay getRenderBBox + viewport-test twice per frame.
+const _injectSeen = new Set<string>();
+
+/**
+ * Render-time bbox for transform-injected IDs. Reads whatever cached representation
+ * the active transform already maintains per frame — no recomputation:
+ *   - topology connectors → `topology.prevBboxes.get(id)` (set by updateTopologyReroutes)
+ *   - endpointDrag connector → `transform.routedBbox` (set by rerouteConnector)
+ *   - scale (non-connector) → `entry.out.bbox` (set by apply functions)
+ *   - translate (non-connector) → `handle.bbox + translateDelta`
+ * Falls back to `handle.bbox` (stored position) when nothing applies.
+ * The returned tuple may be the module scratch — consumers must intersect-test immediately.
+ */
+function getRenderBBox(
+  handle: ObjectHandle,
+  transform: ReturnType<typeof useSelectionStore.getState>['transform'],
+  connTopology: ReturnType<typeof getTransformTopology>,
+): BBoxTuple {
+  const topoPrev = connTopology?.prevBboxes.get(handle.id);
+  if (topoPrev) return topoPrev;
+
+  if (transform.kind === 'translate') {
+    const delta = getTranslateDelta();
+    if (delta) {
+      const b = handle.bbox;
+      _previewScratch[0] = b[0] + delta[0];
+      _previewScratch[1] = b[1] + delta[1];
+      _previewScratch[2] = b[2] + delta[0];
+      _previewScratch[3] = b[3] + delta[1];
+      return _previewScratch;
+    }
+  } else if (transform.kind === 'scale' && handle.kind !== 'connector') {
+    const entry = getScaleEntry(handle.kind, handle.id);
+    if (entry) return (entry.out as { bbox: BBoxTuple }).bbox;
+  } else if (transform.kind === 'endpointDrag') {
+    if (handle.id === transform.connectorId && transform.routedBbox) return transform.routedBbox;
+  }
+  return handle.bbox;
+}
+
+export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array | null, clipCount: number): void {
   const spatialIndex = getSpatialIndex();
   const objectsById = getObjectsById();
   // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
@@ -71,51 +117,87 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipWorldRects?: Worl
 
   // Read topology from transform-state module (not from Zustand)
   const connTopology = getTransformTopology();
+  const translateSet = connTopology?.translateIdSet;
+  const reroutes = connTopology?.reroutes;
 
-  // Collect candidate IDs via spatial index
-  const seen = new Set<string>();
-  const candidateIds: string[] = [];
+  const viewport = getVisibleBoundsTuple() as BBoxTuple;
+  const entries = spatialIndex.queryBBox(viewport);
 
-  if (clipWorldRects) {
-    for (const rect of clipWorldRects) {
-      for (const entry of spatialIndex.queryBBox([rect.minX, rect.minY, rect.maxX, rect.maxY])) {
-        if (!seen.has(entry.id)) {
-          seen.add(entry.id);
-          candidateIds.push(entry.id);
+  _candidateIds.length = 0;
+  const hasClip = clipBuf !== null && clipCount > 0;
+  const cbuf = clipBuf; // narrowed local — avoids repeated NNA inside hot loop
+
+  // Main loop: rbush entries from the viewport, rect-filtered by clipBuf.
+  // Transform-injected IDs (selected / translate-topology / reroute-topology) are
+  // skipped here and re-pushed below via their PREVIEW bbox — this replaces the
+  // old "blind inject to compensate for edge-scroll stale rbush" workaround with
+  // a correctness-first filter by actual render position.
+  for (let k = 0; k < entries.length; k++) {
+    const e = entries[k];
+    if (
+      isTransforming &&
+      (selectedSet.has(e.id) || (translateSet !== undefined && translateSet.has(e.id)) || (reroutes !== undefined && reroutes.has(e.id)))
+    )
+      continue;
+
+    if (hasClip && cbuf !== null) {
+      let hit = false;
+      for (let i = 0; i < clipCount; i++) {
+        const off = i * 4;
+        if (e.minX <= cbuf[off + 2] && e.maxX >= cbuf[off] && e.minY <= cbuf[off + 3] && e.maxY >= cbuf[off + 1]) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit) continue;
+    }
+    _candidateIds.push(e.id);
+  }
+
+  // Inject transform IDs using their preview bbox, viewport-culled.
+  // A selected connector appears in both `selectedIds` and one of the topology maps —
+  // _injectSeen de-duplicates so we don't getRenderBBox/viewport-test twice per frame.
+  if (isTransforming) {
+    _injectSeen.clear();
+    for (let i = 0; i < selectedIds.length; i++) {
+      const id = selectedIds[i];
+      if (_injectSeen.has(id)) continue;
+      const h = objectsById.get(id);
+      if (!h) continue;
+      _injectSeen.add(id);
+      if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
+        _candidateIds.push(id);
+      }
+    }
+    if (connTopology) {
+      for (const id of connTopology.translateIdSet) {
+        if (_injectSeen.has(id)) continue;
+        const h = objectsById.get(id);
+        if (!h) continue;
+        _injectSeen.add(id);
+        if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
+          _candidateIds.push(id);
+        }
+      }
+      for (const id of connTopology.reroutes.keys()) {
+        if (_injectSeen.has(id)) continue;
+        const h = objectsById.get(id);
+        if (!h) continue;
+        _injectSeen.add(id);
+        if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
+          _candidateIds.push(id);
         }
       }
     }
-  } else {
-    // getVisibleBoundsTuple() returns a shared module-scoped tuple (no per-frame alloc).
-    for (const entry of spatialIndex.queryBBox(getVisibleBoundsTuple() as [number, number, number, number])) {
-      seen.add(entry.id);
-      candidateIds.push(entry.id);
-    }
   }
 
-  // During active transforms, spatial index stores ORIGINAL positions. If the camera
-  // has panned (e.g. edge scroll), originals may leave the viewport/dirty-rect bounds
-  // while rendered positions (original + offset) are still on screen. Inject all
-  // selected + topology objects so they're never culled mid-transform.
-  if (isTransforming) {
-    const inject = (id: string) => {
-      if (seen.has(id)) return;
-      if (!objectsById.has(id)) return;
-      seen.add(id);
-      candidateIds.push(id);
-    };
-    for (const id of selectedIds) inject(id);
-    if (connTopology) {
-      for (const id of connTopology.translateIdSet) inject(id);
-      for (const id of connTopology.reroutes.keys()) inject(id);
-    }
-  }
+  // Sort by ULID for deterministic draw order (oldest first -> newest on top).
+  // Main loop excludes inject-set IDs and _injectSeen de-dupes within inject, so
+  // _candidateIds is provably unique — no post-sort dedupe needed.
+  _candidateIds.sort();
 
-  // Sort by ULID for deterministic draw order (oldest first -> newest on top)
-  candidateIds.sort();
-
-  // Draw in ULID order
-  for (const id of candidateIds) {
+  for (let i = 0; i < _candidateIds.length; i++) {
+    const id = _candidateIds[i];
     const handle = objectsById.get(id);
     if (!handle) continue;
 

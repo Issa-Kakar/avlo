@@ -8,9 +8,9 @@ import { manageImageViewport } from '@/core/image/image-manager';
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
 
 // Dirty rect constants
-const MAX_RECTS = 50;
+const MAX_RECTS = 256;
 const AA_MARGIN = 2; // device pixels
-const AREA_RATIO = 0.75;
+const AREA_RATIO = 0.85;
 const COALESCE_SNAP = 2; // device pixels
 
 export class RenderLoop {
@@ -19,6 +19,8 @@ export class RenderLoop {
 
   // Inline dirty rect state (zero-allocation buffer)
   private readonly dirtyBuf = new Float64Array(MAX_RECTS * 4); // [minX,minY,maxX,maxY,...]
+  // World-space clip rects, filled from dirtyBuf each frame — zero allocation.
+  private readonly clipWorldBuf = new Float64Array(MAX_RECTS * 4);
   private dirtyCount = 0;
   private fullClear = false;
   private canvasW = 0;
@@ -286,12 +288,13 @@ export class RenderLoop {
     const s = dpr * scale;
     ctx.setTransform(s, 0, 0, s, -pan.x * s, -pan.y * s);
 
-    // Build clip region from dirty rects (device px → world coords)
-    let clipWorldRects: WorldBounds[] | undefined;
-    if (!this.fullClear && hasDirty) {
-      clipWorldRects = [];
+    // Build clip region from dirty rects (device px → world coords) into reusable buffer.
+    const hasClip = !this.fullClear && hasDirty;
+    let clipCount = 0;
+    if (hasClip) {
       const invS = 1 / (scale * dpr);
       const buf = this.dirtyBuf;
+      const cbuf = this.clipWorldBuf;
 
       ctx.save();
       ctx.beginPath();
@@ -301,15 +304,19 @@ export class RenderLoop {
         const wMinY = buf[off + 1] * invS + pan.y;
         const wMaxX = buf[off + 2] * invS + pan.x;
         const wMaxY = buf[off + 3] * invS + pan.y;
+        cbuf[off] = wMinX;
+        cbuf[off + 1] = wMinY;
+        cbuf[off + 2] = wMaxX;
+        cbuf[off + 3] = wMaxY;
         ctx.rect(wMinX, wMinY, wMaxX - wMinX, wMaxY - wMinY);
-        clipWorldRects.push({ minX: wMinX, minY: wMinY, maxX: wMaxX, maxY: wMaxY });
       }
+      clipCount = this.dirtyCount;
       ctx.clip();
     }
 
-    drawObjects(ctx, clipWorldRects);
+    drawObjects(ctx, hasClip ? this.clipWorldBuf : null, clipCount);
 
-    if (clipWorldRects) ctx.restore();
+    if (hasClip) ctx.restore();
     ctx.restore();
 
     // 10. Reset dirty state
@@ -330,15 +337,17 @@ export class RenderLoop {
   private coalesce(): void {
     const buf = this.dirtyBuf;
     let count = this.dirtyCount;
-    let merged = true;
+    let anyMerged = true;
 
-    while (merged) {
-      merged = false;
-      for (let i = 0; i < count && !merged; i++) {
+    // Continue-on-merge: expanded i absorbs any reachable j in the same pass.
+    // Outer while reruns until no pair merges (typically 1–2 passes). O(n²·k).
+    while (anyMerged) {
+      anyMerged = false;
+      for (let i = 0; i < count; i++) {
         const ai = i * 4;
-        for (let j = i + 1; j < count; j++) {
+        let j = i + 1;
+        while (j < count) {
           const bj = j * 4;
-          // Check overlap with snap margin
           if (
             buf[ai] <= buf[bj + 2] + COALESCE_SNAP &&
             buf[ai + 2] >= buf[bj] - COALESCE_SNAP &&
@@ -350,7 +359,7 @@ export class RenderLoop {
             if (buf[bj + 1] < buf[ai + 1]) buf[ai + 1] = buf[bj + 1];
             if (buf[bj + 2] > buf[ai + 2]) buf[ai + 2] = buf[bj + 2];
             if (buf[bj + 3] > buf[ai + 3]) buf[ai + 3] = buf[bj + 3];
-            // Swap-remove j
+            // Swap-remove j — don't advance j: re-test new content at j against expanded i
             count--;
             if (j < count) {
               const li = count * 4;
@@ -359,8 +368,9 @@ export class RenderLoop {
               buf[bj + 2] = buf[li + 2];
               buf[bj + 3] = buf[li + 3];
             }
-            merged = true;
-            break;
+            anyMerged = true;
+          } else {
+            j++;
           }
         }
       }
