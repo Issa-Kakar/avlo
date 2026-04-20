@@ -21,7 +21,7 @@ import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { getPath } from '../geometry-cache';
 import { useSelectionStore, type TransformState } from '@/stores/selection-store';
-import { getEndpointEdgePosition } from '@/core/connectors/connector-utils';
+import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';

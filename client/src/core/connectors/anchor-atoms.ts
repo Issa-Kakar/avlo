@@ -1,15 +1,19 @@
 /**
  * Anchor ↔ Point Math Atoms
  *
- * Tiny module for anchor interpolation + offset math. The old `sideFromAnchor`
- * classifier and shape-agnostic `isAnchorInterior` are gone — interior-ness is
- * a stored fact (committed at snap time), and elbow sides come directly from
- * the stored anchor. Nothing in here recomputes a direction anymore.
+ * Tiny module for anchor interpolation + offset math + endpoint position.
+ * No classifiers, no re-derivation: interior-ness is a stored fact (committed
+ * at snap time), and elbow sides come directly from the stored anchor. Nothing
+ * in here recomputes a direction.
  *
  * @module core/connectors/anchor-atoms
  */
 import type { FrameTuple, Point } from '../types/geometry';
-import type { SnapTarget, StoredAnchor, StoredElbowAnchor } from './types';
+import type { ObjectHandle, StoredAnchor, StoredElbowAnchor } from '../types/objects';
+import { getStart, getEnd, getStartAnchor, getEndAnchor } from '../accessors';
+import { frameOf } from '../geometry/frame-of';
+import { getHandle } from '@/runtime/room-runtime';
+import type { SnapTarget } from './types';
 import { EDGE_CLEARANCE_W } from './constants';
 import { directionVector } from './connector-utils';
 
@@ -41,4 +45,19 @@ export function anchorRecordFromSnap(snap: SnapTarget): StoredAnchor {
   return snap.kind === 'elbow'
     ? { id: snap.shapeId, side: snap.side, anchor: snap.normalizedAnchor }
     : { id: snap.shapeId, interior: snap.interior, anchor: snap.normalizedAnchor };
+}
+
+/**
+ * The on-edge (or interior) world position for a connector endpoint — no clearance offset.
+ * Anchored: interpolate stored normalized anchor against current shape frame.
+ * Free: return stored position as-is. Used by hit testing and endpoint-dot rendering.
+ */
+export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): Point {
+  const yMap = handle.y;
+  const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
+  const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
+  if (!anchor) return storedPos ?? [0, 0];
+  const frame = frameOf(getHandle(anchor.id));
+  if (!frame) return storedPos ?? [0, 0];
+  return anchorFramePoint(anchor.anchor, frame);
 }

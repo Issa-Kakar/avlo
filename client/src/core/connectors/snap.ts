@@ -22,7 +22,7 @@
  */
 
 import { getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
-import { getShapeTypeMidpoints } from './connector-utils';
+import { clamp01, frameCenter, shapeMidpoints, findNearestEdgePoint } from './shape-geometry';
 import { pointInsideShape } from '../geometry/hit-primitives';
 import { frameOf } from '../geometry/frame-of';
 import { pickTopmostBindable } from '../spatial/object-query';
@@ -31,12 +31,20 @@ import { getHandleShapeType } from '../accessors';
 import type { Dir, SnapTarget, ElbowSnapTarget, StraightSnapTarget, SnapContext } from './types';
 
 // =============================================================================
-// SHARED HELPERS
+// TYPES
 // =============================================================================
 
-function clamp01(v: number): number {
-  return v < 0 ? 0 : v > 1 ? 1 : v;
+/** Intermediate result shared by elbow + straight edge-snap — no `kind` yet. */
+interface EdgeSnapProbe {
+  side: Dir;
+  isMidpoint: boolean;
+  position: Point;
+  normalizedAnchor: Point;
 }
+
+// =============================================================================
+// SHARED HELPERS
+// =============================================================================
 
 /** Clamped normalized anchor from an on-edge world point. */
 function normalizedFromEdge(edge: Point, frame: FrameTuple): Point {
@@ -90,7 +98,7 @@ export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
 
 export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
   const radii = getSnapRadiiWorld();
-  const midpoints = getShapeTypeMidpoints(frame, shapeType);
+  const midpoints = shapeMidpoints(frame, shapeType);
   const isInside = pointInsideShape(ctx.cursorWorld, frame, shapeType);
   const insideDepth = isInside ? (findNearestEdgePoint(ctx.cursorWorld, frame, shapeType)?.dist ?? 0) : 0;
 
@@ -142,6 +150,38 @@ function tryElbowEdgeSnap(
   isInside: boolean,
   radii: SnapRadiiWorld,
 ): ElbowSnapTarget | null {
+  const p = probeEdgeSnap(ctx, frame, shapeType, midpoints, isInside, radii, (side) => wasOnElbowMidpoint(ctx.prevAttach, shapeId, side));
+  if (!p) return null;
+  return {
+    kind: 'elbow',
+    shapeId,
+    side: p.side,
+    normalizedAnchor: p.normalizedAnchor,
+    isMidpoint: p.isMidpoint,
+    position: p.position,
+    isInside,
+  };
+}
+
+// =============================================================================
+// SHARED EDGE-SNAP PROBE
+// =============================================================================
+
+/**
+ * Shared edge-snap pipeline:
+ *   find nearest edge → gate on radius (outside only) → midpoint hysteresis.
+ * Caller supplies the midpoint-hysteresis predicate so elbow and straight
+ * keep their own `prevAttach` shape.
+ */
+function probeEdgeSnap(
+  ctx: SnapContext,
+  frame: FrameTuple,
+  shapeType: string,
+  midpoints: Record<Dir, Point>,
+  isInside: boolean,
+  radii: SnapRadiiWorld,
+  wasOnMidpoint: (side: Dir) => boolean,
+): EdgeSnapProbe | null {
   const edgeSnap = findNearestEdgePoint(ctx.cursorWorld, frame, shapeType);
   if (!edgeSnap) return null;
   if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
@@ -149,28 +189,11 @@ function tryElbowEdgeSnap(
   const edgePos: Point = [edgeSnap.x, edgeSnap.y];
   const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(ctx.cursorWorld, midpoints);
 
-  if (midpointGate(wasOnElbowMidpoint(ctx.prevAttach, shapeId, probe.side), probe.dist, radii)) {
+  if (midpointGate(wasOnMidpoint(probe.side), probe.dist, radii)) {
     const midpoint = midpoints[probe.side];
-    return {
-      kind: 'elbow',
-      shapeId,
-      side: probe.side,
-      normalizedAnchor: normalizedFromEdge(midpoint, frame),
-      isMidpoint: true,
-      position: midpoint,
-      isInside,
-    };
+    return { side: probe.side, isMidpoint: true, position: midpoint, normalizedAnchor: normalizedFromEdge(midpoint, frame) };
   }
-
-  return {
-    kind: 'elbow',
-    shapeId,
-    side: edgeSnap.side,
-    normalizedAnchor: normalizedFromEdge(edgePos, frame),
-    isMidpoint: false,
-    position: edgePos,
-    isInside,
-  };
+  return { side: edgeSnap.side, isMidpoint: false, position: edgePos, normalizedAnchor: normalizedFromEdge(edgePos, frame) };
 }
 
 // =============================================================================
@@ -203,7 +226,7 @@ function computeStraightInterior(
   const { cursorWorld, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
   const [fx, fy, fw, fh] = frame;
-  const center: Point = [fx + fw / 2, fy + fh / 2];
+  const center = frameCenter(frame);
   const centerDist = Math.hypot(cx - center[0], cy - center[1]);
 
   const wasCenter = prevAttach?.kind === 'straight' && prevAttach.shapeId === shapeId && prevAttach.isCenter;
@@ -259,147 +282,18 @@ function tryStraightEdgeSnap(
   isInside: boolean,
   radii: SnapRadiiWorld,
 ): StraightSnapTarget | null {
-  const edgeSnap = findNearestEdgePoint(ctx.cursorWorld, frame, shapeType);
-  if (!edgeSnap) return null;
-  if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
-
-  const edgePos: Point = [edgeSnap.x, edgeSnap.y];
-  const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(ctx.cursorWorld, midpoints);
-
-  if (midpointGate(wasOnStraightMidpoint(ctx.prevAttach, shapeId, probe.side), probe.dist, radii)) {
-    const midpoint = midpoints[probe.side];
-    return {
-      kind: 'straight',
-      shapeId,
-      interior: false,
-      isCenter: false,
-      midpointSide: probe.side,
-      normalizedAnchor: normalizedFromEdge(midpoint, frame),
-      position: midpoint,
-      isInside,
-    };
-  }
-
+  const p = probeEdgeSnap(ctx, frame, shapeType, midpoints, isInside, radii, (side) =>
+    wasOnStraightMidpoint(ctx.prevAttach, shapeId, side),
+  );
+  if (!p) return null;
   return {
     kind: 'straight',
     shapeId,
     interior: false,
     isCenter: false,
-    midpointSide: null,
-    normalizedAnchor: normalizedFromEdge(edgePos, frame),
-    position: edgePos,
+    midpointSide: p.isMidpoint ? p.side : null,
+    normalizedAnchor: p.normalizedAnchor,
+    position: p.position,
     isInside,
   };
-}
-
-// =============================================================================
-// EDGE GEOMETRY (shape-type-aware nearest edge point)
-// =============================================================================
-
-/**
- * Find nearest point on shape edge (shape-type aware).
- */
-export function findNearestEdgePoint(
-  probe: Point,
-  frame: FrameTuple,
-  shapeType: string,
-): { side: Dir; t: number; x: number; y: number; dist: number } | null {
-  const [x, y, w, h] = frame;
-  const [cx, cy] = probe;
-
-  switch (shapeType) {
-    case 'diamond': {
-      const top: Point = [x + w / 2, y];
-      const right: Point = [x + w, y + h / 2];
-      const bottom: Point = [x + w / 2, y + h];
-      const left: Point = [x, y + h / 2];
-
-      const edges: { side: Dir; p1: Point; p2: Point }[] = [
-        { side: 'N', p1: left, p2: top },
-        { side: 'E', p1: top, p2: right },
-        { side: 'S', p1: right, p2: bottom },
-        { side: 'W', p1: bottom, p2: left },
-      ];
-
-      return findNearestOnEdges(probe, edges);
-    }
-
-    case 'ellipse': {
-      const ecx = x + w / 2;
-      const ecy = y + h / 2;
-      const rx = w / 2;
-      const ry = h / 2;
-
-      if (rx < 0.001 || ry < 0.001) return null;
-
-      const angle = Math.atan2((cy - ecy) / ry, (cx - ecx) / rx);
-      const px = ecx + rx * Math.cos(angle);
-      const py = ecy + ry * Math.sin(angle);
-      const dist = Math.hypot(cx - px, cy - py);
-
-      let side: Dir;
-      const normAngle = (angle + Math.PI * 2) % (Math.PI * 2);
-      if (normAngle < Math.PI / 4 || normAngle >= (Math.PI * 7) / 4) {
-        side = 'E';
-      } else if (normAngle < (Math.PI * 3) / 4) {
-        side = 'S';
-      } else if (normAngle < (Math.PI * 5) / 4) {
-        side = 'W';
-      } else {
-        side = 'N';
-      }
-
-      let t = 0.5;
-      if (side === 'N' || side === 'S') {
-        t = (px - x) / w;
-      } else {
-        t = (py - y) / h;
-      }
-
-      return { side, t: Math.max(0, Math.min(1, t)), x: px, y: py, dist };
-    }
-
-    case 'rect':
-    case 'roundedRect':
-    default: {
-      const edges: { side: Dir; p1: Point; p2: Point }[] = [
-        { side: 'N', p1: [x, y], p2: [x + w, y] },
-        { side: 'E', p1: [x + w, y], p2: [x + w, y + h] },
-        { side: 'S', p1: [x, y + h], p2: [x + w, y + h] },
-        { side: 'W', p1: [x, y], p2: [x, y + h] },
-      ];
-
-      return findNearestOnEdges(probe, edges);
-    }
-  }
-}
-
-/** Helper: find nearest point among a list of edges. */
-function findNearestOnEdges(
-  probe: Point,
-  edges: { side: Dir; p1: Point; p2: Point }[],
-): { side: Dir; t: number; x: number; y: number; dist: number } | null {
-  const [cx, cy] = probe;
-  let best: { side: Dir; t: number; x: number; y: number; dist: number } | null = null;
-
-  for (const edge of edges) {
-    const [x1, y1] = edge.p1;
-    const [x2, y2] = edge.p2;
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.hypot(dx, dy);
-    if (len < 0.001) continue;
-
-    const t = Math.max(0, Math.min(1, ((cx - x1) * dx + (cy - y1) * dy) / (len * len)));
-
-    const px = x1 + t * dx;
-    const py = y1 + t * dy;
-    const dist = Math.hypot(cx - px, cy - py);
-
-    if (!best || dist < best.dist) {
-      best = { side: edge.side, t, x: px, y: py, dist };
-    }
-  }
-
-  return best;
 }

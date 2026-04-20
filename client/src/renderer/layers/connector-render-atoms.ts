@@ -21,7 +21,7 @@ import type { FrameTuple, Point } from '@/core/types/geometry';
 import { type ObjectHandle, isBindableHandle } from '@/core/types/objects';
 import { type Dir, type SnapTarget } from '@/core/connectors/types';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
-import { getShapeTypeMidpoints } from '@/core/connectors/connector-utils';
+import { shapeMidpoints } from '@/core/connectors/shape-geometry';
 import { type ConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { getPath } from '../geometry-cache';
 import { getWidth, getHandleShapeType } from '@/core/accessors';
@@ -159,7 +159,7 @@ export function drawShapeMidpoints(
 ): void {
   const { smallRadius, largeRadius, strokeWidth } = getAnchorDotMetricsWorld();
   const radius = isMidpointActive ? largeRadius : smallRadius;
-  const midpoints = getShapeTypeMidpoints(frame, shapeType);
+  const midpoints = shapeMidpoints(frame, shapeType);
   ctx.save();
   ctx.lineWidth = strokeWidth;
   ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;

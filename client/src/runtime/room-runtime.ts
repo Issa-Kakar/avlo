@@ -144,4 +144,4 @@ export function redo(): void {
 // ============================================
 
 // Re-export connector lookup for imperative access (SelectTool, EraserTool)
-export { getConnectorsForShape, hasConnectorLookup } from '@/core/connectors';
+export { getConnectorsForShape, hasConnectorLookup } from '@/core/connectors/connector-lookup';

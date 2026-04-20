@@ -23,7 +23,7 @@ import {
   processConnectorUpdated,
   processConnectorDeleted,
   processShapeDeleted,
-} from '@/core/connectors';
+} from '@/core/connectors/connector-lookup';
 import { getCodeProps } from '@/core/accessors';
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { textLayoutCache } from '@/core/text/text-system';

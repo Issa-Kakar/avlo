@@ -84,6 +84,9 @@ All paths relative to `client/src/` unless noted.
 | `core/spatial/kind-capability.ts` | Per-kind capability table: `hitPoint` (returns `Paint` class), `hitRect`, `hitCircle` + bindable flag |
 | `core/spatial/object-query.ts` | Picker facade — 3 point-pickers + region-membership. Owns `Radius`, `Region`, envelope/prefilter/sort pipeline. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
 | `core/spatial/handle-hit.ts` | Non-spatial sibling: nearest resize-handle / connector-endpoint-dot probes (not in rbush) |
+| `core/connectors/shape-geometry.ts` | Pure shape math (rect/ellipse/diamond): centers, edges, midpoints, nearest-edge, ray×shape intersection. Zero connector deps. |
+| `core/connectors/connector-utils.ts` | Direction primitives, spatial relation, bounds conversion, path simplification, elbow direction resolution |
+| `core/connectors/anchor-atoms.ts` | Anchor ↔ point math: `anchorFramePoint`, `elbowAnchorPoint`, `isSameShape`, `anchorRecordFromSnap`, `getEndpointEdgePosition` |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
@@ -323,14 +326,18 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
 **Connector** (elbow A* routing or straight point-to-point):
 ```typescript
 { id, kind: 'connector',
+  connectorType: 'elbow' | 'straight',  // REQUIRED discriminated field — always written
   points: [number, number][],  // Full routed path (ready to render)
   start: [number, number], end: [number, number],
-  startAnchor?: { id, side: Dir, anchor: [0-1, 0-1] },  // Shape anchoring
-  endAnchor?: { id, side: Dir, anchor: [0-1, 0-1] },
-  connectorType?: 'straight',  // Only stored when not 'elbow' (default)
+  // Anchor shape discriminated by connectorType (parent is the discriminator):
+  //   elbow    → { id, side: Dir, anchor: [0-1, 0-1] }            (side is authoritative)
+  //   straight → { id, interior: boolean, anchor: [0-1, 0-1] }    (interior committed at snap time)
+  startAnchor?: StoredElbowAnchor | StoredStraightAnchor,
+  endAnchor?:   StoredElbowAnchor | StoredStraightAnchor,
   startCap, endCap: 'none'|'arrow',
   color, width, ownerId, createdAt }
 // Connectors always render at opacity 1 — no opacity field stored.
+// getConnectorType(y) still defaults to 'elbow' on read for graceful handling of stale data.
 ```
 Detailed connector docs in `core/connectors/CLAUDE.md`.
 

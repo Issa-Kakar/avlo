@@ -1,26 +1,24 @@
 /**
- * A* Manhattan Routing for Snapped Endpoints
+ * A* Manhattan Routing for Snapped Endpoints.
  *
- * Used when endpoint IS snapped to a shape. Provides obstacle avoidance
- * by routing around the padded shape bounds.
+ * Used when an endpoint is snapped to a shape — provides obstacle avoidance by
+ * routing around padded shape bounds.
  *
- * Key features:
+ * Features:
  * - Non-uniform grid (sparse, meaningful positions only)
- * - Dynamic AABBs with centerlines baked in (no cell blocking needed)
+ * - Dynamic routing bounds with centerlines baked in (no cell blocking needed)
  * - Direction seeding (initial jetty counts as previous turn)
- * - Backwards visit prevention (no U-turns)
+ * - Backwards-visit prevention (no U-turns)
  * - Bend penalty (minimize direction changes)
  * - Segment intersection checking (prevents crossing through shapes)
- *
- * @module lib/connectors/routing-astar
  */
 
-import type { Point } from '../types/geometry';
+import type { FrameTuple, Point } from '../types/geometry';
 import { COST_CONFIG } from './constants';
-import { oppositeDir, simplifyOrthogonal } from './connector-utils';
+import { oppositeDir, simplifyOrthogonal, directionFromDelta } from './connector-utils';
 import { createRoutingContext, buildSimpleGrid } from './routing-context';
 import { MinHeap } from './binary-heap';
-import type { RouteResult, Dir, AABB, Grid, GridCell, AStarNode } from './types';
+import type { RouteResult, Dir, Grid, GridCell, AStarNode } from './types';
 
 /**
 
@@ -94,19 +92,9 @@ function getNeighbors(grid: Grid, cell: GridCell): GridCell[] {
 // A* HELPERS
 // ============================================================================
 
-/**
- * Get movement direction from one cell to another.
- */
+/** Movement direction from one cell to another (orthogonal grid). */
 function getDirection(from: GridCell, to: GridCell): Dir {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-
-  // For orthogonal grid, one of dx/dy should be dominant
-  if (Math.abs(dx) > Math.abs(dy)) {
-    return dx > 0 ? 'E' : 'W';
-  } else {
-    return dy > 0 ? 'S' : 'N';
-  }
+  return directionFromDelta(to.x - from.x, to.y - from.y);
 }
 
 /**
@@ -165,27 +153,19 @@ function cellKey(cell: GridCell): string {
 }
 
 // ============================================================================
-// SEGMENT-AABB INTERSECTION
+// SEGMENT-FRAME INTERSECTION
 // ============================================================================
 
 /**
- * Check if a line segment intersects the strict interior of an AABB.
+ * Check if a line segment intersects the strict interior of a frame.
  *
- * Uses the slab method (parametric intersection). Unlike a midpoint-only
- * check, this handles:
- * - Thin shapes that midpoint could miss
- * - Any segment orientation (though we use H/V only)
- * - Works correctly with raw shape bounds (no stroke inflation needed)
- *
- * @param a - Segment start
- * @param b - Segment end
- * @param aabb - Axis-aligned bounding box (raw shape bounds)
- * @returns true if segment passes through AABB interior
+ * Uses the slab method (parametric intersection). Handles thin shapes,
+ * arbitrary orientations, and works directly on raw shape bounds.
  */
-function segmentIntersectsAABB(a: Point, b: Point, aabb: AABB): boolean {
+function segmentIntersectsFrame(a: Point, b: Point, frame: FrameTuple): boolean {
   const [x1, y1] = a;
   const [x2, y2] = b;
-  const { x, y, w, h } = aabb;
+  const [x, y, w, h] = frame;
   const minX = x;
   const maxX = x + w;
   const minY = y;
@@ -227,28 +207,17 @@ function segmentIntersectsAABB(a: Point, b: Point, aabb: AABB): boolean {
     if (tMin >= tMax) return false;
   }
 
-  // Segment intersects the AABB interior
+  // Segment intersects the frame interior
   return true;
 }
 
 /**
  * Run A* pathfinding on the grid.
  *
- * Direction hints are now used for soft preferences:
- * - preferredFirstDir: Gives a bonus when first move matches this direction
- * - requiredApproachDir: Gives a penalty when goal is approached from wrong direction
- *
- * Segment midpoint checking prevents routes from "jumping over" shapes
+ * Segment intersection checking prevents routes from "jumping over" shapes
  * when the grid is sparse (lines only at padding boundaries).
- *
- * @param grid - The routing grid
- * @param start - Start cell
- * @param goal - Goal cell
- * @param startDir - Direction to start from
- * @param obstacles - Array of AABBs to check segment intersection against
- * @returns Array of cells forming the path
  */
-function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obstacles: AABB[]): GridCell[] {
+function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obstacles: FrameTuple[]): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
   const closedSet = new Set<string>();
   const gScores = new Map<string, number>();
@@ -290,7 +259,7 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
       if (obstacles.length > 0) {
         const from: Point = [current.cell.x, current.cell.y];
         const to: Point = [neighbor.x, neighbor.y];
-        const segmentBlocked = obstacles.some((obs) => segmentIntersectsAABB(from, to, obs));
+        const segmentBlocked = obstacles.some((obs) => segmentIntersectsFrame(from, to, obs));
         if (segmentBlocked) continue;
       }
 
@@ -335,30 +304,16 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
 /**
  * Compute A* routed path for connected endpoints.
  *
- * NEW ARCHITECTURE: Uses routing context for all spatial analysis.
- * Takes 7 primitives instead of Terminal objects for cleaner SelectTool integration.
- *
- * Supports all endpoint combinations:
- * - Free→Anchored: Uses endShapeBounds as obstacle
- * - Anchored→Free: Uses startShapeBounds as obstacle
- * - Anchored→Anchored: Uses both shapes as obstacles
- *
- * @param startPos - Start endpoint position
- * @param startDir - Start outward direction
- * @param endPos - End endpoint position
- * @param endDir - End outward direction
- * @param startShapeBounds - Shape bounds if start is anchored, null if free
- * @param endShapeBounds - Shape bounds if end is anchored, null if free
- * @param strokeWidth - Connector stroke width (affects offsets)
- * @returns Route result with simplified path
+ * Takes 7 primitives. Supports all endpoint combinations — anchored shape
+ * bounds double as obstacles; `null` means free.
  */
 export function computeAStarRoute(
   startPos: Point,
   startDir: Dir,
   endPos: Point,
   endDir: Dir,
-  startShapeBounds: AABB | null,
-  endShapeBounds: AABB | null,
+  startShapeBounds: FrameTuple | null,
+  endShapeBounds: FrameTuple | null,
   strokeWidth: number,
 ): RouteResult {
   // If start and end are exactly the same position
@@ -368,12 +323,12 @@ export function computeAStarRoute(
 
   // 1. Build routing context (ALL spatial intelligence happens here)
   // - Computes centerlines from RAW bounds
-  // - Builds dynamic AABBs with centerline/padding baked in
-  // - Computes stub positions on AABB boundaries
+  // - Builds dynamic routing bounds with centerline/padding baked in
+  // - Computes stub positions on routing-bound edges
   // - Collects obstacles (raw shape bounds)
   const ctx = createRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);
 
-  // 2. Build simple grid from context (trivial - just AABB boundaries)
+  // 2. Build simple grid from context (trivial — just routing-bound edges)
   const grid = buildSimpleGrid(ctx);
 
   // 3. Find start and goal cells (at stub positions)

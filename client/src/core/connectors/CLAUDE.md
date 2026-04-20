@@ -9,13 +9,13 @@ The connector routing system implements two routing modes: **orthogonal (elbow)*
 
 **Key Design Decisions:**
 
-1. **Primitives-Based API** — Routing accepts 7 primitive values, not Terminal objects
-2. **Centerline Routing** — Routes prefer the midpoint between facing shape sides
-3. **Dynamic AABBs** — Routing bounds encode centerline knowledge in their boundaries
-4. **Segment Intersection** — A* checks segments against obstacles (no cell blocking)
-5. **Normalized Anchors** — Shape-agnostic endpoint positions stored as `[0-1, 0-1]`
-6. **Override Patterns** — Clean separation between frame overrides and endpoint overrides
-7. **Connector Type Branching** — All straight logic gated on `connectorType` checks, zero regression risk to elbow
+1. **Primitives-Based API** — Routing accepts 7 primitive values (positions, directions, `FrameTuple | null` per endpoint, stroke width).
+2. **Centerline Routing** — Routes prefer the midpoint between facing shape sides.
+3. **Dynamic Routing Bounds** — Bounds encode centerline knowledge; facing side = centerline.
+4. **Segment Intersection** — A* checks segments against obstacles (no cell blocking).
+5. **Normalized Anchors** — Shape-agnostic endpoint positions stored as `[0-1, 0-1]`.
+6. **Override Patterns** — Clean separation between frame overrides and endpoint overrides.
+7. **Connector Type Branching** — All straight logic gated on `connectorType` checks; elbow path is untouched.
 
 ---
 
@@ -23,42 +23,44 @@ The connector routing system implements two routing modes: **orthogonal (elbow)*
 
 ```
 client/src/core/connectors/
-├── types.ts               # Dir, Bounds, AABB, SnapTarget (discriminated union), RoutingContext, Grid, ConnectorType, ConnectorCap
+├── types.ts               # Dir, Bounds, SnapTarget (discriminated union), RoutingContext, Grid, ConnectorType, ConnectorCap
 ├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas, CENTER_SNAP_RADIUS_PX, STRAIGHT_INTERIOR_DEPTH_PX
-├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, elbowAnchorPoint, isSameShape, anchorRecordFromSnap
-├── connector-utils.ts     # Shape midpoints, direction helpers, bounds conversion, direction resolution, getEndpointEdgePosition, computeShapeEdgeIntersection
-├── snap.ts                # Shape snapping — per-type branching (elbow/straight), dead-zone-free edge gate
-├── routing-context.ts     # Centerlines, dynamic AABBs, stubs, grid construction
-├── routing-astar.ts       # A* pathfinding with segment intersection checking
+├── shape-geometry.ts      # Pure shape math: rect/ellipse/diamond centers, edges, midpoints, nearest-edge, ray×shape intersection. Zero connector deps.
+├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, elbowAnchorPoint, isSameShape, anchorRecordFromSnap, getEndpointEdgePosition
+├── connector-utils.ts     # Direction primitives, spatial relation, path simplify, bounds conversion, elbow direction resolution
+├── snap.ts                # Shape snapping — per-type branch (elbow/straight) + shared probeEdgeSnap pipeline
+├── routing-context.ts     # Centerlines, dynamic routing bounds, stubs, grid construction
+├── routing-astar.ts       # A* pathfinding with segment-intersection obstacle checking
 ├── connector-paths.ts     # Path2D builders (polyline, arrows) for cache and preview
 ├── connector-lookup.ts    # Reverse map: shapeId → Set<connectorId>
-├── reroute-connector.ts   # High-level routing: rerouteConnector + routeNewConnector + computeStraightRoute
-└── index.ts               # Public API exports
+└── reroute-connector.ts   # High-level routing: rerouteConnector + routeNewConnector + computeStraightRoute
 ```
+
+There is no barrel — consumers import from specific files. `FrameTuple`, `Point`, and `StoredAnchor*` come from their canonical homes (`@/core/types/geometry`, `@/core/types/objects`).
 
 ---
 
 ## Primitives-Based Routing API
 
-The routing layer accepts **7 primitive values** instead of Terminal objects:
+The routing layer accepts **7 primitive values**:
 
 ```typescript
 computeAStarRoute(
-  startPos: [number, number],      // 1. Start endpoint position
-  startDir: Dir,                   // 2. Start outward direction
-  endPos: [number, number],        // 3. End endpoint position
-  endDir: Dir,                     // 4. End outward direction
-  startShapeBounds: AABB | null,   // 5. Start shape bounds (null = free)
-  endShapeBounds: AABB | null,     // 6. End shape bounds (null = free)
-  strokeWidth: number              // 7. Connector stroke width
+  startPos: [number, number],         // 1. Start endpoint position
+  startDir: Dir,                      // 2. Start outward direction
+  endPos: [number, number],           // 3. End endpoint position
+  endDir: Dir,                        // 4. End outward direction
+  startShapeBounds: FrameTuple | null,// 5. Start shape bounds (null = free)
+  endShapeBounds: FrameTuple | null,  // 6. End shape bounds (null = free)
+  strokeWidth: number                 // 7. Connector stroke width
 ): RouteResult
 ```
 
 **Why primitives?**
 
-- `isAnchored` is **derived** from `bounds !== null` — no redundant state
-- SelectTool can call routing with minimal boilerplate — no Terminal construction
-- Routing layer has zero dependency on Y.map data or commit-time fields
+- `isAnchored` is **derived** from `bounds !== null` — no redundant state.
+- Callers route with zero boilerplate — no wrapper objects.
+- Routing depends on nothing from Y.map or commit-time fields.
 
 ---
 
@@ -88,21 +90,21 @@ Interior-ness (straight connectors only) is committed at snap time as `anchor.in
 
 **Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Emitted as `StraightSnapTarget` with `isCenter: true`.
 
-### Bounds vs AABB
+### Bounds vs FrameTuple
 
 ```typescript
 // Edge-based representation (internal routing)
 interface Bounds { left, top, right, bottom }
 
-// Frame representation (storage, external API)
-interface AABB { x, y, w, h }
+// Storage / external API — the canonical shape frame
+type FrameTuple = [x, y, w, h];
 ```
 
 Routing uses `Bounds` internally because edge-based math is cleaner:
 - Centerline: `(a.right + b.left) / 2`
 - Facing check: `a.right <= b.left`
 
-Convert with `toBounds(aabb)` and `pointBounds(position)`.
+Convert with `toBounds(frameTuple)` and `pointBounds(position)`.
 
 ### RoutingContext
 
@@ -118,11 +120,11 @@ interface RoutingContext {
   endStub: [number, number];    // WHERE A* ends (ON bounds boundary)
   startDir: Dir;                // Resolved direction
   endDir: Dir;                  // Resolved direction
-  obstacles: AABB[];            // Raw shape bounds for segment checking
+  obstacles: FrameTuple[];      // Raw shape bounds for segment checking
 }
 ```
 
-**Critical insight:** `startBounds`/`endBounds` are **not** raw shape bounds — they're dynamic AABBs with centerline and padding already baked in. This is what makes grid construction trivial. Straight connectors skip RoutingContext entirely — they use `computeStraightRoute()` with `ResolvedEndpoint` data directly.
+**Critical insight:** `startBounds`/`endBounds` are **not** raw shape bounds — they're dynamic routing bounds with centerline and padding already baked in. This is what makes grid construction trivial. Straight connectors skip RoutingContext entirely — they use `computeStraightRoute()` with `ResolvedEndpoint` data directly.
 
 ---
 
@@ -135,12 +137,12 @@ computeAStarRoute(7 primitives)
     │
     └── createRoutingContext()
         ├── 1. Compute centerlines (from RAW bounds)
-        ├── 2. Build dynamic AABBs (centerline + padding on facing sides)
-        ├── 3. Compute stubs (ON AABB boundaries)
+        ├── 2. Build dynamic routing bounds (centerline + padding on facing sides)
+        ├── 3. Compute stubs (ON routing-bound edges)
         └── 4. Collect obstacles (raw shape bounds)
             │
             └── buildSimpleGrid(ctx)
-                └── Add AABB edge lines + stub perpendiculars
+                └── Add routing-bound edge lines + stub perpendiculars
                     │
                     └── astar(grid, startCell, goalCell, startDir, obstacles)
                         └── Segment intersection checking per move
@@ -151,32 +153,20 @@ computeAStarRoute(7 primitives)
 
 ### Centerline Computation
 
-Centerlines are computed from **raw bounds** (actual geometry, no padding):
+Centerlines are computed from **raw bounds** (actual geometry, no padding) via a single per-axis helper, `computeAxisCenterline(aMax, bMin, isFreeToAnchored, offset)`. It returns `null` when the ranges overlap, when a Free→Anchored gap is smaller than the approach offset, or when the gap is ≤ `EDGE_CLEARANCE_W`. `computeCenterlines` calls the helper four times (X + Y, either order) and returns whichever result is non-null.
 
-```typescript
-// X centerline (vertical line between horizontally-separated shapes)
-if (endRaw.left > startRaw.right) {
-  centerX = (startRaw.right + endRaw.left) / 2;
-}
+**Minimum gap check:** the `≤ EDGE_CLEARANCE_W` rule prevents stubs from landing between the endpoint and the shape edge — that would cause backwards routing.
 
-// Y centerline (horizontal line between vertically-separated shapes)
-if (endRaw.top > startRaw.bottom) {
-  centerY = (startRaw.bottom + endRaw.top) / 2;
-}
-```
+### Dynamic Routing Bounds
 
-**Minimum gap check:** When the gap is too small (≤ `EDGE_CLEARANCE_W`), no centerline is created. This prevents stubs from landing between the endpoint position and the shape edge, which would cause backwards routing.
-
-### Dynamic AABBs
-
-The key innovation: AABBs encode centerline knowledge in their boundaries.
+The key innovation: routing bounds encode centerline knowledge in their edges.
 
 **Three cases based on endpoint configuration:**
 
 | Configuration | Behavior |
 |---------------|----------|
-| **Anchored→Free** | Full centerline merging — point's AABB collapses to centerline on all axes |
-| **Free→Anchored** | Facing-side logic — only facing sides get centerline |
+| **Anchored→Free** | Full centerline merging — point's bounds collapse to the centerline on all axes |
+| **Free→Anchored** | Facing-side logic — only facing sides get the centerline |
 | **Shape bounds** | Facing sides → centerline; non-facing → padded outward |
 
 **Facing-side logic for shapes:**
@@ -192,13 +182,13 @@ return {
 };
 ```
 
-**Result:** When shapes face each other, their AABBs share the centerline as a boundary. Grid lines naturally include this centerline, and A* finds paths through it.
+**Result:** When shapes face each other, their routing bounds share the centerline as a boundary. Grid lines naturally include this centerline, and A* finds paths through it.
 
 ### Stub Computation
 
 Stubs are where A* actually starts and ends — at the intersection of:
 - The anchor's fixed axis position (Y for E/W, X for N/S)
-- The AABB boundary in the outward direction
+- The routing-bound edge in the outward direction
 
 ```typescript
 switch (dir) {
@@ -209,7 +199,7 @@ switch (dir) {
 }
 ```
 
-**Result:** Stubs automatically land on centerlines when they exist, because the AABB boundary IS the centerline for facing sides.
+**Result:** Stubs automatically land on centerlines when they exist, because the routing-bound edge IS the centerline for facing sides.
 
 ### Grid Construction
 
@@ -259,7 +249,7 @@ function astar(grid, start, goal, startDir, obstacles): GridCell[] {
       const moveDir = getDirection(current.cell, neighbor);
 
       // Segment intersection check (not cell blocking)
-      if (segmentIntersectsAABB(current.cell, neighbor, obstacle)) continue;
+      if (segmentIntersectsFrame(current.cell, neighbor, obstacle)) continue;
 
       // Cost with bend penalty
       const cost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
@@ -324,7 +314,7 @@ Skipped: direction resolution, RoutingContext, grid construction, A* pathfinding
 
 **Overlap safety:** Validates visible segment isn't flipped (dot product ≤ 0) or collapsed (length < `EDGE_CLEARANCE_W`). Falls back to raw `[startRaw, endRaw]` if degenerate.
 
-**Edge intersection** (`computeShapeEdgeIntersection`): Casts ray from interior anchor toward other endpoint, finds exit point on shape boundary. Supports rect/roundedRect (axis-aligned edges, smallest positive `t`), ellipse (quadratic parametric solve), diamond (Cramer's rule for ray-segment).
+**Edge intersection** (`computeShapeEdgeIntersection`, in `shape-geometry.ts`): Casts ray from interior anchor toward other endpoint, finds exit point on shape boundary. Supports rect/roundedRect (axis-aligned edges, smallest positive `t`), ellipse (quadratic parametric solve), diamond (Cramer's rule for ray-segment).
 
 ---
 
@@ -379,7 +369,7 @@ anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
 
 **Key insight:** `EDGE_CLEARANCE_W` offset lives in the elbow path exclusively. Straight connectors never need it — `computeStraightRoute` applies its own pull-back via `applyPullBack`. The snap layer always emits `position` as the visual anchor point (no offset baked in); elbow routing applies the offset at resolve time.
 
-**`getEndpointEdgePosition`** (in `connector-utils.ts`) uses `anchorFramePoint` — canonical "where does this endpoint's dot sit on the frame" accessor, always on the shape frame, never offset outward.
+**`getEndpointEdgePosition`** (in `anchor-atoms.ts`) uses `anchorFramePoint` — canonical "where does this endpoint's dot sit on the frame" accessor, always on the shape frame, never offset outward.
 
 ---
 
@@ -475,7 +465,7 @@ Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handleP
 
 ### Shape-Type Awareness
 
-`findNearestEdgePoint()` handles different geometries:
+`findNearestEdgePoint()` (in `shape-geometry.ts`) handles different geometries:
 
 | Shape | Edge Detection |
 |-------|---------------|
@@ -487,38 +477,37 @@ Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handleP
 
 ## Direction Resolution
 
-> **Note:** Straight connectors skip direction resolution entirely — they have no A* routing or stubs that need directional seeding.
+> **Note:** Straight connectors skip direction resolution entirely — they have no A* routing or stubs that need directional seeding. All functions here are elbow-only.
 
-### Free→Anchored: `resolveFreeStartDir()`
+All three functions share the primitive `directionFromDelta(dx, dy)` and the `spatialRelation(pos, frame, offset)` helper in `connector-utils.ts`.
+
+### Free→Anchored: `resolveElbowFreeStartDir()`
 
 Complex decision tree based on spatial relationship:
 
 ```typescript
-resolveFreeStartDir(fromPos, toTerminal, strokeWidth): Dir
+resolveElbowFreeStartDir(fromPos, anchorEnd, strokeWidth): Dir
 ```
 
 **Cases:**
 1. **Inside full padding** — Escape outward or wrap toward target
-2. **Same side as anchor** — Check sliver escape, then go toward shape
+2. **Same side as anchor** — Check sliver escape (private `computeElbowSliverEscape`), then go toward shape via `directionFromDelta`
 3. **Opposite side + contained** — Wrap around shape
 4. **Adjacent or clear** — Sliver escape or anchor direction
 
-### Anchored→Free: `computeFreeEndDir()`
+### Anchored→Free: `computeElbowFreeEndDir()`
 
-Simple primary axis + sign:
+Primary axis + sign — a one-liner over `directionFromDelta`:
 
 ```typescript
-function computeFreeEndDir(fromPos, toPos): Dir {
-  const dx = toPos[0] - fromPos[0];
-  const dy = toPos[1] - fromPos[1];
-  const axis = Math.abs(dx) >= Math.abs(dy) ? 'H' : 'V';
-  return axis === 'H' ? (dx >= 0 ? 'E' : 'W') : (dy >= 0 ? 'S' : 'N');
+function computeElbowFreeEndDir(fromPos, toPos): Dir {
+  return directionFromDelta(toPos[0] - fromPos[0], toPos[1] - fromPos[1]);
 }
 ```
 
 ### Drag Direction: `inferDragDirection()`
 
-For live feedback during connector creation:
+For live feedback during connector creation (used by elbow and straight drag previews):
 
 ```typescript
 inferDragDirection(from, cursor, prevDir, hysteresisRatio = 1.04): Dir
@@ -646,19 +635,19 @@ The override pattern exploits this: when dragging one endpoint, the **other endp
 
 ### ResolvedEndpoint
 
-Both `resolveEndpoint()` and `resolveNewEndpoint()` produce this. Straight-specific fields populated when anchored:
+Both `resolveEndpoint()` and `resolveNewEndpoint()` produce this. `frame` doubles as the elbow-routing shape-bounds input (no duplicate `shapeBounds` field).
 
 ```typescript
 interface ResolvedEndpoint {
   position: [number, number];
   dir: Dir | null;
-  shapeBounds: AABB | null;
   isAnchored: boolean;
-  // Straight connector fields (populated when anchored)
+  // Populated for anchored endpoints (both connector types)
   normalizedAnchor?: [number, number];
   shapeType?: string;
-  frame?: FrameTuple;
-  shapeId?: string;              // Enables same-shape detection
+  frame?: FrameTuple;              // Passed to elbow A* as start/endShapeBounds
+  shapeId?: string;                // Enables same-shape detection
+  interior?: boolean;              // Straight-only: committed at snap time
 }
 ```
 
@@ -669,20 +658,20 @@ Returned by `routeNewConnector()`:
 ```typescript
 interface NewRouteResult {
   points: [number, number][];
-  startDashTo: [number, number] | null;  // Legacy field, unused by renderers
-  endDashTo: [number, number] | null;    // Legacy field, unused by renderers
 }
 ```
 
-The `*DashTo` fields are historical. Renderers derive dashed guides from the snap directly — `connector-preview.ts` and `selection-overlay.ts` branch on `snap.kind === 'straight' && snap.interior` and draw from `points[0 | -1]` to `snap.position`. The fields are slated for removal.
+Dashed guides for interior straight anchors are rendered directly from `snap` by `connector-preview.ts` and `selection-overlay.ts` (`snap.kind === 'straight' && snap.interior` → draw from `points[0 | -1]` to `snap.position`). No dash metadata is threaded through the route result.
 
 ### Internal Flow
 
 ```typescript
 function rerouteConnector(connectorId, endpointOverrides) {
   // 1. Read connector data from Y.map
-  // 2. Resolve each endpoint → ResolvedEndpoint via resolveEndpoint()
-  //    (straight fields: normalizedAnchor, shapeType, frame, shapeId)
+  // 2. Resolve each endpoint via resolveEndpoint() →
+  //    - free → FREE_ENDPOINT
+  //    - stored / frame override → buildAnchoredByType()
+  //    - snap override → buildElbowAnchored / buildStraightAnchored directly
 
   // 3. Branch on connector type
   const connectorType = getConnectorType(yMap);
@@ -691,9 +680,9 @@ function rerouteConnector(connectorId, endpointOverrides) {
     return { points: result.points, bbox };
   }
 
-  // 4. Elbow: resolve directions + A* routing
-  const { startDir, endDir } = resolveDirections(...);
-  return { points: computeAStarRoute(...).points, bbox };
+  // 4. Elbow: resolve directions, then callAStar() wraps the 7-arg A* call
+  const { startDir, endDir } = resolveElbowDirections(...);
+  return { points: callAStar(startResolved, startDir, endResolved, endDir, strokeWidth).points, bbox };
 }
 ```
 
@@ -802,8 +791,8 @@ Callers that need the narrowed shape cast via `connectorType` (the parent is the
 ## Key Invariants
 
 1. **Centerlines use actual edges** — Computed from raw bounds, not padded
-2. **Dynamic AABBs share facing boundaries** — Both AABBs have same centerline on facing side
-3. **Stubs are ON AABB boundaries** — Automatically land on centerlines
+2. **Dynamic routing bounds share facing edges** — Both endpoints' bounds have the same centerline on their facing side
+3. **Stubs are ON routing-bound edges** — Automatically land on centerlines
 4. **Segment checking during A*** — No cell blocking at grid construction
 5. **Directions resolved before routing** — RoutingContext receives final directions
 6. **Normalized anchors are shape-agnostic** — `[0-1, 0-1]` + linear interpolation
@@ -832,8 +821,8 @@ Callers that need the narrowed shape cast via `connectorType` (the parent is the
 | Anchor → frame point | `anchorFramePoint()` | Raw point (no outward offset) |
 | Elbow anchor → routing point | `elbowAnchorPoint()` | Raw + EDGE_CLEARANCE_W along stored `anchor.side` |
 | Write anchor record from snap | `anchorRecordFromSnap()` | Per-kind Y.Map shape (elbow: side, straight: interior) |
-| Resolve free→anchored direction | `resolveFreeStartDir()` | Complex spatial logic (elbow only) |
-| Resolve anchored→free direction | `computeFreeEndDir()` | Primary axis + sign (elbow only) |
+| Resolve free→anchored direction | `resolveElbowFreeStartDir()` | Complex spatial logic (elbow only) |
+| Resolve anchored→free direction | `computeElbowFreeEndDir()` | Primary axis + sign (elbow only) |
 | Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + overlap safety |
 | Check interior anchor | read `anchor.interior` (stored) or `snap.interior` (live) | Never recomputed from coords |
 | Find shape edge exit | `computeShapeEdgeIntersection()` | Ray cast for interior anchors (rect/ellipse/diamond) |

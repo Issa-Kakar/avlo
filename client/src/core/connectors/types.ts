@@ -1,19 +1,9 @@
 /**
  * Shared Types for Connector Routing System
- *
- * This file contains all shared type definitions used across the connector
- * routing modules. Consolidating types here reduces duplication and makes
- * imports cleaner.
- *
- * @module lib/connectors/types
  */
 
-import type { Frame, Point } from '../types/geometry';
+import type { FrameTuple, Point } from '../types/geometry';
 import type { Dir as SharedDir } from '../accessors';
-
-// Re-export for convenience
-export type { Frame, FrameTuple, Point } from '../types/geometry';
-export type { StoredAnchor, StoredElbowAnchor, StoredStraightAnchor } from '../types/objects';
 
 /** Connector routing style */
 export type ConnectorType = 'elbow' | 'straight';
@@ -21,69 +11,25 @@ export type ConnectorType = 'elbow' | 'straight';
 /** Connector endpoint cap style */
 export type ConnectorCap = 'arrow' | 'none';
 
-// ============================================================================
-// DIRECTION & GEOMETRY TYPES
-// ============================================================================
-
 /** Cardinal direction type (North, East, South, West) */
 export type Dir = SharedDir;
 
 /**
- * AABB for spatial calculations (compatible with Frame).
- * Note: This type is kept for routing code where {x,y,w,h} format is more readable
- * than FrameTuple for bounds calculations. Identical to Frame.
- */
-export type AABB = Frame;
-
-/**
- * Edge-based bounds representation for routing AABBs.
+ * Edge-based bounds representation for routing.
  *
  * Using edges directly (instead of x,y,w,h) makes routing code cleaner:
- * - Grid lines: `xLines.add(b.left)` vs `xLines.add(b.x)`
- * - Centerline: `(a.right + b.left) / 2` vs `(a.x + a.w + b.x) / 2`
- * - Facing checks: `a.right <= b.left` vs `a.x + a.w <= b.x`
+ * - Grid lines: `xLines.add(b.left)`
+ * - Centerline: `(a.right + b.left) / 2`
+ * - Facing checks: `a.right <= b.left`
  */
 export interface Bounds {
-  left: number; // minX
-  top: number; // minY
-  right: number; // maxX
-  bottom: number; // maxY
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
-// ============================================================================
-// TERMINAL & ROUTING TYPES
-// ============================================================================
-
-/**
- * Terminal describes an endpoint for routing.
- *
- * This is THE canonical endpoint type for all routing operations.
- * Use `isAnchored` instead of `kind: 'world'|'shape'`.
- */
-export interface Terminal {
-  position: Point;
-  /**
-   * Direction the jetty extends from this point.
-   * For shape-attached: same as the side we're on (away from shape).
-   * For free: direction toward other endpoint.
-   */
-  outwardDir: Dir;
-  /** True if snapped to a shape edge */
-  isAnchored: boolean;
-  /** True if this endpoint has an arrow cap (affects offset) */
-  hasCap: boolean;
-  /** Shape bounds for obstacle blocking (when isAnchored=true) */
-  shapeBounds?: AABB;
-  /**
-   * Normalized anchor position within shape frame [0-1, 0-1].
-   * Shape-agnostic: newPos = [frame.x + anchor[0] * frame.w, frame.y + anchor[1] * frame.h]
-   */
-  normalizedAnchor?: Point;
-}
-
-/**
- * Route result with full simplified path.
- */
+/** Route result with full simplified path. */
 export interface RouteResult {
   points: Point[];
 }
@@ -91,18 +37,15 @@ export interface RouteResult {
 /**
  * Complete routing context with all spatial analysis pre-computed.
  *
- * Grid construction just reads AABB boundaries from this.
+ * Grid construction just reads bounds boundaries from this.
  * A* uses stubs as start/goal positions.
- *
- * Note: Does NOT store Terminal objects - only the 7 primitives needed for routing.
  */
 export interface RoutingContext {
   // Endpoint positions (for final path assembly)
   startPos: Point;
   endPos: Point;
 
-  // Dynamic routing bounds (centerline/padding baked in)
-  // These are NOT raw shape bounds - they're the routing AABBs
+  // Dynamic routing bounds (centerline/padding baked in — NOT raw shape bounds)
   startBounds: Bounds;
   endBounds: Bounds;
 
@@ -115,7 +58,7 @@ export interface RoutingContext {
   endDir: Dir;
 
   // Raw shape bounds for obstacle checking (NOT the routing bounds)
-  obstacles: AABB[];
+  obstacles: FrameTuple[];
 }
 
 // ============================================================================

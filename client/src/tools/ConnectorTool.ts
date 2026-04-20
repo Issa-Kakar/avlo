@@ -20,16 +20,11 @@ import type { Point } from '@/core/types/geometry';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import {
-  type Dir,
-  type SnapTarget,
-  type ConnectorCap,
-  type ConnectorType,
-  findBestSnapTarget,
-  routeNewConnector,
-  inferDragDirection,
-  anchorRecordFromSnap,
-} from '@/core/connectors';
+import type { Dir, SnapTarget, ConnectorCap, ConnectorType } from '@/core/connectors/types';
+import { findBestSnapTarget } from '@/core/connectors/snap';
+import { routeNewConnector } from '@/core/connectors/reroute-connector';
+import { inferDragDirection } from '@/core/connectors/connector-utils';
+import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { isCtrlHeld } from '@/runtime/InputManager';
 
 type Phase = 'idle' | 'creating';
@@ -82,13 +77,7 @@ export class ConnectorTool implements PointerTool {
     this.frozenConnectorType = state.connectorType;
 
     // Check if starting on a shape (Ctrl suppresses snapping)
-    const snap = isCtrlHeld()
-      ? null
-      : findBestSnapTarget({
-          cursorWorld: [worldX, worldY],
-          prevAttach: null,
-          connectorType: this.frozenConnectorType,
-        });
+    const snap = this.probeSnap(worldX, worldY, null);
 
     this.fromSnap = snap;
     this.fromPosition = snap ? snap.position : [worldX, worldY];
@@ -105,14 +94,7 @@ export class ConnectorTool implements PointerTool {
   move(worldX: number, worldY: number): void {
     if (this.phase === 'idle') {
       // Hover mode - show anchor dots on nearby shapes (Ctrl suppresses)
-      const snap = isCtrlHeld()
-        ? null
-        : findBestSnapTarget({
-            cursorWorld: [worldX, worldY],
-            prevAttach: this.prevSnap,
-            connectorType: useDeviceUIStore.getState().connectorType,
-          });
-
+      const snap = this.probeSnap(worldX, worldY, this.prevSnap);
       this.hoverSnap = snap;
       this.prevSnap = snap;
       invalidateOverlay();
@@ -120,13 +102,7 @@ export class ConnectorTool implements PointerTool {
     }
 
     // Creating phase - update 'to' endpoint (Ctrl suppresses snapping)
-    const snap = isCtrlHeld()
-      ? null
-      : findBestSnapTarget({
-          cursorWorld: [worldX, worldY],
-          prevAttach: this.prevSnap,
-          connectorType: this.frozenConnectorType ?? 'elbow',
-        });
+    const snap = this.probeSnap(worldX, worldY, this.prevSnap);
 
     this.hoverSnap = snap;
     this.prevSnap = snap;
@@ -139,10 +115,7 @@ export class ConnectorTool implements PointerTool {
       this.dragDir = null;
     }
 
-    const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition!;
-    const end: SnapTarget | Point = snap ?? [worldX, worldY];
-    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
-
+    this.refreshRoute();
     invalidateOverlay();
   }
 
@@ -196,11 +169,7 @@ export class ConnectorTool implements PointerTool {
   }
 
   onViewChange(): void {
-    if (this.phase === 'creating' && this.fromPosition && this.toPosition) {
-      const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition;
-      const end: SnapTarget | Point = this.toSnap ?? this.toPosition;
-      this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
-    }
+    if (this.phase === 'creating') this.refreshRoute();
     invalidateOverlay();
   }
 
@@ -209,6 +178,22 @@ export class ConnectorTool implements PointerTool {
   }
 
   // === Private Methods ===
+
+  private probeSnap(worldX: number, worldY: number, prevAttach: SnapTarget | null): SnapTarget | null {
+    if (isCtrlHeld()) return null;
+    return findBestSnapTarget({
+      cursorWorld: [worldX, worldY],
+      prevAttach,
+      connectorType: this.frozenConnectorType ?? useDeviceUIStore.getState().connectorType,
+    });
+  }
+
+  private refreshRoute(): void {
+    if (!this.fromPosition || !this.toPosition) return;
+    const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition;
+    const end: SnapTarget | Point = this.toSnap ?? this.toPosition;
+    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
+  }
 
   private resetState(): void {
     this.phase = 'idle';

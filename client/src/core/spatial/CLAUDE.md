@@ -629,4 +629,4 @@ would add a `.map` or a wrapping array without buying anything.
 | `core/geometry/hit-primitives` | `strokeHitTest`, `shapeHitTest`, `rectFrameHit`, `circleRectIntersect`, `circleHitsShape`, `bboxesIntersect`, `polylineIntersectsBBox`, `ellipseIntersectsBBox`, `diamondIntersectsBBox`, `getDiamondVertices` — the pure math beneath the caps |
 | `core/geometry/frame-of`      | NOT a spatial consumer — but `frameOf` is used **inside** snap's accept callback |
 | `stores/selection-store`      | `computeHandles(bbox)` for resize handle corners (handle-hit.ts) |
-| `core/connectors/connector-utils` | `getEndpointEdgePosition(handle, endpoint)` (handle-hit.ts)  |
+| `core/connectors/anchor-atoms` | `getEndpointEdgePosition(handle, endpoint)` (handle-hit.ts)  |

@@ -4,7 +4,7 @@ import { ulid } from 'ulid';
 import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
 import type { FontFamily, TextAlignV } from '@/core/accessors';
-import type { ConnectorCap, ConnectorType } from '@/core/connectors';
+import type { ConnectorCap, ConnectorType } from '@/core/connectors/types';
 import { generateUserProfile } from '@/utils/generate-user-profile';
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code' | 'connector' | 'note';

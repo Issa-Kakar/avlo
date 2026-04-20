@@ -15,7 +15,7 @@ import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/tools/types';
 import { computeHandles } from '@/stores/selection-store';
 import { getHandle } from '@/runtime/room-runtime';
-import { getEndpointEdgePosition } from '@/core/connectors/connector-utils';
+import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import { type Radius, resolveRadius } from './object-query';
 
 // ============================================================================

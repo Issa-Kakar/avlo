@@ -20,7 +20,7 @@ import { evictGeometry, clearGeometry } from './geometry-cache';
 import { textLayoutCache } from '@/core/text/text-system';
 import { codeSystem } from '@/core/code/code-system';
 import { bookmarkCache } from '@/core/bookmark/bookmark-render';
-import { clearConnectorLookup } from '@/core/connectors';
+import { clearConnectorLookup } from '@/core/connectors/connector-lookup';
 
 /** Object deleted — remove from all relevant caches */
 export function removeObjectCaches(id: string, kind: ObjectKind): void {
