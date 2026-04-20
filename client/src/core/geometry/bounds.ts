@@ -49,6 +49,10 @@ export const pointsToBBox = (p1: Point, p2: Point): BBoxTuple => [
 
 export const translateBBox = (b: BBoxTuple, dx: number, dy: number): BBoxTuple => [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
 
+export const translatePoint = (p: Point, dx: number, dy: number): Point => [p[0] + dx, p[1] + dy];
+export const translateFrame = (f: FrameTuple, dx: number, dy: number): FrameTuple => [f[0] + dx, f[1] + dy, f[2], f[3]];
+export const translatePoints = (ps: Point[], dx: number, dy: number): Point[] => ps.map((p) => [p[0] + dx, p[1] + dy]);
+
 // Tuple helpers moved from scale-system.ts (geometry primitives, not scale-specific)
 export const frameToBbox = (f: FrameTuple): BBoxTuple => [f[0], f[1], f[0] + f[2], f[1] + f[3]];
 export const bboxToFrame = (b: BBoxTuple): FrameTuple => [b[0], b[1], b[2] - b[0], b[3] - b[1]];

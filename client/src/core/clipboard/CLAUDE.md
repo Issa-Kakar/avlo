@@ -34,28 +34,34 @@ This two-channel approach means:
 interface ClipboardPayload {
   version: 1;
   objects: SerializedObject[];
-  bounds: WorldBounds;           // Bounding box of all serialized objects
+  bounds: BBoxTuple;               // [minX, minY, maxX, maxY] of all serialized objects
 }
 
 interface SerializedObject {
   kind: ObjectKind;
-  props: Record<string, unknown>;  // All Y.Map entries except content
+  props: SerializedProps;          // All Y.Map entries except content; id/kind/ownerId/createdAt typed
   content?: SerializedContent;     // Y.XmlFragment (text, shapes with labels, notes)
   textContent?: string;            // Y.Text (code blocks)
 }
+
+type SerializedProps = { id: string; kind: ObjectKind; ownerId: string; createdAt: number } & Record<string, unknown>;
 
 interface SerializedContent {
   paragraphs: SerializedParagraph[];
 }
 
+type MarkAttrs = { bold?: true; italic?: true; highlight?: string };
+
 interface SerializedParagraph {
-  delta: { insert: string; attributes?: Record<string, unknown> }[];
+  delta: { insert: string; attributes?: MarkAttrs }[];
 }
 ```
 
 **Serialize flow:** `serializeObjects(ids)` iterates ObjectHandles from snapshot, serializes each Y.Map. Y.XmlFragment content → paragraph deltas (preserving bold/italic/highlight attributes). Y.Text content → plain string. BBox tracked from handle.bbox for bounds computation.
 
 **Deserialize flow:** `deserializeFragment(content)` rebuilds Y.XmlFragment → Y.XmlElement('paragraph') → Y.XmlText with delta attributes. `extractPlainText(objects)` joins text content across objects for clipboard plain text.
+
+**Pending Y-type construction gotcha.** Fragment builders (`deserializeFragment`, `prosemirrorJsonToFragment`, `pasteExternalText`, `pasteUrlAsText`) never read `.length` on the in-flight Y.XmlFragment / Y.XmlText — Yjs warns on reads from unattached types ("Invalid access: Add Yjs type to a document before reading data"). Instead, collect children in a plain JS array and `fragment.insert(0, children)` once at the end; track text-delta positions with a local counter. Writes on pending types queue fine and are integrated atomically when the root is attached via `yObj.set('content', fragment)`.
 
 ---
 
@@ -102,7 +108,7 @@ Every object gets a new ULID. An `idMap` (old→new) is built upfront and used f
 - **Explicit offset** (duplicate): uses provided `[dx, dy]`
 - **No offset** (paste): computes target position → `getPasteTarget()`:
   - Cursor world position if available (`getLastCursorWorld()`)
-  - Otherwise viewport center (`getVisibleWorldBounds()` midpoint)
+  - Otherwise viewport center (`bboxCenter(getVisibleBoundsTuple())`)
   - Offset = target - payload bounds center
 
 ### Property Remapping
@@ -148,7 +154,7 @@ Walks the doc content array, processes only `paragraph` nodes:
 - For each inline text node: reads marks array for bold/italic/highlight
   - `bold` mark → `{ bold: true }`
   - `italic` mark → `{ italic: true }`
-  - `highlight` mark → `{ highlight: mark.attrs.color || '#ffd43b' }`
+  - `highlight` mark → `{ highlight: mark.attrs.color || DEFAULT_HIGHLIGHT }` (exported constant)
 - Inserts text with attributes into Y.XmlText
 - Returns null if no content found (triggers plain text fallback)
 

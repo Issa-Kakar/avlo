@@ -23,13 +23,22 @@ import { useSelectionStore } from '@/stores/selection-store';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
-import { getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
+import { useCameraStore, getVisibleBoundsTuple } from '@/stores/camera-store';
 import { animateToFit } from '@/runtime/viewport/zoom';
 import { deleteSelected } from '@/tools/selection/selection-actions';
-import type { WorldBounds } from '../types/geometry';
+import { bboxCenter, bboxSize, translateBBox, translatePoint, translateFrame, translatePoints } from '../geometry/bounds';
+import { bboxTupleToWorldBounds, type BBoxTuple, type FrameTuple, type Point } from '../types/geometry';
 import type { StoredAnchor } from '../types/objects';
 import { normalizeUrl } from '@avlo/shared';
-import { serializeObjects, deserializeFragment, extractPlainText, type ClipboardPayload } from './clipboard-serializer';
+import {
+  serializeObjects,
+  deserializeFragment,
+  extractPlainText,
+  isSerializedPayload,
+  DEFAULT_HIGHLIGHT,
+  type ClipboardPayload,
+  type MarkAttrs,
+} from './clipboard-serializer';
 import { createImageFromBlob } from '../image/image-actions';
 import { enqueue } from '../image/image-manager';
 import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
@@ -38,6 +47,22 @@ import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
 
 const PASTE_CHAR_LIMIT = 50_000;
 const PASTE_EXTENSIONS = [Document, Paragraph, Text, Bold, Italic, Highlight.configure({ multicolor: true })];
+
+// === ProseMirror JSON shape (from @tiptap/core generateJSON) ===
+
+interface PMMark {
+  type: string;
+  attrs?: { color?: string };
+}
+interface PMNode {
+  type: string;
+  text?: string;
+  content?: PMNode[];
+  marks?: PMMark[];
+}
+interface PMDoc {
+  content?: PMNode[];
+}
 
 // === Nonce State ===
 
@@ -132,23 +157,22 @@ export async function pasteFromClipboard(): Promise<void> {
 // === Internal Paste ===
 
 function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): void {
+  if (!isSerializedPayload(payload)) return;
+
   const idMap = new Map<string, string>();
   for (const obj of payload.objects) {
-    const oldId = obj.props.id as string;
-    idMap.set(oldId, ulid());
+    idMap.set(obj.props.id, ulid());
   }
 
   // Compute position offset
   let dx: number, dy: number;
   if (offset) {
-    dx = offset[0];
-    dy = offset[1];
+    [dx, dy] = offset;
   } else {
-    const target = getPasteTarget();
-    const cx = (payload.bounds.minX + payload.bounds.maxX) / 2;
-    const cy = (payload.bounds.minY + payload.bounds.maxY) / 2;
-    dx = target[0] - cx;
-    dy = target[1] - cy;
+    const [tx, ty] = getPasteTarget();
+    const [cx, cy] = bboxCenter(payload.bounds);
+    dx = tx - cx;
+    dy = ty - cy;
   }
 
   const userId = getUserId();
@@ -157,8 +181,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
   transact(() => {
     const objects = getObjects();
     for (const obj of payload.objects) {
-      const oldId = obj.props.id as string;
-      const newId = idMap.get(oldId)!;
+      const newId = idMap.get(obj.props.id)!;
       const yObj = new Y.Map<unknown>();
 
       // Copy all props with remapping
@@ -173,41 +196,28 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           case 'createdAt':
             yObj.set('createdAt', now);
             break;
-          case 'frame': {
-            const [fx, fy, fw, fh] = value as [number, number, number, number];
-            yObj.set('frame', [fx + dx, fy + dy, fw, fh]);
+          case 'frame':
+            yObj.set('frame', translateFrame(value as FrameTuple, dx, dy));
             break;
-          }
-          case 'origin': {
-            const [ox, oy] = value as [number, number];
-            yObj.set('origin', [ox + dx, oy + dy]);
+          case 'origin':
+            yObj.set('origin', translatePoint(value as Point, dx, dy));
             break;
-          }
-          case 'points': {
-            const pts = (value as [number, number][]).map(([px, py]) => [px + dx, py + dy]);
-            yObj.set('points', pts);
+          case 'points':
+            yObj.set('points', translatePoints(value as Point[], dx, dy));
             break;
-          }
-          case 'start': {
-            const [sx, sy] = value as [number, number];
-            yObj.set('start', [sx + dx, sy + dy]);
+          case 'start':
+            yObj.set('start', translatePoint(value as Point, dx, dy));
             break;
-          }
-          case 'end': {
-            const [ex, ey] = value as [number, number];
-            yObj.set('end', [ex + dx, ey + dy]);
+          case 'end':
+            yObj.set('end', translatePoint(value as Point, dx, dy));
             break;
-          }
           case 'startAnchor':
           case 'endAnchor': {
-            const anchor = value as StoredAnchor;
-            const remappedId = idMap.get(anchor.id);
-            if (remappedId) {
-              // Spread preserves the variant's discriminating field
-              // (`side` for elbow, `interior` for straight) — only the target id gets remapped.
-              yObj.set(key, { ...anchor, id: remappedId });
-            }
-            // Else: anchor target isn't in the paste set — drop it, endpoint becomes free.
+            // Spread preserves the variant's discriminating field (`side` for elbow,
+            // `interior` for straight) — only the target id gets remapped. If the anchor
+            // target isn't in the paste set, drop it so the endpoint becomes free.
+            const remapped = remapAnchor(value as StoredAnchor, idMap);
+            if (remapped) yObj.set(key, remapped);
             break;
           }
           default:
@@ -238,23 +248,20 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
   }
 
   // Only switch tool + select when no gesture is active
-  const newIds = payload.objects.map((obj) => idMap.get(obj.props.id as string)!);
-  if (getCurrentTool()?.isActive()) {
-    // Mid-gesture: just create objects, don't interrupt
-  } else {
+  const newIds = payload.objects.map((obj) => idMap.get(obj.props.id)!);
+  if (!getCurrentTool()?.isActive()) {
     useDeviceUIStore.getState().setActiveTool('select');
     useSelectionStore.getState().setSelection(newIds);
     invalidateOverlay();
   }
 
   // Zoom-to-fit if placed bounds are off-screen
-  const placedBounds: WorldBounds = {
-    minX: payload.bounds.minX + dx,
-    minY: payload.bounds.minY + dy,
-    maxX: payload.bounds.maxX + dx,
-    maxY: payload.bounds.maxY + dy,
-  };
-  ensureVisible(placedBounds);
+  ensureVisible(translateBBox(payload.bounds, dx, dy));
+}
+
+function remapAnchor(anchor: StoredAnchor, idMap: Map<string, string>): StoredAnchor | null {
+  const newId = idMap.get(anchor.id);
+  return newId ? { ...anchor, id: newId } : null;
 }
 
 // === External HTML Paste ===
@@ -284,9 +291,9 @@ function pasteExternalHtml(html: string): void {
   }
 
   // Parse HTML to ProseMirror JSON
-  let doc: Record<string, any>;
+  let doc: PMDoc;
   try {
-    doc = generateJSON(cleaned, PASTE_EXTENSIONS);
+    doc = generateJSON(cleaned, PASTE_EXTENSIONS) as PMDoc;
   } catch {
     // Parse failure — fall back to plain text
     pasteExternalText(plainText);
@@ -304,10 +311,12 @@ function pasteExternalHtml(html: string): void {
 
 // === ProseMirror JSON → Y.XmlFragment ===
 
-function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | null {
-  if (!doc.content || !Array.isArray(doc.content)) return null;
+function prosemirrorJsonToFragment(doc: PMDoc): Y.XmlFragment | null {
+  if (!doc.content) return null;
 
-  const fragment = new Y.XmlFragment();
+  // Collect paragraphs into a plain array and batch-insert at index 0 to avoid
+  // `.length` reads on the pending fragment / xmlText (see deserializeFragment).
+  const paragraphs: Y.XmlElement[] = [];
   let hasContent = false;
 
   for (const node of doc.content) {
@@ -315,49 +324,47 @@ function prosemirrorJsonToFragment(doc: Record<string, any>): Y.XmlFragment | nu
 
     const para = new Y.XmlElement('paragraph');
     const xmlText = new Y.XmlText();
+    let textPos = 0;
 
-    if (node.content && Array.isArray(node.content)) {
+    if (node.content) {
       for (const inline of node.content) {
         if (inline.type !== 'text' || typeof inline.text !== 'string') continue;
 
-        const attrs: Record<string, any> = {};
-        if (inline.marks && Array.isArray(inline.marks)) {
+        const attrs: MarkAttrs = {};
+        if (inline.marks) {
           for (const mark of inline.marks) {
-            switch (mark.type) {
-              case 'bold':
-                attrs.bold = true;
-                break;
-              case 'italic':
-                attrs.italic = true;
-                break;
-              case 'highlight':
-                attrs.highlight = mark.attrs?.color || '#ffd43b';
-                break;
-            }
+            if (mark.type === 'bold') attrs.bold = true;
+            else if (mark.type === 'italic') attrs.italic = true;
+            else if (mark.type === 'highlight') attrs.highlight = mark.attrs?.color || DEFAULT_HIGHLIGHT;
           }
         }
 
-        xmlText.insert(xmlText.length, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
+        xmlText.insert(textPos, inline.text, Object.keys(attrs).length > 0 ? attrs : undefined);
+        textPos += inline.text.length;
         if (inline.text) hasContent = true;
       }
     }
 
     para.insert(0, [xmlText]);
-    fragment.insert(fragment.length, [para]);
+    paragraphs.push(para);
   }
 
-  return hasContent ? fragment : null;
+  if (!hasContent) return null;
+
+  const fragment = new Y.XmlFragment();
+  fragment.insert(0, paragraphs);
+  return fragment;
 }
 
 // === Paste URL as Text ===
 
 export function pasteUrlAsText(url: string, worldX: number, worldY: number, objectId?: string): void {
-  const fragment = new Y.XmlFragment();
   const para = new Y.XmlElement('paragraph');
   const xmlText = new Y.XmlText();
   xmlText.insert(0, url);
   para.insert(0, [xmlText]);
-  fragment.insert(fragment.length, [para]);
+  const fragment = new Y.XmlFragment();
+  fragment.insert(0, [para]);
   createPastedTextObject(fragment, url.length, [worldX, worldY], objectId);
 }
 
@@ -398,7 +405,7 @@ function createPastedTextObject(fragment: Y.XmlFragment, charCount: number, posi
 
   // Zoom-to-fit for fixed-width pastes (auto = short text, already near viewport)
   if (typeof pasteWidth === 'number') {
-    ensureVisible({ minX: worldX, minY: worldY, maxX: worldX + pasteWidth, maxY: worldY });
+    ensureVisible([worldX, worldY, worldX + pasteWidth, worldY]);
   }
 }
 
@@ -447,16 +454,18 @@ function pasteExternalText(text: string): void {
   // Character limit
   const truncated = text.length > PASTE_CHAR_LIMIT ? text.slice(0, PASTE_CHAR_LIMIT) : text;
 
-  // Build plain Y.XmlFragment from text lines
-  const fragment = new Y.XmlFragment();
-  const lines = truncated.split('\n');
-  for (const line of lines) {
+  // Build paragraphs in a plain array, then batch-insert into the fragment at
+  // index 0 — avoids reading `.length` on the pending fragment.
+  const paragraphs: Y.XmlElement[] = [];
+  for (const line of truncated.split('\n')) {
     const para = new Y.XmlElement('paragraph');
     const xmlText = new Y.XmlText();
     if (line) xmlText.insert(0, line);
     para.insert(0, [xmlText]);
-    fragment.insert(fragment.length, [para]);
+    paragraphs.push(para);
   }
+  const fragment = new Y.XmlFragment();
+  fragment.insert(0, paragraphs);
 
   createPastedTextObject(fragment, truncated.length);
 }
@@ -507,61 +516,23 @@ export { pasteImage };
 
 // === Smart Duplicate Offset ===
 
-function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [number, number] {
+function computeSmartOffset(bounds: BBoxTuple, excludeIds: Set<string>): [number, number] {
   const spatialIndex = getSpatialIndex();
-  const w = bounds.maxX - bounds.minX;
-  const h = bounds.maxY - bounds.minY;
+  const [w, h] = bboxSize(bounds);
   const gap = 20;
   const eps = 2;
 
   // Try: right, below, above, left
-  const candidates: [number, number, WorldBounds][] = [
-    [
-      w + gap,
-      0,
-      {
-        minX: bounds.maxX + gap - eps,
-        minY: bounds.minY - eps,
-        maxX: bounds.maxX + gap + w + eps,
-        maxY: bounds.maxY + eps,
-      },
-    ],
-    [
-      0,
-      h + gap,
-      {
-        minX: bounds.minX - eps,
-        minY: bounds.maxY + gap - eps,
-        maxX: bounds.maxX + eps,
-        maxY: bounds.maxY + gap + h + eps,
-      },
-    ],
-    [
-      0,
-      -(h + gap),
-      {
-        minX: bounds.minX - eps,
-        minY: bounds.minY - gap - h - eps,
-        maxX: bounds.maxX + eps,
-        maxY: bounds.minY - gap + eps,
-      },
-    ],
-    [
-      -(w + gap),
-      0,
-      {
-        minX: bounds.minX - gap - w - eps,
-        minY: bounds.minY - eps,
-        maxX: bounds.minX - gap + eps,
-        maxY: bounds.maxY + eps,
-      },
-    ],
+  const directions: Array<[number, number]> = [
+    [w + gap, 0],
+    [0, h + gap],
+    [0, -(h + gap)],
+    [-(w + gap), 0],
   ];
 
-  for (const [dx, dy, queryBounds] of candidates) {
-    const results = spatialIndex.queryBBox([queryBounds.minX, queryBounds.minY, queryBounds.maxX, queryBounds.maxY]);
-    const hasCollision = results.some((r) => !excludeIds.has(r.id));
-    if (!hasCollision) return [dx, dy];
+  for (const [dx, dy] of directions) {
+    const query: BBoxTuple = [bounds[0] + dx - eps, bounds[1] + dy - eps, bounds[2] + dx + eps, bounds[3] + dy + eps];
+    if (!spatialIndex.queryBBox(query).some((r) => !excludeIds.has(r.id))) return [dx, dy];
   }
 
   // Fallback
@@ -570,13 +541,13 @@ function computeSmartOffset(bounds: WorldBounds, excludeIds: Set<string>): [numb
 
 // === Visibility ===
 
-function ensureVisible(bounds: WorldBounds): void {
-  const vp = getVisibleWorldBounds();
+function ensureVisible(bounds: BBoxTuple): void {
+  const vp = getVisibleBoundsTuple();
   // Already fully contained — nothing to do
-  if (bounds.minX >= vp.minX && bounds.maxX <= vp.maxX && bounds.minY >= vp.minY && bounds.maxY <= vp.maxY) return;
+  if (bounds[0] >= vp[0] && bounds[2] <= vp[2] && bounds[1] >= vp[1] && bounds[3] <= vp[3]) return;
   const { scale } = useCameraStore.getState();
   // Only zoom out (cap at current scale), floor at 25% to avoid extreme zoom-out
-  animateToFit(bounds, 80, scale, 0.25);
+  animateToFit(bboxTupleToWorldBounds(bounds), 80, scale, 0.25);
 }
 
 // === Helpers ===
@@ -584,9 +555,7 @@ function ensureVisible(bounds: WorldBounds): void {
 function getPasteTarget(): [number, number] {
   const cursor = getLastCursorWorld();
   if (cursor) return cursor;
-
-  const vp = getVisibleWorldBounds();
-  return [(vp.minX + vp.maxX) / 2, (vp.minY + vp.maxY) / 2];
+  return bboxCenter(getVisibleBoundsTuple() as BBoxTuple);
 }
 
 function escapeHtml(text: string): string {

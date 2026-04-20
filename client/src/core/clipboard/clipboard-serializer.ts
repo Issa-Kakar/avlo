@@ -9,20 +9,30 @@
 
 import * as Y from 'yjs';
 import type { ObjectKind, ObjectHandle } from '../types/objects';
-import type { WorldBounds } from '../types/geometry';
+import type { BBoxTuple } from '../types/geometry';
+import { expandBBoxEnvelope } from '../geometry/bounds';
 import { getObjectsById } from '@/runtime/room-runtime';
 
 // === Types ===
 
+/** Inline text mark attributes — canonical set for clipboard + PM parsing. */
+export type MarkAttrs = { bold?: true; italic?: true; highlight?: string };
+
+/** Default highlight color when PM `highlight` mark has no attrs.color. */
+export const DEFAULT_HIGHLIGHT = '#ffd43b';
+
+/** Y.Map entries minus `content` — meta fields are always present on every kind. */
+export type SerializedProps = { id: string; kind: ObjectKind; ownerId: string; createdAt: number } & Record<string, unknown>;
+
 export interface ClipboardPayload {
   version: 1;
   objects: SerializedObject[];
-  bounds: WorldBounds;
+  bounds: BBoxTuple;
 }
 
 export interface SerializedObject {
   kind: ObjectKind;
-  props: Record<string, unknown>;
+  props: SerializedProps;
   content?: SerializedContent;
   textContent?: string;
 }
@@ -32,7 +42,7 @@ export interface SerializedContent {
 }
 
 export interface SerializedParagraph {
-  delta: { insert: string; attributes?: Record<string, unknown> }[];
+  delta: { insert: string; attributes?: MarkAttrs }[];
 }
 
 // === Serialize ===
@@ -40,36 +50,23 @@ export interface SerializedParagraph {
 export function serializeObjects(ids: string[]): ClipboardPayload | null {
   const objectsById = getObjectsById();
   const objects: SerializedObject[] = [];
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
+  let envelope: BBoxTuple | null = null;
 
   for (const id of ids) {
     const handle = objectsById.get(id);
     if (!handle) continue;
     objects.push(serializeHandle(handle));
-    // Canonical bbox from snapshot — correct for all kinds including text/code
-    const b = handle.bbox;
-    minX = Math.min(minX, b[0]);
-    minY = Math.min(minY, b[1]);
-    maxX = Math.max(maxX, b[2]);
-    maxY = Math.max(maxY, b[3]);
+    envelope = expandBBoxEnvelope(envelope, handle.bbox);
   }
 
   if (objects.length === 0) return null;
 
-  return {
-    version: 1,
-    objects,
-    bounds: isFinite(minX) ? { minX, minY, maxX, maxY } : { minX: 0, minY: 0, maxX: 0, maxY: 0 },
-  };
+  return { version: 1, objects, bounds: envelope ?? [0, 0, 0, 0] };
 }
 
 function serializeHandle(handle: ObjectHandle): SerializedObject {
   const props: Record<string, unknown> = {};
   let content: SerializedContent | undefined;
-
   let textContent: string | undefined;
 
   for (const [key, value] of handle.y.entries()) {
@@ -82,7 +79,7 @@ function serializeHandle(handle: ObjectHandle): SerializedObject {
     }
   }
 
-  return { kind: handle.kind, props, content, textContent };
+  return { kind: handle.kind, props: props as SerializedProps, content, textContent };
 }
 
 export function serializeFragment(fragment: Y.XmlFragment): SerializedContent {
@@ -97,7 +94,7 @@ export function serializeFragment(fragment: Y.XmlFragment): SerializedContent {
             if (typeof op.insert === 'string') {
               const entry: SerializedParagraph['delta'][0] = { insert: op.insert };
               if (op.attributes && Object.keys(op.attributes).length > 0) {
-                entry.attributes = op.attributes;
+                entry.attributes = op.attributes as MarkAttrs;
               }
               delta.push(entry);
             }
@@ -114,21 +111,37 @@ export function serializeFragment(fragment: Y.XmlFragment): SerializedContent {
 // === Deserialize ===
 
 export function deserializeFragment(content: SerializedContent): Y.XmlFragment {
-  const fragment = new Y.XmlFragment();
+  // Build children in plain arrays and batch-insert at index 0. Avoids reading
+  // `.length` on pending (unattached) Y.XmlFragment / Y.XmlText — Yjs warns on
+  // those reads; writes on pending types queue fine and are integrated as one
+  // unit when the root fragment is later attached via yObj.set('content', …).
+  const elements: Y.XmlElement[] = [];
 
   for (const para of content.paragraphs) {
     const element = new Y.XmlElement('paragraph');
     const text = new Y.XmlText();
 
+    let textPos = 0;
     for (const op of para.delta) {
-      text.insert(text.length, op.insert, op.attributes);
+      text.insert(textPos, op.insert, op.attributes);
+      textPos += op.insert.length;
     }
 
     element.insert(0, [text]);
-    fragment.insert(fragment.length, [element]);
+    elements.push(element);
   }
 
+  const fragment = new Y.XmlFragment();
+  fragment.insert(0, elements);
   return fragment;
+}
+
+// === Runtime guard ===
+
+export function isSerializedPayload(v: unknown): v is ClipboardPayload {
+  if (!v || typeof v !== 'object') return false;
+  const p = v as ClipboardPayload;
+  return p.version === 1 && Array.isArray(p.objects) && Array.isArray(p.bounds) && p.bounds.length === 4;
 }
 
 // === Plain Text Extraction ===
