@@ -17,6 +17,8 @@ import type { SnapTarget } from './types';
 import { EDGE_CLEARANCE_W } from './constants';
 import { directionVector } from './connector-utils';
 
+const ZERO_POINT: Point = [0, 0];
+
 /** Raw interpolation of a normalized anchor against a frame — no offset. */
 export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
   return [frame[0] + anchor[0] * frame[2], frame[1] + anchor[1] * frame[3]];
@@ -27,9 +29,9 @@ export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
  * Callers pass the stored `StoredElbowAnchor` directly — side is authoritative, never re-derived.
  */
 export function elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): Point {
-  const [px, py] = anchorFramePoint(anchor.anchor, frame);
+  const [ax, ay] = anchor.anchor;
   const [dx, dy] = directionVector(anchor.side);
-  return [px + dx * EDGE_CLEARANCE_W, py + dy * EDGE_CLEARANCE_W];
+  return [frame[0] + ax * frame[2] + dx * EDGE_CLEARANCE_W, frame[1] + ay * frame[3] + dy * EDGE_CLEARANCE_W];
 }
 
 /** Same-shape test — both endpoints share a bound shape id. */
@@ -56,8 +58,8 @@ export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' 
   const yMap = handle.y;
   const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
   const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
-  if (!anchor) return storedPos ?? [0, 0];
+  if (!anchor) return storedPos ?? ZERO_POINT;
   const frame = frameOf(getHandle(anchor.id));
-  if (!frame) return storedPos ?? [0, 0];
+  if (!frame) return storedPos ?? ZERO_POINT;
   return anchorFramePoint(anchor.anchor, frame);
 }

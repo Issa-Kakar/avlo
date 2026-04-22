@@ -33,18 +33,16 @@ export function isVertical(dir: Dir): boolean {
   return dir === 'N' || dir === 'S';
 }
 
+const DIR_VECTORS: Record<Dir, Point> = {
+  N: [0, -1],
+  E: [1, 0],
+  S: [0, 1],
+  W: [-1, 0],
+};
+
 /** Unit vector for a cardinal direction. */
 export function directionVector(dir: Dir): Point {
-  switch (dir) {
-    case 'N':
-      return [0, -1];
-    case 'E':
-      return [1, 0];
-    case 'S':
-      return [0, 1];
-    case 'W':
-      return [-1, 0];
-  }
+  return DIR_VECTORS[dir];
 }
 
 /** Primary-axis cardinal direction from a delta. Horizontal ties go E/W. */
@@ -141,8 +139,7 @@ export function isPointBounds(b: Bounds): boolean {
  * with anchor axis so the escape never collides with the anchored end.
  * Returns null when no axis-aligned escape is available.
  */
-function computeElbowSliverEscape(from: Point, bounds: FrameTuple, anchorIsHorizontal: boolean, strokeWidth: number): Dir | null {
-  const rel = spatialRelation(from, bounds, computeApproachOffset(strokeWidth));
+function computeElbowSliverEscape(rel: SpatialRelation, anchorIsHorizontal: boolean): Dir | null {
   if (anchorIsHorizontal) {
     if (rel.leftOf && rel.nearY) return 'W';
     if (rel.rightOf && rel.nearY) return 'E';
@@ -190,7 +187,7 @@ export function resolveElbowFreeStartDir(
     const dy = ty - fy;
     const hDominant = Math.abs(dx) >= Math.abs(dy);
     if (anchorIsH !== hDominant) {
-      const sliver = computeElbowSliverEscape(fromPos, anchorEnd.shapeBounds, anchorIsH, strokeWidth);
+      const sliver = computeElbowSliverEscape(rel, anchorIsH);
       if (sliver) return sliver;
     }
     return directionFromDelta(dx, dy);
@@ -203,31 +200,12 @@ export function resolveElbowFreeStartDir(
   }
 
   // 4. Adjacent / opposite-not-contained: sliver escape, else anchorDir
-  return computeElbowSliverEscape(fromPos, anchorEnd.shapeBounds, anchorIsH, strokeWidth) ?? anchorDir;
+  return computeElbowSliverEscape(rel, anchorIsH) ?? anchorDir;
 }
 
 /**
- * End direction for ANCHORED→FREE elbow routes — primary axis + sign, no hysteresis.
- * (Use `inferDragDirection` for live drag hysteresis.)
+ * End direction for ANCHORED→FREE elbow routes — primary axis + sign.
  */
 export function computeElbowFreeEndDir(fromPos: Point, toPos: Point): Dir {
   return directionFromDelta(toPos[0] - fromPos[0], toPos[1] - fromPos[1]);
-}
-
-/**
- * Drag-direction hysteresis: keeps previous axis unless the cursor wins the
- * opposite axis by `hysteresisRatio`. Prevents jitter near 45° angles.
- */
-export function inferDragDirection(from: Point, cursor: Point, prevDir: Dir | null, hysteresisRatio: number = 1.04): Dir {
-  const dx = cursor[0] - from[0];
-  const dy = cursor[1] - from[1];
-  if (!prevDir) return directionFromDelta(dx, dy);
-
-  const ax = Math.abs(dx);
-  const ay = Math.abs(dy);
-  const prevH = isHorizontal(prevDir);
-  const switchToV = prevH && ay > ax * hysteresisRatio;
-  const switchToH = !prevH && ax > ay * hysteresisRatio;
-  const horizontal = prevH ? !switchToV : switchToH;
-  return horizontal ? (dx >= 0 ? 'E' : 'W') : dy >= 0 ? 'S' : 'N';
 }

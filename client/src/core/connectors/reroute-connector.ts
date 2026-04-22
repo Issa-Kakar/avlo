@@ -14,7 +14,7 @@
 
 import { getHandle } from '@/runtime/room-runtime';
 import type { FrameTuple, BBoxTuple, Point } from '../types/geometry';
-import { getStart, getEnd, getStartAnchor, getEndAnchor, getWidth, type StoredAnchor } from '../accessors';
+import { getConnectorProps, type StoredAnchor } from '../accessors';
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
 import { computeAStarRoute } from './routing-astar';
@@ -23,8 +23,10 @@ import { computeShapeEdgeIntersection } from './shape-geometry';
 import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
 import type { StoredElbowAnchor, StoredStraightAnchor } from '../types/objects';
 import type { Dir, SnapTarget, ConnectorType } from './types';
-import { getConnectorType, getHandleShapeType } from '../accessors';
+import { getHandleShapeType } from '../accessors';
 import { EDGE_CLEARANCE_W } from './constants';
+
+const ZERO_POINT: Point = [0, 0];
 
 // ============================================================================
 // TYPES
@@ -315,12 +317,13 @@ export function rerouteConnector(
   if (!handle || handle.kind !== 'connector') return null;
 
   const yMap = handle.y;
-  const storedStart = getStart(yMap) ?? [0, 0];
-  const storedEnd = getEnd(yMap) ?? [0, 0];
-  const startAnchor = getStartAnchor(yMap);
-  const endAnchor = getEndAnchor(yMap);
-  const strokeWidth = getWidth(yMap, 2);
-  const connectorType = getConnectorType(yMap);
+  const props = getConnectorProps(yMap);
+  const storedStart = props?.start ?? ZERO_POINT;
+  const storedEnd = props?.end ?? ZERO_POINT;
+  const startAnchor = props?.startAnchor;
+  const endAnchor = props?.endAnchor;
+  const strokeWidth = props?.width ?? 2;
+  const connectorType = props?.connectorType ?? 'elbow';
 
   const startResolved = resolveEndpoint(storedStart, startAnchor, endpointOverrides?.start, connectorType);
   const endResolved = resolveEndpoint(storedEnd, endAnchor, endpointOverrides?.end, connectorType);
@@ -344,17 +347,12 @@ export function routeNewConnector(
   end: SnapTarget | Point,
   strokeWidth: number,
   connectorType: ConnectorType = 'elbow',
-  dragDir?: Dir | null,
 ): NewRouteResult {
   const startResolved = resolveNewEndpoint(start);
   const endResolved = resolveNewEndpoint(end);
 
   if (connectorType === 'straight') {
     return computeStraightRoute(startResolved, endResolved);
-  }
-
-  if (!startResolved.isAnchored && dragDir) {
-    startResolved.dir = dragDir;
   }
 
   const { startDir, endDir } = resolveElbowDirections(startResolved, endResolved, strokeWidth);

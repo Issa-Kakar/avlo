@@ -11,10 +11,12 @@
 
 import type { BBoxTuple, FrameTuple } from '@/core/types/geometry';
 import { getHandle, getConnectorsForShape } from '@/runtime/room-runtime';
-import { getPoints, getStart, getEnd, getStartAnchor, getEndAnchor } from '@/core/accessors';
+import { getPoints, getEndpoints, getEndpointAnchors } from '@/core/accessors';
 import { isBindableHandle } from '@/core/types/objects';
 import { frameOf } from '@/core/geometry/frame-of';
 import type { ConnectorTopology, ConnectorTopologyEntry, EndpointSpec } from './types';
+
+const ZERO_POINT: [number, number] = [0, 0];
 
 /**
  * Compute connector topology at transform begin.
@@ -46,8 +48,7 @@ export function computeConnectorTopology(transformKind: 'translate' | 'scale', s
     const connHandle = getHandle(connId);
     if (!connHandle || connHandle.kind !== 'connector') return;
 
-    const startAnchor = getStartAnchor(connHandle.y);
-    const endAnchor = getEndAnchor(connHandle.y);
+    const { startAnchor, endAnchor } = getEndpointAnchors(connHandle.y);
 
     // Determine if each endpoint moves
     const startMoves = isSelected ? !startAnchor || selectedSet.has(startAnchor.id) : !!startAnchor && selectedSet.has(startAnchor.id);
@@ -56,10 +57,13 @@ export function computeConnectorTopology(transformKind: 'translate' | 'scale', s
     if (!startMoves && !endMoves) return;
 
     const points = getPoints(connHandle.y);
-    const originalPoints: [number, number][] =
-      points.length > 0
-        ? (points as [number, number][])
-        : [(getStart(connHandle.y) ?? [0, 0]) as [number, number], (getEnd(connHandle.y) ?? [0, 0]) as [number, number]];
+    let originalPoints: [number, number][];
+    if (points.length > 0) {
+      originalPoints = points as [number, number][];
+    } else {
+      const { start, end } = getEndpoints(connHandle.y);
+      originalPoints = [start ?? ZERO_POINT, end ?? ZERO_POINT];
+    }
     const originalBbox = [...connHandle.bbox] as BBoxTuple;
 
     // Determine strategy

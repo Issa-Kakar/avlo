@@ -72,6 +72,12 @@ export interface StoredStraightAnchor {
 }
 export type StoredAnchor = StoredElbowAnchor | StoredStraightAnchor;
 
+/** Connector routing style */
+export type ConnectorType = 'elbow' | 'straight';
+
+/** Connector endpoint cap style */
+export type ConnectorCap = 'arrow' | 'none';
+
 // ============================================================================
 // TEXT TYPES
 // ============================================================================

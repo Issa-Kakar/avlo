@@ -87,17 +87,22 @@ function wasOnStraightMidpoint(prev: SnapTarget | null, shapeId: string, side: D
 export function findBestSnapTarget(ctx: SnapContext): SnapTarget | null {
   const { cursorWorld } = ctx;
   const [cx, cy] = cursorWorld;
-  const { edgeSnap: edgeRadius } = getSnapRadiiWorld();
+  const radii = getSnapRadiiWorld();
 
-  return pickTopmostBindable([cx, cy], { world: edgeRadius }, (h) => {
+  return pickTopmostBindable([cx, cy], { world: radii.edgeSnap }, (h) => {
     const frame = frameOf(h);
     if (!frame) return null;
-    return computeSnapForShape(h.id, frame, getHandleShapeType(h), ctx);
+    return computeSnapForShape(h.id, frame, getHandleShapeType(h), ctx, radii);
   });
 }
 
-export function computeSnapForShape(shapeId: string, frame: FrameTuple, shapeType: string, ctx: SnapContext): SnapTarget | null {
-  const radii = getSnapRadiiWorld();
+export function computeSnapForShape(
+  shapeId: string,
+  frame: FrameTuple,
+  shapeType: string,
+  ctx: SnapContext,
+  radii: SnapRadiiWorld,
+): SnapTarget | null {
   const midpoints = shapeMidpoints(frame, shapeType);
   const isInside = pointInsideShape(ctx.cursorWorld, frame, shapeType);
   const insideDepth = isInside ? (findNearestEdgePoint(ctx.cursorWorld, frame, shapeType)?.dist ?? 0) : 0;

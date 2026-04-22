@@ -505,16 +505,6 @@ function computeElbowFreeEndDir(fromPos, toPos): Dir {
 }
 ```
 
-### Drag Direction: `inferDragDirection()`
-
-For live feedback during connector creation (used by elbow and straight drag previews):
-
-```typescript
-inferDragDirection(from, cursor, prevDir, hysteresisRatio = 1.04): Dir
-```
-
-Requires winning axis to exceed the other by `hysteresisRatio` to switch — prevents jitter near 45° angles.
-
 ---
 
 ## Connector Lookup (Reverse Map)
@@ -564,7 +554,7 @@ if (connectorIds) {
 
 Three functions:
 - **`rerouteConnector()`** — Existing connectors: reads Y.map, applies per-endpoint overrides, branches on `connectorType` (SelectTool)
-- **`routeNewConnector(start, end, strokeWidth, connectorType, dragDir?)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
+- **`routeNewConnector(start, end, strokeWidth, connectorType)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
 - **`computeStraightRoute(start, end)`** — Pure straight routing from two `ResolvedEndpoint`s (called by both above)
 
 ### Signature

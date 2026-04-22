@@ -4,12 +4,9 @@
 
 import type { FrameTuple, Point } from '../types/geometry';
 import type { Dir as SharedDir } from '../accessors';
+import type { ConnectorType } from '../types/objects';
 
-/** Connector routing style */
-export type ConnectorType = 'elbow' | 'straight';
-
-/** Connector endpoint cap style */
-export type ConnectorCap = 'arrow' | 'none';
+export type { ConnectorType, ConnectorCap } from '../types/objects';
 
 /** Cardinal direction type (North, East, South, West) */
 export type Dir = SharedDir;
@@ -137,7 +134,7 @@ export interface Centerlines {
 }
 
 /**
- * Grid cell with position and blocking state.
+ * Grid cell with position and index.
  */
 export interface GridCell {
   /** World X coordinate */
@@ -148,8 +145,6 @@ export interface GridCell {
   xi: number;
   /** Grid index Y */
   yi: number;
-  /** True if inside obstacle + padding (not routable) */
-  blocked: boolean;
 }
 
 /**

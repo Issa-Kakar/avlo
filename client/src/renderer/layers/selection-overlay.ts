@@ -16,7 +16,7 @@
 
 import type { SelectionPreview, HandleId } from '@/tools/types';
 import type { Point } from '@/core/types/geometry';
-import { getFrame, getWidth, getConnectorType, getStartAnchor, getEndAnchor, getPoints } from '@/core/accessors';
+import { getFrame, getWidth, getConnectorType, getEndpointAnchors, getPoints } from '@/core/accessors';
 import { getTextFrame } from '@/core/text/text-system';
 import { getCodeFrame } from '@/core/code/code-system';
 import { getPath } from '../geometry-cache';
@@ -353,7 +353,8 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
       drawConnectorDashGuide(ctx, currentSnap.position, lineEnd);
     }
     const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
-    const otherAnchor = otherEndpoint === 'start' ? getStartAnchor(handle.y) : getEndAnchor(handle.y);
+    const { startAnchor: sa, endAnchor: ea } = getEndpointAnchors(handle.y);
+    const otherAnchor = otherEndpoint === 'start' ? sa : ea;
     if (otherAnchor && 'interior' in otherAnchor && otherAnchor.interior) {
       const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
       const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
@@ -365,8 +366,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   // Idle: dashed guide from stored anchor frame point to stored line endpoint
   const storedPoints = getPoints(handle.y);
   if (storedPoints.length < 2) return;
-  const startAnchor = getStartAnchor(handle.y);
-  const endAnchor = getEndAnchor(handle.y);
+  const { startAnchor, endAnchor } = getEndpointAnchors(handle.y);
   if (startAnchor && 'interior' in startAnchor && startAnchor.interior) {
     drawConnectorDashGuide(ctx, startPos, storedPoints[0]);
   }

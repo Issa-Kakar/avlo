@@ -20,10 +20,9 @@ import type { Point } from '@/core/types/geometry';
 import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
 import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import type { Dir, SnapTarget, ConnectorCap, ConnectorType } from '@/core/connectors/types';
+import type { SnapTarget, ConnectorCap, ConnectorType } from '@/core/connectors/types';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import { routeNewConnector } from '@/core/connectors/reroute-connector';
-import { inferDragDirection } from '@/core/connectors/connector-utils';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { isCtrlHeld } from '@/runtime/InputManager';
 
@@ -47,7 +46,6 @@ export class ConnectorTool implements PointerTool {
   // Hover/snap (both phases)
   private hoverSnap: SnapTarget | null = null;
   private prevSnap: SnapTarget | null = null;
-  private dragDir: Dir | null = null;
 
   // Frozen settings (captured at begin)
   private frozenColor = '#000000';
@@ -83,7 +81,6 @@ export class ConnectorTool implements PointerTool {
     this.fromPosition = snap ? snap.position : [worldX, worldY];
     this.toSnap = null;
     this.toPosition = snap ? snap.position : [worldX, worldY];
-    this.dragDir = null;
     this.prevSnap = snap;
     this.hoverSnap = snap;
     this.routedPoints = [];
@@ -108,12 +105,6 @@ export class ConnectorTool implements PointerTool {
     this.prevSnap = snap;
     this.toSnap = snap;
     this.toPosition = snap ? snap.position : [worldX, worldY];
-
-    if (!snap) {
-      this.dragDir = inferDragDirection(this.fromPosition!, [worldX, worldY], this.dragDir);
-    } else {
-      this.dragDir = null;
-    }
 
     this.refreshRoute();
     invalidateOverlay();
@@ -192,7 +183,7 @@ export class ConnectorTool implements PointerTool {
     if (!this.fromPosition || !this.toPosition) return;
     const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition;
     const end: SnapTarget | Point = this.toSnap ?? this.toPosition;
-    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.dragDir).points;
+    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow').points;
   }
 
   private resetState(): void {
@@ -203,7 +194,6 @@ export class ConnectorTool implements PointerTool {
     this.toSnap = null;
     this.toPosition = null;
     this.routedPoints = [];
-    this.dragDir = null;
     this.frozenConnectorType = null;
     // Keep hoverSnap/prevSnap for continued hover behavior
   }

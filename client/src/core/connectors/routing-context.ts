@@ -247,7 +247,7 @@ export function buildSimpleGrid(ctx: RoutingContext): Grid {
   for (let yi = 0; yi < yLines.length; yi++) {
     cells[yi] = [];
     for (let xi = 0; xi < xLines.length; xi++) {
-      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi, blocked: false };
+      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi };
     }
   }
 

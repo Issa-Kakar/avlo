@@ -20,8 +20,6 @@ import { createRoutingContext, buildSimpleGrid } from './routing-context';
 import { MinHeap } from './binary-heap';
 import type { RouteResult, Dir, Grid, GridCell, AStarNode } from './types';
 
-/**
-
 // ============================================================================
 // GRID HELPERS (moved from routing-grid.ts)
 // ============================================================================
@@ -55,37 +53,6 @@ function findNearestCell(grid: Grid, pos: Point): GridCell {
   }
 
   return grid.cells[yi][xi];
-}
-
-/**
- * Get 4-connected neighbors (N, E, S, W) for a cell.
- *
- * @param grid - The grid
- * @param cell - Current cell
- * @returns Array of neighbor cells
- */
-function getNeighbors(grid: Grid, cell: GridCell): GridCell[] {
-  const neighbors: GridCell[] = [];
-  const { xi, yi } = cell;
-
-  // North (yi - 1)
-  if (yi > 0) {
-    neighbors.push(grid.cells[yi - 1][xi]);
-  }
-  // East (xi + 1)
-  if (xi < grid.xLines.length - 1) {
-    neighbors.push(grid.cells[yi][xi + 1]);
-  }
-  // South (yi + 1)
-  if (yi < grid.yLines.length - 1) {
-    neighbors.push(grid.cells[yi + 1][xi]);
-  }
-  // West (xi - 1)
-  if (xi > 0) {
-    neighbors.push(grid.cells[yi][xi - 1]);
-  }
-
-  return neighbors;
 }
 
 // ============================================================================
@@ -145,13 +112,6 @@ function reconstructPath(node: AStarNode): GridCell[] {
   return path;
 }
 
-/**
- * Cell key for Set/Map operations.
- */
-function cellKey(cell: GridCell): string {
-  return `${cell.xi},${cell.yi}`;
-}
-
 // ============================================================================
 // SEGMENT-FRAME INTERSECTION
 // ============================================================================
@@ -162,9 +122,7 @@ function cellKey(cell: GridCell): string {
  * Uses the slab method (parametric intersection). Handles thin shapes,
  * arbitrary orientations, and works directly on raw shape bounds.
  */
-function segmentIntersectsFrame(a: Point, b: Point, frame: FrameTuple): boolean {
-  const [x1, y1] = a;
-  const [x2, y2] = b;
+function segmentIntersectsFrame(x1: number, y1: number, x2: number, y2: number, frame: FrameTuple): boolean {
   const [x, y, w, h] = frame;
   const minX = x;
   const maxX = x + w;
@@ -219,8 +177,11 @@ function segmentIntersectsFrame(a: Point, b: Point, frame: FrameTuple): boolean 
  */
 function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obstacles: FrameTuple[]): GridCell[] {
   const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
-  const closedSet = new Set<string>();
-  const gScores = new Map<string, number>();
+  const closedSet = new Set<number>();
+  const gScores = new Map<number, number>();
+  const xStride = grid.xLines.length;
+  const xMax = xStride - 1;
+  const yMax = grid.yLines.length - 1;
 
   // Start with null arrivalDir - direction hints applied via cost adjustments
   const startNode: AStarNode = {
@@ -233,59 +194,59 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
   };
 
   openSet.push(startNode);
-  gScores.set(cellKey(start), 0);
+  gScores.set(start.yi * xStride + start.xi, 0);
+
+  const visit = (current: AStarNode, neighbor: GridCell): void => {
+    const neighborKey = neighbor.yi * xStride + neighbor.xi;
+    if (closedSet.has(neighborKey)) return;
+
+    // Check if segment crosses any obstacle interior (full segment check)
+    if (obstacles.length > 0) {
+      for (let i = 0; i < obstacles.length; i++) {
+        if (segmentIntersectsFrame(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obstacles[i])) return;
+      }
+    }
+
+    // Compute move direction
+    const moveDir = getDirection(current.cell, neighbor);
+
+    // Base cost with bend penalty
+    const moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
+
+    const tentativeG = current.g + moveCost;
+    const existingG = gScores.get(neighborKey) ?? Infinity;
+    if (tentativeG < existingG) {
+      const h = manhattan(neighbor, goal);
+      gScores.set(neighborKey, tentativeG);
+      openSet.push({
+        cell: neighbor,
+        g: tentativeG,
+        h,
+        f: tentativeG + h,
+        parent: current,
+        arrivalDir: moveDir,
+      });
+    }
+  };
 
   while (!openSet.isEmpty()) {
     const current = openSet.pop()!;
-    const currentKey = cellKey(current.cell);
+    const { xi, yi } = current.cell;
+    const currentKey = yi * xStride + xi;
 
     // Goal check
-    if (current.cell.xi === goal.xi && current.cell.yi === goal.yi) {
+    if (xi === goal.xi && yi === goal.yi) {
       return reconstructPath(current);
     }
 
     if (closedSet.has(currentKey)) continue;
     closedSet.add(currentKey);
 
-    // Explore 4-connected neighbors
-    for (const neighbor of getNeighbors(grid, current.cell)) {
-      // Skip blocked cells
-      if (neighbor.blocked) continue;
-
-      const neighborKey = cellKey(neighbor);
-      if (closedSet.has(neighborKey)) continue;
-
-      // Check if segment crosses any obstacle interior (full segment check)
-      if (obstacles.length > 0) {
-        const from: Point = [current.cell.x, current.cell.y];
-        const to: Point = [neighbor.x, neighbor.y];
-        const segmentBlocked = obstacles.some((obs) => segmentIntersectsFrame(from, to, obs));
-        if (segmentBlocked) continue;
-      }
-
-      // Compute move direction
-      const moveDir = getDirection(current.cell, neighbor);
-
-      // Base cost with bend penalty
-      let moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
-
-      const tentativeG = current.g + moveCost;
-      const existingG = gScores.get(neighborKey) ?? Infinity;
-      if (tentativeG < existingG) {
-        const h = manhattan(neighbor, goal);
-        const neighborNode: AStarNode = {
-          cell: neighbor,
-          g: tentativeG,
-          h: h,
-          f: tentativeG + h,
-          parent: current,
-          arrivalDir: moveDir,
-        };
-
-        gScores.set(neighborKey, tentativeG);
-        openSet.push(neighborNode);
-      }
-    }
+    // Explore 4-connected neighbors (inlined)
+    if (yi > 0) visit(current, grid.cells[yi - 1][xi]);
+    if (xi < xMax) visit(current, grid.cells[yi][xi + 1]);
+    if (yi < yMax) visit(current, grid.cells[yi + 1][xi]);
+    if (xi > 0) visit(current, grid.cells[yi][xi - 1]);
   }
 
   // No path found with obstacles - retry without obstacles
