@@ -1,743 +1,70 @@
-# Connector Routing System v2 - Technical Reference
+# Connector Routing System — Technical Reference
 
-> **System Status:** Dual routing modes (elbow A* + straight point-to-point), full SelectTool integration via `rerouteConnector()`.
-
-> **Maintenance note:** This is a system-level architectural overview, not a changelog. When updating after code changes, match the detail level of surrounding content — don't inflate coverage of your specific change at the expense of the big-picture pipeline flow and cache interactions that make this document useful.
-## Overview
-
-The connector routing system implements two routing modes: **orthogonal (elbow)** with A* Manhattan routing and obstacle avoidance, and **straight** with direct point-to-point lines. Elbow routes prefer centerlines between shapes and use dynamic bounding boxes. All logic branches on `ConnectorType` checks — elbow code paths are completely untouched by straight connector additions.
-
-**Key Design Decisions:**
-
-1. **Primitives-Based API** — Routing accepts 7 primitive values (positions, directions, `FrameTuple | null` per endpoint, stroke width).
-2. **Centerline Routing** — Routes prefer the midpoint between facing shape sides.
-3. **Dynamic Routing Bounds** — Bounds encode centerline knowledge; facing side = centerline.
-4. **Segment Intersection** — A* checks segments against obstacles (no cell blocking).
-5. **Normalized Anchors** — Shape-agnostic endpoint positions stored as `[0-1, 0-1]`.
-6. **Override Patterns** — Clean separation between frame overrides and endpoint overrides.
-7. **Connector Type Branching** — All straight logic gated on `connectorType` checks; elbow path is untouched.
+> **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
 
 ---
 
-## File Structure
+## Overview
+
+Two routing modes, one front-end:
+
+- **Elbow** — orthogonal A* over a sparse grid with centerline-seeded bounds.
+  Endpoints carry a side-direction (`N/E/S/W`). Stable; rarely modified.
+- **Straight** — direct point-to-point with per-endpoint pull-back and (for
+  interior anchors) a ray-cast to the shape boundary.
+
+The snap layer, endpoint resolver, connector-lookup, render atoms, and Y.Map
+schema are shared. Divergence points:
+
+| Concern | Elbow | Straight |
+|---|---|---|
+| Stored anchor shape | `{ id, side, anchor }` | `{ id, interior, anchor }` |
+| Deep-inside snap | Nearest midpoint only | Center → midpoint → clamped interior |
+| Endpoint direction | `side` (feeds A* seed) | `null` (not needed) |
+| Endpoint offset | Perpendicular, applied at resolve (`elbowAnchorPoint`) | Along-line pull-back, applied during route (`applyPullBack`) |
+| Routing algorithm | A* over dynamic grid + obstacles | Two points, ray-cast for interior |
+
+Routing is deterministic from Y.map + current shape frames — no persistent
+route state; every reroute recomputes.
+
+---
+
+## File Map
+
+Orient by task:
+
+| Task | Files to read |
+|------|---------------|
+| Add a new shape kind to snap/route | `shape-geometry.ts`, `snap.ts` (bindable kinds via `BINDABLE_KINDS`) |
+| Change snap behavior (thresholds, tiers) | `snap.ts`, `constants.ts` |
+| Change how connectors reroute on shape transform | `reroute-connector.ts` (endpoint resolver) |
+| Add a new connector type | Y.Map schema + `types.ts` + `snap.ts` branch + `reroute-connector.ts` branch |
+| Change arrow / polyline rendering | `connector-paths.ts` + `renderer/layers/connector-render-atoms.ts` |
+| Change routing heuristics / grid | `routing-context.ts`, `routing-astar.ts` |
+| Fix jitter near midpoints | `snap.ts` hysteresis helpers |
+| Fix interior anchor visuals | `connector-render-atoms.ts`, `connector-preview.ts` |
 
 ```
 client/src/core/connectors/
-├── types.ts               # Dir, Bounds, SnapTarget (discriminated union), RoutingContext, Grid, ConnectorType, ConnectorCap
-├── constants.ts           # SNAP_CONFIG, ROUTING_CONFIG, offset formulas, CENTER_SNAP_RADIUS_PX, STRAIGHT_INTERIOR_DEPTH_PX
-├── shape-geometry.ts      # Pure shape math: rect/ellipse/diamond centers, edges, midpoints, nearest-edge, ray×shape intersection. Zero connector deps.
-├── anchor-atoms.ts        # Anchor ↔ point math: anchorFramePoint, elbowAnchorPoint, isSameShape, anchorRecordFromSnap, getEndpointEdgePosition
-├── connector-utils.ts     # Direction primitives, spatial relation, path simplify, bounds conversion, elbow direction resolution
-├── snap.ts                # Shape snapping — per-type branch (elbow/straight) + shared probeEdgeSnap pipeline
-├── routing-context.ts     # Centerlines, dynamic routing bounds, stubs, grid construction
-├── routing-astar.ts       # A* pathfinding with segment-intersection obstacle checking
-├── connector-paths.ts     # Path2D builders (polyline, arrows) for cache and preview
-├── connector-lookup.ts    # Reverse map: shapeId → Set<connectorId>
-└── reroute-connector.ts   # High-level routing: rerouteConnector + routeNewConnector + computeStraightRoute
+├── types.ts              # Dir, Bounds, SnapTarget union, RoutingContext, Grid, AStarNode
+├── constants.ts          # SNAP_CONFIG, ROUTING_CONFIG, GUIDE_CONFIG, bundle getters, EDGE_CLEARANCE_W
+├── shape-geometry.ts     # Pure shape math: midpoints, nearest-edge, ray×shape intersection
+├── anchor-atoms.ts       # Anchor↔point: anchorFramePoint, elbowAnchorPoint, anchorRecordFromSnap
+├── connector-utils.ts    # Direction primitives, spatialRelation, path simplify, elbow direction resolution
+├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
+├── routing-context.ts    # Centerlines, dynamic routing bounds, stubs, grid construction
+├── routing-astar.ts      # computeAStarRoute + A* with segment-intersection
+├── connector-paths.ts    # Path2D builders (rounded polyline + arrows, trim compensation)
+├── connector-lookup.ts   # Reverse map: shapeId → Set<connectorId>
+├── reroute-connector.ts  # Endpoint resolution, straight route assembly, public entry points
+└── binary-heap.ts        # MinHeap used by A*
 ```
 
-There is no barrel — consumers import from specific files. `FrameTuple`, `Point`, and `StoredAnchor*` come from their canonical homes (`@/core/types/geometry`, `@/core/types/objects`).
-
----
-
-## Primitives-Based Routing API
-
-The routing layer accepts **7 primitive values**:
-
-```typescript
-computeAStarRoute(
-  startPos: [number, number],         // 1. Start endpoint position
-  startDir: Dir,                      // 2. Start outward direction
-  endPos: [number, number],           // 3. End endpoint position
-  endDir: Dir,                        // 4. End outward direction
-  startShapeBounds: FrameTuple | null,// 5. Start shape bounds (null = free)
-  endShapeBounds: FrameTuple | null,  // 6. End shape bounds (null = free)
-  strokeWidth: number                 // 7. Connector stroke width
-): RouteResult
-```
-
-**Why primitives?**
-
-- `isAnchored` is **derived** from `bounds !== null` — no redundant state.
-- Callers route with zero boilerplate — no wrapper objects.
-- Routing depends on nothing from Y.map or commit-time fields.
-
----
-
-## Core Data Structures
-
-### Dir (Cardinal Direction)
-
-```typescript
-type Dir = 'N' | 'E' | 'S' | 'W';
-```
-
-`outwardDir` is the direction a route segment extends **from** an endpoint — the direction of travel away from the anchor point. For snapped endpoints, this matches the shape side.
-
-### ConnectorType
-
-```typescript
-type ConnectorType = 'elbow' | 'straight';
-```
-
-**Required discriminated field** on every connector Y.Map. `ConnectorTool.commitConnector` always writes it. `getConnectorType(y)` defaults to `'elbow'` on read for graceful handling of stale data — but all new writes carry the explicit value.
-
-### Interior vs Edge — Stored, Never Computed
-
-Interior-ness (straight connectors only) is committed at snap time as `anchor.interior: boolean` on the stored anchor. The snap layer already knows — it ran `pointInsideShape(cursor, frame, shapeType)` to decide the branch. Downstream code never recomputes it from normalized coordinates (the old `isAnchorInterior(coord-only)` check was the root of a bug cluster: shape-agnostic, wrong for ellipses/diamonds).
-
-**Consequence:** there is no `isAnchorInterior` function anymore. Consumers read `anchor.interior` (stored) or `snap.interior` / `snap.kind === 'straight'` (live). Elbow anchors have **no** `interior` field — they're always edge-anchored (incl. midpoints).
-
-**Center snap** (`[0.5, 0.5]`): Special interior anchor with dedicated `CENTER_SNAP_RADIUS_PX: 12` and hysteresis (1.3× OUT threshold). Emitted as `StraightSnapTarget` with `isCenter: true`.
-
-### Bounds vs FrameTuple
-
-```typescript
-// Edge-based representation (internal routing)
-interface Bounds { left, top, right, bottom }
-
-// Storage / external API — the canonical shape frame
-type FrameTuple = [x, y, w, h];
-```
-
-Routing uses `Bounds` internally because edge-based math is cleaner:
-- Centerline: `(a.right + b.left) / 2`
-- Facing check: `a.right <= b.left`
-
-Convert with `toBounds(frameTuple)` and `pointBounds(position)`.
-
-### RoutingContext
-
-Single source of truth for all spatial analysis, created by `createRoutingContext()`:
-
-```typescript
-interface RoutingContext {
-  startPos: [number, number];   // Original endpoint position
-  endPos: [number, number];     // Original endpoint position
-  startBounds: Bounds;          // Dynamic routing bounds (centerline/padding baked in)
-  endBounds: Bounds;            // Dynamic routing bounds
-  startStub: [number, number];  // WHERE A* starts (ON bounds boundary)
-  endStub: [number, number];    // WHERE A* ends (ON bounds boundary)
-  startDir: Dir;                // Resolved direction
-  endDir: Dir;                  // Resolved direction
-  obstacles: FrameTuple[];      // Raw shape bounds for segment checking
-}
-```
-
-**Critical insight:** `startBounds`/`endBounds` are **not** raw shape bounds — they're dynamic routing bounds with centerline and padding already baked in. This is what makes grid construction trivial. Straight connectors skip RoutingContext entirely — they use `computeStraightRoute()` with `ResolvedEndpoint` data directly.
-
----
-
-## Routing Architecture
-
-### High-Level Flow
-
-```
-computeAStarRoute(7 primitives)
-    │
-    └── createRoutingContext()
-        ├── 1. Compute centerlines (from RAW bounds)
-        ├── 2. Build dynamic routing bounds (centerline + padding on facing sides)
-        ├── 3. Compute stubs (ON routing-bound edges)
-        └── 4. Collect obstacles (raw shape bounds)
-            │
-            └── buildSimpleGrid(ctx)
-                └── Add routing-bound edge lines + stub perpendiculars
-                    │
-                    └── astar(grid, startCell, goalCell, startDir, obstacles)
-                        └── Segment intersection checking per move
-                            │
-                            └── Assemble: [startPos, ...A*path..., endPos]
-                                └── simplifyOrthogonal() → remove collinear points
-```
-
-### Centerline Computation
-
-Centerlines are computed from **raw bounds** (actual geometry, no padding) via a single per-axis helper, `computeAxisCenterline(aMax, bMin, isFreeToAnchored, offset)`. It returns `null` when the ranges overlap, when a Free→Anchored gap is smaller than the approach offset, or when the gap is ≤ `EDGE_CLEARANCE_W`. `computeCenterlines` calls the helper four times (X + Y, either order) and returns whichever result is non-null.
-
-**Minimum gap check:** the `≤ EDGE_CLEARANCE_W` rule prevents stubs from landing between the endpoint and the shape edge — that would cause backwards routing.
-
-### Dynamic Routing Bounds
-
-The key innovation: routing bounds encode centerline knowledge in their edges.
-
-**Three cases based on endpoint configuration:**
-
-| Configuration | Behavior |
-|---------------|----------|
-| **Anchored→Free** | Full centerline merging — point's bounds collapse to the centerline on all axes |
-| **Free→Anchored** | Facing-side logic — only facing sides get the centerline |
-| **Shape bounds** | Facing sides → centerline; non-facing → padded outward |
-
-**Facing-side logic for shapes:**
-
-```typescript
-const facesRight = raw.right <= other.left;  // This shape is LEFT of other
-const facesLeft = raw.left >= other.right;   // This shape is RIGHT of other
-
-return {
-  left: facesLeft && centerX ? centerX : raw.left - offset,
-  right: facesRight && centerX ? centerX : raw.right + offset,
-  // ... same for top/bottom
-};
-```
-
-**Result:** When shapes face each other, their routing bounds share the centerline as a boundary. Grid lines naturally include this centerline, and A* finds paths through it.
-
-### Stub Computation
-
-Stubs are where A* actually starts and ends — at the intersection of:
-- The anchor's fixed axis position (Y for E/W, X for N/S)
-- The routing-bound edge in the outward direction
-
-```typescript
-switch (dir) {
-  case 'E': return [bounds.right, anchorY];   // Right boundary, anchor's Y
-  case 'W': return [bounds.left, anchorY];    // Left boundary, anchor's Y
-  case 'S': return [anchorX, bounds.bottom];  // Anchor's X, bottom boundary
-  case 'N': return [anchorX, bounds.top];     // Anchor's X, top boundary
-}
-```
-
-**Result:** Stubs automatically land on centerlines when they exist, because the routing-bound edge IS the centerline for facing sides.
-
-### Grid Construction
-
-Grid construction is trivial because RoutingContext encodes all intelligence:
-
-```typescript
-function buildSimpleGrid(ctx: RoutingContext): Grid {
-  const xSet = new Set<number>();
-  const ySet = new Set<number>();
-
-  // Add all 4 edges from each routing bounds
-  [ctx.startBounds, ctx.endBounds].forEach(b => {
-    xSet.add(b.left);
-    xSet.add(b.right);
-    ySet.add(b.top);
-    ySet.add(b.bottom);
-  });
-
-  // Add stub perpendicular lines (for A* to reach goal)
-  if (isHorizontal(ctx.startDir)) ySet.add(ctx.startStub[1]);
-  else xSet.add(ctx.startStub[0]);
-
-  // Sort and build cells
-  const xLines = [...xSet].sort((a, b) => a - b);
-  const yLines = [...ySet].sort((a, b) => a - b);
-  // ... create GridCell[][] with blocked: false
-}
-```
-
-**No cell blocking during construction** — A* checks segment intersection instead.
-
-### A* Pathfinding
-
-```typescript
-function astar(grid, start, goal, startDir, obstacles): GridCell[] {
-  // MinHeap priority queue sorted by f = g + h
-  const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
-
-  // Start node seeded with startDir as arrival direction
-  openSet.push({ cell: start, g: 0, h: manhattan(start, goal), arrivalDir: startDir });
-
-  while (!openSet.isEmpty()) {
-    const current = openSet.pop();
-    if (current.cell === goal) return reconstructPath(current);
-
-    for (const neighbor of getNeighbors(grid, current.cell)) {
-      const moveDir = getDirection(current.cell, neighbor);
-
-      // Segment intersection check (not cell blocking)
-      if (segmentIntersectsFrame(current.cell, neighbor, obstacle)) continue;
-
-      // Cost with bend penalty
-      const cost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
-      // ... standard A* update
-    }
-  }
-
-  // Fallback: retry without obstacles, then direct line
-  if (obstacles.length > 0) return astar(grid, start, goal, startDir, []);
-  return [start, goal];
-}
-```
-
-**Cost function:**
-
-```typescript
-function computeMoveCost(from, to, arrivalDir, moveDir): number {
-  let cost = manhattan(from, to);
-
-  // Prevent U-turns
-  if (arrivalDir && moveDir === oppositeDir(arrivalDir)) return Infinity;
-
-  // Bend penalty (1000) — strongly prefers fewer turns
-  if (arrivalDir && moveDir !== arrivalDir) cost += BEND_PENALTY;
-
-  return cost;
-}
-```
-
-**Path assembly:**
-
-```typescript
-const fullPath = [ctx.startPos, ...astarPath.map(c => [c.x, c.y]), ctx.endPos];
-return { points: simplifyOrthogonal(fullPath) };
-```
-
-### Straight Routing (`computeStraightRoute`)
-
-Straight connectors bypass the entire elbow pipeline. After endpoint resolution in `rerouteConnector()`:
-
-```typescript
-if (connectorType === 'straight') {
-  const result = computeStraightRoute(startResolved, endResolved);
-  return { points: result.points, bbox };
-}
-```
-
-Skipped: direction resolution, RoutingContext, grid construction, A* pathfinding.
-
-**Per-endpoint logic:**
-
-| Endpoint State | Line Position | Dash Guide |
-|---|---|---|
-| Free (`!isAnchored`) | `position` as-is | None |
-| Edge anchor | Pull-back toward other endpoint by `EDGE_CLEARANCE_W` | None |
-| Interior anchor (same shape) | Raw position directly | None |
-| Interior anchor (diff shape) | Edge intersection + pull-back | Dashed: interior → edge |
-
-**Key offset difference from elbow:** Elbow applies `EDGE_CLEARANCE_W` outward (perpendicular to shape edge via `directionVector(side)`). Straight applies it as **pull-back along the connector line** toward the other endpoint. This ensures the arrow tip points directly at the edge.
-
-**Same-shape detection:** Both endpoints interior on same shape (`start.shapeId === end.shapeId`) → skip edge intersection, direct line between raw positions. Prevents the "spinning clock" effect from opposing ray intersections on a convex shape.
-
-**Overlap safety:** Validates visible segment isn't flipped (dot product ≤ 0) or collapsed (length < `EDGE_CLEARANCE_W`). Falls back to raw `[startRaw, endRaw]` if degenerate.
-
-**Edge intersection** (`computeShapeEdgeIntersection`, in `shape-geometry.ts`): Casts ray from interior anchor toward other endpoint, finds exit point on shape boundary. Supports rect/roundedRect (axis-aligned edges, smallest positive `t`), ellipse (quadratic parametric solve), diamond (Cramer's rule for ray-segment).
-
----
-
-## Normalized Anchors & Frame Application
-
-### Normalized Anchor Format
-
-When a connector endpoint snaps to a shape, the position is stored as a **normalized anchor** in `[0-1, 0-1]` space relative to the shape's frame:
-
-```typescript
-interface StoredAnchor {
-  id: string;                    // Target shape ID
-  side: Dir;                     // 'N' | 'E' | 'S' | 'W'
-  anchor: [number, number];      // Normalized position [0-1, 0-1]
-}
-```
-
-**Why normalized?** Shape-agnostic position reconstruction. When a shape resizes or moves, reconstructing the world position is trivial linear interpolation — no need to know shape type (rect, ellipse, diamond).
-
-### Computing Normalized Anchor
-
-During snapping, `computeAnchorAndPosition()` converts edge position to normalized anchor:
-
-```typescript
-normalizedAnchor = [
-  (edgeX - frame.x) / frame.w,
-  (edgeY - frame.y) / frame.h,
-];
-// Clamped to [0, 1]
-```
-
-### Anchor ↔ Point Atoms (`anchor-atoms.ts`)
-
-Four tiny functions. No classifiers, no re-derivation, no shape-type-aware math:
-
-```typescript
-// Raw frame point for a normalized anchor — no offset, sits on the frame (edge or interior).
-anchorFramePoint(anchor: [number, number], frame: FrameTuple): [number, number];
-
-// Elbow-only: frame point + EDGE_CLEARANCE_W along stored anchor.side.
-// Stored side is authoritative — never re-derived from coords.
-elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): [number, number];
-
-// True when two resolved endpoints point at the same shape (by shapeId).
-isSameShape(a, b): boolean;
-
-// Build the Y.Map anchor record for a snap target — shape matches connector type:
-//   elbow   → { id, side, anchor }
-//   straight→ { id, interior, anchor }
-anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
-```
-
-**Key insight:** `EDGE_CLEARANCE_W` offset lives in the elbow path exclusively. Straight connectors never need it — `computeStraightRoute` applies its own pull-back via `applyPullBack`. The snap layer always emits `position` as the visual anchor point (no offset baked in); elbow routing applies the offset at resolve time.
-
-**`getEndpointEdgePosition`** (in `anchor-atoms.ts`) uses `anchorFramePoint` — canonical "where does this endpoint's dot sit on the frame" accessor, always on the shape frame, never offset outward.
-
----
-
-## Snapping System
-
-### API
-
-```typescript
-function findBestSnapTarget(ctx: SnapContext): SnapTarget | null;
-
-interface SnapContext {
-  cursorWorld: [number, number];
-  prevAttach: SnapTarget | null;   // Previous snap (for hysteresis)
-  connectorType: ConnectorType;    // REQUIRED — top-level branch discriminator
-}
-
-// Discriminated union — callers branch on `snap.kind`.
-type SnapTarget = ElbowSnapTarget | StraightSnapTarget;
-
-interface ElbowSnapTarget {
-  kind: 'elbow';
-  shapeId: string;
-  side: Dir;                       // Authoritative (shape-aware edge classification)
-  normalizedAnchor: [number, number];
-  isMidpoint: boolean;
-  position: [number, number];      // Visual dot + pre-offset routing endpoint
-  isInside: boolean;
-}
-
-interface StraightSnapTarget {
-  kind: 'straight';
-  shapeId: string;
-  interior: boolean;               // Committed at snap time; never recomputed
-  isCenter: boolean;               // Snapped to [0.5, 0.5]
-  midpointSide: Dir | null;        // Edge-midpoint snap — for highlight + hysteresis
-  normalizedAnchor: [number, number];
-  position: [number, number];      // Visual dot + pre-pullback routing endpoint
-  isInside: boolean;
-}
-```
-
-`position` is the single visual + pre-offset point for both kinds. The old `edgePosition` is gone — routing owns its own offset/pullback per type (elbow: `+ EDGE_CLEARANCE_W * directionVector(side)` at resolve; straight: `applyPullBack` in `computeStraightRoute`).
-
-### Connectable Kinds
-
-Snapping targets shapes, text, and code blocks (`kind === 'shape' || 'text' || 'code'`). Text and code blocks use derived frames (`getTextFrame`/`getCodeFrame`); both are treated as always-filled rects. The same kind/frame pattern is mirrored in `reroute-connector.ts` and `connector-utils.ts`.
-
-### Fill-Aware Visual Ordering
-
-Snapping respects Z-order and fill state:
-
-1. Sort candidates by ULID descending (topmost first)
-2. For each shape (top to bottom):
-   - **Filled interior:** Occluding — snap to it or reject, then stop scanning
-   - **Unfilled interior:** Transparent — track smallest found, keep scanning
-   - **Edge region:** Always visible for snapping
-3. Return innermost unfilled shape if no filled snap
-
-**Result:** Nested shapes snap to the inner-most shape when cursor is inside.
-
-### Snap Modes — two fully separate pipelines
-
-`computeSnapForShape` branches at the top on `ctx.connectorType`. The two pipelines share nothing except the nearest-edge / nearest-midpoint helpers.
-
-| Cursor Location | Elbow (`computeElbowSnap`) | Straight (`computeStraightSnap`) |
-|---|---|---|
-| Deep inside (> 35px / > 20px) | `forceElbowMidpoint` (nearest midpoint only) | `computeStraightInterior`: center → midpoint → clamped interior |
-| Shallow inside or near edge | `tryElbowEdgeSnap`: edge + midpoint stickiness | `tryStraightEdgeSnap`: edge + midpoint stickiness |
-| Outside snap radius | No snap | No snap |
-
-**Dead-zone fix:** the edge-radius gate (`edgeSnap.dist > radii.edgeSnap`) now applies **only when the cursor is outside the shape** (`!isInside`). When shallow-inside, the nearest edge is always a valid target. Previously the gate rejected shallow-inside edges between 15–35px (elbow) / 15–20px (straight) deep, producing a "dead zone" where neither edge sliding nor force-midpoint fired.
-
-**Straight interior mode:** when `insideDepth > STRAIGHT_INTERIOR_DEPTH_PX (20)`:
-1. Center snap within `CENTER_SNAP_RADIUS_PX (12)` of shape center (hysteresis 1.3×) → `{ kind: 'straight', isCenter: true, interior: true, normalizedAnchor: [0.5, 0.5] }`.
-2. Midpoint stickiness (hysteresis 16/16) → `{ interior: false, midpointSide: side }`.
-3. Fallback → clamped interior anchor at cursor → `{ interior: true, midpointSide: null }`.
-
-Elbow never enters interior mode — deep-inside cursors always pin to a midpoint.
-
-### Ctrl Suppresses Snapping
-
-Holding Ctrl during any connector endpoint interaction prevents binding. `isCtrlHeld()` from `cursor-tracking.ts` is checked before every `findBestSnapTarget()` call — when true, snap is forced to `null`. Affects:
-- **ConnectorTool:** `begin()` (start endpoint), `move()` idle (hover dots), `move()` creating (end endpoint)
-- **SelectTool:** `move()` endpointDrag phase
-
-Live Ctrl state is updated on every pointer event (`handlePointerDown`, `handlePointerMove`, `handlePointerUp` in CanvasRuntime), so releasing Ctrl mid-drag resumes snapping immediately. No rendering changes needed — null snap already means no dots in both renderers.
-
-### Midpoint Stickiness (Hysteresis)
-
-- Snap IN at 16px from midpoint
-- Snap OUT at 16px from midpoint (same threshold)
-- Prevents jitter when cursor hovers near midpoint boundary
-
-### Shape-Type Awareness
-
-`findNearestEdgePoint()` (in `shape-geometry.ts`) handles different geometries:
-
-| Shape | Edge Detection |
-|-------|---------------|
-| Rect/RoundedRect | Simple edge projection |
-| Ellipse | Closest point on perimeter via angle, side from quadrant |
-| Diamond | Four diagonal edges mapped to N/E/S/W |
-
----
-
-## Direction Resolution
-
-> **Note:** Straight connectors skip direction resolution entirely — they have no A* routing or stubs that need directional seeding. All functions here are elbow-only.
-
-All three functions share the primitive `directionFromDelta(dx, dy)` and the `spatialRelation(pos, frame, offset)` helper in `connector-utils.ts`.
-
-### Free→Anchored: `resolveElbowFreeStartDir()`
-
-Complex decision tree based on spatial relationship:
-
-```typescript
-resolveElbowFreeStartDir(fromPos, anchorEnd, strokeWidth): Dir
-```
-
-**Cases:**
-1. **Inside full padding** — Escape outward or wrap toward target
-2. **Same side as anchor** — Check sliver escape (private `computeElbowSliverEscape`), then go toward shape via `directionFromDelta`
-3. **Opposite side + contained** — Wrap around shape
-4. **Adjacent or clear** — Sliver escape or anchor direction
-
-### Anchored→Free: `computeElbowFreeEndDir()`
-
-Primary axis + sign — a one-liner over `directionFromDelta`:
-
-```typescript
-function computeElbowFreeEndDir(fromPos, toPos): Dir {
-  return directionFromDelta(toPos[0] - fromPos[0], toPos[1] - fromPos[1]);
-}
-```
-
----
-
-## Connector Lookup (Reverse Map)
-
-### Purpose
-
-Efficient O(1) lookup of which connectors are anchored to a given shape. Critical for:
-
-- **SelectTool:** Find connectors to reroute when shape transforms
-- **EraserTool:** Clean up anchors when deleting shapes
-
-### Data Structure
-
-```typescript
-// Module-level state (connector-lookup.ts)
-const shapeToConnectors: Map<string, Set<string>>;  // shapeId → connectorIds
-const connectorAnchors: Map<string, { startId?: string; endId?: string }>;
-```
-
-### Lifecycle
-
-| RoomDocManager Event | Connector Lookup Call |
-|----------------------|----------------------|
-| `publishSnapshotNow()` | `initConnectorLookup()` |
-| `hydrateObjectsFromY()` | `hydrateConnectorLookup(objectsById)` |
-| Connector added/updated | `processConnectorAdded/Updated(id, yObj)` |
-| Connector deleted | `processConnectorDeleted(id)` |
-| Shape deleted | `processShapeDeleted(shapeId)` |
-| `destroy()` | `clearConnectorLookup()` |
-
-### Query API
-
-```typescript
-import { getConnectorsForShape } from '@/canvas/room-runtime';
-
-const connectorIds = getConnectorsForShape(shapeId);
-if (connectorIds) {
-  for (const cid of connectorIds) {
-    // Reroute this connector
-  }
-}
-```
-
----
-
-## The Rerouting APIs
-
-Three functions:
-- **`rerouteConnector()`** — Existing connectors: reads Y.map, applies per-endpoint overrides, branches on `connectorType` (SelectTool)
-- **`routeNewConnector(start, end, strokeWidth, connectorType)`** — New connectors: accepts `SnapTarget | [x,y]` per endpoint (ConnectorTool)
-- **`computeStraightRoute(start, end)`** — Pure straight routing from two `ResolvedEndpoint`s (called by both above)
-
-### Signature
-
-```typescript
-type EndpointOverrideValue =
-  | SnapTarget               // Snap to shape edge (has shapeId)
-  | [number, number]          // Free position override
-  | { frame: FrameTuple };    // Reapply the stored anchor against a transformed frame
-
-function rerouteConnector(
-  connectorId: string,
-  endpointOverrides?: { start?: EndpointOverrideValue; end?: EndpointOverrideValue },
-): RerouteResult | null;
-```
-
-Each endpoint is resolved independently by `resolveEndpoint()` which dispatches
-to one of three branches on the override's shape:
-
-1. `[x, y]`                 → free position
-2. `{ frame: FrameTuple }`  → re-anchor against a transformed frame (shape drag/resize)
-3. `SnapTarget`             → snap-driven override (endpoint drag / new connector)
-
-With no override, the endpoint falls back to the stored Y.map anchor (or the
-stored raw position for free endpoints).
-
-### Usage Patterns
-
-**Shape Transform (translate/resize):**
-
-```typescript
-// User dragging selected shapes — pass the transformed frame per affected endpoint.
-const newFrame = computeNewFrame(anchorShapeId, transform);
-for (const connectorId of getAffectedConnectors(selectedIds)) {
-  const points = rerouteConnector(connectorId, {
-    start: { frame: newFrame },  // Only if connector's start is on the selected shape
-    end: { frame: newFrame },    // Only if connector's end is on the selected shape
-  });
-}
-```
-
-**Endpoint Drag (reconnection):**
-
-```typescript
-// User dragging a connector endpoint to reconnect
-const snap = findBestSnapTarget(snapCtx);
-const points = rerouteConnector(connectorId, { end: snap ?? [worldX, worldY] });
-```
-
-**Free Endpoint Translation:**
-
-```typescript
-// Moving an unanchored endpoint
-const currentEnd = getEnd(yMap);
-const points = rerouteConnector(connectorId, {
-  end: [currentEnd[0] + dx, currentEnd[1] + dy],
-});
-```
-
-### Mental Model: Canonical vs Dynamic Data
-
-Think of connector endpoints as having two possible states:
-
-- **Canonical (stored):** The Y.map data is trustworthy and stable
-- **Dynamic (overridden):** The endpoint is actively being transformed
-
-The override pattern exploits this: when dragging one endpoint, the **other endpoint is canonical**. When transforming a shape, only **endpoints anchored to that shape are dynamic** — the caller passes the transformed frame for each affected side.
-
-### ResolvedEndpoint
-
-Both `resolveEndpoint()` and `resolveNewEndpoint()` produce this. `frame` doubles as the elbow-routing shape-bounds input (no duplicate `shapeBounds` field).
-
-```typescript
-interface ResolvedEndpoint {
-  position: [number, number];
-  dir: Dir | null;
-  isAnchored: boolean;
-  // Populated for anchored endpoints (both connector types)
-  normalizedAnchor?: [number, number];
-  shapeType?: string;
-  frame?: FrameTuple;              // Passed to elbow A* as start/endShapeBounds
-  shapeId?: string;                // Enables same-shape detection
-  interior?: boolean;              // Straight-only: committed at snap time
-}
-```
-
-### NewRouteResult
-
-Returned by `routeNewConnector()`:
-
-```typescript
-interface NewRouteResult {
-  points: [number, number][];
-}
-```
-
-Dashed guides for interior straight anchors are rendered directly from `snap` by `connector-preview.ts` and `selection-overlay.ts` (`snap.kind === 'straight' && snap.interior` → draw from `points[0 | -1]` to `snap.position`). No dash metadata is threaded through the route result.
-
-### Internal Flow
-
-```typescript
-function rerouteConnector(connectorId, endpointOverrides) {
-  // 1. Read connector data from Y.map
-  // 2. Resolve each endpoint via resolveEndpoint() →
-  //    - free → FREE_ENDPOINT
-  //    - stored / frame override → buildAnchoredByType()
-  //    - snap override → buildElbowAnchored / buildStraightAnchored directly
-
-  // 3. Branch on connector type
-  const connectorType = getConnectorType(yMap);
-  if (connectorType === 'straight') {
-    const result = computeStraightRoute(startResolved, endResolved);
-    return { points: result.points, bbox };
-  }
-
-  // 4. Elbow: resolve directions, then callAStar() wraps the 7-arg A* call
-  const { startDir, endDir } = resolveElbowDirections(...);
-  return { points: callAStar(startResolved, startDir, endResolved, endDir, strokeWidth).points, bbox };
-}
-```
-
----
-
-## Path Building (connector-paths.ts)
-
-### Output Structure
-
-```typescript
-interface ConnectorPaths {
-  polyline: Path2D;           // Main line (trimmed for arrows)
-  startArrow: Path2D | null;  // Start cap triangle
-  endArrow: Path2D | null;    // End cap triangle
-}
-```
-
-### Main Entry
-
-```typescript
-function buildConnectorPaths(params: {
-  points: [number, number][];
-  strokeWidth: number;
-  startCap: 'arrow' | 'none';
-  endCap: 'arrow' | 'none';
-}): ConnectorPaths
-```
-
-Used by `object-cache.ts` (committed connectors) and `connector-preview.ts` (preview). The resulting `ConnectorPaths` is handed to `paintConnector()` in `renderer/layers/connector-render-atoms.ts` for the actual stroke/fill — see the Rendering Atoms section below.
-
-### Key Features
-
-- **Rounded corners:** `buildRoundedPolylinePath()` uses `arcTo()` with clamped radius
-- **Arrow scaling:** Length ≤ `segmentLength / 2` (Excalidraw approach)
-- **Trim compensation:** Polyline trimmed to prevent overlap with arrow caps
-- **Stroke offset:** Arrow tip pulled back by `roundingLineWidth / 2` for visual accuracy
-
----
-
-## Rendering Atoms (`renderer/layers/connector-render-atoms.ts`)
-
-Canvas drawing for connectors lives in one module so the committed-render path,
-the in-flight preview, and the selection overlay stay visually identical.
-
-- **`paintConnector(ctx, paths, color, width)`** — Strokes the polyline
-  + fills/strokes the arrow caps at the fixed `ARROW_ROUNDING_LINE_WIDTH`.
-  Connectors always render at opacity 1, so no alpha param is threaded through.
-  Shared by `objects.ts` (both `drawConnector` from cache and
-  `drawConnectorFromPoints` for rerouted paths) and `connector-preview.ts`
-  (via `buildConnectorPaths` at draw time).
-- **`drawSnapFeedback(ctx, snap)`** — Full target feedback in one call: shape
-  highlight + midpoint dots + straight-center dot + active anchor dot. Branches
-  internally on `snap.kind` — active midpoint highlight uses `snap.side` (elbow)
-  or `snap.midpointSide` (straight). When snap is the straight center, the
-  center dot doubles as the active indicator and the anchor-position dot is
-  skipped. Shared by `connector-preview.ts` (hover snap during creation) and
-  `selection-overlay.ts` (endpoint drag).
-- **Constant-styled decoration atoms** — `drawAnchorDot`,
-  `drawConnectorDashGuide`, `drawSnapTargetHighlight`, `drawShapeMidpoints`,
-  `drawStraightCenterDot`. No color/width/opacity params leak through; they
-  pull sizing from `getAnchorDotMetricsWorld()` / `getGuideMetricsWorld()` so
-  visual weight is scale-stable.
-- **Helpers:** `isCenterSnap(snap)` and `resolveSnapContext(snap)` — the
-  second resolves a snap to `{ handle, frame, shapeType }` via the bindable
-  kinds set and `frameOf`.
+No barrel — import from specific files. `FrameTuple`, `Point`, and
+`StoredAnchor*` come from `@/core/types/geometry` and `@/core/types/objects`.
+
+Renderer glue: `renderer/layers/connector-render-atoms.ts` (paint + feedback),
+`renderer/layers/connector-preview.ts` (in-flight preview).
 
 ---
 
@@ -748,12 +75,11 @@ the in-flight preview, and the selection overlay stay visually identical.
   id: string;
   kind: 'connector';
   connectorType: 'elbow' | 'straight';  // REQUIRED — always written on new commits
-  points: [number, number][];           // Full routed path
-  start: [number, number];              // Start endpoint position
-  end: [number, number];                // End endpoint position
+  points: [number, number][];           // Full routed path, render-ready
+  start: [number, number];              // Stored endpoint position (fallback when free)
+  end:   [number, number];
 
-  // Anchor shape is discriminated by `connectorType`:
-  startAnchor?: StoredElbowAnchor | StoredStraightAnchor;
+  startAnchor?: StoredElbowAnchor | StoredStraightAnchor;  // Shape tied to connectorType
   endAnchor?:   StoredElbowAnchor | StoredStraightAnchor;
 
   startCap: 'none' | 'arrow';
@@ -761,58 +87,528 @@ the in-flight preview, and the selection overlay stay visually identical.
   color, width, ownerId, createdAt
 }
 
-interface StoredElbowAnchor {
-  id: string;
-  side: Dir;                // Authoritative; never re-derived at read time
-  anchor: [number, number]; // Normalized [0-1, 0-1]
+interface StoredElbowAnchor    { id: string; side: Dir;        anchor: [number, number]; }
+interface StoredStraightAnchor { id: string; interior: boolean; anchor: [number, number]; }
+```
+
+- **`connectorType` is the discriminator** for both anchor union branches and
+  every routing decision downstream. `getConnectorType(y)` defaults to `'elbow'`
+  on stale reads; every new write carries the explicit value.
+- **`side` (elbow)** and **`interior` (straight)** are both committed at snap
+  time and never re-derived. Neither can be reconstructed from the normalized
+  anchor alone — `[0.5, 0]` is an edge midpoint on a rect but could sit inside
+  or outside an ellipse.
+- **`anchor: [0-1, 0-1]`** is normalized into the shape's frame — resizes and
+  moves reduce to linear interpolation, shape-agnostic.
+- Connectors always render at opacity 1; no stored `opacity`.
+
+---
+
+## Core Types (snap-facing)
+
+```typescript
+type Dir = 'N' | 'E' | 'S' | 'W';
+type ConnectorType = 'elbow' | 'straight';
+
+type SnapTarget = ElbowSnapTarget | StraightSnapTarget;  // Discriminated by `kind`
+
+interface ElbowSnapTarget {
+  kind: 'elbow';
+  shapeId: string;
+  side: Dir;                        // Authoritative outward direction
+  normalizedAnchor: [number, number];
+  isMidpoint: boolean;
+  position: [number, number];       // Visual dot + pre-offset routing endpoint
+  isInside: boolean;
 }
 
-interface StoredStraightAnchor {
-  id: string;
-  interior: boolean;        // Committed at snap time; never recomputed
-  anchor: [number, number];
+interface StraightSnapTarget {
+  kind: 'straight';
+  shapeId: string;
+  interior: boolean;                // Committed at snap time
+  isCenter: boolean;                // [0.5, 0.5] — drives center dot
+  midpointSide: Dir | null;         // Non-null when snapped to an edge midpoint
+  normalizedAnchor: [number, number];
+  position: [number, number];
+  isInside: boolean;
+}
+
+interface SnapContext { cursorWorld: Point; prevAttach: SnapTarget | null; connectorType: ConnectorType; }
+```
+
+`position` is always the **un-offset** visual dot; per-type offset (elbow's
+perpendicular `EDGE_CLEARANCE_W`, straight's along-line pull-back) happens in
+routing, not in snap.
+
+---
+
+## Snapping
+
+```typescript
+findBestSnapTarget(ctx: SnapContext): SnapTarget | null
+```
+
+Uses `pickTopmostBindable` (from `core/spatial/object-query`) to iterate
+candidates in Z-order (top-most first) and defers shape-aware decisions to
+`computeSnapForShape`. **Connectable kinds** = `shape`, `text`, `code` (via
+`BINDABLE_KINDS`); text/code use derived frames and are treated as filled
+rects.
+
+### Fill-aware visual ordering
+
+Baked into `pickTopmostBindable`:
+
+1. Filled shape interior → occluding; snap to it or reject, stop scanning.
+2. Unfilled shape interior → transparent; remember as innermost, keep scanning.
+3. Edge region → always a valid snap target regardless of fill.
+
+Result: nested unfilled shapes snap to the innermost shape under the cursor.
+
+### Two pipelines, shared edge probe
+
+`computeSnapForShape` branches on `ctx.connectorType`:
+
+| Cursor position | Elbow (`computeElbowSnap`) | Straight (`computeStraightSnap`) |
+|---|---|---|
+| Outside snap radius | no snap | no snap |
+| Near edge (outside or shallow-inside) | `tryElbowEdgeSnap` → edge + midpoint hysteresis | `tryStraightEdgeSnap` → edge + midpoint hysteresis |
+| Deep inside | `forceElbowMidpoint` (nearest midpoint) | `computeStraightInterior` (center → midpoint → clamped) |
+
+Both call `probeEdgeSnap` for the edge-finding + hysteresis logic. The
+depth threshold differs — `FORCE_MIDPOINT_DEPTH_PX = 35` for elbow,
+`STRAIGHT_INTERIOR_DEPTH_PX = 20` for straight.
+
+**Dead-zone guarantee.** The edge-radius gate (`edgeSnap.dist > radii.edgeSnap`)
+applies **only when the cursor is outside the shape**. Shallow-inside
+(`isInside && depth < depthThreshold`) always permits edge sliding.
+
+### Straight interior (three-tier)
+
+When `insideDepth > STRAIGHT_INTERIOR_DEPTH_PX`:
+
+1. **Center snap** — `centerDist ≤ CENTER_SNAP_RADIUS_PX (12)` (with 1.3×
+   unstick hysteresis once active) → `{ isCenter: true, interior: true,
+   normalizedAnchor: [0.5, 0.5] }`. The only deliberate path to exact center.
+2. **Midpoint stickiness** — within 16px of an edge midpoint → snap there
+   with `midpointSide: Dir`, `interior: false` (it's an edge anchor on the
+   shape boundary, not interior).
+3. **Clamped interior** — cursor becomes the anchor, normalized coords clamped
+   to `[0.01, 0.99]` per axis (avoids sitting exactly on corners).
+   `interior: true, isCenter: false, midpointSide: null`.
+
+Elbow never enters interior mode.
+
+### Hysteresis + Ctrl
+
+- **Edge snap in** at 15px (outside only), **midpoint in/out** at 16/16px
+  (sticky; same threshold).
+- **Center snap** at 12px, unstick at 15.6px (1.3×) once already centered.
+- **Ctrl held** → `isCtrlHeld()` from `cursor-tracking.ts` forces `snap = null`
+  before every `findBestSnapTarget` call. Live state, updates on every pointer
+  event — releasing mid-drag resumes snapping instantly.
+
+### Thresholds (world units at 1× scale; bundled via `getSnapRadiiWorld()`)
+
+| Constant | Value | Use |
+|---|---|---|
+| `EDGE_SNAP_RADIUS_PX` | 15 | outside-shape edge gate |
+| `MIDPOINT_SNAP_IN_PX` / `MIDPOINT_SNAP_OUT_PX` | 16 / 16 | midpoint hysteresis |
+| `FORCE_MIDPOINT_DEPTH_PX` | 35 | elbow-only "lock to midpoint" depth |
+| `STRAIGHT_INTERIOR_DEPTH_PX` | 20 | straight-only interior mode depth |
+| `CENTER_SNAP_RADIUS_PX` | 12 | straight-only [0.5, 0.5] snap |
+| `EDGE_CLEARANCE_W` | 11 | world-unit clearance used by both route paths |
+
+---
+
+## Endpoint Resolution
+
+Shared by `rerouteConnector` (existing) and `routeNewConnector` (in-flight).
+Every endpoint collapses to one `ResolvedEndpoint`; routing never sees Y.map.
+
+### Override union
+
+```typescript
+type EndpointOverrideValue =
+  | SnapTarget               // live snap (endpoint drag / creation)
+  | [number, number]          // free position override
+  | { frame: FrameTuple };    // reapply stored anchor against a transformed frame
+```
+
+No override → fall back to stored anchor (resolved against the anchor shape's
+current frame) or to stored raw position for free endpoints.
+
+### ResolvedEndpoint
+
+```typescript
+interface ResolvedEndpoint {
+  position: [number, number];   // Elbow: + EDGE_CLEARANCE_W outward.  Straight: raw frame point.
+  dir: Dir | null;              // Elbow: side.  Straight: null.
+  isAnchored: boolean;
+  normalizedAnchor?: [number, number];
+  shapeType?: string;
+  frame?: FrameTuple;           // Also fed to A* as start/endShapeBounds
+  shapeId?: string;             // Enables same-shape detection for straight
+  interior?: boolean;           // Straight-only
 }
 ```
 
-Callers that need the narrowed shape cast via `connectorType` (the parent is the discriminator). `getConnectorType(y)` still defaults to `'elbow'` on read for stale data — but every new write carries the explicit value. Connectors render at opacity 1 — no `opacity` field is stored.
+Three factories:
+
+- `FREE_ENDPOINT(position)` — no anchor data.
+- `buildElbowAnchored(frame, shapeType, shapeId, anchor, side)` — position =
+  `elbowAnchorPoint(...)` (perpendicular `EDGE_CLEARANCE_W`); `dir = side`.
+- `buildStraightAnchored(frame, shapeType, shapeId, anchor, interior)` —
+  position = `anchorFramePoint(anchor, frame)` (no offset); `dir = null`.
+
+`buildAnchoredByType(connectorType, …)` dispatches to elbow/straight on the
+stored anchor. Snap-driven overrides use the typed factory directly
+(`resolveSnapOverride` branches on `snap.kind`).
+
+### Canonical vs dynamic (mental model)
+
+Each endpoint is either **canonical** (stored Y.map data is stable) or
+**dynamic** (actively being transformed). The override pattern exploits this:
+
+- Dragging one endpoint → the other is canonical (no override).
+- Translating/resizing a shape → only endpoints anchored to that shape are
+  dynamic; pass `{ frame: newFrame }` per affected side, no snap calculation
+  needed.
+
+### Call patterns
+
+```typescript
+// Shape transform (iterate affected connectors per shape):
+rerouteConnector(cid, {
+  start: { frame: newFrame },  // if connector's start anchors this shape
+  end:   { frame: newFrame },  // if connector's end anchors this shape
+});
+
+// Endpoint drag (reconnection):
+const snap = findBestSnapTarget(snapCtx);
+rerouteConnector(cid, { end: snap ?? [worldX, worldY] });
+
+// Free endpoint translate:
+rerouteConnector(cid, { end: [currentEnd[0] + dx, currentEnd[1] + dy] });
+```
+
+---
+
+## Straight Routing
+
+Bypasses the elbow pipeline entirely — no RoutingContext, no grid, no A*, no
+direction resolution. `computeStraightRoute(start, end)` returns a two-point
+array.
+
+### Per-endpoint logic (`resolveStraightEndpoint`)
+
+Called symmetrically for each side with `(me, myRaw, otherRaw, sameShape)`:
+
+| `me` state | Resulting line endpoint |
+|---|---|
+| Free (`!isAnchored`) | `me.position` as-is |
+| Edge anchor (`interior=false`) | `applyPullBack(myRaw, otherRaw)` — EDGE_CLEARANCE_W along the line |
+| Interior, same shape | `myRaw` — raw anchor, no ray-cast |
+| Interior, different shape | `applyPullBack(computeShapeEdgeIntersection(...).point, otherRaw)` |
+
+`myRaw` is the un-offset `anchorFramePoint` (straight's `position`); it's also
+the source of the dashed guide for interior anchors.
+
+### Same-shape short-circuit
+
+`isSameShape(start, end)` → both interior anchors share a `shapeId`. Ray-casting
+two interior points on one convex shape produces opposing intersections (the
+"spinning clock" artifact), so we skip intersection entirely and connect the
+raw interior points directly.
+
+### Edge intersection (`computeShapeEdgeIntersection`)
+
+Ray from interior anchor toward the other endpoint's raw position; exit point
+and side on the shape boundary. Dispatches on shapeType:
+
+- **rect / roundedRect** — axis-aligned slab per edge, smallest positive `t`.
+- **ellipse** — parametric quadratic; side from exit angle via
+  `ellipseSideFromAngle`.
+- **diamond** — Cramer's rule across the 4 diagonal segments.
+
+Returned `side` is informational; callers apply `EDGE_CLEARANCE_W` pull-back
+along the line afterward.
+
+### Overlap safety
+
+With `rawDelta = endRaw - startRaw` and `visDelta = endPt - startPt`, fall
+back to `[startRaw, endRaw]` when either:
+
+- `visDelta · rawDelta ≤ 0` (pull-back or intersection flipped the line)
+- `|visDelta| < EDGE_CLEARANCE_W` (segment collapsed)
+
+Happens with overlapping shapes or small shapes where clearance exceeds the
+available gap.
+
+### Dashed guides (render-side only)
+
+For interior straight anchors, the preview + overlay layers render a dashed
+guide from `snap.position` (raw frame point) to the polyline endpoint
+(pulled-back line end). Dash metadata is **not** threaded through route
+results — it's computed directly from
+`snap.kind === 'straight' && snap.interior` by `connector-preview.ts` and
+`selection-overlay.ts` via `drawConnectorDashGuide`.
+
+---
+
+## Elbow Routing
+
+`computeAStarRoute(startPos, startDir, endPos, endDir, startFrame, endFrame, strokeWidth)`.
+Primitive API: `isAnchored` is derived from `frame !== null`; no wrapper
+objects.
+
+### Pipeline
+
+```
+computeAStarRoute
+  ├── createRoutingContext (all spatial intelligence)
+  │     ├── centerlines from RAW bounds, per-axis
+  │     ├── dynamic routing bounds (facing-side = centerline, non-facing padded)
+  │     ├── stubs on routing-bound edges at each anchor's fixed axis
+  │     └── obstacles (raw shape bounds, deduped when start===end)
+  ├── buildSimpleGrid (4 edges per bound + stub perpendiculars)
+  ├── astar (segment intersection checks per move, bend penalty, no U-turns)
+  └── assemble [startPos, ...cells, endPos] → simplifyOrthogonal
+```
+
+### RoutingContext (the single trick)
+
+Dynamic routing bounds **encode centerline knowledge in their edges**: when
+two shapes face each other, both bounds share the centerline as their facing
+edge. Grid lines from bound edges automatically include the centerline, so A*
+routes through it without special casing.
+
+Three configurations handled by `buildRoutingBounds`:
+
+| Endpoint pair | Bounds |
+|---|---|
+| Anchored → Free point | Free point's bounds collapse to centerline on all axes (WYSIWYG: path identical whether stopping free or snapping). |
+| Free point → Anchored | Facing-side only gets centerline; non-facing stays at raw point position (so the first segment escapes in the seeded axis rather than collapsing). |
+| Shape → Shape | Facing side = centerline if it exists; non-facing = raw ± approach-offset. |
+
+**Centerline computation** (`computeAxisCenterline`): returns `null` when
+ranges overlap, when a Free→Anchored gap is below the approach offset (stub
+would land behind start), or when the gap is ≤ `EDGE_CLEARANCE_W` (too
+tight to route through). Approach offset = `CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
+
+**Stubs** sit at `(routing-bound edge, anchor's fixed axis)` — so they
+automatically land on centerlines when those exist.
+
+### A* specifics
+
+- Priority queue: `MinHeap<AStarNode>` sorted by `f = g + h`. Heuristic:
+  Manhattan.
+- **No cell blocking** during grid construction. Obstacles are checked per
+  segment via `segmentIntersectsFrame` (slab method) — handles thin shapes
+  and arbitrary segment directions.
+- `cost = Manhattan + BEND_PENALTY (1000)` on direction changes;
+  `cost = Infinity` when moving opposite to `arrivalDir` (no U-turns).
+- Start node seeded with `arrivalDir = startDir` so the first move respects
+  the shape side.
+- **Fallbacks**: no path with obstacles → retry with `obstacles = []`; still
+  nothing → return `[start, goal]` straight line.
+
+### Direction resolution (elbow only)
+
+In `resolveElbowDirections`:
+
+- **Anchored → Anchored** — both `dir`s are stored `side`s. Nothing to compute.
+- **Free → Anchored** — `resolveElbowFreeStartDir(fromPos, anchorEnd, strokeWidth)`.
+  Four-case decision tree over `spatialRelation`: inside full padding (escape
+  outward or wrap toward target), same side (L-route with sliver-escape
+  check), opposite + contained (wrap via shape center), adjacent (sliver
+  escape or anchor direction). This is the one function doing heavy spatial
+  reasoning in the elbow path.
+- **Anchored → Free** — `computeElbowFreeEndDir(fromPos, toPos)`, one-liner
+  over `directionFromDelta` (primary axis + sign).
+
+---
+
+## Public Entry Points
+
+```typescript
+// Reroute existing — reads Y.map, applies overrides, branches on connectorType.
+rerouteConnector(
+  connectorId: string,
+  endpointOverrides?: { start?: EndpointOverrideValue; end?: EndpointOverrideValue },
+): RerouteResult | null;                          // { points, bbox }
+
+// Route new — no Y.map; same resolver + routing pipeline.
+routeNewConnector(
+  start: SnapTarget | [number, number],
+  end:   SnapTarget | [number, number],
+  strokeWidth: number,
+  connectorType?: ConnectorType,                  // default 'elbow'
+): NewRouteResult;                                // { points }
+```
+
+Internal flow (both entry points):
+
+```typescript
+const startR = resolveEndpoint(storedStart, startAnchor, overrides?.start, type);
+const endR   = resolveEndpoint(storedEnd,   endAnchor,   overrides?.end,   type);
+
+if (type === 'straight') return { points: computeStraightRoute(startR, endR).points, bbox };
+
+const { startDir, endDir } = resolveElbowDirections(startR, endR, strokeWidth);
+return { points: callAStar(startR, startDir, endR, endDir, strokeWidth).points, bbox };
+```
+
+BBox for `RerouteResult` comes from `computeConnectorBBoxFromPoints(points, yMap)`.
+
+---
+
+## Anchor Atoms (`anchor-atoms.ts`)
+
+The whole anchor-math surface — five functions, no classifiers, no
+re-derivation. Interior-ness is a stored fact; elbow `side` is read from
+the stored anchor.
+
+```typescript
+anchorFramePoint(anchor: Point, frame: FrameTuple): Point;
+// Raw interpolation of [0-1, 0-1] into frame. No offset. Shared by both types.
+
+elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): Point;
+// Raw point + EDGE_CLEARANCE_W along directionVector(anchor.side). Elbow only.
+
+isSameShape(a, b): boolean;
+// Both endpoints point at the same shapeId.
+
+anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
+// Elbow snap → { id, side, anchor };  straight snap → { id, interior, anchor }.
+
+getEndpointEdgePosition(handle, endpoint: 'start' | 'end'): Point;
+// "Where does this endpoint's dot sit?" — always the raw frame point.
+```
+
+---
+
+## Connector Lookup (reverse map)
+
+O(1) `shapeId → Set<connectorId>` for SelectTool transforms and EraserTool
+deletions. Maintained incrementally by `RoomDocManager` observers.
+
+| RoomDocManager event | Call |
+|---|---|
+| Construction | `initConnectorLookup()` |
+| Hydrate | `hydrateConnectorLookup(objectsById)` |
+| Connector add/update/delete | `processConnectorAdded/Updated/Deleted(id, yObj?)` |
+| Shape delete | `processShapeDeleted(shapeId)` |
+| Teardown | `clearConnectorLookup()` |
+
+Self-loops (both endpoints → same shape) are deduped via `uniqueShapeIds`.
+Query: `getConnectorsForShape(shapeId)`, re-exported from
+`@/runtime/room-runtime`.
+
+---
+
+## Path Building (`connector-paths.ts`)
+
+```typescript
+buildConnectorPaths({ points, strokeWidth, startCap, endCap }): ConnectorPaths;
+// { polyline: Path2D, startArrow: Path2D | null, endArrow: Path2D | null }
+```
+
+Implementation notes (rarely modified):
+
+- **Rounded corners** via `arcTo()`; radius clamped to `min(CORNER_RADIUS_W (26), lenIn/2, lenOut/2)`. Sharp corner when the clamped radius falls below 2.
+- **Arrow sizing** — `length = max(ARROW_MIN_LENGTH_W (6), strokeWidth * 3)`,
+  capped at `segmentLength / 2` (Excalidraw approach); width = length × 1.0.
+- **Polyline trim** before each arrow-capped end so the polyline doesn't poke
+  through the triangle: `neededTrim = scaledLength + strokeWidth/2`, clamped
+  by `segLen - actualCornerRadius`.
+- **Tip stroke compensation** — arrow tip is pulled back by
+  `ARROW_ROUNDING_LINE_WIDTH / 2 (5/2)` so the visible stroke-drawn tip lands
+  at the endpoint.
+
+Used by `object-cache.ts` (committed connectors, cached) and
+`connector-preview.ts` (in-flight, rebuilt per frame). Both hand the result
+to `paintConnector`.
+
+---
+
+## Render Atoms (`renderer/layers/connector-render-atoms.ts`)
+
+All canvas drawing for connectors lives here so the committed render path,
+transform preview, and in-flight preview stay visually identical.
+
+| Atom | Purpose |
+|---|---|
+| `paintConnector(ctx, paths, color, width)` | Strokes polyline + fills/strokes arrow caps at `ARROW_ROUNDING_LINE_WIDTH`. Always opacity 1. Shared by `objects.ts` (`drawConnector` + `drawConnectorFromPoints`) and `connector-preview.ts`. |
+| `drawSnapFeedback(ctx, snap)` | Full snap visualization: shape highlight + midpoint dots + (straight) center dot + active anchor dot. Branches on `snap.kind`; when `isCenterSnap`, center dot doubles as active and the anchor-position dot is skipped. Shared by preview + selection overlay. |
+| `drawConnectorDashGuide(ctx, from, to)` | Interior straight guide. Only drawn for `snap.kind === 'straight' && snap.interior`. |
+| `drawAnchorDot` / `drawSnapTargetHighlight` / `drawShapeMidpoints` / `drawStraightCenterDot` | Styling atoms; sizes come from `getAnchorDotMetricsWorld()` / `getGuideMetricsWorld()` — scale-stable. |
+| `isCenterSnap(snap)` / `resolveSnapContext(snap)` | Helpers: center check; resolve `{ handle, frame, shapeType }` via `BINDABLE_KINDS` + `frameOf`. |
+
+---
+
+## Constants (`constants.ts`)
+
+Two classes of constants, two accessor styles:
+
+- **Screen-space (`_PX`)** — `SNAP_CONFIG`, `ANCHOR_DOT_CONFIG`, `GUIDE_CONFIG`.
+  Materialized into world units per-call via bundle getters
+  (`getSnapRadiiWorld`, `getAnchorDotMetricsWorld`, `getGuideMetricsWorld`).
+  Each getter reads camera scale once and returns every relevant metric
+  pre-divided. Call sites read the bundle once per function rather than
+  threading `scale`.
+- **World-space (`_W`)** — `ROUTING_CONFIG.CORNER_RADIUS_W`,
+  `ARROW_MIN_LENGTH_W`, `EDGE_CLEARANCE_W`, `COST_CONFIG.BEND_PENALTY`.
+  Permanent (stored in Y.Doc) — must not vary with zoom.
+
+Derived helpers: `computeArrowLength(strokeWidth)`,
+`computeArrowWidth(strokeWidth)`, `computeApproachOffset(strokeWidth) =
+CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 
 ---
 
 ## Key Invariants
 
-1. **Centerlines use actual edges** — Computed from raw bounds, not padded
-2. **Dynamic routing bounds share facing edges** — Both endpoints' bounds have the same centerline on their facing side
-3. **Stubs are ON routing-bound edges** — Automatically land on centerlines
-4. **Segment checking during A*** — No cell blocking at grid construction
-5. **Directions resolved before routing** — RoutingContext receives final directions
-6. **Normalized anchors are shape-agnostic** — `[0-1, 0-1]` + linear interpolation
-7. **EDGE_CLEARANCE_W for endpoints** — 11 units, applied ONLY by elbow routing (at resolve). Straight owns its own pull-back.
-8. **Per-endpoint override** — `EndpointOverrideValue` covers free position, transformed frame, or live `SnapTarget` in one union
-9. **Straight routing skips A*** — `computeStraightRoute` bypasses RoutingContext, grid, and direction resolution
-10. **Interior-ness is stored, not computed** — Decided at snap time with shape-aware `pointInsideShape`. Never recomputed from normalized coordinates anywhere downstream.
-11. **Elbow uses stored `side` directly** — `reroute-connector.ts` reads `anchor.side` / `snap.side`; there is no re-derivation from anchor coords.
-12. **Same-shape interior goes direct** — No edge intersection when both endpoints share a shape
-13. **Single paint atom** — Every connector stroke goes through `paintConnector` so committed render, transform preview, and in-flight preview share exactly one draw pass
-14. **Edge-radius gate is outside-only** — Inside-but-shallow always allows edge snapping; no snap dead zones inside shapes.
-15. **`SnapTarget` is a discriminated union** — `snap.kind` is the source of truth; consumers branch on it, never on field shape.
+1. **`connectorType` is the authoritative branch.** Anchor shape, snap pipeline,
+   and routing mode all follow from it. No field-shape inference.
+2. **`SnapTarget` is a discriminated union.** Consumers branch on `snap.kind`.
+3. **Interior-ness is stored, never recomputed.** Committed at snap time via
+   shape-aware `pointInsideShape`. Normalized coords alone are insufficient.
+4. **Elbow `side` is authoritative.** `anchor.side` / `snap.side` is read
+   directly; never re-derived from coordinates.
+5. **`position` is the pre-offset visual dot AND the pre-offset routing
+   endpoint.** Per-type offset (elbow perpendicular / straight along-line)
+   runs in routing — the snap layer never bakes offsets into `position`.
+6. **Same-shape interior goes direct** — no ray-cast; avoids opposing-ray
+   intersections on convex shapes.
+7. **Centerlines come from RAW bounds**; dynamic routing bounds then merge
+   facing edges to those centerlines. Stubs on those edges land on the
+   centerline automatically.
+8. **A* checks segment intersection, not cell blocking.** The grid is sparse
+   and unblocked; obstacle avoidance is per-move via slab intersection.
+9. **Edge-radius gate is outside-only.** Shallow-inside (below the mode's
+   depth threshold) always permits edge snapping — no dead zone.
+10. **Single paint atom.** Every connector stroke goes through
+    `paintConnector`, so committed render, transform preview, and in-flight
+    preview share one draw pass.
 
 ---
 
-## Summary: Integration Points
+## Integration Cheat Sheet
 
-| Task | API | Notes |
-|------|-----|-------|
-| Create new connector | `routeNewConnector()` | SnapTarget or [x,y] per endpoint |
-| Reroute existing connector | `rerouteConnector()` | Reads Y.map, applies `EndpointOverrideValue` per side |
-| Find snap target | `findBestSnapTarget()` | Fill-aware, returns discriminated `SnapTarget` |
-| Get connectors for shape | `getConnectorsForShape()` | O(1) reverse lookup |
-| Build render paths | `buildConnectorPaths()` | Returns polyline + arrows |
-| Paint connector | `paintConnector()` | Shared draw atom (committed + preview) |
-| Anchor → frame point | `anchorFramePoint()` | Raw point (no outward offset) |
-| Elbow anchor → routing point | `elbowAnchorPoint()` | Raw + EDGE_CLEARANCE_W along stored `anchor.side` |
-| Write anchor record from snap | `anchorRecordFromSnap()` | Per-kind Y.Map shape (elbow: side, straight: interior) |
-| Resolve free→anchored direction | `resolveElbowFreeStartDir()` | Complex spatial logic (elbow only) |
-| Resolve anchored→free direction | `computeElbowFreeEndDir()` | Primary axis + sign (elbow only) |
-| Route straight connector | `computeStraightRoute()` | Pull-back + edge intersection + overlap safety |
-| Check interior anchor | read `anchor.interior` (stored) or `snap.interior` (live) | Never recomputed from coords |
-| Find shape edge exit | `computeShapeEdgeIntersection()` | Ray cast for interior anchors (rect/ellipse/diamond) |
+| Need | Call |
+|---|---|
+| Create new connector | `routeNewConnector(start, end, strokeWidth, type?)` |
+| Reroute existing connector | `rerouteConnector(id, { start?, end? })` |
+| Find snap target | `findBestSnapTarget(ctx)` |
+| All connectors anchored to a shape | `getConnectorsForShape(shapeId)` |
+| Anchor → frame point | `anchorFramePoint(anchor, frame)` |
+| Elbow anchor → routing point (with perp offset) | `elbowAnchorPoint(anchor, frame)` |
+| Y.Map anchor record from live snap | `anchorRecordFromSnap(snap)` |
+| Where an endpoint's dot should render | `getEndpointEdgePosition(handle, 'start' \| 'end')` |
+| Ray-cast interior → shape edge | `computeShapeEdgeIntersection(type, frame, interior, target)` |
+| Build render paths | `buildConnectorPaths({ points, strokeWidth, startCap, endCap })` |
+| Paint connector | `paintConnector(ctx, paths, color, width)` |
+| Render full snap feedback | `drawSnapFeedback(ctx, snap)` |
+| Resolve free→anchored elbow direction | `resolveElbowFreeStartDir(fromPos, anchorEnd, strokeWidth)` |
+| Resolve anchored→free elbow direction | `computeElbowFreeEndDir(fromPos, toPos)` |
+| Check interior (storage vs live) | `anchor.interior` / `snap.interior` |
