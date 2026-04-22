@@ -1,5 +1,7 @@
 # Selection System
 
+> **Maintenance:** Architectural overview, not a changelog. Match surrounding detail level when updating — don't inflate coverage of one change at the expense of the big picture.
+
 SelectTool + transform system + selection store + hit testing + transform rendering. The most complex tool in the codebase: handles translate, scale (per-kind-aware), connector endpoint drag, marquee, multi-select, text/code editing entry, and Z-order-aware hit testing.
 
 ## Architecture
@@ -7,7 +9,7 @@ SelectTool + transform system + selection store + hit testing + transform render
 ```
 SelectTool.ts (PointerTool singleton via tool-registry)
 ├── State machine: idle → pendingClick → marquee | translate | scale | endpointDrag
-├── Hit testing via core/geometry/hit-testing.ts
+├── Hit testing via core/spatial/ (see core/spatial/CLAUDE.md — owns all hit logic)
 ├── Delegates to TransformController for scale/translate lifecycle
 ├── Commits endpoint drags directly via transact()
 └── Preview data → overlay + base canvas rendering
@@ -70,11 +72,11 @@ core/types/handles.ts (handle taxonomy)
 ├── scaleOrigin() — opposite handle position
 └── handleCursor() — CSS cursor string
 
-core/geometry/hit-testing.ts (shared with EraserTool)
-├── testObjectHit() → HitCandidate (per-kind dispatch)
-├── hitTestHandle() → HandleId (resize handles)
-├── hitTestEndpointDots() → EndpointHit (connector mode)
-└── objectIntersectsRect() (marquee geometry)
+core/spatial/ (see core/spatial/CLAUDE.md — owns all hit logic)
+├── pickTopmostPaint()  → ObjectHandle  (click: frame-aware tournament)
+├── queryHandleIds()    → string[]      (marquee/eraser: precise per-kind intersect)
+├── hitResizeHandle()   → HandleId      (resize handles)
+└── hitEndpointDot()    → EndpointHit   (connector mode)
 
 renderer/layers/objects.ts (base canvas — consumer of transform getters)
 ├── drawObjects() — main dispatch, reads selectionStore for transform preview
@@ -123,9 +125,9 @@ CLICK_WINDOW_MS = 180   // Time threshold for gap click disambiguation
 2. Convert world → screen for threshold checking
 3. Priority hit testing (mode-specific):
    Standard mode (has selection, not editing text/code):
-     → hitTestHandle() → downTarget = 'handle'
+     → hitResizeHandle() → downTarget = 'handle'
    Connector mode:
-     → hitTestEndpointDots() → downTarget = 'connectorEndpoint'
+     → hitEndpointDot() → downTarget = 'connectorEndpoint'
 4. Common object hit test:
    → hitTestObjects() → 'objectInSelection' or 'objectOutsideSelection'
 5. No object hit:
@@ -546,51 +548,16 @@ For reroute entries:
 
 ## Hit Testing
 
-### Object Hit Testing (`testObjectHit`)
+All hit logic lives in `core/spatial/` (see its CLAUDE.md for internals — pipeline, paint classification, per-kind caps, frame-aware tournament). SelectTool is a pure consumer: pick the right entry point per phase, read the single value each returns.
 
-Per-kind dispatch with `HitCandidate` classification:
+| Phase | Call | Returns | Behavior |
+|-------|------|---------|----------|
+| Click target (`hitTestObjects`) | `pickTopmostPaint([x, y], { px: HIT_RADIUS_PX + HIT_SLACK_PX })` | `ObjectHandle \| null` | **Best candidate, not just topmost.** Topmost paint-blocker wins outright (strokes, connectors, text/code/image frames, filled-shape edges). For a small unfilled shape stacked above a larger filled shape, the smaller wins — frame-aware area tournament. |
+| Marquee (`updateMarqueeSelection`) | `queryHandleIds(inBBox(marqueeBBox))` | `string[]` | **Precise per-kind intersection, not bbox.** Shape-type aware (ellipse perimeter, diamond edges), polylines tested segment-wise, framed kinds (text/code/note/image/bookmark) tested against their derived frame. |
+| Resize handle (standard mode) | `hitResizeHandle([x, y], selectionBounds)` | `HandleId \| null` | Screen-space probe (~10px). Only consulted with selection active and no text/code editor mounted. |
+| Endpoint dot (connector mode) | `hitEndpointDot([x, y], selectedIds)` | `EndpointHit \| null` | Screen-space nearest-probe over selected connectors' start/end world positions. |
 
-```typescript
-interface HitCandidate {
-  id: string;              // ULID = Z-order
-  kind: ObjectKind;
-  distance: number;        // 0 if inside/on stroke
-  insideInterior: boolean; // Inside shape/text bounds (not edge)
-  area: number;            // Bounding area for nested priority
-  isFilled: boolean;       // Shapes: has fillColor. Others: true
-}
-```
-
-| Kind | Hit Test Method |
-|------|----------------|
-| `stroke` / `connector` | Polyline segment distance test (tolerance = radius + strokeWidth/2) |
-| `shape` | Interior test (rect/ellipse/diamond) + edge distance test. `isFilled = !!fillColor` |
-| `text` | `getTextFrame()` → rect hit test. `isFilled = !!fillColor` |
-| `code` | `getCodeFrame()` → rect hit test. Always filled (dark bg) |
-| `note` | `getTextFrame()` → rect hit test. Always filled |
-| `image` / `bookmark` | `getFrame()` → simple rect containment. Always filled |
-
-**Spatial index pre-filter:** Query R-tree with `[worldX +- radiusWorld, worldY +- radiusWorld]`, then test each candidate.
-
-### Z-Order Selection (`pickBestCandidate`)
-
-Scans from topmost (highest ULID) to bottommost with occlusion model:
-
-1. **Unfilled shape interiors** = transparent. Remembered (smallest area tracked), scanning continues.
-2. **Everything else that paints** (stroke, connector, filled shape, text edge, code) = opaque. Stops scan.
-3. Resolution: ink always beats frames. Between fill and frame: smaller area wins. Tie: higher Z wins.
-
-### Handle Hit Testing (`hitTestHandle`)
-
-Screen-space radius: `HANDLE_HIT_PX = 10` / scale. Tests corners first, then side edges. Side edges only hit if cursor is between corners.
-
-### Marquee Intersection (`objectIntersectsRect`)
-
-Per-kind geometry intersection (not just bbox):
-- Strokes/connectors: `polylineIntersectsRect()` on points
-- Shapes: shape-type-aware (ellipse perimeter sampling, diamond edge/vertex, rect bounds)
-- Text/code/note: derived frame → rect intersection
-- Image/bookmark: stored frame → rect intersection
+Click tolerance: `HIT_RADIUS_PX (6) + HIT_SLACK_PX (2) = 8px` screen-space — forgiving touch target without enlarging the visual anchor. Marquee uses no tolerance (exact region intersect).
 
 ---
 
@@ -754,6 +721,6 @@ Store fields consumed by context menu are documented in `components/context-menu
 | `core/geometry/scale-system.ts` | Pure math atoms: `scaleAround`, `uniformFactor` (handle-aware), `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` + bbox-aware atoms consumed by transform.ts (`scaleBBoxUniform`, `scaleBBoxEdges`, `edgePinDelta`, `derivePaddedFrame`). Imports `ScaleCtx` from `tools/selection/types.ts`. |
 | `core/geometry/bounds.ts` | Bbox/frame tuple helpers (`frameToBbox`, `bboxToFrame`, `bboxCenter`, `copyBbox`, etc.), WorldBounds operations, mutating offset primitives (`offsetBBox`, `offsetFrame`, `offsetPoint`, `offsetPoints`, `setBBoxXYWH`) |
 | `core/types/handles.ts` | HandleId taxonomy, type guards, scaleOrigin, handleCursor |
-| `core/geometry/hit-testing.ts` | `testObjectHit`, `hitTestHandle`, `hitTestEndpointDots`, `objectIntersectsRect` |
+| `core/spatial/` | Hit testing + region queries — consumed only via `pickTopmostPaint` (click), `queryHandleIds(inBBox)` (marquee), `hitResizeHandle`, `hitEndpointDot`. Internals documented in `core/spatial/CLAUDE.md`. |
 | `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |
 | `renderer/layers/selection-overlay.ts` | `drawSelectionOverlay`: highlights, marquee, box+handles, endpoint dots |
