@@ -1,9 +1,9 @@
 /**
  * Shared types for the selection subsystem.
- * Single home for SelectionKind, TransformState, ConnectorTopology, SelectedStyles, etc.
+ * Single home for SelectionKind, TransformState, SelectedStyles, etc.
  */
 
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { ObjectKind } from '@/core/types/objects';
 import type { HandleId } from '@/core/types/handles';
 import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
@@ -178,43 +178,3 @@ export interface MarqueeState {
   current: [number, number] | null; // World coords
 }
 
-// ============================================================================
-// Connector Topology
-// ============================================================================
-
-/**
- * Per-endpoint override spec:
- *   null   = canonical (no override — endpoint stays at Y.Map stored value)
- *   string = frame override (value is the shapeId whose frame to transform)
- *   true   = free position override (apply transform to original position)
- */
-export type EndpointSpec = string | true | null;
-
-export interface ConnectorTopologyEntry {
-  connectorId: string;
-  strategy: 'translate' | 'reroute';
-  originalPoints: [number, number][];
-  originalBbox: BBoxTuple;
-  translatedPoints: [number, number][]; // pre-allocated, mutated per-frame (translate only)
-  startSpec: EndpointSpec; // only meaningful for 'reroute'
-  endSpec: EndpointSpec; // only meaningful for 'reroute'
-}
-
-/**
- * Connector topology computed once at transform begin.
- * Store-owned: entries/sets/maps are immutable after construction.
- * Mutable caches (reroutes, prevBboxes) are .set() per frame with no new allocations.
- */
-export interface ConnectorTopology {
-  /** All topology entries (translate + reroute) */
-  entries: ConnectorTopologyEntry[];
-  /** O(1) lookup: is this connector translateOnly? */
-  translateIdSet: Set<string>;
-  /** Original frames of selected shapes (for frame overrides) */
-  originalFrames: Map<string, FrameTuple>;
-
-  /** connectorId → rerouted points (mutable per-frame cache) */
-  reroutes: Map<string, [number, number][] | null>;
-  /** connectorId → previous frame bbox (mutable per-frame cache) */
-  prevBboxes: Map<string, BBoxTuple>;
-}

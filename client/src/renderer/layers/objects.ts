@@ -41,6 +41,7 @@ import {
   type Entry,
   type GeoOf,
 } from '@/tools/selection/transform';
+import type { ConnectorEntry } from '@/tools/selection/connector-topology';
 import type { CodeProps } from '@/core/accessors';
 
 function getCodeRenderData(id: string, props: CodeProps) {
@@ -63,15 +64,11 @@ function withTransform(ctx: CanvasRenderingContext2D, tx: number, ty: number, sx
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateIds: string[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
-// Dedupes inject candidates across the three sources (selectedIds / topology.translateIdSet /
-// topology.reroutes). A selected connector is typically present in both selectedIds and one
-// of the topology maps — without this we'd pay getRenderBBox + viewport-test twice per frame.
-const _injectSeen = new Set<string>();
 
 /**
  * Render-time bbox for transform-injected IDs. Reads whatever cached representation
  * the active transform already maintains per frame — no recomputation:
- *   - topology connectors → `topology.prevBboxes.get(id)` (set by updateTopologyReroutes)
+ *   - topology connectors → `topology.byId.get(id).currBbox` (set by runTopology*)
  *   - endpointDrag connector → `transform.routedBbox` (set by rerouteConnector)
  *   - scale (non-connector) → `entry.out.bbox` (set by apply functions)
  *   - translate (non-connector) → `handle.bbox + translateDelta`
@@ -83,8 +80,8 @@ function getRenderBBox(
   transform: ReturnType<typeof useSelectionStore.getState>['transform'],
   connTopology: ReturnType<typeof getTransformTopology>,
 ): BBoxTuple {
-  const topoPrev = connTopology?.prevBboxes.get(handle.id);
-  if (topoPrev) return topoPrev;
+  const te = connTopology?.byId.get(handle.id);
+  if (te) return te.currBbox;
 
   if (transform.kind === 'translate') {
     const delta = getTranslateDelta();
@@ -117,8 +114,6 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
 
   // Read topology from transform-state module (not from Zustand)
   const connTopology = getTransformTopology();
-  const translateSet = connTopology?.translateIdSet;
-  const reroutes = connTopology?.reroutes;
 
   const viewport = getVisibleBoundsTuple() as BBoxTuple;
   const entries = spatialIndex.queryBBox(viewport);
@@ -128,17 +123,11 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   const cbuf = clipBuf; // narrowed local — avoids repeated NNA inside hot loop
 
   // Main loop: rbush entries from the viewport, rect-filtered by clipBuf.
-  // Transform-injected IDs (selected / translate-topology / reroute-topology) are
-  // skipped here and re-pushed below via their PREVIEW bbox — this replaces the
-  // old "blind inject to compensate for edge-scroll stale rbush" workaround with
-  // a correctness-first filter by actual render position.
+  // Transform-injected IDs (selected + attached-topology connectors) are skipped
+  // here and re-pushed below via their PREVIEW bbox — single walk, pre-deduplicated.
   for (let k = 0; k < entries.length; k++) {
     const e = entries[k];
-    if (
-      isTransforming &&
-      (selectedSet.has(e.id) || (translateSet !== undefined && translateSet.has(e.id)) || (reroutes !== undefined && reroutes.has(e.id)))
-    )
-      continue;
+    if (isTransforming && (selectedSet.has(e.id) || (connTopology !== null && connTopology.byId.has(e.id)))) continue;
 
     if (hasClip && cbuf !== null) {
       let hit = false;
@@ -155,45 +144,21 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   }
 
   // Inject transform IDs using their preview bbox, viewport-culled.
-  // A selected connector appears in both `selectedIds` and one of the topology maps —
-  // _injectSeen de-duplicates so we don't getRenderBBox/viewport-test twice per frame.
+  // `injectIds` is pre-deduplicated at build time (selectedIds ∪ attachedConnectors).
   if (isTransforming) {
-    _injectSeen.clear();
-    for (let i = 0; i < selectedIds.length; i++) {
-      const id = selectedIds[i];
-      if (_injectSeen.has(id)) continue;
+    const injectSource = connTopology?.injectIds ?? selectedIds;
+    for (let i = 0; i < injectSource.length; i++) {
+      const id = injectSource[i];
       const h = objectsById.get(id);
       if (!h) continue;
-      _injectSeen.add(id);
       if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
         _candidateIds.push(id);
-      }
-    }
-    if (connTopology) {
-      for (const id of connTopology.translateIdSet) {
-        if (_injectSeen.has(id)) continue;
-        const h = objectsById.get(id);
-        if (!h) continue;
-        _injectSeen.add(id);
-        if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
-          _candidateIds.push(id);
-        }
-      }
-      for (const id of connTopology.reroutes.keys()) {
-        if (_injectSeen.has(id)) continue;
-        const h = objectsById.get(id);
-        if (!h) continue;
-        _injectSeen.add(id);
-        if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
-          _candidateIds.push(id);
-        }
       }
     }
   }
 
   // Sort by ULID for deterministic draw order (oldest first -> newest on top).
-  // Main loop excludes inject-set IDs and _injectSeen de-dupes within inject, so
-  // _candidateIds is provably unique — no post-sort dedupe needed.
+  // Main loop excludes inject-set IDs and injectIds is provably unique — no post-sort dedupe needed.
   _candidateIds.sort();
 
   for (let i = 0; i < _candidateIds.length; i++) {
@@ -201,79 +166,70 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     const handle = objectsById.get(id);
     if (!handle) continue;
 
-    // === TRANSFORM SELECTED OBJECTS DURING ACTIVE TRANSFORM ===
-    const isSelected = selectedSet.has(id);
-    const needsTransform = isTransforming && isSelected;
+    // Connector: single topology-dispatched draw path covers selected + attached.
+    if (handle.kind === 'connector') {
+      const te = connTopology?.byId.get(handle.id);
+      if (te) {
+        drawConnectorWithTopology(ctx, handle, te);
+        continue;
+      }
+      if (transform.kind === 'endpointDrag' && handle.id === transform.connectorId && transform.routedPoints) {
+        drawConnectorFromPoints(ctx, handle, transform.routedPoints);
+        continue;
+      }
+      drawObject(ctx, handle);
+      continue;
+    }
 
-    if (needsTransform) {
+    // === TRANSFORM SELECTED NON-CONNECTOR OBJECTS DURING ACTIVE TRANSFORM ===
+    const isSelected = selectedSet.has(id);
+    if (isTransforming && isSelected) {
       if (transform.kind === 'translate') {
         const delta = getTranslateDelta();
         if (!delta) {
           drawObject(ctx, handle);
-        } else if (handle.kind === 'connector') {
-          // Connector during translate: check topology reroutes
-          const points = connTopology?.reroutes.get(handle.id);
-          if (points) {
-            drawConnectorFromPoints(ctx, handle, points);
-          } else if (connTopology?.translateIdSet.has(handle.id)) {
-            ctx.save();
-            ctx.translate(delta[0], delta[1]);
-            drawObject(ctx, handle);
-            ctx.restore();
-          } else {
-            drawObject(ctx, handle);
-          }
         } else {
-          // Non-connector: use ctx.translate with cached Path2D (efficient)
           ctx.save();
           ctx.translate(delta[0], delta[1]);
           drawObject(ctx, handle);
           ctx.restore();
         }
       } else if (transform.kind === 'scale') {
-        // Scale: entry-based rendering (typed by kind)
-        if (handle.kind !== 'connector') {
-          renderScaleEntry(ctx, handle);
-        } else {
-          const points = connTopology?.reroutes.get(handle.id);
-          if (points) {
-            drawConnectorFromPoints(ctx, handle, points);
-          } else {
-            drawObject(ctx, handle);
-          }
-        }
-      } else if (transform.kind === 'endpointDrag') {
-        if (handle.kind === 'connector' && handle.id === transform.connectorId && transform.routedPoints) {
-          drawConnectorFromPoints(ctx, handle, transform.routedPoints);
-        } else {
-          drawObject(ctx, handle);
-        }
+        renderScaleEntry(ctx, handle);
       } else {
         drawObject(ctx, handle);
       }
     } else {
-      // Non-selected: check topology for connector overrides
-      if (handle.kind === 'connector' && connTopology) {
-        const points = connTopology.reroutes.get(id);
-        if (points) {
-          drawConnectorFromPoints(ctx, handle, points);
-        } else if (connTopology.translateIdSet.has(id)) {
-          const delta = getTranslateDelta();
-          if (delta) {
-            ctx.save();
-            ctx.translate(delta[0], delta[1]);
-            drawObject(ctx, handle);
-            ctx.restore();
-          } else {
-            drawObject(ctx, handle);
-          }
-        } else {
-          drawObject(ctx, handle);
-        }
-      } else {
-        drawObject(ctx, handle);
-      }
+      drawObject(ctx, handle);
     }
+  }
+}
+
+/**
+ * Single connector draw dispatch under active transform.
+ * Covers both selected and non-selected (attached) connectors via topology entry.
+ */
+function drawConnectorWithTopology(ctx: CanvasRenderingContext2D, handle: ObjectHandle, te: ConnectorEntry): void {
+  switch (te.mode) {
+    case 'static':
+      drawObject(ctx, handle);
+      return;
+    case 'translate': {
+      const d = getTranslateDelta();
+      if (!d) {
+        drawObject(ctx, handle);
+        return;
+      }
+      ctx.save();
+      ctx.translate(d[0], d[1]);
+      drawObject(ctx, handle);
+      ctx.restore();
+      return;
+    }
+    case 'reroute':
+      if (te.currPoints) drawConnectorFromPoints(ctx, handle, te.currPoints);
+      else drawObject(ctx, handle);
+      return;
   }
 }
 

@@ -64,7 +64,23 @@ export function frameToBboxMut(f: FrameTuple, out: BBoxTuple): void {
   out[3] = f[1] + f[3];
 }
 
+/** Convert bbox to frame form in-place. Mirror of frameToBboxMut. */
+export function bboxToFrameMut(b: BBoxTuple, out: FrameTuple): void {
+  out[0] = b[0];
+  out[1] = b[1];
+  out[2] = b[2] - b[0];
+  out[3] = b[3] - b[1];
+}
+
 export function copyBbox(src: BBoxTuple, dst: BBoxTuple): void {
+  dst[0] = src[0];
+  dst[1] = src[1];
+  dst[2] = src[2];
+  dst[3] = src[3];
+}
+
+/** Copy frame in-place: dst = src. Mirror of copyBbox. */
+export function copyFrame(dst: FrameTuple, src: FrameTuple): void {
   dst[0] = src[0];
   dst[1] = src[1];
   dst[2] = src[2];

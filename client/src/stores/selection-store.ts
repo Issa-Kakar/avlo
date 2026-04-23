@@ -38,10 +38,8 @@ export type {
   InlineStyles,
   TransformState,
   MarqueeState,
-  ConnectorTopology,
-  ConnectorTopologyEntry,
-  EndpointSpec,
 } from '@/tools/selection/types';
+export type { ConnectorTopology, ConnectorEntry } from '@/tools/selection/connector-topology';
 
 // === State Interface ===
 
@@ -125,9 +123,6 @@ export interface SelectionActions {
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
-
-// Re-export for backward compat — topology builder lives in connector-topology.ts
-export { computeConnectorTopology } from '@/tools/selection/connector-topology';
 
 // === Store Implementation ===
 

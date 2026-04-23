@@ -9,12 +9,11 @@
 
 import type * as Y from 'yjs';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
-import { OBJECT_KINDS } from '@/core/types/objects';
+import type { ObjectKind, BindableKind, TextAlign, TextWidth } from '@/core/types/objects';
+import { OBJECT_KINDS, isBindableKind } from '@/core/types/objects';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
 import {
-  scaleAround,
   scaleBBoxUniform,
   scaleBBoxEdges,
   edgePinDelta,
@@ -24,17 +23,14 @@ import {
 } from '@/core/geometry/scale-system';
 import {
   frameToBbox,
-  bboxToFrame,
   bboxCenter,
   copyBbox,
   offsetPoint,
   offsetBBox,
   offsetFrame as offsetFrameMut,
-  offsetPoints as offsetPointsMut,
   setBBoxXYWH,
-  translateBBox,
 } from '@/core/geometry/bounds';
-import { getHandle, transact, getObjects } from '@/runtime/room-runtime';
+import { getHandle, transact } from '@/runtime/room-runtime';
 import { getFrame, getPoints, getWidth, getOrigin, getTextProps, getCodeProps } from '@/core/accessors';
 import {
   getTextFrame,
@@ -53,9 +49,15 @@ import {
   type CodeLayout,
 } from '@/core/code/code-system';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
-import { computeConnectorTopology } from './connector-topology';
-import type { ConnectorTopology, EndpointSpec, KindCounts as SelectionKindCounts, ScaleCtx } from './types';
+import {
+  newTopologyBuilder,
+  runTopologyScale,
+  runTopologyTranslate,
+  commitTopology,
+  cancelTopology,
+  type ConnectorTopology,
+} from './connector-topology';
+import type { KindCounts as SelectionKindCounts, ScaleCtx } from './types';
 
 // ============================================================================
 // Structural Traits — field-set atoms for generic function signatures
@@ -277,6 +279,9 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
 function applyOffset(f: any, dx: number, dy: number, o: any): void {
   if ('frame' in o) offsetFrameMut(o.frame, f.frame, dx, dy);
   if ('origin' in o) offsetPoint(o.origin, f.origin, dx, dy);
+  // Propagate scale when both sides carry it (note/bookmark only) so connector-topology's
+  // fillFrameFromBind sees ratio=1 under translate/edgePin without a dedicated path.
+  if ('scale' in o && 'scale' in f) o.scale = f.scale;
   offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
@@ -528,7 +533,10 @@ function freezeTranslateEntry(kind: ObjectKind, id: string, y: Y.Map<unknown>, b
     case 'bookmark': {
       const origin = getOrigin(y);
       if (!origin) return null;
-      return { origin: [...origin] as Point, bbox: [...bbox] as BBoxTuple };
+      // Capture scale so applyOffset can propagate it to out.scale (needed by
+      // connector-topology's fillFrameFromBind under translate/edgePin).
+      const scale = (y.get('scale') as number) ?? 1;
+      return { origin: [...origin] as Point, scale, bbox: [...bbox] as BBoxTuple };
     }
     default:
       return null;
@@ -564,9 +572,16 @@ export class TransformController {
 
     this.scaleCtx = { sx: 1, sy: 1, origin, selBounds, handleId };
 
+    const builder = newTopologyBuilder('scale', selectedIds);
+
     for (const id of selectedIds) {
       const handle = getHandle(id);
-      if (!handle || handle.kind === 'connector') continue;
+      if (!handle) continue;
+
+      if (handle.kind === 'connector') {
+        builder.onSelectedConnector(id, handle);
+        continue;
+      }
 
       const behavior = resolveBehavior(handle.kind, handleId, mixed);
 
@@ -593,9 +608,13 @@ export class TransformController {
         this.behaviors[handle.kind] = behavior;
         this.activeKinds.push(handle.kind);
       }
+
+      if (isBindableKind(handle.kind)) {
+        builder.onSelectedBindable(id, handle.kind, entry as Entry<BindableKind>, handle);
+      }
     }
 
-    this.topology = computeConnectorTopology('scale', [...selectedIds]);
+    this.topology = builder.finalize();
   }
 
   updateScale(sx: number, sy: number): void {
@@ -619,7 +638,7 @@ export class TransformController {
       }
     }
 
-    this.updateTopologyReroutes();
+    if (this.topology) runTopologyScale(this.topology, this.scaleCtx);
   }
 
   // --- Translate lifecycle ---
@@ -630,9 +649,16 @@ export class TransformController {
     this.dx = 0;
     this.dy = 0;
 
+    const builder = newTopologyBuilder('translate', selectedIds);
+
     for (const id of selectedIds) {
       const handle = getHandle(id);
-      if (!handle || handle.kind === 'connector') continue;
+      if (!handle) continue;
+
+      if (handle.kind === 'connector') {
+        builder.onSelectedConnector(id, handle);
+        continue;
+      }
 
       const frozen = freezeTranslateEntry(handle.kind, id, handle.y, handle.bbox);
       if (!frozen) continue;
@@ -644,9 +670,13 @@ export class TransformController {
       (this.store[handle.kind] as Map<string, Entry>).set(id, entry);
 
       if (!this.activeKinds.includes(handle.kind)) this.activeKinds.push(handle.kind);
+
+      if (isBindableKind(handle.kind)) {
+        builder.onSelectedBindable(id, handle.kind, entry as Entry<BindableKind>, handle);
+      }
     }
 
-    this.topology = computeConnectorTopology('translate', [...selectedIds]);
+    this.topology = builder.finalize();
   }
 
   updateTranslate(dx: number, dy: number): void {
@@ -664,7 +694,7 @@ export class TransformController {
       }
     }
 
-    this.updateTopologyReroutes();
+    if (this.topology) runTopologyTranslate(this.topology, dx, dy);
   }
 
   // --- Shared lifecycle ---
@@ -674,6 +704,8 @@ export class TransformController {
     const behaviors = this.behaviors;
     const topology = this.topology;
     const mode = this.mode;
+    const dx = this.dx;
+    const dy = this.dy;
 
     // Clear visual state FIRST (prevents double-transform glitch)
     this.clear();
@@ -699,7 +731,7 @@ export class TransformController {
           for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
         }
       }
-      this.commitTopologyEntries(topology);
+      if (topology && mode !== 'none') commitTopology(topology, mode, dx, dy);
     });
   }
 
@@ -713,13 +745,7 @@ export class TransformController {
         invalidateWorldBBox(e.out.bbox);
       }
     }
-    if (this.topology) {
-      for (const entry of this.topology.entries) {
-        const prev = this.topology.prevBboxes.get(entry.connectorId);
-        if (prev) invalidateWorldBBox(prev);
-        invalidateWorldBBox(entry.originalBbox);
-      }
-    }
+    if (this.topology) cancelTopology(this.topology);
     this.clear();
   }
 
@@ -734,101 +760,7 @@ export class TransformController {
     this.topology = null;
   }
 
-  // --- Topology ---
-
-  private resolveTopologySpec(spec: EndpointSpec, pos: [number, number]): EndpointOverrideValue | undefined {
-    if (typeof spec === 'string') {
-      // Frame override from entry
-      const frame = this.getEntryFrame(spec);
-      if (frame) return { frame };
-      // Fallback: original frame from topology
-      const orig = this.topology?.originalFrames.get(spec);
-      return orig ? { frame: orig } : undefined;
-    }
-    if (spec !== true) return undefined;
-    if (this.mode === 'translate') return [pos[0] + this.dx, pos[1] + this.dy];
-    if (this.scaleCtx) {
-      const { origin, sx, sy } = this.scaleCtx;
-      return [scaleAround(pos[0], origin[0], sx), scaleAround(pos[1], origin[1], sy)];
-    }
-    return undefined;
-  }
-
-  private updateTopologyReroutes(): void {
-    const topology = this.topology;
-    if (!topology) return;
-
-    for (const entry of topology.entries) {
-      if (entry.strategy === 'translate') {
-        const dx = this.dx,
-          dy = this.dy;
-        offsetPointsMut(entry.translatedPoints, entry.originalPoints, dx, dy);
-        topology.reroutes.set(entry.connectorId, entry.translatedPoints);
-
-        const prev = topology.prevBboxes.get(entry.connectorId);
-        if (prev) invalidateWorldBBox(prev);
-        const translated = translateBBox(entry.originalBbox, dx, dy);
-        invalidateWorldBBox(entry.originalBbox);
-        invalidateWorldBBox(translated);
-        topology.prevBboxes.set(entry.connectorId, translated);
-        continue;
-      }
-
-      // Reroute entries
-      const overrides: Record<string, EndpointOverrideValue> = {};
-      const s = this.resolveTopologySpec(entry.startSpec, entry.originalPoints[0]);
-      const e = this.resolveTopologySpec(entry.endSpec, entry.originalPoints[entry.originalPoints.length - 1]);
-      if (s) overrides.start = s;
-      if (e) overrides.end = e;
-
-      const hasOverrides = overrides.start !== undefined || overrides.end !== undefined;
-      const result = rerouteConnector(entry.connectorId, hasOverrides ? overrides : undefined);
-      topology.reroutes.set(entry.connectorId, result?.points ?? null);
-
-      const prev = topology.prevBboxes.get(entry.connectorId);
-      if (prev) invalidateWorldBBox(prev);
-      if (result) {
-        invalidateWorldBBox(result.bbox);
-        topology.prevBboxes.set(entry.connectorId, result.bbox);
-      }
-    }
-  }
-
-  private commitTopologyEntries(topology: ConnectorTopology | null): void {
-    if (!topology) return;
-    const objects = getObjects();
-    for (const entry of topology.entries) {
-      const yMap = objects.get(entry.connectorId);
-      if (!yMap) continue;
-
-      if (entry.strategy === 'translate') {
-        const pts = entry.translatedPoints.map((p) => [...p] as [number, number]);
-        yMap.set('points', pts);
-        yMap.set('start', [...entry.translatedPoints[0]] as [number, number]);
-        yMap.set('end', [...entry.translatedPoints[entry.translatedPoints.length - 1]] as [number, number]);
-      } else {
-        const points = topology.reroutes.get(entry.connectorId);
-        if (!points || points.length < 2) continue;
-        yMap.set('points', points);
-        yMap.set('start', points[0]);
-        yMap.set('end', points[points.length - 1]);
-      }
-    }
-  }
-
   // --- Accessors ---
-
-  getEntryFrame(id: string): FrameTuple | null {
-    for (const kind in this.store) {
-      const map = this.store[kind as ObjectKind];
-      if (!map) continue;
-      const entry = map.get(id);
-      if (!entry) continue;
-      if ('frame' in entry.out) return (entry.out as { frame: FrameTuple }).frame;
-      return bboxToFrame(entry.out.bbox);
-    }
-    return null;
-  }
 
   getMode(): 'none' | 'scale' | 'translate' {
     return this.mode;
