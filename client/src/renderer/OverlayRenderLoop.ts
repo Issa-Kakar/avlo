@@ -7,7 +7,6 @@ import { getAnimationController, destroyAnimationController, EraserTrailAnimatio
 export class OverlayRenderLoop {
   private started = false;
   private rafId: number | null = null;
-  private needsFrame = false;
   private cameraUnsubscribe: (() => void) | null = null;
   private toolUnsubscribe: (() => void) | null = null;
 
@@ -16,6 +15,7 @@ export class OverlayRenderLoop {
   private lastCanvasH = 0;
 
   start(): void {
+    if (this.started) return;
     this.started = true;
 
     // Register animation jobs + wire push-based invalidation
@@ -64,44 +64,41 @@ export class OverlayRenderLoop {
 
     destroyAnimationController();
 
-    if (this.rafId) cancelAnimationFrame(this.rafId);
-    this.rafId = null;
-    this.needsFrame = false;
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
     this.started = false;
     this.lastCanvasW = 0;
     this.lastCanvasH = 0;
   }
 
-  invalidateAll() {
-    if (!this.needsFrame) {
-      this.needsFrame = true;
-      this.schedule();
-    }
+  // Single-flag gate: rafId tracks "frame pending." started-guarded so pre-mount
+  // invalidations (BC-delivered awareness/Y updates fire before Canvas mounts
+  // when another tab is already open) can't pollute state.
+  invalidateAll(): void {
+    if (!this.started || this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(this.tick);
   }
 
-  private schedule(): void {
-    if (this.rafId || !this.started) return;
-    this.rafId = requestAnimationFrame(() => {
-      this.rafId = null;
-      this.needsFrame = false;
-      this.frame();
-    });
-  }
+  private tick = (): void => {
+    this.rafId = null;
+    if (!this.started) return;
+    this.frame();
+  };
 
   private frame(): void {
-    if (!this.started) return;
     applyPendingResize();
 
     const ctx = getOverlayContext();
     if (!ctx) return;
 
-    // Detect canvas resize → schedule re-render
+    // Resize detected → request another render. rafId was just cleared in tick,
+    // so invalidateAll queues a fresh frame without fighting the gate.
     if (ctx.canvas.width !== this.lastCanvasW || ctx.canvas.height !== this.lastCanvasH) {
       this.lastCanvasW = ctx.canvas.width;
       this.lastCanvasH = ctx.canvas.height;
-      requestAnimationFrame(() => {
-        if (this.started) this.invalidateAll();
-      });
+      this.invalidateAll();
     }
 
     const { scale, pan, dpr, cssWidth, cssHeight } = useCameraStore.getState();
