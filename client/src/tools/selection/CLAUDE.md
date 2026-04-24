@@ -38,11 +38,14 @@ tools/selection/types.ts (shared type home)
 ├── SelectionKind = ObjectKind | 'none' | 'mixed'  — matches object taxonomy 1:1
 ├── KindCounts = Record<ObjectKind, number> & { total }  — singular keys
 ├── TransformState discriminant (ScaleTransform carries handleId/selBounds/origin)
-├── SelectedStyles, InlineStyles, MarqueeState
-└── ConnectorTopology + EndpointSpec
+├── ScaleCtx (gesture bundle for scale-system.ts atoms)
+└── SelectedStyles, InlineStyles, MarqueeState
 
 tools/selection/connector-topology.ts
-└── computeConnectorTopology(transformKind, selectedIds) — pure builder, breaks store↔transform cycle
+├── ConnectorTopology + ConnectorEntry (static | translate | reroute discriminated union)
+├── newTopologyBuilder(mode, selectedIdSet) — controller drives inline with its freeze loop
+├── runTopologyScale / runTopologyTranslate — per-frame apply (pure dispatch, zero allocation)
+└── commitTopology / cancelTopology
 
 selection-utils.ts (pure functions — zero-arg where possible)
 ├── computeSelectionComposition(ids) → kind, mode, counts (buckets via counts[kind]++)
@@ -417,35 +420,41 @@ topology: ConnectorTopology | null
 ```
 beginScale(selectedIds, kindCounts, handleId, origin, selBounds):
   1. clear() — reset all state
-  2. For each selected non-connector:
-     a. resolveBehavior(kind, handleId, mixed) → ScaleBehavior
-     b. freezeScaleEntry(kind, behavior, id, y, bbox) → frozen geometry snapshot
-     c. createOutFor(kind, frozen) → pre-allocated output
-     d. Store as Entry in store[kind]
-  3. computeConnectorTopology('scale', selectedIds) → topology
+  2. builder = newTopologyBuilder('scale', selectedIds)
+  3. For each selected id (one getHandle per id):
+     - connector → builder.onSelectedConnector(id, handle); continue
+     - non-connector:
+       a. resolveBehavior(kind, handleId, mixed) → ScaleBehavior
+       b. freezeScaleEntry(kind, behavior, id, y, bbox) → frozen geometry snapshot
+       c. createOutFor(kind, frozen) → pre-allocated output
+       d. Store as Entry in store[kind]
+       e. if bindable → builder.onSelectedBindable(id, kind, entry, handle)
+  4. this.topology = builder.finalize()
 
 updateScale(sx, sy):
   1. Update scaleCtx.sx, scaleCtx.sy
   2. For each activeKind: lookup apply function from APPLY_SCALE[kind][behavior]
   3. Apply to all entries, invalidate dirty rects
-  4. updateTopologyReroutes()
+  4. if topology → runTopologyScale(topology, scaleCtx)
 
 beginTranslate(selectedIds):
   1. clear(), freeze translate entries (simpler: no behavior resolution)
-  2. computeConnectorTopology('translate', selectedIds)
+  2. Build topology via newTopologyBuilder('translate', selectedIds) inline
 
 updateTranslate(dx, dy):
   1. Store dx, dy
   2. For each activeKind: TRANSLATE_APPLY[kind] on all entries
-  3. updateTopologyReroutes()
+  3. if topology → runTopologyTranslate(topology, dx, dy)
 
 commit():
   1. Capture store/behaviors/topology refs
   2. clear() — prevents double-transform glitch
-  3. transact(() => { dispatch COMMIT_SCALE or TRANSLATE_COMMIT per kind })
-  4. commitTopologyEntries()
+  3. transact(() => {
+       dispatch COMMIT_SCALE or TRANSLATE_COMMIT per kind
+       if (topology) commitTopology(topology, mode, dx, dy)
+     })
 
-cancel(): invalidate all dirty rects, clear()
+cancel(): invalidate all dirty rects, cancelTopology(topology), clear()
 clear(): reset store, activeKinds, behaviors, scaleCtx, dx/dy, mode, topology
 ```
 
@@ -510,39 +519,82 @@ Scale origins and bounds are derived from `handle.bbox` (includes stroke width p
 
 ## Connector Topology
 
-Computed once at transform `begin()` via `computeConnectorTopology(transformKind, selectedIds)` in `tools/selection/connector-topology.ts`. This file exists to break the store↔transform circular import — the builder reads handles/frames directly and is called by `TransformController` during `beginScale`/`beginTranslate`. Selection-store re-exports the function for backward compat.
+Connectors never enter the per-kind entry store — `TransformController` routes them through a companion module (`tools/selection/connector-topology.ts`) via a builder it drives inline with its single begin-phase freeze loop. One `getHandle` per selected id, one per non-selected attached connector; no redundant passes.
 
-### Strategy Determination
+### Endpoint states × connector modes
 
-Two passes:
-1. **Selected connectors:** Check if both endpoints move (free endpoints always move if connector is selected; anchored endpoints move if anchored shape is selected).
-2. **Non-selected connectors:** Anchored to selected shapes. Only the anchored endpoint moves.
+Two orthogonal classifications, decided at begin:
 
-```
-Translate + both endpoints move → strategy: 'translate'
-Otherwise → strategy: 'reroute' (A* each frame via rerouteConnector)
-Scale → always 'reroute'
-```
+**Endpoint state** (per endpoint, via `classifyEndpoint`):
+| State | When | Override passed to `rerouteConnector` |
+|---|---|---|
+| `canonical` | Anchored to a non-selected bindable, OR free and connector not selected | none — reroute falls back to Y.Map |
+| `frame-bound` | Anchored to a selected bindable | `{ frame: <live> }` filled from `entry.out.*` |
+| `free-moving` | Not anchored AND connector is selected | `Point` (translated or scaled per frame) |
 
-### EndpointSpec (for reroute)
+**Connector mode** (per connector, discriminant of `ConnectorEntry`):
+| Mode | Condition | Per-frame work |
+|---|---|---|
+| `static` | Both endpoints canonical (only selected connectors enter) | None — renderer draws at stored position |
+| `translate` | Both endpoints non-canonical AND gesture is `translate` | Rigid bbox shift; commit translates points once |
+| `reroute` | Anything else (incl. any scale gesture with non-canonical endpoints) | `rerouteConnector(id, { start?, end? })` |
+
+### Shape
 
 ```typescript
-type EndpointSpec = string | true | null;
-// string = shapeId — frame override (transform shape's frame, use as anchor)
-// true   = free position override (apply transform to original endpoint position)
-// null   = canonical (no override — endpoint stays at stored value)
+type ConnectorEntry = StaticEntry | TranslateEntry | RerouteEntry;  // discriminated by `mode`
+
+type ConnectorTopology = {
+  byId:       ReadonlyMap<string, ConnectorEntry>;   // renderer lookup
+  translates: readonly TranslateEntry[];             // monomorphic apply loops
+  reroutes:   readonly RerouteEntry[];
+  injectIds:  readonly string[];                     // selectedIds ∪ attached-non-selected connectors
+};
+
+type Side = BindSide | FreeSide;
+type BindSide = { kind: 'bind'; bindKind; entry; frozenFrame: FrameTuple | null };  // non-null for note/bookmark
+type FreeSide = { kind: 'free'; originalPos: Readonly<Point>; scratch: Point };     // per-instance scratch
 ```
 
-### Per-Frame Rerouting (TransformController.updateTopologyReroutes)
+`RerouteEntry.start` / `.end` is `Side | null` — `null` encodes canonical (no override key set on the shared `OVERRIDES` object that frame reuses).
 
-For translate entries: offset `translatedPoints` by `(dx, dy)`.
-For reroute entries:
-1. `resolveTopologySpec()` builds endpoint overrides:
-   - `string` spec → `{ frame: getEntryFrame(shapeId) }` (reads transformed frame from entry store)
-   - `true` spec → translate or scale the original position
-2. `rerouteConnector(id, overrides)` → new points
-3. Store in `topology.reroutes` map (mutable per-frame cache)
-4. Track bbox in `topology.prevBboxes` for dirty rect accumulation
+### Bind-side frame derivation (`fillFrameFromBind`)
+
+Per-frame, for each bind side, fill a module-level `FrameTuple` scratch from whatever apply just wrote:
+- **shape / image** — `copyFrame(scratch, out.frame)`.
+- **text / code** — `bboxToFrameMut(out.bbox, scratch)` (bbox coincides with visual frame today; flagged with a TODO for italic-overhang widening).
+- **note / bookmark** — `[out.origin.x, out.origin.y, frozenFrame.w × (out.scale/frozen.scale), frozenFrame.h × ratio]`. The ratio matches the renderer's `ctx.scale` factor exactly, keeping the connector anchor in pixel-lockstep with the rendered edge.
+
+Mode-agnostic: the same function serves translate and scale because `applyOffset` propagates `f.scale → o.scale` for note/bookmark (ratio = 1 under translate). Each frame scratch is wrapped once in a permanently-linked `{ frame }` object; safe to share across entries because `rerouteConnector` allocates fresh position tuples from anchor × frame — the scratch is only read.
+
+### Free-side isolation (per-instance scratch)
+
+Each `FreeSide` owns a private `scratch: Point`, allocated once at build. Apply writes `scratch[0] = scaleAround(originalPos[0], origin, sx)` (or the translate equivalent) and returns `s.scratch` directly. Per-side (not shared module-level) because `rerouteConnector`'s routing pipeline holds `FREE_ENDPOINT(position)` by reference and pushes it into the returned `points` array — sharing one scratch across entries within a frame would leak the last-processed entry's values into every prior entry's `currPoints`.
+
+`makeSide` also clones `storedPos` into `originalPos` so a prior gesture's entry preserved by Y.Map (by reference) can't corrupt this gesture's baseline.
+
+### Commit
+
+`commitReroute` writes `points` as-is (A*/simplify yields fresh interior tuples), then clones the first/last into `start`/`end` so Y.Map never holds a live topology reference. `commitTranslate` allocates one translated `Point[]` from `originalPoints + (dx, dy)` — no per-frame polyline buffer.
+
+### Public API
+
+| Function | Called by |
+|---|---|
+| `newTopologyBuilder(mode, selectedIdSet)` → `TopologyBuilder` | `TransformController.beginScale` / `beginTranslate` |
+| `builder.onSelectedConnector(id, handle)` / `.onSelectedBindable(id, kind, entry, handle)` | Per-id dispatch inside the controller's freeze loop |
+| `builder.finalize(): ConnectorTopology \| null` | End of controller's begin |
+| `runTopologyScale(topology, ctx)` / `runTopologyTranslate(topology, dx, dy)` | `updateScale` / `updateTranslate` (after non-connector apply) |
+| `commitTopology(topology, mode, dx, dy)` | Inside `commit()`'s transact block |
+| `cancelTopology(topology)` | `TransformController.cancel()` |
+
+### Invariants
+
+1. **Zero per-frame allocation in the topology layer.** Frame scratches + per-free-side scratch are allocated once at build.
+2. **Apply paths of bindable kinds are untouched.** `fillFrameFromBind` reads `entry.out.*` / `entry.frozen.*` — the only apply-adjacent concession is `applyOffset` propagating `f.scale → o.scale` when both sides carry the field.
+3. **Frame overrides are read-only.** `rerouteConnector` reads `override.frame` via `anchorFramePoint` / `elbowAnchorPoint`, both of which allocate fresh position tuples.
+4. **Free-endpoint scratches must be per-side.** Shared module scratches break multi-entry scale/translate because free-endpoint positions flow through to `currPoints`.
+5. **Y.Map never stores a live topology reference.** Commit clones endpoints; `makeSide` clones the stored baseline. Future reroute paths can be added without re-opening either aliasing vector.
 
 ---
 
@@ -713,8 +765,8 @@ Store fields consumed by context menu are documented in `components/context-menu
 |------|----------------|
 | `tools/selection/SelectTool.ts` | State machine, hit testing dispatch, routes transform lifecycle through store, endpoint drag commit |
 | `tools/selection/transform.ts` | TransformController, structural traits, mapped types, dispatch tables, apply/commit/freeze functions, module getters |
-| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState` (incl. `ScaleTransform` = `{ kind, initialDelta, clickOffset }`), `ScaleCtx` (gesture bundle for `scale-system.ts` atoms), `SelectedStyles`, `InlineStyles`, `ConnectorTopology`, empty constants |
-| `tools/selection/connector-topology.ts` | `computeConnectorTopology(transformKind, selectedIds)` — pure builder, lives outside store to break circular import |
+| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState` (incl. `ScaleTransform` = `{ kind, initialDelta, clickOffset }`), `ScaleCtx` (gesture bundle for `scale-system.ts` atoms), `SelectedStyles`, `InlineStyles`, empty constants |
+| `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (`static` \| `translate` \| `reroute`), `newTopologyBuilder` (driven inline by `TransformController`'s freeze loop), `runTopologyScale`/`runTopologyTranslate`/`commitTopology`/`cancelTopology`, `fillFrameFromBind` bind-side frame derivation |
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles`, `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | 21 mutation functions for context menu buttons (documented in context-menu CLAUDE.md) |
 | `stores/selection-store.ts` | Zustand store, orchestrates `TransformController` (begin/update/end/cancel), `computeSelectionBounds()`, `filterSelectionByKind(kind: ObjectKind)`, handle helpers. Re-exports shared types for backward compat. |

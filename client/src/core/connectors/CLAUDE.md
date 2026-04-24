@@ -237,6 +237,21 @@ type EndpointOverrideValue =
 No override → fall back to stored anchor (resolved against the anchor shape's
 current frame) or to stored raw position for free endpoints.
 
+**Read-only contract, aliased endpoints.** `rerouteConnector` treats override
+values as read-only (frame overrides flow through `anchorFramePoint` /
+`elbowAnchorPoint`, which allocate fresh position tuples). But the resulting
+route's `points[0]` / `points[points.length-1]` may *alias* a
+`[number, number]` free-position override — the elbow A* path assembles
+`[startPos, ...cells, endPos]` and the straight path returns `me.position`
+directly. Consequences for callers:
+- A scratch tuple used as an override **must not** be shared across multiple
+  `rerouteConnector` calls within one apply pass — the previous call's
+  endpoint will mutate when the next call writes. Per-endpoint or per-entry
+  scratches only.
+- Callers persisting the route to Y.Map **must** clone `points[0]` and
+  `points[last]` before writing `start` / `end` (Y.Map preserves references,
+  so an un-cloned write resurfaces as the next gesture's "stored position").
+
 ### ResolvedEndpoint
 
 ```typescript
