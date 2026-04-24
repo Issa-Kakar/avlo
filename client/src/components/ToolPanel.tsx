@@ -460,7 +460,7 @@ function Inspector({
                     value={hexInput}
                     onChange={(e) => {
                       const v = e.target.value;
-                      setHexInput(v.startsWith('#') ? v : '#' + v);
+                      setHexInput(v.startsWith('#') ? v : `#${v}`);
                     }}
                     onKeyDown={(e) => e.key === 'Enter' && handleHexSubmit()}
                     placeholder="#"

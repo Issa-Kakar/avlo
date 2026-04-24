@@ -138,7 +138,7 @@ export function fitCircle(points: Vec2[]): {
     rawRMS_NEW: residualRMS_NEW.toFixed(2),
     normRMS_OLD: (residualRMS_OLD / r_OLD).toFixed(4),
     normRMS_NEW: (residualRMS_NEW / r_NEW).toFixed(4),
-    normRatioImprovement: (residualRMS_OLD / r_OLD / (residualRMS_NEW / r_NEW)).toFixed(2) + 'x',
+    normRatioImprovement: `${(residualRMS_OLD / r_OLD / (residualRMS_NEW / r_NEW)).toFixed(2)}x`,
   });
 
   return { cx, cy, r, residualRMS: residualRMS_NEW };

@@ -332,7 +332,7 @@ function commitOriginScale(y: Y.Map<unknown>, o: HasOrigin & HasScale): void {
 function commitTextScale(y: Y.Map<unknown>, o: OutOf<'text'>): void {
   y.set('origin', [...o.origin]);
   y.set('fontSize', o.fontSize);
-  if (!isNaN(o.width)) y.set('width', o.width);
+  if (!Number.isNaN(o.width)) y.set('width', o.width);
 }
 function commitCodeScale(y: Y.Map<unknown>, o: OutOf<'code'>): void {
   y.set('origin', [...o.origin]);

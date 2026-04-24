@@ -131,7 +131,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   // here and re-pushed below via their PREVIEW bbox — single walk, pre-deduplicated.
   for (let k = 0; k < entries.length; k++) {
     const e = entries[k];
-    if (isTransforming && (selectedSet.has(e.id) || (connTopology !== null && connTopology.byId.has(e.id)))) continue;
+    if (isTransforming && (selectedSet.has(e.id) || connTopology?.byId.has(e.id))) continue;
 
     if (hasClip && cbuf !== null) {
       let hit = false;

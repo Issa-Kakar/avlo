@@ -34,7 +34,7 @@ export function getSvgPathFromStroke(points: number[][], closed = true): string 
 
   let a = points[0];
   let b = points[1];
-  let c = points[2];
+  const c = points[2];
   let d = `M${a[0]},${a[1]} Q${b[0]},${b[1]} ${avg(b[0], c[0])},${avg(b[1], c[1])} T`;
 
   for (let i = 2; i < len - 1; i++) {

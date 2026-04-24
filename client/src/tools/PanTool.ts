@@ -25,8 +25,6 @@ export class PanTool implements PointerTool {
   private coastRafId: number | null = null;
   private coastLastTime = 0;
 
-  constructor() {}
-
   canBegin(): boolean {
     return this.pointerId === null;
   }

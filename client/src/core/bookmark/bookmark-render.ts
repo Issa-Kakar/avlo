@@ -78,14 +78,14 @@ function wrapText(
   let current = '';
 
   for (const word of words) {
-    const test = current ? current + ' ' + word : word;
+    const test = current ? `${current} ${word}` : word;
     if (ctx.measureText(test).width > maxWidth && current) {
       if (lines.length === maxLines - 1) {
         let truncated = test;
-        while (ctx.measureText(truncated + '\u2026').width > maxWidth && truncated.length > 1) {
+        while (ctx.measureText(`${truncated}\u2026`).width > maxWidth && truncated.length > 1) {
           truncated = truncated.slice(0, -1);
         }
-        lines.push(truncated + '\u2026');
+        lines.push(`${truncated}\u2026`);
         return lines;
       }
       lines.push(current);
@@ -97,10 +97,10 @@ function wrapText(
   if (current) {
     if (lines.length === maxLines - 1 && ctx.measureText(current).width > maxWidth) {
       let truncated = current;
-      while (ctx.measureText(truncated + '\u2026').width > maxWidth && truncated.length > 1) {
+      while (ctx.measureText(`${truncated}\u2026`).width > maxWidth && truncated.length > 1) {
         truncated = truncated.slice(0, -1);
       }
-      lines.push(truncated + '\u2026');
+      lines.push(`${truncated}\u2026`);
     } else {
       lines.push(current);
     }

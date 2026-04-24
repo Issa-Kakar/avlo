@@ -465,9 +465,9 @@ export class TextTool implements PointerTool {
     this.boundHandleClickOutside = (e: PointerEvent) => {
       if (e.button !== 0) return;
       const target = e.target as Node;
-      if (this.container && this.container.contains(target)) return;
+      if (this.container?.contains(target)) return;
       const menuElement = document.querySelector('.ctx-menu');
-      if (menuElement && menuElement.contains(target)) return;
+      if (menuElement?.contains(target)) return;
       this.commitAndClose();
       // Only consume canvas clicks when text tool is active — prevents creating
       // a new text object on click-off. Other tools (select, draw, etc.) should
@@ -475,7 +475,7 @@ export class TextTool implements PointerTool {
       const tool = useDeviceUIStore.getState().activeTool;
       if (tool === 'text' || tool === 'note') {
         const canvas = getCanvasElement();
-        if (canvas && canvas.contains(target)) {
+        if (canvas?.contains(target)) {
           e.stopPropagation();
         }
       }
@@ -628,7 +628,7 @@ export class TextTool implements PointerTool {
     // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
     (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
 
-    if (this.container && this.container.parentNode) {
+    if (this.container?.parentNode) {
       this.container.parentNode.removeChild(this.container);
     }
 

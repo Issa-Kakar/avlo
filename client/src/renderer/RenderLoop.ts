@@ -252,7 +252,7 @@ export class RenderLoop {
     // 3. Read camera state (single read for entire frame)
     const { scale, pan, dpr, cssWidth, cssHeight } = useCameraStore.getState();
     if (cssWidth <= 0 || cssHeight <= 0) return;
-    if (!isFinite(scale) || scale <= 0 || !isFinite(pan.x) || !isFinite(pan.y)) return;
+    if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(pan.x) || !Number.isFinite(pan.y)) return;
 
     const pixelW = Math.round(cssWidth * dpr);
     const pixelH = Math.round(cssHeight * dpr);

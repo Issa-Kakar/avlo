@@ -479,14 +479,14 @@ export class CodeTool implements PointerTool {
     this.boundHandleClickOutside = (e: PointerEvent) => {
       if (e.button !== 0) return;
       const target = e.target as Node;
-      if (this.container && this.container.contains(target)) return;
+      if (this.container?.contains(target)) return;
       const menuElement = document.querySelector('.ctx-menu');
-      if (menuElement && menuElement.contains(target)) return;
+      if (menuElement?.contains(target)) return;
       this.commitAndClose();
       // Consume canvas clicks when code tool is active
       if (useDeviceUIStore.getState().activeTool === 'code') {
         const canvas = getCanvasElement();
-        if (canvas && canvas.contains(target)) {
+        if (canvas?.contains(target)) {
           e.stopPropagation();
         }
       }
@@ -666,7 +666,7 @@ export class CodeTool implements PointerTool {
     view.observer = null;
 
     // Remove container
-    if (this.container && this.container.parentNode) {
+    if (this.container?.parentNode) {
       this.container.parentNode.removeChild(this.container);
     }
 

@@ -22,7 +22,7 @@ function isPrivateHost(hostname: string): boolean {
   // IPv4 private ranges
   const parts = lower.split('.');
   if (parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p))) {
-    const [a, b] = [parseInt(parts[0]), parseInt(parts[1])];
+    const [a, b] = [parseInt(parts[0], 10), parseInt(parts[1], 10)];
     if (a === 127) return true; // 127.x.x.x
     if (a === 10) return true; // 10.x.x.x
     if (a === 172 && b >= 16 && b <= 31) return true; // 172.16-31.x.x

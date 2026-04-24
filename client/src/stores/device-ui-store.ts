@@ -303,15 +303,13 @@ export const useDeviceUIStore = create<DeviceUIState>()(
 // USER IDENTITY INITIALIZATION
 // ============================================
 
-{
-  if (!useDeviceUIStore.getState().userId) {
-    const profile = generateUserProfile();
-    useDeviceUIStore.setState({
-      userId: ulid(),
-      userName: profile.name,
-      userColor: profile.color,
-    });
-  }
+if (!useDeviceUIStore.getState().userId) {
+  const profile = generateUserProfile();
+  useDeviceUIStore.setState({
+    userId: ulid(),
+    userName: profile.name,
+    userColor: profile.color,
+  });
 }
 
 /** Imperative getter — returns the stable user ID string. */

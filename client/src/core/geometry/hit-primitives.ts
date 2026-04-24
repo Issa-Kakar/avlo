@@ -169,8 +169,6 @@ export function pointInsideShape(c: Point, frame: FrameTuple, shapeType: string)
       const dy = (c[1] - ecy) / ry;
       return dx * dx + dy * dy <= 1;
     }
-    case 'rect':
-    case 'roundedRect':
     default:
       return c[0] >= x && c[0] <= x + w && c[1] >= y && c[1] <= y + h;
   }
@@ -204,8 +202,6 @@ export function shapeEdgeHitTest(c: Point, tolerance: number, frame: FrameTuple,
       const distFromEdge = Math.abs(normalizedDist - 1);
       return distFromEdge <= normalizedTolerance ? distFromEdge * avgRadius : null;
     }
-    case 'rect':
-    case 'roundedRect':
     default: {
       const tl: Point = [x, y];
       const tr: Point = [x + w, y];
@@ -311,9 +307,6 @@ export function circleHitsShape(
       const distFromEdge = Math.abs(normalizedDist - 1);
       return distFromEdge <= normalizedR + normalizedStroke;
     }
-
-    case 'rect':
-    case 'roundedRect':
     default: {
       if (isFilled) {
         return circleRectIntersect(c, r + halfStroke, frame);

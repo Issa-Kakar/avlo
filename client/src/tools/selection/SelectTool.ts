@@ -68,8 +68,6 @@ export class SelectTool implements PointerTool {
   private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
 
-  constructor() {}
-
   private hasAddModifier(): boolean {
     return isShiftHeld() || isCtrlOrMetaHeld();
   }
@@ -451,8 +449,6 @@ export class SelectTool implements PointerTool {
             }
             // Else: do nothing, selection stays
             break;
-
-          case 'background':
           default:
             // Click on background → deselect
             store.clearSelection();

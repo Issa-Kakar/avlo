@@ -328,7 +328,7 @@ async function drainUploads(): Promise<void> {
 
       // Exponential backoff (no max retries — offline-first means retry forever)
       if (!ignoreBackoff && entry.lastAttempt > 0) {
-        const delay = Math.min(BASE_DELAY_MS * Math.pow(2, entry.retries), MAX_BACKOFF_MS);
+        const delay = Math.min(BASE_DELAY_MS * 2 ** entry.retries, MAX_BACKOFF_MS);
         const elapsed = Date.now() - entry.lastAttempt;
         if (elapsed < delay) continue;
       }

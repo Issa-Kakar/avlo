@@ -12,8 +12,8 @@ import type { CodeLanguage } from '../accessors';
 // STYLE ENUM — 13 styles, fits in a byte
 // ============================================================================
 
-/** const enum inlines to numeric literals at compile time — zero runtime cost. */
-export const enum S {
+/** Numeric style tokens indexed into PALETTE / isBold. */
+export enum S {
   DEFAULT = 0,
   KEYWORD = 1,
   DEF_KW = 2,
@@ -362,7 +362,7 @@ function keywordStyle(word: string, lang: CodeLanguage): number {
 // ============================================================================
 
 // Reusable buffer for highlight triples — reset per line via counter
-let _syncBuf: number[] = [];
+const _syncBuf: number[] = [];
 let _syncBufCount = 0;
 
 function pushTriple(from: number, to: number, style: number): void {

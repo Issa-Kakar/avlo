@@ -54,8 +54,6 @@ export class ConnectorTool implements PointerTool {
   private frozenEndCap: ConnectorCap = 'arrow';
   private frozenConnectorType: ConnectorType | null = null;
 
-  constructor() {}
-
   canBegin(): boolean {
     return this.phase === 'idle';
   }

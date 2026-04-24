@@ -298,7 +298,7 @@ const MEASURE_LRU = new LRU<string, number>(75_000);
 const SPACE_WIDTH_CACHE = new Map<string, number>();
 
 export function measureTextCached(font: string, text: string): number {
-  const key = font + '\0' + text;
+  const key = `${font}\0${text}`;
   const hit = MEASURE_LRU.get(key);
   if (hit !== undefined) return hit;
   const ctx = getMeasureContext();

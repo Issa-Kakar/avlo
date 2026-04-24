@@ -611,7 +611,7 @@ export function recognizePerfectShapePointCloud(rawPointsWU: Point2[], opts: Rec
   // GATE 1 & 2: Self-intersection and near-touch (RAW points, before normalization)
   // These checks reject scribbles that cross or nearly touch themselves
   // =========================================================================
-  const flatPoints = rawPointsWU.flatMap(([x, y]) => [x, y]);
+  const flatPoints = rawPointsWU.flat();
   const selfIntersectEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag);
   const nearTouchEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag);
 
@@ -794,7 +794,7 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.group('🚧 Pre-Normalization Gates (RAW points)');
 
-  const flatPoints = rawPointsWU.flatMap(([x, y]) => [x, y]);
+  const flatPoints = rawPointsWU.flat();
   const selfIntersectEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.SELF_INTERSECT_EPS_FACTOR * diag);
   const nearTouchEps = Math.max(PDOLLAR_CONFIG.MIN_EPS_WU, PDOLLAR_CONFIG.NEAR_TOUCH_EPS_FACTOR * diag);
 

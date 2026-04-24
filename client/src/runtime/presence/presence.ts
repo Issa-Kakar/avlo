@@ -288,7 +288,7 @@ function processBatch(
 }
 
 function processUpsert(clientId: number, state: Record<string, unknown> | undefined): boolean {
-  if (!state || !state.userId) return false;
+  if (!state?.userId) return false;
 
   const userId = state.userId as string;
   const name = (state.name as string) || 'Anonymous';
