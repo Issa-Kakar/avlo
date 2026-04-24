@@ -149,6 +149,7 @@ export function detach(): void {
   }
   if (currentProvider && statusHandler) {
     try {
+      // biome-ignore lint/suspicious/noExplicitAny: upstream-type — provider adapter's optional `off` method is not in the public type; duck-typed at teardown
       (currentProvider as any).off?.('status', statusHandler);
     } catch {
       /* ignore */
@@ -228,6 +229,7 @@ function flush(): void {
 
 function getBackpressureDelay(): number {
   try {
+    // biome-ignore lint/suspicious/noExplicitAny: upstream-type — provider's `ws` is an internal field not in the public type; read for backpressure gating only
     const ws: WebSocket | undefined = (currentProvider as any)?.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return 0;
     const buf = ws.bufferedAmount ?? 0;

@@ -291,7 +291,7 @@ function registerAssetInfo(assetId: string, ppsp: number, nw: number, nh: number
 export function manageImageViewport(): void {
   if (!hasActiveRoom()) return;
 
-  let spatialIndex;
+  let spatialIndex: ReturnType<typeof getSpatialIndex>;
   try {
     spatialIndex = getSpatialIndex();
   } catch {

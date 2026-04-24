@@ -35,6 +35,7 @@ export default defineConfig({
       autoCodeSplitting: true,
       routesDirectory: './src/routes',
       generatedRouteTree: './src/routeTree.gen.ts',
+      // biome-ignore lint/suspicious/noExplicitAny: upstream-type — tanstackRouter plugin return type is narrower than Vite's Plugin[]; cast lets the plugin array type-check
     }) as any,
     react(),
     tailwindcss(),

@@ -42,17 +42,13 @@
     "rules": {
       "recommended": true,
       "suspicious": {
-        "noExplicitAny": "warn",
+        "noExplicitAny": "error",
         "noConsole": { "level": "warn", "options": { "allow": ["warn", "error"] } },
         "noArrayIndexKey": "off",
-        "noAssignInExpressions": "off",
-        "noImplicitAnyLet": "off"
+        "noAssignInExpressions": "off"
       },
       "style": {
         "noNonNullAssertion": "off"
-      },
-      "complexity": {
-        "noBannedTypes": "off"
       },
       "performance": {
         "noAccumulatingSpread": "off"

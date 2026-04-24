@@ -283,6 +283,7 @@ export function recognizeOpenStroke({ pointsWU, pointerNowWU }: { pointsWU: numb
   }
 
   // Case 2: Check winner by highest score
+  // biome-ignore lint/suspicious/noExplicitAny: subsystem-internal — recognition winner dispatch; `data` narrowed by `kind` at each callsite (aabbFit vs circleFit)
   let winner: { kind: 'circle' | 'box'; score: number; data: any };
   if (boxScore >= circleScore) {
     winner = { kind: 'box', score: boxScore, data: aabbFit };

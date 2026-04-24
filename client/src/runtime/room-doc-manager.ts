@@ -79,6 +79,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Y.Map-based object storage
   readonly objectsById = new Map<string, ObjectHandle>();
   readonly spatialIndex = new ObjectSpatialIndex();
+  // biome-ignore lint/suspicious/noExplicitAny: upstream-type — Yjs YEvent<T> generic is deliberately loose; deep observers receive heterogeneous events across nested maps
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
 
   // Reused observer scratch — cleared at top of each fire. Safe because observer
