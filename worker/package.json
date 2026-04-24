@@ -9,8 +9,9 @@
   },
   "dependencies": {
     "@hono/zod-validator": "^0.7.6",
-    "hono": "^4.7.0",
+    "hono": "^4.12.15",
     "hono-party": "^2.0.3",
+    "partyserver": "^0.4.1",
     "yjs": "^13.6.27",
     "zod": "^4.3.6"
   },
