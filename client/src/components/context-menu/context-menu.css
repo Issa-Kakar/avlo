@@ -509,6 +509,9 @@
   margin: 2px 0;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: lint-false-positive —
+   this base rule is just semantically grouped with dropdown bars above; its
+   targets differ and no real cascade override is intended. */
 .ctx-type-item {
   height: 36px;
   gap: 10px;

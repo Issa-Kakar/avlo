@@ -113,6 +113,21 @@ html {
   display: none;
 }
 
+/* Paragraph styling */
+.tiptap p {
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  color: #adb5bd;
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
 .tiptap[data-width-mode='note'] {
   overflow: hidden;
   text-align: var(--text-align, center);
@@ -136,20 +151,6 @@ html {
 
 .tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
   display: none;
-}
-/* Paragraph styling */
-.tiptap p {
-  margin: 0;
-  padding: 0;
-  white-space: pre-wrap;
-}
-
-.tiptap p.is-editor-empty:first-child::before {
-  color: #adb5bd;
-  content: attr(data-placeholder);
-  float: left;
-  height: 0;
-  pointer-events: none;
 }
 
 .tiptap strong {
@@ -202,8 +203,9 @@ html {
   font-family: 'JetBrains Mono', monospace;
   overflow-y: auto;
   overflow-x: hidden;
-  /* Force inherit container's explicit px line-height — CM base theme sets 1.4
-     which fights our theme's 1.5 at identical specificity. !important bypasses. */
+  /* biome-ignore lint/complexity/noImportantStyles: upstream-type — CodeMirror
+     base theme sets line-height at equal class specificity (.cm-scroller).
+     !important avoids specificity inflation of every selector in our theme. */
   line-height: inherit !important;
 }
 /* --- Code Header & Output Chrome --- */
