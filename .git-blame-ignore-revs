@@ -3,3 +3,6 @@
 #   git config blame.ignoreRevsFile .git-blame-ignore-revs
 #
 # Add the SHA of any pure-reformat / whitespace-only commit below.
+
+# style: enable organizeImports and reformat (pure reorder)
+c2c294614b9da17b65d57834d0a32a314743f388
