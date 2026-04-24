@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 
 // Mural-style icons: solid filled shapes, viewBox="0 0 24 24", fill="currentColor"
 // Design: chunky, bold, paths fill 80-90% of viewBox, detail via evenodd cutouts + compound paths

@@ -1,7 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
+import type React from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { hasActiveRoom, redo, undo } from '@/runtime/room-runtime';
-import { ConnectorSizePreset, DrawingSettings, SizePreset, TEXT_COLOR_PALETTE, useDeviceUIStore } from '../stores/device-ui-store';
+import {
+  type ConnectorSizePreset,
+  type DrawingSettings,
+  type SizePreset,
+  TEXT_COLOR_PALETTE,
+  useDeviceUIStore,
+} from '../stores/device-ui-store';
 
 import './ToolPanel.css';
 

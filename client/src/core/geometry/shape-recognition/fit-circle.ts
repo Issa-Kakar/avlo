@@ -1,4 +1,4 @@
-import { Vec2 } from './types';
+import type { Vec2 } from './types';
 
 /**
  * Fit a circle to a set of 2D points using the Taubin algebraic method.

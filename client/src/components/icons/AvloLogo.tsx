@@ -1,4 +1,4 @@
-import React from 'react';
+import type React from 'react';
 
 /**
  * Avlo logo — Righteous (single weight) with opacity 0.85 to soften visual weight.

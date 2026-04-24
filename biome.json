@@ -51,7 +51,6 @@
         "noImplicitAnyLet": "off"
       },
       "style": {
-        "useImportType": "off",
         "noNonNullAssertion": "off"
       },
       "complexity": {

@@ -6,7 +6,7 @@
  * Proportional padding (fontSize-relative) + measured font metrics for pixel-perfect alignment.
  */
 
-import * as Y from 'yjs';
+import type * as Y from 'yjs';
 import { invalidateWorld } from '@/renderer/RenderLoop';
 import type { CodeLanguage } from '../accessors';
 import { getCodeProps } from '../accessors';

@@ -1,4 +1,4 @@
-import { Vec2 } from './types';
+import type { Vec2 } from './types';
 
 /**
  * Fit an Oriented Bounding Box (OBB) to a set of 2D points using PCA.

@@ -8,7 +8,7 @@
  * Dependency direction is one-way: sticky-note → text-system.
  */
 
-import * as Y from 'yjs';
+import type * as Y from 'yjs';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { FontFamily, NoteProps } from '../accessors';
 import { getNoteProps } from '../accessors';

@@ -1,5 +1,5 @@
 import { RECT_AABB_COVERAGE_MIN_TOL, RECT_AABB_COVERAGE_TOLERANCE_FACTOR } from './shape-params';
-import { Corner, Edge, Vec2 } from './types';
+import type { Corner, Edge, Vec2 } from './types';
 
 /**
  * Compute the axis ratio from PCA eigenvalues.

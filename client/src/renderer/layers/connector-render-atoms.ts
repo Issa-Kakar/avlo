@@ -21,7 +21,7 @@ import { getHandleShapeType, getWidth } from '@/core/accessors';
 import { ARROW_ROUNDING_LINE_WIDTH, type ConnectorPaths } from '@/core/connectors/connector-paths';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import { shapeMidpoints } from '@/core/connectors/shape-geometry';
-import { type Dir, type SnapTarget } from '@/core/connectors/types';
+import type { Dir, SnapTarget } from '@/core/connectors/types';
 import { frameOf } from '@/core/geometry/frame-of';
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { isBindableHandle, type ObjectHandle } from '@/core/types/objects';
