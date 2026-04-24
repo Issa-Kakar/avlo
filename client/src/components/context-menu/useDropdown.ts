@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /** Shared dropdown state: open/close, outside-click dismiss, preventDefault toggle. */
 export function useDropdown() {

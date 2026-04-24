@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { connectRoom } from '@/runtime/room-runtime';
 import RoomPage from '@/components/RoomPage';
+import { connectRoom } from '@/runtime/room-runtime';
 
 export const Route = createFileRoute('/room/$roomId')({
   beforeLoad: ({ params }) => {

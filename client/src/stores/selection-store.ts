@@ -1,45 +1,45 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
-import type { HandleId } from '@/tools/types';
-import type { ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
-import { getObjectsById, getHandle } from '@/runtime/room-runtime';
+import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
+import { rawScaleFactors } from '@/core/geometry/scale-system';
+import { getTextFrame } from '@/core/text/text-system';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
+import { handlePosition, scaleOrigin } from '@/core/types/handles';
+import type { ObjectKind } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { getHandle, getObjectsById } from '@/runtime/room-runtime';
 import {
   computeSelectionComposition,
   computeStyles,
   computeUniformInlineStyles,
-  stylesEqual,
-  inlineStylesEqual,
   EMPTY_ID_SET,
+  inlineStylesEqual,
+  stylesEqual,
 } from '@/tools/selection/selection-utils';
 import { getController } from '@/tools/selection/transform';
-import { scaleOrigin, handlePosition } from '@/core/types/handles';
-import { rawScaleFactors } from '@/core/geometry/scale-system';
-import { getTextFrame } from '@/core/text/text-system';
-import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import type {
+  InlineStyles,
+  KindCounts,
+  MarqueeState,
+  SelectedStyles,
   SelectionKind,
   SelectionMode,
-  KindCounts,
-  SelectedStyles,
-  InlineStyles,
   TransformState,
-  MarqueeState,
 } from '@/tools/selection/types';
-import { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from '@/tools/selection/types';
+import { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from '@/tools/selection/types';
+import type { HandleId } from '@/tools/types';
 
+export type { ConnectorEntry, ConnectorTopology } from '@/tools/selection/connector-topology';
 export type {
+  InlineStyles,
+  KindCounts,
+  MarqueeState,
+  SelectedStyles,
   SelectionKind,
   SelectionMode,
-  KindCounts,
-  SelectedStyles,
-  InlineStyles,
   TransformState,
-  MarqueeState,
 } from '@/tools/selection/types';
-export type { ConnectorTopology, ConnectorEntry } from '@/tools/selection/connector-topology';
 
 // === State Interface ===
 

@@ -15,19 +15,18 @@
  * `rerouteConnector` allocates fresh position tuples from the frame + anchor.
  */
 
+import { getEndpointAnchors, getEndpoints, getPoints } from '@/core/accessors';
+import { type EndpointOverrideValue, rerouteConnector } from '@/core/connectors/reroute-connector';
+import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
+import { frameOf } from '@/core/geometry/frame-of';
+import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectHandle, BindableKind, StoredAnchor } from '@/core/types/objects';
+import { isCorner } from '@/core/types/handles';
+import type { BindableKind, ObjectHandle, StoredAnchor } from '@/core/types/objects';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { getConnectorsForShape, getHandle, getObjects } from '@/runtime/room-runtime';
 import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
-
-import { offsetBBox, copyBbox, offsetPoint, copyFrame, bboxToFrameMut } from '@/core/geometry/bounds';
-import { scaleAround, uniformFactor, preservePositionMut } from '@/core/geometry/scale-system';
-import { isCorner } from '@/core/types/handles';
-import { frameOf } from '@/core/geometry/frame-of';
-import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
-import { getHandle, getConnectorsForShape, getObjects } from '@/runtime/room-runtime';
-import { invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getPoints, getEndpoints, getEndpointAnchors } from '@/core/accessors';
 
 // ============================================================================
 // Types

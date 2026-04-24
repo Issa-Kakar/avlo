@@ -3,18 +3,17 @@
  * fixed top toolbar at 48px with Inspector extension, and zoom controls.
  */
 
-import { useEffect } from 'react';
 import { getRouteApi } from '@tanstack/react-router';
+import { useEffect } from 'react';
 import { disconnectRoom } from '@/runtime/room-runtime';
-import { ErrorBoundary } from './ErrorBoundary';
-
 // Components
 import { Canvas } from './Canvas';
-import { TopBar } from './TopBar';
-import { ToolPanel } from './ToolPanel';
-import { ZoomControls } from './ZoomControls';
-import { UserAvatarCluster } from './UserAvatarCluster';
+import { ErrorBoundary } from './ErrorBoundary';
 import { ToastProvider, useToast } from './Toast';
+import { ToolPanel } from './ToolPanel';
+import { TopBar } from './TopBar';
+import { UserAvatarCluster } from './UserAvatarCluster';
+import { ZoomControls } from './ZoomControls';
 
 // CSS
 import './RoomPage.css';

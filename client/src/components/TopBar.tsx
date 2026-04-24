@@ -1,6 +1,6 @@
 import { AvloLogo } from './icons/AvloLogo';
-import { SidebarIcon } from './icons/SidebarIcon';
 import { KebabIcon } from './icons/KebabIcon';
+import { SidebarIcon } from './icons/SidebarIcon';
 import './TopBar.css';
 
 export function TopBar() {

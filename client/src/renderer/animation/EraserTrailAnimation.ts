@@ -7,10 +7,10 @@
  * @module canvas/animation/EraserTrailAnimation
  */
 
-import type { AnimationJob } from './AnimationController';
-import { useCameraStore } from '@/stores/camera-store';
 import { getStroke } from 'perfect-freehand';
+import { useCameraStore } from '@/stores/camera-store';
 import { getSvgPathFromStroke } from '../types';
+import type { AnimationJob } from './AnimationController';
 
 const TRAIL_LIFETIME_MS = 200;
 const TRAIL_MAX_POINTS = 10;

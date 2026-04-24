@@ -9,7 +9,7 @@
  * - Uniform scale bounds computation
  */
 
-import type { WorldBounds, FrameTuple, BBoxTuple, Point } from '../types/geometry';
+import type { BBoxTuple, FrameTuple, Point, WorldBounds } from '../types/geometry';
 
 // ============================================================================
 // BBOX TUPLE HELPERS

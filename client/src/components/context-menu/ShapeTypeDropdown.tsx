@@ -1,11 +1,11 @@
 import type React from 'react';
-import { useSelectionStore } from '@/stores/selection-store';
 import type { SelectionStore } from '@/stores/selection-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import { setSelectedShapeType } from '@/tools/selection/selection-actions';
-import { MenuButton } from './MenuButton';
-import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
 import { IconShapes, IconTextType } from './icons/FilterIcons';
-import { IconRectType, IconCircleType, IconDiamondType, IconRoundedRectType, IconStickySquareFold } from './icons/ShapeTypeIcons';
+import { IconCircleType, IconDiamondType, IconRectType, IconRoundedRectType, IconStickySquareFold } from './icons/ShapeTypeIcons';
+import { IconCheck, IconChevronDown } from './icons/UtilityIcons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectShapeType = (s: SelectionStore) => s.selectedStyles.shapeType;

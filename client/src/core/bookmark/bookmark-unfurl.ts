@@ -5,18 +5,18 @@
  * Loading state is local-only via HTML placeholder.
  */
 
-import * as Y from 'yjs';
-import { ulid } from 'ulid';
 import { extractDomain } from '@avlo/shared';
-import { hasActiveRoom, getHandle, transact, getObjects } from '@/runtime/room-runtime';
+import { ulid } from 'ulid';
+import * as Y from 'yjs';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { getHandle, getObjects, hasActiveRoom, transact } from '@/runtime/room-runtime';
+import { getCurrentTool } from '@/runtime/tool-registry';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import { pasteUrlAsText } from '../clipboard/clipboard-actions';
 import { postToPrimary } from '../image/image-manager';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import { useSelectionStore } from '@/stores/selection-store';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getCurrentTool } from '@/runtime/tool-registry';
-import { computeBookmarkHeight, BOOKMARK_WIDTH } from './bookmark-render';
-import { createPlaceholder, removePlaceholder, removeAllPlaceholders } from './bookmark-placeholder';
+import { createPlaceholder, removeAllPlaceholders, removePlaceholder } from './bookmark-placeholder';
+import { BOOKMARK_WIDTH, computeBookmarkHeight } from './bookmark-render';
 
 // ---------------------------------------------------------------------------
 // Types

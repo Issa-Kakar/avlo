@@ -14,25 +14,25 @@
  * @module runtime/keyboard-manager
  */
 
-import { getCurrentTool, panTool, textTool, codeTool } from './tool-registry';
-import { undo, redo, getHandle, hasActiveRoom } from './room-runtime';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, setCursorOverride, type Tool, type ShapeVariant } from '@/stores/device-ui-store';
-import { deleteSelected, toggleSelectedBold, toggleSelectedItalic, setSelectedHighlight } from '@/tools/selection/selection-actions';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { frameOf } from '@/core/geometry/frame-of';
-import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
 import {
   copySelected,
-  pasteFromClipboard,
   cutSelected,
   duplicateSelected,
-  selectAll,
+  pasteFromClipboard,
   pasteImage,
+  selectAll,
 } from '@/core/clipboard/clipboard-actions';
-import { zoomIn, zoomOut, animateZoomReset } from './viewport/zoom';
-import { startDirection, stopDirection, stopAll as stopArrowPan } from './viewport/arrow-key-pan';
+import { frameOf } from '@/core/geometry/frame-of';
 import { openImageFilePicker } from '@/core/image/image-actions';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { type ShapeVariant, setCursorOverride, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import { deleteSelected, setSelectedHighlight, toggleSelectedBold, toggleSelectedItalic } from '@/tools/selection/selection-actions';
+import { computeUniformInlineStyles } from '@/tools/selection/selection-utils';
+import { getHandle, hasActiveRoom, redo, undo } from './room-runtime';
+import { codeTool, getCurrentTool, panTool, textTool } from './tool-registry';
+import { startDirection, stopAll as stopArrowPan, stopDirection } from './viewport/arrow-key-pan';
+import { animateZoomReset, zoomIn, zoomOut } from './viewport/zoom';
 
 // === Spacebar Pan State ===
 

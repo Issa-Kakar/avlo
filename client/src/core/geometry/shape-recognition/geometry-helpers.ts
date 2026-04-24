@@ -1,5 +1,5 @@
-import { Vec2, Edge, Corner } from './types';
-import { RECT_AABB_COVERAGE_TOLERANCE_FACTOR, RECT_AABB_COVERAGE_MIN_TOL } from './shape-params';
+import { RECT_AABB_COVERAGE_MIN_TOL, RECT_AABB_COVERAGE_TOLERANCE_FACTOR } from './shape-params';
+import { Corner, Edge, Vec2 } from './types';
 
 /**
  * Compute the axis ratio from PCA eigenvalues.
@@ -422,7 +422,7 @@ export function avgParallelError(edges: Edge[]): number {
     const b = norm180(angle_j);
 
     // Distance between angles in [0, 180) space
-    let diff = Math.abs(a - b);
+    const diff = Math.abs(a - b);
 
     // CRITICAL FIX: Fold to [0, 90] so that 0° and 180° both map to 0° error
     // This makes opposite-facing parallel edges register as 0° error

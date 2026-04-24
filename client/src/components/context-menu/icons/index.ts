@@ -1,16 +1,16 @@
 export {
-  IconAlignTextLeft,
   IconAlignTextCenter,
+  IconAlignTextLeft,
   IconAlignTextRight,
-  IconAlignVTop,
-  IconAlignVMiddle,
   IconAlignVBottom,
+  IconAlignVMiddle,
+  IconAlignVTop,
 } from './AlignIcons';
-export { TextColorIcon } from './TextColorIcon';
-export { HighlightIcon } from './HighlightIcon';
+export { IconCodeHeader, IconCodeLines, IconCodeOutput } from './CodeIcons';
+export { IconCodeBlock, IconConnectorLine, IconImages, IconPenStroke, IconShapes, IconTextType } from './FilterIcons';
 export { IconBold, IconItalic } from './FormatIcons';
-export { IconChevronDown, IconMinus, IconPlus, IconMoreDots, IconNoFill, IconCheck } from './UtilityIcons';
-export { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages } from './FilterIcons';
+export { HighlightIcon } from './HighlightIcon';
+export { IconCircleType, IconDiamondType, IconRectType, IconRoundedRectType, IconStickySquareFold } from './ShapeTypeIcons';
+export { TextColorIcon } from './TextColorIcon';
 export { IconTrash } from './TrashIcon';
-export { IconCodeLines, IconCodeHeader, IconCodeOutput } from './CodeIcons';
-export { IconRectType, IconCircleType, IconDiamondType, IconRoundedRectType, IconStickySquareFold } from './ShapeTypeIcons';
+export { IconCheck, IconChevronDown, IconMinus, IconMoreDots, IconNoFill, IconPlus } from './UtilityIcons';

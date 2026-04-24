@@ -14,24 +14,24 @@
  * produce this); `'ink'` and `'fill'` are the two paint-blocker classes.
  */
 
+import { getFillColor, getFrame, getPoints, getShapeType, getWidth } from '@/core/accessors';
+import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
+import { getCodeFrame } from '@/core/code/code-system';
+import {
+  bboxesIntersect,
+  circleHitsShape,
+  circleRectIntersect,
+  diamondIntersectsBBox,
+  ellipseIntersectsBBox,
+  getDiamondVertices,
+  polylineIntersectsBBox,
+  rectFrameHit,
+  shapeHitTest,
+  strokeHitTest,
+} from '@/core/geometry/hit-primitives';
+import { getTextFrame } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import { getFrame, getPoints, getShapeType, getWidth, getFillColor } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
-import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
-import {
-  strokeHitTest,
-  shapeHitTest,
-  rectFrameHit,
-  circleRectIntersect,
-  circleHitsShape,
-  bboxesIntersect,
-  polylineIntersectsBBox,
-  ellipseIntersectsBBox,
-  diamondIntersectsBBox,
-  getDiamondVertices,
-} from '@/core/geometry/hit-primitives';
 
 export type Paint = 'ink' | 'fill' | 'seethrough';
 

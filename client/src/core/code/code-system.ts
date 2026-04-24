@@ -6,35 +6,35 @@
  * Proportional padding (fontSize-relative) + measured font metrics for pixel-perfect alignment.
  */
 
-import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type { CodeLanguage } from '../accessors';
-import { getCodeProps } from '../accessors';
 import * as Y from 'yjs';
 import { invalidateWorld } from '@/renderer/RenderLoop';
+import type { CodeLanguage } from '../accessors';
+import { getCodeProps } from '../accessors';
 import { frameTupleToWorldBounds } from '../geometry/bounds';
 import { getMeasuredAscentRatio, getMeasuredDescentRatio, getMinCharWidthRatio } from '../text/text-system';
+import type { BBoxTuple, FrameTuple } from '../types/geometry';
 
 import {
-  type RunSpans,
-  PALETTE,
-  isBold,
-  syncTokenize,
+  CHROME_FONT_RATIO,
   CODE_BG,
   CODE_DEFAULT,
-  CODE_GUTTER,
   CODE_FONT_FAMILY,
-  LINE_HEIGHT_MULT,
-  CHROME_FONT_RATIO,
+  CODE_GUTTER,
+  CODE_OUTPUT_LABEL,
+  CODE_PLAY_BG,
+  CODE_PLAY_GREEN,
+  CODE_SEPARATOR,
+  CODE_TITLE_COLOR,
   HEADER_HEIGHT_RATIO,
+  isBold,
+  LINE_HEIGHT_MULT,
+  MAX_OUTPUT_CANVAS_LINES,
   OUTPUT_LABEL_H_RATIO,
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
-  MAX_OUTPUT_CANVAS_LINES,
-  CODE_SEPARATOR,
-  CODE_TITLE_COLOR,
-  CODE_PLAY_GREEN,
-  CODE_PLAY_BG,
-  CODE_OUTPUT_LABEL,
+  PALETTE,
+  type RunSpans,
+  syncTokenize,
 } from './code-tokens';
 
 // ============================================================================

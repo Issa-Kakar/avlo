@@ -18,17 +18,17 @@
  * No tracking maps — everything derived at query time from snapshot.
  */
 
-import type { BBoxTuple } from '../types/geometry';
-import { getAssetId, getFrame, getNaturalDimensions } from '../accessors';
-import type { WorkerInbound, WorkerOutbound } from './image-worker';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { hasActiveRoom, getObjectsById, getSpatialIndex, getHandle } from '@/runtime/room-runtime';
-import { useCameraStore, getVisibleBoundsTuple } from '@/stores/camera-store';
+import { getHandle, getObjectsById, getSpatialIndex, hasActiveRoom } from '@/runtime/room-runtime';
+import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import type { ObjectHandle } from '../types/objects';
-import { handleUnfurlResult, handleUnfurlFailed } from '../bookmark/bookmark-unfurl';
+import { getAssetId, getFrame, getNaturalDimensions } from '../accessors';
 import { repositionAllPlaceholders } from '../bookmark/bookmark-placeholder';
 import { getBookmarkFrame } from '../bookmark/bookmark-render';
+import { handleUnfurlFailed, handleUnfurlResult } from '../bookmark/bookmark-unfurl';
+import type { BBoxTuple } from '../types/geometry';
+import type { ObjectHandle } from '../types/objects';
+import type { WorkerInbound, WorkerOutbound } from './image-worker';
 
 // ============================================================
 // Workers

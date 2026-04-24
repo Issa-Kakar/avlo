@@ -14,11 +14,11 @@
  * - Room teardown → clearGeometry() via clearAllObjectCaches()
  */
 
-import type { ObjectHandle } from '@/core/types/objects';
-import { getPoints, getFrame, getWidth, getShapeType, getStartCap, getEndCap } from '@/core/accessors';
 import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE, getSvgPathFromStroke } from './types';
+import { getEndCap, getFrame, getPoints, getShapeType, getStartCap, getWidth } from '@/core/accessors';
 import { buildConnectorPaths, type ConnectorPaths } from '@/core/connectors/connector-paths';
+import type { ObjectHandle } from '@/core/types/objects';
+import { getSvgPathFromStroke, PF_OPTIONS_BASE } from './types';
 
 type CachedGeometry = Path2D | ConnectorPaths;
 

@@ -14,9 +14,9 @@
  * @module renderer/layers/connector-preview
  */
 
-import type { ConnectorPreview } from '@/tools/types';
 import { buildConnectorPaths } from '@/core/connectors/connector-paths';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
+import type { ConnectorPreview } from '@/tools/types';
 import { drawConnectorDashGuide, drawSnapFeedback, paintConnector } from './connector-render-atoms';
 
 /**

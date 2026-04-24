@@ -1,9 +1,9 @@
-import { useSelectionStore } from '@/stores/selection-store';
-import type { SelectionStore } from '@/stores/selection-store';
-import { setSelectedCodeLanguage } from '@/tools/selection/selection-actions';
 import type { CodeLanguage } from '@/core/accessors';
+import type { SelectionStore } from '@/stores/selection-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import { setSelectedCodeLanguage } from '@/tools/selection/selection-actions';
+import { IconCheck, IconChevronDown } from './icons';
 import { MenuButton } from './MenuButton';
-import { IconChevronDown, IconCheck } from './icons';
 import { useDropdown } from './useDropdown';
 
 const selectCodeLanguage = (s: SelectionStore) => s.selectedStyles.codeLanguage;

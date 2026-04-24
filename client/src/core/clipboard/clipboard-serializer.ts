@@ -8,10 +8,10 @@
  */
 
 import * as Y from 'yjs';
-import type { ObjectKind, ObjectHandle } from '../types/objects';
-import type { BBoxTuple } from '../types/geometry';
-import { expandBBoxEnvelope } from '../geometry/bounds';
 import { getObjectsById } from '@/runtime/room-runtime';
+import { expandBBoxEnvelope } from '../geometry/bounds';
+import type { BBoxTuple } from '../types/geometry';
+import type { ObjectHandle, ObjectKind } from '../types/objects';
 
 // === Types ===
 

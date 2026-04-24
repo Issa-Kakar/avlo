@@ -1,9 +1,17 @@
 import type React from 'react';
-import type { KindCounts } from '@/stores/selection-store';
 import type { ObjectKind } from '@/core/types/objects';
+import type { KindCounts } from '@/stores/selection-store';
+import {
+  IconChevronDown,
+  IconCodeBlock,
+  IconConnectorLine,
+  IconImages,
+  IconPenStroke,
+  IconShapes,
+  IconStickySquareFold,
+  IconTextType,
+} from './icons';
 import { MenuButton } from './MenuButton';
-import { IconChevronDown } from './icons';
-import { IconShapes, IconPenStroke, IconConnectorLine, IconTextType, IconCodeBlock, IconImages, IconStickySquareFold } from './icons';
 import { useDropdown } from './useDropdown';
 
 // Keys are ObjectKind (singular), matching KindCounts / SelectionKind exactly.

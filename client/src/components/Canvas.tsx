@@ -1,4 +1,4 @@
-import React, { useRef, useLayoutEffect } from 'react';
+import React, { useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasRuntime } from '@/runtime/CanvasRuntime';
 import { contextMenuController } from '@/runtime/ContextMenuController';

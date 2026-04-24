@@ -10,8 +10,9 @@
  *
  * @module core/connectors/shape-geometry
  */
-import type { FrameTuple, Point } from '../types/geometry';
+
 import { frameCenter } from '../geometry/bounds';
+import type { FrameTuple, Point } from '../types/geometry';
 import type { Dir } from './types';
 
 // ============================================================================

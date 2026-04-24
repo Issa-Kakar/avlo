@@ -1,6 +1,6 @@
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { setCursorOverride } from '@/stores/device-ui-store';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import type { PointerTool, PreviewData } from './types';
 
 // --- Momentum constants ---

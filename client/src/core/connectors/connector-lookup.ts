@@ -5,9 +5,9 @@
  * Provides O(1) lookup for SelectTool transforms and EraserTool deletions.
  */
 
-import type { ObjectHandle } from '../types/objects';
-import { getStartAnchor, getEndAnchor } from '../accessors';
 import type * as Y from 'yjs';
+import { getEndAnchor, getStartAnchor } from '../accessors';
+import type { ObjectHandle } from '../types/objects';
 
 // ============================================================
 // Module-Level State

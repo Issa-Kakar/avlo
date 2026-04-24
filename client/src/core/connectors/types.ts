@@ -2,11 +2,11 @@
  * Shared Types for Connector Routing System
  */
 
-import type { FrameTuple, Point } from '../types/geometry';
 import type { Dir as SharedDir } from '../accessors';
+import type { FrameTuple, Point } from '../types/geometry';
 import type { ConnectorType } from '../types/objects';
 
-export type { ConnectorType, ConnectorCap } from '../types/objects';
+export type { ConnectorCap, ConnectorType } from '../types/objects';
 
 /** Cardinal direction type (North, East, South, West) */
 export type Dir = SharedDir;

@@ -11,7 +11,7 @@
  */
 
 import type { Point } from '../types/geometry';
-import { ROUTING_CONFIG, computeArrowLength } from './constants';
+import { computeArrowLength, ROUTING_CONFIG } from './constants';
 
 // ============================================================================
 // Types

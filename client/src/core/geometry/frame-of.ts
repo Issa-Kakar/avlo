@@ -5,13 +5,13 @@
  * into one mapped dispatch. Adding a new bindable kind = one line here.
  */
 
-import type { FrameTuple } from '@/core/types/geometry';
-import type { ObjectHandle, BindableKind } from '@/core/types/objects';
-import { isBindableHandle } from '@/core/types/objects';
 import { getFrame } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
-import { getCodeFrame } from '@/core/code/code-system';
 import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
+import { getCodeFrame } from '@/core/code/code-system';
+import { getTextFrame } from '@/core/text/text-system';
+import type { FrameTuple } from '@/core/types/geometry';
+import type { BindableKind, ObjectHandle } from '@/core/types/objects';
+import { isBindableHandle } from '@/core/types/objects';
 
 type FrameResolver<K extends BindableKind> = (h: ObjectHandle & { kind: K }) => FrameTuple | null;
 

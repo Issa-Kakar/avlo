@@ -11,15 +11,14 @@
  *   Worker → Main: { type:'spans', id, version, spans: RunSpans[] }  (transferred)
  */
 
+import type { Parser, Tree } from '@lezer/common';
+import { TreeFragment } from '@lezer/common';
+import { highlightTree, tagHighlighter, tags } from '@lezer/highlight';
 import { parser as jsParser } from '@lezer/javascript';
 import { parser as pythonParser } from '@lezer/python';
-import { highlightTree } from '@lezer/highlight';
-import { tagHighlighter, tags } from '@lezer/highlight';
-import { TreeFragment } from '@lezer/common';
-import type { Tree, Parser } from '@lezer/common';
 
 import type { RunSpans } from './code-tokens';
-import { TAG_STYLE_INDEX, packRunSpans, EMPTY_SPANS } from './code-tokens';
+import { EMPTY_SPANS, packRunSpans, TAG_STYLE_INDEX } from './code-tokens';
 
 // ============================================================================
 // Tag Highlighter — expanded tag list for complete coloring
@@ -138,8 +137,8 @@ function parse(id: string, text: string, language: string, changes?: ChangedRang
 // ============================================================================
 
 // Reusable buffers — persisted across calls, zero allocation per parse
-let _lineBuf: number[] = [];
-let _hlBuf: number[] = [];
+const _lineBuf: number[] = [];
+const _hlBuf: number[] = [];
 let _hlCount = 0;
 
 function extractSpans(tree: Tree, text: string): RunSpans[] {

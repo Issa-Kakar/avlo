@@ -1,19 +1,19 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { PreviewData, PointerTool, ShapeType } from './types';
-import { useDeviceUIStore, getUserId, type ShapeVariant } from '@/stores/device-ui-store';
-import { worldToCanvas, useCameraStore } from '@/stores/camera-store';
+import { bboxToFrame, cornerFrame, frameToBbox, scaleBBoxAround } from '@/core/geometry/bounds';
 import { HoldDetector } from '@/core/geometry/shape-recognition/HoldDetector';
 import {
-  recognizePerfectShapePointCloud,
-  debugRecognize,
   computeBboxCenterExtents,
+  debugRecognize,
+  recognizePerfectShapePointCloud,
 } from '@/core/geometry/shape-recognition/pdollar-recognizer';
-import { createFillFromStroke } from '@/utils/color';
-import { transact, getObjects } from '@/runtime/room-runtime';
+import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { cornerFrame, frameToBbox, bboxToFrame, scaleBBoxAround } from '@/core/geometry/bounds';
-import type { Point, FrameTuple } from '@/core/types/geometry';
+import { getObjects, transact } from '@/runtime/room-runtime';
+import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
+import { getUserId, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
+import { createFillFromStroke } from '@/utils/color';
+import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
 const SHAPE_VARIANT_TO_TYPE: Record<ShapeVariant, Exclude<ShapeType, 'line'>> = {

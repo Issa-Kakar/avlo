@@ -3,11 +3,11 @@
  * Single home for SelectionKind, TransformState, SelectedStyles, etc.
  */
 
-import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { ObjectKind } from '@/core/types/objects';
-import type { HandleId } from '@/core/types/handles';
-import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
+import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
 import type { SnapTarget } from '@/core/connectors/types';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
+import type { HandleId } from '@/core/types/handles';
+import type { ObjectKind } from '@/core/types/objects';
 
 // ============================================================================
 // Selection Composition

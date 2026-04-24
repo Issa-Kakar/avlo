@@ -1,5 +1,5 @@
 import { TEXT_FONT_SIZE_PRESETS } from '@/stores/device-ui-store';
-import { IconStepUp, IconStepDown } from './icons/UtilityIcons';
+import { IconStepDown, IconStepUp } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 interface FontSizeStepperProps {

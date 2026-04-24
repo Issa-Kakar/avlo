@@ -8,40 +8,40 @@
  * @module lib/clipboard/clipboard-actions
  */
 
-import * as Y from 'yjs';
-import { ulid } from 'ulid';
+import { normalizeUrl } from '@avlo/shared';
 import { generateJSON } from '@tiptap/core';
+import Bold from '@tiptap/extension-bold';
 import Document from '@tiptap/extension-document';
+import Highlight from '@tiptap/extension-highlight';
+import Italic from '@tiptap/extension-italic';
 import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
-import Bold from '@tiptap/extension-bold';
-import Italic from '@tiptap/extension-italic';
-import Highlight from '@tiptap/extension-highlight';
-import { getObjectsById, getSpatialIndex, transact, getObjects } from '@/runtime/room-runtime';
-import { getCurrentTool } from '@/runtime/tool-registry';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
+import { ulid } from 'ulid';
+import * as Y from 'yjs';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
-import { useCameraStore, getVisibleBoundsTuple } from '@/stores/camera-store';
+import { getObjects, getObjectsById, getSpatialIndex, transact } from '@/runtime/room-runtime';
+import { getCurrentTool } from '@/runtime/tool-registry';
 import { animateToFit } from '@/runtime/viewport/zoom';
+import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import { deleteSelected } from '@/tools/selection/selection-actions';
-import { bboxCenter, bboxSize, translateBBox, translatePoint, translateFrame, translatePoints } from '../geometry/bounds';
-import { bboxTupleToWorldBounds, type BBoxTuple, type FrameTuple, type Point } from '../types/geometry';
+import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
+import { bboxCenter, bboxSize, translateBBox, translateFrame, translatePoint, translatePoints } from '../geometry/bounds';
+import { createImageFromBlob } from '../image/image-actions';
+import { enqueue } from '../image/image-manager';
+import { type BBoxTuple, bboxTupleToWorldBounds, type FrameTuple, type Point } from '../types/geometry';
 import type { StoredAnchor } from '../types/objects';
-import { normalizeUrl } from '@avlo/shared';
 import {
-  serializeObjects,
+  type ClipboardPayload,
+  DEFAULT_HIGHLIGHT,
   deserializeFragment,
   extractPlainText,
   isSerializedPayload,
-  DEFAULT_HIGHLIGHT,
-  type ClipboardPayload,
   type MarkAttrs,
+  serializeObjects,
 } from './clipboard-serializer';
-import { createImageFromBlob } from '../image/image-actions';
-import { enqueue } from '../image/image-manager';
-import { beginUnfurl, canCreateBookmark } from '../bookmark/bookmark-unfurl';
 
 // === Constants ===
 

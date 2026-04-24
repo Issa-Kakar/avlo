@@ -4,15 +4,15 @@
  * Used by CanvasRuntime (drop), clipboard-actions (paste), toolbar, and keyboard shortcut.
  */
 
+import { isSvg } from '@avlo/shared';
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import { isSvg } from '@avlo/shared';
-import { ingest, enqueue } from './image-manager';
-import { transact, getObjects } from '@/runtime/room-runtime';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
+import { getObjects, transact } from '@/runtime/room-runtime';
 import { getVisibleWorldBounds } from '@/stores/camera-store';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import { enqueue, ingest } from './image-manager';
 
 const MAX_SVG_INPUT = 10 * 1024 * 1024; // 10 MB
 const SVG_TIMEOUT = 10_000; // 10 s

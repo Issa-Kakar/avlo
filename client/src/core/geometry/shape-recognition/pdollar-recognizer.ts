@@ -16,7 +16,7 @@
  * - Quadrant occupation (on normalized points)
  */
 
-import { hasSelfIntersection, hasNearTouch } from './geometry-helpers';
+import { hasNearTouch, hasSelfIntersection } from './geometry-helpers';
 
 // =============================================================================
 // TYPES

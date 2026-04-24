@@ -15,16 +15,16 @@
 
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { PointerTool, PreviewData, ConnectorPreview } from './types';
-import type { Point } from '@/core/types/geometry';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import { transact, getObjects } from '@/runtime/room-runtime';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import type { SnapTarget, ConnectorCap, ConnectorType } from '@/core/connectors/types';
-import { findBestSnapTarget } from '@/core/connectors/snap';
-import { routeNewConnector } from '@/core/connectors/reroute-connector';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
+import { routeNewConnector } from '@/core/connectors/reroute-connector';
+import { findBestSnapTarget } from '@/core/connectors/snap';
+import type { ConnectorCap, ConnectorType, SnapTarget } from '@/core/connectors/types';
+import type { Point } from '@/core/types/geometry';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isCtrlHeld } from '@/runtime/InputManager';
+import { getObjects, transact } from '@/runtime/room-runtime';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import type { ConnectorPreview, PointerTool, PreviewData } from './types';
 
 type Phase = 'idle' | 'creating';
 

@@ -14,11 +14,11 @@
  */
 
 import type { FrameTuple, Point } from '../types/geometry';
-import { COST_CONFIG } from './constants';
-import { oppositeDir, simplifyOrthogonal, directionFromDelta } from './connector-utils';
-import { createRoutingContext, buildSimpleGrid } from './routing-context';
 import { MinHeap } from './binary-heap';
-import type { RouteResult, Dir, Grid, GridCell, AStarNode } from './types';
+import { directionFromDelta, oppositeDir, simplifyOrthogonal } from './connector-utils';
+import { COST_CONFIG } from './constants';
+import { buildSimpleGrid, createRoutingContext } from './routing-context';
+import type { AStarNode, Dir, Grid, GridCell, RouteResult } from './types';
 
 // ============================================================================
 // GRID HELPERS (moved from routing-grid.ts)

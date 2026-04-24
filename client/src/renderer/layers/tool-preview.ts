@@ -5,12 +5,12 @@
  * @module renderer/layers/tool-preview
  */
 
-import { drawStrokePreview } from './stroke-preview';
-import { drawDimmedStrokes } from './eraser-dim';
-import { drawShapePreview } from './shape-preview';
-import { drawSelectionOverlay } from './selection-overlay';
-import { drawConnectorPreview } from './connector-preview';
 import { getActivePreview } from '@/runtime/tool-registry';
+import { drawConnectorPreview } from './connector-preview';
+import { drawDimmedStrokes } from './eraser-dim';
+import { drawSelectionOverlay } from './selection-overlay';
+import { drawShapePreview } from './shape-preview';
+import { drawStrokePreview } from './stroke-preview';
 
 /**
  * Draw the current tool preview. Context should be in world transform.

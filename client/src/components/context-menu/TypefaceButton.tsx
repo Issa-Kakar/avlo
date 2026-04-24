@@ -1,11 +1,11 @@
-import { useSelectionStore } from '@/stores/selection-store';
-import type { SelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
 import type { FontFamily } from '@/core/accessors';
 import { FONT_FAMILIES } from '@/core/text/text-system';
-import { MenuButton } from './MenuButton';
+import { useDeviceUIStore } from '@/stores/device-ui-store';
+import type { SelectionStore } from '@/stores/selection-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import { setSelectedFontFamily } from '@/tools/selection/selection-actions';
 import { IconCheck } from './icons/UtilityIcons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectFontFamily = (s: SelectionStore) => s.selectedStyles.fontFamily;

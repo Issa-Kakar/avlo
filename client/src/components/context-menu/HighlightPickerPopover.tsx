@@ -1,7 +1,7 @@
 import { HIGHLIGHT_COLORS } from '@/stores/device-ui-store';
-import { useSelectionStore, selectInlineHighlightColor } from '@/stores/selection-store';
-import { MenuButton } from './MenuButton';
+import { selectInlineHighlightColor, useSelectionStore } from '@/stores/selection-store';
 import { HighlightIcon } from './icons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 interface HighlightPickerPopoverProps {

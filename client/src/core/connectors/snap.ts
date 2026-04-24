@@ -21,14 +21,14 @@
  * @module lib/connectors/snap
  */
 
-import { getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
-import { clamp01, frameCenter, shapeMidpoints, findNearestEdgePoint } from './shape-geometry';
-import { pointInsideShape } from '../geometry/hit-primitives';
+import { getHandleShapeType } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
+import { pointInsideShape } from '../geometry/hit-primitives';
 import { pickTopmostBindable } from '../spatial/object-query';
 import type { FrameTuple, Point } from '../types/geometry';
-import { getHandleShapeType } from '../accessors';
-import type { Dir, SnapTarget, ElbowSnapTarget, StraightSnapTarget, SnapContext } from './types';
+import { getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
+import { clamp01, findNearestEdgePoint, frameCenter, shapeMidpoints } from './shape-geometry';
+import type { Dir, ElbowSnapTarget, SnapContext, SnapTarget, StraightSnapTarget } from './types';
 
 // =============================================================================
 // TYPES

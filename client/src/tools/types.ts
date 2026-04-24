@@ -1,5 +1,5 @@
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { SnapTarget } from '@/core/connectors/types';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 
 /**
  * HandleId identifies resize handles at selection corners and sides.

@@ -5,14 +5,14 @@
  * Transform orchestration lives in tools/selection/transform.ts.
  */
 
+import type { ScaleCtx } from '@/tools/selection/types';
 import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 import type { HandleId } from '../types/handles';
 import { isHorzSide, isVertSide } from '../types/handles';
 import { bboxCenter, setBBoxXYWH } from './bounds';
-import type { ScaleCtx } from '@/tools/selection/types';
 
 // Re-export tuple helpers from bounds.ts (canonical location for geometry primitives)
-export { frameToBbox, frameToBboxMut, copyBbox, bboxCenter, bboxSize, frameCenter } from './bounds';
+export { bboxCenter, bboxSize, copyBbox, frameCenter, frameToBbox, frameToBboxMut } from './bounds';
 
 // ============================================================================
 // Number Primitives

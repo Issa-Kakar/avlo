@@ -1,8 +1,8 @@
-import { getWidth, getFillColor } from '@/core/accessors';
-import { frameOf } from '@/core/geometry/frame-of';
-import { getPath, getConnectorPaths } from '../geometry-cache';
+import { getFillColor, getWidth } from '@/core/accessors';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
+import { frameOf } from '@/core/geometry/frame-of';
 import { getHandle } from '@/runtime/room-runtime';
+import { getConnectorPaths, getPath } from '../geometry-cache';
 
 /**
  * Draw dimmed objects with a uniform white lighten effect.

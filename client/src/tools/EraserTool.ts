@@ -1,10 +1,10 @@
-import { worldToCanvas } from '@/stores/camera-store';
-import { getHandle, transact, getObjects, getConnectorsForShape } from '@/runtime/room-runtime';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { getEndAnchor, getStartAnchor } from '@/core/accessors';
+import { atPoint, queryHandleIds } from '@/core/spatial/object-query';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
-import { getStartAnchor, getEndAnchor } from '@/core/accessors';
-import { queryHandleIds, atPoint } from '@/core/spatial/object-query';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { getConnectorsForShape, getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { worldToCanvas } from '@/stores/camera-store';
 import type { PointerTool } from './types';
 
 // Fixed radius configuration

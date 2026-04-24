@@ -1,6 +1,6 @@
 import { CONTEXT_MENU_COLORS } from './color-palette';
-import { MenuButton } from './MenuButton';
 import { TextColorIcon } from './icons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 interface TextColorPopoverProps {

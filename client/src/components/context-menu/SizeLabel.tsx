@@ -1,4 +1,4 @@
-import { IconChevronDown, IconCheck } from './icons/UtilityIcons';
+import { IconCheck, IconChevronDown } from './icons/UtilityIcons';
 import { useDropdown } from './useDropdown';
 
 const STROKE_PRESETS: [string, number][] = [

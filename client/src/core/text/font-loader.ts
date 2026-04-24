@@ -5,7 +5,7 @@
  * Uses CSS Font Loading API (document.fonts).
  */
 
-import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
+import { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
 
 let fontsLoaded = false;
 let loadPromise: Promise<void> | null = null;

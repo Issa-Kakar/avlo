@@ -1,9 +1,9 @@
+import { manageImageViewport } from '@/core/image/image-manager';
+import type { BBoxTuple, WorldBounds } from '@/core/types/geometry';
+import { applyPendingResize, getBaseContext } from '@/runtime/SurfaceManager';
+import { isMobile, useCameraStore } from '@/stores/camera-store';
 import { drawObjects } from './layers/objects';
 import { FRAME_CONFIG } from './types';
-import { useCameraStore, isMobile } from '@/stores/camera-store';
-import { getBaseContext, applyPendingResize } from '@/runtime/SurfaceManager';
-import type { WorldBounds, BBoxTuple } from '@/core/types/geometry';
-import { manageImageViewport } from '@/core/image/image-manager';
 
 const NATIVE_RAF = true; // true = vsync (no throttle), false = 60fps cap
 

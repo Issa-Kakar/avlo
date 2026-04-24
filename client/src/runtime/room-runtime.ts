@@ -13,12 +13,12 @@
  */
 
 import type { RoomId } from '@avlo/shared';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple } from '@/core/types/geometry';
 import type { ObjectSpatialIndex } from '@/core/spatial';
+import type { BBoxTuple } from '@/core/types/geometry';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { useCameraStore } from '@/stores/camera-store';
 import type { IRoomDocManager } from './room-doc-manager';
 import { RoomDocManagerImpl } from './room-doc-manager';
-import { useCameraStore } from '@/stores/camera-store';
 
 interface RoomContext {
   roomId: RoomId;

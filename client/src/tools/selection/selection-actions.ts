@@ -1,23 +1,23 @@
-import { getObjectsById, transact, getConnectorsForShape, getObjects } from '@/runtime/room-runtime';
+import * as Y from 'yjs';
+import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
 import {
-  getStartAnchor,
-  getEndAnchor,
-  getOrigin,
   getAlign,
   getContent,
+  getEndAnchor,
   getFontSize,
-  getLineNumbers,
   getHeaderVisible,
+  getLineNumbers,
+  getOrigin,
   getOutputVisible,
+  getStartAnchor,
   hasLabel,
 } from '@/core/accessors';
-import type { TextAlign, TextAlignV, FontFamily, CodeLanguage } from '@/core/accessors';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, TEXT_FONT_SIZE_PRESETS, type SizePreset, type ConnectorSizePreset } from '@/stores/device-ui-store';
+import { anchorFactor, getTextFrame } from '@/core/text/text-system';
+import { getConnectorsForShape, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
-import { getTextFrame, anchorFactor } from '@/core/text/text-system';
+import { type ConnectorSizePreset, type SizePreset, TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import { computeUniformInlineStyles } from './selection-utils';
-import * as Y from 'yjs';
 
 // === Helpers ===
 

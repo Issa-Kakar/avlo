@@ -14,7 +14,7 @@
  */
 
 import type { CanvasRuntime } from './CanvasRuntime';
-import { handleKeyDown, handleKeyUp, handlePaste, handleBlur } from './keyboard-manager';
+import { handleBlur, handleKeyDown, handleKeyUp, handlePaste } from './keyboard-manager';
 
 // ============================================
 // MODIFIER STATE

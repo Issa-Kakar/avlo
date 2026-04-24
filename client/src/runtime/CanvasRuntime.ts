@@ -8,22 +8,22 @@
  * @module runtime/CanvasRuntime
  */
 
-import { renderLoop } from '@/renderer/RenderLoop';
-import { overlayLoop } from '@/renderer/OverlayRenderLoop';
-import { cancelZoom, calculateZoomTransform } from './viewport/zoom';
-import { SurfaceManager } from './SurfaceManager';
-import { InputManager } from './InputManager';
-import { getCurrentTool, canStartMMBPan, panTool } from './tool-registry';
-import { updateCursor, clearCursor } from './presence/presence';
-import { isSpacebarPanMode } from './keyboard-manager';
-import { setLastCursorWorld } from './cursor-tracking';
-import { setCursorOverride } from '@/stores/device-ui-store';
-import { screenToWorld, screenToCanvas, capturePointer, releasePointer, useCameraStore } from '@/stores/camera-store';
-import { contextMenuController } from './ContextMenuController';
-import { updateEdgeScroll, stopEdgeScroll, isEdgeScrolling } from './viewport/edge-scroll';
-import { clear as clearImageManager } from '@/core/image/image-manager';
 import { cleanupOnRoomTeardown } from '@/core/bookmark/bookmark-unfurl';
 import { createImageFromBlob } from '@/core/image/image-actions';
+import { clear as clearImageManager } from '@/core/image/image-manager';
+import { overlayLoop } from '@/renderer/OverlayRenderLoop';
+import { renderLoop } from '@/renderer/RenderLoop';
+import { capturePointer, releasePointer, screenToCanvas, screenToWorld, useCameraStore } from '@/stores/camera-store';
+import { setCursorOverride } from '@/stores/device-ui-store';
+import { contextMenuController } from './ContextMenuController';
+import { setLastCursorWorld } from './cursor-tracking';
+import { InputManager } from './InputManager';
+import { isSpacebarPanMode } from './keyboard-manager';
+import { clearCursor, updateCursor } from './presence/presence';
+import { SurfaceManager } from './SurfaceManager';
+import { canStartMMBPan, getCurrentTool, panTool } from './tool-registry';
+import { isEdgeScrolling, stopEdgeScroll, updateEdgeScroll } from './viewport/edge-scroll';
+import { calculateZoomTransform, cancelZoom } from './viewport/zoom';
 
 export interface RuntimeConfig {
   container: HTMLElement;
@@ -246,7 +246,7 @@ export class CanvasRuntime {
     const now = performance.now();
     const boost = this.getWheelBoost(now);
     const normalizedDelta = delta / 120;
-    const factor = Math.pow(WHEEL_BASE, -normalizedDelta * boost);
+    const factor = WHEEL_BASE ** (-normalizedDelta * boost);
 
     const { scale, pan } = useCameraStore.getState();
     const target = calculateZoomTransform(scale, pan, factor, pivot);
@@ -254,7 +254,7 @@ export class CanvasRuntime {
   }
 
   private handlePinchZoom(delta: number, pivot: { x: number; y: number }): void {
-    const factor = Math.pow(2, -delta * PINCH_SENSITIVITY);
+    const factor = 2 ** (-delta * PINCH_SENSITIVITY);
 
     const { scale, pan } = useCameraStore.getState();
     const target = calculateZoomTransform(scale, pan, factor, pivot);

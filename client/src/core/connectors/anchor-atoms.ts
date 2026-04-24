@@ -8,14 +8,15 @@
  *
  * @module core/connectors/anchor-atoms
  */
+
+import { getHandle } from '@/runtime/room-runtime';
+import { getEnd, getEndAnchor, getStart, getStartAnchor } from '../accessors';
+import { frameOf } from '../geometry/frame-of';
 import type { FrameTuple, Point } from '../types/geometry';
 import type { ObjectHandle, StoredAnchor, StoredElbowAnchor } from '../types/objects';
-import { getStart, getEnd, getStartAnchor, getEndAnchor } from '../accessors';
-import { frameOf } from '../geometry/frame-of';
-import { getHandle } from '@/runtime/room-runtime';
-import type { SnapTarget } from './types';
-import { EDGE_CLEARANCE_W } from './constants';
 import { directionVector } from './connector-utils';
+import { EDGE_CLEARANCE_W } from './constants';
+import type { SnapTarget } from './types';
 
 const ZERO_POINT: Point = [0, 0];
 

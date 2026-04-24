@@ -14,14 +14,14 @@
  * @module canvas/tool-registry
  */
 
+import { type Tool as ToolId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { CodeTool } from '@/tools/CodeTool';
+import { ConnectorTool } from '@/tools/ConnectorTool';
 import { DrawingTool } from '@/tools/DrawingTool';
 import { EraserTool } from '@/tools/EraserTool';
-import { TextTool } from '@/tools/TextTool';
 import { PanTool } from '@/tools/PanTool';
 import { SelectTool } from '@/tools/selection/SelectTool';
-import { ConnectorTool } from '@/tools/ConnectorTool';
-import { CodeTool } from '@/tools/CodeTool';
-import { useDeviceUIStore, type Tool as ToolId } from '@/stores/device-ui-store';
+import { TextTool } from '@/tools/TextTool';
 import type { PointerTool, PreviewData } from '@/tools/types';
 
 // ===========================================
@@ -107,7 +107,7 @@ export function canStartMMBPan(): boolean {
 // ===========================================
 
 /** Export panTool for direct MMB access, textTool for direct access */
-export { panTool, textTool, codeTool };
+export { codeTool, panTool, textTool };
 
 /** Export all tools for testing/debugging */
 export const allTools = {

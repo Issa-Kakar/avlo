@@ -10,50 +10,50 @@
  */
 
 import { Editor } from '@tiptap/core';
+import Bold from '@tiptap/extension-bold';
 import Document from '@tiptap/extension-document';
-import { Placeholder } from '@tiptap/extensions';
+import Highlight from '@tiptap/extension-highlight';
+import Italic from '@tiptap/extension-italic';
 import Paragraph from '@tiptap/extension-paragraph';
 import Text from '@tiptap/extension-text';
-import Bold from '@tiptap/extension-bold';
-import Italic from '@tiptap/extension-italic';
-import Highlight from '@tiptap/extension-highlight';
-import { TextCollaboration } from '@/core/text/extensions';
+import { Placeholder } from '@tiptap/extensions';
+import { ulid } from 'ulid';
 import * as Y from 'yjs';
-import type { PointerTool, PreviewData } from './types';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { invalidateWorld } from '@/renderer/RenderLoop';
-import { getActiveRoomDoc, getHandle, getHandleKind, transact, getObjects } from '@/runtime/room-runtime';
-import { getEditorHost } from '@/runtime/SurfaceManager';
+import type { FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
 import {
-  getTextProps,
-  getColor,
-  getFillColor,
-  getFrame,
-  getShapeType,
-  getContent,
-  getFontSize,
-  getFontFamily,
   getAlign,
   getAlignV,
+  getColor,
+  getContent,
+  getFillColor,
+  getFontFamily,
+  getFontSize,
+  getFrame,
   getLabelColor,
-  hasLabel,
   getNoteProps,
+  getShapeType,
+  getTextProps,
+  hasLabel,
 } from '@/core/accessors';
-import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
-import { FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio, computeLabelTextBox, anchorFactor } from '@/core/text/text-system';
-import {
-  NOTE_WIDTH,
-  NOTE_FILL_COLOR,
-  getNotePadding,
-  getNoteContentWidth,
-  getNoteLayout,
-  getNoteDerivedFontSize,
-} from '@/core/text/sticky-note';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
-import { ulid } from 'ulid';
+import { TextCollaboration } from '@/core/text/extensions';
+import {
+  getNoteContentWidth,
+  getNoteDerivedFontSize,
+  getNoteLayout,
+  getNotePadding,
+  NOTE_FILL_COLOR,
+  NOTE_WIDTH,
+} from '@/core/text/sticky-note';
+import { anchorFactor, computeLabelTextBox, FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-system';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { invalidateWorld } from '@/renderer/RenderLoop';
+import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, transact } from '@/runtime/room-runtime';
+import { getEditorHost } from '@/runtime/SurfaceManager';
+import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import type { PointerTool, PreviewData } from './types';
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
 function syncInlineStylesToStore(editor: Editor): void {

@@ -1,11 +1,11 @@
 import type * as Y from 'yjs';
-import type { ObjectKind } from '../types/objects';
-import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
-import { getPoints, getFrame, getWidth, getStartCap, getEndCap, getTextProps, getNoteProps, getBookmarkProps } from '../accessors';
-import { computeTextBBox } from '../text/text-system';
-import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
+import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
+import { BOOKMARK_WIDTH, computeBookmarkBBox } from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
-import { computeBookmarkBBox, BOOKMARK_WIDTH } from '../bookmark/bookmark-render';
+import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
+import { computeTextBBox } from '../text/text-system';
+import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
+import type { ObjectKind } from '../types/objects';
 
 export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown>): BBoxTuple {
   switch (kind) {

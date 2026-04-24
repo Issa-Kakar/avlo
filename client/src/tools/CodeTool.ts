@@ -6,48 +6,48 @@
  * All CM padding/sizing via CSS custom properties (--c-*) set as exact px.
  */
 
-import * as Y from 'yjs';
 import { ulid } from 'ulid';
-import { getActiveRoomDoc, getHandle, transact, getObjects } from '@/runtime/room-runtime';
-import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { invalidateWorld } from '@/renderer/RenderLoop';
-import { getEditorHost } from '@/runtime/SurfaceManager';
-import { useSelectionStore } from '@/stores/selection-store';
-import { useDeviceUIStore, getUserId } from '@/stores/device-ui-store';
-import {
-  getCodeProps,
-  getLineNumbers,
-  getLanguage,
-  getHeaderVisible,
-  getOutputVisible,
-  getCodeOutput,
-  CODE_EXTENSIONS,
-} from '@/core/accessors';
+import * as Y from 'yjs';
 import type { CodeLanguage } from '@/core/accessors';
 import {
+  CODE_EXTENSIONS,
+  getCodeOutput,
+  getCodeProps,
+  getHeaderVisible,
+  getLanguage,
+  getLineNumbers,
+  getOutputVisible,
+} from '@/core/accessors';
+import {
+  borderRadius,
+  charWidth,
+  chromeFontSize,
   getDefaultWidth,
-  padTop,
+  gutterPad,
+  headerBarHeight,
+  lineHeight as lineHeightFn,
   padBottom,
   padLeft,
   padRight,
-  gutterPad,
-  charWidth,
-  borderRadius,
-  lineHeight as lineHeightFn,
-  chromeFontSize,
-  headerBarHeight,
+  padTop,
 } from '@/core/code/code-system';
+import { getCodeMirrorExtensions } from '@/core/code/code-theme';
 import {
   CODE_FONT_FAMILY,
-  MAX_TITLE_LENGTH,
   MAX_OUTPUT_CANVAS_LINES,
+  MAX_TITLE_LENGTH,
+  OUTPUT_LABEL_H_RATIO,
   OUTPUT_LINE_H_MULT,
   OUTPUT_PAD_BOTTOM_RATIO,
-  OUTPUT_LABEL_H_RATIO,
 } from '@/core/code/code-tokens';
-import { getCodeMirrorExtensions } from '@/core/code/code-theme';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { invalidateWorld } from '@/renderer/RenderLoop';
+import { getActiveRoomDoc, getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { getEditorHost } from '@/runtime/SurfaceManager';
+import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import type { PointerTool, PreviewData } from './types';
 
 export class CodeTool implements PointerTool {

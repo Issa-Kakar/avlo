@@ -8,56 +8,56 @@
  */
 
 import type * as Y from 'yjs';
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectKind, BindableKind, TextAlign, TextWidth } from '@/core/types/objects';
-import { OBJECT_KINDS, isBindableKind } from '@/core/types/objects';
-import type { HandleId } from '@/core/types/handles';
-import { isCorner, isHorzSide } from '@/core/types/handles';
+import { getCodeProps, getFrame, getOrigin, getPoints, getTextProps, getWidth } from '@/core/accessors';
 import {
-  scaleBBoxUniform,
-  scaleBBoxEdges,
-  edgePinDelta,
-  derivePaddedFrame,
-  roundProp,
-  computeReflowWidth,
-} from '@/core/geometry/scale-system';
-import {
-  frameToBbox,
-  bboxCenter,
-  copyBbox,
-  offsetPoint,
-  offsetBBox,
-  offsetFrame as offsetFrameMut,
-  setBBoxXYWH,
-} from '@/core/geometry/bounds';
-import { getHandle, transact } from '@/runtime/room-runtime';
-import { getFrame, getPoints, getWidth, getOrigin, getTextProps, getCodeProps } from '@/core/accessors';
-import {
-  getTextFrame,
-  textLayoutCache,
-  getMinCharWidth,
-  layoutMeasuredContent,
-  anchorFactor,
-  type TextLayout,
-} from '@/core/text/text-system';
-import {
-  getCodeFrame,
+  type CodeLayout,
+  blockHeight as codeBlockHeight,
   codeSystem,
   computeLayout as computeCodeLayout,
-  blockHeight as codeBlockHeight,
+  getCodeFrame,
   getMinWidth as getCodeMinWidth,
-  type CodeLayout,
 } from '@/core/code/code-system';
-import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import {
+  bboxCenter,
+  copyBbox,
+  frameToBbox,
+  offsetBBox,
+  offsetFrame as offsetFrameMut,
+  offsetPoint,
+  setBBoxXYWH,
+} from '@/core/geometry/bounds';
+import {
+  computeReflowWidth,
+  derivePaddedFrame,
+  edgePinDelta,
+  roundProp,
+  scaleBBoxEdges,
+  scaleBBoxUniform,
+} from '@/core/geometry/scale-system';
+import {
+  anchorFactor,
+  getMinCharWidth,
+  getTextFrame,
+  layoutMeasuredContent,
+  type TextLayout,
+  textLayoutCache,
+} from '@/core/text/text-system';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { HandleId } from '@/core/types/handles';
+import { isCorner, isHorzSide } from '@/core/types/handles';
+import type { BindableKind, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
+import { isBindableKind, OBJECT_KINDS } from '@/core/types/objects';
+import { invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { getHandle, transact } from '@/runtime/room-runtime';
+import {
+  type ConnectorTopology,
+  cancelTopology,
+  commitTopology,
   newTopologyBuilder,
   runTopologyScale,
   runTopologyTranslate,
-  commitTopology,
-  cancelTopology,
-  type ConnectorTopology,
 } from './connector-topology';
-import type { KindCounts as SelectionKindCounts, ScaleCtx } from './types';
+import type { ScaleCtx, KindCounts as SelectionKindCounts } from './types';
 
 // ============================================================================
 // Structural Traits — field-set atoms for generic function signatures

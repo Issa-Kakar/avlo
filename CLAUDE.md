@@ -10,6 +10,9 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 - `@avlo/shared` → `packages/shared/src/*`
 - `@/*` → `client/src/*`
 
+Run once per clone so `git blame` skips reformat-only commits:
+`git config blame.ignoreRevsFile .git-blame-ignore-revs`
+
 ## Best Practices
 - Always prefer **getters** over parameter passing — data should be accessible where needed
 - Minimize object creation and parameter bloat; derive or access what already exists

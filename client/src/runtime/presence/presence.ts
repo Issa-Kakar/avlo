@@ -7,13 +7,13 @@
  * `getPeerCursors()` directly — zero Zustand overhead per frame.
  */
 
-import type { Awareness as YAwareness } from 'y-protocols/awareness';
 import type YProvider from 'y-partyserver/provider';
-import { usePresenceStore, type PeerIdentity } from '@/stores/presence-store';
-import { getUserProfile } from '@/stores/device-ui-store';
+import type { Awareness as YAwareness } from 'y-protocols/awareness';
+import { clearBitmapCache } from '@/renderer/animation/cursor-bitmap';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isMobile } from '@/stores/camera-store';
-import { clearBitmapCache } from '@/renderer/animation/cursor-bitmap';
+import { getUserProfile } from '@/stores/device-ui-store';
+import { type PeerIdentity, usePresenceStore } from '@/stores/presence-store';
 
 // ─── Types ───────────────────────────────────────────────────────────
 

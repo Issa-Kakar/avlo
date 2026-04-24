@@ -1,8 +1,8 @@
-import type { ObjectHandle, BookmarkProps } from '../types/objects';
-import type { BBoxTuple, FrameTuple } from '../types/geometry';
 import { getBookmarkProps } from '../accessors';
 import { getBitmap } from '../image/image-manager';
 import { renderNoteBody } from '../text/sticky-note';
+import type { BBoxTuple, FrameTuple } from '../types/geometry';
+import type { BookmarkProps, ObjectHandle } from '../types/objects';
 
 // ---------------------------------------------------------------------------
 // Constants

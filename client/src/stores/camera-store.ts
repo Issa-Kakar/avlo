@@ -14,7 +14,7 @@
  */
 
 import { create } from 'zustand';
-import { subscribeWithSelector, persist } from 'zustand/middleware';
+import { persist, subscribeWithSelector } from 'zustand/middleware';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
 

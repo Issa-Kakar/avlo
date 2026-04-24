@@ -2,34 +2,34 @@
  * RoomDocManager - Central authority for Y.Doc and real-time collaboration
  */
 
-import * as Y from 'yjs';
+import type { RoomId } from '@avlo/shared';
+import { ySyncPluginKey } from '@tiptap/y-tiptap';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import YProvider from 'y-partyserver/provider';
-import { getUserId } from '@/stores/device-ui-store';
-import type { RoomId } from '@avlo/shared';
-import { ObjectSpatialIndex } from '@/core/spatial';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple } from '@/core/types/geometry';
-import { computeBBoxFor, bboxEquals } from '@/core/geometry/bbox';
-import { removeObjectCaches, clearAllObjectCaches } from '@/renderer/object-cache';
-import { evictGeometry } from '@/renderer/geometry-cache';
-import { invalidateWorldBBox, invalidateWorldAll } from '@/renderer/RenderLoop';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getVisibleWorldBounds } from '@/stores/camera-store';
+import * as Y from 'yjs';
+import { getCodeProps } from '@/core/accessors';
+import { codeSystem } from '@/core/code/code-system';
 import {
-  initConnectorLookup,
   hydrateConnectorLookup,
+  initConnectorLookup,
   processConnectorAdded,
-  processConnectorUpdated,
   processConnectorDeleted,
+  processConnectorUpdated,
   processShapeDeleted,
 } from '@/core/connectors/connector-lookup';
-import { getCodeProps } from '@/core/accessors';
-import { ySyncPluginKey } from '@tiptap/y-tiptap';
-import { textLayoutCache } from '@/core/text/text-system';
-import { codeSystem } from '@/core/code/code-system';
-import { useSelectionStore } from '@/stores/selection-store';
+import { bboxEquals, computeBBoxFor } from '@/core/geometry/bbox';
 import { hydrateImages } from '@/core/image/image-manager';
+import { ObjectSpatialIndex } from '@/core/spatial';
+import { textLayoutCache } from '@/core/text/text-system';
+import type { BBoxTuple } from '@/core/types/geometry';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { evictGeometry } from '@/renderer/geometry-cache';
+import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
+import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
+import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { getVisibleWorldBounds } from '@/stores/camera-store';
+import { getUserId } from '@/stores/device-ui-store';
+import { useSelectionStore } from '@/stores/selection-store';
 import { attach, detach } from './presence/presence';
 
 // Type alias for Y structures

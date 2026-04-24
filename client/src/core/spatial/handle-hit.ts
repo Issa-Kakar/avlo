@@ -11,11 +11,11 @@
  * its own `/scale`.
  */
 
-import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { HandleId } from '@/tools/types';
-import { computeHandles } from '@/stores/selection-store';
-import { getHandle } from '@/runtime/room-runtime';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
+import { getHandle } from '@/runtime/room-runtime';
+import { computeHandles } from '@/stores/selection-store';
+import type { HandleId } from '@/tools/types';
 import { type Radius, resolveRadius } from './object-query';
 
 // ============================================================================

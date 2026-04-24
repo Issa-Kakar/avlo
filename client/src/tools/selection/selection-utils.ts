@@ -1,29 +1,29 @@
-import type { ObjectKind } from '@/core/types/objects';
-import { OBJECT_KINDS } from '@/core/types/objects';
+import type { FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
 import {
-  getColor,
-  getWidth,
-  getFillColor,
-  getShapeType,
-  getFontSize,
-  getFontFamily,
   getAlign,
   getAlignV,
+  getColor,
+  getFillColor,
+  getFontFamily,
+  getFontSize,
+  getHeaderVisible,
   getLabelColor,
   getLanguage,
-  getHeaderVisible,
   getOutputVisible,
+  getShapeType,
+  getWidth,
   hasLabel,
 } from '@/core/accessors';
-import type { TextAlign, TextAlignV, FontFamily } from '@/core/accessors';
 import { getInlineStyles } from '@/core/text/text-system';
+import type { ObjectKind } from '@/core/types/objects';
+import { OBJECT_KINDS } from '@/core/types/objects';
 import { getObjectsById } from '@/runtime/room-runtime';
-import type { SelectionKind, KindCounts, SelectedStyles, InlineStyles } from './types';
+import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind } from './types';
 import { EMPTY_STYLES } from './types';
 
 // Re-export for consumers that still import shared types from selection-utils.
-export type { KindCounts, SelectedStyles, InlineStyles, SelectionKind } from './types';
-export { EMPTY_STYLES, EMPTY_KIND_COUNTS, EMPTY_INLINE_STYLES } from './types';
+export type { InlineStyles, KindCounts, SelectedStyles, SelectionKind } from './types';
+export { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from './types';
 
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 

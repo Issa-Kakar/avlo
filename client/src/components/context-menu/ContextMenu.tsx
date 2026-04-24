@@ -1,46 +1,44 @@
 import { memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
-import { useSelectionStore } from '@/stores/selection-store';
+import { getHandleKind } from '@/runtime/room-runtime';
+import { selectTextColor, selectTextSize, useDeviceUIStore } from '@/stores/device-ui-store';
 import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
-import { filterSelectionByKind, selectInlineBold, selectInlineItalic } from '@/stores/selection-store';
+import { filterSelectionByKind, selectInlineBold, selectInlineItalic, useSelectionStore } from '@/stores/selection-store';
 import {
-  setSelectedWidth,
-  setSelectedColor,
-  setSelectedFillColor,
-  setSelectedTextColor,
-  setSelectedFontSize,
-  setSelectedHighlight,
-  toggleSelectedBold,
-  toggleSelectedItalic,
-  incrementFontSize,
+  decrementCodeFontSize,
   decrementFontSize,
   deleteSelected,
   incrementCodeFontSize,
-  decrementCodeFontSize,
+  incrementFontSize,
   setSelectedCodeFontSize,
-  toggleCodeLineNumbers,
+  setSelectedColor,
+  setSelectedFillColor,
+  setSelectedFontSize,
+  setSelectedHighlight,
+  setSelectedTextColor,
+  setSelectedWidth,
   toggleCodeHeader,
+  toggleCodeLineNumbers,
   toggleCodeOutput,
+  toggleSelectedBold,
+  toggleSelectedItalic,
 } from '@/tools/selection/selection-actions';
-import { useDeviceUIStore, selectTextColor, selectTextSize } from '@/stores/device-ui-store';
-import { NO_FILL } from './color-palette';
-
-import { MenuButton } from './MenuButton';
-import { ButtonGroup } from './ButtonGroup';
-import { FontSizeStepper } from './FontSizeStepper';
-import { SizeLabel } from './SizeLabel';
-import { TypefaceButton } from './TypefaceButton';
-import { FilterObjectsDropdown } from './FilterObjectsDropdown';
-import { ColorPickerPopover } from './ColorPickerPopover';
-import { TextColorPopover } from './TextColorPopover';
-import { HighlightPickerPopover } from './HighlightPickerPopover';
-import { ShapeTypeDropdown } from './ShapeTypeDropdown';
 import { AlignDropdown } from './AlignDropdown';
-import { IconBold, IconItalic, IconMoreDots, IconTrash, IconCodeLines, IconCodeHeader, IconCodeOutput } from './icons';
+import { ButtonGroup } from './ButtonGroup';
+import { ColorPickerPopover } from './ColorPickerPopover';
+import { NO_FILL } from './color-palette';
+import { FilterObjectsDropdown } from './FilterObjectsDropdown';
+import { FontSizeStepper } from './FontSizeStepper';
+import { HighlightPickerPopover } from './HighlightPickerPopover';
+import { IconBold, IconCodeHeader, IconCodeLines, IconCodeOutput, IconItalic, IconMoreDots, IconTrash } from './icons';
 import { LanguageDropdown } from './LanguageDropdown';
+import { MenuButton } from './MenuButton';
 import { NoteAlignDropdown } from './NoteAlignDropdown';
-import { getHandleKind } from '@/runtime/room-runtime';
+import { ShapeTypeDropdown } from './ShapeTypeDropdown';
+import { SizeLabel } from './SizeLabel';
+import { TextColorPopover } from './TextColorPopover';
+import { TypefaceButton } from './TypefaceButton';
 
 // === Selectors (stable module-level references) ===
 

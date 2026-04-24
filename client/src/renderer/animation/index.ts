@@ -2,7 +2,6 @@
  * Animation module exports
  */
 
-export { getAnimationController, destroyAnimationController, type AnimationJob } from './AnimationController';
-
-export { EraserTrailAnimation } from './EraserTrailAnimation';
+export { type AnimationJob, destroyAnimationController, getAnimationController } from './AnimationController';
 export { CursorAnimationJob } from './CursorAnimationJob';
+export { EraserTrailAnimation } from './EraserTrailAnimation';

@@ -1,7 +1,7 @@
-import { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
-import { MenuButton } from './MenuButton';
 import { ColorCircle } from './ColorCircle';
+import { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
 import { IconNoFill } from './icons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 interface ColorPickerPopoverProps {

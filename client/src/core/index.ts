@@ -1,24 +1,24 @@
 // core/index.ts — SAFE: export type is erased at compile time
-export type { Point, BBoxTuple, FrameTuple, WorldBounds, Frame } from './types/geometry';
+export type { BBoxTuple, Frame, FrameTuple, Point, WorldBounds } from './types/geometry';
 export type {
-  ObjectKind,
-  ObjectHandle,
-  IndexEntry,
+  BindableHandle,
+  BindableKind,
+  BookmarkProps,
+  CodeLanguage,
+  CodeProps,
   Dir,
+  FontFamily,
+  ImageProps,
+  IndexEntry,
+  NoteProps,
+  ObjectHandle,
+  ObjectKind,
+  ShapeProps,
   StoredAnchor,
+  StrokeProps,
   TextAlign,
   TextAlignV,
-  TextWidth,
-  FontFamily,
-  CodeLanguage,
-  StrokeProps,
-  ShapeProps,
   TextProps,
-  CodeProps,
-  NoteProps,
-  ImageProps,
-  BookmarkProps,
-  BindableKind,
-  BindableHandle,
+  TextWidth,
 } from './types/objects';
-export { isBindableKind, isBindableHandle, BINDABLE_KINDS } from './types/objects';
+export { BINDABLE_KINDS, isBindableHandle, isBindableKind } from './types/objects';

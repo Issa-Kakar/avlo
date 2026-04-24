@@ -8,41 +8,47 @@
  */
 
 import * as Y from 'yjs';
-import type { FrameTuple, Frame } from './types/geometry';
+import type { Frame, FrameTuple } from './types/geometry';
 import type {
-  ObjectHandle,
-  StoredAnchor,
-  TextAlign,
-  TextAlignV,
-  TextWidth,
-  FontFamily,
-  TextProps,
+  BookmarkProps,
   CodeLanguage,
   CodeProps,
-  StrokeProps,
-  ShapeProps,
-  NoteProps,
-  ImageProps,
-  BookmarkProps,
-  ConnectorType,
   ConnectorCap,
+  ConnectorType,
+  FontFamily,
+  ImageProps,
+  NoteProps,
+  ObjectHandle,
+  ShapeProps,
+  StoredAnchor,
+  StrokeProps,
+  TextAlign,
+  TextAlignV,
+  TextProps,
+  TextWidth,
 } from './types/objects';
 
 // Re-export types for backwards compatibility
 export type {
+  BookmarkProps,
+  CodeLanguage,
+  CodeProps,
+  ConnectorCap,
+  ConnectorType,
   Dir,
+  FontFamily,
+  ImageProps,
+  NoteProps,
+  ShapeProps,
   StoredAnchor,
   StoredElbowAnchor,
   StoredStraightAnchor,
+  StrokeProps,
   TextAlign,
   TextAlignV,
+  TextProps,
   TextWidth,
-  FontFamily,
-  ConnectorType,
-  ConnectorCap,
 } from './types/objects';
-export type { CodeLanguage, CodeProps, TextProps, StrokeProps, ShapeProps } from './types/objects';
-export type { NoteProps, ImageProps, BookmarkProps } from './types/objects';
 
 // ============================================================================
 // COMMON ACCESSORS (all object kinds)

@@ -1,5 +1,5 @@
-import ReactDOM from 'react-dom/client';
 import { RouterProvider } from '@tanstack/react-router';
+import ReactDOM from 'react-dom/client';
 import { router } from './router';
 import './index.css';
 import { ensureFontsLoaded } from './core/text/font-loader';

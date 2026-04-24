@@ -10,9 +10,9 @@
  */
 
 import type { FrameTuple, Point } from '../types/geometry';
+import { isHorizontal, isPointBounds, pointBounds, toBounds } from './connector-utils';
 import { computeApproachOffset, EDGE_CLEARANCE_W } from './constants';
-import { toBounds, pointBounds, isPointBounds, isHorizontal } from './connector-utils';
-import type { Dir, Bounds, RoutingContext, Grid, GridCell, Centerlines } from './types';
+import type { Bounds, Centerlines, Dir, Grid, GridCell, RoutingContext } from './types';
 
 // ============================================================================
 // MAIN ENTRY POINT

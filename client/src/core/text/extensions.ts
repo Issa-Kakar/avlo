@@ -29,10 +29,10 @@
  * which is after _typeChanged already dispatched the PM transaction with the wrong selection.)
  */
 import { Extension } from '@tiptap/core';
-import { ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey, undo, redo } from '@tiptap/y-tiptap';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
-import * as Y from 'yjs';
+import { redo, undo, ySyncPlugin, ySyncPluginKey, yUndoPlugin, yUndoPluginKey } from '@tiptap/y-tiptap';
 import type { XmlFragment } from 'yjs';
+import * as Y from 'yjs';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {

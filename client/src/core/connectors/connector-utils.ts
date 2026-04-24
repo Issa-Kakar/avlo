@@ -11,10 +11,10 @@
  * defined above it.
  */
 
-import type { FrameTuple, Point } from '../types/geometry';
 import { frameCenter } from '../geometry/bounds';
-import type { Dir, Bounds } from './types';
+import type { FrameTuple, Point } from '../types/geometry';
 import { computeApproachOffset } from './constants';
+import type { Bounds, Dir } from './types';
 
 // ============================================================================
 // DIRECTION PRIMITIVES

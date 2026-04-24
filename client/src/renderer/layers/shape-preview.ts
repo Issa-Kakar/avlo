@@ -1,5 +1,5 @@
-import type { ShapePreview } from '@/tools/types';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
+import type { ShapePreview } from '@/tools/types';
 import { createFillFromStroke } from '@/utils/color';
 
 /**

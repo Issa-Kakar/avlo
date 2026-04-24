@@ -1,8 +1,8 @@
-import { computePosition, offset, flip, shift, hide } from '@floating-ui/dom';
 import type { VirtualElement } from '@floating-ui/dom';
-import { useSelectionStore, computeSelectionBounds } from '@/stores/selection-store';
-import { worldToClient } from '@/stores/camera-store';
+import { computePosition, flip, hide, offset, shift } from '@floating-ui/dom';
 import type { BBoxTuple } from '@/core/types/geometry';
+import { worldToClient } from '@/stores/camera-store';
+import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 
 const SETTLE_MS = 150;
 

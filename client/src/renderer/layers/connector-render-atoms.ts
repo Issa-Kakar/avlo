@@ -17,17 +17,17 @@
  * @module renderer/layers/connector-render-atoms
  */
 
-import type { FrameTuple, Point } from '@/core/types/geometry';
-import { type ObjectHandle, isBindableHandle } from '@/core/types/objects';
-import { type Dir, type SnapTarget } from '@/core/connectors/types';
+import { getHandleShapeType, getWidth } from '@/core/accessors';
+import { ARROW_ROUNDING_LINE_WIDTH, type ConnectorPaths } from '@/core/connectors/connector-paths';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import { shapeMidpoints } from '@/core/connectors/shape-geometry';
-import { type ConnectorPaths, ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
-import { getPath } from '../geometry-cache';
-import { getWidth, getHandleShapeType } from '@/core/accessors';
-import { useCameraStore } from '@/stores/camera-store';
-import { getHandle } from '@/runtime/room-runtime';
+import { type Dir, type SnapTarget } from '@/core/connectors/types';
 import { frameOf } from '@/core/geometry/frame-of';
+import type { FrameTuple, Point } from '@/core/types/geometry';
+import { isBindableHandle, type ObjectHandle } from '@/core/types/objects';
+import { getHandle } from '@/runtime/room-runtime';
+import { useCameraStore } from '@/stores/camera-store';
+import { getPath } from '../geometry-cache';
 
 /**
  * Stroke a connector's polyline + fill/stroke its arrow caps in one call.

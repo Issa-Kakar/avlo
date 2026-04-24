@@ -12,7 +12,7 @@
  * @module runtime/SurfaceManager
  */
 
-import { useCameraStore, setCanvasElement } from '@/stores/camera-store';
+import { setCanvasElement, useCameraStore } from '@/stores/camera-store';
 import { applyCursor } from '@/stores/device-ui-store';
 
 const MAX_CANVAS_DIMENSION = 16384;

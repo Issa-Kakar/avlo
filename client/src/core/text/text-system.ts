@@ -21,15 +21,14 @@
  */
 
 import * as Y from 'yjs';
+import type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type { TextProps, TextAlign, TextAlignV, TextWidth, FontFamily } from '../accessors';
-
+import { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
 import { areFontsLoaded } from './font-loader';
-import { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
 
-export { FONT_WEIGHTS, FONT_FAMILIES } from './font-config';
+export type { FontFamily, TextAlign, TextAlignV, TextProps, TextWidth } from '../accessors';
 export type { FontFamilyConfig } from './font-config';
-export type { TextAlign, TextAlignV, TextWidth, TextProps, FontFamily } from '../accessors';
+export { FONT_FAMILIES, FONT_WEIGHTS } from './font-config';
 
 /** Vertical offset for constrained-box content alignment (matches CSS clamp behavior).
  *  Shared by sticky-note rendering and shape-label rendering. */

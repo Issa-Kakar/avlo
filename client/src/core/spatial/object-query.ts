@@ -11,12 +11,12 @@
  * points; no reason to split them into their own module).
  */
 
-import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { BindableHandle, ObjectHandle, ObjectKind, IndexEntry } from '@/core/types/objects';
 import { getFrame } from '@/core/accessors';
-import { getSpatialIndex, getHandle } from '@/runtime/room-runtime';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
+import type { BindableHandle, IndexEntry, ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { getHandle, getSpatialIndex } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
-import { KIND, type AnyCapability, type Paint } from './kind-capability';
+import { type AnyCapability, KIND, type Paint } from './kind-capability';
 
 // ============================================================================
 // Radius + Region

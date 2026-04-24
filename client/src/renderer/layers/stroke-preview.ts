@@ -1,6 +1,6 @@
-import type { StrokePreview } from '@/tools/types';
 import { getStroke } from 'perfect-freehand';
-import { PF_OPTIONS_BASE, getSvgPathFromStroke } from '../types';
+import type { StrokePreview } from '@/tools/types';
+import { getSvgPathFromStroke, PF_OPTIONS_BASE } from '../types';
 
 /**
  * Draw stroke preview using Perfect Freehand

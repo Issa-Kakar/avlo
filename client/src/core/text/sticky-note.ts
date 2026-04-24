@@ -9,27 +9,27 @@
  */
 
 import * as Y from 'yjs';
-import type { ObjectHandle } from '../types/objects';
-import type { BBoxTuple, FrameTuple } from '../types/geometry';
-import type { NoteProps, FontFamily } from '../accessors';
-import { getNoteProps } from '../accessors';
 import { useSelectionStore } from '@/stores/selection-store';
+import type { FontFamily, NoteProps } from '../accessors';
+import { getNoteProps } from '../accessors';
+import type { BBoxTuple, FrameTuple } from '../types/geometry';
+import type { ObjectHandle } from '../types/objects';
+import { FONT_FAMILIES } from './font-config';
+import type { MeasuredContent, TextLayout } from './text-system';
 import {
-  textLayoutCache,
-  parseAndTokenize,
-  measureTokenizedContent,
-  measureTextCached,
-  sliceTextToFit,
-  nextSoftBreak,
-  buildFontString,
-  layoutMeasuredContent,
   anchorFactor,
+  buildFontString,
   getBaselineToTopRatio,
   getLineStartX,
   getNoteContentOffsetY,
+  layoutMeasuredContent,
+  measureTextCached,
+  measureTokenizedContent,
+  nextSoftBreak,
+  parseAndTokenize,
+  sliceTextToFit,
+  textLayoutCache,
 } from './text-system';
-import { FONT_FAMILIES } from './font-config';
-import type { MeasuredContent, TextLayout } from './text-system';
 
 // =============================================================================
 // CONSTANTS

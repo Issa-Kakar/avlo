@@ -14,18 +14,18 @@
  * @module renderer/layers/selection-overlay
  */
 
-import type { SelectionPreview, HandleId } from '@/tools/types';
-import type { Point } from '@/core/types/geometry';
-import { getFrame, getWidth, getConnectorType, getEndpointAnchors, getPoints } from '@/core/accessors';
-import { getTextFrame } from '@/core/text/text-system';
+import { getConnectorType, getEndpointAnchors, getFrame, getPoints, getWidth } from '@/core/accessors';
 import { getCodeFrame } from '@/core/code/code-system';
-import { getPath } from '../geometry-cache';
-import { useSelectionStore, type TransformState } from '@/stores/selection-store';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
+import { getTextFrame } from '@/core/text/text-system';
+import type { Point } from '@/core/types/geometry';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
-import { drawConnectorDashGuide, drawAnchorDot, drawSnapFeedback } from './connector-render-atoms';
+import { type TransformState, useSelectionStore } from '@/stores/selection-store';
+import type { HandleId, SelectionPreview } from '@/tools/types';
+import { getPath } from '../geometry-cache';
+import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 
 // =============================================================================
 // STYLING CONSTANTS

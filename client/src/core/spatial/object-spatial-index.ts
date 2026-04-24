@@ -1,6 +1,6 @@
 import RBush from 'rbush';
-import type { ObjectKind, IndexEntry, ObjectHandle } from '../types/objects';
 import type { BBoxTuple } from '../types/geometry';
+import type { IndexEntry, ObjectHandle, ObjectKind } from '../types/objects';
 
 /**
  * ObjectSpatialIndex — pure rbush wrapper, tuple-first.

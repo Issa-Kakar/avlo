@@ -12,27 +12,27 @@
  * 5. Otherwise, fallback to line (no straightness check)
  */
 
-import type { Vec2 } from './types';
+import { fitAABB } from './fit-aabb';
+import { fitCircle } from './fit-circle';
+import { detectCorners, hasNearTouch, hasSelfIntersection, reconstructRectangleEdges } from './geometry-helpers';
+import { scoreCircle, scoreRectangleAABB } from './score';
 import {
-  SHAPE_CONFIDENCE_MIN,
-  SHAPE_AMBIGUITY_DELTA,
-  RECT_CORNER_TIE_TOLERANCE_DEG,
-  RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE,
-  RECT_MAX_RIGHT_ANGLES,
-  LINE_SELF_INTERSECT_AMBIGUOUS,
-  LINE_SELF_INTERSECT_EPSILON_FACTOR,
-  LINE_SELF_INTERSECT_MIN_EPSILON,
-  LINE_NEAR_CLOSURE_AMBIGUOUS,
   LINE_CLOSE_GAP_RATIO,
+  LINE_NEAR_CLOSURE_AMBIGUOUS,
   LINE_NEAR_TOUCH_AMBIGUOUS,
   LINE_NEAR_TOUCH_EPSILON_FACTOR,
   LINE_NEAR_TOUCH_MIN_EPSILON,
+  LINE_SELF_INTERSECT_AMBIGUOUS,
+  LINE_SELF_INTERSECT_EPSILON_FACTOR,
+  LINE_SELF_INTERSECT_MIN_EPSILON,
+  RECT_CORNER_TIE_TOLERANCE_DEG,
+  RECT_MAX_RIGHT_ANGLES,
+  RECT_MIN_RIGHT_ANGLES_FOR_CONFIDENCE,
+  SHAPE_AMBIGUITY_DELTA,
+  SHAPE_CONFIDENCE_MIN,
 } from './shape-params';
-import { fitCircle } from './fit-circle';
-import { fitAABB } from './fit-aabb';
-import { detectCorners, reconstructRectangleEdges, hasSelfIntersection, hasNearTouch } from './geometry-helpers';
-import { scoreCircle, scoreRectangleAABB } from './score';
 import { simplifyStroke } from './simplification';
+import type { Vec2 } from './types';
 
 /**
  * Result of shape recognition

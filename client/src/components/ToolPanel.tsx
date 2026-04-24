@@ -1,28 +1,28 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { DrawingSettings, SizePreset, ConnectorSizePreset, TEXT_COLOR_PALETTE, useDeviceUIStore } from '../stores/device-ui-store';
-import { undo, redo, hasActiveRoom } from '@/runtime/room-runtime';
+import React, { useEffect, useRef, useState } from 'react';
 import { openImageFilePicker } from '@/core/image/image-actions';
+import { hasActiveRoom, redo, undo } from '@/runtime/room-runtime';
+import { ConnectorSizePreset, DrawingSettings, SizePreset, TEXT_COLOR_PALETTE, useDeviceUIStore } from '../stores/device-ui-store';
 
 import './ToolPanel.css';
 
 // Import icon components from Phase 5
 import {
-  IconSelect,
-  IconPen,
-  IconHighlighter,
-  IconEraser,
-  IconText,
-  IconRectangle,
-  IconEllipse,
   IconArrow,
-  IconDiamond,
   IconCode,
+  IconDiamond,
+  IconEllipse,
+  IconEraser,
+  IconFill,
+  IconHighlighter,
   IconImage,
   IconPan,
-  IconStickyNote,
-  IconFill,
-  IconUndo,
+  IconPen,
+  IconRectangle,
   IconRedo,
+  IconSelect,
+  IconStickyNote,
+  IconText,
+  IconUndo,
 } from './icons';
 
 export function ToolPanel() {

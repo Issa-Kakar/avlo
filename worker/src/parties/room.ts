@@ -1,6 +1,6 @@
-import * as Y from 'yjs';
-import { YServer } from 'y-partyserver';
 import type { Connection } from 'partyserver';
+import { YServer } from 'y-partyserver';
+import * as Y from 'yjs';
 
 // One canonical head per room, V2-encoded at rest
 const headKey = (room: string) => `rooms/${room}/head.v2.bin`;

@@ -13,18 +13,17 @@
  */
 
 import { getHandle } from '@/runtime/room-runtime';
-import type { FrameTuple, BBoxTuple, Point } from '../types/geometry';
-import { getConnectorProps, type StoredAnchor } from '../accessors';
+import { getConnectorProps, getHandleShapeType, type StoredAnchor } from '../accessors';
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
-import { computeAStarRoute } from './routing-astar';
-import { resolveElbowFreeStartDir, computeElbowFreeEndDir, oppositeDir } from './connector-utils';
-import { computeShapeEdgeIntersection } from './shape-geometry';
-import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
+import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 import type { StoredElbowAnchor, StoredStraightAnchor } from '../types/objects';
-import type { Dir, SnapTarget, ConnectorType } from './types';
-import { getHandleShapeType } from '../accessors';
+import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
+import { computeElbowFreeEndDir, oppositeDir, resolveElbowFreeStartDir } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
+import { computeAStarRoute } from './routing-astar';
+import { computeShapeEdgeIntersection } from './shape-geometry';
+import type { ConnectorType, Dir, SnapTarget } from './types';
 
 const ZERO_POINT: Point = [0, 0];
 

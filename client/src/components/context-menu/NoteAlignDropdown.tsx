@@ -1,11 +1,17 @@
-import { useSelectionStore } from '@/stores/selection-store';
-import type { SelectionStore } from '@/stores/selection-store';
-import { setSelectedTextAlign, setSelectedTextAlignV } from '@/tools/selection/selection-actions';
 import type { TextAlign, TextAlignV } from '@/core/accessors';
-import { MenuButton } from './MenuButton';
+import type { SelectionStore } from '@/stores/selection-store';
+import { useSelectionStore } from '@/stores/selection-store';
+import { setSelectedTextAlign, setSelectedTextAlignV } from '@/tools/selection/selection-actions';
+import {
+  IconAlignTextCenter,
+  IconAlignTextLeft,
+  IconAlignTextRight,
+  IconAlignVBottom,
+  IconAlignVMiddle,
+  IconAlignVTop,
+} from './icons/AlignIcons';
 import { IconChevronDown } from './icons/UtilityIcons';
-import { IconAlignTextLeft, IconAlignTextCenter, IconAlignTextRight } from './icons/AlignIcons';
-import { IconAlignVTop, IconAlignVMiddle, IconAlignVBottom } from './icons/AlignIcons';
+import { MenuButton } from './MenuButton';
 import { useDropdown } from './useDropdown';
 
 const selectTextAlign = (s: SelectionStore) => s.selectedStyles.textAlign;

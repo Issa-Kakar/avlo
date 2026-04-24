@@ -1,4 +1,4 @@
-import { useCameraStore, MIN_ZOOM, MAX_ZOOM } from '@/stores/camera-store';
+import { MAX_ZOOM, MIN_ZOOM, useCameraStore } from '@/stores/camera-store';
 
 interface ZoomPoint {
   x: number;

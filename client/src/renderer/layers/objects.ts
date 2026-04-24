@@ -1,48 +1,52 @@
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
+import type { CodeProps } from '@/core/accessors';
 import {
+  CODE_EXTENSIONS,
+  getAlign,
+  getAlignV,
+  getAssetId,
+  getCodeProps,
   getColor,
-  getOpacity,
-  getWidth,
-  getFrame,
-  getShapeType,
-  getFillColor,
-  getStrokeTool,
-  getStartCap,
-  getEndCap,
-  hasLabel,
-  getLabelColor,
   getContent,
-  getFontSize,
+  getEndCap,
+  getFillColor,
   getFontFamily,
-  getStrokeProps,
+  getFontSize,
+  getFrame,
+  getLabelColor,
+  getOpacity,
   getShapeProps,
+  getShapeType,
+  getStartCap,
+  getStrokeProps,
+  getStrokeTool,
+  getTextProps,
+  getWidth,
+  hasLabel,
 } from '@/core/accessors';
-import { getPath, getConnectorPaths } from '../geometry-cache';
+import { drawBookmark } from '@/core/bookmark/bookmark-render';
+import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
 import { buildConnectorPaths } from '@/core/connectors/connector-paths';
-import { paintConnector } from './connector-render-atoms';
+import { bboxesIntersect } from '@/core/geometry/hit-primitives';
+import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
+import { getBitmap } from '@/core/image/image-manager';
+import { drawStickyNote } from '@/core/text/sticky-note';
+import { computeLabelTextBox, layoutMeasuredContent, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
-import { bboxesIntersect } from '@/core/geometry/hit-primitives';
-import { textLayoutCache, renderTextLayout, renderShapeLabel, computeLabelTextBox, layoutMeasuredContent } from '@/core/text/text-system';
-import { drawStickyNote } from '@/core/text/sticky-note';
-import { getTextProps, getAlign, getAlignV, getCodeProps } from '@/core/accessors';
-import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
-import { CODE_EXTENSIONS, getAssetId } from '@/core/accessors';
-import { getBitmap } from '@/core/image/image-manager';
-import { drawBookmark } from '@/core/bookmark/bookmark-render';
+import type { ConnectorEntry } from '@/tools/selection/connector-topology';
 import {
-  getScaleEntry,
-  getScaleBehavior,
-  getTranslateDelta,
-  getTransformTopology,
   type Entry,
   type GeoOf,
+  getScaleBehavior,
+  getScaleEntry,
+  getTransformTopology,
+  getTranslateDelta,
 } from '@/tools/selection/transform';
-import type { ConnectorEntry } from '@/tools/selection/connector-topology';
-import type { CodeProps } from '@/core/accessors';
+import { getConnectorPaths, getPath } from '../geometry-cache';
+import { paintConnector } from './connector-render-atoms';
 
 function getCodeRenderData(id: string, props: CodeProps) {
   return {

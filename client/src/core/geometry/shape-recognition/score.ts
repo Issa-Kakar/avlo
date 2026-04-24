@@ -4,42 +4,41 @@
  * Each shape has hard gates (immediate rejection) and weighted scoring components.
  */
 
-import type { Vec2, Edge, Corner } from './types';
 import {
-  SHAPE_CONFIDENCE_MIN,
-  CIRCLE_MIN_COVERAGE,
+  aabbCoverageAcrossDistinctSides,
+  // AABB helpers
+  aabbSideFitScore,
+  angularCoverage,
+  avgOrthogonalError,
+  avgParallelError,
+  pcaAxisRatio,
+} from './geometry-helpers';
+import {
   CIRCLE_MAX_AXIS_RATIO,
   CIRCLE_MAX_RMS_RATIO,
+  CIRCLE_MIN_COVERAGE,
   CIRCLE_WEIGHT_COVERAGE,
   CIRCLE_WEIGHT_FIT,
   CIRCLE_WEIGHT_ROUND,
-  // AABB parameters
-  RECT_SIDE_EPSILON_FACTOR,
-  RECT_MIN_SIDE_EPSILON,
   RECT_CORNER_SOFT_TOLERANCE_DEG,
-  RECT_PARALLEL_SOFT_TOLERANCE_DEG,
-  RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG,
-  RECT_WEIGHT_SIDEDIST,
-  RECT_WEIGHT_SIDECOV,
-  RECT_WEIGHT_CORNERS,
-  RECT_WEIGHT_PARALLEL,
-  RECT_WEIGHT_ORTHOGONAL,
+  RECT_CORNER_TIE_TOLERANCE_DEG,
   // New right-angle constants
   RECT_MIN_RIGHT_ANGLES_FOR_VALIDITY,
+  RECT_MIN_SIDE_EPSILON,
   RECT_NO_RIGHT_ANGLE_MULTIPLIER,
+  RECT_ORTHOGONAL_SOFT_TOLERANCE_DEG,
+  RECT_PARALLEL_SOFT_TOLERANCE_DEG,
+  // AABB parameters
+  RECT_SIDE_EPSILON_FACTOR,
   RECT_TWO_RIGHT_ANGLES_PENALTY,
-  RECT_CORNER_TIE_TOLERANCE_DEG,
+  RECT_WEIGHT_CORNERS,
+  RECT_WEIGHT_ORTHOGONAL,
+  RECT_WEIGHT_PARALLEL,
+  RECT_WEIGHT_SIDECOV,
+  RECT_WEIGHT_SIDEDIST,
+  SHAPE_CONFIDENCE_MIN,
 } from './shape-params';
-
-import {
-  pcaAxisRatio,
-  angularCoverage,
-  avgParallelError,
-  avgOrthogonalError,
-  // AABB helpers
-  aabbSideFitScore,
-  aabbCoverageAcrossDistinctSides,
-} from './geometry-helpers';
+import type { Corner, Edge, Vec2 } from './types';
 
 /**
  * Clamps a value to [0, 1] range

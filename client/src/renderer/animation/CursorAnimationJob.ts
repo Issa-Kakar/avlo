@@ -8,10 +8,10 @@
  * Frame-rate independent: same perceptual smoothing at 60fps, 144fps, or any rate.
  */
 
-import type { AnimationJob } from './AnimationController';
 import { getPeerCursors } from '@/runtime/presence/presence';
-import { getCursorBitmap, CURSOR_BITMAP_OFFSET_X, CURSOR_BITMAP_OFFSET_Y, CURSOR_BITMAP_SCALE } from './cursor-bitmap';
-import { useCameraStore, getViewTransform, getVisibleWorldBounds } from '@/stores/camera-store';
+import { getViewTransform, getVisibleWorldBounds, useCameraStore } from '@/stores/camera-store';
+import type { AnimationJob } from './AnimationController';
+import { CURSOR_BITMAP_OFFSET_X, CURSOR_BITMAP_OFFSET_Y, CURSOR_BITMAP_SCALE, getCursorBitmap } from './cursor-bitmap';
 
 const TAU = 60; // ms — responsive at 20Hz send rate
 const SETTLE_THRESHOLD_PX = 0.5; // canvas pixels

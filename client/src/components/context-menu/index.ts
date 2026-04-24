@@ -1,33 +1,32 @@
-export { MenuButton } from './MenuButton';
 export { ButtonGroup } from './ButtonGroup';
 export { ColorCircle } from './ColorCircle';
-export { FontSizeStepper } from './FontSizeStepper';
-export { TypefaceButton } from './TypefaceButton';
 export { ContextMenu } from './ContextMenu';
-export { FilterObjectsDropdown } from './FilterObjectsDropdown';
-export { SizeLabel } from './SizeLabel';
-export { ShapeTypeDropdown } from './ShapeTypeDropdown';
 export { CONTEXT_MENU_COLORS, NO_FILL } from './color-palette';
-
+export { FilterObjectsDropdown } from './FilterObjectsDropdown';
+export { FontSizeStepper } from './FontSizeStepper';
 export {
-  IconAlignTextLeft,
-  IconAlignTextCenter,
-  IconAlignTextRight,
-  TextColorIcon,
   HighlightIcon,
+  IconAlignTextCenter,
+  IconAlignTextLeft,
+  IconAlignTextRight,
+  IconCheck,
   IconChevronDown,
+  IconCircleType,
+  IconConnectorLine,
+  IconDiamondType,
   IconMinus,
-  IconPlus,
   IconMoreDots,
   IconNoFill,
-  IconShapes,
   IconPenStroke,
-  IconConnectorLine,
+  IconPlus,
+  IconRectType,
+  IconRoundedRectType,
+  IconShapes,
   IconTextType,
   IconTrash,
-  IconCheck,
-  IconRectType,
-  IconCircleType,
-  IconDiamondType,
-  IconRoundedRectType,
+  TextColorIcon,
 } from './icons';
+export { MenuButton } from './MenuButton';
+export { ShapeTypeDropdown } from './ShapeTypeDropdown';
+export { SizeLabel } from './SizeLabel';
+export { TypefaceButton } from './TypefaceButton';

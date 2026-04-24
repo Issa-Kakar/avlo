@@ -7,10 +7,10 @@
  * @module canvas/edge-scroll
  */
 
-import { useCameraStore, screenToWorld, getCanvasRect } from '@/stores/camera-store';
+import { getCanvasRect, screenToWorld, useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
-import { getCurrentTool } from '../tool-registry';
 import { setLastCursorWorld } from '../cursor-tracking';
+import { getCurrentTool } from '../tool-registry';
 
 const EDGE_ZONE = 40; // CSS px from each viewport edge
 const DELAY_MS = 50; // Wait before scrolling starts
