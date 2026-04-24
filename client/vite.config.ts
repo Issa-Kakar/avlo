@@ -13,14 +13,19 @@ const proxyConfig = {
     ws: true,
     changeOrigin: true,
   },
-  '/parties/*': {
-    target: `http://localhost:${workerPort}`,
-    changeOrigin: true,
-  },
   '/api': {
     target: `http://localhost:${workerPort}`,
     changeOrigin: true,
   },
+};
+
+// credentialless (not require-corp) so cross-origin Google Fonts keep loading
+// without needing CORP headers on each asset. Future external CDN assets that
+// need credentials will look like 401s — switch to require-corp + per-asset
+// CORP, or proxy them through /api, if that becomes an issue.
+const isolationHeaders = {
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'credentialless',
 };
 
 export default defineConfig({
@@ -41,12 +46,18 @@ export default defineConfig({
     },
   },
   server: {
+    // host: true binds dual-stack (0.0.0.0 + ::) so WSL2-mirrored browsers
+    // don't hit the ::1 → 127.0.0.1 retry dance on localhost.
+    host: true,
     port: clientPort,
     proxy: proxyConfig,
+    headers: isolationHeaders,
   },
   preview: {
+    host: true,
     port: clientPort,
     proxy: proxyConfig,
+    headers: isolationHeaders,
   },
   build: {
     rollupOptions: {
