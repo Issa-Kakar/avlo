@@ -298,7 +298,7 @@ export class CodeTool implements PointerTool {
     });
 
     // Tab normalizer: replace \t with 4 spaces in all insertions
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: CodeMirror transactionFilter callback param
     const tabNormalizer = cmState.EditorState.transactionFilter.of((tr: any) => {
       if (!tr.docChanged) return tr;
       const edits: { from: number; to: number; insert: string }[] = [];
@@ -316,7 +316,7 @@ export class CodeTool implements PointerTool {
 
     const backspaceIndent = {
       key: 'Backspace',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: CodeMirror keymap handler view param
       run: (v: any) => {
         const sel = v.state.selection.main;
         if (!sel.empty) return false;
@@ -406,7 +406,7 @@ export class CodeTool implements PointerTool {
     }
 
     // Extract syncConf for main UM integration
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: accessing CodeMirror internal facet
     const syncConf = (view.state as any).facet(cmYCollab.ySyncFacet);
     this.syncConf = syncConf;
 
@@ -600,9 +600,9 @@ export class CodeTool implements PointerTool {
           },
         })
       : [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: CodeMirror dispatch accepts loosely typed state effects
     (this.editorView as any).dispatch({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: compartment reconfigure is loosely typed
       effects: (this.lineNumbersCompartment as any).reconfigure(ext),
     });
   }
@@ -617,9 +617,9 @@ export class CodeTool implements PointerTool {
     const [cmJS, cmPython] = await Promise.all([import('@codemirror/lang-javascript'), import('@codemirror/lang-python')]);
     if (!this.editorView || !this.langCompartment) return;
     const ext = lang === 'python' ? cmPython.python() : cmJS.javascript({ typescript: true, jsx: true });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: CodeMirror dispatch accepts loosely typed state effects
     (this.editorView as any).dispatch({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: compartment reconfigure is loosely typed
       effects: (this.langCompartment as any).reconfigure(ext),
     });
   }

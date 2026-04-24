@@ -326,7 +326,7 @@ function getGraphemes(text: string): string[] {
   if (hit) return hit;
   let out: string[];
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: Intl.Segmenter not yet in all TS lib targets
     const seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
     out = Array.from(seg.segment(text), (x: { segment: string }) => x.segment);
   } else {
@@ -576,7 +576,7 @@ export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth
   };
 
   // --- Pending whitespace state ---
-  let pendingSegs: MeasuredSegment[] = [];
+  const pendingSegs: MeasuredSegment[] = [];
   let pendingW = 0;
   const clearPending = () => {
     pendingSegs.length = 0;

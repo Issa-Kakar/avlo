@@ -37,7 +37,7 @@ export async function ensureFontsLoaded(): Promise<void> {
     if (loads.length > 0) await Promise.all(loads);
 
     fontsLoaded = true;
-    // eslint-disable-next-line no-console
+    // biome-ignore lint/suspicious/noConsole: boot-time diagnostic
     console.log('[font-loader] Fonts loaded successfully');
   })();
 

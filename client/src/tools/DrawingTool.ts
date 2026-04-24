@@ -306,28 +306,35 @@ export class DrawingTool implements PointerTool {
     return cornerFrame(this.anchor, this.cursor);
   }
 
-  /* eslint-disable no-console */
   private onHoldFire(): void {
     if (this.mode !== 'stroke') return;
     if (this.points.length < 1) return;
 
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.group('Hold Detector Fired - $P Shape Recognition');
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`Stroke has ${this.points.length} points after 600ms dwell`);
 
     const result = recognizePerfectShapePointCloud(this.points);
     debugRecognize(this.points);
 
     if (!result) {
+      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.log('Not enough points for recognition');
+      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.groupEnd();
       return;
     }
 
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`Best: ${result.best.kind} (${result.best.templateId})`);
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`);
 
     if (result.ambiguous) {
+      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.log('Ambiguous - NO SNAP, continuing freehand');
+      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.groupEnd();
       return;
     }
@@ -356,12 +363,13 @@ export class DrawingTool implements PointerTool {
         break;
     }
 
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`SNAP: ${result.best.kind.toUpperCase()}`);
+    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.groupEnd();
     this.hold.cancel();
     invalidateOverlay();
   }
-  /* eslint-enable no-console */
 
   private enterSnapShape(shapeType: Exclude<ShapeType, 'line'>, originFrame: FrameTuple, origin: Point, refDist: number): void {
     this.mode = 'shape';

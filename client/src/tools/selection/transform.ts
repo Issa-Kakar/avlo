@@ -275,7 +275,7 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
 // ============================================================================
 
 /** Field-presence-checked offset apply. Used by both translate and edgePin. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: field-presence runtime check bridges all kinds
 function applyOffset(f: any, dx: number, dy: number, o: any): void {
   if ('frame' in o) offsetFrameMut(o.frame, f.frame, dx, dy);
   if ('origin' in o) offsetPoint(o.origin, f.origin, dx, dy);
@@ -389,7 +389,7 @@ const TRANSLATE_COMMIT: TranslateCommitTable = {
 // Output Factories (pre-allocation)
 // ============================================================================
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: output shape varies by kind; return type widens to union
 function createOutFor(kind: ObjectKind): any {
   switch (kind) {
     case 'shape':
@@ -627,7 +627,7 @@ export class TransformController {
       const behavior = this.behaviors[kind]!;
       // SAFETY: ScaleApplyTable mapped type enforces kind→function compatibility at definition.
       // Cast due to correlated union: TS can't prove APPLY_SCALE[kind] and store[kind] share K.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
       const apply = APPLY_SCALE[kind][behavior] as ((f: any, ctx: ScaleCtx, o: any) => void) | undefined;
       if (!apply) continue;
       for (const [, e] of map) {
@@ -719,14 +719,14 @@ export class TransformController {
           const behavior = behaviors[k];
           // SAFETY: ScaleCommitTable mapped type enforces kind→function compatibility at definition.
           const commitFn = behavior
-            ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            ? // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
               (COMMIT_SCALE[k][behavior] as ((y: Y.Map<unknown>, o: any, f: any) => void) | undefined)
             : undefined;
           if (!commitFn) continue;
           for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
         } else {
           // SAFETY: TranslateCommitTable mapped type enforces kind→function compatibility at definition.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // biome-ignore lint/suspicious/noExplicitAny: correlated-union cast documented above
           const commitFn = TRANSLATE_COMMIT[k] as (y: Y.Map<unknown>, o: any, f: any) => void;
           for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
         }

@@ -625,7 +625,7 @@ export class TextTool implements PointerTool {
 
     // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
     this.editor.destroy();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
     (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
 
     if (this.container && this.container.parentNode) {

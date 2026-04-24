@@ -19,33 +19,26 @@
     "preview": "concurrently \"npm run dev:worker\" \"npm run preview -w client\"",
     "deploy": "wrangler deploy",
     "typecheck": "npm run -w packages/shared build:types && npm run -w client typecheck && npm run -w worker typecheck",
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{ts,tsx,js,jsx,mjs,cjs}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "*.{json,md,css,scss}": [
-      "prettier --write"
+    "*.{ts,tsx,js,jsx,mjs,cjs,json,jsonc,css}": [
+      "biome check --write --no-errors-on-unmatched"
     ]
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.13",
     "@rollup/rollup-linux-x64-gnu": "^4.46.3",
     "@types/node": "^22.13.4",
-    "@typescript-eslint/eslint-plugin": "^8.39.1",
-    "@typescript-eslint/parser": "^8.39.1",
     "concurrently": "^8.2.2",
-    "eslint": "^9.33.0",
-    "eslint-plugin-react-hooks": "^5.1.0",
-    "globals": "^16.3.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
-    "prettier": "^3.6.2",
     "typescript": "^5.9.2",
     "wrangler": "^4.85.0"
   },

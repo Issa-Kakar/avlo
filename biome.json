@@ -1,0 +1,112 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/build",
+      "!**/.wrangler",
+      "!**/.tanstack",
+      "!**/playwright-report",
+      "!**/test-results",
+      "!**/.cache",
+      "!**/.turbo",
+      "!client/src/routeTree.gen.ts",
+      "!worker/worker-configuration.d.ts",
+      "!package-lock.json"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 140,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "trailingCommas": "all",
+      "semicolons": "always",
+      "arrowParentheses": "always",
+      "bracketSpacing": true
+    }
+  },
+  "css": {
+    "formatter": {
+      "quoteStyle": "single"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noExplicitAny": "warn",
+        "noConsole": { "level": "warn", "options": { "allow": ["warn", "error"] } },
+        "noArrayIndexKey": "off",
+        "noAssignInExpressions": "off",
+        "noImplicitAnyLet": "off"
+      },
+      "style": {
+        "useImportType": "off",
+        "useTemplate": "off",
+        "noNonNullAssertion": "off",
+        "useNodejsImportProtocol": "off"
+      },
+      "complexity": {
+        "noBannedTypes": "off"
+      },
+      "performance": {
+        "noAccumulatingSpread": "off"
+      },
+      "a11y": {
+        "recommended": false
+      }
+    }
+  },
+  "assist": {
+    "enabled": true,
+    "actions": {
+      "source": {
+        "organizeImports": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "includes": ["client/**/*.{ts,tsx,js,jsx}"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "useHookAtTopLevel": "error",
+            "useExhaustiveDependencies": "warn"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "**/__tests__/**/*.{ts,tsx,js,jsx}",
+        "**/*.test.{ts,tsx,js,jsx}",
+        "**/*.spec.{ts,tsx,js,jsx}",
+        "**/test-*.{ts,tsx,js,jsx}"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off",
+            "noConsole": "off"
+          },
+          "correctness": {
+            "noUnusedVariables": "off",
+            "noUnusedImports": "off",
+            "noUnusedFunctionParameters": "off"
+          }
+        }
+      }
+    }
+  ]
+}

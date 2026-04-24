@@ -51,7 +51,7 @@ export interface IRoomDocManager {
 }
 
 // Options for RoomDocManager (currently empty, but preserved for future use)
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+// biome-ignore lint/suspicious/noEmptyInterface: preserved for future use
 export interface RoomDocManagerOptions {}
 
 // Implementation class (exported for registry use)

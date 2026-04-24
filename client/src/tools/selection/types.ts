@@ -177,4 +177,3 @@ export interface MarqueeState {
   anchor: [number, number] | null; // World coords
   current: [number, number] | null; // World coords
 }
-

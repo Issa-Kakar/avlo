@@ -315,7 +315,7 @@
 .popover-section h6 {
   margin: 0 0 6px 0;
   font:
-    600 11px/1 Inter,
+    600 11px / 1 Inter,
     ui-sans-serif,
     system-ui;
   letter-spacing: 0.02em;
