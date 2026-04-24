@@ -768,7 +768,6 @@ export function computeBboxCenterExtents(points: Point2[]): {
  * Call this to see which templates match and their scores.
  */
 export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {}): void {
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.group('🔍 $P Recognition Debug (with Hybrid Gates)');
 
   const minMargin = opts.minMargin ?? PDOLLAR_CONFIG.MIN_MARGIN;
@@ -781,17 +780,13 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   const h = bb.maxY - bb.minY;
   const diag = Math.hypot(w, h);
   const aspect = w / Math.max(1e-6, h);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Input: ${rawPointsWU.length} points, aspect: ${aspect.toFixed(2)}, diag: ${diag.toFixed(1)}`);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Templates: ${getTemplates().length} (closed only)`);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(
     `Shape thresholds: box<${PDOLLAR_CONFIG.MAX_DISTANCE_BOX}, diamond<${PDOLLAR_CONFIG.MAX_DISTANCE_DIAMOND}, circle<${PDOLLAR_CONFIG.MAX_DISTANCE_CIRCLE}`,
   );
 
   // === PRE-NORMALIZATION GATES ===
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.group('🚧 Pre-Normalization Gates (RAW points)');
 
   const flatPoints = rawPointsWU.flat();
@@ -801,46 +796,36 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
   const hasSelfInt = hasSelfIntersection(flatPoints, selfIntersectEps);
   const hasNearTch = hasNearTouch(flatPoints, nearTouchEps);
 
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Gate 1 - Self-intersection (eps=${selfIntersectEps.toFixed(1)}): ${hasSelfInt ? '❌ BLOCKED' : '✅ PASS'}`);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Gate 2 - Near-touch (eps=${nearTouchEps.toFixed(1)}): ${hasNearTch ? '❌ BLOCKED' : '✅ PASS'}`);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.groupEnd();
 
   // Run recognition
   const result = recognizePerfectShapePointCloud(rawPointsWU, opts);
 
   if (!result) {
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log('❌ Not enough points or degenerate input');
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.groupEnd();
     return;
   }
 
   // Check if blocked by pre-normalization gates
   if (result.best.templateId.startsWith('gate/')) {
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`❌ Blocked by ${result.best.templateId} - continuing freehand`);
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.groupEnd();
     return;
   }
 
   // Log top 10 template scores (too many to show all)
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log('Template scores (top 10, lower distance = better):');
   const top10 = result.all.slice(0, 10);
   for (const match of top10) {
     const marker = match === result.best ? '✅ BEST' : match === result.secondBest ? '🥈 2nd ' : '     ';
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`  ${marker} ${match.templateId}: ${match.distance.toFixed(3)}`);
   }
 
   // === POST-NORMALIZATION GATES (for box/diamond) ===
   if (result.best.kind === 'box' || result.best.kind === 'diamond') {
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.group('🚧 Post-Normalization Gates (NORMALIZED points)');
 
     // Normalize for gate analysis
@@ -876,36 +861,27 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
     const quadrantPass = quadrantScore >= PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION;
 
     if (turnSkipped) {
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.log(
         `Gate 3 - Turn count: ${turnCount} (SKIPPED - distance ${result.best.distance.toFixed(2)} < ${PDOLLAR_CONFIG.MIN_TURNS_BOX_RELAXED_THRESHOLD} for box): ✅ PASS`,
       );
     } else {
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
       console.log(
         `Gate 3 - Turn count: ${turnCount} (need ${minTurns}-${PDOLLAR_CONFIG.MAX_TURNS} for ${result.best.kind}): ${turnPass ? '✅ PASS' : '❌ BLOCKED'}`,
       );
     }
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(
       `Gate 4 - Quadrant occupation: ${(quadrantScore * 100).toFixed(0)}% (need ${(PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION * 100).toFixed(0)}%): ${quadrantPass ? '✅ PASS' : '❌ BLOCKED'}`,
     );
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.groupEnd();
   }
 
   // Decision summary
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log('---');
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Best: ${result.best.templateId} (${result.best.distance.toFixed(3)})`);
   if (result.secondBest) {
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`Second: ${result.secondBest.templateId} (${result.secondBest.distance.toFixed(3)})`);
   }
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Margin: ${(result.margin * 100).toFixed(1)}%`);
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.log(`Ambiguous: ${result.ambiguous}`);
 
   if (result.ambiguous) {
@@ -964,11 +940,9 @@ export function debugRecognize(rawPointsWU: Point2[], opts: RecognizerOpts = {})
         reasons.push(`quadrant ${(quadrantScore * 100).toFixed(0)}% < min ${(PDOLLAR_CONFIG.MIN_QUADRANT_OCCUPATION * 100).toFixed(0)}%`);
       }
     }
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
     console.log(`Reason: ${reasons.join(', ')}`);
   }
 
-  // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
   console.groupEnd();
 }
 

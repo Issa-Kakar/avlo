@@ -43,7 +43,7 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "error",
-        "noConsole": { "level": "warn", "options": { "allow": ["warn", "error"] } },
+        "noConsole": { "level": "error", "options": { "allow": ["warn", "error"] } },
         "noArrayIndexKey": "off",
         "noAssignInExpressions": "off"
       },
@@ -95,6 +95,16 @@
             "noUnusedVariables": "off",
             "noUnusedImports": "off",
             "noUnusedFunctionParameters": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": ["client/src/core/geometry/shape-recognition/**/*.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "off"
           }
         }
       }
