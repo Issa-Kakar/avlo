@@ -1,12 +1,12 @@
 /* ===== Phase 9 - RoomPage Design System ===== */
 
 /* Google Fonts Import */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
 
 /* ===== Design System Foundation ===== */
 :root {
-  --font-stack: 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', monospace;
+  --font-stack: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", monospace;
 
   /* Simplified Color System */
   --brand-primary: #6366f1;
@@ -66,7 +66,7 @@
 }
 
 /* Dark Theme */
-[data-theme='dark'] {
+[data-theme="dark"] {
   --bg-primary: #0f1419;
   --bg-secondary: #111827;
   --bg-tertiary: #1f2937;
@@ -219,7 +219,7 @@
   font-family: var(--font-stack);
 }
 
-[data-theme='dark'] .micro {
+[data-theme="dark"] .micro {
   background: rgba(17, 24, 39, 0.92);
   border-color: rgba(255, 255, 255, 0.06);
   color: #9ca3af;
@@ -230,7 +230,7 @@
   border-color: rgba(0, 0, 0, 0.1);
 }
 
-[data-theme='dark'] .micro:hover {
+[data-theme="dark"] .micro:hover {
   background: #1f2937;
   border-color: rgba(255, 255, 255, 0.1);
 }
@@ -257,12 +257,12 @@
   border-color: #1dacd8;
 }
 
-[data-theme='dark'] .micro-invite {
+[data-theme="dark"] .micro-invite {
   background: #1dacd8;
   color: white;
 }
 
-[data-theme='dark'] .micro-invite:hover {
+[data-theme="dark"] .micro-invite:hover {
   background: #1dacd8;
   border-color: rgba(255, 255, 255, 0.1);
 }
@@ -291,7 +291,7 @@
   background: var(--bg-primary);
 }
 
-[data-theme='dark'] .micro-avatar {
+[data-theme="dark"] .micro-avatar {
   border-color: var(--bg-primary);
 }
 
@@ -319,6 +319,6 @@
   font-weight: 600;
 }
 
-[data-theme='dark'] .user-overflow {
+[data-theme="dark"] .user-overflow {
   color: #9ca3af;
 }

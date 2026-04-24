@@ -35,9 +35,7 @@
     }
   },
   "css": {
-    "formatter": {
-      "quoteStyle": "single"
-    }
+    "formatter": {}
   },
   "linter": {
     "enabled": true,

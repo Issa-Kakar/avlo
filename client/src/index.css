@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 html {
   overflow: hidden;
@@ -14,15 +14,15 @@ html {
 
 /* --- Grandstander --- */
 @font-face {
-  font-family: 'Grandstander';
-  src: url('/fonts/Grandstander.woff2') format('woff2');
+  font-family: "Grandstander";
+  src: url("/fonts/Grandstander.woff2") format("woff2");
   font-weight: 450 700;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: 'Grandstander';
-  src: url('/fonts/Grandstander-Italic.woff2') format('woff2');
+  font-family: "Grandstander";
+  src: url("/fonts/Grandstander-Italic.woff2") format("woff2");
   font-weight: 450 700;
   font-style: italic;
   font-display: swap;
@@ -30,15 +30,15 @@ html {
 
 /* --- Inter --- */
 @font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter.woff2') format('woff2');
+  font-family: "Inter";
+  src: url("/fonts/Inter.woff2") format("woff2");
   font-weight: 450 700;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: 'Inter';
-  src: url('/fonts/Inter-Italic.woff2') format('woff2');
+  font-family: "Inter";
+  src: url("/fonts/Inter-Italic.woff2") format("woff2");
   font-weight: 450 700;
   font-style: italic;
   font-display: swap;
@@ -46,15 +46,15 @@ html {
 
 /* --- Lora --- */
 @font-face {
-  font-family: 'Lora';
-  src: url('/fonts/Lora.woff2') format('woff2');
+  font-family: "Lora";
+  src: url("/fonts/Lora.woff2") format("woff2");
   font-weight: 450 700;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: 'Lora';
-  src: url('/fonts/Lora-Italic.woff2') format('woff2');
+  font-family: "Lora";
+  src: url("/fonts/Lora-Italic.woff2") format("woff2");
   font-weight: 450 700;
   font-style: italic;
   font-display: swap;
@@ -62,15 +62,15 @@ html {
 
 /* --- JetBrains Mono --- */
 @font-face {
-  font-family: 'JetBrains Mono';
-  src: url('/fonts/JetBrainsMono.woff2') format('woff2');
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono.woff2") format("woff2");
   font-weight: 450 700;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
-  font-family: 'JetBrains Mono';
-  src: url('/fonts/JetBrainsMono-Italic.woff2') format('woff2');
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono-Italic.woff2") format("woff2");
   font-weight: 450 700;
   font-style: italic;
   font-display: swap;
@@ -82,7 +82,7 @@ html {
 
 .tiptap {
   /* Font styling */
-  font-family: 'Grandstander', cursive, sans-serif;
+  font-family: "Grandstander", cursive, sans-serif;
   font-weight: 450;
   margin: 0;
   padding: 0;
@@ -104,12 +104,12 @@ html {
 }
 
 /* Fixed-width container: outline, clip hanging whitespace, suppress placeholder */
-.tiptap[data-width-mode='fixed'] {
+.tiptap[data-width-mode="fixed"] {
   outline: 1px solid #1d4ed8;
   overflow: hidden;
 }
 
-.tiptap[data-width-mode='fixed'] .is-editor-empty:first-child::before {
+.tiptap[data-width-mode="fixed"] .is-editor-empty:first-child::before {
   display: none;
 }
 
@@ -128,28 +128,28 @@ html {
   pointer-events: none;
 }
 
-.tiptap[data-width-mode='note'] {
+.tiptap[data-width-mode="note"] {
   overflow: hidden;
   text-align: var(--text-align, center);
 }
-.tiptap[data-width-mode='note'] p {
+.tiptap[data-width-mode="note"] p {
   margin: 0;
 }
-.tiptap[data-width-mode='note'] .is-editor-empty:first-child::before {
+.tiptap[data-width-mode="note"] .is-editor-empty:first-child::before {
   display: none;
 }
 
-.tiptap[data-width-mode='label'] {
+.tiptap[data-width-mode="label"] {
   overflow-x: hidden;
   overflow-y: auto;
   text-align: var(--text-align, center);
   scrollbar-width: none;
 }
-.tiptap[data-width-mode='label']::-webkit-scrollbar {
+.tiptap[data-width-mode="label"]::-webkit-scrollbar {
   display: none;
 }
 
-.tiptap[data-width-mode='label'] .is-editor-empty:first-child::before {
+.tiptap[data-width-mode="label"] .is-editor-empty:first-child::before {
   display: none;
 }
 
@@ -200,7 +200,7 @@ html {
   outline: none;
 }
 .code-editor .cm-scroller {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   overflow-y: auto;
   overflow-x: hidden;
   /* biome-ignore lint/complexity/noImportantStyles: upstream-type — CodeMirror
@@ -220,7 +220,7 @@ html {
   border: none;
   outline: none;
   color: #aeaeae;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   flex: 1;
   min-width: 0;
   padding: 0;
@@ -241,7 +241,7 @@ html {
   pointer-events: none;
 }
 .code-output {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   overflow: hidden;
   box-sizing: border-box;
 }
