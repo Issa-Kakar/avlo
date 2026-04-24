@@ -60,7 +60,7 @@ core/geometry/scale-system.ts (pure math atoms — NO STATE)
 ├── scaleAround(), round3(), roundProp() — number primitives
 ├── rawScaleFactors() — cursor→factors from initialDelta
 ├── uniformFactor(sx, sy, handleId) — handle-aware collapse to 1 signed magnitude
-├── preservePosition() — relative 0-1 position maintained in scaled/flipped box
+├── preservePosition() / preservePositionMut() — relative 0-1 position in scaled/flipped box (mut writes `out` for zero-alloc hot paths)
 ├── edgePinPosition1D() — straddle-aware 1D edge-pin position (origin objects pin near, others pin far)
 └── computeReflowWidth() — edge-scaling + min-width clamping for text/code
 
@@ -491,7 +491,7 @@ gesture context directly without re-declaring its fields.
 **Factor computation:**
 - `rawScaleFactors(wx, wy, origin, delta, handleId)` — cursor→[sx,sy] using initialDelta (not bounds width). Cursor position should have clickOffset subtracted before passing.
 - `uniformFactor(sx, sy, handleId)` — handle-aware collapse of 2 axes to 1 signed magnitude. Uses `isHorzSide`/`isVertSide` type guards (not value equality) to detect side handles, preventing corner-handle flicker when one axis passes through 1.0. Min 0.001.
-- `preservePosition(cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box.
+- `preservePosition(cx, cy, selBounds, origin, factor)` / `preservePositionMut(out, cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box. Mut variant writes `out` in place for zero-allocation callers (consumed by the connector topology free-side resolver on corner handles).
 
 **Edge pin:**
 - `edgePinPosition1D(objMin, objMax, originV, scale)` — 1D edge-pin position. Straddle-aware: objects whose bbox contains origin pin the nearer edge (stay fixed), all others pin the farther edge (track the dragged handle). Produces discrete flip when crossing origin.
@@ -569,9 +569,9 @@ Mode-agnostic: the same function serves translate and scale because `applyOffset
 
 ### Free-side isolation (per-instance scratch)
 
-Each `FreeSide` owns a private `scratch: Point`, allocated once at build. Apply writes `scratch[0] = scaleAround(originalPos[0], origin, sx)` (or the translate equivalent) and returns `s.scratch` directly. Per-side (not shared module-level) because `rerouteConnector`'s routing pipeline holds `FREE_ENDPOINT(position)` by reference and pushes it into the returned `points` array — sharing one scratch across entries within a frame would leak the last-processed entry's values into every prior entry's `currPoints`.
+Each `FreeSide` owns a private `scratch: Point`, allocated once at build. Per-side (not shared module-level) because `rerouteConnector`'s routing pipeline holds `FREE_ENDPOINT(position)` by reference and pushes it into the returned `points` array — sharing one scratch across entries within a frame would leak the last-processed entry's values into every prior entry's `currPoints`. `makeSide` also clones `storedPos` into `originalPos` so a prior gesture's entry preserved by Y.Map (by reference) can't corrupt this gesture's baseline.
 
-`makeSide` also clones `storedPos` into `originalPos` so a prior gesture's entry preserved by Y.Map (by reference) can't corrupt this gesture's baseline.
+Free-apply math lives in two helpers — `resolveFreeScale(s, ctx)` and `resolveFreeTranslate(s, dx, dy)` — so the four slot resolvers (`resolveStart/End{Scale,Translate}`) stay pure dispatch, selecting which module `FRAME_SCRATCH_*` / `FRAME_WRAP_*` pair to feed on the bind branch. `resolveFreeScale` branches on `isCorner(ctx.handleId)`: corners use `uniformFactor` + `preservePositionMut`, so free endpoints track the selection's uniform corner scale (matching `scaleBBoxUniform` for shapes/images) instead of stretching diagonally with independent `sx`/`sy`. Side handles fall through to axis-aligned `scaleAround` — the inactive axis is hardcoded `1` by `rawScaleFactors`, so the corresponding coordinate passes through unchanged.
 
 ### Commit
 

@@ -21,7 +21,8 @@ import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
 
 import { offsetBBox, copyBbox, offsetPoint, copyFrame, bboxToFrameMut } from '@/core/geometry/bounds';
-import { scaleAround } from '@/core/geometry/scale-system';
+import { scaleAround, uniformFactor, preservePositionMut } from '@/core/geometry/scale-system';
+import { isCorner } from '@/core/types/handles';
 import { frameOf } from '@/core/geometry/frame-of';
 import { rerouteConnector, type EndpointOverrideValue } from '@/core/connectors/reroute-connector';
 import { getHandle, getConnectorsForShape, getObjects } from '@/runtime/room-runtime';
@@ -50,35 +51,36 @@ type FreeSide = {
 
 type Side = BindSide | FreeSide;
 
-export type StaticEntry = {
-  readonly mode: 'static';
+interface BaseEntry {
+  readonly mode: 'static' | 'translate' | 'reroute';
   readonly id: string;
-  /** Copy of handle.bbox at begin; never mutated. */
   readonly currBbox: BBoxTuple;
-};
+}
 
-export type TranslateEntry = {
-  readonly mode: 'translate';
-  readonly id: string;
+/** Entries that track dirty rects across frames (every mode except `static`). */
+interface DirtyEntry extends BaseEntry {
   readonly originalBbox: BBoxTuple;
+  readonly prevBbox: BBoxTuple;
+}
+
+export interface StaticEntry extends BaseEntry {
+  readonly mode: 'static';
+}
+
+export interface TranslateEntry extends DirtyEntry {
+  readonly mode: 'translate';
   /** Reference into Y.Map's points array — never mutated. */
   readonly originalPoints: readonly Point[];
-  readonly currBbox: BBoxTuple;
-  readonly prevBbox: BBoxTuple;
-};
+}
 
-export type RerouteEntry = {
+export interface RerouteEntry extends DirtyEntry {
   readonly mode: 'reroute';
-  readonly id: string;
   /** null = canonical (no override; reroute reads Y.Map for this endpoint). */
   readonly start: Side | null;
   readonly end: Side | null;
-  readonly originalBbox: BBoxTuple;
-  readonly currBbox: BBoxTuple;
-  readonly prevBbox: BBoxTuple;
   /** Last successful reroute result; null if A* failed this frame. */
   currPoints: Point[] | null;
-};
+}
 
 export type ConnectorEntry = StaticEntry | TranslateEntry | RerouteEntry;
 
@@ -195,6 +197,12 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
     },
 
     onSelectedBindable(id, kind, entry, handle) {
+      // Check connectors first — `selectedBindables` is only consulted when a connector
+      // endpoint's anchor.id lands here, and that can only happen for connectors in this
+      // shape's attached set. No attached → the frame freeze + map entry are unreachable.
+      const attached = getConnectorsForShape(id);
+      if (!attached || attached.size === 0) return;
+
       let frozenFrame: FrameTuple | null = null;
       if (kind === 'note' || kind === 'bookmark') {
         const f = frameOf(handle);
@@ -206,8 +214,6 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       }
       selectedBindables.set(id, { kind, entry, frozenFrame });
 
-      const attached = getConnectorsForShape(id);
-      if (!attached) return;
       for (const cid of attached) {
         if (selectedIdSet.has(cid)) continue;
         attachedIds.add(cid);
@@ -362,13 +368,38 @@ function applyReroutesScale(arr: readonly RerouteEntry[], ctx: ScaleCtx): void {
   }
 }
 
+// Free-branch helpers — identical math across start/end; extracted so corner-uniform
+// logic lives in one place and the 4 slot-specific resolvers stay pure dispatch.
+
+function resolveFreeTranslate(s: FreeSide, dx: number, dy: number): Point {
+  offsetPoint(s.scratch, s.originalPos as Point, dx, dy);
+  return s.scratch;
+}
+
+/**
+ * Corner handles: uniform-factor + preserve-position, so free endpoints track the
+ * selection's uniform corner scale instead of stretching diagonally with independent
+ * sx/sy. Matches `scaleBBoxUniform` behavior for shapes/images on corners.
+ * Side handles: axis-aligned — `rawScaleFactors` hardcodes the inactive axis to 1,
+ * so `scaleAround` with that axis is a no-op.
+ */
+function resolveFreeScale(s: FreeSide, ctx: ScaleCtx): Point {
+  if (isCorner(ctx.handleId)) {
+    const uf = uniformFactor(ctx.sx, ctx.sy, ctx.handleId);
+    preservePositionMut(s.scratch, s.originalPos[0], s.originalPos[1], ctx.selBounds, ctx.origin, uf);
+  } else {
+    s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
+    s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
+  }
+  return s.scratch;
+}
+
 function resolveStartTranslate(s: Side, dx: number, dy: number): EndpointOverrideValue {
   if (s.kind === 'bind') {
     fillFrameFromBind(FRAME_SCRATCH_START, s);
     return FRAME_WRAP_START;
   }
-  offsetPoint(s.scratch, s.originalPos as Point, dx, dy);
-  return s.scratch;
+  return resolveFreeTranslate(s, dx, dy);
 }
 
 function resolveEndTranslate(s: Side, dx: number, dy: number): EndpointOverrideValue {
@@ -376,8 +407,7 @@ function resolveEndTranslate(s: Side, dx: number, dy: number): EndpointOverrideV
     fillFrameFromBind(FRAME_SCRATCH_END, s);
     return FRAME_WRAP_END;
   }
-  offsetPoint(s.scratch, s.originalPos as Point, dx, dy);
-  return s.scratch;
+  return resolveFreeTranslate(s, dx, dy);
 }
 
 function resolveStartScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
@@ -385,9 +415,7 @@ function resolveStartScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
     fillFrameFromBind(FRAME_SCRATCH_START, s);
     return FRAME_WRAP_START;
   }
-  s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
-  s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
-  return s.scratch;
+  return resolveFreeScale(s, ctx);
 }
 
 function resolveEndScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
@@ -395,9 +423,7 @@ function resolveEndScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
     fillFrameFromBind(FRAME_SCRATCH_END, s);
     return FRAME_WRAP_END;
   }
-  s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
-  s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
-  return s.scratch;
+  return resolveFreeScale(s, ctx);
 }
 
 function rerouteAndPublish(e: RerouteEntry): void {

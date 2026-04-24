@@ -70,8 +70,8 @@ export function uniformFactor(sx: number, sy: number, h: HandleId): number {
   return dom < 0 ? -m : m;
 }
 
-/** Position preservation with flip: relative 0-1 position maintained in scaled box. */
-export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin: Point, factor: number): Point {
+/** Position preservation with flip: write relative 0-1 position into `out`, maintained in scaled box. */
+export function preservePositionMut(out: Point, cx: number, cy: number, sel: BBoxTuple, origin: Point, factor: number): void {
   const [ox, oy] = origin;
   const bw = sel[2] - sel[0],
     bh = sel[3] - sel[1];
@@ -87,7 +87,15 @@ export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin:
     nMinY = Math.min(c1y, c2y);
   const nW = Math.abs(c2x - c1x),
     nH = Math.abs(c2y - c1y);
-  return [nMinX + tx * nW, nMinY + ty * nH];
+  out[0] = nMinX + tx * nW;
+  out[1] = nMinY + ty * nH;
+}
+
+/** Allocating variant — convenience wrapper over `preservePositionMut`. */
+export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin: Point, factor: number): Point {
+  const out: Point = [0, 0];
+  preservePositionMut(out, cx, cy, sel, origin, factor);
+  return out;
 }
 
 /** Scale both edges around origin, normalize for flip, pin based on origin relationship. */
