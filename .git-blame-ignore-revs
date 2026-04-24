@@ -6,3 +6,6 @@
 
 # style: enable organizeImports and reformat (pure reorder)
 c2c294614b9da17b65d57834d0a32a314743f388
+
+# style(css): normalize to double quotes (pure reformat)
+5eb3b67eaca4466f946d81e3e765e463ad536cc7
