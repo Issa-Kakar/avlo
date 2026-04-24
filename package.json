@@ -39,7 +39,7 @@
     "concurrently": "^8.2.2",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
-    "typescript": "^5.9.2",
+    "typescript": "^6.0.3",
     "wrangler": "^4.85.0"
   },
   "overrides": {
