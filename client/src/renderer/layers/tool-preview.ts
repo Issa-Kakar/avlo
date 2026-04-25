@@ -31,7 +31,7 @@ export function drawToolPreview(ctx: CanvasRenderingContext2D): void {
       drawShapePreview(ctx, preview);
       break;
     case 'selection':
-      drawSelectionOverlay(ctx, preview);
+      drawSelectionOverlay(ctx);
       break;
     case 'connector':
       drawConnectorPreview(ctx, preview);

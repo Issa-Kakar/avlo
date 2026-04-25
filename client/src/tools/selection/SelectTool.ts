@@ -3,7 +3,7 @@ import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { type EndpointOverrideValue, rerouteConnector } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
+import { pointsToBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
 import { type EndpointHit, hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
@@ -13,14 +13,14 @@ import type { ObjectHandle } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { contextMenuController } from '@/runtime/ContextMenuController';
+import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { isCtrlHeld, isCtrlOrMetaHeld, isShiftHeld } from '@/runtime/InputManager';
 import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
 import { codeTool, textTool } from '@/runtime/tool-registry';
 import { worldToCanvas } from '@/stores/camera-store';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
-import { computeHandles, computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
+import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 import type { HandleId, PointerTool, PreviewData } from '../types';
-import { getController, getTransformScaleCtx } from './transform';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -544,53 +544,9 @@ export class SelectTool implements PointerTool {
   }
 
   getPreview(): PreviewData | null {
-    const store = useSelectionStore.getState();
-    const { selectedIds, mode, transform, marquee } = store;
-
-    // Compute marquee rect if active
-    let marqueeRect: BBoxTuple | null = null;
-    if (marquee.active && marquee.anchor && marquee.current) {
-      marqueeRect = pointsToBBox(marquee.anchor, marquee.current);
-    }
-
-    // Connector mode: no selection bounds, no handles
-    // Standard mode: compute bounds and handles as usual
-    let selectionBounds: BBoxTuple | null = null;
-    let handles: { id: HandleId; x: number; y: number }[] | null = null;
-
-    if (mode === 'standard' && selectedIds.length > 0) {
-      // During scale, use geometry bounds (selBounds) so selection rect aligns with transform
-      // During idle/translate, use bbox-based bounds for visual stroke coverage
-      if (transform.kind === 'scale') {
-        const sCtx = getTransformScaleCtx();
-        if (sCtx) {
-          selectionBounds = scaleBBoxAround(sCtx.selBounds, sCtx.origin as [number, number], sCtx.sx, sCtx.sy);
-        }
-      } else if (transform.kind === 'translate') {
-        const baseBounds = computeSelectionBounds();
-        const ctrl = getController();
-        if (baseBounds) {
-          selectionBounds = translateBBox(baseBounds, ctrl.dx, ctrl.dy);
-        }
-      } else {
-        selectionBounds = computeSelectionBounds();
-      }
-      if (selectionBounds) {
-        handles = computeHandles(selectionBounds);
-      }
-    }
-
-    const isTransforming = transform.kind !== 'none' && transform.kind !== 'endpointDrag';
-
-    return {
-      kind: 'selection',
-      selectionBounds,
-      marqueeRect,
-      handles: isTransforming || (store.textEditingId && !textTool.isEditingLabel()) || store.codeEditingId ? null : handles,
-      isTransforming,
-      selectedIds,
-      bbox: null,
-    };
+    const { selectedIds, marquee } = useSelectionStore.getState();
+    if (selectedIds.length === 0 && !marquee.active) return null;
+    return { kind: 'selection' };
   }
 
   destroy(): void {
@@ -601,6 +557,10 @@ export class SelectTool implements PointerTool {
     if (textTool.isEditorMounted()) textTool.onViewChange();
     if (codeTool.isEditorMounted()) codeTool.onViewChange();
     invalidateOverlay();
+    if (this.phase === 'idle') {
+      const last = getLastCursorWorld();
+      if (last) this.handleHoverCursor(last[0], last[1]);
+    }
   }
 
   /**

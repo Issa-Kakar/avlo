@@ -14,6 +14,7 @@
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { getHandle } from '@/runtime/room-runtime';
+import { useCameraStore } from '@/stores/camera-store';
 import { computeHandles } from '@/stores/selection-store';
 import type { HandleId } from '@/tools/types';
 import { type Radius, resolveRadius } from './object-query';
@@ -58,11 +59,31 @@ export function hitNearest<T>(opts: { at: Point; radius: Radius; probes: Iterabl
 export const HANDLE_HIT_PX = 10;
 
 /**
+ * Min bbox size (in screen px) below which handles are hidden + non-hittable.
+ * 2× handle diameter — handles overlap below this and occlude the object.
+ */
+export const HANDLE_MIN_BBOX_PX = 24;
+
+/**
+ * Single gate for handle visibility/hit-testing/cursor. Returns false when the
+ * selection bbox is smaller than `HANDLE_MIN_BBOX_PX` on its smallest screen
+ * dimension — at that size the four handles overlap and the object can't be
+ * grabbed underneath.
+ */
+export function shouldShowHandles(bbox: BBoxTuple, scale?: number): boolean {
+  const s = scale ?? useCameraStore.getState().scale;
+  const w = (bbox[2] - bbox[0]) * s;
+  const h = (bbox[3] - bbox[1]) * s;
+  return Math.min(w, h) >= HANDLE_MIN_BBOX_PX;
+}
+
+/**
  * Resize-handle hit test. Kept bespoke: corners are point-probes but the
  * N/S/E/W side handles are edge strips (hit anywhere along the edge, not just
  * the midpoint). A pure `hitNearest` circle probe would be harder to grab.
  */
 export function hitResizeHandle(at: Point, bbox: BBoxTuple): HandleId | null {
+  if (!shouldShowHandles(bbox)) return null;
   const handleRadius = resolveRadius({ px: HANDLE_HIT_PX });
   const [worldX, worldY] = at;
   const corners = computeHandles(bbox);

@@ -1,5 +1,5 @@
 import type { SnapTarget } from '@/core/connectors/types';
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { FrameTuple, Point } from '@/core/types/geometry';
 
 /**
  * HandleId identifies resize handles at selection corners and sides.
@@ -64,22 +64,15 @@ export type ShapePreview =
       fill: boolean;
     };
 
-/** Selection overlay preview. */
-export type SelectionPreview = {
-  kind: 'selection';
-  /** Selection bounds in world coords (with transform applied for preview) */
-  selectionBounds: BBoxTuple | null;
-  /** Marquee rect in world coords (anchor to current point) */
-  marqueeRect: BBoxTuple | null;
-  /** Handle positions for resize (world coords) */
-  handles: { id: HandleId; x: number; y: number }[] | null;
-  /** Whether currently transforming (to hide handles during drag) */
-  isTransforming: boolean;
-  /** IDs of selected objects (for rendering selection highlight) */
-  selectedIds: string[];
-  /** Always null for overlay previews */
-  bbox: null;
-};
+/**
+ * Selection overlay sentinel.
+ *
+ * The overlay reads everything it needs (selectedIds, mode, marquee, transform
+ * discriminant, scale gesture, translate delta, topology, viewport) from
+ * stores + transform getters at draw time. SelectTool only signals "there is
+ * something to draw" via this sentinel.
+ */
+export type SelectionPreview = { kind: 'selection' };
 
 /**
  * ConnectorPreview — the bare minimum the renderer can't derive.

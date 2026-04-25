@@ -1,70 +1,55 @@
 /**
  * Selection Overlay Rendering
  *
- * Handles all visual elements of the selection preview:
- * 1. Object highlights (blue outlines around selected objects)
- * 2. Marquee rectangle (dashed selection box during drag)
- * 3. Selection box with resize handles
- * 4. Connector endpoint dots (in connector mode)
+ * Single sentinel preview from `SelectTool.getPreview()` — overlay reads
+ * everything else (selectedIds, mode, marquee, transform discriminant, scale
+ * gesture, translate delta, topology, viewport) directly from the relevant
+ * stores + transform getters. Per-object highlights are live during transforms,
+ * viewport-culled, and shape-aware (rounded-rect path). Handles use a
+ * pre-rendered bitmap stamp to keep `shadowBlur` off the hot path. Handles +
+ * endpoint dots hide during translate; handles also hide when the selection
+ * bbox is smaller than `HANDLE_MIN_BBOX_PX` on screen.
  *
  * CRITICAL: This is called INSIDE world transform scope.
- * The context has the world transform already applied when this is called.
- * Preview coordinates are in world space and will be transformed to canvas automatically.
  *
  * @module renderer/layers/selection-overlay
  */
 
-import { getConnectorType, getEndpointAnchors, getFrame, getPoints, getWidth } from '@/core/accessors';
-import { getCodeFrame } from '@/core/code/code-system';
+import {
+  getConnectorType,
+  getEndpointAnchors,
+  getFrame,
+  getHandleShapeType,
+  getPoints,
+  getWidth,
+} from '@/core/accessors';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
-import { getTextFrame } from '@/core/text/text-system';
-import type { Point } from '@/core/types/geometry';
+import { frameToBbox, pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
+import { frameOf } from '@/core/geometry/frame-of';
+import { bboxesIntersect } from '@/core/geometry/hit-primitives';
+import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
+import { shouldShowHandles } from '@/core/spatial/handle-hit';
+import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { ObjectHandle } from '@/core/types/objects';
 import { getHandle } from '@/runtime/room-runtime';
-import { useCameraStore } from '@/stores/camera-store';
-import { type TransformState, useSelectionStore } from '@/stores/selection-store';
-import type { HandleId, SelectionPreview } from '@/tools/types';
-import { getPath } from '../geometry-cache';
+import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
+import { computeHandles, computeSelectionBounds, type TransformState, useSelectionStore } from '@/stores/selection-store';
+import { getController, getScaleEntry, getTransformScaleCtx, getTransformTopology } from '@/tools/selection/transform';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
+import { drawResizeHandles } from './handle-stamp';
 
 // =============================================================================
 // STYLING CONSTANTS
 // =============================================================================
 
 const SELECTION_STYLE = {
-  // Colors - Blue-700 based palette for deeper, more refined selection
-  /** Primary selection color (blue-700) */
   PRIMARY: 'rgba(29, 78, 216, 1)',
-  /** Fill for marquee - darker for better visibility */
   PRIMARY_FILL: 'rgba(29, 78, 216, 0.15)',
-  /** Muted stroke for marquee */
   PRIMARY_MUTED: 'rgba(29, 78, 216, 0.7)',
-
-  // Stroke widths (screen pixels)
-  /** Object highlight stroke width */
   HIGHLIGHT_WIDTH: 2,
-  /** Selection box stroke width */
   BOX_WIDTH: 2,
-  /** Marquee stroke width */
   MARQUEE_WIDTH: 1.5,
-
-  // Handle config - circular handles with shadow and subtle outline
-  /** Handle radius in screen pixels (10px diameter) */
-  HANDLE_RADIUS_PX: 6,
-  /** Handle fill - subtle off-white (98% white, avoids blending with pure white backgrounds) */
-  HANDLE_FILL: 'rgb(250, 250, 250)',
-  /** Handle stroke - matches shadow tone for cohesion */
-  HANDLE_STROKE: 'rgba(0, 0, 0, 0.25)',
-  /** Handle stroke width - thicker for better edge definition */
-  HANDLE_STROKE_WIDTH_PX: 2.5,
-
-  // Handle shadow for depth effect
-  /** Shadow color for floating handle effect */
-  HANDLE_SHADOW_COLOR: 'rgba(0, 0, 0, 0.25)',
-  /** Shadow blur radius */
-  HANDLE_SHADOW_BLUR_PX: 4,
-  /** Vertical shadow offset for subtle depth */
-  HANDLE_SHADOW_OFFSET_Y_PX: 1,
 } as const;
 
 // =============================================================================
@@ -74,228 +59,224 @@ const SELECTION_STYLE = {
 /**
  * Draw selection overlay on overlay canvas.
  *
- * Renders four phases:
- * 1. Object highlights - blue outlines around selected objects (when not transforming)
- * 2. Marquee rectangle - dashed selection box during drag select
- * 3. Selection box + handles - bounding box with resize handles (when not transforming)
- * 4. Connector endpoint dots - in connector mode for single connector selection
- *
- * @param ctx - Canvas 2D context with world transform applied
- * @param preview - SelectionPreview data from SelectTool
+ * Discriminates by selection size and mode:
+ *   single non-connector → one rect (the bounds *is* the highlight) + handles
+ *   multi                → per-object highlights (viewport-culled) + selection rect + handles
+ *   connector mode (1)   → polyline highlight + endpoint dots; no rect, no handles
+ * Handles hide during translate and when the bbox would be too small on screen.
  */
-export function drawSelectionOverlay(ctx: CanvasRenderingContext2D, preview: SelectionPreview): void {
+export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
+  const { selectedIds, mode, marquee, transform } = useSelectionStore.getState();
   const scale = useCameraStore.getState().scale;
-  // Read store for connector mode state
-  const { mode, transform } = useSelectionStore.getState();
-  const isConnectorMode = mode === 'connector';
 
-  // Phase 1: Object highlights (skip connector bbox in connector mode)
-  if (!preview.isTransforming && preview.selectedIds.length > 0) {
-    drawObjectHighlights(ctx, preview.selectedIds, scale, isConnectorMode);
+  // 1. Marquee — independent of selection.
+  if (marquee.active && marquee.anchor && marquee.current) {
+    drawMarqueeRect(ctx, pointsToBBox(marquee.anchor, marquee.current), scale);
+  }
+  if (selectedIds.length === 0) return;
+
+  const isTranslating = transform.kind === 'translate';
+
+  // 2. Connector mode (single connector by invariant).
+  if (mode === 'connector') {
+    const cid = selectedIds[0];
+    drawConnectorHighlight(ctx, cid, transform, scale);
+    if (!isTranslating) drawConnectorEndpointDots(ctx, cid, transform);
+    return;
   }
 
-  // Phase 2: Marquee rectangle
-  if (preview.marqueeRect) {
-    drawMarqueeRect(ctx, preview.marqueeRect);
+  // 3. Single non-connector selection — bounds rect doubles as highlight.
+  if (selectedIds.length === 1) {
+    const handle = getHandle(selectedIds[0]);
+    if (!handle) return;
+    const bbox = currentBoundsForHandle(handle, transform);
+    if (!bbox) return;
+    ctx.save();
+    ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
+    ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    drawObjectHighlight(ctx, handle, bbox, transform);
+    ctx.restore();
+    if (!isTranslating && shouldShowHandles(bbox, scale)) {
+      drawResizeHandles(ctx, computeHandles(bbox), scale);
+    }
+    return;
   }
 
-  // Phase 3: Selection box + handles (only when not transforming, never in connector mode)
-  if (preview.selectionBounds && !preview.isTransforming && !isConnectorMode) {
-    drawSelectionBoxAndHandles(ctx, preview.selectionBounds, preview.handles);
-  }
-
-  // Phase 4: Connector endpoint dots (connector mode only, single connector)
-  if (isConnectorMode && preview.selectedIds.length === 1) {
-    drawConnectorEndpointDots(ctx, preview.selectedIds[0], transform);
-  }
-}
-
-// =============================================================================
-// INTERNAL HELPERS
-// =============================================================================
-
-/**
- * Draw blue highlight outlines around selected objects.
- *
- * Different rendering per object kind:
- * - text: stroke the frame rect
- * - stroke/connector: stroke bbox rect (avoids PerfectFreehand artifact)
- * - shape: stroke the cached Path2D (follows actual geometry)
- *
- * @param suppressConnectors - When true, skip connector bbox highlights (connector mode)
- */
-function drawObjectHighlights(ctx: CanvasRenderingContext2D, selectedIds: string[], scale: number, suppressConnectors: boolean): void {
+  // 4. Multi-selection.
+  const visible = getVisibleBoundsTuple() as BBoxTuple;
+  ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
   ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
-
   for (const id of selectedIds) {
     const handle = getHandle(id);
     if (!handle) continue;
-
-    // Skip connector bbox highlight in connector mode
-    if (suppressConnectors && handle.kind === 'connector') continue;
-
-    // Text: stroke the frame rect
-    if (handle.kind === 'text') {
-      const frame = getTextFrame(id);
-      if (frame) {
-        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
-      }
+    if (handle.kind === 'connector') {
+      drawConnectorHighlight(ctx, id, transform, scale);
       continue;
     }
+    const bbox = currentBoundsForHandle(handle, transform);
+    if (!bbox || !bboxesIntersect(bbox, visible)) continue;
+    drawObjectHighlight(ctx, handle, bbox, transform);
+  }
+  ctx.restore();
 
-    // Code: stroke the derived frame rect
-    if (handle.kind === 'code') {
-      const frame = getCodeFrame(id);
-      if (frame) {
-        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
-      }
-      continue;
-    }
-
-    // Image: stroke the stored frame rect
-    if (handle.kind === 'image') {
-      const frame = getFrame(handle.y);
-      if (frame) {
-        ctx.strokeRect(frame[0], frame[1], frame[2], frame[3]);
-      }
-      continue;
-    }
-
-    // Note: stroke bbox (includes shadow — user likes the offset appearance)
-    if (handle.kind === 'note') {
-      const [minX, minY, maxX, maxY] = handle.bbox;
-      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-      continue;
-    }
-
-    // Bookmark: stroke the bbox (includes shadow padding)
-    if (handle.kind === 'bookmark') {
-      const [minX, minY, maxX, maxY] = handle.bbox;
-      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-      continue;
-    }
-
-    // Strokes/Connectors: use bbox rectangle (avoids PF "ball" end cap artifact)
-    if (handle.kind === 'stroke' || handle.kind === 'connector') {
-      const [minX, minY, maxX, maxY] = handle.bbox;
-      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
-      continue;
-    }
-
-    // Shapes: stroke cached Path2D scaled to visual outer edge
-    // Scale the context around the shape center so the path expands outward
-    // by half the stroke width — aligning the highlight with the painted edge.
-    const path = getPath(id, handle);
-    const frame = getFrame(handle.y);
-    if (frame) {
-      const sw = getWidth(handle.y, 2);
-      const [fx, fy, fw, fh] = frame;
-      const cx = fx + fw / 2;
-      const cy = fy + fh / 2;
-      const sx = fw > 0 ? (fw + sw) / fw : 1;
-      const sy = fh > 0 ? (fh + sw) / fh : 1;
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.scale(sx, sy);
-      ctx.translate(-cx, -cy);
-      ctx.stroke(path);
-      ctx.restore();
-    } else {
-      ctx.stroke(path);
+  // Selection-bounds rect + handles (sliding for scale, translated for translate, base for idle).
+  const selRect = selectionRectForOverlay(transform);
+  if (selRect) {
+    drawSelectionBox(ctx, selRect, scale);
+    if (!isTranslating && shouldShowHandles(selRect, scale)) {
+      drawResizeHandles(ctx, computeHandles(selRect), scale);
     }
   }
 }
 
-/**
- * Draw marquee selection rectangle.
- *
- * Darker blue fill with solid blue stroke.
- */
-function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: [number, number, number, number]): void {
-  const scale = useCameraStore.getState().scale;
-  const [minX, minY, maxX, maxY] = marqueeRect;
+// =============================================================================
+// PER-OBJECT BOUNDS / HIGHLIGHT
+// =============================================================================
 
-  // Darker fill - visible tint
+/** Live bbox during transform; frame-aware fallback when idle. */
+function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTuple | null {
+  if (t.kind === 'scale' && handle.kind !== 'connector') {
+    const e = getScaleEntry(handle.kind, handle.id);
+    if (e) return (e.out as { bbox: BBoxTuple }).bbox;
+  }
+  if (t.kind === 'translate') {
+    const c = getController();
+    return translateBBox(handle.bbox, c.dx, c.dy);
+  }
+  switch (handle.kind) {
+    case 'text':
+    case 'code':
+    case 'note':
+    case 'bookmark': {
+      const f = frameOf(handle);
+      return f ? frameToBbox(f) : handle.bbox;
+    }
+    default:
+      return handle.bbox;
+  }
+}
+
+/** Live frame for shape highlight: entry.out.frame during scale, translated during translate, stored otherwise. */
+function currentFrameForShape(handle: ObjectHandle, t: TransformState): FrameTuple | null {
+  if (t.kind === 'scale') {
+    const e = getScaleEntry('shape', handle.id);
+    if (e) return e.out.frame;
+  }
+  const stored = getFrame(handle.y);
+  if (!stored) return null;
+  if (t.kind === 'translate') {
+    const c = getController();
+    return [stored[0] + c.dx, stored[1] + c.dy, stored[2], stored[3]];
+  }
+  return stored;
+}
+
+/**
+ * Stroke one object's highlight. Caller owns ctx style. Shapes get a fresh
+ * Path2D from the live frame outset by half stroke width — keeps rounded-rect
+ * radii intact at any non-uniform scale (no ctx.scale distortion).
+ */
+function drawObjectHighlight(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BBoxTuple, t: TransformState): void {
+  if (handle.kind === 'shape') {
+    const frame = currentFrameForShape(handle, t);
+    if (!frame) return;
+    const sw = getWidth(handle.y, 2);
+    const expanded: FrameTuple = [frame[0] - sw / 2, frame[1] - sw / 2, frame[2] + sw, frame[3] + sw];
+    ctx.stroke(buildShapePathFromFrame(getHandleShapeType(handle), expanded));
+    return;
+  }
+  ctx.strokeRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]);
+}
+
+// =============================================================================
+// SELECTION BOX (multi-select)
+// =============================================================================
+
+/** Sliding for scale, translated for translate, base bounds otherwise. */
+function selectionRectForOverlay(t: TransformState): BBoxTuple | null {
+  if (t.kind === 'scale') {
+    const s = getTransformScaleCtx();
+    return s ? scaleBBoxAround(s.selBounds, s.origin, s.sx, s.sy) : null;
+  }
+  const base = computeSelectionBounds();
+  if (!base) return null;
+  if (t.kind === 'translate') {
+    const c = getController();
+    return translateBBox(base, c.dx, c.dy);
+  }
+  return base;
+}
+
+function drawSelectionBox(ctx: CanvasRenderingContext2D, bounds: BBoxTuple, scale: number): void {
+  ctx.save();
+  ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
+  ctx.lineWidth = SELECTION_STYLE.BOX_WIDTH / scale;
+  ctx.strokeRect(bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]);
+  ctx.restore();
+}
+
+// =============================================================================
+// MARQUEE
+// =============================================================================
+
+function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: BBoxTuple, scale: number): void {
+  const [minX, minY, maxX, maxY] = marqueeRect;
+  ctx.save();
   ctx.fillStyle = SELECTION_STYLE.PRIMARY_FILL;
   ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
-
-  // Solid stroke (no dashes)
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY_MUTED;
   ctx.lineWidth = SELECTION_STYLE.MARQUEE_WIDTH / scale;
   ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+  ctx.restore();
 }
 
-/**
- * Draw selection bounding box with resize handles.
- *
- * Selection box: solid blue stroke
- * Handles: off-white circles with subtle dark outline and drop shadow
- */
-function drawSelectionBoxAndHandles(
-  ctx: CanvasRenderingContext2D,
-  selectionBounds: [number, number, number, number],
-  handles: { id: HandleId; x: number; y: number }[] | null,
-): void {
-  const scale = useCameraStore.getState().scale;
-  const [minX, minY, maxX, maxY] = selectionBounds;
+// =============================================================================
+// CONNECTOR HIGHLIGHT (live polyline) + ENDPOINT DOTS
+// =============================================================================
 
-  // Selection box stroke
+function drawConnectorHighlight(ctx: CanvasRenderingContext2D, id: string, t: TransformState, scale: number): void {
+  const handle = getHandle(id);
+  if (!handle || handle.kind !== 'connector') return;
+  const points = connectorPathPoints(handle, t);
+  if (!points || points.length < 2) return;
+  ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = SELECTION_STYLE.BOX_WIDTH / scale;
-  ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+  ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.stroke();
+  ctx.restore();
+}
 
-  // Circular handles with drop shadow and subtle outline
-  if (handles) {
-    const radius = SELECTION_STYLE.HANDLE_RADIUS_PX / scale;
-
-    // Setup shadow for floating handle effect (only applies to fill)
-    ctx.shadowColor = SELECTION_STYLE.HANDLE_SHADOW_COLOR;
-    ctx.shadowBlur = SELECTION_STYLE.HANDLE_SHADOW_BLUR_PX / scale;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = SELECTION_STYLE.HANDLE_SHADOW_OFFSET_Y_PX / scale;
-
-    ctx.fillStyle = SELECTION_STYLE.HANDLE_FILL;
-
-    // Draw all fills first (with shadow)
-    for (const h of handles) {
-      ctx.beginPath();
-      ctx.arc(h.x, h.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Clear shadow before drawing strokes (shadow on strokes looks bad)
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-
-    // Draw subtle outline for edge definition
-    ctx.strokeStyle = SELECTION_STYLE.HANDLE_STROKE;
-    ctx.lineWidth = SELECTION_STYLE.HANDLE_STROKE_WIDTH_PX / scale;
-
-    for (const h of handles) {
-      ctx.beginPath();
-      ctx.arc(h.x, h.y, radius, 0, Math.PI * 2);
-      ctx.stroke();
+function connectorPathPoints(handle: ObjectHandle, t: TransformState): Point[] | null {
+  if (t.kind === 'scale' || t.kind === 'translate') {
+    const top = getTransformTopology();
+    const e = top?.byId.get(handle.id);
+    if (e?.mode === 'reroute' && e.currPoints) return e.currPoints;
+    if (e?.mode === 'translate') {
+      const c = getController();
+      return getPoints(handle.y).map((p) => [p[0] + c.dx, p[1] + c.dy]);
     }
   }
+  if (t.kind === 'endpointDrag' && t.connectorId === handle.id && t.routedPoints) {
+    return t.routedPoints;
+  }
+  return getPoints(handle.y) as Point[];
 }
 
-// =============================================================================
-// CONNECTOR ENDPOINT DOTS
-// =============================================================================
-
 /**
- * Draw connector endpoint dots when in connector mode.
- *
- * Composes the shared atoms in `connector-render-atoms.ts`. Endpoint positions
- * come from `getEndpointEdgePosition` (which is anchor-frame-point backed, so
- * dots always sit on the shape frame — never offset outward). `drawSnapFeedback`
- * handles the full drag-side visual (highlight + midpoints + center dot + active
- * dot); this function only layers the inactive dot on the non-snapped side and
- * the dashed guides for interior anchors on straight connectors.
+ * Endpoint dots in connector mode. Composes shared atoms:
+ * `drawSnapFeedback` paints highlight + midpoints + center + active dot;
+ * we layer the inactive dot on the non-snapped side and dashed guides for
+ * straight connectors with interior anchors.
  */
 function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
   const handle = getHandle(connectorId);
@@ -304,7 +285,6 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   const isStraight = getConnectorType(handle.y) === 'straight';
   const isDragging = transform.kind === 'endpointDrag' && transform.connectorId === connectorId;
 
-  // === Endpoint positions ===
   let startPos: Point;
   let endPos: Point;
   let startActive = false;
@@ -337,14 +317,11 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     endPos = getEndpointEdgePosition(handle, 'end');
   }
 
-  // Snap-target feedback: highlight + midpoints + center dot + active edge dot (all in one).
   drawSnapFeedback(ctx, currentSnap);
 
-  // Inactive dots on sides that aren't actively snapped (the snapped side was drawn above).
   if (!startActive) drawAnchorDot(ctx, startPos, false);
   if (!endActive) drawAnchorDot(ctx, endPos, false);
 
-  // === Dashed guides for straight connectors with interior anchors ===
   if (!isStraight) return;
 
   if (isDragging && dragRoute && dragRoute.length >= 2) {
@@ -363,7 +340,6 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     return;
   }
 
-  // Idle: dashed guide from stored anchor frame point to stored line endpoint
   const storedPoints = getPoints(handle.y);
   if (storedPoints.length < 2) return;
   const { startAnchor, endAnchor } = getEndpointAnchors(handle.y);
