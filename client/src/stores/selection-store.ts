@@ -196,8 +196,8 @@ export const useSelectionStore = create<SelectionStore>()(
       const handlePos = handlePosition(handleId, selBounds);
       const initialDelta: Point = [handlePos[0] - origin[0], handlePos[1] - origin[1]];
       const clickOffset: Point = [downWorld[0] - handlePos[0], downWorld[1] - handlePos[1]];
-      const { selectedIdSet, kindCounts } = get();
-      getController().beginScale(selectedIdSet, kindCounts, handleId, origin, selBounds);
+      const { selectedIdSet } = get();
+      getController().beginScale(selectedIdSet, handleId, origin, selBounds);
       set({ transform: { kind: 'scale', initialDelta, clickOffset } });
     },
 

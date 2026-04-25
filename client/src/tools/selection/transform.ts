@@ -46,7 +46,7 @@ import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
 import type { BindableKind, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
-import { isBindableKind, OBJECT_KINDS } from '@/core/types/objects';
+import { isBindableKind } from '@/core/types/objects';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import {
@@ -57,7 +57,7 @@ import {
   runTopologyScale,
   runTopologyTranslate,
 } from './connector-topology';
-import type { ScaleCtx, KindCounts as SelectionKindCounts } from './types';
+import type { ScaleCtx } from './types';
 
 // ============================================================================
 // Structural Traits — field-set atoms for generic function signatures
@@ -145,37 +145,35 @@ type EntryStore = { [K in ObjectKind]?: Map<string, Entry<K>> };
 export type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
 
 type HandleCat = 'corner' | 'hSide' | 'vSide';
-type Comp = 'only' | 'mixed';
+type Comp = 'single' | 'multi';
 type BKey = `${ScalableKind}_${HandleCat}_${Comp}`;
 
 const DEFAULT_BEHAVIOR: Record<HandleCat, Record<Comp, ScaleBehavior>> = {
-  corner: { only: 'uniform', mixed: 'uniform' },
-  hSide: { only: 'uniform', mixed: 'edgePin' },
-  vSide: { only: 'uniform', mixed: 'edgePin' },
+  corner: { single: 'uniform', multi: 'uniform' },
+  hSide: { single: 'uniform', multi: 'edgePin' },
+  vSide: { single: 'uniform', multi: 'edgePin' },
 };
 
-/** Exceptions: shapes do nonUniform everywhere, text/code reflow on E/W always. */
+/**
+ * Exceptions: shapes do nonUniform on sides (always) and on corners only when single (multi-shape
+ * corners fall through to default `uniform` so groups scale together). Text/code reflow on E/W always.
+ */
 const BEHAVIOR_OVERRIDES: Partial<Record<BKey, ScaleBehavior>> = {
-  shape_corner_only: 'nonUniform',
-  shape_hSide_only: 'nonUniform',
-  shape_hSide_mixed: 'nonUniform',
-  shape_vSide_only: 'nonUniform',
-  shape_vSide_mixed: 'nonUniform',
-  text_hSide_only: 'reflow',
-  text_hSide_mixed: 'reflow',
-  code_hSide_only: 'reflow',
-  code_hSide_mixed: 'reflow',
+  shape_corner_single: 'nonUniform',
+  shape_hSide_single: 'nonUniform',
+  shape_hSide_multi: 'nonUniform',
+  shape_vSide_single: 'nonUniform',
+  shape_vSide_multi: 'nonUniform',
+  text_hSide_single: 'reflow',
+  text_hSide_multi: 'reflow',
+  code_hSide_single: 'reflow',
+  code_hSide_multi: 'reflow',
 };
 
-function resolveBehavior(kind: ScalableKind, handleId: HandleId, mixed: boolean): ScaleBehavior {
+function resolveBehavior(kind: ScalableKind, handleId: HandleId, single: boolean): ScaleBehavior {
   const cat: HandleCat = isCorner(handleId) ? 'corner' : isHorzSide(handleId) ? 'hSide' : 'vSide';
-  return BEHAVIOR_OVERRIDES[`${kind}_${cat}_${mixed ? 'mixed' : 'only'}`] ?? DEFAULT_BEHAVIOR[cat][mixed ? 'mixed' : 'only'];
-}
-
-function countKinds(c: SelectionKindCounts): number {
-  let n = 0;
-  for (const k of OBJECT_KINDS) if (c[k] > 0) n++;
-  return n;
+  const comp: Comp = single ? 'single' : 'multi';
+  return BEHAVIOR_OVERRIDES[`${kind}_${cat}_${comp}`] ?? DEFAULT_BEHAVIOR[cat][comp];
 }
 
 // ============================================================================
@@ -559,16 +557,10 @@ export class TransformController {
 
   // --- Scale lifecycle ---
 
-  beginScale(
-    selectedIds: ReadonlySet<string>,
-    kindCounts: SelectionKindCounts,
-    handleId: HandleId,
-    origin: Point,
-    selBounds: BBoxTuple,
-  ): void {
+  beginScale(selectedIds: ReadonlySet<string>, handleId: HandleId, origin: Point, selBounds: BBoxTuple): void {
     this.clear();
     this.mode = 'scale';
-    const mixed = countKinds(kindCounts) > 1;
+    const single = selectedIds.size === 1;
 
     this.scaleCtx = { sx: 1, sy: 1, origin, selBounds, handleId };
 
@@ -583,7 +575,7 @@ export class TransformController {
         continue;
       }
 
-      const behavior = resolveBehavior(handle.kind, handleId, mixed);
+      const behavior = resolveBehavior(handle.kind, handleId, single);
 
       // Reflow text/code: skip if measured/sourceLines unavailable
       if (behavior === 'reflow' && handle.kind === 'text') {

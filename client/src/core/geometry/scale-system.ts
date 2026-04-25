@@ -98,13 +98,22 @@ export function preservePosition(cx: number, cy: number, sel: BBoxTuple, origin:
   return out;
 }
 
-/** Scale both edges around origin, normalize for flip, pin based on origin relationship. */
-export function edgePinPosition1D(objMin: number, objMax: number, originV: number, scale: number): number {
+/**
+ * 1D edge-pin position. Spans-full-axis fast-path (objMin ≤ selLo AND objMax ≥ selHi):
+ * translate via scaleAround on the object center, since pinning to an edge it owns would freeze it.
+ * Otherwise straddle-aware: origin-touching objects pin the nearer edge, others pin the farther.
+ */
+export function edgePinPosition1D(objMin: number, objMax: number, originV: number, scale: number, selLo: number, selHi: number): number {
+  const size = objMax - objMin;
+  // Spans full axis: object IS the bound on both sides → translate via scaleAround on center.
+  if (objMin <= selLo && objMax >= selHi) {
+    const center = (objMin + objMax) / 2;
+    return scaleAround(center, originV, scale) - size / 2;
+  }
   const l = scaleAround(objMin, originV, scale);
   const r = scaleAround(objMax, originV, scale);
   const left = Math.min(l, r),
     right = Math.max(l, r);
-  const size = objMax - objMin;
   // Objects straddling origin: pin nearer edge (keeps origin-defining objects fixed)
   if (objMin <= originV && originV <= objMax) return Math.abs(left - originV) <= Math.abs(right - originV) ? left : right - size;
   // All others: pin farther edge (tracks the dragged handle)
@@ -164,9 +173,10 @@ export function scaleBBoxEdges(out: BBoxTuple, src: BBoxTuple, ctx: ScaleCtx): v
 
 /** Edge-pin [dx, dy] delta for a bbox under ctx. */
 export function edgePinDelta(src: BBoxTuple, ctx: ScaleCtx): Point {
+  const sel = ctx.selBounds;
   return [
-    edgePinPosition1D(src[0], src[2], ctx.origin[0], ctx.sx) - src[0],
-    edgePinPosition1D(src[1], src[3], ctx.origin[1], ctx.sy) - src[1],
+    edgePinPosition1D(src[0], src[2], ctx.origin[0], ctx.sx, sel[0], sel[2]) - src[0],
+    edgePinPosition1D(src[1], src[3], ctx.origin[1], ctx.sy, sel[1], sel[3]) - src[1],
   ];
 }
 

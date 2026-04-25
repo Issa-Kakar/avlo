@@ -61,7 +61,7 @@ core/geometry/scale-system.ts (pure math atoms — NO STATE)
 ├── rawScaleFactors() — cursor→factors from initialDelta
 ├── uniformFactor(sx, sy, handleId) — handle-aware collapse to 1 signed magnitude
 ├── preservePosition() / preservePositionMut() — relative 0-1 position in scaled/flipped box (mut writes `out` for zero-alloc hot paths)
-├── edgePinPosition1D() — straddle-aware 1D edge-pin position (origin objects pin near, others pin far)
+├── edgePinPosition1D() — 1D edge-pin position. Spans-full-axis fast-path translates via scaleAround on center; otherwise straddle-aware (origin objects pin near, others pin far)
 └── computeReflowWidth() — edge-scaling + min-width clamping for text/code
 
 core/geometry/bounds.ts (bbox/frame helpers)
@@ -163,7 +163,7 @@ SelectTool hands the store raw cursor coords and nothing else. Gesture math live
 2. `scaleOrigin(handleId, selBounds)` → origin; `handlePosition(handleId, selBounds)` → handlePos
 3. `initialDelta = handlePos - origin` (handle-to-origin vector)
 4. `clickOffset = downWorld - handlePos` (cursor-to-handle gap, stays constant throughout drag so the grabbed pixel tracks the cursor)
-5. `ctrl.beginScale(selectedIdSet, kindCounts, handleId, origin, selBounds)`
+5. `ctrl.beginScale(selectedIdSet, handleId, origin, selBounds)`
 6. Set `transform = { kind: 'scale', initialDelta, clickOffset }`
 
 The controller owns `handleId`/`origin`/`selBounds` (needed per-apply via `scaleCtx`). The store owns `initialDelta`/`clickOffset` (gesture math for `rawScaleFactors`). No duplication.
@@ -282,7 +282,7 @@ Connectors are handled by topology, never enter the entry system.
 
 ### Behavior Resolution
 
-Scale behavior depends on three factors: **object kind**, **handle category** (corner/hSide/vSide), and **composition** (only/mixed).
+Scale behavior depends on three factors: **object kind**, **handle category** (corner/hSide/vSide), and **selection size** (single = 1 obj / multi = 2+ objs).
 
 ```typescript
 type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
@@ -290,8 +290,8 @@ type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
 
 **Default behavior** (applies to most kinds):
 
-| Handle | kind-only | mixed |
-|--------|-----------|-------|
+| Handle | single (1 obj) | multi (2+ objs) |
+|--------|----------------|-----------------|
 | corner | uniform | uniform |
 | hSide | uniform | edgePin |
 | vSide | uniform | edgePin |
@@ -300,13 +300,13 @@ type ScaleBehavior = 'uniform' | 'nonUniform' | 'edgePin' | 'reflow';
 
 | Key | Behavior | Why |
 |-----|----------|-----|
-| `shape_corner_only` | nonUniform | Shapes scale independently per-axis |
-| `shape_hSide_only/mixed` | nonUniform | Shapes always non-uniform |
-| `shape_vSide_only/mixed` | nonUniform | Shapes always non-uniform |
-| `text_hSide_only/mixed` | reflow | E/W handles re-layout text at new width |
-| `code_hSide_only/mixed` | reflow | E/W handles re-layout code at new width |
+| `shape_corner_single` | nonUniform | Lone shape scales independently per-axis (multi-shape corners fall through to default `uniform` so groups scale together) |
+| `shape_hSide_single/multi` | nonUniform | Shapes always non-uniform on sides |
+| `shape_vSide_single/multi` | nonUniform | Shapes always non-uniform on sides |
+| `text_hSide_single/multi` | reflow | E/W handles re-layout text at new width |
+| `code_hSide_single/multi` | reflow | E/W handles re-layout code at new width |
 
-`resolveBehavior(kind, handleId, mixed)` → returns `ScaleBehavior` (never undefined — defaults always provide a value).
+`resolveBehavior(kind, handleId, single)` → returns `ScaleBehavior` (never undefined — defaults always provide a value).
 
 ### Dispatch Tables
 
@@ -418,13 +418,13 @@ topology: ConnectorTopology | null
 **Lifecycle:**
 
 ```
-beginScale(selectedIds, kindCounts, handleId, origin, selBounds):
-  1. clear() — reset all state
+beginScale(selectedIds, handleId, origin, selBounds):
+  1. clear() — reset all state; single = (selectedIds.size === 1)
   2. builder = newTopologyBuilder('scale', selectedIds)
   3. For each selected id (one getHandle per id):
      - connector → builder.onSelectedConnector(id, handle); continue
      - non-connector:
-       a. resolveBehavior(kind, handleId, mixed) → ScaleBehavior
+       a. resolveBehavior(kind, handleId, single) → ScaleBehavior
        b. freezeScaleEntry(kind, behavior, id, y, bbox) → frozen geometry snapshot
        c. createOutFor(kind, frozen) → pre-allocated output
        d. Store as Entry in store[kind]
@@ -494,7 +494,7 @@ gesture context directly without re-declaring its fields.
 - `preservePosition(cx, cy, selBounds, origin, factor)` / `preservePositionMut(out, cx, cy, selBounds, origin, factor)` — relative 0-1 position maintained in scaled/flipped box. Mut variant writes `out` in place for zero-allocation callers (consumed by the connector topology free-side resolver on corner handles).
 
 **Edge pin:**
-- `edgePinPosition1D(objMin, objMax, originV, scale)` — 1D edge-pin position. Straddle-aware: objects whose bbox contains origin pin the nearer edge (stay fixed), all others pin the farther edge (track the dragged handle). Produces discrete flip when crossing origin.
+- `edgePinPosition1D(objMin, objMax, originV, scale, selLo, selHi)` — 1D edge-pin position. Spans-full-axis fast-path (`objMin ≤ selLo AND objMax ≥ selHi`) → translate via `scaleAround` on the object center, since pinning to an edge it owns would freeze it (e.g. two side-by-side notes both spanning the full Y range under a vSide drag). Otherwise straddle-aware: objects whose bbox contains origin pin the nearer edge (stay fixed), all others pin the farther edge (track the dragged handle). Produces discrete flip when crossing origin.
 - `edgePinDelta(src, ctx)` — composes two 1D calls into a `[dx, dy]` delta. Consumed by `edgePinOffset` in transform.ts.
 
 **BBox-aware atoms (compose the primitives above, consumed by transform.ts):**
