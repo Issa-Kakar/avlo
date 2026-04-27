@@ -43,7 +43,7 @@ export function segmentsIntersect(a1: Point, a2: Point, b1: Point, b2: Point): b
 }
 
 /** Two BBoxes intersect. */
-export function bboxesIntersect(a: BBoxTuple, b: BBoxTuple): boolean {
+export function bboxesIntersect(a: Readonly<BBoxTuple>, b: Readonly<BBoxTuple>): boolean {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 

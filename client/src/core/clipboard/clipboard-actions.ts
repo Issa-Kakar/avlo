@@ -555,7 +555,7 @@ function ensureVisible(bounds: BBoxTuple): void {
 function getPasteTarget(): [number, number] {
   const cursor = getLastCursorWorld();
   if (cursor) return cursor;
-  return bboxCenter(getVisibleBoundsTuple() as BBoxTuple);
+  return bboxCenter(getVisibleBoundsTuple());
 }
 
 function escapeHtml(text: string): string {

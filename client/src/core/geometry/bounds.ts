@@ -87,7 +87,7 @@ export function copyFrame(dst: FrameTuple, src: FrameTuple): void {
   dst[3] = src[3];
 }
 
-export const bboxCenter = (b: BBoxTuple): Point => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+export const bboxCenter = (b: Readonly<BBoxTuple>): Point => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 export const bboxSize = (b: BBoxTuple): [number, number] => [b[2] - b[0], b[3] - b[1]];
 export const frameCenter = (f: FrameTuple): Point => [f[0] + f[2] / 2, f[1] + f[3] / 2];
 

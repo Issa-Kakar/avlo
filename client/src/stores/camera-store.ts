@@ -15,6 +15,7 @@
 
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
+import type { BBoxTuple } from '@/core/types/geometry';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
 
@@ -329,9 +330,9 @@ export function getVisibleWorldBounds(): {
  * Callers MUST treat the returned tuple as readonly; the same array is
  * overwritten on the next call.
  */
-const _scratchVisibleTuple: [number, number, number, number] = [0, 0, 0, 0];
+const _scratchVisibleTuple: BBoxTuple = [0, 0, 0, 0];
 
-export function getVisibleBoundsTuple(): Readonly<[number, number, number, number]> {
+export function getVisibleBoundsTuple(): Readonly<BBoxTuple> {
   const { cssWidth, cssHeight, scale, pan } = useCameraStore.getState();
   const safeScale = Math.max(0.001, scale);
   _scratchVisibleTuple[0] = pan.x;

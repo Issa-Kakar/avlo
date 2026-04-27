@@ -35,7 +35,7 @@ export class ObjectSpatialIndex {
   }
 
   /** Tuple-first bbox query. Reuses a module-scoped scratch envelope. */
-  queryBBox(bbox: BBoxTuple): IndexEntry[] {
+  queryBBox(bbox: Readonly<BBoxTuple>): IndexEntry[] {
     _scratchBBox.minX = bbox[0];
     _scratchBBox.minY = bbox[1];
     _scratchBBox.maxX = bbox[2];

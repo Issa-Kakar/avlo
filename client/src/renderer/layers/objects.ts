@@ -119,7 +119,7 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   // Read topology from transform-state module (not from Zustand)
   const connTopology = getTransformTopology();
 
-  const viewport = getVisibleBoundsTuple() as BBoxTuple;
+  const viewport = getVisibleBoundsTuple();
   const entries = spatialIndex.queryBBox(viewport);
 
   _candidateIds.length = 0;

@@ -15,14 +15,7 @@
  * @module renderer/layers/selection-overlay
  */
 
-import {
-  getConnectorType,
-  getEndpointAnchors,
-  getFrame,
-  getHandleShapeType,
-  getPoints,
-  getWidth,
-} from '@/core/accessors';
+import { getConnectorType, getEndpointAnchors, getFrame, getHandleShapeType, getPoints, getWidth } from '@/core/accessors';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
 import { frameToBbox, pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
@@ -105,7 +98,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   }
 
   // 4. Multi-selection.
-  const visible = getVisibleBoundsTuple() as BBoxTuple;
+  const visible = getVisibleBoundsTuple();
   ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
   ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
