@@ -124,6 +124,9 @@ type OutMap = {
 export type GeoOf<K extends ObjectKind> = GeoMap[K];
 export type OutOf<K extends ObjectKind> = OutMap[K];
 
+/** Kinds whose GeoOf has bbox — safe for entry.frozen.bbox / entry.out.bbox access. Resolves to `Exclude<ObjectKind, 'connector'>`. */
+export type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
+
 // ============================================================================
 // Entry + Store — Generics Survive Through Indexed Access
 // ============================================================================
@@ -550,6 +553,10 @@ export class TransformController {
   private activeKinds: ScalableKind[] = [];
   private behaviors: Partial<Record<ScalableKind, ScaleBehavior>> = {};
   private scaleCtx: ScaleCtx | null = null;
+  /** Selection union snapshotted at `beginTranslate`. Mirrors `scaleCtx.selBounds`: avoids
+   * recomputing the union every pointermove and freezes the overlay rect against
+   * remote-mutation jitter (peer edit on a selected object would otherwise wobble it). */
+  private translateSelBounds: BBoxTuple | null = null;
   dx = 0;
   dy = 0;
   private mode: 'none' | 'scale' | 'translate' = 'none';
@@ -635,9 +642,10 @@ export class TransformController {
 
   // --- Translate lifecycle ---
 
-  beginTranslate(selectedIds: ReadonlySet<string>): void {
+  beginTranslate(selectedIds: ReadonlySet<string>, selBounds: BBoxTuple): void {
     this.clear();
     this.mode = 'translate';
+    this.translateSelBounds = selBounds;
     this.dx = 0;
     this.dy = 0;
 
@@ -746,6 +754,7 @@ export class TransformController {
     this.activeKinds = [];
     this.behaviors = {};
     this.scaleCtx = null;
+    this.translateSelBounds = null;
     this.dx = 0;
     this.dy = 0;
     this.mode = 'none';
@@ -778,6 +787,30 @@ export class TransformController {
     if (this.mode === 'translate') return this.dx !== 0 || this.dy !== 0;
     if (this.mode === 'scale' && this.scaleCtx) return this.scaleCtx.sx !== 1 || this.scaleCtx.sy !== 1;
     return false;
+  }
+
+  /**
+   * Overlay-only: should the multi-select rect scale via `uniformFactor` or per-axis (sx, sy)?
+   *   - Standard case: every active scalable kind is `uniform` → uniformFactor (rect agrees
+   *     with per-entry math).
+   *   - All-connector selection: connectors don't enter `activeKinds` (topology owns them),
+   *     so `activeKinds.length === 0` flags this case. Mirrors the topology free-endpoint
+   *     resolver — corner = uniformFactor, side = per-axis (rawScaleFactors hardcodes the
+   *     inactive side-axis to 1, so per-axis math is correct on sides). Without this
+   *     branch, all-connector corner gestures would diagonal-stretch the rect while the
+   *     connectors themselves uniform-scaled per-endpoint — visual disagreement.
+   *   - Anything else (mixed behaviors, shape nonUniform, text/code reflow, edgePin):
+   *     per-axis falls through.
+   */
+  isOverlayUniform(): boolean {
+    if (this.mode !== 'scale' || !this.scaleCtx) return false;
+    if (this.activeKinds.length === 0) return this.topology !== null && isCorner(this.scaleCtx.handleId);
+    for (const k of this.activeKinds) if (this.behaviors[k] !== 'uniform') return false;
+    return true;
+  }
+
+  getTranslateSelBounds(): BBoxTuple | null {
+    return this.translateSelBounds;
   }
 }
 
@@ -815,4 +848,17 @@ export function getTransformTopology(): ConnectorTopology | null {
 
 export function getTransformScaleCtx(): ScaleCtx | null {
   return ctrl?.getScaleCtx() ?? null;
+}
+
+export function isOverlayUniform(): boolean {
+  return ctrl?.isOverlayUniform() ?? false;
+}
+
+/** True only after a meaningful update has been applied (sx/sy ≠ 1, or dx/dy ≠ 0). */
+export function transformHasChange(): boolean {
+  return ctrl?.hasChange() ?? false;
+}
+
+export function getTranslateSelBounds(): BBoxTuple | null {
+  return ctrl?.getTranslateSelBounds() ?? null;
 }

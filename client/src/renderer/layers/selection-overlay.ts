@@ -1,14 +1,16 @@
 /**
  * Selection Overlay Rendering
  *
- * Single sentinel preview from `SelectTool.getPreview()` — overlay reads
- * everything else (selectedIds, mode, marquee, transform discriminant, scale
- * gesture, translate delta, topology, viewport) directly from the relevant
- * stores + transform getters. Per-object highlights are live during transforms,
- * viewport-culled, and shape-aware (rounded-rect path). Handles use a
- * pre-rendered bitmap stamp to keep `shadowBlur` off the hot path. Handles +
- * endpoint dots hide during translate; handles also hide when the selection
- * bbox is smaller than `HANDLE_MIN_BBOX_PX` on screen.
+ * Reads state directly from stores + transform getters (no SelectTool plumbing).
+ * Handles use a pre-rendered bitmap stamp to keep `shadowBlur` off the hot path.
+ * Per-mode dispatch + per-call WHY live on the individual functions below.
+ *
+ * Two cross-cutting concerns:
+ *   - `transformHasChange()` gates the begin→first-update gap (`entry.out.*` is
+ *     zero-bbox until the first update writes real values). Connector topology
+ *     skips the gate — its `currBbox` is initialized live at build.
+ *   - `shouldShowHandles` is the single render/hit/cursor visibility gate so
+ *     they can never disagree.
  *
  * CRITICAL: This is called INSIDE world transform scope.
  *
@@ -21,6 +23,7 @@ import type { SnapTarget } from '@/core/connectors/types';
 import { frameToBbox, pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
+import { uniformFactor } from '@/core/geometry/scale-system';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
@@ -28,7 +31,16 @@ import type { ObjectHandle } from '@/core/types/objects';
 import { getHandle } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { computeHandles, computeSelectionBounds, type TransformState, useSelectionStore } from '@/stores/selection-store';
-import { getController, getScaleEntry, getTransformScaleCtx, getTransformTopology } from '@/tools/selection/transform';
+import {
+  getController,
+  getScaleEntry,
+  getTransformScaleCtx,
+  getTransformTopology,
+  getTranslateSelBounds,
+  isOverlayUniform,
+  type KindWithBBoxGeo,
+  transformHasChange,
+} from '@/tools/selection/transform';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 import { drawResizeHandles } from './handle-stamp';
 
@@ -53,9 +65,16 @@ const SELECTION_STYLE = {
  * Draw selection overlay on overlay canvas.
  *
  * Discriminates by selection size and mode:
- *   single non-connector → one rect (the bounds *is* the highlight) + handles
- *   multi                → per-object highlights (viewport-culled) + selection rect + handles
- *   connector mode (1)   → polyline highlight + endpoint dots; no rect, no handles
+ *   single non-connector → one rect (the bounds *is* the highlight) + handles.
+ *                          Whiteboard convention — the selection rect alone signals
+ *                          "this is selected" when there's only one object.
+ *   multi                → per-object highlights (viewport-culled) + union rect + handles.
+ *                          Per-object highlights individuate within the group rect.
+ *   connector mode (1)   → endpoint dots only. Connectors are never scaled in practice
+ *                          (you drag endpoints to reshape them); the dots already signal
+ *                          selection, so no bbox / no handles. A polyline highlight was
+ *                          tried but the rendered elbow path's dynamic corner radius is
+ *                          hard to match without extra work for no real benefit.
  * Handles hide during translate and when the bbox would be too small on screen.
  */
 export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
@@ -70,11 +89,10 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
 
   const isTranslating = transform.kind === 'translate';
 
-  // 2. Connector mode (single connector by invariant).
+  // 2. Connector mode (single connector by invariant). Endpoint dots only — no bbox,
+  // no polyline highlight, no resize handles.
   if (mode === 'connector') {
-    const cid = selectedIds[0];
-    drawConnectorHighlight(ctx, cid, transform, scale);
-    if (!isTranslating) drawConnectorEndpointDots(ctx, cid, transform);
+    if (!isTranslating) drawConnectorEndpointDots(ctx, selectedIds[0], transform);
     return;
   }
 
@@ -83,14 +101,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
     const handle = getHandle(selectedIds[0]);
     if (!handle) return;
     const bbox = currentBoundsForHandle(handle, transform);
-    if (!bbox) return;
-    ctx.save();
-    ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-    ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    drawObjectHighlight(ctx, handle, bbox, transform);
-    ctx.restore();
+    drawSelectionBox(ctx, bbox, scale);
     if (!isTranslating && shouldShowHandles(bbox, scale)) {
       drawResizeHandles(ctx, computeHandles(bbox), scale);
     }
@@ -107,12 +118,8 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   for (const id of selectedIds) {
     const handle = getHandle(id);
     if (!handle) continue;
-    if (handle.kind === 'connector') {
-      drawConnectorHighlight(ctx, id, transform, scale);
-      continue;
-    }
     const bbox = currentBoundsForHandle(handle, transform);
-    if (!bbox || !bboxesIntersect(bbox, visible)) continue;
+    if (!bboxesIntersect(bbox, visible)) continue;
     drawObjectHighlight(ctx, handle, bbox, transform);
   }
   ctx.restore();
@@ -131,32 +138,41 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
 // PER-OBJECT BOUNDS / HIGHLIGHT
 // =============================================================================
 
-/** Live bbox during transform; frame-aware fallback when idle. */
-function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTuple | null {
-  if (t.kind === 'scale' && handle.kind !== 'connector') {
-    const e = getScaleEntry(handle.kind, handle.id);
-    if (e) return (e.out as { bbox: BBoxTuple }).bbox;
-  }
-  if (t.kind === 'translate') {
-    const c = getController();
-    return translateBBox(handle.bbox, c.dx, c.dy);
-  }
-  switch (handle.kind) {
-    case 'text':
-    case 'code':
-    case 'note':
-    case 'bookmark': {
-      const f = frameOf(handle);
-      return f ? frameToBbox(f) : handle.bbox;
+/**
+ * Live bbox during transform; frame-aware fallback when idle (or when a transform has
+ * begun but no movement has been applied yet — `entry.out.bbox` is uninitialized
+ * between begin and the first update, so `transformHasChange()` gates the live read
+ * and the function falls through to the idle path. Connector topology entries are
+ * initialized correctly at build, so they don't need the gate. Endpoint drag never
+ * reaches this function (connector mode renders dots only, never per-object bbox).
+ */
+function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTuple {
+  if (handle.kind === 'connector') {
+    if (t.kind === 'scale' || t.kind === 'translate') {
+      const ce = getTransformTopology()?.byId.get(handle.id);
+      if (ce) return ce.currBbox;
     }
-    default:
-      return handle.bbox;
+    return handle.bbox;
   }
+  if ((t.kind === 'scale' || t.kind === 'translate') && transformHasChange()) {
+    const e = getScaleEntry(handle.kind as KindWithBBoxGeo, handle.id);
+    if (e) return e.out.bbox;
+  }
+  if (handle.kind === 'text') {
+    const f = frameOf(handle);
+    return f ? frameToBbox(f) : handle.bbox;
+  }
+  return handle.bbox;
 }
 
-/** Live frame for shape highlight: entry.out.frame during scale, translated during translate, stored otherwise. */
+/**
+ * Live frame for shape highlight: `entry.out.frame` during scale (gated by
+ * `transformHasChange()` so we fall back to stored frame between begin and the first
+ * update — `entry.out` is uninitialized in that gap). Translate adds `dx/dy` to the
+ * stored frame (already identity at dx=dy=0 — no gate needed).
+ */
 function currentFrameForShape(handle: ObjectHandle, t: TransformState): FrameTuple | null {
-  if (t.kind === 'scale') {
+  if (t.kind === 'scale' && transformHasChange()) {
     const e = getScaleEntry('shape', handle.id);
     if (e) return e.out.frame;
   }
@@ -170,9 +186,13 @@ function currentFrameForShape(handle: ObjectHandle, t: TransformState): FrameTup
 }
 
 /**
- * Stroke one object's highlight. Caller owns ctx style. Shapes get a fresh
- * Path2D from the live frame outset by half stroke width — keeps rounded-rect
- * radii intact at any non-uniform scale (no ctx.scale distortion).
+ * Multi-select per-object highlight. Single-select doesn't call this — the bounds
+ * rect doubles as the highlight there. Caller owns ctx style. Shapes get a fresh
+ * Path2D from the live frame outset by half stroke width — preserves rounded-rect
+ * corner radii under non-uniform scale (a `ctx.scale` would distort them).
+ * Everything else (incl. connectors) gets a plain bbox stroke; a polyline-shaped
+ * connector highlight was tried but the rendered elbow path's dynamic corner
+ * radius is hard to mirror without extra render work for no real benefit.
  */
 function drawObjectHighlight(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BBoxTuple, t: TransformState): void {
   if (handle.kind === 'shape') {
@@ -190,19 +210,43 @@ function drawObjectHighlight(ctx: CanvasRenderingContext2D, handle: ObjectHandle
 // SELECTION BOX (multi-select)
 // =============================================================================
 
-/** Sliding for scale, translated for translate, base bounds otherwise. */
+/**
+ * Sliding for scale, translated for translate, base bounds otherwise.
+ * `transformHasChange()` short-circuits the transform paths to live
+ * `computeSelectionBounds` before the first update fires — same graceful fallback
+ * as `currentBoundsForHandle`.
+ *
+ * Scale: uses `uniformFactor` when `isOverlayUniform()` is true (every active kind
+ * is `uniform`, OR all-connector selection on a corner). The all-connector branch
+ * is the subtle one — connectors don't enter the entry store (topology owns
+ * them), so their corner gesture transforms free endpoints via `uniformFactor`
+ * and side gestures via per-axis `scaleAround` (rawScaleFactors hardcodes the
+ * inactive axis to 1). The overlay must mirror that math — using `(sx, sy)` on
+ * an all-connector corner would diagonal-stretch the rect while every connector
+ * underneath uniform-scaled, breaking the "what you drag is what you get" cue.
+ *
+ * Translate: union frozen at `beginTranslate` (`getTranslateSelBounds`). Parallels
+ * `scaleCtx.selBounds`; recomputing live every frame would let remote mid-drag
+ * mutations wobble the rect.
+ */
 function selectionRectForOverlay(t: TransformState): BBoxTuple | null {
+  if (t.kind === 'none' || !transformHasChange()) return computeSelectionBounds();
   if (t.kind === 'scale') {
     const s = getTransformScaleCtx();
-    return s ? scaleBBoxAround(s.selBounds, s.origin, s.sx, s.sy) : null;
+    if (!s) return null;
+    if (isOverlayUniform()) {
+      const uf = uniformFactor(s.sx, s.sy, s.handleId);
+      return scaleBBoxAround(s.selBounds, s.origin, uf, uf);
+    }
+    return scaleBBoxAround(s.selBounds, s.origin, s.sx, s.sy);
   }
-  const base = computeSelectionBounds();
-  if (!base) return null;
   if (t.kind === 'translate') {
+    const base = getTranslateSelBounds();
+    if (!base) return null;
     const c = getController();
     return translateBBox(base, c.dx, c.dy);
   }
-  return base;
+  return computeSelectionBounds();
 }
 
 function drawSelectionBox(ctx: CanvasRenderingContext2D, bounds: BBoxTuple, scale: number): void {
@@ -229,41 +273,8 @@ function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: BBoxTuple, 
 }
 
 // =============================================================================
-// CONNECTOR HIGHLIGHT (live polyline) + ENDPOINT DOTS
+// CONNECTOR ENDPOINT DOTS
 // =============================================================================
-
-function drawConnectorHighlight(ctx: CanvasRenderingContext2D, id: string, t: TransformState, scale: number): void {
-  const handle = getHandle(id);
-  if (!handle || handle.kind !== 'connector') return;
-  const points = connectorPathPoints(handle, t);
-  if (!points || points.length < 2) return;
-  ctx.save();
-  ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(points[0][0], points[0][1]);
-  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function connectorPathPoints(handle: ObjectHandle, t: TransformState): Point[] | null {
-  if (t.kind === 'scale' || t.kind === 'translate') {
-    const top = getTransformTopology();
-    const e = top?.byId.get(handle.id);
-    if (e?.mode === 'reroute' && e.currPoints) return e.currPoints;
-    if (e?.mode === 'translate') {
-      const c = getController();
-      return getPoints(handle.y).map((p) => [p[0] + c.dx, p[1] + c.dy]);
-    }
-  }
-  if (t.kind === 'endpointDrag' && t.connectorId === handle.id && t.routedPoints) {
-    return t.routedPoints;
-  }
-  return getPoints(handle.y) as Point[];
-}
 
 /**
  * Endpoint dots in connector mode. Composes shared atoms:

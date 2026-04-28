@@ -76,15 +76,25 @@ core/types/handles.ts (handle taxonomy)
 └── handleCursor() — CSS cursor string
 
 core/spatial/ (see core/spatial/CLAUDE.md — owns all hit logic)
-├── pickTopmostPaint()  → ObjectHandle  (click: frame-aware tournament)
-├── queryHandleIds()    → string[]      (marquee/eraser: precise per-kind intersect)
-├── hitResizeHandle()   → HandleId      (resize handles)
-└── hitEndpointDot()    → EndpointHit   (connector mode)
+├── pickTopmostPaint()    → ObjectHandle  (click: frame-aware tournament)
+├── queryHandleIds()      → string[]      (marquee/eraser: precise per-kind intersect)
+├── hitResizeHandle()     → HandleId      (resize handles; gates on shouldShowHandles)
+├── hitEndpointDot()      → EndpointHit   (connector mode)
+└── shouldShowHandles()   → bool          (single visibility/hit/cursor gate; Math.max ≥ 12px)
 
 renderer/layers/objects.ts (base canvas — consumer of transform getters)
 ├── drawObjects() — main dispatch, reads selectionStore for transform preview
 ├── renderScaleEntry() — per-kind scale dispatch using getScaleEntry/getScaleBehavior
 └── renderTranslatedEntry() — edge-pin fallback via bbox delta
+
+renderer/layers/selection-overlay.ts (overlay canvas — selection chrome)
+├── drawSelectionOverlay() — discriminates by mode: connector → endpoint dots only;
+│                            single non-connector → bounds rect IS the highlight + handles;
+│                            multi → per-object highlights + selection rect + handles
+├── currentBoundsForHandle() / currentFrameForShape() — gated by transformHasChange()
+│                            so begin→first-update gap falls back to idle geometry
+└── selectionRectForOverlay() — uniform-aware (uniformFactor when isOverlayUniform());
+                                frozen-at-begin during translate (getTranslateSelBounds())
 ```
 
 ---
@@ -437,9 +447,10 @@ updateScale(sx, sy):
   3. Apply to all entries, invalidate dirty rects
   4. if topology → runTopologyScale(topology, scaleCtx)
 
-beginTranslate(selectedIds):
-  1. clear(), freeze translate entries (simpler: no behavior resolution)
-  2. Build topology via newTopologyBuilder('translate', selectedIds) inline
+beginTranslate(selectedIds, selBounds):
+  1. clear(), capture selBounds for overlay rect (parallels scaleCtx.selBounds)
+  2. Freeze translate entries (simpler: no behavior resolution)
+  3. Build topology via newTopologyBuilder('translate', selectedIds) inline
 
 updateTranslate(dx, dy):
   1. Store dx, dy
@@ -464,7 +475,7 @@ clear(): reset store, activeKinds, behaviors, scaleCtx, dx/dy, mode, topology
 - `getMap<K>(kind)` — returns `Map<string, Entry<K>> | undefined` (generic preserved)
 - `getBehavior(kind)` — returns `ScaleBehavior | undefined`
 - `getScaleCtx()`, `getTopology()`, `getMode()`, `hasChange()`
-- `getEntryFrame(id)` — searches all kinds for entry's output frame (topology use)
+- `isOverlayUniform()`, `getTranslateSelBounds()` — overlay-only (see `selection-overlay.ts`)
 
 ### Module Getters (for renderer)
 
@@ -475,8 +486,15 @@ getTransformMode(): 'none' | 'scale' | 'translate'
 getTranslateDelta(): [number, number] | null
 getTransformTopology(): ConnectorTopology | null
 getTransformScaleCtx(): ScaleCtx | null
+transformHasChange(): boolean                     // overlay-only — gates begin→first-update reads
+isOverlayUniform(): boolean                       // overlay-only — rect uniform-vs-per-axis
+getTranslateSelBounds(): BBoxTuple | null         // overlay-only — translate union frozen at begin
 getController(): TransformController              // Lazy singleton
 ```
+
+### Overlay-only accessors
+
+Three module getters exist purely for `selection-overlay.ts`: `transformHasChange()` (live-vs-idle gate), `isOverlayUniform()` (uniform vs. per-axis rect), `getTranslateSelBounds()` (translate union frozen at begin, parallels `scaleCtx.selBounds`). Each WHY lives at the call site in the overlay; only the controller-side method docs spell out the field invariants.
 
 ### Scale Math (scale-system.ts)
 
@@ -606,7 +624,7 @@ All hit logic lives in `core/spatial/` (see its CLAUDE.md for internals — pipe
 |-------|------|---------|----------|
 | Click target (`hitTestObjects`) | `pickTopmostPaint([x, y], { px: HIT_RADIUS_PX + HIT_SLACK_PX })` | `ObjectHandle \| null` | **Best candidate, not just topmost.** Topmost paint-blocker wins outright (strokes, connectors, text/code/image frames, filled-shape edges). For a small unfilled shape stacked above a larger filled shape, the smaller wins — frame-aware area tournament. |
 | Marquee (`updateMarqueeSelection`) | `queryHandleIds(inBBox(marqueeBBox))` | `string[]` | **Precise per-kind intersection, not bbox.** Shape-type aware (ellipse perimeter, diamond edges), polylines tested segment-wise, framed kinds (text/code/note/image/bookmark) tested against their derived frame. |
-| Resize handle (standard mode) | `hitResizeHandle([x, y], selectionBounds)` | `HandleId \| null` | Screen-space probe (~10px). Only consulted with selection active and no text/code editor mounted. |
+| Resize handle (standard mode) | `hitResizeHandle([x, y], selectionBounds)` | `HandleId \| null` | Screen-space probe (~10px). Internally gates on `shouldShowHandles(bbox)` — `Math.max(w, h) * scale ≥ HANDLE_MIN_BBOX_PX (12)` so the gate flips exactly when corner stamps would physically meet (one tiny axis stays grabbable). Same gate drives overlay visibility + cursor — render/hit/cursor always agree. Only consulted with selection active and no text/code editor mounted. |
 | Endpoint dot (connector mode) | `hitEndpointDot([x, y], selectedIds)` | `EndpointHit \| null` | Screen-space nearest-probe over selected connectors' start/end world positions. |
 
 Click tolerance: `HIT_RADIUS_PX (6) + HIT_SLACK_PX (2) = 8px` screen-space — forgiving touch target without enlarging the visual anchor. Marquee uses no tolerance (exact region intersect).
@@ -644,10 +662,10 @@ Reads `getScaleEntry(kind, id)` and `getScaleBehavior(kind)` from transform modu
 
 ### renderTranslatedEntry()
 
-Generic edge-pin fallback. Typed as `Entry<KindWithBBoxGeo>` where:
+Generic edge-pin fallback. Typed as `Entry<KindWithBBoxGeo>`, where `KindWithBBoxGeo` is exported from `transform.ts` (next to `GeoMap`/`OutMap`) and shared by `selection-overlay.ts`:
 ```typescript
-type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
-// Resolves to: 'stroke' | 'text' | 'code' | 'note' | 'bookmark'
+export type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
+// Resolves to: Exclude<ObjectKind, 'connector'> — every non-connector kind has bbox in GeoMap.
 ```
 
 Computes delta from `entry.out.bbox - entry.frozen.bbox`, applies `ctx.translate(dx, dy)`.
@@ -693,7 +711,7 @@ Exception: `EndpointDragTransform` still carries full state in the store (connec
 |--------|--------|
 | `setSelection(ids)` | Compute composition, reset transform/marquee, bump boundsVersion, refreshStyles |
 | `clearSelection()` | Reset everything to defaults |
-| `beginTranslate()` | `ctrl.beginTranslate(selectedIdSet)` + set `{ kind: 'translate' }` |
+| `beginTranslate()` | `computeSelectionBounds()` (mirrors `beginScale`) → `ctrl.beginTranslate(selectedIdSet, selBounds)` + set `{ kind: 'translate' }`. Bails early if union is null. |
 | `updateTranslate(dx, dy)` | `ctrl.updateTranslate(dx, dy)` |
 | `beginScale(handleId, downWorld)` | `computeSelectionBounds()` → `scaleOrigin`/`handlePosition` → gesture math → `ctrl.beginScale(...)` + set `{ kind: 'scale', initialDelta, clickOffset }` |
 | `updateScale(worldX, worldY)` | Narrow `transform` + read `scaleCtx` → `rawScaleFactors(...)` → `ctrl.updateScale(sx, sy)` |
@@ -716,11 +734,11 @@ Single-pass bucket count: `counts[handle.kind]++` into a `Record<ObjectKind, num
 
 ### computeSelectionBounds()
 
-Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain. Serves double duty — selection overlay bounds AND scale gesture bounds.
+Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain. Serves triple duty — idle selection overlay bounds, scale gesture bounds (`store.beginScale`), and translate-frozen union (`store.beginTranslate`).
 - Text: `frameToBbox(getTextFrame(id))` (italic overhangs differ from bbox)
 - All others (including code): `handle.bbox` (code's `computeCodeBBox` already writes the derived layout frame into `handle.bbox` — no stroke padding to account for)
 
-Returns `null` on empty selection (causes `store.beginScale` to bail early).
+Returns `null` on empty selection (causes both `beginScale` and `beginTranslate` to bail early). The overlay also calls it directly when idle or before the first update fires (see `selection-overlay.ts`).
 
 ### computeStyles(ids, kind)
 
@@ -764,7 +782,7 @@ Store fields consumed by context menu are documented in `components/context-menu
 | File | Responsibility |
 |------|----------------|
 | `tools/selection/SelectTool.ts` | State machine, hit testing dispatch, routes transform lifecycle through store, endpoint drag commit |
-| `tools/selection/transform.ts` | TransformController, structural traits, mapped types, dispatch tables, apply/commit/freeze functions, module getters |
+| `tools/selection/transform.ts` | TransformController, structural traits, mapped types (incl. exported `KindWithBBoxGeo`), dispatch tables, apply/commit/freeze functions, module getters (incl. `transformHasChange`/`isOverlayUniform`/`getTranslateSelBounds` for the overlay) |
 | `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState` (incl. `ScaleTransform` = `{ kind, initialDelta, clickOffset }`), `ScaleCtx` (gesture bundle for `scale-system.ts` atoms), `SelectedStyles`, `InlineStyles`, empty constants |
 | `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (`static` \| `translate` \| `reroute`), `newTopologyBuilder` (driven inline by `TransformController`'s freeze loop), `runTopologyScale`/`runTopologyTranslate`/`commitTopology`/`cancelTopology`, `fillFrameFromBind` bind-side frame derivation |
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles`, `computeUniformInlineStyles` |
@@ -773,6 +791,6 @@ Store fields consumed by context menu are documented in `components/context-menu
 | `core/geometry/scale-system.ts` | Pure math atoms: `scaleAround`, `uniformFactor` (handle-aware), `preservePosition`, `edgePinPosition1D`, `computeReflowWidth` + bbox-aware atoms consumed by transform.ts (`scaleBBoxUniform`, `scaleBBoxEdges`, `edgePinDelta`, `derivePaddedFrame`). Imports `ScaleCtx` from `tools/selection/types.ts`. |
 | `core/geometry/bounds.ts` | Bbox/frame tuple helpers (`frameToBbox`, `bboxToFrame`, `bboxCenter`, `copyBbox`, etc.), WorldBounds operations, mutating offset primitives (`offsetBBox`, `offsetFrame`, `offsetPoint`, `offsetPoints`, `setBBoxXYWH`) |
 | `core/types/handles.ts` | HandleId taxonomy, type guards, scaleOrigin, handleCursor |
-| `core/spatial/` | Hit testing + region queries — consumed only via `pickTopmostPaint` (click), `queryHandleIds(inBBox)` (marquee), `hitResizeHandle`, `hitEndpointDot`. Internals documented in `core/spatial/CLAUDE.md`. |
+| `core/spatial/` | Hit testing + region queries — consumed only via `pickTopmostPaint` (click), `queryHandleIds(inBBox)` (marquee), `hitResizeHandle`, `hitEndpointDot`. `core/spatial/handle-hit.ts` also owns `shouldShowHandles` (the single render/hit/cursor visibility gate, `Math.max ≥ HANDLE_MIN_BBOX_PX`). Internals documented in `core/spatial/CLAUDE.md`. |
 | `renderer/layers/objects.ts` | `drawObjects` dispatch, `renderScaleEntry` (entry-based), `renderTranslatedEntry` (edge-pin fallback) |
-| `renderer/layers/selection-overlay.ts` | `drawSelectionOverlay`: highlights, marquee, box+handles, endpoint dots |
+| `renderer/layers/selection-overlay.ts` | `drawSelectionOverlay`: marquee, single-select bounds rect (doubles as highlight), multi-select per-object highlights + union rect, connector mode endpoint dots only (no bbox/handles — connectors aren't scaled in practice; dots already signal selection). Mid-transform geometry reads gated by `transformHasChange()` to bridge the begin→first-update gap; per-axis vs. uniform overlay rect via `isOverlayUniform()`; translate union frozen at begin via `getTranslateSelBounds()`. |

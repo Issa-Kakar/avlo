@@ -181,7 +181,9 @@ export const useSelectionStore = create<SelectionStore>()(
     // === Transform Actions ===
 
     beginTranslate: () => {
-      getController().beginTranslate(get().selectedIdSet);
+      const selBounds = computeSelectionBounds();
+      if (!selBounds) return;
+      getController().beginTranslate(get().selectedIdSet, selBounds);
       set({ transform: { kind: 'translate' } });
     },
 

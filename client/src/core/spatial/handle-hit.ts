@@ -60,21 +60,23 @@ export const HANDLE_HIT_PX = 10;
 
 /**
  * Min bbox size (in screen px) below which handles are hidden + non-hittable.
- * 2× handle diameter — handles overlap below this and occlude the object.
+ * Equals the visual handle diameter (`HANDLE_RADIUS_PX = 6` × 2 in handle-stamp.ts) —
+ * handles physically overlap below this.
  */
-export const HANDLE_MIN_BBOX_PX = 24;
+export const HANDLE_MIN_BBOX_PX = 12;
 
 /**
- * Single gate for handle visibility/hit-testing/cursor. Returns false when the
- * selection bbox is smaller than `HANDLE_MIN_BBOX_PX` on its smallest screen
- * dimension — at that size the four handles overlap and the object can't be
- * grabbed underneath.
+ * Single gate for handle visibility/hit-testing/cursor. Compares the bbox's larger
+ * screen-space dimension against `HANDLE_MIN_BBOX_PX` — handles vanish only when the
+ * corner stamps would physically meet. Using `Math.max` keeps handles available on
+ * ultra-thin geometry (e.g. a 5wu-wide tall shape) and prevents premature hiding on
+ * zoom-out.
  */
 export function shouldShowHandles(bbox: BBoxTuple, scale?: number): boolean {
   const s = scale ?? useCameraStore.getState().scale;
   const w = (bbox[2] - bbox[0]) * s;
   const h = (bbox[3] - bbox[1]) * s;
-  return Math.min(w, h) >= HANDLE_MIN_BBOX_PX;
+  return Math.max(w, h) >= HANDLE_MIN_BBOX_PX;
 }
 
 /**

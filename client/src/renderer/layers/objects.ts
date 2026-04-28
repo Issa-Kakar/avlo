@@ -32,18 +32,18 @@ import { getBitmap } from '@/core/image/image-manager';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { computeLabelTextBox, layoutMeasuredContent, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import type { ObjectHandle } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { ConnectorEntry } from '@/tools/selection/connector-topology';
 import {
   type Entry,
-  type GeoOf,
   getScaleBehavior,
   getScaleEntry,
   getTransformTopology,
   getTranslateDelta,
+  type KindWithBBoxGeo,
 } from '@/tools/selection/transform';
 import { getConnectorPaths, getPath } from '../geometry-cache';
 import { paintConnector } from './connector-render-atoms';
@@ -564,9 +564,6 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
     }
   }
 }
-
-/** Kinds whose GeoOf has bbox — safe for entry.frozen.bbox access */
-type KindWithBBoxGeo = { [K in ObjectKind]: GeoOf<K> extends { bbox: BBoxTuple } ? K : never }[ObjectKind];
 
 function renderTranslatedEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, entry: Entry<KindWithBBoxGeo>): void {
   const dx = entry.out.bbox[0] - entry.frozen.bbox[0];
