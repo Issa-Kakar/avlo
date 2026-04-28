@@ -224,7 +224,10 @@ computeLabelTextBox(shapeType, frame)
 ### BBox + Derived Frame
 
 ```typescript
-computeTextBBox(id, props)   // Derives frame from layout, caches, returns frame + 2px padding
+computeTextBBox(id, props)   // Derives frame from layout, caches, returns frame + 2px vert pad
+                              // + horizontal italic-overhang pad (getItalicOverhangPad(fontSize) —
+                              // fontSize × Inter-bold-W ratio × 0.45, floored at 2; family-agnostic
+                              // upper bound so swapping fonts can't escape the dirty rect)
 computeNoteBBox(id, props)   // Square frame, caches, returns frame + shadow pad
 getTextFrame(id)             // Reads cached frame — used for BOTH text AND note objects
 getInlineStyles(id)          // UniformStyles from cached tokenized content

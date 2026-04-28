@@ -284,17 +284,17 @@ export function getMinCharWidth(fontSize: number, fontFamily: FontFamily = 'Gran
 
 /**
  * Italic glyphs paint outside the layout box (DOM-style line breaking ignores ink-extent
- * for word wrap). The horizontal pad widens the dirty rect so italic ink can't escape it.
+ * for word wrap). The horizontal pad widens the dirty rect so italic ink can't escape.
+ *
+ * Always sized off Inter's bold-W min-char ratio (the widest of our four families) so the
+ * pad is a strict upper bound on every family's overhang — switching fontFamily on a text
+ * object whose width was clamped to a narrower family's min-char-width can't leave smear
+ * artifacts. Also collapses freeze data: pad depends only on fontSize.
  */
-const ITALIC_PAD_RATIO = 0.25;
+const ITALIC_PAD_RATIO = 0.45;
 
-export function getItalicOverhangPad(fontSize: number, fontFamily: FontFamily = 'Grandstander'): number {
-  return Math.max(2, getMinCharWidth(fontSize, fontFamily) * ITALIC_PAD_RATIO);
-}
-
-/** Per-fontFamily italic-pad ratio. Multiply by fontSize and floor to 2 to get padH. */
-export function getItalicOverhangPadRatio(fontFamily: FontFamily = 'Grandstander'): number {
-  return getMinCharWidthRatio(fontFamily) * ITALIC_PAD_RATIO;
+export function getItalicOverhangPad(fontSize: number): number {
+  return Math.max(2, fontSize * ITALIC_PAD_RATIO * getMinCharWidthRatio('Inter'));
 }
 
 /**
@@ -1192,7 +1192,7 @@ export function computeTextBBox(objectId: string, props: TextProps): BBoxTuple {
   const fy = oy - fontSize * getBaselineToTopRatio(fontFamily);
   const fh = layout.lines.length * layout.lineHeight;
   textLayoutCache.setFrame(objectId, [fx, fy, layout.boxWidth, fh]);
-  const padH = getItalicOverhangPad(fontSize, fontFamily);
+  const padH = getItalicOverhangPad(fontSize);
   return [fx - padH, fy - 2, fx + layout.boxWidth + padH, fy + fh + 2];
 }
 

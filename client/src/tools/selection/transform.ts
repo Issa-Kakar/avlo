@@ -37,7 +37,6 @@ import {
 import {
   anchorFactor,
   getItalicOverhangPad,
-  getItalicOverhangPadRatio,
   getMinCharWidth,
   getTextFrame,
   layoutMeasuredContent,
@@ -85,18 +84,16 @@ type GeoMap = {
   image: HasFrame & HasBBox;
   // width is uniform-only (used by commitStrokeUniform). Translate/edgePin freeze omits it.
   stroke: HasPoints & HasBBox & { width?: number };
-  // fontSize/width are uniform+reflow only; align/measured/minW are reflow-only.
-  // italicPad* drive `fillDirty`: ratio re-applied to live out.fontSize (uniform/reflow);
-  // padH is the precomputed fallback used when out.fontSize is 0 (translate/edgePin).
+  // fontSize is required (every text behavior captures it — translate/edgePin do too so
+  // applyOffset can propagate it to out.fontSize, keeping fillDirty's italic-pad math
+  // unconditional). align/measured/minW are reflow-only.
   text: HasOrigin &
     HasBBox & {
-      fontSize?: number;
+      fontSize: number;
       width?: TextWidth;
       align?: TextAlign;
       measured?: MeasuredContent | null;
       minW?: number;
-      italicPadRatio: number;
-      italicPadH: number;
     };
   // fontSize/width are uniform+reflow only; the rest are reflow-only.
   code: HasOrigin &
@@ -286,9 +283,11 @@ function reflowCode(f: GeoOf<'code'>, ctx: ScaleCtx, o: OutOf<'code'>): void {
 function applyOffset(f: any, dx: number, dy: number, o: any): void {
   if ('frame' in o) offsetFrameMut(o.frame, f.frame, dx, dy);
   if ('origin' in o) offsetPoint(o.origin, f.origin, dx, dy);
-  // Propagate scale when both sides carry it (note/bookmark only) so connector-topology's
-  // fillFrameFromBind sees ratio=1 under translate/edgePin without a dedicated path.
+  // Propagate fields that translate/edgePin doesn't change but downstream readers need:
+  //   scale (note/bookmark) — connector-topology's fillFrameFromBind needs ratio=1
+  //   fontSize (text)       — fillDirty's italic-pad math reads out.fontSize
   if ('scale' in o && 'scale' in f) o.scale = f.scale;
+  if ('fontSize' in o && 'fontSize' in f) o.fontSize = f.fontSize;
   offsetBBox(o.bbox, f.bbox, dx, dy);
 }
 
@@ -398,17 +397,15 @@ const TRANSLATE_COMMIT: TranslateCommitTable = {
 
 /**
  * Write the inflated dirty tuple for `e` into `out`. For text we widen horizontally by
- * the italic-overhang pad (live `out.fontSize * frozen.italicPadRatio` when an apply has
- * already populated fontSize, else the precomputed `frozen.italicPadH`); other kinds
+ * the italic-overhang pad — `out.fontSize` is the live value during uniform/reflow and
+ * the propagated frozen value during translate/edgePin (see `applyOffset`). Other kinds
  * already carry the right padding in `out.bbox` (shapes/images embed strokePad,
  * notes/bookmarks embed shadowPad).
  */
 function fillDirty(out: BBoxTuple, kind: ObjectKind, e: Entry): void {
   const bb = (e.out as HasBBox).bbox;
   if (kind === 'text') {
-    const f = e.frozen as GeoOf<'text'>;
-    const o = e.out as OutOf<'text'>;
-    const padH = o.fontSize > 0 ? Math.max(2, o.fontSize * f.italicPadRatio) : f.italicPadH;
+    const padH = getItalicOverhangPad((e.out as OutOf<'text'>).fontSize);
     out[0] = bb[0] - padH;
     out[1] = bb[1] - 2;
     out[2] = bb[2] + padH;
@@ -432,7 +429,6 @@ function createOutFor(kind: ObjectKind): any {
       // No points array allocation — gestures only update bbox.
       return { bbox: [0, 0, 0, 0] as BBoxTuple, factor: 1, fcx: 0, fcy: 0 };
     case 'text':
-      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: null };
     case 'code':
       return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: null };
     case 'note':
@@ -473,8 +469,6 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
       const tf = getTextFrame(id);
       if (!p || !tf) return null;
       const b = frameToBbox(tf);
-      const italicPadRatio = getItalicOverhangPadRatio(p.fontFamily);
-      const italicPadH = getItalicOverhangPad(p.fontSize, p.fontFamily);
       if (behavior === 'reflow') {
         return {
           origin: [...p.origin] as Point,
@@ -484,18 +478,14 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
           align: p.align,
           measured: textLayoutCache.getMeasuredContent(id) ?? null,
           minW: getMinCharWidth(p.fontSize, p.fontFamily),
-          italicPadRatio,
-          italicPadH,
         };
       }
-      // uniform: drop fontFamily, align, frame
+      // uniform: drop reflow-only fields
       return {
         origin: [...p.origin] as Point,
         bbox: b,
         fontSize: p.fontSize,
         width: p.width,
-        italicPadRatio,
-        italicPadH,
       };
     }
 
@@ -555,23 +545,20 @@ function freezeTranslateEntry(kind: ObjectKind, id: string, y: Y.Map<unknown>, b
       return { points: pts.map((p) => [...p] as Point), bbox: [...bbox] as BBoxTuple };
     }
     case 'text': {
+      // Text is the special case: handle.bbox carries italic-overhang pad, so derive the
+      // tight visual frame from the layout cache. fontSize captured (not used by translate's
+      // apply) so applyOffset can propagate it → fillDirty reads out.fontSize unconditionally.
       const p = getTextProps(y);
       if (!p) return null;
-      const derivedFrame = getTextFrame(id);
-      const derivedBbox = derivedFrame ? frameToBbox(derivedFrame) : ([...bbox] as BBoxTuple);
-      return {
-        origin: [...p.origin] as Point,
-        bbox: derivedBbox,
-        italicPadRatio: getItalicOverhangPadRatio(p.fontFamily),
-        italicPadH: getItalicOverhangPad(p.fontSize, p.fontFamily),
-      };
+      const tf = getTextFrame(id);
+      const tightBbox = tf ? frameToBbox(tf) : ([...bbox] as BBoxTuple);
+      return { origin: [...p.origin] as Point, bbox: tightBbox, fontSize: p.fontSize };
     }
     case 'code': {
+      // computeCodeBBox writes bbox = frameToBbox(frame), so handle.bbox is already tight.
       const origin = getOrigin(y);
       if (!origin) return null;
-      const derivedFrame = getCodeFrame(id);
-      const derivedBbox = derivedFrame ? frameToBbox(derivedFrame) : ([...bbox] as BBoxTuple);
-      return { origin: [...origin] as Point, bbox: derivedBbox };
+      return { origin: [...origin] as Point, bbox: [...bbox] as BBoxTuple };
     }
     case 'note':
     case 'bookmark': {
@@ -596,9 +583,10 @@ export class TransformController {
   private activeKinds: ScalableKind[] = [];
   private behaviors: Partial<Record<ScalableKind, ScaleBehavior>> = {};
   private scaleCtx: ScaleCtx | null = null;
-  /** Selection union snapshotted at `beginTranslate`. Mirrors `scaleCtx.selBounds`: avoids
-   * recomputing the union every pointermove and freezes the overlay rect against
-   * remote-mutation jitter (peer edit on a selected object would otherwise wobble it). */
+  /** Selection union snapshotted at `beginTranslate`. Two reasons: (a) overlay reads it directly
+   * each frame instead of recomputing from live Y.Map state (translate has no `scaleCtx` to
+   * piggyback on); (b) frozen at begin so a remote peer mutating a selected object can't drift
+   * the rect off the ephemeral transform. */
   private translateSelBounds: BBoxTuple | null = null;
   dx = 0;
   dy = 0;
