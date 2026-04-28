@@ -17,6 +17,7 @@
 import { getStroke } from 'perfect-freehand';
 import { getEndCap, getFrame, getPoints, getShapeType, getStartCap, getWidth } from '@/core/accessors';
 import { buildConnectorPaths, type ConnectorPaths } from '@/core/connectors/connector-paths';
+import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getSvgPathFromStroke, PF_OPTIONS_BASE } from './types';
 
@@ -32,19 +33,6 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
-
-// Helper function to create rounded rectangle
-function roundedRect(path: Path2D, x: number, y: number, w: number, h: number, r: number): void {
-  path.moveTo(x + r, y);
-  path.lineTo(x + w - r, y);
-  path.quadraticCurveTo(x + w, y, x + w, y + r);
-  path.lineTo(x + w, y + h - r);
-  path.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  path.lineTo(x + r, y + h);
-  path.quadraticCurveTo(x, y + h, x, y + h - r);
-  path.lineTo(x, y + r);
-  path.quadraticCurveTo(x, y, x + r, y);
-}
 
 function buildGeometry(handle: ObjectHandle): CachedGeometry {
   const { kind, y } = handle;
@@ -71,39 +59,7 @@ function buildGeometry(handle: ObjectHandle): CachedGeometry {
       const shapeType = getShapeType(y);
       const frame = getFrame(y);
       if (!frame) return new Path2D();
-
-      const [x, y0, w, h] = frame;
-      const path = new Path2D();
-
-      switch (shapeType) {
-        case 'rect':
-          path.rect(x, y0, w, h);
-          break;
-        case 'ellipse':
-          path.ellipse(x + w / 2, y0 + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
-          break;
-        case 'diamond': {
-          const cx = x + w / 2;
-          const cy = y0 + h / 2;
-          const radius = Math.min(20, Math.min(w, h) * 0.1);
-          path.moveTo(cx + w / 4, y0 + h / 4);
-          path.arcTo(x + w, cy, cx, y0 + h, radius);
-          path.arcTo(cx, y0 + h, x, cy, radius);
-          path.arcTo(x, cy, cx, y0, radius);
-          path.arcTo(cx, y0, x + w, cy, radius);
-          path.closePath();
-          break;
-        }
-        case 'roundedRect': {
-          const radius = Math.min(20, w * 0.1, h * 0.1);
-          roundedRect(path, x, y0, w, h, radius);
-          break;
-        }
-        default:
-          path.rect(x, y0, w, h);
-      }
-
-      return path;
+      return buildShapePathFromFrame(shapeType, frame);
     }
 
     case 'connector': {

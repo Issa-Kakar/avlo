@@ -106,50 +106,9 @@ export function diamondEdges(f: FrameTuple): ShapeEdge[] {
 // SHAPE MIDPOINTS
 // ============================================================================
 
-/**
- * N/E/S/W world points on a shape's edge.
- * Rect / ellipse / roundedRect: frame edge centers.
- * Diamond: apex of each rounded corner (inset from the mathematical vertex).
- */
-export function shapeMidpoints(frame: FrameTuple, shapeType: string): Record<Dir, Point> {
-  if (shapeType === 'diamond') return getDiamondApexMidpoints(frame);
+/** N/E/S/W world points on a shape's edge — frame edge centers for every shape. */
+export function shapeMidpoints(frame: FrameTuple, _shapeType: string): Record<Dir, Point> {
   return rectMidpoints(frame);
-}
-
-/**
- * Rounded-diamond apex positions.
- *
- * For a rounded corner, the visual tip is the apex of the inscribed arc —
- * inset from the mathematical vertex by `radius * (csc(halfAngle) - 1)`
- * where halfAngle is half the angle between the two edges meeting at the vertex.
- * Corner radius matches the diamond render in `object-cache.ts`.
- */
-function getDiamondApexMidpoints(frame: FrameTuple): Record<Dir, Point> {
-  const [x, y, w, h] = frame;
-  const radius = Math.min(20, Math.min(w, h) * 0.1);
-
-  if (radius < 0.5) return rectMidpoints(frame);
-
-  const [cx, cy] = frameCenter(frame);
-  const h2 = h * h;
-  const w2 = w * w;
-  const sumSq = h2 + w2;
-
-  // Corner angles (top/bottom vs left/right) via dot product of edge vectors.
-  const halfTheta_TB = Math.acos(Math.max(-1, Math.min(1, (h2 - w2) / sumSq))) / 2;
-  const halfTheta_LR = Math.acos(Math.max(-1, Math.min(1, (w2 - h2) / sumSq))) / 2;
-
-  const minSin = 0.1; // ~6° half-angle minimum; prevents explosion for very acute angles
-  const maxOffset = radius * 2;
-  const offset_TB = Math.min(radius * (1 / Math.max(Math.sin(halfTheta_TB), minSin) - 1), maxOffset);
-  const offset_LR = Math.min(radius * (1 / Math.max(Math.sin(halfTheta_LR), minSin) - 1), maxOffset);
-
-  return {
-    N: [cx, y + offset_TB],
-    E: [x + w - offset_LR, cy],
-    S: [cx, y + h - offset_TB],
-    W: [x + offset_LR, cy],
-  };
 }
 
 // ============================================================================
