@@ -10,8 +10,8 @@ import { disconnectRoom } from '@/runtime/room-runtime';
 import { Canvas } from './Canvas';
 import { ErrorBoundary } from './ErrorBoundary';
 import { ToastProvider, useToast } from './Toast';
-import { ToolPanel } from './ToolPanel';
 import { TopBar } from './TopBar';
+import { Toolbar } from './toolbar';
 import { UserAvatarCluster } from './UserAvatarCluster';
 import { ZoomControls } from './ZoomControls';
 
@@ -60,7 +60,7 @@ function RoomCanvas() {
           </div>
 
           {/* Floating UI elements */}
-          <ToolPanel />
+          <Toolbar />
           <ZoomControls />
         </div>
       </div>
