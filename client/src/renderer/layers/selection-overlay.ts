@@ -159,6 +159,8 @@ function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTu
     if (e) return e.out.bbox;
   }
   if (handle.kind === 'text') {
+    // handle.bbox carries italic-overhang horizontal padding (from computeTextBBox);
+    // highlights/handles must sit on the visual frame edge, so prefer frameOf().
     const f = frameOf(handle);
     return f ? frameToBbox(f) : handle.bbox;
   }

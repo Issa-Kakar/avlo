@@ -36,6 +36,8 @@ import {
 } from '@/core/geometry/scale-system';
 import {
   anchorFactor,
+  getItalicOverhangPad,
+  getItalicOverhangPadRatio,
   getMinCharWidth,
   getTextFrame,
   layoutMeasuredContent,
@@ -84,6 +86,8 @@ type GeoMap = {
   // width is uniform-only (used by commitStrokeUniform). Translate/edgePin freeze omits it.
   stroke: HasPoints & HasBBox & { width?: number };
   // fontSize/width are uniform+reflow only; align/measured/minW are reflow-only.
+  // italicPad* drive `fillDirty`: ratio re-applied to live out.fontSize (uniform/reflow);
+  // padH is the precomputed fallback used when out.fontSize is 0 (translate/edgePin).
   text: HasOrigin &
     HasBBox & {
       fontSize?: number;
@@ -91,6 +95,8 @@ type GeoMap = {
       align?: TextAlign;
       measured?: MeasuredContent | null;
       minW?: number;
+      italicPadRatio: number;
+      italicPadH: number;
     };
   // fontSize/width are uniform+reflow only; the rest are reflow-only.
   code: HasOrigin &
@@ -387,6 +393,32 @@ const TRANSLATE_COMMIT: TranslateCommitTable = {
 };
 
 // ============================================================================
+// Dirty-Rect Inflation — keeps `prevBbox` padded for italic overhang
+// ============================================================================
+
+/**
+ * Write the inflated dirty tuple for `e` into `out`. For text we widen horizontally by
+ * the italic-overhang pad (live `out.fontSize * frozen.italicPadRatio` when an apply has
+ * already populated fontSize, else the precomputed `frozen.italicPadH`); other kinds
+ * already carry the right padding in `out.bbox` (shapes/images embed strokePad,
+ * notes/bookmarks embed shadowPad).
+ */
+function fillDirty(out: BBoxTuple, kind: ObjectKind, e: Entry): void {
+  const bb = (e.out as HasBBox).bbox;
+  if (kind === 'text') {
+    const f = e.frozen as GeoOf<'text'>;
+    const o = e.out as OutOf<'text'>;
+    const padH = o.fontSize > 0 ? Math.max(2, o.fontSize * f.italicPadRatio) : f.italicPadH;
+    out[0] = bb[0] - padH;
+    out[1] = bb[1] - 2;
+    out[2] = bb[2] + padH;
+    out[3] = bb[3] + 2;
+  } else {
+    copyBbox(bb, out);
+  }
+}
+
+// ============================================================================
 // Output Factories (pre-allocation)
 // ============================================================================
 
@@ -441,6 +473,8 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
       const tf = getTextFrame(id);
       if (!p || !tf) return null;
       const b = frameToBbox(tf);
+      const italicPadRatio = getItalicOverhangPadRatio(p.fontFamily);
+      const italicPadH = getItalicOverhangPad(p.fontSize, p.fontFamily);
       if (behavior === 'reflow') {
         return {
           origin: [...p.origin] as Point,
@@ -450,6 +484,8 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
           align: p.align,
           measured: textLayoutCache.getMeasuredContent(id) ?? null,
           minW: getMinCharWidth(p.fontSize, p.fontFamily),
+          italicPadRatio,
+          italicPadH,
         };
       }
       // uniform: drop fontFamily, align, frame
@@ -458,6 +494,8 @@ function freezeScaleEntry(kind: ObjectKind, behavior: ScaleBehavior, id: string,
         bbox: b,
         fontSize: p.fontSize,
         width: p.width,
+        italicPadRatio,
+        italicPadH,
       };
     }
 
@@ -517,11 +555,16 @@ function freezeTranslateEntry(kind: ObjectKind, id: string, y: Y.Map<unknown>, b
       return { points: pts.map((p) => [...p] as Point), bbox: [...bbox] as BBoxTuple };
     }
     case 'text': {
-      const origin = getOrigin(y);
-      if (!origin) return null;
+      const p = getTextProps(y);
+      if (!p) return null;
       const derivedFrame = getTextFrame(id);
       const derivedBbox = derivedFrame ? frameToBbox(derivedFrame) : ([...bbox] as BBoxTuple);
-      return { origin: [...origin] as Point, bbox: derivedBbox };
+      return {
+        origin: [...p.origin] as Point,
+        bbox: derivedBbox,
+        italicPadRatio: getItalicOverhangPadRatio(p.fontFamily),
+        italicPadH: getItalicOverhangPad(p.fontSize, p.fontFamily),
+      };
     }
     case 'code': {
       const origin = getOrigin(y);
@@ -631,9 +674,9 @@ export class TransformController {
       if (!apply) continue;
       for (const [, e] of map) {
         apply(e.frozen, this.scaleCtx, e.out);
+        invalidateWorldBBox(e.prevBbox); // OLD dirty (padded for text via fillDirty)
+        fillDirty(e.prevBbox, kind, e); // NEW dirty into prevBbox
         invalidateWorldBBox(e.prevBbox);
-        invalidateWorldBBox(e.out.bbox);
-        copyBbox(e.out.bbox, e.prevBbox);
       }
     }
 
@@ -688,9 +731,9 @@ export class TransformController {
       const map = this.store[kind]!;
       for (const [, e] of map) {
         applyOffset(e.frozen, dx, dy, e.out);
+        invalidateWorldBBox(e.prevBbox); // OLD dirty (padded for text via fillDirty)
+        fillDirty(e.prevBbox, kind, e); // NEW dirty into prevBbox
         invalidateWorldBBox(e.prevBbox);
-        invalidateWorldBBox(e.out.bbox);
-        copyBbox(e.out.bbox, e.prevBbox);
       }
     }
 
@@ -736,13 +779,15 @@ export class TransformController {
   }
 
   cancel(): void {
-    // Invalidate dirty rects
+    // Invalidate dirty rects (padded for text — out.bbox alone would leak italic overhang).
     for (const kind in this.store) {
-      const map = this.store[kind as ObjectKind];
+      const k = kind as ObjectKind;
+      const map = this.store[k];
       if (!map) continue;
       for (const [, e] of map) {
         invalidateWorldBBox(e.prevBbox);
-        invalidateWorldBBox(e.out.bbox);
+        fillDirty(e.prevBbox, k, e);
+        invalidateWorldBBox(e.prevBbox);
       }
     }
     if (this.topology) cancelTopology(this.topology);

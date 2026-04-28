@@ -152,8 +152,8 @@ function fillFrameFromBind(scratch: FrameTuple, side: BindSide): void {
     }
     case 'text':
     case 'code': {
-      // TODO: when italic-overhang widening lands in computeTextBBox, out.bbox will
-      // no longer coincide with the visual frame — switch to a layout-derived path.
+      // out.bbox is the tight visual frame for text/code (frozen reads frameToBbox(getTextFrame));
+      // dirty-rect padding lives on entry.prevBbox via fillDirty, not on out.bbox.
       bboxToFrameMut(e.out.bbox, scratch);
       return;
     }

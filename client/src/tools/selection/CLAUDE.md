@@ -527,7 +527,7 @@ gesture context directly without re-declaring its fields.
 
 Scale origins and bounds are derived from `handle.bbox` (includes stroke width padding), not raw frame geometry. This ensures the visual selection overlay (handles drawn at bbox corners) matches the scale anchor point.
 
-**`computeSelectionBounds()`** (selection-store.ts, zero-arg) serves both roles: selection overlay bounds and scale gesture bounds. Union of `handle.bbox` for all selected objects. Exception: text uses `getTextFrame() → frameToBbox()` (italic overhangs make bbox differ from visual frame). Called by `store.beginScale`. The editing fallback (reads `textEditingId`/`codeEditingId` when `selectedIds` is empty) is unreachable during scale because handle hit-test gates on not-editing.
+**`computeSelectionBounds()`** (selection-store.ts, zero-arg) serves both roles: selection overlay bounds and scale gesture bounds. Union of `handle.bbox` for all selected objects. Exception: text uses `getTextFrame() → frameToBbox()` because `handle.bbox` carries horizontal italic-overhang padding (added by `computeTextBBox` so dirty rects clear italic ink) — handles/multi-select rect must sit on the visual frame, not the padded bbox. Called by `store.beginScale`. The editing fallback (reads `textEditingId`/`codeEditingId` when `selectedIds` is empty) is unreachable during scale because handle hit-test gates on not-editing.
 
 **Shape/image scaling — constant padding invariant:** Shapes have stroke-width padding between frame and bbox (`padding = strokeWidth/2 + 1`). During scale, the **bbox** is scaled for position computation, then the **frame** is derived by subtracting constant padding. The output bbox = frame + constant padding (not the scaled bbox), because stroke width doesn't scale with the transform. This prevents dirty rect artifacts at small scales where scaled padding would be smaller than the actual stroke extent.
 
@@ -580,7 +580,7 @@ type FreeSide = { kind: 'free'; originalPos: Readonly<Point>; scratch: Point }; 
 
 Per-frame, for each bind side, fill a module-level `FrameTuple` scratch from whatever apply just wrote:
 - **shape / image** — `copyFrame(scratch, out.frame)`.
-- **text / code** — `bboxToFrameMut(out.bbox, scratch)` (bbox coincides with visual frame today; flagged with a TODO for italic-overhang widening).
+- **text / code** — `bboxToFrameMut(out.bbox, scratch)`. `out.bbox` is the tight visual frame for text/code (freeze reads `frameToBbox(getTextFrame)`); horizontal italic-overhang padding lives on `entry.prevBbox` via `fillDirty`, never on `out.bbox`.
 - **note / bookmark** — `[out.origin.x, out.origin.y, frozenFrame.w × (out.scale/frozen.scale), frozenFrame.h × ratio]`. The ratio matches the renderer's `ctx.scale` factor exactly, keeping the connector anchor in pixel-lockstep with the rendered edge.
 
 Mode-agnostic: the same function serves translate and scale because `applyOffset` propagates `f.scale → o.scale` for note/bookmark (ratio = 1 under translate). Each frame scratch is wrapped once in a permanently-linked `{ frame }` object; safe to share across entries because `rerouteConnector` allocates fresh position tuples from anchor × frame — the scratch is only read.
@@ -735,7 +735,7 @@ Single-pass bucket count: `counts[handle.kind]++` into a `Record<ObjectKind, num
 ### computeSelectionBounds()
 
 Zero-arg: reads `selectedIds` → `textEditingId` → `codeEditingId` fallback chain. Serves triple duty — idle selection overlay bounds, scale gesture bounds (`store.beginScale`), and translate-frozen union (`store.beginTranslate`).
-- Text: `frameToBbox(getTextFrame(id))` (italic overhangs differ from bbox)
+- Text: `frameToBbox(getTextFrame(id))` (handle.bbox carries italic-overhang padding for dirty rects — overlay needs the tight visual frame)
 - All others (including code): `handle.bbox` (code's `computeCodeBBox` already writes the derived layout frame into `handle.bbox` — no stroke padding to account for)
 
 Returns `null` on empty selection (causes both `beginScale` and `beginTranslate` to bail early). The overlay also calls it directly when idle or before the first update fires (see `selection-overlay.ts`).
