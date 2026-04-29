@@ -1,18 +1,12 @@
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { hasActiveRoom, redo, undo } from '@/runtime/room-runtime';
-import {
-  type ConnectorSizePreset,
-  type DrawingSettings,
-  type SizePreset,
-  TEXT_COLOR_PALETTE,
-  useDeviceUIStore,
-} from '../stores/device-ui-store';
+import { type ConnectorSizePreset, type SizePreset, TEXT_COLOR_PALETTE, type Tool, useDeviceUIStore } from '../stores/device-ui-store';
 
 import './ToolPanel.css';
 
-// Import icon components from Phase 5
 import {
   IconArrow,
   IconCode,
@@ -32,186 +26,218 @@ import {
   IconUndo,
 } from './icons';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Module-level constants — frozen, never re-allocated per render
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SIZE_LABELS: readonly string[] = ['S', 'M', 'L', 'XL'];
+const SIZE_PRESETS_DEFAULT: readonly number[] = [4, 7, 10, 13];
+const SIZE_PRESETS_CONNECTOR: readonly number[] = [2, 4, 6, 8];
+const SIZE_PRESETS_NONE: readonly number[] = [];
+
+const FIXED_COLORS: readonly string[] = TEXT_COLOR_PALETTE.slice(0, 8);
+const FIXED_COLORS_REVERSED: readonly string[] = [...FIXED_COLORS].reverse();
+const FIXED_COLORS_LOWER: ReadonlySet<string> = new Set(FIXED_COLORS.map((c) => c.toLowerCase()));
+
+const MORE_COLORS: readonly string[] = [
+  '#FFFFFF',
+  '#8B5E3C',
+  '#06B6D4',
+  '#EC4899',
+  '#84CC16',
+  '#1E3A8A',
+  '#14B8A6',
+  '#0EA5E9',
+  '#A855F7',
+  '#F43F5E',
+  '#F5E7C6',
+  '#374151',
+];
+
+const INSPECTOR_TOOLS: ReadonlySet<Tool> = new Set(['pen', 'highlighter', 'text', 'shape', 'connector', 'note']);
+const NO_COLOR_TOOLS: ReadonlySet<Tool> = new Set(['eraser', 'pan', 'image']);
+const NO_SIZE_TOOLS: ReadonlySet<Tool> = new Set(['pan', 'image']);
+const FILL_TOGGLE_TOOLS: ReadonlySet<Tool> = new Set(['shape', 'pen', 'highlighter', 'select']);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Selectors — narrow the subscription so cursorOverride/text/code/etc. churn
+// in the store does NOT re-render the toolbar.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type DeviceUI = ReturnType<typeof useDeviceUIStore.getState>;
+
+const selectActiveTool = (s: DeviceUI) => s.activeTool;
+const selectToolPanelSlice = (s: DeviceUI) => ({
+  drawingSettings: s.drawingSettings,
+  shapeVariant: s.shapeVariant,
+  recentColors: s.recentColors,
+  isColorPopoverOpen: s.isColorPopoverOpen,
+  connectorType: s.connectorType,
+  connectorSize: s.connectorSize,
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stable handlers — defined once at module scope. Read live state via
+// getState() at click time; never re-allocate.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const setTool = (t: Tool) => useDeviceUIStore.getState().setActiveTool(t);
+const onClickSelect = () => setTool('select');
+const onClickPan = () => setTool('pan');
+const onClickNote = () => setTool('note');
+const onClickPen = () => setTool('pen');
+const onClickHighlighter = () => setTool('highlighter');
+const onClickEraser = () => setTool('eraser');
+const onClickText = () => setTool('text');
+const onClickConnector = () => setTool('connector');
+const onClickCode = () => setTool('code');
+const onClickImage = () => openImageFilePicker();
+
+const onClickRectangle = () => {
+  const s = useDeviceUIStore.getState();
+  s.setActiveTool('shape');
+  s.setShapeVariant('rectangle');
+};
+const onClickDiamond = () => {
+  const s = useDeviceUIStore.getState();
+  s.setActiveTool('shape');
+  s.setShapeVariant('diamond');
+};
+const onClickEllipse = () => {
+  const s = useDeviceUIStore.getState();
+  s.setActiveTool('shape');
+  s.setShapeVariant('ellipse');
+};
+
+const onClickUndo = () => {
+  if (hasActiveRoom()) undo();
+};
+const onClickRedo = () => {
+  if (hasActiveRoom()) redo();
+};
+
+const onColorChange = (c: string) => useDeviceUIStore.getState().setDrawingColor(c);
+const onAddRecentColor = (c: string) => useDeviceUIStore.getState().addRecentColor(c);
+
+const onTogglePopover = () => {
+  const s = useDeviceUIStore.getState();
+  s.setColorPopoverOpen(!s.isColorPopoverOpen);
+};
+const onToggleFill = () => {
+  const s = useDeviceUIStore.getState();
+  s.setFillEnabled(!s.drawingSettings.fill);
+};
+const onToggleConnectorType = () => {
+  const s = useDeviceUIStore.getState();
+  s.setConnectorType(s.connectorType === 'elbow' ? 'straight' : 'elbow');
+};
+const onChangeDrawingSize = (size: number) => useDeviceUIStore.getState().setDrawingSize(size as SizePreset);
+const onChangeConnectorSize = (size: number) => useDeviceUIStore.getState().setConnectorSize(size as ConnectorSizePreset);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ToolPanel
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function ToolPanel() {
-  const {
-    activeTool,
-    drawingSettings,
-    setFillEnabled,
-    setDrawingSize,
-    setConnectorSize,
-    shapeVariant,
-    recentColors,
-    isColorPopoverOpen,
-    setActiveTool,
-    setDrawingColor,
-    addRecentColor,
-    setColorPopoverOpen,
-    setShapeVariant,
-    // TEMP: connector type lives in the same inspector slot as the fill toggle
-    // until the new vertical toolbar (in a worktree) replaces this whole file.
-    connectorType,
-    setConnectorType,
-  } = useDeviceUIStore();
+  const activeTool = useDeviceUIStore(selectActiveTool);
+  const { drawingSettings, shapeVariant, recentColors, isColorPopoverOpen, connectorType, connectorSize } = useDeviceUIStore(
+    useShallow(selectToolPanelSlice),
+  );
 
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  // Handle size changes based on active tool - route to correct setter
-  const handleSizeChange = (size: number) => {
-    switch (activeTool) {
-      case 'connector':
-        setConnectorSize(size as ConnectorSizePreset);
-        break;
-      default:
-        setDrawingSize(size as SizePreset);
-    }
-  };
-
-  // Determine if inspector should show
-  const showInspector = ['pen', 'highlighter', 'text', 'shape', 'connector', 'note'].includes(activeTool);
-  const showColors = !['eraser', 'pan', 'image'].includes(activeTool);
-  const showSizes = !['pan', 'image'].includes(activeTool);
-  const showFillToggle = activeTool === 'shape' || activeTool === 'pen' || activeTool === 'highlighter' || activeTool === 'select';
+  const showInspector = INSPECTOR_TOOLS.has(activeTool);
+  const showColors = !NO_COLOR_TOOLS.has(activeTool);
+  const showSizes = !NO_SIZE_TOOLS.has(activeTool);
+  const showFillToggle = FILL_TOGGLE_TOOLS.has(activeTool);
   // TEMP: piggy-back the fill-toggle slot to expose the connector elbow⇄straight toggle.
   // Icon is intentionally reused (not semantic) — this whole panel is being replaced by
   // the vertical toolbar in a worktree. Delete both the flag and the button below when
   // the new toolbar lands.
   const showConnectorTypeToggle = activeTool === 'connector';
 
-  // Get current settings based on active tool with proper tool-specific overrides
-  const getCurrentSettings = () => {
-    const store = useDeviceUIStore.getState();
-    const base = drawingSettings;
+  const sizePresets =
+    activeTool === 'text' || activeTool === 'note'
+      ? SIZE_PRESETS_NONE
+      : activeTool === 'connector'
+        ? SIZE_PRESETS_CONNECTOR
+        : SIZE_PRESETS_DEFAULT;
 
-    switch (activeTool) {
-      case 'connector':
-        return { ...base, size: store.connectorSize };
-      case 'highlighter':
-        return { ...base, opacity: store.highlighterOpacity };
-      default:
-        return base;
-    }
-  };
-
-  const currentSettings = getCurrentSettings();
-
-  // Size presets
-  const getSizePresets = () => {
-    if (activeTool === 'text' || activeTool === 'note') return []; // Sizes managed in context menu
-    if (activeTool === 'connector') return [2, 4, 6, 8];
-    return [4, 7, 10, 13];
-  };
-
-  const sizePresets = getSizePresets();
-  const sizeLabels = ['S', 'M', 'L', 'XL'];
+  const currentSize = activeTool === 'connector' ? connectorSize : drawingSettings.size;
+  const onSizeChange = activeTool === 'connector' ? onChangeConnectorSize : onChangeDrawingSize;
 
   // Close popover on outside click
   useEffect(() => {
+    if (!isColorPopoverOpen) return;
     const handleClickOutside = (event: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
-        setColorPopoverOpen(false);
+        useDeviceUIStore.getState().setColorPopoverOpen(false);
       }
     };
-
-    if (isColorPopoverOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isColorPopoverOpen, setColorPopoverOpen]);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isColorPopoverOpen]);
 
   return (
     <div className="tool-dock-wrap">
-      {/* Main toolbar */}
       <div className="tool-dock">
-        {/* Navigation */}
-        <ToolButton tool="select" isActive={activeTool === 'select'} onClick={() => setActiveTool('select')} tooltip="Select (V)">
+        <ToolButton isActive={activeTool === 'select'} onClick={onClickSelect} tooltip="Select (V)">
           <IconSelect className="icon" />
         </ToolButton>
 
-        <ToolButton tool="pan" isActive={activeTool === 'pan'} onClick={() => setActiveTool('pan')} tooltip="Pan (Space)">
+        <ToolButton isActive={activeTool === 'pan'} onClick={onClickPan} tooltip="Pan (Space)">
           <IconPan className="icon" />
         </ToolButton>
 
         <div className="tool-divider" />
 
-        <ToolButton tool="note" isActive={activeTool === 'note'} onClick={() => setActiveTool('note')} tooltip="Sticky Note (N)">
+        <ToolButton isActive={activeTool === 'note'} onClick={onClickNote} tooltip="Sticky Note (N)">
           <IconStickyNote className="icon" />
         </ToolButton>
 
-        {/* Drawing — no divider, matches Mural compact style */}
-        <ToolButton tool="pen" isActive={activeTool === 'pen'} onClick={() => setActiveTool('pen')} tooltip="Pen (P)">
+        <ToolButton isActive={activeTool === 'pen'} onClick={onClickPen} tooltip="Pen (P)">
           <IconPen className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="highlighter"
-          isActive={activeTool === 'highlighter'}
-          onClick={() => setActiveTool('highlighter')}
-          tooltip="Highlighter (H)"
-        >
+        <ToolButton isActive={activeTool === 'highlighter'} onClick={onClickHighlighter} tooltip="Highlighter (H)">
           <IconHighlighter className="icon" />
         </ToolButton>
 
-        <ToolButton tool="eraser" isActive={activeTool === 'eraser'} onClick={() => setActiveTool('eraser')} tooltip="Eraser (E)">
+        <ToolButton isActive={activeTool === 'eraser'} onClick={onClickEraser} tooltip="Eraser (E)">
           <IconEraser className="icon" />
         </ToolButton>
 
-        <ToolButton tool="text" isActive={activeTool === 'text'} onClick={() => setActiveTool('text')} tooltip="Text (T)">
+        <ToolButton isActive={activeTool === 'text'} onClick={onClickText} tooltip="Text (T)">
           <IconText className="icon" />
         </ToolButton>
 
-        <ToolButton tool="connector" isActive={activeTool === 'connector'} onClick={() => setActiveTool('connector')} tooltip="Connector">
+        <ToolButton isActive={activeTool === 'connector'} onClick={onClickConnector} tooltip="Connector">
           <IconArrow className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="rectangle"
-          isActive={activeTool === 'shape' && shapeVariant === 'rectangle'}
-          onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('rectangle');
-          }}
-          tooltip="Rectangle (R)"
-        >
+        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'rectangle'} onClick={onClickRectangle} tooltip="Rectangle (R)">
           <IconRectangle className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="diamond"
-          isActive={activeTool === 'shape' && shapeVariant === 'diamond'}
-          onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('diamond');
-          }}
-          tooltip="Diamond (D)"
-        >
+        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'diamond'} onClick={onClickDiamond} tooltip="Diamond (D)">
           <IconDiamond className="icon" />
         </ToolButton>
 
-        <ToolButton
-          tool="ellipse"
-          isActive={activeTool === 'shape' && shapeVariant === 'ellipse'}
-          onClick={() => {
-            setActiveTool('shape');
-            setShapeVariant('ellipse');
-          }}
-          tooltip="Ellipse (O)"
-        >
+        <ToolButton isActive={activeTool === 'shape' && shapeVariant === 'ellipse'} onClick={onClickEllipse} tooltip="Ellipse (O)">
           <IconEllipse className="icon" />
         </ToolButton>
 
-        <ToolButton tool="code" isActive={activeTool === 'code'} onClick={() => setActiveTool('code')} tooltip="Code">
+        <ToolButton isActive={activeTool === 'code'} onClick={onClickCode} tooltip="Code">
           <IconCode className="icon" />
         </ToolButton>
 
-        <ToolButton tool="image" isActive={false} onClick={() => openImageFilePicker()} tooltip="Image (I)">
+        <ToolButton isActive={false} onClick={onClickImage} tooltip="Image (I)">
           <IconImage className="icon" />
         </ToolButton>
 
-        {/* Inspector with new color system - moved inside toolbar */}
         {showInspector && (
           <Inspector
             fillEnabled={drawingSettings.fill}
-            drawingSettings={drawingSettings}
             showColors={showColors}
             showSizes={showSizes}
             showFillToggle={showFillToggle}
@@ -219,26 +245,19 @@ export function ToolPanel() {
             connectorType={connectorType}
             recentColors={recentColors}
             sizePresets={sizePresets}
-            sizeLabels={sizeLabels}
-            currentColor={currentSettings.color}
-            currentSize={currentSettings.size}
+            currentColor={drawingSettings.color}
+            currentSize={currentSize}
             isColorPopoverOpen={isColorPopoverOpen}
             popoverRef={popoverRef}
-            onColorChange={setDrawingColor}
-            onSizeChange={handleSizeChange}
-            onColorPopoverToggle={() => setColorPopoverOpen(!isColorPopoverOpen)}
-            onFillToggle={() => setFillEnabled(!drawingSettings.fill)}
-            onConnectorTypeToggle={() => setConnectorType(connectorType === 'elbow' ? 'straight' : 'elbow')}
-            addRecentColor={(color: string) => addRecentColor(color)}
+            onSizeChange={onSizeChange}
           />
         )}
 
-        {/* Compact Undo/Redo container - moved inside toolbar */}
         <div className="undo-redo-compact">
-          <button className="undo-btn" aria-label="Undo" onClick={() => hasActiveRoom() && undo()}>
+          <button className="undo-btn" aria-label="Undo" onClick={onClickUndo}>
             <IconUndo className="undo-icon" />
           </button>
-          <button className="redo-btn" aria-label="Redo" onClick={() => hasActiveRoom() && redo()}>
+          <button className="redo-btn" aria-label="Redo" onClick={onClickRedo}>
             <IconRedo className="redo-icon" />
           </button>
         </div>
@@ -247,50 +266,47 @@ export function ToolPanel() {
   );
 }
 
-// Tool Button Component
+// ─────────────────────────────────────────────────────────────────────────────
+// ToolButton — memoized; siblings don't re-render when one button's `isActive`
+// flips, since onClick refs are module-level and never invalidate.
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface ToolButtonProps {
-  tool: string;
   isActive: boolean;
   onClick: () => void;
   tooltip: string;
   children: React.ReactNode;
 }
 
-function ToolButton({ isActive, onClick, tooltip, children }: ToolButtonProps) {
+const ToolButton = memo(function ToolButton({ isActive, onClick, tooltip, children }: ToolButtonProps) {
   return (
     <button className={`tool-btn ${isActive ? 'active' : ''}`} data-tooltip={tooltip} onClick={onClick} aria-label={tooltip}>
       {children}
     </button>
   );
-}
+});
 
-// Enhanced Inspector Component with new color system
+// ─────────────────────────────────────────────────────────────────────────────
+// Inspector — memoized. Receives only the slice it actually displays.
+// ─────────────────────────────────────────────────────────────────────────────
+
 interface InspectorProps {
   showColors: boolean;
   showSizes: boolean;
   showFillToggle: boolean;
-  // TEMP (remove with rest of this panel): reuses the fill-toggle slot as a connector
-  // elbow⇄straight toggle. See showConnectorTypeToggle comment in ToolPanel.
   showConnectorTypeToggle: boolean;
   connectorType: 'elbow' | 'straight';
-  fillEnabled: DrawingSettings['fill'];
+  fillEnabled: boolean;
   recentColors: string[];
-  sizePresets: number[];
-  sizeLabels: string[];
+  sizePresets: readonly number[];
   currentColor: string;
   currentSize: number;
   isColorPopoverOpen: boolean;
-  drawingSettings: DrawingSettings;
-  onColorChange: (color: string) => void;
   onSizeChange: (size: number) => void;
-  onColorPopoverToggle: () => void;
-  onFillToggle: () => void;
-  onConnectorTypeToggle: () => void;
-  addRecentColor: (color: string) => void;
   popoverRef: React.RefObject<HTMLDivElement | null>;
 }
 
-function Inspector({
+const Inspector = memo(function Inspector({
   showColors,
   showSizes,
   showFillToggle,
@@ -299,32 +315,20 @@ function Inspector({
   fillEnabled,
   recentColors,
   sizePresets,
-  sizeLabels,
   currentColor,
   currentSize,
   isColorPopoverOpen,
-  onColorChange,
   onSizeChange,
-  onColorPopoverToggle,
-  onFillToggle,
-  onConnectorTypeToggle,
-  addRecentColor,
   popoverRef,
 }: InspectorProps) {
   const [hexInput, setHexInput] = useState('#');
 
-  const fixedColors = TEXT_COLOR_PALETTE.slice(0, 8);
-
-  const isCustomColor = (color: string) => {
-    return !fixedColors.some((c) => c.toLowerCase() === color?.toLowerCase());
-  };
+  const isCustomColor = !FIXED_COLORS_LOWER.has(currentColor?.toLowerCase());
 
   const handleColorSelect = (color: string, isCustom: boolean) => {
     onColorChange(color);
-    if (isCustom) {
-      addRecentColor(color);
-    }
-    onColorPopoverToggle(); // Close popover
+    if (isCustom) onAddRecentColor(color);
+    onTogglePopover();
   };
 
   const handleHexSubmit = () => {
@@ -335,25 +339,8 @@ function Inspector({
     }
   };
 
-  // More colors for the extended palette
-  const moreColors = [
-    '#FFFFFF', // White
-    '#8B5E3C', // Brown
-    '#06B6D4', // Cyan
-    '#EC4899', // Pink
-    '#84CC16', // Lime
-    '#1E3A8A', // Navy
-    '#14B8A6', // Teal
-    '#0EA5E9', // Sky
-    '#A855F7', // Purple
-    '#F43F5E', // Rose
-    '#F5E7C6', // Sand
-    '#374151', // Slate
-  ];
-
   return (
     <div className="inspector">
-      {/* REORDERED: Sizes on left, fill in middle, colors on right */}
       {showSizes && sizePresets.length > 1 && (
         <div className="row sizes">
           {sizePresets.map((px, i) => (
@@ -361,32 +348,29 @@ function Inspector({
               key={px}
               className={`size-pill ${currentSize === px ? 'active' : ''}`}
               onClick={() => onSizeChange(px)}
-              aria-label={`Size ${sizeLabels[i]}`}
+              aria-label={`Size ${SIZE_LABELS[i]}`}
             >
-              {sizeLabels[i]}
+              {SIZE_LABELS[i]}
             </button>
           ))}
         </div>
       )}
 
-      {/* Fill toggle button - between sizes and colors */}
       {showFillToggle && (
-        <button className={`icon-btn ${fillEnabled ? 'on' : ''}`} onClick={onFillToggle} aria-label="Fill" title="Fill">
+        <button className={`icon-btn ${fillEnabled ? 'on' : ''}`} onClick={onToggleFill} aria-label="Fill" title="Fill">
           <IconFill className="icon" />
         </button>
       )}
 
       {/*
         TEMP: connector elbow⇄straight toggle squatting in the fill-toggle slot.
-        Same <IconFill> + `.icon-btn` styling as the fill button — purely to give
-        the toggle *somewhere* to live until the new vertical toolbar ships.
-        "on" state = elbow (so the straight default reads as "off"); pick is arbitrary.
-        Mutually exclusive with showFillToggle (connector tool isn't in that list).
+        Same <IconFill> + `.icon-btn` styling — purely to give the toggle somewhere
+        to live until the new vertical toolbar ships. "on" state = elbow.
       */}
       {showConnectorTypeToggle && (
         <button
           className={`icon-btn ${connectorType === 'elbow' ? 'on' : ''}`}
-          onClick={onConnectorTypeToggle}
+          onClick={onToggleConnectorType}
           aria-label="Connector type"
           title={`Connector: ${connectorType} (click to toggle)`}
         >
@@ -397,20 +381,17 @@ function Inspector({
       {showColors && (
         <div className="inspector-colors">
           <div className="swatch-row">
-            {/* Rainbow circle for more colors - leftmost color, shows custom color dot when selected */}
             <button
               className="swatch swatch-plus"
-              onClick={onColorPopoverToggle}
+              onClick={onTogglePopover}
               aria-haspopup="dialog"
               aria-expanded={isColorPopoverOpen}
               aria-label="More colors"
             >
-              {/* Show custom color dot overlay when custom color is selected */}
-              {isCustomColor(currentColor) && <div className="custom-color-dot" style={{ backgroundColor: currentColor }} />}
+              {isCustomColor && <div className="custom-color-dot" style={{ backgroundColor: currentColor }} />}
             </button>
 
-            {/* Fixed 8 colors - REVERSED ORDER (right to left becomes left to right) */}
-            {[...fixedColors].reverse().map((c) => (
+            {FIXED_COLORS_REVERSED.map((c) => (
               <button
                 key={c}
                 className={`swatch ${currentColor === c ? 'is-active-fixed' : ''}`}
@@ -421,10 +402,8 @@ function Inspector({
             ))}
           </div>
 
-          {/* Color Popover */}
           {isColorPopoverOpen && (
             <div className="color-popover" role="dialog" aria-modal="true" ref={popoverRef}>
-              {/* Recent Colors */}
               {recentColors.length > 0 && (
                 <div className="popover-section">
                   <h6>RECENT</h6>
@@ -442,11 +421,10 @@ function Inspector({
                 </div>
               )}
 
-              {/* More Colors */}
               <div className="popover-section">
                 <h6>MORE</h6>
                 <div className="swatch-grid">
-                  {moreColors.map((c) => (
+                  {MORE_COLORS.map((c) => (
                     <button
                       key={c}
                       className="swatch"
@@ -458,7 +436,6 @@ function Inspector({
                 </div>
               </div>
 
-              {/* Hex Input */}
               <div className="popover-section">
                 <h6>HEX CODE</h6>
                 <div className="hex-row">
@@ -484,4 +461,4 @@ function Inspector({
       )}
     </div>
   );
-}
+});
