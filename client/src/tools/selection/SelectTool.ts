@@ -16,7 +16,7 @@ import { contextMenuController } from '@/runtime/ContextMenuController';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { isCtrlHeld, isCtrlOrMetaHeld, isShiftHeld } from '@/runtime/InputManager';
 import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
-import { codeTool, textTool } from '@/runtime/tool-registry';
+import { codeTool, panTool, textTool } from '@/runtime/tool-registry';
 import { worldToCanvas } from '@/stores/camera-store';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
@@ -581,6 +581,11 @@ export class SelectTool implements PointerTool {
    * Connector mode: grab cursor on endpoint dots.
    */
   private handleHoverCursor(worldX: number, worldY: number): void {
+    // Cursor ownership: panTool owns 'grabbing' during MMB/spacebar pan. The
+    // camera subscription routes those pans through onViewChange → here, so
+    // bail before clobbering panTool's cursor every frame.
+    if (panTool.isActive()) return;
+
     const store = useSelectionStore.getState();
     const { mode, selectedIds } = store;
 

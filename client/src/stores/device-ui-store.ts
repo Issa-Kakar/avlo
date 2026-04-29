@@ -199,6 +199,10 @@ export const useDeviceUIStore = create<DeviceUIState>()(
       // Actions
       setActiveTool: (tool) => set({ activeTool: tool }),
       setCursorOverride: (cursor) => {
+        // Idempotent: bail if value unchanged. Eliminates per-frame state churn
+        // from callers that re-emit the same cursor (e.g., SelectTool's hover
+        // gate writing `null` every pointermove while not over a handle).
+        if (get().cursorOverride === cursor) return;
         set({ cursorOverride: cursor });
         applyCursor();
       },
