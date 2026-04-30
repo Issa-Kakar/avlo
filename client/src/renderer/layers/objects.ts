@@ -30,7 +30,7 @@ import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { getBitmap } from '@/core/image/image-manager';
 import { drawStickyNote } from '@/core/text/sticky-note';
-import { computeLabelTextBox, layoutMeasuredContent, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
+import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
@@ -339,7 +339,7 @@ function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHa
   const fontFamily = getFontFamily(handle.y);
   const align = getAlign(handle.y, 'center');
   const alignV = getAlignV(handle.y);
-  const layout = layoutMeasuredContent(measured, textBox[2], fontSize);
+  const layout = layoutIntoLabelScratch(measured, textBox[2], fontSize);
   renderShapeLabel(ctx, layout, textBox, getLabelColor(handle.y), fontFamily, align, alignV);
 }
 

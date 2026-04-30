@@ -36,6 +36,7 @@ import {
 } from '@/core/geometry/scale-system';
 import {
   anchorFactor,
+  createTextLayout,
   getItalicOverhangPad,
   getMinCharWidth,
   getTextFrame,
@@ -250,13 +251,14 @@ function reflowText(f: GeoOf<'text'>, ctx: ScaleCtx, o: OutOf<'text'>): void {
   const fx = f.bbox[0];
   const fw = f.bbox[2] - f.bbox[0];
   const [newLeft, targetWidth] = computeReflowWidth(fx, fw, ctx.origin[0], ctx.sx, f.minW!);
-  const layout = layoutMeasuredContent(f.measured!, targetWidth, f.fontSize!);
+  // o.layout is pre-allocated at freeze time (createOutFor('text')); reused per pointermove.
+  const layout = layoutMeasuredContent(f.measured!, targetWidth, f.fontSize!, o.layout ?? undefined);
   o.origin[0] = newLeft + anchorFactor(f.align!) * targetWidth;
   o.origin[1] = f.origin[1];
   o.width = layout.boxWidth;
   o.layout = layout;
   o.fontSize = f.fontSize!;
-  const nh = layout.lines.length * layout.lineHeight;
+  const nh = layout.lineCount * layout.lineHeight;
   setBBoxXYWH(o.bbox, newLeft, f.bbox[1], targetWidth, nh);
 }
 
@@ -429,6 +431,9 @@ function createOutFor(kind: ObjectKind): any {
       // No points array allocation — gestures only update bbox.
       return { bbox: [0, 0, 0, 0] as BBoxTuple, factor: 1, fcx: 0, fcy: 0 };
     case 'text':
+      // Pre-allocate a TextLayout buffer once at freeze; reflowText reuses it per pointermove.
+      // Other text behaviors (uniform/edgePin) leave it untouched but it's harmless.
+      return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: createTextLayout() };
     case 'code':
       return { origin: [0, 0] as Point, fontSize: 0, width: 0, bbox: [0, 0, 0, 0] as BBoxTuple, layout: null };
     case 'note':

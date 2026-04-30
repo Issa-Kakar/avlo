@@ -96,15 +96,18 @@ See **Sticky Notes** section for full details.
 
 ```
 Y.XmlFragment
-    ↓ parseAndTokenize()
-TokenizedContent { paragraphs, uniformStyles }
-    ↓ measureTokenizedContent(tokenized, fontSize, fontFamily)
-MeasuredContent { paragraphs: MeasuredToken[][], lineHeight }
-    ↓ layoutMeasuredContent(measured, width, fontSize)   ← exported
-TextLayout { lines: MeasuredLine[], fontSize, fontFamily, lineHeight, widthMode, boxWidth }
+    ↓ parseAndTokenize(fragment, out?)
+TokenizedContent (SOA: paragraphTokenStart, tokenSegStart, tokenKind, segText, segBold, segItalic, segHighlight, segSpaceMode)
+    ↓ measureTokenizedContent(tokenized, fontSize, fontFamily, out?)
+MeasuredContent (SOA: + tokenAdvanceWidth, segFont, segAdvanceWidth, segIsWhitespace; lineHeight, fontFamily)
+    ↓ layoutMeasuredContent(measured, width, fontSize, out?)   ← exported
+TextLayout (SOA: lineRunStart, lineAdvanceWidth, lineAlignmentWidth, lineBaselineY, runText, runFont,
+            runHighlight, runAdvanceWidth, runAdvanceX; fontSize, fontFamily, lineHeight, widthMode, boxWidth)
 ```
 
-Primary API: `textLayoutCache.getLayout()`. `layoutMeasuredContent()` exported for reflow during E/W transforms.
+All three stages are **parallel-array (SOA) buffers**: `out?` parameters let callers reuse a buffer across re-tokenize / re-measure / re-flow. Capacities double on grow; counts reset between calls. Renderers iterate via `for (let li=0; li<lineCount; li++) { for (let r=lineRunStart[li]; r<lineRunStart[li+1]; r++) ... }`. Per-line / per-run object allocations are eliminated entirely after the first call.
+
+Primary API: `textLayoutCache.getLayout()` (auto-wires per-id buffers). `layoutMeasuredContent()` is exported for reflow during E/W transforms; the `out` param lets the transform's `Entry<'text'>.out.layout` be reused per pointermove. `layoutIntoLabelScratch()` writes into a single module-level scratch shared across all labeled shapes per frame.
 
 ### Font Metrics
 
@@ -126,7 +129,13 @@ Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color;
 
 ### Stage 2: Measurement
 
-Canvas `measureText()` via singleton offscreen canvas. Caches: `MEASURE_LRU` (75k, key: `font+'\0'+text`), `SPACE_WIDTH_CACHE` (per font), `GRAPHEME_LRU` (10k, `Intl.Segmenter` splits). All cleared on `textLayoutCache.clear()`.
+Canvas `measureText()` via singleton offscreen canvas. Caches:
+- `MEASURE_BY_FONT: Map<font, Map<text, width>>` — two-level cache, no concat-key allocation per call. Soft-cap at 200k entries (clears on overflow).
+- `SPACE_WIDTH_CACHE` — per-font space char width.
+- `GRAPHEME_CACHE` — `Intl.Segmenter` results, plain Map.
+- `PREFIX_BY_FONT: Map<font, Map<text, PrefixWidths>>` — per-grapheme cumulative widths (Float64Array) + char-end offsets (Uint32Array). Powers `sliceTextToFit` in O(log N) post-warmup with zero per-probe allocation.
+
+All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once and indexes by `bold<<1 | italic` — eliminates O(segments) `buildFontString` calls. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`).
 
 ### Stage 3: Flow Engine
 
@@ -140,25 +149,29 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
-### Layout Output Types
+### Layout Output Types (SOA)
 
 ```typescript
-interface MeasuredRun {
-  text: string; font: string; highlight: string | null;
-  advanceWidth: number; advanceX: number;
-}
-interface MeasuredLine {
-  runs: MeasuredRun[]; index: number;
-  advanceWidth: number;      // Total including trailing whitespace
-  alignmentWidth: number;    // Wrap-break -> visualWidth (WS hangs); paragraph-end -> min(advance, max)
-  baselineY: number;
-}
 interface TextLayout {
-  lines: MeasuredLine[]; fontSize: number; fontFamily: FontFamily;
-  lineHeight: number; widthMode: 'auto' | 'fixed';
-  boxWidth: number;          // auto -> max advanceWidth; fixed -> explicit width
+  fontSize: number; fontFamily: FontFamily; lineHeight: number;
+  widthMode: 'auto' | 'fixed'; boxWidth: number;
+
+  lineCount: number; lineCap: number;
+  lineRunStart: Uint32Array;       // [lineCap+1] — runs of line i are [lineRunStart[i], lineRunStart[i+1])
+  lineAdvanceWidth: Float64Array;  // total incl. trailing whitespace
+  lineAlignmentWidth: Float64Array; // wrap-break → visualWidth; paragraph-end → min(advance,max)
+  lineBaselineY: Float64Array;     // i * lineHeight, cached for hot read
+
+  runCount: number; runCap: number;
+  runText: string[];               // grow but never shrink; slots overwritten in-place
+  runFont: string[];
+  runHighlight: (string | null)[];
+  runAdvanceWidth: Float64Array;
+  runAdvanceX: Float64Array;
 }
 ```
+
+`createTextLayout()` allocates an empty buffer with default capacities; `resetTextLayout(l)` zeros counts (preserves capacity). `layoutMeasuredContent(content, width, fontSize, out?)` writes into `out` if provided. Layout coalescing (adjacent runs with identical font+highlight merge via `runText[r] += text`) and the pending-WS state machine are unchanged.
 
 ---
 
@@ -190,13 +203,17 @@ textLayoutCache.getFrame(id)             // Read derived frame
 textLayoutCache.getMeasuredContent(id)   // For E/W reflow (skips tokenize + measure)
 textLayoutCache.getInlineStyles(id)      // UniformStyles from cached tokenized content
 
-// Note bridge — narrow read/write surface for sticky-note.ts orchestration.
-// `noteDerivedFontSize` still lives on CacheEntry so `invalidateContent` nulls it.
-textLayoutCache.getNoteCache(id)         // → NoteCacheSnapshot | null
-textLayoutCache.setNoteCache(id, snap)   // upsert; always nulls frame
+// Note bridge — narrow, allocation-free accessors. `noteDerivedFontSize` lives on
+// CacheEntry so `invalidateContent` nulls it.
+textLayoutCache.noteCachedTokenized(id)         // → TokenizedContent | null
+textLayoutCache.noteCachedMeasured(id)          // → MeasuredContent | null
+textLayoutCache.noteCachedFontFamily(id)        // → FontFamily | null
+textLayoutCache.noteCachedDerivedFontSize(id)   // → number | null
+textLayoutCache.noteCachedLayout(id)            // → TextLayout | null
+textLayoutCache.setNoteResults(id, tokenized, measured, fontFamily, derivedFontSize, layout)
 ```
 
-Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` — it reads/writes via the bridge above.
+Note-level orchestration (`getNoteLayout`, `getNoteDerivedFontSize`) lives in `sticky-note.ts` — it reads/writes via the field accessors above. The previous `NoteCacheSnapshot` wrapper has been removed; readers now poll fields directly without per-call object allocation.
 
 ---
 
