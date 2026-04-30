@@ -99,7 +99,7 @@ Y.XmlFragment
     ↓ parseAndTokenize(fragment, out?)
 TokenizedContent (SOA: paragraphTokenStart, tokenSegStart, tokenKind, segText, segBold, segItalic, segHighlight, segSpaceMode)
     ↓ measureTokenizedContent(tokenized, fontSize, fontFamily, out?)
-MeasuredContent (SOA: + tokenAdvanceWidth, segFont, segAdvanceWidth, segIsWhitespace; lineHeight, fontFamily)
+MeasuredContent (SOA: + tokenAdvanceWidth, segFont, segAdvanceWidth; lineHeight, fontFamily)
     ↓ layoutMeasuredContent(measured, width, fontSize, out?)   ← exported
 TextLayout (SOA: lineRunStart, lineAdvanceWidth, lineAlignmentWidth, lineBaselineY, runText, runFont,
             runHighlight, runAdvanceWidth, runAdvanceX; fontSize, fontFamily, lineHeight, widthMode, boxWidth)
@@ -135,7 +135,7 @@ Canvas `measureText()` via singleton offscreen canvas. Caches:
 - `GRAPHEME_CACHE` — `Intl.Segmenter` results, plain Map.
 - `PREFIX_BY_FONT: Map<font, Map<text, PrefixWidths>>` — per-grapheme cumulative widths (Float64Array) + char-end offsets (Uint32Array). Powers `sliceTextToFit` in O(log N) post-warmup with zero per-probe allocation.
 
-All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once and indexes by `bold<<1 | italic` — eliminates O(segments) `buildFontString` calls. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`).
+All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
 
 ### Stage 3: Flow Engine
 
@@ -145,7 +145,7 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-**Oversized words (break-word):** `sliceTextToFit()` binary-searches grapheme boundaries. Forward-progress: >=1 grapheme per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line.
+**Oversized words (break-word):** `sliceTextToFit(font, text, maxW, start?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. Binary search is over the cached `PrefixWidths` table for the full segment; one cache entry per segment text, not per suffix. Forward-progress: >=1 grapheme advances from `start` per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line. `noteFlowCheck` (sticky-note search predicate) mirrors the cursor-offset pattern.
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
@@ -518,7 +518,9 @@ After finding `derivedFontSize`, mutates `MeasuredContent` (100px) in place:
 
 ```typescript
 const ratio = derivedFontSize / 100;
-for (tok) { tok.advanceWidth *= ratio; seg.advanceWidth *= ratio; seg.font = rebuild; }
+const F = buildFontMatrix(derivedFontSize, fontFamily);
+for (seg) { seg.advanceWidth *= ratio; seg.font = fontFromMatrix(F, bold, italic); }
+for (tok) { tok.advanceWidth *= ratio; }
 measured.lineHeight = derivedFontSize * lhMult;
 layoutMeasuredContent(measured, contentWidth, derivedFontSize);
 ```

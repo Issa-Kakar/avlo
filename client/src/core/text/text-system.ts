@@ -91,7 +91,6 @@ export interface MeasuredContent {
   segItalic: Uint8Array;
   segHighlight: (string | null)[];
   segAdvanceWidth: Float64Array;
-  segIsWhitespace: Uint8Array;
   segSpaceMode: Uint8Array;
   paragraphCap: number;
   tokenCap: number;
@@ -166,7 +165,7 @@ export function buildFontString(bold: boolean, italic: boolean, fontSize: number
 }
 
 /** Pre-build the four (bold × italic) font strings for a given (fontSize, fontFamily). */
-function buildFontMatrix(fontSize: number, fontFamily: FontFamily): readonly [string, string, string, string] {
+export function buildFontMatrix(fontSize: number, fontFamily: FontFamily): readonly [string, string, string, string] {
   return [
     buildFontString(false, false, fontSize, fontFamily),
     buildFontString(false, true, fontSize, fontFamily),
@@ -175,7 +174,7 @@ function buildFontMatrix(fontSize: number, fontFamily: FontFamily): readonly [st
   ] as const;
 }
 
-function fontFromMatrix(F: readonly [string, string, string, string], bold: boolean, italic: boolean): string {
+export function fontFromMatrix(F: readonly [string, string, string, string], bold: boolean, italic: boolean): string {
   return F[(bold ? 2 : 0) | (italic ? 1 : 0)];
 }
 
@@ -338,9 +337,8 @@ function getGraphemes(text: string): string[] {
   if (hit) return hit;
   let out: string[];
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    // biome-ignore lint/suspicious/noExplicitAny: Intl.Segmenter not yet in all TS lib targets
-    const seg = new (Intl as any).Segmenter(undefined, { granularity: 'grapheme' });
-    out = Array.from(seg.segment(text), (x: { segment: string }) => x.segment);
+    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    out = Array.from(seg.segment(text), (x) => x.segment);
   } else {
     out = Array.from(text);
   }
@@ -368,7 +366,6 @@ function getPrefixWidths(font: string, text: string): PrefixWidths {
   const g = getGraphemes(text);
   const widths = new Float64Array(g.length + 1);
   const charEnds = new Uint32Array(g.length + 1);
-  setMeasureFont(font);
   let acc = 0,
     ci = 0;
   for (let i = 0; i < g.length; i++) {
@@ -388,6 +385,10 @@ function getPrefixWidths(font: string, text: string): PrefixWidths {
 
 // First-character whitespace test (handles Unicode WS via JS engine's `\s`).
 const WS_FIRST_CHAR = /^\s/;
+
+// Token splitter — alternation of \s+|\S+ groups runs of whitespace vs non-whitespace.
+// Hoisted; reset lastIndex before each use.
+const TOKENIZE_SPLIT_RE = /(\s+|\S+)/g;
 
 // UAX#14-like soft wrap opportunity sets — char-code lookups, no Set hash.
 function isBreakAfterCC(cc: number): boolean {
@@ -413,12 +414,14 @@ function isBreakBeforeCC(cc: number): boolean {
   return cc === 123 || cc === 91 || cc === 40;
 }
 
-/** Find end of first soft segment (UAX#14-like). Returns char index. */
-export function nextSoftBreak(text: string): number {
-  for (let i = 0; i < text.length; i++) {
+/** Find end of first soft segment from `start` (UAX#14-like). Returns char index in `text`.
+ *  When `start > 0`, "first char of the segment" semantics for break-before is preserved
+ *  by anchoring at `start`, not 0. */
+export function nextSoftBreak(text: string, start: number = 0): number {
+  for (let i = start; i < text.length; i++) {
     const cc = text.charCodeAt(i);
     if (isBreakAfterCC(cc) && i + 1 < text.length && text.charCodeAt(i + 1) !== 34) return i + 1;
-    if (i > 0 && isBreakBeforeCC(cc) && text.charCodeAt(i - 1) !== 34) return i;
+    if (i > start && isBreakBeforeCC(cc) && text.charCodeAt(i - 1) !== 34) return i;
   }
   return text.length;
 }
@@ -600,9 +603,9 @@ export function parseAndTokenize(fragment: Y.XmlFragment, out?: TokenizedContent
           // Inline tokenization — regex splits into whitespace/non-whitespace chunks.
           // First-char test determines kind (regex split is alternation of \s+|\S+, all-or-nothing).
           // /^\s/ on the first char handles Unicode whitespace (NBSP, etc.) correctly.
-          const re = /(\s+|\S+)/g;
+          TOKENIZE_SPLIT_RE.lastIndex = 0;
           let m: RegExpExecArray | null;
-          while ((m = re.exec(op.insert)) !== null) {
+          while ((m = TOKENIZE_SPLIT_RE.exec(op.insert)) !== null) {
             const chunk = m[0];
             const kind = WS_FIRST_CHAR.test(chunk) ? 1 : 0;
             pushSegmentBoundary(t, paraStartTok, kind, chunk, bold, italic, highlight);
@@ -655,7 +658,6 @@ function createMeasuredContent(): MeasuredContent {
     segItalic: new Uint8Array(16),
     segHighlight: [],
     segAdvanceWidth: new Float64Array(16),
-    segIsWhitespace: new Uint8Array(16),
     segSpaceMode: new Uint8Array(16),
     paragraphCap: 8,
     tokenCap: 16,
@@ -703,9 +705,6 @@ function ensureMeasuredSegCap(m: MeasuredContent, n: number): void {
   const naw = new Float64Array(cap);
   naw.set(m.segAdvanceWidth);
   m.segAdvanceWidth = naw;
-  const nws = new Uint8Array(cap);
-  nws.set(m.segIsWhitespace);
-  m.segIsWhitespace = nws;
   const nsm = new Uint8Array(cap);
   nsm.set(m.segSpaceMode);
   m.segSpaceMode = nsm;
@@ -753,14 +752,12 @@ export function measureTokenizedContent(
 
   // Measure each segment + sum into per-token advance width
   for (let ti = 0; ti < content.tokenCount; ti++) {
-    const isSpace = content.tokenKind[ti] === 1;
     const sStart = content.tokenSegStart[ti];
     const sEnd = content.tokenSegStart[ti + 1];
     let totalW = 0;
     for (let s = sStart; s < sEnd; s++) {
       const font = fontFromMatrix(F, m.segBold[s] !== 0, m.segItalic[s] !== 0);
       m.segFont[s] = font;
-      m.segIsWhitespace[s] = isSpace ? 1 : 0;
       const w = measureSegRaw(font, m.segText[s], m.segSpaceMode[s]);
       m.segAdvanceWidth[s] = w;
       totalW += w;
@@ -777,35 +774,53 @@ export function measureTokenizedContent(
 
 const SLICE_RESULT = { head: '', tail: '', headW: 0 };
 
-/** Binary search for largest prefix fitting within maxW. Forces >=1 grapheme.
- *  Returns module scratch — consumers must read fields immediately. Allocations: 2 substrings. */
-export function sliceTextToFit(font: string, text: string, maxW: number): { head: string; tail: string; headW: number } {
-  if (!text) {
+/** Binary search for largest prefix of `text[start..]` fitting within maxW. Forces >=1 grapheme.
+ *  Returns module scratch — consumers must read fields immediately. Allocations: ≤2 substrings.
+ *  When `start > 0`, callers must ensure `start` lies on a grapheme boundary (true for cursors
+ *  produced by previous slices or `nextSoftBreak`). */
+export function sliceTextToFit(font: string, text: string, maxW: number, start: number = 0): { head: string; tail: string; headW: number } {
+  if (start >= text.length) {
     SLICE_RESULT.head = '';
     SLICE_RESULT.tail = '';
     SLICE_RESULT.headW = 0;
     return SLICE_RESULT;
   }
-  const fullW = measureTextCached(font, text);
-  if (fullW <= maxW) {
-    SLICE_RESULT.head = text;
+  const { widths, charEnds } = getPrefixWidths(font, text);
+
+  // Find startIdx: the grapheme index whose charEnds value === start. Binary search.
+  let startIdx = 0;
+  if (start > 0) {
+    let slo = 0,
+      shi = charEnds.length - 1;
+    while (slo < shi) {
+      const mid = (slo + shi) >>> 1;
+      if (charEnds[mid] < start) slo = mid + 1;
+      else shi = mid;
+    }
+    startIdx = slo;
+  }
+
+  const baseW = widths[startIdx];
+  const suffixW = widths[widths.length - 1] - baseW;
+  if (suffixW <= maxW) {
+    SLICE_RESULT.head = start === 0 ? text : text.substring(start);
     SLICE_RESULT.tail = '';
-    SLICE_RESULT.headW = fullW;
+    SLICE_RESULT.headW = suffixW;
     return SLICE_RESULT;
   }
-  const { widths, charEnds } = getPrefixWidths(font, text);
-  let lo = 0,
+
+  let lo = startIdx,
     hi = widths.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >>> 1;
-    if (widths[mid] <= maxW) lo = mid;
+    if (widths[mid] - baseW <= maxW) lo = mid;
     else hi = mid - 1;
   }
-  if (lo === 0) lo = 1; // forward progress
+  if (lo === startIdx) lo = startIdx + 1; // forward progress
   const ce = charEnds[lo];
-  SLICE_RESULT.head = text.substring(0, ce);
+  SLICE_RESULT.head = text.substring(start, ce);
   SLICE_RESULT.tail = text.substring(ce);
-  SLICE_RESULT.headW = widths[lo];
+  SLICE_RESULT.headW = widths[lo] - baseW;
   return SLICE_RESULT;
 }
 
@@ -911,6 +926,14 @@ function appendRun(l: TextLayout, font: string, highlight: string | null, isWs: 
   _b.advanceX += w;
 }
 
+function appendAllSegments(l: TextLayout, m: MeasuredContent, ti: number, isWs: boolean): void {
+  const sStart = m.tokenSegStart[ti];
+  const sEnd = m.tokenSegStart[ti + 1];
+  for (let s = sStart; s < sEnd; s++) {
+    appendRun(l, m.segFont[s], m.segHighlight[s], isWs, m.segText[s], m.segAdvanceWidth[s]);
+  }
+}
+
 function pushLine(l: TextLayout): void {
   ensureLineCap(l, l.lineCount + 1);
   const li = l.lineCount;
@@ -963,7 +986,7 @@ function stashPending(m: MeasuredContent, ti: number): void {
 function commitPending(m: MeasuredContent, l: TextLayout): void {
   for (let i = 0; i < _pending.count; i++) {
     const s = _pending.segIdx[i];
-    appendRun(l, m.segFont[s], m.segHighlight[s], m.segIsWhitespace[s] !== 0, m.segText[s], m.segAdvanceWidth[s]);
+    appendRun(l, m.segFont[s], m.segHighlight[s], true, m.segText[s], m.segAdvanceWidth[s]);
   }
   clearPending();
 }
@@ -975,24 +998,18 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
   const sEnd = m.tokenSegStart[ti + 1];
 
   if (maxWidth === Infinity) {
-    for (let s = sStart; s < sEnd; s++) {
-      appendRun(l, m.segFont[s], m.segHighlight[s], m.segIsWhitespace[s] !== 0, m.segText[s], m.segAdvanceWidth[s]);
-    }
+    appendAllSegments(l, m, ti, false);
     return;
   }
 
   const remaining = maxWidth - _b.advanceX;
   if (tokAdvance <= remaining) {
-    for (let s = sStart; s < sEnd; s++) {
-      appendRun(l, m.segFont[s], m.segHighlight[s], m.segIsWhitespace[s] !== 0, m.segText[s], m.segAdvanceWidth[s]);
-    }
+    appendAllSegments(l, m, ti, false);
     return;
   }
   if (tokAdvance <= maxWidth) {
     if (l.runCount > _b.runStart) pushLine(l);
-    for (let s = sStart; s < sEnd; s++) {
-      appendRun(l, m.segFont[s], m.segHighlight[s], m.segIsWhitespace[s] !== 0, m.segText[s], m.segAdvanceWidth[s]);
-    }
+    appendAllSegments(l, m, ti, false);
     return;
   }
 
@@ -1002,7 +1019,6 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
   for (let s = sStart; s < sEnd; s++) {
     const font = m.segFont[s];
     const highlight = m.segHighlight[s];
-    const isWs = m.segIsWhitespace[s] !== 0;
     const fullText = m.segText[s];
     let cursor = 0;
     while (cursor < fullText.length) {
@@ -1012,35 +1028,34 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
         lineRemaining = maxWidth;
       }
       // Soft-break attempt before char-level
-      const remainingText = cursor === 0 ? fullText : fullText.substring(cursor);
-      const segEnd = nextSoftBreak(remainingText);
-      if (segEnd < remainingText.length) {
-        const chunk = remainingText.substring(0, segEnd);
+      const segEnd = nextSoftBreak(fullText, cursor);
+      if (segEnd < fullText.length) {
+        const chunk = fullText.substring(cursor, segEnd);
         const chunkW = measureTextCached(font, chunk);
         if (chunkW <= lineRemaining) {
-          appendRun(l, font, highlight, isWs, chunk, chunkW);
-          cursor += segEnd;
+          appendRun(l, font, highlight, false, chunk, chunkW);
+          cursor = segEnd;
           continue;
         }
         if (chunkW <= maxWidth) {
           if (l.runCount > _b.runStart) pushLine(l);
-          appendRun(l, font, highlight, isWs, chunk, chunkW);
-          cursor += segEnd;
+          appendRun(l, font, highlight, false, chunk, chunkW);
+          cursor = segEnd;
           continue;
         }
       }
       // Char-level
-      const r = sliceTextToFit(font, remainingText, lineRemaining);
+      const r = sliceTextToFit(font, fullText, lineRemaining, cursor);
       const head = r.head;
       const headW = r.headW;
-      const tail = r.tail;
+      const hasTail = r.tail.length > 0;
       if (headW > lineRemaining && l.runCount > _b.runStart) {
         pushLine(l);
         continue;
       }
-      appendRun(l, font, highlight, isWs, head, headW);
+      appendRun(l, font, highlight, false, head, headW);
       cursor += head.length;
-      if (tail.length > 0) pushLine(l);
+      if (hasTail) pushLine(l);
     }
   }
 }
@@ -1077,17 +1092,9 @@ export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth
       if (isSpaceTok) {
         if (!_b.hasInk) {
           // LEADING ws — commit immediately (can overflow)
-          const sStart = content.tokenSegStart[ti];
-          const sEnd = content.tokenSegStart[ti + 1];
-          for (let s = sStart; s < sEnd; s++) {
-            appendRun(layout, content.segFont[s], content.segHighlight[s], true, content.segText[s], content.segAdvanceWidth[s]);
-          }
+          appendAllSegments(layout, content, ti, true);
         } else if (maxWidth === Infinity) {
-          const sStart = content.tokenSegStart[ti];
-          const sEnd = content.tokenSegStart[ti + 1];
-          for (let s = sStart; s < sEnd; s++) {
-            appendRun(layout, content.segFont[s], content.segHighlight[s], true, content.segText[s], content.segAdvanceWidth[s]);
-          }
+          appendAllSegments(layout, content, ti, true);
         } else {
           stashPending(content, ti);
         }
@@ -1434,6 +1441,7 @@ export function renderTextLayout(
   }
 
   const hlR = fontSize * 0.25;
+  let lastFont = '';
   for (let li = 0; li < lineCount; li++) {
     const startRun = layout.lineRunStart[li];
     const endRun = layout.lineRunStart[li + 1];
@@ -1470,7 +1478,6 @@ export function renderTextLayout(
 
     // Pass 2: text
     ctx.fillStyle = color;
-    let lastFont = '';
     for (let r = startRun; r < endRun; r++) {
       const f = layout.runFont[r];
       if (f !== lastFont) {
@@ -1516,6 +1523,7 @@ export function renderShapeLabel(
 
   const shapeAnchorX = tbx + anchorFactor(align) * tbw;
   const hlR = fontSize * 0.25;
+  let lastFont = '';
   for (let li = 0; li < lineCount; li++) {
     const startRun = layout.lineRunStart[li];
     const endRun = layout.lineRunStart[li + 1];
@@ -1546,7 +1554,6 @@ export function renderShapeLabel(
 
     // Pass 2: text
     ctx.fillStyle = color;
-    let lastFont = '';
     for (let r = startRun; r < endRun; r++) {
       const f = layout.runFont[r];
       if (f !== lastFont) {

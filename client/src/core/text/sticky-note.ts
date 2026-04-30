@@ -18,8 +18,9 @@ import { FONT_FAMILIES } from './font-config';
 import type { MeasuredContent, TextLayout } from './text-system';
 import {
   anchorFactor,
-  buildFontString,
+  buildFontMatrix,
   createTextLayout,
+  fontFromMatrix,
   getBaselineToTopRatio,
   getLineStartX,
   getNoteContentOffsetY,
@@ -134,8 +135,9 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
         const sEnd = measured.tokenSegStart[ti + 1];
         for (let s = sStart; s < sEnd; s++) {
           const font = measured.segFont[s];
-          let text = measured.segText[s];
-          while (text.length > 0) {
+          const fullText = measured.segText[s];
+          let cursor = 0;
+          while (cursor < fullText.length) {
             let remaining = maxW - curW;
             if (remaining <= 0) {
               lineCount++;
@@ -143,13 +145,13 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
               curW = 0;
               remaining = maxW;
             }
-            const segEnd = nextSoftBreak(text);
-            if (segEnd < text.length) {
-              const chunk = text.substring(0, segEnd);
+            const segEnd = nextSoftBreak(fullText, cursor);
+            if (segEnd < fullText.length) {
+              const chunk = fullText.substring(cursor, segEnd);
               const chunkW = measureTextCached(font, chunk);
               if (chunkW <= remaining) {
                 curW += chunkW;
-                text = text.substring(segEnd);
+                cursor = segEnd;
                 continue;
               }
               if (chunkW <= maxW) {
@@ -159,11 +161,11 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
                   curW = 0;
                 }
                 curW += chunkW;
-                text = text.substring(segEnd);
+                cursor = segEnd;
                 continue;
               }
             }
-            const r = sliceTextToFit(font, text, remaining);
+            const r = sliceTextToFit(font, fullText, remaining, cursor);
             if (r.headW > remaining && curW > 0) {
               lineCount++;
               if (lineCount > maxLines) return 'heightOverflow';
@@ -171,8 +173,8 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
               continue;
             }
             curW += r.headW;
-            text = r.tail;
-            if (text.length > 0) {
+            cursor += r.head.length;
+            if (cursor < fullText.length) {
               lineCount++;
               if (lineCount > maxLines) return 'heightOverflow';
               curW = 0;
@@ -333,17 +335,11 @@ function layoutNoteContent(
 
   // Phase B: mutate measured to derived font size, build layout
   const ratio = derivedFontSize / 100;
-  // Pre-build the four font strings for the derived size
-  const F0 = buildFontString(false, false, derivedFontSize, fontFamily);
-  const F1 = buildFontString(false, true, derivedFontSize, fontFamily);
-  const F2 = buildFontString(true, false, derivedFontSize, fontFamily);
-  const F3 = buildFontString(true, true, derivedFontSize, fontFamily);
+  const F = buildFontMatrix(derivedFontSize, fontFamily);
 
   for (let s = 0; s < measured.segCount; s++) {
     measured.segAdvanceWidth[s] *= ratio;
-    const b = measured.segBold[s] !== 0;
-    const i = measured.segItalic[s] !== 0;
-    measured.segFont[s] = b ? (i ? F3 : F2) : i ? F1 : F0;
+    measured.segFont[s] = fontFromMatrix(F, measured.segBold[s] !== 0, measured.segItalic[s] !== 0);
   }
   for (let t = 0; t < measured.tokenCount; t++) measured.tokenAdvanceWidth[t] *= ratio;
   measured.lineHeight = derivedFontSize * lhMult;
@@ -526,6 +522,7 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
 
   ctx.textBaseline = 'alphabetic';
 
+  let lastFont = '';
   for (let li = 0; li < lineCount; li++) {
     const startRun = layout.lineRunStart[li];
     const endRun = layout.lineRunStart[li + 1];
@@ -556,7 +553,6 @@ export function drawStickyNote(ctx: CanvasRenderingContext2D, handle: ObjectHand
 
     // Pass 2: text
     ctx.fillStyle = '#1a1a1a';
-    let lastFont = '';
     for (let r = startRun; r < endRun; r++) {
       const f = layout.runFont[r];
       if (f !== lastFont) {
