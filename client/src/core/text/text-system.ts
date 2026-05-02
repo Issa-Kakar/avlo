@@ -497,6 +497,11 @@ export function nextSoftBreak(text: string, start: number = 0): number {
     if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) continue; // LB13
     if (prev === LB_OP) continue; // LB14
     if (prev === LB_QU || curr === LB_QU) continue; // LB19
+    // LB25: suppress break inside numeric expressions. HY×NU keeps signed numbers
+    // glued (e.g. `:-2947.84` stays one chunk); SY×NU keeps fractions glued
+    // (e.g. `5/3`). HY×AL still breaks (e.g. `cross-hatch`) — LB25 doesn't apply.
+    // IS×NU and NU×NU are already suppressed by their LHS not being in prevAllows.
+    if ((prev === LB_HY || prev === LB_SY) && curr === LB_NU) continue; // LB25
     if ((prev === LB_AL || prev === LB_NU) && curr === LB_OP) continue; // LB30 (AL/NU × OP)
     if ((prev === LB_CL || prev === LB_CP) && (curr === LB_AL || curr === LB_NU)) continue; // LB30 (CL/CP × AL/NU)
 
