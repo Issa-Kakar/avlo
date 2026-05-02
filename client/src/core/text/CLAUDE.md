@@ -12,7 +12,7 @@ WYSIWYG rich text: **DOM overlay editing** (Tiptap/ProseMirror) + **canvas rende
 - **Rendering:** Canvas layout engine (tokenizer → measurement → flow) matching CSS `pre-wrap` + `break-word`
 - **Positioning:** Measured font metrics (`fontBoundingBox*`) ensure DOM ↔ canvas baseline alignment
 - **Collaboration:** Y.XmlFragment CRDT, two-tier UndoManager (per-session + room-level atomic session merging)
-- **WYSIWYG parity:** Same font/weight, same line-height (`fontSize * 1.3`), same baseline positioning via `getBaselineToTopRatio()` (CSS half-leading formula), identical whitespace semantics. Sub-pixel ~0.5px from per-token vs native shaping.
+- **WYSIWYG parity:** Same font/weight, same line-height (`fontSize * 1.3`), same baseline positioning via `getBaselineToTopRatio()` (CSS half-leading formula), identical whitespace semantics. 
 
 ## Files
 

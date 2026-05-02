@@ -131,6 +131,7 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
           pendingW = 0;
         }
 
+        // Per-sub-segment Q1/Q2/Q3 driver — mirrors `placeWord` in text-system.ts.
         const sStart = measured.tokenSegStart[ti];
         const sEnd = measured.tokenSegStart[ti + 1];
         for (let s = sStart; s < sEnd; s++) {
@@ -138,46 +139,43 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
           const fullText = measured.segText[s];
           let cursor = 0;
           while (cursor < fullText.length) {
-            let remaining = maxW - curW;
-            if (remaining <= 0) {
-              lineCount++;
-              if (lineCount > maxLines) return 'heightOverflow';
-              curW = 0;
-              remaining = maxW;
-            }
             const segEnd = nextSoftBreak(fullText, cursor);
-            if (segEnd < fullText.length) {
-              const chunk = fullText.substring(cursor, segEnd);
-              const chunkW = measureTextCached(font, chunk);
-              if (chunkW <= remaining) {
-                curW += chunkW;
-                cursor = segEnd;
-                continue;
-              }
-              if (chunkW <= maxW) {
-                if (curW > 0) {
-                  lineCount++;
-                  if (lineCount > maxLines) return 'heightOverflow';
-                  curW = 0;
-                }
-                curW += chunkW;
-                cursor = segEnd;
-                continue;
-              }
-            }
-            const r = sliceTextToFit(font, fullText, remaining, cursor);
-            if (r.headW > remaining && curW > 0) {
-              lineCount++;
-              if (lineCount > maxLines) return 'heightOverflow';
-              curW = 0;
+            const chunk = fullText.substring(cursor, segEnd);
+            const chunkW = measureTextCached(font, chunk);
+            const lineRemaining = maxW - curW;
+
+            // Q1
+            if (chunkW <= lineRemaining) {
+              curW += chunkW;
+              cursor = segEnd;
               continue;
             }
-            curW += r.headW;
-            cursor += r.head.length;
-            if (cursor < fullText.length) {
+            // Q2
+            if (chunkW <= maxW) {
+              if (curW > 0) {
+                lineCount++;
+                if (lineCount > maxLines) return 'heightOverflow';
+                curW = 0;
+              }
+              curW += chunkW;
+              cursor = segEnd;
+              continue;
+            }
+            // Q3
+            if (curW > 0) {
               lineCount++;
               if (lineCount > maxLines) return 'heightOverflow';
               curW = 0;
+            }
+            while (cursor < segEnd) {
+              const r = sliceTextToFit(font, fullText, maxW - curW, cursor, segEnd);
+              curW += r.headW;
+              cursor += r.head.length;
+              if (cursor < segEnd) {
+                lineCount++;
+                if (lineCount > maxLines) return 'heightOverflow';
+                curW = 0;
+              }
             }
           }
         }

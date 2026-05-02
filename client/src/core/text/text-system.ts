@@ -383,45 +383,120 @@ function getPrefixWidths(font: string, text: string): PrefixWidths {
 // §3  STAGE 1: TOKENIZE — Y.XmlFragment → TokenizedContent (SOA, in-place)
 // =============================================================================
 
-// First-character whitespace test (handles Unicode WS via JS engine's `\s`).
-const WS_FIRST_CHAR = /^\s/;
+// Whitespace producing word-break opportunities. Excludes the NBSP family
+// (U+00A0 NBSP, U+202F narrow NBSP, U+2007 figure space, U+2060 WJ, U+FEFF
+// ZWNBSP) — those stay inside word tokens; the UAX#14 classifier (LB11/LB12)
+// glues across them. Also excludes ZWSP (U+200B), which provides an in-word
+// break opportunity via the ZW class instead.
+const WS_FIRST_CHAR = /^[\t\n\v\f\r 　]/;
+const TOKENIZE_SPLIT_RE = /([\t\n\v\f\r 　]+|[^\t\n\v\f\r 　]+)/g;
 
-// Token splitter — alternation of \s+|\S+ groups runs of whitespace vs non-whitespace.
-// Hoisted; reset lastIndex before each use.
-const TOKENIZE_SPLIT_RE = /(\s+|\S+)/g;
+// UAX#14 line-break classes used by `nextSoftBreak`. Values are arbitrary; only
+// pairwise comparisons matter. AL is the default.
+const LB_AL = 0;
+const LB_NU = 1;
+const LB_OP = 2;
+const LB_CL = 3;
+const LB_CP = 4;
+const LB_EX = 5;
+const LB_IS = 6;
+const LB_SY = 7;
+const LB_QU = 8;
+const LB_HY = 9;
+const LB_BA = 10;
+const LB_SP = 11;
+const LB_GL = 12;
+const LB_ZW = 13;
+const LB_WJ = 14;
+const LB_CM = 15;
 
-// UAX#14-like soft wrap opportunity sets — char-code lookups, no Set hash.
-function isBreakAfterCC(cc: number): boolean {
-  // : , ; / ! ? % - } ] )
-  switch (cc) {
-    case 58:
-    case 44:
-    case 59:
-    case 47:
-    case 33:
-    case 63:
-    case 37:
-    case 45:
-    case 125:
-    case 93:
-    case 41:
-      return true;
-  }
-  return false;
+const LB_ASCII: Uint8Array = (() => {
+  const a = new Uint8Array(128);
+  for (let i = 0; i < 128; i++) a[i] = LB_AL;
+  for (let i = 48; i <= 57; i++) a[i] = LB_NU; // 0–9
+  // Whitespace — appears as its own token; classification matters only for
+  // pairs straddling the same token (rare), but we set SP for completeness.
+  a[9] = LB_SP;
+  a[10] = LB_SP;
+  a[11] = LB_SP;
+  a[12] = LB_SP;
+  a[13] = LB_SP;
+  a[32] = LB_SP;
+  // OP — open punctuation
+  a[40] = LB_OP; // (
+  a[91] = LB_OP; // [
+  a[123] = LB_OP; // {
+  // CP — close paren
+  a[41] = LB_CP; // )
+  // CL — close punctuation
+  a[93] = LB_CL; // ]
+  a[125] = LB_CL; // }
+  // EX — exclamation/question
+  a[33] = LB_EX; // !
+  a[63] = LB_EX; // ?
+  // IS — infix separators
+  a[44] = LB_IS; // ,
+  a[46] = LB_IS; // .
+  a[58] = LB_IS; // :
+  a[59] = LB_IS; // ;
+  // SY — slashes
+  a[47] = LB_SY; // /
+  // HY — hyphen
+  a[45] = LB_HY; // -
+  // BA — break-after misc
+  a[37] = LB_BA; // %
+  // QU — quotes
+  a[34] = LB_QU; // "
+  a[39] = LB_QU; // '
+  return a;
+})();
+
+function getLBClass(cc: number): number {
+  if (cc < 128) return LB_ASCII[cc];
+  if (cc === 0x00a0 || cc === 0x202f || cc === 0x2007) return LB_GL; // NBSP family → glue
+  if (cc === 0xfeff || cc === 0x2060) return LB_WJ; // ZWNBSP, WJ → word joiner
+  if (cc === 0x200b) return LB_ZW; // ZWSP → break opportunity (LB8)
+  if (cc === 0x200c || cc === 0x200d) return LB_CM; // ZWNJ, ZWJ → combining
+  if (cc === 0x2018 || cc === 0x2019 || cc === 0x201c || cc === 0x201d) return LB_QU; // smart quotes
+  if (cc === 0x2013 || cc === 0x2014) return LB_HY; // en/em dash
+  if (cc === 0x00ad) return LB_BA; // SHY
+  return LB_AL;
 }
-function isBreakBeforeCC(cc: number): boolean {
-  // { [ (
-  return cc === 123 || cc === 91 || cc === 40;
-}
 
-/** Find end of first soft segment from `start` (UAX#14-like). Returns char index in `text`.
- *  When `start > 0`, "first char of the segment" semantics for break-before is preserved
- *  by anchoring at `start`, not 0. */
+/** Find end of first soft-wrap sub-segment of `text[start..]` per UAX#14.
+ *  Returns a char index in `text` (or `text.length` if no break). The returned
+ *  index always lies on a grapheme boundary because LB9 suppresses break-before
+ *  combining marks (CM, ZWJ, ZWNJ). */
 export function nextSoftBreak(text: string, start: number = 0): number {
-  for (let i = start; i < text.length; i++) {
-    const cc = text.charCodeAt(i);
-    if (isBreakAfterCC(cc) && i + 1 < text.length && text.charCodeAt(i + 1) !== 34) return i + 1;
-    if (i > start && isBreakBeforeCC(cc) && text.charCodeAt(i - 1) !== 34) return i;
+  for (let i = start + 1; i < text.length; i++) {
+    const prev = getLBClass(text.charCodeAt(i - 1));
+    const curr = getLBClass(text.charCodeAt(i));
+
+    // Identify break candidates: prev allows break-after, or curr is OP.
+    const prevAllows =
+      prev === LB_HY ||
+      prev === LB_BA ||
+      prev === LB_IS ||
+      prev === LB_SY ||
+      prev === LB_EX ||
+      prev === LB_CL ||
+      prev === LB_CP ||
+      prev === LB_ZW;
+    const currOpensBreak = curr === LB_OP;
+    if (!prevAllows && !currOpensBreak) continue;
+
+    // Apply UAX#14 suppressions in order.
+    if (curr === LB_CM) continue; // LB9: never split a grapheme cluster
+    if (prev === LB_WJ || curr === LB_WJ) continue; // LB11
+    if (prev === LB_GL) continue; // LB12
+    if (curr === LB_GL && prev !== LB_SP && prev !== LB_BA && prev !== LB_HY) continue; // LB12a
+    if (curr === LB_CL || curr === LB_CP || curr === LB_EX || curr === LB_IS || curr === LB_SY) continue; // LB13
+    if (prev === LB_OP) continue; // LB14
+    if (prev === LB_QU || curr === LB_QU) continue; // LB19
+    if ((prev === LB_AL || prev === LB_NU) && curr === LB_OP) continue; // LB30 (AL/NU × OP)
+    if ((prev === LB_CL || prev === LB_CP) && (curr === LB_AL || curr === LB_NU)) continue; // LB30 (CL/CP × AL/NU)
+
+    return i;
   }
   return text.length;
 }
@@ -774,12 +849,20 @@ export function measureTokenizedContent(
 
 const SLICE_RESULT = { head: '', tail: '', headW: 0 };
 
-/** Binary search for largest prefix of `text[start..]` fitting within maxW. Forces >=1 grapheme.
- *  Returns module scratch — consumers must read fields immediately. Allocations: ≤2 substrings.
- *  When `start > 0`, callers must ensure `start` lies on a grapheme boundary (true for cursors
- *  produced by previous slices or `nextSoftBreak`). */
-export function sliceTextToFit(font: string, text: string, maxW: number, start: number = 0): { head: string; tail: string; headW: number } {
-  if (start >= text.length) {
+/** Binary search for largest prefix of `text[start..endChar]` fitting within maxW.
+ *  Forces >=1 grapheme advance (or reaches `endChar`). Returns module scratch — consumers
+ *  must read fields immediately. When `start > 0`, callers must ensure `start` lies on a
+ *  grapheme boundary (true for cursors produced by previous slices or `nextSoftBreak`).
+ *  `endChar` upper-bounds the slice so callers can cut at a soft-break boundary while
+ *  reusing the per-segment-text PrefixWidths cache entry. */
+export function sliceTextToFit(
+  font: string,
+  text: string,
+  maxW: number,
+  start: number = 0,
+  endChar: number = text.length,
+): { head: string; tail: string; headW: number } {
+  if (start >= endChar) {
     SLICE_RESULT.head = '';
     SLICE_RESULT.tail = '';
     SLICE_RESULT.headW = 0;
@@ -800,17 +883,31 @@ export function sliceTextToFit(font: string, text: string, maxW: number, start: 
     startIdx = slo;
   }
 
+  // Find endIdx: largest grapheme index where charEnds[endIdx] <= endChar.
+  let endIdx = widths.length - 1;
+  if (endChar < text.length) {
+    let elo = startIdx,
+      ehi = widths.length - 1;
+    while (elo < ehi) {
+      const mid = (elo + ehi + 1) >>> 1;
+      if (charEnds[mid] <= endChar) elo = mid;
+      else ehi = mid - 1;
+    }
+    endIdx = elo;
+  }
+
   const baseW = widths[startIdx];
-  const suffixW = widths[widths.length - 1] - baseW;
+  const suffixW = widths[endIdx] - baseW;
   if (suffixW <= maxW) {
-    SLICE_RESULT.head = start === 0 ? text : text.substring(start);
-    SLICE_RESULT.tail = '';
+    const ce = charEnds[endIdx];
+    SLICE_RESULT.head = text.substring(start, ce);
+    SLICE_RESULT.tail = ce < text.length ? text.substring(ce) : '';
     SLICE_RESULT.headW = suffixW;
     return SLICE_RESULT;
   }
 
   let lo = startIdx,
-    hi = widths.length - 1;
+    hi = endIdx;
   while (lo < hi) {
     const mid = (lo + hi + 1) >>> 1;
     if (widths[mid] - baseW <= maxW) lo = mid;
@@ -1013,49 +1110,43 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
     return;
   }
 
-  // break-word path
-  if (remaining <= 0 && l.runCount > _b.runStart) pushLine(l);
-
+  // break-word path. Per-sub-segment Q1/Q2/Q3 driver: cut the word at UAX#14
+  // soft-break opportunities; for each chunk in order ask "fits current line?",
+  // "fits a fresh line?", or fall through to char-slicing across as many lines
+  // as needed. Caller invariants guarantee _b.advanceX === 0 here.
   for (let s = sStart; s < sEnd; s++) {
     const font = m.segFont[s];
     const highlight = m.segHighlight[s];
     const fullText = m.segText[s];
     let cursor = 0;
     while (cursor < fullText.length) {
-      let lineRemaining = maxWidth - _b.advanceX;
-      if (lineRemaining <= 0) {
-        pushLine(l);
-        lineRemaining = maxWidth;
-      }
-      // Soft-break attempt before char-level
       const segEnd = nextSoftBreak(fullText, cursor);
-      if (segEnd < fullText.length) {
-        const chunk = fullText.substring(cursor, segEnd);
-        const chunkW = measureTextCached(font, chunk);
-        if (chunkW <= lineRemaining) {
-          appendRun(l, font, highlight, false, chunk, chunkW);
-          cursor = segEnd;
-          continue;
-        }
-        if (chunkW <= maxWidth) {
-          if (l.runCount > _b.runStart) pushLine(l);
-          appendRun(l, font, highlight, false, chunk, chunkW);
-          cursor = segEnd;
-          continue;
-        }
-      }
-      // Char-level
-      const r = sliceTextToFit(font, fullText, lineRemaining, cursor);
-      const head = r.head;
-      const headW = r.headW;
-      const hasTail = r.tail.length > 0;
-      if (headW > lineRemaining && l.runCount > _b.runStart) {
-        pushLine(l);
+      const chunk = fullText.substring(cursor, segEnd);
+      const chunkW = measureTextCached(font, chunk);
+      const lineRemaining = maxWidth - _b.advanceX;
+
+      // Q1: fits the current line as-is.
+      if (chunkW <= lineRemaining) {
+        appendRun(l, font, highlight, false, chunk, chunkW);
+        cursor = segEnd;
         continue;
       }
-      appendRun(l, font, highlight, false, head, headW);
-      cursor += head.length;
-      if (hasTail) pushLine(l);
+      // Q2: fits a fresh empty line.
+      if (chunkW <= maxWidth) {
+        if (l.runCount > _b.runStart) pushLine(l);
+        appendRun(l, font, highlight, false, chunk, chunkW);
+        cursor = segEnd;
+        continue;
+      }
+      // Q3: oversized — char-slice. Always start on a fresh line if dirty.
+      if (l.runCount > _b.runStart) pushLine(l);
+      while (cursor < segEnd) {
+        const r = sliceTextToFit(font, fullText, maxWidth - _b.advanceX, cursor, segEnd);
+        appendRun(l, font, highlight, false, r.head, r.headW);
+        cursor += r.head.length;
+        if (cursor < segEnd) pushLine(l);
+      }
+      // Tail of slicing sits on the current line; next outer iter handles the next sub-segment.
     }
   }
 }
