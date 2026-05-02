@@ -473,10 +473,14 @@ export function nextSoftBreak(text: string, start: number = 0): number {
     const curr = getLBClass(text.charCodeAt(i));
 
     // Identify break candidates: prev allows break-after, or curr is OP.
+    // IS (. , : ;) is NOT a break-after class — LB29 (IS × AL/HL) and LB25
+    // (numeric infix IS × NU) make the post-IS break opportunity vanish in
+    // practice for word-internal text. Omitting IS here is equivalent to
+    // applying both suppressions, while still allowing IS × OP via the OP
+    // candidate below (e.g. ":[" stays breakable).
     const prevAllows =
       prev === LB_HY ||
       prev === LB_BA ||
-      prev === LB_IS ||
       prev === LB_SY ||
       prev === LB_EX ||
       prev === LB_CL ||
@@ -1088,32 +1092,26 @@ function commitPending(m: MeasuredContent, l: TextLayout): void {
   clearPending();
 }
 
-/** Place a word token on the current line, breaking by character if oversized. */
+/** Place a word token on the current line.
+ *
+ *  Fast path: whole word fits remaining → drop in atomic. Otherwise drive a
+ *  per-sub-segment Q1/Q2/Q3 ladder over the soft-break opportunities so that
+ *  intra-word break points (HY, BA, OP candidate, etc.) are honored before
+ *  falling back to char-slicing. Q3 is unreachable when `tokAdvance <= maxWidth`
+ *  because no sub-segment can exceed the whole-word width. */
 function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: number): void {
   const tokAdvance = m.tokenAdvanceWidth[ti];
   const sStart = m.tokenSegStart[ti];
   const sEnd = m.tokenSegStart[ti + 1];
 
-  if (maxWidth === Infinity) {
+  if (maxWidth === Infinity || tokAdvance <= maxWidth - _b.advanceX) {
     appendAllSegments(l, m, ti, false);
     return;
   }
 
-  const remaining = maxWidth - _b.advanceX;
-  if (tokAdvance <= remaining) {
-    appendAllSegments(l, m, ti, false);
-    return;
-  }
-  if (tokAdvance <= maxWidth) {
-    if (l.runCount > _b.runStart) pushLine(l);
-    appendAllSegments(l, m, ti, false);
-    return;
-  }
-
-  // break-word path. Per-sub-segment Q1/Q2/Q3 driver: cut the word at UAX#14
-  // soft-break opportunities; for each chunk in order ask "fits current line?",
-  // "fits a fresh line?", or fall through to char-slicing across as many lines
-  // as needed. Caller invariants guarantee _b.advanceX === 0 here.
+  // Per-sub-segment Q1/Q2/Q3 ladder. Cut the word at UAX#14 soft-break
+  // opportunities and ask, for each chunk in order: fits current line, fits a
+  // fresh empty line, or oversized → char-slice across as many lines as needed.
   for (let s = sStart; s < sEnd; s++) {
     const font = m.segFont[s];
     const highlight = m.segHighlight[s];
@@ -1138,7 +1136,7 @@ function placeWord(m: MeasuredContent, l: TextLayout, ti: number, maxWidth: numb
         cursor = segEnd;
         continue;
       }
-      // Q3: oversized — char-slice. Always start on a fresh line if dirty.
+      // Q3: oversized chunk — char-slice. Always start on a fresh line if dirty.
       if (l.runCount > _b.runStart) pushLine(l);
       while (cursor < segEnd) {
         const r = sliceTextToFit(font, fullText, maxWidth - _b.advanceX, cursor, segEnd);
@@ -1191,35 +1189,16 @@ export function layoutMeasuredContent(content: MeasuredContent, width: TextWidth
         }
         continue;
       }
-      // WORD token
-      const tokAdvance = content.tokenAdvanceWidth[ti];
-      if (maxWidth === Infinity) {
-        if (_pending.totalW > 0) commitPending(content, layout);
-        placeWord(content, layout, ti, maxWidth);
-        continue;
-      }
+      // WORD token. Commit pending inter-word WS to the current line and let
+      // placeWord drive the per-sub-segment ladder. Pre-emptive line pushes
+      // here would mask intra-word break opportunities (e.g. the `-` inside
+      // `Char-level` when only `Char-` fits on the current line).
       if (_b.hasInk) {
-        if (tokAdvance <= maxWidth) {
-          if (_b.advanceX + _pending.totalW + tokAdvance <= maxWidth) {
-            if (_pending.totalW > 0) commitPending(content, layout);
-            placeWord(content, layout, ti, maxWidth);
-          } else {
-            commitPending(content, layout);
-            pushLine(layout);
-            placeWord(content, layout, ti, maxWidth);
-          }
-        } else {
-          commitPending(content, layout);
-          pushLine(layout);
-          placeWord(content, layout, ti, maxWidth);
-        }
+        if (_pending.totalW > 0) commitPending(content, layout);
       } else {
-        if (_b.advanceX > 0 && _b.advanceX + tokAdvance > maxWidth) {
-          pushLine(layout);
-        }
         clearPending();
-        placeWord(content, layout, ti, maxWidth);
       }
+      placeWord(content, layout, ti, maxWidth);
     }
     commitPending(content, layout);
     pushLine(layout);

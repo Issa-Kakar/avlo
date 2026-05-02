@@ -121,91 +121,71 @@ function noteFlowCheck(measured: MeasuredContent, maxW: number, maxLines: number
         continue;
       }
 
-      if (tokAdvance > maxW) {
-        if (!phase2) return findStepForWord(tokAdvance, contentWidth);
+      // Fast path: word fits remaining space (after committing pending WS).
+      if (curW + pendingW + tokAdvance <= maxW) {
+        curW += pendingW + tokAdvance;
+        pendingW = 0;
+        hasInk = true;
+        continue;
+      }
 
-        if (hasInk) {
-          lineCount++;
-          if (lineCount > maxLines) return 'heightOverflow';
-          curW = 0;
-          pendingW = 0;
-        }
+      // Phase 1 bails out on oversized words — char-breaking not allowed yet.
+      if (tokAdvance > maxW && !phase2) return findStepForWord(tokAdvance, contentWidth);
 
-        // Per-sub-segment Q1/Q2/Q3 driver — mirrors `placeWord` in text-system.ts.
-        const sStart = measured.tokenSegStart[ti];
-        const sEnd = measured.tokenSegStart[ti + 1];
-        for (let s = sStart; s < sEnd; s++) {
-          const font = measured.segFont[s];
-          const fullText = measured.segText[s];
-          let cursor = 0;
-          while (cursor < fullText.length) {
-            const segEnd = nextSoftBreak(fullText, cursor);
-            const chunk = fullText.substring(cursor, segEnd);
-            const chunkW = measureTextCached(font, chunk);
-            const lineRemaining = maxW - curW;
+      // Per-sub-segment Q1/Q2/Q3 ladder — mirrors `placeWord`. Commit pending
+      // WS to the current line so intra-word break opportunities can place
+      // the leading sub-segment on the same line (e.g. `Char-` after `is `).
+      curW += pendingW;
+      pendingW = 0;
 
-            // Q1
-            if (chunkW <= lineRemaining) {
-              curW += chunkW;
-              cursor = segEnd;
-              continue;
-            }
-            // Q2
-            if (chunkW <= maxW) {
-              if (curW > 0) {
-                lineCount++;
-                if (lineCount > maxLines) return 'heightOverflow';
-                curW = 0;
-              }
-              curW += chunkW;
-              cursor = segEnd;
-              continue;
-            }
-            // Q3
+      const sStart = measured.tokenSegStart[ti];
+      const sEnd = measured.tokenSegStart[ti + 1];
+      for (let s = sStart; s < sEnd; s++) {
+        const font = measured.segFont[s];
+        const fullText = measured.segText[s];
+        let cursor = 0;
+        while (cursor < fullText.length) {
+          const segEnd = nextSoftBreak(fullText, cursor);
+          const chunk = fullText.substring(cursor, segEnd);
+          const chunkW = measureTextCached(font, chunk);
+          const lineRemaining = maxW - curW;
+
+          // Q1
+          if (chunkW <= lineRemaining) {
+            curW += chunkW;
+            cursor = segEnd;
+            continue;
+          }
+          // Q2
+          if (chunkW <= maxW) {
             if (curW > 0) {
               lineCount++;
               if (lineCount > maxLines) return 'heightOverflow';
               curW = 0;
             }
-            while (cursor < segEnd) {
-              const r = sliceTextToFit(font, fullText, maxW - curW, cursor, segEnd);
-              curW += r.headW;
-              cursor += r.head.length;
-              if (cursor < segEnd) {
-                lineCount++;
-                if (lineCount > maxLines) return 'heightOverflow';
-                curW = 0;
-              }
+            curW += chunkW;
+            cursor = segEnd;
+            continue;
+          }
+          // Q3 — phase 2 only (sub-segs of fits-maxW words can't exceed maxW).
+          if (curW > 0) {
+            lineCount++;
+            if (lineCount > maxLines) return 'heightOverflow';
+            curW = 0;
+          }
+          while (cursor < segEnd) {
+            const r = sliceTextToFit(font, fullText, maxW - curW, cursor, segEnd);
+            curW += r.headW;
+            cursor += r.head.length;
+            if (cursor < segEnd) {
+              lineCount++;
+              if (lineCount > maxLines) return 'heightOverflow';
+              curW = 0;
             }
           }
         }
-        hasInk = true;
-        pendingW = 0;
-        continue;
       }
-
-      if (hasInk) {
-        const testW = curW + pendingW + tokAdvance;
-        if (testW <= maxW) {
-          curW = testW;
-          pendingW = 0;
-        } else {
-          lineCount++;
-          if (lineCount > maxLines) return 'heightOverflow';
-          curW = tokAdvance;
-          pendingW = 0;
-        }
-      } else {
-        if (curW > 0 && curW + tokAdvance > maxW) {
-          lineCount++;
-          if (lineCount > maxLines) return 'heightOverflow';
-          curW = tokAdvance;
-        } else {
-          curW += tokAdvance;
-        }
-        hasInk = true;
-        pendingW = 0;
-      }
+      hasInk = true;
     }
 
     lineCount++;
