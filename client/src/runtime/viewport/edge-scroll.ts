@@ -74,7 +74,7 @@ function tick(): void {
   const dy = (Math.sign(proxY) * BASE_SPEED * factorY) / scale;
 
   if (dx !== 0 || dy !== 0) {
-    useCameraStore.getState().setPan({ x: pan.x + dx, y: pan.y + dy });
+    useCameraStore.getState().setPanXY(pan.x + dx, pan.y + dy);
 
     const world = screenToWorld(lastClientX, lastClientY);
     if (world) {

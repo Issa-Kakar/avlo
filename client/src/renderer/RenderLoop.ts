@@ -1,7 +1,7 @@
 import { manageImageViewport } from '@/core/image/image-manager';
 import type { BBoxTuple, WorldBounds } from '@/core/types/geometry';
 import { applyPendingResize, getBaseContext } from '@/runtime/SurfaceManager';
-import { isMobile, useCameraStore } from '@/stores/camera-store';
+import { isMobile, subscribeCamera, useCameraStore } from '@/stores/camera-store';
 import { drawObjects } from './layers/objects';
 import { FRAME_CONFIG } from './types';
 
@@ -60,32 +60,13 @@ export class RenderLoop {
     this.lastCanvasH = this.canvasH;
 
     // Any camera change → full clear + schedule frame
-    this.cameraUnsubscribe = useCameraStore.subscribe(
-      (state) => ({
-        scale: state.scale,
-        panX: state.pan.x,
-        panY: state.pan.y,
-        cssWidth: state.cssWidth,
-        cssHeight: state.cssHeight,
-        dpr: state.dpr,
-      }),
-      (curr) => {
-        this.canvasW = Math.round(curr.cssWidth * curr.dpr);
-        this.canvasH = Math.round(curr.cssHeight * curr.dpr);
-        this.fullClear = true;
-        this.dirtyCount = 0;
-        this.markDirty();
-      },
-      {
-        equalityFn: (a, b) =>
-          a.scale === b.scale &&
-          a.panX === b.panX &&
-          a.panY === b.panY &&
-          a.cssWidth === b.cssWidth &&
-          a.cssHeight === b.cssHeight &&
-          a.dpr === b.dpr,
-      },
-    );
+    this.cameraUnsubscribe = subscribeCamera((s) => {
+      this.canvasW = Math.round(s.cssWidth * s.dpr);
+      this.canvasH = Math.round(s.cssHeight * s.dpr);
+      this.fullClear = true;
+      this.dirtyCount = 0;
+      this.markDirty();
+    });
 
     if (document.hidden) this.startHiddenLoop();
   }

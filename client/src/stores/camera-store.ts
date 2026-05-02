@@ -8,16 +8,19 @@
  * - Single source of truth for camera state (scale, pan, viewport dimensions)
  * - Pure transform functions that read from store synchronously
  * - Module-level canvas reference for screen-to-world coordinate conversion
- * - Selective subscriptions via subscribeWithSelector middleware
+ * - Diff-cached subscriptions via `subscribeCamera` (no per-tick selector allocation)
+ * - Manual localStorage persistence on a 1Hz debounce — no `persist` middleware
+ *   (which would write localStorage on every setState; unacceptable on the pan path)
  *
  * @module stores/camera-store
  */
 
 import { create } from 'zustand';
-import { persist, subscribeWithSelector } from 'zustand/middleware';
 import type { BBoxTuple } from '@/core/types/geometry';
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 5;
+
+const PERSIST_KEY = 'avlo.camera.v1';
 
 // ============================================
 // TYPES
@@ -53,8 +56,12 @@ export interface CameraActions {
   setScale: (scale: number) => void;
   /** Set pan position */
   setPan: (pan: { x: number; y: number }) => void;
+  /** Set pan position from raw x,y (avoids per-call object literal on hot pan path) */
+  setPanXY: (x: number, y: number) => void;
   /** Set scale and pan atomically (for animations) */
   setScaleAndPan: (scale: number, pan: { x: number; y: number }) => void;
+  /** Set scale and pan atomically from raw x,y (avoids per-call object literal on hot zoom path) */
+  setScaleAndPanXY: (scale: number, x: number, y: number) => void;
   /** Update viewport dimensions */
   setViewport: (cssWidth: number, cssHeight: number, dpr: number) => void;
   /** Reset view to initial state (scale=1, pan={0,0}) */
@@ -141,6 +148,19 @@ export function isMobile(): boolean {
 // STORE CREATION
 // ============================================
 
+/** Seed roomCameras from localStorage. Tolerates missing/bad JSON. */
+function loadInitialRoomCameras(): Record<string, { scale: number; pan: { x: number; y: number } }> {
+  if (typeof localStorage === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(PERSIST_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as { roomCameras?: Record<string, { scale: number; pan: { x: number; y: number } }> };
+    return parsed?.roomCameras ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /** Initial camera state */
 const INITIAL_STATE: CameraState = {
   scale: 1,
@@ -148,100 +168,148 @@ const INITIAL_STATE: CameraState = {
   cssWidth: 1, // Safe non-zero default
   cssHeight: 1,
   dpr: typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
-  roomCameras: {},
+  roomCameras: loadInitialRoomCameras(),
   currentRoomId: null,
 };
 
 /** Debounced sync timer for persisting camera to roomCameras */
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Hoisted module-level callback — avoids per-tick closure allocation. */
+function syncRoomCamera(): void {
+  syncTimer = null;
+  const { scale, pan, currentRoomId, roomCameras } = useCameraStore.getState();
+  if (!currentRoomId) return;
+  const prev = roomCameras[currentRoomId];
+  if (prev && prev.scale === scale && prev.pan.x === pan.x && prev.pan.y === pan.y) return;
+  const next = { ...roomCameras, [currentRoomId]: { scale, pan } };
+  useCameraStore.setState({ roomCameras: next });
+  try {
+    localStorage.setItem(PERSIST_KEY, JSON.stringify({ roomCameras: next }));
+  } catch {
+    // localStorage full / unavailable → silently drop persist; in-memory state is canonical
+  }
+}
+
 /**
- * Camera store with subscribeWithSelector + persist middleware.
- * Only roomCameras is persisted to localStorage (via partialize).
+ * Camera store. Uses plain `subscribe` (cache+diff via subscribeCamera helper).
+ * Persistence is handled manually inside the 1Hz debounced sync below — NOT via
+ * zustand's persist middleware, which would write localStorage on every setState
+ * (60×/sec during pan, ~26 listeners/sec on the Storage event surface).
  */
-export const useCameraStore = create<CameraStore>()(
-  subscribeWithSelector(
-    persist(
-      (set, get) => ({
-        // Initial state
-        ...INITIAL_STATE,
+export const useCameraStore = create<CameraStore>()((set, get) => ({
+  // Initial state
+  ...INITIAL_STATE,
 
-        // Actions (all with equality guards to skip no-op updates)
-        setScale: (scale: number) => {
-          const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
-          if (clamped === get().scale) return;
-          set({ scale: clamped });
-        },
-
-        setPan: (pan: { x: number; y: number }) => {
-          const curr = get().pan;
-          if (pan.x === curr.x && pan.y === curr.y) return;
-          set({ pan });
-        },
-
-        setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
-          const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
-          const state = get();
-          if (clamped === state.scale && pan.x === state.pan.x && pan.y === state.pan.y) return;
-          set({ scale: clamped, pan });
-        },
-
-        setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
-          const state = get();
-          if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr) return;
-          set({ cssWidth, cssHeight, dpr });
-        },
-
-        resetView: () => {
-          set({ scale: 1, pan: { x: 0, y: 0 } });
-        },
-
-        setRoom: (roomId: string) => {
-          // Flush pending debounced sync
-          if (syncTimer) {
-            clearTimeout(syncTimer);
-            syncTimer = null;
-          }
-          const { scale, pan, currentRoomId, roomCameras } = get();
-          const updated = { ...roomCameras };
-          // Save outgoing room
-          if (currentRoomId) updated[currentRoomId] = { scale, pan };
-          // Restore incoming room
-          const saved = updated[roomId];
-          set({
-            roomCameras: updated,
-            currentRoomId: roomId,
-            scale: saved?.scale ?? 1,
-            pan: saved?.pan ?? { x: 0, y: 0 },
-          });
-        },
-      }),
-      {
-        name: 'avlo.camera.v1',
-        partialize: (state) => ({ roomCameras: state.roomCameras }),
-      },
-    ),
-  ),
-);
-
-// Debounced sync: write current camera to roomCameras at most once per second
-useCameraStore.subscribe(
-  (s) => ({ scale: s.scale, px: s.pan.x, py: s.pan.y }),
-  () => {
-    if (syncTimer) clearTimeout(syncTimer);
-    syncTimer = setTimeout(() => {
-      syncTimer = null;
-      const { scale, pan, currentRoomId, roomCameras } = useCameraStore.getState();
-      if (!currentRoomId) return;
-      const prev = roomCameras[currentRoomId];
-      if (prev && prev.scale === scale && prev.pan.x === pan.x && prev.pan.y === pan.y) return;
-      useCameraStore.setState({
-        roomCameras: { ...roomCameras, [currentRoomId]: { scale, pan } },
-      });
-    }, 1000);
+  // Actions (all with equality guards to skip no-op updates)
+  setScale: (scale: number) => {
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+    if (clamped === get().scale) return;
+    set({ scale: clamped });
   },
-  { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
-);
+
+  setPan: (pan: { x: number; y: number }) => {
+    const curr = get().pan;
+    if (pan.x === curr.x && pan.y === curr.y) return;
+    set({ pan });
+  },
+
+  setPanXY: (x: number, y: number) => {
+    const curr = get().pan;
+    if (x === curr.x && y === curr.y) return;
+    set({ pan: { x, y } });
+  },
+
+  setScaleAndPan: (scale: number, pan: { x: number; y: number }) => {
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+    const state = get();
+    if (clamped === state.scale && pan.x === state.pan.x && pan.y === state.pan.y) return;
+    set({ scale: clamped, pan });
+  },
+
+  setScaleAndPanXY: (scale: number, x: number, y: number) => {
+    const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, scale));
+    const state = get();
+    if (clamped === state.scale && x === state.pan.x && y === state.pan.y) return;
+    set({ scale: clamped, pan: { x, y } });
+  },
+
+  setViewport: (cssWidth: number, cssHeight: number, dpr: number) => {
+    const state = get();
+    if (cssWidth === state.cssWidth && cssHeight === state.cssHeight && dpr === state.dpr) return;
+    set({ cssWidth, cssHeight, dpr });
+  },
+
+  resetView: () => {
+    set({ scale: 1, pan: { x: 0, y: 0 } });
+  },
+
+  setRoom: (roomId: string) => {
+    // Drop any pending debounced sync — we save outgoing inline below.
+    if (syncTimer) {
+      clearTimeout(syncTimer);
+      syncTimer = null;
+    }
+    const { scale, pan, currentRoomId, roomCameras } = get();
+    const updated = { ...roomCameras };
+    // Save outgoing room
+    if (currentRoomId) updated[currentRoomId] = { scale, pan };
+    // Restore incoming room
+    const saved = updated[roomId];
+    set({
+      roomCameras: updated,
+      currentRoomId: roomId,
+      scale: saved?.scale ?? 1,
+      pan: saved?.pan ?? { x: 0, y: 0 },
+    });
+    // Persist room-switch state immediately (so a fast nav-then-close doesn't lose it).
+    try {
+      localStorage.setItem(PERSIST_KEY, JSON.stringify({ roomCameras: updated }));
+    } catch {
+      // ignore
+    }
+  },
+}));
+
+// ============================================
+// SUBSCRIPTION HELPER
+// ============================================
+
+/**
+ * Subscribe to camera transform changes (scale, pan, viewport, dpr) with internal
+ * caching/diffing — fires `listener(state)` only when at least one of the 6 fields
+ * actually changes.
+ *
+ * Replaces the per-subscriber `subscribeWithSelector` pattern, which allocated a
+ * fresh selector-result object per setState. With 4 hot subscribers (debounce sync,
+ * tool view-change, RenderLoop, OverlayRenderLoop) this matters during pan/zoom.
+ */
+export type CameraListener = (s: CameraStore) => void;
+export function subscribeCamera(listener: CameraListener): () => void {
+  let pScale = NaN;
+  let pPanX = NaN;
+  let pPanY = NaN;
+  let pCw = NaN;
+  let pCh = NaN;
+  let pDpr = NaN;
+  return useCameraStore.subscribe((s) => {
+    if (s.scale === pScale && s.pan.x === pPanX && s.pan.y === pPanY && s.cssWidth === pCw && s.cssHeight === pCh && s.dpr === pDpr) return;
+    pScale = s.scale;
+    pPanX = s.pan.x;
+    pPanY = s.pan.y;
+    pCw = s.cssWidth;
+    pCh = s.cssHeight;
+    pDpr = s.dpr;
+    listener(s);
+  });
+}
+
+// Debounced sync: write current camera to roomCameras + localStorage at most once per second.
+// The hoisted `syncRoomCamera` callback avoids allocating a fresh closure per pan tick.
+subscribeCamera(() => {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(syncRoomCamera, 1000);
+});
 
 // ============================================
 // PURE TRANSFORM FUNCTIONS

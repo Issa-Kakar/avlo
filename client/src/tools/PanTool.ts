@@ -53,11 +53,8 @@ export class PanTool implements PointerTool {
       this.samples.shift();
     }
 
-    const { scale, pan, setPan } = useCameraStore.getState();
-    setPan({
-      x: pan.x - dx / scale,
-      y: pan.y - dy / scale,
-    });
+    const { scale, pan, setPanXY } = useCameraStore.getState();
+    setPanXY(pan.x - dx / scale, pan.y - dy / scale);
     invalidateOverlay();
   }
 
@@ -185,11 +182,8 @@ export class PanTool implements PointerTool {
     this.coastVy *= decay;
 
     // Convert screen velocity to world pan delta
-    const { scale, pan, setPan } = useCameraStore.getState();
-    setPan({
-      x: pan.x - (this.coastVx * dt) / scale,
-      y: pan.y - (this.coastVy * dt) / scale,
-    });
+    const { scale, pan, setPanXY } = useCameraStore.getState();
+    setPanXY(pan.x - (this.coastVx * dt) / scale, pan.y - (this.coastVy * dt) / scale);
 
     const speed = Math.hypot(this.coastVx, this.coastVy);
     if (speed > STOP_SPEED) {

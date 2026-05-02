@@ -54,12 +54,10 @@ function tick(): void {
   const e = easeOutCubic(t);
 
   const scale = startScale + (tgtScale - startScale) * e;
-  const pan = {
-    x: startPan.x + (tgtPan.x - startPan.x) * e,
-    y: startPan.y + (tgtPan.y - startPan.y) * e,
-  };
+  const px = startPan.x + (tgtPan.x - startPan.x) * e;
+  const py = startPan.y + (tgtPan.y - startPan.y) * e;
 
-  useCameraStore.getState().setScaleAndPan(scale, pan);
+  useCameraStore.getState().setScaleAndPanXY(scale, px, py);
 
   if (t < 1) {
     rafId = requestAnimationFrame(tick);

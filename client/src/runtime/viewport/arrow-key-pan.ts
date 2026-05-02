@@ -45,13 +45,9 @@ function tick(): void {
   dx /= len;
   dy /= len;
 
-  const { scale, pan } = useCameraStore.getState();
-  const worldSpeed = computeSpeed(now) / scale;
-
-  useCameraStore.getState().setPan({
-    x: pan.x + dx * worldSpeed * dt,
-    y: pan.y + dy * worldSpeed * dt,
-  });
+  const state = useCameraStore.getState();
+  const worldSpeed = computeSpeed(now) / state.scale;
+  state.setPanXY(state.pan.x + dx * worldSpeed * dt, state.pan.y + dy * worldSpeed * dt);
 
   rafId = requestAnimationFrame(tick);
 }

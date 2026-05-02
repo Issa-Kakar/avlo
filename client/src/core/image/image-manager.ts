@@ -86,11 +86,17 @@ const inflightIngests = new Map<string, { resolve: (result: IngestResult) => voi
 // Helpers
 // ============================================================
 
+// Scratch tuple — overwritten each call. Safe because rbush queryBBox reads
+// the bounds synchronously into its scratch envelope and doesn't retain.
+const _paddedScratch: BBoxTuple = [0, 0, 0, 0];
 function padViewport(vb: Readonly<[number, number, number, number]>): BBoxTuple {
-  const [minX, minY, maxX, maxY] = vb;
-  const vw = maxX - minX;
-  const vh = maxY - minY;
-  return [minX - vw * 2.25, minY - vh * 2.25, maxX + vw * 2.25, maxY + vh * 2.25];
+  const vw = vb[2] - vb[0];
+  const vh = vb[3] - vb[1];
+  _paddedScratch[0] = vb[0] - vw * 2.25;
+  _paddedScratch[1] = vb[1] - vh * 2.25;
+  _paddedScratch[2] = vb[2] + vw * 2.25;
+  _paddedScratch[3] = vb[3] + vh * 2.25;
+  return _paddedScratch;
 }
 
 function ppspToLevel(ppsp: number): 0 | 1 | 2 {

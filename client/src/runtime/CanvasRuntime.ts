@@ -13,7 +13,7 @@ import { createImageFromBlob } from '@/core/image/image-actions';
 import { clear as clearImageManager } from '@/core/image/image-manager';
 import { overlayLoop } from '@/renderer/OverlayRenderLoop';
 import { renderLoop } from '@/renderer/RenderLoop';
-import { capturePointer, releasePointer, screenToCanvas, screenToWorld, useCameraStore } from '@/stores/camera-store';
+import { capturePointer, releasePointer, screenToCanvas, screenToWorld, subscribeCamera, useCameraStore } from '@/stores/camera-store';
 import { setCursorOverride } from '@/stores/device-ui-store';
 import { contextMenuController } from './ContextMenuController';
 import { setLastCursorWorld } from './cursor-tracking';
@@ -62,14 +62,10 @@ export class CanvasRuntime {
     this.inputManager.attach();
 
     // 4. Camera subscription for tool view changes + context menu repositioning
-    this.cameraUnsub = useCameraStore.subscribe(
-      (s) => ({ scale: s.scale, px: s.pan.x, py: s.pan.y }),
-      () => {
-        if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
-        contextMenuController.onCameraMove();
-      },
-      { equalityFn: (a, b) => a.scale === b.scale && a.px === b.px && a.py === b.py },
-    );
+    this.cameraUnsub = subscribeCamera(() => {
+      if (!isEdgeScrolling()) getCurrentTool()?.onViewChange();
+      contextMenuController.onCameraMove();
+    });
 
     // 5. First-frame bootstrap
     renderLoop.invalidateAll();
@@ -250,7 +246,7 @@ export class CanvasRuntime {
 
     const { scale, pan } = useCameraStore.getState();
     const target = calculateZoomTransform(scale, pan, factor, pivot);
-    useCameraStore.getState().setScaleAndPan(target.scale, target.pan);
+    useCameraStore.getState().setScaleAndPanXY(target.scale, target.pan.x, target.pan.y);
   }
 
   private handlePinchZoom(delta: number, pivot: { x: number; y: number }): void {
@@ -258,7 +254,7 @@ export class CanvasRuntime {
 
     const { scale, pan } = useCameraStore.getState();
     const target = calculateZoomTransform(scale, pan, factor, pivot);
-    useCameraStore.getState().setScaleAndPan(target.scale, target.pan);
+    useCameraStore.getState().setScaleAndPanXY(target.scale, target.pan.x, target.pan.y);
   }
 
   private getWheelBoost(now: number): number {

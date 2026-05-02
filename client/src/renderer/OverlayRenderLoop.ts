@@ -1,5 +1,5 @@
 import { applyPendingResize, getOverlayContext } from '@/runtime/SurfaceManager';
-import { useCameraStore } from '@/stores/camera-store';
+import { subscribeCamera, useCameraStore } from '@/stores/camera-store';
 import { useDeviceUIStore } from '@/stores/device-ui-store';
 import { CursorAnimationJob, destroyAnimationController, EraserTrailAnimation, getAnimationController } from './animation';
 import { drawToolPreview } from './layers/tool-preview';
@@ -25,26 +25,7 @@ export class OverlayRenderLoop {
     controller.setInvalidator(() => this.invalidateAll());
 
     // Subscribe to camera store — any change invalidates overlay
-    this.cameraUnsubscribe = useCameraStore.subscribe(
-      (state) => ({
-        scale: state.scale,
-        panX: state.pan.x,
-        panY: state.pan.y,
-        cssWidth: state.cssWidth,
-        cssHeight: state.cssHeight,
-        dpr: state.dpr,
-      }),
-      () => this.invalidateAll(),
-      {
-        equalityFn: (a, b) =>
-          a.scale === b.scale &&
-          a.panX === b.panX &&
-          a.panY === b.panY &&
-          a.cssWidth === b.cssWidth &&
-          a.cssHeight === b.cssHeight &&
-          a.dpr === b.dpr,
-      },
-    );
+    this.cameraUnsubscribe = subscribeCamera(() => this.invalidateAll());
 
     // Evict any live preview when tool switches
     let lastTool = useDeviceUIStore.getState().activeTool;
