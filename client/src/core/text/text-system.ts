@@ -295,7 +295,7 @@ let measureEntryCount = 0;
 const MEASURE_SOFT_CAP = 200_000;
 
 function softEvictMeasure(): void {
-  // Cheap path: clear the whole table on cap. PREFIX_BY_FONT and SPACE_WIDTH_CACHE
+  // Cheap path: clear the whole table on cap. CHAR_ENDS_CACHE and SPACE_WIDTH_CACHE
   // are independent — they cache typed arrays / single floats and don't depend on this LRU.
   MEASURE_BY_FONT.clear();
   measureEntryCount = 0;
@@ -328,54 +328,34 @@ function getSpaceWidth(font: string): number {
   return w;
 }
 
-// --- Grapheme segmentation ---
+// --- Grapheme boundaries (font-independent) ---
 
-const GRAPHEME_CACHE = new Map<string, string[]>();
+const CHAR_ENDS_CACHE = new Map<string, Uint32Array>();
 
-function getGraphemes(text: string): string[] {
-  const hit = GRAPHEME_CACHE.get(text);
+/** Char-index end-offsets for each grapheme cluster of `text`. `out[0] = 0`,
+ *  `out[i+1]` = end of i-th grapheme. Used by `sliceTextToFit` to align cuts on
+ *  grapheme boundaries (LB9-correct: never splits CM/ZWJ/ZWNJ/surrogate pairs). */
+function getCharEnds(text: string): Uint32Array {
+  let hit = CHAR_ENDS_CACHE.get(text);
   if (hit) return hit;
-  let out: string[];
+  // First pass: count graphemes so we can size the typed array exactly. Avoids the
+  // intermediate string[] that the old getGraphemes carried just for its length.
+  const offsets: number[] = [0];
+  let ci = 0;
   if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
     const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    out = Array.from(seg.segment(text), (x) => x.segment);
+    for (const { segment } of seg.segment(text)) {
+      ci += segment.length;
+      offsets.push(ci);
+    }
   } else {
-    out = Array.from(text);
+    for (const cp of text) {
+      ci += cp.length;
+      offsets.push(ci);
+    }
   }
-  GRAPHEME_CACHE.set(text, out);
-  return out;
-}
-
-/** Cumulative grapheme widths and char-end offsets — powers allocation-free sliceTextToFit. */
-interface PrefixWidths {
-  widths: Float64Array; // [g.length + 1] — widths[i] = sum of first i grapheme widths
-  charEnds: Uint32Array; // [g.length + 1] — charEnds[i] = end char offset of first i graphemes
-}
-
-const PREFIX_BY_FONT = new Map<string, Map<string, PrefixWidths>>();
-
-function getPrefixWidths(font: string, text: string): PrefixWidths {
-  let inner = PREFIX_BY_FONT.get(font);
-  if (inner) {
-    const hit = inner.get(text);
-    if (hit) return hit;
-  } else {
-    inner = new Map();
-    PREFIX_BY_FONT.set(font, inner);
-  }
-  const g = getGraphemes(text);
-  const widths = new Float64Array(g.length + 1);
-  const charEnds = new Uint32Array(g.length + 1);
-  let acc = 0,
-    ci = 0;
-  for (let i = 0; i < g.length; i++) {
-    acc += measureTextCached(font, g[i]);
-    widths[i + 1] = acc;
-    ci += g[i].length;
-    charEnds[i + 1] = ci;
-  }
-  const out: PrefixWidths = { widths, charEnds };
-  inner.set(text, out);
+  const out = new Uint32Array(offsets);
+  CHAR_ENDS_CACHE.set(text, out);
   return out;
 }
 
@@ -862,8 +842,14 @@ const SLICE_RESULT = { head: '', tail: '', headW: 0 };
  *  Forces >=1 grapheme advance (or reaches `endChar`). Returns module scratch — consumers
  *  must read fields immediately. When `start > 0`, callers must ensure `start` lies on a
  *  grapheme boundary (true for cursors produced by previous slices or `nextSoftBreak`).
- *  `endChar` upper-bounds the slice so callers can cut at a soft-break boundary while
- *  reusing the per-segment-text PrefixWidths cache entry. */
+ *
+ *  Each probe measures the actual candidate substring via `measureTextCached` rather than
+ *  reading from a per-grapheme cumulative-widths table. The DOM shapes each broken line
+ *  independently — line N's rendered width is `ctx.measureText(line_text).width`, including
+ *  intra-line kerning but NO kerning across the break. Direct probing reproduces that exactly,
+ *  so canvas char-break decisions match the DOM down to the subpixel. The previous summed
+ *  per-grapheme widths overestimated by the cumulative kerning, evicting tail chars (e.g. a
+ *  trailing '.') that the DOM would have kept on the line. */
 export function sliceTextToFit(
   font: string,
   text: string,
@@ -877,9 +863,10 @@ export function sliceTextToFit(
     SLICE_RESULT.headW = 0;
     return SLICE_RESULT;
   }
-  const { widths, charEnds } = getPrefixWidths(font, text);
+  const charEnds = getCharEnds(text);
 
-  // Find startIdx: the grapheme index whose charEnds value === start. Binary search.
+  // Find startIdx: smallest grapheme index where charEnds[startIdx] >= start.
+  // Caller invariant guarantees start lies on a grapheme boundary, so equality holds.
   let startIdx = 0;
   if (start > 0) {
     let slo = 0,
@@ -893,10 +880,10 @@ export function sliceTextToFit(
   }
 
   // Find endIdx: largest grapheme index where charEnds[endIdx] <= endChar.
-  let endIdx = widths.length - 1;
+  let endIdx = charEnds.length - 1;
   if (endChar < text.length) {
     let elo = startIdx,
-      ehi = widths.length - 1;
+      ehi = charEnds.length - 1;
     while (elo < ehi) {
       const mid = (elo + ehi + 1) >>> 1;
       if (charEnds[mid] <= endChar) elo = mid;
@@ -905,28 +892,34 @@ export function sliceTextToFit(
     endIdx = elo;
   }
 
-  const baseW = widths[startIdx];
-  const suffixW = widths[endIdx] - baseW;
-  if (suffixW <= maxW) {
-    const ce = charEnds[endIdx];
-    SLICE_RESULT.head = text.substring(start, ce);
-    SLICE_RESULT.tail = ce < text.length ? text.substring(ce) : '';
-    SLICE_RESULT.headW = suffixW;
+  // Fast path: the whole [start..endIdx] fits in one shot. One measureText call.
+  const fullCe = charEnds[endIdx];
+  const fullSlice = text.substring(start, fullCe);
+  const fullW = measureTextCached(font, fullSlice);
+  if (fullW <= maxW) {
+    SLICE_RESULT.head = fullSlice;
+    SLICE_RESULT.tail = fullCe < text.length ? text.substring(fullCe) : '';
+    SLICE_RESULT.headW = fullW;
     return SLICE_RESULT;
   }
 
+  // Binary search probing actual candidate substrings — kerning-exact, DOM-faithful.
   let lo = startIdx,
     hi = endIdx;
   while (lo < hi) {
     const mid = (lo + hi + 1) >>> 1;
-    if (widths[mid] - baseW <= maxW) lo = mid;
+    const w = measureTextCached(font, text.substring(start, charEnds[mid]));
+    if (w <= maxW) lo = mid;
     else hi = mid - 1;
   }
-  if (lo === startIdx) lo = startIdx + 1; // forward progress
+  // Forward progress: at least one grapheme must advance even if oversized.
+  // Reaching here implies fullW > maxW > 0 ⇒ endIdx > startIdx ⇒ startIdx + 1 ≤ endIdx.
+  if (lo === startIdx) lo = startIdx + 1;
   const ce = charEnds[lo];
-  SLICE_RESULT.head = text.substring(start, ce);
+  const head = text.substring(start, ce);
+  SLICE_RESULT.head = head;
   SLICE_RESULT.tail = text.substring(ce);
-  SLICE_RESULT.headW = widths[lo] - baseW;
+  SLICE_RESULT.headW = measureTextCached(font, head); // typically a cache hit from probe
   return SLICE_RESULT;
 }
 
@@ -1357,9 +1350,8 @@ class TextLayoutCache {
     this.cache.clear();
     MEASURE_BY_FONT.clear();
     measureEntryCount = 0;
-    GRAPHEME_CACHE.clear();
     SPACE_WIDTH_CACHE.clear();
-    PREFIX_BY_FONT.clear();
+    CHAR_ENDS_CACHE.clear();
   }
 
   has(objectId: string): boolean {

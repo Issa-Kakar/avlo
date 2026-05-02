@@ -132,8 +132,7 @@ Highlight extraction: `attrs.highlight` with `{ color: '#hex' }` → that color;
 Canvas `measureText()` via singleton offscreen canvas. Caches:
 - `MEASURE_BY_FONT: Map<font, Map<text, width>>` — two-level cache, no concat-key allocation per call. Soft-cap at 200k entries (clears on overflow).
 - `SPACE_WIDTH_CACHE` — per-font space char width.
-- `GRAPHEME_CACHE` — `Intl.Segmenter` results, plain Map.
-- `PREFIX_BY_FONT: Map<font, Map<text, PrefixWidths>>` — per-grapheme cumulative widths (Float64Array) + char-end offsets (Uint32Array). Powers `sliceTextToFit` in O(log N) post-warmup with zero per-probe allocation.
+- `CHAR_ENDS_CACHE: Map<text, Uint32Array>` — grapheme end-offsets (font-independent). Powers `sliceTextToFit`'s grapheme-aligned binary search.
 
 All cleared on `textLayoutCache.clear()`. Per-token measure pre-builds the four (bold × italic) font strings once via exported `buildFontMatrix(fontSize, fontFamily)` and indexes via `fontFromMatrix(F, bold, italic)` — eliminates O(segments) `buildFontString` calls; sticky-note's Phase B reuses both helpers when projecting 100px measurements onto the derived font size. Each whitespace segment carries a `segSpaceMode` flag (1=all-ASCII-space → fast `getSpaceWidth × len`, 2=mixed-WS → falls through to `measureTextCached`). Token kind for word vs whitespace dispatch in the flow engine reads `tokenKind[ti]` directly — no per-segment whitespace flag is stored.
 
@@ -145,7 +144,7 @@ Two modes: **auto** (`maxWidth = Infinity`, no wrapping) and **fixed** (wraps at
 
 **Paragraph end:** Trailing WS is content (not hanging), so `alignmentWidth = min(advanceWidth, maxWidth)`.
 
-**Oversized words (break-word):** `sliceTextToFit(font, text, maxW, start?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. Binary search is over the cached `PrefixWidths` table for the full segment; one cache entry per segment text, not per suffix. Forward-progress: >=1 grapheme advances from `start` per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line. `noteFlowCheck` (sticky-note search predicate) mirrors the cursor-offset pattern.
+**Oversized words (break-word):** `sliceTextToFit(font, text, maxW, start?, endChar?)` and `nextSoftBreak(text, start?)` accept a cursor offset, so the char-break loop walks a segment without per-iteration `text.substring(cursor)` allocation. The slicer reads grapheme boundaries from `CHAR_ENDS_CACHE` (font-independent) and probes each binary-search candidate via `measureTextCached(font, text.substring(start, charEnds[mid]))` — direct shaping captures kerning exactly, so each broken line's width matches what the DOM would render for that line shaped independently. (The previous per-grapheme cumulative-widths approach summed individual char advances, missing cumulative kerning and evicting trailing chars near the line edge.) Fast path: if `[start..endChar]` fits as a whole, returns in one measureText call. Forward-progress: >=1 grapheme advances from `start` per slice. Cross-segment guard: if forced grapheme overflows non-empty line, push line first, retry on fresh line. `noteFlowCheck` (sticky-note search predicate) mirrors the cursor-offset pattern.
 
 **Run coalescing:** Adjacent runs with identical font+highlight merge via string concat.
 
