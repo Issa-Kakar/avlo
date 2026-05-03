@@ -44,8 +44,17 @@ export interface KindCapability<K extends ObjectKind> {
   /** Point-probe: returns the paint class on a hit, or `null` on miss. */
   readonly hitPoint: (h: HandleOf<K>, p: Point, r: number) => Paint | null;
 
-  /** Rect-vs-geometry intersect (marquee tight phase). */
-  readonly hitRect: (h: HandleOf<K>, bbox: BBoxTuple) => boolean;
+  /**
+   * Rect-vs-geometry intersect (marquee tight phase).
+   *
+   * **`null` opt-out:** when the stored rbush bbox is *tight* to the geometry
+   * (no shadow / stroke / overhang padding), the rbush envelope filter that
+   * produced the candidate IS already the precision rect check — running this
+   * cap would re-do the same `bboxesIntersect` against identical numbers.
+   * `queryHandleIds` checks for `null` and trusts the envelope. See
+   * `tightFramedCap` for the kinds that opt in (image, code).
+   */
+  readonly hitRect: ((h: HandleOf<K>, bbox: BBoxTuple) => boolean) | null;
 
   /** Fill-aware circle-vs-geometry intersect (eraser). */
   readonly hitCircle: (h: HandleOf<K>, c: Point, r: number) => boolean;
@@ -139,14 +148,39 @@ function framedCap<K extends 'text' | 'note' | 'code' | 'image' | 'bookmark'>(
   };
 }
 
+/**
+ * Variant of `framedCap` for kinds whose stored rbush bbox is *tight* to the
+ * geometry's frame — i.e. `computeBBoxFor(...)` writes `[fx, fy, fx+fw, fy+fh]`
+ * with zero padding. Sets `hitRect: null` so `queryHandleIds` skips the
+ * precision rect check entirely and trusts the rbush envelope filter (which
+ * would otherwise run the same `bboxesIntersect` against identical numbers).
+ *
+ * Safe ONLY for kinds whose `bbox.ts` entry is exactly the frame:
+ *   - image  → `[x, y, x+w, y+h]` from `getFrame(y)`
+ *   - code   → `[ox, oy, ox+totalWidth, oy+blockHeight]` from `computeCodeBBox`
+ *
+ * Do NOT use for kinds whose stored bbox is padded beyond the frame — their
+ * cap legitimately filters out marquees touching only the padding zone:
+ *   - text:     italic overhang (`getItalicOverhangPad`) + 2px vertical pad
+ *   - note:     shadow pad (`getNoteShadowPad`, ~18.8wu @ scale 1)
+ *   - bookmark: shadow pad
+ *   - shape:    stroke pad + ellipse/diamond need shape-aware precision
+ *
+ * If a future kind's `bbox.ts` entry stops equaling its frame, switch it back
+ * to plain `framedCap` — otherwise marquee will leak hits in the padding zone.
+ */
+function tightFramedCap<K extends 'image' | 'code'>(resolveFrame: (h: HandleOf<K>) => FrameTuple | null): KindCapability<K> {
+  return { ...framedCap(resolveFrame), hitRect: null };
+}
+
 export const KIND: { readonly [K in ObjectKind]: KindCapability<K> } = {
   stroke: STROKE_CAP,
   connector: CONNECTOR_CAP,
   shape: SHAPE_CAP,
   text: framedCap<'text'>((h) => getTextFrame(h.id)),
-  code: framedCap<'code'>((h) => getCodeFrame(h.id)),
+  code: tightFramedCap<'code'>((h) => getCodeFrame(h.id)),
   note: framedCap<'note'>((h) => getTextFrame(h.id)),
-  image: framedCap<'image'>((h) => getFrame(h.y)),
+  image: tightFramedCap<'image'>((h) => getFrame(h.y)),
   bookmark: framedCap<'bookmark'>((h) => getBookmarkFrame(h.id)),
 };
 

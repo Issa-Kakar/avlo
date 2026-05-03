@@ -97,6 +97,13 @@ function collectHits(entries: readonly IndexEntry[], p: Point, r: number, kindFi
  * prefilter via rbush, then per-kind precise intersect (`cap.hitRect` for
  * rect regions, `cap.hitCircle` for point regions). Returns `string[]` so
  * consumers don't `.map(h => h.id)` afterward.
+ *
+ * Tight-bbox fast path: when `cap.hitRect === null` (kinds whose stored
+ * rbush bbox equals their frame — currently image and code), the envelope
+ * filter we just passed IS the precision rect check, so we skip the cap
+ * call. See `tightFramedCap` in `kind-capability.ts`. Marquee runs precision
+ * for every viewport entry, so dropping the redundant Y.Map.get +
+ * `bboxesIntersect` per image/code matters when many are on screen.
  */
 export function queryHandleIds(region: Region): string[] {
   const env = regionEnvelope(region);
@@ -106,7 +113,7 @@ export function queryHandleIds(region: Region): string[] {
     const h = getHandle(e.id);
     if (!h) continue;
     const cap = KIND[h.kind] as AnyCapability;
-    const ok = region.kind === 'rect' ? cap.hitRect(h, region.bbox) : cap.hitCircle(h, region.p, region.r);
+    const ok = region.kind === 'rect' ? cap.hitRect === null || cap.hitRect(h, region.bbox) : cap.hitCircle(h, region.p, region.r);
     if (ok) out.push(h.id);
   }
   return out;

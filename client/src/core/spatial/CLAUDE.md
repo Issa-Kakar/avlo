@@ -116,6 +116,14 @@ hitPoint(h, p, r) → Paint | null     // null = geometric miss
 3. **Only shapes produce `'fill'` / `'seethrough'`.** `shapeArea` (inline
    `f[2]*f[3]`) is only called when `paint ∈ {fill, seethrough}`, so frames of
    non-shape bindables are never read for area.
+4. **`cap.hitRect` may be `null`** — opt-out for kinds whose stored rbush bbox
+   equals their tight frame (currently image and code via `tightFramedCap`).
+   `queryHandleIds` checks for null and trusts the rbush envelope filter as
+   the precision rect check, skipping a redundant `bboxesIntersect` (and the
+   Y.Map.get inside the cap's frame resolver). Kinds with stored padding —
+   text (italic overhang + 2px vert), note/bookmark (shadow), shape (stroke +
+   ellipse/diamond geometry) — keep a real `hitRect` because their cap
+   legitimately filters out marquees touching only the padding zone.
 
 ### Frame resolution (per kind)
 
@@ -197,7 +205,10 @@ construction). Hydrated via `bulkLoad()` on room join, maintained per-object via
 ## When modifying
 
 - **New `ObjectKind`**: add a `KindCapability<K>` to `KIND`. `bindable` is read
-  once at import. For framed-rect kinds use `framedCap(getXxxFrame)`.
+  once at import. For framed-rect kinds use `framedCap(getXxxFrame)` — or
+  `tightFramedCap` if the new kind's `bbox.ts` entry equals its frame with
+  zero padding (no shadow / stroke / overhang), which sets `hitRect: null`
+  and skips the redundant marquee precision pass.
 - **New consumer with hit-testing needs**: pick the closest existing picker by
   return shape (handle / id / typed accept result / `string[]`). Don't add a new
   picker export unless the occlusion model genuinely differs.
