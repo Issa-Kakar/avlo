@@ -2,9 +2,29 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Avlo</title>
+
+    <!-- Avlo · Aqua to ink · favicon + PWA setup -->
+    <link rel="icon" type="image/svg+xml" href="/aqua-ink/favicon.svg?v=3" />
+    <!-- PNG/ICO fallbacks disabled until they're regenerated to match the new SVG.
+         Chrome prefers exact-size PNG over SVG, so leaving these in shows the OLD padded design.
+         Re-enable once Claude Design ships matching PNGs:
+    <link rel="icon" type="image/png" sizes="32x32" href="/aqua-ink/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/aqua-ink/favicon-16x16.png" />
+    <link rel="alternate icon" href="/aqua-ink/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/aqua-ink/apple-touch-icon.png" />
+    -->
+    <link rel="manifest" href="/aqua-ink/site.webmanifest" />
+    <meta name="theme-color" content="#020a14" />
+    <meta property="og:title" content="Avlo" />
+    <meta property="og:description" content="Offline-first collaborative whiteboard." />
+    <meta property="og:image" content="https://example.com/aqua-ink/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://example.com/aqua-ink/og-image.png" />
 
     <!-- Syne bold for logo (temporary — replace with local font-face later) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
