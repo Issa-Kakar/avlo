@@ -22,7 +22,6 @@ import {
   pasteImage,
   selectAll,
 } from '@/core/clipboard/clipboard-actions';
-import { frameOf } from '@/core/geometry/frame-of';
 import { openImageFilePicker } from '@/core/image/image-actions';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { type ShapeVariant, setCursorOverride, type Tool, useDeviceUIStore } from '@/stores/device-ui-store';
@@ -261,22 +260,20 @@ function handleBareKey(e: KeyboardEvent, key: string): void {
     return;
   }
 
-  // Enter — edit single text or shape
+  // Enter — start editing the single selected text/shape/note (textTool) or code block (codeTool).
+  // Omitting the entry point lets the editor default the cursor to the end of the document.
   if (key === 'enter' && useDeviceUIStore.getState().activeTool === 'select') {
     if (selectedIds.length !== 1) return;
     const handle = getHandle(selectedIds[0]);
-    if (!handle || (handle.kind !== 'text' && handle.kind !== 'shape' && handle.kind !== 'note')) return;
+    if (!handle) return;
 
-    // Compute center
-    const frame = frameOf(handle);
-    if (!frame) return;
-
-    const centerX = frame[0] + frame[2] / 2;
-    const centerY = frame[1] + frame[3] / 2;
-
-    e.preventDefault();
-    textTool.startEditing(handle.id, [centerX, centerY]);
-    return;
+    if (handle.kind === 'text' || handle.kind === 'shape' || handle.kind === 'note') {
+      e.preventDefault();
+      textTool.startEditing(handle.id);
+    } else if (handle.kind === 'code') {
+      e.preventDefault();
+      codeTool.startEditing(handle.id);
+    }
   }
 }
 

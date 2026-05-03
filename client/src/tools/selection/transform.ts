@@ -49,7 +49,7 @@ import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
 import type { BindableKind, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
-import { invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getHandle, transact } from '@/runtime/room-runtime';
 import {
   type ConnectorTopology,
@@ -772,17 +772,9 @@ export class TransformController {
   }
 
   cancel(): void {
-    // Invalidate dirty rects (padded for text — out.bbox alone would leak italic overhang).
-    for (const kind in this.store) {
-      const k = kind as ObjectKind;
-      const map = this.store[k];
-      if (!map) continue;
-      for (const [, e] of map) {
-        invalidateWorldBBox(e.prevBbox);
-        fillDirty(e.prevBbox, k, e);
-        invalidateWorldBBox(e.prevBbox);
-      }
-    }
+    // Full clear is simpler and more correct than walking entries + topology — cancel
+    // restores idle geometry, so every dirty rect from the gesture must be repainted.
+    invalidateWorldAll();
     if (this.topology) cancelTopology(this.topology);
     this.clear();
   }

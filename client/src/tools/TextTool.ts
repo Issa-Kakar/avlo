@@ -47,10 +47,10 @@ import {
 } from '@/core/text/sticky-note';
 import { anchorFactor, computeLabelTextBox, FONT_FAMILIES, getBaselineToTopRatio, getMeasuredAscentRatio } from '@/core/text/text-system';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { invalidateWorld } from '@/renderer/RenderLoop';
+import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getHandleKind, getObjects, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
-import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { PointerTool, PreviewData } from './types';
@@ -127,7 +127,7 @@ export class TextTool implements PointerTool {
 
     this.resetGesture();
     invalidateOverlay();
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
   }
 
   cancel(): void {
@@ -164,9 +164,10 @@ export class TextTool implements PointerTool {
 
   /**
    * Start editing an existing text object.
-   * Called by SelectTool (double-click on text) with the click position for cursor placement.
+   * SelectTool (click) passes the click position for cursor placement; keyboard Enter
+   * omits it so the cursor lands at the end of the document.
    */
-  startEditing(objectId: string, entryPoint: [number, number]): void {
+  startEditing(objectId: string, entryPoint?: [number, number]): void {
     const handle = getHandle(objectId);
     if (!handle) return;
 
@@ -184,9 +185,9 @@ export class TextTool implements PointerTool {
       });
     }
 
-    this.downWorld = entryPoint;
+    this.downWorld = entryPoint ?? null;
     useSelectionStore.getState().beginTextEditing(objectId, isNewLabel);
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
     this.mountEditor(objectId, isNewLabel);
   }
 
@@ -432,13 +433,13 @@ export class TextTool implements PointerTool {
       },
     });
 
-    // For existing text, place cursor at click position.
+    // For existing text, place cursor at click position when provided, else at end.
     // Deferred to next frame — ProseMirror needs a layout pass before posAtCoords works.
-    if (!isNew && clientCoords) {
+    if (!isNew) {
       requestAnimationFrame(() => {
         if (!this.editor) return;
-        const pos = this.editor.view.posAtCoords({ left: clientCoords[0], top: clientCoords[1] });
-        this.editor.commands.focus(pos ? pos.pos : 'end');
+        const hit = clientCoords ? this.editor.view.posAtCoords({ left: clientCoords[0], top: clientCoords[1] }) : null;
+        this.editor.commands.focus(hit ? hit.pos : 'end');
       });
     }
 
@@ -638,7 +639,7 @@ export class TextTool implements PointerTool {
 
     useSelectionStore.getState().endTextEditing();
     // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
     invalidateOverlay();
   }
 

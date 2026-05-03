@@ -42,10 +42,10 @@ import {
 } from '@/core/code/code-tokens';
 import { pickTopmostOfKind } from '@/core/spatial/object-query';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { invalidateWorld } from '@/renderer/RenderLoop';
+import { invalidateWorldAll } from '@/renderer/RenderLoop';
 import { getActiveRoomDoc, getHandle, getObjects, transact } from '@/runtime/room-runtime';
 import { getEditorHost } from '@/runtime/SurfaceManager';
-import { getCanvasElement, getVisibleWorldBounds, useCameraStore, worldToClient } from '@/stores/camera-store';
+import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import type { PointerTool, PreviewData } from './types';
@@ -108,7 +108,7 @@ export class CodeTool implements PointerTool {
 
     this.resetGesture();
     invalidateOverlay();
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
   }
 
   cancel(): void {
@@ -402,6 +402,8 @@ export class CodeTool implements PointerTool {
         v.focus();
       });
     } else {
+      // No entry point (keyboard Enter) — position cursor at end of document.
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
       view.focus();
     }
 
@@ -458,7 +460,7 @@ export class CodeTool implements PointerTool {
     this.container = container;
     this.objectId = objectId;
 
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
 
     this.setupEditorHandlers();
   }
@@ -679,7 +681,7 @@ export class CodeTool implements PointerTool {
     this.outputTextDiv = null;
 
     useSelectionStore.getState().endCodeEditing();
-    invalidateWorld(getVisibleWorldBounds());
+    invalidateWorldAll();
     invalidateOverlay();
   }
 

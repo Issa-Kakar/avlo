@@ -23,7 +23,7 @@ import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
 import type { BindableKind, ObjectHandle, StoredAnchor } from '@/core/types/objects';
-import { invalidateWorldBBox } from '@/renderer/RenderLoop';
+import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getConnectorsForShape, getHandle, getObjects } from '@/runtime/room-runtime';
 import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
@@ -481,13 +481,8 @@ function commitReroute(e: RerouteEntry): void {
 // Cancel
 // ============================================================================
 
-export function cancelTopology(topology: ConnectorTopology): void {
-  for (const e of topology.translates) {
-    invalidateWorldBBox(e.prevBbox);
-    invalidateWorldBBox(e.originalBbox);
-  }
-  for (const e of topology.reroutes) {
-    invalidateWorldBBox(e.prevBbox);
-    invalidateWorldBBox(e.originalBbox);
-  }
+export function cancelTopology(_topology: ConnectorTopology): void {
+  // Full clear matches transform.cancel — both restore idle geometry, so per-entry
+  // bbox accounting buys nothing over a single base-canvas repaint.
+  invalidateWorldAll();
 }
