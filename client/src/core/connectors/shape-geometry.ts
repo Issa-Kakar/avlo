@@ -254,36 +254,56 @@ function projectAnchorDiamond(anchor: Point, frame: FrameTuple, outEdge: Point, 
  *
  * Used by straight connectors with interior anchors — the visible line stops at
  * the shape edge; a dashed guide covers the interior segment.
+ *
+ * Per-shape `*ExitT` helpers are pure scalar math: take 8 frame/ray scalars,
+ * return the forward `t` along the ray (or `NaN` on miss). The destructure
+ * and the world-point write `origin + t·direction` happen here, once.
  */
 export function rayShapeExitPoint(origin: Point, direction: Point, frame: FrameTuple, shapeType: string, outPoint: Point): boolean {
   if (frame[2] < 0.001 || frame[3] < 0.001) return false;
-  if (Math.abs(direction[0]) < 1e-9 && Math.abs(direction[1]) < 1e-9) return false;
-
-  if (shapeType === 'ellipse') return rayEllipseExit(origin, direction, frame, outPoint);
-  if (shapeType === 'diamond') return rayDiamondExit(origin, direction, frame, outPoint);
-  return rayRectExit(origin, direction, frame, outPoint);
-}
-
-/** Ray vs axis-aligned rectangle — slab method, smallest forward axis-exit. */
-function rayRectExit(origin: Point, direction: Point, frame: FrameTuple, out: Point): boolean {
   const [ox, oy] = origin;
   const [dx, dy] = direction;
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return false;
   const [x, y, w, h] = frame;
-  // Per-axis exit t for the slab containing `origin`. Inf when the ray is parallel.
-  const tx = dx > 1e-12 ? (x + w - ox) / dx : dx < -1e-12 ? (x - ox) / dx : Infinity;
-  const ty = dy > 1e-12 ? (y + h - oy) / dy : dy < -1e-12 ? (y - oy) / dy : Infinity;
-  const t = Math.min(tx, ty);
-  if (t === Infinity || t <= 1e-9) return false;
-  out[0] = ox + t * dx;
-  out[1] = oy + t * dy;
+
+  const t =
+    shapeType === 'ellipse'
+      ? rayEllipseExitT(ox, oy, dx, dy, x, y, w, h)
+      : shapeType === 'diamond'
+        ? rayDiamondExitT(ox, oy, dx, dy, x, y, w, h)
+        : rayRectExitT(ox, oy, dx, dy, x, y, w, h);
+  if (Number.isNaN(t)) return false;
+
+  outPoint[0] = ox + t * dx;
+  outPoint[1] = oy + t * dy;
   return true;
 }
 
-/** Ray vs ellipse — quadratic in unit-circle coords; smallest positive root. */
-function rayEllipseExit(origin: Point, direction: Point, frame: FrameTuple, out: Point): boolean {
-  const [ox, oy] = origin;
-  const [dx, dy] = direction;
-  const [x, y, w, h] = frame;
+/** Where a ray exits a 1D `[near, far]` slab. `Infinity` if the ray is parallel. */
+function slabExit(near: number, far: number, origin: number, dir: number): number {
+  if (dir > 1e-12) return (far - origin) / dir;
+  if (dir < -1e-12) return (near - origin) / dir;
+  return Infinity;
+}
+
+/** Smallest forward (>1e-9) real root of `a·t² + b·t + c = 0`. `NaN` on miss. */
+function smallestPositiveRoot(a: number, b: number, c: number): number {
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return NaN;
+  const sqrtD = Math.sqrt(disc);
+  const tNear = (-b - sqrtD) / (2 * a);
+  const tFar = (-b + sqrtD) / (2 * a);
+  return tNear > 1e-9 ? tNear : tFar > 1e-9 ? tFar : NaN;
+}
+
+/** Ray vs axis-aligned rectangle — slab method, smallest forward axis-exit. */
+function rayRectExitT(ox: number, oy: number, dx: number, dy: number, x: number, y: number, w: number, h: number): number {
+  const t = Math.min(slabExit(x, x + w, ox, dx), slabExit(y, y + h, oy, dy));
+  return t === Infinity || t <= 1e-9 ? NaN : t;
+}
+
+/** Ray vs ellipse — quadratic in unit-circle coords; smallest forward root. */
+function rayEllipseExitT(ox: number, oy: number, dx: number, dy: number, x: number, y: number, w: number, h: number): number {
   const rx = w / 2;
   const ry = h / 2;
   // Normalize so the ellipse becomes the unit circle |p|² = 1.
@@ -291,28 +311,11 @@ function rayEllipseExit(origin: Point, direction: Point, frame: FrameTuple, out:
   const v = (oy - y - ry) / ry;
   const du = dx / rx;
   const dv = dy / ry;
-  const a = du * du + dv * dv;
-  const b = 2 * (u * du + v * dv);
-  const c = u * u + v * v - 1;
-  const disc = b * b - 4 * a * c;
-  if (disc < 0) return false;
-  const sqrtD = Math.sqrt(disc);
-  const tNear = (-b - sqrtD) / (2 * a);
-  const tFar = (-b + sqrtD) / (2 * a);
-  // Smallest forward root: entry for exterior origin, exit for interior.
-  const t = tNear > 1e-9 ? tNear : tFar > 1e-9 ? tFar : NaN;
-  if (Number.isNaN(t)) return false;
-  out[0] = ox + t * dx;
-  out[1] = oy + t * dy;
-  return true;
+  return smallestPositiveRoot(du * du + dv * dv, 2 * (u * du + v * dv), u * u + v * v - 1);
 }
 
 /** Ray vs diamond — Cramer's rule across the 4 vertex-to-vertex segments. */
-function rayDiamondExit(origin: Point, direction: Point, frame: FrameTuple, out: Point): boolean {
-  const [ox, oy] = origin;
-  const [dx, dy] = direction;
-  const [x, y, w, h] = frame;
-
+function rayDiamondExitT(ox: number, oy: number, dx: number, dy: number, x: number, y: number, w: number, h: number): number {
   const wx = x;
   const wy = y + h / 2;
   const nx = x + w / 2;
@@ -328,10 +331,7 @@ function rayDiamondExit(origin: Point, direction: Point, frame: FrameTuple, out:
   bestT = raySegmentT(ox, oy, dx, dy, ex, ey, sx, sy, bestT);
   bestT = raySegmentT(ox, oy, dx, dy, sx, sy, wx, wy, bestT);
 
-  if (bestT === Infinity) return false;
-  out[0] = ox + bestT * dx;
-  out[1] = oy + bestT * dy;
-  return true;
+  return bestT === Infinity ? NaN : bestT;
 }
 
 /** Smallest forward `t` of ray vs segment, returning `bestT` unchanged on miss. */
