@@ -68,6 +68,13 @@ export function midpointFor(frame: FrameTuple, side: Dir, out: Point): void {
  * vertical), while the same anchor on a stretched-tall diamond classifies as E —
  * the right answer for routing in both cases.
  *
+ * **Cardinal midpoint fast path.** The 4 N/E/S/W midpoint anchors short-circuit
+ * the per-shape math: rect edge-midpoint = ellipse cardinal point = diamond
+ * vertex, all sharing world position and cardinal outward normal. This is also
+ * what fixes diamond vertices — the per-edge classifier would otherwise flip
+ * a left-vertex anchor to N or S on a stretched-wide diamond (the projected
+ * edge's normal `(-h, -w)/L` is dominated by `w`).
+ *
  * Defensive fallbacks (write frame center + outward `(1, 0)` and return E):
  *   - frame width or height < 0.001
  *   - anchor exactly at `(0.5, 0.5)` — only legitimate for straight center snaps
@@ -82,9 +89,39 @@ export function projectAnchorToEdge(anchor: Point, frame: FrameTuple, shapeType:
     outNormal[1] = 0;
     return 'E';
   }
+  const midDir = cardinalMidpointDir(anchor[0], anchor[1]);
+  if (midDir !== null) {
+    outEdge[0] = frame[0] + anchor[0] * frame[2];
+    outEdge[1] = frame[1] + anchor[1] * frame[3];
+    outNormal[0] = midDir === 'E' ? 1 : midDir === 'W' ? -1 : 0;
+    outNormal[1] = midDir === 'S' ? 1 : midDir === 'N' ? -1 : 0;
+    return midDir;
+  }
   if (shapeType === 'ellipse') return projectAnchorEllipse(anchor, frame, outEdge, outNormal);
   if (shapeType === 'diamond') return projectAnchorDiamond(anchor, frame, outEdge, outNormal);
   return projectAnchorRect(anchor, frame, outEdge, outNormal);
+}
+
+const MIDPOINT_EPS = 1e-9;
+
+/**
+ * Match `(ax, ay)` to one of the 4 cardinal midpoints — N=(0.5,0), E=(1,0.5),
+ * S=(0.5,1), W=(0,0.5) — within `MIDPOINT_EPS`. Returns `null` otherwise. The
+ * snap layer writes these values exactly via `midpointFor` → `normalizedFromEdge`;
+ * the epsilon covers drift through serialization or transform math.
+ */
+function cardinalMidpointDir(ax: number, ay: number): Dir | null {
+  const halfX = ax > 0.5 - MIDPOINT_EPS && ax < 0.5 + MIDPOINT_EPS;
+  if (halfX) {
+    if (ay < MIDPOINT_EPS) return 'N';
+    if (ay > 1 - MIDPOINT_EPS) return 'S';
+  }
+  const halfY = ay > 0.5 - MIDPOINT_EPS && ay < 0.5 + MIDPOINT_EPS;
+  if (halfY) {
+    if (ax < MIDPOINT_EPS) return 'W';
+    if (ax > 1 - MIDPOINT_EPS) return 'E';
+  }
+  return null;
 }
 
 /**
