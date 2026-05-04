@@ -91,6 +91,12 @@ export const bboxCenter = (b: Readonly<BBoxTuple>): Point => [(b[0] + b[2]) / 2,
 export const bboxSize = (b: BBoxTuple): [number, number] => [b[2] - b[0], b[3] - b[1]];
 export const frameCenter = (f: FrameTuple): Point => [f[0] + f[2] / 2, f[1] + f[3] / 2];
 
+/** In-place mirror of `frameCenter` — fill `out` with the frame's center point. */
+export function fillFrameCenter(f: FrameTuple, out: Point): void {
+  out[0] = f[0] + f[2] / 2;
+  out[1] = f[1] + f[3] / 2;
+}
+
 // ============================================================================
 // ANCHOR → FRAME BUILDER (used by DrawingTool + shape preview renderer)
 // ============================================================================

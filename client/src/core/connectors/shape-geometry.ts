@@ -19,8 +19,9 @@
  * @module core/connectors/shape-geometry
  */
 
-import { frameCenter } from '../geometry/bounds';
+import { fillFrameCenter, frameCenter } from '../geometry/bounds';
 import type { FrameTuple, Point } from '../types/geometry';
+import { directionFromDelta, directionVector } from './connector-utils';
 import type { Dir } from './types';
 
 // ============================================================================
@@ -30,6 +31,28 @@ import type { Dir } from './types';
 export const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export { frameCenter };
+
+/** Fill `out` with the world point of normalized `anchor` against `frame`. */
+export function fillAnchorPoint(anchor: Point, frame: FrameTuple, out: Point): void {
+  out[0] = frame[0] + anchor[0] * frame[2];
+  out[1] = frame[1] + anchor[1] * frame[3];
+}
+
+/** Fill `out` with the unit cardinal vector for `dir`. */
+export function fillCardinal(dir: Dir, out: Point): void {
+  const v = directionVector(dir);
+  out[0] = v[0];
+  out[1] = v[1];
+}
+
+/** Write the unit-normalized `(x, y)` into `out`. Returns `false` on zero-magnitude (out untouched). */
+function normalize2dInto(x: number, y: number, out: Point): boolean {
+  const len = Math.hypot(x, y);
+  if (len < 1e-12) return false;
+  out[0] = x / len;
+  out[1] = y / len;
+  return true;
+}
 
 /** Fill `out` with the world-space midpoint of `side` for any rect-inscribed shape. */
 export function midpointFor(frame: FrameTuple, side: Dir, out: Point): void {
@@ -83,18 +106,14 @@ export function midpointFor(frame: FrameTuple, side: Dir, out: Point): void {
  */
 export function projectAnchorToEdge(anchor: Point, frame: FrameTuple, shapeType: string, outEdge: Point, outNormal: Point): Dir {
   if (frame[2] < 0.001 || frame[3] < 0.001 || (anchor[0] === 0.5 && anchor[1] === 0.5)) {
-    outEdge[0] = frame[0] + frame[2] / 2;
-    outEdge[1] = frame[1] + frame[3] / 2;
-    outNormal[0] = 1;
-    outNormal[1] = 0;
+    fillFrameCenter(frame, outEdge);
+    fillCardinal('E', outNormal);
     return 'E';
   }
   const midDir = cardinalMidpointDir(anchor[0], anchor[1]);
   if (midDir !== null) {
-    outEdge[0] = frame[0] + anchor[0] * frame[2];
-    outEdge[1] = frame[1] + anchor[1] * frame[3];
-    outNormal[0] = midDir === 'E' ? 1 : midDir === 'W' ? -1 : 0;
-    outNormal[1] = midDir === 'S' ? 1 : midDir === 'N' ? -1 : 0;
+    fillAnchorPoint(anchor, frame, outEdge);
+    fillCardinal(midDir, outNormal);
     return midDir;
   }
   if (shapeType === 'ellipse') return projectAnchorEllipse(anchor, frame, outEdge, outNormal);
@@ -131,44 +150,25 @@ function cardinalMidpointDir(ax: number, ay: number): Dir | null {
 function projectAnchorRect(anchor: Point, frame: FrameTuple, outEdge: Point, outNormal: Point): Dir {
   const ax = clamp01(anchor[0]);
   const ay = clamp01(anchor[1]);
-  const dN = ay;
-  const dS = 1 - ay;
-  const dW = ax;
+
+  let side: Dir = 'W';
+  let best = ax;
   const dE = 1 - ax;
-  const [x, y, w, h] = frame;
-
-  let side: Dir;
-  if (dW <= dE && dW <= dN && dW <= dS) side = 'W';
-  else if (dE <= dN && dE <= dS) side = 'E';
-  else if (dN <= dS) side = 'N';
-  else side = 'S';
-
-  switch (side) {
-    case 'W':
-      outEdge[0] = x;
-      outEdge[1] = y + ay * h;
-      outNormal[0] = -1;
-      outNormal[1] = 0;
-      return 'W';
-    case 'E':
-      outEdge[0] = x + w;
-      outEdge[1] = y + ay * h;
-      outNormal[0] = 1;
-      outNormal[1] = 0;
-      return 'E';
-    case 'N':
-      outEdge[0] = x + ax * w;
-      outEdge[1] = y;
-      outNormal[0] = 0;
-      outNormal[1] = -1;
-      return 'N';
-    case 'S':
-      outEdge[0] = x + ax * w;
-      outEdge[1] = y + h;
-      outNormal[0] = 0;
-      outNormal[1] = 1;
-      return 'S';
+  if (dE < best) {
+    side = 'E';
+    best = dE;
   }
+  if (ay < best) {
+    side = 'N';
+    best = ay;
+  }
+  if (1 - ay < best) side = 'S';
+
+  // Snap perpendicular axis to 0/1; tangential axis keeps the clamped anchor coord.
+  outEdge[0] = frame[0] + (side === 'W' ? 0 : side === 'E' ? 1 : ax) * frame[2];
+  outEdge[1] = frame[1] + (side === 'N' ? 0 : side === 'S' ? 1 : ay) * frame[3];
+  fillCardinal(side, outNormal);
+  return side;
 }
 
 /**
@@ -180,31 +180,17 @@ function projectAnchorEllipse(anchor: Point, frame: FrameTuple, outEdge: Point, 
   const [x, y, w, h] = frame;
   const rx = w / 2;
   const ry = h / 2;
-  const cx = x + rx;
-  const cy = y + ry;
   const ux = 2 * anchor[0] - 1;
   const uy = 2 * anchor[1] - 1;
   const ulen = Math.hypot(ux, uy);
-  let unx: number;
-  let uny: number;
-  if (ulen < 1e-9) {
-    unx = 1;
-    uny = 0;
-  } else {
-    unx = ux / ulen;
-    uny = uy / ulen;
-  }
+  const unx = ulen < 1e-9 ? 1 : ux / ulen;
+  const uny = ulen < 1e-9 ? 0 : uy / ulen;
 
-  outEdge[0] = cx + rx * unx;
-  outEdge[1] = cy + ry * uny;
+  outEdge[0] = x + rx + rx * unx;
+  outEdge[1] = y + ry + ry * uny;
 
-  const nxRaw = unx / rx;
-  const nyRaw = uny / ry;
-  const nlen = Math.hypot(nxRaw, nyRaw);
-  outNormal[0] = nxRaw / nlen;
-  outNormal[1] = nyRaw / nlen;
-
-  return cardinalFromNormal(outNormal);
+  normalize2dInto(unx / rx, uny / ry, outNormal);
+  return directionFromDelta(outNormal[0], outNormal[1]);
 }
 
 /**
@@ -233,9 +219,7 @@ function projectAnchorDiamond(anchor: Point, frame: FrameTuple, outEdge: Point, 
     const sy = i === 0 ? 0.5 : i === 1 ? 0 : i === 2 ? 0.5 : 1;
     const dx = i < 2 ? 0.5 : -0.5;
     const dy = i === 0 || i === 3 ? -0.5 : 0.5;
-    let t = ((ax - sx) * dx + (ay - sy) * dy) / 0.5; // |dir|² = 0.5
-    if (t < 0) t = 0;
-    else if (t > 1) t = 1;
+    const t = clamp01(((ax - sx) * dx + (ay - sy) * dy) / 0.5); // |dir|² = 0.5
     const px = sx + t * dx;
     const py = sy + t * dy;
     const distSq = (ax - px) ** 2 + (ay - py) ** 2;
@@ -255,19 +239,8 @@ function projectAnchorDiamond(anchor: Point, frame: FrameTuple, outEdge: Point, 
   // 0 NW: (-h, -w)   1 NE: ( h, -w)   2 SE: ( h,  w)   3 SW: (-h,  w)
   const nx = bestEdge === 0 || bestEdge === 3 ? -h : h;
   const ny = bestEdge < 2 ? -w : w;
-  const nlen = Math.hypot(nx, ny);
-  outNormal[0] = nx / nlen;
-  outNormal[1] = ny / nlen;
-
-  return cardinalFromNormal(outNormal);
-}
-
-/** Dominant-axis cardinal from a unit world normal; horizontal wins on ties. */
-function cardinalFromNormal(n: Point): Dir {
-  const ax = Math.abs(n[0]);
-  const ay = Math.abs(n[1]);
-  if (ax >= ay) return n[0] >= 0 ? 'E' : 'W';
-  return n[1] >= 0 ? 'S' : 'N';
+  normalize2dInto(nx, ny, outNormal);
+  return directionFromDelta(outNormal[0], outNormal[1]);
 }
 
 // ============================================================================
@@ -291,70 +264,44 @@ export function rayShapeExitPoint(origin: Point, direction: Point, frame: FrameT
   return rayRectExit(origin, direction, frame, outPoint);
 }
 
-/** Ray vs axis-aligned rectangle — smallest positive t across four edges. */
+/** Ray vs axis-aligned rectangle — slab method, smallest forward axis-exit. */
 function rayRectExit(origin: Point, direction: Point, frame: FrameTuple, out: Point): boolean {
   const [ox, oy] = origin;
   const [dx, dy] = direction;
   const [x, y, w, h] = frame;
-  let bestT = Infinity;
-
-  if (Math.abs(dy) >= 1e-12) {
-    const tN = (y - oy) / dy;
-    if (tN > 1e-9 && tN < bestT) {
-      const cross = ox + tN * dx;
-      if (cross >= x - 0.001 && cross <= x + w + 0.001) bestT = tN;
-    }
-    const tS = (y + h - oy) / dy;
-    if (tS > 1e-9 && tS < bestT) {
-      const cross = ox + tS * dx;
-      if (cross >= x - 0.001 && cross <= x + w + 0.001) bestT = tS;
-    }
-  }
-  if (Math.abs(dx) >= 1e-12) {
-    const tW = (x - ox) / dx;
-    if (tW > 1e-9 && tW < bestT) {
-      const cross = oy + tW * dy;
-      if (cross >= y - 0.001 && cross <= y + h + 0.001) bestT = tW;
-    }
-    const tE = (x + w - ox) / dx;
-    if (tE > 1e-9 && tE < bestT) {
-      const cross = oy + tE * dy;
-      if (cross >= y - 0.001 && cross <= y + h + 0.001) bestT = tE;
-    }
-  }
-
-  if (bestT === Infinity) return false;
-  out[0] = ox + bestT * dx;
-  out[1] = oy + bestT * dy;
+  // Per-axis exit t for the slab containing `origin`. Inf when the ray is parallel.
+  const tx = dx > 1e-12 ? (x + w - ox) / dx : dx < -1e-12 ? (x - ox) / dx : Infinity;
+  const ty = dy > 1e-12 ? (y + h - oy) / dy : dy < -1e-12 ? (y - oy) / dy : Infinity;
+  const t = Math.min(tx, ty);
+  if (t === Infinity || t <= 1e-9) return false;
+  out[0] = ox + t * dx;
+  out[1] = oy + t * dy;
   return true;
 }
 
-/** Ray vs ellipse — solve quadratic in parameter t. */
+/** Ray vs ellipse — quadratic in unit-circle coords; smallest positive root. */
 function rayEllipseExit(origin: Point, direction: Point, frame: FrameTuple, out: Point): boolean {
   const [ox, oy] = origin;
   const [dx, dy] = direction;
   const [x, y, w, h] = frame;
   const rx = w / 2;
   const ry = h / 2;
-  const cx = x + rx;
-  const cy = y + ry;
-
-  const a = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-  const b = 2 * (((ox - cx) * dx) / (rx * rx) + ((oy - cy) * dy) / (ry * ry));
-  const c = (ox - cx) ** 2 / (rx * rx) + (oy - cy) ** 2 / (ry * ry) - 1;
-
+  // Normalize so the ellipse becomes the unit circle |p|² = 1.
+  const u = (ox - x - rx) / rx;
+  const v = (oy - y - ry) / ry;
+  const du = dx / rx;
+  const dv = dy / ry;
+  const a = du * du + dv * dv;
+  const b = 2 * (u * du + v * dv);
+  const c = u * u + v * v - 1;
   const disc = b * b - 4 * a * c;
   if (disc < 0) return false;
-
-  const sqrtDisc = Math.sqrt(disc);
-  const t1 = (-b + sqrtDisc) / (2 * a);
-  const t2 = (-b - sqrtDisc) / (2 * a);
-
-  let t = Infinity;
-  if (t1 > 1e-9 && t1 < t) t = t1;
-  if (t2 > 1e-9 && t2 < t) t = t2;
-  if (t === Infinity) return false;
-
+  const sqrtD = Math.sqrt(disc);
+  const tNear = (-b - sqrtD) / (2 * a);
+  const tFar = (-b + sqrtD) / (2 * a);
+  // Smallest forward root: entry for exterior origin, exit for interior.
+  const t = tNear > 1e-9 ? tNear : tFar > 1e-9 ? tFar : NaN;
+  if (Number.isNaN(t)) return false;
   out[0] = ox + t * dx;
   out[1] = oy + t * dy;
   return true;

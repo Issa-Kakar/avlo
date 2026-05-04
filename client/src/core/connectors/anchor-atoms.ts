@@ -16,13 +16,16 @@ import type { FrameTuple, Point } from '../types/geometry';
 import type { ObjectHandle, StoredAnchor } from '../types/objects';
 import { directionVector } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
+import { fillAnchorPoint } from './shape-geometry';
 import type { Dir, SnapTarget } from './types';
 
 const ZERO_POINT: Point = [0, 0];
 
-/** Raw interpolation of a normalized anchor against a frame — no offset. */
+/** Raw interpolation of a normalized anchor against a frame — no offset. Allocates. */
 export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
-  return [frame[0] + anchor[0] * frame[2], frame[1] + anchor[1] * frame[3]];
+  const out: Point = [0, 0];
+  fillAnchorPoint(anchor, frame, out);
+  return out;
 }
 
 /**
@@ -34,9 +37,12 @@ export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
  * cardinal so the stub stays orthogonal to the routing grid.
  */
 export function elbowAnchorPoint(anchor: Point, frame: FrameTuple, dir: Dir): Point {
-  const [ax, ay] = anchor;
-  const [dx, dy] = directionVector(dir);
-  return [frame[0] + ax * frame[2] + dx * EDGE_CLEARANCE_W, frame[1] + ay * frame[3] + dy * EDGE_CLEARANCE_W];
+  const v = directionVector(dir);
+  const out: Point = [0, 0];
+  fillAnchorPoint(anchor, frame, out);
+  out[0] += v[0] * EDGE_CLEARANCE_W;
+  out[1] += v[1] * EDGE_CLEARANCE_W;
+  return out;
 }
 
 /** Same-shape test — both endpoints share a bound shape id. */
