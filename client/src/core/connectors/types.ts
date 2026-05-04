@@ -139,49 +139,15 @@ export interface Centerlines {
 }
 
 /**
- * Grid cell with position and index.
- */
-export interface GridCell {
-  /** World X coordinate */
-  x: number;
-  /** World Y coordinate */
-  y: number;
-  /** Grid index X */
-  xi: number;
-  /** Grid index Y */
-  yi: number;
-}
-
-/**
  * Non-uniform grid structure for A* routing.
+ *
+ * Grid cells are addressed by index: `cellIdx = yi * xLines.length + xi`.
+ * The cell's world position is `(xLines[xi], yLines[yi])`. A* never materializes
+ * a `GridCell` object — index + line arrays carry all the info needed.
  */
 export interface Grid {
-  /** 2D cell array [yi][xi] */
-  cells: GridCell[][];
   /** Sorted unique X coordinates */
   xLines: number[];
   /** Sorted unique Y coordinates */
   yLines: number[];
-}
-
-// ============================================================================
-// A* ALGORITHM TYPES
-// ============================================================================
-
-/**
- * A* node for priority queue.
- */
-export interface AStarNode {
-  /** Grid cell this node represents */
-  cell: GridCell;
-  /** Cost from start */
-  g: number;
-  /** Heuristic to goal */
-  h: number;
-  /** f = g + h */
-  f: number;
-  /** Parent node for path reconstruction */
-  parent: AStarNode | null;
-  /** Direction we arrived from (for bend penalty) */
-  arrivalDir: Dir | null;
 }

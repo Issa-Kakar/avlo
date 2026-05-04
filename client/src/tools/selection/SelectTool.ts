@@ -1,6 +1,6 @@
 import { getConnectorType, getEndAnchor, getStartAnchor } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
-import { type EndpointOverrideValue, rerouteConnector } from '@/core/connectors/reroute-connector';
+import { type EndpointDragOverride, rerouteConnectorEndpointDrag } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
 import { pointsToBBox } from '@/core/geometry/bounds';
@@ -344,12 +344,10 @@ export class SelectTool implements PointerTool {
             });
 
         // 2. Build endpoint override
-        const overrideValue: EndpointOverrideValue = snap ?? [worldX, worldY];
-        const endpointOverride: { start?: EndpointOverrideValue; end?: EndpointOverrideValue } = {};
-        endpointOverride[endpoint] = overrideValue;
+        const overrideValue: EndpointDragOverride = snap ?? [worldX, worldY];
 
         // 3. Reroute
-        const result = rerouteConnector(connectorId, endpointOverride);
+        const result = rerouteConnectorEndpointDrag(connectorId, endpoint, overrideValue);
 
         // 4. Invalidate prev + current dirty rects
         invalidateWorldBBox(epTransform.prevBbox);

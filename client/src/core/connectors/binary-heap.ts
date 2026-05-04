@@ -1,8 +1,10 @@
 /**
  * Binary Heap Implementation for A* Priority Queue
  *
- * Generic min-heap that can be used with any comparable type.
- * Provides O(log n) push/pop operations.
+ * Generic min-heap with manual swap (no destructuring allocation) and `clear()`
+ * for reuse across calls. The single consumer (`routing-astar`) instantiates it
+ * as `MinHeap<number>` storing node indices, comparator reading parallel typed
+ * arrays.
  *
  * @module lib/connectors/binary-heap
  */
@@ -55,30 +57,38 @@ export class MinHeap<T> {
     return this.items.length === 0;
   }
 
+  /** Reset the heap for reuse without releasing the backing array. */
+  clear(): void {
+    this.items.length = 0;
+  }
+
   private bubbleUp(idx: number): void {
+    const items = this.items;
     while (idx > 0) {
-      const parentIdx = Math.floor((idx - 1) / 2);
-      if (this.compareFn(this.items[idx], this.items[parentIdx]) >= 0) break;
-      [this.items[idx], this.items[parentIdx]] = [this.items[parentIdx], this.items[idx]];
+      const parentIdx = (idx - 1) >> 1;
+      if (this.compareFn(items[idx], items[parentIdx]) >= 0) break;
+      const tmp = items[idx];
+      items[idx] = items[parentIdx];
+      items[parentIdx] = tmp;
       idx = parentIdx;
     }
   }
 
   private bubbleDown(idx: number): void {
+    const items = this.items;
+    const len = items.length;
     while (true) {
       const leftIdx = 2 * idx + 1;
       const rightIdx = 2 * idx + 2;
       let smallest = idx;
 
-      if (leftIdx < this.items.length && this.compareFn(this.items[leftIdx], this.items[smallest]) < 0) {
-        smallest = leftIdx;
-      }
-      if (rightIdx < this.items.length && this.compareFn(this.items[rightIdx], this.items[smallest]) < 0) {
-        smallest = rightIdx;
-      }
+      if (leftIdx < len && this.compareFn(items[leftIdx], items[smallest]) < 0) smallest = leftIdx;
+      if (rightIdx < len && this.compareFn(items[rightIdx], items[smallest]) < 0) smallest = rightIdx;
 
       if (smallest === idx) break;
-      [this.items[idx], this.items[smallest]] = [this.items[smallest], this.items[idx]];
+      const tmp = items[idx];
+      items[idx] = items[smallest];
+      items[smallest] = tmp;
       idx = smallest;
     }
   }

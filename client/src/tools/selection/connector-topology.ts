@@ -16,7 +16,7 @@
  */
 
 import { getEndpointAnchors, getEndpoints, getPoints } from '@/core/accessors';
-import { type EndpointOverrideValue, rerouteConnector } from '@/core/connectors/reroute-connector';
+import { type FrameOverride, rerouteConnectorTransform, type TransformOverride } from '@/core/connectors/reroute-connector';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
@@ -99,14 +99,11 @@ const FRAME_SCRATCH_START: FrameTuple = [0, 0, 0, 0];
 const FRAME_SCRATCH_END: FrameTuple = [0, 0, 0, 0];
 
 // Pre-linked wrappers kept permanently bound to their frame scratches. Mutating
-// the tuple mutates what rerouteConnector reads via `override.frame`. Frame
-// overrides are safe to share: rerouteConnector allocates fresh position tuples
-// from `anchorFramePoint`/`elbowAnchorPoint`, so the frame is only read.
-const FRAME_WRAP_START = { frame: FRAME_SCRATCH_START };
-const FRAME_WRAP_END = { frame: FRAME_SCRATCH_END };
-
-// Shared overrides — keys set/cleared per entry; rerouteConnector reads synchronously.
-const OVERRIDES: { start?: EndpointOverrideValue; end?: EndpointOverrideValue } = {};
+// the tuple mutates what rerouteConnectorTransform reads via `override.frame`.
+// Frame overrides are safe to share: the implementation allocates fresh position
+// tuples from `anchorFramePoint`/`elbowAnchorPoint`, so the frame is only read.
+const FRAME_WRAP_START: FrameOverride = { frame: FRAME_SCRATCH_START };
+const FRAME_WRAP_END: FrameOverride = { frame: FRAME_SCRATCH_END };
 
 const ZERO_POINT: Readonly<Point> = [0, 0];
 
@@ -352,18 +349,18 @@ function applyTranslates(arr: readonly TranslateEntry[], dx: number, dy: number)
 function applyReroutesTranslate(arr: readonly RerouteEntry[], dx: number, dy: number): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    OVERRIDES.start = e.start ? resolveStartTranslate(e.start, dx, dy) : undefined;
-    OVERRIDES.end = e.end ? resolveEndTranslate(e.end, dx, dy) : undefined;
-    rerouteAndPublish(e);
+    const startOv = e.start ? resolveStartTranslate(e.start, dx, dy) : null;
+    const endOv = e.end ? resolveEndTranslate(e.end, dx, dy) : null;
+    rerouteAndPublish(e, startOv, endOv);
   }
 }
 
 function applyReroutesScale(arr: readonly RerouteEntry[], ctx: ScaleCtx): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    OVERRIDES.start = e.start ? resolveStartScale(e.start, ctx) : undefined;
-    OVERRIDES.end = e.end ? resolveEndScale(e.end, ctx) : undefined;
-    rerouteAndPublish(e);
+    const startOv = e.start ? resolveStartScale(e.start, ctx) : null;
+    const endOv = e.end ? resolveEndScale(e.end, ctx) : null;
+    rerouteAndPublish(e, startOv, endOv);
   }
 }
 
@@ -393,7 +390,7 @@ function resolveFreeScale(s: FreeSide, ctx: ScaleCtx): Point {
   return s.scratch;
 }
 
-function resolveStartTranslate(s: Side, dx: number, dy: number): EndpointOverrideValue {
+function resolveStartTranslate(s: Side, dx: number, dy: number): TransformOverride {
   if (s.kind === 'bind') {
     fillFrameFromBind(FRAME_SCRATCH_START, s);
     return FRAME_WRAP_START;
@@ -401,7 +398,7 @@ function resolveStartTranslate(s: Side, dx: number, dy: number): EndpointOverrid
   return resolveFreeTranslate(s, dx, dy);
 }
 
-function resolveEndTranslate(s: Side, dx: number, dy: number): EndpointOverrideValue {
+function resolveEndTranslate(s: Side, dx: number, dy: number): TransformOverride {
   if (s.kind === 'bind') {
     fillFrameFromBind(FRAME_SCRATCH_END, s);
     return FRAME_WRAP_END;
@@ -409,7 +406,7 @@ function resolveEndTranslate(s: Side, dx: number, dy: number): EndpointOverrideV
   return resolveFreeTranslate(s, dx, dy);
 }
 
-function resolveStartScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
+function resolveStartScale(s: Side, ctx: ScaleCtx): TransformOverride {
   if (s.kind === 'bind') {
     fillFrameFromBind(FRAME_SCRATCH_START, s);
     return FRAME_WRAP_START;
@@ -417,7 +414,7 @@ function resolveStartScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
   return resolveFreeScale(s, ctx);
 }
 
-function resolveEndScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
+function resolveEndScale(s: Side, ctx: ScaleCtx): TransformOverride {
   if (s.kind === 'bind') {
     fillFrameFromBind(FRAME_SCRATCH_END, s);
     return FRAME_WRAP_END;
@@ -425,9 +422,8 @@ function resolveEndScale(s: Side, ctx: ScaleCtx): EndpointOverrideValue {
   return resolveFreeScale(s, ctx);
 }
 
-function rerouteAndPublish(e: RerouteEntry): void {
-  const hasAny = OVERRIDES.start !== undefined || OVERRIDES.end !== undefined;
-  const result = rerouteConnector(e.id, hasAny ? OVERRIDES : undefined);
+function rerouteAndPublish(e: RerouteEntry, startOv: TransformOverride | null, endOv: TransformOverride | null): void {
+  const result = rerouteConnectorTransform(e.id, startOv, endOv);
   invalidateWorldBBox(e.prevBbox);
   if (result) {
     copyBbox(result.bbox, e.currBbox);

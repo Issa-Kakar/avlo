@@ -11,31 +11,86 @@
  * - Backwards-visit prevention (no U-turns)
  * - Bend penalty (minimize direction changes)
  * - Segment intersection checking (prevents crossing through shapes)
+ *
+ * MEMORY MODEL:
+ * - All A* state is module-pool typed arrays (cell-keyed: closedGen, gScoreGen,
+ *   gScores; node-keyed: fScores, parentNode, arrivalDir, nodeCell).
+ * - Generation counter (`astarGen`) makes "clear before use" a single increment
+ *   instead of N writes.
+ * - MinHeap stores node indices; comparator reads fScores.
+ * - Path reconstruction walks parent indices forward into `pathCells`, then
+ *   computeAStarRoute iterates in reverse, applying collinear simplification
+ *   inline. Final Point[] is the only allocation per route.
+ * - Pool sizes (MAX_CELLS=64, MAX_NODES=256) cover realistic A* grids; dev-mode
+ *   warning fires if exceeded so the bound can be revisited.
+ *
+ * SYNCHRONOUS-ONLY: same contract as routing-context.ts. Module scratches are
+ * not re-entrant; A* may recurse into itself once (obstacle-free retry) but
+ * that recursion bumps `astarGen` and resets the node pool.
  */
 
 import type { FrameTuple, Point } from '../types/geometry';
 import { MinHeap } from './binary-heap';
-import { directionFromDelta, oppositeDir, simplifyOrthogonal } from './connector-utils';
 import { COST_CONFIG } from './constants';
-import { buildSimpleGrid, createRoutingContext } from './routing-context';
-import type { AStarNode, Dir, Grid, GridCell, RouteResult } from './types';
+import { fillRoutingContext, fillSimpleGrid, GRID } from './routing-context';
+import type { Dir, Grid, RouteResult } from './types';
 
 // ============================================================================
-// GRID HELPERS (moved from routing-grid.ts)
+// POOLS (module-level, reused across calls)
 // ============================================================================
 
-/**
- * Find the nearest grid cell for a world position.
- *
- * @param grid - The grid to search
- * @param pos - World position
- * @returns Nearest grid cell
- */
-function findNearestCell(grid: Grid, pos: Point): GridCell {
-  let xi = 0,
-    yi = 0;
-  let bestXDist = Infinity,
-    bestYDist = Infinity;
+/** Realistic A* grid is ≤ 6×6 = 36; 8×8 = 64 covers the long tail. */
+const MAX_CELLS = 64;
+/** A* visits each cell ≤ ~3 times in practice; 4× cells covers worst cases. */
+const MAX_NODES = 256;
+
+// Cell-keyed state (one entry per grid cell). Keyed by `yi * xStride + xi`.
+const closedGen = new Uint32Array(MAX_CELLS);
+const gScoreGen = new Uint32Array(MAX_CELLS);
+const gScores = new Float32Array(MAX_CELLS);
+
+// Node-keyed state (one entry per heap node — multiple may map to one cell).
+const fScores = new Float32Array(MAX_NODES);
+const parentNode = new Int32Array(MAX_NODES);
+const arrivalDir = new Int8Array(MAX_NODES);
+const nodeCell = new Int32Array(MAX_NODES);
+
+// Path reconstruction: cell indices walked goal-to-start.
+const pathCells = new Int32Array(MAX_NODES);
+
+// Open set heap: stores node indices, comparator reads fScores.
+const openSet = new MinHeap<number>((a, b) => fScores[a] - fScores[b]);
+
+let astarGen = 0;
+let nodePoolIdx = 0;
+
+// Cardinal direction encoded as 0..3 for tight typed-array storage.
+const DIR_N = 0;
+const DIR_E = 1;
+const DIR_S = 2;
+const DIR_W = 3;
+const OPPOSITE_INT = [DIR_S, DIR_W, DIR_N, DIR_E];
+
+function dirToInt(d: Dir): number {
+  return d === 'N' ? DIR_N : d === 'E' ? DIR_E : d === 'S' ? DIR_S : DIR_W;
+}
+
+/** Cardinal direction from a delta as 0..3 (matches `directionFromDelta`). */
+function dirFromDeltaInt(dx: number, dy: number): number {
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? DIR_E : DIR_W;
+  return dy >= 0 ? DIR_S : DIR_N;
+}
+
+// ============================================================================
+// GRID HELPERS
+// ============================================================================
+
+/** Find the nearest grid cell index for a world position. Returns `yi * xStride + xi`. */
+function findNearestCellIdx(grid: Grid, pos: Point): number {
+  let xi = 0;
+  let yi = 0;
+  let bestXDist = Infinity;
+  let bestYDist = Infinity;
 
   for (let i = 0; i < grid.xLines.length; i++) {
     const dist = Math.abs(grid.xLines[i] - pos[0]);
@@ -52,64 +107,7 @@ function findNearestCell(grid: Grid, pos: Point): GridCell {
     }
   }
 
-  return grid.cells[yi][xi];
-}
-
-// ============================================================================
-// A* HELPERS
-// ============================================================================
-
-/** Movement direction from one cell to another (orthogonal grid). */
-function getDirection(from: GridCell, to: GridCell): Dir {
-  return directionFromDelta(to.x - from.x, to.y - from.y);
-}
-
-/**
- * Manhattan distance heuristic.
- */
-function manhattan(a: GridCell, b: GridCell): number {
-  return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-}
-
-/**
- * Compute movement cost including bend penalty.
- *
- * @param from - Source cell
- * @param to - Target cell
- * @param arrivalDir - Direction we arrived at source from
- * @param moveDir - Direction we're moving to target
- * @returns Movement cost
- */
-function computeMoveCost(from: GridCell, to: GridCell, arrivalDir: Dir | null, moveDir: Dir): number {
-  // Base cost: Manhattan distance of this segment
-  let cost = Math.abs(to.x - from.x) + Math.abs(to.y - from.y);
-
-  // BACKWARDS PREVENTION
-  if (arrivalDir && moveDir === oppositeDir(arrivalDir)) {
-    return Infinity;
-  }
-
-  // BEND PENALTY (minimize direction changes)
-  if (arrivalDir && moveDir !== arrivalDir) {
-    cost += COST_CONFIG.BEND_PENALTY;
-  }
-
-  return cost;
-}
-
-/**
- * Reconstruct path from A* goal node.
- */
-function reconstructPath(node: AStarNode): GridCell[] {
-  const path: GridCell[] = [];
-  let current: AStarNode | null = node;
-
-  while (current !== null) {
-    path.unshift(current.cell);
-    current = current.parent;
-  }
-
-  return path;
+  return yi * grid.xLines.length + xi;
 }
 
 // ============================================================================
@@ -121,6 +119,9 @@ function reconstructPath(node: AStarNode): GridCell[] {
  *
  * Uses the slab method (parametric intersection). Handles thin shapes,
  * arbitrary orientations, and works directly on raw shape bounds.
+ *
+ * Scalar `(x1, y1, x2, y2)` parameters by design — inner-loop A* per-neighbor
+ * call; unpacking a Point would be a wash.
  */
 function segmentIntersectsFrame(x1: number, y1: number, x2: number, y2: number, frame: FrameTuple): boolean {
   const [x, y, w, h] = frame;
@@ -129,17 +130,13 @@ function segmentIntersectsFrame(x1: number, y1: number, x2: number, y2: number, 
   const minY = y;
   const maxY = y + h;
 
-  // Direction vector
   const dx = x2 - x1;
   const dy = y2 - y1;
 
-  // Parametric bounds
   let tMin = 0;
   let tMax = 1;
 
-  // Check X slab
   if (dx === 0) {
-    // Vertical line - check if X is inside (including boundary)
     if (x1 < minX || x1 > maxX) return false;
   } else {
     const t1 = (minX - x1) / dx;
@@ -151,9 +148,7 @@ function segmentIntersectsFrame(x1: number, y1: number, x2: number, y2: number, 
     if (tMin >= tMax) return false;
   }
 
-  // Check Y slab
   if (dy === 0) {
-    // Horizontal line - check if Y is inside (including boundary)
     if (y1 < minY || y1 > maxY) return false;
   } else {
     const t1 = (minY - y1) / dy;
@@ -165,97 +160,177 @@ function segmentIntersectsFrame(x1: number, y1: number, x2: number, y2: number, 
     if (tMin >= tMax) return false;
   }
 
-  // Segment intersects the frame interior
   return true;
 }
 
+// ============================================================================
+// A*
+// ============================================================================
+
+/** Allocate a fresh node index. Falls back to last index in dev-mode warning if pool exhausted. */
+function allocateNode(cellIdx: number): number {
+  if (nodePoolIdx >= MAX_NODES) {
+    if (import.meta.env.DEV) console.warn(`[routing-astar] node pool exhausted (MAX_NODES=${MAX_NODES})`);
+    return MAX_NODES - 1;
+  }
+  const idx = nodePoolIdx++;
+  nodeCell[idx] = cellIdx;
+  return idx;
+}
+
 /**
- * Run A* pathfinding on the grid.
+ * Run A* pathfinding on the grid. Returns `pathLen` (path written into
+ * `pathCells` in goal→start order) on success, `-1` when no path was found
+ * even without obstacles.
  *
- * Segment intersection checking prevents routes from "jumping over" shapes
- * when the grid is sparse (lines only at padding boundaries).
+ * On failure with non-empty obstacles, recurses once with obstacles cleared —
+ * the recursion bumps `astarGen` and resets the node pool, so it's safe.
  */
-function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obstacles: FrameTuple[]): GridCell[] {
-  const openSet = new MinHeap<AStarNode>((a, b) => a.f - b.f);
-  const closedSet = new Set<number>();
-  const gScores = new Map<number, number>();
+function astar(grid: Grid, startCellIdx: number, goalCellIdx: number, startDir: Dir, obstacles: FrameTuple[]): number {
+  astarGen++;
+  openSet.clear();
+  nodePoolIdx = 0;
+
   const xStride = grid.xLines.length;
   const xMax = xStride - 1;
   const yMax = grid.yLines.length - 1;
 
-  // Start with null arrivalDir - direction hints applied via cost adjustments
-  const startNode: AStarNode = {
-    cell: start,
-    g: 0,
-    h: manhattan(start, goal),
-    f: manhattan(start, goal),
-    parent: null,
-    arrivalDir: startDir,
-  };
+  if (xStride * grid.yLines.length > MAX_CELLS) {
+    if (import.meta.env.DEV) console.warn(`[routing-astar] cell count exceeded MAX_CELLS (${xStride * grid.yLines.length})`);
+  }
 
-  openSet.push(startNode);
-  gScores.set(start.yi * xStride + start.xi, 0);
+  const goalYi = (goalCellIdx / xStride) | 0;
+  const goalXi = goalCellIdx % xStride;
+  const goalX = grid.xLines[goalXi];
+  const goalY = grid.yLines[goalYi];
 
-  const visit = (current: AStarNode, neighbor: GridCell): void => {
-    const neighborKey = neighbor.yi * xStride + neighbor.xi;
-    if (closedSet.has(neighborKey)) return;
+  // Seed start node. arrivalDir = startDir so the first move respects the shape side.
+  const startNodeIdx = allocateNode(startCellIdx);
+  parentNode[startNodeIdx] = -1;
+  arrivalDir[startNodeIdx] = dirToInt(startDir);
 
-    // Check if segment crosses any obstacle interior (full segment check)
-    if (obstacles.length > 0) {
-      for (let i = 0; i < obstacles.length; i++) {
-        if (segmentIntersectsFrame(current.cell.x, current.cell.y, neighbor.x, neighbor.y, obstacles[i])) return;
-      }
-    }
+  const startYi = (startCellIdx / xStride) | 0;
+  const startXi = startCellIdx % xStride;
+  const startX = grid.xLines[startXi];
+  const startY = grid.yLines[startYi];
+  const startH = Math.abs(startX - goalX) + Math.abs(startY - goalY);
+  fScores[startNodeIdx] = startH;
 
-    // Compute move direction
-    const moveDir = getDirection(current.cell, neighbor);
+  gScoreGen[startCellIdx] = astarGen;
+  gScores[startCellIdx] = 0;
 
-    // Base cost with bend penalty
-    const moveCost = computeMoveCost(current.cell, neighbor, current.arrivalDir, moveDir);
-
-    const tentativeG = current.g + moveCost;
-    const existingG = gScores.get(neighborKey) ?? Infinity;
-    if (tentativeG < existingG) {
-      const h = manhattan(neighbor, goal);
-      gScores.set(neighborKey, tentativeG);
-      openSet.push({
-        cell: neighbor,
-        g: tentativeG,
-        h,
-        f: tentativeG + h,
-        parent: current,
-        arrivalDir: moveDir,
-      });
-    }
-  };
+  openSet.push(startNodeIdx);
 
   while (!openSet.isEmpty()) {
-    const current = openSet.pop()!;
-    const { xi, yi } = current.cell;
-    const currentKey = yi * xStride + xi;
+    const currentNodeIdx = openSet.pop()!;
+    const currentCellIdx = nodeCell[currentNodeIdx];
 
-    // Goal check
-    if (xi === goal.xi && yi === goal.yi) {
-      return reconstructPath(current);
+    if (currentCellIdx === goalCellIdx) {
+      // Reconstruct: walk parent chain into pathCells (goal→start order).
+      let pathLen = 0;
+      let cur = currentNodeIdx;
+      while (cur !== -1 && pathLen < MAX_NODES) {
+        pathCells[pathLen++] = nodeCell[cur];
+        cur = parentNode[cur];
+      }
+      return pathLen;
     }
 
-    if (closedSet.has(currentKey)) continue;
-    closedSet.add(currentKey);
+    if (closedGen[currentCellIdx] === astarGen) continue;
+    closedGen[currentCellIdx] = astarGen;
 
-    // Explore 4-connected neighbors (inlined)
-    if (yi > 0) visit(current, grid.cells[yi - 1][xi]);
-    if (xi < xMax) visit(current, grid.cells[yi][xi + 1]);
-    if (yi < yMax) visit(current, grid.cells[yi + 1][xi]);
-    if (xi > 0) visit(current, grid.cells[yi][xi - 1]);
+    const yi = (currentCellIdx / xStride) | 0;
+    const xi = currentCellIdx % xStride;
+    const fromX = grid.xLines[xi];
+    const fromY = grid.yLines[yi];
+    const arrDir = arrivalDir[currentNodeIdx];
+    const currentG = gScores[currentCellIdx]; // gScoreGen guaranteed === astarGen here
+
+    // Visit 4-connected neighbors, inlined to keep call count down.
+    if (yi > 0) visit(currentNodeIdx, fromX, fromY, currentG, arrDir, xStride, xi, yi - 1, grid, obstacles, goalX, goalY);
+    if (xi < xMax) visit(currentNodeIdx, fromX, fromY, currentG, arrDir, xStride, xi + 1, yi, grid, obstacles, goalX, goalY);
+    if (yi < yMax) visit(currentNodeIdx, fromX, fromY, currentG, arrDir, xStride, xi, yi + 1, grid, obstacles, goalX, goalY);
+    if (xi > 0) visit(currentNodeIdx, fromX, fromY, currentG, arrDir, xStride, xi - 1, yi, grid, obstacles, goalX, goalY);
   }
 
-  // No path found with obstacles - retry without obstacles
-  if (obstacles.length > 0) {
-    return astar(grid, start, goal, startDir, []);
+  // Retry without obstacles; recursion bumps astarGen + resets node pool.
+  if (obstacles.length > 0) return astar(grid, startCellIdx, goalCellIdx, startDir, EMPTY_OBSTACLES);
+
+  return -1;
+}
+
+const EMPTY_OBSTACLES: FrameTuple[] = [];
+
+function visit(
+  parentIdx: number,
+  fromX: number,
+  fromY: number,
+  parentG: number,
+  parentArrDir: number,
+  xStride: number,
+  toXi: number,
+  toYi: number,
+  grid: Grid,
+  obstacles: FrameTuple[],
+  goalX: number,
+  goalY: number,
+): void {
+  const neighborCellIdx = toYi * xStride + toXi;
+  if (closedGen[neighborCellIdx] === astarGen) return;
+
+  const toX = grid.xLines[toXi];
+  const toY = grid.yLines[toYi];
+
+  for (let i = 0; i < obstacles.length; i++) {
+    if (segmentIntersectsFrame(fromX, fromY, toX, toY, obstacles[i])) return;
   }
 
-  // No path found even without obstacles - return direct line (fallback)
-  return [start, goal];
+  const moveDirInt = dirFromDeltaInt(toX - fromX, toY - fromY);
+
+  // Backwards prevention.
+  if (moveDirInt === OPPOSITE_INT[parentArrDir]) return;
+
+  let cost = Math.abs(toX - fromX) + Math.abs(toY - fromY);
+  if (moveDirInt !== parentArrDir) cost += COST_CONFIG.BEND_PENALTY;
+
+  const tentativeG = parentG + cost;
+  const existingG = gScoreGen[neighborCellIdx] === astarGen ? gScores[neighborCellIdx] : Infinity;
+  if (tentativeG >= existingG) return;
+
+  gScoreGen[neighborCellIdx] = astarGen;
+  gScores[neighborCellIdx] = tentativeG;
+
+  const newNodeIdx = allocateNode(neighborCellIdx);
+  parentNode[newNodeIdx] = parentIdx;
+  arrivalDir[newNodeIdx] = moveDirInt;
+  fScores[newNodeIdx] = tentativeG + Math.abs(toX - goalX) + Math.abs(toY - goalY);
+
+  openSet.push(newNodeIdx);
+}
+
+// ============================================================================
+// PATH EMISSION (collinear-aware)
+// ============================================================================
+
+/**
+ * Push (x, y) onto `out`, merging with the previous candidate when the last
+ * two points + the new point are collinear (sameX or sameY across all three).
+ * Folds `simplifyOrthogonal` directly into the emission loop.
+ */
+function pushOrMerge(out: Point[], x: number, y: number): void {
+  const len = out.length;
+  if (len >= 2) {
+    const prev = out[len - 2];
+    const cand = out[len - 1];
+    const sameX = Math.abs(prev[0] - cand[0]) < 0.001 && Math.abs(cand[0] - x) < 0.001;
+    const sameY = Math.abs(prev[1] - cand[1]) < 0.001 && Math.abs(cand[1] - y) < 0.001;
+    if (sameX || sameY) {
+      cand[0] = x;
+      cand[1] = y;
+      return;
+    }
+  }
+  out.push([x, y]);
 }
 
 // ============================================================================
@@ -267,6 +342,8 @@ function astar(grid: Grid, start: GridCell, goal: GridCell, startDir: Dir, obsta
  *
  * Takes 7 primitives. Supports all endpoint combinations — anchored shape
  * bounds double as obstacles; `null` means free.
+ *
+ * Returns a freshly-allocated `Point[]`; all internal A* state is module-pool.
  */
 export function computeAStarRoute(
   startPos: Point,
@@ -277,36 +354,37 @@ export function computeAStarRoute(
   endShapeBounds: FrameTuple | null,
   strokeWidth: number,
 ): RouteResult {
-  // If start and end are exactly the same position
   if (startPos[0] === endPos[0] && startPos[1] === endPos[1]) {
     return { points: [endPos] };
   }
 
-  // 1. Build routing context (ALL spatial intelligence happens here)
-  // - Computes centerlines from RAW bounds
-  // - Builds dynamic routing bounds with centerline/padding baked in
-  // - Computes stub positions on routing-bound edges
-  // - Collects obstacles (raw shape bounds)
-  const ctx = createRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);
+  const ctx = fillRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);
+  const grid = fillSimpleGrid(GRID, ctx);
 
-  // 2. Build simple grid from context (trivial — just routing-bound edges)
-  const grid = buildSimpleGrid(ctx);
+  const startCellIdx = findNearestCellIdx(grid, ctx.startStub);
+  const goalCellIdx = findNearestCellIdx(grid, ctx.endStub);
 
-  // 3. Find start and goal cells (at stub positions)
-  const startCell = findNearestCell(grid, ctx.startStub);
-  const goalCell = findNearestCell(grid, ctx.endStub);
+  const pathLen = astar(grid, startCellIdx, goalCellIdx, ctx.startDir, ctx.obstacles);
 
-  // 4. Run A* between stubs (seed with startDir)
-  const path = astar(grid, startCell, goalCell, ctx.startDir, ctx.obstacles);
+  // Emit final route with inline collinear simplification.
+  const out: Point[] = [];
+  pushOrMerge(out, startPos[0], startPos[1]);
 
-  // 5. Assemble full path: actual_start → A* path → actual_end
-  // This is key for dynamic offset - stubs may be on centerline, not padded boundary
-  const fullPath: Point[] = [startPos];
-  for (const cell of path) {
-    fullPath.push([cell.x, cell.y]);
+  if (pathLen < 0) {
+    // No path even without obstacles → direct line fallback.
+    pushOrMerge(out, endPos[0], endPos[1]);
+    return { points: out };
   }
-  fullPath.push(endPos);
 
-  // 6. Simplify collinear points
-  return { points: simplifyOrthogonal(fullPath) };
+  const xStride = grid.xLines.length;
+  // pathCells holds cells in goal→start order; iterate in reverse for start→goal emission.
+  for (let i = pathLen - 1; i >= 0; i--) {
+    const cellIdx = pathCells[i];
+    const yi = (cellIdx / xStride) | 0;
+    const xi = cellIdx % xStride;
+    pushOrMerge(out, grid.xLines[xi], grid.yLines[yi]);
+  }
+  pushOrMerge(out, endPos[0], endPos[1]);
+
+  return { points: out };
 }

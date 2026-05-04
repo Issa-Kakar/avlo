@@ -7,19 +7,62 @@
  * - Point-bounds for free endpoints (converge to a single point, expand to centerline).
  * - Stubs are ON routing-bound edges, not separate offset calculations.
  * - No cell blocking needed — grid lines come directly from routing bounds.
+ *
+ * SYNCHRONOUS-ONLY CONTRACT:
+ * Every scratch in this file (raw bounds, routing bounds, centerlines, stubs,
+ * obstacles, ctx, grid, cell pool) is module-level and reused per call. Callers
+ * MUST NOT invoke `fillRoutingContext` re-entrantly — there is no second copy
+ * of these scratches. The full reroute/route pipeline is synchronous; A* never
+ * calls back out into reroute, and Y.Doc observers don't run inside transact().
  */
 
 import type { FrameTuple, Point } from '../types/geometry';
-import { isHorizontal, isPointBounds, pointBounds, toBounds } from './connector-utils';
+import { fillBoundsFromFrame, fillBoundsFromPoint, isHorizontal, isPointBounds } from './connector-utils';
 import { computeApproachOffset, EDGE_CLEARANCE_W } from './constants';
-import type { Bounds, Centerlines, Dir, Grid, GridCell, RoutingContext } from './types';
+import type { Bounds, Centerlines, Dir, Grid, RoutingContext } from './types';
+
+// ============================================================================
+// MODULE-LEVEL SCRATCHES (synchronous, non-re-entrant)
+// ============================================================================
+
+const START_RAW: Bounds = { left: 0, top: 0, right: 0, bottom: 0 };
+const END_RAW: Bounds = { left: 0, top: 0, right: 0, bottom: 0 };
+const ROUTING_START: Bounds = { left: 0, top: 0, right: 0, bottom: 0 };
+const ROUTING_END: Bounds = { left: 0, top: 0, right: 0, bottom: 0 };
+const CENTERLINES: Centerlines = { x: null, y: null };
+const START_STUB: Point = [0, 0];
+const END_STUB: Point = [0, 0];
+
+// Obstacles: cleared and pushed into per call. Max length 2.
+const OBSTACLES: FrameTuple[] = [];
+
+// CTX permanently references the scratches above. Returned by reference each call.
+const CTX: RoutingContext = {
+  startPos: [0, 0] as Point,
+  endPos: [0, 0] as Point,
+  startBounds: ROUTING_START,
+  endBounds: ROUTING_END,
+  startStub: START_STUB,
+  endStub: END_STUB,
+  startDir: 'E',
+  endDir: 'E',
+  obstacles: OBSTACLES,
+};
+
+// Grid pool — pre-allocated line arrays (cells are addressed by index, not objects).
+const MAX_GRID_LINES = 16;
+const GRID_X_LINES: number[] = [];
+const GRID_Y_LINES: number[] = [];
+const GRID_SCRATCH: Grid = { xLines: GRID_X_LINES, yLines: GRID_Y_LINES };
 
 // ============================================================================
 // MAIN ENTRY POINT
 // ============================================================================
 
 /**
- * Create the complete routing context with all spatial analysis.
+ * Fill the module routing context with all spatial analysis. Returns a stable
+ * reference to `CTX` whose fields point at module scratches — read-only for
+ * the caller (consumed by A* before any subsequent call).
  *
  * Single place where centerlines are computed, dynamic routing bounds are built
  * (facing side = centerline), stubs are placed on those bounds, and obstacles
@@ -27,7 +70,7 @@ import type { Bounds, Centerlines, Dir, Grid, GridCell, RoutingContext } from '.
  *
  * Takes 7 primitives; `isAnchored` is derived from `startShapeBounds !== null`.
  */
-export function createRoutingContext(
+export function fillRoutingContext(
   startPos: Point,
   startDir: Dir,
   endPos: Point,
@@ -38,47 +81,43 @@ export function createRoutingContext(
 ): RoutingContext {
   const offset = computeApproachOffset(strokeWidth);
 
-  // Derive isAnchored from bounds !== null
   const startAnchored = startShapeBounds !== null;
   const endAnchored = endShapeBounds !== null;
 
-  // 1. Get raw bounds (shape bounds or point)
-  const startRaw = startShapeBounds ? toBounds(startShapeBounds) : pointBounds(startPos);
-  const endRaw = endShapeBounds ? toBounds(endShapeBounds) : pointBounds(endPos);
+  // 1. Get raw bounds (shape bounds or point), filled into module scratches.
+  if (startShapeBounds) fillBoundsFromFrame(START_RAW, startShapeBounds);
+  else fillBoundsFromPoint(START_RAW, startPos);
+  if (endShapeBounds) fillBoundsFromFrame(END_RAW, endShapeBounds);
+  else fillBoundsFromPoint(END_RAW, endPos);
 
   // 2. Determine endpoint configuration
   const isFreeToAnchored = !startAnchored && endAnchored;
   const isAnchoredToFree = startAnchored && !endAnchored;
-  // 3. Compute centerlines from RAW bounds (no padding)
-  const centerlines = computeCenterlines(startRaw, endRaw, isFreeToAnchored, offset);
 
-  // 4. Build dynamic routing bounds with centerline/padding
-  // Each call determines its own facing sides based on where the OTHER shape is
-  const routingStartBounds = buildRoutingBounds(startRaw, endRaw, centerlines, offset, isAnchoredToFree);
-  const routingEndBounds = buildRoutingBounds(endRaw, startRaw, centerlines, offset, isAnchoredToFree);
+  // 3. Compute centerlines from RAW bounds (no padding) into CENTERLINES.
+  fillCenterlines(CENTERLINES, START_RAW, END_RAW, isFreeToAnchored, offset);
 
-  // 5. Compute stubs from bounds + direction
-  const startStub = computeStub(routingStartBounds, startPos, startDir);
-  const endStub = computeStub(routingEndBounds, endPos, endDir);
+  // 4. Build dynamic routing bounds with centerline/padding into ROUTING_*.
+  // Each call determines its own facing sides based on where the OTHER shape is.
+  fillRoutingBounds(ROUTING_START, START_RAW, END_RAW, CENTERLINES, offset, isAnchoredToFree);
+  fillRoutingBounds(ROUTING_END, END_RAW, START_RAW, CENTERLINES, offset, isAnchoredToFree);
 
-  // 6. Collect obstacles (raw shape bounds for segment checking)
-  const obstacles: FrameTuple[] = [];
-  if (startShapeBounds) obstacles.push(startShapeBounds);
-  if (endShapeBounds && endShapeBounds !== startShapeBounds) {
-    obstacles.push(endShapeBounds);
-  }
+  // 5. Compute stubs from bounds + direction into STUB scratches.
+  fillStub(START_STUB, ROUTING_START, startPos, startDir);
+  fillStub(END_STUB, ROUTING_END, endPos, endDir);
 
-  return {
-    startPos,
-    endPos,
-    startBounds: routingStartBounds,
-    endBounds: routingEndBounds,
-    startStub,
-    endStub,
-    startDir,
-    endDir,
-    obstacles,
-  };
+  // 6. Collect obstacles (raw shape bounds for segment checking) — clear+push.
+  OBSTACLES.length = 0;
+  if (startShapeBounds) OBSTACLES.push(startShapeBounds);
+  if (endShapeBounds && endShapeBounds !== startShapeBounds) OBSTACLES.push(endShapeBounds);
+
+  // 7. Refresh CTX header fields. Bounds/stubs/obstacles already share refs with scratches.
+  CTX.startPos = startPos;
+  CTX.endPos = endPos;
+  CTX.startDir = startDir;
+  CTX.endDir = endDir;
+
+  return CTX;
 }
 
 // ============================================================================
@@ -102,18 +141,16 @@ function computeAxisCenterline(aMax: number, bMin: number, isFreeToAnchored: boo
 }
 
 /**
- * Centerlines between two raw bounds — one per axis, either order.
+ * Fill `out` with centerlines between two raw bounds — one per axis, either order.
  * Uses RAW bounds (no padding); a centerline is the midpoint between actual edges.
  */
-function computeCenterlines(startRaw: Bounds, endRaw: Bounds, isFreeToAnchored: boolean, offset: number): Centerlines {
-  return {
-    x:
-      computeAxisCenterline(startRaw.right, endRaw.left, isFreeToAnchored, offset) ??
-      computeAxisCenterline(endRaw.right, startRaw.left, isFreeToAnchored, offset),
-    y:
-      computeAxisCenterline(startRaw.bottom, endRaw.top, isFreeToAnchored, offset) ??
-      computeAxisCenterline(endRaw.bottom, startRaw.top, isFreeToAnchored, offset),
-  };
+function fillCenterlines(out: Centerlines, startRaw: Bounds, endRaw: Bounds, isFreeToAnchored: boolean, offset: number): void {
+  out.x =
+    computeAxisCenterline(startRaw.right, endRaw.left, isFreeToAnchored, offset) ??
+    computeAxisCenterline(endRaw.right, startRaw.left, isFreeToAnchored, offset);
+  out.y =
+    computeAxisCenterline(startRaw.bottom, endRaw.top, isFreeToAnchored, offset) ??
+    computeAxisCenterline(endRaw.bottom, startRaw.top, isFreeToAnchored, offset);
 }
 
 // ============================================================================
@@ -121,7 +158,7 @@ function computeCenterlines(startRaw: Bounds, endRaw: Bounds, isFreeToAnchored: 
 // ============================================================================
 
 /**
- * Build dynamic routing bounds with centerline + padding baked in.
+ * Fill `out` with dynamic routing bounds (centerline + padding baked in).
  *
  * THREE cases based on endpoint configuration:
  *
@@ -133,45 +170,40 @@ function computeCenterlines(startRaw: Bounds, endRaw: Bounds, isFreeToAnchored: 
  *    shape whose outward direction is the anchor side). Only facing sides get
  *    the centerline; non-facing sides stay at the raw position. Critical so the
  *    first segment escapes in the direction-seeded axis rather than collapsing
- *    to the centerline. Example: start LEFT of shape, inside padded Y, anchor
- *    on EAST — direction is N (escape up), E/W are non-facing, stub X stays at
- *    the actual point X (not the centerline), first segment goes vertical.
+ *    to the centerline.
  *
  * 3. SHAPE BOUNDS — facing side = centerline (if exists) shared between both
- *    shapes' routing bounds; non-facing sides = raw bound ± offset.
+ *    shapes' routing bounds; non-facing sides = raw bound ± approach-offset.
  */
-function buildRoutingBounds(raw: Bounds, other: Bounds, centerlines: Centerlines, offset: number, isAnchoredToFree: boolean): Bounds {
+function fillRoutingBounds(
+  out: Bounds,
+  raw: Bounds,
+  other: Bounds,
+  centerlines: Centerlines,
+  offset: number,
+  isAnchoredToFree: boolean,
+): void {
   const isPoint = isPointBounds(raw);
 
-  // Case 1: Anchored→free endpoint - full centerline merging
-  // Ensures WYSIWYG: identical path whether stopping free or snapping to shape
+  // Case 1: Anchored→free endpoint - full centerline merging.
   if (isPoint && isAnchoredToFree) {
-    return {
-      left: centerlines.x ?? raw.left,
-      right: centerlines.x ?? raw.right,
-      top: centerlines.y ?? raw.top,
-      bottom: centerlines.y ?? raw.bottom,
-    };
+    out.left = centerlines.x ?? raw.left;
+    out.right = centerlines.x ?? raw.right;
+    out.top = centerlines.y ?? raw.top;
+    out.bottom = centerlines.y ?? raw.bottom;
+    return;
   }
 
-  // Cases 2 & 3: Shape bounds OR free→anchored point
-  // Both use facing-side logic - only facing sides get centerline
-  // For free→anchored: treats point like imaginary shape based on outward direction
-  const facesRight = raw.right <= other.left; // This is left of other
-  const facesLeft = raw.left >= other.right; // This is right of other
-  const facesBottom = raw.bottom <= other.top; // This is above other
-  const facesTop = raw.top >= other.bottom; // This is below other
+  // Cases 2 & 3: facing-side logic.
+  const facesRight = raw.right <= other.left;
+  const facesLeft = raw.left >= other.right;
+  const facesBottom = raw.bottom <= other.top;
+  const facesTop = raw.top >= other.bottom;
 
-  return {
-    // Facing side → centerline; non-facing → raw (point) or raw±offset (shape)
-    left: facesLeft && centerlines.x !== null ? centerlines.x : isPoint ? raw.left : raw.left - offset,
-
-    right: facesRight && centerlines.x !== null ? centerlines.x : isPoint ? raw.right : raw.right + offset,
-
-    top: facesTop && centerlines.y !== null ? centerlines.y : isPoint ? raw.top : raw.top - offset,
-
-    bottom: facesBottom && centerlines.y !== null ? centerlines.y : isPoint ? raw.bottom : raw.bottom + offset,
-  };
+  out.left = facesLeft && centerlines.x !== null ? centerlines.x : isPoint ? raw.left : raw.left - offset;
+  out.right = facesRight && centerlines.x !== null ? centerlines.x : isPoint ? raw.right : raw.right + offset;
+  out.top = facesTop && centerlines.y !== null ? centerlines.y : isPoint ? raw.top : raw.top - offset;
+  out.bottom = facesBottom && centerlines.y !== null ? centerlines.y : isPoint ? raw.bottom : raw.bottom + offset;
 }
 
 // ============================================================================
@@ -179,23 +211,32 @@ function buildRoutingBounds(raw: Bounds, other: Bounds, centerlines: Centerlines
 // ============================================================================
 
 /**
- * Stub position — where A* actually starts / ends.
+ * Fill `out` with the stub position — where A* actually starts / ends.
  *
  * Intersection of the anchor's fixed axis (Y for E/W, X for N/S) with the
  * routing-bounds edge in the outward direction. Because routing bounds already
  * encode centerline and padding, stubs land ON the centerline whenever one exists.
  */
-function computeStub(bounds: Bounds, anchorPos: Point, dir: Dir): Point {
-  const [ax, ay] = anchorPos;
+function fillStub(out: Point, bounds: Bounds, anchorPos: Point, dir: Dir): void {
+  const ax = anchorPos[0];
+  const ay = anchorPos[1];
   switch (dir) {
     case 'E':
-      return [bounds.right, ay];
+      out[0] = bounds.right;
+      out[1] = ay;
+      return;
     case 'W':
-      return [bounds.left, ay];
+      out[0] = bounds.left;
+      out[1] = ay;
+      return;
     case 'S':
-      return [ax, bounds.bottom];
+      out[0] = ax;
+      out[1] = bounds.bottom;
+      return;
     case 'N':
-      return [ax, bounds.top];
+      out[0] = ax;
+      out[1] = bounds.top;
+      return;
   }
 }
 
@@ -204,52 +245,54 @@ function computeStub(bounds: Bounds, anchorPos: Point, dir: Dir): Point {
 // ============================================================================
 
 /**
- * Build a simple grid from routing context.
- *
- * Trivial because routing context already has:
- * - Dynamic routing bounds with centerline/padding baked in
- * - Stub positions on those bounds
- *
- * No cell blocking needed — A* handles obstacles via segment intersection.
- *
- * @param ctx - Routing context with pre-computed bounds and stubs
- * @returns Grid for A* routing
+ * Sort + in-place dedup of `arr` (values within 1e-9). Length is shrunk after.
+ * Faster than Set<number> for the ~10 candidate values we actually have.
  */
-export function buildSimpleGrid(ctx: RoutingContext): Grid {
-  // Collect grid lines from routing-bound edges (Sets auto-dedupe)
-  const xSet = new Set<number>();
-  const ySet = new Set<number>();
-
-  // Add all 4 edges from each routing bounds
-  xSet.add(ctx.startBounds.left);
-  xSet.add(ctx.startBounds.right);
-  ySet.add(ctx.startBounds.top);
-  ySet.add(ctx.startBounds.bottom);
-
-  xSet.add(ctx.endBounds.left);
-  xSet.add(ctx.endBounds.right);
-  ySet.add(ctx.endBounds.top);
-  ySet.add(ctx.endBounds.bottom);
-
-  // Add stub perpendicular lines (Y for H heading, X for V heading)
-  if (isHorizontal(ctx.startDir)) ySet.add(ctx.startStub[1]);
-  else xSet.add(ctx.startStub[0]);
-
-  if (isHorizontal(ctx.endDir)) ySet.add(ctx.endStub[1]);
-  else xSet.add(ctx.endStub[0]);
-
-  // Sort
-  const xLines = [...xSet].sort((a, b) => a - b);
-  const yLines = [...ySet].sort((a, b) => a - b);
-
-  // Build cells (no blocking - A* checks segments)
-  const cells: GridCell[][] = [];
-  for (let yi = 0; yi < yLines.length; yi++) {
-    cells[yi] = [];
-    for (let xi = 0; xi < xLines.length; xi++) {
-      cells[yi][xi] = { x: xLines[xi], y: yLines[yi], xi, yi };
+function sortAndDedup(arr: number[]): void {
+  arr.sort((a, b) => a - b);
+  let writeIdx = 0;
+  let prev = NaN;
+  for (let i = 0; i < arr.length; i++) {
+    const v = arr[i];
+    if (i === 0 || v - prev > 1e-9) {
+      arr[writeIdx++] = v;
+      prev = v;
     }
   }
-
-  return { cells, xLines, yLines };
+  arr.length = writeIdx;
 }
+
+/**
+ * Fill the grid line arrays from the routing context.
+ *
+ * Lines come from the 4 routing-bound edges per side (8 total) plus the
+ * perpendicular stub line each anchor needs. ~10 candidates dedup faster via
+ * sort-then-unique sweep than via Set<number>.
+ *
+ * Cells are addressed by `(yi, xi)` index in A* — no GridCell objects allocated.
+ */
+export function fillSimpleGrid(out: Grid, ctx: RoutingContext): Grid {
+  out.xLines.length = 0;
+  out.yLines.length = 0;
+
+  out.xLines.push(ctx.startBounds.left, ctx.startBounds.right, ctx.endBounds.left, ctx.endBounds.right);
+  out.yLines.push(ctx.startBounds.top, ctx.startBounds.bottom, ctx.endBounds.top, ctx.endBounds.bottom);
+
+  if (isHorizontal(ctx.startDir)) out.yLines.push(ctx.startStub[1]);
+  else out.xLines.push(ctx.startStub[0]);
+
+  if (isHorizontal(ctx.endDir)) out.yLines.push(ctx.endStub[1]);
+  else out.xLines.push(ctx.endStub[0]);
+
+  sortAndDedup(out.xLines);
+  sortAndDedup(out.yLines);
+
+  if (import.meta.env.DEV && (out.xLines.length > MAX_GRID_LINES || out.yLines.length > MAX_GRID_LINES)) {
+    console.warn(`[routing-context] grid lines exceeded MAX_GRID_LINES (${out.xLines.length}×${out.yLines.length})`);
+  }
+
+  return out;
+}
+
+/** Module-level grid scratch — exported so routing-astar can pass it into fillSimpleGrid. */
+export const GRID = GRID_SCRATCH;

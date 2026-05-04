@@ -90,38 +90,24 @@ function onSide(rel: SpatialRelation, dir: Dir): boolean {
 }
 
 // ============================================================================
-// PATH SIMPLIFICATION
+// BOUNDS FILLERS (used by routing-context — write into caller scratches)
 // ============================================================================
 
-/** Remove collinear points from an orthogonal (H/V) path. */
-export function simplifyOrthogonal(points: Point[]): Point[] {
-  if (points.length < 3) return points;
-  const result: Point[] = [points[0]];
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = result[result.length - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-    const sameX = Math.abs(prev[0] - curr[0]) < 0.001 && Math.abs(curr[0] - next[0]) < 0.001;
-    const sameY = Math.abs(prev[1] - curr[1]) < 0.001 && Math.abs(curr[1] - next[1]) < 0.001;
-    if (!sameX && !sameY) result.push(curr);
-  }
-  result.push(points[points.length - 1]);
-  return result;
-}
-
-// ============================================================================
-// BOUNDS CONVERSION (used by routing-context)
-// ============================================================================
-
-/** Convert a frame tuple [x,y,w,h] to edge-based Bounds. */
-export function toBounds(frame: FrameTuple): Bounds {
+/** Fill `out` with edge-based bounds from a frame tuple. */
+export function fillBoundsFromFrame(out: Bounds, frame: FrameTuple): void {
   const [x, y, w, h] = frame;
-  return { left: x, top: y, right: x + w, bottom: y + h };
+  out.left = x;
+  out.top = y;
+  out.right = x + w;
+  out.bottom = y + h;
 }
 
-/** Bounds collapsed to a single point — used for free (non-anchored) endpoints. */
-export function pointBounds(pos: Point): Bounds {
-  return { left: pos[0], top: pos[1], right: pos[0], bottom: pos[1] };
+/** Fill `out` with collapsed point-bounds (all edges converge to `pos`). */
+export function fillBoundsFromPoint(out: Bounds, pos: Point): void {
+  out.left = pos[0];
+  out.right = pos[0];
+  out.top = pos[1];
+  out.bottom = pos[1];
 }
 
 /** True when all edges of `b` converge to a single point (no padding applied). */

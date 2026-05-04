@@ -56,7 +56,7 @@ client/src/core/connectors/
 ├── routing-astar.ts      # computeAStarRoute + A* with segment-intersection
 ├── connector-paths.ts    # Path2D builders (rounded polyline + arrows, trim compensation)
 ├── connector-lookup.ts   # Reverse map: shapeId → Set<connectorId>
-├── reroute-connector.ts  # Endpoint resolution, straight route assembly, public entry points
+├── reroute-connector.ts  # Endpoint resolution, straight route assembly, three reroute entry points + routeNewConnector
 └── binary-heap.ts        # MinHeap used by A*
 ```
 
@@ -226,35 +226,53 @@ Elbow never enters interior mode.
 
 ## Endpoint Resolution
 
-Shared by `rerouteConnector` (existing) and `routeNewConnector` (in-flight).
-Every endpoint collapses to one `ResolvedEndpoint`; routing never sees Y.map.
+Three specialized public entry points share one private core (`rerouteCore`)
+that branches on `connectorType` exactly once. Each entry point only accepts
+the override shapes its caller actually produces — the topology hot path
+never pays for a SnapTarget discriminator it can't generate.
 
-### Override union
-
-```typescript
-type EndpointOverrideValue =
-  | SnapTarget               // live snap (endpoint drag / creation)
-  | [number, number]          // free position override
-  | { frame: FrameTuple };    // reapply stored anchor against a transformed frame
+```
+rerouteConnectorEndpointDrag(id, endpoint, override)        // SelectTool
+rerouteConnectorTransform(id, startOverride, endOverride)   // connector-topology
+rerouteConnectorCanonical(id)                                // future "update affected"
+routeNewConnector(start, end, strokeWidth, type)             // ConnectorTool
 ```
 
-No override → fall back to stored anchor (resolved against the anchor shape's
-current frame) or to stored raw position for free endpoints.
+Every endpoint collapses to one `ResolvedEndpoint`; routing never sees Y.Map.
 
-**Read-only contract, aliased endpoints.** `rerouteConnector` treats override
-values as read-only (frame overrides flow through `anchorFramePoint` /
-`elbowAnchorPoint`, which allocate fresh position tuples). But the resulting
-route's `points[0]` / `points[points.length-1]` may *alias* a
-`[number, number]` free-position override — the elbow A* path assembles
-`[startPos, ...cells, endPos]` and the straight path returns `me.position`
-directly. Consequences for callers:
-- A scratch tuple used as an override **must not** be shared across multiple
-  `rerouteConnector` calls within one apply pass — the previous call's
-  endpoint will mutate when the next call writes. Per-endpoint or per-entry
-  scratches only.
+### Override unions (per entry point)
+
+```typescript
+type FrameOverride        = { frame: FrameTuple };           // anchor reapplied against transformed frame
+type TransformOverride    = FrameOverride | Point;           // null = canonical (read Y.Map)
+type EndpointDragOverride = SnapTarget | Point;              // SelectTool drag side
+```
+
+`TransformOverride` carries no `SnapTarget` branch — transform paths never
+feed snap. `EndpointDragOverride` carries no `FrameOverride` branch — only
+shape transforms reapply frames.
+
+**Read-only contract, aliased endpoints.** Frame overrides are read-only
+(`anchorFramePoint` / `elbowAnchorPoint` allocate fresh position tuples).
+The resulting route's `points[0]` / `points[points.length-1]` may *alias*
+a `Point` free-position override — the elbow A* path emits
+`[startPos, ...cells, endPos]` (start/end pushed as fresh tuples) and the
+straight path clones the visible endpoints. But **inputs to reroute may be
+the result of a prior call** if a caller passes its own scratch buffer; the
+guarantee is the call clones inputs into the result, not that inputs are
+distinct from past outputs. Consequences for callers:
+- A scratch tuple used as a free-position override **must not** be shared
+  across multiple reroute calls within one apply pass — see
+  `connector-topology.ts` `FreeSide.scratch` (per-side, not module-shared).
 - Callers persisting the route to Y.Map **must** clone `points[0]` and
   `points[last]` before writing `start` / `end` (Y.Map preserves references,
   so an un-cloned write resurfaces as the next gesture's "stored position").
+
+**Synchronous-only contract.** The reroute pipeline owns module scratches in
+`reroute-connector.ts`, `routing-context.ts`, and `routing-astar.ts`. Callers
+must not invoke any reroute entry recursively (e.g. from inside an A* hop or a
+Y.Doc observer reentry). The full route is synchronous; A* never re-enters
+reroute, and Y.Doc observers don't run inside `transact()`.
 
 ### ResolvedEndpoint
 
@@ -298,17 +316,17 @@ Each endpoint is either **canonical** (stored Y.map data is stable) or
 
 ```typescript
 // Shape transform (iterate affected connectors per shape):
-rerouteConnector(cid, {
-  start: { frame: newFrame },  // if connector's start anchors this shape
-  end:   { frame: newFrame },  // if connector's end anchors this shape
-});
+rerouteConnectorTransform(cid,
+  startOv,    // FrameOverride | Point | null  (null = canonical)
+  endOv,
+);
 
-// Endpoint drag (reconnection):
+// Endpoint drag (reconnection — SelectTool):
 const snap = findBestSnapTarget(snapCtx);
-rerouteConnector(cid, { end: snap ?? [worldX, worldY] });
+rerouteConnectorEndpointDrag(cid, endpoint, snap ?? [worldX, worldY]);
 
-// Free endpoint translate:
-rerouteConnector(cid, { end: [currentEnd[0] + dx, currentEnd[1] + dy] });
+// Trust Y.Map entirely (future "update affected connectors"):
+rerouteConnectorCanonical(cid);
 ```
 
 ---
@@ -319,19 +337,22 @@ Bypasses the elbow pipeline entirely — no RoutingContext, no grid, no A*, no
 direction resolution. `computeStraightRoute(start, end)` returns a two-point
 array.
 
-### Per-endpoint logic (`resolveStraightEndpoint`)
+### Per-endpoint logic (`resolveStraightEndpointInto`)
 
-Called symmetrically for each side with `(me, myRaw, otherRaw, sameShape)`:
+Called symmetrically for each side, writing into a module scratch
+(`STRAIGHT_PT_START` / `STRAIGHT_PT_END`):
 
-| `me` state | Resulting line endpoint |
+| `me` state | Result written into `out` |
 |---|---|
-| Free (`!isAnchored`) | `me.position` as-is |
-| Edge anchor (`interior=false`) | `applyPullBack(myRaw, otherRaw)` — EDGE_CLEARANCE_W along the line |
-| Interior, same shape | `myRaw` — raw anchor, no ray-cast |
-| Interior, different shape | `applyPullBack(computeShapeEdgeIntersection(...).point, otherRaw)` |
+| Free (`!isAnchored`) | `me.position` copied |
+| Edge anchor (`interior=false`) | `applyPullBackInto(out, me.position, otherRaw)` — EDGE_CLEARANCE_W along the line |
+| Interior, same shape | `me.position` copied (raw anchor; no ray-cast) |
+| Interior, different shape | ray-cast exit + `applyPullBackInto` (via `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT` scratches) |
 
-`myRaw` is the un-offset `anchorFramePoint` (straight's `position`); it's also
-the source of the dashed guide for interior anchors.
+For straight endpoints, `me.position` IS the un-offset `anchorFramePoint`
+(`buildStraightAnchored` writes it; no offset). It's also the source of the
+dashed guide for interior anchors. `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT`
+are reused sequentially per side — never aliased into the result.
 
 ### Same-shape short-circuit
 
@@ -386,14 +407,15 @@ objects.
 
 ```
 computeAStarRoute
-  ├── createRoutingContext (all spatial intelligence)
+  ├── fillRoutingContext (all spatial intelligence; writes into module scratches)
   │     ├── centerlines from RAW bounds, per-axis
   │     ├── dynamic routing bounds (facing-side = centerline, non-facing padded)
   │     ├── stubs on routing-bound edges at each anchor's fixed axis
   │     └── obstacles (raw shape bounds, deduped when start===end)
-  ├── buildSimpleGrid (4 edges per bound + stub perpendiculars)
-  ├── astar (segment intersection checks per move, bend penalty, no U-turns)
-  └── assemble [startPos, ...cells, endPos] → simplifyOrthogonal
+  ├── fillSimpleGrid (sort-then-unique into pre-allocated xLines/yLines)
+  ├── astar (index-based: typed arrays + generation counter, segment-intersection
+  │          checks per move, bend penalty, no U-turns)
+  └── emit final Point[] with inline collinear simplification
 ```
 
 ### RoutingContext (the single trick)
@@ -421,17 +443,37 @@ automatically land on centerlines when those exist.
 
 ### A* specifics
 
-- Priority queue: `MinHeap<AStarNode>` sorted by `f = g + h`. Heuristic:
-  Manhattan.
+- **Index-based, zero-alloc.** Cells are addressed by `yi * xStride + xi`
+  (no `GridCell` objects). All A* state lives in module-pool typed arrays:
+  cell-keyed (`closedGen`/`gScoreGen`/`gScores`, `Uint32Array`/`Float32Array`,
+  `MAX_CELLS = 64`) and node-keyed (`fScores`/`parentNode`/`arrivalDir`/
+  `nodeCell`, `MAX_NODES = 256`). A `Uint32` generation counter (`astarGen`)
+  is bumped per call — "clear before use" becomes a single increment, not N
+  writes.
+- **Heap stores node indices.** `MinHeap<number>` reused across calls
+  (`.clear()` at start), comparator reads `fScores[idx]`. Manual swap inside
+  the heap (no destructuring allocation).
+- Priority sorted by `f = g + h`, Manhattan heuristic. Cardinal directions
+  encoded as `0..3` (`DIR_N` / `DIR_E` / `DIR_S` / `DIR_W`); `OPPOSITE_INT`
+  table avoids the `Dir` string ↔ string lookup hot path.
 - **No cell blocking** during grid construction. Obstacles are checked per
   segment via `segmentIntersectsFrame` (slab method) — handles thin shapes
   and arbitrary segment directions.
-- `cost = Manhattan + BEND_PENALTY (1000)` on direction changes;
-  `cost = Infinity` when moving opposite to `arrivalDir` (no U-turns).
+- `cost = Manhattan + BEND_PENALTY (1000)` on direction changes; backwards
+  moves are skipped (no U-turns).
 - Start node seeded with `arrivalDir = startDir` so the first move respects
   the shape side.
-- **Fallbacks**: no path with obstacles → retry with `obstacles = []`; still
-  nothing → return `[start, goal]` straight line.
+- **Path reconstruction** walks parent indices forward into `pathCells`
+  (`Int32Array(MAX_NODES)`); caller iterates in reverse during emission. No
+  intermediate `fullPath` array; collinear simplification folds inline via
+  `pushOrMerge` while writing the final `Point[]`.
+- **Final `Point[]` is the only allocation per route.** Each emitted vertex is
+  a fresh `[x, y]`; the result array is fresh.
+- **Fallbacks**: no path with obstacles → recurse with `EMPTY_OBSTACLES`
+  (recursion bumps `astarGen` and resets the node pool); still nothing →
+  return `[startPos, endPos]` direct line.
+- **Pool exhaustion** is dev-mode warned (`MAX_CELLS` / `MAX_NODES`); raise
+  caps if the warning fires under realistic gestures.
 
 ### Direction resolution (elbow only)
 
@@ -452,31 +494,42 @@ In `resolveElbowDirections`:
 ## Public Entry Points
 
 ```typescript
-// Reroute existing — reads Y.map, applies overrides, branches on connectorType.
-rerouteConnector(
+// SelectTool endpoint drag — one side overridden, the other reads Y.Map.
+rerouteConnectorEndpointDrag(
   connectorId: string,
-  endpointOverrides?: { start?: EndpointOverrideValue; end?: EndpointOverrideValue },
-): RerouteResult | null;                          // { points, bbox }
+  endpoint: 'start' | 'end',
+  override: SnapTarget | Point,                    // EndpointDragOverride
+): RerouteResult | null;                           // { points, bbox }
 
-// Route new — no Y.map; same resolver + routing pipeline.
+// connector-topology transforms — per-side FrameOverride | Point | null.
+rerouteConnectorTransform(
+  connectorId: string,
+  startOverride: FrameOverride | Point | null,
+  endOverride:   FrameOverride | Point | null,
+): RerouteResult | null;
+
+// Trust Y.Map (future "update affected connectors") — wrapper over Transform.
+rerouteConnectorCanonical(connectorId: string): RerouteResult | null;
+
+// Route new — no Y.map; same resolver + routing pipeline. (ConnectorTool.)
 routeNewConnector(
-  start: SnapTarget | [number, number],
-  end:   SnapTarget | [number, number],
+  start: SnapTarget | Point,
+  end:   SnapTarget | Point,
   strokeWidth: number,
-  connectorType?: ConnectorType,                  // default 'elbow'
-): NewRouteResult;                                // { points }
+  connectorType?: ConnectorType,                   // default 'elbow'
+): NewRouteResult;                                 // { points }
 ```
 
-Internal flow (both entry points):
+Internal flow — every reroute entry point delegates to one private
+`rerouteCore(ctx, startResolved, endResolved)` that branches on `connectorType`
+exactly once:
 
 ```typescript
-const startR = resolveEndpoint(storedStart, startAnchor, overrides?.start, type);
-const endR   = resolveEndpoint(storedEnd,   endAnchor,   overrides?.end,   type);
-
-if (type === 'straight') return { points: computeStraightRoute(startR, endR).points, bbox };
-
-const { startDir, endDir } = resolveElbowDirections(startR, endR, strokeWidth);
-return { points: callAStar(startR, startDir, endR, endDir, strokeWidth).points, bbox };
+function rerouteCore(ctx, startResolved, endResolved) {
+  if (ctx.connectorType === 'straight') return { points: computeStraightRoute(...).points, bbox };
+  const { startDir, endDir } = resolveElbowDirections(startResolved, endResolved, ctx.strokeWidth);
+  return { points: callAStar(...).points, bbox };
+}
 ```
 
 BBox for `RerouteResult` comes from `computeConnectorBBoxFromPoints(points, yMap)`.
@@ -614,6 +667,18 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 10. **Single paint atom.** Every connector stroke goes through
     `paintConnector`, so committed render, transform preview, and in-flight
     preview share one draw pass.
+11. **Three reroute entry points, one core.** Each public reroute (endpoint-
+    drag, transform, canonical) accepts only the override shapes its caller
+    actually produces; all four delegate to `rerouteCore`, which branches on
+    `connectorType` exactly once. No drift risk; the topology hot path skips
+    runtime override-shape discrimination it can't generate.
+12. **Module scratches are non-re-entrant.** `reroute-connector.ts`,
+    `routing-context.ts`, and `routing-astar.ts` all hold module-level
+    scratches (point projections, bounds, grid lines, A* state). The reroute
+    pipeline is synchronous; callers must not invoke it recursively.
+13. **Final route Point[] is the only allocation in the elbow path.** All
+    other arrays (cells, gScores, fScores, pathCells, xLines, yLines) are
+    module-pool typed arrays reused via a generation counter.
 
 ---
 
@@ -622,7 +687,9 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 | Need | Call |
 |---|---|
 | Create new connector | `routeNewConnector(start, end, strokeWidth, type?)` |
-| Reroute existing connector | `rerouteConnector(id, { start?, end? })` |
+| Reroute on endpoint drag (SelectTool) | `rerouteConnectorEndpointDrag(id, endpoint, snap \| pt)` |
+| Reroute under shape transform (topology) | `rerouteConnectorTransform(id, startOv, endOv)` |
+| Reroute reading Y.Map (no overrides) | `rerouteConnectorCanonical(id)` |
 | Find snap target | `findBestSnapTarget(ctx)` |
 | All connectors anchored to a shape | `getConnectorsForShape(shapeId)` |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
