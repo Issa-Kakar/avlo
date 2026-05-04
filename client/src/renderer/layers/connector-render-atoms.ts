@@ -20,7 +20,7 @@
 import { getHandleShapeType, getWidth } from '@/core/accessors';
 import { ARROW_ROUNDING_LINE_WIDTH, type ConnectorPaths } from '@/core/connectors/connector-paths';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
-import { shapeMidpoints } from '@/core/connectors/shape-geometry';
+import { midpointFor } from '@/core/connectors/shape-geometry';
 import type { Dir, SnapTarget } from '@/core/connectors/types';
 import { frameOf } from '@/core/geometry/frame-of';
 import type { FrameTuple, Point } from '@/core/types/geometry';
@@ -150,24 +150,27 @@ export function drawSnapTargetHighlight(ctx: CanvasRenderingContext2D, handle: O
  * true, sizes grow to `largeRadius` and the `activeSide` midpoint is skipped so
  * the caller can render the glowing active dot over the top with `drawAnchorDot`.
  */
+const MIDPOINT_SCRATCH: Point = [0, 0];
+const MIDPOINT_SIDES: readonly Dir[] = ['N', 'E', 'S', 'W'];
+
 export function drawShapeMidpoints(
   ctx: CanvasRenderingContext2D,
   frame: FrameTuple,
-  shapeType: string,
+  _shapeType: string,
   activeSide: Dir | null,
   isMidpointActive: boolean,
 ): void {
   const { smallRadius, largeRadius, strokeWidth } = getAnchorDotMetricsWorld();
   const radius = isMidpointActive ? largeRadius : smallRadius;
-  const midpoints = shapeMidpoints(frame, shapeType);
   ctx.save();
   ctx.lineWidth = strokeWidth;
   ctx.fillStyle = ANCHOR_DOT_CONFIG.INACTIVE_FILL;
   ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
-  for (const [s, pos] of Object.entries(midpoints) as [Dir, Point][]) {
+  for (const s of MIDPOINT_SIDES) {
     if (isMidpointActive && s === activeSide) continue;
+    midpointFor(frame, s, MIDPOINT_SCRATCH);
     ctx.beginPath();
-    ctx.arc(pos[0], pos[1], radius, 0, Math.PI * 2);
+    ctx.arc(MIDPOINT_SCRATCH[0], MIDPOINT_SCRATCH[1], radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }

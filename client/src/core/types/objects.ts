@@ -53,16 +53,18 @@ export type Dir = 'N' | 'E' | 'S' | 'W';
 /**
  * Anchor data stored in Y.map for connected endpoints.
  *
- * Discriminated union — the parent connector's `connectorType` picks the variant:
- * - Elbow connectors store `side` (authoritative outward direction from shape-aware snap).
- * - Straight connectors store `interior` (committed at snap time; edge vs interior).
+ * Discriminated by the parent connector's `connectorType`:
+ * - Elbow stores `{ id, anchor }` only. `side` is derived at route time from
+ *   `(anchor + live frame + shapeType)` via `projectAnchorToEdge` — never persisted.
+ *   Old Y.Maps may still carry a `side` field on elbow anchors; readers ignore it,
+ *   writers omit it.
+ * - Straight stores `{ id, interior, anchor }`. `interior` is committed at snap
+ *   time (committed user intent — center vs edge); not derivable from coords alone.
  *
- * Narrow with `'side' in anchor` / `'interior' in anchor`, or cast via the
- * parent's `connectorType` when reading — there is no runtime normalizer by design.
+ * Narrow with `'interior' in anchor`, or cast via the parent's `connectorType`.
  */
 export interface StoredElbowAnchor {
   id: string;
-  side: Dir;
   anchor: [number, number];
 }
 export interface StoredStraightAnchor {

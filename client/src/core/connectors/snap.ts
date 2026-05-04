@@ -18,6 +18,11 @@
  * `position` is the visual dot + pre-offset routing endpoint; routing owns its
  * own offset/pullback per type.
  *
+ * **Side classification** comes from `projectAnchorToEdge` — cursor is converted
+ * to a normalized anchor and projected against the live frame, so the cardinal
+ * matches the world-space outward normal regardless of aspect ratio. This
+ * supersedes the old line-distance + atan2 classifiers.
+ *
  * @module lib/connectors/snap
  */
 
@@ -27,7 +32,7 @@ import { pointInsideShape } from '../geometry/hit-primitives';
 import { pickTopmostBindable } from '../spatial/object-query';
 import type { FrameTuple, Point } from '../types/geometry';
 import { getSnapRadiiWorld, type SnapRadiiWorld } from './constants';
-import { clamp01, findNearestEdgePoint, frameCenter, shapeMidpoints } from './shape-geometry';
+import { clamp01, frameCenter, midpointFor, projectAnchorToEdge } from './shape-geometry';
 import type { Dir, ElbowSnapTarget, SnapContext, SnapTarget, StraightSnapTarget } from './types';
 
 // =============================================================================
@@ -42,9 +47,41 @@ interface EdgeSnapProbe {
   normalizedAnchor: Point;
 }
 
+interface NearestEdgeProbe {
+  side: Dir;
+  x: number;
+  y: number;
+  dist: number;
+}
+
+// =============================================================================
+// MODULE-LEVEL SCRATCH (synchronous callers only — never interleave probes)
+// =============================================================================
+
+const PROBE_NORMALIZED: Point = [0, 0];
+const PROBE_EDGE: Point = [0, 0];
+const PROBE_NORMAL: Point = [0, 0];
+const SCRATCH_MIDPOINT: Point = [0, 0];
+
+const SIDES: readonly Dir[] = ['N', 'E', 'S', 'W'];
+
 // =============================================================================
 // SHARED HELPERS
 // =============================================================================
+
+/** Project cursor onto the shape's edge (via `projectAnchorToEdge` on cursor-as-anchor). */
+function probeNearestEdge(probe: Point, frame: FrameTuple, shapeType: string): NearestEdgeProbe | null {
+  if (frame[2] < 0.001 || frame[3] < 0.001) return null;
+  PROBE_NORMALIZED[0] = (probe[0] - frame[0]) / frame[2];
+  PROBE_NORMALIZED[1] = (probe[1] - frame[1]) / frame[3];
+  const side = projectAnchorToEdge(PROBE_NORMALIZED, frame, shapeType, PROBE_EDGE, PROBE_NORMAL);
+  return {
+    side,
+    x: PROBE_EDGE[0],
+    y: PROBE_EDGE[1],
+    dist: Math.hypot(probe[0] - PROBE_EDGE[0], probe[1] - PROBE_EDGE[1]),
+  };
+}
 
 /** Clamped normalized anchor from an on-edge world point. */
 function normalizedFromEdge(edge: Point, frame: FrameTuple): Point {
@@ -53,17 +90,25 @@ function normalizedFromEdge(edge: Point, frame: FrameTuple): Point {
 }
 
 /** Nearest midpoint side + world distance from a probe point. */
-function nearestMidpoint(probe: Point, midpoints: Record<Dir, Point>): { side: Dir; dist: number } {
-  let side: Dir = 'N';
-  let dist = Infinity;
-  for (const [s, pos] of Object.entries(midpoints) as [Dir, Point][]) {
-    const d = Math.hypot(probe[0] - pos[0], probe[1] - pos[1]);
-    if (d < dist) {
-      dist = d;
-      side = s;
+function nearestMidpoint(probe: Point, frame: FrameTuple): { side: Dir; dist: number } {
+  let bestSide: Dir = 'N';
+  let bestDist = Infinity;
+  for (const s of SIDES) {
+    midpointFor(frame, s, SCRATCH_MIDPOINT);
+    const d = Math.hypot(probe[0] - SCRATCH_MIDPOINT[0], probe[1] - SCRATCH_MIDPOINT[1]);
+    if (d < bestDist) {
+      bestDist = d;
+      bestSide = s;
     }
   }
-  return { side, dist };
+  return { side: bestSide, dist: bestDist };
+}
+
+/** Allocate a fresh world-space midpoint Point for a returned snap target. */
+function midpointPoint(frame: FrameTuple, side: Dir): Point {
+  const out: Point = [0, 0];
+  midpointFor(frame, side, out);
+  return out;
 }
 
 /** Midpoint hysteresis gate: sticky within `midOut`, enters on first touch at `midIn`. */
@@ -103,13 +148,12 @@ export function computeSnapForShape(
   ctx: SnapContext,
   radii: SnapRadiiWorld,
 ): SnapTarget | null {
-  const midpoints = shapeMidpoints(frame, shapeType);
   const isInside = pointInsideShape(ctx.cursorWorld, frame, shapeType);
-  const insideDepth = isInside ? (findNearestEdgePoint(ctx.cursorWorld, frame, shapeType)?.dist ?? 0) : 0;
+  const insideDepth = isInside ? (probeNearestEdge(ctx.cursorWorld, frame, shapeType)?.dist ?? 0) : 0;
 
   return ctx.connectorType === 'straight'
-    ? computeStraightSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, insideDepth, radii)
-    : computeElbowSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, insideDepth, radii);
+    ? computeStraightSnap(ctx, shapeId, frame, shapeType, isInside, insideDepth, radii)
+    : computeElbowSnap(ctx, shapeId, frame, shapeType, isInside, insideDepth, radii);
 }
 
 // =============================================================================
@@ -121,20 +165,19 @@ function computeElbowSnap(
   shapeId: string,
   frame: FrameTuple,
   shapeType: string,
-  midpoints: Record<Dir, Point>,
   isInside: boolean,
   insideDepth: number,
   radii: SnapRadiiWorld,
 ): ElbowSnapTarget | null {
   if (isInside && insideDepth > radii.forceMidpointDepth) {
-    return forceElbowMidpoint(shapeId, frame, midpoints, ctx.cursorWorld);
+    return forceElbowMidpoint(shapeId, frame, ctx.cursorWorld);
   }
-  return tryElbowEdgeSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, radii);
+  return tryElbowEdgeSnap(ctx, shapeId, frame, shapeType, isInside, radii);
 }
 
-function forceElbowMidpoint(shapeId: string, frame: FrameTuple, midpoints: Record<Dir, Point>, probe: Point): ElbowSnapTarget {
-  const nearest = nearestMidpoint(probe, midpoints);
-  const midpoint = midpoints[nearest.side];
+function forceElbowMidpoint(shapeId: string, frame: FrameTuple, probe: Point): ElbowSnapTarget {
+  const nearest = nearestMidpoint(probe, frame);
+  const midpoint = midpointPoint(frame, nearest.side);
   return {
     kind: 'elbow',
     shapeId,
@@ -151,11 +194,10 @@ function tryElbowEdgeSnap(
   shapeId: string,
   frame: FrameTuple,
   shapeType: string,
-  midpoints: Record<Dir, Point>,
   isInside: boolean,
   radii: SnapRadiiWorld,
 ): ElbowSnapTarget | null {
-  const p = probeEdgeSnap(ctx, frame, shapeType, midpoints, isInside, radii, (side) => wasOnElbowMidpoint(ctx.prevAttach, shapeId, side));
+  const p = probeEdgeSnap(ctx, frame, shapeType, isInside, radii, (side) => wasOnElbowMidpoint(ctx.prevAttach, shapeId, side));
   if (!p) return null;
   return {
     kind: 'elbow',
@@ -174,7 +216,7 @@ function tryElbowEdgeSnap(
 
 /**
  * Shared edge-snap pipeline:
- *   find nearest edge → gate on radius (outside only) → midpoint hysteresis.
+ *   project cursor → edge → gate on radius (outside only) → midpoint hysteresis.
  * Caller supplies the midpoint-hysteresis predicate so elbow and straight
  * keep their own `prevAttach` shape.
  */
@@ -182,20 +224,19 @@ function probeEdgeSnap(
   ctx: SnapContext,
   frame: FrameTuple,
   shapeType: string,
-  midpoints: Record<Dir, Point>,
   isInside: boolean,
   radii: SnapRadiiWorld,
   wasOnMidpoint: (side: Dir) => boolean,
 ): EdgeSnapProbe | null {
-  const edgeSnap = findNearestEdgePoint(ctx.cursorWorld, frame, shapeType);
+  const edgeSnap = probeNearestEdge(ctx.cursorWorld, frame, shapeType);
   if (!edgeSnap) return null;
   if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
 
   const edgePos: Point = [edgeSnap.x, edgeSnap.y];
-  const probe = isInside ? nearestMidpoint(edgePos, midpoints) : nearestMidpoint(ctx.cursorWorld, midpoints);
+  const probe = isInside ? nearestMidpoint(edgePos, frame) : nearestMidpoint(ctx.cursorWorld, frame);
 
   if (midpointGate(wasOnMidpoint(probe.side), probe.dist, radii)) {
-    const midpoint = midpoints[probe.side];
+    const midpoint = midpointPoint(frame, probe.side);
     return { side: probe.side, isMidpoint: true, position: midpoint, normalizedAnchor: normalizedFromEdge(midpoint, frame) };
   }
   return { side: edgeSnap.side, isMidpoint: false, position: edgePos, normalizedAnchor: normalizedFromEdge(edgePos, frame) };
@@ -210,24 +251,17 @@ function computeStraightSnap(
   shapeId: string,
   frame: FrameTuple,
   shapeType: string,
-  midpoints: Record<Dir, Point>,
   isInside: boolean,
   insideDepth: number,
   radii: SnapRadiiWorld,
 ): StraightSnapTarget | null {
   if (isInside && insideDepth > radii.straightInteriorDepth) {
-    return computeStraightInterior(ctx, shapeId, frame, midpoints, radii);
+    return computeStraightInterior(ctx, shapeId, frame, radii);
   }
-  return tryStraightEdgeSnap(ctx, shapeId, frame, shapeType, midpoints, isInside, radii);
+  return tryStraightEdgeSnap(ctx, shapeId, frame, shapeType, isInside, radii);
 }
 
-function computeStraightInterior(
-  ctx: SnapContext,
-  shapeId: string,
-  frame: FrameTuple,
-  midpoints: Record<Dir, Point>,
-  radii: SnapRadiiWorld,
-): StraightSnapTarget {
+function computeStraightInterior(ctx: SnapContext, shapeId: string, frame: FrameTuple, radii: SnapRadiiWorld): StraightSnapTarget {
   const { cursorWorld, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
   const [fx, fy, fw, fh] = frame;
@@ -250,9 +284,9 @@ function computeStraightInterior(
     };
   }
 
-  const nearest = nearestMidpoint(cursorWorld, midpoints);
+  const nearest = nearestMidpoint(cursorWorld, frame);
   if (midpointGate(wasOnStraightMidpoint(prevAttach, shapeId, nearest.side), nearest.dist, radii)) {
-    const midpoint = midpoints[nearest.side];
+    const midpoint = midpointPoint(frame, nearest.side);
     return {
       kind: 'straight',
       shapeId,
@@ -283,13 +317,10 @@ function tryStraightEdgeSnap(
   shapeId: string,
   frame: FrameTuple,
   shapeType: string,
-  midpoints: Record<Dir, Point>,
   isInside: boolean,
   radii: SnapRadiiWorld,
 ): StraightSnapTarget | null {
-  const p = probeEdgeSnap(ctx, frame, shapeType, midpoints, isInside, radii, (side) =>
-    wasOnStraightMidpoint(ctx.prevAttach, shapeId, side),
-  );
+  const p = probeEdgeSnap(ctx, frame, shapeType, isInside, radii, (side) => wasOnStraightMidpoint(ctx.prevAttach, shapeId, side));
   if (!p) return null;
   return {
     kind: 'straight',

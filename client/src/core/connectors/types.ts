@@ -87,7 +87,12 @@ interface SnapTargetBase {
 /** Snap target for an elbow connector — always edge-anchored (incl. midpoint). */
 export interface ElbowSnapTarget extends SnapTargetBase {
   kind: 'elbow';
-  /** Authoritative outward direction — from shape-aware edge classification. */
+  /**
+   * Gesture-time UI hint — drives the active midpoint highlight + hysteresis.
+   * **Not persisted.** Routing re-derives the cardinal at route time via
+   * `projectAnchorToEdge`. In steady-state both agree (same projection, same
+   * frame); diverging only during in-flight gesture transients.
+   */
   side: Dir;
   /** True when snapped to the edge midpoint (for hysteresis + midpoint highlight). */
   isMidpoint: boolean;

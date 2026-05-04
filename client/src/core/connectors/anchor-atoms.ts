@@ -13,10 +13,10 @@ import { getHandle } from '@/runtime/room-runtime';
 import { getEnd, getEndAnchor, getStart, getStartAnchor } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
 import type { FrameTuple, Point } from '../types/geometry';
-import type { ObjectHandle, StoredAnchor, StoredElbowAnchor } from '../types/objects';
+import type { ObjectHandle, StoredAnchor } from '../types/objects';
 import { directionVector } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
-import type { SnapTarget } from './types';
+import type { Dir, SnapTarget } from './types';
 
 const ZERO_POINT: Point = [0, 0];
 
@@ -26,12 +26,16 @@ export function anchorFramePoint(anchor: Point, frame: FrameTuple): Point {
 }
 
 /**
- * Elbow-only: frame point shifted `EDGE_CLEARANCE_W` outward along the stored side.
- * Callers pass the stored `StoredElbowAnchor` directly — side is authoritative, never re-derived.
+ * Elbow-only: frame point shifted `EDGE_CLEARANCE_W` outward along the given cardinal.
+ *
+ * `dir` is supplied by the caller (derived at route time via `projectAnchorToEdge`) —
+ * cardinal-aligned by design so A* gets axis-aligned escape segments. On stretched
+ * diamonds the projected outward normal is non-cardinal, but the offset stays
+ * cardinal so the stub stays orthogonal to the routing grid.
  */
-export function elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): Point {
-  const [ax, ay] = anchor.anchor;
-  const [dx, dy] = directionVector(anchor.side);
+export function elbowAnchorPoint(anchor: Point, frame: FrameTuple, dir: Dir): Point {
+  const [ax, ay] = anchor;
+  const [dx, dy] = directionVector(dir);
   return [frame[0] + ax * frame[2] + dx * EDGE_CLEARANCE_W, frame[1] + ay * frame[3] + dy * EDGE_CLEARANCE_W];
 }
 
@@ -42,11 +46,12 @@ export function isSameShape(a: { shapeId?: string } | null | undefined, b: { sha
 
 /**
  * Build the Y.Map anchor record for a snap target.
- * Shape matches connector type: elbow stores `side`, straight stores `interior`.
+ * Elbow stores `{ id, anchor }` — `side` is derived at route time, never persisted.
+ * Straight stores `{ id, interior, anchor }` — `interior` is committed at snap time.
  */
 export function anchorRecordFromSnap(snap: SnapTarget): StoredAnchor {
   return snap.kind === 'elbow'
-    ? { id: snap.shapeId, side: snap.side, anchor: snap.normalizedAnchor }
+    ? { id: snap.shapeId, anchor: snap.normalizedAnchor }
     : { id: snap.shapeId, interior: snap.interior, anchor: snap.normalizedAnchor };
 }
 

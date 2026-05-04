@@ -17,15 +17,21 @@ import { getConnectorProps, getHandleShapeType, type StoredAnchor } from '../acc
 import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
 import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
-import type { StoredElbowAnchor, StoredStraightAnchor } from '../types/objects';
+import type { StoredStraightAnchor } from '../types/objects';
 import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
 import { computeElbowFreeEndDir, oppositeDir, resolveElbowFreeStartDir } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
 import { computeAStarRoute } from './routing-astar';
-import { computeShapeEdgeIntersection } from './shape-geometry';
+import { projectAnchorToEdge, rayShapeExitPoint } from './shape-geometry';
 import type { ConnectorType, Dir, SnapTarget } from './types';
 
 const ZERO_POINT: Point = [0, 0];
+
+// Module-level scratches for projection (synchronous reroute path; not re-entrant).
+const PROJECT_EDGE: Point = [0, 0];
+const PROJECT_NORMAL: Point = [0, 0];
+const RAY_DIRECTION: Point = [0, 0];
+const RAY_EXIT: Point = [0, 0];
 
 // ============================================================================
 // TYPES
@@ -82,11 +88,15 @@ const FREE_ENDPOINT = (position: Point): ResolvedEndpoint => ({
   isAnchored: false,
 });
 
-/** Elbow: position = frame point + EDGE_CLEARANCE_W along `side`; dir = side. */
-function buildElbowAnchored(frame: FrameTuple, shapeType: string, shapeId: string, normalizedAnchor: Point, side: Dir): ResolvedEndpoint {
+/**
+ * Elbow: derive `dir` from `(anchor + frame + shapeType)` via `projectAnchorToEdge`,
+ * then place position at `EDGE_CLEARANCE_W` outward along that cardinal.
+ */
+function buildElbowAnchored(frame: FrameTuple, shapeType: string, shapeId: string, normalizedAnchor: Point): ResolvedEndpoint {
+  const dir = projectAnchorToEdge(normalizedAnchor, frame, shapeType, PROJECT_EDGE, PROJECT_NORMAL);
   return {
-    position: elbowAnchorPoint({ id: shapeId, side, anchor: normalizedAnchor }, frame),
-    dir: side,
+    position: elbowAnchorPoint(normalizedAnchor, frame, dir),
+    dir,
     isAnchored: true,
     normalizedAnchor,
     shapeType,
@@ -122,7 +132,7 @@ function buildStraightAnchored(
  */
 function buildAnchoredByType(connectorType: ConnectorType, frame: FrameTuple, shapeType: string, anchor: StoredAnchor): ResolvedEndpoint {
   return connectorType === 'elbow'
-    ? buildElbowAnchored(frame, shapeType, anchor.id, anchor.anchor, (anchor as StoredElbowAnchor).side)
+    ? buildElbowAnchored(frame, shapeType, anchor.id, anchor.anchor)
     : buildStraightAnchored(frame, shapeType, anchor.id, anchor.anchor, (anchor as StoredStraightAnchor).interior);
 }
 
@@ -133,9 +143,9 @@ function buildAnchoredByType(connectorType: ConnectorType, frame: FrameTuple, sh
 /**
  * Resolve a single endpoint, picking the right override branch first.
  *
- * Trusts the stored anchor's shape matches its parent connector's `connectorType`
- * (elbow stores `side`, straight stores `interior`). No runtime normalization —
- * interior-ness was committed at snap time and is authoritative.
+ * Elbow side is derived from `(anchor + frame + shapeType)` via `projectAnchorToEdge`
+ * — never persisted. Straight `interior` is committed at snap time and is read
+ * straight from the stored anchor; no runtime normalization.
  */
 function resolveEndpoint(
   storedPosition: Point,
@@ -181,7 +191,7 @@ function resolveSnapOverride(snap: SnapTarget): ResolvedEndpoint {
     return FREE_ENDPOINT(snap.position);
   }
   return snap.kind === 'elbow'
-    ? buildElbowAnchored(frame, shapeType, snap.shapeId, snap.normalizedAnchor, snap.side)
+    ? buildElbowAnchored(frame, shapeType, snap.shapeId, snap.normalizedAnchor)
     : buildStraightAnchored(frame, shapeType, snap.shapeId, snap.normalizedAnchor, snap.interior);
 }
 
@@ -227,9 +237,10 @@ function resolveStraightEndpoint(me: ResolvedEndpoint, myRaw: Point, otherRaw: P
   if (!me.isAnchored || !me.normalizedAnchor || !me.frame) return me.position;
   if (!me.interior) return applyPullBack(myRaw, otherRaw);
   if (sameShape || !me.shapeType) return myRaw;
-  const intersection = computeShapeEdgeIntersection(me.shapeType, me.frame, myRaw, otherRaw);
-  if (!intersection) return myRaw;
-  return applyPullBack(intersection.point, otherRaw);
+  RAY_DIRECTION[0] = otherRaw[0] - myRaw[0];
+  RAY_DIRECTION[1] = otherRaw[1] - myRaw[1];
+  if (!rayShapeExitPoint(myRaw, RAY_DIRECTION, me.frame, me.shapeType, RAY_EXIT)) return myRaw;
+  return applyPullBack(RAY_EXIT, otherRaw);
 }
 
 /**

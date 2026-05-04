@@ -330,7 +330,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
   points: [number, number][],  // Full routed path (ready to render)
   start: [number, number], end: [number, number],
   // Anchor shape discriminated by connectorType (parent is the discriminator):
-  //   elbow    → { id, side: Dir, anchor: [0-1, 0-1] }            (side is authoritative)
+  //   elbow    → { id, anchor: [0-1, 0-1] }                       (side derived at route time)
   //   straight → { id, interior: boolean, anchor: [0-1, 0-1] }    (interior committed at snap time)
   startAnchor?: StoredElbowAnchor | StoredStraightAnchor,
   endAnchor?:   StoredElbowAnchor | StoredStraightAnchor,
@@ -338,6 +338,7 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
   color, width, ownerId, createdAt }
 // Connectors always render at opacity 1 — no opacity field stored.
 // getConnectorType(y) still defaults to 'elbow' on read for graceful handling of stale data.
+// Old Y.Maps may carry `side` on elbow anchors — readers ignore it; writers omit it.
 ```
 Detailed connector docs in `core/connectors/CLAUDE.md`.
 

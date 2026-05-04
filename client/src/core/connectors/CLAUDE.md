@@ -18,10 +18,10 @@ schema are shared. Divergence points:
 
 | Concern | Elbow | Straight |
 |---|---|---|
-| Stored anchor shape | `{ id, side, anchor }` | `{ id, interior, anchor }` |
+| Stored anchor shape | `{ id, anchor }` | `{ id, interior, anchor }` |
 | Deep-inside snap | Nearest midpoint only | Center → midpoint → clamped interior |
-| Endpoint direction | `side` (feeds A* seed) | `null` (not needed) |
-| Endpoint offset | Perpendicular, applied at resolve (`elbowAnchorPoint`) | Along-line pull-back, applied during route (`applyPullBack`) |
+| Endpoint direction | derived at route time via `projectAnchorToEdge` | `null` (not needed) |
+| Endpoint offset | Cardinal (along projected `dir`), applied at resolve (`elbowAnchorPoint`) | Along-line pull-back, applied during route (`applyPullBack`) |
 | Routing algorithm | A* over dynamic grid + obstacles | Two points, ray-cast for interior |
 
 Routing is deterministic from Y.map + current shape frames — no persistent
@@ -35,7 +35,7 @@ Orient by task:
 
 | Task | Files to read |
 |------|---------------|
-| Add a new shape kind to snap/route | `shape-geometry.ts`, `snap.ts` (bindable kinds via `BINDABLE_KINDS`) |
+| Add a new shape kind to snap/route | `shape-geometry.ts` (`projectAnchorToEdge` + `rayShapeExitPoint` branches), `snap.ts` (bindable kinds via `BINDABLE_KINDS`) |
 | Change snap behavior (thresholds, tiers) | `snap.ts`, `constants.ts` |
 | Change how connectors reroute on shape transform | `reroute-connector.ts` (endpoint resolver) |
 | Add a new connector type | Y.Map schema + `types.ts` + `snap.ts` branch + `reroute-connector.ts` branch |
@@ -48,8 +48,8 @@ Orient by task:
 client/src/core/connectors/
 ├── types.ts              # Dir, Bounds, SnapTarget union, RoutingContext, Grid, AStarNode
 ├── constants.ts          # SNAP_CONFIG, ROUTING_CONFIG, GUIDE_CONFIG, bundle getters, EDGE_CLEARANCE_W
-├── shape-geometry.ts     # Pure shape math: midpoints, nearest-edge, ray×shape intersection
-├── anchor-atoms.ts       # Anchor↔point: anchorFramePoint, elbowAnchorPoint, anchorRecordFromSnap
+├── shape-geometry.ts     # projectAnchorToEdge (anchor → world edge + outward normal + Dir), rayShapeExitPoint, midpointFor
+├── anchor-atoms.ts       # Anchor↔point: anchorFramePoint, elbowAnchorPoint(anchor, frame, dir), anchorRecordFromSnap
 ├── connector-utils.ts    # Direction primitives, spatialRelation, path simplify, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
 ├── routing-context.ts    # Centerlines, dynamic routing bounds, stubs, grid construction
@@ -87,19 +87,23 @@ Renderer glue: `renderer/layers/connector-render-atoms.ts` (paint + feedback),
   color, width, ownerId, createdAt
 }
 
-interface StoredElbowAnchor    { id: string; side: Dir;        anchor: [number, number]; }
+interface StoredElbowAnchor    { id: string;                    anchor: [number, number]; }
 interface StoredStraightAnchor { id: string; interior: boolean; anchor: [number, number]; }
 ```
 
 - **`connectorType` is the discriminator** for both anchor union branches and
   every routing decision downstream. `getConnectorType(y)` defaults to `'elbow'`
   on stale reads; every new write carries the explicit value.
-- **`side` (elbow)** and **`interior` (straight)** are both committed at snap
-  time and never re-derived. Neither can be reconstructed from the normalized
-  anchor alone — `[0.5, 0]` is an edge midpoint on a rect but could sit inside
-  or outside an ellipse.
+- **Elbow `side` is *derived*** at route time from `(anchor + live frame +
+  shapeType)` via `projectAnchorToEdge` — never persisted. Old Y.Maps may carry
+  a `side` field; readers ignore it, writers omit it. Auto-corrects when the
+  shape's aspect ratio or shape-type changes.
+- **Straight `interior`** is committed at snap time (user intent — center vs
+  edge). Cannot be reconstructed from the normalized anchor alone.
 - **`anchor: [0-1, 0-1]`** is normalized into the shape's frame — resizes and
   moves reduce to linear interpolation, shape-agnostic.
+- **`start` / `end` Y.Map fields stay** in this PR. They will fold into a
+  `Point | StoredAnchor` union in the follow-up local-routing refactor.
 - Connectors always render at opacity 1; no stored `opacity`.
 
 ---
@@ -115,7 +119,7 @@ type SnapTarget = ElbowSnapTarget | StraightSnapTarget;  // Discriminated by `ki
 interface ElbowSnapTarget {
   kind: 'elbow';
   shapeId: string;
-  side: Dir;                        // Authoritative outward direction
+  side: Dir;                        // Gesture-time UI hint (midpoint highlight + hysteresis); not persisted
   normalizedAnchor: [number, number];
   isMidpoint: boolean;
   position: [number, number];       // Visual dot + pre-offset routing endpoint
@@ -270,8 +274,9 @@ interface ResolvedEndpoint {
 Three factories:
 
 - `FREE_ENDPOINT(position)` — no anchor data.
-- `buildElbowAnchored(frame, shapeType, shapeId, anchor, side)` — position =
-  `elbowAnchorPoint(...)` (perpendicular `EDGE_CLEARANCE_W`); `dir = side`.
+- `buildElbowAnchored(frame, shapeType, shapeId, anchor)` — calls
+  `projectAnchorToEdge(anchor, frame, shapeType, ...)` to derive `dir`, then
+  `elbowAnchorPoint(anchor, frame, dir)` for position (cardinal `EDGE_CLEARANCE_W`).
 - `buildStraightAnchored(frame, shapeType, shapeId, anchor, interior)` —
   position = `anchorFramePoint(anchor, frame)` (no offset); `dir = null`.
 
@@ -335,18 +340,19 @@ two interior points on one convex shape produces opposing intersections (the
 "spinning clock" artifact), so we skip intersection entirely and connect the
 raw interior points directly.
 
-### Edge intersection (`computeShapeEdgeIntersection`)
+### Edge intersection (`rayShapeExitPoint`)
 
-Ray from interior anchor toward the other endpoint's raw position; exit point
-and side on the shape boundary. Dispatches on shapeType:
+Ray from interior anchor toward the other endpoint's raw position; writes the
+exit point on the shape boundary into a caller-owned scratch tuple; returns
+`true` on success. Dispatches on shapeType:
 
 - **rect / roundedRect** — axis-aligned slab per edge, smallest positive `t`.
-- **ellipse** — parametric quadratic; side from exit angle via
-  `ellipseSideFromAngle`.
+- **ellipse** — parametric quadratic.
 - **diamond** — Cramer's rule across the 4 diagonal segments.
 
-Returned `side` is informational; callers apply `EDGE_CLEARANCE_W` pull-back
-along the line afterward.
+The cardinal side isn't returned (callers don't need it); they apply
+`EDGE_CLEARANCE_W` pull-back along the line afterward, which is direction-
+agnostic.
 
 ### Overlap safety
 
@@ -479,22 +485,24 @@ BBox for `RerouteResult` comes from `computeConnectorBBoxFromPoints(points, yMap
 
 ## Anchor Atoms (`anchor-atoms.ts`)
 
-The whole anchor-math surface — five functions, no classifiers, no
-re-derivation. Interior-ness is a stored fact; elbow `side` is read from
-the stored anchor.
+The whole anchor-math surface — five functions, no classifiers. Interior-ness
+is a stored fact; elbow `dir` is supplied by the caller (derived via
+`projectAnchorToEdge` at the route boundary).
 
 ```typescript
 anchorFramePoint(anchor: Point, frame: FrameTuple): Point;
 // Raw interpolation of [0-1, 0-1] into frame. No offset. Shared by both types.
 
-elbowAnchorPoint(anchor: StoredElbowAnchor, frame: FrameTuple): Point;
-// Raw point + EDGE_CLEARANCE_W along directionVector(anchor.side). Elbow only.
+elbowAnchorPoint(anchor: Point, frame: FrameTuple, dir: Dir): Point;
+// Raw point + EDGE_CLEARANCE_W along directionVector(dir). Cardinal-aligned by
+// design (A* needs orthogonal escape segments). Caller derives `dir` via
+// projectAnchorToEdge at route time.
 
 isSameShape(a, b): boolean;
 // Both endpoints point at the same shapeId.
 
 anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
-// Elbow snap → { id, side, anchor };  straight snap → { id, interior, anchor }.
+// Elbow snap → { id, anchor };  straight snap → { id, interior, anchor }.
 
 getEndpointEdgePosition(handle, endpoint: 'start' | 'end'): Point;
 // "Where does this endpoint's dot sit?" — always the raw frame point.
@@ -588,10 +596,11 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 2. **`SnapTarget` is a discriminated union.** Consumers branch on `snap.kind`.
 3. **Interior-ness is stored, never recomputed.** Committed at snap time via
    shape-aware `pointInsideShape`. Normalized coords alone are insufficient.
-4. **Elbow `side` is authoritative.** `anchor.side` / `snap.side` is read
-   directly; never re-derived from coordinates.
+4. **Elbow `side` is *derived*** at route time from `(anchor + live frame +
+   shapeType)` via `projectAnchorToEdge`. **Not persisted.** The `side` on
+   `ElbowSnapTarget` is a gesture-time UI hint, not authoritative.
 5. **`position` is the pre-offset visual dot AND the pre-offset routing
-   endpoint.** Per-type offset (elbow perpendicular / straight along-line)
+   endpoint.** Per-type offset (elbow cardinal / straight along-line)
    runs in routing — the snap layer never bakes offsets into `position`.
 6. **Same-shape interior goes direct** — no ray-cast; avoids opposing-ray
    intersections on convex shapes.
@@ -617,10 +626,11 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 | Find snap target | `findBestSnapTarget(ctx)` |
 | All connectors anchored to a shape | `getConnectorsForShape(shapeId)` |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
-| Elbow anchor → routing point (with perp offset) | `elbowAnchorPoint(anchor, frame)` |
+| Elbow anchor → routing point (with cardinal offset) | `elbowAnchorPoint(anchor, frame, dir)` |
+| Project normalized anchor → edge point + outward normal + Dir | `projectAnchorToEdge(anchor, frame, shapeType, outEdge, outNormal)` |
 | Y.Map anchor record from live snap | `anchorRecordFromSnap(snap)` |
 | Where an endpoint's dot should render | `getEndpointEdgePosition(handle, 'start' \| 'end')` |
-| Ray-cast interior → shape edge | `computeShapeEdgeIntersection(type, frame, interior, target)` |
+| Ray-cast interior → shape edge | `rayShapeExitPoint(origin, direction, frame, shapeType, outPoint)` |
 | Build render paths | `buildConnectorPaths({ points, strokeWidth, startCap, endCap })` |
 | Paint connector | `paintConnector(ctx, paths, color, width)` |
 | Render full snap feedback | `drawSnapFeedback(ctx, snap)` |
