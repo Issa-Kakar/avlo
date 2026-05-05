@@ -177,9 +177,7 @@ export class CodeTool implements PointerTool {
     const originX = worldX - width / 2;
     const originY = worldY - singleLineH / 2;
 
-    let createdId: string | null = null;
-
-    transact(() => {
+    const createdId = transact(() => {
       const id = ulid();
       const yObj = new Y.Map<unknown>();
 
@@ -197,7 +195,7 @@ export class CodeTool implements PointerTool {
       yObj.set('createdAt', Date.now());
 
       getObjects().set(id, yObj);
-      createdId = id;
+      return id;
     });
 
     if (createdId) {

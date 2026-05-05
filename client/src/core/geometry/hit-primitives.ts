@@ -6,6 +6,7 @@
  * objects cross the boundary — use converters in bounds.ts if needed.
  */
 
+import { clamp, clamp01 } from '@/utils/math';
 import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 
 // ============================================================================
@@ -21,7 +22,7 @@ export function pointToSegmentDistance(p: Point, a: Point, b: Point): number {
     return Math.hypot(p[0] - a[0], p[1] - a[1]);
   }
 
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy)));
+  const t = clamp01(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy));
   const projX = a[0] + t * dx;
   const projY = a[1] + t * dy;
 
@@ -114,8 +115,8 @@ export function strokeHitTest(p: Point, points: readonly Point[], radius: number
 /** Circle-rect intersection against a FrameTuple. */
 export function circleRectIntersect(c: Point, r: number, frame: FrameTuple): boolean {
   const [x, y, w, h] = frame;
-  const closestX = Math.max(x, Math.min(c[0], x + w));
-  const closestY = Math.max(y, Math.min(c[1], y + h));
+  const closestX = clamp(c[0], x, x + w);
+  const closestY = clamp(c[1], y, y + h);
   const dx = c[0] - closestX;
   const dy = c[1] - closestY;
   return dx * dx + dy * dy <= r * r;
@@ -254,8 +255,8 @@ export function rectFrameHit(c: Point, r: number, frame: FrameTuple): { distance
   if (c[0] >= x && c[0] <= x + w && c[1] >= y && c[1] <= y + h) {
     return { distance: 0, insideInterior: true };
   }
-  const closestX = Math.max(x, Math.min(c[0], x + w));
-  const closestY = Math.max(y, Math.min(c[1], y + h));
+  const closestX = clamp(c[0], x, x + w);
+  const closestY = clamp(c[1], y, y + h);
   const dx = c[0] - closestX;
   const dy = c[1] - closestY;
   const dist = Math.hypot(dx, dy);

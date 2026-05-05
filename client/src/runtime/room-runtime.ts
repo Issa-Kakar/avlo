@@ -127,8 +127,19 @@ export function getBbox(id: string): BBoxTuple | undefined {
 // MUTATION HELPERS
 // ============================================
 
-export function transact(fn: () => void): void {
-  getActiveRoomDoc().mutate(fn);
+/**
+ * Run `fn` inside a Y.Doc transaction. Returns whatever `fn` returns so callers
+ * can elide the `let foo; transact(()=>{ foo = ... }); if (foo) ...` dance:
+ *   `const id = transact(() => { ...; return id; });`
+ * Returns `undefined` when the room is destroyed (mutate is a no-op then) — same
+ * nullish guard works for both branches.
+ */
+export function transact<T>(fn: () => T): T | undefined {
+  let result: T | undefined;
+  getActiveRoomDoc().mutate(() => {
+    result = fn();
+  });
+  return result;
 }
 
 export function undo(): void {

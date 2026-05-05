@@ -2,6 +2,7 @@ import { getFillColor, getWidth } from '@/core/accessors';
 import { ARROW_ROUNDING_LINE_WIDTH } from '@/core/connectors/connector-paths';
 import { frameOf } from '@/core/geometry/frame-of';
 import { getHandle } from '@/runtime/room-runtime';
+import { clamp01 } from '@/utils/math';
 import { getConnectorPaths, getPath } from '../geometry-cache';
 
 /**
@@ -12,7 +13,7 @@ export function drawDimmedStrokes(ctx: CanvasRenderingContext2D, hitIds: string[
   if (!hitIds.length) return;
 
   const hitSet = new Set(hitIds);
-  const alpha = Math.max(0, Math.min(1, baseOpacity));
+  const alpha = clamp01(baseOpacity);
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';

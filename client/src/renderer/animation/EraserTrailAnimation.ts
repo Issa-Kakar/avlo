@@ -9,6 +9,7 @@
 
 import { getStroke } from 'perfect-freehand';
 import { useCameraStore } from '@/stores/camera-store';
+import { clamp01 } from '@/utils/math';
 import { getSvgPathFromStroke } from '../types';
 import type { AnimationJob } from './AnimationController';
 
@@ -67,7 +68,7 @@ export class EraserTrailAnimation implements AnimationJob {
       const { dpr } = useCameraStore.getState();
 
       const pfPoints = this.points.map((p) => {
-        const age = Math.max(0, Math.min(1, (now - p.t) / TRAIL_LIFETIME_MS));
+        const age = clamp01((now - p.t) / TRAIL_LIFETIME_MS);
         const strength = 1 - age;
         const eased = 1 - (1 - strength) * (1 - strength);
         return [p.x, p.y, eased] as [number, number, number];

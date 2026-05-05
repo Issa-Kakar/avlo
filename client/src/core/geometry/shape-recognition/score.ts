@@ -4,6 +4,7 @@
  * Each shape has hard gates (immediate rejection) and weighted scoring components.
  */
 
+import { clamp01 } from '@/utils/math';
 import {
   aabbCoverageAcrossDistinctSides,
   // AABB helpers
@@ -39,13 +40,6 @@ import {
   SHAPE_CONFIDENCE_MIN,
 } from './shape-params';
 import type { Corner, Edge, Vec2 } from './types';
-
-/**
- * Clamps a value to [0, 1] range
- */
-function clamp01(x: number): number {
-  return Math.max(0, Math.min(1, x));
-}
 
 /**
  * Scores how well a stroke matches an axis-aligned rectangle.
@@ -178,7 +172,7 @@ export function scoreRectangleAABB(
 
   console.groupEnd();
 
-  return Math.max(0, Math.min(1, finalScore)); // Return modified score
+  return clamp01(finalScore);
 }
 
 /**
