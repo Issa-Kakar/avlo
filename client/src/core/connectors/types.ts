@@ -67,7 +67,7 @@ export interface RoutingContext {
  *
  * `position` is the single visual dot + routing endpoint before any offset/pullback.
  * Elbow routing applies `+ directionVector(side) * EDGE_CLEARANCE_W` at resolve time;
- * straight routing applies its own pull-back in `computeStraightRoute`. The snap
+ * straight routing applies its own pull-back in `computeStraightRouteInto`. The snap
  * layer never bakes an offset into `position`.
  */
 interface SnapTargetBase {

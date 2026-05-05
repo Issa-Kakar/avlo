@@ -8,14 +8,28 @@
  * Variants (discriminated by `mode`):
  *   static    — both endpoints canonical; no apply, no commit; renderer draws in-place
  *   translate — both endpoints move together; rigid polyline + bbox shift
- *   reroute   — mixed / scale; call rerouteConnector per frame with per-side overrides
+ *   reroute   — mixed / scale; call rerouteTransformInto per frame with per-side overrides
+ *
+ * RerouteEntry hoists a `RouteContext` (cap/width/cachedRoute/pipeline frozen at
+ * begin — no per-frame Y.Map reads) and owns a permanent `pointsBuf` + `validCount`
+ * mutated in place each frame. Renderer iterates `pointsBuf[0..validCount)`.
  *
  * Free endpoints own a per-instance `scratch: Point` (allocated once at build, written
- * per frame). Frame-bound endpoints share module-level frame scratches — safe because
- * `rerouteConnector` allocates fresh position tuples from the frame + anchor.
+ * per frame). Frame-bound endpoints share slot-indexed module-level frame scratches —
+ * safe because `rerouteTransformInto` allocates fresh position tuples from the frame
+ * + anchor.
  */
 
-import { type FrameOverride, rerouteConnectorTransform, type TransformOverride } from '@/core/connectors/reroute-connector';
+import {
+  buildRouteContext,
+  type FrameOverride,
+  type RouteContext,
+  rerouteTransformInto,
+  SLOT_END,
+  SLOT_START,
+  type Slot,
+  type TransformOverride,
+} from '@/core/connectors/reroute-connector';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
@@ -74,8 +88,12 @@ export interface RerouteEntry extends DirtyEntry {
   /** null = canonical (no override; reroute reads Y.Map for this endpoint). */
   readonly start: Side | null;
   readonly end: Side | null;
-  /** Last successful reroute result; null if A* failed this frame. */
-  currPoints: Point[] | null;
+  /** Cap/width/cachedRoute/pipeline frozen at begin — no per-frame Y.Map reads. */
+  readonly routeCtx: RouteContext;
+  /** Persistent buffer mutated in place each frame. `length` may exceed `validCount`. */
+  readonly pointsBuf: Point[];
+  /** Valid prefix length of `pointsBuf`. -1 = routing failed this frame. */
+  validCount: number;
 }
 
 export type ConnectorEntry = StaticEntry | TranslateEntry | RerouteEntry;
@@ -89,18 +107,19 @@ export type ConnectorTopology = {
 };
 
 // ============================================================================
-// Module-level scratches — zero allocation per frame
+// Module-level scratches — slot-indexed, zero allocation per frame
 // ============================================================================
 
-const FRAME_SCRATCH_START: FrameTuple = [0, 0, 0, 0];
-const FRAME_SCRATCH_END: FrameTuple = [0, 0, 0, 0];
+const FRAME_SCRATCH: readonly [FrameTuple, FrameTuple] = [
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+];
 
 // Pre-linked wrappers kept permanently bound to their frame scratches. Mutating
-// the tuple mutates what rerouteConnectorTransform reads via `override.frame`.
+// the tuple mutates what rerouteTransformInto reads via `override.frame`.
 // Frame overrides are safe to share: the implementation allocates fresh position
 // tuples from `anchorFramePoint`/`elbowAnchorPoint`, so the frame is only read.
-const FRAME_WRAP_START: FrameOverride = { frame: FRAME_SCRATCH_START };
-const FRAME_WRAP_END: FrameOverride = { frame: FRAME_SCRATCH_END };
+const FRAME_WRAP: readonly [FrameOverride, FrameOverride] = [{ frame: FRAME_SCRATCH[0] }, { frame: FRAME_SCRATCH[1] }];
 
 const ZERO_POINT: Readonly<Point> = [0, 0];
 
@@ -281,6 +300,10 @@ function processConnector(
   }
 
   // REROUTE — everything else. Per-side overrides computed per frame.
+  // RouteContext built once at begin — drives every per-frame route call.
+  const routeCtx = buildRouteContext(conn.id, conn.y);
+  if (!routeCtx) return; // partially-built connector — observer will reroute on next write
+
   const ob = conn.bbox;
   const startStoredPos = start && Array.isArray(start) ? (start as Point) : undefined;
   const endStoredPos = end && Array.isArray(end) ? (end as Point) : undefined;
@@ -292,7 +315,9 @@ function processConnector(
     originalBbox: ob,
     currBbox: [ob[0], ob[1], ob[2], ob[3]],
     prevBbox: [ob[0], ob[1], ob[2], ob[3]],
-    currPoints: null,
+    routeCtx,
+    pointsBuf: [],
+    validCount: 0,
   };
   reroutes.push(e);
   byId.set(conn.id, e);
@@ -343,23 +368,27 @@ function applyTranslates(arr: readonly TranslateEntry[], dx: number, dy: number)
 function applyReroutesTranslate(arr: readonly RerouteEntry[], dx: number, dy: number): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    const startOv = e.start ? resolveStartTranslate(e.start, dx, dy) : null;
-    const endOv = e.end ? resolveEndTranslate(e.end, dx, dy) : null;
+    const startOv = e.start ? resolveSlotTranslate(SLOT_START, e.start, dx, dy) : null;
+    const endOv = e.end ? resolveSlotTranslate(SLOT_END, e.end, dx, dy) : null;
     rerouteAndPublish(e, startOv, endOv);
   }
 }
 
 function applyReroutesScale(arr: readonly RerouteEntry[], ctx: ScaleCtx): void {
+  // Hoist gesture-stable invariants out of the per-entry loop. `corner`/`uf`
+  // depend only on `ctx.handleId`/`sx`/`sy` — same value for every entry this frame.
+  const corner = isCorner(ctx.handleId);
+  const uf = corner ? uniformFactor(ctx.sx, ctx.sy, ctx.handleId) : 0;
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    const startOv = e.start ? resolveStartScale(e.start, ctx) : null;
-    const endOv = e.end ? resolveEndScale(e.end, ctx) : null;
+    const startOv = e.start ? resolveSlotScale(SLOT_START, e.start, ctx, corner, uf) : null;
+    const endOv = e.end ? resolveSlotScale(SLOT_END, e.end, ctx, corner, uf) : null;
     rerouteAndPublish(e, startOv, endOv);
   }
 }
 
 // Free-branch helpers — identical math across start/end; extracted so corner-uniform
-// logic lives in one place and the 4 slot-specific resolvers stay pure dispatch.
+// logic lives in one place and the slot-parametric resolvers stay pure dispatch.
 
 function resolveFreeTranslate(s: FreeSide, dx: number, dy: number): Point {
   offsetPoint(s.scratch, s.originalPos as Point, dx, dy);
@@ -372,10 +401,11 @@ function resolveFreeTranslate(s: FreeSide, dx: number, dy: number): Point {
  * sx/sy. Matches `scaleBBoxUniform` behavior for shapes/images on corners.
  * Side handles: axis-aligned — `rawScaleFactors` hardcodes the inactive axis to 1,
  * so `scaleAround` with that axis is a no-op.
+ *
+ * `corner` and `uf` are pre-hoisted by `applyReroutesScale` (gesture-stable).
  */
-function resolveFreeScale(s: FreeSide, ctx: ScaleCtx): Point {
-  if (isCorner(ctx.handleId)) {
-    const uf = uniformFactor(ctx.sx, ctx.sy, ctx.handleId);
+function resolveFreeScale(s: FreeSide, ctx: ScaleCtx, corner: boolean, uf: number): Point {
+  if (corner) {
     preservePositionMut(s.scratch, s.originalPos[0], s.originalPos[1], ctx.selBounds, ctx.origin, uf);
   } else {
     s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
@@ -384,49 +414,32 @@ function resolveFreeScale(s: FreeSide, ctx: ScaleCtx): Point {
   return s.scratch;
 }
 
-function resolveStartTranslate(s: Side, dx: number, dy: number): TransformOverride {
+function resolveSlotTranslate(slot: Slot, s: Side, dx: number, dy: number): TransformOverride {
   if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH_START, s);
-    return FRAME_WRAP_START;
+    fillFrameFromBind(FRAME_SCRATCH[slot], s);
+    return FRAME_WRAP[slot];
   }
   return resolveFreeTranslate(s, dx, dy);
 }
 
-function resolveEndTranslate(s: Side, dx: number, dy: number): TransformOverride {
+function resolveSlotScale(slot: Slot, s: Side, ctx: ScaleCtx, corner: boolean, uf: number): TransformOverride {
   if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH_END, s);
-    return FRAME_WRAP_END;
+    fillFrameFromBind(FRAME_SCRATCH[slot], s);
+    return FRAME_WRAP[slot];
   }
-  return resolveFreeTranslate(s, dx, dy);
-}
-
-function resolveStartScale(s: Side, ctx: ScaleCtx): TransformOverride {
-  if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH_START, s);
-    return FRAME_WRAP_START;
-  }
-  return resolveFreeScale(s, ctx);
-}
-
-function resolveEndScale(s: Side, ctx: ScaleCtx): TransformOverride {
-  if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH_END, s);
-    return FRAME_WRAP_END;
-  }
-  return resolveFreeScale(s, ctx);
+  return resolveFreeScale(s, ctx, corner, uf);
 }
 
 function rerouteAndPublish(e: RerouteEntry, startOv: TransformOverride | null, endOv: TransformOverride | null): void {
-  const result = rerouteConnectorTransform(e.id, startOv, endOv);
   invalidateWorldBBox(e.prevBbox);
-  if (result) {
-    copyBbox(result.bbox, e.currBbox);
-    e.currPoints = result.points;
-  } else {
-    // A* failed — reset currBbox so dirty-rect accounting stays consistent
+  const count = rerouteTransformInto(e.routeCtx, startOv, endOv, e.currBbox, e.pointsBuf);
+  if (count < 0) {
+    // Routing failed — reset currBbox so dirty-rect accounting stays consistent
     // with what the renderer will draw (stored route at original position).
+    e.validCount = -1;
     copyBbox(e.originalBbox, e.currBbox);
-    e.currPoints = null;
+  } else {
+    e.validCount = count;
   }
   invalidateWorldBBox(e.currBbox);
   copyBbox(e.currBbox, e.prevBbox);

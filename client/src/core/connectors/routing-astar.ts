@@ -19,8 +19,8 @@
  *   instead of N writes.
  * - MinHeap stores node indices; comparator reads fScores.
  * - Path reconstruction walks parent indices forward into `pathCells`, then
- *   computeAStarRoute iterates in reverse, applying collinear simplification
- *   inline. Final Point[] is the only allocation per route.
+ *   `computeAStarRouteInto` iterates in reverse, writing find-or-push into the
+ *   caller-supplied output buffer. With a warm pooled buffer, A* is allocation-free.
  * - Pool sizes (MAX_CELLS=64, MAX_NODES=256) cover realistic A* grids; dev-mode
  *   warning fires if exceeded so the bound can be revisited.
  *
@@ -33,7 +33,7 @@ import type { FrameTuple, Point } from '../types/geometry';
 import { MinHeap } from './binary-heap';
 import { COST_CONFIG } from './constants';
 import { fillRoutingContext, fillSimpleGrid, GRID } from './routing-context';
-import type { Dir, Grid, RouteResult } from './types';
+import type { Dir, Grid } from './types';
 
 // ============================================================================
 // POOLS (module-level, reused across calls)
@@ -309,28 +309,37 @@ function visit(
 }
 
 // ============================================================================
-// PATH EMISSION (collinear-aware)
+// PATH EMISSION (collinear-aware, allocation-free into caller buffer)
 // ============================================================================
 
 /**
- * Push (x, y) onto `out`, merging with the previous candidate when the last
- * two points + the new point are collinear (sameX or sameY across all three).
- * Folds `simplifyOrthogonal` directly into the emission loop.
+ * Write (x, y) into `out` at position `idx`, merging with the previous candidate
+ * when the last two points + the new point are collinear (sameX or sameY).
+ * Falls back to find-or-push when there's no merge: reuse `out[idx]` if present
+ * (high-water-mark pool), otherwise grow.
+ *
+ * Returns the next write index.
  */
-function pushOrMerge(out: Point[], x: number, y: number): void {
-  const len = out.length;
-  if (len >= 2) {
-    const prev = out[len - 2];
-    const cand = out[len - 1];
+function emitOrMerge(out: Point[], idx: number, x: number, y: number): number {
+  if (idx >= 2) {
+    const prev = out[idx - 2];
+    const cand = out[idx - 1];
     const sameX = Math.abs(prev[0] - cand[0]) < 0.001 && Math.abs(cand[0] - x) < 0.001;
     const sameY = Math.abs(prev[1] - cand[1]) < 0.001 && Math.abs(cand[1] - y) < 0.001;
     if (sameX || sameY) {
       cand[0] = x;
       cand[1] = y;
-      return;
+      return idx;
     }
   }
-  out.push([x, y]);
+  const slot = out[idx];
+  if (slot) {
+    slot[0] = x;
+    slot[1] = y;
+  } else {
+    out.push([x, y]);
+  }
+  return idx + 1;
 }
 
 // ============================================================================
@@ -338,14 +347,16 @@ function pushOrMerge(out: Point[], x: number, y: number): void {
 // ============================================================================
 
 /**
- * Compute A* routed path for connected endpoints.
+ * Compute A* routed path for connected endpoints, writing into a caller-owned
+ * `outPoints` buffer (find-or-push tuple reuse). Returns the valid prefix length;
+ * `outPoints.length` may exceed it (high-water mark from past gestures). Caller
+ * must iterate by the returned count, never `.length`.
  *
- * Takes 7 primitives. Supports all endpoint combinations — anchored shape
- * bounds double as obstacles; `null` means free.
- *
- * Returns a freshly-allocated `Point[]`; all internal A* state is module-pool.
+ * Anchored shape bounds double as obstacles; `null` means free. All internal
+ * A* state is module-pool typed arrays — once `outPoints` is warm, A* is
+ * allocation-free.
  */
-export function computeAStarRoute(
+export function computeAStarRouteInto(
   startPos: Point,
   startDir: Dir,
   endPos: Point,
@@ -353,9 +364,10 @@ export function computeAStarRoute(
   startShapeBounds: FrameTuple | null,
   endShapeBounds: FrameTuple | null,
   strokeWidth: number,
-): RouteResult {
+  outPoints: Point[],
+): number {
   if (startPos[0] === endPos[0] && startPos[1] === endPos[1]) {
-    return { points: [endPos] };
+    return emitOrMerge(outPoints, 0, endPos[0], endPos[1]);
   }
 
   const ctx = fillRoutingContext(startPos, startDir, endPos, endDir, startShapeBounds, endShapeBounds, strokeWidth);
@@ -366,14 +378,12 @@ export function computeAStarRoute(
 
   const pathLen = astar(grid, startCellIdx, goalCellIdx, ctx.startDir, ctx.obstacles);
 
-  // Emit final route with inline collinear simplification.
-  const out: Point[] = [];
-  pushOrMerge(out, startPos[0], startPos[1]);
+  let idx = emitOrMerge(outPoints, 0, startPos[0], startPos[1]);
 
   if (pathLen < 0) {
     // No path even without obstacles → direct line fallback.
-    pushOrMerge(out, endPos[0], endPos[1]);
-    return { points: out };
+    idx = emitOrMerge(outPoints, idx, endPos[0], endPos[1]);
+    return idx;
   }
 
   const xStride = grid.xLines.length;
@@ -382,9 +392,9 @@ export function computeAStarRoute(
     const cellIdx = pathCells[i];
     const yi = (cellIdx / xStride) | 0;
     const xi = cellIdx % xStride;
-    pushOrMerge(out, grid.xLines[xi], grid.yLines[yi]);
+    idx = emitOrMerge(outPoints, idx, grid.xLines[xi], grid.yLines[yi]);
   }
-  pushOrMerge(out, endPos[0], endPos[1]);
+  idx = emitOrMerge(outPoints, idx, endPos[0], endPos[1]);
 
-  return { points: out };
+  return idx;
 }

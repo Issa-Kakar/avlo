@@ -27,13 +27,11 @@
 
 import type * as Y from 'yjs';
 import { getObjects } from '@/runtime/room-runtime';
-import { getEnd, getStart } from '../accessors';
-import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
+import { getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors';
+import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import type { BBoxTuple, Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
-import { rerouteConnectorTransform } from './reroute-connector';
-
-const ZERO_BBOX: BBoxTuple = [0, 0, 0, 0];
+import { buildRouteContext, rerouteTransformInto } from './reroute-connector';
 
 function endpointShapeId(ep: ConnectorEndpoint | undefined): string | null {
   if (!ep || Array.isArray(ep)) return null;
@@ -129,29 +127,41 @@ export class ConnectorRouter {
   // ============================================================
 
   /**
-   * Reroute from canonical Y.Map state, write to cache, return new bbox.
-   * Called by RoomDocManager Phase C for any connector in `rerouteIds`.
-   * `rerouteConnectorTransform` reads the Y.Map via `getHandle(id)` internally; the
-   * `id` parameter is sufficient for the lookup.
-   * On reroute failure (defensive — malformed connector), returns zero bbox and skips
-   * the cache write — next observer pass corrects.
+   * Reroute from canonical Y.Map state. Caller passes `yObj` directly so the
+   * router never round-trips through `getHandle(connectorId)` for the connector
+   * itself — eliminates the bbox-dummy placeholder pattern in the observer.
+   *
+   * Mutates the per-connector pooled buffer in `routes` (length trimmed to count
+   * — canonical reroutes are steady-state). Returns a fresh `BBoxTuple` written
+   * via the *Into bbox helper, or `null` on routing failure (caller skips upsert).
    */
-  rerouteCanonical(id: string): BBoxTuple {
-    const result = rerouteConnectorTransform(id, null, null);
-    if (!result) return [0, 0, 0, 0];
-    this.routes.set(id, result.points);
-    return result.bbox;
+  rerouteCanonical(id: string, yObj: Y.Map<unknown>): BBoxTuple | null {
+    const ctx = buildRouteContext(id, yObj);
+    if (!ctx) return null;
+    let buf = this.routes.get(id);
+    if (!buf) {
+      buf = [];
+      this.routes.set(id, buf);
+    }
+    const outBbox: BBoxTuple = [0, 0, 0, 0];
+    const count = rerouteTransformInto(ctx, null, null, outBbox, buf);
+    if (count < 0) {
+      this.routes.delete(id);
+      return null;
+    }
+    if (buf.length > count) buf.length = count;
+    return outBbox;
   }
 
   /**
    * Bbox without re-routing — Phase B's connector-style-only branch (color/width/cap
-   * change). Reads cached route + style from Y.Map (caller passes the Y.Map for
-   * style fields like cap/width/color).
+   * change). Writes into `outBbox`. Returns `false` when no cached route exists.
    */
-  computeBBox(id: string, y: Y.Map<unknown>): BBoxTuple {
+  computeBBox(id: string, y: Y.Map<unknown>, outBbox: BBoxTuple): boolean {
     const route = this.routes.get(id);
-    if (!route || route.length < 2) return ZERO_BBOX;
-    return computeConnectorBBoxFromPoints(route, y);
+    if (!route || route.length < 2) return false;
+    computeConnectorBBoxFromPointsInto(route, route.length, getWidth(y, 2), getStartCap(y), getEndCap(y), outBbox);
+    return true;
   }
 
   clear(): void {

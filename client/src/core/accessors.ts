@@ -166,6 +166,30 @@ export function getConnectorProps(y: Y.Map<unknown>): ConnectorProps | null {
   };
 }
 
+/**
+ * Routing-only batched read. Subset of ConnectorProps used by the reroute pipeline —
+ * skips cap/color reads that routing doesn't consume. Cap/width still come through
+ * RouteContext (built once per gesture) for bbox padding.
+ */
+export interface RouteInputs {
+  start: ConnectorEndpoint;
+  end: ConnectorEndpoint;
+  connectorType: ConnectorType;
+  strokeWidth: number;
+}
+
+export function getRouteInputs(y: Y.Map<unknown>): RouteInputs | null {
+  const start = y.get('start') as ConnectorEndpoint | undefined;
+  const end = y.get('end') as ConnectorEndpoint | undefined;
+  if (!start || !end) return null;
+  return {
+    start,
+    end,
+    connectorType: getConnectorType(y),
+    strokeWidth: getWidth(y, 2),
+  };
+}
+
 // ============================================================================
 // TEXT-SPECIFIC ACCESSORS
 // ============================================================================

@@ -177,8 +177,8 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
         drawConnectorWithTopology(ctx, handle, te);
         continue;
       }
-      if (transform.kind === 'endpointDrag' && handle.id === transform.connectorId && transform.routedPoints) {
-        drawConnectorFromPoints(ctx, handle, transform.routedPoints);
+      if (transform.kind === 'endpointDrag' && handle.id === transform.connectorId && transform.validCount >= 2) {
+        drawConnectorFromPoints(ctx, handle, transform.pointsBuf, transform.validCount);
         continue;
       }
       drawObject(ctx, handle);
@@ -231,7 +231,7 @@ function drawConnectorWithTopology(ctx: CanvasRenderingContext2D, handle: Object
       return;
     }
     case 'reroute':
-      if (te.currPoints) drawConnectorFromPoints(ctx, handle, te.currPoints);
+      if (te.validCount > 0) drawConnectorFromPoints(ctx, handle, te.pointsBuf, te.validCount);
       else drawObject(ctx, handle);
       return;
   }
@@ -408,13 +408,15 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
 
 /**
  * Draw a connector from explicit points (for rerouted connectors during transforms).
- * Reads styles from handle.y, builds fresh paths from the given points.
+ * `count` defaults to `points.length` for off-gesture callers; on-gesture callers
+ * pass a pooled buffer (`pointsBuf`) and the explicit valid-prefix length.
  */
-function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[]): void {
-  if (points.length < 2) return;
+function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[], count?: number): void {
+  const n = count ?? points.length;
+  if (n < 2) return;
   const { y } = handle;
   const width = getWidth(y);
-  const paths = buildConnectorPaths({ points, strokeWidth: width, startCap: getStartCap(y), endCap: getEndCap(y) });
+  const paths = buildConnectorPaths({ points, count: n, strokeWidth: width, startCap: getStartCap(y), endCap: getEndCap(y) });
   paintConnector(ctx, paths, getColor(y), width);
 }
 

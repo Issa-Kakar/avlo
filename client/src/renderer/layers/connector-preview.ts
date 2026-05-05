@@ -23,8 +23,8 @@ import { drawConnectorDashGuide, drawSnapFeedback, paintConnector } from './conn
  * Draw connector preview on overlay canvas.
  */
 export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: ConnectorPreview): void {
-  const { points, fromSnap, hoverSnap } = preview;
-  const hasRoute = points.length >= 2;
+  const { points, pointsCount, fromSnap, hoverSnap } = preview;
+  const hasRoute = pointsCount >= 2;
 
   // Live style — device-ui-store is stable within a gesture.
   const uiState = useDeviceUIStore.getState();
@@ -36,7 +36,7 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
 
   // 1. Polyline + arrow caps — shared paint atom with objects.ts.
   if (hasRoute) {
-    const paths = buildConnectorPaths({ points, strokeWidth: width, startCap, endCap });
+    const paths = buildConnectorPaths({ points, count: pointsCount, strokeWidth: width, startCap, endCap });
     paintConnector(ctx, paths, color, width);
   }
 
@@ -48,7 +48,7 @@ export function drawConnectorPreview(ctx: CanvasRenderingContext2D, preview: Con
       drawConnectorDashGuide(ctx, points[0], fromSnap.position);
     }
     if (hoverSnap?.kind === 'straight' && hoverSnap.interior) {
-      drawConnectorDashGuide(ctx, points[points.length - 1], hoverSnap.position);
+      drawConnectorDashGuide(ctx, points[pointsCount - 1], hoverSnap.position);
     }
   }
 

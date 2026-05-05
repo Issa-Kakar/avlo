@@ -35,9 +35,14 @@ export interface ConnectorPaths {
 /**
  * Input parameters for building connector paths.
  * Extracted from Y.Map at cache build time.
+ *
+ * `count` is the valid prefix length of `points` (defaults to `points.length`).
+ * Hot-path callers passing a pooled buffer must supply a count; off-gesture
+ * callers reading the trimmed `getConnectorRoute(id)` cache may omit it.
  */
 export interface ConnectorPathParams {
   points: Point[];
+  count?: number;
   strokeWidth: number;
   startCap: 'arrow' | 'none';
   endCap: 'arrow' | 'none';
@@ -94,19 +99,20 @@ export const ARROW_ROUNDING_LINE_WIDTH = 5;
  */
 export function buildConnectorPaths(params: ConnectorPathParams): ConnectorPaths {
   const { points, strokeWidth, startCap, endCap } = params;
+  const count = params.count ?? points.length;
 
-  if (points.length < 2) {
+  if (count < 2) {
     return { polyline: new Path2D(), startArrow: null, endArrow: null };
   }
 
   // Compute trim info before building polyline
-  const endTrim = endCap === 'arrow' ? computeEndTrimInfo(points, strokeWidth, 'end') : null;
-  const startTrim = startCap === 'arrow' ? computeEndTrimInfo(points, strokeWidth, 'start') : null;
+  const endTrim = endCap === 'arrow' ? computeEndTrimInfo(points, count, strokeWidth, 'end') : null;
+  const startTrim = startCap === 'arrow' ? computeEndTrimInfo(points, count, strokeWidth, 'start') : null;
 
   // Build paths
-  const polyline = buildRoundedPolylinePath(points, startTrim, endTrim);
-  const startArrow = startCap === 'arrow' ? buildArrowPath(points, strokeWidth, 'start') : null;
-  const endArrow = endCap === 'arrow' ? buildArrowPath(points, strokeWidth, 'end') : null;
+  const polyline = buildRoundedPolylinePath(points, count, startTrim, endTrim);
+  const startArrow = startCap === 'arrow' ? buildArrowPath(points, count, strokeWidth, 'start') : null;
+  const endArrow = endCap === 'arrow' ? buildArrowPath(points, count, strokeWidth, 'end') : null;
 
   return { polyline, startArrow, endArrow };
 }
@@ -124,25 +130,30 @@ export function buildConnectorPaths(params: ConnectorPathParams): ConnectorPaths
  * @param endTrim - Trim info for end arrow (or null)
  * @returns Path2D for the polyline
  */
-export function buildRoundedPolylinePath(points: Point[], startTrim: EndTrimInfo | null, endTrim: EndTrimInfo | null): Path2D {
+export function buildRoundedPolylinePath(
+  points: Point[],
+  count: number,
+  startTrim: EndTrimInfo | null,
+  endTrim: EndTrimInfo | null,
+): Path2D {
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
   const path = new Path2D();
 
-  if (points.length < 2) return path;
+  if (count < 2) return path;
 
   // Start point (potentially trimmed for start arrow)
   const startPoint = startTrim?.trimmedPoint ?? points[0];
   path.moveTo(startPoint[0], startPoint[1]);
 
   // Handle 2-point case (straight line, no corners)
-  if (points.length === 2) {
+  if (count === 2) {
     const endPoint = endTrim?.trimmedPoint ?? points[1];
     path.lineTo(endPoint[0], endPoint[1]);
     return path;
   }
 
   // Middle points with arcTo corners
-  for (let i = 1; i < points.length - 1; i++) {
+  for (let i = 1; i < count - 1; i++) {
     const prev = points[i - 1];
     const curr = points[i];
     const next = points[i + 1];
@@ -164,7 +175,7 @@ export function buildRoundedPolylinePath(points: Point[], startTrim: EndTrimInfo
   }
 
   // Final segment - use trimmed point if provided (for arrow caps)
-  const endPoint = endTrim?.trimmedPoint ?? points[points.length - 1];
+  const endPoint = endTrim?.trimmedPoint ?? points[count - 1];
   path.lineTo(endPoint[0], endPoint[1]);
 
   return path;
@@ -187,8 +198,8 @@ export function buildRoundedPolylinePath(points: Point[], startTrim: EndTrimInfo
  * @param position - Which end ('start' or 'end')
  * @returns Path2D for the arrow triangle
  */
-export function buildArrowPath(points: Point[], strokeWidth: number, position: 'start' | 'end'): Path2D {
-  const geom = computeArrowGeometry(points, strokeWidth, position);
+export function buildArrowPath(points: Point[], count: number, strokeWidth: number, position: 'start' | 'end'): Path2D {
+  const geom = computeArrowGeometry(points, count, strokeWidth, position);
   if (!geom) return new Path2D();
 
   const path = new Path2D();
@@ -211,15 +222,15 @@ export function buildArrowPath(points: Point[], strokeWidth: number, position: '
  * @param position - Which end ('start' or 'end')
  * @returns Arrow geometry or null if not enough points
  */
-export function computeArrowGeometry(points: Point[], strokeWidth: number, position: 'start' | 'end'): ArrowGeometry | null {
-  if (points.length < 2) return null;
+export function computeArrowGeometry(points: Point[], count: number, strokeWidth: number, position: 'start' | 'end'): ArrowGeometry | null {
+  if (count < 2) return null;
 
   let tip: Point;
   let prev: Point;
 
   if (position === 'end') {
-    tip = points[points.length - 1];
-    prev = points[points.length - 2];
+    tip = points[count - 1];
+    prev = points[count - 2];
   } else {
     tip = points[0];
     prev = points[1];
@@ -302,8 +313,8 @@ export function computeScaledArrowDimensions(segmentLength: number, strokeWidth:
  * @param position - Which end to trim ('start' or 'end')
  * @returns Trim info or null if not enough points
  */
-export function computeEndTrimInfo(points: Point[], strokeWidth: number, position: 'start' | 'end'): EndTrimInfo | null {
-  if (points.length < 2) return null;
+export function computeEndTrimInfo(points: Point[], count: number, strokeWidth: number, position: 'start' | 'end'): EndTrimInfo | null {
+  if (count < 2) return null;
 
   const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
 
@@ -312,15 +323,15 @@ export function computeEndTrimInfo(points: Point[], strokeWidth: number, positio
   let cornerPrev: Point | null = null; // The point before the corner
 
   if (position === 'end') {
-    tip = points[points.length - 1];
-    prev = points[points.length - 2];
-    if (points.length >= 3) {
-      cornerPrev = points[points.length - 3];
+    tip = points[count - 1];
+    prev = points[count - 2];
+    if (count >= 3) {
+      cornerPrev = points[count - 3];
     }
   } else {
     tip = points[0];
     prev = points[1];
-    if (points.length >= 3) {
+    if (count >= 3) {
       cornerPrev = points[2];
     }
   }

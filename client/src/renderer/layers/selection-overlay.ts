@@ -298,12 +298,14 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
   let currentSnap: SnapTarget | null = null;
   let draggedEndpoint: 'start' | 'end' | null = null;
   let dragRoute: Point[] | null = null;
+  let dragRouteCount = 0;
 
   if (isDragging) {
-    const { endpoint, currentPosition, currentSnap: snap, routedPoints } = transform;
+    const { endpoint, currentPosition, currentSnap: snap, pointsBuf, validCount } = transform;
     draggedEndpoint = endpoint;
     currentSnap = snap;
-    dragRoute = routedPoints ?? null;
+    dragRoute = validCount >= 2 ? pointsBuf : null;
+    dragRouteCount = validCount;
 
     const draggedPos: Point = snap ? snap.position : currentPosition;
     const draggedActive = snap !== null;
@@ -330,9 +332,9 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
 
   if (!isStraight) return;
 
-  if (isDragging && dragRoute && dragRoute.length >= 2) {
+  if (isDragging && dragRoute && dragRouteCount >= 2) {
     if (currentSnap?.kind === 'straight' && currentSnap.interior) {
-      const lineEnd = draggedEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
+      const lineEnd = draggedEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRouteCount - 1];
       drawConnectorDashGuide(ctx, currentSnap.position, lineEnd);
     }
     const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
@@ -340,7 +342,7 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     const otherAnchor = otherEp && !Array.isArray(otherEp) ? (otherEp as StoredAnchor) : undefined;
     if (otherAnchor && 'interior' in otherAnchor && otherAnchor.interior) {
       const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
-      const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
+      const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRouteCount - 1];
       drawConnectorDashGuide(ctx, otherPos, otherLineEnd);
     }
     return;

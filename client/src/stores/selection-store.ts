@@ -91,11 +91,11 @@ export interface SelectionActions {
   cancelTransform: () => void;
 
   // Endpoint drag lifecycle
-  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: BBoxTuple) => void;
+  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: BBoxTuple, pointsBuf: Point[]) => void;
   updateEndpointDrag: (
     currentPosition: [number, number],
     currentSnap: SnapTarget | null,
-    routedPoints: [number, number][] | null,
+    validCount: number,
     routedBbox: BBoxTuple | null,
   ) => void;
 
@@ -226,7 +226,7 @@ export const useSelectionStore = create<SelectionStore>()(
 
     // === Endpoint Drag Actions ===
 
-    beginEndpointDrag: (connectorId, endpoint, originBbox) =>
+    beginEndpointDrag: (connectorId, endpoint, originBbox, pointsBuf) =>
       set({
         transform: {
           kind: 'endpointDrag',
@@ -234,13 +234,14 @@ export const useSelectionStore = create<SelectionStore>()(
           endpoint,
           currentPosition: [0, 0],
           currentSnap: null,
-          routedPoints: null,
+          pointsBuf,
+          validCount: 0,
           routedBbox: null,
           prevBbox: originBbox,
         },
       }),
 
-    updateEndpointDrag: (currentPosition, currentSnap, routedPoints, routedBbox) =>
+    updateEndpointDrag: (currentPosition, currentSnap, validCount, routedBbox) =>
       set((state) => {
         if (state.transform.kind !== 'endpointDrag') return state;
         return {
@@ -248,7 +249,7 @@ export const useSelectionStore = create<SelectionStore>()(
             ...state.transform,
             currentPosition,
             currentSnap,
-            routedPoints,
+            validCount,
             routedBbox,
             prevBbox: routedBbox ?? state.transform.prevBbox,
           },

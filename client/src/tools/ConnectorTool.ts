@@ -3,7 +3,7 @@
  *
  * Lean snap-based state inspired by SelectTool's endpointDrag:
  * - Snap targets and positions instead of ToolTerminal
- * - Routing delegated to routeNewConnector()
+ * - Routing delegated to routeNewConnectorInto() with a pooled preview buffer
  * - Caps frozen from store at begin()
  *
  * State Machine:
@@ -16,7 +16,7 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
-import { routeNewConnector } from '@/core/connectors/reroute-connector';
+import { routeNewConnectorInto } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { ConnectorCap, ConnectorType, SnapTarget } from '@/core/connectors/types';
 import type { Point } from '@/core/types/geometry';
@@ -42,7 +42,9 @@ export class ConnectorTool implements PointerTool {
   private fromPosition: Point | null = null;
   private toSnap: SnapTarget | null = null;
   private toPosition: Point | null = null;
-  private routedPoints: Point[] = [];
+  /** Pooled preview buffer — reused across pointer moves. Iterate by `routedCount`. */
+  private readonly routedPoints: Point[] = [];
+  private routedCount = 0;
 
   // Hover/snap (both phases)
   private hoverSnap: SnapTarget | null = null;
@@ -82,7 +84,8 @@ export class ConnectorTool implements PointerTool {
     this.toPosition = snap ? snap.position : [worldX, worldY];
     this.prevSnap = snap;
     this.hoverSnap = snap;
-    this.routedPoints = [];
+    this.routedPoints.length = 0;
+    this.routedCount = 0;
 
     invalidateOverlay();
   }
@@ -116,7 +119,7 @@ export class ConnectorTool implements PointerTool {
     }
 
     // Only commit if we have a valid connector (at least 2 points with some distance)
-    if (this.fromPosition && this.toPosition && this.routedPoints.length >= 2) {
+    if (this.fromPosition && this.toPosition && this.routedCount >= 2) {
       const [fx, fy] = this.fromPosition;
       const [tx, ty] = this.toPosition;
       const dist = Math.hypot(tx - fx, ty - fy);
@@ -146,6 +149,7 @@ export class ConnectorTool implements PointerTool {
     const preview: ConnectorPreview = {
       kind: 'connector',
       points: this.routedPoints,
+      pointsCount: this.routedCount,
       fromSnap: this.fromSnap,
       hoverSnap: this.hoverSnap,
     };
@@ -182,7 +186,7 @@ export class ConnectorTool implements PointerTool {
     if (!this.fromPosition || !this.toPosition) return;
     const start: SnapTarget | Point = this.fromSnap ?? this.fromPosition;
     const end: SnapTarget | Point = this.toSnap ?? this.toPosition;
-    this.routedPoints = routeNewConnector(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow').points;
+    this.routedCount = routeNewConnectorInto(start, end, this.frozenWidth, this.frozenConnectorType ?? 'elbow', this.routedPoints);
   }
 
   private resetState(): void {
@@ -192,7 +196,8 @@ export class ConnectorTool implements PointerTool {
     this.fromPosition = null;
     this.toSnap = null;
     this.toPosition = null;
-    this.routedPoints = [];
+    this.routedPoints.length = 0;
+    this.routedCount = 0;
     this.frozenConnectorType = null;
     // Keep hoverSnap/prevSnap for continued hover behavior
   }
@@ -200,7 +205,7 @@ export class ConnectorTool implements PointerTool {
   private commitConnector(): void {
     const fromPos = this.fromPosition;
     const toPos = this.toPosition;
-    if (!fromPos || !toPos || this.routedPoints.length < 2) return;
+    if (!fromPos || !toPos || this.routedCount < 2) return;
 
     const id = ulid();
     const userId = getUserId();

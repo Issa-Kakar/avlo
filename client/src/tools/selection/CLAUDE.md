@@ -544,10 +544,10 @@ Connectors never enter the per-kind entry store — `TransformController` routes
 Two orthogonal classifications, decided at begin:
 
 **Endpoint state** (per endpoint, via `classifyEndpoint`):
-| State | When | Override passed to `rerouteConnector` |
+| State | When | Override passed to reroute |
 |---|---|---|
-| `canonical` | Anchored to a non-selected bindable, OR free and connector not selected | none — reroute falls back to Y.Map |
-| `frame-bound` | Anchored to a selected bindable | `{ frame: <live> }` filled from `entry.out.*` |
+| `canonical` | Anchored to a non-selected bindable, OR free and connector not selected | `null` — reroute reads canonical from `RouteContext.start` / `.end` |
+| `frame-bound` | Anchored to a selected bindable | `FrameOverride` filled from `entry.out.*` (slot-indexed scratch) |
 | `free-moving` | Not anchored AND connector is selected | `Point` (translated or scaled per frame) |
 
 **Connector mode** (per connector, discriminant of `ConnectorEntry`):
@@ -555,7 +555,7 @@ Two orthogonal classifications, decided at begin:
 |---|---|---|
 | `static` | Both endpoints canonical (only selected connectors enter) | None — renderer draws at stored position |
 | `translate` | Both endpoints non-canonical AND gesture is `translate` | Rigid bbox shift; renderer reads cached route + applies `ctx.translate(dx, dy)` |
-| `reroute` | Anything else (incl. any scale gesture with non-canonical endpoints) | `rerouteConnector(id, { start?, end? })` |
+| `reroute` | Anything else (incl. any scale gesture with non-canonical endpoints) | `rerouteTransformInto(routeCtx, startOv, endOv, currBbox, pointsBuf)` |
 
 ### Shape
 
@@ -569,12 +569,22 @@ type ConnectorTopology = {
   injectIds:  readonly string[];                     // selectedIds ∪ attached-non-selected connectors
 };
 
+interface RerouteEntry extends DirtyEntry {
+  readonly mode: 'reroute';
+  readonly start: Side | null;                       // null = canonical
+  readonly end:   Side | null;
+  readonly routeCtx: RouteContext;                   // cap/width/cachedRoute/pipeline frozen at begin
+  readonly pointsBuf: Point[];                       // persistent buffer mutated in place each frame
+  validCount: number;                                // valid prefix length; -1 = routing failed this frame
+}
+
 type Side = BindSide | FreeSide;
 type BindSide = { kind: 'bind'; bindKind; entry; frozenFrame: FrameTuple | null };  // non-null for note/bookmark
 type FreeSide = { kind: 'free'; originalPos: Readonly<Point>; scratch: Point };     // per-instance scratch
 ```
 
-`RerouteEntry.start` / `.end` is `Side | null` — `null` encodes canonical (no override key set on the shared `OVERRIDES` object that frame reuses).
+`RerouteEntry.start` / `.end` is `Side | null` — `null` encodes canonical (no override).
+The renderer reads `pointsBuf[0..validCount)` exclusively; `pointsBuf.length` may exceed `validCount` (high-water mark across frames).
 
 ### Bind-side frame derivation (`fillFrameFromBind`)
 
@@ -583,13 +593,13 @@ Per-frame, for each bind side, fill a module-level `FrameTuple` scratch from wha
 - **text / code** — `bboxToFrameMut(out.bbox, scratch)`. `out.bbox` is the tight visual frame; italic-overhang padding lives on `entry.prevBbox` via `fillDirty` (sized off `out.fontSize`, family-agnostic), never on `out.bbox`.
 - **note / bookmark** — `[out.origin.x, out.origin.y, frozenFrame.w × (out.scale/frozen.scale), frozenFrame.h × ratio]`. The ratio matches the renderer's `ctx.scale` factor exactly, keeping the connector anchor in pixel-lockstep with the rendered edge.
 
-Mode-agnostic: the same function serves translate and scale because `applyOffset` propagates `f.scale → o.scale` for note/bookmark (ratio = 1 under translate). Each frame scratch is wrapped once in a permanently-linked `{ frame }` object; safe to share across entries because `rerouteConnector` allocates fresh position tuples from anchor × frame — the scratch is only read.
+Mode-agnostic: the same function serves translate and scale because `applyOffset` propagates `f.scale → o.scale` for note/bookmark (ratio = 1 under translate). Frame scratches live in a slot-indexed `FRAME_SCRATCH: readonly [FrameTuple, FrameTuple]` (start = 0, end = 1); `FRAME_WRAP[slot]` is a permanently-linked `{ frame }` object reused across entries — `rerouteTransformInto` allocates fresh position tuples from anchor × frame, so the scratch is only read.
 
 ### Free-side isolation (per-instance scratch)
 
-Each `FreeSide` owns a private `scratch: Point`, allocated once at build. Per-side (not shared module-level) because `rerouteConnector`'s routing pipeline holds `FREE_ENDPOINT(position)` by reference and pushes it into the returned `points` array — sharing one scratch across entries within a frame would leak the last-processed entry's values into every prior entry's `currPoints`. `makeSide` also clones `storedPos` into `originalPos` so a prior gesture's entry preserved by Y.Map (by reference) can't corrupt this gesture's baseline.
+Each `FreeSide` owns a private `scratch: Point`, allocated once at build. Per-side (not shared module-level) because the routing pipeline holds free `Point`s by reference and writes them into the returned route — sharing one scratch across entries within a frame would leak the last-processed entry's values. `makeSide` also clones `storedPos` into `originalPos` so a prior gesture's entry preserved by Y.Map (by reference) can't corrupt this gesture's baseline.
 
-Free-apply math lives in two helpers — `resolveFreeScale(s, ctx)` and `resolveFreeTranslate(s, dx, dy)` — so the four slot resolvers (`resolveStart/End{Scale,Translate}`) stay pure dispatch, selecting which module `FRAME_SCRATCH_*` / `FRAME_WRAP_*` pair to feed on the bind branch. `resolveFreeScale` branches on `isCorner(ctx.handleId)`: corners use `uniformFactor` + `preservePositionMut`, so free endpoints track the selection's uniform corner scale (matching `scaleBBoxUniform` for shapes/images) instead of stretching diagonally with independent `sx`/`sy`. Side handles fall through to axis-aligned `scaleAround` — the inactive axis is hardcoded `1` by `rawScaleFactors`, so the corresponding coordinate passes through unchanged.
+Free-apply math lives in two helpers — `resolveFreeScale(s, ctx, corner, uf)` and `resolveFreeTranslate(s, dx, dy)`. The slot abstraction collapses the four prior `resolveStart/End{Scale,Translate}` resolvers into two slot-parametric ones (`resolveSlotScale(slot, …)` / `resolveSlotTranslate(slot, …)`); the slot indexes `FRAME_SCRATCH[slot]` / `FRAME_WRAP[slot]` on the bind branch. `applyReroutesScale` hoists `corner = isCorner(ctx.handleId)` and `uf = uniformFactor(...)` out of the per-entry loop — both are gesture-stable. `resolveFreeScale` branches on `corner`: corners use `preservePositionMut(out, …, uf)`, so free endpoints track the selection's uniform corner scale (matching `scaleBBoxUniform` for shapes/images) instead of stretching diagonally with independent `sx`/`sy`. Side handles fall through to axis-aligned `scaleAround` — the inactive axis is hardcoded `1` by `rawScaleFactors`, so the corresponding coordinate passes through unchanged.
 
 ### Commit
 
@@ -620,11 +630,13 @@ Coverage by topology:
 
 ### Invariants
 
-1. **Zero per-frame allocation in the topology layer.** Frame scratches + per-free-side scratch are allocated once at build.
-2. **Apply paths of bindable kinds are untouched.** `fillFrameFromBind` reads `entry.out.*` / `entry.frozen.*` — the only apply-adjacent concession is `applyOffset` propagating `f.scale → o.scale` when both sides carry the field.
-3. **Frame overrides are read-only.** `rerouteConnector` reads `override.frame` via `anchorFramePoint` / `elbowAnchorPoint`, both of which allocate fresh position tuples.
-4. **Free-endpoint scratches must be per-side.** Shared module scratches break multi-entry scale/translate because free-endpoint positions flow through to `currPoints`.
-5. **Y.Map never stores a live topology reference.** Commit allocates fresh `[x, y]` tuples for free-Point writes; `makeSide` clones the stored baseline into `originalPos`. The route polyline is local-cache only — never written to Y.Map.
+1. **Zero per-frame allocation in the topology layer.** Frame scratches + per-free-side scratch are allocated once at build; `pointsBuf` (per RerouteEntry) is mutated in place via find-or-push tuple reuse and grows only on the first frame that exceeds its high-water mark.
+2. **Zero per-frame Y.Map reads.** `RouteContext` (start/end/cap/width/cachedRoute/pipeline) is built ONCE at `processConnector` and stored on each `RerouteEntry`. Per-frame apply reads only `routeCtx` + the override overlays.
+3. **Apply paths of bindable kinds are untouched.** `fillFrameFromBind` reads `entry.out.*` / `entry.frozen.*` — the only apply-adjacent concession is `applyOffset` propagating `f.scale → o.scale` when both sides carry the field.
+4. **Frame overrides are read-only.** `rerouteTransformInto` reads `override.frame` via `anchorFramePoint` / `elbowAnchorPoint`, both of which allocate fresh position tuples.
+5. **Free-endpoint scratches must be per-side.** Shared module scratches break multi-entry scale/translate because free-endpoint positions flow through to the routed buffer.
+6. **Y.Map never stores a live topology reference.** Commit allocates fresh `[x, y]` tuples for free-Point writes; `makeSide` clones the stored baseline into `originalPos`. The route polyline is local-cache only — never written to Y.Map.
+7. **Buffer-length contract.** Renderer reads `pointsBuf[0..validCount)` only — never `.length`, never `for...of`. `drawConnectorFromPoints` takes an explicit count.
 
 ---
 
@@ -655,7 +667,7 @@ Reads `useSelectionStore` for transform state. For each object in ULID order:
 
 **Scale:** `renderScaleEntry(ctx, handle, snapshot)` — per-kind dispatch using entry system.
 
-**Endpoint drag:** Connector with matching id + routedPoints → `drawConnectorFromPoints()`.
+**Endpoint drag:** Connector with matching id + `validCount >= 2` → `drawConnectorFromPoints(ctx, handle, transform.pointsBuf, transform.validCount)`.
 
 **Culling guard:** During transforms, all selected + topology connector IDs are injected into candidate list regardless of spatial index viewport query. Prevents disappearing during edge-scroll panning.
 
@@ -715,7 +727,7 @@ Per-frame `sx`/`sy` stay on `TransformController` — mutating the Zustand discr
 
 All entry state (frozen geometry, output, topology, dx/dy, sx/sy) lives in `TransformController`. The store orchestrates the whole scale gesture end-to-end: SelectTool calls `store.beginScale(handleId, downWorld)` once and `store.updateScale(worldX, worldY)` on each move — it never reads scale state back or touches `rawScaleFactors`. `beginScale`/`beginTranslate`/`updateScale`/`updateTranslate`/`endTransform`/`cancelTransform` all call `getController()` internally; SelectTool imports `getController` only for `getPreview()` scale reads.
 
-Exception: `EndpointDragTransform` still carries full state in the store (connectorId, endpoint, routedPoints, currentSnap, prevBbox) — it's not entry-based and doesn't go through the controller.
+Exception: `EndpointDragTransform` still carries full state in the store (connectorId, endpoint, `pointsBuf` + `validCount`, currentSnap, prevBbox) — it's not entry-based and doesn't go through the controller. SelectTool owns the `pointsBuf`/`dragRouteCtx`/`dragBbox` fields and reuses them across the gesture; only the count + bbox are pushed to the store per pointer event.
 
 ### Key Actions
 
@@ -766,15 +778,19 @@ Aggregates bold/italic/highlight across text/shape(labeled)/note objects.
 
 Only in connector mode (single connector selected). Dragging start or end endpoint. Managed by SelectTool directly (not TransformController).
 
+At drag-begin: SelectTool builds `dragRouteCtx = buildRouteContext(connectorId, handle.y)` once and clears the pooled `dragPointsBuf`. Per pointer event:
+
 ```
-1. Find snap target (findBestSnapTarget) — Ctrl suppresses
+1. Find snap target (findBestSnapTarget, connectorType from dragRouteCtx) — Ctrl suppresses
 2. Build endpoint override (SnapTarget or [worldX, worldY])
-3. Reroute connector (rerouteConnector with override)
-4. Update store with position, snap, routedPoints, routedBbox
-5. Invalidate prev + current dirty rects
+3. count = rerouteEndpointDragInto(dragRouteCtx, slot, override, dragBbox, dragPointsBuf)
+4. Push (currentPosition, snap, count, dragBbox-clone) into the store
+5. Invalidate prev + current dirty rects (dragBbox)
 ```
 
-**Commit:** Sets `points`, `start`, `end` on Y.Map. Updates or deletes anchor key based on snap state.
+The `pointsBuf` is shared by reference between SelectTool and the store entry; only `validCount` and `routedBbox` are pushed per event. At drag-end, `dragRouteCtx` is cleared but the buffer stays for reuse next gesture.
+
+**Commit:** Reads the dragged-side endpoint from `pointsBuf[0]` or `pointsBuf[validCount - 1]` (cloned into a fresh tuple) and writes either an `anchorRecordFromSnap` (when snapped) or that free `Point` to Y.Map.
 
 ---
 

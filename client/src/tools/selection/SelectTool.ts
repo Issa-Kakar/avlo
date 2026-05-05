@@ -1,6 +1,13 @@
-import { getConnectorType } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
-import { type EndpointDragOverride, rerouteConnectorEndpointDrag } from '@/core/connectors/reroute-connector';
+import {
+  buildRouteContext,
+  type EndpointDragOverride,
+  type RouteContext,
+  rerouteEndpointDragInto,
+  SLOT_END,
+  SLOT_START,
+  type Slot,
+} from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
 import { pointsToBBox } from '@/core/geometry/bounds';
@@ -67,6 +74,11 @@ export class SelectTool implements PointerTool {
   // Target classification for pointer down
   private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
+
+  // Endpoint drag — RouteContext + buffers hoisted at drag-begin, reused per pointer event.
+  private dragRouteCtx: RouteContext | null = null;
+  private readonly dragPointsBuf: Point[] = [];
+  private readonly dragBbox: BBoxTuple = [0, 0, 0, 0];
 
   private hasAddModifier(): boolean {
     return isShiftHeld() || isCtrlOrMetaHeld();
@@ -211,14 +223,19 @@ export class SelectTool implements PointerTool {
 
             this.phase = 'endpointDrag';
 
-            // Begin endpoint drag transform
+            // Begin endpoint drag transform — hoist RouteContext + buffer for per-event reuse.
             const connHandle = getHandle(this.endpointHitAtDown!.connectorId);
             if (connHandle) {
+              this.dragRouteCtx = buildRouteContext(this.endpointHitAtDown!.connectorId, connHandle.y);
+              this.dragPointsBuf.length = 0;
               useSelectionStore
                 .getState()
-                .beginEndpointDrag(this.endpointHitAtDown!.connectorId, this.endpointHitAtDown!.endpoint, [
-                  ...connHandle.bbox,
-                ] as BBoxTuple);
+                .beginEndpointDrag(
+                  this.endpointHitAtDown!.connectorId,
+                  this.endpointHitAtDown!.endpoint,
+                  [...connHandle.bbox] as BBoxTuple,
+                  this.dragPointsBuf,
+                );
             }
             setCursorOverride('grabbing');
             applyCursor();
@@ -331,34 +348,36 @@ export class SelectTool implements PointerTool {
         const epTransform = useSelectionStore.getState().transform;
         if (epTransform.kind !== 'endpointDrag') break;
 
-        const { connectorId, endpoint } = epTransform;
+        const { endpoint } = epTransform;
+        const ctx = this.dragRouteCtx;
+        if (!ctx) break;
 
-        // Read connector type for snap context
-        const connHandle = getHandle(connectorId);
-        const epConnectorType = connHandle ? getConnectorType(connHandle.y) : 'elbow';
-
-        // 1. Find snap target (Ctrl suppresses snapping)
+        // 1. Find snap target (Ctrl suppresses snapping). connectorType comes from
+        //    the hoisted RouteContext — no per-event Y.Map read.
         const snap = isCtrlHeld()
           ? null
           : findBestSnapTarget({
               cursorWorld: [worldX, worldY],
               prevAttach: epTransform.currentSnap,
-              connectorType: epConnectorType,
+              connectorType: ctx.connectorType,
             });
 
         // 2. Build endpoint override
         const overrideValue: EndpointDragOverride = snap ?? [worldX, worldY];
 
-        // 3. Reroute
-        const result = rerouteConnectorEndpointDrag(connectorId, endpoint, overrideValue);
+        // 3. Reroute into the hoisted buffer.
+        const slot: Slot = endpoint === 'start' ? SLOT_START : SLOT_END;
+        const count = rerouteEndpointDragInto(ctx, slot, overrideValue, this.dragBbox, this.dragPointsBuf);
 
         // 4. Invalidate prev + current dirty rects
         invalidateWorldBBox(epTransform.prevBbox);
-        if (result) invalidateWorldBBox(result.bbox);
+        if (count > 0) invalidateWorldBBox(this.dragBbox);
 
-        // 5. Update store
+        // 5. Update store with valid count + bbox (pointsBuf is already shared by reference).
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
-        useSelectionStore.getState().updateEndpointDrag(currentPosition, snap ?? null, result?.points ?? null, result?.bbox ?? null);
+        useSelectionStore
+          .getState()
+          .updateEndpointDrag(currentPosition, snap ?? null, count, count > 0 ? ([...this.dragBbox] as BBoxTuple) : null);
         break;
       }
     }
@@ -478,7 +497,7 @@ export class SelectTool implements PointerTool {
           break;
         }
 
-        const { connectorId, endpoint, routedPoints, currentSnap, prevBbox, routedBbox } = epStore.transform;
+        const { connectorId, endpoint, pointsBuf, validCount, currentSnap, prevBbox, routedBbox } = epStore.transform;
 
         // Invalidate the connector region
         invalidateWorldBBox(prevBbox);
@@ -486,10 +505,12 @@ export class SelectTool implements PointerTool {
 
         epStore.endTransform();
 
-        // Commit if we have valid routed points
-        if (routedPoints && routedPoints.length >= 2) {
-          this.commitEndpointDrag(connectorId, endpoint, routedPoints, currentSnap);
+        // Commit if we have valid routed points (read by validCount, not .length).
+        if (validCount >= 2) {
+          this.commitEndpointDrag(connectorId, endpoint, pointsBuf, validCount, currentSnap);
         }
+        // Clear the gesture context; pointsBuf stays for reuse next gesture.
+        this.dragRouteCtx = null;
         break;
       }
     }
@@ -517,6 +538,7 @@ export class SelectTool implements PointerTool {
       if (store.transform.kind === 'endpointDrag') {
         invalidateWorldBBox(store.transform.prevBbox);
       }
+      this.dragRouteCtx = null;
     }
     useSelectionStore.getState().cancelTransform();
 
@@ -640,19 +662,20 @@ export class SelectTool implements PointerTool {
   private commitEndpointDrag(
     connectorId: string,
     endpoint: 'start' | 'end',
-    routedPoints: [number, number][],
+    pointsBuf: Point[],
+    validCount: number,
     currentSnap: SnapTarget | null,
   ): void {
     transact(() => {
       const yMap = getObjects().get(connectorId);
       if (!yMap) return;
 
-      const value: ConnectorEndpoint = currentSnap
-        ? anchorRecordFromSnap(currentSnap)
-        : ([
-            routedPoints[endpoint === 'start' ? 0 : routedPoints.length - 1][0],
-            routedPoints[endpoint === 'start' ? 0 : routedPoints.length - 1][1],
-          ] as Point);
+      // Read the dragged-side endpoint from the valid-prefix slice — pointsBuf may
+      // hold trailing high-water-mark tuples beyond `validCount`. Clone into a
+      // fresh tuple so Y.Map doesn't preserve a reference into our pooled buffer.
+      const idx = endpoint === 'start' ? 0 : validCount - 1;
+      const src = pointsBuf[idx];
+      const value: ConnectorEndpoint = currentSnap ? anchorRecordFromSnap(currentSnap) : ([src[0], src[1]] as Point);
       yMap.set(endpoint, value);
     });
   }

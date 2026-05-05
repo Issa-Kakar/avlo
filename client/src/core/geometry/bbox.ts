@@ -3,6 +3,7 @@ import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStar
 import { BOOKMARK_WIDTH, computeBookmarkBBox } from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
 import { getConnectorRoute } from '../connectors/connector-router';
+import type { ConnectorCap } from '../connectors/types';
 import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
@@ -104,30 +105,49 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
  */
 export function computeConnectorBBoxFromPoints(points: Point[], yMap: Y.Map<unknown>): BBoxTuple {
   if (points.length < 2) return [0, 0, 0, 0];
+  const out: BBoxTuple = [0, 0, 0, 0];
+  computeConnectorBBoxFromPointsInto(points, points.length, getWidth(yMap), getStartCap(yMap), getEndCap(yMap), out);
+  return out;
+}
+
+/**
+ * Allocation-free variant: writes the bbox into `outBbox`. Caller supplies an
+ * explicit `count` so a reused points buffer (length may exceed valid prefix)
+ * iterates only its valid range. Width + caps are also passed in — callers on
+ * the topology hot path read these once from RouteContext at gesture-begin.
+ */
+export function computeConnectorBBoxFromPointsInto(
+  points: Point[],
+  count: number,
+  strokeWidth: number,
+  startCap: ConnectorCap,
+  endCap: ConnectorCap,
+  outBbox: BBoxTuple,
+): void {
+  if (count < 2) {
+    outBbox[0] = outBbox[1] = outBbox[2] = outBbox[3] = 0;
+    return;
+  }
 
   let minX = points[0][0],
     minY = points[0][1];
   let maxX = minX,
     maxY = minY;
 
-  for (let i = 1; i < points.length; i++) {
-    const [x, y] = points[i];
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y);
-    maxY = Math.max(maxY, y);
+  for (let i = 1; i < count; i++) {
+    const p = points[i];
+    if (p[0] < minX) minX = p[0];
+    else if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1];
+    else if (p[1] > maxY) maxY = p[1];
   }
 
-  const width = getWidth(yMap);
-  const startCap = getStartCap(yMap);
-  const endCap = getEndCap(yMap);
-
-  const strokePadding = width / 2;
+  const strokePadding = strokeWidth / 2;
   const hasArrow = startCap === 'arrow' || endCap === 'arrow';
 
   let padding: number;
   if (hasArrow) {
-    const arrowLength = Math.max(6, width * 3);
+    const arrowLength = Math.max(6, strokeWidth * 3);
     const arrowHalfWidth = arrowLength / 2;
     const arrowRounding = 2.5;
     padding = Math.max(strokePadding, arrowHalfWidth + arrowRounding) + 1;
@@ -135,7 +155,10 @@ export function computeConnectorBBoxFromPoints(points: Point[], yMap: Y.Map<unkn
     padding = strokePadding + 1;
   }
 
-  return [minX - padding, minY - padding, maxX + padding, maxY + padding];
+  outBbox[0] = minX - padding;
+  outBbox[1] = minY - padding;
+  outBbox[2] = maxX + padding;
+  outBbox[3] = maxY + padding;
 }
 
 export function bboxEquals(a: BBoxTuple, b: BBoxTuple): boolean {

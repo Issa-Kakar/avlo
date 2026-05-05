@@ -129,6 +129,10 @@ export interface ScaleTransform {
 /**
  * Endpoint drag transform: dragging a single connector endpoint.
  * Fundamentally different from translate/scale - operates on ONE connector, ONE endpoint.
+ *
+ * `pointsBuf` is owned by SelectTool (reused across the gesture) and exposed here
+ * by reference. `pointsBuf.length` may exceed `validCount` (high-water mark) —
+ * consumers MUST iterate by `validCount`, never `.length`.
  */
 export interface EndpointDragTransform {
   kind: 'endpointDrag';
@@ -140,9 +144,11 @@ export interface EndpointDragTransform {
   /** Current snap target (for commit and overlay rendering) */
   currentSnap: SnapTarget | null;
 
-  /** Rerouted path (updated on each move via rerouteConnector) */
-  routedPoints: [number, number][] | null;
-  /** Bbox of routedPoints (for dirty rect) */
+  /** Persistent rerouted points buffer (owned by SelectTool, mutated each move). */
+  pointsBuf: Point[];
+  /** Valid prefix length of pointsBuf. 0 before first move; -1 on routing failure. */
+  validCount: number;
+  /** Bbox of the rerouted path (for dirty rect) */
   routedBbox: BBoxTuple | null;
 
   /** Previous frame's bbox for dirty rect invalidation (seeded from original bbox) */

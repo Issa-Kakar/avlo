@@ -351,7 +351,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       if (kind === 'connector') {
         if (rerouteIds.has(id)) continue; // defer to Phase C
         // Style-only branch: route unchanged, but bbox may shift (caps/width).
-        const newBBox = this.connectorRouter.computeBBox(id, yObj);
+        const newBBox: BBoxTuple = [0, 0, 0, 0];
+        if (!this.connectorRouter.computeBBox(id, yObj, newBBox)) continue;
         const r = this.upsertHandle(id, kind, yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
         if (r.needsRefresh) needsRefresh = true;
         if (r.needsReposition) needsReposition = true;
@@ -381,17 +382,13 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // === PHASE C: process reroute set ===
     // `rerouteIds` was mutated during Phase B; iterating now sees the finalized set.
     // The `if (!yObj) continue` guard covers ids added via propagation that race with delete.
+    // No placeholder objectsById.set: the router consumes `yObj` directly — connector
+    // handles enter `objectsById` exactly once per upsert with their real bbox.
     for (const id of rerouteIds) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-      // Pre-seed objectsById with a placeholder so the routing pipeline's getHandle(id)
-      // resolves to this connector (newly-added connectors haven't reached objectsById yet).
-      // Existing connectors keep their previous bbox during the route call (it's
-      // overwritten via upsertHandle below). The router doesn't read this entry's bbox.
-      if (!this.objectsById.has(id)) {
-        this.objectsById.set(id, { id, kind: 'connector', y: yObj, bbox: [0, 0, 0, 0] });
-      }
-      const newBBox = this.connectorRouter.rerouteCanonical(id);
+      const newBBox = this.connectorRouter.rerouteCanonical(id, yObj);
+      if (!newBBox) continue; // routing failed → leave handle as-is (next observer pass corrects)
       // Connector reroute always invalidates Path2D regardless of bbox — route changed.
       // Subsequent bbox-mismatch eviction inside upsertHandle is harmless (delete on absent key is no-op).
       evictGeometry(id);
@@ -502,13 +499,12 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     });
 
     // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
+    // Router takes `yObj` directly — no placeholder set. The handle enters
+    // `objectsById` exactly once with its real bbox.
     for (const id of deferredConnectorIds) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-      // Inserting into objectsById BEFORE rerouteCanonical so getHandle(id) inside the
-      // routing pipeline sees this connector. Bbox is filled post-route.
-      this.objectsById.set(id, { id, kind: 'connector', y: yObj, bbox: [0, 0, 0, 0] });
-      const bbox = this.connectorRouter.rerouteCanonical(id);
+      const bbox = this.connectorRouter.rerouteCanonical(id, yObj) ?? ([0, 0, 0, 0] as BBoxTuple);
       const handle: ObjectHandle = { id, kind: 'connector', y: yObj, bbox };
       this.objectsById.set(id, handle);
       handles.push(handle);

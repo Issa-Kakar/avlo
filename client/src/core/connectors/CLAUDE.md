@@ -58,7 +58,7 @@ client/src/core/connectors/
 ├── connector-utils.ts    # Direction primitives, spatialRelation, path simplify, elbow direction resolution
 ├── snap.ts               # findBestSnapTarget + two pipelines + shared edge probe
 ├── routing-context.ts    # Centerlines, dynamic routing bounds, stubs, grid construction
-├── routing-astar.ts      # computeAStarRoute + A* with segment-intersection
+├── routing-astar.ts      # computeAStarRouteInto + A* with segment-intersection
 ├── connector-paths.ts    # Path2D builders (rounded polyline + arrows, trim compensation)
 ├── connector-router.ts   # Route cache + reverse shapeId→connectors map + detachConnectorFromShape helper
 ├── reroute-connector.ts  # Endpoint resolution, straight route assembly, three reroute entry points + routeNewConnector
@@ -233,54 +233,77 @@ Elbow never enters interior mode.
 
 ## Endpoint Resolution
 
-Two parallel pipelines (elbow + straight) share a single Y.Map fetch
-(`readContext`). Each public entry reads `connectorType` once, branches once,
-dispatches to a type-specific path, and never sees the type again. Each
-pipeline operates on its own discriminated-union endpoint type carrying only
-the fields it uses — no shared `ResolvedEndpoint`, no optional fields, no
-defensive nullability.
+A single `Pipeline<E>` strategy record collapses the two routing paths (elbow
++ straight). `connectorType` is read once at `buildRouteContext` and stored as
+`pipeline: AnyPipeline` — every helper below the entry boundary is parametric
+in the endpoint type `E` (ELBOW xor STRAIGHT). No string comparisons, no type
+threading.
+
+All hot-path entries write into a caller-owned `outPoints` buffer (`*Into`
+family); the legacy fresh-allocating wrappers are deleted. Each call site owns
+a permanent buffer reused across frames; `outPoints.length` may exceed the
+returned `validCount` (high-water mark). Consumers MUST iterate by `count`,
+never `.length` / `for...of`.
 
 ```
-rerouteConnectorEndpointDrag(id, endpoint, override)        // SelectTool
-rerouteConnectorTransform(id, startOverride, endOverride)   // connector-topology + ConnectorRouter
-                                                             //   (router calls with (null, null) for canonical reroute)
-routeNewConnector(start, end, strokeWidth, type)             // ConnectorTool
+rerouteEndpointDragInto(ctx, slot, override, outBbox, outPoints) → count   // SelectTool
+rerouteTransformInto(ctx, startOv, endOv, outBbox, outPoints) → count      // topology + router
+routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count    // ConnectorTool
+
+buildRouteContext(connectorId, yObj) → RouteContext | null
 ```
+
+### RouteContext — gesture-stable inputs
+
+```typescript
+interface RouteContext {
+  readonly start: ConnectorEndpoint | undefined;
+  readonly end:   ConnectorEndpoint | undefined;
+  readonly strokeWidth: number;
+  readonly startCap: ConnectorCap;
+  readonly endCap:   ConnectorCap;
+  readonly connectorType: ConnectorType;     // exposed for orthogonal callers (snap)
+  readonly cachedRoute: Point[] | null;
+  readonly pipeline: AnyPipeline;            // pre-picked at build, never branched again
+}
+```
+
+Built ONCE per gesture (topology, SelectTool drag) or per call (router
+canonical reroute). Per-frame routing reads only `RouteContext` + the override
+overlays — never touches the Y.Map. Caller passes `yObj` directly so the
+router never round-trips through `getHandle(connectorId)` for the connector
+itself.
 
 ### Override unions (per entry point)
 
 ```typescript
 type FrameOverride        = { frame: FrameTuple };           // anchor reapplied against transformed frame
-type TransformOverride    = FrameOverride | Point;           // null = canonical (read Y.Map)
+type TransformOverride    = FrameOverride | Point;           // null = canonical
 type EndpointDragOverride = SnapTarget | Point;              // SelectTool drag side
+type Slot                 = 0 | 1;                           // SLOT_START | SLOT_END
 ```
 
 `TransformOverride` carries no `SnapTarget` branch — transform paths never
 feed snap. `EndpointDragOverride` carries no `FrameOverride` branch — only
-shape transforms reapply frames.
+shape transforms reapply frames. The drag entry takes a `slot` to select which
+side is driven; the other reads canonically from `ctx`.
 
 **Read-only contract, aliased endpoints.** Frame overrides are read-only
 (`anchorFramePoint` / `elbowAnchorPoint` allocate fresh position tuples).
-The resulting route's `points[0]` / `points[points.length-1]` may *alias*
-a `Point` free-position override — the elbow A* path emits
-`[startPos, ...cells, endPos]` (start/end pushed as fresh tuples) and the
-straight path clones the visible endpoints. But **inputs to reroute may be
-the result of a prior call** if a caller passes its own scratch buffer; the
-guarantee is the call clones inputs into the result, not that inputs are
-distinct from past outputs. Consequences for callers:
+The resulting `outPoints[0]` / `outPoints[count-1]` may *alias* a `Point`
+free-position override. Consequences for callers:
 - A scratch tuple used as a free-position override **must not** be shared
   across multiple reroute calls within one apply pass — see
   `connector-topology.ts` `FreeSide.scratch` (per-side, not module-shared).
 - Callers persisting *free* endpoint positions to Y.Map (e.g. SelectTool's
-  endpoint-drag commit) must clone the route's first/last point — Y.Map
+  endpoint-drag commit) must clone the slice's first/last point — Y.Map
   preserves references, so an un-cloned write resurfaces as the next
-  gesture's "stored position". Routed paths themselves never go to Y.Map
-  under the new schema; the route lives only in the local cache.
+  gesture's "stored position". Routed paths themselves never go to Y.Map.
 
 **Synchronous-only contract.** The reroute pipeline owns module scratches in
 `reroute-connector.ts`, `routing-context.ts`, and `routing-astar.ts`. Callers
-must not invoke any reroute entry recursively (e.g. from inside an A* hop or a
-Y.Doc observer reentry). The full route is synchronous; A* never re-enters
+must not invoke any reroute entry recursively (e.g. from inside an A* hop or
+a Y.Doc observer reentry). The full route is synchronous; A* never re-enters
 reroute, and Y.Doc observers don't run inside `transact()`.
 
 ### Internal endpoint types
@@ -309,35 +332,43 @@ narrowing on `kind` proves invariants the old shape required runtime guards
 to express (`if (!me.isAnchored || !me.normalizedAnchor || !me.frame)` →
 `me.kind === 'interior'`).
 
-### Factories (one per pipeline)
+### Pipeline strategy record
 
-- `buildElbowAnchored(frame, shapeType, anchor)` — calls
-  `projectAnchorToEdge(anchor, frame, shapeType, …)` to derive `dir`, then
-  `elbowAnchorPoint(anchor, frame, dir)` for position (cardinal `EDGE_CLEARANCE_W`).
-  Returns `{ kind: 'anchored', pos, dir, frame }`.
-- `buildStraightAnchored(frame, shapeType, anchor, interior, shapeId)` —
-  position = `anchorFramePoint(anchor, frame)` (no offset). Branches on
-  `interior` → `{ kind: 'interior', pos, frame, shapeType, shapeId }` or
-  `{ kind: 'edge', pos }`.
+```typescript
+interface Pipeline<E> {
+  free(pos: Point): E;
+  buildAnchored(frame: FrameTuple, shapeType: string, src: AnchorSource): E;
+  routeInto(start: E, end: E, strokeWidth: number, outPoints: Point[]): number;  // -1 on fail
+}
+const ELBOW: Pipeline<ElbowEndpoint>;
+const STRAIGHT: Pipeline<StraightEndpoint>;
+type AnyPipeline = Pipeline<ElbowEndpoint> | Pipeline<StraightEndpoint>;
+```
 
-### Resolvers (per pipeline, all `connectorType`-free)
+ELBOW's `buildAnchored` derives `dir` via `projectAnchorToEdge`, places position
+at `EDGE_CLEARANCE_W` along that cardinal. STRAIGHT's branches on
+`src.interior` → `interior` variant (with frame + shapeType + shapeId) or `edge`
+variant. The `interior` flag on `AnchorSource` is straight-only; ELBOW's
+factory ignores it.
 
-Each pipeline exposes:
-- `resolveXxxSide(override, endpoint, cachedRoute, side)` — handles transform
-  overrides AND canonical. `endpoint` is the union from Y.Map (`Point` →
-  free; `StoredAnchor` → resolve frame via `frameOf(getHandle(id))`; absent →
-  cached-route fallback). `cachedRoute` is the local-cache route used for
-  dangling-anchor fallback when `frameOf` returns null.
-- `resolveXxxFromSnapOrPoint(input)` — shared by SelectTool drag and
-  `routeNewConnector`. `Point` input = free; `SnapTarget` input → factory.
+V8 sees bimorphic dispatch at the `Pipeline.*` call sites (well within IC
+capacity); each pipeline's endpoint variants keep stable hidden classes; the
+route assemblers (`computeElbowRouteInto` / `computeStraightRouteInto` and
+`computeAStarRouteInto`'s emission loop) only ever see one endpoint type per
+pipeline.
 
-The straight side casts `endpoint as StoredStraightAnchor` once at the boundary
-— the parent connector's `connectorType` discriminates the union, so the cast
-is sound and isolated.
+### Generic resolvers — single implementation parametric in E
+
+- `resolveStored<E>(P, override, endpoint, cachedRoute, side)` — handles
+  transform overrides AND canonical. The `(endpoint as StoredStraightAnchor).interior`
+  cast is the one place straight-only data leaks through; the parent's
+  `connectorType` discriminates the union, ELBOW's factory ignores it.
+- `resolveSnap<E>(P, input)` — shared by SelectTool drag and
+  `routeNewConnectorInto`. `Point` input = free; `SnapTarget` input → factory.
 
 ### Canonical vs dynamic (mental model)
 
-Each endpoint is either **canonical** (stored Y.map data is stable) or
+Each endpoint is either **canonical** (stored Y.Map data is stable) or
 **dynamic** (actively being transformed). The override pattern exploits this:
 
 - Dragging one endpoint → the other is canonical (no override).
@@ -349,17 +380,20 @@ Each endpoint is either **canonical** (stored Y.map data is stable) or
 
 ```typescript
 // Shape transform (iterate affected connectors per shape):
-rerouteConnectorTransform(cid,
+rerouteTransformInto(routeCtx,
   startOv,    // FrameOverride | Point | null  (null = canonical)
   endOv,
+  outBbox,
+  outPoints,
 );
 
 // Endpoint drag (reconnection — SelectTool):
 const snap = findBestSnapTarget(snapCtx);
-rerouteConnectorEndpointDrag(cid, endpoint, snap ?? [worldX, worldY]);
+const slot: Slot = endpoint === 'start' ? SLOT_START : SLOT_END;
+rerouteEndpointDragInto(routeCtx, slot, snap ?? [worldX, worldY], outBbox, outPoints);
 
 // Canonical reroute (router-driven — observer Phase C, hydrate Pass 2):
-rerouteConnectorTransform(cid, null, null);
+connectorRouter.rerouteCanonical(connectorId, yObj);   // owns its own pooled buffer
 ```
 
 ---
@@ -367,8 +401,8 @@ rerouteConnectorTransform(cid, null, null);
 ## Straight Routing
 
 Bypasses the elbow pipeline entirely — no RoutingContext, no grid, no A*, no
-direction resolution. `computeStraightRoute(start, end)` returns a two-point
-array.
+direction resolution. `computeStraightRouteInto(start, end, outPoints)` writes
+two points and returns `2`.
 
 ### Per-endpoint logic (`resolveStraightVisibleEndpoint`)
 
@@ -388,7 +422,7 @@ For straight endpoints, `me.pos` IS the un-offset `anchorFramePoint`
 dashed guide for interior anchors. `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT`
 are reused sequentially per side — never aliased into the result.
 
-### Same-shape short-circuit (pair-level, in `computeStraightRoute`)
+### Same-shape short-circuit (pair-level, in `computeStraightRouteInto`)
 
 When `start.kind === 'interior' && end.kind === 'interior' && start.shapeId
 === end.shapeId`, return `[start.pos, end.pos]` directly. Ray-casting two
@@ -435,14 +469,14 @@ results — it's computed directly from
 
 ## Elbow Routing
 
-`computeAStarRoute(startPos, startDir, endPos, endDir, startFrame, endFrame, strokeWidth)`.
+`computeAStarRouteInto(startPos, startDir, endPos, endDir, startFrame, endFrame, strokeWidth, outPoints)`.
 Primitive API: `isAnchored` is derived from `frame !== null`; no wrapper
-objects.
+objects. Returns the valid count; `outPoints.length` may exceed it.
 
 ### Pipeline
 
 ```
-computeAStarRoute
+computeAStarRouteInto
   ├── fillRoutingContext (all spatial intelligence; writes into module scratches)
   │     ├── centerlines from RAW bounds, per-axis
   │     ├── dynamic routing bounds (facing-side = centerline, non-facing padded)
@@ -451,7 +485,7 @@ computeAStarRoute
   ├── fillSimpleGrid (sort-then-unique into pre-allocated xLines/yLines)
   ├── astar (index-based: typed arrays + generation counter, segment-intersection
   │          checks per move, bend penalty, no U-turns)
-  └── emit final Point[] with inline collinear simplification
+  └── emit into outPoints via find-or-push (collinear simplification inline)
 ```
 
 ### RoutingContext (the single trick)
@@ -502,9 +536,11 @@ automatically land on centerlines when those exist.
 - **Path reconstruction** walks parent indices forward into `pathCells`
   (`Int32Array(MAX_NODES)`); caller iterates in reverse during emission. No
   intermediate `fullPath` array; collinear simplification folds inline via
-  `pushOrMerge` while writing the final `Point[]`.
-- **Final `Point[]` is the only allocation per route.** Each emitted vertex is
-  a fresh `[x, y]`; the result array is fresh.
+  `emitOrMerge` while writing into `outPoints` (find-or-push tuple reuse).
+- **Allocation-free once warm.** A* writes via `emitOrMerge` into the
+  caller-supplied `outPoints`; existing tuple slots are reused. The first
+  reroute that exceeds the buffer's high-water mark grows it; subsequent
+  reroutes mutate in place.
 - **Fallbacks**: no path with obstacles → recurse with `EMPTY_OBSTACLES`
   (recursion bumps `astarGen` and resets the node pool); still nothing →
   return `[startPos, endPos]` direct line.
@@ -529,59 +565,67 @@ In `resolveElbowDirections`:
 
 ## Public Entry Points
 
+All hot-path entries write into a caller-owned `outPoints` buffer and return a
+valid prefix length. `outPoints.length` may exceed it — iterate by `count`.
+
 ```typescript
-// SelectTool endpoint drag — one side overridden, the other reads Y.Map.
-rerouteConnectorEndpointDrag(
-  connectorId: string,
-  endpoint: 'start' | 'end',
+// SelectTool endpoint drag — one side overridden by `slot`, the other reads via ctx.
+rerouteEndpointDragInto(
+  ctx: RouteContext,
+  slot: Slot,                                      // SLOT_START | SLOT_END
   override: SnapTarget | Point,                    // EndpointDragOverride
-): RerouteResult | null;                           // { points, bbox }
+  outBbox: BBoxTuple,
+  outPoints: Point[],
+): number;                                         // valid count, or -1 on failure
 
-// connector-topology transforms + ConnectorRouter canonical reroute (router calls
-// with both nulls; topology with FrameOverride | Point per side).
-rerouteConnectorTransform(
-  connectorId: string,
-  startOverride: FrameOverride | Point | null,
-  endOverride:   FrameOverride | Point | null,
-): RerouteResult | null;
+// connector-topology transforms (router has its own pooled buffer; see below).
+rerouteTransformInto(
+  ctx: RouteContext,
+  startOv: FrameOverride | Point | null,
+  endOv:   FrameOverride | Point | null,
+  outBbox: BBoxTuple,
+  outPoints: Point[],
+): number;
 
-// Route new — no Y.map; same resolver + routing pipeline. (ConnectorTool.)
-routeNewConnector(
+// Route new — no Y.Map; same resolver + routing pipeline. (ConnectorTool.)
+routeNewConnectorInto(
   start: SnapTarget | Point,
   end:   SnapTarget | Point,
   strokeWidth: number,
-  connectorType?: ConnectorType,                   // default 'elbow'
-): NewRouteResult;                                 // { points }
+  connectorType: ConnectorType,
+  outPoints: Point[],
+): number;
+
+// RouteContext builder — pass yObj directly (no getHandle round-trip for the connector).
+buildRouteContext(connectorId: string, yObj: Y.Map<unknown>): RouteContext | null;
 ```
 
-Internal flow — each public entry reads `ctx = readContext(connectorId)` once
-(shared Y.Map fetch + cached-route lookup), then branches on
-`ctx.connectorType` exactly once and dispatches to a per-pipeline private:
+Internal flow — entries unwrap `ctx.pipeline` (cast to `Pipeline<unknown>`) once
+inside the runner body and dispatch to a parametric `runReroute<E>` /
+`runDrag<E>`. Each pipeline produces endpoints fed only into its own `routeInto`
+— provably safe.
 
 ```typescript
-export function rerouteConnectorTransform(connectorId, startOverride, endOverride) {
-  const ctx = readContext(connectorId);
-  if (!ctx) return null;
-  return ctx.connectorType === 'straight'
-    ? rerouteStraightTransform(ctx, startOverride, endOverride)
-    : rerouteElbowTransform(ctx, startOverride, endOverride);
+export function rerouteTransformInto(ctx, startOv, endOv, outBbox, outPoints) {
+  return runReroute(ctx.pipeline as Pipeline<unknown>, ctx, startOv, endOv, outBbox, outPoints);
 }
 
-function rerouteElbowTransform(ctx, sOv, eOv) {
-  const start = resolveElbowSide(sOv, ctx.start, ctx.cachedRoute, 'start');
-  const end   = resolveElbowSide(eOv, ctx.end,   ctx.cachedRoute, 'end');
-  const { points } = computeElbowRoute(start, end, ctx.strokeWidth);
-  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
+function runReroute<E>(P, ctx, sOv, eOv, outBbox, outPoints) {
+  const start = resolveStored(P, sOv, ctx.start, ctx.cachedRoute, 'start');
+  const end   = resolveStored(P, eOv, ctx.end,   ctx.cachedRoute, 'end');
+  const count = P.routeInto(start, end, ctx.strokeWidth, outPoints);
+  if (count < 2) return -1;
+  computeConnectorBBoxFromPointsInto(outPoints, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);
+  return count;
 }
-// rerouteStraightTransform symmetric. Drag follows the same shape.
 ```
 
-`connectorType` lives only in `ConnectorContext` (the `readContext` output) and
-is never threaded into resolvers, factories, or route assemblers — every
+`connectorType` lives only on `RouteContext` (built once at `buildRouteContext`)
+and is never threaded into resolvers, factories, or route assemblers — every
 internal function operates on `ElbowEndpoint` xor `StraightEndpoint`, and the
 type itself encodes which pipeline you're in.
 
-BBox for `RerouteResult` comes from `computeConnectorBBoxFromPoints(points, yMap)`.
+BBox is written via `computeConnectorBBoxFromPointsInto(points, count, width, startCap, endCap, outBbox)` — caller supplies the explicit count + style fields (already on `RouteContext`, no per-frame Y.Map read).
 
 ---
 
@@ -621,11 +665,16 @@ Owns three private maps, maintained by `RoomDocManager`'s deep observer:
 |---|---|---|
 | `shapeToConnectors` | `shapeId → Set<connectorId>` | Connector start/end key change → `updateAnchors`; connector add → `registerConnector`; connector delete → `removeConnector`; shape delete → `removeShape` |
 | `anchorIds` | `connectorId → [startShapeId, endShapeId]` (mutated in place) | Same as above; tuple slots reused after first registration |
-| `routes` | `connectorId → Point[]` (fresh references owned by router) | `rerouteCanonical` writes after a successful reroute |
+| `routes` | `connectorId → Point[]` (also the per-connector pooled buffer) | `rerouteCanonical` mutates in place; trims `length = count` after each canonical write |
 
 Self-loops (both endpoints → same shape) are deduped inline with four `!==`
 checks against fixed slots — no `Set` allocation per update.
 `removeConnector` / `removeShape` are unconditional no-ops on unknown ids.
+
+The `routes` map doubles as the canonical pooled buffer: each connector's
+entry is mutated in place by `rerouteCanonical` (find-or-push tuple reuse),
+then trimmed to `count` so off-gesture readers can iterate by `.length`
+safely.
 
 ### Read API
 
@@ -633,15 +682,19 @@ checks against fixed slots — no `Set` allocation per update.
 getConnectorRoute(id):           Point[] | null              // module-level — every connector consumer reads this
 getAttachedConnectors(shapeId):  ReadonlySet<string> | undefined
 detachConnectorFromShape(connectorId, shapeId):  void        // shape-deletion helper (transact-required)
+
+rerouteCanonical(id, yObj):      BBoxTuple | null            // direct yObj — no getHandle round-trip
+computeBBox(id, yObj, outBbox):  boolean                     // *Into; style-only branch (Phase B)
 ```
 
 `getConnectorRoute` is the single source of truth for routed polylines —
 read by `bbox.ts` (connector bbox), `kind-capability.ts` (CONNECTOR_CAP hit
 predicates), `geometry-cache.ts` (Path2D builder), `selection-overlay.ts`
 (dashed guides), `anchor-atoms.ts` (dangling-anchor fallback), and
-`reroute-connector.ts` (cached-route fallback inside resolvers). Bbox is
-derived freshly per access via `computeConnectorBBoxFromPoints` on the cached
-route — no separate bbox cache.
+`reroute-connector.ts` (cached-route fallback inside resolvers). Off-gesture
+readers see `.length === validCount` because the router trims after every
+canonical write. Bbox is derived freshly per access via
+`computeConnectorBBoxFromPoints` on the cached route — no separate bbox cache.
 
 ### Lifecycle (RoomDocManager)
 
@@ -753,24 +806,33 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 10. **Single paint atom.** Every connector stroke goes through
     `paintConnector`, so committed render, transform preview, and in-flight
     preview share one draw pass.
-11. **Two parallel reroute pipelines, one shared `readContext`.** Each public
-    reroute (endpoint-drag, transform, canonical) accepts only the override
-    shapes its caller actually produces; each branches on `ctx.connectorType`
-    exactly once and dispatches to elbow or straight private internals.
-    Internal helpers operate on `ElbowEndpoint` xor `StraightEndpoint` — the
-    type encodes the pipeline. No drift risk; the topology hot path skips
-    runtime override-shape discrimination it can't generate.
-12. **`connectorType` is never threaded into internals.** It is read once (in
-    `readContext`) and branched on once at the top of every public entry.
-    Resolvers, factories, route assemblers, and per-side helpers operate on
-    typed endpoint unions only.
+11. **Two parallel reroute pipelines, one shared strategy record.** A single
+    `Pipeline<E>` record per connector type (ELBOW + STRAIGHT) drives a
+    `Pipeline<unknown>` cast inside the entry runner; below the entry boundary,
+    every helper is parametric in `E`. Internal helpers operate on
+    `ElbowEndpoint` xor `StraightEndpoint` — the type encodes the pipeline.
+    The Pipeline call sites are bimorphic; V8 ICs handle this comfortably.
+12. **`connectorType` is read once at `buildRouteContext`** and stored as
+    `pipeline: AnyPipeline` on `RouteContext`. No helper below the entry
+    boundary inspects it; resolvers, factories, route assemblers, and
+    per-side helpers operate on typed endpoint unions only.
 13. **Module scratches are non-re-entrant.** `reroute-connector.ts`,
     `routing-context.ts`, and `routing-astar.ts` all hold module-level
-    scratches (point projections, bounds, grid lines, A* state). The reroute
-    pipeline is synchronous; callers must not invoke it recursively.
-14. **Final route Point[] is the only allocation in the elbow path.** All
-    other arrays (cells, gScores, fScores, pathCells, xLines, yLines) are
-    module-pool typed arrays reused via a generation counter.
+    scratches (point projections, bounds, grid lines, A* state). The `*Into`
+    entries are synchronous; callers must not invoke them recursively.
+14. **Buffer-length contract.** `outPoints` / `pointsBuf` is mutated in place
+    via find-or-push tuple reuse; `.length` may exceed the returned `count`
+    (high-water mark from a prior gesture's longer route). Hot-path consumers
+    MUST iterate by `count`, never `.length` / `for...of`. The renderer
+    (`drawConnectorFromPoints`) and `connector-paths.ts` builders all take an
+    explicit count. Off-gesture readers (`getConnectorRoute(id)` consumers in
+    bbox.ts, kind-capability, geometry-cache, selection-overlay) can read
+    `.length` because the router trims its canonical cache after every
+    successful reroute.
+15. **No bbox-dummy.** `objectsById` never holds a connector handle with a
+    `[0,0,0,0]` placeholder bbox. Phase C and hydrate Pass 2 set the proper
+    handle on first insert; `rerouteCanonical(id, yObj)` never round-trips
+    through `getHandle(connectorId)` for the connector itself.
 
 ---
 
@@ -778,11 +840,12 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 
 | Need | Call |
 |---|---|
-| Create new connector | `routeNewConnector(start, end, strokeWidth, type?)` |
-| Reroute on endpoint drag (SelectTool) | `rerouteConnectorEndpointDrag(id, endpoint, snap \| pt)` |
-| Reroute under shape transform (topology) | `rerouteConnectorTransform(id, startOv, endOv)` |
-| Reroute reading Y.Map (no overrides — router only) | `rerouteConnectorTransform(id, null, null)` |
-| Read cached route polyline | `getConnectorRoute(id)` |
+| Create new connector (preview/commit) | `routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count` |
+| Reroute on endpoint drag (SelectTool) | `rerouteEndpointDragInto(ctx, slot, snap \| pt, outBbox, outPoints) → count` |
+| Reroute under shape transform (topology) | `rerouteTransformInto(ctx, startOv, endOv, outBbox, outPoints) → count` |
+| Build a RouteContext | `buildRouteContext(connectorId, yObj)` |
+| Canonical reroute (router-driven, observer Phase C / hydrate) | `connectorRouter.rerouteCanonical(id, yObj)` |
+| Read cached route polyline | `getConnectorRoute(id)` (`.length === validCount` post-trim) |
 | Find snap target | `findBestSnapTarget(ctx)` |
 | All connectors anchored to a shape | `getAttachedConnectors(shapeId)` |
 | Detach connector from a deleting shape | `detachConnectorFromShape(connectorId, shapeId)` (inside `transact()`) |
@@ -792,9 +855,11 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 | Y.Map anchor record from live snap | `anchorRecordFromSnap(snap)` |
 | Where an endpoint's dot should render | `getEndpointEdgePosition(handle, 'start' \| 'end')` |
 | Ray-cast interior → shape edge | `rayShapeExitPoint(origin, direction, frame, shapeType, outPoint)` |
-| Build render paths | `buildConnectorPaths({ points, strokeWidth, startCap, endCap })` |
+| Build render paths (with explicit count) | `buildConnectorPaths({ points, count, strokeWidth, startCap, endCap })` |
 | Paint connector | `paintConnector(ctx, paths, color, width)` |
 | Render full snap feedback | `drawSnapFeedback(ctx, snap)` |
 | Resolve free→anchored elbow direction | `resolveElbowFreeStartDir(fromPos, anchorEnd, strokeWidth)` |
 | Resolve anchored→free elbow direction | `computeElbowFreeEndDir(fromPos, toPos)` |
 | Check interior (storage vs live) | `anchor.interior` / `snap.interior` |
+| Routing-only batched Y.Map read | `getRouteInputs(y)` |
+| BBox into pre-allocated tuple | `computeConnectorBBoxFromPointsInto(points, count, w, sCap, eCap, outBbox)` |

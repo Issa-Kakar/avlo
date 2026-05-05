@@ -83,8 +83,13 @@ export type SelectionPreview = { kind: 'selection' };
  */
 export type ConnectorPreview = {
   kind: 'connector';
-  /** Full routed path (the one thing the renderer can't derive). */
+  /**
+   * Pooled routed-path buffer — `length` may exceed `pointsCount` (high-water mark
+   * across pointer moves). Renderer iterates `points[0..pointsCount)`.
+   */
   points: Point[];
+  /** Valid prefix length of `points`. 0 before the first move; never negative here. */
+  pointsCount: number;
   /** Start-side attachment — drives start dashed guide. No anchor dot is drawn on this side. */
   fromSnap: SnapTarget | null;
   /** Current hover/target snap — drives target highlight, midpoint dots, and end dashed guide. */
