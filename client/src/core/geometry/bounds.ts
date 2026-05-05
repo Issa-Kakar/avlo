@@ -47,6 +47,14 @@ export const pointsToBBox = (p1: Point, p2: Point): BBoxTuple => [
   Math.max(p1[1], p2[1]),
 ];
 
+/** In-place mirror of `pointsToBBox` — write the min/max envelope of two points into `out`. */
+export function pointsToBBoxMut(p1: Point, p2: Point, out: BBoxTuple): void {
+  out[0] = Math.min(p1[0], p2[0]);
+  out[1] = Math.min(p1[1], p2[1]);
+  out[2] = Math.max(p1[0], p2[0]);
+  out[3] = Math.max(p1[1], p2[1]);
+}
+
 export const translateBBox = (b: BBoxTuple, dx: number, dy: number): BBoxTuple => [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
 
 export const translatePoint = (p: Point, dx: number, dy: number): Point => [p[0] + dx, p[1] + dy];

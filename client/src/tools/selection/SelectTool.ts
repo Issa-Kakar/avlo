@@ -10,7 +10,7 @@ import {
 } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { copyBbox } from '@/core/geometry/bounds';
+import { copyBbox, pointsToBBoxMut } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
 import { type EndpointHit, hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
@@ -80,16 +80,15 @@ export class SelectTool implements PointerTool {
   private readonly dragPointsBuf: Point[] = [];
   private readonly dragBbox: BBoxTuple = [0, 0, 0, 0];
 
-  // Marquee — local state + scratch bbox, never reallocated.
+  // Marquee — local state + scratch bbox + scratch current-point, never reallocated.
   private marqueeActive = false;
   private readonly marqueeBBox: BBoxTuple = [0, 0, 0, 0];
+  private readonly marqueeCurrent: Point = [0, 0];
 
   private updateMarqueeBBox(curX: number, curY: number): void {
-    const [ax, ay] = this.downWorld!;
-    this.marqueeBBox[0] = Math.min(ax, curX);
-    this.marqueeBBox[1] = Math.min(ay, curY);
-    this.marqueeBBox[2] = Math.max(ax, curX);
-    this.marqueeBBox[3] = Math.max(ay, curY);
+    this.marqueeCurrent[0] = curX;
+    this.marqueeCurrent[1] = curY;
+    pointsToBBoxMut(this.downWorld!, this.marqueeCurrent, this.marqueeBBox);
   }
 
   getMarqueeBBox(): Readonly<BBoxTuple> | null {
