@@ -418,7 +418,7 @@ interface SelectionState {
   selectedIds, mode, selectionKind, selectedIdSet, kindCounts,
   menuOpen, selectedStyles, inlineStyles, boundsVersion,
   transform: TransformState,    // {kind:'none'} | TranslateTransform | ScaleTransform | EndpointDragTransform
-  marquee, textEditingId, textEditingIsNew, codeEditingId,
+  marquee, textEditingId, codeEditingId,
 }
 ```
 

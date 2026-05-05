@@ -48,6 +48,7 @@ import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
 
 export class CodeTool implements PointerTool {
@@ -504,18 +505,9 @@ export class CodeTool implements PointerTool {
   }
 
   private removeEditorHandlers(): void {
-    if (this.clickTimeoutId !== null) {
-      clearTimeout(this.clickTimeoutId);
-      this.clickTimeoutId = null;
-    }
-    if (this.boundHandleKeyDown) {
-      document.removeEventListener('keydown', this.boundHandleKeyDown, true);
-      this.boundHandleKeyDown = null;
-    }
-    if (this.boundHandleClickOutside) {
-      document.removeEventListener('pointerdown', this.boundHandleClickOutside, true);
-      this.boundHandleClickOutside = null;
-    }
+    this.clickTimeoutId = dispose(this.clickTimeoutId, clearTimeout);
+    this.boundHandleKeyDown = dispose(this.boundHandleKeyDown, (h) => document.removeEventListener('keydown', h, true));
+    this.boundHandleClickOutside = dispose(this.boundHandleClickOutside, (h) => document.removeEventListener('pointerdown', h, true));
   }
 
   // =========================================================================
@@ -627,62 +619,61 @@ export class CodeTool implements PointerTool {
   }
 
   // =========================================================================
-  // Private: Commit and Close
+  // Public: Commit and Close — safe to call when nothing is mounted (no-op DOM teardown,
+  // still syncs store state). Selection store calls this when the editing object is
+  // deleted by a remote peer or local action.
   // =========================================================================
 
   commitAndClose(): void {
-    if (!this.editorView || !this.objectId) return;
+    if (this.editorView && this.objectId) {
+      this.saveTitle(); // saveTitle null-guards on missing handle internally
+      this.titleInput = null; // Prevent blur-triggered re-save during DOM removal
+      this.justClosedCodeId = this.objectId;
+      this.removeEditorHandlers();
 
-    this.saveTitle();
-    this.titleInput = null; // Prevent blur-triggered re-save during DOM removal
-    this.justClosedCodeId = this.objectId;
-    this.removeEditorHandlers();
+      // Unseal main UndoManager
+      const mainUM = getActiveRoomDoc().getUndoManager();
+      if (mainUM && this.syncConf) {
+        mainUM.removeTrackedOrigin(this.syncConf);
+        mainUM.stopCapturing();
+        mainUM.captureTimeout = 500;
+      }
+      this.syncConf = null;
 
-    // Unseal main UndoManager
-    const mainUM = getActiveRoomDoc().getUndoManager();
-    if (mainUM && this.syncConf) {
-      mainUM.removeTrackedOrigin(this.syncConf);
-      mainUM.stopCapturing();
-      mainUM.captureTimeout = 500;
+      // Clean up Y.Map observer + language compartment
+      this.yMapUnobserve = dispose(this.yMapUnobserve, (fn) => fn());
+      this.langCompartment = null;
+      this.lineNumbersCompartment = null;
+
+      // Clear per-session UM before destroy — flushes stack items holding plugin refs
+      this.sessionUM = dispose(this.sessionUM, (m) => m.clear());
+
+      // Destroy EditorView + break internal back-reference cycles
+      const view = this.editorView as Record<string, unknown>;
+      (view as unknown as { destroy(): void }).destroy();
+      view.viewState = null;
+      view.docView = null;
+      view.inputState = null;
+      view.observer = null;
+
+      // Remove container
+      if (this.container?.parentNode) {
+        this.container.parentNode.removeChild(this.container);
+      }
+
+      this.container = null;
+      this.editorView = null;
+      this.objectId = null;
+      this.headerDiv = null;
+      this.titleInput = null;
+      this.outputDiv = null;
+      this.outputTextDiv = null;
+
+      invalidateWorldAll();
+      invalidateOverlay();
     }
-    this.syncConf = null;
-
-    // Clean up Y.Map observer + language compartment
-    this.yMapUnobserve?.();
-    this.yMapUnobserve = null;
-    this.langCompartment = null;
-    this.lineNumbersCompartment = null;
-
-    // Clear per-session UM before destroy — flushes stack items holding plugin refs
-    if (this.sessionUM) {
-      this.sessionUM.clear();
-      this.sessionUM = null;
-    }
-
-    // Destroy EditorView + break internal back-reference cycles
-    const view = this.editorView as Record<string, unknown>;
-    (view as unknown as { destroy(): void }).destroy();
-    view.viewState = null;
-    view.docView = null;
-    view.inputState = null;
-    view.observer = null;
-
-    // Remove container
-    if (this.container?.parentNode) {
-      this.container.parentNode.removeChild(this.container);
-    }
-
-    this.container = null;
-    this.editorView = null;
-    this.objectId = null;
-    this.headerDiv = null;
-    this.titleInput = null;
-    this.outputDiv = null;
-    this.outputTextDiv = null;
 
     useSelectionStore.getState().endCodeEditing();
-    invalidateWorldAll();
-    invalidateOverlay();
   }
 
   // =========================================================================

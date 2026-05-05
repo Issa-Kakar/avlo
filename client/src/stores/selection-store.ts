@@ -9,6 +9,7 @@ import { handlePosition, scaleOrigin } from '@/core/types/handles';
 import type { ObjectKind } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getHandle, getObjectsById } from '@/runtime/room-runtime';
+import { codeTool, textTool } from '@/runtime/tool-registry';
 import {
   computeSelectionComposition,
   computeStyles,
@@ -67,8 +68,6 @@ export interface SelectionState {
   // Text editing - primitives only
   /** Object ID being edited, null if not editing */
   textEditingId: string | null;
-  /** True if this text object was just created (for empty deletion on blur) */
-  textEditingIsNew: boolean;
 
   // Code editing
   /** Code object ID being edited, null if not editing */
@@ -107,8 +106,8 @@ export interface SelectionActions {
   cancelMarquee: () => void;
 
   // Text editing actions
-  /** Begin text editing (objectId, isNew flag for empty deletion) */
-  beginTextEditing: (objectId: string, isNew: boolean) => void;
+  /** Begin text editing */
+  beginTextEditing: (objectId: string) => void;
   /** End text editing */
   endTextEditing: () => void;
 
@@ -146,7 +145,6 @@ export const useSelectionStore = create<SelectionStore>()(
     transform: { kind: 'none' },
     marquee: { active: false, anchor: null, current: null },
     textEditingId: null,
-    textEditingIsNew: false,
     codeEditingId: null,
 
     // === Selection Actions ===
@@ -288,10 +286,9 @@ export const useSelectionStore = create<SelectionStore>()(
 
     // === Text Editing Actions ===
 
-    beginTextEditing: (objectId, isNew) => {
+    beginTextEditing: (objectId) => {
       set({
         textEditingId: objectId,
-        textEditingIsNew: isNew,
         menuOpen: true,
       });
       get().refreshStyles();
@@ -301,7 +298,6 @@ export const useSelectionStore = create<SelectionStore>()(
       const { selectedIds } = get();
       set({
         textEditingId: null,
-        textEditingIsNew: false,
         menuOpen: selectedIds.length > 0,
       });
       get().refreshStyles();
@@ -367,13 +363,14 @@ export const useSelectionStore = create<SelectionStore>()(
           break;
         }
       }
+      // Tool teardown owns DOM unmount + state cleanup + world/overlay invalidation —
+      // calling endTextEditing/endCodeEditing alone leaves the editor's DOM mounted
+      // showing a stale view of the now-gone object until the user closes it manually.
       if (textEditingId !== null && deletedIds.has(textEditingId)) {
-        get().endTextEditing();
-        overlayDirty = true;
+        textTool.commitAndClose();
       }
       if (codeEditingId !== null && deletedIds.has(codeEditingId)) {
-        get().endCodeEditing();
-        overlayDirty = true;
+        codeTool.commitAndClose();
       }
       if (overlayDirty) invalidateOverlay();
     },
@@ -466,7 +463,6 @@ export function computeHandles(bbox: BBoxTuple): { id: HandleId; x: number; y: n
 
 export const selectTextEditingId = (state: SelectionStore) => state.textEditingId;
 export const selectIsTextEditing = (state: SelectionStore) => state.textEditingId !== null;
-export const selectTextEditingIsNew = (state: SelectionStore) => state.textEditingIsNew;
 
 // === Inline Style Selectors ===
 

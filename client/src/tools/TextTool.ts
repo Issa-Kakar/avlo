@@ -53,6 +53,7 @@ import { getEditorHost } from '@/runtime/SurfaceManager';
 import { getCanvasElement, useCameraStore, worldToClient } from '@/stores/camera-store';
 import { getUserId, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { dispose } from '@/utils/dispose';
 import type { PointerTool, PreviewData } from './types';
 
 /** Sync TipTap editor inline styles (bold/italic/highlight) into the selection store. */
@@ -112,7 +113,7 @@ export class TextTool implements PointerTool {
     }
 
     if (this.hitTextId) {
-      useSelectionStore.getState().beginTextEditing(this.hitTextId, false);
+      useSelectionStore.getState().beginTextEditing(this.hitTextId);
       this.mountEditor(this.hitTextId, false);
     } else {
       let [x, y] = this.downWorld;
@@ -121,7 +122,7 @@ export class TextTool implements PointerTool {
         y -= NOTE_WIDTH / 2;
       }
       const objectId = this.createTextObject(x, y);
-      useSelectionStore.getState().beginTextEditing(objectId, true);
+      useSelectionStore.getState().beginTextEditing(objectId);
       this.mountEditor(objectId, true);
     }
 
@@ -186,7 +187,7 @@ export class TextTool implements PointerTool {
     }
 
     this.downWorld = entryPoint ?? null;
-    useSelectionStore.getState().beginTextEditing(objectId, isNewLabel);
+    useSelectionStore.getState().beginTextEditing(objectId);
     invalidateWorldAll();
     this.mountEditor(objectId, isNewLabel);
   }
@@ -493,14 +494,8 @@ export class TextTool implements PointerTool {
   }
 
   private removeEditorHandlers(): void {
-    if (this.boundHandleKeyDown) {
-      document.removeEventListener('keydown', this.boundHandleKeyDown, true);
-      this.boundHandleKeyDown = null;
-    }
-    if (this.boundHandleClickOutside) {
-      document.removeEventListener('pointerdown', this.boundHandleClickOutside, true);
-      this.boundHandleClickOutside = null;
-    }
+    this.boundHandleKeyDown = dispose(this.boundHandleKeyDown, (h) => document.removeEventListener('keydown', h, true));
+    this.boundHandleClickOutside = dispose(this.boundHandleClickOutside, (h) => document.removeEventListener('pointerdown', h, true));
   }
 
   // =========================================================================
@@ -592,55 +587,60 @@ export class TextTool implements PointerTool {
   }
 
   // =========================================================================
-  // Private: Commit and Close
+  // Public: Commit and Close — safe to call when nothing is mounted (no-op DOM teardown,
+  // still syncs store state). Selection store calls this when the editing object is
+  // deleted by a remote peer or local action.
   // =========================================================================
 
-  private commitAndClose(): void {
-    if (!this.editor || !this.objectId) return;
-    const handle = getHandle(this.objectId);
+  commitAndClose(): void {
+    if (this.editor && this.objectId) {
+      const handle = getHandle(this.objectId);
 
-    // Delete empty content on close (sticky notes kept — empty note is valid)
-    if (this.editor.isEmpty) {
-      if (handle?.kind === 'shape') {
-        // Shape label: remove label fields, keep shape
-        transact(() => {
-          handle.y.delete('content');
-          handle.y.delete('fontSize');
-          handle.y.delete('fontFamily');
-          handle.y.delete('labelColor');
-          handle.y.delete('align');
-          handle.y.delete('alignV');
-        });
-      } else if (!handle || handle.kind !== 'note') {
-        // Regular text object: delete entirely
-        transact(() => {
-          getObjects().delete(this.objectId!);
-        });
+      // Delete empty content on close — only when object still exists (otherwise the
+      // remote/local delete already removed it). Sticky notes keep empty content.
+      if (this.editor.isEmpty && handle) {
+        if (handle.kind === 'shape') {
+          // Shape label: remove label fields, keep shape
+          transact(() => {
+            handle.y.delete('content');
+            handle.y.delete('fontSize');
+            handle.y.delete('fontFamily');
+            handle.y.delete('labelColor');
+            handle.y.delete('align');
+            handle.y.delete('alignV');
+          });
+        } else if (handle.kind !== 'note') {
+          // Regular text object: delete entirely
+          transact(() => {
+            getObjects().delete(this.objectId!);
+          });
+        }
       }
+
+      // Track shape label close for remount prevention
+      if (handle?.kind === 'shape' || handle?.kind === 'note') this.justClosedLabelId = this.objectId;
+
+      this.removeEditorHandlers();
+
+      // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
+      this.editor.destroy();
+      // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
+      (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
+
+      if (this.container?.parentNode) {
+        this.container.parentNode.removeChild(this.container);
+      }
+
+      this.container = null;
+      this.editor = null;
+      this.objectId = null;
+
+      // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
+      invalidateWorldAll();
+      invalidateOverlay();
     }
-
-    // Track shape label close for remount prevention
-    if (handle?.kind === 'shape' || handle?.kind === 'note') this.justClosedLabelId = this.objectId;
-
-    this.removeEditorHandlers();
-
-    // Destroy triggers extension onDestroy → seals undo session, clears per-session UM
-    this.editor.destroy();
-    // biome-ignore lint/suspicious/noExplicitAny: release Tiptap internal EditorState + plugin states
-    (this.editor as any).editorState = null; // Tiptap doesn't null this — release EditorState + plugin states
-
-    if (this.container?.parentNode) {
-      this.container.parentNode.removeChild(this.container);
-    }
-
-    this.container = null;
-    this.editor = null;
-    this.objectId = null;
 
     useSelectionStore.getState().endTextEditing();
-    // World invalidation required — unmounting the editor doesn't trigger a Yjs mutation
-    invalidateWorldAll();
-    invalidateOverlay();
   }
 
   // =========================================================================

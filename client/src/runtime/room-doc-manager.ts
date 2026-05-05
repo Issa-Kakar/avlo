@@ -22,22 +22,11 @@ import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
+import { dispose } from '@/utils/dispose';
 import { attach, detach } from './presence/presence';
 
 // Type alias for Y structures
 type YObjects = Y.Map<Y.Map<unknown>>;
-
-/** Run a teardown function if value is non-null; swallow errors during teardown. */
-function dispose<T>(value: T | null, fn: (v: T) => void): null {
-  if (value !== null) {
-    try {
-      fn(value);
-    } catch {
-      /* swallow during teardown */
-    }
-  }
-  return null;
-}
 
 // Manager interface - public API
 export interface IRoomDocManager {
