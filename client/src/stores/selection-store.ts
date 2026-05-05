@@ -91,13 +91,14 @@ export interface SelectionActions {
   cancelTransform: () => void;
 
   // Endpoint drag lifecycle
-  beginEndpointDrag: (connectorId: string, endpoint: 'start' | 'end', originBbox: BBoxTuple, pointsBuf: Point[]) => void;
-  updateEndpointDrag: (
-    currentPosition: [number, number],
-    currentSnap: SnapTarget | null,
-    validCount: number,
-    routedBbox: BBoxTuple | null,
+  beginEndpointDrag: (
+    connectorId: string,
+    endpoint: 'start' | 'end',
+    originBbox: BBoxTuple,
+    pointsBuf: Point[],
+    dragBbox: BBoxTuple,
   ) => void;
+  updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null, validCount: number) => void;
 
   // Marquee lifecycle
   beginMarquee: (anchor: [number, number]) => void;
@@ -226,7 +227,7 @@ export const useSelectionStore = create<SelectionStore>()(
 
     // === Endpoint Drag Actions ===
 
-    beginEndpointDrag: (connectorId, endpoint, originBbox, pointsBuf) =>
+    beginEndpointDrag: (connectorId, endpoint, originBbox, pointsBuf, dragBbox) =>
       set({
         transform: {
           kind: 'endpointDrag',
@@ -236,22 +237,24 @@ export const useSelectionStore = create<SelectionStore>()(
           currentSnap: null,
           pointsBuf,
           validCount: 0,
-          routedBbox: null,
-          prevBbox: originBbox,
+          // Shared-by-ref with SelectTool's dragBbox (mutated in place each event).
+          routedBbox: dragBbox,
+          // Separate snapshot tuple — must not alias dragBbox or the dirty-rect chain breaks.
+          prevBbox: [originBbox[0], originBbox[1], originBbox[2], originBbox[3]],
         },
       }),
 
-    updateEndpointDrag: (currentPosition, currentSnap, validCount, routedBbox) =>
+    updateEndpointDrag: (currentPosition, currentSnap, validCount) =>
       set((state) => {
         if (state.transform.kind !== 'endpointDrag') return state;
+        // routedBbox stays as the same shared dragBbox reference; prevBbox is
+        // snapshotted by the caller (SelectTool) BEFORE the reroute mutates dragBbox.
         return {
           transform: {
             ...state.transform,
             currentPosition,
             currentSnap,
             validCount,
-            routedBbox,
-            prevBbox: routedBbox ?? state.transform.prevBbox,
           },
         };
       }),

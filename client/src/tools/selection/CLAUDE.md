@@ -569,6 +569,12 @@ type ConnectorTopology = {
   injectIds:  readonly string[];                     // selectedIds ∪ attached-non-selected connectors
 };
 
+interface TranslateEntry extends DirtyEntry {
+  readonly mode: 'translate';
+  readonly frozenStart: Point | null;                // free-side baseline (cloned at begin); null = bound
+  readonly frozenEnd:   Point | null;
+}
+
 interface RerouteEntry extends DirtyEntry {
   readonly mode: 'reroute';
   readonly start: Side | null;                       // null = canonical
@@ -584,7 +590,7 @@ type FreeSide = { kind: 'free'; originalPos: Readonly<Point>; scratch: Point }; 
 ```
 
 `RerouteEntry.start` / `.end` is `Side | null` — `null` encodes canonical (no override).
-The renderer reads `pointsBuf[0..validCount)` exclusively; `pointsBuf.length` may exceed `validCount` (high-water mark across frames).
+`TranslateEntry.frozenStart` / `.frozenEnd` is the cloned free-side endpoint at gesture-begin (null on bound side); `commitTranslate` reads frozen + dx/dy and never re-reads Y.Map. The renderer reads `pointsBuf[0..validCount)` exclusively; `pointsBuf.length` may exceed `validCount` (high-water mark across frames).
 
 ### Bind-side frame derivation (`fillFrameFromBind`)
 
@@ -609,7 +615,7 @@ Single rule for both `commitTranslate` and `commitReroute`:
 
 The bound shape's frame write in the same transaction triggers the observer reroute on tx end, which populates the local route cache via `ConnectorRouter.rerouteCanonical`. Off-gesture consumers read the fresh cache.
 
-- `commitTranslate(e, dx, dy)` reads the OLD pre-gesture endpoint union from Y.Map. Free side → `y.set(side, [x + dx, y + dy])`. Bound side → no-op.
+- `commitTranslate(e, dx, dy)` reads `e.frozenStart` / `e.frozenEnd` (cloned at begin). Free side → `y.set(side, [frozen + dx, frozen + dy])`. Bound side → frozen is `null`, no write. No Y.Map read at commit time.
 - `commitReroute(e)` reads each side's `RerouteEntry`. Free side → write its `scratch` Point (already updated each frame by `resolveFreeScale` / `resolveFreeTranslate`). Bound side → no-op.
 
 Coverage by topology:
@@ -778,17 +784,22 @@ Aggregates bold/italic/highlight across text/shape(labeled)/note objects.
 
 Only in connector mode (single connector selected). Dragging start or end endpoint. Managed by SelectTool directly (not TransformController).
 
-At drag-begin: SelectTool builds `dragRouteCtx = buildRouteContext(connectorId, handle.y)` once and clears the pooled `dragPointsBuf`. Per pointer event:
+At drag-begin: SelectTool builds `dragRouteCtx = buildRouteContext(connectorId, handle.y)` once, clears the pooled `dragPointsBuf`, and seeds `dragBbox` with the current connector bbox. Both `dragPointsBuf` AND `dragBbox` are passed to `beginEndpointDrag` by reference — the store's `pointsBuf` and `routedBbox` fields share those references for the gesture's lifetime. `prevBbox` is a separate snapshot tuple seeded from `originBbox` at begin.
+
+Per pointer event:
 
 ```
-1. Find snap target (findBestSnapTarget, connectorType from dragRouteCtx) — Ctrl suppresses
-2. Build endpoint override (SnapTarget or [worldX, worldY])
-3. count = rerouteEndpointDragInto(dragRouteCtx, slot, override, dragBbox, dragPointsBuf)
-4. Push (currentPosition, snap, count, dragBbox-clone) into the store
-5. Invalidate prev + current dirty rects (dragBbox)
+1. Snapshot current dragBbox into prevBbox (BEFORE reroute mutates dragBbox)
+2. Find snap target (findBestSnapTarget, connectorType from dragRouteCtx) — Ctrl suppresses
+3. Build endpoint override (SnapTarget or [worldX, worldY])
+4. count = rerouteEndpointDragInto(dragRouteCtx, slot, override, dragBbox, dragPointsBuf)
+5. Invalidate prevBbox (step 1 snapshot) + dragBbox (just-mutated)
+6. updateEndpointDrag(currentPosition, snap, count) — no bbox arg, routedBbox is shared
 ```
 
-The `pointsBuf` is shared by reference between SelectTool and the store entry; only `validCount` and `routedBbox` are pushed per event. At drag-end, `dragRouteCtx` is cleared but the buffer stays for reuse next gesture.
+The snapshot in step 1 is **load-bearing**: because `routedBbox === dragBbox` (shared reference), reading `transform.routedBbox` at step 5 would read the just-mutated current bbox, not the previous frame's. The dirty-rect chain depends on the explicit copy.
+
+**Stores:** `pointsBuf` and `routedBbox` are shared by reference (mutated in place by SelectTool). `prevBbox` is a separate tuple snapshotted by SelectTool before each reroute. `validCount` and `currentPosition`/`currentSnap` are pushed per event. At drag-end, `dragRouteCtx` is cleared but `dragPointsBuf` and `dragBbox` stay for reuse next gesture.
 
 **Commit:** Reads the dragged-side endpoint from `pointsBuf[0]` or `pointsBuf[validCount - 1]` (cloned into a fresh tuple) and writes either an `anchorRecordFromSnap` (when snapped) or that free `Point` to Y.Map.
 

@@ -26,7 +26,7 @@
  */
 
 import type * as Y from 'yjs';
-import { getObjects } from '@/runtime/room-runtime';
+import { getActiveRoomDoc, getObjects } from '@/runtime/room-runtime';
 import { getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors';
 import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import type { BBoxTuple, Point } from '../types/geometry';
@@ -192,21 +192,16 @@ export class ConnectorRouter {
 }
 
 // ============================================================
-// Module-level access — set on construct, cleared on destroy
+// Module-level access
+// Callers must run inside an active room scope (post-connectRoom, pre-disconnectRoom).
 // ============================================================
 
-let active: ConnectorRouter | null = null;
-
-export function setActiveConnectorRouter(router: ConnectorRouter | null): void {
-  active = router;
-}
-
 export function getConnectorRoute(id: string): Point[] | null {
-  return active?.getRoute(id) ?? null;
+  return getActiveRoomDoc().connectorRouter.getRoute(id);
 }
 
 export function getAttachedConnectors(shapeId: string): ReadonlySet<string> | undefined {
-  return active?.getAttached(shapeId);
+  return getActiveRoomDoc().connectorRouter.getAttached(shapeId);
 }
 
 // ============================================================
@@ -217,14 +212,12 @@ export function getAttachedConnectors(shapeId: string): ReadonlySet<string> | un
  * Detach a connector from a shape that's being deleted, replacing the bound endpoint
  * with the cached route's first/last point so the connector remains visible at the
  * last-known position. Caller must run inside a transact() block.
- *
- * If no cached route exists (connector never routed), no-op — caller's choice whether
- * to delete the connector or leave it dangling.
+ * No-op when no cached route exists — corrupted state.
  */
 export function detachConnectorFromShape(connectorId: string, shapeId: string): void {
   const y = getObjects().get(connectorId);
   if (!y) return;
-  const route = active?.getRoute(connectorId);
+  const route = getActiveRoomDoc().connectorRouter.getRoute(connectorId);
   if (!route || route.length < 2) return;
   const start = y.get('start') as ConnectorEndpoint | undefined;
   const end = y.get('end') as ConnectorEndpoint | undefined;

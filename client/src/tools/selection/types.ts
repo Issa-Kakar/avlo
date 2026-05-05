@@ -148,10 +148,14 @@ export interface EndpointDragTransform {
   pointsBuf: Point[];
   /** Valid prefix length of pointsBuf. 0 before first move; -1 on routing failure. */
   validCount: number;
-  /** Bbox of the rerouted path (for dirty rect) */
-  routedBbox: BBoxTuple | null;
+  /**
+   * Bbox of the rerouted path. Shared-by-reference with SelectTool's `dragBbox`;
+   * mutated in place per pointer event. Caller (SelectTool) snapshots this into
+   * `prevBbox` BEFORE invoking the reroute so the dirty-rect chain stays correct.
+   */
+  routedBbox: BBoxTuple;
 
-  /** Previous frame's bbox for dirty rect invalidation (seeded from original bbox) */
+  /** Previous frame's bbox for dirty rect invalidation (separate snapshot tuple). */
   prevBbox: BBoxTuple;
 }
 

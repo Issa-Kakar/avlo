@@ -690,16 +690,22 @@ computeBBox(id, yObj, outBbox):  boolean                     // *Into; style-onl
 `getConnectorRoute` is the single source of truth for routed polylines —
 read by `bbox.ts` (connector bbox), `kind-capability.ts` (CONNECTOR_CAP hit
 predicates), `geometry-cache.ts` (Path2D builder), `selection-overlay.ts`
-(dashed guides), `anchor-atoms.ts` (dangling-anchor fallback), and
-`reroute-connector.ts` (cached-route fallback inside resolvers). Off-gesture
-readers see `.length === validCount` because the router trims after every
-canonical write. Bbox is derived freshly per access via
+(dashed guides). `anchor-atoms.ts` and `reroute-connector.ts` also read it,
+but only as a defensive last-known-position fallback for corrupted state
+(bound anchor whose target frame is missing). Off-gesture readers see
+`.length === validCount` because the router trims after every canonical
+write. Bbox is derived freshly per access via
 `computeConnectorBBoxFromPoints` on the cached route — no separate bbox cache.
+
+The module-level helpers (`getConnectorRoute`, `getAttachedConnectors`)
+resolve directly through `getActiveRoomDoc().connectorRouter`. Same
+active-room contract as `getHandle` / `getObjects`: callers must run inside
+an active room scope (post-`connectRoom`, pre-`disconnectRoom`).
 
 ### Lifecycle (RoomDocManager)
 
 ```
-construct → setActiveConnectorRouter(router)
+construct → connectorRouter constructed (no global wiring needed)
 hydrate   → Pass 1 registerConnector for every connector;
             Pass 2 rerouteCanonical fills routes + bbox (after non-connectors are seeded)
 observer  → top-level add → registerConnector + rerouteIds.add
@@ -708,7 +714,7 @@ observer  → top-level add → registerConnector + rerouteIds.add
             shape shapeType swap → propagate rerouteIds via getAttached
             bindable bbox change (Phase B) → propagate rerouteIds via getAttached
 Phase C   → for each rerouteId: rerouteCanonical → upsertHandle (evictGeometry first)
-destroy   → router.clear() + setActiveConnectorRouter(null)
+destroy   → router.clear()
 ```
 
 ### `detachConnectorFromShape(connectorId, shapeId)`

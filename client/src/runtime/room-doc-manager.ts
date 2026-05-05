@@ -9,7 +9,7 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
-import { ConnectorRouter, setActiveConnectorRouter } from '@/core/connectors/connector-router';
+import { ConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor } from '@/core/geometry/bbox';
 import { hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
@@ -92,10 +92,6 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
-
-    // Wire router globally so module-level getters (getConnectorRoute, getAttachedConnectors)
-    // resolve against this room's router. Cleared in destroy().
-    setActiveConnectorRouter(this.connectorRouter);
 
     // Async init: IDB → hydrate → observer → UndoManager → WS
     void this.init();
@@ -201,9 +197,8 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clean up spatial index
     this.spatialIndex.clear();
 
-    // Clear connector router state + unwire global before object-cache teardown.
+    // Clear connector router state before object-cache teardown.
     this.connectorRouter.clear();
-    setActiveConnectorRouter(null);
 
     // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
@@ -353,23 +348,36 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         // Style-only branch: route unchanged, but bbox may shift (caps/width).
         const newBBox: BBoxTuple = [0, 0, 0, 0];
         if (!this.connectorRouter.computeBBox(id, yObj, newBBox)) continue;
-        const r = this.upsertHandle(id, kind, yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
-        if (r.needsRefresh) needsRefresh = true;
-        if (r.needsReposition) needsReposition = true;
+        const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
+        if (bboxChanged) {
+          evictGeometry(id); // caps/width change → Path2D stale
+          if (prevBBox) dirtyBBoxes.push(prevBBox);
+        }
+        dirtyBBoxes.push(newBBox);
+        if (selectedSet.has(id) || id === editingId) {
+          needsRefresh = true;
+          if (bboxChanged) needsReposition = true;
+        }
         continue;
       }
 
       // Non-connector branch
-      const prevBBox = this.objectsById.get(id)?.bbox ?? null;
       const newBBox = computeBBoxFor(id, kind, yObj);
-      const r = this.upsertHandle(id, kind, yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
-      if (r.needsRefresh) needsRefresh = true;
-      if (r.needsReposition) needsReposition = true;
+      const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
+      if (bboxChanged) {
+        evictGeometry(id);
+        if (prevBBox) dirtyBBoxes.push(prevBBox);
+      }
+      dirtyBBoxes.push(newBBox);
+      if (selectedSet.has(id) || id === editingId) {
+        needsRefresh = true;
+        if (bboxChanged) needsReposition = true;
+      }
 
       // Bindable bbox change → propagate to attached connectors. Single rule covers shape
       // frame, text/code/note/bookmark derived-frame changes (text reflow, code lang swap,
       // font swap, scale, bookmark height change).
-      if (!isUnbindableKind(kind) && prevBBox && !bboxEquals(prevBBox, newBBox)) {
+      if (!isUnbindableKind(kind) && prevBBox && bboxChanged) {
         const attached = this.connectorRouter.getAttached(id);
         if (attached) {
           for (const cid of attached) {
@@ -390,11 +398,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       const newBBox = this.connectorRouter.rerouteCanonical(id, yObj);
       if (!newBBox) continue; // routing failed → leave handle as-is (next observer pass corrects)
       // Connector reroute always invalidates Path2D regardless of bbox — route changed.
-      // Subsequent bbox-mismatch eviction inside upsertHandle is harmless (delete on absent key is no-op).
       evictGeometry(id);
-      const r = this.upsertHandle(id, 'connector', yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
-      if (r.needsRefresh) needsRefresh = true;
-      if (r.needsReposition) needsReposition = true;
+      const { prevBBox, bboxChanged } = this.upsertHandle(id, 'connector', yObj, newBBox);
+      if (prevBBox && bboxChanged) dirtyBBoxes.push(prevBBox);
+      dirtyBBoxes.push(newBBox);
+      if (selectedSet.has(id) || id === editingId) {
+        needsRefresh = true;
+        if (bboxChanged) needsReposition = true;
+      }
     }
 
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
@@ -408,51 +419,22 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   /**
-   * Insert/update a handle: spatial index insert/update, bbox-changed eviction,
-   * dirty-rect bookkeeping, selection-refresh tracking. Returns whether selection
-   * state needs refresh / reposition.
+   * Insert/update a handle: spatial index + objectsById bookkeeping. Caller decides
+   * whether to evict geometry / push dirty rects / track selection — keyed off the
+   * returned `bboxChanged` flag.
    */
   private upsertHandle(
     id: string,
     kind: ObjectKind,
     yObj: Y.Map<unknown>,
     newBBox: BBoxTuple,
-    dirtyBBoxes: BBoxTuple[],
-    selectedSet: ReadonlySet<string>,
-    editingId: string | null,
-  ): { needsRefresh: boolean; needsReposition: boolean } {
+  ): { prevBBox: BBoxTuple | null; bboxChanged: boolean } {
     const prev = this.objectsById.get(id);
     const oldBBox = prev?.bbox ?? null;
-
-    const handle: ObjectHandle = { id, kind, y: yObj, bbox: newBBox };
-    this.objectsById.set(id, handle);
-
-    if (oldBBox) {
-      this.spatialIndex.update(id, oldBBox, newBBox, kind);
-    } else {
-      this.spatialIndex.insert(id, newBBox, kind);
-    }
-
-    if (!oldBBox) {
-      dirtyBBoxes.push(newBBox);
-    } else {
-      const bboxChanged = !bboxEquals(oldBBox, newBBox);
-      if (bboxChanged) {
-        evictGeometry(id);
-        dirtyBBoxes.push(oldBBox);
-        dirtyBBoxes.push(newBBox);
-      } else {
-        dirtyBBoxes.push(newBBox);
-      }
-    }
-
-    let needsRefresh = false;
-    let needsReposition = false;
-    if (selectedSet.has(id) || id === editingId) {
-      needsRefresh = true;
-      if (!oldBBox || !bboxEquals(oldBBox, newBBox)) needsReposition = true;
-    }
-    return { needsRefresh, needsReposition };
+    this.objectsById.set(id, { id, kind, y: yObj, bbox: newBBox });
+    if (oldBBox) this.spatialIndex.update(id, oldBBox, newBBox, kind);
+    else this.spatialIndex.insert(id, newBBox, kind);
+    return { prevBBox: oldBBox, bboxChanged: !oldBBox || !bboxEquals(oldBBox, newBBox) };
   }
 
   private flushDirtyBBoxes(bboxes: BBoxTuple[]): void {

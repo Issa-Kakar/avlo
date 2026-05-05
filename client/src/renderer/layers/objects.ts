@@ -73,7 +73,8 @@ const _previewScratch: BBoxTuple = [0, 0, 0, 0];
  * Render-time bbox for transform-injected IDs. Reads whatever cached representation
  * the active transform already maintains per frame — no recomputation:
  *   - topology connectors → `topology.byId.get(id).currBbox` (set by runTopology*)
- *   - endpointDrag connector → `transform.routedBbox` (set by rerouteConnector)
+ *   - endpointDrag connector → `transform.routedBbox` (shared SelectTool.dragBbox,
+ *     mutated in place each pointer event; gated on `validCount >= 2`)
  *   - scale (non-connector) → `entry.out.bbox` (set by apply functions)
  *   - translate (non-connector) → `handle.bbox + translateDelta`
  * Falls back to `handle.bbox` (stored position) when nothing applies.
@@ -101,7 +102,7 @@ function getRenderBBox(
     const entry = getScaleEntry(handle.kind, handle.id);
     if (entry) return (entry.out as { bbox: BBoxTuple }).bbox;
   } else if (transform.kind === 'endpointDrag') {
-    if (handle.id === transform.connectorId && transform.routedBbox) return transform.routedBbox;
+    if (handle.id === transform.connectorId && transform.validCount >= 2) return transform.routedBbox;
   }
   return handle.bbox;
 }

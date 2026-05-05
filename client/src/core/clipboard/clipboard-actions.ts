@@ -209,8 +209,7 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
           case 'start':
           case 'end': {
             // Connector endpoint union: free Point translates by [dx, dy]; StoredAnchor
-            // remaps target id when in paste set, else passes through (becomes dangling
-            // until target is also pasted — resolver falls back to cached route).
+            // remaps target id when in paste set, else passes through unchanged.
             const ep = value as ConnectorEndpoint;
             if (Array.isArray(ep)) {
               yObj.set(key, translatePoint(ep as Point, dx, dy));

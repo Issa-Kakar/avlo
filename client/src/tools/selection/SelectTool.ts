@@ -10,7 +10,7 @@ import {
 } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { SnapTarget } from '@/core/connectors/types';
-import { pointsToBBox } from '@/core/geometry/bounds';
+import { copyBbox, pointsToBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
 import { type EndpointHit, hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
@@ -228,13 +228,17 @@ export class SelectTool implements PointerTool {
             if (connHandle) {
               this.dragRouteCtx = buildRouteContext(this.endpointHitAtDown!.connectorId, connHandle.y);
               this.dragPointsBuf.length = 0;
+              // Seed dragBbox with the current connector bbox so the first frame's
+              // prevBbox snapshot covers stored geometry.
+              copyBbox(connHandle.bbox, this.dragBbox);
               useSelectionStore
                 .getState()
                 .beginEndpointDrag(
                   this.endpointHitAtDown!.connectorId,
                   this.endpointHitAtDown!.endpoint,
-                  [...connHandle.bbox] as BBoxTuple,
+                  connHandle.bbox,
                   this.dragPointsBuf,
+                  this.dragBbox,
                 );
             }
             setCursorOverride('grabbing');
@@ -352,7 +356,11 @@ export class SelectTool implements PointerTool {
         const ctx = this.dragRouteCtx;
         if (!ctx) break;
 
-        // 1. Find snap target (Ctrl suppresses snapping). connectorType comes from
+        // 1. Snapshot the current routed bbox into prevBbox BEFORE we mutate dragBbox.
+        //    routedBbox === dragBbox (shared ref); copying preserves the dirty-rect chain.
+        copyBbox(this.dragBbox, epTransform.prevBbox);
+
+        // 2. Find snap target (Ctrl suppresses snapping). connectorType comes from
         //    the hoisted RouteContext — no per-event Y.Map read.
         const snap = isCtrlHeld()
           ? null
@@ -362,22 +370,20 @@ export class SelectTool implements PointerTool {
               connectorType: ctx.connectorType,
             });
 
-        // 2. Build endpoint override
+        // 3. Build endpoint override.
         const overrideValue: EndpointDragOverride = snap ?? [worldX, worldY];
 
-        // 3. Reroute into the hoisted buffer.
+        // 4. Reroute mutates dragBbox + dragPointsBuf in place.
         const slot: Slot = endpoint === 'start' ? SLOT_START : SLOT_END;
         const count = rerouteEndpointDragInto(ctx, slot, overrideValue, this.dragBbox, this.dragPointsBuf);
 
-        // 4. Invalidate prev + current dirty rects
+        // 5. Dirty-rect: invalidate the prev (snapshotted in step 1) + new (just-mutated dragBbox).
         invalidateWorldBBox(epTransform.prevBbox);
         if (count > 0) invalidateWorldBBox(this.dragBbox);
 
-        // 5. Update store with valid count + bbox (pointsBuf is already shared by reference).
+        // 6. Push UI state to store (no bbox arg — routedBbox is shared by reference).
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
-        useSelectionStore
-          .getState()
-          .updateEndpointDrag(currentPosition, snap ?? null, count, count > 0 ? ([...this.dragBbox] as BBoxTuple) : null);
+        useSelectionStore.getState().updateEndpointDrag(currentPosition, snap ?? null, count);
         break;
       }
     }
@@ -499,9 +505,9 @@ export class SelectTool implements PointerTool {
 
         const { connectorId, endpoint, pointsBuf, validCount, currentSnap, prevBbox, routedBbox } = epStore.transform;
 
-        // Invalidate the connector region
+        // Invalidate the connector region (routedBbox is the shared dragBbox — always present).
         invalidateWorldBBox(prevBbox);
-        if (routedBbox) invalidateWorldBBox(routedBbox);
+        if (validCount >= 2) invalidateWorldBBox(routedBbox);
 
         epStore.endTransform();
 

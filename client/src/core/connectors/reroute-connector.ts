@@ -161,12 +161,8 @@ export type AnyPipeline = Pipeline<ElbowEndpoint> | Pipeline<StraightEndpoint>;
 // GENERIC RESOLVERS — single implementation, parametric in E
 // ============================================================================
 
-/**
- * Cached-route fallback for dangling anchors: the stored anchor points to a shape
- * whose frame is no longer available locally (deleted, not yet hydrated). Returns
- * the route's first or last point as a free Point so the connector renders at its
- * last-known position. `[0, 0]` only when the cache is also empty (never-routed).
- */
+/** Defensive fallback: bound anchor with missing target frame = corrupted doc.
+ *  Render at last-known position. `[0, 0]` only when there isn't even a cached route. */
 function fallbackPoint(cachedRoute: Point[] | null, side: 'start' | 'end'): Point {
   if (cachedRoute && cachedRoute.length > 0) {
     const pt = side === 'start' ? cachedRoute[0] : cachedRoute[cachedRoute.length - 1];

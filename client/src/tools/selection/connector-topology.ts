@@ -81,6 +81,9 @@ export interface StaticEntry extends BaseEntry {
 
 export interface TranslateEntry extends DirtyEntry {
   readonly mode: 'translate';
+  /** Frozen pre-gesture FREE-side endpoint. null = bound (commit skips). */
+  readonly frozenStart: Point | null;
+  readonly frozenEnd: Point | null;
 }
 
 export interface RerouteEntry extends DirtyEntry {
@@ -287,12 +290,18 @@ function processConnector(
   // No originalPoints: rendering reads cached route + applies ctx.translate(dx, dy).
   if (mode === 'translate' && startState !== 'canonical' && endState !== 'canonical') {
     const ob = conn.bbox;
+    // Freeze each FREE-side endpoint (bound sides commit nothing). Cloned so a Y.Map-preserved
+    // ref from a prior gesture can't alias us; commit reads frozen + dx/dy (no Y.Map read).
+    const frozenStart = start && Array.isArray(start) ? ([start[0], start[1]] as Point) : null;
+    const frozenEnd = end && Array.isArray(end) ? ([end[0], end[1]] as Point) : null;
     const e: TranslateEntry = {
       mode: 'translate',
       id: conn.id,
       originalBbox: ob,
       currBbox: [ob[0], ob[1], ob[2], ob[3]],
       prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      frozenStart,
+      frozenEnd,
     };
     translates.push(e);
     byId.set(conn.id, e);
@@ -310,8 +319,8 @@ function processConnector(
   const e: RerouteEntry = {
     mode: 'reroute',
     id: conn.id,
-    start: makeSide(startState, startAnchor, startStoredPos, selectedBindables),
-    end: makeSide(endState, endAnchor, endStoredPos, selectedBindables),
+    start: startState === 'canonical' ? null : makeSide(startAnchor, startStoredPos, selectedBindables, startState),
+    end: endState === 'canonical' ? null : makeSide(endAnchor, endStoredPos, selectedBindables, endState),
     originalBbox: ob,
     currBbox: [ob[0], ob[1], ob[2], ob[3]],
     prevBbox: [ob[0], ob[1], ob[2], ob[3]],
@@ -324,15 +333,15 @@ function processConnector(
 }
 
 function makeSide(
-  state: EndpointState,
   anchor: StoredAnchor | undefined,
   storedPos: Point | undefined,
   selectedBindables: ReadonlyMap<string, SelectedBindable>,
-): Side | null {
-  if (state === 'canonical') return null;
+  state: 'frame-bound' | 'free-moving',
+): Side {
   if (state === 'frame-bound') {
-    const sb = selectedBindables.get(anchor!.id);
-    if (!sb) return null;
+    // classifyEndpoint returned 'frame-bound' only after `selectedBindables.has(anchor.id)`
+    // — Map's contract guarantees the get is non-undefined.
+    const sb = selectedBindables.get(anchor!.id)!;
     return { kind: 'bind', bindKind: sb.kind, entry: sb.entry, frozenFrame: sb.frozenFrame };
   }
   // free-moving — clone the stored point into an independent tuple. Y.Map may have
@@ -465,12 +474,10 @@ export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 
 function commitTranslate(e: TranslateEntry, dx: number, dy: number): void {
   const y = getObjects().get(e.id);
   if (!y) return;
-  // Read the OLD pre-gesture endpoints (no in-gesture writes happened).
-  // Free side → write translated Point. Bound side → skip.
-  const start = y.get('start') as ConnectorEndpoint | undefined;
-  const end = y.get('end') as ConnectorEndpoint | undefined;
-  if (start && Array.isArray(start)) y.set('start', [start[0] + dx, start[1] + dy] as Point);
-  if (end && Array.isArray(end)) y.set('end', [end[0] + dx, end[1] + dy] as Point);
+  // Free side → frozen + dx/dy. Bound side → skip (the bound shape's frame write
+  // in this tx triggers observer reroute → router caches the new route).
+  if (e.frozenStart) y.set('start', [e.frozenStart[0] + dx, e.frozenStart[1] + dy] as Point);
+  if (e.frozenEnd) y.set('end', [e.frozenEnd[0] + dx, e.frozenEnd[1] + dy] as Point);
 }
 
 function commitReroute(e: RerouteEntry): void {

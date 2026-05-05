@@ -67,7 +67,9 @@ export function anchorRecordFromSnap(snap: SnapTarget): StoredAnchor {
  * Anchored: interpolate stored normalized anchor against current shape frame.
  * Free: return stored position as-is. Used by hit testing and endpoint-dot rendering.
  *
- * Dangling anchor (target gone): falls back to cached route's first/last point.
+ * The route/zero fallbacks at the end are defensive: if a bound anchor's target frame
+ * is missing, the doc is in a corrupted state (deletion didn't detach). We keep rendering
+ * at the last-known position rather than asserting.
  */
 export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): Point {
   const ep: ConnectorEndpoint | undefined = endpoint === 'start' ? getStart(handle.y) : getEnd(handle.y);
