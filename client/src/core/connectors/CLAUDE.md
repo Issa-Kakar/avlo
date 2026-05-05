@@ -233,17 +233,26 @@ Bypasses A* entirely. `computeStraightRouteInto(start, end, outPoints)` writes 2
 
 ## Connector Router (`connector-router.ts`)
 
-Three private maps maintained by `RoomDocManager`'s deep observer:
+Three private maps + a reroute queue. The router owns its own queue — `RoomDocManager`'s observer pokes it via typed events and drains the queue in Phase C; it never touches the internals.
 
-| Map | Shape | Updated |
+| Map / Set | Shape | Updated |
 |---|---|---|
 | `shapeToConnectors` | `shapeId → Set<connectorId>` | connector add/remove/anchor change, shape delete |
 | `anchorIds` | `connectorId → [startShapeId, endShapeId]` (mutated in place) | same; tuple slots reused |
 | `routes` | `connectorId → Point[]` (per-connector pooled buffer) | `rerouteCanonical` mutates + trims to `count` |
+| `_rerouteQueue` | `Set<connectorId>` | added by `on*` events; drained in Phase C |
 
 Self-loops dedupe inline with four `!==` checks (no Set allocation per update). `removeConnector` / `removeShape` are unconditional no-ops on unknown ids.
 
 ```typescript
+// Event API (called from observer — typed by event, not operation)
+onConnectorAdded(id, y):              void   // top-level add → register + queue
+onObjectDeleted(id):                  void   // top-level delete → removeConnector + removeShape
+onConnectorEdited(id, y, startEnd):   void   // start/end/connectorType change → updateAnchors? + queue
+onBindableChanged(id):                void   // bindable bbox/shapeType change → propagate to attached
+isQueuedForReroute(id):               boolean
+drainRerouteQueue():                  IterableIterator<string>  // exhaust before next observer fire
+
 // Read API (module-level — getActiveRoomDoc().connectorRouter under the hood)
 getConnectorRoute(id):           Point[] | null              // .length === validCount post-trim
 getAttachedConnectors(shapeId):  ReadonlySet<string> | undefined
@@ -256,9 +265,9 @@ computeBBox(id, y, outBbox):     boolean                     // *Into; style-onl
 
 Lifecycle:
 - **Hydrate**: Pass 1 `registerConnector` per connector; Pass 2 `rerouteCanonical` after non-connectors are seeded.
-- **Observer**: top-level add → `registerConnector` + queue; top-level delete → `removeConnector` + `removeShape`; connector start/end/connectorType change → `updateAnchors` + queue; bindable bbox/shapeType change → propagate via `getAttached`.
-- **Phase C**: per queued id → `rerouteCanonical` → `upsertHandle` (after `evictGeometry`).
-- **Destroy**: `router.clear()`.
+- **Observer**: top-level add → `onConnectorAdded`; top-level delete → `onObjectDeleted`; connector start/end/connectorType change → `onConnectorEdited`; bindable bbox/shapeType change → `onBindableChanged` (Phase B fires this on every bindable bbox change, including first-insert — so a connector that anchors to a shape arriving after it on remote sync still reroutes).
+- **Phase C**: `for (const id of router.drainRerouteQueue())` → `rerouteCanonical` → `upsertHandle`. `finalizeUpsert(..., alwaysEvict=true, ...)` evicts geometry unconditionally — route changed.
+- **Destroy**: `router.clear()` (also clears `_rerouteQueue`).
 
 `detachConnectorFromShape` reads the cached route, replaces any bound endpoint pointing at `shapeId` with the route's first/last point (cloned). No-op when no cached route. Caller must run inside `transact()`.
 

@@ -121,6 +121,10 @@ export interface SelectionActions {
 
   // Context menu support
   refreshStyles: () => void;
+
+  // Doc-observer reactions
+  onObjectsDeleted: (deletedIds: ReadonlySet<string>) => void;
+  onObjectsChanged: (touched: ReadonlySet<string>, bboxChangedIds: ReadonlySet<string>) => void;
 }
 
 export type SelectionStore = SelectionState & SelectionActions;
@@ -349,6 +353,55 @@ export const useSelectionStore = create<SelectionStore>()(
       }
 
       if (Object.keys(patch).length > 0) set(patch);
+    },
+
+    // === Doc-observer Reactions ===
+
+    onObjectsDeleted: (deletedIds) => {
+      const { selectedIds, textEditingId, codeEditingId } = get();
+      let overlayDirty = false;
+      for (const sid of selectedIds) {
+        if (deletedIds.has(sid)) {
+          get().clearSelection();
+          overlayDirty = true;
+          break;
+        }
+      }
+      if (textEditingId !== null && deletedIds.has(textEditingId)) {
+        get().endTextEditing();
+        overlayDirty = true;
+      }
+      if (codeEditingId !== null && deletedIds.has(codeEditingId)) {
+        get().endCodeEditing();
+        overlayDirty = true;
+      }
+      if (overlayDirty) invalidateOverlay();
+    },
+
+    onObjectsChanged: (touched, bboxChangedIds) => {
+      if (touched.size === 0) return;
+      const { selectedIds, textEditingId, codeEditingId } = get();
+      let refresh = false;
+      let reposition = false;
+      for (const id of selectedIds) {
+        if (touched.has(id)) {
+          refresh = true;
+          if (bboxChangedIds.has(id)) reposition = true;
+        }
+      }
+      if (textEditingId !== null && touched.has(textEditingId)) {
+        refresh = true;
+        if (bboxChangedIds.has(textEditingId)) reposition = true;
+      }
+      if (codeEditingId !== null && touched.has(codeEditingId)) {
+        refresh = true;
+        if (bboxChangedIds.has(codeEditingId)) reposition = true;
+      }
+      if (refresh) get().refreshStyles();
+      if (reposition) {
+        set((s) => ({ boundsVersion: s.boundsVersion + 1 }));
+        invalidateOverlay();
+      }
     },
   })),
 );

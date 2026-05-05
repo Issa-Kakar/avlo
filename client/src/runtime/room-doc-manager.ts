@@ -17,16 +17,27 @@ import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
 import { isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { evictGeometry } from '@/renderer/geometry-cache';
-import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getVisibleWorldBounds } from '@/stores/camera-store';
+import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { getUserId } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
 import { attach, detach } from './presence/presence';
 
 // Type alias for Y structures
 type YObjects = Y.Map<Y.Map<unknown>>;
+
+/** Run a teardown function if value is non-null; swallow errors during teardown. */
+function dispose<T>(value: T | null, fn: (v: T) => void): null {
+  if (value !== null) {
+    try {
+      fn(value);
+    } catch {
+      /* swallow during teardown */
+    }
+  }
+  return null;
+}
 
 // Manager interface - public API
 export interface IRoomDocManager {
@@ -74,15 +85,14 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   readonly objectsById = new Map<string, ObjectHandle>();
   readonly spatialIndex = new ObjectSpatialIndex();
   readonly connectorRouter = new ConnectorRouter();
-  // biome-ignore lint/suspicious/noExplicitAny: upstream-type — Yjs YEvent<T> generic is deliberately loose; deep observers receive heterogeneous events across nested maps
-  private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
+  private objectsObserver: ((events: Y.YEvent<Y.AbstractType<unknown>>[], tx: Y.Transaction) => void) | null = null;
 
   // Reused observer scratch — cleared at top of each fire. Safe because observer
   // is not reentrant (Y.Doc dispatches at end of transaction; applyObjectChanges
   // does not trigger a new transaction).
   private readonly _touchedIds = new Set<string>();
   private readonly _deletedIds = new Set<string>();
-  private readonly _rerouteIds = new Set<string>();
+  private readonly _bboxChangedIds = new Set<string>();
   private readonly _dirtyBBoxes: BBoxTuple[] = [];
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
@@ -163,36 +173,17 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     if (this.destroyed) return;
     this.destroyed = true;
 
-    // Cleanup providers
-    if (this.indexeddbProvider) {
-      this.indexeddbProvider.destroy();
-      this.indexeddbProvider = null;
-    }
+    this.indexeddbProvider = dispose(this.indexeddbProvider, (p) => p.destroy());
 
     // Detach presence listeners (signals departure while WS still open)
     detach();
 
-    if (this.websocketProvider) {
-      this.websocketProvider.disconnect();
-      this.websocketProvider.destroy();
-      this.websocketProvider = null;
-    }
-
-    // Destroy UndoManager
-    if (this.undoManager) {
-      this.undoManager.destroy();
-      this.undoManager = null;
-    }
-
-    // Remove objects observer
-    if (this.objectsObserver) {
-      try {
-        this.objects.unobserveDeep(this.objectsObserver);
-      } catch {
-        // Ignore errors during cleanup
-      }
-      this.objectsObserver = null;
-    }
+    this.websocketProvider = dispose(this.websocketProvider, (p) => {
+      p.disconnect();
+      p.destroy();
+    });
+    this.undoManager = dispose(this.undoManager, (m) => m.destroy());
+    this.objectsObserver = dispose(this.objectsObserver, (fn) => this.objects.unobserveDeep(fn));
 
     // Clean up spatial index
     this.spatialIndex.clear();
@@ -216,65 +207,47 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private setupObjectsObserver(): void {
     if (this.objectsObserver) return; // idempotent
 
-    this.objectsObserver = (events, _tx) => {
-      const touchedIds = this._touchedIds;
-      const deletedIds = this._deletedIds;
-      const rerouteIds = this._rerouteIds;
-      touchedIds.clear();
-      deletedIds.clear();
-      rerouteIds.clear();
+    this.objectsObserver = (events) => {
+      const { _touchedIds: touched, _deletedIds: deleted, connectorRouter: router } = this;
+      touched.clear();
+      deleted.clear();
 
       for (const ev of events) {
-        // Top-level object adds/deletes
+        // Top-level adds/deletes
         if (ev.target === this.objects && ev instanceof Y.YMapEvent) {
           for (const [key, change] of ev.changes.keys) {
             const id = String(key);
             if (change.action === 'delete') {
-              deletedIds.add(id);
-              // Both calls safely no-op if id unknown to the router.
-              this.connectorRouter.removeConnector(id);
-              this.connectorRouter.removeShape(id);
+              deleted.add(id);
+              router.onObjectDeleted(id);
             } else {
-              touchedIds.add(id);
+              touched.add(id);
               const yObj = this.objects.get(id);
-              if (yObj?.get('kind') === 'connector') {
-                rerouteIds.add(id);
-                this.connectorRouter.registerConnector(id, yObj);
-              }
+              if (yObj?.get('kind') === 'connector') router.onConnectorAdded(id, yObj);
             }
           }
           continue;
         }
 
-        // Nested changes - path[0] is object ID
         const path = ev.path as (string | number)[];
         const id = String(path[0] ?? '');
         if (!id) continue;
         const yObj = this.objects.get(id);
-        if (!yObj) continue; // deleted in this tx — event-order independent
-        touchedIds.add(id);
+        if (!yObj) continue;
+        touched.add(id);
 
-        // Direct edits on the object's root Y.Map
         if (path.length === 1 && ev instanceof Y.YMapEvent) {
           const kind = yObj.get('kind') as ObjectKind | undefined;
           if (kind === 'connector') {
-            const startChanged = ev.keysChanged.has('start');
-            const endChanged = ev.keysChanged.has('end');
-            const typeChanged = ev.keysChanged.has('connectorType');
-            if (startChanged || endChanged || typeChanged) {
-              rerouteIds.add(id);
-              if (startChanged || endChanged) this.connectorRouter.updateAnchors(id, yObj);
+            const startEnd = ev.keysChanged.has('start') || ev.keysChanged.has('end');
+            if (startEnd || ev.keysChanged.has('connectorType')) {
+              router.onConnectorEdited(id, yObj, startEnd);
             }
           } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
-            // Shape-type swap rewires snap edge geometry. Frame changes are caught by
-            // Phase B's bbox-diff propagation — no need to also key-check here.
-            const attached = this.connectorRouter.getAttached(id);
-            if (attached) for (const cid of attached) rerouteIds.add(cid);
+            router.onBindableChanged(id);
           }
         }
 
-        // Y.XmlFragment change: invalidate text cache (eager re-tokenize for inline styles)
-        // Y.Text change (code blocks): sync tokenize + dispatch to Lezer worker
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
           const content = yObj.get('content');
           const kind = yObj.get('kind') as string | undefined;
@@ -287,8 +260,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         }
       }
 
-      if (touchedIds.size === 0 && deletedIds.size === 0) return;
-
+      if (touched.size === 0 && deleted.size === 0) return;
       this.applyObjectChanges();
     };
 
@@ -296,126 +268,87 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   }
 
   private applyObjectChanges(): void {
-    const touchedIds = this._touchedIds;
-    const deletedIds = this._deletedIds;
-    const rerouteIds = this._rerouteIds;
-    const dirtyBBoxes = this._dirtyBBoxes;
-    dirtyBBoxes.length = 0;
+    const { _touchedIds: touched, _deletedIds: deleted, _bboxChangedIds: changed, _dirtyBBoxes: dirty, connectorRouter: router } = this;
+    dirty.length = 0;
+    changed.clear();
 
     // === PHASE A: deletions === (router maps already updated in observer)
-    for (const id of deletedIds) {
+    for (const id of deleted) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
       this.spatialIndex.remove(id, handle.bbox);
       removeObjectCaches(id, handle.kind);
-      dirtyBBoxes.push(handle.bbox);
+      dirty.push(handle.bbox);
       this.objectsById.delete(id);
     }
 
-    // Selection deletion bridge
     const sel = useSelectionStore.getState();
-    const editingId = sel.textEditingId;
-    const selectedSet = sel.selectedIdSet;
-    let needsRefresh = false;
-    let needsReposition = false;
-
-    if (selectedSet.size > 0) {
-      for (const id of deletedIds) {
-        if (selectedSet.has(id)) {
-          sel.clearSelection();
-          break;
-        }
-      }
-    } else if (editingId && deletedIds.has(editingId)) {
-      useSelectionStore.getState().endTextEditing();
-    }
-    const codeEditingId = sel.codeEditingId;
-    if (codeEditingId && deletedIds.has(codeEditingId)) {
-      useSelectionStore.getState().endCodeEditing();
-    }
+    sel.onObjectsDeleted(deleted);
 
     // === PHASE B: touched non-connectors + style-only connectors ===
     // Updates non-connector handles BEFORE Phase C reads them via frameOf — Phase C must
     // see the post-Phase-B view of bindable handles. Style-only connectors (color/width/cap)
     // also handled here; rerouting connectors defer to Phase C.
-    for (const id of touchedIds) {
+    for (const id of touched) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
 
       if (kind === 'connector') {
-        if (rerouteIds.has(id)) continue; // defer to Phase C
+        if (router.isQueuedForReroute(id)) continue; // defer to Phase C
         // Style-only branch: route unchanged, but bbox may shift (caps/width).
         const newBBox: BBoxTuple = [0, 0, 0, 0];
-        if (!this.connectorRouter.computeBBox(id, yObj, newBBox)) continue;
+        if (!router.computeBBox(id, yObj, newBBox)) continue;
         const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
-        if (bboxChanged) {
-          evictGeometry(id); // caps/width change → Path2D stale
-          if (prevBBox) dirtyBBoxes.push(prevBBox);
-        }
-        dirtyBBoxes.push(newBBox);
-        if (selectedSet.has(id) || id === editingId) {
-          needsRefresh = true;
-          if (bboxChanged) needsReposition = true;
-        }
+        this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, false, dirty);
+        if (bboxChanged) changed.add(id);
         continue;
       }
 
       // Non-connector branch
       const newBBox = computeBBoxFor(id, kind, yObj);
       const { prevBBox, bboxChanged } = this.upsertHandle(id, kind, yObj, newBBox);
+      this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, false, dirty);
       if (bboxChanged) {
-        evictGeometry(id);
-        if (prevBBox) dirtyBBoxes.push(prevBBox);
-      }
-      dirtyBBoxes.push(newBBox);
-      if (selectedSet.has(id) || id === editingId) {
-        needsRefresh = true;
-        if (bboxChanged) needsReposition = true;
-      }
-
-      // Bindable bbox change → propagate to attached connectors. Single rule covers shape
-      // frame, text/code/note/bookmark derived-frame changes (text reflow, code lang swap,
-      // font swap, scale, bookmark height change).
-      if (!isUnbindableKind(kind) && prevBBox && bboxChanged) {
-        const attached = this.connectorRouter.getAttached(id);
-        if (attached) {
-          for (const cid of attached) {
-            if (!deletedIds.has(cid)) rerouteIds.add(cid);
-          }
-        }
+        changed.add(id);
+        // Bindable bbox change → propagate to attached connectors. `onBindableChanged`
+        // is a free no-op when no attachments exist; firing on first-insert as well as
+        // updates lets connectors reroute when their anchor shape arrives late (remote sync).
+        if (!isUnbindableKind(kind)) router.onBindableChanged(id);
       }
     }
 
-    // === PHASE C: process reroute set ===
-    // `rerouteIds` was mutated during Phase B; iterating now sees the finalized set.
-    // The `if (!yObj) continue` guard covers ids added via propagation that race with delete.
-    // No placeholder objectsById.set: the router consumes `yObj` directly — connector
-    // handles enter `objectsById` exactly once per upsert with their real bbox.
-    for (const id of rerouteIds) {
+    // === PHASE C: drain reroute queue (router-owned) ===
+    // The router queue may include ids from observer events AND ids queued via Phase B's
+    // bindable-propagation (`onBindableChanged`); the `touched.add(id)` below ensures the
+    // post-phase refresh fires for the latter (set add is idempotent).
+    for (const id of router.drainRerouteQueue()) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-      const newBBox = this.connectorRouter.rerouteCanonical(id, yObj);
+      const newBBox = router.rerouteCanonical(id, yObj);
       if (!newBBox) continue; // routing failed → leave handle as-is (next observer pass corrects)
-      // Connector reroute always invalidates Path2D regardless of bbox — route changed.
-      evictGeometry(id);
       const { prevBBox, bboxChanged } = this.upsertHandle(id, 'connector', yObj, newBBox);
-      if (prevBBox && bboxChanged) dirtyBBoxes.push(prevBBox);
-      dirtyBBoxes.push(newBBox);
-      if (selectedSet.has(id) || id === editingId) {
-        needsRefresh = true;
-        if (bboxChanged) needsReposition = true;
-      }
+      this.finalizeUpsert(id, prevBBox, newBBox, bboxChanged, true, dirty); // route changed → always evict
+      touched.add(id);
+      if (bboxChanged) changed.add(id);
     }
 
-    if (needsRefresh) useSelectionStore.getState().refreshStyles();
-    if (needsReposition) {
-      useSelectionStore.setState((s) => ({ boundsVersion: s.boundsVersion + 1 }));
-      // Selection handles follow remote moves/undos of the currently selected object
-      invalidateOverlay();
-    }
+    sel.onObjectsChanged(touched, changed);
+    this.flushDirtyBBoxes(dirty);
+  }
 
-    this.flushDirtyBBoxes(dirtyBBoxes);
+  /** upsert tail: evict geometry on bbox change (or always, for rerouted connectors) and push dirty rects. */
+  private finalizeUpsert(
+    id: string,
+    prev: BBoxTuple | null,
+    next: BBoxTuple,
+    bboxChanged: boolean,
+    alwaysEvict: boolean,
+    dirty: BBoxTuple[],
+  ): void {
+    if (bboxChanged || alwaysEvict) evictGeometry(id);
+    if (bboxChanged && prev) dirty.push(prev);
+    dirty.push(next);
   }
 
   /**
@@ -439,9 +372,9 @@ export class RoomDocManagerImpl implements IRoomDocManager {
 
   private flushDirtyBBoxes(bboxes: BBoxTuple[]): void {
     if (bboxes.length === 0) return;
-    const vp = getVisibleWorldBounds();
+    const vp = getVisibleBoundsTuple();
     for (const bbox of bboxes) {
-      if (bbox[2] >= vp.minX && bbox[0] <= vp.maxX && bbox[3] >= vp.minY && bbox[1] <= vp.maxY) {
+      if (bbox[2] >= vp[0] && bbox[0] <= vp[2] && bbox[3] >= vp[1] && bbox[1] <= vp[3]) {
         invalidateWorldBBox(bbox);
       }
     }

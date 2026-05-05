@@ -1,16 +1,17 @@
 /**
- * Connector Router — local route cache + reverse map for bound connectors.
+ * Connector Router — local route cache + reverse map + reroute queue for bound connectors.
  *
- * Three private maps:
+ * Three private maps + one queue:
  *   - shapeToConnectors: shapeId → Set<connectorId>  (only bindable shapes)
  *   - anchorIds: connectorId → [startShapeId | null, endShapeId | null]  (mutated in place)
  *   - routes: connectorId → cached Point[]  (owned references — fresh from routing pipeline)
+ *   - _rerouteQueue: connectorIds queued for canonical reroute (drained in Phase C)
  *
- * Maintained by `RoomDocManager` deep observer:
- *   - top-level add/delete → registerConnector / removeConnector + removeShape
- *   - direct edits on connector (start/end/connectorType keys) → updateAnchors
- *   - direct edits on bindable shape (frame/origin/etc.) → propagate via getAttached
- *   - shape kind=='shape' shapeType swap → also propagate via getAttached
+ * Driven by `RoomDocManager` deep observer via four typed events:
+ *   - onConnectorAdded(id, y)              top-level add of a connector
+ *   - onObjectDeleted(id)                  top-level delete of any object (connector or shape)
+ *   - onConnectorEdited(id, y, startEnd)   start/end/connectorType key change
+ *   - onBindableChanged(id)                bindable's bbox or shapeType changed (propagation)
  *
  * Public reads via module-level helpers (set on construct, cleared on destroy):
  *   getConnectorRoute(id)         → Point[] | null
@@ -45,9 +46,51 @@ export class ConnectorRouter {
   private readonly anchorIds = new Map<string, [string | null, string | null]>();
   // connectorId → cached routed Point[]. Fresh tuples — owned by router.
   private readonly routes = new Map<string, Point[]>();
+  // Connector ids queued for canonical reroute. Drained in Phase C.
+  private readonly _rerouteQueue = new Set<string>();
 
   // ============================================================
-  // Map maintenance — called by RoomDocManager observer
+  // Event API — called by RoomDocManager observer (typed by event, not operation)
+  // ============================================================
+
+  /** Connector top-level add: register topology + queue for canonical reroute. */
+  onConnectorAdded(id: string, y: Y.Map<unknown>): void {
+    this.registerConnector(id, y);
+    this._rerouteQueue.add(id);
+  }
+
+  /** Object top-level delete (any id, no-op if unknown). Combines the two prior calls. */
+  onObjectDeleted(id: string): void {
+    this.removeConnector(id);
+    this.removeShape(id);
+  }
+
+  /** Connector start/end/connectorType key changed. `startEndChanged` controls anchor diff. */
+  onConnectorEdited(id: string, y: Y.Map<unknown>, startEndChanged: boolean): void {
+    if (startEndChanged) this.updateAnchors(id, y);
+    this._rerouteQueue.add(id);
+  }
+
+  /** Bindable's bbox or shapeType changed — propagate to attached connectors. No-op if no attachments. */
+  onBindableChanged(id: string): void {
+    const attached = this.shapeToConnectors.get(id);
+    if (!attached) return;
+    for (const cid of attached) this._rerouteQueue.add(cid);
+  }
+
+  /** Phase B's "is this connector deferred to Phase C?" check. */
+  isQueuedForReroute(id: string): boolean {
+    return this._rerouteQueue.has(id);
+  }
+
+  /** Phase C iterator. Caller MUST exhaust before the next observer fire (Set is reused). */
+  *drainRerouteQueue(): IterableIterator<string> {
+    for (const id of this._rerouteQueue) yield id;
+    this._rerouteQueue.clear();
+  }
+
+  // ============================================================
+  // Map maintenance — composed by event API above
   // ============================================================
 
   /** New connector added: snapshot anchorIds + link both sides. */
@@ -175,6 +218,7 @@ export class ConnectorRouter {
     this.shapeToConnectors.clear();
     this.anchorIds.clear();
     this.routes.clear();
+    this._rerouteQueue.clear();
   }
 
   // ============================================================
