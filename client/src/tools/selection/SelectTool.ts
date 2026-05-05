@@ -1,4 +1,4 @@
-import { getConnectorType, getEndAnchor, getStartAnchor } from '@/core/accessors';
+import { getConnectorType } from '@/core/accessors';
 import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
 import { type EndpointDragOverride, rerouteConnectorEndpointDrag } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
@@ -7,9 +7,9 @@ import { pointsToBBox } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
 import { type EndpointHit, hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
-import type { BBoxTuple } from '@/core/types/geometry';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { handleCursor } from '@/core/types/handles';
-import type { ObjectHandle } from '@/core/types/objects';
+import type { ConnectorEndpoint, ObjectHandle } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { contextMenuController } from '@/runtime/ContextMenuController';
@@ -230,11 +230,13 @@ export class SelectTool implements PointerTool {
 
             const hitHandle = this.hitAtDown!;
 
-            // Connectors: check anchor state to decide drag behavior
+            // Connectors: check anchor state to decide drag behavior.
+            // Bound endpoints are StoredAnchor objects — `!Array.isArray(ep)` distinguishes from free Points.
             if (hitHandle.kind === 'connector') {
-              const sa = getStartAnchor(hitHandle.y);
-              const ea = getEndAnchor(hitHandle.y);
-              if (sa || ea) {
+              const start = hitHandle.y.get('start') as ConnectorEndpoint | undefined;
+              const end = hitHandle.y.get('end') as ConnectorEndpoint | undefined;
+              const isAnchored = (start && !Array.isArray(start)) || (end && !Array.isArray(end));
+              if (isAnchored) {
                 // Anchored → marquee (can't translate anchored connector)
                 this.phase = 'marquee';
                 useSelectionStore.getState().beginMarquee(this.downWorld!);
@@ -256,14 +258,15 @@ export class SelectTool implements PointerTool {
             if (!passMove) break;
             contextMenuController.hide();
 
-            // Connector mode (1 connector): check anchor state
+            // Connector mode (1 connector): check anchor state via union branch.
             const inSelStore = useSelectionStore.getState();
             if (inSelStore.mode === 'connector') {
               const connHandle = getHandle(inSelStore.selectedIds[0]);
               if (connHandle?.kind === 'connector') {
-                const sa = getStartAnchor(connHandle.y);
-                const ea = getEndAnchor(connHandle.y);
-                if (sa || ea) {
+                const start = connHandle.y.get('start') as ConnectorEndpoint | undefined;
+                const end = connHandle.y.get('end') as ConnectorEndpoint | undefined;
+                const isAnchored = (start && !Array.isArray(start)) || (end && !Array.isArray(end));
+                if (isAnchored) {
                   // Anchored → marquee (gives visual feedback)
                   this.phase = 'marquee';
                   useSelectionStore.getState().beginMarquee(this.downWorld!);
@@ -630,7 +633,9 @@ export class SelectTool implements PointerTool {
 
   /**
    * Commit endpoint drag results to Y.Doc.
-   * Updates connector points, start/end positions, and anchor data.
+   * Writes only the dragged side's union value: anchor when snapped, free Point otherwise
+   * (route's first/last point captures clearance-applied / pulled-back position). The
+   * deep observer reroutes canonically post-tx, populating the local route cache.
    */
   private commitEndpointDrag(
     connectorId: string,
@@ -642,18 +647,13 @@ export class SelectTool implements PointerTool {
       const yMap = getObjects().get(connectorId);
       if (!yMap) return;
 
-      // Update routed path
-      yMap.set('points', routedPoints);
-      yMap.set('start', routedPoints[0]);
-      yMap.set('end', routedPoints[routedPoints.length - 1]);
-
-      // Update anchor for the dragged endpoint — shape matches connector type
-      const anchorKey = endpoint === 'start' ? 'startAnchor' : 'endAnchor';
-      if (currentSnap) {
-        yMap.set(anchorKey, anchorRecordFromSnap(currentSnap));
-      } else {
-        yMap.delete(anchorKey);
-      }
+      const value: ConnectorEndpoint = currentSnap
+        ? anchorRecordFromSnap(currentSnap)
+        : ([
+            routedPoints[endpoint === 'start' ? 0 : routedPoints.length - 1][0],
+            routedPoints[endpoint === 'start' ? 0 : routedPoints.length - 1][1],
+          ] as Point);
+      yMap.set(endpoint, value);
     });
   }
 

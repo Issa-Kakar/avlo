@@ -9,20 +9,13 @@ import YProvider from 'y-partyserver/provider';
 import * as Y from 'yjs';
 import { getCodeProps } from '@/core/accessors';
 import { codeSystem } from '@/core/code/code-system';
-import {
-  hydrateConnectorLookup,
-  initConnectorLookup,
-  processConnectorAdded,
-  processConnectorDeleted,
-  processConnectorUpdated,
-  processShapeDeleted,
-} from '@/core/connectors/connector-lookup';
+import { ConnectorRouter, setActiveConnectorRouter } from '@/core/connectors/connector-router';
 import { bboxEquals, computeBBoxFor } from '@/core/geometry/bbox';
 import { hydrateImages } from '@/core/image/image-manager';
 import { ObjectSpatialIndex } from '@/core/spatial';
 import { textLayoutCache } from '@/core/text/text-system';
 import type { BBoxTuple } from '@/core/types/geometry';
-import type { ObjectHandle, ObjectKind } from '@/core/types/objects';
+import { isUnbindableKind, type ObjectHandle, type ObjectKind } from '@/core/types/objects';
 import { evictGeometry } from '@/renderer/geometry-cache';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { clearAllObjectCaches, removeObjectCaches } from '@/renderer/object-cache';
@@ -40,6 +33,7 @@ export interface IRoomDocManager {
   readonly objects: YObjects;
   readonly objectsById: ReadonlyMap<string, ObjectHandle>;
   readonly spatialIndex: ObjectSpatialIndex;
+  readonly connectorRouter: ConnectorRouter;
 
   mutate(fn: () => void): void;
   destroy(): void;
@@ -79,6 +73,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // Y.Map-based object storage
   readonly objectsById = new Map<string, ObjectHandle>();
   readonly spatialIndex = new ObjectSpatialIndex();
+  readonly connectorRouter = new ConnectorRouter();
   // biome-ignore lint/suspicious/noExplicitAny: upstream-type — Yjs YEvent<T> generic is deliberately loose; deep observers receive heterogeneous events across nested maps
   private objectsObserver: ((events: Y.YEvent<any>[], tx: Y.Transaction) => void) | null = null;
 
@@ -87,6 +82,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   // does not trigger a new transaction).
   private readonly _touchedIds = new Set<string>();
   private readonly _deletedIds = new Set<string>();
+  private readonly _rerouteIds = new Set<string>();
   private readonly _dirtyBBoxes: BBoxTuple[] = [];
 
   constructor(roomId: RoomId, _options?: RoomDocManagerOptions) {
@@ -97,6 +93,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.ydoc = new Y.Doc({ guid: roomId });
     this.objects = this.ydoc.getMap('objects') as YObjects;
 
+    // Wire router globally so module-level getters (getConnectorRoute, getAttachedConnectors)
+    // resolve against this room's router. Cleared in destroy().
+    setActiveConnectorRouter(this.connectorRouter);
+
     // Async init: IDB → hydrate → observer → UndoManager → WS
     void this.init();
   }
@@ -106,8 +106,7 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     await this.initializeIndexedDBProvider();
     if (this.destroyed) return;
 
-    // 2. Init connector lookup + hydrate from IDB data (first STR bulk load)
-    initConnectorLookup();
+    // 2. Hydrate from IDB data (first STR bulk load + initial connector routes)
     this.hydrateObjectsFromY();
 
     // 3. Attach deep observer AFTER hydrate (critical ordering)
@@ -202,7 +201,11 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     // Clean up spatial index
     this.spatialIndex.clear();
 
-    // Clear all object caches (geometry + layout + connector lookup)
+    // Clear connector router state + unwire global before object-cache teardown.
+    this.connectorRouter.clear();
+    setActiveConnectorRouter(null);
+
+    // Clear all object caches (geometry + layout)
     clearAllObjectCaches();
 
     // Clear object maps
@@ -221,8 +224,10 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     this.objectsObserver = (events, _tx) => {
       const touchedIds = this._touchedIds;
       const deletedIds = this._deletedIds;
+      const rerouteIds = this._rerouteIds;
       touchedIds.clear();
       deletedIds.clear();
+      rerouteIds.clear();
 
       for (const ev of events) {
         // Top-level object adds/deletes
@@ -231,8 +236,16 @@ export class RoomDocManagerImpl implements IRoomDocManager {
             const id = String(key);
             if (change.action === 'delete') {
               deletedIds.add(id);
+              // Both calls safely no-op if id unknown to the router.
+              this.connectorRouter.removeConnector(id);
+              this.connectorRouter.removeShape(id);
             } else {
               touchedIds.add(id);
+              const yObj = this.objects.get(id);
+              if (yObj?.get('kind') === 'connector') {
+                rerouteIds.add(id);
+                this.connectorRouter.registerConnector(id, yObj);
+              }
             }
           }
           continue;
@@ -242,17 +255,36 @@ export class RoomDocManagerImpl implements IRoomDocManager {
         const path = ev.path as (string | number)[];
         const id = String(path[0] ?? '');
         if (!id) continue;
-
+        const yObj = this.objects.get(id);
+        if (!yObj) continue; // deleted in this tx — event-order independent
         touchedIds.add(id);
+
+        // Direct edits on the object's root Y.Map
+        if (path.length === 1 && ev instanceof Y.YMapEvent) {
+          const kind = yObj.get('kind') as ObjectKind | undefined;
+          if (kind === 'connector') {
+            const startChanged = ev.keysChanged.has('start');
+            const endChanged = ev.keysChanged.has('end');
+            const typeChanged = ev.keysChanged.has('connectorType');
+            if (startChanged || endChanged || typeChanged) {
+              rerouteIds.add(id);
+              if (startChanged || endChanged) this.connectorRouter.updateAnchors(id, yObj);
+            }
+          } else if (kind === 'shape' && ev.keysChanged.has('shapeType')) {
+            // Shape-type swap rewires snap edge geometry. Frame changes are caught by
+            // Phase B's bbox-diff propagation — no need to also key-check here.
+            const attached = this.connectorRouter.getAttached(id);
+            if (attached) for (const cid of attached) rerouteIds.add(cid);
+          }
+        }
 
         // Y.XmlFragment change: invalidate text cache (eager re-tokenize for inline styles)
         // Y.Text change (code blocks): sync tokenize + dispatch to Lezer worker
         if (path.length >= 2 && String(path[1] ?? '') === 'content') {
-          const yObj = this.objects.get(id);
-          const content = yObj?.get('content');
-          const kind = yObj?.get('kind') as string | undefined;
+          const content = yObj.get('content');
+          const kind = yObj.get('kind') as string | undefined;
           if (kind === 'code' && ev instanceof Y.YTextEvent) {
-            const lang = getCodeProps(yObj!)?.language ?? 'javascript';
+            const lang = getCodeProps(yObj)?.language ?? 'javascript';
             codeSystem.handleContentChange(id, ev, lang);
           } else if (content instanceof Y.XmlFragment) {
             textLayoutCache.invalidateContent(id, content);
@@ -271,35 +303,27 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private applyObjectChanges(): void {
     const touchedIds = this._touchedIds;
     const deletedIds = this._deletedIds;
+    const rerouteIds = this._rerouteIds;
     const dirtyBBoxes = this._dirtyBBoxes;
     dirtyBBoxes.length = 0;
 
-    // Process deletions
+    // === PHASE A: deletions === (router maps already updated in observer)
     for (const id of deletedIds) {
       const handle = this.objectsById.get(id);
       if (!handle) continue;
-
       this.spatialIndex.remove(id, handle.bbox);
       removeObjectCaches(id, handle.kind);
       dirtyBBoxes.push(handle.bbox);
-
       this.objectsById.delete(id);
-
-      if (handle.kind === 'connector') {
-        processConnectorDeleted(id);
-      } else {
-        processShapeDeleted(id);
-      }
     }
 
-    // Process additions/updates
+    // Selection deletion bridge
     const sel = useSelectionStore.getState();
     const editingId = sel.textEditingId;
     const selectedSet = sel.selectedIdSet;
     let needsRefresh = false;
     let needsReposition = false;
 
-    // Deletion bridge
     if (selectedSet.size > 0) {
       for (const id of deletedIds) {
         if (selectedSet.has(id)) {
@@ -315,50 +339,65 @@ export class RoomDocManagerImpl implements IRoomDocManager {
       useSelectionStore.getState().endCodeEditing();
     }
 
+    // === PHASE B: touched non-connectors + style-only connectors ===
+    // Updates non-connector handles BEFORE Phase C reads them via frameOf — Phase C must
+    // see the post-Phase-B view of bindable handles. Style-only connectors (color/width/cap)
+    // also handled here; rerouting connectors defer to Phase C.
     for (const id of touchedIds) {
       const yObj = this.objects.get(id);
       if (!yObj) continue;
-
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
-      const prev = this.objectsById.get(id);
-      const oldBBox = prev?.bbox ?? null;
-
-      const newBBox = computeBBoxFor(id, kind, yObj);
-
-      const handle: ObjectHandle = { id, kind, y: yObj, bbox: newBBox };
-      this.objectsById.set(id, handle);
-
-      if (oldBBox) {
-        this.spatialIndex.update(id, oldBBox, newBBox, kind);
-      } else {
-        this.spatialIndex.insert(id, newBBox, kind);
-      }
 
       if (kind === 'connector') {
-        if (oldBBox) {
-          processConnectorUpdated(id, yObj);
-        } else {
-          processConnectorAdded(id, yObj);
-        }
+        if (rerouteIds.has(id)) continue; // defer to Phase C
+        // Style-only branch: route unchanged, but bbox may shift (caps/width).
+        const newBBox = this.connectorRouter.computeBBox(id, yObj);
+        const r = this.upsertHandle(id, kind, yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
+        if (r.needsRefresh) needsRefresh = true;
+        if (r.needsReposition) needsReposition = true;
+        continue;
       }
 
-      if (!oldBBox) {
-        dirtyBBoxes.push(newBBox);
-      } else {
-        const bboxChanged = !bboxEquals(oldBBox, newBBox);
-        if (bboxChanged) {
-          evictGeometry(id);
-          dirtyBBoxes.push(oldBBox);
-          dirtyBBoxes.push(newBBox);
-        } else {
-          dirtyBBoxes.push(newBBox);
+      // Non-connector branch
+      const prevBBox = this.objectsById.get(id)?.bbox ?? null;
+      const newBBox = computeBBoxFor(id, kind, yObj);
+      const r = this.upsertHandle(id, kind, yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
+      if (r.needsRefresh) needsRefresh = true;
+      if (r.needsReposition) needsReposition = true;
+
+      // Bindable bbox change → propagate to attached connectors. Single rule covers shape
+      // frame, text/code/note/bookmark derived-frame changes (text reflow, code lang swap,
+      // font swap, scale, bookmark height change).
+      if (!isUnbindableKind(kind) && prevBBox && !bboxEquals(prevBBox, newBBox)) {
+        const attached = this.connectorRouter.getAttached(id);
+        if (attached) {
+          for (const cid of attached) {
+            if (!deletedIds.has(cid)) rerouteIds.add(cid);
+          }
         }
       }
+    }
 
-      if (selectedSet.has(id) || id === editingId) {
-        needsRefresh = true;
-        if (!oldBBox || !bboxEquals(oldBBox, newBBox)) needsReposition = true;
+    // === PHASE C: process reroute set ===
+    // `rerouteIds` was mutated during Phase B; iterating now sees the finalized set.
+    // The `if (!yObj) continue` guard covers ids added via propagation that race with delete.
+    for (const id of rerouteIds) {
+      const yObj = this.objects.get(id);
+      if (!yObj) continue;
+      // Pre-seed objectsById with a placeholder so the routing pipeline's getHandle(id)
+      // resolves to this connector (newly-added connectors haven't reached objectsById yet).
+      // Existing connectors keep their previous bbox during the route call (it's
+      // overwritten via upsertHandle below). The router doesn't read this entry's bbox.
+      if (!this.objectsById.has(id)) {
+        this.objectsById.set(id, { id, kind: 'connector', y: yObj, bbox: [0, 0, 0, 0] });
       }
+      const newBBox = this.connectorRouter.rerouteCanonical(id);
+      // Connector reroute always invalidates Path2D regardless of bbox — route changed.
+      // Subsequent bbox-mismatch eviction inside upsertHandle is harmless (delete on absent key is no-op).
+      evictGeometry(id);
+      const r = this.upsertHandle(id, 'connector', yObj, newBBox, dirtyBBoxes, selectedSet, editingId);
+      if (r.needsRefresh) needsRefresh = true;
+      if (r.needsReposition) needsReposition = true;
     }
 
     if (needsRefresh) useSelectionStore.getState().refreshStyles();
@@ -369,6 +408,54 @@ export class RoomDocManagerImpl implements IRoomDocManager {
     }
 
     this.flushDirtyBBoxes(dirtyBBoxes);
+  }
+
+  /**
+   * Insert/update a handle: spatial index insert/update, bbox-changed eviction,
+   * dirty-rect bookkeeping, selection-refresh tracking. Returns whether selection
+   * state needs refresh / reposition.
+   */
+  private upsertHandle(
+    id: string,
+    kind: ObjectKind,
+    yObj: Y.Map<unknown>,
+    newBBox: BBoxTuple,
+    dirtyBBoxes: BBoxTuple[],
+    selectedSet: ReadonlySet<string>,
+    editingId: string | null,
+  ): { needsRefresh: boolean; needsReposition: boolean } {
+    const prev = this.objectsById.get(id);
+    const oldBBox = prev?.bbox ?? null;
+
+    const handle: ObjectHandle = { id, kind, y: yObj, bbox: newBBox };
+    this.objectsById.set(id, handle);
+
+    if (oldBBox) {
+      this.spatialIndex.update(id, oldBBox, newBBox, kind);
+    } else {
+      this.spatialIndex.insert(id, newBBox, kind);
+    }
+
+    if (!oldBBox) {
+      dirtyBBoxes.push(newBBox);
+    } else {
+      const bboxChanged = !bboxEquals(oldBBox, newBBox);
+      if (bboxChanged) {
+        evictGeometry(id);
+        dirtyBBoxes.push(oldBBox);
+        dirtyBBoxes.push(newBBox);
+      } else {
+        dirtyBBoxes.push(newBBox);
+      }
+    }
+
+    let needsRefresh = false;
+    let needsReposition = false;
+    if (selectedSet.has(id) || id === editingId) {
+      needsRefresh = true;
+      if (!oldBBox || !bboxEquals(oldBBox, newBBox)) needsReposition = true;
+    }
+    return { needsRefresh, needsReposition };
   }
 
   private flushDirtyBBoxes(bboxes: BBoxTuple[]): void {
@@ -388,26 +475,49 @@ export class RoomDocManagerImpl implements IRoomDocManager {
   private hydrateObjectsFromY(): void {
     this.objectsById.clear();
     this.spatialIndex.clear();
+    this.connectorRouter.clear();
     clearAllObjectCaches();
 
     const handles: ObjectHandle[] = [];
     const mediaHandles: ObjectHandle[] = [];
+    const deferredConnectorIds: string[] = [];
+
+    // Pass 1: build handles for everything except connectors. Connectors only get
+    // their anchorIds + shapeToConnectors entries here — bbox + route deferred to pass 2.
     this.objects.forEach((yObj, key) => {
       const id = String(key);
       const kind = (yObj.get('kind') as ObjectKind) ?? 'stroke';
-      const bbox = computeBBoxFor(id, kind, yObj);
 
+      if (kind === 'connector') {
+        this.connectorRouter.registerConnector(id, yObj);
+        deferredConnectorIds.push(id);
+        return;
+      }
+
+      const bbox = computeBBoxFor(id, kind, yObj);
       const handle: ObjectHandle = { id, kind, y: yObj, bbox };
       this.objectsById.set(id, handle);
       handles.push(handle);
       if (kind === 'image' || kind === 'bookmark') mediaHandles.push(handle);
     });
 
+    // Pass 2: route + handle for connectors (bindable frames are ready post pass 1).
+    for (const id of deferredConnectorIds) {
+      const yObj = this.objects.get(id);
+      if (!yObj) continue;
+      // Inserting into objectsById BEFORE rerouteCanonical so getHandle(id) inside the
+      // routing pipeline sees this connector. Bbox is filled post-route.
+      this.objectsById.set(id, { id, kind: 'connector', y: yObj, bbox: [0, 0, 0, 0] });
+      const bbox = this.connectorRouter.rerouteCanonical(id);
+      const handle: ObjectHandle = { id, kind: 'connector', y: yObj, bbox };
+      this.objectsById.set(id, handle);
+      handles.push(handle);
+    }
+
     if (handles.length > 0) {
       this.spatialIndex.bulkLoad(handles);
     }
 
-    hydrateConnectorLookup(this.objectsById);
     hydrateImages(mediaHandles);
     invalidateWorldAll();
   }

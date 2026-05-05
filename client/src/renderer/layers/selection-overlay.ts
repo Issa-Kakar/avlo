@@ -17,7 +17,7 @@
  * @module renderer/layers/selection-overlay
  */
 
-import { getConnectorType, getEndpointAnchors, getFrame, getHandleShapeType, getPoints, getWidth } from '@/core/accessors';
+import { getConnectorType, getFrame, getHandleShapeType, getWidth } from '@/core/accessors';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
 import { frameToBbox, pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
@@ -27,8 +27,8 @@ import { uniformFactor } from '@/core/geometry/scale-system';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
-import type { ObjectHandle } from '@/core/types/objects';
-import { getHandle } from '@/runtime/room-runtime';
+import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types/objects';
+import { getConnectorRoute, getHandle } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { computeHandles, computeSelectionBounds, type TransformState, useSelectionStore } from '@/stores/selection-store';
 import {
@@ -336,8 +336,8 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
       drawConnectorDashGuide(ctx, currentSnap.position, lineEnd);
     }
     const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
-    const { startAnchor: sa, endAnchor: ea } = getEndpointAnchors(handle.y);
-    const otherAnchor = otherEndpoint === 'start' ? sa : ea;
+    const otherEp = handle.y.get(otherEndpoint) as ConnectorEndpoint | undefined;
+    const otherAnchor = otherEp && !Array.isArray(otherEp) ? (otherEp as StoredAnchor) : undefined;
     if (otherAnchor && 'interior' in otherAnchor && otherAnchor.interior) {
       const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
       const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRoute.length - 1];
@@ -346,9 +346,12 @@ function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: s
     return;
   }
 
-  const storedPoints = getPoints(handle.y);
-  if (storedPoints.length < 2) return;
-  const { startAnchor, endAnchor } = getEndpointAnchors(handle.y);
+  const storedPoints = getConnectorRoute(handle.id);
+  if (!storedPoints || storedPoints.length < 2) return;
+  const startEp = handle.y.get('start') as ConnectorEndpoint | undefined;
+  const endEp = handle.y.get('end') as ConnectorEndpoint | undefined;
+  const startAnchor = startEp && !Array.isArray(startEp) ? (startEp as StoredAnchor) : undefined;
+  const endAnchor = endEp && !Array.isArray(endEp) ? (endEp as StoredAnchor) : undefined;
   if (startAnchor && 'interior' in startAnchor && startAnchor.interior) {
     drawConnectorDashGuide(ctx, startPos, storedPoints[0]);
   }

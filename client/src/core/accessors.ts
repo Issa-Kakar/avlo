@@ -14,13 +14,13 @@ import type {
   CodeLanguage,
   CodeProps,
   ConnectorCap,
+  ConnectorEndpoint,
   ConnectorType,
   FontFamily,
   ImageProps,
   NoteProps,
   ObjectHandle,
   ShapeProps,
-  StoredAnchor,
   StrokeProps,
   TextAlign,
   TextAlignV,
@@ -34,6 +34,7 @@ export type {
   CodeLanguage,
   CodeProps,
   ConnectorCap,
+  ConnectorEndpoint,
   ConnectorType,
   Dir,
   FontFamily,
@@ -117,20 +118,12 @@ export function hasLabel(y: Y.Map<unknown>): boolean {
 // CONNECTOR-SPECIFIC ACCESSORS
 // ============================================================================
 
-export function getStart(y: Y.Map<unknown>): [number, number] | undefined {
-  return y.get('start') as [number, number] | undefined;
+export function getStart(y: Y.Map<unknown>): ConnectorEndpoint | undefined {
+  return y.get('start') as ConnectorEndpoint | undefined;
 }
 
-export function getEnd(y: Y.Map<unknown>): [number, number] | undefined {
-  return y.get('end') as [number, number] | undefined;
-}
-
-export function getStartAnchor(y: Y.Map<unknown>): StoredAnchor | undefined {
-  return y.get('startAnchor') as StoredAnchor | undefined;
-}
-
-export function getEndAnchor(y: Y.Map<unknown>): StoredAnchor | undefined {
-  return y.get('endAnchor') as StoredAnchor | undefined;
+export function getEnd(y: Y.Map<unknown>): ConnectorEndpoint | undefined {
+  return y.get('end') as ConnectorEndpoint | undefined;
 }
 
 export function getStartCap(y: Y.Map<unknown>): ConnectorCap {
@@ -149,10 +142,8 @@ export function getConnectorType(y: Y.Map<unknown>): ConnectorType {
 }
 
 export interface ConnectorProps {
-  start: [number, number];
-  end: [number, number];
-  startAnchor?: StoredAnchor;
-  endAnchor?: StoredAnchor;
+  start: ConnectorEndpoint;
+  end: ConnectorEndpoint;
   startCap: ConnectorCap;
   endCap: ConnectorCap;
   connectorType: ConnectorType;
@@ -160,29 +151,13 @@ export interface ConnectorProps {
   color: string;
 }
 
-export function getEndpoints(y: Y.Map<unknown>): { start?: [number, number]; end?: [number, number] } {
-  return {
-    start: y.get('start') as [number, number] | undefined,
-    end: y.get('end') as [number, number] | undefined,
-  };
-}
-
-export function getEndpointAnchors(y: Y.Map<unknown>): { startAnchor?: StoredAnchor; endAnchor?: StoredAnchor } {
-  return {
-    startAnchor: y.get('startAnchor') as StoredAnchor | undefined,
-    endAnchor: y.get('endAnchor') as StoredAnchor | undefined,
-  };
-}
-
 export function getConnectorProps(y: Y.Map<unknown>): ConnectorProps | null {
-  const start = y.get('start') as [number, number] | undefined;
-  const end = y.get('end') as [number, number] | undefined;
+  const start = y.get('start') as ConnectorEndpoint | undefined;
+  const end = y.get('end') as ConnectorEndpoint | undefined;
   if (!start || !end) return null;
   return {
     start,
     end,
-    startAnchor: y.get('startAnchor') as StoredAnchor | undefined,
-    endAnchor: y.get('endAnchor') as StoredAnchor | undefined,
     startCap: getStartCap(y),
     endCap: getEndCap(y),
     connectorType: getConnectorType(y),

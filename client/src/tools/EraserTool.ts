@@ -1,9 +1,8 @@
-import { getEndAnchor, getStartAnchor } from '@/core/accessors';
 import { atPoint, queryHandleIds } from '@/core/spatial/object-query';
 import { getAnimationController } from '@/renderer/animation/AnimationController';
 import type { EraserTrailAnimation } from '@/renderer/animation/EraserTrailAnimation';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { getConnectorsForShape, getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { detachConnectorFromShape, getAttachedConnectors, getHandle, getObjects, transact } from '@/runtime/room-runtime';
 import { worldToCanvas } from '@/stores/camera-store';
 import type { PointerTool } from './types';
 
@@ -162,61 +161,26 @@ export class EraserTool implements PointerTool {
 
     const idsToDelete = this.state.hitAccum;
 
-    // Collect connector anchor cleanups needed
-    // Map: connectorId → { clearStart: boolean, clearEnd: boolean }
-    const anchorCleanups = new Map<string, { clearStart: boolean; clearEnd: boolean }>();
-
+    // Collect (connectorId, shapeId) pairs to detach. Surviving connectors get their bound
+    // endpoint(s) replaced with the cached route's first/last point so they remain visible.
+    const detachPairs: [string, string][] = [];
     for (const id of idsToDelete) {
-      // Skip connectors - they don't have shapes anchored to them
       const handle = getHandle(id);
       if (!handle || handle.kind === 'connector') continue;
 
-      // Find connectors anchored to this shape
-      const connectorIds = getConnectorsForShape(id);
+      const connectorIds = getAttachedConnectors(id);
       if (!connectorIds) continue;
-
       for (const connectorId of connectorIds) {
-        // Skip if connector is also being deleted
         if (idsToDelete.has(connectorId)) continue;
-
-        const connectorHandle = getHandle(connectorId);
-        if (!connectorHandle) continue;
-
-        // Check which anchor(s) point to this shape
-        const startAnchor = getStartAnchor(connectorHandle.y);
-        const endAnchor = getEndAnchor(connectorHandle.y);
-
-        const existing = anchorCleanups.get(connectorId) ?? { clearStart: false, clearEnd: false };
-
-        if (startAnchor?.id === id) {
-          existing.clearStart = true;
-        }
-        if (endAnchor?.id === id) {
-          existing.clearEnd = true;
-        }
-
-        if (existing.clearStart || existing.clearEnd) {
-          anchorCleanups.set(connectorId, existing);
-        }
+        detachPairs.push([connectorId, id]);
       }
     }
 
-    // Single transaction: clear dead anchors + delete objects
+    // Single transaction: detach surviving connectors + delete objects.
     transact(() => {
-      // Step 1: Clear dead anchors from affected connectors
-      for (const [connectorId, { clearStart, clearEnd }] of anchorCleanups) {
-        const connectorYMap = getObjects().get(connectorId);
-        if (!connectorYMap) continue;
-
-        if (clearStart) {
-          connectorYMap.delete('startAnchor');
-        }
-        if (clearEnd) {
-          connectorYMap.delete('endAnchor');
-        }
+      for (const [connectorId, shapeId] of detachPairs) {
+        detachConnectorFromShape(connectorId, shapeId);
       }
-
-      // Step 2: Delete the objects
       for (const id of idsToDelete) {
         getObjects().delete(id);
       }

@@ -29,6 +29,9 @@ export const BINDABLE_KINDS: readonly BindableKind[] = ['shape', 'text', 'code',
 const BINDABLE_SET: ReadonlySet<ObjectKind> = new Set(BINDABLE_KINDS);
 export const isBindableKind = (k: ObjectKind): k is BindableKind => BINDABLE_SET.has(k);
 
+/** Two `===` checks beat the 6-element Set lookup `isBindableKind` does in propagation hot loops. */
+export const isUnbindableKind = (k: ObjectKind): k is UnbindableKind => k === 'stroke' || k === 'connector';
+
 export type BindableHandle = ObjectHandle & { kind: BindableKind };
 export const isBindableHandle = (h: ObjectHandle | null | undefined): h is BindableHandle => !!h && isBindableKind(h.kind);
 
@@ -73,6 +76,13 @@ export interface StoredStraightAnchor {
   anchor: [number, number];
 }
 export type StoredAnchor = StoredElbowAnchor | StoredStraightAnchor;
+
+/**
+ * Connector endpoint stored in Y.Map. Discriminated by `Array.isArray`:
+ * - `[number, number]` — free Point
+ * - `StoredAnchor`     — bound to a shape (StoredElbowAnchor | StoredStraightAnchor by parent connectorType)
+ */
+export type ConnectorEndpoint = [number, number] | StoredAnchor;
 
 /** Connector routing style */
 export type ConnectorType = 'elbow' | 'straight';

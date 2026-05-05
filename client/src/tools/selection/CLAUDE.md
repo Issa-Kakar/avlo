@@ -554,7 +554,7 @@ Two orthogonal classifications, decided at begin:
 | Mode | Condition | Per-frame work |
 |---|---|---|
 | `static` | Both endpoints canonical (only selected connectors enter) | None — renderer draws at stored position |
-| `translate` | Both endpoints non-canonical AND gesture is `translate` | Rigid bbox shift; commit translates points once |
+| `translate` | Both endpoints non-canonical AND gesture is `translate` | Rigid bbox shift; renderer reads cached route + applies `ctx.translate(dx, dy)` |
 | `reroute` | Anything else (incl. any scale gesture with non-canonical endpoints) | `rerouteConnector(id, { start?, end? })` |
 
 ### Shape
@@ -593,7 +593,19 @@ Free-apply math lives in two helpers — `resolveFreeScale(s, ctx)` and `resolve
 
 ### Commit
 
-`commitReroute` writes `points` as-is (A*/simplify yields fresh interior tuples), then clones the first/last into `start`/`end` so Y.Map never holds a live topology reference. `commitTranslate` allocates one translated `Point[]` from `originalPoints + (dx, dy)` — no per-frame polyline buffer.
+Single rule for both `commitTranslate` and `commitReroute`:
+
+> **Free endpoints commit a Point. Bound endpoints commit nothing. `points` is never committed.**
+
+The bound shape's frame write in the same transaction triggers the observer reroute on tx end, which populates the local route cache via `ConnectorRouter.rerouteCanonical`. Off-gesture consumers read the fresh cache.
+
+- `commitTranslate(e, dx, dy)` reads the OLD pre-gesture endpoint union from Y.Map. Free side → `y.set(side, [x + dx, y + dy])`. Bound side → no-op.
+- `commitReroute(e)` reads each side's `RerouteEntry`. Free side → write its `scratch` Point (already updated each frame by `resolveFreeScale` / `resolveFreeTranslate`). Bound side → no-op.
+
+Coverage by topology:
+- **Both free, translate**: both write translated Points. Observer reroutes.
+- **Both bound, translate or scale**: nothing written for connector. Both shapes' frame writes propagate via Phase B → connector → Phase C reroutes.
+- **Mixed (one bound, one free)**: free side writes Point; bound side skipped. Phase B propagates the bound shape's bbox change → connector enters Phase C reroute.
 
 ### Public API
 
@@ -612,7 +624,7 @@ Free-apply math lives in two helpers — `resolveFreeScale(s, ctx)` and `resolve
 2. **Apply paths of bindable kinds are untouched.** `fillFrameFromBind` reads `entry.out.*` / `entry.frozen.*` — the only apply-adjacent concession is `applyOffset` propagating `f.scale → o.scale` when both sides carry the field.
 3. **Frame overrides are read-only.** `rerouteConnector` reads `override.frame` via `anchorFramePoint` / `elbowAnchorPoint`, both of which allocate fresh position tuples.
 4. **Free-endpoint scratches must be per-side.** Shared module scratches break multi-entry scale/translate because free-endpoint positions flow through to `currPoints`.
-5. **Y.Map never stores a live topology reference.** Commit clones endpoints; `makeSide` clones the stored baseline. Future reroute paths can be added without re-opening either aliasing vector.
+5. **Y.Map never stores a live topology reference.** Commit allocates fresh `[x, y]` tuples for free-Point writes; `makeSide` clones the stored baseline into `originalPos`. The route polyline is local-cache only — never written to Y.Map.
 
 ---
 

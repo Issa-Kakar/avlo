@@ -140,8 +140,8 @@ export function redo(): void {
 }
 
 // ============================================
-// CONNECTOR LOOKUP RE-EXPORTS
+// CONNECTOR ROUTER RE-EXPORTS
 // ============================================
 
-// Re-export connector lookup for imperative access (SelectTool, EraserTool)
-export { getConnectorsForShape, hasConnectorLookup } from '@/core/connectors/connector-lookup';
+// Re-export router accessors for imperative access (EraserTool, selection-actions, topology)
+export { detachConnectorFromShape, getAttachedConnectors, getConnectorRoute } from '@/core/connectors/connector-router';

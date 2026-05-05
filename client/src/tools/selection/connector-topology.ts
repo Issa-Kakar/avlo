@@ -15,16 +15,15 @@
  * `rerouteConnector` allocates fresh position tuples from the frame + anchor.
  */
 
-import { getEndpointAnchors, getEndpoints, getPoints } from '@/core/accessors';
 import { type FrameOverride, rerouteConnectorTransform, type TransformOverride } from '@/core/connectors/reroute-connector';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
-import type { BindableKind, ObjectHandle, StoredAnchor } from '@/core/types/objects';
+import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types/objects';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getConnectorsForShape, getHandle, getObjects } from '@/runtime/room-runtime';
+import { getAttachedConnectors, getHandle, getObjects } from '@/runtime/room-runtime';
 import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
 
@@ -68,8 +67,6 @@ export interface StaticEntry extends BaseEntry {
 
 export interface TranslateEntry extends DirtyEntry {
   readonly mode: 'translate';
-  /** Reference into Y.Map's points array — never mutated. */
-  readonly originalPoints: readonly Point[];
 }
 
 export interface RerouteEntry extends DirtyEntry {
@@ -196,16 +193,14 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       // Check connectors first — `selectedBindables` is only consulted when a connector
       // endpoint's anchor.id lands here, and that can only happen for connectors in this
       // shape's attached set. No attached → the frame freeze + map entry are unreachable.
-      const attached = getConnectorsForShape(id);
+      const attached = getAttachedConnectors(id);
       if (!attached || attached.size === 0) return;
 
       let frozenFrame: FrameTuple | null = null;
       if (kind === 'note' || kind === 'bookmark') {
-        const f = frameOf(handle);
-        // Baseline for note/bookmark's scale-ratio frame derivation in apply.
-        // Always present at transform begin (object was rendered to be selected);
-        // the early return is a totality guard, not a real expected branch.
-        if (!f) return;
+        // note/bookmark frames are populated during hydrate and only become null after delete,
+        // which can't happen for a selected handle mid-begin. Non-null assertion is sound here.
+        const f = frameOf(handle)!;
         frozenFrame = [f[0], f[1], f[2], f[3]];
       }
       selectedBindables.set(id, { kind, entry, frozenFrame });
@@ -250,7 +245,13 @@ function processConnector(
   reroutes: RerouteEntry[],
   byId: Map<string, ConnectorEntry>,
 ): void {
-  const { startAnchor, endAnchor } = getEndpointAnchors(conn.y);
+  // Read the union directly. `start`/`end` are `ConnectorEndpoint | undefined` —
+  // anchored side carries StoredAnchor, free side carries Point (or undefined for
+  // partially-built connectors, which become canonical free-fallback below).
+  const start = conn.y.get('start') as ConnectorEndpoint | undefined;
+  const end = conn.y.get('end') as ConnectorEndpoint | undefined;
+  const startAnchor = start && !Array.isArray(start) ? start : undefined;
+  const endAnchor = end && !Array.isArray(end) ? end : undefined;
   const startState = classifyEndpoint(startAnchor, isSelected, selectedBindables);
   const endState = classifyEndpoint(endAnchor, isSelected, selectedBindables);
 
@@ -264,21 +265,13 @@ function processConnector(
   }
 
   // TRANSLATE-ONLY — both endpoints move rigidly under translate gesture.
+  // No originalPoints: rendering reads cached route + applies ctx.translate(dx, dy).
   if (mode === 'translate' && startState !== 'canonical' && endState !== 'canonical') {
-    const pts = getPoints(conn.y);
-    let originalPoints: Readonly<Point[]>;
-    if (pts.length > 0) {
-      originalPoints = pts;
-    } else {
-      const { start, end } = getEndpoints(conn.y);
-      originalPoints = [start ?? ZERO_POINT, end ?? ZERO_POINT] as Point[];
-    }
     const ob = conn.bbox;
     const e: TranslateEntry = {
       mode: 'translate',
       id: conn.id,
       originalBbox: ob,
-      originalPoints,
       currBbox: [ob[0], ob[1], ob[2], ob[3]],
       prevBbox: [ob[0], ob[1], ob[2], ob[3]],
     };
@@ -288,13 +281,14 @@ function processConnector(
   }
 
   // REROUTE — everything else. Per-side overrides computed per frame.
-  const { start: storedStart, end: storedEnd } = getEndpoints(conn.y);
   const ob = conn.bbox;
+  const startStoredPos = start && Array.isArray(start) ? (start as Point) : undefined;
+  const endStoredPos = end && Array.isArray(end) ? (end as Point) : undefined;
   const e: RerouteEntry = {
     mode: 'reroute',
     id: conn.id,
-    start: makeSide(startState, startAnchor, storedStart, selectedBindables),
-    end: makeSide(endState, endAnchor, storedEnd, selectedBindables),
+    start: makeSide(startState, startAnchor, startStoredPos, selectedBindables),
+    end: makeSide(endState, endAnchor, endStoredPos, selectedBindables),
     originalBbox: ob,
     currBbox: [ob[0], ob[1], ob[2], ob[3]],
     prevBbox: [ob[0], ob[1], ob[2], ob[3]],
@@ -449,28 +443,31 @@ export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 
   for (const e of topology.reroutes) commitReroute(e);
 }
 
+/**
+ * Commit rule (both translate and reroute): free endpoints commit a Point, bound
+ * endpoints commit nothing, `points` is never committed. The bound shape's frame
+ * write in the same tx triggers the observer reroute on tx end → router caches
+ * the final route → consumers read the fresh cache.
+ */
 function commitTranslate(e: TranslateEntry, dx: number, dy: number): void {
   const y = getObjects().get(e.id);
   if (!y) return;
-  const src = e.originalPoints;
-  const pts: Point[] = new Array(src.length);
-  for (let i = 0; i < src.length; i++) pts[i] = [src[i][0] + dx, src[i][1] + dy];
-  y.set('points', pts);
-  y.set('start', pts[0]);
-  y.set('end', pts[pts.length - 1]);
+  // Read the OLD pre-gesture endpoints (no in-gesture writes happened).
+  // Free side → write translated Point. Bound side → skip.
+  const start = y.get('start') as ConnectorEndpoint | undefined;
+  const end = y.get('end') as ConnectorEndpoint | undefined;
+  if (start && Array.isArray(start)) y.set('start', [start[0] + dx, start[1] + dy] as Point);
+  if (end && Array.isArray(end)) y.set('end', [end[0] + dx, end[1] + dy] as Point);
 }
 
 function commitReroute(e: RerouteEntry): void {
   const y = getObjects().get(e.id);
   if (!y) return;
-  const p = e.currPoints;
-  if (!p || p.length < 2) return;
-  // Clone endpoints so Y.Map never holds a reference that we (or any future topology
-  // reroute path) might mutate on a subsequent gesture. Interior points are fresh
-  // from A*/simplify, so `points` array can be stored as-is.
-  y.set('points', p);
-  y.set('start', [p[0][0], p[0][1]]);
-  y.set('end', [p[p.length - 1][0], p[p.length - 1][1]]);
+  // Free-side scratches were updated each frame by resolveFreeScale/resolveFreeTranslate.
+  // Bound-side commits skipped — the bound bindable's commit (frame/origin/scale) writes
+  // its own change, which the observer turns into a propagation → rerouteIds → canonical reroute.
+  if (e.start && e.start.kind === 'free') y.set('start', [e.start.scratch[0], e.start.scratch[1]] as Point);
+  if (e.end && e.end.kind === 'free') y.set('end', [e.end.scratch[0], e.end.scratch[1]] as Point);
 }
 
 // ============================================================================

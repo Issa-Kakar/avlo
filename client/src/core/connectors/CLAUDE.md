@@ -13,8 +13,9 @@ Two routing modes, one front-end:
 - **Straight** — direct point-to-point with per-endpoint pull-back and (for
   interior anchors) a ray-cast to the shape boundary.
 
-The snap layer, endpoint resolver, connector-lookup, render atoms, and Y.Map
-schema are shared. Divergence points:
+The snap layer, endpoint resolver, connector-router (route cache + reverse
+shape→connector map), render atoms, and Y.Map schema are shared. Divergence
+points:
 
 | Concern | Elbow | Straight |
 |---|---|---|
@@ -24,8 +25,12 @@ schema are shared. Divergence points:
 | Endpoint offset | Cardinal (along projected `dir`), applied at resolve (`elbowAnchorPoint`) | Along-line pull-back, applied during route (`applyPullBack`) |
 | Routing algorithm | A* over dynamic grid + obstacles | Two points, ray-cast for interior |
 
-Routing is deterministic from Y.map + current shape frames — no persistent
-route state; every reroute recomputes.
+Routing is deterministic from Y.map + current shape frames. Routes live in a
+**local cache** owned by `ConnectorRouter`, populated by the deep observer on
+every relevant input change (endpoint write, connectorType swap, attached-bindable
+bbox change, attached-shape `shapeType` swap). Y.Map stores intent only — the
+endpoint union per side, plus type/style/cap fields. The route polyline never
+hits the wire.
 
 ---
 
@@ -55,7 +60,7 @@ client/src/core/connectors/
 ├── routing-context.ts    # Centerlines, dynamic routing bounds, stubs, grid construction
 ├── routing-astar.ts      # computeAStarRoute + A* with segment-intersection
 ├── connector-paths.ts    # Path2D builders (rounded polyline + arrows, trim compensation)
-├── connector-lookup.ts   # Reverse map: shapeId → Set<connectorId>
+├── connector-router.ts   # Route cache + reverse shapeId→connectors map + detachConnectorFromShape helper
 ├── reroute-connector.ts  # Endpoint resolution, straight route assembly, three reroute entry points + routeNewConnector
 └── binary-heap.ts        # MinHeap used by A*
 ```
@@ -74,36 +79,38 @@ Renderer glue: `renderer/layers/connector-render-atoms.ts` (paint + feedback),
 {
   id: string;
   kind: 'connector';
-  connectorType: 'elbow' | 'straight';  // REQUIRED — always written on new commits
-  points: [number, number][];           // Full routed path, render-ready
-  start: [number, number];              // Stored endpoint position (fallback when free)
-  end:   [number, number];
-
-  startAnchor?: StoredElbowAnchor | StoredStraightAnchor;  // Shape tied to connectorType
-  endAnchor?:   StoredElbowAnchor | StoredStraightAnchor;
-
+  connectorType: 'elbow' | 'straight';  // REQUIRED — always written
+  start: ConnectorEndpoint;             // Single field per side: Point | StoredAnchor
+  end:   ConnectorEndpoint;
   startCap: 'none' | 'arrow';
   endCap:   'none' | 'arrow';
   color, width, ownerId, createdAt
 }
 
+type ConnectorEndpoint = [number, number] | StoredAnchor;
+// Discriminated by Array.isArray:
+//   [number, number] — free Point
+//   StoredAnchor    — shape-bound (anchor record below)
+
 interface StoredElbowAnchor    { id: string;                    anchor: [number, number]; }
 interface StoredStraightAnchor { id: string; interior: boolean; anchor: [number, number]; }
+type StoredAnchor = StoredElbowAnchor | StoredStraightAnchor;  // discriminated by parent connectorType
 ```
 
 - **`connectorType` is the discriminator** for both anchor union branches and
   every routing decision downstream. `getConnectorType(y)` defaults to `'elbow'`
   on stale reads; every new write carries the explicit value.
+- **No `points` field** — the routed polyline is local-cache only, owned by
+  `ConnectorRouter` and populated by the deep observer.
+- **No separate `startAnchor` / `endAnchor` fields** — endpoint data collapses
+  into one union per side. `Array.isArray(ep)` distinguishes Point from anchor.
 - **Elbow `side` is *derived*** at route time from `(anchor + live frame +
-  shapeType)` via `projectAnchorToEdge` — never persisted. Old Y.Maps may carry
-  a `side` field; readers ignore it, writers omit it. Auto-corrects when the
-  shape's aspect ratio or shape-type changes.
+  shapeType)` via `projectAnchorToEdge` — never persisted. Auto-corrects when
+  the shape's aspect ratio or shape-type changes.
 - **Straight `interior`** is committed at snap time (user intent — center vs
   edge). Cannot be reconstructed from the normalized anchor alone.
 - **`anchor: [0-1, 0-1]`** is normalized into the shape's frame — resizes and
   moves reduce to linear interpolation, shape-agnostic.
-- **`start` / `end` Y.Map fields stay** in this PR. They will fold into a
-  `Point | StoredAnchor` union in the follow-up local-routing refactor.
 - Connectors always render at opacity 1; no stored `opacity`.
 
 ---
@@ -235,8 +242,8 @@ defensive nullability.
 
 ```
 rerouteConnectorEndpointDrag(id, endpoint, override)        // SelectTool
-rerouteConnectorTransform(id, startOverride, endOverride)   // connector-topology
-rerouteConnectorCanonical(id)                                // future "update affected"
+rerouteConnectorTransform(id, startOverride, endOverride)   // connector-topology + ConnectorRouter
+                                                             //   (router calls with (null, null) for canonical reroute)
 routeNewConnector(start, end, strokeWidth, type)             // ConnectorTool
 ```
 
@@ -264,9 +271,11 @@ distinct from past outputs. Consequences for callers:
 - A scratch tuple used as a free-position override **must not** be shared
   across multiple reroute calls within one apply pass — see
   `connector-topology.ts` `FreeSide.scratch` (per-side, not module-shared).
-- Callers persisting the route to Y.Map **must** clone `points[0]` and
-  `points[last]` before writing `start` / `end` (Y.Map preserves references,
-  so an un-cloned write resurfaces as the next gesture's "stored position").
+- Callers persisting *free* endpoint positions to Y.Map (e.g. SelectTool's
+  endpoint-drag commit) must clone the route's first/last point — Y.Map
+  preserves references, so an un-cloned write resurfaces as the next
+  gesture's "stored position". Routed paths themselves never go to Y.Map
+  under the new schema; the route lives only in the local cache.
 
 **Synchronous-only contract.** The reroute pipeline owns module scratches in
 `reroute-connector.ts`, `routing-context.ts`, and `routing-astar.ts`. Callers
@@ -314,13 +323,15 @@ to express (`if (!me.isAnchored || !me.normalizedAnchor || !me.frame)` →
 ### Resolvers (per pipeline, all `connectorType`-free)
 
 Each pipeline exposes:
-- `resolveXxxSide(override, anchor, storedPos)` — handles transform overrides
-  AND canonical (`override === null` reads frame from `getHandle(anchor.id)`;
-  `Point` override = free; `FrameOverride` reapplies anchor on the supplied frame).
+- `resolveXxxSide(override, endpoint, cachedRoute, side)` — handles transform
+  overrides AND canonical. `endpoint` is the union from Y.Map (`Point` →
+  free; `StoredAnchor` → resolve frame via `frameOf(getHandle(id))`; absent →
+  cached-route fallback). `cachedRoute` is the local-cache route used for
+  dangling-anchor fallback when `frameOf` returns null.
 - `resolveXxxFromSnapOrPoint(input)` — shared by SelectTool drag and
   `routeNewConnector`. `Point` input = free; `SnapTarget` input → factory.
 
-The straight side casts `anchor as StoredStraightAnchor` once at the boundary
+The straight side casts `endpoint as StoredStraightAnchor` once at the boundary
 — the parent connector's `connectorType` discriminates the union, so the cast
 is sound and isolated.
 
@@ -347,8 +358,8 @@ rerouteConnectorTransform(cid,
 const snap = findBestSnapTarget(snapCtx);
 rerouteConnectorEndpointDrag(cid, endpoint, snap ?? [worldX, worldY]);
 
-// Trust Y.Map entirely (future "update affected connectors"):
-rerouteConnectorCanonical(cid);
+// Canonical reroute (router-driven — observer Phase C, hydrate Pass 2):
+rerouteConnectorTransform(cid, null, null);
 ```
 
 ---
@@ -526,15 +537,13 @@ rerouteConnectorEndpointDrag(
   override: SnapTarget | Point,                    // EndpointDragOverride
 ): RerouteResult | null;                           // { points, bbox }
 
-// connector-topology transforms — per-side FrameOverride | Point | null.
+// connector-topology transforms + ConnectorRouter canonical reroute (router calls
+// with both nulls; topology with FrameOverride | Point per side).
 rerouteConnectorTransform(
   connectorId: string,
   startOverride: FrameOverride | Point | null,
   endOverride:   FrameOverride | Point | null,
 ): RerouteResult | null;
-
-// Trust Y.Map (future "update affected connectors") — wrapper over Transform.
-rerouteConnectorCanonical(connectorId: string): RerouteResult | null;
 
 // Route new — no Y.map; same resolver + routing pipeline. (ConnectorTool.)
 routeNewConnector(
@@ -546,7 +555,7 @@ routeNewConnector(
 ```
 
 Internal flow — each public entry reads `ctx = readContext(connectorId)` once
-(shared Y.Map fetch — schema doesn't fork by type), then branches on
+(shared Y.Map fetch + cached-route lookup), then branches on
 `ctx.connectorType` exactly once and dispatches to a per-pipeline private:
 
 ```typescript
@@ -559,12 +568,12 @@ export function rerouteConnectorTransform(connectorId, startOverride, endOverrid
 }
 
 function rerouteElbowTransform(ctx, sOv, eOv) {
-  const start = resolveElbowSide(sOv, ctx.startAnchor, ctx.storedStart);
-  const end   = resolveElbowSide(eOv, ctx.endAnchor,   ctx.storedEnd);
+  const start = resolveElbowSide(sOv, ctx.start, ctx.cachedRoute, 'start');
+  const end   = resolveElbowSide(eOv, ctx.end,   ctx.cachedRoute, 'end');
   const { points } = computeElbowRoute(start, end, ctx.strokeWidth);
   return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
 }
-// rerouteStraightTransform symmetric. Drag + canonical follow the same shape.
+// rerouteStraightTransform symmetric. Drag follows the same shape.
 ```
 
 `connectorType` lives only in `ConnectorContext` (the `readContext` output) and
@@ -598,27 +607,64 @@ anchorRecordFromSnap(snap: SnapTarget): StoredAnchor;
 // Elbow snap → { id, anchor };  straight snap → { id, interior, anchor }.
 
 getEndpointEdgePosition(handle, endpoint: 'start' | 'end'): Point;
-// "Where does this endpoint's dot sit?" — always the raw frame point.
+// "Where does this endpoint's dot sit?" — raw frame point when bound, free
+// position when free, cached-route fallback when target frame is gone.
 ```
 
 ---
 
-## Connector Lookup (reverse map)
+## Connector Router (`connector-router.ts`)
 
-O(1) `shapeId → Set<connectorId>` for SelectTool transforms and EraserTool
-deletions. Maintained incrementally by `RoomDocManager` observers.
+Owns three private maps, maintained by `RoomDocManager`'s deep observer:
 
-| RoomDocManager event | Call |
-|---|---|
-| Construction | `initConnectorLookup()` |
-| Hydrate | `hydrateConnectorLookup(objectsById)` |
-| Connector add/update/delete | `processConnectorAdded/Updated/Deleted(id, yObj?)` |
-| Shape delete | `processShapeDeleted(shapeId)` |
-| Teardown | `clearConnectorLookup()` |
+| Map | Shape | Updated when |
+|---|---|---|
+| `shapeToConnectors` | `shapeId → Set<connectorId>` | Connector start/end key change → `updateAnchors`; connector add → `registerConnector`; connector delete → `removeConnector`; shape delete → `removeShape` |
+| `anchorIds` | `connectorId → [startShapeId, endShapeId]` (mutated in place) | Same as above; tuple slots reused after first registration |
+| `routes` | `connectorId → Point[]` (fresh references owned by router) | `rerouteCanonical` writes after a successful reroute |
 
-Self-loops (both endpoints → same shape) are deduped via `uniqueShapeIds`.
-Query: `getConnectorsForShape(shapeId)`, re-exported from
-`@/runtime/room-runtime`.
+Self-loops (both endpoints → same shape) are deduped inline with four `!==`
+checks against fixed slots — no `Set` allocation per update.
+`removeConnector` / `removeShape` are unconditional no-ops on unknown ids.
+
+### Read API
+
+```typescript
+getConnectorRoute(id):           Point[] | null              // module-level — every connector consumer reads this
+getAttachedConnectors(shapeId):  ReadonlySet<string> | undefined
+detachConnectorFromShape(connectorId, shapeId):  void        // shape-deletion helper (transact-required)
+```
+
+`getConnectorRoute` is the single source of truth for routed polylines —
+read by `bbox.ts` (connector bbox), `kind-capability.ts` (CONNECTOR_CAP hit
+predicates), `geometry-cache.ts` (Path2D builder), `selection-overlay.ts`
+(dashed guides), `anchor-atoms.ts` (dangling-anchor fallback), and
+`reroute-connector.ts` (cached-route fallback inside resolvers). Bbox is
+derived freshly per access via `computeConnectorBBoxFromPoints` on the cached
+route — no separate bbox cache.
+
+### Lifecycle (RoomDocManager)
+
+```
+construct → setActiveConnectorRouter(router)
+hydrate   → Pass 1 registerConnector for every connector;
+            Pass 2 rerouteCanonical fills routes + bbox (after non-connectors are seeded)
+observer  → top-level add → registerConnector + rerouteIds.add
+            top-level delete → removeConnector + removeShape (unconditional)
+            connector start/end/connectorType change → updateAnchors + rerouteIds.add
+            shape shapeType swap → propagate rerouteIds via getAttached
+            bindable bbox change (Phase B) → propagate rerouteIds via getAttached
+Phase C   → for each rerouteId: rerouteCanonical → upsertHandle (evictGeometry first)
+destroy   → router.clear() + setActiveConnectorRouter(null)
+```
+
+### `detachConnectorFromShape(connectorId, shapeId)`
+
+Used by EraserTool + selection-actions when a shape with attached connectors
+is deleted. Reads the cached route, replaces any bound endpoint pointing at
+`shapeId` with the route's first/last point (cloned), so the connector remains
+visible at its last-known position. No-op when no cached route exists. Caller
+must run inside a `transact()` block.
 
 ---
 
@@ -735,9 +781,11 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 | Create new connector | `routeNewConnector(start, end, strokeWidth, type?)` |
 | Reroute on endpoint drag (SelectTool) | `rerouteConnectorEndpointDrag(id, endpoint, snap \| pt)` |
 | Reroute under shape transform (topology) | `rerouteConnectorTransform(id, startOv, endOv)` |
-| Reroute reading Y.Map (no overrides) | `rerouteConnectorCanonical(id)` |
+| Reroute reading Y.Map (no overrides — router only) | `rerouteConnectorTransform(id, null, null)` |
+| Read cached route polyline | `getConnectorRoute(id)` |
 | Find snap target | `findBestSnapTarget(ctx)` |
-| All connectors anchored to a shape | `getConnectorsForShape(shapeId)` |
+| All connectors anchored to a shape | `getAttachedConnectors(shapeId)` |
+| Detach connector from a deleting shape | `detachConnectorFromShape(connectorId, shapeId)` (inside `transact()`) |
 | Anchor → frame point | `anchorFramePoint(anchor, frame)` |
 | Elbow anchor → routing point (with cardinal offset) | `elbowAnchorPoint(anchor, frame, dir)` |
 | Project normalized anchor → edge point + outward normal + Dir | `projectAnchorToEdge(anchor, frame, shapeType, outEdge, outNormal)` |

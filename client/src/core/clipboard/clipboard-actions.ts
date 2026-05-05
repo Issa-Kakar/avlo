@@ -32,7 +32,7 @@ import { bboxCenter, bboxSize, translateBBox, translateFrame, translatePoint, tr
 import { createImageFromBlob } from '../image/image-actions';
 import { enqueue } from '../image/image-manager';
 import { type BBoxTuple, bboxTupleToWorldBounds, type FrameTuple, type Point } from '../types/geometry';
-import type { StoredAnchor } from '../types/objects';
+import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
 import {
   type ClipboardPayload,
   DEFAULT_HIGHLIGHT,
@@ -203,21 +203,21 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
             yObj.set('origin', translatePoint(value as Point, dx, dy));
             break;
           case 'points':
+            // Strokes still use `points`; connectors no longer do.
             yObj.set('points', translatePoints(value as Point[], dx, dy));
             break;
           case 'start':
-            yObj.set('start', translatePoint(value as Point, dx, dy));
-            break;
-          case 'end':
-            yObj.set('end', translatePoint(value as Point, dx, dy));
-            break;
-          case 'startAnchor':
-          case 'endAnchor': {
-            // Spread preserves the variant's discriminating field (`side` for elbow,
-            // `interior` for straight) — only the target id gets remapped. If the anchor
-            // target isn't in the paste set, drop it so the endpoint becomes free.
-            const remapped = remapAnchor(value as StoredAnchor, idMap);
-            if (remapped) yObj.set(key, remapped);
+          case 'end': {
+            // Connector endpoint union: free Point translates by [dx, dy]; StoredAnchor
+            // remaps target id when in paste set, else passes through (becomes dangling
+            // until target is also pasted — resolver falls back to cached route).
+            const ep = value as ConnectorEndpoint;
+            if (Array.isArray(ep)) {
+              yObj.set(key, translatePoint(ep as Point, dx, dy));
+            } else {
+              const remapped = remapAnchor(ep as StoredAnchor, idMap);
+              yObj.set(key, remapped ?? ep);
+            }
             break;
           }
           default:

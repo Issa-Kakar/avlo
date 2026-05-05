@@ -20,6 +20,7 @@ import { routeNewConnector } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
 import type { ConnectorCap, ConnectorType, SnapTarget } from '@/core/connectors/types';
 import type { Point } from '@/core/types/geometry';
+import type { ConnectorEndpoint } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { isCtrlHeld } from '@/runtime/InputManager';
 import { getObjects, transact } from '@/runtime/room-runtime';
@@ -197,26 +198,26 @@ export class ConnectorTool implements PointerTool {
   }
 
   private commitConnector(): void {
-    if (!this.fromPosition || !this.toPosition || this.routedPoints.length < 2) return;
+    const fromPos = this.fromPosition;
+    const toPos = this.toPosition;
+    if (!fromPos || !toPos || this.routedPoints.length < 2) return;
 
     const id = ulid();
     const userId = getUserId();
+    const fromSnap = this.fromSnap;
+    const toSnap = this.toSnap;
     transact(() => {
       const connectorMap = new Y.Map<unknown>();
 
       connectorMap.set('id', id);
       connectorMap.set('kind', 'connector');
 
-      // Full routed path (assembled, ready to render)
-      connectorMap.set('points', this.routedPoints);
-
-      // Endpoint positions (use routed path endpoints for consistency)
-      connectorMap.set('start', this.routedPoints[0]);
-      connectorMap.set('end', this.routedPoints[this.routedPoints.length - 1]);
-
-      // Anchor data (only if snapped to a shape) — shape matches connector type
-      if (this.fromSnap) connectorMap.set('startAnchor', anchorRecordFromSnap(this.fromSnap));
-      if (this.toSnap) connectorMap.set('endAnchor', anchorRecordFromSnap(this.toSnap));
+      // Single union per side. Anchor when snapped, Point otherwise. Local route cache
+      // is populated by the deep observer on Phase C (rerouteCanonical).
+      const start: ConnectorEndpoint = fromSnap ? anchorRecordFromSnap(fromSnap) : ([fromPos[0], fromPos[1]] as Point);
+      const end: ConnectorEndpoint = toSnap ? anchorRecordFromSnap(toSnap) : ([toPos[0], toPos[1]] as Point);
+      connectorMap.set('start', start);
+      connectorMap.set('end', end);
 
       // Caps and type — connectorType is ALWAYS stored now (required discriminated field)
       connectorMap.set('startCap', this.frozenStartCap);

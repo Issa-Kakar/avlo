@@ -17,6 +17,7 @@
 import { getStroke } from 'perfect-freehand';
 import { getEndCap, getFrame, getPoints, getShapeType, getStartCap, getWidth } from '@/core/accessors';
 import { buildConnectorPaths, type ConnectorPaths } from '@/core/connectors/connector-paths';
+import { getConnectorRoute } from '@/core/connectors/connector-router';
 import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import type { ObjectHandle } from '@/core/types/objects';
 import { getSvgPathFromStroke, PF_OPTIONS_BASE } from './types';
@@ -63,12 +64,12 @@ function buildGeometry(handle: ObjectHandle): CachedGeometry {
     }
 
     case 'connector': {
-      const points = getPoints(y);
-      const strokeWidth = getWidth(y);
-      const startCap = getStartCap(y);
-      const endCap = getEndCap(y);
-
-      return buildConnectorPaths({ points, strokeWidth, startCap, endCap });
+      // Read from local route cache — connector points no longer live in Y.Map.
+      const points = getConnectorRoute(handle.id);
+      if (!points || points.length < 2) {
+        return buildConnectorPaths({ points: points ?? [], strokeWidth: getWidth(y), startCap: getStartCap(y), endCap: getEndCap(y) });
+      }
+      return buildConnectorPaths({ points, strokeWidth: getWidth(y), startCap: getStartCap(y), endCap: getEndCap(y) });
     }
 
     default:

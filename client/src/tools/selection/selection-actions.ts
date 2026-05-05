@@ -3,17 +3,15 @@ import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/acc
 import {
   getAlign,
   getContent,
-  getEndAnchor,
   getFontSize,
   getHeaderVisible,
   getLineNumbers,
   getOrigin,
   getOutputVisible,
-  getStartAnchor,
   hasLabel,
 } from '@/core/accessors';
 import { anchorFactor, getTextFrame } from '@/core/text/text-system';
-import { getConnectorsForShape, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
+import { detachConnectorFromShape, getAttachedConnectors, getObjects, getObjectsById, transact } from '@/runtime/room-runtime';
 import { textTool } from '@/runtime/tool-registry';
 import { type ConnectorSizePreset, type SizePreset, TEXT_FONT_SIZE_PRESETS, useDeviceUIStore } from '@/stores/device-ui-store';
 import { useSelectionStore } from '@/stores/selection-store';
@@ -133,47 +131,24 @@ export function deleteSelected(): void {
   const objectsById = getObjectsById();
   const idsToDelete = new Set(selectedIds);
 
-  // Collect connector anchor cleanups for surviving connectors
-  const anchorCleanups = new Map<string, { y: Y.Map<unknown>; clearStart: boolean; clearEnd: boolean }>();
-
+  // Collect (connectorId, shapeId) pairs to detach. Surviving connectors get their bound
+  // endpoint(s) replaced with the cached route's first/last point.
+  const detachPairs: [string, string][] = [];
   for (const id of idsToDelete) {
     const handle = objectsById.get(id);
     if (!handle || handle.kind === 'connector') continue;
-
-    const connectorIds = getConnectorsForShape(id);
+    const connectorIds = getAttachedConnectors(id);
     if (!connectorIds) continue;
-
     for (const connectorId of connectorIds) {
       if (idsToDelete.has(connectorId)) continue;
-
-      const connectorHandle = objectsById.get(connectorId);
-      if (!connectorHandle) continue;
-
-      const startAnchor = getStartAnchor(connectorHandle.y);
-      const endAnchor = getEndAnchor(connectorHandle.y);
-      const existing = anchorCleanups.get(connectorId) ?? {
-        y: connectorHandle.y,
-        clearStart: false,
-        clearEnd: false,
-      };
-
-      if (startAnchor?.id === id) existing.clearStart = true;
-      if (endAnchor?.id === id) existing.clearEnd = true;
-
-      if (existing.clearStart || existing.clearEnd) {
-        anchorCleanups.set(connectorId, existing);
-      }
+      detachPairs.push([connectorId, id]);
     }
   }
 
   transact(() => {
-    // Clear dead anchors via live handle references
-    for (const { y, clearStart, clearEnd } of anchorCleanups.values()) {
-      if (clearStart) y.delete('startAnchor');
-      if (clearEnd) y.delete('endAnchor');
+    for (const [connectorId, shapeId] of detachPairs) {
+      detachConnectorFromShape(connectorId, shapeId);
     }
-
-    // Delete objects
     const objects = getObjects();
     for (const id of idsToDelete) objects.delete(id);
   });

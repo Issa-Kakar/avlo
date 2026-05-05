@@ -327,18 +327,20 @@ type ObjectKind = 'stroke' | 'shape' | 'text' | 'connector' | 'code' | 'image' |
 ```typescript
 { id, kind: 'connector',
   connectorType: 'elbow' | 'straight',  // REQUIRED discriminated field — always written
-  points: [number, number][],  // Full routed path (ready to render)
-  start: [number, number], end: [number, number],
-  // Anchor shape discriminated by connectorType (parent is the discriminator):
-  //   elbow    → { id, anchor: [0-1, 0-1] }                       (side derived at route time)
-  //   straight → { id, interior: boolean, anchor: [0-1, 0-1] }    (interior committed at snap time)
-  startAnchor?: StoredElbowAnchor | StoredStraightAnchor,
-  endAnchor?:   StoredElbowAnchor | StoredStraightAnchor,
+  // Single union per side (discriminated by Array.isArray):
+  //   [number, number]  → free Point
+  //   StoredAnchor      → shape-bound; StoredElbowAnchor or StoredStraightAnchor by parent connectorType
+  //     elbow    → { id, anchor: [0-1, 0-1] }                       (side derived at route time)
+  //     straight → { id, interior: boolean, anchor: [0-1, 0-1] }    (interior committed at snap time)
+  start: ConnectorEndpoint,
+  end:   ConnectorEndpoint,
   startCap, endCap: 'none'|'arrow',
   color, width, ownerId, createdAt }
+// No `points` field — the routed polyline lives in a local cache
+// (`ConnectorRouter` owned by RoomDocManager), populated by the deep observer
+// on every relevant input change. Read via getConnectorRoute(id).
 // Connectors always render at opacity 1 — no opacity field stored.
-// getConnectorType(y) still defaults to 'elbow' on read for graceful handling of stale data.
-// Old Y.Maps may carry `side` on elbow anchors — readers ignore it; writers omit it.
+// getConnectorType(y) defaults to 'elbow' on read for graceful handling of stale data.
 ```
 Detailed connector docs in `core/connectors/CLAUDE.md`.
 

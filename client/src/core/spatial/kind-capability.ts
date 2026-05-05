@@ -17,6 +17,7 @@
 import { getFillColor, getFrame, getPoints, getShapeType, getWidth } from '@/core/accessors';
 import { getBookmarkFrame } from '@/core/bookmark/bookmark-render';
 import { getCodeFrame } from '@/core/code/code-system';
+import { getConnectorRoute } from '@/core/connectors/connector-router';
 import {
   bboxesIntersect,
   circleHitsShape,
@@ -80,17 +81,17 @@ const STROKE_CAP: KindCapability<'stroke'> = {
 const CONNECTOR_CAP: KindCapability<'connector'> = {
   bindable: false,
   hitPoint: (h, p, r) => {
-    const points = getPoints(h.y);
-    if (points.length === 0) return null;
+    const points = getConnectorRoute(h.id);
+    if (!points || points.length === 0) return null;
     return strokeHitTest(p, points, r + getWidth(h.y) / 2) ? 'ink' : null;
   },
   hitRect: (h, bbox) => {
-    const points = getPoints(h.y);
-    return points.length > 0 && polylineIntersectsBBox(points, bbox);
+    const points = getConnectorRoute(h.id);
+    return !!points && points.length > 0 && polylineIntersectsBBox(points, bbox);
   },
   hitCircle: (h, c, r) => {
-    const points = getPoints(h.y);
-    return points.length > 0 && strokeHitTest(c, points, r);
+    const points = getConnectorRoute(h.id);
+    return !!points && points.length > 0 && strokeHitTest(c, points, r);
   },
 };
 

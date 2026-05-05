@@ -2,6 +2,7 @@ import type * as Y from 'yjs';
 import { getBookmarkProps, getEndCap, getFrame, getNoteProps, getPoints, getStartCap, getTextProps, getWidth } from '../accessors';
 import { BOOKMARK_WIDTH, computeBookmarkBBox } from '../bookmark/bookmark-render';
 import { computeCodeBBox } from '../code/code-system';
+import { getConnectorRoute } from '../connectors/connector-router';
 import { computeNoteBBox, NOTE_WIDTH } from '../text/sticky-note';
 import { computeTextBBox } from '../text/text-system';
 import type { BBoxTuple, Point, WorldBounds } from '../types/geometry';
@@ -84,46 +85,11 @@ export function computeBBoxFor(id: string, kind: ObjectKind, yMap: Y.Map<unknown
     }
 
     case 'connector': {
-      const points = getPoints(yMap);
-      if (points.length < 2) return [0, 0, 0, 0];
-
-      let minX = points[0][0],
-        minY = points[0][1];
-      let maxX = minX,
-        maxY = minY;
-
-      for (let i = 1; i < points.length; i++) {
-        const [x, y] = points[i];
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-      }
-
-      const width = getWidth(yMap);
-      const startCap = getStartCap(yMap);
-      const endCap = getEndCap(yMap);
-
-      // Polyline stroke extends perpendicular by half width
-      const strokePadding = width / 2;
-
-      // Arrow sizing (matches ROUTING_CONFIG in connectors/constants.ts):
-      // - arrowLength = max(ARROW_MIN_LENGTH_W=6, width * ARROW_LENGTH_FACTOR=3)
-      // - arrowHalfWidth = arrowLength * ARROW_ASPECT_RATIO / 2 = arrowLength / 2
-      // - Rounding stroke (roundingLineWidth=5) extends triangle by 2.5
-      const hasArrow = startCap === 'arrow' || endCap === 'arrow';
-
-      let padding: number;
-      if (hasArrow) {
-        const arrowLength = Math.max(6, width * 3);
-        const arrowHalfWidth = arrowLength / 2;
-        const arrowRounding = 2.5;
-        padding = Math.max(strokePadding, arrowHalfWidth + arrowRounding) + 1;
-      } else {
-        padding = strokePadding + 1;
-      }
-
-      return [minX - padding, minY - padding, maxX + padding, maxY + padding];
+      // Read from local route cache — connector points no longer live in Y.Map.
+      // Parallel to text/code/note/bookmark: each kind delegates to its subsystem cache.
+      const points = getConnectorRoute(id);
+      if (!points || points.length < 2) return [0, 0, 0, 0];
+      return computeConnectorBBoxFromPoints(points, yMap);
     }
 
     default:

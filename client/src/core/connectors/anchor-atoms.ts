@@ -10,10 +10,11 @@
  */
 
 import { getHandle } from '@/runtime/room-runtime';
-import { getEnd, getEndAnchor, getStart, getStartAnchor } from '../accessors';
+import { getEnd, getStart } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
 import type { FrameTuple, Point } from '../types/geometry';
-import type { ObjectHandle, StoredAnchor } from '../types/objects';
+import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '../types/objects';
+import { getConnectorRoute } from './connector-router';
 import { directionVector } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
 import { fillAnchorPoint } from './shape-geometry';
@@ -65,13 +66,20 @@ export function anchorRecordFromSnap(snap: SnapTarget): StoredAnchor {
  * The on-edge (or interior) world position for a connector endpoint — no clearance offset.
  * Anchored: interpolate stored normalized anchor against current shape frame.
  * Free: return stored position as-is. Used by hit testing and endpoint-dot rendering.
+ *
+ * Dangling anchor (target gone): falls back to cached route's first/last point.
  */
 export function getEndpointEdgePosition(handle: ObjectHandle, endpoint: 'start' | 'end'): Point {
-  const yMap = handle.y;
-  const storedPos = endpoint === 'start' ? getStart(yMap) : getEnd(yMap);
-  const anchor = endpoint === 'start' ? getStartAnchor(yMap) : getEndAnchor(yMap);
-  if (!anchor) return storedPos ?? ZERO_POINT;
-  const frame = frameOf(getHandle(anchor.id));
-  if (!frame) return storedPos ?? ZERO_POINT;
-  return anchorFramePoint(anchor.anchor, frame);
+  const ep: ConnectorEndpoint | undefined = endpoint === 'start' ? getStart(handle.y) : getEnd(handle.y);
+  if (!ep) return ZERO_POINT;
+  if (Array.isArray(ep)) return ep;
+  // ep is StoredAnchor — try frame, then fall back to cached route.
+  const frame = frameOf(getHandle((ep as StoredAnchor).id));
+  if (frame) return anchorFramePoint(ep.anchor, frame);
+  const route = getConnectorRoute(handle.id);
+  if (route && route.length > 0) {
+    const pt = endpoint === 'start' ? route[0] : route[route.length - 1];
+    return [pt[0], pt[1]];
+  }
+  return ZERO_POINT;
 }
