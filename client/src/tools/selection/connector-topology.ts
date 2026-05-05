@@ -202,9 +202,9 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       let frozenFrame: FrameTuple | null = null;
       if (kind === 'note' || kind === 'bookmark') {
         const f = frameOf(handle);
-        // Defensive: un-hydrated note/bookmark can't serve as a frame-bound anchor.
-        // Skipping here keeps attached connectors out of topology; rerouteConnector's
-        // Y.Map-read path will degrade to free-endpoint gracefully.
+        // Baseline for note/bookmark's scale-ratio frame derivation in apply.
+        // Always present at transform begin (object was rendered to be selected);
+        // the early return is a totality guard, not a real expected branch.
         if (!f) return;
         frozenFrame = [f[0], f[1], f[2], f[3]];
       }
