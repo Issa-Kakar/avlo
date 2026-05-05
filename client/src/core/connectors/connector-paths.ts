@@ -13,6 +13,13 @@
 import type { Point } from '../types/geometry';
 import { computeArrowLength, ROUTING_CONFIG } from './constants';
 
+/**
+ * Path sink: shared type with shape-path. Both `Path2D` (for caching) and
+ * `CanvasRenderingContext2D` (for direct emit in transform preview) implement
+ * the path-construction surface we use here.
+ */
+export type PathSink = Path2D | CanvasRenderingContext2D;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -122,13 +129,53 @@ export function buildConnectorPaths(params: ConnectorPathParams): ConnectorPaths
 // ============================================================================
 
 /**
+ * Emit rounded polyline commands into a `PathSink`.
+ * Same arcTo corner logic as `buildRoundedPolylinePath`; works on either Path2D
+ * (cache) or CanvasRenderingContext2D (direct draw, no Path2D allocation).
+ */
+export function emitRoundedPolylineIntoSink(
+  sink: PathSink,
+  points: Point[],
+  count: number,
+  startTrim: EndTrimInfo | null,
+  endTrim: EndTrimInfo | null,
+): void {
+  const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
+  if (count < 2) return;
+
+  const startPoint = startTrim?.trimmedPoint ?? points[0];
+  sink.moveTo(startPoint[0], startPoint[1]);
+
+  if (count === 2) {
+    const endPoint = endTrim?.trimmedPoint ?? points[1];
+    sink.lineTo(endPoint[0], endPoint[1]);
+    return;
+  }
+
+  for (let i = 1; i < count - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+
+    const lenIn = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
+    const lenOut = Math.hypot(next[0] - curr[0], next[1] - curr[1]);
+
+    const maxR = Math.min(cornerRadius, lenIn / 2, lenOut / 2);
+
+    if (maxR < 2) {
+      sink.lineTo(curr[0], curr[1]);
+    } else {
+      sink.arcTo(curr[0], curr[1], next[0], next[1], maxR);
+    }
+  }
+
+  const endPoint = endTrim?.trimmedPoint ?? points[count - 1];
+  sink.lineTo(endPoint[0], endPoint[1]);
+}
+
+/**
  * Build rounded polyline Path2D using arcTo for corners.
  * Handles trimming at both ends for arrow caps.
- *
- * @param points - Full route points
- * @param startTrim - Trim info for start arrow (or null)
- * @param endTrim - Trim info for end arrow (or null)
- * @returns Path2D for the polyline
  */
 export function buildRoundedPolylinePath(
   points: Point[],
@@ -136,48 +183,8 @@ export function buildRoundedPolylinePath(
   startTrim: EndTrimInfo | null,
   endTrim: EndTrimInfo | null,
 ): Path2D {
-  const cornerRadius = ROUTING_CONFIG.CORNER_RADIUS_W;
   const path = new Path2D();
-
-  if (count < 2) return path;
-
-  // Start point (potentially trimmed for start arrow)
-  const startPoint = startTrim?.trimmedPoint ?? points[0];
-  path.moveTo(startPoint[0], startPoint[1]);
-
-  // Handle 2-point case (straight line, no corners)
-  if (count === 2) {
-    const endPoint = endTrim?.trimmedPoint ?? points[1];
-    path.lineTo(endPoint[0], endPoint[1]);
-    return path;
-  }
-
-  // Middle points with arcTo corners
-  for (let i = 1; i < count - 1; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-
-    // Compute available segment lengths
-    const lenIn = Math.hypot(curr[0] - prev[0], curr[1] - prev[1]);
-    const lenOut = Math.hypot(next[0] - curr[0], next[1] - curr[1]);
-
-    // Clamp radius to fit available space
-    const maxR = Math.min(cornerRadius, lenIn / 2, lenOut / 2);
-
-    if (maxR < 2) {
-      // Too small for rounding - use sharp corner
-      path.lineTo(curr[0], curr[1]);
-    } else {
-      // Use arcTo for smooth corner
-      path.arcTo(curr[0], curr[1], next[0], next[1], maxR);
-    }
-  }
-
-  // Final segment - use trimmed point if provided (for arrow caps)
-  const endPoint = endTrim?.trimmedPoint ?? points[count - 1];
-  path.lineTo(endPoint[0], endPoint[1]);
-
+  emitRoundedPolylineIntoSink(path, points, count, startTrim, endTrim);
   return path;
 }
 
@@ -186,28 +193,28 @@ export function buildRoundedPolylinePath(
 // ============================================================================
 
 /**
+ * Emit arrow triangle commands into a `PathSink`.
+ */
+export function emitArrowIntoSink(sink: PathSink, geom: ArrowGeometry): void {
+  sink.moveTo(geom.tip[0], geom.tip[1]);
+  sink.lineTo(geom.left[0], geom.left[1]);
+  sink.lineTo(geom.right[0], geom.right[1]);
+  sink.closePath();
+}
+
+/**
  * Build arrow triangle Path2D.
  * Triangle vertices are pulled back by stroke offset for visual alignment.
  *
  * The arrow is designed to be rendered with:
  * - ctx.fill(path) - solid interior
  * - ctx.stroke(path) with lineWidth=5, lineJoin='round' - rounded corners
- *
- * @param points - Full route points
- * @param strokeWidth - Connector stroke width
- * @param position - Which end ('start' or 'end')
- * @returns Path2D for the arrow triangle
  */
 export function buildArrowPath(points: Point[], count: number, strokeWidth: number, position: 'start' | 'end'): Path2D {
   const geom = computeArrowGeometry(points, count, strokeWidth, position);
-  if (!geom) return new Path2D();
-
   const path = new Path2D();
-  path.moveTo(geom.tip[0], geom.tip[1]);
-  path.lineTo(geom.left[0], geom.left[1]);
-  path.lineTo(geom.right[0], geom.right[1]);
-  path.closePath();
-
+  if (!geom) return path;
+  emitArrowIntoSink(path, geom);
   return path;
 }
 

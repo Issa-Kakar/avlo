@@ -1,4 +1,5 @@
-import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
+import { buildShapePathFromFrame, emitShapeIntoSink } from '@/core/geometry/shape-path';
+import type { FrameTuple } from '@/core/types/geometry';
 import type { ShapePreview } from '@/tools/types';
 import { createFillFromStroke } from '@/utils/color';
 
@@ -39,5 +40,38 @@ export function drawShapePreview(ctx: CanvasRenderingContext2D, preview: ShapePr
     ctx.fill(path);
   }
   ctx.stroke(path);
+  ctx.restore();
+}
+
+/**
+ * Paint a shape frame directly into ctx (zero Path2D allocation).
+ * Mirrors the shape rendering ctx-state sequence in `objects.ts:drawShape` so
+ * output is byte-identical to the cached-path render. Used by the per-frame
+ * scale preview to skip Path2D creation entirely.
+ */
+export function paintShapeFrame(
+  ctx: CanvasRenderingContext2D,
+  shapeType: string,
+  frame: FrameTuple,
+  fillColor: string | null | undefined,
+  strokeColor: string | null | undefined,
+  strokeWidth: number,
+  opacity: number,
+): void {
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.beginPath();
+  emitShapeIntoSink(ctx, shapeType, frame);
+  if (fillColor) {
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+  }
+  if (strokeColor && strokeWidth > 0) {
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
   ctx.restore();
 }

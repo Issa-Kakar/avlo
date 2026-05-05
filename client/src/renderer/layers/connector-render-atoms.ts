@@ -18,7 +18,14 @@
  */
 
 import { getHandleShapeType, getWidth } from '@/core/accessors';
-import { ARROW_ROUNDING_LINE_WIDTH, type ConnectorPaths } from '@/core/connectors/connector-paths';
+import {
+  ARROW_ROUNDING_LINE_WIDTH,
+  type ConnectorPaths,
+  computeArrowGeometry,
+  computeEndTrimInfo,
+  emitArrowIntoSink,
+  emitRoundedPolylineIntoSink,
+} from '@/core/connectors/connector-paths';
 import { ANCHOR_DOT_CONFIG, getAnchorDotMetricsWorld, getGuideMetricsWorld } from '@/core/connectors/constants';
 import { midpointFor } from '@/core/connectors/shape-geometry';
 import type { Dir, SnapTarget } from '@/core/connectors/types';
@@ -59,6 +66,63 @@ export function paintConnector(ctx: CanvasRenderingContext2D, paths: ConnectorPa
   if (paths.endArrow) {
     ctx.fill(paths.endArrow);
     ctx.stroke(paths.endArrow);
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Paint a connector directly from a points buffer (zero Path2D allocation).
+ * Mirrors `paintConnector`'s ctx-state sequence; used by the per-frame transform
+ * preview path so reroutes don't burn 1–3 Path2D allocations per connector.
+ *
+ * `count` is the valid prefix length of `points` (HWM buffer contract).
+ */
+export function paintConnectorFromPoints(
+  ctx: CanvasRenderingContext2D,
+  points: Point[],
+  count: number,
+  strokeWidth: number,
+  startCap: 'arrow' | 'none',
+  endCap: 'arrow' | 'none',
+  color: string,
+): void {
+  if (count < 2) return;
+
+  const startTrim = startCap === 'arrow' ? computeEndTrimInfo(points, count, strokeWidth, 'start') : null;
+  const endTrim = endCap === 'arrow' ? computeEndTrimInfo(points, count, strokeWidth, 'end') : null;
+
+  ctx.save();
+
+  // Pass 1: polyline (matches paintConnector lines 44-49)
+  ctx.strokeStyle = color;
+  ctx.lineWidth = strokeWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  emitRoundedPolylineIntoSink(ctx, points, count, startTrim, endTrim);
+  ctx.stroke();
+
+  // Pass 2: arrows (matches paintConnector lines 52-63)
+  ctx.fillStyle = color;
+  ctx.lineWidth = ARROW_ROUNDING_LINE_WIDTH;
+  if (startCap === 'arrow') {
+    const g = computeArrowGeometry(points, count, strokeWidth, 'start');
+    if (g) {
+      ctx.beginPath();
+      emitArrowIntoSink(ctx, g);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+  if (endCap === 'arrow') {
+    const g = computeArrowGeometry(points, count, strokeWidth, 'end');
+    if (g) {
+      ctx.beginPath();
+      emitArrowIntoSink(ctx, g);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 
   ctx.restore();

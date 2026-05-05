@@ -19,28 +19,12 @@ import {
   stylesEqual,
 } from '@/tools/selection/selection-utils';
 import { getController } from '@/tools/selection/transform';
-import type {
-  InlineStyles,
-  KindCounts,
-  MarqueeState,
-  SelectedStyles,
-  SelectionKind,
-  SelectionMode,
-  TransformState,
-} from '@/tools/selection/types';
+import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, SelectionMode, TransformState } from '@/tools/selection/types';
 import { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from '@/tools/selection/types';
 import type { HandleId } from '@/tools/types';
 
 export type { ConnectorEntry, ConnectorTopology } from '@/tools/selection/connector-topology';
-export type {
-  InlineStyles,
-  KindCounts,
-  MarqueeState,
-  SelectedStyles,
-  SelectionKind,
-  SelectionMode,
-  TransformState,
-} from '@/tools/selection/types';
+export type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, SelectionMode, TransformState } from '@/tools/selection/types';
 
 // === State Interface ===
 
@@ -63,7 +47,6 @@ export interface SelectionState {
   /** Bumped on bbox changes to selected objects (for repositioning) */
   boundsVersion: number;
   transform: TransformState;
-  marquee: MarqueeState;
 
   // Text editing - primitives only
   /** Object ID being edited, null if not editing */
@@ -98,12 +81,6 @@ export interface SelectionActions {
     dragBbox: BBoxTuple,
   ) => void;
   updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null, validCount: number) => void;
-
-  // Marquee lifecycle
-  beginMarquee: (anchor: [number, number]) => void;
-  updateMarquee: (current: [number, number]) => void;
-  endMarquee: () => void;
-  cancelMarquee: () => void;
 
   // Text editing actions
   /** Begin text editing */
@@ -143,7 +120,6 @@ export const useSelectionStore = create<SelectionStore>()(
     inlineStyles: EMPTY_INLINE_STYLES,
     boundsVersion: 0,
     transform: { kind: 'none' },
-    marquee: { active: false, anchor: null, current: null },
     textEditingId: null,
     codeEditingId: null,
 
@@ -259,29 +235,6 @@ export const useSelectionStore = create<SelectionStore>()(
             validCount,
           },
         };
-      }),
-
-    // === Marquee Actions ===
-
-    beginMarquee: (anchor) =>
-      set({
-        marquee: { active: true, anchor, current: anchor },
-      }),
-
-    updateMarquee: (current) =>
-      set((state) => {
-        if (!state.marquee.active || !state.marquee.anchor) return state;
-        return { marquee: { ...state.marquee, current } };
-      }),
-
-    endMarquee: () =>
-      set((state) => ({
-        marquee: { ...state.marquee, active: false },
-      })),
-
-    cancelMarquee: () =>
-      set({
-        marquee: { active: false, anchor: null, current: null },
       }),
 
     // === Text Editing Actions ===

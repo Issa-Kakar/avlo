@@ -25,9 +25,7 @@ import {
 } from '@/core/accessors';
 import { drawBookmark } from '@/core/bookmark/bookmark-render';
 import { codeSystem, renderCodeLayout } from '@/core/code/code-system';
-import { buildConnectorPaths } from '@/core/connectors/connector-paths';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
-import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { getBitmap } from '@/core/image/image-manager';
 import { drawStickyNote } from '@/core/text/sticky-note';
 import { computeLabelTextBox, layoutIntoLabelScratch, renderShapeLabel, renderTextLayout, textLayoutCache } from '@/core/text/text-system';
@@ -46,7 +44,8 @@ import {
   type KindWithBBoxGeo,
 } from '@/tools/selection/transform';
 import { getConnectorPaths, getPath } from '../geometry-cache';
-import { paintConnector } from './connector-render-atoms';
+import { paintConnector, paintConnectorFromPoints } from './connector-render-atoms';
+import { paintShapeFrame } from './shape-preview';
 
 function getCodeRenderData(id: string, props: CodeProps) {
   return {
@@ -411,14 +410,14 @@ function drawConnector(ctx: CanvasRenderingContext2D, handle: ObjectHandle): voi
  * Draw a connector from explicit points (for rerouted connectors during transforms).
  * `count` defaults to `points.length` for off-gesture callers; on-gesture callers
  * pass a pooled buffer (`pointsBuf`) and the explicit valid-prefix length.
+ *
+ * Hot path: emits straight into ctx (zero Path2D allocation per frame).
  */
 function drawConnectorFromPoints(ctx: CanvasRenderingContext2D, handle: ObjectHandle, points: Point[], count?: number): void {
   const n = count ?? points.length;
   if (n < 2) return;
   const { y } = handle;
-  const width = getWidth(y);
-  const paths = buildConnectorPaths({ points, count: n, strokeWidth: width, startCap: getStartCap(y), endCap: getEndCap(y) });
-  paintConnector(ctx, paths, getColor(y), width);
+  paintConnectorFromPoints(ctx, points, n, getWidth(y), getStartCap(y), getEndCap(y), getColor(y));
 }
 
 // ============================================================================
@@ -439,23 +438,8 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       const width = getWidth(handle.y, 1);
       const opacity = getOpacity(handle.y);
 
-      const path = buildShapePathFromFrame(shapeType, frame);
-
-      ctx.save();
-      ctx.globalAlpha = opacity;
-      if (fillColor) {
-        ctx.fillStyle = fillColor;
-        ctx.fill(path);
-      }
-      if (color && width > 0) {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.stroke(path);
-      }
+      paintShapeFrame(ctx, shapeType, frame, fillColor, color, width, opacity);
       if (hasLabel(handle.y)) drawShapeLabelWithFrame(ctx, handle, frame);
-      ctx.restore();
       break;
     }
 

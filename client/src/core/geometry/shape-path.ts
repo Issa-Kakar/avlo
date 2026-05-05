@@ -1,4 +1,4 @@
-import type { Point } from '@/core/types/geometry';
+import type { FrameTuple, Point } from '@/core/types/geometry';
 
 /**
  * Diamond corner cut-distance (world units). Each polygon vertex steps back by
@@ -16,25 +16,31 @@ export const DIAMOND_CORNER_OFFSET_W = 5;
 export const ROUNDED_RECT_MAX_RADIUS_W = 20;
 
 /**
- * Build shape path from explicit frame (not from cache).
- * Used by object rendering, object-cache, and transform previews.
+ * Path sink: anything that exposes the path-construction subset we use here.
+ * Both `Path2D` (for caches) and `CanvasRenderingContext2D` (for direct emit
+ * in the per-frame transform preview) implement this surface.
  */
-export function buildShapePathFromFrame(shapeType: string, frame: [number, number, number, number]): Path2D {
+export type PathSink = Path2D | CanvasRenderingContext2D;
+
+/**
+ * Emit shape commands into a `PathSink` (Path2D for caching, ctx for direct
+ * draw). No fill/stroke side effects — the caller owns paint.
+ */
+export function emitShapeIntoSink(sink: PathSink, shapeType: string, frame: FrameTuple): void {
   const [x, y0, w, h] = frame;
-  const path = new Path2D();
 
   switch (shapeType) {
     case 'rect':
-      path.rect(x, y0, w, h);
+      sink.rect(x, y0, w, h);
       break;
     case 'ellipse':
-      path.ellipse(x + w / 2, y0 + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+      sink.ellipse(x + w / 2, y0 + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
       break;
     case 'diamond': {
       const cx = x + w / 2;
       const cy = y0 + h / 2;
-      buildRoundedPolygonPath(
-        path,
+      emitRoundedPolygonIntoSink(
+        sink,
         [
           [cx, y0],
           [x + w, cy],
@@ -47,17 +53,25 @@ export function buildShapePathFromFrame(shapeType: string, frame: [number, numbe
     }
     case 'roundedRect': {
       const radius = Math.min(ROUNDED_RECT_MAX_RADIUS_W, w * 0.1, h * 0.1);
-      path.roundRect(x, y0, w, h, radius);
+      sink.roundRect(x, y0, w, h, radius);
       break;
     }
     default:
-      path.rect(x, y0, w, h);
+      sink.rect(x, y0, w, h);
   }
+}
 
+/**
+ * Build shape path from explicit frame (not from cache).
+ * Used by object rendering, object-cache, and drawing-tool preview.
+ */
+export function buildShapePathFromFrame(shapeType: string, frame: FrameTuple): Path2D {
+  const path = new Path2D();
+  emitShapeIntoSink(path, shapeType, frame);
   return path;
 }
 
-function buildRoundedPolygonPath(path: Path2D, vertices: readonly Point[], offset: number): void {
+function emitRoundedPolygonIntoSink(sink: PathSink, vertices: readonly Point[], offset: number): void {
   const n = vertices.length;
   if (n < 3) return;
 
@@ -81,7 +95,7 @@ function buildRoundedPolygonPath(path: Path2D, vertices: readonly Point[], offse
 
   const startX = vertices[0][0] + r[0] * dir[0].dx;
   const startY = vertices[0][1] + r[0] * dir[0].dy;
-  path.moveTo(startX, startY);
+  sink.moveTo(startX, startY);
 
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
@@ -89,9 +103,9 @@ function buildRoundedPolygonPath(path: Path2D, vertices: readonly Point[], offse
     const inCutY = vertices[j][1] - r[j] * dir[i].dy;
     const outCutX = vertices[j][0] + r[j] * dir[j].dx;
     const outCutY = vertices[j][1] + r[j] * dir[j].dy;
-    path.lineTo(inCutX, inCutY);
-    path.quadraticCurveTo(vertices[j][0], vertices[j][1], outCutX, outCutY);
+    sink.lineTo(inCutX, inCutY);
+    sink.quadraticCurveTo(vertices[j][0], vertices[j][1], outCutX, outCutY);
   }
 
-  path.closePath();
+  sink.closePath();
 }

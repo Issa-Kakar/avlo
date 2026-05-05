@@ -17,18 +17,18 @@
  * @module renderer/layers/selection-overlay
  */
 
-import { getConnectorType, getFrame, getHandleShapeType, getWidth } from '@/core/accessors';
+import { getConnectorType } from '@/core/accessors';
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
 import type { SnapTarget } from '@/core/connectors/types';
-import { frameToBbox, pointsToBBox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
+import { frameToBbox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { uniformFactor } from '@/core/geometry/scale-system';
-import { buildShapePathFromFrame } from '@/core/geometry/shape-path';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
-import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
+import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types/objects';
 import { getConnectorRoute, getHandle } from '@/runtime/room-runtime';
+import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { computeHandles, computeSelectionBounds, type TransformState, useSelectionStore } from '@/stores/selection-store';
 import {
@@ -78,13 +78,12 @@ const SELECTION_STYLE = {
  * Handles hide during translate and when the bbox would be too small on screen.
  */
 export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
-  const { selectedIds, mode, marquee, transform } = useSelectionStore.getState();
+  const { selectedIds, mode, transform, textEditingId, codeEditingId } = useSelectionStore.getState();
   const scale = useCameraStore.getState().scale;
 
-  // 1. Marquee — independent of selection.
-  if (marquee.active && marquee.anchor && marquee.current) {
-    drawMarqueeRect(ctx, pointsToBBox(marquee.anchor, marquee.current), scale);
-  }
+  // 1. Marquee — independent of selection. Owned by SelectTool.
+  const marqueeBBox = selectTool.getMarqueeBBox();
+  if (marqueeBBox) drawMarqueeRect(ctx, marqueeBBox, scale);
   if (selectedIds.length === 0) return;
 
   const isTranslating = transform.kind === 'translate';
@@ -102,7 +101,9 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
     if (!handle) return;
     const bbox = currentBoundsForHandle(handle, transform);
     drawSelectionBox(ctx, bbox, scale);
-    if (!isTranslating && shouldShowHandles(bbox, scale)) {
+    const id = selectedIds[0];
+    const isEditing = textEditingId === id || codeEditingId === id;
+    if (!isTranslating && !isEditing && shouldShowHandles(bbox, scale)) {
       drawResizeHandles(ctx, computeHandles(bbox), scale);
     }
     return;
@@ -120,7 +121,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
     if (!handle) continue;
     const bbox = currentBoundsForHandle(handle, transform);
     if (!bboxesIntersect(bbox, visible)) continue;
-    drawObjectHighlight(ctx, handle, bbox, transform);
+    ctx.strokeRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]);
   }
   ctx.restore();
 
@@ -128,7 +129,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const selRect = selectionRectForOverlay(transform);
   if (selRect) {
     drawSelectionBox(ctx, selRect, scale);
-    if (!isTranslating && shouldShowHandles(selRect, scale)) {
+    if (!isTranslating && shouldShowHandles(selRect, scale) && textEditingId === null && codeEditingId === null) {
       drawResizeHandles(ctx, computeHandles(selRect), scale);
     }
   }
@@ -165,47 +166,6 @@ function currentBoundsForHandle(handle: ObjectHandle, t: TransformState): BBoxTu
     return f ? frameToBbox(f) : handle.bbox;
   }
   return handle.bbox;
-}
-
-/**
- * Live frame for shape highlight: `entry.out.frame` during scale (gated by
- * `transformHasChange()` so we fall back to stored frame between begin and the first
- * update — `entry.out` is uninitialized in that gap). Translate adds `dx/dy` to the
- * stored frame (already identity at dx=dy=0 — no gate needed).
- */
-function currentFrameForShape(handle: ObjectHandle, t: TransformState): FrameTuple | null {
-  if (t.kind === 'scale' && transformHasChange()) {
-    const e = getScaleEntry('shape', handle.id);
-    if (e) return e.out.frame;
-  }
-  const stored = getFrame(handle.y);
-  if (!stored) return null;
-  if (t.kind === 'translate') {
-    const c = getController();
-    return [stored[0] + c.dx, stored[1] + c.dy, stored[2], stored[3]];
-  }
-  return stored;
-}
-
-/**
- * Multi-select per-object highlight. Single-select doesn't call this — the bounds
- * rect doubles as the highlight there. Caller owns ctx style. Shapes get a fresh
- * Path2D from the live frame outset by half stroke width — preserves rounded-rect
- * corner radii under non-uniform scale (a `ctx.scale` would distort them).
- * Everything else (incl. connectors) gets a plain bbox stroke; a polyline-shaped
- * connector highlight was tried but the rendered elbow path's dynamic corner
- * radius is hard to mirror without extra render work for no real benefit.
- */
-function drawObjectHighlight(ctx: CanvasRenderingContext2D, handle: ObjectHandle, bbox: BBoxTuple, t: TransformState): void {
-  if (handle.kind === 'shape') {
-    const frame = currentFrameForShape(handle, t);
-    if (!frame) return;
-    const sw = getWidth(handle.y, 2);
-    const expanded: FrameTuple = [frame[0] - sw / 2, frame[1] - sw / 2, frame[2] + sw, frame[3] + sw];
-    ctx.stroke(buildShapePathFromFrame(getHandleShapeType(handle), expanded));
-    return;
-  }
-  ctx.strokeRect(bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]);
 }
 
 // =============================================================================
@@ -263,7 +223,7 @@ function drawSelectionBox(ctx: CanvasRenderingContext2D, bounds: BBoxTuple, scal
 // MARQUEE
 // =============================================================================
 
-function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: BBoxTuple, scale: number): void {
+function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: Readonly<BBoxTuple>, scale: number): void {
   const [minX, minY, maxX, maxY] = marqueeRect;
   ctx.save();
   ctx.fillStyle = SELECTION_STYLE.PRIMARY_FILL;

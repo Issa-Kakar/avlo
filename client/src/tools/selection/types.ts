@@ -177,13 +177,3 @@ export interface ScaleCtx {
   selBounds: BBoxTuple;
   handleId: HandleId;
 }
-
-// ============================================================================
-// Marquee State
-// ============================================================================
-
-export interface MarqueeState {
-  active: boolean;
-  anchor: [number, number] | null; // World coords
-  current: [number, number] | null; // World coords
-}
