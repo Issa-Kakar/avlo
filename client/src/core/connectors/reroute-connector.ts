@@ -3,19 +3,16 @@
  *
  * Two parallel pipelines (elbow + straight) collapsed into a single `Pipeline<E>`
  * strategy record. `connectorType` is read once at `buildRouteContext` and stored
- * as `pipeline: AnyPipeline` on the gesture-stable `RouteContext` — no helper
- * below the entry inspects it. Below the boundary every helper is parametric in
- * the endpoint type `E`.
+ * as `pipeline: AnyPipeline` on the gesture-stable `RouteContext`.
  *
- * All hot-path entries write into caller-owned buffers (`*Into` family); the
- * legacy fresh-allocating wrappers are deleted. The topology + SelectTool drag
- * + ConnectorTool preview each own a permanent `pointsBuf` reused across frames
- * (high-water mark; consumers iterate by returned `validCount`).
+ * All hot-path entries write into caller-owned buffers (`*Into` family). The
+ * topology owns pre-built endpoint objects and mutates them in place each frame
+ * via `Pipeline.configAnchored` + scratch aliasing — no override-decoder cost
+ * for canonical or bind sides. Router canonical reroute bakes endpoints fresh
+ * via `bakeCanonicalEndpoint` and feeds them straight to `Pipeline.routeInto`.
  *
- *   rerouteTransformInto(ctx, startOv, endOv, outBbox, outPoints) → count
- *     Caller: connector-topology + ConnectorRouter. Each side:
- *     FrameOverride | Point | null. ConnectorRouter passes (null, null) for
- *     canonical reroute.
+ *   bakeCanonicalEndpoint(P, ep, cachedRoute, side) → E
+ *     Used by ConnectorRouter (per-call, fresh) + topology static-side build.
  *
  *   rerouteEndpointDragInto(ctx, slot, override, outBbox, outPoints) → count
  *     Caller: SelectTool. The non-dragged side reads Y.Map; the dragged side
@@ -34,12 +31,12 @@ import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
 import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredStraightAnchor } from '../types/objects';
-import { anchorFramePoint, elbowAnchorPoint } from './anchor-atoms';
+import { fillElbowAnchorPointInto } from './anchor-atoms';
 import { getConnectorRoute } from './connector-router';
 import { computeElbowFreeEndDir, oppositeDir, resolveElbowFreeStartDir } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
 import { computeAStarRouteInto } from './routing-astar';
-import { projectAnchorToEdge, rayShapeExitPoint } from './shape-geometry';
+import { fillAnchorPoint, projectAnchorToEdge, rayShapeExitPoint } from './shape-geometry';
 import type { ConnectorCap, ConnectorType, Dir, SnapTarget } from './types';
 
 /*
@@ -47,12 +44,12 @@ import type { ConnectorCap, ConnectorType, Dir, SnapTarget } from './types';
  * 1. Module scratches in this file and in routing-context.ts/routing-astar.ts are
  *    NOT re-entrant. *Into entries are synchronous; no caller may invoke them
  *    recursively from within an A* hop or a Y.Doc observer reentry.
- * 2. Frame overrides are read-only. The implementation only reads override.frame
- *    via fillAnchorPoint / fillCardinal (each writes a fresh Point output).
- * 3. Free-position overrides (Point) MAY be aliased into outPoints[0] / outPoints[count-1]
- *    of the result. Callers persisting to Y.Map must clone endpoints. Callers
- *    sharing a Point across multiple reroute calls in one apply pass must use
- *    per-side scratch (see connector-topology.ts FreeSide.scratch).
+ * 2. `Pipeline.newFree(pos)` preserves the input `pos` reference — `endpoint.pos === pos`.
+ *    Topology free sides exploit this to alias the side scratch into endpoint.pos;
+ *    callers wanting isolation clone before calling.
+ * 3. `Pipeline.newAnchored(frame, ...)` preserves the input `frame` reference for
+ *    kinds that carry a `frame` field (ELBOW anchored, STRAIGHT interior). Topology
+ *    bind sides exploit this to alias side.frame to endpoint.frame.
  * 4. `outPoints` is mutated in place via find-or-push tuple reuse. Its `.length`
  *    may exceed the returned `validCount` (high-water mark). All consumers MUST
  *    iterate by `count`, never `.length` / `for...of`.
@@ -78,12 +75,6 @@ const STRAIGHT_PT_END: Point = [0, 0];
 // PUBLIC TYPES
 // ============================================================================
 
-/** Override that reapplies a connector's stored anchor against a transformed frame. */
-export type FrameOverride = { frame: FrameTuple };
-
-/** Per-side override for transform-driven reroutes (translate/scale shape gestures). */
-export type TransformOverride = FrameOverride | Point;
-
 /** Per-side override for endpoint-drag reroutes (live snap or free position). */
 export type EndpointDragOverride = SnapTarget | Point;
 
@@ -100,7 +91,7 @@ export const SLOT_END: Slot = 1;
  * Elbow endpoint. Carries direction (cardinal escape) and frame (obstacle bounds
  * passed to A*). Anchored variant has both; free has only position.
  */
-type ElbowEndpoint = { kind: 'free'; pos: Point } | { kind: 'anchored'; pos: Point; dir: Dir; frame: FrameTuple };
+export type ElbowEndpoint = { kind: 'free'; pos: Point } | { kind: 'anchored'; pos: Point; dir: Dir; frame: FrameTuple };
 
 /**
  * Straight endpoint. Three states:
@@ -113,13 +104,13 @@ type ElbowEndpoint = { kind: 'free'; pos: Point } | { kind: 'anchored'; pos: Poi
  * Same-shape interior pairs are detected at the route level (see
  * `computeStraightRouteInto`) — `shapeId` exists only on the `interior` variant.
  */
-type StraightEndpoint =
+export type StraightEndpoint =
   | { kind: 'free'; pos: Point }
   | { kind: 'edge'; pos: Point }
   | { kind: 'interior'; pos: Point; frame: FrameTuple; shapeType: string; shapeId: string };
 
 /** Source-form for an anchored endpoint, normalized across stored anchor + snap target. */
-interface AnchorSource {
+export interface AnchorSource {
   anchor: Point;
   shapeId: string;
   /** Straight-only; ignored by the elbow factory. */
@@ -130,27 +121,70 @@ interface AnchorSource {
 // PIPELINE STRATEGY (one record per connector type)
 // ============================================================================
 
-interface Pipeline<E> {
-  free(pos: Point): E;
-  buildAnchored(frame: FrameTuple, shapeType: string, src: AnchorSource): E;
+export interface Pipeline<E> {
+  /**
+   * Free-endpoint factory. Preserves the input `pos` reference — `endpoint.pos === pos`
+   * after construction (callers wanting aliasing pass the side scratch; callers wanting
+   * isolation clone before calling).
+   */
+  newFree(pos: Point): E;
+  /**
+   * Anchored-endpoint factory. Preserves the input `frame` reference for the kinds that
+   * carry a `frame` field (ELBOW anchored, STRAIGHT interior) — same alias-friendly
+   * contract as `newFree`.
+   */
+  newAnchored(frame: FrameTuple, shapeType: string, src: AnchorSource): E;
+  /**
+   * Per-frame mutator for an existing anchored endpoint. Endpoint variant kind is frozen
+   * at construction (ELBOW: 'anchored'; STRAIGHT: 'edge' or 'interior' per stored
+   * `interior`); callers pass an endpoint produced by `newAnchored`. Writes are
+   * alias-safe: `out.frame[i] = frame[i]` is a no-op when `out.frame === frame`.
+   */
+  configAnchored(out: E, frame: FrameTuple, shapeType: string, src: AnchorSource): void;
   /** Writes into outPoints (find-or-push). Returns valid count, or -1 on failure. */
   routeInto(start: E, end: E, strokeWidth: number, outPoints: Point[]): number;
 }
 
-const ELBOW: Pipeline<ElbowEndpoint> = {
-  free: (pos) => ({ kind: 'free', pos }),
-  buildAnchored: (frame, shapeType, s) => {
+export const ELBOW: Pipeline<ElbowEndpoint> = {
+  newFree: (pos) => ({ kind: 'free', pos }),
+  newAnchored: (frame, shapeType, s) => {
     const dir = projectAnchorToEdge(s.anchor, frame, shapeType, PROJECT_EDGE, PROJECT_NORMAL);
-    return { kind: 'anchored', pos: elbowAnchorPoint(s.anchor, frame, dir), dir, frame };
+    const pos: Point = [0, 0];
+    fillElbowAnchorPointInto(pos, s.anchor, frame, dir);
+    return { kind: 'anchored', pos, dir, frame };
+  },
+  configAnchored: (out, frame, shapeType, src) => {
+    if (out.kind !== 'anchored') return;
+    const dir = projectAnchorToEdge(src.anchor, frame, shapeType, PROJECT_EDGE, PROJECT_NORMAL);
+    out.dir = dir;
+    fillElbowAnchorPointInto(out.pos, src.anchor, frame, dir);
+    // Alias-safe: when out.frame === frame these are self-writes.
+    out.frame[0] = frame[0];
+    out.frame[1] = frame[1];
+    out.frame[2] = frame[2];
+    out.frame[3] = frame[3];
   },
   routeInto: (start, end, strokeWidth, outPoints) => computeElbowRouteInto(start, end, strokeWidth, outPoints),
 };
 
-const STRAIGHT: Pipeline<StraightEndpoint> = {
-  free: (pos) => ({ kind: 'free', pos }),
-  buildAnchored: (frame, shapeType, s) => {
-    const pos = anchorFramePoint(s.anchor, frame);
+export const STRAIGHT: Pipeline<StraightEndpoint> = {
+  newFree: (pos) => ({ kind: 'free', pos }),
+  newAnchored: (frame, shapeType, s) => {
+    const pos: Point = [0, 0];
+    fillAnchorPoint(s.anchor, frame, pos);
     return s.interior ? { kind: 'interior', pos, frame, shapeType, shapeId: s.shapeId } : { kind: 'edge', pos };
+  },
+  configAnchored: (out, frame, _shapeType, src) => {
+    if (out.kind === 'interior') {
+      fillAnchorPoint(src.anchor, frame, out.pos);
+      out.frame[0] = frame[0];
+      out.frame[1] = frame[1];
+      out.frame[2] = frame[2];
+      out.frame[3] = frame[3];
+      // shapeType / shapeId frozen at begin per invariant — not rewritten.
+    } else if (out.kind === 'edge') {
+      fillAnchorPoint(src.anchor, frame, out.pos);
+    }
   },
   routeInto: (start, end, _strokeWidth, outPoints) => computeStraightRouteInto(start, end, outPoints),
 };
@@ -171,46 +205,44 @@ function fallbackPoint(cachedRoute: Point[] | null, side: 'start' | 'end'): Poin
   return [0, 0];
 }
 
-/**
- * Transform-or-canonical resolution. `override === null` reads canonical Y.Map;
- * `override` as Point becomes a free endpoint; `override` as FrameOverride
- * reapplies the stored anchor against the supplied frame.
- *
- * The straight pipeline carries `interior` on `StoredStraightAnchor`; the cast
- * is safe because parent `connectorType` discriminates the union, and elbow's
- * factory ignores `interior`.
- */
-function resolveStored<E>(
-  P: Pipeline<E>,
-  override: TransformOverride | null,
-  endpoint: ConnectorEndpoint | undefined,
-  cachedRoute: Point[] | null,
-  side: 'start' | 'end',
-): E {
-  if (Array.isArray(override)) return P.free(override);
-  if (!endpoint) return P.free(fallbackPoint(cachedRoute, side));
-  if (Array.isArray(endpoint)) return P.free(endpoint);
-  // endpoint is StoredAnchor here.
-  const handle = getHandle(endpoint.id);
-  const frame = override ? override.frame : frameOf(handle);
-  if (!frame) return P.free(fallbackPoint(cachedRoute, side));
-  return P.buildAnchored(frame, getHandleShapeType(handle), {
-    anchor: endpoint.anchor,
-    shapeId: endpoint.id,
-    interior: (endpoint as StoredStraightAnchor).interior ?? false,
-  });
-}
-
 /** SelectTool drag override + ConnectorTool's new-connector input share this shape. */
 function resolveSnap<E>(P: Pipeline<E>, input: SnapTarget | Point): E {
-  if (Array.isArray(input)) return P.free(input);
+  if (Array.isArray(input)) return P.newFree(input);
   const handle = getHandle(input.shapeId);
   const frame = frameOf(handle);
-  if (!frame) return P.free(input.position);
-  return P.buildAnchored(frame, getHandleShapeType(handle), {
+  if (!frame) return P.newFree(input.position);
+  return P.newAnchored(frame, getHandleShapeType(handle), {
     anchor: input.normalizedAnchor,
     shapeId: input.shapeId,
     interior: input.kind === 'straight' ? input.interior : false,
+  });
+}
+
+/**
+ * Bake a canonical endpoint from stored Y.Map data. Used by:
+ *   - `ConnectorRouter.rerouteCanonical` (one-shot, fresh allocations every call)
+ *   - topology builders for `kind: 'static'` (canonical-on-both-sides) and the
+ *     non-driven side of a mixed-state RerouteEntry
+ *
+ * Frame reference is preserved (alias-friendly contract — see `Pipeline.newAnchored`).
+ * Free endpoints clone the stored Point to avoid leaking a Y.Map reference into a
+ * mutable scratch.
+ */
+export function bakeCanonicalEndpoint<E>(
+  P: Pipeline<E>,
+  ep: ConnectorEndpoint | undefined,
+  cachedRoute: Point[] | null,
+  side: 'start' | 'end',
+): E {
+  if (!ep) return P.newFree(fallbackPoint(cachedRoute, side));
+  if (Array.isArray(ep)) return P.newFree([ep[0], ep[1]]);
+  const handle = getHandle(ep.id);
+  const frame = frameOf(handle);
+  if (!frame) return P.newFree(fallbackPoint(cachedRoute, side));
+  return P.newAnchored(frame, getHandleShapeType(handle), {
+    anchor: ep.anchor,
+    shapeId: ep.id,
+    interior: (ep as StoredStraightAnchor).interior ?? false,
   });
 }
 
@@ -408,23 +440,6 @@ export function buildRouteContext(connectorId: string, yObj: Y.Map<unknown>): Ro
 // ============================================================================
 
 /**
- * Reroute under transform overrides. `startOv`/`endOv` may be `null` (canonical),
- * a `Point` (free endpoint), or a `FrameOverride` (anchor reapplied).
- *
- * Returns the valid prefix length of `outPoints`, or `-1` on routing failure.
- * Mutates `outBbox` (with stroke + cap padding) on success only.
- */
-export function rerouteTransformInto(
-  ctx: RouteContext,
-  startOv: TransformOverride | null,
-  endOv: TransformOverride | null,
-  outBbox: BBoxTuple,
-  outPoints: Point[],
-): number {
-  return runReroute(ctx.pipeline as Pipeline<unknown>, ctx, startOv, endOv, outBbox, outPoints);
-}
-
-/**
  * Reroute for an endpoint drag. `slot` selects which side is driven by the
  * override; the other reads canonically from `ctx`.
  *
@@ -456,24 +471,8 @@ export function routeNewConnectorInto(
 }
 
 // ============================================================================
-// PARAMETRIC RUNNERS — Pipeline<unknown> cast contained here
+// PARAMETRIC RUNNER — Pipeline<unknown> cast contained here
 // ============================================================================
-
-function runReroute<E>(
-  P: Pipeline<E>,
-  ctx: RouteContext,
-  sOv: TransformOverride | null,
-  eOv: TransformOverride | null,
-  outBbox: BBoxTuple,
-  outPoints: Point[],
-): number {
-  const start = resolveStored(P, sOv, ctx.start, ctx.cachedRoute, 'start');
-  const end = resolveStored(P, eOv, ctx.end, ctx.cachedRoute, 'end');
-  const count = P.routeInto(start, end, ctx.strokeWidth, outPoints);
-  if (count < 2) return -1;
-  computeConnectorBBoxFromPointsInto(outPoints, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);
-  return count;
-}
 
 function runDrag<E>(
   P: Pipeline<E>,
@@ -483,9 +482,11 @@ function runDrag<E>(
   outBbox: BBoxTuple,
   outPoints: Point[],
 ): number {
+  // Drag side built from the live snap/free input; the other side is canonical
+  // (no override possible for a drag — only one endpoint moves).
   const driven = resolveSnap(P, override);
-  const start = slot === SLOT_START ? driven : resolveStored(P, null, ctx.start, ctx.cachedRoute, 'start');
-  const end = slot === SLOT_END ? driven : resolveStored(P, null, ctx.end, ctx.cachedRoute, 'end');
+  const start = slot === SLOT_START ? driven : bakeCanonicalEndpoint(P, ctx.start, ctx.cachedRoute, 'start');
+  const end = slot === SLOT_END ? driven : bakeCanonicalEndpoint(P, ctx.end, ctx.cachedRoute, 'end');
   const count = P.routeInto(start, end, ctx.strokeWidth, outPoints);
   if (count < 2) return -1;
   computeConnectorBBoxFromPointsInto(outPoints, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);

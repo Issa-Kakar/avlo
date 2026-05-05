@@ -31,7 +31,7 @@ import { getEnd, getEndCap, getStart, getStartCap, getWidth } from '../accessors
 import { computeConnectorBBoxFromPointsInto } from '../geometry/bbox';
 import type { BBoxTuple, Point } from '../types/geometry';
 import type { ConnectorEndpoint, StoredAnchor } from '../types/objects';
-import { buildRouteContext, rerouteTransformInto } from './reroute-connector';
+import { bakeCanonicalEndpoint, buildRouteContext, type Pipeline } from './reroute-connector';
 
 function endpointShapeId(ep: ConnectorEndpoint | undefined): string | null {
   if (!ep || Array.isArray(ep)) return null;
@@ -131,6 +131,9 @@ export class ConnectorRouter {
    * router never round-trips through `getHandle(connectorId)` for the connector
    * itself — eliminates the bbox-dummy placeholder pattern in the observer.
    *
+   * Bakes both endpoints directly via `bakeCanonicalEndpoint` and routes through
+   * the pipeline — no override-decoder cost (canonical reroute never has overrides).
+   *
    * Mutates the per-connector pooled buffer in `routes` (length trimmed to count
    * — canonical reroutes are steady-state). Returns a fresh `BBoxTuple` written
    * via the *Into bbox helper, or `null` on routing failure (caller skips upsert).
@@ -138,18 +141,22 @@ export class ConnectorRouter {
   rerouteCanonical(id: string, yObj: Y.Map<unknown>): BBoxTuple | null {
     const ctx = buildRouteContext(id, yObj);
     if (!ctx) return null;
+    const P = ctx.pipeline as Pipeline<unknown>;
+    const start = bakeCanonicalEndpoint(P, ctx.start, ctx.cachedRoute, 'start');
+    const end = bakeCanonicalEndpoint(P, ctx.end, ctx.cachedRoute, 'end');
     let buf = this.routes.get(id);
     if (!buf) {
       buf = [];
       this.routes.set(id, buf);
     }
-    const outBbox: BBoxTuple = [0, 0, 0, 0];
-    const count = rerouteTransformInto(ctx, null, null, outBbox, buf);
-    if (count < 0) {
+    const count = P.routeInto(start, end, ctx.strokeWidth, buf);
+    if (count < 2) {
       this.routes.delete(id);
       return null;
     }
     if (buf.length > count) buf.length = count;
+    const outBbox: BBoxTuple = [0, 0, 0, 0];
+    computeConnectorBBoxFromPointsInto(buf, count, ctx.strokeWidth, ctx.startCap, ctx.endCap, outBbox);
     return outBbox;
   }
 

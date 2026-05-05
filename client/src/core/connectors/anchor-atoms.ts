@@ -46,6 +46,14 @@ export function elbowAnchorPoint(anchor: Point, frame: FrameTuple, dir: Dir): Po
   return out;
 }
 
+/** Write-into form of `elbowAnchorPoint` — used by the per-frame topology bind rebake. */
+export function fillElbowAnchorPointInto(out: Point, anchor: Point, frame: FrameTuple, dir: Dir): void {
+  const v = directionVector(dir);
+  fillAnchorPoint(anchor, frame, out);
+  out[0] += v[0] * EDGE_CLEARANCE_W;
+  out[1] += v[1] * EDGE_CLEARANCE_W;
+}
+
 /** Same-shape test — both endpoints share a bound shape id. */
 export function isSameShape(a: { shapeId?: string } | null | undefined, b: { shapeId?: string } | null | undefined): boolean {
   return !!(a?.shapeId && b?.shapeId && a.shapeId === b.shapeId);

@@ -8,60 +8,114 @@
  * Variants (discriminated by `mode`):
  *   static    — both endpoints canonical; no apply, no commit; renderer draws in-place
  *   translate — both endpoints move together; rigid polyline + bbox shift
- *   reroute   — mixed / scale; call rerouteTransformInto per frame with per-side overrides
+ *   reroute   — mixed / scale; per-pipeline apply loops route fresh polylines
  *
- * RerouteEntry hoists a `RouteContext` (cap/width/cachedRoute/pipeline frozen at
- * begin — no per-frame Y.Map reads) and owns a permanent `pointsBuf` + `validCount`
- * mutated in place each frame. Renderer iterates `pointsBuf[0..validCount)`.
+ * Reroute entries are partitioned at finalize into `elbowReroutes` / `straightReroutes`,
+ * so per-frame apply loops are monomorphic in the endpoint type — `Pipeline<E>`
+ * dispatch collapses to direct ELBOW / STRAIGHT calls.
  *
- * Free endpoints own a per-instance `scratch: Point` (allocated once at build, written
- * per frame). Frame-bound endpoints share slot-indexed module-level frame scratches —
- * safe because `rerouteTransformInto` allocates fresh position tuples from the frame
- * + anchor.
+ * **Side ownership.** A `Side` is "an endpoint that knows how to refresh itself."
+ *   - `static` — endpoint baked once at begin via `bakeCanonicalEndpoint`; never touched.
+ *   - `free`   — endpoint.pos === side.scratch (alias). Per-frame apply mutates scratch
+ *                slots; endpoint sees updates automatically. originalPos cloned at begin.
+ *   - `bind`   — for ELBOW + STRAIGHT-interior, endpoint.frame === side.frame (alias).
+ *                `fillFrameFromBind(side.frame, side)` writes both at once. For
+ *                STRAIGHT-edge, side.frame is a standalone scratch fed into
+ *                `fillAnchorPoint(anchor, frame, endpoint.pos)`.
+ *
+ * **Alias contract.**
+ *   1. Once aliased, never reassign the array — only mutate slots.
+ *   2. Free-side scratches are per-side; never module-shared (the route polyline holds
+ *      `scratch` by reference at slot 0 / slot N-1).
+ *   3. `commitReroute` clones `[scratch[0], scratch[1]]` into Y.Map.
  */
 
+import { getHandleShapeType } from '@/core/accessors';
 import {
+  type AnchorSource,
+  bakeCanonicalEndpoint,
   buildRouteContext,
-  type FrameOverride,
+  ELBOW,
+  type ElbowEndpoint,
   type RouteContext,
-  rerouteTransformInto,
-  SLOT_END,
-  SLOT_START,
-  type Slot,
-  type TransformOverride,
+  STRAIGHT,
+  type StraightEndpoint,
 } from '@/core/connectors/reroute-connector';
+import { computeConnectorBBoxFromPointsInto } from '@/core/geometry/bbox';
 import { bboxToFrameMut, copyBbox, copyFrame, offsetBBox, offsetPoint } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { preservePositionMut, scaleAround, uniformFactor } from '@/core/geometry/scale-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import { isCorner } from '@/core/types/handles';
-import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types/objects';
+import type { BindableKind, ConnectorEndpoint, ObjectHandle, StoredAnchor, StoredStraightAnchor } from '@/core/types/objects';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { getAttachedConnectors, getHandle, getObjects } from '@/runtime/room-runtime';
 import type { Entry } from './transform';
 import type { ScaleCtx } from './types';
 
 // ============================================================================
-// Types
+// Per-pipeline Side types
 // ============================================================================
+//
+// Side variants share a common `kind` discriminator. AnchorSource fields
+// (anchor / shapeId / interior) are inlined directly so the bind side IS
+// structurally an AnchorSource — `Pipeline.configAnchored(out, frame, shapeType, side)`
+// passes the side as the source with no allocation.
 
-type BindSide = {
+type ElbowStaticSide = { readonly kind: 'static'; readonly endpoint: ElbowEndpoint };
+type ElbowFreeSide = {
+  readonly kind: 'free';
+  readonly endpoint: ElbowEndpoint;
+  /** Aliased: `endpoint.pos === scratch`. Per-frame apply mutates slots. */
+  readonly scratch: Point;
+  /** Cloned at begin; gesture-stable input to scale math. */
+  readonly originalPos: Point;
+};
+type ElbowBindSide = {
   readonly kind: 'bind';
+  readonly endpoint: ElbowEndpoint;
   readonly bindKind: BindableKind;
   readonly entry: Entry<BindableKind>;
   /** Non-null only for note/bookmark (fillFrameFromBind needs the frozen dims). */
   readonly frozenFrame: FrameTuple | null;
+  // AnchorSource fields — inlined so the side satisfies AnchorSource structurally.
+  readonly anchor: Point;
+  readonly shapeId: string;
+  /** Always false for elbow; ELBOW pipeline ignores. */
+  readonly interior: boolean;
+  /** Frozen at begin; UI invariant prevents shape-type swap mid-gesture. */
+  readonly shapeType: string;
+  /** Aliased: `frame === endpoint.frame`. fillFrameFromBind writes here. */
+  readonly frame: FrameTuple;
 };
+type ElbowSide = ElbowStaticSide | ElbowFreeSide | ElbowBindSide;
 
-type FreeSide = {
+type StraightStaticSide = { readonly kind: 'static'; readonly endpoint: StraightEndpoint };
+type StraightFreeSide = {
   readonly kind: 'free';
-  /** Independent snapshot — cloned at build so Y.Map-preserved refs can't alias us. */
-  readonly originalPos: Readonly<Point>;
-  /** Per-instance scratch for apply results; reused across frames for this side only. */
+  readonly endpoint: StraightEndpoint;
   readonly scratch: Point;
+  readonly originalPos: Point;
 };
+type StraightBindSide = {
+  readonly kind: 'bind';
+  readonly endpoint: StraightEndpoint;
+  readonly bindKind: BindableKind;
+  readonly entry: Entry<BindableKind>;
+  readonly frozenFrame: FrameTuple | null;
+  readonly anchor: Point;
+  readonly shapeId: string;
+  /** Frozen at begin per stored anchor's interior flag; STRAIGHT.configAnchored
+   *  branches on endpoint.kind ('edge' vs 'interior'), already fixed at construction. */
+  readonly interior: boolean;
+  /** Aliased to endpoint.frame for interior; standalone scratch for edge. */
+  readonly frame: FrameTuple;
+};
+type StraightSide = StraightStaticSide | StraightFreeSide | StraightBindSide;
 
-type Side = BindSide | FreeSide;
+// ============================================================================
+// Entry types
+// ============================================================================
 
 interface BaseEntry {
   readonly mode: 'static' | 'translate' | 'reroute';
@@ -69,7 +123,6 @@ interface BaseEntry {
   readonly currBbox: BBoxTuple;
 }
 
-/** Entries that track dirty rects across frames (every mode except `static`). */
 interface DirtyEntry extends BaseEntry {
   readonly originalBbox: BBoxTuple;
   readonly prevBbox: BBoxTuple;
@@ -86,12 +139,11 @@ export interface TranslateEntry extends DirtyEntry {
   readonly frozenEnd: Point | null;
 }
 
-export interface RerouteEntry extends DirtyEntry {
+interface RerouteEntryBase<S> extends DirtyEntry {
   readonly mode: 'reroute';
-  /** null = canonical (no override; reroute reads Y.Map for this endpoint). */
-  readonly start: Side | null;
-  readonly end: Side | null;
-  /** Cap/width/cachedRoute/pipeline frozen at begin — no per-frame Y.Map reads. */
+  readonly start: S;
+  readonly end: S;
+  /** Cap/width/cachedRoute frozen at begin — no per-frame Y.Map reads. */
   readonly routeCtx: RouteContext;
   /** Persistent buffer mutated in place each frame. `length` may exceed `validCount`. */
   readonly pointsBuf: Point[];
@@ -99,32 +151,19 @@ export interface RerouteEntry extends DirtyEntry {
   validCount: number;
 }
 
-export type ConnectorEntry = StaticEntry | TranslateEntry | RerouteEntry;
+export type ElbowRerouteEntry = RerouteEntryBase<ElbowSide>;
+export type StraightRerouteEntry = RerouteEntryBase<StraightSide>;
+
+export type ConnectorEntry = StaticEntry | TranslateEntry | ElbowRerouteEntry | StraightRerouteEntry;
 
 export type ConnectorTopology = {
   readonly byId: ReadonlyMap<string, ConnectorEntry>;
   readonly translates: readonly TranslateEntry[];
-  readonly reroutes: readonly RerouteEntry[];
+  readonly elbowReroutes: readonly ElbowRerouteEntry[];
+  readonly straightReroutes: readonly StraightRerouteEntry[];
   /** selectedIds ∪ non-selected-attached-connectors (pre-deduplicated). */
   readonly injectIds: readonly string[];
 };
-
-// ============================================================================
-// Module-level scratches — slot-indexed, zero allocation per frame
-// ============================================================================
-
-const FRAME_SCRATCH: readonly [FrameTuple, FrameTuple] = [
-  [0, 0, 0, 0],
-  [0, 0, 0, 0],
-];
-
-// Pre-linked wrappers kept permanently bound to their frame scratches. Mutating
-// the tuple mutates what rerouteTransformInto reads via `override.frame`.
-// Frame overrides are safe to share: the implementation allocates fresh position
-// tuples from `anchorFramePoint`/`elbowAnchorPoint`, so the frame is only read.
-const FRAME_WRAP: readonly [FrameOverride, FrameOverride] = [{ frame: FRAME_SCRATCH[0] }, { frame: FRAME_SCRATCH[1] }];
-
-const ZERO_POINT: Readonly<Point> = [0, 0];
 
 // ============================================================================
 // Endpoint classifier
@@ -147,6 +186,8 @@ function classifyEndpoint(
   return connectorIsSelected ? 'free-moving' : 'canonical';
 }
 
+const ZERO_POINT: Readonly<Point> = [0, 0];
+
 // ============================================================================
 // Frame derivation per bind-side kind
 // ============================================================================
@@ -156,27 +197,22 @@ function classifyEndpoint(
  * Reads only `entry.out.*` (+ optionally `entry.frozen.*` + `side.frozenFrame`).
  * Mode-agnostic: whatever apply just wrote is what we read.
  */
-function fillFrameFromBind(scratch: FrameTuple, side: BindSide): void {
+function fillFrameFromBind(scratch: FrameTuple, side: ElbowBindSide | StraightBindSide): void {
   const e = side.entry;
   switch (side.bindKind) {
     case 'shape':
     case 'image': {
-      // Apply writes out.frame in every mode (uniform/nonUniform/edgePin/translate).
       const f = (e.out as { frame: FrameTuple }).frame;
       copyFrame(scratch, f);
       return;
     }
     case 'text':
     case 'code': {
-      // out.bbox is the tight visual frame for text/code (frozen reads frameToBbox(getTextFrame));
-      // dirty-rect padding lives on entry.prevBbox via fillDirty, not on out.bbox.
       bboxToFrameMut(e.out.bbox, scratch);
       return;
     }
     case 'note':
     case 'bookmark': {
-      // out.bbox carries shadow padding — cannot alias as frame.
-      // ratio matches renderer (objects.ts, renderScaleEntry note/bookmark branch).
       const frozenScale = (e.frozen as { scale: number }).scale;
       const outScale = (e.out as { scale: number }).scale;
       const outOrigin = (e.out as { origin: Point }).origin;
@@ -189,6 +225,111 @@ function fillFrameFromBind(scratch: FrameTuple, side: BindSide): void {
       return;
     }
   }
+}
+
+// ============================================================================
+// Side builders (gesture begin) — one allocation per bind / free side
+// ============================================================================
+
+function buildElbowSide(
+  endpoint: ConnectorEndpoint | undefined,
+  anchor: StoredAnchor | undefined,
+  state: EndpointState,
+  selectedBindables: ReadonlyMap<string, SelectedBindable>,
+  cachedRoute: Point[] | null,
+  side: 'start' | 'end',
+): ElbowSide | null {
+  if (state === 'canonical') {
+    return { kind: 'static', endpoint: bakeCanonicalEndpoint(ELBOW, endpoint, cachedRoute, side) };
+  }
+  if (state === 'frame-bound') {
+    // classifyEndpoint guarantees anchor + selectedBindables.has
+    const sb = selectedBindables.get(anchor!.id)!;
+    const handle = getHandle(anchor!.id);
+    if (!handle) return null;
+    const initFrame = frameOf(handle);
+    if (!initFrame) return null;
+    const ourFrame: FrameTuple = [initFrame[0], initFrame[1], initFrame[2], initFrame[3]];
+    const shapeType = getHandleShapeType(handle);
+    const src: AnchorSource = {
+      anchor: [anchor!.anchor[0], anchor!.anchor[1]],
+      shapeId: anchor!.id,
+      interior: false,
+    };
+    const ep = ELBOW.newAnchored(ourFrame, shapeType, src);
+    return {
+      kind: 'bind',
+      endpoint: ep,
+      bindKind: sb.kind,
+      entry: sb.entry,
+      frozenFrame: sb.frozenFrame,
+      anchor: src.anchor,
+      shapeId: src.shapeId,
+      interior: false,
+      shapeType,
+      frame: ourFrame,
+    };
+  }
+  // free-moving
+  const storedPos = endpoint && Array.isArray(endpoint) ? (endpoint as Point) : ZERO_POINT;
+  const scratch: Point = [storedPos[0], storedPos[1]];
+  const ep = ELBOW.newFree(scratch);
+  return {
+    kind: 'free',
+    endpoint: ep,
+    scratch,
+    originalPos: [storedPos[0], storedPos[1]],
+  };
+}
+
+function buildStraightSide(
+  endpoint: ConnectorEndpoint | undefined,
+  anchor: StoredAnchor | undefined,
+  state: EndpointState,
+  selectedBindables: ReadonlyMap<string, SelectedBindable>,
+  cachedRoute: Point[] | null,
+  side: 'start' | 'end',
+): StraightSide | null {
+  if (state === 'canonical') {
+    return { kind: 'static', endpoint: bakeCanonicalEndpoint(STRAIGHT, endpoint, cachedRoute, side) };
+  }
+  if (state === 'frame-bound') {
+    const sb = selectedBindables.get(anchor!.id)!;
+    const handle = getHandle(anchor!.id);
+    if (!handle) return null;
+    const initFrame = frameOf(handle);
+    if (!initFrame) return null;
+    const ourFrame: FrameTuple = [initFrame[0], initFrame[1], initFrame[2], initFrame[3]];
+    const shapeType = getHandleShapeType(handle);
+    const interior = (anchor as StoredStraightAnchor).interior ?? false;
+    const src: AnchorSource = {
+      anchor: [anchor!.anchor[0], anchor!.anchor[1]],
+      shapeId: anchor!.id,
+      interior,
+    };
+    const ep = STRAIGHT.newAnchored(ourFrame, shapeType, src);
+    return {
+      kind: 'bind',
+      endpoint: ep,
+      bindKind: sb.kind,
+      entry: sb.entry,
+      frozenFrame: sb.frozenFrame,
+      anchor: src.anchor,
+      shapeId: src.shapeId,
+      interior,
+      frame: ourFrame,
+    };
+  }
+  // free-moving
+  const storedPos = endpoint && Array.isArray(endpoint) ? (endpoint as Point) : ZERO_POINT;
+  const scratch: Point = [storedPos[0], storedPos[1]];
+  const ep = STRAIGHT.newFree(scratch);
+  return {
+    kind: 'free',
+    endpoint: ep,
+    scratch,
+    originalPos: [storedPos[0], storedPos[1]],
+  };
 }
 
 // ============================================================================
@@ -236,15 +377,16 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
     finalize() {
       const byId = new Map<string, ConnectorEntry>();
       const translates: TranslateEntry[] = [];
-      const reroutes: RerouteEntry[] = [];
+      const elbowReroutes: ElbowRerouteEntry[] = [];
+      const straightReroutes: StraightRerouteEntry[] = [];
 
       for (const handle of selectedConnectors) {
-        processConnector(handle, true, mode, selectedBindables, translates, reroutes, byId);
+        processConnector(handle, true, mode, selectedBindables, translates, elbowReroutes, straightReroutes, byId);
       }
       for (const cid of attachedIds) {
         const h = getHandle(cid);
         if (!h || h.kind !== 'connector') continue;
-        processConnector(h, false, mode, selectedBindables, translates, reroutes, byId);
+        processConnector(h, false, mode, selectedBindables, translates, elbowReroutes, straightReroutes, byId);
       }
 
       if (byId.size === 0) return null;
@@ -253,7 +395,7 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
       for (const id of selectedIdSet) injectIds.push(id);
       for (const id of attachedIds) injectIds.push(id);
 
-      return { byId, translates, reroutes, injectIds };
+      return { byId, translates, elbowReroutes, straightReroutes, injectIds };
     },
   };
 }
@@ -264,12 +406,10 @@ function processConnector(
   mode: 'translate' | 'scale',
   selectedBindables: ReadonlyMap<string, SelectedBindable>,
   translates: TranslateEntry[],
-  reroutes: RerouteEntry[],
+  elbowReroutes: ElbowRerouteEntry[],
+  straightReroutes: StraightRerouteEntry[],
   byId: Map<string, ConnectorEntry>,
 ): void {
-  // Read the union directly. `start`/`end` are `ConnectorEndpoint | undefined` —
-  // anchored side carries StoredAnchor, free side carries Point (or undefined for
-  // partially-built connectors, which become canonical free-fallback below).
   const start = conn.y.get('start') as ConnectorEndpoint | undefined;
   const end = conn.y.get('end') as ConnectorEndpoint | undefined;
   const startAnchor = start && !Array.isArray(start) ? start : undefined;
@@ -277,21 +417,16 @@ function processConnector(
   const startState = classifyEndpoint(startAnchor, isSelected, selectedBindables);
   const endState = classifyEndpoint(endAnchor, isSelected, selectedBindables);
 
-  // STATIC — both endpoints canonical. Only selected connectors enter topology;
-  // non-selected static has no reason to (nothing moves).
+  // STATIC — both endpoints canonical. Only selected connectors enter topology.
   if (startState === 'canonical' && endState === 'canonical') {
     if (!isSelected) return;
-    const e: StaticEntry = { mode: 'static', id: conn.id, currBbox: [...conn.bbox] as BBoxTuple };
-    byId.set(conn.id, e);
+    byId.set(conn.id, { mode: 'static', id: conn.id, currBbox: [...conn.bbox] as BBoxTuple });
     return;
   }
 
   // TRANSLATE-ONLY — both endpoints move rigidly under translate gesture.
-  // No originalPoints: rendering reads cached route + applies ctx.translate(dx, dy).
   if (mode === 'translate' && startState !== 'canonical' && endState !== 'canonical') {
     const ob = conn.bbox;
-    // Freeze each FREE-side endpoint (bound sides commit nothing). Cloned so a Y.Map-preserved
-    // ref from a prior gesture can't alias us; commit reads frozen + dx/dy (no Y.Map read).
     const frozenStart = start && Array.isArray(start) ? ([start[0], start[1]] as Point) : null;
     const frozenEnd = end && Array.isArray(end) ? ([end[0], end[1]] as Point) : null;
     const e: TranslateEntry = {
@@ -308,60 +443,67 @@ function processConnector(
     return;
   }
 
-  // REROUTE — everything else. Per-side overrides computed per frame.
-  // RouteContext built once at begin — drives every per-frame route call.
+  // REROUTE — partition by connectorType for monomorphic apply loops.
   const routeCtx = buildRouteContext(conn.id, conn.y);
   if (!routeCtx) return; // partially-built connector — observer will reroute on next write
 
   const ob = conn.bbox;
-  const startStoredPos = start && Array.isArray(start) ? (start as Point) : undefined;
-  const endStoredPos = end && Array.isArray(end) ? (end as Point) : undefined;
-  const e: RerouteEntry = {
-    mode: 'reroute',
-    id: conn.id,
-    start: startState === 'canonical' ? null : makeSide(startAnchor, startStoredPos, selectedBindables, startState),
-    end: endState === 'canonical' ? null : makeSide(endAnchor, endStoredPos, selectedBindables, endState),
-    originalBbox: ob,
-    currBbox: [ob[0], ob[1], ob[2], ob[3]],
-    prevBbox: [ob[0], ob[1], ob[2], ob[3]],
-    routeCtx,
-    pointsBuf: [],
-    validCount: 0,
-  };
-  reroutes.push(e);
-  byId.set(conn.id, e);
-}
-
-function makeSide(
-  anchor: StoredAnchor | undefined,
-  storedPos: Point | undefined,
-  selectedBindables: ReadonlyMap<string, SelectedBindable>,
-  state: 'frame-bound' | 'free-moving',
-): Side {
-  if (state === 'frame-bound') {
-    // classifyEndpoint returned 'frame-bound' only after `selectedBindables.has(anchor.id)`
-    // — Map's contract guarantees the get is non-undefined.
-    const sb = selectedBindables.get(anchor!.id)!;
-    return { kind: 'bind', bindKind: sb.kind, entry: sb.entry, frozenFrame: sb.frozenFrame };
+  if (routeCtx.connectorType === 'straight') {
+    const startSide = buildStraightSide(start, startAnchor, startState, selectedBindables, routeCtx.cachedRoute, 'start');
+    const endSide = buildStraightSide(end, endAnchor, endState, selectedBindables, routeCtx.cachedRoute, 'end');
+    if (!startSide || !endSide) return;
+    const e: StraightRerouteEntry = {
+      mode: 'reroute',
+      id: conn.id,
+      start: startSide,
+      end: endSide,
+      originalBbox: ob,
+      currBbox: [ob[0], ob[1], ob[2], ob[3]],
+      prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      routeCtx,
+      pointsBuf: [],
+      validCount: 0,
+    };
+    straightReroutes.push(e);
+    byId.set(conn.id, e);
+  } else {
+    const startSide = buildElbowSide(start, startAnchor, startState, selectedBindables, routeCtx.cachedRoute, 'start');
+    const endSide = buildElbowSide(end, endAnchor, endState, selectedBindables, routeCtx.cachedRoute, 'end');
+    if (!startSide || !endSide) return;
+    const e: ElbowRerouteEntry = {
+      mode: 'reroute',
+      id: conn.id,
+      start: startSide,
+      end: endSide,
+      originalBbox: ob,
+      currBbox: [ob[0], ob[1], ob[2], ob[3]],
+      prevBbox: [ob[0], ob[1], ob[2], ob[3]],
+      routeCtx,
+      pointsBuf: [],
+      validCount: 0,
+    };
+    elbowReroutes.push(e);
+    byId.set(conn.id, e);
   }
-  // free-moving — clone the stored point into an independent tuple. Y.Map may have
-  // preserved a previous gesture's scratch reference (we now clone at commit too,
-  // but belt-and-suspenders: any prior stored value becomes our private snapshot).
-  const src = storedPos ?? ZERO_POINT;
-  return { kind: 'free', originalPos: [src[0], src[1]], scratch: [0, 0] };
 }
 
 // ============================================================================
-// Per-frame apply
+// Per-frame apply — monomorphic per pipeline
 // ============================================================================
 
 export function runTopologyTranslate(topology: ConnectorTopology, dx: number, dy: number): void {
   applyTranslates(topology.translates, dx, dy);
-  applyReroutesTranslate(topology.reroutes, dx, dy);
+  applyElbowReroutesTranslate(topology.elbowReroutes, dx, dy);
+  applyStraightReroutesTranslate(topology.straightReroutes, dx, dy);
 }
 
 export function runTopologyScale(topology: ConnectorTopology, ctx: ScaleCtx): void {
-  applyReroutesScale(topology.reroutes, ctx);
+  // `corner`/`uf` depend only on `ctx.handleId`/`sx`/`sy` — same value for every
+  // entry this frame; hoist once across both pipelines.
+  const corner = isCorner(ctx.handleId);
+  const uf = corner ? uniformFactor(ctx.sx, ctx.sy, ctx.handleId) : 0;
+  applyElbowReroutesScale(topology.elbowReroutes, ctx, corner, uf);
+  applyStraightReroutesScale(topology.straightReroutes, ctx, corner, uf);
 }
 
 function applyTranslates(arr: readonly TranslateEntry[], dx: number, dy: number): void {
@@ -374,84 +516,145 @@ function applyTranslates(arr: readonly TranslateEntry[], dx: number, dy: number)
   }
 }
 
-function applyReroutesTranslate(arr: readonly RerouteEntry[], dx: number, dy: number): void {
+// ---- Elbow loops ----
+
+function applyElbowReroutesTranslate(arr: readonly ElbowRerouteEntry[], dx: number, dy: number): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    const startOv = e.start ? resolveSlotTranslate(SLOT_START, e.start, dx, dy) : null;
-    const endOv = e.end ? resolveSlotTranslate(SLOT_END, e.end, dx, dy) : null;
-    rerouteAndPublish(e, startOv, endOv);
+    rebakeElbowSideTranslate(e.start, dx, dy);
+    rebakeElbowSideTranslate(e.end, dx, dy);
+    publishElbowRoute(e);
   }
 }
 
-function applyReroutesScale(arr: readonly RerouteEntry[], ctx: ScaleCtx): void {
-  // Hoist gesture-stable invariants out of the per-entry loop. `corner`/`uf`
-  // depend only on `ctx.handleId`/`sx`/`sy` — same value for every entry this frame.
-  const corner = isCorner(ctx.handleId);
-  const uf = corner ? uniformFactor(ctx.sx, ctx.sy, ctx.handleId) : 0;
+function applyElbowReroutesScale(arr: readonly ElbowRerouteEntry[], ctx: ScaleCtx, corner: boolean, uf: number): void {
   for (let i = 0; i < arr.length; i++) {
     const e = arr[i];
-    const startOv = e.start ? resolveSlotScale(SLOT_START, e.start, ctx, corner, uf) : null;
-    const endOv = e.end ? resolveSlotScale(SLOT_END, e.end, ctx, corner, uf) : null;
-    rerouteAndPublish(e, startOv, endOv);
+    rebakeElbowSideScale(e.start, ctx, corner, uf);
+    rebakeElbowSideScale(e.end, ctx, corner, uf);
+    publishElbowRoute(e);
   }
 }
 
-// Free-branch helpers — identical math across start/end; extracted so corner-uniform
-// logic lives in one place and the slot-parametric resolvers stay pure dispatch.
-
-function resolveFreeTranslate(s: FreeSide, dx: number, dy: number): Point {
-  offsetPoint(s.scratch, s.originalPos as Point, dx, dy);
-  return s.scratch;
-}
-
-/**
- * Corner handles: uniform-factor + preserve-position, so free endpoints track the
- * selection's uniform corner scale instead of stretching diagonally with independent
- * sx/sy. Matches `scaleBBoxUniform` behavior for shapes/images on corners.
- * Side handles: axis-aligned — `rawScaleFactors` hardcodes the inactive axis to 1,
- * so `scaleAround` with that axis is a no-op.
- *
- * `corner` and `uf` are pre-hoisted by `applyReroutesScale` (gesture-stable).
- */
-function resolveFreeScale(s: FreeSide, ctx: ScaleCtx, corner: boolean, uf: number): Point {
-  if (corner) {
-    preservePositionMut(s.scratch, s.originalPos[0], s.originalPos[1], ctx.selBounds, ctx.origin, uf);
-  } else {
-    s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
-    s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
+function rebakeElbowSideTranslate(s: ElbowSide, dx: number, dy: number): void {
+  switch (s.kind) {
+    case 'static':
+      return;
+    case 'free':
+      // endpoint.pos === scratch; mutating slots updates the endpoint automatically.
+      offsetPoint(s.scratch, s.originalPos, dx, dy);
+      return;
+    case 'bind':
+      // s.frame === s.endpoint.frame (alias); fillFrameFromBind writes both at once.
+      fillFrameFromBind(s.frame, s);
+      // configAnchored re-derives endpoint.dir + endpoint.pos in place; frame slots are
+      // self-writes (alias).
+      ELBOW.configAnchored(s.endpoint, s.frame, s.shapeType, s);
+      return;
   }
-  return s.scratch;
 }
 
-function resolveSlotTranslate(slot: Slot, s: Side, dx: number, dy: number): TransformOverride {
-  if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH[slot], s);
-    return FRAME_WRAP[slot];
+function rebakeElbowSideScale(s: ElbowSide, ctx: ScaleCtx, corner: boolean, uf: number): void {
+  switch (s.kind) {
+    case 'static':
+      return;
+    case 'free':
+      if (corner) {
+        // Corner handles: track the selection's uniform corner scale.
+        preservePositionMut(s.scratch, s.originalPos[0], s.originalPos[1], ctx.selBounds, ctx.origin, uf);
+      } else {
+        // Side handles: axis-aligned. The inactive axis is hardcoded 1 by rawScaleFactors.
+        s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
+        s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
+      }
+      return;
+    case 'bind':
+      fillFrameFromBind(s.frame, s);
+      ELBOW.configAnchored(s.endpoint, s.frame, s.shapeType, s);
+      return;
   }
-  return resolveFreeTranslate(s, dx, dy);
 }
 
-function resolveSlotScale(slot: Slot, s: Side, ctx: ScaleCtx, corner: boolean, uf: number): TransformOverride {
-  if (s.kind === 'bind') {
-    fillFrameFromBind(FRAME_SCRATCH[slot], s);
-    return FRAME_WRAP[slot];
-  }
-  return resolveFreeScale(s, ctx, corner, uf);
-}
-
-function rerouteAndPublish(e: RerouteEntry, startOv: TransformOverride | null, endOv: TransformOverride | null): void {
+function publishElbowRoute(e: ElbowRerouteEntry): void {
   invalidateWorldBBox(e.prevBbox);
-  const count = rerouteTransformInto(e.routeCtx, startOv, endOv, e.currBbox, e.pointsBuf);
-  if (count < 0) {
-    // Routing failed — reset currBbox so dirty-rect accounting stays consistent
-    // with what the renderer will draw (stored route at original position).
-    e.validCount = -1;
-    copyBbox(e.originalBbox, e.currBbox);
-  } else {
-    e.validCount = count;
-  }
+  const count = ELBOW.routeInto(e.start.endpoint, e.end.endpoint, e.routeCtx.strokeWidth, e.pointsBuf);
+  publishCount(e, count);
   invalidateWorldBBox(e.currBbox);
   copyBbox(e.currBbox, e.prevBbox);
+}
+
+// ---- Straight loops ----
+
+function applyStraightReroutesTranslate(arr: readonly StraightRerouteEntry[], dx: number, dy: number): void {
+  for (let i = 0; i < arr.length; i++) {
+    const e = arr[i];
+    rebakeStraightSideTranslate(e.start, dx, dy);
+    rebakeStraightSideTranslate(e.end, dx, dy);
+    publishStraightRoute(e);
+  }
+}
+
+function applyStraightReroutesScale(arr: readonly StraightRerouteEntry[], ctx: ScaleCtx, corner: boolean, uf: number): void {
+  for (let i = 0; i < arr.length; i++) {
+    const e = arr[i];
+    rebakeStraightSideScale(e.start, ctx, corner, uf);
+    rebakeStraightSideScale(e.end, ctx, corner, uf);
+    publishStraightRoute(e);
+  }
+}
+
+function rebakeStraightSideTranslate(s: StraightSide, dx: number, dy: number): void {
+  switch (s.kind) {
+    case 'static':
+      return;
+    case 'free':
+      offsetPoint(s.scratch, s.originalPos, dx, dy);
+      return;
+    case 'bind':
+      // Interior: s.frame === s.endpoint.frame (alias). Edge: s.frame is standalone scratch
+      // fed into STRAIGHT.configAnchored which writes endpoint.pos via fillAnchorPoint.
+      fillFrameFromBind(s.frame, s);
+      STRAIGHT.configAnchored(s.endpoint, s.frame, '', s);
+      return;
+  }
+}
+
+function rebakeStraightSideScale(s: StraightSide, ctx: ScaleCtx, corner: boolean, uf: number): void {
+  switch (s.kind) {
+    case 'static':
+      return;
+    case 'free':
+      if (corner) {
+        preservePositionMut(s.scratch, s.originalPos[0], s.originalPos[1], ctx.selBounds, ctx.origin, uf);
+      } else {
+        s.scratch[0] = scaleAround(s.originalPos[0], ctx.origin[0], ctx.sx);
+        s.scratch[1] = scaleAround(s.originalPos[1], ctx.origin[1], ctx.sy);
+      }
+      return;
+    case 'bind':
+      fillFrameFromBind(s.frame, s);
+      STRAIGHT.configAnchored(s.endpoint, s.frame, '', s);
+      return;
+  }
+}
+
+function publishStraightRoute(e: StraightRerouteEntry): void {
+  invalidateWorldBBox(e.prevBbox);
+  const count = STRAIGHT.routeInto(e.start.endpoint, e.end.endpoint, e.routeCtx.strokeWidth, e.pointsBuf);
+  publishCount(e, count);
+  invalidateWorldBBox(e.currBbox);
+  copyBbox(e.currBbox, e.prevBbox);
+}
+
+// Shared bbox / validCount publish for both pipelines.
+function publishCount<S>(e: RerouteEntryBase<S>, count: number): void {
+  if (count < 2) {
+    e.validCount = -1;
+    copyBbox(e.originalBbox, e.currBbox);
+    return;
+  }
+  e.validCount = count;
+  computeConnectorBBoxFromPointsInto(e.pointsBuf, count, e.routeCtx.strokeWidth, e.routeCtx.startCap, e.routeCtx.endCap, e.currBbox);
 }
 
 // ============================================================================
@@ -462,7 +665,8 @@ export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 
   if (mode === 'translate') {
     for (const e of topology.translates) commitTranslate(e, dx, dy);
   }
-  for (const e of topology.reroutes) commitReroute(e);
+  for (const e of topology.elbowReroutes) commitReroute(e);
+  for (const e of topology.straightReroutes) commitReroute(e);
 }
 
 /**
@@ -474,20 +678,23 @@ export function commitTopology(topology: ConnectorTopology, mode: 'translate' | 
 function commitTranslate(e: TranslateEntry, dx: number, dy: number): void {
   const y = getObjects().get(e.id);
   if (!y) return;
-  // Free side → frozen + dx/dy. Bound side → skip (the bound shape's frame write
-  // in this tx triggers observer reroute → router caches the new route).
   if (e.frozenStart) y.set('start', [e.frozenStart[0] + dx, e.frozenStart[1] + dy] as Point);
   if (e.frozenEnd) y.set('end', [e.frozenEnd[0] + dx, e.frozenEnd[1] + dy] as Point);
 }
 
-function commitReroute(e: RerouteEntry): void {
+function commitReroute<S extends ElbowSide | StraightSide>(e: RerouteEntryBase<S>): void {
   const y = getObjects().get(e.id);
   if (!y) return;
-  // Free-side scratches were updated each frame by resolveFreeScale/resolveFreeTranslate.
-  // Bound-side commits skipped — the bound bindable's commit (frame/origin/scale) writes
-  // its own change, which the observer turns into a propagation → rerouteIds → canonical reroute.
-  if (e.start && e.start.kind === 'free') y.set('start', [e.start.scratch[0], e.start.scratch[1]] as Point);
-  if (e.end && e.end.kind === 'free') y.set('end', [e.end.scratch[0], e.end.scratch[1]] as Point);
+  // Free-side scratches were updated each frame by the apply loop. Clone before write —
+  // Y.Map preserves references, the scratch must stay private to this gesture.
+  if (e.start.kind === 'free') {
+    const s = e.start.scratch;
+    y.set('start', [s[0], s[1]] as Point);
+  }
+  if (e.end.kind === 'free') {
+    const s = e.end.scratch;
+    y.set('end', [s[0], s[1]] as Point);
+  }
 }
 
 // ============================================================================
