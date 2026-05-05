@@ -226,10 +226,12 @@ Elbow never enters interior mode.
 
 ## Endpoint Resolution
 
-Three specialized public entry points share one private core (`rerouteCore`)
-that branches on `connectorType` exactly once. Each entry point only accepts
-the override shapes its caller actually produces — the topology hot path
-never pays for a SnapTarget discriminator it can't generate.
+Two parallel pipelines (elbow + straight) share a single Y.Map fetch
+(`readContext`). Each public entry reads `connectorType` once, branches once,
+dispatches to a type-specific path, and never sees the type again. Each
+pipeline operates on its own discriminated-union endpoint type carrying only
+the fields it uses — no shared `ResolvedEndpoint`, no optional fields, no
+defensive nullability.
 
 ```
 rerouteConnectorEndpointDrag(id, endpoint, override)        // SelectTool
@@ -237,8 +239,6 @@ rerouteConnectorTransform(id, startOverride, endOverride)   // connector-topolog
 rerouteConnectorCanonical(id)                                // future "update affected"
 routeNewConnector(start, end, strokeWidth, type)             // ConnectorTool
 ```
-
-Every endpoint collapses to one `ResolvedEndpoint`; routing never sees Y.Map.
 
 ### Override unions (per entry point)
 
@@ -274,33 +274,55 @@ must not invoke any reroute entry recursively (e.g. from inside an A* hop or a
 Y.Doc observer reentry). The full route is synchronous; A* never re-enters
 reroute, and Y.Doc observers don't run inside `transact()`.
 
-### ResolvedEndpoint
+### Internal endpoint types
 
 ```typescript
-interface ResolvedEndpoint {
-  position: [number, number];   // Elbow: + EDGE_CLEARANCE_W outward.  Straight: raw frame point.
-  dir: Dir | null;              // Elbow: side.  Straight: null.
-  isAnchored: boolean;
-  normalizedAnchor?: [number, number];
-  shapeType?: string;
-  frame?: FrameTuple;           // Also fed to A* as start/endShapeBounds
-  shapeId?: string;             // Enables same-shape detection for straight
-  interior?: boolean;           // Straight-only
-}
+// Elbow: position + cardinal direction + frame (also fed to A* as obstacle bounds).
+type ElbowEndpoint =
+  | { kind: 'free'; pos: Point }
+  | { kind: 'anchored'; pos: Point; dir: Dir; frame: FrameTuple };
+
+// Straight: three states. shapeType + shapeId + frame appear ONLY on `interior`,
+// where they're needed for ray-cast and the same-shape short-circuit. The `edge`
+// variant carries only `pos` — pull-back doesn't need anything else.
+type StraightEndpoint =
+  | { kind: 'free'; pos: Point }
+  | { kind: 'edge'; pos: Point }
+  | { kind: 'interior'; pos: Point; frame: FrameTuple; shapeType: string; shapeId: string };
 ```
 
-Three factories:
+What disappeared from the prior `ResolvedEndpoint`: `dir` on straight (was
+always `null`), `shapeId` on elbow (unused post-construction), `interior?` on
+elbow, `normalizedAnchor` everywhere (dead — written, never read), and the
+`isAnchored` boolean discriminator (replaced by `kind`). All optional fields
+are gone — every present field is required for its variant. TypeScript
+narrowing on `kind` proves invariants the old shape required runtime guards
+to express (`if (!me.isAnchored || !me.normalizedAnchor || !me.frame)` →
+`me.kind === 'interior'`).
 
-- `FREE_ENDPOINT(position)` — no anchor data.
-- `buildElbowAnchored(frame, shapeType, shapeId, anchor)` — calls
-  `projectAnchorToEdge(anchor, frame, shapeType, ...)` to derive `dir`, then
+### Factories (one per pipeline)
+
+- `buildElbowAnchored(frame, shapeType, anchor)` — calls
+  `projectAnchorToEdge(anchor, frame, shapeType, …)` to derive `dir`, then
   `elbowAnchorPoint(anchor, frame, dir)` for position (cardinal `EDGE_CLEARANCE_W`).
-- `buildStraightAnchored(frame, shapeType, shapeId, anchor, interior)` —
-  position = `anchorFramePoint(anchor, frame)` (no offset); `dir = null`.
+  Returns `{ kind: 'anchored', pos, dir, frame }`.
+- `buildStraightAnchored(frame, shapeType, anchor, interior, shapeId)` —
+  position = `anchorFramePoint(anchor, frame)` (no offset). Branches on
+  `interior` → `{ kind: 'interior', pos, frame, shapeType, shapeId }` or
+  `{ kind: 'edge', pos }`.
 
-`buildAnchoredByType(connectorType, …)` dispatches to elbow/straight on the
-stored anchor. Snap-driven overrides use the typed factory directly
-(`resolveSnapOverride` branches on `snap.kind`).
+### Resolvers (per pipeline, all `connectorType`-free)
+
+Each pipeline exposes:
+- `resolveXxxSide(override, anchor, storedPos)` — handles transform overrides
+  AND canonical (`override === null` reads frame from `getHandle(anchor.id)`;
+  `Point` override = free; `FrameOverride` reapplies anchor on the supplied frame).
+- `resolveXxxFromSnapOrPoint(input)` — shared by SelectTool drag and
+  `routeNewConnector`. `Point` input = free; `SnapTarget` input → factory.
+
+The straight side casts `anchor as StoredStraightAnchor` once at the boundary
+— the parent connector's `connectorType` discriminates the union, so the cast
+is sound and isolated.
 
 ### Canonical vs dynamic (mental model)
 
@@ -337,29 +359,32 @@ Bypasses the elbow pipeline entirely — no RoutingContext, no grid, no A*, no
 direction resolution. `computeStraightRoute(start, end)` returns a two-point
 array.
 
-### Per-endpoint logic (`resolveStraightEndpointInto`)
+### Per-endpoint logic (`resolveStraightVisibleEndpoint`)
 
 Called symmetrically for each side, writing into a module scratch
-(`STRAIGHT_PT_START` / `STRAIGHT_PT_END`):
+(`STRAIGHT_PT_START` / `STRAIGHT_PT_END`). The same-shape interior pair is
+intercepted at the route level (next section), so this function never sees it
+— three explicit cases over `me.kind`:
 
-| `me` state | Result written into `out` |
+| `me.kind` | Result written into `out` |
 |---|---|
-| Free (`!isAnchored`) | `me.position` copied |
-| Edge anchor (`interior=false`) | `applyPullBackInto(out, me.position, otherRaw)` — EDGE_CLEARANCE_W along the line |
-| Interior, same shape | `me.position` copied (raw anchor; no ray-cast) |
-| Interior, different shape | ray-cast exit + `applyPullBackInto` (via `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT` scratches) |
+| `free` | `me.pos` copied |
+| `edge` | `applyPullBackInto(out, me.pos, otherPos)` — EDGE_CLEARANCE_W along the line |
+| `interior` | ray-cast exit + `applyPullBackInto` (via `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT` scratches) |
 
-For straight endpoints, `me.position` IS the un-offset `anchorFramePoint`
+For straight endpoints, `me.pos` IS the un-offset `anchorFramePoint`
 (`buildStraightAnchored` writes it; no offset). It's also the source of the
 dashed guide for interior anchors. `STRAIGHT_RAY_DIR` / `STRAIGHT_RAY_EXIT`
 are reused sequentially per side — never aliased into the result.
 
-### Same-shape short-circuit
+### Same-shape short-circuit (pair-level, in `computeStraightRoute`)
 
-`isSameShape(start, end)` → both interior anchors share a `shapeId`. Ray-casting
-two interior points on one convex shape produces opposing intersections (the
-"spinning clock" artifact), so we skip intersection entirely and connect the
-raw interior points directly.
+When `start.kind === 'interior' && end.kind === 'interior' && start.shapeId
+=== end.shapeId`, return `[start.pos, end.pos]` directly. Ray-casting two
+interior points on one convex shape produces opposing intersections (the
+"spinning clock" artifact). The check lives at the route level because it's
+a property of the **pair**, not a per-side concern — extracting it lets each
+per-side branch operate on a clean three-case `kind` switch.
 
 ### Edge intersection (`rayShapeExitPoint`)
 
@@ -520,17 +545,32 @@ routeNewConnector(
 ): NewRouteResult;                                 // { points }
 ```
 
-Internal flow — every reroute entry point delegates to one private
-`rerouteCore(ctx, startResolved, endResolved)` that branches on `connectorType`
-exactly once:
+Internal flow — each public entry reads `ctx = readContext(connectorId)` once
+(shared Y.Map fetch — schema doesn't fork by type), then branches on
+`ctx.connectorType` exactly once and dispatches to a per-pipeline private:
 
 ```typescript
-function rerouteCore(ctx, startResolved, endResolved) {
-  if (ctx.connectorType === 'straight') return { points: computeStraightRoute(...).points, bbox };
-  const { startDir, endDir } = resolveElbowDirections(startResolved, endResolved, ctx.strokeWidth);
-  return { points: callAStar(...).points, bbox };
+export function rerouteConnectorTransform(connectorId, startOverride, endOverride) {
+  const ctx = readContext(connectorId);
+  if (!ctx) return null;
+  return ctx.connectorType === 'straight'
+    ? rerouteStraightTransform(ctx, startOverride, endOverride)
+    : rerouteElbowTransform(ctx, startOverride, endOverride);
 }
+
+function rerouteElbowTransform(ctx, sOv, eOv) {
+  const start = resolveElbowSide(sOv, ctx.startAnchor, ctx.storedStart);
+  const end   = resolveElbowSide(eOv, ctx.endAnchor,   ctx.storedEnd);
+  const { points } = computeElbowRoute(start, end, ctx.strokeWidth);
+  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
+}
+// rerouteStraightTransform symmetric. Drag + canonical follow the same shape.
 ```
+
+`connectorType` lives only in `ConnectorContext` (the `readContext` output) and
+is never threaded into resolvers, factories, or route assemblers — every
+internal function operates on `ElbowEndpoint` xor `StraightEndpoint`, and the
+type itself encodes which pipeline you're in.
 
 BBox for `RerouteResult` comes from `computeConnectorBBoxFromPoints(points, yMap)`.
 
@@ -667,16 +707,22 @@ CORNER_RADIUS_W + arrowLength + EDGE_CLEARANCE_W`.
 10. **Single paint atom.** Every connector stroke goes through
     `paintConnector`, so committed render, transform preview, and in-flight
     preview share one draw pass.
-11. **Three reroute entry points, one core.** Each public reroute (endpoint-
-    drag, transform, canonical) accepts only the override shapes its caller
-    actually produces; all four delegate to `rerouteCore`, which branches on
-    `connectorType` exactly once. No drift risk; the topology hot path skips
+11. **Two parallel reroute pipelines, one shared `readContext`.** Each public
+    reroute (endpoint-drag, transform, canonical) accepts only the override
+    shapes its caller actually produces; each branches on `ctx.connectorType`
+    exactly once and dispatches to elbow or straight private internals.
+    Internal helpers operate on `ElbowEndpoint` xor `StraightEndpoint` — the
+    type encodes the pipeline. No drift risk; the topology hot path skips
     runtime override-shape discrimination it can't generate.
-12. **Module scratches are non-re-entrant.** `reroute-connector.ts`,
+12. **`connectorType` is never threaded into internals.** It is read once (in
+    `readContext`) and branched on once at the top of every public entry.
+    Resolvers, factories, route assemblers, and per-side helpers operate on
+    typed endpoint unions only.
+13. **Module scratches are non-re-entrant.** `reroute-connector.ts`,
     `routing-context.ts`, and `routing-astar.ts` all hold module-level
     scratches (point projections, bounds, grid lines, A* state). The reroute
     pipeline is synchronous; callers must not invoke it recursively.
-13. **Final route Point[] is the only allocation in the elbow path.** All
+14. **Final route Point[] is the only allocation in the elbow path.** All
     other arrays (cells, gScores, fScores, pathCells, xLines, yLines) are
     module-pool typed arrays reused via a generation counter.
 

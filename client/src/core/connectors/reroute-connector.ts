@@ -1,10 +1,12 @@
 /**
  * High-Level Connector Rerouting API.
  *
- * Three specialized public entry points share one private core that branches on
- * `connectorType` exactly once. Each public function takes only the override
- * shape its caller actually produces — no runtime tag-soup discrimination on
- * hot paths.
+ * Two parallel pipelines (elbow + straight) share a single Y.Map fetch
+ * (`readContext`). Each public entry reads `connectorType` once, branches
+ * once, and dispatches to a type-specific path. Internal endpoint types
+ * are discriminated unions carrying only the fields each path actually
+ * uses — no fat shared `ResolvedEndpoint`, no `connectorType` threaded
+ * into resolvers, no defensive nullability.
  *
  *   rerouteConnectorEndpointDrag(id, endpoint, override)
  *     Caller: SelectTool. The non-dragged side reads Y.Map; the dragged side
@@ -32,7 +34,7 @@ import { computeConnectorBBoxFromPoints } from '../geometry/bbox';
 import { frameOf } from '../geometry/frame-of';
 import type { BBoxTuple, FrameTuple, Point } from '../types/geometry';
 import type { StoredStraightAnchor } from '../types/objects';
-import { anchorFramePoint, elbowAnchorPoint, isSameShape } from './anchor-atoms';
+import { anchorFramePoint, elbowAnchorPoint } from './anchor-atoms';
 import { computeElbowFreeEndDir, oppositeDir, resolveElbowFreeStartDir } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
 import { computeAStarRoute } from './routing-astar';
@@ -53,6 +55,10 @@ import type { ConnectorType, Dir, SnapTarget } from './types';
  * 4. The final route Point[] is freshly allocated on every call. All other arrays
  *    in the elbow pipeline (cells, gScores, fScores, pathCells, xLines, yLines)
  *    are module-pool-owned and reused next call.
+ * 5. `connectorType` is read once (in readContext) and branched on once at the
+ *    top of every public entry. It is never threaded into resolvers, factories,
+ *    route assemblers, or per-side helpers — each pipeline operates on its own
+ *    typed endpoint union (ElbowEndpoint xor StraightEndpoint).
  */
 
 const ZERO_POINT: Point = [0, 0];
@@ -62,16 +68,16 @@ const PROJECT_EDGE: Point = [0, 0];
 const PROJECT_NORMAL: Point = [0, 0];
 
 // Straight pipeline scratches. STRAIGHT_RAY_DIR / STRAIGHT_RAY_EXIT consumed
-// sequentially per side inside resolveStraightEndpointInto — never aliased into
-// the result. STRAIGHT_PT_START / STRAIGHT_PT_END hold the two visible endpoints
-// returned in the final straight route.
+// sequentially per side inside resolveStraightVisibleEndpoint — never aliased
+// into the result. STRAIGHT_PT_START / STRAIGHT_PT_END hold the two visible
+// endpoints returned in the final straight route.
 const STRAIGHT_RAY_DIR: Point = [0, 0];
 const STRAIGHT_RAY_EXIT: Point = [0, 0];
 const STRAIGHT_PT_START: Point = [0, 0];
 const STRAIGHT_PT_END: Point = [0, 0];
 
 // ============================================================================
-// TYPES
+// PUBLIC TYPES
 // ============================================================================
 
 /** Override that reapplies a connector's stored anchor against a transformed frame. */
@@ -98,128 +104,158 @@ export interface NewRouteResult {
   points: Point[];
 }
 
+// ============================================================================
+// INTERNAL ENDPOINT TYPES — discriminated unions, no optional fields
+// ============================================================================
+
 /**
- * Resolved endpoint with position, direction, and anchor metadata.
- * Free endpoints carry only `position` + `isAnchored=false`; anchored endpoints
- * populate everything else. `frame` doubles as the obstacle-bounds passed into A*.
+ * Elbow endpoint. Carries direction (cardinal escape) and frame (obstacle bounds
+ * passed to A*). Anchored variant has both; free has only position.
  */
-interface ResolvedEndpoint {
-  position: Point;
-  dir: Dir | null;
-  isAnchored: boolean;
-  // Populated for anchored endpoints (both connector types).
-  normalizedAnchor?: Point;
-  shapeType?: string;
-  frame?: FrameTuple;
-  shapeId?: string;
-  /** Straight-only: true = stored/snapped as interior, false = edge. */
-  interior?: boolean;
-}
+type ElbowEndpoint = { kind: 'free'; pos: Point } | { kind: 'anchored'; pos: Point; dir: Dir; frame: FrameTuple };
+
+/**
+ * Straight endpoint. Three states:
+ *   free     — no shape attachment.
+ *   edge     — anchored on the shape's boundary; visible position is `pos`
+ *              minus an along-line pull-back.
+ *   interior — anchored inside the shape; needs ray-cast to derive the visible
+ *              edge exit, plus the same along-line pull-back.
+ *
+ * Same-shape interior pairs are detected at the route level (see
+ * `computeStraightRoute`) — `shapeId` exists only on the `interior` variant.
+ */
+type StraightEndpoint =
+  | { kind: 'free'; pos: Point }
+  | { kind: 'edge'; pos: Point }
+  | { kind: 'interior'; pos: Point; frame: FrameTuple; shapeType: string; shapeId: string };
 
 // ============================================================================
-// FREE + ANCHORED FACTORIES
+// ANCHORED FACTORIES (one per pipeline)
 // ============================================================================
-
-const FREE_ENDPOINT = (position: Point): ResolvedEndpoint => ({
-  position,
-  dir: null,
-  isAnchored: false,
-});
 
 /**
  * Elbow: derive `dir` from `(anchor + frame + shapeType)` via `projectAnchorToEdge`,
  * then place position at `EDGE_CLEARANCE_W` outward along that cardinal.
  */
-function buildElbowAnchored(frame: FrameTuple, shapeType: string, shapeId: string, normalizedAnchor: Point): ResolvedEndpoint {
-  const dir = projectAnchorToEdge(normalizedAnchor, frame, shapeType, PROJECT_EDGE, PROJECT_NORMAL);
-  return {
-    position: elbowAnchorPoint(normalizedAnchor, frame, dir),
-    dir,
-    isAnchored: true,
-    normalizedAnchor,
-    shapeType,
-    frame,
-    shapeId,
-  };
-}
-
-/** Straight: position = raw frame point (no offset); dir = null; carries stored `interior`. */
-function buildStraightAnchored(
-  frame: FrameTuple,
-  shapeType: string,
-  shapeId: string,
-  normalizedAnchor: Point,
-  interior: boolean,
-): ResolvedEndpoint {
-  return {
-    position: anchorFramePoint(normalizedAnchor, frame),
-    dir: null,
-    isAnchored: true,
-    normalizedAnchor,
-    shapeType,
-    frame,
-    shapeId,
-    interior,
-  };
+function buildElbowAnchored(frame: FrameTuple, shapeType: string, anchor: Point): ElbowEndpoint {
+  const dir = projectAnchorToEdge(anchor, frame, shapeType, PROJECT_EDGE, PROJECT_NORMAL);
+  return { kind: 'anchored', pos: elbowAnchorPoint(anchor, frame, dir), dir, frame };
 }
 
 /**
- * Thin dispatcher — the single elbow/straight ternary for the stored-anchor /
- * frame-override branches. Snap-driven overrides use the typed factories
- * directly (they have the snap shape already).
+ * Straight: position = raw frame point (no offset). Returns the `interior` variant
+ * with ray-cast inputs when `interior=true`, or the bare `edge` variant otherwise.
  */
-function buildAnchoredByType(connectorType: ConnectorType, frame: FrameTuple, shapeType: string, anchor: StoredAnchor): ResolvedEndpoint {
-  return connectorType === 'elbow'
-    ? buildElbowAnchored(frame, shapeType, anchor.id, anchor.anchor)
-    : buildStraightAnchored(frame, shapeType, anchor.id, anchor.anchor, (anchor as StoredStraightAnchor).interior);
+function buildStraightAnchored(frame: FrameTuple, shapeType: string, anchor: Point, interior: boolean, shapeId: string): StraightEndpoint {
+  const pos = anchorFramePoint(anchor, frame);
+  return interior ? { kind: 'interior', pos, frame, shapeType, shapeId } : { kind: 'edge', pos };
 }
 
 // ============================================================================
-// CANONICAL ENDPOINT (Y.Map fallback)
+// ELBOW RESOLVERS
 // ============================================================================
 
-/** Resolve endpoint from stored Y.Map data — anchored against current frame, or free. */
-function resolveCanonical(storedPosition: Point, anchor: StoredAnchor | undefined, connectorType: ConnectorType): ResolvedEndpoint {
-  if (!anchor) return FREE_ENDPOINT(storedPosition);
-  const anchorHandle = getHandle(anchor.id);
-  const frame = frameOf(anchorHandle);
-  if (!frame) return FREE_ENDPOINT(storedPosition);
-  return buildAnchoredByType(connectorType, frame, getHandleShapeType(anchorHandle), anchor);
+/**
+ * Transform-or-canonical resolution. `override === null` reads canonical Y.Map;
+ * `override` as Point becomes a free endpoint; `override` as FrameOverride
+ * reapplies the stored anchor against the supplied frame.
+ */
+function resolveElbowSide(override: TransformOverride | null, anchor: StoredAnchor | undefined, storedPos: Point): ElbowEndpoint {
+  if (Array.isArray(override)) return { kind: 'free', pos: override };
+  if (!anchor) return { kind: 'free', pos: storedPos };
+  const handle = getHandle(anchor.id);
+  const frame = override ? override.frame : frameOf(handle);
+  if (!frame) return { kind: 'free', pos: storedPos };
+  return buildElbowAnchored(frame, getHandleShapeType(handle), anchor.anchor);
 }
 
-/** Override: caller provided a transformed frame — reapply the stored anchor against it. */
-function resolveFrameOverride(
-  frame: FrameTuple,
-  anchor: StoredAnchor | undefined,
-  storedPosition: Point,
-  connectorType: ConnectorType,
-): ResolvedEndpoint {
-  if (!anchor) return FREE_ENDPOINT(storedPosition);
-  return buildAnchoredByType(connectorType, frame, getHandleShapeType(getHandle(anchor.id)), anchor);
+/** SelectTool drag override + ConnectorTool's new-connector input share this shape. */
+function resolveElbowFromSnapOrPoint(input: SnapTarget | Point): ElbowEndpoint {
+  if (Array.isArray(input)) return { kind: 'free', pos: input };
+  const handle = getHandle(input.shapeId);
+  const frame = frameOf(handle);
+  if (!frame) return { kind: 'free', pos: input.position };
+  return buildElbowAnchored(frame, getHandleShapeType(handle), input.normalizedAnchor);
+}
+
+// ============================================================================
+// STRAIGHT RESOLVERS
+// ============================================================================
+
+/**
+ * Same shape as `resolveElbowSide` but produces a `StraightEndpoint`. Anchors in
+ * the straight pipeline are always `StoredStraightAnchor` (parent's connectorType
+ * discriminates the union); the cast is safe and isolated.
+ */
+function resolveStraightSide(override: TransformOverride | null, anchor: StoredAnchor | undefined, storedPos: Point): StraightEndpoint {
+  if (Array.isArray(override)) return { kind: 'free', pos: override };
+  if (!anchor) return { kind: 'free', pos: storedPos };
+  const handle = getHandle(anchor.id);
+  const frame = override ? override.frame : frameOf(handle);
+  if (!frame) return { kind: 'free', pos: storedPos };
+  const sa = anchor as StoredStraightAnchor;
+  return buildStraightAnchored(frame, getHandleShapeType(handle), sa.anchor, sa.interior, sa.id);
 }
 
 /**
- * Override: caller provided a live SnapTarget — branches on `snap.kind` and
- * dispatches directly to the typed factory for each kind.
+ * Straight pipeline always receives `StraightSnapTarget`s by invariant
+ * (findBestSnapTarget is called with the connector's type — see snap.ts +
+ * core/connectors/CLAUDE.md). The `: false` interior fallback is unreachable
+ * in practice; guarding rather than asserting keeps the function total.
  */
-function resolveSnapOverride(snap: SnapTarget): ResolvedEndpoint {
-  const handle = getHandle(snap.shapeId);
-  const frame = frameOf(handle) ?? undefined;
-  const shapeType = getHandleShapeType(handle);
-  if (!frame) {
-    // No frame available — best-effort free endpoint carrying the snap's position.
-    return FREE_ENDPOINT(snap.position);
+function resolveStraightFromSnapOrPoint(input: SnapTarget | Point): StraightEndpoint {
+  if (Array.isArray(input)) return { kind: 'free', pos: input };
+  const handle = getHandle(input.shapeId);
+  const frame = frameOf(handle);
+  if (!frame) return { kind: 'free', pos: input.position };
+  const interior = input.kind === 'straight' ? input.interior : false;
+  return buildStraightAnchored(frame, getHandleShapeType(handle), input.normalizedAnchor, interior, input.shapeId);
+}
+
+// ============================================================================
+// ELBOW ROUTE ASSEMBLY
+// ============================================================================
+
+/**
+ * Resolve start + end cardinal directions for the A* path. Four explicit cases
+ * over the discriminated union — TypeScript narrowing proves `dir`/`frame`
+ * presence on the `'anchored'` branch; no `!`, no `??`, no defensive guards.
+ */
+function resolveElbowDirections(start: ElbowEndpoint, end: ElbowEndpoint, strokeWidth: number): { startDir: Dir; endDir: Dir } {
+  if (start.kind === 'anchored' && end.kind === 'anchored') {
+    return { startDir: start.dir, endDir: end.dir };
   }
-  return snap.kind === 'elbow'
-    ? buildElbowAnchored(frame, shapeType, snap.shapeId, snap.normalizedAnchor)
-    : buildStraightAnchored(frame, shapeType, snap.shapeId, snap.normalizedAnchor, snap.interior);
+  if (start.kind === 'free' && end.kind === 'anchored') {
+    const startDir = resolveElbowFreeStartDir(start.pos, { position: end.pos, outwardDir: end.dir, shapeBounds: end.frame }, strokeWidth);
+    return { startDir, endDir: end.dir };
+  }
+  if (start.kind === 'anchored' && end.kind === 'free') {
+    return { startDir: start.dir, endDir: computeElbowFreeEndDir(start.pos, end.pos) };
+  }
+  // both free
+  const startDir = computeElbowFreeEndDir(start.pos, end.pos);
+  return { startDir, endDir: oppositeDir(startDir) };
+}
+
+function computeElbowRoute(start: ElbowEndpoint, end: ElbowEndpoint, strokeWidth: number): NewRouteResult {
+  const { startDir, endDir } = resolveElbowDirections(start, end, strokeWidth);
+  return computeAStarRoute(
+    start.pos,
+    startDir,
+    end.pos,
+    endDir,
+    start.kind === 'anchored' ? start.frame : null,
+    end.kind === 'anchored' ? end.frame : null,
+    strokeWidth,
+  );
 }
 
 // ============================================================================
 // STRAIGHT ROUTE ASSEMBLY
 // ============================================================================
 
-/** Apply EDGE_CLEARANCE_W pull-back along the line from `point` toward `toward`, writing into `out`. */
+/** Apply EDGE_CLEARANCE_W pull-back along the line from `src` toward `toward`, writing into `out`. */
 function applyPullBackInto(out: Point, src: Point, toward: Point): void {
   const dx = toward[0] - src[0];
   const dy = toward[1] - src[1];
@@ -235,62 +271,67 @@ function applyPullBackInto(out: Point, src: Point, toward: Point): void {
 
 /**
  * Resolve one endpoint of a straight route to its visible line position, written
- * into `out`. For straight endpoints, `me.position` IS the raw frame point —
- * `buildStraightAnchored` writes it via `anchorFramePoint` and never offsets.
+ * into `out`. Three cases — the same-shape interior short-circuit is handled at
+ * the pair level in `computeStraightRoute`, so this function never sees it.
  *
- * - Free endpoint           → me.position.
- * - Edge anchor             → pull-back toward the other endpoint.
- * - Interior, same shape    → raw position (skip edge intersection — convex ray flip).
- * - Interior, diff shape    → edge intersection + pull-back.
+ *   free     → copy `me.pos`.
+ *   edge     → pull-back toward `otherPos`.
+ *   interior → ray-cast exit + pull-back (different shapes, by construction).
  *
  * Dashed guides for interior anchors are rendered directly from `snap` by the
  * preview/overlay layers; this function doesn't thread dash metadata.
  */
-function resolveStraightEndpointInto(out: Point, me: ResolvedEndpoint, otherRaw: Point, sameShape: boolean): void {
-  if (!me.isAnchored || !me.normalizedAnchor || !me.frame) {
-    out[0] = me.position[0];
-    out[1] = me.position[1];
-    return;
+function resolveStraightVisibleEndpoint(out: Point, me: StraightEndpoint, otherPos: Point): void {
+  switch (me.kind) {
+    case 'free':
+      out[0] = me.pos[0];
+      out[1] = me.pos[1];
+      return;
+    case 'edge':
+      applyPullBackInto(out, me.pos, otherPos);
+      return;
+    case 'interior':
+      STRAIGHT_RAY_DIR[0] = otherPos[0] - me.pos[0];
+      STRAIGHT_RAY_DIR[1] = otherPos[1] - me.pos[1];
+      if (!rayShapeExitPoint(me.pos, STRAIGHT_RAY_DIR, me.frame, me.shapeType, STRAIGHT_RAY_EXIT)) {
+        out[0] = me.pos[0];
+        out[1] = me.pos[1];
+        return;
+      }
+      applyPullBackInto(out, STRAIGHT_RAY_EXIT, otherPos);
+      return;
   }
-  const myRaw = me.position;
-  if (!me.interior) {
-    applyPullBackInto(out, myRaw, otherRaw);
-    return;
-  }
-  if (sameShape || !me.shapeType) {
-    out[0] = myRaw[0];
-    out[1] = myRaw[1];
-    return;
-  }
-  STRAIGHT_RAY_DIR[0] = otherRaw[0] - myRaw[0];
-  STRAIGHT_RAY_DIR[1] = otherRaw[1] - myRaw[1];
-  if (!rayShapeExitPoint(myRaw, STRAIGHT_RAY_DIR, me.frame, me.shapeType, STRAIGHT_RAY_EXIT)) {
-    out[0] = myRaw[0];
-    out[1] = myRaw[1];
-    return;
-  }
-  applyPullBackInto(out, STRAIGHT_RAY_EXIT, otherRaw);
 }
 
 /**
  * Compute a straight-line route between two resolved endpoints.
- * Both sides share `resolveStraightEndpointInto` to avoid mirror-image duplication.
+ *
+ * Pair-level short-circuit: both interior + same shape → straight raw-to-raw.
+ * Ray-casting two interior points on one convex shape produces opposing
+ * intersections (the "spinning clock" artifact).
  *
  * Output endpoints are FRESH allocations (cloned from STRAIGHT_PT_*) so callers
  * can safely store them in Y.Map / dirty-rect tracking without aliasing the
  * module scratch.
  */
-function computeStraightRoute(start: ResolvedEndpoint, end: ResolvedEndpoint): NewRouteResult {
-  const startRaw = start.position;
-  const endRaw = end.position;
-  const sameShape = isSameShape(start, end);
+function computeStraightRoute(start: StraightEndpoint, end: StraightEndpoint): NewRouteResult {
+  if (start.kind === 'interior' && end.kind === 'interior' && start.shapeId === end.shapeId) {
+    return {
+      points: [
+        [start.pos[0], start.pos[1]],
+        [end.pos[0], end.pos[1]],
+      ],
+    };
+  }
 
-  resolveStraightEndpointInto(STRAIGHT_PT_START, start, endRaw, sameShape);
-  resolveStraightEndpointInto(STRAIGHT_PT_END, end, startRaw, sameShape);
+  const startRaw = start.pos;
+  const endRaw = end.pos;
+  resolveStraightVisibleEndpoint(STRAIGHT_PT_START, start, endRaw);
+  resolveStraightVisibleEndpoint(STRAIGHT_PT_END, end, startRaw);
 
-  // Overlap safety: if edge intersections or pullbacks produced a flipped/collapsed segment
-  // (overlapping shapes, exit-point overshoot), fall back to raw positions — avoids the
-  // "spinning clock" artifact.
+  // Overlap safety: if edge intersections or pullbacks produced a flipped/collapsed
+  // segment (overlapping shapes, exit-point overshoot), fall back to raw positions —
+  // avoids the "spinning clock" artifact.
   const rawDx = endRaw[0] - startRaw[0];
   const rawDy = endRaw[1] - startRaw[1];
   if (rawDx * rawDx + rawDy * rawDy > 0.001) {
@@ -315,48 +356,9 @@ function computeStraightRoute(start: ResolvedEndpoint, end: ResolvedEndpoint): N
 }
 
 // ============================================================================
-// ELBOW ROUTE ASSEMBLY
+// CONNECTOR PROPS LOOKUP — shared across pipelines (Y.Map shape doesn't fork)
 // ============================================================================
 
-/**
- * Resolve routing directions for both endpoints (elbow routing only).
- * Straight routing skips direction seeding entirely.
- */
-function resolveElbowDirections(start: ResolvedEndpoint, end: ResolvedEndpoint, strokeWidth: number): { startDir: Dir; endDir: Dir } {
-  let startDir = start.dir;
-  let endDir = end.dir;
-
-  // Free→Anchored: compute start direction from spatial relationship
-  if (!start.isAnchored && end.isAnchored && end.frame) {
-    startDir = resolveElbowFreeStartDir(
-      start.position,
-      { position: end.position, outwardDir: end.dir!, shapeBounds: end.frame },
-      strokeWidth,
-    );
-  } else if (!start.isAnchored && startDir === null) {
-    startDir = computeElbowFreeEndDir(start.position, end.position);
-  }
-
-  // Anchored→Free: compute end direction from primary axis
-  if (start.isAnchored && !end.isAnchored) {
-    endDir = computeElbowFreeEndDir(start.position, end.position);
-  } else if (!end.isAnchored && endDir === null) {
-    endDir = oppositeDir(startDir!);
-  }
-
-  return { startDir: startDir!, endDir: endDir! };
-}
-
-/** Single wrapper over `computeAStarRoute` — collapses the 7-arg duplication at call sites. */
-function callAStar(start: ResolvedEndpoint, startDir: Dir, end: ResolvedEndpoint, endDir: Dir, strokeWidth: number) {
-  return computeAStarRoute(start.position, startDir, end.position, endDir, start.frame ?? null, end.frame ?? null, strokeWidth);
-}
-
-// ============================================================================
-// CONNECTOR PROPS LOOKUP
-// ============================================================================
-
-/** Connector props bundle used by every reroute entry — single Y.Map fetch. */
 interface ConnectorContext {
   yMap: Y.Map<unknown>;
   storedStart: Point;
@@ -384,17 +386,41 @@ function readContext(connectorId: string): ConnectorContext | null {
 }
 
 // ============================================================================
-// PRIVATE CORE — SINGLE BRANCH ON CONNECTOR TYPE
+// PER-PIPELINE REROUTE ENTRIES (private)
 // ============================================================================
 
-function rerouteCore(ctx: ConnectorContext, startResolved: ResolvedEndpoint, endResolved: ResolvedEndpoint): RerouteResult {
-  if (ctx.connectorType === 'straight') {
-    const straight = computeStraightRoute(startResolved, endResolved);
-    return { points: straight.points, bbox: computeConnectorBBoxFromPoints(straight.points, ctx.yMap) };
-  }
-  const { startDir, endDir } = resolveElbowDirections(startResolved, endResolved, ctx.strokeWidth);
-  const result = callAStar(startResolved, startDir, endResolved, endDir, ctx.strokeWidth);
-  return { points: result.points, bbox: computeConnectorBBoxFromPoints(result.points, ctx.yMap) };
+function rerouteElbowDrag(ctx: ConnectorContext, endpoint: 'start' | 'end', override: EndpointDragOverride): RerouteResult {
+  const overrideResolved = resolveElbowFromSnapOrPoint(override);
+  const start = endpoint === 'start' ? overrideResolved : resolveElbowSide(null, ctx.startAnchor, ctx.storedStart);
+  const end = endpoint === 'end' ? overrideResolved : resolveElbowSide(null, ctx.endAnchor, ctx.storedEnd);
+  const { points } = computeElbowRoute(start, end, ctx.strokeWidth);
+  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
+}
+
+function rerouteStraightDrag(ctx: ConnectorContext, endpoint: 'start' | 'end', override: EndpointDragOverride): RerouteResult {
+  const overrideResolved = resolveStraightFromSnapOrPoint(override);
+  const start = endpoint === 'start' ? overrideResolved : resolveStraightSide(null, ctx.startAnchor, ctx.storedStart);
+  const end = endpoint === 'end' ? overrideResolved : resolveStraightSide(null, ctx.endAnchor, ctx.storedEnd);
+  const { points } = computeStraightRoute(start, end);
+  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
+}
+
+function rerouteElbowTransform(ctx: ConnectorContext, startOv: TransformOverride | null, endOv: TransformOverride | null): RerouteResult {
+  const start = resolveElbowSide(startOv, ctx.startAnchor, ctx.storedStart);
+  const end = resolveElbowSide(endOv, ctx.endAnchor, ctx.storedEnd);
+  const { points } = computeElbowRoute(start, end, ctx.strokeWidth);
+  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
+}
+
+function rerouteStraightTransform(
+  ctx: ConnectorContext,
+  startOv: TransformOverride | null,
+  endOv: TransformOverride | null,
+): RerouteResult {
+  const start = resolveStraightSide(startOv, ctx.startAnchor, ctx.storedStart);
+  const end = resolveStraightSide(endOv, ctx.endAnchor, ctx.storedEnd);
+  const { points } = computeStraightRoute(start, end);
+  return { points, bbox: computeConnectorBBoxFromPoints(points, ctx.yMap) };
 }
 
 // ============================================================================
@@ -415,13 +441,7 @@ export function rerouteConnectorEndpointDrag(
 ): RerouteResult | null {
   const ctx = readContext(connectorId);
   if (!ctx) return null;
-
-  const overrideResolved = Array.isArray(override) ? FREE_ENDPOINT(override) : resolveSnapOverride(override);
-
-  const startResolved = endpoint === 'start' ? overrideResolved : resolveCanonical(ctx.storedStart, ctx.startAnchor, ctx.connectorType);
-  const endResolved = endpoint === 'end' ? overrideResolved : resolveCanonical(ctx.storedEnd, ctx.endAnchor, ctx.connectorType);
-
-  return rerouteCore(ctx, startResolved, endResolved);
+  return ctx.connectorType === 'straight' ? rerouteStraightDrag(ctx, endpoint, override) : rerouteElbowDrag(ctx, endpoint, override);
 }
 
 /**
@@ -438,22 +458,9 @@ export function rerouteConnectorTransform(
 ): RerouteResult | null {
   const ctx = readContext(connectorId);
   if (!ctx) return null;
-
-  const startResolved = resolveTransformSide(startOverride, ctx.startAnchor, ctx.storedStart, ctx.connectorType);
-  const endResolved = resolveTransformSide(endOverride, ctx.endAnchor, ctx.storedEnd, ctx.connectorType);
-
-  return rerouteCore(ctx, startResolved, endResolved);
-}
-
-function resolveTransformSide(
-  override: TransformOverride | null,
-  anchor: StoredAnchor | undefined,
-  storedPosition: Point,
-  connectorType: ConnectorType,
-): ResolvedEndpoint {
-  if (override === null) return resolveCanonical(storedPosition, anchor, connectorType);
-  if (Array.isArray(override)) return FREE_ENDPOINT(override);
-  return resolveFrameOverride(override.frame, anchor, storedPosition, connectorType);
+  return ctx.connectorType === 'straight'
+    ? rerouteStraightTransform(ctx, startOverride, endOverride)
+    : rerouteElbowTransform(ctx, startOverride, endOverride);
 }
 
 /**
@@ -468,7 +475,7 @@ export function rerouteConnectorCanonical(connectorId: string): RerouteResult | 
 
 /**
  * Route a new connector from endpoint specs.
- * Companion to the reroute family — same pipeline, no Y.Map data needed.
+ * Companion to the reroute family — same pipelines, no Y.Map data needed.
  */
 export function routeNewConnector(
   start: SnapTarget | Point,
@@ -476,13 +483,8 @@ export function routeNewConnector(
   strokeWidth: number,
   connectorType: ConnectorType = 'elbow',
 ): NewRouteResult {
-  const startResolved = Array.isArray(start) ? FREE_ENDPOINT(start) : resolveSnapOverride(start);
-  const endResolved = Array.isArray(end) ? FREE_ENDPOINT(end) : resolveSnapOverride(end);
-
   if (connectorType === 'straight') {
-    return computeStraightRoute(startResolved, endResolved);
+    return computeStraightRoute(resolveStraightFromSnapOrPoint(start), resolveStraightFromSnapOrPoint(end));
   }
-
-  const { startDir, endDir } = resolveElbowDirections(startResolved, endResolved, strokeWidth);
-  return { points: callAStar(startResolved, startDir, endResolved, endDir, strokeWidth).points };
+  return computeElbowRoute(resolveElbowFromSnapOrPoint(start), resolveElbowFromSnapOrPoint(end), strokeWidth);
 }
