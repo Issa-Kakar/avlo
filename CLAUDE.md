@@ -44,10 +44,18 @@ All paths relative to `client/src/` unless noted.
 |------|----------------|
 | `renderer/RenderLoop.ts` | Base canvas singleton, dirty rect tracking (Float64Array), exports `invalidateWorld/BBox/All` |
 | `renderer/OverlayRenderLoop.ts` | Overlay canvas singleton, full clear each frame, exports `invalidateOverlay` |
-| `renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
-| `renderer/layers/selection-overlay.ts` | Selection overlay: highlights, marquee, box, circular handles |
+| `renderer/types.ts` | `FRAME_CONFIG` (FPS targets), Perfect Freehand options, shared render-side types |
 | `renderer/geometry-cache.ts` | Path2D (strokes/shapes) + ConnectorPaths cache, shapeType-aware staleness |
 | `renderer/object-cache.ts` | Unified cache dispatcher: `removeObjectCaches(id, kind)`, `clearAllObjectCaches()` |
+| `renderer/layers/objects.ts` | Object rendering dispatch, transform preview, fill-aware Z-order |
+| `renderer/layers/selection-overlay.ts` | Selection overlay: highlights, bbox, circular handles (marquee owned by SelectTool) |
+| `renderer/layers/tool-preview.ts` | Tool preview dispatcher — routes active tool preview to its drawer |
+| `renderer/layers/connector-preview.ts` | In-flight connector overlay (uses connector-render-atoms) |
+| `renderer/layers/connector-render-atoms.ts` | Shared connector draw atoms (`paintConnector`, `drawAnchorDot`, dash guides) — used by `objects.ts` and `connector-preview.ts` |
+| `renderer/layers/shape-preview.ts` | In-flight shape draw (line / rect / ellipse / diamond / roundedRect) |
+| `renderer/layers/stroke-preview.ts` | In-flight Perfect Freehand stroke |
+| `renderer/layers/eraser-dim.ts` | Dim hovered objects under eraser via 'screen' blend |
+| `renderer/layers/handle-stamp.ts` | Resize-handle bitmap stamp — pre-rendered offscreen, blitted via `drawImage` (no per-frame `shadowBlur`) |
 
 ### Tools (`tools/` — zero-arg singletons via `tool-registry.ts`)
 | File | Notes |
@@ -82,12 +90,25 @@ All paths relative to `client/src/` unless noted.
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
 | `core/spatial/object-spatial-index.ts` | Pure RBush wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` with scratch-bbox reuse |
 | `core/spatial/kind-capability.ts` | Per-kind capability table: `hitPoint` (returns `Paint` class), `hitRect`, `hitCircle` + bindable flag |
-| `core/spatial/object-query.ts` | Picker facade — 3 point-pickers + region-membership. Owns `Radius`, `Region`, envelope/prefilter/sort pipeline. **Only module** in `core/` that imports `getHandle`/`getSpatialIndex` from `room-runtime`. |
+| `core/spatial/object-query.ts` | Picker facade — 3 point-pickers + region-membership. Owns `Radius`, `Region`, envelope/prefilter/sort pipeline. |
 | `core/spatial/handle-hit.ts` | Non-spatial sibling: nearest resize-handle / connector-endpoint-dot probes (not in rbush) |
+| `core/spatial/index.ts` | Barrel: re-exports `ObjectSpatialIndex` |
 | `core/connectors/shape-geometry.ts` | Pure shape math (rect/ellipse/diamond): centers, edges, midpoints, nearest-edge, ray×shape intersection. Zero connector deps. |
 | `core/connectors/connector-utils.ts` | Direction primitives, spatial relation, bounds conversion, path simplification, elbow direction resolution |
 | `core/connectors/anchor-atoms.ts` | Anchor ↔ point math: `anchorFramePoint`, `elbowAnchorPoint`, `isSameShape`, `anchorRecordFromSnap`, `getEndpointEdgePosition` |
+| `core/connectors/connector-router.ts` | Local route cache + reverse map (shape→connectors) + reroute queue. **External API** (re-exported from `room-runtime`): `getConnectorRoute`, `getAttachedConnectors`, `detachConnectorFromShape`. |
+| `core/connectors/connector-paths.ts` | Path2D builders (polyline + arrow caps). Shared by `object-cache` (committed) and `connector-preview` (ephemeral). Exports `ARROW_ROUNDING_LINE_WIDTH`. |
+| `core/connectors/snap.ts` | Snapping pipelines branched on `connectorType`: elbow → edge+midpoint stickiness; straight → interior anchors with deep/shallow logic. Used by `ConnectorTool`. |
+| `core/connectors/reroute-connector.ts` | High-level reroute API. `Pipeline<E>` strategy record + gesture-stable `RouteContext`. Caller-owned `*Into` buffers (zero-alloc hot path). |
+| `core/connectors/routing-astar.ts` | A* Manhattan routing for snapped endpoints (obstacle avoidance around padded shape bounds). |
+| `core/connectors/routing-context.ts` | Single source of truth for A* — routing-bound construction, stub placement, point-bounds for free endpoints. |
+| `core/connectors/binary-heap.ts` | Generic min-heap with `clear()` for reuse — A* priority queue. Single consumer: `routing-astar`. |
+| `core/connectors/constants.ts` | `SNAP_CONFIG` (CSS px), `ANCHOR_DOT_CONFIG`, `GUIDE_CONFIG` (overlay), `ROUTING_CONFIG` (world-space, stored). |
+| `core/connectors/types.ts` | Shared connector routing types (Pipeline, RouteContext, etc.) |
 | `core/text/sticky-note.ts` | Note constants/geometry, auto-font-size pipeline (`layoutNoteContent`, `getNoteLayout`, `getNoteDerivedFontSize`), 9-slice shadow cache, `renderNoteBody` (shared w/ bookmarks), `drawStickyNote`, `computeNoteBBox`. **Docs:** `core/text/CLAUDE.md` |
+| `core/text/font-config.ts` | `FONT_FAMILIES`, `FONT_WEIGHTS` — record-keyed by CSS font-family name (zero indirection) |
+| `core/text/font-loader.ts` | `ensureFontsLoaded()` via CSS Font Loading API — awaited in `main.tsx` before canvas exists |
+| `core/text/extensions.ts` | Custom `TextCollaboration` Tiptap extension — replaces upstream to avoid UndoManager retention across short-lived editor mounts |
 
 ### Subsystem Docs (detailed CLAUDE.md in each)
 | Folder | Coverage |
@@ -100,6 +121,7 @@ All paths relative to `client/src/` unless noted.
 | `core/clipboard/` | Nonce-based clipboard, serialization, internal/external paste, smart duplicate |
 | `core/spatial/` | Hit testing + region queries: pipeline, kind capabilities, picker facade, non-facade consumers |
 | `runtime/input/` | Keyboard shortcuts, InputManager, modifier state, zoom, edge scroll, arrow pan |
+| `runtime/presence/` | Awareness lifecycle, cursor send/receive, peer identity, animation handoff |
 | `tools/selection/` | SelectTool state machine, transforms per-kind, hit testing, connector topology, overlay |
 | `components/context-menu/` | Selection-aware toolbar: bars by kind, mutation dispatch |
 
@@ -108,12 +130,21 @@ All paths relative to `client/src/` unless noted.
 |------|----------------|
 | `stores/camera-store.ts` | Camera state, coordinate transforms, canvas element, pointer capture, per-room persistence |
 | `stores/device-ui-store.ts` | Toolbar state, drawing settings, user identity, cursor management (persisted) |
-| `stores/selection-store.ts` | Selection state, transform state, connector topology (ephemeral) |
+| `stores/selection-store.ts` | Selection state, transform state. Re-exports `ConnectorTopology` types (built/owned by `tools/selection/transform.ts`). |
 | `stores/presence-store.ts` | Peer identities + count (Zustand, for React components only) |
 
-### Shared Package (`packages/shared/src/`) — minimal, 4 files
+### Utils (`utils/`)
 | File | Responsibility |
 |------|----------------|
+| `utils/math.ts` | `clamp(x, min, max)`, `clamp01(x)` — branchless inline forms |
+| `utils/dispose.ts` | `dispose<T>(value, fn): null` — single-line teardown chain helper, swallows mid-chain errors |
+| `utils/color.ts` | `createFillFromStroke(stroke, mixRatio)` — tinted fill from stroke color |
+| `utils/generate-user-profile.ts` | `generateUserProfile()` (random adjective+animal name + `COLORS` palette) |
+
+### Shared Package (`packages/shared/src/`) — 5 files
+| File | Responsibility |
+|------|----------------|
+| `index.ts` | Barrel re-exports |
 | `types/identifiers.ts` | `RoomId`, `UserId`, `StrokeId`, `TextId` |
 | `utils/ulid.ts` | `ulid()` |
 | `utils/url-utils.ts` | `normalizeUrl()`, `isValidHttpUrl()`, `extractDomain()` |
@@ -133,6 +164,7 @@ All paths relative to `client/src/` unless noted.
 | `index.ts` | Hono app: CORS, asset routes, unfurl route, `partyserverMiddleware()` for Yjs sync |
 | `assets.ts` | `PUT /api/assets/:key` (validate + R2 store), `GET /api/assets/:key` (edge-cached R2 proxy) |
 | `unfurl.ts` | `GET /api/unfurl?url=` — HTMLRewriter OG extraction, image→R2, SSRF guard, edge cache 7d |
+| `parties/room.ts` | `RoomDurableObject` (extends `YServer`): hibernate-aware, debounced V2 snapshot to R2 (`rooms/<id>/head.v2.bin`), hard flush on last disconnect |
 
 ### Routes (`routes/`)
 `__root.tsx` (root layout, `<Outlet />`), `index.tsx` (redirect → `/room/dev`), `room.$roomId.tsx` (room route, `beforeLoad: connectRoom`)
@@ -187,7 +219,7 @@ tool-registry.ts - SELF-CONSTRUCTING SINGLETONS
 │   image → one-shot file picker (no persistent tool)
 │
 │   Exports: getCurrentTool(), getToolById(), getActivePreview()
-│            canStartMMBPan(), panTool, textTool, codeTool
+│            canStartMMBPan(), panTool, textTool, codeTool, selectTool
 
                 │
                 ▼
@@ -259,9 +291,9 @@ All tools implement `PointerTool` (`tools/types.ts`): `canBegin`, `begin(pointer
 
 Module-level room context. `connectRoom(roomId)` from route `beforeLoad`, `disconnectRoom(roomId)` from RoomPage cleanup. Fail-fast (throws if no room).
 
-Key exports: `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`, `transact(fn)`/`undo()`/`redo()`, `getConnectorsForShape(shapeId)`.
+Key exports: `connectRoom`/`disconnectRoom`/`hasActiveRoom`, `getHandle(id)`/`getHandleKind(id)`/`getBbox(id)`/`getObjectsById()`/`getSpatialIndex()`/`getObjects()`, `transact<T>(fn): T | undefined`/`undo()`/`redo()`. Re-exports from `core/connectors/connector-router`: `getConnectorRoute(id)`, `getAttachedConnectors(shapeId)`, `detachConnectorFromShape`.
 
-Prefer `getHandle(id)` over `getObjectsById().get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`.
+Prefer `getHandle(id)` over `getObjectsById().get(id)` and `transact(fn)` over `getActiveRoomDoc().mutate(fn)`. `transact` returns whatever `fn` returns, so callers can elide the `let foo; transact(()=>{ foo = ... })` dance.
 
 ---
 
@@ -440,8 +472,10 @@ Synchronous constructor, async init (fire-and-forget). `objectsById` and `spatia
 ## Cache Architecture
 
 - **Geometry:** `renderer/geometry-cache.ts` — Path2D (strokes/shapes) + ConnectorPaths. Auto-detects shapeType changes.
-- **Layout:** `textLayoutCache` (three-tier), `codeSystem` (two-tier tokenization + layout), `bookmarkCache` (text wrapping)
+- **Layout:** `textLayoutCache` (three-tier, SOA-pooled — allocation-free reflow/relayout), `codeSystem` (two-tier tokenization + layout), `bookmarkCache` (text wrapping)
+- **Connector routes:** `connector-router.ts` (local route cache, owned by RoomDocManager) — fresh `Point[]` per relevant input change.
 - **Unified eviction:** `removeObjectCaches(id, kind)` on delete, `clearAllObjectCaches()` on room teardown
+- **Tool teardown:** Tools that own per-object DOM/state (TextTool, CodeTool) tear down on object deletion via `dispose()` chains.
 
 ---
 
@@ -484,7 +518,7 @@ Imperative getters: `getUserId()` (used by tools for `ownerId`, undo tracking, p
 
 Detailed docs in `tools/selection/CLAUDE.md`. Covers state machine, per-kind transform behavior, connector topology, hit testing (Z-order, handles, endpoints), text/code reflow, dirty rect optimization, and commit paths.
 
-**Key files:** `SelectTool.ts` (state machine + commits), `tools/selection/transform.ts` (TransformController, entry system, dispatch tables), `selection-store.ts` (Zustand store + topology builder), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/spatial/object-query.ts` (picker facade shared with EraserTool/TextTool/CodeTool/snap), `core/spatial/handle-hit.ts` (resize handles + endpoint dots), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
+**Key files:** `SelectTool.ts` (state machine + commits, owns marquee state), `tools/selection/transform.ts` (TransformController, entry system, dispatch tables, owns built topology), `tools/selection/connector-topology.ts` (`buildTopology` — graph of attached connectors per selected shape), `selection-store.ts` (Zustand state), `selection-utils.ts` (composition, bounds, styles), `selection-actions.ts` (context menu mutations), `core/spatial/object-query.ts` (picker facade shared with EraserTool/TextTool/CodeTool/snap), `core/spatial/handle-hit.ts` (resize handles + endpoint dots), `core/geometry/scale-system.ts` (pure scale math), `core/types/handles.ts` (handle taxonomy), `renderer/layers/objects.ts` (transform preview rendering), `renderer/layers/selection-overlay.ts` (highlights, handles, endpoint dots).
 
 ---
 
