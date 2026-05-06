@@ -16,6 +16,21 @@ npm run typecheck    # Type check all workspaces (RUN FROM ROOT!)
 - Avoid over-encapsulation; this system needs low-friction data access across modules
 - Fewest lines of code while maintaining full robustness
 
+## Invariants
+
+- **Dirty-rect pipeline ↔ WYSIWYG.** The base canvas only repaints rectangles
+  reported by `invalidateWorldBBox` / `invalidateWorld`. Any code path that
+  publishes a bbox MUST publish the bbox of what was painted (or what the
+  pipeline will paint next frame), padded for stroke + caps. Defensive
+  bailouts that return a placeholder bbox (`[0,0,0,0]`, an unpadded frame, a
+  partial union) cause the worst class of visible bug: stale pixels under a
+  partial clear, malformed canvas regions until the user pans/zooms that area
+  back into a redraw. Same applies to commit paths — early-returning before
+  the Y.Map write while the dirty rect already cleared the screen breaks
+  WYSIWYG. Defensive programming is welcome; visual correctness is not
+  negotiable. If a bailout is truly needed, invalidate the **union of old +
+  new bbox** explicitly and document why.
+
 ---
 
 ## File Map

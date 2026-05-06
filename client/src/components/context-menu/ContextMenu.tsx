@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import './context-menu.css';
 import { getHandleKind } from '@/runtime/room-runtime';
 import { selectTextColor, selectTextSize, useDeviceUIStore } from '@/stores/device-ui-store';
-import type { SelectionKind, SelectionStore } from '@/stores/selection-store';
+import type { SelectionStore } from '@/stores/selection-store';
 import { filterSelectionByKind, selectInlineBold, selectInlineItalic, useSelectionStore } from '@/stores/selection-store';
 import {
   decrementCodeFontSize,
@@ -24,6 +24,7 @@ import {
   toggleSelectedBold,
   toggleSelectedItalic,
 } from '@/tools/selection/selection-actions';
+import type { SelectionKind } from '@/tools/selection/types';
 import { AlignDropdown } from './AlignDropdown';
 import { ButtonGroup } from './ButtonGroup';
 import { ColorPickerPopover } from './ColorPickerPopover';

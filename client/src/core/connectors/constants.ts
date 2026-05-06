@@ -53,9 +53,9 @@ export const SNAP_CONFIG = {
 export const ANCHOR_DOT_CONFIG = {
   // Sizing (screen pixels)
   /** Small dot radius - midpoints when not snapped to midpoint */
-  SMALL_RADIUS_PX: 5,
+  SMALL_RADIUS_PX: 6,
   /** Large dot radius - active dot and all midpoints when snapped */
-  LARGE_RADIUS_PX: 7,
+  LARGE_RADIUS_PX: 6.5,
   /** Stroke width for dot outlines */
   STROKE_WIDTH_PX: 2,
 

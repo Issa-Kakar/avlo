@@ -208,16 +208,30 @@ function pasteInternal(payload: ClipboardPayload, offset?: [number, number]): vo
             break;
           case 'start':
           case 'end': {
-            // Connector endpoint union: free Point translates by [dx, dy]; StoredAnchor
-            // remaps target id when in paste set, else passes through unchanged.
-            // TODO(clipboard): when remapAnchor returns null, strip to a free Point —
-            // stale anchor.ids shouldn't leak into the connector layer.
+            // Connector endpoint union. Free Point → translate. StoredAnchor:
+            //   remap → in paste set → write remapped anchor.
+            //   else target exists in canvas → keep anchor (rebinds correctly).
+            //   else cached endpoint → translate cached point as a free Point (no
+            //     dangling anchor.id leaks into the connector layer).
+            //   else last-ditch payload bbox center as a free Point.
+            // NOTE: deferred — offline/online sync corruption (peer A binds, peer B
+            //   deletes the shape pre-sync) will be handled deterministically once
+            //   the shadow-POJO-for-props refactor lands.
             const ep = value as ConnectorEndpoint;
             if (Array.isArray(ep)) {
               yObj.set(key, translatePoint(ep as Point, dx, dy));
             } else {
-              const remapped = remapAnchor(ep as StoredAnchor, idMap);
-              yObj.set(key, remapped ?? ep);
+              const stored = ep as StoredAnchor;
+              const remapped = remapAnchor(stored, idMap);
+              if (remapped) {
+                yObj.set(key, remapped);
+              } else if (getObjectsById().has(stored.id)) {
+                yObj.set(key, stored);
+              } else {
+                const cached = key === 'start' ? obj.cachedStart : obj.cachedEnd;
+                const fallback: Point = cached ? translatePoint(cached, dx, dy) : translatePoint(bboxCenter(payload.bounds), dx, dy);
+                yObj.set(key, fallback);
+              }
             }
             break;
           }

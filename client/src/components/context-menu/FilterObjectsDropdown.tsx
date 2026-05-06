@@ -1,6 +1,6 @@
 import type React from 'react';
 import type { ObjectKind } from '@/core/types/objects';
-import type { KindCounts } from '@/stores/selection-store';
+import type { KindCounts } from '@/tools/selection/types';
 import {
   IconChevronDown,
   IconCodeBlock,

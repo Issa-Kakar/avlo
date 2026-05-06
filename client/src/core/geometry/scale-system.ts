@@ -11,9 +11,6 @@ import type { HandleId } from '../types/handles';
 import { isHorzSide, isVertSide } from '../types/handles';
 import { bboxCenter, setBBoxXYWH } from './bounds';
 
-// Re-export tuple helpers from bounds.ts (canonical location for geometry primitives)
-export { bboxCenter, bboxSize, copyBbox, frameCenter, frameToBbox, frameToBboxMut } from './bounds';
-
 // ============================================================================
 // Number Primitives
 // ============================================================================

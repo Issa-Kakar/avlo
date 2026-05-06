@@ -21,10 +21,6 @@ import { getObjectsById } from '@/runtime/room-runtime';
 import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind } from './types';
 import { EMPTY_STYLES } from './types';
 
-// Re-export for consumers that still import shared types from selection-utils.
-export type { InlineStyles, KindCounts, SelectedStyles, SelectionKind } from './types';
-export { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from './types';
-
 export const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 // === Selection Composition ===

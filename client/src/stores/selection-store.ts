@@ -23,9 +23,6 @@ import type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, Selection
 import { EMPTY_INLINE_STYLES, EMPTY_KIND_COUNTS, EMPTY_STYLES } from '@/tools/selection/types';
 import type { HandleId } from '@/tools/types';
 
-export type { ConnectorEntry, ConnectorTopology } from '@/tools/selection/connector-topology';
-export type { InlineStyles, KindCounts, SelectedStyles, SelectionKind, SelectionMode, TransformState } from '@/tools/selection/types';
-
 // === State Interface ===
 
 export interface SelectionState {

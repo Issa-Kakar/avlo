@@ -129,7 +129,7 @@ function handleModifierShortcut(e: KeyboardEvent, key: string): void {
 
     case 'x':
       e.preventDefault();
-      cutSelected();
+      if (!gestureActive) cutSelected();
       return;
 
     case 'd':

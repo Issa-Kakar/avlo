@@ -9,8 +9,9 @@
 
 import * as Y from 'yjs';
 import { getObjectsById } from '@/runtime/room-runtime';
+import { getConnectorRoute } from '../connectors/connector-router';
 import { expandBBoxEnvelope } from '../geometry/bounds';
-import type { BBoxTuple } from '../types/geometry';
+import type { BBoxTuple, Point } from '../types/geometry';
 import type { ObjectHandle, ObjectKind } from '../types/objects';
 
 // === Types ===
@@ -35,6 +36,11 @@ export interface SerializedObject {
   props: SerializedProps;
   content?: SerializedContent;
   textContent?: string;
+  /** Connectors only: cached endpoint positions captured from the route at copy time.
+   * Used as paste-fallback when an anchored target shape isn't present (cross-room paste,
+   * or copied → deleted → pasted in same room). Cloned to insulate from pooled route buffer. */
+  cachedStart?: Point;
+  cachedEnd?: Point;
 }
 
 export interface SerializedContent {
@@ -79,7 +85,20 @@ function serializeHandle(handle: ObjectHandle): SerializedObject {
     }
   }
 
-  return { kind: handle.kind, props: props as SerializedProps, content, textContent };
+  let cachedStart: Point | undefined;
+  let cachedEnd: Point | undefined;
+  if (handle.kind === 'connector') {
+    const route = getConnectorRoute(handle.id);
+    if (route && route.length >= 1) {
+      const first = route[0];
+      const last = route[route.length - 1];
+      // Clone — router's route buffer is pooled and mutated in place.
+      cachedStart = [first[0], first[1]];
+      cachedEnd = [last[0], last[1]];
+    }
+  }
+
+  return { kind: handle.kind, props: props as SerializedProps, content, textContent, cachedStart, cachedEnd };
 }
 
 export function serializeFragment(fragment: Y.XmlFragment): SerializedContent {

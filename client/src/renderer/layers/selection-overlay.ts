@@ -30,7 +30,7 @@ import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types
 import { getConnectorRoute, getHandle } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
-import { computeHandles, computeSelectionBounds, type TransformState, useSelectionStore } from '@/stores/selection-store';
+import { computeHandles, computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
 import {
   getController,
   getScaleEntry,
@@ -41,6 +41,7 @@ import {
   type KindWithBBoxGeo,
   transformHasChange,
 } from '@/tools/selection/transform';
+import type { TransformState } from '@/tools/selection/types';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 import { drawResizeHandles } from './handle-stamp';
 
