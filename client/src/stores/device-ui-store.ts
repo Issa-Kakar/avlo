@@ -8,7 +8,7 @@ import { getCanvasElement } from './camera-store';
 import { useSelectionStore } from './selection-store';
 
 export type Tool = 'pen' | 'highlighter' | 'eraser' | 'text' | 'pan' | 'select' | 'shape' | 'image' | 'code' | 'connector' | 'note';
-export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse';
+export type ShapeVariant = 'diamond' | 'rectangle' | 'ellipse' | 'triangle';
 
 // Size types
 export type SizePreset = 4 | 7 | 10 | 13;

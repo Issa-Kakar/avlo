@@ -153,6 +153,32 @@ export function pointInDiamond(p: Point, vertices: readonly [Point, Point, Point
   return true;
 }
 
+/** Apex-up isoceles triangle vertices in CW order (apex, bottom-right, bottom-left). */
+export function getTriangleVertices(frame: FrameTuple): [Point, Point, Point] {
+  const [x, y, w, h] = frame;
+  return [
+    [x + w / 2, y],
+    [x + w, y + h],
+    [x, y + h],
+  ];
+}
+
+/** Point inside a triangle (convex polygon via cross product sign test). */
+export function pointInTriangle(p: Point, vertices: readonly [Point, Point, Point]): boolean {
+  let sign: number | null = null;
+  for (let i = 0; i < 3; i++) {
+    const [x1, y1] = vertices[i];
+    const [x2, y2] = vertices[(i + 1) % 3];
+    const cross = (x2 - x1) * (p[1] - y1) - (y2 - y1) * (p[0] - x1);
+    if (sign === null) {
+      sign = cross >= 0 ? 1 : -1;
+    } else if ((cross >= 0 ? 1 : -1) !== sign) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Point inside a shape interior (rect/roundedRect/ellipse/diamond). */
 export function pointInsideShape(c: Point, frame: FrameTuple, shapeType: string): boolean {
   const [x, y, w, h] = frame;
@@ -160,6 +186,8 @@ export function pointInsideShape(c: Point, frame: FrameTuple, shapeType: string)
   switch (shapeType) {
     case 'diamond':
       return pointInDiamond(c, getDiamondVertices(frame));
+    case 'triangle':
+      return pointInTriangle(c, getTriangleVertices(frame));
     case 'ellipse': {
       const ecx = x + w / 2;
       const ecy = y + h / 2;
@@ -185,6 +213,15 @@ export function shapeEdgeHitTest(c: Point, tolerance: number, frame: FrameTuple,
       let minDist = Infinity;
       for (let i = 0; i < 4; i++) {
         const dist = pointToSegmentDistance(c, v[i], v[(i + 1) % 4]);
+        if (dist < minDist) minDist = dist;
+      }
+      return minDist <= tolerance ? minDist : null;
+    }
+    case 'triangle': {
+      const v = getTriangleVertices(frame);
+      let minDist = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const dist = pointToSegmentDistance(c, v[i], v[(i + 1) % 3]);
         if (dist < minDist) minDist = dist;
       }
       return minDist <= tolerance ? minDist : null;
@@ -288,6 +325,15 @@ export function circleHitsShape(
       return false;
     }
 
+    case 'triangle': {
+      const v = getTriangleVertices(frame);
+      if (isFilled && pointInTriangle(c, v)) return true;
+      for (let i = 0; i < 3; i++) {
+        if (pointToSegmentDistance(c, v[i], v[(i + 1) % 3]) <= r + halfStroke) return true;
+      }
+      return false;
+    }
+
     case 'ellipse': {
       const ecx = x + w / 2;
       const ecy = y + h / 2;
@@ -374,6 +420,27 @@ export function diamondIntersectsBBox(vertices: readonly [Point, Point, Point, P
   }
   for (let i = 0; i < 4; i++) {
     if (segmentIntersectsBBox(vertices[i], vertices[(i + 1) % 4], bbox)) return true;
+  }
+  return false;
+}
+
+/** Triangle intersects BBox. */
+export function triangleIntersectsBBox(vertices: readonly [Point, Point, Point], bbox: BBoxTuple): boolean {
+  for (const v of vertices) {
+    if (pointInBBox(v, bbox)) return true;
+  }
+  const [minX, minY, maxX, maxY] = bbox;
+  const corners: Point[] = [
+    [minX, minY],
+    [maxX, minY],
+    [maxX, maxY],
+    [minX, maxY],
+  ];
+  for (const c of corners) {
+    if (pointInTriangle(c, vertices)) return true;
+  }
+  for (let i = 0; i < 3; i++) {
+    if (segmentIntersectsBBox(vertices[i], vertices[(i + 1) % 3], bbox)) return true;
   }
   return false;
 }

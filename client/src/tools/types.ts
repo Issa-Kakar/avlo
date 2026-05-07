@@ -10,12 +10,12 @@ export type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
 /**
  * Shape types the DrawingTool previews and commits.
  *
- * - `'rect' | 'ellipse' | 'diamond' | 'roundedRect'` are stored as shape objects
- *   on the Y.Doc (frame-based).
+ * - `'rect' | 'ellipse' | 'diamond' | 'roundedRect' | 'triangle'` are stored as
+ *   shape objects on the Y.Doc (frame-based).
  * - `'line'` is tool-layer only: previewed as a clean 2-point segment via direct
  *   `ctx.stroke` and committed as a 2-point stroke — the data model has no line kind.
  */
-export type ShapeType = 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | 'line';
+export type ShapeType = 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | 'triangle' | 'line';
 
 /** Freehand pen/highlighter preview. */
 export type StrokePreview = {
@@ -56,7 +56,7 @@ export type ShapePreview =
     }
   | {
       kind: 'shape';
-      shapeType: 'rect' | 'ellipse' | 'diamond' | 'roundedRect';
+      shapeType: 'rect' | 'ellipse' | 'diamond' | 'roundedRect' | 'triangle';
       frame: FrameTuple;
       color: string;
       width: number;

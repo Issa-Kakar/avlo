@@ -16,6 +16,7 @@ const SHAPE_VARIANT_TO_TYPE: Record<ShapeVariant, Exclude<ShapeType, 'line'>> = 
   rectangle: 'roundedRect',
   ellipse: 'ellipse',
   diamond: 'diamond',
+  triangle: 'triangle',
 };
 
 /** Click-to-place (single-click with shape tool) produces a 180wu fixed shape. */

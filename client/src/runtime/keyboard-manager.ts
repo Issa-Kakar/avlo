@@ -221,6 +221,7 @@ const SHAPE_KEYS: Record<string, ShapeVariant> = {
   r: 'rectangle',
   o: 'ellipse',
   d: 'diamond',
+  '3': 'triangle',
 };
 
 function handleBareKey(e: KeyboardEvent, key: string): void {

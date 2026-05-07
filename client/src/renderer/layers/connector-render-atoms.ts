@@ -220,7 +220,7 @@ const MIDPOINT_SIDES: readonly Dir[] = ['N', 'E', 'S', 'W'];
 export function drawShapeMidpoints(
   ctx: CanvasRenderingContext2D,
   frame: FrameTuple,
-  _shapeType: string,
+  shapeType: string,
   activeSide: Dir | null,
   isMidpointActive: boolean,
 ): void {
@@ -232,7 +232,7 @@ export function drawShapeMidpoints(
   ctx.strokeStyle = ANCHOR_DOT_CONFIG.INACTIVE_STROKE;
   for (const s of MIDPOINT_SIDES) {
     if (isMidpointActive && s === activeSide) continue;
-    midpointFor(frame, s, MIDPOINT_SCRATCH);
+    midpointFor(frame, shapeType, s, MIDPOINT_SCRATCH);
     ctx.beginPath();
     ctx.arc(MIDPOINT_SCRATCH[0], MIDPOINT_SCRATCH[1], radius, 0, Math.PI * 2);
     ctx.fill();

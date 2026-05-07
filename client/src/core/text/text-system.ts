@@ -336,7 +336,7 @@ const CHAR_ENDS_CACHE = new Map<string, Uint32Array>();
  *  `out[i+1]` = end of i-th grapheme. Used by `sliceTextToFit` to align cuts on
  *  grapheme boundaries (LB9-correct: never splits CM/ZWJ/ZWNJ/surrogate pairs). */
 function getCharEnds(text: string): Uint32Array {
-  let hit = CHAR_ENDS_CACHE.get(text);
+  const hit = CHAR_ENDS_CACHE.get(text);
   if (hit) return hit;
   // First pass: count graphemes so we can size the typed array exactly. Avoids the
   // intermediate string[] that the old getGraphemes carried just for its length.
@@ -459,13 +459,7 @@ export function nextSoftBreak(text: string, start: number = 0): number {
     // applying both suppressions, while still allowing IS × OP via the OP
     // candidate below (e.g. ":[" stays breakable).
     const prevAllows =
-      prev === LB_HY ||
-      prev === LB_BA ||
-      prev === LB_SY ||
-      prev === LB_EX ||
-      prev === LB_CL ||
-      prev === LB_CP ||
-      prev === LB_ZW;
+      prev === LB_HY || prev === LB_BA || prev === LB_SY || prev === LB_EX || prev === LB_CL || prev === LB_CP || prev === LB_ZW;
     const currOpensBreak = curr === LB_OP;
     if (!prevAllows && !currOpensBreak) continue;
 
@@ -1473,6 +1467,16 @@ export function computeLabelTextBox(shapeType: string, frame: FrameTuple): Frame
       const cx = fx + fw / 2,
         cy = fy + fh / 2;
       return [cx - iw / 2 + pad, cy - ih / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
+    }
+    case 'triangle': {
+      // Apex-up triangle. Largest inscribed axis-aligned rect that fits with its
+      // top edge at the triangle's mid-height: width tapers as `(v/h) · w`, so
+      // at v = h/2 the available width is exactly w/2. Place the rect in the
+      // lower (wider) half — it just kisses both slanted edges at the top.
+      const iw = fw / 2,
+        ih = fh / 2;
+      const cx = fx + fw / 2;
+      return [cx - iw / 2 + pad, fy + fh / 2 + pad, Math.max(0, iw - 2 * pad), Math.max(0, ih - 2 * pad)];
     }
     default:
       return [fx + pad, fy + pad, Math.max(0, fw - 2 * pad), Math.max(0, fh - 2 * pad)];

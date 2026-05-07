@@ -90,11 +90,11 @@ function normalizedFromEdge(edge: Point, frame: FrameTuple): Point {
 }
 
 /** Nearest midpoint side + world distance from a probe point. */
-function nearestMidpoint(probe: Point, frame: FrameTuple): { side: Dir; dist: number } {
+function nearestMidpoint(probe: Point, frame: FrameTuple, shapeType: string): { side: Dir; dist: number } {
   let bestSide: Dir = 'N';
   let bestDist = Infinity;
   for (const s of SIDES) {
-    midpointFor(frame, s, SCRATCH_MIDPOINT);
+    midpointFor(frame, shapeType, s, SCRATCH_MIDPOINT);
     const d = Math.hypot(probe[0] - SCRATCH_MIDPOINT[0], probe[1] - SCRATCH_MIDPOINT[1]);
     if (d < bestDist) {
       bestDist = d;
@@ -105,9 +105,9 @@ function nearestMidpoint(probe: Point, frame: FrameTuple): { side: Dir; dist: nu
 }
 
 /** Allocate a fresh world-space midpoint Point for a returned snap target. */
-function midpointPoint(frame: FrameTuple, side: Dir): Point {
+function midpointPoint(frame: FrameTuple, shapeType: string, side: Dir): Point {
   const out: Point = [0, 0];
-  midpointFor(frame, side, out);
+  midpointFor(frame, shapeType, side, out);
   return out;
 }
 
@@ -170,14 +170,14 @@ function computeElbowSnap(
   radii: SnapRadiiWorld,
 ): ElbowSnapTarget | null {
   if (isInside && insideDepth > radii.forceMidpointDepth) {
-    return forceElbowMidpoint(shapeId, frame, ctx.cursorWorld);
+    return forceElbowMidpoint(shapeId, frame, shapeType, ctx.cursorWorld);
   }
   return tryElbowEdgeSnap(ctx, shapeId, frame, shapeType, isInside, radii);
 }
 
-function forceElbowMidpoint(shapeId: string, frame: FrameTuple, probe: Point): ElbowSnapTarget {
-  const nearest = nearestMidpoint(probe, frame);
-  const midpoint = midpointPoint(frame, nearest.side);
+function forceElbowMidpoint(shapeId: string, frame: FrameTuple, shapeType: string, probe: Point): ElbowSnapTarget {
+  const nearest = nearestMidpoint(probe, frame, shapeType);
+  const midpoint = midpointPoint(frame, shapeType, nearest.side);
   return {
     kind: 'elbow',
     shapeId,
@@ -233,10 +233,10 @@ function probeEdgeSnap(
   if (!isInside && edgeSnap.dist > radii.edgeSnap) return null;
 
   const edgePos: Point = [edgeSnap.x, edgeSnap.y];
-  const probe = isInside ? nearestMidpoint(edgePos, frame) : nearestMidpoint(ctx.cursorWorld, frame);
+  const probe = isInside ? nearestMidpoint(edgePos, frame, shapeType) : nearestMidpoint(ctx.cursorWorld, frame, shapeType);
 
   if (midpointGate(wasOnMidpoint(probe.side), probe.dist, radii)) {
-    const midpoint = midpointPoint(frame, probe.side);
+    const midpoint = midpointPoint(frame, shapeType, probe.side);
     return { side: probe.side, isMidpoint: true, position: midpoint, normalizedAnchor: normalizedFromEdge(midpoint, frame) };
   }
   return { side: edgeSnap.side, isMidpoint: false, position: edgePos, normalizedAnchor: normalizedFromEdge(edgePos, frame) };
@@ -256,12 +256,18 @@ function computeStraightSnap(
   radii: SnapRadiiWorld,
 ): StraightSnapTarget | null {
   if (isInside && insideDepth > radii.straightInteriorDepth) {
-    return computeStraightInterior(ctx, shapeId, frame, radii);
+    return computeStraightInterior(ctx, shapeId, frame, shapeType, radii);
   }
   return tryStraightEdgeSnap(ctx, shapeId, frame, shapeType, isInside, radii);
 }
 
-function computeStraightInterior(ctx: SnapContext, shapeId: string, frame: FrameTuple, radii: SnapRadiiWorld): StraightSnapTarget {
+function computeStraightInterior(
+  ctx: SnapContext,
+  shapeId: string,
+  frame: FrameTuple,
+  shapeType: string,
+  radii: SnapRadiiWorld,
+): StraightSnapTarget {
   const { cursorWorld, prevAttach } = ctx;
   const [cx, cy] = cursorWorld;
   const [fx, fy, fw, fh] = frame;
@@ -284,9 +290,9 @@ function computeStraightInterior(ctx: SnapContext, shapeId: string, frame: Frame
     };
   }
 
-  const nearest = nearestMidpoint(cursorWorld, frame);
+  const nearest = nearestMidpoint(cursorWorld, frame, shapeType);
   if (midpointGate(wasOnStraightMidpoint(prevAttach, shapeId, nearest.side), nearest.dist, radii)) {
-    const midpoint = midpointPoint(frame, nearest.side);
+    const midpoint = midpointPoint(frame, shapeType, nearest.side);
     return {
       kind: 'straight',
       shapeId,

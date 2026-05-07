@@ -56,6 +56,21 @@ export function emitShapeIntoSink(sink: PathSink, shapeType: string, frame: Fram
       sink.roundRect(x, y0, w, h, radius);
       break;
     }
+    case 'triangle': {
+      // Apex-up isoceles. Vertices in CW order (matches diamond convention) so the
+      // outward normal at each edge equals the CW rotation of the world tangent.
+      const cx = x + w / 2;
+      emitRoundedPolygonIntoSink(
+        sink,
+        [
+          [cx, y0],
+          [x + w, y0 + h],
+          [x, y0 + h],
+        ],
+        DIAMOND_CORNER_OFFSET_W,
+      );
+      break;
+    }
     default:
       sink.rect(x, y0, w, h);
   }

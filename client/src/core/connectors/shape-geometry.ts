@@ -1,5 +1,5 @@
 /**
- * Pure shape geometry — rect / ellipse / diamond math with zero connector dependencies.
+ * Pure shape geometry — rect / ellipse / diamond / triangle math with zero connector dependencies.
  *
  * Two pure projections cover every snap, route, and reroute path:
  *   - `projectAnchorToEdge(anchor, frame, shapeType, outEdge, outNormal): Dir`
@@ -8,8 +8,10 @@
  *   - `rayShapeExitPoint(origin, direction, frame, shapeType, outPoint): boolean`
  *     Where a ray from an interior point exits the shape boundary.
  *
- * Plus a single midpoint atom (`midpointFor`) — N/E/S/W edge midpoints are identical
- * for every shape type (rect-inscribed diamonds, axis-aligned ellipses).
+ * Plus a midpoint atom (`midpointFor`) — N/E/S/W edge midpoints. Rect / ellipse /
+ * diamond / roundedRect share bbox-side positions; triangle returns true edge
+ * centers (apex / right-edge mid / base center / left-edge mid) so snap dots
+ * stay on the shape.
  *
  * **Non-re-entrance.** The internal helpers fill caller-owned out-tuples and use
  * stack-local scalars only — no module-level scratch leaks between calls. Caller
@@ -54,9 +56,37 @@ function normalize2dInto(x: number, y: number, out: Point): boolean {
   return true;
 }
 
-/** Fill `out` with the world-space midpoint of `side` for any rect-inscribed shape. */
-export function midpointFor(frame: FrameTuple, side: Dir, out: Point): void {
+/**
+ * Fill `out` with the world-space midpoint of `side` for the given shape.
+ *
+ * Rect/ellipse/diamond/roundedRect all share bbox-side midpoints (rect edge,
+ * ellipse cardinal point, and diamond vertex coincide). Triangle is not
+ * rect-inscribed in this sense — only N (apex) and S (base center) lie on the
+ * bbox boundary. E and W midpoints map to the actual edge centers of the
+ * apex→BR and BL→apex edges, so the snap dot stays on the triangle.
+ */
+export function midpointFor(frame: FrameTuple, shapeType: string, side: Dir, out: Point): void {
   const [x, y, w, h] = frame;
+  if (shapeType === 'triangle') {
+    switch (side) {
+      case 'N':
+        out[0] = x + w / 2;
+        out[1] = y;
+        return;
+      case 'E':
+        out[0] = x + (3 * w) / 4;
+        out[1] = y + h / 2;
+        return;
+      case 'S':
+        out[0] = x + w / 2;
+        out[1] = y + h;
+        return;
+      case 'W':
+        out[0] = x + w / 4;
+        out[1] = y + h / 2;
+        return;
+    }
+  }
   switch (side) {
     case 'N':
       out[0] = x + w / 2;
@@ -118,6 +148,7 @@ export function projectAnchorToEdge(anchor: Point, frame: FrameTuple, shapeType:
   }
   if (shapeType === 'ellipse') return projectAnchorEllipse(anchor, frame, outEdge, outNormal);
   if (shapeType === 'diamond') return projectAnchorDiamond(anchor, frame, outEdge, outNormal);
+  if (shapeType === 'triangle') return projectAnchorTriangle(anchor, frame, outEdge, outNormal);
   return projectAnchorRect(anchor, frame, outEdge, outNormal);
 }
 
@@ -243,6 +274,61 @@ function projectAnchorDiamond(anchor: Point, frame: FrameTuple, outEdge: Point, 
   return directionFromDelta(outNormal[0], outNormal[1]);
 }
 
+/**
+ * Triangle (apex-up isoceles): parametric projection in normalized space onto
+ * the closest of three edges. Vertex order matches `getTriangleVertices` (CW
+ * with screen y-down): apex (0.5, 0) → BR (1, 1) → BL (0, 1) → apex.
+ *
+ * World outward normals (CW rotation of world tangent):
+ *   E0 apex→BR: tangent (0.5w, h),  normal ( h, -0.5w) — right edge, points right/up
+ *   E1 BR→BL:   tangent (-w, 0),    normal ( 0,  w)    — base, points down
+ *   E2 BL→apex: tangent (0.5w,-h),  normal (-h, -0.5w) — left edge, points left/up
+ *
+ * No N edge exists — anchors near the apex project to E0 or E2 and route as
+ * E or W. This is geometrically correct: the apex is a vertex, not an edge.
+ */
+function projectAnchorTriangle(anchor: Point, frame: FrameTuple, outEdge: Point, outNormal: Point): Dir {
+  const ax = anchor[0];
+  const ay = anchor[1];
+
+  // Each edge: start + direction in normalized [0, 1]² space.
+  // 0 E0 (apex→BR): start (0.5, 0), dir (0.5,  1), |dir|² = 1.25
+  // 1 E1 (BR→BL):   start (1,   1), dir (-1,   0), |dir|² = 1
+  // 2 E2 (BL→apex): start (0,   1), dir (0.5, -1), |dir|² = 1.25
+  let bestEdge = 0;
+  let bestDist = Infinity;
+  let bestPx = 0;
+  let bestPy = 0;
+
+  for (let i = 0; i < 3; i++) {
+    const sx = i === 0 ? 0.5 : i === 1 ? 1 : 0;
+    const sy = i === 0 ? 0 : 1;
+    const dx = i === 0 ? 0.5 : i === 1 ? -1 : 0.5;
+    const dy = i === 0 ? 1 : i === 1 ? 0 : -1;
+    const dlenSq = i === 1 ? 1 : 1.25;
+    const t = clamp01(((ax - sx) * dx + (ay - sy) * dy) / dlenSq);
+    const px = sx + t * dx;
+    const py = sy + t * dy;
+    const distSq = (ax - px) ** 2 + (ay - py) ** 2;
+    if (distSq < bestDist) {
+      bestDist = distSq;
+      bestEdge = i;
+      bestPx = px;
+      bestPy = py;
+    }
+  }
+
+  const [x, y, w, h] = frame;
+  outEdge[0] = x + bestPx * w;
+  outEdge[1] = y + bestPy * h;
+
+  // CW rotation of world tangent per edge.
+  const nx = bestEdge === 0 ? h : bestEdge === 1 ? 0 : -h;
+  const ny = bestEdge === 0 ? -0.5 * w : bestEdge === 1 ? w : -0.5 * w;
+  normalize2dInto(nx, ny, outNormal);
+  return directionFromDelta(outNormal[0], outNormal[1]);
+}
+
 // ============================================================================
 // RAY × SHAPE EXIT
 // ============================================================================
@@ -271,7 +357,9 @@ export function rayShapeExitPoint(origin: Point, direction: Point, frame: FrameT
       ? rayEllipseExitT(ox, oy, dx, dy, x, y, w, h)
       : shapeType === 'diamond'
         ? rayDiamondExitT(ox, oy, dx, dy, x, y, w, h)
-        : rayRectExitT(ox, oy, dx, dy, x, y, w, h);
+        : shapeType === 'triangle'
+          ? rayTriangleExitT(ox, oy, dx, dy, x, y, w, h)
+          : rayRectExitT(ox, oy, dx, dy, x, y, w, h);
   if (Number.isNaN(t)) return false;
 
   outPoint[0] = ox + t * dx;
@@ -330,6 +418,23 @@ function rayDiamondExitT(ox: number, oy: number, dx: number, dy: number, x: numb
   bestT = raySegmentT(ox, oy, dx, dy, nx, ny, ex, ey, bestT);
   bestT = raySegmentT(ox, oy, dx, dy, ex, ey, sx, sy, bestT);
   bestT = raySegmentT(ox, oy, dx, dy, sx, sy, wx, wy, bestT);
+
+  return bestT === Infinity ? NaN : bestT;
+}
+
+/** Ray vs triangle (apex-up) — Cramer's rule across the 3 vertex-to-vertex segments. */
+function rayTriangleExitT(ox: number, oy: number, dx: number, dy: number, x: number, y: number, w: number, h: number): number {
+  const apexX = x + w / 2;
+  const apexY = y;
+  const brX = x + w;
+  const brY = y + h;
+  const blX = x;
+  const blY = y + h;
+
+  let bestT = Infinity;
+  bestT = raySegmentT(ox, oy, dx, dy, apexX, apexY, brX, brY, bestT);
+  bestT = raySegmentT(ox, oy, dx, dy, brX, brY, blX, blY, bestT);
+  bestT = raySegmentT(ox, oy, dx, dy, blX, blY, apexX, apexY, bestT);
 
   return bestT === Infinity ? NaN : bestT;
 }

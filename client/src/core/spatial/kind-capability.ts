@@ -25,10 +25,12 @@ import {
   diamondIntersectsBBox,
   ellipseIntersectsBBox,
   getDiamondVertices,
+  getTriangleVertices,
   polylineIntersectsBBox,
   rectFrameHit,
   shapeHitTest,
   strokeHitTest,
+  triangleIntersectsBBox,
 } from '@/core/geometry/hit-primitives';
 import { getTextFrame } from '@/core/text/text-system';
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
@@ -112,6 +114,7 @@ const SHAPE_CAP: KindCapability<'shape'> = {
     const [x, y, w, hh] = frame;
     if (shapeType === 'ellipse') return ellipseIntersectsBBox(x + w / 2, y + hh / 2, w / 2, hh / 2, bbox);
     if (shapeType === 'diamond') return diamondIntersectsBBox(getDiamondVertices(frame), bbox);
+    if (shapeType === 'triangle') return triangleIntersectsBBox(getTriangleVertices(frame), bbox);
     return bboxesIntersect([x, y, x + w, y + hh], bbox);
   },
   hitCircle: (h, c, r) => {
