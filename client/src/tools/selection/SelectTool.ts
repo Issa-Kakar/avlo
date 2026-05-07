@@ -158,11 +158,14 @@ export class SelectTool implements PointerTool {
       //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
       this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
       this.phase = 'pendingClick';
-      // Single text/code re-click: undo hide so editor mounts without menu flash (hide deferred to move)
+      // Single-selected editable-text re-click: undo deferred hide so end()'s
+      // editor mount doesn't flash. Covers every kind that can enter text editing
+      // on click — text, code, note, and shape (label-less shapes create the label
+      // on first click, so they belong here too).
       if (
         isSelected &&
         selectedIds.length === 1 &&
-        (hitKind === 'text' || hitKind === 'code' || hitKind === 'note' || textTool.justClosedLabelId === hitId)
+        (hitKind === 'text' || hitKind === 'code' || hitKind === 'note' || hitKind === 'shape')
       ) {
         contextMenuController.cancelHide();
       }
@@ -470,11 +473,7 @@ export class SelectTool implements PointerTool {
                 textTool.startEditing(hitId, this.downWorld!);
               }
             } else if (hitHandle.kind === 'code' && !codeTool.isEditorMounted()) {
-              if (codeTool.justClosedCodeId === hitId) {
-                codeTool.justClosedCodeId = null;
-              } else {
-                codeTool.startEditing(hitId, this.downWorld!);
-              }
+              codeTool.startEditing(hitId, this.downWorld!);
             }
             break;
           }
@@ -544,7 +543,6 @@ export class SelectTool implements PointerTool {
     }
 
     textTool.justClosedLabelId = null;
-    codeTool.justClosedCodeId = null;
     invalidateOverlay();
   }
 
@@ -571,7 +569,6 @@ export class SelectTool implements PointerTool {
     }
 
     textTool.justClosedLabelId = null;
-    codeTool.justClosedCodeId = null;
     invalidateOverlay();
   }
 

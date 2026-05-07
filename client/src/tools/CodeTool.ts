@@ -58,9 +58,6 @@ export class CodeTool implements PointerTool {
   private hitCodeId: string | null = null;
   private pendingEntryWorld: [number, number] | null = null;
 
-  // Public: prevent close→remount cycle (mirrors textTool.justClosedLabelId)
-  justClosedCodeId: string | null = null;
-
   // Editor state
   objectId: string | null = null;
   private container: HTMLDivElement | null = null;
@@ -626,7 +623,6 @@ export class CodeTool implements PointerTool {
     if (this.editorView && this.objectId) {
       this.saveTitle(); // saveTitle null-guards on missing handle internally
       this.titleInput = null; // Prevent blur-triggered re-save during DOM removal
-      this.justClosedCodeId = this.objectId;
       this.removeEditorHandlers();
 
       // Unseal main UndoManager

@@ -470,7 +470,21 @@ export class TextTool implements PointerTool {
       if (this.container?.contains(target)) return;
       const menuElement = document.querySelector('.ctx-menu');
       if (menuElement?.contains(target)) return;
+
+      // Niche guard for shape/note labels: this same pointerdown is about to reach
+      // SelectTool, which would re-enter editing on pointerup. Capture id/kind
+      // BEFORE commitAndClose nulls objectId, then arm justClosedLabelId for
+      // SelectTool's pointerup to consume. Escape and programmatic closes don't
+      // go through here, so they never arm the guard.
+      const closingId = this.objectId;
+      const closingKind = closingId ? getHandle(closingId)?.kind : null;
+
       this.commitAndClose();
+
+      if (closingId && (closingKind === 'shape' || closingKind === 'note')) {
+        this.justClosedLabelId = closingId;
+      }
+
       // Only consume canvas clicks when text tool is active — prevents creating
       // a new text object on click-off. Other tools (select, draw, etc.) should
       // receive the event so the click-off also starts their gesture.
@@ -616,9 +630,6 @@ export class TextTool implements PointerTool {
           });
         }
       }
-
-      // Track shape label close for remount prevention
-      if (handle?.kind === 'shape' || handle?.kind === 'note') this.justClosedLabelId = this.objectId;
 
       this.removeEditorHandlers();
 
