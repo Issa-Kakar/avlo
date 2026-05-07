@@ -1,6 +1,7 @@
 /**
- * $P template library — built once at module load with FIXED aspect ratios
- * (paper-faithful: discrimination on geometry, not on input self-similarity).
+ * $P template library — built once on first use (lazy via `getTemplates()`)
+ * with FIXED aspect ratios (paper-faithful: discrimination on geometry, not
+ * on input self-similarity).
  *
  * Storage: ONE packed `Float64Array(NUM_TEMPLATES * 2 * N)` for cache locality
  * during the inner cloud-distance loop. Per-template metadata in parallel
@@ -41,7 +42,7 @@ export function getTemplateId(t: number): string {
   return TPL_IDS[t];
 }
 
-/** Lazy module-load build. Allocates ~19 KB once. */
+/** Lazy: builds + caches on first call (from `recognize()`). ~19 KB once. */
 export function getTemplates(): Float64Array {
   if (TPL) return TPL;
   const buf = new Float64Array(TEMPLATE_COUNT * STRIDE);
