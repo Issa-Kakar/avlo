@@ -53,10 +53,62 @@ const SELECTION_STYLE = {
   PRIMARY: 'rgba(29, 78, 216, 1)',
   PRIMARY_FILL: 'rgba(29, 78, 216, 0.15)',
   PRIMARY_MUTED: 'rgba(29, 78, 216, 0.7)',
-  HIGHLIGHT_WIDTH: 2,
-  BOX_WIDTH: 2,
-  MARQUEE_WIDTH: 1.5,
+  // Base stroke widths in CSS pixels at scale=1. Sized for "crisp" — slightly
+  // thinner than a normal 2px hairline. World-space cap (`STROKE_WORLD_FACTOR`)
+  // takes over for highlights/box when zoomed far out (see
+  // `selectionStrokeWidthW`); the marquee keeps its plain `width / scale`
+  // behaviour (no cap) — its visual weight at low zoom was deliberate.
+  HIGHLIGHT_WIDTH_PX: 1.5,
+  BOX_WIDTH_PX: 1.5,
+  MARQUEE_WIDTH_PX: 1.5,
 } as const;
+
+/**
+ * Selection-overlay stroke width in world units, capped so it doesn't grow
+ * unboundedly as the user zooms out.
+ *
+ * Pure screen-space (`basePx / scale`) at normal zoom; clamped at
+ * `basePx * STROKE_WORLD_FACTOR` world units below the threshold zoom. The
+ * cap engages at `scale ≤ 1 / STROKE_WORLD_FACTOR` (i.e. 0.5 with factor 2),
+ * so above that the overlay looks identical to the old pure-screen-space form.
+ *
+ * Below the threshold the line gets thinner ON SCREEN as the user zooms out
+ * further — keeps highlights/bboxes from dominating small zoomed-out objects.
+ * "Understanding of world space": the line tracks world units when zoomed-out
+ * geometry is the limiting factor.
+ */
+const STROKE_WORLD_FACTOR = 2;
+function selectionStrokeWidthW(basePx: number, scale: number): number {
+  return Math.min(basePx / scale, basePx * STROKE_WORLD_FACTOR);
+}
+
+/**
+ * **Handle visibility while EDITING — DO NOT collapse to a generic "is editing"
+ * check.** This rule has been re-fixed multiple times; every time the overlay
+ * is rewritten the kind discrimination gets dropped and shape/note label
+ * editing loses its handles.
+ *
+ * Hide handles only when the editor's DOM occupies the ENTIRE bbox/frame:
+ *   - `text` (standalone) → DOM = frame, zero padding. Handles would overlap
+ *     the caret / drag-resize the box out from under the cursor. HIDE.
+ *   - `code` (CodeMirror)  → DOM = frame, zero padding. Same reason. HIDE.
+ *
+ * Keep handles VISIBLE when editing happens INSIDE a padded shell:
+ *   - `shape` (label) → bbox encloses the shape stroke; the label DOM lives
+ *     packed strictly inside `computeLabelTextBox`. Handles sit on the bbox
+ *     edge — well outside the editor — so they don't fight the caret.
+ *   - `note`  (label) → bbox encloses note shadow + content padding. The
+ *     editor DOM is packed inside; handles on the bbox edge are clear of it.
+ *
+ * Hit-testing already does the right thing (`SelectTool` gates on
+ * `textTool.isEditingLabel()`); the bug surfaces purely on the render side
+ * if this check is collapsed.
+ */
+function shouldHideHandlesForEditing(textEditingId: string | null, codeEditingId: string | null): boolean {
+  if (codeEditingId !== null) return true; // code blocks are always pure-DOM
+  if (textEditingId === null) return false;
+  return getHandle(textEditingId)?.kind === 'text';
+}
 
 // =============================================================================
 // MAIN EXPORT
@@ -96,15 +148,15 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
     return;
   }
 
+  const hideHandlesForEdit = shouldHideHandlesForEditing(textEditingId, codeEditingId);
+
   // 3. Single non-connector selection — bounds rect doubles as highlight.
   if (selectedIds.length === 1) {
     const handle = getHandle(selectedIds[0]);
     if (!handle) return;
     const bbox = currentBoundsForHandle(handle, transform);
     drawSelectionBox(ctx, bbox, scale);
-    const id = selectedIds[0];
-    const isEditing = textEditingId === id || codeEditingId === id;
-    if (!isTranslating && !isEditing && shouldShowHandles(bbox, scale)) {
+    if (!isTranslating && !hideHandlesForEdit && shouldShowHandles(bbox, scale)) {
       drawResizeHandles(ctx, computeHandles(bbox), scale);
     }
     return;
@@ -114,7 +166,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const visible = getVisibleBoundsTuple();
   ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = SELECTION_STYLE.HIGHLIGHT_WIDTH / scale;
+  ctx.lineWidth = selectionStrokeWidthW(SELECTION_STYLE.HIGHLIGHT_WIDTH_PX, scale);
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   for (const id of selectedIds) {
@@ -130,7 +182,7 @@ export function drawSelectionOverlay(ctx: CanvasRenderingContext2D): void {
   const selRect = selectionRectForOverlay(transform);
   if (selRect) {
     drawSelectionBox(ctx, selRect, scale);
-    if (!isTranslating && shouldShowHandles(selRect, scale) && textEditingId === null && codeEditingId === null) {
+    if (!isTranslating && !hideHandlesForEdit && shouldShowHandles(selRect, scale)) {
       drawResizeHandles(ctx, computeHandles(selRect), scale);
     }
   }
@@ -215,7 +267,7 @@ function selectionRectForOverlay(t: TransformState): BBoxTuple | null {
 function drawSelectionBox(ctx: CanvasRenderingContext2D, bounds: BBoxTuple, scale: number): void {
   ctx.save();
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY;
-  ctx.lineWidth = SELECTION_STYLE.BOX_WIDTH / scale;
+  ctx.lineWidth = selectionStrokeWidthW(SELECTION_STYLE.BOX_WIDTH_PX, scale);
   ctx.strokeRect(bounds[0], bounds[1], bounds[2] - bounds[0], bounds[3] - bounds[1]);
   ctx.restore();
 }
@@ -230,7 +282,7 @@ function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: Readonly<BB
   ctx.fillStyle = SELECTION_STYLE.PRIMARY_FILL;
   ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
   ctx.strokeStyle = SELECTION_STYLE.PRIMARY_MUTED;
-  ctx.lineWidth = SELECTION_STYLE.MARQUEE_WIDTH / scale;
+  ctx.lineWidth = SELECTION_STYLE.MARQUEE_WIDTH_PX / scale;
   ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
   ctx.restore();
 }

@@ -255,7 +255,18 @@ function computeStraightSnap(
   insideDepth: number,
   radii: SnapRadiiWorld,
 ): StraightSnapTarget | null {
-  if (isInside && insideDepth > radii.straightInteriorDepth) {
+  // Clamp the screen-space interior gate to a fraction of the shape's smaller
+  // dimension. `radii.straightInteriorDepth = 20px / scale` grows in world
+  // units as the user zooms out — at very low zoom it can exceed the shape's
+  // entire interior, so the cursor never reaches "deep inside" and
+  // `computeStraightInterior` (which owns center + interior snap) never runs.
+  // Cap = 30% of `min(w, h)`: at normal zoom the screen-space gate dominates;
+  // when the shape is small in world coords the cap takes over and keeps
+  // the center dot hittable. Edge snap behavior is unchanged because the cap
+  // only LOWERS the gate, never raises it.
+  const minDim = Math.min(frame[2], frame[3]);
+  const effectiveInteriorDepth = Math.min(radii.straightInteriorDepth, minDim * 0.3);
+  if (isInside && insideDepth > effectiveInteriorDepth) {
     return computeStraightInterior(ctx, shapeId, frame, shapeType, radii);
   }
   return tryStraightEdgeSnap(ctx, shapeId, frame, shapeType, isInside, radii);
