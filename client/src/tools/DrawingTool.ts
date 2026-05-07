@@ -1,18 +1,14 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { bboxToFrame, cornerFrame, frameToBbox, scaleBBoxAround } from '@/core/geometry/bounds';
-import { HoldDetector } from '@/core/geometry/shape-recognition/HoldDetector';
-import {
-  computeBboxCenterExtents,
-  debugRecognize,
-  recognizePerfectShapePointCloud,
-} from '@/core/geometry/shape-recognition/pdollar-recognizer';
+import { computeBboxCenterExtents, recognizePerfectShapePointCloud } from '@/core/recognizer/recognize';
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getUserId, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import { createFillFromStroke } from '@/utils/color';
+import { HoldDetector } from './hold-detector';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
@@ -307,37 +303,10 @@ export class DrawingTool implements PointerTool {
   }
 
   private onHoldFire(): void {
-    if (this.mode !== 'stroke') return;
-    if (this.points.length < 1) return;
-
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.group('Hold Detector Fired - $P Shape Recognition');
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.log(`Stroke has ${this.points.length} points after 600ms dwell`);
+    if (this.mode !== 'stroke' || this.points.length < 1) return;
 
     const result = recognizePerfectShapePointCloud(this.points);
-    debugRecognize(this.points);
-
-    if (!result) {
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-      console.log('Not enough points for recognition');
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-      console.groupEnd();
-      return;
-    }
-
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.log(`Best: ${result.best.kind} (${result.best.templateId})`);
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.log(`Distance: ${result.best.distance.toFixed(3)}, Margin: ${(result.margin * 100).toFixed(1)}%`);
-
-    if (result.ambiguous) {
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-      console.log('Ambiguous - NO SNAP, continuing freehand');
-      // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-      console.groupEnd();
-      return;
-    }
+    if (!result || result.ambiguous) return;
 
     const bb = computeBboxCenterExtents(this.points);
     const originFrame: FrameTuple = [bb.cx - bb.hx, bb.cy - bb.hy, bb.hx * 2, bb.hy * 2];
@@ -363,10 +332,6 @@ export class DrawingTool implements PointerTool {
         break;
     }
 
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.log(`SNAP: ${result.best.kind.toUpperCase()}`);
-    // biome-ignore lint/suspicious/noConsole: intentional $P recognition debug logs
-    console.groupEnd();
     this.hold.cancel();
     invalidateOverlay();
   }
