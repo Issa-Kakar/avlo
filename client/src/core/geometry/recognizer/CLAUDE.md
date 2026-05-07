@@ -1,8 +1,10 @@
 # Recognizer Subsystem
 
-Single-stroke perfect-shape recognizer fired by the 600 ms hold detector. Maps
+Single-stroke perfect-shape recognizer fired by the 550 ms hold detector. Maps
 a raw point list to one of `circle | box | diamond | line` against 37 fixed
-aspect-ratio templates.
+aspect-ratio templates. Single consumer: `tools/DrawingTool.ts`. Nested under
+`core/geometry/` because it is geometry-flavored and not part of the public
+core surface (unlike connectors / spatial / text).
 
 **Algorithm (black box):** Vatavu, Anthony, & Wobbrock (2012) "$P Point-Cloud
 Recognizer" + Vatavu (2018) $Q optimization. Modernize implementation, never
@@ -21,6 +23,7 @@ replace.
 | `cloud-distance.ts`  | $Q greedy match — the inner hot loop (1184 iterations / recognition). `Uint16Array(32)` swap-pop unmatched-bookkeeping scratch. |
 | `gates.ts`           | `countSignificantTurns`, `quadrantOccupation`. Re-exports `hasSelfIntersection`, `hasNearTouch`. |
 | `self-intersect.ts`  | Zero-alloc segment-pair scanners. Pre-bakes per-segment bbox into a module scratch (`SEGS`). |
+| `hold-detector.ts`   | Pointer-event lifecycle: fires `onFire` after 550 ms dwell within a 6 px jitter radius. Wired by `DrawingTool` to `recognize()`. No recognizer deps. |
 
 ## Layout invariant
 
