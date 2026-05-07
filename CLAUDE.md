@@ -82,7 +82,7 @@ All paths relative to `client/src/` unless noted.
 | `tools/selection/selection-utils.ts` | Selection composition, bounds, style computation |
 | `tools/selection/selection-actions.ts` | Selection mutations (color, fill, width, shape, text formatting, code language/fontSize) |
 | `tools/selection/connector-topology.ts` | Builds the connector topology graph (attached connectors per selected shape) |
-| `tools/DrawingTool.ts` | Pen, highlighter, shape drawing. `tools/hold-detector.ts` (550ms) fires `core/recognizer` on dwell. |
+| `tools/DrawingTool.ts` | Pen, highlighter, shape drawing. `core/geometry/recognizer/hold-detector.ts` (550ms) fires the $P recognizer on dwell. |
 | `tools/EraserTool.ts` | Geometry-aware hit testing + deletion |
 | `tools/TextTool.ts` | WYSIWYG rich text + sticky notes, Tiptap DOM overlay. **Docs:** `core/text/CLAUDE.md` |
 | `tools/PanTool.ts` | Viewport panning (dedicated + MMB + spacebar) |
@@ -103,7 +103,7 @@ All paths relative to `client/src/` unless noted.
 | `core/geometry/hit-primitives.ts` | Pure tuple-first hit math: point/segment/polyline/shape/rect/circle atoms (no handles, no Y.Map) |
 | `core/geometry/frame-of.ts` | `frameOf(handle)` — mapped dispatch to the right frame getter for any bindable kind |
 | `core/geometry/shape-path.ts` | Build Path2D from frame tuple |
-| `core/recognizer/recognize.ts` | $P/$Q point-cloud shape recognizer — 550ms-hold perfect-shape match (rect/ellipse/diamond/line). Float64Array hot path, packed templates, byte-identical algorithm. **Docs:** `core/recognizer/CLAUDE.md` |
+| `core/geometry/recognizer/recognize.ts` | $P/$Q point-cloud shape recognizer — 550ms-hold perfect-shape match (rect/ellipse/diamond/line). Float64Array hot path, packed templates, byte-identical algorithm. Single consumer: `DrawingTool`. **Docs:** `core/geometry/recognizer/CLAUDE.md` |
 | `core/spatial/object-spatial-index.ts` | Pure RBush wrapper; tuple-first `queryBBox(bbox)` + `queryRadius(x,y,r)` with scratch-bbox reuse |
 | `core/spatial/kind-capability.ts` | Per-kind capability table: `hitPoint` (returns `Paint` class), `hitRect`, `hitCircle` + bindable flag |
 | `core/spatial/object-query.ts` | Picker facade — 3 point-pickers + region-membership. Owns `Radius`, `Region`, envelope/prefilter/sort pipeline. |
@@ -130,7 +130,7 @@ All paths relative to `client/src/` unless noted.
 | Folder | Coverage |
 |--------|----------|
 | `core/connectors/` | Elbow A* + straight routing, snap, topology, reroute API |
-| `core/recognizer/` | $P/$Q point-cloud recognizer: typed-array points, packed templates, validation gates |
+| `core/geometry/recognizer/` | $P/$Q point-cloud recognizer: typed-array points, packed templates, validation gates, hold-detector trigger |
 | `core/code/` | RunSpans model, two-tier tokenization, CodeMirror, canvas renderer |
 | `core/text/` | Layout engine, three-tier cache, TextCollaboration, shape labels, sticky notes |
 | `core/image/` | Offline-first image pipeline, mip levels, two web workers, viewport management |
@@ -542,7 +542,7 @@ Detailed docs in `tools/selection/CLAUDE.md`. Covers state machine, per-kind tra
 ## Other Tools
 
 ### DrawingTool
-Handles pen, highlighter, AND shape drawing. HoldDetector (550ms, `tools/hold-detector.ts`) fires the $P recognizer (`core/recognizer/`) for shape snap. Click-to-place: 180wu fixed shape. Settings frozen at `begin()`.
+Handles pen, highlighter, AND shape drawing. HoldDetector (550ms, `core/geometry/recognizer/hold-detector.ts`) fires the $P recognizer (`core/geometry/recognizer/`) for shape snap. Click-to-place: 180wu fixed shape. Settings frozen at `begin()`.
 
 ### EraserTool
 Geometry-aware hit testing, deletes all object kinds.

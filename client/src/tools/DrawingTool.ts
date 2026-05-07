@@ -1,14 +1,14 @@
 import { ulid } from 'ulid';
 import * as Y from 'yjs';
 import { bboxToFrame, cornerFrame, frameToBbox, scaleBBoxAround } from '@/core/geometry/bounds';
-import { computeBboxCenterExtents, recognizePerfectShapePointCloud } from '@/core/recognizer/recognize';
+import { HoldDetector } from '@/core/geometry/recognizer/hold-detector';
+import { computeBboxCenterExtents, recognizePerfectShapePointCloud } from '@/core/geometry/recognizer/recognize';
 import type { FrameTuple, Point } from '@/core/types/geometry';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
 import { getObjects, transact } from '@/runtime/room-runtime';
 import { useCameraStore, worldToCanvas } from '@/stores/camera-store';
 import { getUserId, type ShapeVariant, useDeviceUIStore } from '@/stores/device-ui-store';
 import { createFillFromStroke } from '@/utils/color';
-import { HoldDetector } from './hold-detector';
 import type { PointerTool, PreviewData, ShapeType } from './types';
 
 /** Toolbar shape variant → stored shapeType. */
