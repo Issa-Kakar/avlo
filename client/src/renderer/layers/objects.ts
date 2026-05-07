@@ -34,15 +34,18 @@ import type { ObjectHandle } from '@/core/types/objects';
 import { getObjectsById, getSpatialIndex } from '@/runtime/room-runtime';
 import { getVisibleBoundsTuple } from '@/stores/camera-store';
 import { useSelectionStore } from '@/stores/selection-store';
-import type { ConnectorEntry } from '@/tools/selection/connector-topology';
+import type { ConnectorEntry, EndpointDragEntry } from '@/tools/selection/connector-topology';
 import {
   type Entry,
+  getController,
+  getEndpointDragEntry,
   getScaleBehavior,
   getScaleEntry,
+  getTransformInjectIds,
   getTransformTopology,
-  getTranslateDelta,
   type KindWithBBoxGeo,
 } from '@/tools/selection/transform';
+import type { TransformState } from '@/tools/selection/types';
 import { getConnectorPaths, getPath } from '../geometry-cache';
 import { paintConnector, paintConnectorFromPoints } from './connector-render-atoms';
 import { paintShapeFrame } from './shape-preview';
@@ -56,68 +59,47 @@ function getCodeRenderData(id: string, props: CodeProps) {
   };
 }
 
-function withTransform(ctx: CanvasRenderingContext2D, tx: number, ty: number, sx: number, sy: number, draw: () => void): void {
-  ctx.save();
-  ctx.translate(tx, ty);
-  ctx.scale(sx, sy);
-  draw();
-  ctx.restore();
-}
-
 // Module-scope scratches. Reused across frames — zero allocation on the hot path.
 const _candidateIds: string[] = [];
 const _previewScratch: BBoxTuple = [0, 0, 0, 0];
 
-/**
- * Render-time bbox for transform-injected IDs. Reads whatever cached representation
- * the active transform already maintains per frame — no recomputation:
- *   - topology connectors → `topology.byId.get(id).currBbox` (set by runTopology*)
- *   - endpointDrag connector → `transform.routedBbox` (shared SelectTool.dragBbox,
- *     mutated in place each pointer event; gated on `validCount >= 2`)
- *   - scale (non-connector) → `entry.out.bbox` (set by apply functions)
- *   - translate (non-connector) → `handle.bbox + translateDelta`
- * Falls back to `handle.bbox` (stored position) when nothing applies.
- * The returned tuple may be the module scratch — consumers must intersect-test immediately.
- */
-function getRenderBBox(
-  handle: ObjectHandle,
-  transform: ReturnType<typeof useSelectionStore.getState>['transform'],
-  connTopology: ReturnType<typeof getTransformTopology>,
-): BBoxTuple {
-  const te = connTopology?.byId.get(handle.id);
-  if (te) return te.currBbox;
-
-  if (transform.kind === 'translate') {
-    const delta = getTranslateDelta();
-    if (delta) {
-      const b = handle.bbox;
-      _previewScratch[0] = b[0] + delta[0];
-      _previewScratch[1] = b[1] + delta[1];
-      _previewScratch[2] = b[2] + delta[0];
-      _previewScratch[3] = b[3] + delta[1];
-      return _previewScratch;
-    }
-  } else if (transform.kind === 'scale' && handle.kind !== 'connector') {
-    const entry = getScaleEntry(handle.kind, handle.id);
-    if (entry) return (entry.out as { bbox: BBoxTuple }).bbox;
-  } else if (transform.kind === 'endpointDrag') {
-    if (handle.id === transform.connectorId && transform.validCount >= 2) return transform.routedBbox;
-  }
-  return handle.bbox;
-}
+// Per-frame editing-id snapshot, written once at the top of `drawObjects` and
+// read by leaf `draw*` functions. Avoids one `useSelectionStore.getState()`
+// per relevant object per frame.
+let _textEditingId: string | null = null;
+let _codeEditingId: string | null = null;
 
 export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array | null, clipCount: number): void {
   const spatialIndex = getSpatialIndex();
   const objectsById = getObjectsById();
-  // === READ SELECTION STATE FOR TRANSFORM PREVIEW ===
-  const selectionState = useSelectionStore.getState();
-  const selectedSet = selectionState.selectedIdSet;
-  const selectedIds = selectionState.selectedIds;
-  const transform = selectionState.transform;
-  const isTransforming = transform.kind !== 'none';
+  const sel = useSelectionStore.getState();
+  const selectedSet = sel.selectedIdSet;
+  const transform = sel.transform;
+  const tm = transform.kind;
+  const isTransforming = tm !== 'none';
+  const isTranslating = tm === 'translate';
+  const isScaling = tm === 'scale';
 
-  // Read topology from transform-state module (not from Zustand)
-  const connTopology = getTransformTopology();
+  // Hoist editing IDs ONCE per frame — leaf draw fns read these instead of
+  // polling `useSelectionStore.getState()` per object.
+  _textEditingId = sel.textEditingId;
+  _codeEditingId = sel.codeEditingId;
+
+  // Pre-resolve per-frame dispatch tokens. Topology mode → connEntries Map.get;
+  // endpoint drag → string equality on epDragId. Both null when idle.
+  const topology = getTransformTopology();
+  const connEntries: ReadonlyMap<string, ConnectorEntry> | null = topology?.byId ?? null;
+  const attachedSet: ReadonlySet<string> | null = topology?.attachedConnectorIds ?? null;
+  const haveAttached = attachedSet !== null;
+
+  const epDragEntry = getEndpointDragEntry();
+  const epDragId: string | null = epDragEntry?.id ?? null;
+
+  // Hoist translate dx/dy as scalars once per frame. Avoids the per-iteration
+  // `getTranslateDelta()` allocation when threading through inner loops.
+  const ctrl = isTranslating ? getController() : null;
+  const tdx = ctrl ? ctrl.dx : 0;
+  const tdy = ctrl ? ctrl.dy : 0;
 
   const viewport = getVisibleBoundsTuple();
   const entries = spatialIndex.queryBBox(viewport);
@@ -127,11 +109,15 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
   const cbuf = clipBuf; // narrowed local — avoids repeated NNA inside hot loop
 
   // Main loop: rbush entries from the viewport, rect-filtered by clipBuf.
-  // Transform-injected IDs (selected + attached-topology connectors) are skipped
-  // here and re-pushed below via their PREVIEW bbox — single walk, pre-deduplicated.
+  // Transform-injected IDs (selected + attached-topology connectors, or the
+  // dragged endpoint connector — already in selectedSet by drill invariant)
+  // are skipped here and re-pushed below via their preview bbox.
   for (let k = 0; k < entries.length; k++) {
     const e = entries[k];
-    if (isTransforming && (selectedSet.has(e.id) || connTopology?.byId.has(e.id))) continue;
+    if (isTransforming) {
+      if (selectedSet.has(e.id)) continue;
+      if (haveAttached && attachedSet!.has(e.id)) continue;
+    }
 
     if (hasClip && cbuf !== null) {
       let hit = false;
@@ -147,18 +133,11 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     _candidateIds.push(e.id);
   }
 
-  // Inject transform IDs using their preview bbox, viewport-culled.
-  // `injectIds` is pre-deduplicated at build time (selectedIds ∪ attachedConnectors).
+  // Pre-dispatched inject cull. Outer switch picks the loop body once;
+  // inner is straight-line per kind.
   if (isTransforming) {
-    const injectSource = connTopology?.injectIds ?? selectedIds;
-    for (let i = 0; i < injectSource.length; i++) {
-      const id = injectSource[i];
-      const h = objectsById.get(id);
-      if (!h) continue;
-      if (bboxesIntersect(getRenderBBox(h, transform, connTopology), viewport)) {
-        _candidateIds.push(id);
-      }
-    }
+    const injectIds = getTransformInjectIds() ?? sel.selectedIds;
+    cullInjected(injectIds, objectsById, viewport, transform, connEntries, epDragEntry, tdx, tdy);
   }
 
   // Sort by ULID for deterministic draw order (oldest first -> newest on top).
@@ -170,69 +149,125 @@ export function drawObjects(ctx: CanvasRenderingContext2D, clipBuf: Float64Array
     const handle = objectsById.get(id);
     if (!handle) continue;
 
-    // Connector: single topology-dispatched draw path covers selected + attached.
+    // Connector branch: ONE Map.get (topology) OR ONE string compare (endpoint
+    // drag) + ONE dispatch. No optional chaining on the hot path. The
+    // endpoint-drag synthetic entry has `mode: 'reroute'`, structurally
+    // identical to a topology reroute — same `drawConnectorEntry` dispatch.
     if (handle.kind === 'connector') {
-      const te = connTopology?.byId.get(handle.id);
-      if (te) {
-        drawConnectorWithTopology(ctx, handle, te);
-        continue;
-      }
-      if (transform.kind === 'endpointDrag' && handle.id === transform.connectorId && transform.validCount >= 2) {
-        drawConnectorFromPoints(ctx, handle, transform.pointsBuf, transform.validCount);
-        continue;
-      }
-      drawObject(ctx, handle);
+      let ce: ConnectorEntry | null = null;
+      if (connEntries) ce = connEntries.get(handle.id) ?? null;
+      else if (epDragId !== null && handle.id === epDragId) ce = epDragEntry;
+      if (ce) drawConnectorEntry(ctx, handle, ce, tdx, tdy);
+      else drawConnector(ctx, handle);
       continue;
     }
 
-    // === TRANSFORM SELECTED NON-CONNECTOR OBJECTS DURING ACTIVE TRANSFORM ===
-    const isSelected = selectedSet.has(id);
-    if (isTransforming && isSelected) {
-      if (transform.kind === 'translate') {
-        const delta = getTranslateDelta();
-        if (!delta) {
-          drawObject(ctx, handle);
-        } else {
-          ctx.save();
-          ctx.translate(delta[0], delta[1]);
-          drawObject(ctx, handle);
-          ctx.restore();
-        }
-      } else if (transform.kind === 'scale') {
-        renderScaleEntry(ctx, handle);
-      } else {
-        drawObject(ctx, handle);
-      }
-    } else {
+    // Non-connector path. endpointDrag never affects non-connectors and
+    // selectedSet narrows to the dragged connector by drill invariant — the
+    // `else` arm below is unreachable for non-connectors and intentionally
+    // omitted (impossible state, no fallback paint).
+    if (!isTransforming || !selectedSet.has(id)) {
       drawObject(ctx, handle);
+      continue;
+    }
+    if (isTranslating) {
+      ctx.save();
+      ctx.translate(tdx, tdy);
+      drawObject(ctx, handle);
+      ctx.restore();
+    } else if (isScaling) {
+      renderScaleEntry(ctx, handle);
     }
   }
 }
 
 /**
- * Single connector draw dispatch under active transform.
- * Covers both selected and non-selected (attached) connectors via topology entry.
+ * Connector dispatch under active transform. Static / translate / reroute —
+ * handles every gesture mode uniformly. `tdx`/`tdy` are the hoisted translate
+ * delta (zero when not translating); the `translate` case is the only consumer.
  */
-function drawConnectorWithTopology(ctx: CanvasRenderingContext2D, handle: ObjectHandle, te: ConnectorEntry): void {
-  switch (te.mode) {
+function drawConnectorEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle, ce: ConnectorEntry, tdx: number, tdy: number): void {
+  switch (ce.mode) {
     case 'static':
-      drawObject(ctx, handle);
+      drawConnector(ctx, handle);
       return;
-    case 'translate': {
-      const d = getTranslateDelta();
-      if (!d) {
-        drawObject(ctx, handle);
-        return;
-      }
+    case 'translate':
       ctx.save();
-      ctx.translate(d[0], d[1]);
-      drawObject(ctx, handle);
+      ctx.translate(tdx, tdy);
+      drawConnector(ctx, handle);
       ctx.restore();
       return;
-    }
     case 'reroute':
-      if (te.validCount > 0) drawConnectorFromPoints(ctx, handle, te.pointsBuf, te.validCount);
-      else drawObject(ctx, handle);
+      if (ce.validCount > 0) drawConnectorFromPoints(ctx, handle, ce.pointsBuf, ce.validCount);
+      else drawConnector(ctx, handle);
+      return;
+  }
+}
+
+/**
+ * Pre-dispatched inject cull. The outer switch resolves the transform mode
+ * once per frame, then the inner loop is monomorphic — no per-iteration
+ * `switch (transform.kind)`. EndpointDrag is a single ID so the loop is
+ * elided entirely (read directly off `epDragEntry`).
+ */
+function cullInjected(
+  injectIds: readonly string[],
+  objectsById: ReturnType<typeof getObjectsById>,
+  viewport: Readonly<BBoxTuple>,
+  transform: TransformState,
+  connEntries: ReadonlyMap<string, ConnectorEntry> | null,
+  epDragEntry: EndpointDragEntry | null,
+  tdx: number,
+  tdy: number,
+): void {
+  switch (transform.kind) {
+    case 'translate': {
+      for (let i = 0; i < injectIds.length; i++) {
+        const id = injectIds[i];
+        const h = objectsById.get(id);
+        if (!h) continue;
+        const ce = connEntries?.get(id);
+        if (ce) {
+          if (bboxesIntersect(ce.currBbox, viewport)) _candidateIds.push(id);
+          continue;
+        }
+        // Non-connector translate: handle.bbox + delta. Inline writes — no allocation.
+        const b = h.bbox;
+        _previewScratch[0] = b[0] + tdx;
+        _previewScratch[1] = b[1] + tdy;
+        _previewScratch[2] = b[2] + tdx;
+        _previewScratch[3] = b[3] + tdy;
+        if (bboxesIntersect(_previewScratch, viewport)) _candidateIds.push(id);
+      }
+      return;
+    }
+    case 'scale': {
+      for (let i = 0; i < injectIds.length; i++) {
+        const id = injectIds[i];
+        const h = objectsById.get(id);
+        if (!h) continue;
+        const ce = connEntries?.get(id);
+        if (ce) {
+          if (bboxesIntersect(ce.currBbox, viewport)) _candidateIds.push(id);
+          continue;
+        }
+        if (h.kind !== 'connector') {
+          const entry = getScaleEntry(h.kind, id);
+          const bbox = entry ? (entry.out as { bbox: BBoxTuple }).bbox : h.bbox;
+          if (bboxesIntersect(bbox, viewport)) _candidateIds.push(id);
+        } else if (bboxesIntersect(h.bbox, viewport)) {
+          _candidateIds.push(id);
+        }
+      }
+      return;
+    }
+    case 'endpointDrag': {
+      // Single connector — read directly off the controller's synthetic entry.
+      if (!epDragEntry) return;
+      if (bboxesIntersect(epDragEntry.currBbox, viewport)) _candidateIds.push(epDragEntry.id);
+      return;
+    }
+    case 'none':
       return;
   }
 }
@@ -315,7 +350,7 @@ function drawShape(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
 }
 
 function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
-  if (useSelectionStore.getState().textEditingId === handle.id) return;
+  if (_textEditingId === handle.id) return;
   const content = getContent(handle.y);
   if (!content) return;
   const frame = getFrame(handle.y)!;
@@ -330,7 +365,7 @@ function drawShapeLabel(ctx: CanvasRenderingContext2D, handle: ObjectHandle): vo
 }
 
 function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHandle, frame: FrameTuple): void {
-  if (useSelectionStore.getState().textEditingId === handle.id) return;
+  if (_textEditingId === handle.id) return;
   const measured = textLayoutCache.getMeasuredContent(handle.id);
   if (!measured) return;
   const textBox = computeLabelTextBox(getShapeType(handle.y), frame);
@@ -349,7 +384,7 @@ function drawShapeLabelWithFrame(ctx: CanvasRenderingContext2D, handle: ObjectHa
  */
 function drawText(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
-  if (useSelectionStore.getState().textEditingId === id) return;
+  if (_textEditingId === id) return;
 
   const props = getTextProps(y);
   if (!props) return;
@@ -364,8 +399,7 @@ function drawCode(ctx: CanvasRenderingContext2D, handle: ObjectHandle): void {
   const { id, y } = handle;
 
   // Skip rendering if currently being edited (DOM overlay handles it)
-  const codeEditingId = useSelectionStore.getState().codeEditingId;
-  if (codeEditingId === id) return;
+  if (_codeEditingId === id) return;
 
   const props = getCodeProps(y);
   if (!props) return;
@@ -499,9 +533,11 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         const layout = textLayoutCache.getLayout(handle.id, props.content, props.fontSize, props.fontFamily, props.width);
         const color = getColor(handle.y);
         const fillColor = getFillColor(handle.y);
-        withTransform(ctx, entry.out.origin[0], entry.out.origin[1], ratio, ratio, () =>
-          renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor),
-        );
+        ctx.save();
+        ctx.translate(entry.out.origin[0], entry.out.origin[1]);
+        ctx.scale(ratio, ratio);
+        renderTextLayout(ctx, layout, 0, 0, color, props.align, fillColor);
+        ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);
       }
@@ -524,9 +560,11 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
         const layout = codeSystem.getLayout(handle.id, props.content, props.fontSize, props.width, props.language, props.lineNumbers);
         const { spans, lines, title, output } = getCodeRenderData(handle.id, props);
         const b = entry.out.bbox;
-        withTransform(ctx, b[0], b[1], ratio, ratio, () =>
-          renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output),
-        );
+        ctx.save();
+        ctx.translate(b[0], b[1]);
+        ctx.scale(ratio, ratio);
+        renderCodeLayout(ctx, layout, 0, 0, props.fontSize, spans, lines, title, output);
+        ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);
       }
@@ -540,10 +578,12 @@ function renderScaleEntry(ctx: CanvasRenderingContext2D, handle: ObjectHandle): 
       const behavior = getScaleBehavior(handle.kind);
       if (behavior === 'uniform') {
         const ratio = entry.out.scale / entry.frozen.scale!;
-        withTransform(ctx, entry.out.origin[0], entry.out.origin[1], ratio, ratio, () => {
-          ctx.translate(-entry.frozen.origin[0], -entry.frozen.origin[1]);
-          drawObject(ctx, handle);
-        });
+        ctx.save();
+        ctx.translate(entry.out.origin[0], entry.out.origin[1]);
+        ctx.scale(ratio, ratio);
+        ctx.translate(-entry.frozen.origin[0], -entry.frozen.origin[1]);
+        drawObject(ctx, handle);
+        ctx.restore();
       } else {
         renderTranslatedEntry(ctx, handle, entry);
       }

@@ -154,15 +154,34 @@ interface RerouteEntryBase<S> extends DirtyEntry {
 export type ElbowRerouteEntry = RerouteEntryBase<ElbowSide>;
 export type StraightRerouteEntry = RerouteEntryBase<StraightSide>;
 
-export type ConnectorEntry = StaticEntry | TranslateEntry | ElbowRerouteEntry | StraightRerouteEntry;
+/**
+ * Endpoint-drag synthetic entry. Allocated ONCE as a scratch on
+ * `TransformController` and reused across gestures — `id`, `currBbox` slots,
+ * `pointsBuf`, and `validCount` are reset per `beginEndpointDrag`. Renderer
+ * reads it via `getEndpointDragEntry()`; same `mode: 'reroute'` shape as
+ * topology reroute entries so the per-frame draw dispatch is identical.
+ */
+export interface EndpointDragEntry {
+  readonly mode: 'reroute';
+  /** Mutable: written by the controller on each `beginEndpointDrag`. */
+  id: string;
+  readonly currBbox: BBoxTuple;
+  readonly pointsBuf: Point[];
+  validCount: number;
+}
+
+export type ConnectorEntry = StaticEntry | TranslateEntry | ElbowRerouteEntry | StraightRerouteEntry | EndpointDragEntry;
 
 export type ConnectorTopology = {
   readonly byId: ReadonlyMap<string, ConnectorEntry>;
   readonly translates: readonly TranslateEntry[];
   readonly elbowReroutes: readonly ElbowRerouteEntry[];
   readonly straightReroutes: readonly StraightRerouteEntry[];
-  /** selectedIds ∪ non-selected-attached-connectors (pre-deduplicated). */
-  readonly injectIds: readonly string[];
+  /** Non-selected connectors whose endpoints bind to a selected bindable.
+   *  Drives the spatial-loop skip predicate. The full inject set
+   *  (selected ∪ attached) is composed by the controller — `injectIds`
+   *  is no longer a topology concern. */
+  readonly attachedConnectorIds: ReadonlySet<string>;
 };
 
 // ============================================================================
@@ -391,11 +410,7 @@ export function newTopologyBuilder(mode: 'translate' | 'scale', selectedIdSet: R
 
       if (byId.size === 0) return null;
 
-      const injectIds: string[] = [];
-      for (const id of selectedIdSet) injectIds.push(id);
-      for (const id of attachedIds) injectIds.push(id);
-
-      return { byId, translates, elbowReroutes, straightReroutes, injectIds };
+      return { byId, translates, elbowReroutes, straightReroutes, attachedConnectorIds: attachedIds };
     },
   };
 }

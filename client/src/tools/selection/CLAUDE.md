@@ -10,10 +10,10 @@ SelectTool + transform engine + selection store + hit testing + transform render
 
 | File | Responsibility |
 |------|----------------|
-| `tools/selection/SelectTool.ts` | State machine, hit dispatch, routes transform lifecycle through the store, endpoint drag commit |
-| `tools/selection/transform.ts` | `TransformController`, structural traits, mapped types (incl. `KindWithBBoxGeo`), dispatch tables, apply/commit/freeze, module getters |
-| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState`, `ScaleCtx`, `SelectedStyles`, `InlineStyles` |
-| `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (static / translate / reroute), per-pipeline Side types, `newTopologyBuilder`, `runTopologyScale/Translate`, `commitTopology`, `cancelTopology`, `fillFrameFromBind` |
+| `tools/selection/SelectTool.ts` | State machine, hit dispatch, routes transform lifecycle through the store. Endpoint drag begun via `getController().beginEndpointDrag(...)`; rest of lifecycle flows through `endTransform`/`cancelTransform`. |
+| `tools/selection/transform.ts` | `TransformController` — owns scale + translate + **endpoint drag** modes, structural traits, mapped types (incl. `KindWithBBoxGeo`), dispatch tables, apply/commit/freeze, `getEndpointDragEntry()` accessor, controller-owned `injectIds` buffer, module getters |
+| `tools/selection/types.ts` | Shared types: `SelectionKind`, `KindCounts`, `TransformState`, `ScaleCtx`, `SelectedStyles`, `InlineStyles`. `EndpointDragTransform` carries renderer/UI fields only. |
+| `tools/selection/connector-topology.ts` | `ConnectorEntry` discriminated union (static / translate / reroute / endpoint-drag synthetic), per-pipeline Side types, `newTopologyBuilder`, `runTopologyScale/Translate`, `commitTopology`, `cancelTopology`, `fillFrameFromBind` |
 | `tools/selection/selection-utils.ts` | `computeSelectionComposition`, `computeStyles`, `computeUniformInlineStyles` |
 | `tools/selection/selection-actions.ts` | Mutation functions for context menu (see `components/context-menu/CLAUDE.md`) |
 | `stores/selection-store.ts` | Zustand store, orchestrates `TransformController`, `computeSelectionBounds()` |
@@ -31,9 +31,13 @@ SelectTool + transform engine + selection store + hit testing + transform render
 ```typescript
 type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
 
-type DownTarget =
-  | 'none' | 'handle' | 'connectorEndpoint' | 'objectInSelection'
-  | 'objectOutsideSelection' | 'selectionGap' | 'background';
+/** Discriminated pointer-down classification — payload-per-variant, no `!.` peeks. */
+type DownHit =
+  | { kind: 'background' }
+  | { kind: 'selectionGap' }
+  | { kind: 'object';   handle: ObjectHandle; isSelected: boolean }
+  | { kind: 'handle';   handleId: HandleId }
+  | { kind: 'endpoint'; connectorId: string; slot: Slot };
 
 const HIT_RADIUS_PX = 6;       // tolerance = HIT_RADIUS_PX + HIT_SLACK_PX = 8px screen
 const HIT_SLACK_PX = 2;
@@ -44,8 +48,8 @@ const CLICK_WINDOW_MS = 180;
 ### `begin()` flow
 
 1. `contextMenuController.hide()`.
-2. Mode-specific priority: standard mode (selection + not editing) → `hitResizeHandle()` → `'handle'`. Connector mode → `hitEndpointDot()` → `'connectorEndpoint'`.
-3. Common: `hitTestObjects()` → `'objectInSelection'` xor `'objectOutsideSelection'`.
+2. Mode-specific priority: standard mode (selection + not editing) → `hitResizeHandle()` → `'handle'`. Connector mode → `hitEndpointDot()` → `'endpoint'`.
+3. Common: `hitTestObjects()` → `'object'` (carries `isSelected`).
 4. No object hit: standard mode + inside selection bbox → `'selectionGap'`; else `'background'` (clears selection).
 5. `phase = 'pendingClick'` for all targets.
 
@@ -55,14 +59,14 @@ const CLICK_WINDOW_MS = 180;
 
 Transition gated by `passMove` (`dist > MOVE_THRESHOLD_PX`). Gap/background also accept `passTime` (≥ `CLICK_WINDOW_MS`).
 
-| DownTarget | Transition | Notes |
+| DownHit kind | Transition | Notes |
 |---|---|---|
-| `handle` | `scale` | `store.beginScale(handleId, downWorld)` |
-| `connectorEndpoint` | `endpointDrag` | Drill to single connector if multi-selected |
-| `objectOutsideSelection` | `translate` | Selects first. Anchored connectors → `marquee` instead |
-| `objectInSelection` | `translate` | Anchored connectors in connector mode → `marquee` instead |
-| `selectionGap` | `translate` | Drag = translate entire selection |
-| `background` | `marquee` | Empty area drag = marquee select |
+| `handle`   | `scale` | `store.beginScale(handleId, downWorld)` |
+| `endpoint` | `endpointDrag` | Drill to single connector if multi-selected. Controller owns the gesture (RouteContext + buffer + bbox snapshots). |
+| `object` (unselected) | `translate` | Selects first. Anchored connectors → `marquee` instead. |
+| `object` (selected)   | `translate` | Anchored connectors in connector mode → `marquee` instead. |
+| `selectionGap`        | `translate` | Drag = translate entire selection. |
+| `background`          | `marquee`   | Empty area drag = marquee select. |
 
 ### Scale phase
 
@@ -240,9 +244,11 @@ beginTranslate / updateTranslate / commit / cancel: parallel structure
 ```typescript
 getScaleEntry<K>(kind, id): Entry<K> | undefined  // generic flows through
 getScaleBehavior(kind):     ScaleBehavior | undefined
-getTransformMode():         'none' | 'scale' | 'translate'
+getTransformMode():         'none' | 'scale' | 'translate' | 'endpointDrag'
 getTranslateDelta():        [number, number] | null
-getTransformTopology():     ConnectorTopology | null
+getTransformTopology():     ConnectorTopology | null      // null in idle / endpointDrag
+getEndpointDragEntry():     EndpointDragEntry | null      // null unless dragging
+getTransformInjectIds():    readonly string[] | null      // controller-owned reused buffer
 getTransformScaleCtx():     ScaleCtx | null
 transformHasChange():       boolean              // overlay-only — gates begin→first-update reads
 isOverlayUniform():         boolean              // overlay-only — uniform vs per-axis rect
@@ -292,11 +298,11 @@ type ConnectorEntry =
   | StraightRerouteEntry;      // RerouteEntryBase<StraightSide>
 
 type ConnectorTopology = {
-  byId:             ReadonlyMap<string, ConnectorEntry>;   // renderer lookup (all reroute variants share mode/currBbox/pointsBuf/validCount)
-  translates:       readonly TranslateEntry[];
-  elbowReroutes:    readonly ElbowRerouteEntry[];          // partitioned for monomorphic apply
-  straightReroutes: readonly StraightRerouteEntry[];
-  injectIds:        readonly string[];                     // selectedIds ∪ attached-non-selected connectors
+  byId:                 ReadonlyMap<string, ConnectorEntry>;   // renderer lookup (all reroute variants share mode/currBbox/pointsBuf/validCount)
+  translates:           readonly TranslateEntry[];
+  elbowReroutes:        readonly ElbowRerouteEntry[];          // partitioned for monomorphic apply
+  straightReroutes:     readonly StraightRerouteEntry[];
+  attachedConnectorIds: ReadonlySet<string>;                   // non-selected connectors bound to a selected bindable
 };
 
 interface RerouteEntryBase<S> extends DirtyEntry {
@@ -379,7 +385,7 @@ All hit logic in `core/spatial/` (see its CLAUDE.md). SelectTool is a pure consu
 | Click target | `pickTopmostPaint([x, y], { px: 8 })` | `ObjectHandle \| null` | **Best candidate, not just topmost.** Frame-aware area tournament — small unfilled shape stacked above larger filled shape: smaller wins. |
 | Marquee | `queryHandleIds(inBBox(marqueeBBox))` | `string[]` | **Precise per-kind intersection.** Shape-type aware (ellipse perimeter, diamond edges); polylines segment-wise; framed kinds against derived frame. |
 | Resize handle | `hitResizeHandle([x, y], selectionBounds)` | `HandleId \| null` | Screen-space ~10px probe. Internally gates on `shouldShowHandles(bbox)` — `Math.max(w, h) * scale ≥ HANDLE_MIN_BBOX_PX (12)`. Same gate drives overlay visibility + cursor — render/hit/cursor always agree. |
-| Endpoint dot | `hitEndpointDot([x, y], selectedIds)` | `EndpointHit \| null` | Screen-space nearest probe over selected connectors' endpoints. |
+| Endpoint dot | `hitEndpointDot([x, y], selectedIds)` | `EndpointHit \| null` | Screen-space nearest probe over selected connectors' endpoints. `EndpointHit.slot: Slot` (`0 \| 1`). |
 
 Marquee uses no tolerance (exact region intersect).
 
@@ -387,14 +393,39 @@ Marquee uses no tolerance (exact region intersect).
 
 ## Rendering During Transforms (`renderer/layers/objects.ts`)
 
-`drawObjects()` reads `useSelectionStore` for transform state. Per object in ULID order:
+`drawObjects()` reads `useSelectionStore` for transform state and **resolves dispatch tokens once per frame** before iterating objects. No per-iteration optional chaining, no per-iteration `useSelectionStore.getState()`, no per-iteration kind switches the caller already knows.
 
-- **Not transforming or unselected:** `drawObject(ctx, handle)`.
-- **Translate:** `ctx.translate(dx, dy)` + `drawObject()`. Connectors via topology: translate-only → `ctx.translate`; rerouted → `drawConnectorFromPoints()`.
-- **Scale:** `renderScaleEntry(ctx, handle, snapshot)` per-kind dispatch.
-- **Endpoint drag:** Connector with matching id + `validCount ≥ 2` → `drawConnectorFromPoints(ctx, handle, transform.pointsBuf, transform.validCount)`.
+Frame-top hoists:
 
-**Culling guard:** during transforms, all selected + topology connector IDs are injected regardless of spatial-index viewport query. Prevents disappearing during edge-scroll panning.
+```ts
+_textEditingId / _codeEditingId         // module-state snapshot — leaf draw fns read these
+const topology = getTransformTopology()
+const connEntries = topology?.byId          // null in idle / endpointDrag
+const attachedSet = topology?.attachedConnectorIds  // ReadonlySet | null
+const epDragEntry = getEndpointDragEntry()  // EndpointDragEntry | null
+const epDragId    = epDragEntry?.id ?? null
+const tdx / tdy   = isTranslating ? ctrl.dx : 0   // hoisted scalar
+```
+
+Per object in ULID order:
+
+- **Connector:** ONE Map.get (topology) OR ONE string equality (endpoint drag) + ONE dispatch (`drawConnectorEntry`):
+  - `connEntries` non-null → `connEntries.get(handle.id)` (topology gestures).
+  - else `epDragId !== null && handle.id === epDragId` → `epDragEntry` (endpoint drag).
+  - Resolved `ce` → switch on `ce.mode`:
+    - `'static'` → `drawConnector(ctx, handle)`.
+    - `'translate'` → `ctx.translate(tdx, tdy)` + `drawConnector`.
+    - `'reroute'` (topology scale-driven OR endpoint-drag synthetic) → `drawConnectorFromPoints(ctx, handle, ce.pointsBuf, ce.validCount)`.
+  - No entry → `drawConnector(ctx, handle)` (off-gesture or partially-built).
+- **Non-connector, not transforming or unselected:** `drawObject(ctx, handle)`.
+- **Non-connector, translate:** `ctx.translate(tdx, tdy)` + `drawObject()`.
+- **Non-connector, scale:** `renderScaleEntry(ctx, handle)` per-kind dispatch (closure-free `ctx.save/translate/scale/[body]/restore` inline at every site).
+
+**Spatial-loop skip** during transforms: `selectedSet.has(id)` OR (`attachedSet !== null && attachedSet.has(id)`). The endpoint-drag id is already in `selectedSet` by drill invariant — no third branch needed. Tighter than checking `connEntries.has(id)` (which spans selected ∪ attached redundantly).
+
+**Culling guard.** During transforms, inject IDs (selected ∪ attached-connectors via topology, OR the dragged connector for endpoint drag) are pushed using their preview bbox regardless of spatial-index query. The cull is **pre-dispatched** — outer switch on `transform.kind` resolves once per frame, inner loop is monomorphic. EndpointDrag's cull reads `epDragEntry` directly (no `for` loop ceremony for one ID).
+
+**Endpoint drag's render path is structurally indistinguishable from a single-connector reroute** — the controller exposes a synthetic `EndpointDragEntry` (`mode: 'reroute'`, `pointsBuf`, `validCount`, `currBbox`) that flows through the same `drawConnectorEntry` dispatch as topology reroute entries. The renderer's only branch on endpoint drag is the frame-top accessor split (`connEntries` vs `epDragId`), not the hot per-iteration loop.
 
 ### `renderScaleEntry()` per kind
 
@@ -422,9 +453,7 @@ interface SelectionState {
 }
 ```
 
-`TranslateTransform` is a thin marker. `ScaleTransform` carries `{kind, initialDelta, clickOffset}` (gesture-frame constants for `rawScaleFactors`). All entry state (frozen, output, topology, dx/dy, sx/sy) lives in `TransformController`. The store orchestrates the whole gesture: SelectTool calls `store.beginScale`/`updateScale`/`endTransform`/`cancelTransform`; never reads scale state back or touches `rawScaleFactors`.
-
-**Exception:** `EndpointDragTransform` carries full state in the store — not entry-based, doesn't go through the controller.
+`TranslateTransform` is a thin marker. `ScaleTransform` carries `{kind, initialDelta, clickOffset}` (gesture-frame constants for `rawScaleFactors`). `EndpointDragTransform` carries `{kind, connectorId, slot: Slot, currentPosition, currentSnap}` — renderer/UI only; the route buffer + bbox snapshots + `RouteContext` live on the controller. All entry state (frozen, output, topology, dx/dy, sx/sy, endpoint drag) lives in `TransformController`. The store orchestrates the whole gesture; SelectTool never touches the controller directly except for `getController().beginEndpointDrag(...)` at gesture start (controller needs the live handle to build `RouteContext`).
 
 | Action | Effect |
 |---|---|
@@ -434,9 +463,10 @@ interface SelectionState {
 | `updateTranslate(dx, dy)` | `ctrl.updateTranslate` |
 | `beginScale(handleId, downWorld)` | bounds → origin/handlePos → gesture math → `ctrl.beginScale` + `{kind:'scale', ...}` |
 | `updateScale(worldX, worldY)` | `rawScaleFactors` → `ctrl.updateScale` |
-| `endTransform()` | `ctrl.hasChange() ? commit() : clear()` + `{kind:'none'}` |
-| `cancelTransform()` | `ctrl.cancel()` + `{kind:'none'}` |
-| `beginEndpointDrag` | Set endpointDrag transform |
+| `endTransform()` | Routes by `transform.kind`: endpointDrag → `ctrl.commitEndpointDrag(currentSnap)`; translate/scale → `ctrl.hasChange() ? commit() : clear()`. Then `{kind:'none'}`. |
+| `cancelTransform()` | `ctrl.cancel()` (handles all gesture modes) + `{kind:'none'}` |
+| `beginEndpointDrag(connectorId, slot)` | Set endpointDrag transform discriminant. Controller is begun separately via `getController().beginEndpointDrag(connectorId, slot, handle)`. |
+| `updateEndpointDrag(currentPosition, currentSnap)` | Patch the discriminant — overlay reads it for snap feedback + dragged dot. Controller is updated separately via `getController().updateEndpointDrag(worldX, worldY, snap)`. |
 | `begin/endTextEditing`, `begin/endCodeEditing`, `refreshStyles` | Editing state + style snapshot upkeep |
 
 `computeSelectionBounds()` (zero-arg) serves triple duty: idle overlay bounds, scale gesture bounds, translate-frozen union. Reads `selectedIds → textEditingId → codeEditingId` fallback chain. Returns `null` on empty selection (causes both begin-fns to bail). Text uses `frameToBbox(getTextFrame())`; all others use `handle.bbox`.
@@ -445,21 +475,32 @@ interface SelectionState {
 
 ## Endpoint Drag
 
-Only in connector mode (single connector selected). Managed by SelectTool directly (not the controller).
+Only in connector mode (single connector selected). **Owned by `TransformController`** as a third gesture mode alongside scale and translate. SelectTool delegates lifecycle; the controller's synthetic `EndpointDragEntry` (`mode: 'reroute'`, `pointsBuf`, `validCount`, `currBbox`) flows through `drawConnectorEntry` — same dispatch the topology reroute entries use. The renderer cannot tell endpoint drag from a single-connector reroute and shouldn't have to.
 
-At drag-begin: `dragRouteCtx = buildRouteContext(connectorId, handle.y)` once; clear pooled `dragPointsBuf`; seed `dragBbox` from current connector bbox. Both `dragPointsBuf` AND `dragBbox` passed to `beginEndpointDrag` **by reference** — store's `pointsBuf` and `routedBbox` share those references for the gesture's lifetime. `prevBbox` is a separate snapshot tuple.
+**Controller state** (`TransformController.endpointDrag`, logical only):
+- `entry: EndpointDragEntry` — alias to `epDragEntryScratch` (controller-owned scratch allocated once at construction). Renderer reads directly via `getEndpointDragEntry()`.
+- `routeCtx: RouteContext` — `buildRouteContext(connectorId, handle.y)` once at begin; gesture-stable.
+- `slot: Slot` — which endpoint moves (0 = start, 1 = end).
+- `prevBbox: BBoxTuple` — alias to `epDragPrevBbox` (controller-owned scratch).
 
-Per pointer event:
-1. **Snapshot `dragBbox` into `prevBbox`** (BEFORE reroute mutates `dragBbox`). Load-bearing: `routedBbox === dragBbox`, so reading `transform.routedBbox` after step 4 would read just-mutated current bbox.
-2. `findBestSnapTarget` (Ctrl suppresses).
-3. Build endpoint override (`SnapTarget` or `[worldX, worldY]`).
-4. `count = rerouteEndpointDragInto(dragRouteCtx, slot, override, dragBbox, dragPointsBuf)`.
-5. Invalidate `prevBbox` (step 1) + `dragBbox` (just mutated).
-6. `updateEndpointDrag(currentPosition, snap, count)` — no bbox arg, `routedBbox` is shared.
+**Controller scratches** (allocated once at construction, mutated per gesture):
+- `epDragEntryScratch: EndpointDragEntry` — `id` reset per begin; `currBbox` slots and `pointsBuf` mutated per frame; `validCount` reset per begin and updated per frame.
+- `epDragPrevBbox: BBoxTuple` — slots mutated per frame.
+- `injectIds: string[]` — shared with scale/translate; reset to length 0 then pushed `connectorId` (single element) per `beginEndpointDrag`.
 
-At drag-end: `dragRouteCtx` cleared; `dragPointsBuf`/`dragBbox` retained for next gesture.
+**No wrapper collections.** No `Map<string, ConnectorEntry>` and no `injectIds: readonly string[]` allocations per gesture — the renderer dispatches off the controller's accessor (`getEndpointDragEntry()`) directly.
 
-**Commit:** read dragged-side endpoint from `pointsBuf[0]` xor `pointsBuf[validCount - 1]` (cloned), write either `anchorRecordFromSnap(snap)` (snapped) xor that free `Point` to Y.Map.
+**Lifecycle (controller methods):**
+1. `beginEndpointDrag(connectorId, slot, handle): boolean` — clears state, builds RouteContext (returns `false` on a partially-built connector), mutates the scratches (`id`, `currBbox`, `pointsBuf.length=0`, `validCount=0`, `prevBbox`), pushes the id into `injectIds`, sets `mode = 'endpointDrag'`. Per-gesture allocation: zero.
+2. `updateEndpointDrag(worldX, worldY, snap)` — snapshots `entry.currBbox → prevBbox` BEFORE the reroute, invalidates OLD, calls `rerouteEndpointDragInto(routeCtx, slot, snap ?? [x, y], entry.currBbox, entry.pointsBuf)`, invalidates NEW. The snapshot order is load-bearing.
+3. `commitEndpointDrag(snap): boolean` — invalidates dirty rects, writes `anchorRecordFromSnap(snap)` xor a free `Point` cloned from `pointsBuf[slotPointIndex(slot, validCount)]` to Y.Map (inside `transact()`), tears down state. Returns `false` on `validCount < 2` (no commit). Scratches are left as-is for the next gesture.
+4. `cancel()` — when `endpointDrag` is non-null, invalidates the precise dirty rects and clears (no full repaint).
+
+**SelectTool** at gesture begin: `getController().beginEndpointDrag(connectorId, slot, handle)`; `useSelectionStore.getState().beginEndpointDrag(connectorId, slot)` for the store discriminant. Per move: read `connectorType` from the live handle, compute snap via `findBestSnapTarget`, call `getController().updateEndpointDrag(...)` + `useSelectionStore.getState().updateEndpointDrag(currentPosition, snap)`. End/cancel route through `endTransform()` / `cancelTransform()` like other gestures.
+
+**Commit rule.** Free Point xor `StoredAnchor`. The deep observer reroutes canonically post-tx, populating the local route cache.
+
+**Slot naming.** `Slot = 0 | 1` (`SLOT_START`/`SLOT_END`) lives in `core/connectors/reroute-connector.ts`. Helpers there: `slotKey(s)` (Y.Map field name at the storage boundary), `slotOther(s)` (1 - s), `slotPointIndex(s, count)` (branchless: `s * (count - 1)`).
 
 ---
 

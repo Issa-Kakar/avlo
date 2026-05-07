@@ -13,10 +13,11 @@ import { getHandle } from '@/runtime/room-runtime';
 import { getEnd, getStart } from '../accessors';
 import { frameOf } from '../geometry/frame-of';
 import type { FrameTuple, Point } from '../types/geometry';
-import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '../types/objects';
+import type { ConnectorEndpoint, ObjectHandle, StoredAnchor, StoredStraightAnchor } from '../types/objects';
 import { getConnectorRoute } from './connector-router';
 import { directionVector } from './connector-utils';
 import { EDGE_CLEARANCE_W } from './constants';
+import { type Slot, slotKey } from './reroute-connector';
 import { fillAnchorPoint } from './shape-geometry';
 import type { Dir, SnapTarget } from './types';
 
@@ -57,6 +58,21 @@ export function fillElbowAnchorPointInto(out: Point, anchor: Point, frame: Frame
 /** Same-shape test — both endpoints share a bound shape id. */
 export function isSameShape(a: { shapeId?: string } | null | undefined, b: { shapeId?: string } | null | undefined): boolean {
   return !!(a?.shapeId && b?.shapeId && a.shapeId === b.shapeId);
+}
+
+/** True if the connector has at least one shape-bound endpoint (StoredAnchor, not a free Point). */
+export function isAnchored(handle: ObjectHandle): boolean {
+  if (handle.kind !== 'connector') return false;
+  const start = getStart(handle.y);
+  const end = getEnd(handle.y);
+  return (start != null && !Array.isArray(start)) || (end != null && !Array.isArray(end));
+}
+
+/** True if the given slot is bound AND interior-attached (straight connector deep snap). */
+export function isInteriorAnchored(handle: ObjectHandle, slot: Slot): boolean {
+  const ep = handle.y.get(slotKey(slot)) as ConnectorEndpoint | undefined;
+  if (ep == null || Array.isArray(ep)) return false;
+  return (ep as StoredStraightAnchor).interior === true;
 }
 
 /**

@@ -4,6 +4,7 @@
  */
 
 import type { CodeLanguage, FontFamily, TextAlign, TextAlignV } from '@/core/accessors';
+import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
@@ -128,35 +129,22 @@ export interface ScaleTransform {
 
 /**
  * Endpoint drag transform: dragging a single connector endpoint.
- * Fundamentally different from translate/scale - operates on ONE connector, ONE endpoint.
  *
- * `pointsBuf` is owned by SelectTool (reused across the gesture) and exposed here
- * by reference. `pointsBuf.length` may exceed `validCount` (high-water mark) —
- * consumers MUST iterate by `validCount`, never `.length`.
+ * Renderer-and-overlay-only fields. The buffer + bbox + RouteContext live on
+ * `TransformController.endpointDrag` (one source of truth for active gesture
+ * state). The renderer reads the synthetic `EndpointDragEntry` directly via
+ * `getEndpointDragEntry()`; the overlay reads `currentPosition`/`currentSnap`
+ * here for the dragged-dot + snap feedback.
  */
 export interface EndpointDragTransform {
   kind: 'endpointDrag';
   connectorId: string;
-  endpoint: 'start' | 'end';
-
-  /** Current world position (snapped or free cursor) */
+  /** Which endpoint is being dragged. 0 = start, 1 = end. */
+  slot: Slot;
+  /** Cursor position when not snapped; equals `snap.position` when snapped. */
   currentPosition: [number, number];
-  /** Current snap target (for commit and overlay rendering) */
+  /** Current snap target (drives overlay snap feedback + commit anchor record). */
   currentSnap: SnapTarget | null;
-
-  /** Persistent rerouted points buffer (owned by SelectTool, mutated each move). */
-  pointsBuf: Point[];
-  /** Valid prefix length of pointsBuf. 0 before first move; -1 on routing failure. */
-  validCount: number;
-  /**
-   * Bbox of the rerouted path. Shared-by-reference with SelectTool's `dragBbox`;
-   * mutated in place per pointer event. Caller (SelectTool) snapshots this into
-   * `prevBbox` BEFORE invoking the reroute so the dirty-rect chain stays correct.
-   */
-  routedBbox: BBoxTuple;
-
-  /** Previous frame's bbox for dirty rect invalidation (separate snapshot tuple). */
-  prevBbox: BBoxTuple;
 }
 
 export type TransformState = { kind: 'none' } | TranslateTransform | ScaleTransform | EndpointDragTransform;

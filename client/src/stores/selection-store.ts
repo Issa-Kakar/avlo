@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
+import type { Slot } from '@/core/connectors/reroute-connector';
 import type { SnapTarget } from '@/core/connectors/types';
 import { expandBBoxEnvelope, frameToBbox } from '@/core/geometry/bounds';
 import { rawScaleFactors } from '@/core/geometry/scale-system';
@@ -69,15 +70,11 @@ export interface SelectionActions {
   endTransform: () => void;
   cancelTransform: () => void;
 
-  // Endpoint drag lifecycle
-  beginEndpointDrag: (
-    connectorId: string,
-    endpoint: 'start' | 'end',
-    originBbox: BBoxTuple,
-    pointsBuf: Point[],
-    dragBbox: BBoxTuple,
-  ) => void;
-  updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null, validCount: number) => void;
+  // Endpoint drag lifecycle — store carries renderer/UI fields only;
+  // the controller owns RouteContext + buffers + synthetic ConnectorEntry.
+  // End/cancel route through `endTransform` / `cancelTransform` like other gestures.
+  beginEndpointDrag: (connectorId: string, slot: Slot) => void;
+  updateEndpointDrag: (currentPosition: [number, number], currentSnap: SnapTarget | null) => void;
 
   // Text editing actions
   /** Begin text editing */
@@ -189,9 +186,17 @@ export const useSelectionStore = create<SelectionStore>()(
     },
 
     endTransform: () => {
+      const t = get().transform;
       const ctrl = getController();
-      if (ctrl.hasChange()) ctrl.commit();
-      else ctrl.clear();
+      if (t.kind === 'endpointDrag') {
+        // Controller owns the route buffer + bbox snapshots; the snap target lives
+        // on the store discriminant (drives commit's anchor-vs-free choice).
+        ctrl.commitEndpointDrag(t.currentSnap);
+      } else if (ctrl.hasChange()) {
+        ctrl.commit();
+      } else {
+        ctrl.clear();
+      }
       set({ transform: { kind: 'none' } });
     },
 
@@ -202,37 +207,21 @@ export const useSelectionStore = create<SelectionStore>()(
 
     // === Endpoint Drag Actions ===
 
-    beginEndpointDrag: (connectorId, endpoint, originBbox, pointsBuf, dragBbox) =>
+    beginEndpointDrag: (connectorId, slot) =>
       set({
         transform: {
           kind: 'endpointDrag',
           connectorId,
-          endpoint,
+          slot,
           currentPosition: [0, 0],
           currentSnap: null,
-          pointsBuf,
-          validCount: 0,
-          // Shared-by-ref with SelectTool's dragBbox (mutated in place each event).
-          routedBbox: dragBbox,
-          // Separate snapshot tuple — must not alias dragBbox or the dirty-rect chain breaks.
-          prevBbox: [originBbox[0], originBbox[1], originBbox[2], originBbox[3]],
         },
       }),
 
-    updateEndpointDrag: (currentPosition, currentSnap, validCount) =>
-      set((state) => {
-        if (state.transform.kind !== 'endpointDrag') return state;
-        // routedBbox stays as the same shared dragBbox reference; prevBbox is
-        // snapshotted by the caller (SelectTool) BEFORE the reroute mutates dragBbox.
-        return {
-          transform: {
-            ...state.transform,
-            currentPosition,
-            currentSnap,
-            validCount,
-          },
-        };
-      }),
+    updateEndpointDrag: (currentPosition, currentSnap) =>
+      set((state) =>
+        state.transform.kind === 'endpointDrag' ? { transform: { ...state.transform, currentPosition, currentSnap } } : state,
+      ),
 
     // === Text Editing Actions ===
 

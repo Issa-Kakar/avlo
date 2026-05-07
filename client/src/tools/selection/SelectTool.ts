@@ -1,33 +1,26 @@
-import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
-import {
-  buildRouteContext,
-  type EndpointDragOverride,
-  type RouteContext,
-  rerouteEndpointDragInto,
-  SLOT_END,
-  SLOT_START,
-  type Slot,
-} from '@/core/connectors/reroute-connector';
+import { getConnectorType } from '@/core/accessors';
+import { isAnchored } from '@/core/connectors/anchor-atoms';
+import type { Slot } from '@/core/connectors/reroute-connector';
 import { findBestSnapTarget } from '@/core/connectors/snap';
-import type { SnapTarget } from '@/core/connectors/types';
-import { copyBbox, pointsToBBoxMut } from '@/core/geometry/bounds';
+import { pointsToBBoxMut } from '@/core/geometry/bounds';
 import { pointInBBox } from '@/core/geometry/hit-primitives';
-import { type EndpointHit, hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
+import { hitEndpointDot, hitResizeHandle } from '@/core/spatial/handle-hit';
 import { inBBox, pickTopmostPaint, queryHandleIds } from '@/core/spatial/object-query';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
+import type { HandleId } from '@/core/types/handles';
 import { handleCursor } from '@/core/types/handles';
-import type { ConnectorEndpoint, ObjectHandle } from '@/core/types/objects';
+import type { ObjectHandle } from '@/core/types/objects';
 import { invalidateOverlay } from '@/renderer/OverlayRenderLoop';
-import { invalidateWorldBBox } from '@/renderer/RenderLoop';
 import { contextMenuController } from '@/runtime/ContextMenuController';
 import { getLastCursorWorld } from '@/runtime/cursor-tracking';
 import { isCtrlHeld, isCtrlOrMetaHeld, isShiftHeld } from '@/runtime/InputManager';
-import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
+import { getHandle } from '@/runtime/room-runtime';
 import { codeTool, panTool, textTool } from '@/runtime/tool-registry';
 import { worldToCanvas } from '@/stores/camera-store';
 import { applyCursor, setCursorOverride } from '@/stores/device-ui-store';
 import { computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
-import type { HandleId, PointerTool, PreviewData } from '../types';
+import { getController } from '@/tools/selection/transform';
+import type { PointerTool, PreviewData } from '../types';
 
 // === Constants ===
 const HIT_RADIUS_PX = 6; // Screen-space hit test radius for selection
@@ -39,14 +32,17 @@ const CLICK_WINDOW_MS = 180; // Time threshold for gap click disambiguation
 
 type Phase = 'idle' | 'pendingClick' | 'marquee' | 'translate' | 'scale' | 'endpointDrag';
 
-type DownTarget =
-  | 'none'
-  | 'handle' // Clicked resize handle (standard mode only)
-  | 'connectorEndpoint' // Clicked endpoint dot (connector mode only)
-  | 'objectInSelection' // Clicked object that IS selected
-  | 'objectOutsideSelection' // Clicked object that is NOT selected
-  | 'selectionGap' // Empty space INSIDE selection bounds (standard mode only)
-  | 'background'; // Empty space OUTSIDE selection bounds
+/**
+ * Discriminated union of pointer-down classifications. Replaces four mutually-exclusive
+ * optional instance fields + the seven-valued DownTarget enum: each variant carries
+ * exactly the data the corresponding pendingClick branch consumes, with no `!.` peeks.
+ */
+type DownHit =
+  | { kind: 'background' }
+  | { kind: 'selectionGap' }
+  | { kind: 'object'; handle: ObjectHandle; isSelected: boolean }
+  | { kind: 'handle'; handleId: HandleId }
+  | { kind: 'endpoint'; connectorId: string; slot: Slot };
 
 // === SelectTool Class ===
 
@@ -58,6 +54,10 @@ type DownTarget =
  * - Invalidation: invalidation-helpers.ts
  * - Cursor: useDeviceUIStore (applyCursor, setCursorOverride)
  * - Camera/Selection: Zustand stores
+ *
+ * Endpoint drag's RouteContext + buffer + bbox snapshots live on TransformController;
+ * SelectTool just routes lifecycle through `getController().beginEndpointDrag(...)`
+ * and the standard `endTransform` / `cancelTransform` store actions.
  */
 export class SelectTool implements PointerTool {
   // State machine
@@ -65,20 +65,8 @@ export class SelectTool implements PointerTool {
   private pointerId: number | null = null;
   private downWorld: [number, number] | null = null;
   private downScreen: [number, number] | null = null;
-
-  // Hit testing results at pointer down
-  private hitAtDown: ObjectHandle | null = null;
-  private pendingHandleId: HandleId | null = null;
-  private endpointHitAtDown: EndpointHit | null = null;
-
-  // Target classification for pointer down
-  private downTarget: DownTarget = 'none';
   private downTimeMs: number = 0;
-
-  // Endpoint drag — RouteContext + buffers hoisted at drag-begin, reused per pointer event.
-  private dragRouteCtx: RouteContext | null = null;
-  private readonly dragPointsBuf: Point[] = [];
-  private readonly dragBbox: BBoxTuple = [0, 0, 0, 0];
+  private downHit: DownHit = { kind: 'background' };
 
   // Marquee — local state + scratch bbox + scratch current-point, never reallocated.
   private marqueeActive = false;
@@ -112,7 +100,6 @@ export class SelectTool implements PointerTool {
     this.pointerId = pointerId;
     this.downWorld = [worldX, worldY];
     this.downTimeMs = performance.now();
-    this.downTarget = 'none';
 
     // Convert to screen space for move threshold
     const [screenX, screenY] = worldToCanvas(worldX, worldY);
@@ -127,8 +114,7 @@ export class SelectTool implements PointerTool {
       const selectionBounds = computeSelectionBounds();
       const handleHit = selectionBounds ? hitResizeHandle([worldX, worldY], selectionBounds) : null;
       if (handleHit) {
-        this.pendingHandleId = handleHit;
-        this.downTarget = 'handle';
+        this.downHit = { kind: 'handle', handleId: handleHit };
         this.phase = 'pendingClick';
         invalidateOverlay();
         return;
@@ -137,8 +123,7 @@ export class SelectTool implements PointerTool {
       // Connector mode: check endpoint dots first
       const endpointHit = hitEndpointDot([worldX, worldY], selectedIds);
       if (endpointHit) {
-        this.endpointHitAtDown = endpointHit;
-        this.downTarget = 'connectorEndpoint';
+        this.downHit = { kind: 'endpoint', connectorId: endpointHit.connectorId, slot: endpointHit.slot };
         this.phase = 'pendingClick';
         setCursorOverride('grabbing');
         applyCursor();
@@ -149,14 +134,10 @@ export class SelectTool implements PointerTool {
 
     // 2. Common: object hit test
     const hit = this.hitTestObjects(worldX, worldY);
-    this.hitAtDown = hit;
 
     if (hit) {
-      const hitId = hit.id;
-      const hitKind = hit.kind;
-      const isSelected = selectedIds.includes(hitId);
-      //NO LONGER USED, BAD UX: if (!isSelected && selectedIds.length > 0) store.clearSelection();
-      this.downTarget = isSelected ? 'objectInSelection' : 'objectOutsideSelection';
+      const isSelected = selectedIds.includes(hit.id);
+      this.downHit = { kind: 'object', handle: hit, isSelected };
       this.phase = 'pendingClick';
       // Single-selected editable-text re-click: undo deferred hide so end()'s
       // editor mount doesn't flash. Covers every kind that can enter text editing
@@ -165,7 +146,7 @@ export class SelectTool implements PointerTool {
       if (
         isSelected &&
         selectedIds.length === 1 &&
-        (hitKind === 'text' || hitKind === 'code' || hitKind === 'note' || hitKind === 'shape')
+        (hit.kind === 'text' || hit.kind === 'code' || hit.kind === 'note' || hit.kind === 'shape')
       ) {
         contextMenuController.cancelHide();
       }
@@ -178,7 +159,7 @@ export class SelectTool implements PointerTool {
       // Standard mode has selection bounds - can have gap clicks
       const selectionBounds = computeSelectionBounds();
       if (selectionBounds && pointInBBox([worldX, worldY], selectionBounds)) {
-        this.downTarget = 'selectionGap';
+        this.downHit = { kind: 'selectionGap' };
         this.phase = 'pendingClick';
         invalidateOverlay();
         return;
@@ -187,7 +168,7 @@ export class SelectTool implements PointerTool {
     // Connector mode has no selection bounds → no gap, straight to background
 
     if (selectedIds.length > 0) store.clearSelection();
-    this.downTarget = 'background';
+    this.downHit = { kind: 'background' };
     this.phase = 'pendingClick';
     invalidateOverlay();
   }
@@ -215,108 +196,55 @@ export class SelectTool implements PointerTool {
         const passTime = elapsed >= CLICK_WINDOW_MS;
 
         // Target-aware branching
-        switch (this.downTarget) {
+        switch (this.downHit.kind) {
           case 'handle': {
             if (!passMove) break;
+            const handleId = this.downHit.handleId;
             this.phase = 'scale';
-            useSelectionStore.getState().beginScale(this.pendingHandleId!, this.downWorld!);
+            useSelectionStore.getState().beginScale(handleId, this.downWorld!);
             if (useSelectionStore.getState().transform.kind !== 'scale') {
               this.phase = 'idle';
               break;
             }
-            setCursorOverride(handleCursor(this.pendingHandleId!));
+            setCursorOverride(handleCursor(handleId));
             applyCursor();
             break;
           }
 
-          case 'connectorEndpoint': {
+          case 'endpoint': {
             // Connector mode only: dragging an endpoint dot
             if (!passMove) break;
 
+            const { connectorId, slot } = this.downHit;
             // Drill down to single connector if multiple selected
             const epStore = useSelectionStore.getState();
-            if (epStore.selectedIds.length > 1) {
-              epStore.setSelection([this.endpointHitAtDown!.connectorId]);
-            }
+            if (epStore.selectedIds.length > 1) epStore.setSelection([connectorId]);
 
+            const connHandle = getHandle(connectorId);
+            if (!connHandle) break;
+            // Controller owns RouteContext + buffer + bbox snapshots for the gesture.
+            if (!getController().beginEndpointDrag(connectorId, slot, connHandle)) break;
             this.phase = 'endpointDrag';
-
-            // Begin endpoint drag transform — hoist RouteContext + buffer for per-event reuse.
-            const connHandle = getHandle(this.endpointHitAtDown!.connectorId);
-            if (connHandle) {
-              this.dragRouteCtx = buildRouteContext(this.endpointHitAtDown!.connectorId, connHandle.y);
-              this.dragPointsBuf.length = 0;
-              // Seed dragBbox with the current connector bbox so the first frame's
-              // prevBbox snapshot covers stored geometry.
-              copyBbox(connHandle.bbox, this.dragBbox);
-              useSelectionStore
-                .getState()
-                .beginEndpointDrag(
-                  this.endpointHitAtDown!.connectorId,
-                  this.endpointHitAtDown!.endpoint,
-                  connHandle.bbox,
-                  this.dragPointsBuf,
-                  this.dragBbox,
-                );
-            }
+            useSelectionStore.getState().beginEndpointDrag(connectorId, slot);
             setCursorOverride('grabbing');
             applyCursor();
             break;
           }
 
-          case 'objectOutsideSelection': {
+          case 'object': {
             if (!passMove) break;
-
-            const hitHandle = this.hitAtDown!;
-
-            // Connectors: check anchor state to decide drag behavior.
-            // Bound endpoints are StoredAnchor objects — `!Array.isArray(ep)` distinguishes from free Points.
-            if (hitHandle.kind === 'connector') {
-              const start = hitHandle.y.get('start') as ConnectorEndpoint | undefined;
-              const end = hitHandle.y.get('end') as ConnectorEndpoint | undefined;
-              const isAnchored = (start && !Array.isArray(start)) || (end && !Array.isArray(end));
-              if (isAnchored) {
-                // Anchored → marquee (can't translate anchored connector)
-                this.phase = 'marquee';
-                this.marqueeActive = true;
-                this.updateMarqueeBBox(worldX, worldY);
-                this.updateMarqueeSelection();
-                break;
-              }
-            }
-
-            // Non-connector or free connector: select + translate
+            const { handle, isSelected } = this.downHit;
             const store = useSelectionStore.getState();
-            store.setSelection([hitHandle.id]);
-            this.phase = 'translate';
-            useSelectionStore.getState().beginTranslate();
-            break;
-          }
-
-          case 'objectInSelection': {
-            if (!passMove) break;
-            contextMenuController.hide();
-
-            // Connector mode (1 connector): check anchor state via union branch.
-            const inSelStore = useSelectionStore.getState();
-            if (inSelStore.mode === 'connector') {
-              const connHandle = getHandle(inSelStore.selectedIds[0]);
-              if (connHandle?.kind === 'connector') {
-                const start = connHandle.y.get('start') as ConnectorEndpoint | undefined;
-                const end = connHandle.y.get('end') as ConnectorEndpoint | undefined;
-                const isAnchored = (start && !Array.isArray(start)) || (end && !Array.isArray(end));
-                if (isAnchored) {
-                  // Anchored → marquee (gives visual feedback)
-                  this.phase = 'marquee';
-                  this.marqueeActive = true;
-                  this.updateMarqueeBBox(worldX, worldY);
-                  this.updateMarqueeSelection();
-                  break;
-                }
-              }
+            // Anchored connectors: marquee (cannot translate them rigidly).
+            if (handle.kind === 'connector' && isAnchored(handle)) {
+              this.phase = 'marquee';
+              this.marqueeActive = true;
+              this.updateMarqueeBBox(worldX, worldY);
+              this.updateMarqueeSelection();
+              break;
             }
-
-            // Standard mode or free connector: translate group
+            if (isSelected) contextMenuController.hide();
+            else store.setSelection([handle.id]);
             this.phase = 'translate';
             useSelectionStore.getState().beginTranslate();
             break;
@@ -366,39 +294,19 @@ export class SelectTool implements PointerTool {
       case 'endpointDrag': {
         const epTransform = useSelectionStore.getState().transform;
         if (epTransform.kind !== 'endpointDrag') break;
-
-        const { endpoint } = epTransform;
-        const ctx = this.dragRouteCtx;
-        if (!ctx) break;
-
-        // 1. Snapshot the current routed bbox into prevBbox BEFORE we mutate dragBbox.
-        //    routedBbox === dragBbox (shared ref); copying preserves the dirty-rect chain.
-        copyBbox(this.dragBbox, epTransform.prevBbox);
-
-        // 2. Find snap target (Ctrl suppresses snapping). connectorType comes from
-        //    the hoisted RouteContext — no per-event Y.Map read.
+        // Read connectorType from the live handle (cheaper than threading through controller).
+        const handle = getHandle(epTransform.connectorId);
+        if (!handle || handle.kind !== 'connector') break;
         const snap = isCtrlHeld()
           ? null
           : findBestSnapTarget({
               cursorWorld: [worldX, worldY],
               prevAttach: epTransform.currentSnap,
-              connectorType: ctx.connectorType,
+              connectorType: getConnectorType(handle.y),
             });
-
-        // 3. Build endpoint override.
-        const overrideValue: EndpointDragOverride = snap ?? [worldX, worldY];
-
-        // 4. Reroute mutates dragBbox + dragPointsBuf in place.
-        const slot: Slot = endpoint === 'start' ? SLOT_START : SLOT_END;
-        const count = rerouteEndpointDragInto(ctx, slot, overrideValue, this.dragBbox, this.dragPointsBuf);
-
-        // 5. Dirty-rect: invalidate the prev (snapshotted in step 1) + new (just-mutated dragBbox).
-        invalidateWorldBBox(epTransform.prevBbox);
-        if (count > 0) invalidateWorldBBox(this.dragBbox);
-
-        // 6. Push UI state to store (no bbox arg — routedBbox is shared by reference).
+        getController().updateEndpointDrag(worldX, worldY, snap);
         const currentPosition: [number, number] = snap ? snap.position : [worldX, worldY];
-        useSelectionStore.getState().updateEndpointDrag(currentPosition, snap ?? null, count);
+        useSelectionStore.getState().updateEndpointDrag(currentPosition, snap);
         break;
       }
     }
@@ -422,57 +330,41 @@ export class SelectTool implements PointerTool {
           dist = Math.sqrt(dx * dx + dy * dy);
         }
 
-        switch (this.downTarget) {
+        switch (this.downHit.kind) {
           case 'handle':
             // Clicked handle but didn't drag → no-op
             break;
 
-          case 'connectorEndpoint':
+          case 'endpoint':
             // Clicked endpoint dot but didn't drag → drill down to single connector
-            if (store.selectedIds.length > 1) {
-              store.setSelection([this.endpointHitAtDown!.connectorId]);
-            }
+            if (store.selectedIds.length > 1) store.setSelection([this.downHit.connectorId]);
             break;
 
-          case 'objectOutsideSelection': {
-            const hitId = this.hitAtDown!.id;
-            if (this.hasAddModifier()) {
-              // Additive: add to current selection
-              const current = store.selectedIds;
-              if (!current.includes(hitId)) {
-                store.setSelection([...current, hitId]);
+          case 'object': {
+            const { handle, isSelected } = this.downHit;
+            const hitId = handle.id;
+            if (!isSelected) {
+              if (this.hasAddModifier()) {
+                // Additive: add to current selection
+                const current = store.selectedIds;
+                if (!current.includes(hitId)) store.setSelection([...current, hitId]);
+              } else {
+                store.setSelection([hitId]);
               }
-            } else {
-              // Replace selection
-              store.setSelection([hitId]);
+              break;
             }
-            break;
-          }
-
-          case 'objectInSelection': {
-            const hitHandle = this.hitAtDown!;
-            const hitId = hitHandle.id;
             if (this.hasAddModifier()) {
               // Subtractive: remove from selection
               const remaining = store.selectedIds.filter((id) => id !== hitId);
-              if (remaining.length > 0) {
-                store.setSelection(remaining);
-              } else {
-                store.clearSelection();
-              }
+              if (remaining.length > 0) store.setSelection(remaining);
+              else store.clearSelection();
             } else if (store.selectedIds.length > 1) {
               // Drill down to single object
               store.setSelection([hitId]);
-            } else if (
-              (hitHandle.kind === 'text' || hitHandle.kind === 'shape' || hitHandle.kind === 'note') &&
-              !textTool.isEditorMounted()
-            ) {
-              if (textTool.justClosedLabelId === hitId) {
-                textTool.justClosedLabelId = null;
-              } else {
-                textTool.startEditing(hitId, this.downWorld!);
-              }
-            } else if (hitHandle.kind === 'code' && !codeTool.isEditorMounted()) {
+            } else if ((handle.kind === 'text' || handle.kind === 'shape' || handle.kind === 'note') && !textTool.isEditorMounted()) {
+              if (textTool.justClosedLabelId === hitId) textTool.justClosedLabelId = null;
+              else textTool.startEditing(hitId, this.downWorld!);
+            } else if (handle.kind === 'code' && !codeTool.isEditorMounted()) {
               codeTool.startEditing(hitId, this.downWorld!);
             }
             break;
@@ -481,12 +373,11 @@ export class SelectTool implements PointerTool {
           case 'selectionGap':
             // Quick tap in gap → deselect
             // Long hold or slight movement in gap → keep selection (user was trying to drag)
-            if (elapsed < CLICK_WINDOW_MS && dist <= MOVE_THRESHOLD_PX) {
-              store.clearSelection();
-            }
+            if (elapsed < CLICK_WINDOW_MS && dist <= MOVE_THRESHOLD_PX) store.clearSelection();
             // Else: do nothing, selection stays
             break;
-          default:
+
+          case 'background':
             // Click on background → deselect
             store.clearSelection();
             break;
@@ -501,32 +392,10 @@ export class SelectTool implements PointerTool {
       }
 
       case 'translate':
-      case 'scale': {
-        useSelectionStore.getState().endTransform();
-        break;
-      }
-
+      case 'scale':
       case 'endpointDrag': {
-        const epStore = useSelectionStore.getState();
-        if (epStore.transform.kind !== 'endpointDrag') {
-          epStore.endTransform();
-          break;
-        }
-
-        const { connectorId, endpoint, pointsBuf, validCount, currentSnap, prevBbox, routedBbox } = epStore.transform;
-
-        // Invalidate the connector region (routedBbox is the shared dragBbox — always present).
-        invalidateWorldBBox(prevBbox);
-        if (validCount >= 2) invalidateWorldBBox(routedBbox);
-
-        epStore.endTransform();
-
-        // Commit if we have valid routed points (read by validCount, not .length).
-        if (validCount >= 2) {
-          this.commitEndpointDrag(connectorId, endpoint, pointsBuf, validCount, currentSnap);
-        }
-        // Clear the gesture context; pointsBuf stays for reuse next gesture.
-        this.dragRouteCtx = null;
+        // endTransform routes by transform.kind: endpointDrag → controller.commitEndpointDrag(snap).
+        useSelectionStore.getState().endTransform();
         break;
       }
     }
@@ -547,14 +416,7 @@ export class SelectTool implements PointerTool {
   }
 
   cancel(): void {
-    // Invalidate dirty rect before clearing transform state
-    if (this.phase === 'endpointDrag') {
-      const store = useSelectionStore.getState();
-      if (store.transform.kind === 'endpointDrag') {
-        invalidateWorldBBox(store.transform.prevBbox);
-      }
-      this.dragRouteCtx = null;
-    }
+    // Controller's cancel() handles all gesture modes (translate / scale / endpointDrag).
     useSelectionStore.getState().cancelTransform();
 
     this.marqueeActive = false;
@@ -660,38 +522,8 @@ export class SelectTool implements PointerTool {
     this.pointerId = null;
     this.downWorld = null;
     this.downScreen = null;
-    this.hitAtDown = null;
-    this.pendingHandleId = null;
-    this.endpointHitAtDown = null;
-    this.downTarget = 'none';
+    this.downHit = { kind: 'background' };
     this.downTimeMs = 0;
-  }
-
-  /**
-   * Commit endpoint drag results to Y.Doc.
-   * Writes only the dragged side's union value: anchor when snapped, free Point otherwise
-   * (route's first/last point captures clearance-applied / pulled-back position). The
-   * deep observer reroutes canonically post-tx, populating the local route cache.
-   */
-  private commitEndpointDrag(
-    connectorId: string,
-    endpoint: 'start' | 'end',
-    pointsBuf: Point[],
-    validCount: number,
-    currentSnap: SnapTarget | null,
-  ): void {
-    transact(() => {
-      const yMap = getObjects().get(connectorId);
-      if (!yMap) return;
-
-      // Read the dragged-side endpoint from the valid-prefix slice — pointsBuf may
-      // hold trailing high-water-mark tuples beyond `validCount`. Clone into a
-      // fresh tuple so Y.Map doesn't preserve a reference into our pooled buffer.
-      const idx = endpoint === 'start' ? 0 : validCount - 1;
-      const src = pointsBuf[idx];
-      const value: ConnectorEndpoint = currentSnap ? anchorRecordFromSnap(currentSnap) : ([src[0], src[1]] as Point);
-      yMap.set(endpoint, value);
-    });
   }
 
   private updateMarqueeSelection(): void {

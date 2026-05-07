@@ -17,6 +17,17 @@ import {
   getCodeFrame,
   getMinWidth as getCodeMinWidth,
 } from '@/core/code/code-system';
+import { anchorRecordFromSnap } from '@/core/connectors/anchor-atoms';
+import {
+  buildRouteContext,
+  type EndpointDragOverride,
+  type RouteContext,
+  rerouteEndpointDragInto,
+  type Slot,
+  slotKey,
+  slotPointIndex,
+} from '@/core/connectors/reroute-connector';
+import type { SnapTarget } from '@/core/connectors/types';
 import {
   bboxCenter,
   copyBbox,
@@ -47,14 +58,15 @@ import {
 import type { BBoxTuple, FrameTuple, Point } from '@/core/types/geometry';
 import type { HandleId } from '@/core/types/handles';
 import { isCorner, isHorzSide } from '@/core/types/handles';
-import type { BindableKind, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
+import type { BindableKind, ConnectorEndpoint, ObjectHandle, ObjectKind, TextAlign, TextWidth } from '@/core/types/objects';
 import { isBindableKind } from '@/core/types/objects';
 import { invalidateWorldAll, invalidateWorldBBox } from '@/renderer/RenderLoop';
-import { getHandle, transact } from '@/runtime/room-runtime';
+import { getHandle, getObjects, transact } from '@/runtime/room-runtime';
 import {
   type ConnectorTopology,
   cancelTopology,
   commitTopology,
+  type EndpointDragEntry,
   newTopologyBuilder,
   runTopologyScale,
   runTopologyTranslate,
@@ -595,8 +607,40 @@ export class TransformController {
   private translateSelBounds: BBoxTuple | null = null;
   dx = 0;
   dy = 0;
-  private mode: 'none' | 'scale' | 'translate' = 'none';
+  private mode: 'none' | 'scale' | 'translate' | 'endpointDrag' = 'none';
   private topology: ConnectorTopology | null = null;
+  /**
+   * Endpoint-drag state — logical only. The renderer reads the synthetic
+   * `EndpointDragEntry` directly via `getEndpointDragEntry()`; no Map / array
+   * wrapper collections. `entry` and `prevBbox` alias the controller-owned
+   * scratches so per-gesture allocation is zero.
+   */
+  private endpointDrag: {
+    readonly entry: EndpointDragEntry;
+    readonly routeCtx: RouteContext;
+    readonly slot: Slot;
+    readonly prevBbox: BBoxTuple;
+  } | null = null;
+  /**
+   * Pre-allocated EndpointDragEntry scratch — reused across every endpoint
+   * drag gesture. `id` reset per begin; `currBbox`/`pointsBuf` slots mutated
+   * per frame; `validCount` reset per begin and updated per frame.
+   */
+  private readonly epDragEntryScratch: EndpointDragEntry = {
+    mode: 'reroute',
+    id: '',
+    currBbox: [0, 0, 0, 0],
+    pointsBuf: [],
+    validCount: 0,
+  };
+  /** Pre-allocated `prevBbox` scratch for endpoint drag — reused across gestures. */
+  private readonly epDragPrevBbox: BBoxTuple = [0, 0, 0, 0];
+  /**
+   * Per-gesture inject ids, reused across translate / scale / endpointDrag.
+   * Length reset at every begin; pushed during the freeze loop and after
+   * `builder.finalize()` (attached connectors). Returned via `getInjectIds()`.
+   */
+  private readonly injectIds: string[] = [];
 
   // --- Scale lifecycle ---
 
@@ -610,6 +654,7 @@ export class TransformController {
     const builder = newTopologyBuilder('scale', selectedIds);
 
     for (const id of selectedIds) {
+      this.injectIds.push(id);
       const handle = getHandle(id);
       if (!handle) continue;
 
@@ -650,6 +695,9 @@ export class TransformController {
     }
 
     this.topology = builder.finalize();
+    if (this.topology) {
+      for (const id of this.topology.attachedConnectorIds) this.injectIds.push(id);
+    }
   }
 
   updateScale(sx: number, sy: number): void {
@@ -688,6 +736,7 @@ export class TransformController {
     const builder = newTopologyBuilder('translate', selectedIds);
 
     for (const id of selectedIds) {
+      this.injectIds.push(id);
       const handle = getHandle(id);
       if (!handle) continue;
 
@@ -713,6 +762,9 @@ export class TransformController {
     }
 
     this.topology = builder.finalize();
+    if (this.topology) {
+      for (const id of this.topology.attachedConnectorIds) this.injectIds.push(id);
+    }
   }
 
   updateTranslate(dx: number, dy: number): void {
@@ -731,6 +783,81 @@ export class TransformController {
     }
 
     if (this.topology) runTopologyTranslate(this.topology, dx, dy);
+  }
+
+  // --- Endpoint drag lifecycle ---
+
+  /**
+   * Begin an endpoint-drag gesture. Builds RouteContext, mutates the controller's
+   * pre-allocated scratch (`epDragEntryScratch`/`epDragPrevBbox`), and pushes the
+   * dragged connector id into the shared `injectIds` buffer. Returns false when
+   * `buildRouteContext` fails (partially-built connector); SelectTool keeps the
+   * pending phase in idle and bails. Per-gesture allocation: zero.
+   */
+  beginEndpointDrag(connectorId: string, slot: Slot, handle: ObjectHandle): boolean {
+    this.clear();
+    const routeCtx = buildRouteContext(connectorId, handle.y);
+    if (!routeCtx) return false;
+    this.mode = 'endpointDrag';
+
+    const e = this.epDragEntryScratch;
+    e.id = connectorId;
+    copyBbox(handle.bbox, e.currBbox);
+    e.pointsBuf.length = 0;
+    e.validCount = 0;
+    copyBbox(handle.bbox, this.epDragPrevBbox);
+
+    this.endpointDrag = {
+      entry: e,
+      routeCtx,
+      slot,
+      prevBbox: this.epDragPrevBbox,
+    };
+
+    this.injectIds.push(connectorId);
+    return true;
+  }
+
+  /** Per-event endpoint-drag update. `snap` is null when unsnapped (free position). */
+  updateEndpointDrag(worldX: number, worldY: number, snap: SnapTarget | null): void {
+    if (!this.endpointDrag) return;
+    const ed = this.endpointDrag;
+    // Snapshot CURRENT (just-painted) bbox into prevBbox BEFORE the reroute mutates currBbox.
+    copyBbox(ed.entry.currBbox, ed.prevBbox);
+    invalidateWorldBBox(ed.prevBbox); // OLD dirty
+    const override: EndpointDragOverride = snap ?? [worldX, worldY];
+    const count = rerouteEndpointDragInto(ed.routeCtx, ed.slot, override, ed.entry.currBbox, ed.entry.pointsBuf);
+    ed.entry.validCount = count;
+    if (count > 0) invalidateWorldBBox(ed.entry.currBbox); // NEW dirty
+  }
+
+  /**
+   * Commit endpoint drag. Returns true when a Y.Map write happened (validCount ≥ 2);
+   * false on failed routes. Always tears down the gesture state.
+   */
+  commitEndpointDrag(snap: SnapTarget | null): boolean {
+    if (!this.endpointDrag) return false;
+    const ed = this.endpointDrag;
+    invalidateWorldBBox(ed.prevBbox);
+    if (ed.entry.validCount >= 2) invalidateWorldBBox(ed.entry.currBbox);
+    if (ed.entry.validCount < 2) {
+      this.endpointDrag = null;
+      this.mode = 'none';
+      return false;
+    }
+    const slot = ed.slot;
+    const validCount = ed.entry.validCount;
+    const id = ed.entry.id;
+    const src = ed.entry.pointsBuf[slotPointIndex(slot, validCount)];
+    const value: ConnectorEndpoint = snap ? anchorRecordFromSnap(snap) : ([src[0], src[1]] as Point);
+    transact(() => {
+      const yMap = getObjects().get(id);
+      if (!yMap) return;
+      yMap.set(slotKey(slot), value);
+    });
+    this.endpointDrag = null;
+    this.mode = 'none';
+    return true;
   }
 
   // --- Shared lifecycle ---
@@ -767,13 +894,23 @@ export class TransformController {
           for (const [, e] of map) commitFn(e.y, e.out, e.frozen);
         }
       }
-      if (topology && mode !== 'none') commitTopology(topology, mode, dx, dy);
+      // commit() is reached only when mode is 'scale' or 'translate' (endpointDrag
+      // routes through commitEndpointDrag); narrow explicitly so commitTopology's
+      // discriminated parameter types check.
+      if (topology && (mode === 'scale' || mode === 'translate')) commitTopology(topology, mode, dx, dy);
     });
   }
 
   cancel(): void {
-    // Full clear is simpler and more correct than walking entries + topology — cancel
-    // restores idle geometry, so every dirty rect from the gesture must be repainted.
+    // Endpoint drag uses precise dirty rects (single connector). Translate/scale gestures
+    // touch arbitrarily many objects; full repaint is simpler than walking everything.
+    if (this.endpointDrag) {
+      invalidateWorldBBox(this.endpointDrag.prevBbox);
+      if (this.endpointDrag.entry.validCount >= 2) invalidateWorldBBox(this.endpointDrag.entry.currBbox);
+      this.endpointDrag = null;
+      this.mode = 'none';
+      return;
+    }
     invalidateWorldAll();
     if (this.topology) cancelTopology(this.topology);
     this.clear();
@@ -789,11 +926,13 @@ export class TransformController {
     this.dy = 0;
     this.mode = 'none';
     this.topology = null;
+    this.endpointDrag = null;
+    this.injectIds.length = 0;
   }
 
   // --- Accessors ---
 
-  getMode(): 'none' | 'scale' | 'translate' {
+  getMode(): 'none' | 'scale' | 'translate' | 'endpointDrag' {
     return this.mode;
   }
 
@@ -803,6 +942,21 @@ export class TransformController {
 
   getTopology(): ConnectorTopology | null {
     return this.topology;
+  }
+
+  /**
+   * Synthetic connector entry for the active endpoint-drag gesture. Renderer
+   * dispatches off this in the connector branch when `topology` is null —
+   * one string-equality test per connector iteration vs. a Map.get on
+   * topology gestures.
+   */
+  getEndpointDragEntry(): EndpointDragEntry | null {
+    return this.endpointDrag ? this.endpointDrag.entry : null;
+  }
+
+  /** Inject IDs for the cull loop. Reused buffer; null when idle. */
+  getInjectIds(): readonly string[] | null {
+    return this.mode === 'none' ? null : this.injectIds;
   }
 
   getMap<K extends ObjectKind>(kind: K): Map<string, Entry<K>> | undefined {
@@ -863,7 +1017,7 @@ export function getScaleBehavior(kind: ScalableKind): ScaleBehavior | undefined 
   return ctrl?.getBehavior(kind);
 }
 
-export function getTransformMode(): 'none' | 'scale' | 'translate' {
+export function getTransformMode(): 'none' | 'scale' | 'translate' | 'endpointDrag' {
   return ctrl?.getMode() ?? 'none';
 }
 
@@ -874,6 +1028,22 @@ export function getTranslateDelta(): [number, number] | null {
 
 export function getTransformTopology(): ConnectorTopology | null {
   return ctrl?.getTopology() ?? null;
+}
+
+/**
+ * Per-frame accessor for the renderer's connector branch under endpoint drag.
+ * Returns null when idle, scale, or translate — those gestures expose their
+ * connector entries via `getTransformTopology().byId` instead. The split keeps
+ * the per-frame branch monomorphic: topology mode does one Map.get, endpoint
+ * drag does one string equality.
+ */
+export function getEndpointDragEntry(): EndpointDragEntry | null {
+  return ctrl?.getEndpointDragEntry() ?? null;
+}
+
+/** Pre-deduplicated inject IDs for the cull loop (selected ∪ attached, or [draggedId]). */
+export function getTransformInjectIds(): readonly string[] | null {
+  return ctrl?.getInjectIds() ?? null;
 }
 
 export function getTransformScaleCtx(): ScaleCtx | null {

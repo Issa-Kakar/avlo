@@ -12,6 +12,7 @@
  */
 
 import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
+import { SLOT_END, SLOT_START, type Slot } from '@/core/connectors/reroute-connector';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
 import { getHandle } from '@/runtime/room-runtime';
 import { useCameraStore } from '@/stores/camera-store';
@@ -125,15 +126,15 @@ export const ENDPOINT_DOT_HIT_PX = 10;
 
 export interface EndpointHit {
   connectorId: string;
-  endpoint: 'start' | 'end';
+  slot: Slot;
 }
 
 function* iterEndpointDotProbes(selectedIds: readonly string[]): Generator<HandleProbe<EndpointHit>> {
   for (const id of selectedIds) {
     const handle = getHandle(id);
     if (!handle || handle.kind !== 'connector') continue;
-    yield { center: getEndpointEdgePosition(handle, 'start'), value: { connectorId: id, endpoint: 'start' } };
-    yield { center: getEndpointEdgePosition(handle, 'end'), value: { connectorId: id, endpoint: 'end' } };
+    yield { center: getEndpointEdgePosition(handle, 'start'), value: { connectorId: id, slot: SLOT_START } };
+    yield { center: getEndpointEdgePosition(handle, 'end'), value: { connectorId: id, slot: SLOT_END } };
   }
 }
 

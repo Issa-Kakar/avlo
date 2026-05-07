@@ -155,8 +155,13 @@ routeNewConnectorInto(start, end, strokeWidth, type, outPoints) → count
 //   Pass yObj directly so the router never round-trips through getHandle(connectorId).
 buildRouteContext(connectorId, yObj) → RouteContext | null
 
-// Constants
-SLOT_START: 0, SLOT_END: 1
+// Slot taxonomy (used by endpoint-drag entry, EndpointHit, and topology side-builders)
+type Slot = 0 | 1
+SLOT_START: Slot = 0
+SLOT_END:   Slot = 1
+slotKey(s):                  'start' | 'end'   // storage-boundary only
+slotOther(s):                Slot              // 1 - s
+slotPointIndex(s, count):    number            // branchless: s * (count - 1)
 ```
 
 The router's canonical reroute composes `bakeCanonicalEndpoint` + `Pipeline.routeInto` directly — no override decoder. Topology shape transforms don't go through any single entry — see the Side model above.
@@ -275,7 +280,7 @@ Lifecycle:
 
 ## Anchor Atoms (`anchor-atoms.ts`)
 
-Five functions, no classifiers. Interior-ness is stored; elbow `dir` is supplied by the caller (derived via `projectAnchorToEdge`).
+Six classifiers / writers. Interior-ness is stored; elbow `dir` is supplied by the caller (derived via `projectAnchorToEdge`).
 
 | Function | Purpose |
 |---|---|
@@ -283,6 +288,8 @@ Five functions, no classifiers. Interior-ness is stored; elbow `dir` is supplied
 | `elbowAnchorPoint(anchor, frame, dir)` | Raw + `EDGE_CLEARANCE_W` along `directionVector(dir)`. Allocates. |
 | `fillElbowAnchorPointInto(out, anchor, frame, dir)` | Write-into form. Used by `Pipeline.configAnchored`. |
 | `isSameShape(a, b)` | Both endpoints → same `shapeId`. |
+| `isAnchored(handle)` | True iff connector has at least one shape-bound endpoint (StoredAnchor, not free Point). |
+| `isInteriorAnchored(handle, slot)` | True iff the given slot is bound AND `interior === true` (straight deep snap). |
 | `anchorRecordFromSnap(snap)` | Elbow → `{id, anchor}`; straight → `{id, interior, anchor}`. |
 | `getEndpointEdgePosition(handle, 'start'\|'end')` | Where the dot renders: raw frame point when bound, free pos when free, cached-route fallback when target frame is gone. |
 

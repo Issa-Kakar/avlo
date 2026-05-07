@@ -82,6 +82,12 @@ export type EndpointDragOverride = SnapTarget | Point;
 export type Slot = 0 | 1;
 export const SLOT_START: Slot = 0;
 export const SLOT_END: Slot = 1;
+/** Map slot to its Y.Map field name. Only used at the storage boundary. */
+export const slotKey = (s: Slot): 'start' | 'end' => (s === 0 ? 'start' : 'end');
+/** The opposite slot. */
+export const slotOther = (s: Slot): Slot => (1 - s) as Slot;
+/** Branchless: index of the slot's point in a `count`-length polyline (start → 0, end → count - 1). */
+export const slotPointIndex = (s: Slot, count: number): number => s * (count - 1);
 
 // ============================================================================
 // INTERNAL ENDPOINT TYPES — discriminated unions, no optional fields

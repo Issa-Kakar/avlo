@@ -18,21 +18,23 @@
  */
 
 import { getConnectorType } from '@/core/accessors';
-import { getEndpointEdgePosition } from '@/core/connectors/anchor-atoms';
-import type { SnapTarget } from '@/core/connectors/types';
+import { getEndpointEdgePosition, isInteriorAnchored } from '@/core/connectors/anchor-atoms';
+import { SLOT_END, SLOT_START, slotKey, slotOther, slotPointIndex } from '@/core/connectors/reroute-connector';
 import { frameToBbox, scaleBBoxAround, translateBBox } from '@/core/geometry/bounds';
 import { frameOf } from '@/core/geometry/frame-of';
 import { bboxesIntersect } from '@/core/geometry/hit-primitives';
 import { uniformFactor } from '@/core/geometry/scale-system';
 import { shouldShowHandles } from '@/core/spatial/handle-hit';
 import type { BBoxTuple, Point } from '@/core/types/geometry';
-import type { ConnectorEndpoint, ObjectHandle, StoredAnchor } from '@/core/types/objects';
+import type { ObjectHandle } from '@/core/types/objects';
 import { getConnectorRoute, getHandle } from '@/runtime/room-runtime';
 import { selectTool } from '@/runtime/tool-registry';
 import { getVisibleBoundsTuple, useCameraStore } from '@/stores/camera-store';
 import { computeHandles, computeSelectionBounds, useSelectionStore } from '@/stores/selection-store';
+import type { EndpointDragEntry } from '@/tools/selection/connector-topology';
 import {
   getController,
+  getEndpointDragEntry,
   getScaleEntry,
   getTransformScaleCtx,
   getTransformTopology,
@@ -41,7 +43,7 @@ import {
   type KindWithBBoxGeo,
   transformHasChange,
 } from '@/tools/selection/transform';
-import type { TransformState } from '@/tools/selection/types';
+import type { EndpointDragTransform, TransformState } from '@/tools/selection/types';
 import { drawAnchorDot, drawConnectorDashGuide, drawSnapFeedback } from './connector-render-atoms';
 import { drawResizeHandles } from './handle-stamp';
 
@@ -292,85 +294,59 @@ function drawMarqueeRect(ctx: CanvasRenderingContext2D, marqueeRect: Readonly<BB
 // =============================================================================
 
 /**
- * Endpoint dots in connector mode. Composes shared atoms:
- * `drawSnapFeedback` paints highlight + midpoints + center + active dot;
- * we layer the inactive dot on the non-snapped side and dashed guides for
- * straight connectors with interior anchors.
+ * Endpoint dots in connector mode. Idle and dragging branches are split into
+ * separate functions: each owns its own straight-line logic with no `let`
+ * accumulator dance. The dragging branch reads route points off the
+ * controller's synthetic ConnectorEntry — same source the renderer uses,
+ * so the dashed guide always agrees with the rerouted polyline.
  */
 function drawConnectorEndpointDots(ctx: CanvasRenderingContext2D, connectorId: string, transform: TransformState): void {
   const handle = getHandle(connectorId);
   if (!handle || handle.kind !== 'connector') return;
-
   const isStraight = getConnectorType(handle.y) === 'straight';
-  const isDragging = transform.kind === 'endpointDrag' && transform.connectorId === connectorId;
 
-  let startPos: Point;
-  let endPos: Point;
-  let startActive = false;
-  let endActive = false;
-  let currentSnap: SnapTarget | null = null;
-  let draggedEndpoint: 'start' | 'end' | null = null;
-  let dragRoute: Point[] | null = null;
-  let dragRouteCount = 0;
-
-  if (isDragging) {
-    const { endpoint, currentPosition, currentSnap: snap, pointsBuf, validCount } = transform;
-    draggedEndpoint = endpoint;
-    currentSnap = snap;
-    dragRoute = validCount >= 2 ? pointsBuf : null;
-    dragRouteCount = validCount;
-
-    const draggedPos: Point = snap ? snap.position : currentPosition;
-    const draggedActive = snap !== null;
-    const otherPos = getEndpointEdgePosition(handle, endpoint === 'start' ? 'end' : 'start');
-
-    if (endpoint === 'start') {
-      startPos = draggedPos;
-      startActive = draggedActive;
-      endPos = otherPos;
-    } else {
-      endPos = draggedPos;
-      endActive = draggedActive;
-      startPos = otherPos;
-    }
-  } else {
-    startPos = getEndpointEdgePosition(handle, 'start');
-    endPos = getEndpointEdgePosition(handle, 'end');
-  }
-
-  drawSnapFeedback(ctx, currentSnap);
-
-  if (!startActive) drawAnchorDot(ctx, startPos, false);
-  if (!endActive) drawAnchorDot(ctx, endPos, false);
-
-  if (!isStraight) return;
-
-  if (isDragging && dragRoute && dragRouteCount >= 2) {
-    if (currentSnap?.kind === 'straight' && currentSnap.interior) {
-      const lineEnd = draggedEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRouteCount - 1];
-      drawConnectorDashGuide(ctx, currentSnap.position, lineEnd);
-    }
-    const otherEndpoint: 'start' | 'end' = draggedEndpoint === 'start' ? 'end' : 'start';
-    const otherEp = handle.y.get(otherEndpoint) as ConnectorEndpoint | undefined;
-    const otherAnchor = otherEp && !Array.isArray(otherEp) ? (otherEp as StoredAnchor) : undefined;
-    if (otherAnchor && 'interior' in otherAnchor && otherAnchor.interior) {
-      const otherPos = getEndpointEdgePosition(handle, otherEndpoint);
-      const otherLineEnd = otherEndpoint === 'start' ? dragRoute[0] : dragRoute[dragRouteCount - 1];
-      drawConnectorDashGuide(ctx, otherPos, otherLineEnd);
-    }
+  if (transform.kind === 'endpointDrag' && transform.connectorId === connectorId) {
+    drawDraggingConnectorDots(ctx, handle, transform, getEndpointDragEntry(), isStraight);
     return;
   }
+  drawIdleConnectorDots(ctx, handle, isStraight);
+}
 
-  const storedPoints = getConnectorRoute(handle.id);
-  if (!storedPoints || storedPoints.length < 2) return;
-  const startEp = handle.y.get('start') as ConnectorEndpoint | undefined;
-  const endEp = handle.y.get('end') as ConnectorEndpoint | undefined;
-  const startAnchor = startEp && !Array.isArray(startEp) ? (startEp as StoredAnchor) : undefined;
-  const endAnchor = endEp && !Array.isArray(endEp) ? (endEp as StoredAnchor) : undefined;
-  if (startAnchor && 'interior' in startAnchor && startAnchor.interior) {
-    drawConnectorDashGuide(ctx, startPos, storedPoints[0]);
+function drawIdleConnectorDots(ctx: CanvasRenderingContext2D, handle: ObjectHandle, isStraight: boolean): void {
+  const startPos = getEndpointEdgePosition(handle, 'start');
+  const endPos = getEndpointEdgePosition(handle, 'end');
+  drawAnchorDot(ctx, startPos, false);
+  drawAnchorDot(ctx, endPos, false);
+  if (!isStraight) return;
+  const route = getConnectorRoute(handle.id);
+  if (!route || route.length < 2) return;
+  if (isInteriorAnchored(handle, SLOT_START)) drawConnectorDashGuide(ctx, startPos, route[0]);
+  if (isInteriorAnchored(handle, SLOT_END)) drawConnectorDashGuide(ctx, endPos, route[route.length - 1]);
+}
+
+function drawDraggingConnectorDots(
+  ctx: CanvasRenderingContext2D,
+  handle: ObjectHandle,
+  t: EndpointDragTransform,
+  ce: EndpointDragEntry | null,
+  isStraight: boolean,
+): void {
+  const { slot, currentPosition, currentSnap } = t;
+  const draggedPos: Point = currentSnap ? currentSnap.position : currentPosition;
+  const otherSlot = slotOther(slot);
+  const otherPos = getEndpointEdgePosition(handle, slotKey(otherSlot));
+
+  if (currentSnap) drawSnapFeedback(ctx, currentSnap);
+  else drawAnchorDot(ctx, draggedPos, false);
+  drawAnchorDot(ctx, otherPos, false);
+
+  if (!isStraight || !ce || ce.validCount < 2) return;
+  const { pointsBuf, validCount } = ce;
+
+  if (currentSnap?.kind === 'straight' && currentSnap.interior) {
+    drawConnectorDashGuide(ctx, currentSnap.position, pointsBuf[slotPointIndex(slot, validCount)]);
   }
-  if (endAnchor && 'interior' in endAnchor && endAnchor.interior) {
-    drawConnectorDashGuide(ctx, endPos, storedPoints[storedPoints.length - 1]);
+  if (isInteriorAnchored(handle, otherSlot)) {
+    drawConnectorDashGuide(ctx, otherPos, pointsBuf[slotPointIndex(otherSlot, validCount)]);
   }
 }
