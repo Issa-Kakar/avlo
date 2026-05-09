@@ -282,7 +282,10 @@ export function buildCodeSourceInto(text: string, out: CodeSource): void {
 }
 
 // ============================================================================
-// §4b SPANS BUFFER — capacity helpers (used by code-tokens.ts and worker swap)
+// §4b SPANS BUFFER — `CodeSpans` factory. Capacity helpers (`ensureSpansDataCap`,
+// `ensureSpansLineCap`) live in `code-tokens.ts` so the lezer worker's import
+// graph never reaches `code-system.ts` (which would drag in RenderLoop →
+// image-manager and crash the worker on load).
 // ============================================================================
 
 function createCodeSpans(): CodeSpans {
@@ -294,33 +297,6 @@ function createCodeSpans(): CodeSpans {
     spanCap: 48,
     lineCap: 8,
   };
-}
-
-export function ensureSpansLineCap(s: CodeSpans, n: number): void {
-  if (s.lineCap >= n) return;
-  let cap = s.lineCap;
-  while (cap < n) cap *= 2;
-  const next = new Uint32Array(cap + 1);
-  next.set(s.spanLineStart);
-  s.spanLineStart = next;
-  s.lineCap = cap;
-}
-
-export function ensureSpansDataCap(s: CodeSpans, n: number): void {
-  if (s.spanCap >= n) return;
-  let cap = s.spanCap;
-  while (cap < n) cap *= 2;
-  const next = new Uint16Array(cap);
-  next.set(s.spanData);
-  s.spanData = next;
-  s.spanCap = cap;
-  // Whitespace buffer is parallel: one byte per triple = one slot per 3 spanData u16s.
-  const wsCap = (cap / 3) | 0;
-  if (s.spanWhitespace.length < wsCap) {
-    const nextWs = new Uint8Array(wsCap);
-    nextWs.set(s.spanWhitespace);
-    s.spanWhitespace = nextWs;
-  }
 }
 
 // ============================================================================
@@ -564,6 +540,8 @@ function ensureWorkers(): void {
   for (let i = 0; i < POOL_SIZE; i++) {
     const w = new Worker(new URL('./lezer-worker.ts', import.meta.url), { type: 'module' });
     w.onmessage = handleWorkerMessage;
+    w.onerror = (e) => console.error('[worker] onerror', i, e.message, e.filename, e.lineno);
+    w.onmessageerror = (e) => console.error('[worker] onmessageerror', i, e);
     workers.push(w);
   }
 }
@@ -749,7 +727,11 @@ class CodeSystemCache {
     const e = this.entries.get(id);
     if (!e || forVersion !== e.version) return;
     e.spans.spanData = spanData;
-    e.spans.spanCap = spanData.length;
+    // Floor spanCap so a worker response with empty spanData (length 0) doesn't
+    // trip ensureSpansDataCap's `while (cap < n) cap *= 2` infinite loop the
+    // next time the sync tokenizer needs to grow the buffer. Belt-and-suspenders
+    // with the floor inside ensureSpansDataCap itself.
+    e.spans.spanCap = Math.max(spanData.length, 48);
     e.spans.spanLineStart = spanLineStart;
     e.spans.spanWhitespace = spanWhitespace;
     e.spans.lineCap = spanLineStart.length - 1;

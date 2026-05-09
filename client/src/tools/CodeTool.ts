@@ -664,13 +664,12 @@ export class CodeTool implements PointerTool {
       // Clear per-session UM before destroy — flushes stack items holding plugin refs
       this.sessionUM = dispose(this.sessionUM, (m) => m.clear());
 
-      // Destroy EditorView + break internal back-reference cycles
-      const view = this.editorView as Record<string, unknown>;
-      (view as unknown as { destroy(): void }).destroy();
-      view.viewState = null;
-      view.docView = null;
-      view.inputState = null;
-      view.observer = null;
+      // Destroy EditorView. Don't manually null its internal fields — CM's
+      // `destroy()` schedules a final blur-notification setTimeout that reads
+      // `view.observer.notifiedFocused`; pre-emptive nulling races that timeout
+      // and throws "Cannot read properties of null (reading 'notifiedFocused')".
+      // V8 GC handles cycles fine; the bookkeeping isn't needed.
+      (this.editorView as { destroy(): void }).destroy();
 
       // Remove container
       if (this.container?.parentNode) {

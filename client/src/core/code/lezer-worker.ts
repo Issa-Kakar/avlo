@@ -284,20 +284,24 @@ const _emptyBuf: number[] = [];
 // ============================================================================
 
 self.onmessage = (e: MessageEvent) => {
-  const msg = e.data;
+  try {
+    const msg = e.data;
 
-  switch (msg.type) {
-    case 'parse': {
-      const { id, text, language, version, changes } = msg;
-      const tree = parse(id, text, language, changes);
-      extractAndSendSpans(tree, text, id, version);
-      break;
+    switch (msg.type) {
+      case 'parse': {
+        const { id, text, language, version, changes } = msg;
+        const tree = parse(id, text, language, changes);
+        extractAndSendSpans(tree, text, id, version);
+        break;
+      }
+      case 'remove':
+        state.delete(msg.id);
+        break;
+      case 'clearAll':
+        state.clear();
+        break;
     }
-    case 'remove':
-      state.delete(msg.id);
-      break;
-    case 'clearAll':
-      state.clear();
-      break;
+  } catch (err) {
+    console.error('[worker] crash', err);
   }
 };

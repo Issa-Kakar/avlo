@@ -9,7 +9,43 @@
 
 import type { CodeLanguage } from '../accessors';
 import type { CodeSource, CodeSpans } from './code-system';
-import { ensureSpansDataCap, ensureSpansLineCap } from './code-system';
+
+// ============================================================================
+// SPANS BUFFER CAP HELPERS — defined here (not in code-system) so the lezer
+// worker's import graph stays free of `code-system.ts` (which pulls in
+// RenderLoop → image-manager → top-level `window` access). Keeping these as a
+// value import from code-system would drag the entire main-thread bundle
+// (incl. image-manager's worker spawns) into the worker, breaking it on load.
+// ============================================================================
+
+export function ensureSpansLineCap(s: CodeSpans, n: number): void {
+  if (s.lineCap >= n) return;
+  let cap = s.lineCap;
+  while (cap < n) cap *= 2;
+  const next = new Uint32Array(cap + 1);
+  next.set(s.spanLineStart);
+  s.spanLineStart = next;
+  s.lineCap = cap;
+}
+
+export function ensureSpansDataCap(s: CodeSpans, n: number): void {
+  if (s.spanCap >= n) return;
+  // Floor to 16 so a worker response with empty spanData (length 0) doesn't
+  // trip `while (cap < n) cap *= 2` into an infinite loop.
+  let cap = Math.max(s.spanCap, 16);
+  while (cap < n) cap *= 2;
+  const next = new Uint16Array(cap);
+  next.set(s.spanData);
+  s.spanData = next;
+  s.spanCap = cap;
+  // Whitespace buffer is parallel: one byte per triple = one slot per 3 spanData u16s.
+  const wsCap = (cap / 3) | 0;
+  if (s.spanWhitespace.length < wsCap) {
+    const nextWs = new Uint8Array(wsCap);
+    nextWs.set(s.spanWhitespace);
+    s.spanWhitespace = nextWs;
+  }
+}
 
 // ============================================================================
 // STYLE ENUM — 13 styles, fits in a byte

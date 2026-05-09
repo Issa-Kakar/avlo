@@ -10,7 +10,7 @@ Canvas-rendered code blocks with CodeMirror DOM overlay editing, two-tier syntax
 
 | File | Role |
 |------|------|
-| `code-tokens.ts` | Style enum (`S`), `PALETTE`, packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenizeInto`) — imported by main thread, worker, and theme |
+| `code-tokens.ts` | Style enum (`S`), `PALETTE`, spans-buffer cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap` — kept here, not in `code-system.ts`, so the worker bundle stays free of `RenderLoop` → `image-manager`), packed-triple writers (`countPackedTriples` / `writePackedTriples` / `packRunSpansInto`), `TAG_STYLES`/`TAG_STYLE_INDEX` maps, CoolGlow color constants, chrome constants (separator/title/play/output colors + sizing ratios), keyword sets + classification, sync regex tokenizer (`syncTokenizeInto`) — imported by main thread, worker, and theme |
 | `code-system.ts` | SOA pipeline types (`CodeSource`, `CodeSpans`, `CodeLayout`, `CodeOutput`), pooled-buffer `CodeSystemCache`, `buildCodeSourceInto` / `layoutCodeSourceInto` / `ensureOutputCache`, zero-allocation canvas renderer (`renderCodeLayout` with header/output chrome), chrome height helpers (`chromeFontSize`, `headerBarHeight`, `outputPanelHeight`, `blockHeight`), worker pool (2 warm workers, hash-routed), delta→ChangedRange conversion, font metrics (derived from text-system) |
 | `code-theme.ts` | CodeMirror theme extensions — lazy-loaded CoolGlow dark theme + syntax highlighting (`getCodeMirrorExtensions`). No dependency on code-system |
 | `lezer-worker.ts` | Web Worker — per-object Lezer `Tree` + `TreeFragment` state, cached configured parsers, incremental parsing, `highlightTree` → flat `{spanData, spanLineStart}` via `TAG_STYLE_INDEX` + `writePackedTriples`, zero-copy transfer of both ArrayBuffers |
@@ -284,6 +284,8 @@ Worker → Main: { type:'spans', id, version, spanData: Uint16Array, spanLineSta
 - `'typescript'` → `@lezer/javascript` configured with `dialect: 'ts jsx'` (cached)
 - `'javascript'` (default) → `@lezer/javascript` configured with `dialect: 'jsx'` (cached)
 
+**Worker bundle hygiene.** `code-tokens.ts` imports `code-system.ts` only as `import type { CodeSpans }` — value imports are forbidden. A static value import would chain `code-tokens → code-system → @/renderer/RenderLoop → @/core/image/image-manager`, dragging the main-thread bundle into the worker; `image-manager.ts` has top-level `new Worker(...)` (would spawn 2 nested image workers per lezer worker on module load) and `window.addEventListener(...)` (throws in worker context), aborting the worker's module-load before `onmessage` is installed and silently dropping every parse request. The cap helpers (`ensureSpansDataCap` / `ensureSpansLineCap`) live in `code-tokens.ts` to keep this chain broken — they're cited by the sync tokenizer's `packRunSpansInto`. `w.onerror` / `w.onmessageerror` handlers in `ensureWorkers` surface any future module-load regression instead of failing silently.
+
 ---
 
 ## Cache (`CodeSystemCache`)
@@ -317,7 +319,7 @@ interface CacheEntry {
 | fontSize/width/lineNumbers change (detected in `getLayout`) | — | reflowed in place | nulled | unchanged |
 | Language change (detected in `getLayout`) | Spans re-tokenized in place | **preserved** if dims unchanged | preserved | incremented |
 
-`applyWorkerSpans` does NOT touch the layout — only span colors change. It calls `invalidateWorld(frameBounds)` if a cached frame exists.
+`applyWorkerSpans` does NOT touch the layout — only span colors change. It calls `invalidateWorld(frameBounds)` if a cached frame exists. Floors `e.spans.spanCap = Math.max(spanData.length, 48)` so an empty-content response (`spanData.length === 0`) doesn't trip `ensureSpansDataCap`'s `cap *= 2` doubling loop on the next sync-tokenize grow; `ensureSpansDataCap` separately floors `cap = Math.max(s.spanCap, 16)` for defense-in-depth.
 
 **Language change optimization:** Language affects only colors, not geometry. Re-tokenize spans + dispatch worker parse, but do NOT recompute layout unless fontSize/width also changed.
 
